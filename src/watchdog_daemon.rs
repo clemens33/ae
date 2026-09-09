@@ -51,6 +51,8 @@ const MOTION_FAILURE_LIMIT: u8 = 3;
 pub struct Knobs {
     /// Seconds slept at the end of every cycle.
     pub interval_secs: u64,
+    /// Seconds between bounded local quota observations; zero disables them.
+    pub quota_every_secs: u64,
     /// The window under which a pane change or an event counts as recent.
     pub stale_secs: u64,
     /// How many nudges may be DELIVERED before the alert replaces them.
@@ -75,6 +77,7 @@ impl Default for Knobs {
     fn default() -> Self {
         Self {
             interval_secs: 60,
+            quota_every_secs: 300,
             stale_secs: 900,
             max_nudges: 2,
             throttle_alert_cycles: 5,
@@ -127,6 +130,8 @@ pub struct Observation {
     pub is_dead: bool,
     /// [`shows_throttle`]'s answer.
     pub is_throttled: bool,
+    /// The worst exact-match row from the last scheduled quota observation.
+    pub throttle_quota: Option<String>,
     /// The RESOLVED quiet suppression: `Done` always, `WaitingUser`/`Blocked`
     /// only while their baseline holds.
     pub quiet: Option<QuietKind>,
@@ -223,6 +228,347 @@ pub enum Effect {
     ReconcileWedge,
 }
 
+/// Advisory state for one stable vendor quota key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum QuotaLevel {
+    Headroom,
+    Low,
+    Critical,
+}
+
+impl QuotaLevel {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Headroom => "headroom",
+            Self::Low => "low",
+            Self::Critical => "critical",
+        }
+    }
+}
+
+/// Labels are not identity: the canonical source and vendor dimensions are.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct QuotaKey {
+    source: std::path::PathBuf,
+    rollout: Option<String>,
+    bucket: String,
+    qualifier: Option<String>,
+    window_minutes: Option<u32>,
+}
+
+#[derive(Debug, Clone)]
+struct QuotaSample {
+    key: QuotaKey,
+    group: crate::quota::Group,
+    row: crate::quota::Row,
+    used: f64,
+    observed_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct QuotaTracked {
+    key: QuotaKey,
+    observed_at: i64,
+    level: QuotaLevel,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct QuotaRecipient {
+    slot: String,
+    agent: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PendingAdvisory {
+    key: QuotaKey,
+    observed_at: i64,
+    level: QuotaLevel,
+    recipient: QuotaRecipient,
+    text: String,
+    attempts: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum QuotaAction {
+    Deliver(PendingAdvisory),
+    Dropped { recipient: String, summary: String },
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct QuotaCarry {
+    sweeps_until_observe: u64,
+    tracked: Vec<QuotaTracked>,
+    pending: Vec<PendingAdvisory>,
+    last_observation: Option<crate::quota::Observation>,
+}
+
+fn classify_quota(used: f64, prior: Option<QuotaLevel>) -> QuotaLevel {
+    match prior {
+        Some(QuotaLevel::Critical) if used >= 90.0 => QuotaLevel::Critical,
+        Some(QuotaLevel::Critical | QuotaLevel::Low) if used >= 75.0 => {
+            if used >= 95.0 {
+                QuotaLevel::Critical
+            } else {
+                QuotaLevel::Low
+            }
+        }
+        _ if used >= 95.0 => QuotaLevel::Critical,
+        _ if used >= 80.0 => QuotaLevel::Low,
+        _ => QuotaLevel::Headroom,
+    }
+}
+
+fn quota_samples(observation: &crate::quota::Observation) -> Vec<QuotaSample> {
+    let mut samples: Vec<QuotaSample> = Vec::new();
+    for group in &observation.groups {
+        let Some(source) = group.source.clone() else {
+            continue;
+        };
+        for row in &group.rows {
+            if !matches!(
+                row.status,
+                crate::quota::Status::Fresh | crate::quota::Status::Stale
+            ) {
+                continue;
+            }
+            let (Some(used), Some(observed_at)) = (
+                row.used_percent
+                    .as_deref()
+                    .and_then(|value| value.parse::<f64>().ok())
+                    .filter(|value| value.is_finite()),
+                row.observed_at,
+            ) else {
+                continue;
+            };
+            if observation.now.saturating_sub(observed_at) > 60 * 60 {
+                continue;
+            }
+            let key = QuotaKey {
+                source: source.clone(),
+                rollout: group.rollout.clone(),
+                bucket: row.bucket.clone(),
+                qualifier: row.qualifier.clone(),
+                window_minutes: row.window_minutes,
+            };
+            let sample = QuotaSample {
+                key: key.clone(),
+                group: group.clone(),
+                row: row.clone(),
+                used,
+                observed_at,
+            };
+            if let Some(existing) = samples.iter_mut().find(|sample| sample.key == key) {
+                if sample.observed_at > existing.observed_at {
+                    *existing = sample;
+                }
+            } else {
+                samples.push(sample);
+            }
+        }
+    }
+    samples.sort_by(|left, right| left.key.cmp(&right.key));
+    samples
+}
+
+fn quota_recipients(roster: &[RosterEntry], lead_pair: bool) -> Vec<QuotaRecipient> {
+    roster
+        .iter()
+        .filter(|entry| entry.slot == "main" || (lead_pair && entry.slot == "worker.0"))
+        .map(|entry| QuotaRecipient {
+            slot: entry.slot.clone(),
+            agent: entry.name.clone(),
+        })
+        .collect()
+}
+
+fn quota_sweep_count(knobs: &Knobs) -> Option<u64> {
+    (knobs.quota_every_secs > 0).then(|| {
+        knobs
+            .quota_every_secs
+            .div_ceil(knobs.interval_secs.max(1))
+            .max(1)
+    })
+}
+
+fn quota_observation_due(carry: &mut QuotaCarry, knobs: &Knobs) -> bool {
+    let Some(sweeps) = quota_sweep_count(knobs) else {
+        return false;
+    };
+    if carry.sweeps_until_observe > 0 {
+        carry.sweeps_until_observe -= 1;
+        return false;
+    }
+    carry.sweeps_until_observe = sweeps.saturating_sub(1);
+    true
+}
+
+impl QuotaCarry {
+    fn cancel_where(
+        &mut self,
+        predicate: impl Fn(&PendingAdvisory) -> bool,
+        reason: &str,
+        actions: &mut Vec<QuotaAction>,
+    ) {
+        let mut retained = Vec::new();
+        for pending in self.pending.drain(..) {
+            if predicate(&pending) {
+                actions.push(QuotaAction::Dropped {
+                    recipient: pending.recipient.agent,
+                    summary: format!("{reason}: {}", pending.text),
+                });
+            } else {
+                retained.push(pending);
+            }
+        }
+        self.pending = retained;
+    }
+
+    fn reconcile(
+        &mut self,
+        observation: &crate::quota::Observation,
+        recipients: &[QuotaRecipient],
+        meta_dir: &Path,
+    ) -> Vec<QuotaAction> {
+        let mut actions = Vec::new();
+        self.cancel_where(
+            |pending| !recipients.contains(&pending.recipient),
+            "recipient identity changed",
+            &mut actions,
+        );
+
+        let samples = quota_samples(observation);
+        let live_keys: Vec<QuotaKey> = samples.iter().map(|sample| sample.key.clone()).collect();
+        let silent_keys: Vec<QuotaKey> = self
+            .tracked
+            .iter()
+            .filter(|tracked| !live_keys.contains(&tracked.key))
+            .map(|tracked| tracked.key.clone())
+            .collect();
+        self.tracked
+            .retain(|tracked| live_keys.contains(&tracked.key));
+        self.cancel_where(
+            |pending| silent_keys.contains(&pending.key),
+            "quota observation went silent",
+            &mut actions,
+        );
+
+        for sample in samples {
+            let previous = self
+                .tracked
+                .iter()
+                .position(|tracked| tracked.key == sample.key);
+            let Some(index) = previous else {
+                self.tracked.push(QuotaTracked {
+                    key: sample.key,
+                    observed_at: sample.observed_at,
+                    level: classify_quota(sample.used, None),
+                });
+                continue;
+            };
+            if sample.observed_at <= self.tracked[index].observed_at {
+                continue;
+            }
+            let before = self.tracked[index].level;
+            let after = classify_quota(sample.used, Some(before));
+            self.tracked[index].observed_at = sample.observed_at;
+            self.tracked[index].level = after;
+            if before == after {
+                continue;
+            }
+            self.cancel_where(
+                |pending| pending.key == sample.key,
+                "superseded by newer quota transition",
+                &mut actions,
+            );
+            let state = if after == QuotaLevel::Headroom {
+                "back to headroom"
+            } else {
+                after.label()
+            };
+            let text = observation.advisory_line(&sample.group, &sample.row, state, meta_dir);
+            for recipient in recipients {
+                self.pending.push(PendingAdvisory {
+                    key: sample.key.clone(),
+                    observed_at: sample.observed_at,
+                    level: after,
+                    recipient: recipient.clone(),
+                    text: text.clone(),
+                    attempts: 0,
+                });
+            }
+        }
+
+        actions.extend(self.pending.iter().cloned().map(QuotaAction::Deliver));
+        self.last_observation = Some(observation.clone());
+        actions
+    }
+
+    fn record_delivery(
+        &mut self,
+        delivered: &PendingAdvisory,
+        success: bool,
+    ) -> Option<QuotaAction> {
+        let index = self.pending.iter().position(|pending| {
+            pending.key == delivered.key
+                && pending.observed_at == delivered.observed_at
+                && pending.level == delivered.level
+                && pending.recipient == delivered.recipient
+        })?;
+        if success {
+            self.pending.remove(index);
+            return None;
+        }
+        self.pending[index].attempts = self.pending[index].attempts.saturating_add(1);
+        if self.pending[index].attempts < 2 {
+            return None;
+        }
+        let pending = self.pending.remove(index);
+        Some(QuotaAction::Dropped {
+            recipient: pending.recipient.agent,
+            summary: format!("delivery failed twice: {}", pending.text),
+        })
+    }
+}
+
+fn throttle_quota_line(
+    observation: &crate::quota::Observation,
+    tracked: &[QuotaTracked],
+    entry: &RosterEntry,
+    meta_dir: &Path,
+    now: i64,
+) -> Option<String> {
+    let identity = crate::quota::recorded_identity(entry)?;
+    let mut matches: Vec<QuotaSample> = quota_samples(observation)
+        .into_iter()
+        .filter(|sample| {
+            sample.group.tool == identity.tool
+                && sample.key.source == identity.source
+                && sample.key.rollout == identity.rollout
+                && now.saturating_sub(sample.observed_at) <= 60 * 60
+        })
+        .collect();
+    matches.sort_by(|left, right| {
+        let level = |sample: &QuotaSample| {
+            tracked
+                .iter()
+                .find(|held| held.key == sample.key)
+                .map_or_else(|| classify_quota(sample.used, None), |held| held.level)
+        };
+        let left_level = level(left);
+        let right_level = level(right);
+        right_level
+            .cmp(&left_level)
+            .then_with(|| right.used.total_cmp(&left.used))
+            .then_with(|| left.key.cmp(&right.key))
+    });
+    let sample = matches.first()?;
+    let level = tracked
+        .iter()
+        .find(|held| held.key == sample.key)
+        .map_or_else(|| classify_quota(sample.used, None), |held| held.level);
+    Some(observation.advisory_line_at(&sample.group, &sample.row, level.label(), meta_dir, now))
+}
+
 /// The result of accounting for one pane in one cycle.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Accounting {
@@ -291,7 +637,10 @@ fn book_throttle(
     if previous == 0 {
         effects.push(Effect::Emit {
             action: "throttled",
-            summary: "upstream throttling detected — pausing nudges".to_owned(),
+            summary: seen.throttle_quota.as_deref().map_or_else(
+                || "upstream throttling detected — pausing nudges".to_owned(),
+                |line| format!("upstream throttling detected — pausing nudges; {line}"),
+            ),
         });
     }
     if next.throttle_streak == knobs.throttle_alert_cycles {
@@ -643,6 +992,18 @@ fn sweep_seconds(meta_bytes: &[u8], env: Option<&str>, fallback: u64) -> u64 {
     }
 }
 
+/// Resolve the session-pinned quota cadence before the internal flag/default.
+fn quota_seconds(meta_bytes: &[u8], fallback: u64) -> Result<u64, String> {
+    let Some(raw) = crate::meta::sole_value(meta_bytes, "quota_every_secs") else {
+        return match crate::meta::first_value(meta_bytes, "quota_every_secs") {
+            Some(value) => Err(String::from_utf8_lossy(value).into_owned()),
+            None => Ok(fallback),
+        };
+    };
+    let value = String::from_utf8_lossy(raw);
+    value.parse::<u64>().map_err(|_| value.into_owned())
+}
+
 /// The session's own send helper, at the FIXED path `<meta-dir>/send`.
 struct SendHelper(std::path::PathBuf);
 
@@ -659,6 +1020,7 @@ impl SendHelper {
 }
 
 /// What one pass counted, gathered so the publish call stays one statement.
+#[derive(Default)]
 struct Counts {
     /// Panes that were neither dead nor stale.
     active: usize,
@@ -668,6 +1030,17 @@ struct Counts {
     dead: usize,
     /// Panes silent past the window.
     stale: usize,
+}
+
+impl Counts {
+    fn record(&mut self, verdict: Verdict) {
+        self.total += 1;
+        match verdict {
+            Verdict::Dead => self.dead += 1,
+            Verdict::Stale => self.stale += 1,
+            _ => self.active += 1,
+        }
+    }
 }
 
 /// One pane's verdict this cycle.
@@ -1026,6 +1399,16 @@ pub fn run(
         return Ok(1);
     };
     knobs.sweep.sweep_secs = sweep_seconds(&bytes, sweep_env().as_deref(), knobs.sweep.sweep_secs);
+    knobs.quota_every_secs = match quota_seconds(&bytes, knobs.quota_every_secs) {
+        Ok(seconds) => seconds,
+        Err(value) => {
+            writeln!(
+                err,
+                "ae: watchdog: quota_every_secs must be an unsigned integer in seconds; got '{value}'."
+            )?;
+            return Ok(crate::state::EXIT_USAGE);
+        }
+    };
     let meta = Meta::parse(&String::from_utf8_lossy(&bytes));
     // The INITIAL resolution, kept as the fast refuse.
     let server = match meta.server_selector() {
@@ -1204,6 +1587,10 @@ fn watch(
                         server: &server,
                         session,
                         goal: meta.goal().map(ToOwned::to_owned),
+                        local_config: meta
+                            .origin()
+                            .and_then(|origin| crate::config::local_overlay(meta_dir, origin)),
+                        lead_pair: crate::lifecycle::meta_value(bytes, "layout") == "lead-pair",
                         // Re-read EVERY cycle, like the goal and the roster: a
                         // session can be promoted to orchestrator, or its main
                         // replaced, while this daemon runs.
@@ -1428,6 +1815,9 @@ struct Carry {
     quiet: QuietCycle,
     /// The faster publisher that runs between verdict cycles.
     motion: MotionState,
+    /// Session-local quota transitions, pending per-recipient deliveries, and
+    /// the last bounded observation available to the throttle branch.
+    quota: QuotaCarry,
     /// The last look this daemon actually READ, and `None` until one answers.
     ///
     /// Carried so that a cycle whose read failed draws in the look it saw last
@@ -1446,6 +1836,7 @@ impl Carry {
             missing: Vec::new(),
             quiet: QuietCycle::new(knobs.quiet_panes_per_cycle),
             motion: MotionState::default(),
+            quota: QuotaCarry::default(),
             look: None,
         }
     }
@@ -1597,6 +1988,8 @@ struct Cycle<'a> {
     session: &'a str,
     goal: Option<String>,
     roster: Vec<RosterEntry>,
+    local_config: Option<std::path::PathBuf>,
+    lead_pair: bool,
     /// `meta_agent=true` — this session is the fleet orchestrator.
     meta_agent: bool,
 }
@@ -1645,6 +2038,85 @@ struct Acting<'a> {
 }
 
 impl Cycle<'_> {
+    /// The same session-relative quota inputs as the generated `quota` helper.
+    fn quota_observation(
+        &self,
+        now: i64,
+    ) -> Result<crate::quota::Observation, crate::config::ConfigError> {
+        let root = crate::state_root().or_else(|| {
+            self.meta_dir
+                .parent()
+                .and_then(Path::parent)
+                .map(Path::to_path_buf)
+        });
+        let global = root
+            .as_deref()
+            .map(|root| crate::doors::config_file(crate::shape::current(), root));
+        let home = crate::doors::home();
+        let roots = root.as_deref().map(crate::inventory::Roots::under);
+        crate::quota::observe(&crate::quota::Inputs {
+            home: home.as_deref(),
+            global: global.as_deref(),
+            local: self.local_config.as_deref(),
+            sessions: roots.as_ref().map(crate::inventory::Roots::sessions),
+            now,
+        })
+    }
+
+    fn apply_quota_actions(
+        &self,
+        carry: &mut QuotaCarry,
+        actions: Vec<QuotaAction>,
+        err: &mut impl Write,
+    ) -> crate::Result<()> {
+        for action in actions {
+            match action {
+                QuotaAction::Dropped { recipient, summary } => {
+                    self.emit("quota-advisory-dropped", &recipient, &summary, err)?;
+                }
+                QuotaAction::Deliver(pending) => {
+                    let success = self.deliver(
+                        &pending.recipient.agent,
+                        &pending.text,
+                        "quota-advisory",
+                        &pending.text,
+                    );
+                    if let Some(QuotaAction::Dropped { recipient, summary }) =
+                        carry.record_delivery(&pending, success)
+                    {
+                        self.emit("quota-advisory-dropped", &recipient, &summary, err)?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn refresh_quota(
+        &self,
+        carry: &mut QuotaCarry,
+        now: i64,
+        err: &mut impl Write,
+    ) -> crate::Result<()> {
+        if !quota_observation_due(carry, &self.knobs) {
+            return Ok(());
+        }
+        match self.quota_observation(now) {
+            Ok(observation) => {
+                let recipients = quota_recipients(&self.roster, self.lead_pair);
+                let actions = carry.reconcile(&observation, &recipients, self.meta_dir);
+                self.apply_quota_actions(carry, actions, err)
+            }
+            Err(why) => {
+                writeln!(
+                    err,
+                    "ae: watchdog: quota observation failed — skipped: {why}"
+                )?;
+                Ok(())
+            }
+        }
+    }
+
     /// Read the fleet through [`crate::current_world`], enrich it through the
     /// same card collector as `ae brief --all`, then touch the watchdog-owned
     /// checkpoint without advancing the last-delivered hash.
@@ -1716,6 +2188,17 @@ impl Cycle<'_> {
         })
     }
 
+    fn throttle_quota(&self, quota: &QuotaCarry, slot: &str, now: i64) -> Option<String> {
+        self.roster
+            .iter()
+            .find(|entry| entry.slot == slot)
+            .and_then(|entry| {
+                quota.last_observation.as_ref().and_then(|observation| {
+                    throttle_quota_line(observation, &quota.tracked, entry, self.meta_dir, now)
+                })
+            })
+    }
+
     /// One pass over the session's panes.
     fn run(&self, carry: &mut Carry, err: &mut impl Write) -> crate::Result<()> {
         // An enumeration that FAILED is not evidence that anything is gone.
@@ -1734,14 +2217,12 @@ impl Cycle<'_> {
         } else {
             None
         };
+        self.refresh_quota(&mut carry.quota, now, err)?;
 
         carry.quiet.begin();
         let mut index = 0_usize;
         let mut live: Vec<String> = Vec::new();
-        let mut active = 0_usize;
-        let mut total = 0_usize;
-        let mut dead = 0_usize;
-        let mut stale = 0_usize;
+        let mut counts = Counts::default();
         let mut by_slot: Vec<(String, Verdict)> = Vec::new();
         let mut by_pane: Vec<PaneMark> = Vec::new();
 
@@ -1753,10 +2234,10 @@ impl Cycle<'_> {
                 continue;
             }
             index += 1;
-            total += 1;
             live.push(agent.to_owned());
             let slot = pane.slot.clone().unwrap_or_default();
             let agent_bin = self.agent_bin(&slot);
+            let throttle_quota = self.throttle_quota(&carry.quota, &slot, now);
 
             // The main loop tolerates a failed capture: an unreadable pane
             // hashes as empty here.
@@ -1771,6 +2252,7 @@ impl Cycle<'_> {
                     descendancy_of(table.as_deref(), pane.pane_pid, agent_bin.as_deref()),
                 ),
                 is_throttled: shows_throttle(&capture, agent_bin.as_deref().unwrap_or_default()),
+                throttle_quota,
                 quiet: self.resolve_quiet(
                     &QuietQuery {
                         events: &events,
@@ -1801,11 +2283,7 @@ impl Cycle<'_> {
             for effect in &booked.effects {
                 self.apply(effect, &acting, carried, err)?;
             }
-            match booked.verdict {
-                Verdict::Dead => dead += 1,
-                Verdict::Stale => stale += 1,
-                _ => active += 1,
-            }
+            counts.record(booked.verdict);
             by_slot.push((slot, booked.verdict));
             by_pane.push(PaneMark {
                 pane: pane.pane_id.clone(),
@@ -1813,20 +2291,8 @@ impl Cycle<'_> {
             });
         }
         carry.quiet.end(index);
-        self.close(
-            carry,
-            &Counts {
-                active,
-                total,
-                dead,
-                stale,
-            },
-            &by_slot,
-            &by_pane,
-            &live,
-            err,
-        )
-        .inspect(|()| schedule_automatic_upgrade())
+        self.close(carry, &counts, &by_slot, &by_pane, &live, err)
+            .inspect(|()| schedule_automatic_upgrade())
     }
 
     /// The cycle's last step: compose the strips in this session's look, then
@@ -2316,7 +2782,7 @@ impl Cycle<'_> {
                 let display = stale_display(on.seen.last_actor_event_age_secs);
                 let text = nudge_text(self.goal.as_deref(), self.meta_dir);
                 let summary = format!("{display}, no recent ae activity");
-                let delivered = self.deliver(agent, &text, &summary);
+                let delivered = self.deliver(agent, &text, "nudge", &summary);
                 for effect in record_nudge(state, delivered, &self.knobs, &display) {
                     self.apply(&effect, on, state, err)?;
                 }
@@ -2355,7 +2821,7 @@ impl Cycle<'_> {
         };
         // Delivery is CHECKED.
         let body = overview.body();
-        let delivered = self.deliver(on.agent, &body, "fleet overview changed");
+        let delivered = self.deliver(on.agent, &body, "nudge", "fleet overview changed");
         // This is intentionally AFTER the checked delivery. A deferred submit
         // cannot be acknowledged by a `done` event that preceded the paste,
         // and the minimum spacing begins when the paste actually landed.
@@ -2389,7 +2855,7 @@ impl Cycle<'_> {
     /// route through it rather than each spawning for itself: a second delivery
     /// site is a second thing to audit, and a unit guard in this file holds the
     /// count at one.
-    fn deliver(&self, agent: &str, text: &str, summary: &str) -> bool {
+    fn deliver(&self, agent: &str, text: &str, action: &str, summary: &str) -> bool {
         transport::deliver(
             self.helper.path(),
             agent,
@@ -2397,7 +2863,7 @@ impl Cycle<'_> {
             false,
             &[
                 ("AE_SENDER_OVERRIDE", ACTOR),
-                ("_AE_EVENT_ACTION", "nudge"),
+                ("_AE_EVENT_ACTION", action),
                 ("_AE_EVENT_SUMMARY", summary),
             ],
         )
@@ -2621,18 +3087,20 @@ fn bar_glyph(dead: usize, stale: usize, icons: bool) -> &'static str {
 mod tests {
     use super::{
         ACTOR, Carry, Continuation, Cycle, Effect, Journal, Knobs, MissingState, MotionState,
-        MotionVerdict, Observation, OverviewReading, PaneState, QuietCycle, QuietQuery, Rebind,
-        SendHelper, UNKNOWN_ALERT_CYCLES, Verdict, account, adopt_server, age_secs, bar_glyph,
+        MotionVerdict, Observation, OverviewReading, PaneState, PendingAdvisory, QuietCycle,
+        QuietQuery, QuotaAction, QuotaCarry, QuotaLevel, QuotaRecipient, Rebind, SendHelper,
+        UNKNOWN_ALERT_CYCLES, Verdict, account, adopt_server, age_secs, bar_glyph, classify_quota,
         continuation, entry_mut, is_meta_agent, last_actor_event_age, last_done_event_at,
         last_working_declaration_at, motion_cadence, motion_failure, motion_observation_due,
-        motion_publish_failure, motion_ticker_enabled, nudge_text, read_events, rebind,
-        record_nudge, session_name, slot_mark, stale_display, sweep_effects, sweep_seconds,
-        system_time_from_epoch, window_agents_line,
+        motion_publish_failure, motion_ticker_enabled, nudge_text, quota_observation_due,
+        quota_recipients, quota_seconds, read_events, rebind, record_nudge, session_name,
+        slot_mark, stale_display, sweep_effects, sweep_seconds, system_time_from_epoch,
+        throttle_quota_line, window_agents_line,
     };
     use super::{Look, Mark, PaneMark, session_mark};
     use crate::events::Event;
     use crate::inventory::ServerId;
-    use crate::meta::{Meta, RosterEntry, Selector};
+    use crate::meta::{Meta, RecordedConfigHome, RecordedConfigHomeBase, RosterEntry, Selector};
     use crate::procs::Descendancy;
     use crate::tmux::StopProbe;
     use crate::watchdog::{
@@ -2650,11 +3118,524 @@ mod tests {
             hash: 7,
             is_dead: false,
             is_throttled: false,
+            throttle_quota: None,
             quiet: None,
             descendancy: Descendancy::Present,
             last_actor_event_age_secs: 0,
             sweep: None,
         }
+    }
+
+    fn quota_row(
+        bucket: &str,
+        qualifier: Option<&str>,
+        used: &str,
+        observed_at: i64,
+        status: crate::quota::Status,
+    ) -> crate::quota::Row {
+        crate::quota::Row {
+            bucket: bucket.to_owned(),
+            qualifier: qualifier.map(str::to_owned),
+            window_minutes: Some(300),
+            used_percent: Some(used.to_owned()),
+            resets_at: Some(13_600),
+            observed_at: Some(observed_at),
+            status,
+        }
+    }
+
+    fn quota_group(
+        source: &Path,
+        rollout: Option<&str>,
+        owner: Option<&str>,
+        rows: Vec<crate::quota::Row>,
+    ) -> crate::quota::Group {
+        crate::quota::Group {
+            profiles: vec!["sol".to_owned()],
+            tool: crate::tool::ToolKind::Codex,
+            home: source.parent().map(Path::to_path_buf),
+            source: Some(source.to_path_buf()),
+            clients: vec!["cx".to_owned()],
+            rollout: rollout.map(str::to_owned),
+            owner: owner.map(str::to_owned),
+            rows,
+            hint: None,
+            summary: None,
+        }
+    }
+
+    fn quota_observation(groups: Vec<crate::quota::Group>, now: i64) -> crate::quota::Observation {
+        crate::quota::Observation {
+            rendered: groups.clone(),
+            groups,
+            home: Some(PathBuf::from("/home/test")),
+            now,
+        }
+    }
+
+    fn quota_recipient(slot: &str, agent: &str) -> QuotaRecipient {
+        QuotaRecipient {
+            slot: slot.to_owned(),
+            agent: agent.to_owned(),
+        }
+    }
+
+    fn quota_for(used: &str, observed_at: i64) -> crate::quota::Observation {
+        quota_observation(
+            vec![quota_group(
+                Path::new("/tmp/cx/sessions"),
+                Some("018f1f70-7b2c-7000-8000-000000000001"),
+                Some("demo:lead"),
+                vec![quota_row(
+                    "codex",
+                    Some("pro"),
+                    used,
+                    observed_at,
+                    crate::quota::Status::Fresh,
+                )],
+            )],
+            10_000,
+        )
+    }
+
+    fn transition_deliveries(actions: &[QuotaAction]) -> Vec<&PendingAdvisory> {
+        actions
+            .iter()
+            .filter_map(|action| match action {
+                QuotaAction::Deliver(pending) => Some(pending),
+                QuotaAction::Dropped { .. } => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn quota_classification_hysteresis_has_exact_boundaries() {
+        let mut state = None;
+        let mut seen = Vec::new();
+        for used in [79.0, 80.0, 95.0, 94.0, 89.0, 74.0] {
+            let next = classify_quota(used, state);
+            seen.push(next);
+            state = Some(next);
+        }
+        assert_eq!(
+            seen,
+            [
+                QuotaLevel::Headroom,
+                QuotaLevel::Low,
+                QuotaLevel::Critical,
+                QuotaLevel::Critical,
+                QuotaLevel::Low,
+                QuotaLevel::Headroom,
+            ]
+        );
+    }
+
+    #[test]
+    fn quota_first_silent_and_old_samples_never_advance_state() {
+        let recipients = [quota_recipient("main", "lead")];
+        let mut carry = QuotaCarry::default();
+        assert!(
+            carry
+                .reconcile(&quota_for("79", 9_900), &recipients, Path::new("/m"))
+                .is_empty(),
+            "first sample is baseline only"
+        );
+        assert!(
+            carry
+                .reconcile(&quota_for("80", 9_900), &recipients, Path::new("/m"))
+                .is_empty(),
+            "equal observation is ignored"
+        );
+        assert!(
+            carry
+                .reconcile(&quota_for("95", 9_899), &recipients, Path::new("/m"))
+                .is_empty(),
+            "older observation is ignored"
+        );
+        assert_eq!(carry.tracked[0].level, QuotaLevel::Headroom);
+        assert_eq!(
+            transition_deliveries(&carry.reconcile(
+                &quota_for("80", 9_901),
+                &recipients,
+                Path::new("/m")
+            ))
+            .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn silent_or_expired_rows_drop_state_and_make_recovery_a_first_sample() {
+        let recipients = [quota_recipient("main", "lead")];
+        let mut carry = QuotaCarry::default();
+        let _ = carry.reconcile(&quota_for("79", 9_900), &recipients, Path::new("/m"));
+        let mut silent = quota_for("80", 9_901);
+        silent.groups[0].rows[0].status = crate::quota::Status::Unknown;
+        let actions = carry.reconcile(&silent, &recipients, Path::new("/m"));
+        assert!(
+            actions.is_empty(),
+            "no pending transition existed to cancel"
+        );
+        assert!(carry.tracked.is_empty());
+        assert!(
+            carry
+                .reconcile(&quota_for("95", 9_902), &recipients, Path::new("/m"))
+                .is_empty(),
+            "fresh recovery is a new baseline"
+        );
+
+        let mut expired = quota_for("95", 3_999);
+        expired.now = 10_000;
+        let _ = carry.reconcile(&expired, &recipients, Path::new("/m"));
+        assert!(carry.tracked.is_empty(), "stale beyond 60m is silent");
+    }
+
+    #[test]
+    fn quota_keys_separate_rollouts_and_scoped_qualifiers() {
+        let source = Path::new("/tmp/cx/sessions");
+        let groups = vec![
+            quota_group(
+                source,
+                Some("018f1f70-7b2c-7000-8000-000000000001"),
+                Some("demo:lead"),
+                vec![
+                    quota_row(
+                        "weekly_scoped",
+                        Some("Fable"),
+                        "10",
+                        9_900,
+                        crate::quota::Status::Fresh,
+                    ),
+                    quota_row(
+                        "weekly_scoped",
+                        Some("Opus"),
+                        "20",
+                        9_900,
+                        crate::quota::Status::Fresh,
+                    ),
+                ],
+            ),
+            quota_group(
+                source,
+                Some("018f1f70-7b2c-7000-8000-000000000002"),
+                Some("demo:colead"),
+                vec![quota_row(
+                    "weekly_scoped",
+                    Some("Fable"),
+                    "30",
+                    9_900,
+                    crate::quota::Status::Fresh,
+                )],
+            ),
+        ];
+        let mut carry = QuotaCarry::default();
+        assert!(
+            carry
+                .reconcile(&quota_observation(groups, 10_000), &[], Path::new("/m"))
+                .is_empty()
+        );
+        assert_eq!(carry.tracked.len(), 3);
+    }
+
+    #[test]
+    fn pending_advisories_book_per_recipient_retry_once_and_never_resend_success() {
+        let recipients = [
+            quota_recipient("main", "lead"),
+            quota_recipient("worker.0", "colead"),
+        ];
+        let mut carry = QuotaCarry::default();
+        let _ = carry.reconcile(&quota_for("79", 9_900), &recipients, Path::new("/m"));
+        let first = carry.reconcile(&quota_for("80", 9_901), &recipients, Path::new("/m"));
+        let deliveries = transition_deliveries(&first);
+        assert_eq!(deliveries.len(), 2);
+        let lead = deliveries[0].clone();
+        let colead = deliveries[1].clone();
+        assert!(carry.record_delivery(&lead, true).is_none());
+        assert!(
+            carry.record_delivery(&colead, false).is_none(),
+            "first refusal stays pending"
+        );
+        let retry = carry.reconcile(&quota_for("81", 9_902), &recipients, Path::new("/m"));
+        let retry = transition_deliveries(&retry);
+        assert_eq!(retry.len(), 1);
+        assert_eq!(retry[0].recipient.agent, "colead");
+        assert!(matches!(
+            carry.record_delivery(retry[0], false),
+            Some(QuotaAction::Dropped { recipient, .. }) if recipient == "colead"
+        ));
+        assert!(carry.pending.is_empty(), "there is no third attempt");
+    }
+
+    #[test]
+    fn newer_transition_replaces_retry_and_expiry_cancels_it() {
+        let recipients = [quota_recipient("main", "lead")];
+        let mut carry = QuotaCarry::default();
+        let _ = carry.reconcile(&quota_for("79", 9_900), &recipients, Path::new("/m"));
+        let low = carry.reconcile(&quota_for("80", 9_901), &recipients, Path::new("/m"));
+        assert!(
+            carry
+                .record_delivery(transition_deliveries(&low)[0], false)
+                .is_none()
+        );
+        let reset = carry.reconcile(&quota_for("74", 9_902), &recipients, Path::new("/m"));
+        assert_eq!(
+            reset
+                .iter()
+                .filter(|action| matches!(action, QuotaAction::Dropped { .. }))
+                .count(),
+            1
+        );
+        let reset_delivery = transition_deliveries(&reset);
+        assert_eq!(reset_delivery.len(), 1);
+        assert!(reset_delivery[0].text.contains("back to headroom"));
+        assert!(carry.record_delivery(reset_delivery[0], false).is_none());
+        let mut expired = quota_for("74", 3_000);
+        expired.now = 10_000;
+        let cancelled = carry.reconcile(&expired, &recipients, Path::new("/m"));
+        assert!(matches!(
+            cancelled.as_slice(),
+            [QuotaAction::Dropped { recipient, .. }] if recipient == "lead"
+        ));
+        assert!(carry.pending.is_empty());
+    }
+
+    #[test]
+    fn leadership_recipients_are_session_local_and_layout_scoped() {
+        let entry = |slot: &str, name: &str| RosterEntry {
+            slot: slot.to_owned(),
+            name: name.to_owned(),
+            profile: None,
+            harness_session: None,
+            config_home: RecordedConfigHome::Missing,
+            config_home_base: RecordedConfigHomeBase::Missing,
+            binary: None,
+        };
+        let roster = [
+            entry("main", "lead"),
+            entry("worker.0", "colead"),
+            entry("worker.1", "builder"),
+            entry("spawned.0", "reviewer"),
+        ];
+        assert_eq!(
+            quota_recipients(&roster, false),
+            [quota_recipient("main", "lead")]
+        );
+        assert_eq!(
+            quota_recipients(&roster, true),
+            [
+                quota_recipient("main", "lead"),
+                quota_recipient("worker.0", "colead")
+            ]
+        );
+        let orchestrator = [entry("main", "orchestrator")];
+        assert_eq!(
+            quota_recipients(&orchestrator, false),
+            [quota_recipient("main", "orchestrator")]
+        );
+    }
+
+    #[test]
+    fn quota_cadence_rounds_up_to_whole_sweeps_and_zero_disables() {
+        let mut carry = QuotaCarry::default();
+        let knobs = Knobs {
+            interval_secs: 60,
+            quota_every_secs: 301,
+            ..Knobs::default()
+        };
+        let due: Vec<bool> = (0..7)
+            .map(|_| quota_observation_due(&mut carry, &knobs))
+            .collect();
+        assert_eq!(due, [true, false, false, false, false, false, true]);
+        let mut disabled = QuotaCarry::default();
+        assert!(!(0..10).any(|_| quota_observation_due(
+            &mut disabled,
+            &Knobs {
+                quota_every_secs: 0,
+                ..Knobs::default()
+            }
+        )));
+    }
+
+    #[test]
+    fn persisted_quota_cadence_wins_and_invalid_state_is_refused() {
+        assert_eq!(quota_seconds(b"quota_every_secs=420\n", 300), Ok(420));
+        assert_eq!(quota_seconds(b"quota_every_secs=0\n", 300), Ok(0));
+        assert_eq!(quota_seconds(b"session=demo\n", 300), Ok(300));
+        assert_eq!(
+            quota_seconds(b"quota_every_secs=soon\n", 300),
+            Err("soon".to_owned())
+        );
+        assert_eq!(
+            quota_seconds(b"quota_every_secs=60\nquota_every_secs=120\n", 300),
+            Err("60".to_owned()),
+            "ambiguous persisted state must not enable an arbitrary cadence"
+        );
+    }
+
+    #[test]
+    fn advisory_text_is_exact_and_hostile_vendor_fields_are_bounded() {
+        let source = Path::new("/tmp/cx/sessions");
+        let observation = quota_observation(
+            vec![quota_group(
+                source,
+                Some("018f1f70-7b2c-7000-8000-000000000001"),
+                Some("demo:lead"),
+                vec![quota_row(
+                    "weekly_scoped",
+                    Some("Fable"),
+                    "80.0",
+                    9_880,
+                    crate::quota::Status::Stale,
+                )],
+            )],
+            10_000,
+        );
+        let sample = &super::quota_samples(&observation)[0];
+        assert_eq!(
+            observation.advisory_line(&sample.group, &sample.row, "low", Path::new("/m/demo")),
+            "quota: codex · cx · demo:lead weekly_scoped Fable 5h 80% (low, observed 2m ago), resets in 1h00m — prefer another client for new spawns; table: /m/demo/quota"
+        );
+
+        let mut hostile = observation.clone();
+        hostile.groups[0].rows[0].bucket = format!("bad\u{1b}[2J\r\n{}", "x".repeat(300));
+        hostile.groups[0].rows[0].qualifier = Some("q\u{7f}\n".repeat(100));
+        let sample = &super::quota_samples(&hostile)[0];
+        let line = hostile.advisory_line(&sample.group, &sample.row, "low", Path::new("/m"));
+        assert!(!line.contains('\u{1b}'));
+        assert!(!line.contains('\r'));
+        assert!(!line.contains('\n'));
+        assert!(line.len() < 240, "hostile labels stayed bounded: {line}");
+    }
+
+    #[test]
+    fn throttle_quota_uses_worst_exact_recorded_row_and_first_cycle_only() {
+        let rollout = "018f1f70-7b2c-7000-8000-000000000001";
+        let mut entry = RosterEntry {
+            slot: "main".to_owned(),
+            name: "lead".to_owned(),
+            profile: Some("changed-profile".to_owned()),
+            harness_session: Some(rollout.to_owned()),
+            config_home: RecordedConfigHome::Path(PathBuf::from("/tmp/cx")),
+            config_home_base: RecordedConfigHomeBase::Missing,
+            binary: Some("codex".to_owned()),
+        };
+        let identity = crate::quota::recorded_identity(&entry).expect("recorded identity");
+        let mut observation = quota_observation(
+            vec![quota_group(
+                &identity.source,
+                Some(rollout),
+                Some("demo:lead"),
+                vec![
+                    quota_row("z", None, "96", 9_900, crate::quota::Status::Fresh),
+                    quota_row("a", None, "96", 9_900, crate::quota::Status::Fresh),
+                    quota_row("b", None, "85", 9_900, crate::quota::Status::Fresh),
+                ],
+            )],
+            10_000,
+        );
+        observation.rendered.clear();
+        let mut quota = QuotaCarry::default();
+        let _ = quota.reconcile(&observation, &[], Path::new("/m"));
+        let line = throttle_quota_line(
+            &observation,
+            &quota.tracked,
+            &entry,
+            Path::new("/m"),
+            10_000,
+        )
+        .expect("exact row");
+        assert!(
+            line.contains(" a 5h 96% (critical,"),
+            "tie picks key ascending: {line}"
+        );
+        assert!(
+            throttle_quota_line(
+                &observation,
+                &quota.tracked,
+                &entry,
+                Path::new("/m"),
+                13_501,
+            )
+            .is_none(),
+            "the last observation expires against the current cycle clock"
+        );
+
+        let mut observed = seen();
+        observed.is_throttled = true;
+        observed.throttle_quota = Some(line.clone());
+        let first = account(&PaneState::default(), &observed, &Knobs::default());
+        assert_eq!(emitted(&first.effects)[0].0, "throttled");
+        assert!(emitted(&first.effects)[0].1.contains(&line));
+        let second = account(&first.next, &observed, &Knobs::default());
+        assert!(
+            emitted(&second.effects).is_empty(),
+            "later cycles do not repeat it"
+        );
+
+        entry.harness_session = Some("018f1f70-7b2c-7000-8000-000000000002".to_owned());
+        assert!(
+            throttle_quota_line(
+                &observation,
+                &quota.tracked,
+                &entry,
+                Path::new("/m"),
+                10_000,
+            )
+            .is_none()
+        );
+        entry.config_home = RecordedConfigHome::Missing;
+        assert!(
+            throttle_quota_line(
+                &observation,
+                &quota.tracked,
+                &entry,
+                Path::new("/m"),
+                10_000,
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn throttle_identity_requires_the_recorded_home_mode_and_base() {
+        let entry = |binary: &str,
+                     home: RecordedConfigHome,
+                     base: RecordedConfigHomeBase,
+                     session: Option<&str>| RosterEntry {
+            slot: "main".to_owned(),
+            name: "lead".to_owned(),
+            profile: Some("changed".to_owned()),
+            harness_session: session.map(str::to_owned),
+            config_home: home,
+            config_home_base: base,
+            binary: Some(binary.to_owned()),
+        };
+        let explicit = crate::quota::recorded_identity(&entry(
+            "claude",
+            RecordedConfigHome::Path(PathBuf::from("/tmp/claude-explicit")),
+            RecordedConfigHomeBase::Missing,
+            None,
+        ))
+        .expect("explicit Claude identity");
+        assert!(explicit.source.ends_with("claude-explicit/.claude.json"));
+        let implicit = crate::quota::recorded_identity(&entry(
+            "claude",
+            RecordedConfigHome::Implicit(PathBuf::from("/tmp/person/.claude")),
+            RecordedConfigHomeBase::Path(PathBuf::from("/tmp/person")),
+            None,
+        ))
+        .expect("implicit Claude identity");
+        assert!(implicit.source.ends_with("person/.claude.json"));
+        assert!(
+            crate::quota::recorded_identity(&entry(
+                "claude",
+                RecordedConfigHome::Implicit(PathBuf::from("/tmp/person/.claude")),
+                RecordedConfigHomeBase::Missing,
+                None,
+            ))
+            .is_none(),
+            "an incomplete implicit identity must not guess the default home"
+        );
     }
 
     fn motion(pane_id: &str, agent: &str) -> crate::tmux::MotionPane {
@@ -3306,7 +4287,7 @@ mod tests {
         );
         assert_eq!(
             source
-                .matches(concat!("(\"_AE_EVENT_", "ACTION\", \"nudge\")"))
+                .matches(concat!("(\"_AE_EVENT_", "ACTION\", action)"))
                 .count(),
             1,
             "the delivery carries the three frozen env vars, and this is the one \
@@ -3340,6 +4321,7 @@ mod tests {
         assert_eq!(knobs.quiet_beat_ms, 1000);
         assert_eq!(knobs.quiet_tries, 4);
         assert_eq!(knobs.quiet_panes_per_cycle, 2);
+        assert_eq!(knobs.quota_every_secs, 300);
     }
 
     #[test]
@@ -3476,6 +4458,8 @@ mod tests {
             session: "demo",
             goal: None,
             roster: Vec::new(),
+            local_config: None,
+            lead_pair: false,
             meta_agent: false,
         };
         let event = Event::parse_line(

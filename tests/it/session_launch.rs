@@ -497,6 +497,67 @@ fn add_profile(rig: &Rig, name: &str, command: &str) {
 }
 
 #[test]
+fn quota_cadence_is_validated_before_launch_and_persisted_for_the_daemon() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::new("quota-cadence", &["claude"], None);
+    let base = std::fs::read_to_string(&rig.config).expect("the rig config");
+    for (index, value) in ["", "-1", "soon", "18446744073709551616"]
+        .into_iter()
+        .enumerate()
+    {
+        let config = base.replace(
+            "watchdog = false\n",
+            &format!("watchdog = false\nquota_every_secs = {value}\n"),
+        );
+        assert!(std::fs::write(&rig.config, config).is_ok(), "bad config");
+        let session = format!("badquota{index}");
+        let (code, stdout, stderr) = rig.launch(&["--local", &session]);
+        assert_eq!(code, Some(2), "stdout: {stdout}\nstderr: {stderr}");
+        assert!(
+            stderr.contains("[workspace] quota_every_secs") && stderr.contains(value),
+            "{stderr}"
+        );
+        assert!(
+            !rig.dir(&session).exists(),
+            "invalid cadence created a session directory"
+        );
+    }
+
+    let config = base.replace(
+        "watchdog = false\n",
+        "watchdog = false\nquota_every_secs = 420\n",
+    );
+    assert!(std::fs::write(&rig.config, config).is_ok(), "valid config");
+    let (code, stdout, stderr) = rig.launch(&["--local", "goodquota"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        rig.meta("goodquota").contains("quota_every_secs=420\n"),
+        "the daemon's persisted input is missing"
+    );
+    assert!(
+        rig.tmux(&["kill-session", "-t", "=goodquota"]).0,
+        "stop the first runtime without removing its state"
+    );
+    let changed = base.replace(
+        "watchdog = false\n",
+        "watchdog = false\nquota_every_secs = 7\n",
+    );
+    assert!(
+        std::fs::write(&rig.config, changed).is_ok(),
+        "changed config"
+    );
+    let (code, stdout, stderr) = rig.launch(&["--local", "goodquota"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        rig.meta("goodquota").contains("quota_every_secs=420\n"),
+        "resume replaced the persisted cadence from changed config"
+    );
+    rig.kill_server_at(&["-S", &rig.sock.display().to_string()]);
+}
+
+#[test]
 #[allow(clippy::too_many_lines, reason = "one end-to-end retained-store story")]
 fn a_client_profile_launches_the_configured_executable_and_home() {
     if skip() {

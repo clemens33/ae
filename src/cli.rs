@@ -1429,6 +1429,7 @@ fn watchdog_knobs(flags: &[String]) -> std::result::Result<crate::watchdog_daemo
         let number = |text: &str| text.parse::<u64>().map_err(|_| text.to_owned());
         match flag.as_str() {
             "--interval" => knobs.interval_secs = number(value)?,
+            "--quota-every-secs" => knobs.quota_every_secs = number(value)?,
             "--stale-secs" => knobs.stale_secs = number(value)?,
             "--max-nudges" => knobs.max_nudges = count(value)?,
             "--throttle-alert-cycles" => knobs.throttle_alert_cycles = count(value)?,
@@ -2411,6 +2412,8 @@ mod tests {
             "2",
             "--sweep-secs",
             "600",
+            "--quota-every-secs",
+            "420",
             "--sweep-retry-secs",
             "45",
         ])) else {
@@ -2425,6 +2428,7 @@ mod tests {
         assert_eq!(knobs.quiet_beat_ms, 250);
         assert_eq!(knobs.quiet_tries, 9);
         assert_eq!(knobs.quiet_panes_per_cycle, 3);
+        assert_eq!(knobs.quota_every_secs, 420);
         assert_eq!(knobs.sweep.sweep_secs, 600);
         assert_eq!(knobs.sweep.retry_secs, 45);
         assert_eq!(knobs.sweep.retry_max, 2);
@@ -2442,6 +2446,12 @@ mod tests {
         };
         assert_eq!(knobs.sweep.sweep_secs, 0);
         assert!(!knobs.sweep.enabled());
+        let Request::WatchdogRun { knobs, .. } =
+            Request::parse(&argv(&[WATCHDOG_RUN, "/s/demo", "--quota-every-secs", "0"]))
+        else {
+            panic!("the knob flags did not parse");
+        };
+        assert_eq!(knobs.quota_every_secs, 0);
         let Request::WatchdogRun { knobs, .. } = Request::parse(&argv(&[WATCHDOG_RUN, "/s/demo"]))
         else {
             panic!("the flagless call did not parse");
@@ -2456,6 +2466,15 @@ mod tests {
         // nobody chose — and a watchdog is not a place to guess.
         assert_eq!(
             Request::parse(&argv(&[WATCHDOG_RUN, "/s/demo", "--interval", "soon"])),
+            Request::UsageError("soon".to_owned())
+        );
+        assert_eq!(
+            Request::parse(&argv(&[
+                WATCHDOG_RUN,
+                "/s/demo",
+                "--quota-every-secs",
+                "soon",
+            ])),
             Request::UsageError("soon".to_owned())
         );
         assert_eq!(

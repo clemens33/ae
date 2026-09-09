@@ -194,20 +194,137 @@ struct ScopePaths {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Group {
-    profiles: Vec<String>,
-    tool: ToolKind,
-    home: Option<PathBuf>,
-    clients: Vec<String>,
-    rollout: Option<String>,
-    owner: Option<String>,
-    rows: Vec<Row>,
-    hint: Option<String>,
-    summary: Option<RolloutSummary>,
+pub(crate) struct Group {
+    pub(crate) profiles: Vec<String>,
+    pub(crate) tool: ToolKind,
+    pub(crate) home: Option<PathBuf>,
+    pub(crate) source: Option<PathBuf>,
+    pub(crate) clients: Vec<String>,
+    pub(crate) rollout: Option<String>,
+    pub(crate) owner: Option<String>,
+    pub(crate) rows: Vec<Row>,
+    pub(crate) hint: Option<String>,
+    pub(crate) summary: Option<RolloutSummary>,
+}
+
+/// One bounded read of every configured quota scope.
+///
+/// `groups` is deliberately uncapped. The operator table uses the separate
+/// rendered projection so its three-rollout display bound remains unchanged.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Observation {
+    pub(crate) groups: Vec<Group>,
+    pub(crate) rendered: Vec<Group>,
+    pub(crate) home: Option<PathBuf>,
+    pub(crate) now: i64,
+}
+
+/// A seat identity precise enough to join its persisted conversation to one
+/// observed vendor source without falling back to current profile config.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RecordedIdentity {
+    pub(crate) tool: ToolKind,
+    pub(crate) source: PathBuf,
+    pub(crate) rollout: Option<String>,
+}
+
+impl Observation {
+    /// Render one advisory line from the same sanitized, width-bounded cells
+    /// as the operator table. The helper path is ae-owned rather than vendor
+    /// input and remains complete so the recipient can invoke it verbatim.
+    pub(crate) fn advisory_line(
+        &self,
+        group: &Group,
+        row: &Row,
+        state: &str,
+        meta_dir: &Path,
+    ) -> String {
+        self.advisory_line_at(group, row, state, meta_dir, self.now)
+    }
+
+    pub(crate) fn advisory_line_at(
+        &self,
+        group: &Group,
+        row: &Row,
+        state: &str,
+        meta_dir: &Path,
+        now: i64,
+    ) -> String {
+        let scope = bounded_cell(&scope_identity(group, self.home.as_deref()), 1);
+        let owner = group.owner.as_deref().map(|owner| bounded_cell(owner, 0));
+        let bucket = row.qualifier.as_deref().map_or_else(
+            || row.bucket.clone(),
+            |qualifier| format!("{} {qualifier}", row.bucket),
+        );
+        let bucket = bounded_cell(&bucket, 2);
+        let window = row
+            .window_minutes
+            .map_or_else(|| "-".to_owned(), window_label);
+        let used = row
+            .used_percent
+            .as_deref()
+            .map_or_else(|| "-".to_owned(), percent_label);
+        let observed = row.observed_at.map_or_else(
+            || "unknown".to_owned(),
+            |at| age_label(now.saturating_sub(at)),
+        );
+        let reset = row.resets_at.map_or_else(
+            || "unknown".to_owned(),
+            |at| span_label(at.saturating_sub(now)),
+        );
+        format!(
+            "quota: {} · {scope}{} {bucket} {window} {used} ({state}, observed {observed}), resets in {reset} — prefer another client for new spawns; table: {}/quota",
+            group.tool.as_str(),
+            owner.map_or_else(String::new, |owner| format!(" · {owner}")),
+            meta_dir.display()
+        )
+    }
+}
+
+/// Resolve only a complete, recorded seat identity. Legacy/default homes and
+/// inconsistent mode/base pairs are intentionally not guessed.
+pub(crate) fn recorded_identity(entry: &crate::meta::RosterEntry) -> Option<RecordedIdentity> {
+    use crate::meta::{RecordedConfigHome, RecordedConfigHomeBase};
+
+    let tool = ToolKind::from_binary_name(entry.binary.as_deref()?);
+    let source = match tool.adapter().quota.source {
+        QuotaSource::ClaudeCache => match (&entry.config_home, &entry.config_home_base) {
+            (RecordedConfigHome::Path(home), RecordedConfigHomeBase::Missing) => {
+                home.join(".claude.json")
+            }
+            (RecordedConfigHome::Implicit(_), RecordedConfigHomeBase::Path(base)) => {
+                base.join(".claude.json")
+            }
+            _ => return None,
+        },
+        QuotaSource::CodexRollouts => match (&entry.config_home, &entry.config_home_base) {
+            (RecordedConfigHome::Path(home), RecordedConfigHomeBase::Missing)
+            | (RecordedConfigHome::Implicit(home), RecordedConfigHomeBase::Path(_)) => {
+                home.join("sessions")
+            }
+            _ => return None,
+        },
+        QuotaSource::Unsupported => return None,
+    };
+    let rollout = if tool.adapter().quota.source == QuotaSource::CodexRollouts {
+        Some(entry.harness_session.clone()?)
+    } else {
+        None
+    };
+    Some(RecordedIdentity {
+        tool,
+        source: canonical_source(source).ok()?,
+        rollout,
+    })
+}
+
+struct CodexGroups {
+    all: Vec<Group>,
+    rendered: Vec<Group>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct RolloutSummary {
+pub(crate) struct RolloutSummary {
     hidden: usize,
     unreadable: usize,
     oldest_observed: Option<i64>,
@@ -329,61 +446,64 @@ impl Budget {
     }
 }
 
-/// Read configured client scopes and print the local quota table.
+/// Read every configured client scope under one invocation-wide budget.
 ///
-/// The operation is deliberately observational: it opens only client cache
-/// files, writes only to the supplied streams, and never starts a process.
-///
-/// # Errors
-///
-/// Returns an I/O error only when the supplied output stream cannot be written.
-pub fn run(inputs: &Inputs<'_>, out: &mut impl Write, err: &mut impl Write) -> crate::Result<u8> {
-    let cfg = match crate::config::read_identity(inputs.global, inputs.local) {
-        Ok(cfg) => cfg,
-        Err(error) => {
-            writeln!(err, "{error}")?;
-            return Ok(1);
-        }
-    };
+/// The returned data is uncapped even though the operator table deliberately
+/// displays only the three newest Codex rollouts per scope.
+pub(crate) fn observe(inputs: &Inputs<'_>) -> Result<Observation, crate::config::ConfigError> {
+    let cfg = crate::config::read_identity(inputs.global, inputs.local)?;
     let mut scopes = configured_scopes(&cfg, inputs.home);
     let mut groups = Vec::new();
+    let mut rendered = Vec::new();
     let mut budget = Budget::new();
     let fleet = fleet_rollouts(inputs.sessions, &mut budget);
     add_recorded_codex_scopes(&mut scopes, &fleet);
     for scope in &scopes {
         let quota = scope.tool.adapter().quota;
         match quota.source {
-            QuotaSource::ClaudeCache => groups.push(Group {
-                profiles: scope.profiles.clone(),
-                tool: scope.tool,
-                home: scope.home.clone(),
-                clients: scope.clients.clone(),
-                rollout: None,
-                owner: None,
-                rows: rows_or_placeholder(read_claude(scope, inputs.now, &mut budget)),
-                hint: scope.hint.clone(),
-                summary: None,
-            }),
-            QuotaSource::CodexRollouts => {
-                groups.extend(codex_groups(scope, &fleet, inputs.now, &mut budget));
+            QuotaSource::ClaudeCache => {
+                let group = Group {
+                    profiles: scope.profiles.clone(),
+                    tool: scope.tool,
+                    home: scope.home.clone(),
+                    source: scope.source_key.clone(),
+                    clients: scope.clients.clone(),
+                    rollout: None,
+                    owner: None,
+                    rows: rows_or_placeholder(read_claude(scope, inputs.now, &mut budget)),
+                    hint: scope.hint.clone(),
+                    summary: None,
+                };
+                rendered.push(group.clone());
+                groups.push(group);
             }
-            QuotaSource::Unsupported => groups.push(Group {
-                profiles: scope.profiles.clone(),
-                tool: scope.tool,
-                home: scope.home.clone(),
-                clients: scope.clients.clone(),
-                rollout: None,
-                owner: None,
-                rows: vec![placeholder(Status::Unsupported)],
-                hint: scope
-                    .hint
-                    .clone()
-                    .or_else(|| quota.unsupported_hint.map(str::to_owned)),
-                summary: None,
-            }),
+            QuotaSource::CodexRollouts => {
+                let observed = codex_groups(scope, &fleet, inputs.now, &mut budget);
+                groups.extend(observed.all);
+                rendered.extend(observed.rendered);
+            }
+            QuotaSource::Unsupported => {
+                let group = Group {
+                    profiles: scope.profiles.clone(),
+                    tool: scope.tool,
+                    home: scope.home.clone(),
+                    source: scope.source_key.clone(),
+                    clients: scope.clients.clone(),
+                    rollout: None,
+                    owner: None,
+                    rows: vec![placeholder(Status::Unsupported)],
+                    hint: scope
+                        .hint
+                        .clone()
+                        .or_else(|| quota.unsupported_hint.map(str::to_owned)),
+                    summary: None,
+                };
+                rendered.push(group.clone());
+                groups.push(group);
+            }
         }
     }
-    let canonical_operator_home = inputs.home.and_then(|home| {
+    let home = inputs.home.and_then(|home| {
         crate::run::canonical_config_home(&crate::launch_cmd::Resolved::Path(home.to_path_buf()))
             .ok()
             .and_then(|resolved| match resolved {
@@ -393,13 +513,37 @@ pub fn run(inputs: &Inputs<'_>, out: &mut impl Write, err: &mut impl Write) -> c
                 }
             })
     });
+    Ok(Observation {
+        groups,
+        rendered,
+        home,
+        now: inputs.now,
+    })
+}
+
+/// Read configured client scopes and print the local quota table.
+///
+/// The operation is deliberately observational: it opens only client cache
+/// files, writes only to the supplied streams, and never starts a process.
+///
+/// # Errors
+///
+/// Returns an I/O error only when the supplied output stream cannot be written.
+pub fn run(inputs: &Inputs<'_>, out: &mut impl Write, err: &mut impl Write) -> crate::Result<u8> {
+    let observation = match observe(inputs) {
+        Ok(observation) => observation,
+        Err(error) => {
+            writeln!(err, "{error}")?;
+            return Ok(1);
+        }
+    };
     write!(
         out,
         "{}",
         render_at(
-            &groups,
-            canonical_operator_home.as_deref().or(inputs.home),
-            inputs.now
+            &observation.rendered,
+            observation.home.as_deref().or(inputs.home),
+            observation.now
         )
     )?;
     Ok(0)
@@ -858,7 +1002,12 @@ fn session_paths(root: &Path, budget: &mut Budget) -> io::Result<Bounded<Vec<Pat
     Ok(Bounded::Ready(paths))
 }
 
-fn codex_groups(scope: &Scope, fleet: &FleetRollouts, now: i64, budget: &mut Budget) -> Vec<Group> {
+fn codex_groups(
+    scope: &Scope,
+    fleet: &FleetRollouts,
+    now: i64,
+    budget: &mut Budget,
+) -> CodexGroups {
     let candidates = scope_rollouts(scope, fleet);
     let total = candidates.len();
     let mut truncated = fleet.status == FleetStatus::Truncated;
@@ -882,6 +1031,7 @@ fn codex_groups(scope: &Scope, fleet: &FleetRollouts, now: i64, budget: &mut Bud
                 profiles: scope.profiles.clone(),
                 tool: scope.tool,
                 home: scope.home.clone(),
+                source: scope.source_key.clone(),
                 clients: scope.clients.clone(),
                 rollout: Some(located.rollout.id.clone()),
                 owner: Some(located.rollout.owner.clone()),
@@ -894,7 +1044,14 @@ fn codex_groups(scope: &Scope, fleet: &FleetRollouts, now: i64, budget: &mut Bud
     }
     order_ranked_groups(&mut ranked);
 
-    summarize_codex_groups(scope, fleet.status, ranked, total, truncated)
+    let mut all: Vec<Group> = ranked.iter().map(|ranked| ranked.group.clone()).collect();
+    let rendered = summarize_codex_groups(scope, fleet.status, ranked, total, truncated);
+    if all.is_empty()
+        && let Some(placeholder) = rendered.iter().find(|group| group.summary.is_none())
+    {
+        all.push(placeholder.clone());
+    }
+    CodexGroups { all, rendered }
 }
 
 fn scope_rollouts<'a>(scope: &Scope, fleet: &'a FleetRollouts) -> Vec<&'a FleetRollout> {
@@ -998,6 +1155,7 @@ fn summarize_codex_groups(
             profiles: scope.profiles.clone(),
             tool: scope.tool,
             home: scope.home.clone(),
+            source: scope.source_key.clone(),
             clients: scope.clients.clone(),
             rollout: None,
             owner: None,
@@ -1018,6 +1176,7 @@ fn summarize_codex_groups(
             profiles: Vec::new(),
             tool: scope.tool,
             home: scope.home.clone(),
+            source: scope.source_key.clone(),
             clients: scope.clients.clone(),
             rollout: None,
             owner: None,
@@ -1090,16 +1249,19 @@ fn placeholder(status: Status) -> Row {
     }
 }
 
-fn scope_label(group: &Group, home: Option<&Path>) -> String {
-    let identity = if group.clients.is_empty() {
+fn scope_identity(group: &Group, home: Option<&Path>) -> String {
+    if group.clients.is_empty() {
         group
             .home
             .as_deref()
             .map_or_else(|| "unknown".to_owned(), |path| short_path(path, home))
     } else {
         group.clients.join(", ")
-    };
-    let mut label = format!("{} · {identity}", group.tool.as_str());
+    }
+}
+
+fn scope_label(group: &Group, home: Option<&Path>) -> String {
+    let mut label = format!("{} · {}", group.tool.as_str(), scope_identity(group, home));
     if group.tool.adapter().quota.source == QuotaSource::CodexRollouts {
         label.push_str(" · unidentified");
         if let Some(owner) = group.owner.as_deref() {
@@ -1294,6 +1456,13 @@ fn sanitize_cell(text: &str) -> String {
         }
     }
     clean
+}
+
+fn bounded_cell(text: &str, column: usize) -> String {
+    sanitize_cell(text)
+        .chars()
+        .take(TABLE_MAX_WIDTHS[column])
+        .collect()
 }
 
 fn consume_escape(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
@@ -1796,6 +1965,7 @@ mod tests {
         };
         let groups = codex_groups(&scope, &fleet, NOW, &mut Budget::new());
         let shown: Vec<_> = groups
+            .rendered
             .iter()
             .filter(|group| group.summary.is_none())
             .filter_map(|group| group.owner.as_deref())
@@ -1804,7 +1974,8 @@ mod tests {
             shown,
             ["session:seat-4", "session:seat-3", "session:seat-2"]
         );
-        let rendered = render_at(&groups, Some(&root), NOW);
+        assert_eq!(groups.all.len(), 5, "observation keeps capped-out rollouts");
+        let rendered = render_at(&groups.rendered, Some(&root), NOW);
         assert!(rendered.contains("+2 rollouts not shown"), "{rendered}");
         assert!(rendered.contains("oldest observed 10m ago"), "{rendered}");
         assert!(!rendered.contains("session:seat-0"), "{rendered}");
@@ -1886,10 +2057,11 @@ mod tests {
             max_elapsed: std::time::Duration::from_secs(1),
         };
         let groups = codex_groups(&scope, &fleet, NOW, &mut budget);
-        assert!(groups.iter().all(|group| {
+        assert!(groups.rendered.iter().all(|group| {
             group.summary.is_some() || group.rows.iter().all(|row| row.status != Status::Truncated)
         }));
         let summary = groups
+            .rendered
             .iter()
             .find_map(|group| group.summary.as_ref())
             .expect("truncated summary");
@@ -1897,7 +2069,7 @@ mod tests {
         assert_eq!(summary.unreadable, 0);
         assert!(summary.not_read);
         assert_eq!(summary.status, Some(Status::Truncated));
-        let rendered = render_at(&groups, Some(&root), NOW);
+        let rendered = render_at(&groups.rendered, Some(&root), NOW);
         assert!(
             rendered.lines().any(|line| {
                 line.contains("+5 rollouts not read") && line.contains("truncated")

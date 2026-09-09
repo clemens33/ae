@@ -137,7 +137,7 @@ fn plant(root: &Path, session: &str, socket: &Path, work_dir: Option<&Path>) -> 
     assert!(
         fs::write(
             &send,
-            "#!/bin/sh\nprintf '%s %s %s\\n' \"${AE_SENDER_OVERRIDE:-none}\" \"${_AE_EVENT_ACTION:-none}\" \"$1\" >> \"$(dirname \"$0\")/delivered\"\nexit 0\n",
+            "#!/bin/sh\nprintf '%s %s %s %s\\n' \"${AE_SENDER_OVERRIDE:-none}\" \"${_AE_EVENT_ACTION:-none}\" \"$1\" \"$2\" >> \"$(dirname \"$0\")/delivered\"\nexit 0\n",
         )
         .is_ok(),
         "the send helper"
@@ -255,6 +255,125 @@ fn stamp_agent(socket: &Path, scratch: &Path, session: &str) {
 
 fn events(meta_dir: &Path) -> String {
     fs::read_to_string(meta_dir.join("events.jsonl")).unwrap_or_default()
+}
+
+fn write_claude_quota(path: &Path, used: u8, observed_at: i64) {
+    let reset = ae::time::Timestamp::from_epoch(observed_at + 7_200);
+    let cache = format!(
+        "{{\"cachedUsageUtilization\":{{\"fetchedAtMs\":{},\"utilization\":{{\"limits\":[{{\"kind\":\"session\",\"group\":\"session\",\"percent\":{used},\"resets_at\":\"{reset}\",\"scope\":null}}]}}}}}}\n",
+        observed_at * 1_000,
+    );
+    assert!(fs::write(path, cache).is_ok(), "a Claude quota cache");
+}
+
+fn wait_for_advisories(delivered: &Path, expected: usize) {
+    let deadline = Instant::now() + BUDGET;
+    while Instant::now() < deadline
+        && fs::read_to_string(delivered)
+            .unwrap_or_default()
+            .matches("quota-advisory")
+            .count()
+            < expected
+    {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn a_changing_cache_emits_each_expected_quota_advisory_once() {
+    let scratch = scratch("quota");
+    require_tmux(&scratch);
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup::new(&socket, &scratch);
+    let root = scratch.join("state");
+    let tool_home = scratch.join("tool-home");
+    assert!(fs::create_dir_all(&root).is_ok(), "a state root");
+    assert!(fs::create_dir_all(&tool_home).is_ok(), "a tool home");
+    assert!(
+        fs::write(root.join("config"), "[profiles]\ncl = claude\n").is_ok(),
+        "a quota config"
+    );
+    let meta_dir = plant(&root, "quota", &socket, None);
+    let meta = fs::read_to_string(meta_dir.join("meta")).unwrap_or_default();
+    assert!(
+        fs::write(meta_dir.join("meta"), format!("{meta}quota_every_secs=1\n")).is_ok(),
+        "the persisted quota cadence"
+    );
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &["new-session", "-d", "-s", "quota", "cat"]
+        )
+        .0,
+        "the watched session"
+    );
+    stamp_agent(&socket, &scratch, "quota");
+
+    let now = ae::time::Timestamp::now().epoch();
+    let cache = tool_home.join(".claude.json");
+    write_claude_quota(&cache, 79, now);
+    let daemon_out = scratch.join("daemon-out");
+    let daemon_err = scratch.join("daemon-err");
+    let stdout = fs::File::create(&daemon_out).expect("a stdout sink");
+    let stderr = fs::File::create(&daemon_err).expect("a stderr sink");
+    let spawned = super::cli::ae()
+        .arg("_watchdog-run")
+        .arg(&meta_dir)
+        .args([
+            "--interval",
+            "1",
+            "--quota-every-secs",
+            "999",
+            "--stale-secs",
+            "999999",
+            "--tg-supervise-secs",
+            "0",
+        ])
+        .env("HOME", &tool_home)
+        .env("AE_HOME", &root)
+        .env("CONFIG_FILE", root.join("config"))
+        .stdout(stdout)
+        .stderr(stderr)
+        .spawn();
+    let mut child = spawned.expect("the ae binary should spawn");
+
+    let baseline_deadline = Instant::now() + BUDGET;
+    while Instant::now() < baseline_deadline && !meta_dir.join(".watchdog.pid").is_file() {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    std::thread::sleep(Duration::from_millis(1_100));
+    assert!(
+        fs::read_to_string(meta_dir.join("delivered"))
+            .unwrap_or_default()
+            .is_empty(),
+        "the first quota sample is silent"
+    );
+
+    write_claude_quota(&cache, 80, now + 2);
+    let delivered = meta_dir.join("delivered");
+    wait_for_advisories(&delivered, 1);
+    write_claude_quota(&cache, 95, now + 3);
+    wait_for_advisories(&delivered, 2);
+
+    stop_watchdog(&mut child, &socket, &scratch, "quota");
+    let receipt = fs::read_to_string(&delivered).unwrap_or_default();
+    let diagnostics = fs::read_to_string(&daemon_err).unwrap_or_default();
+    let advisories: Vec<&str> = receipt
+        .lines()
+        .filter(|line| line.starts_with("watchdog quota-advisory lead "))
+        .collect();
+    assert_eq!(
+        advisories.len(),
+        2,
+        "receipt: {receipt}\nstderr: {diagnostics}"
+    );
+    assert!(advisories[0].contains("80% (low,"), "{}", advisories[0]);
+    assert!(
+        advisories[1].contains("95% (critical,"),
+        "{}",
+        advisories[1]
+    );
 }
 
 #[test]

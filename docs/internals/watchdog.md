@@ -29,7 +29,7 @@ the process it already has until it is stopped and started.
 
 | Component | Runtime | Ownership |
 |---|---|---|
-| Rust core watchdog | `_watchdog-run` in the session's `_watchdog` pane | Per-cycle observation, state-machine decisions, nudges, alerts, status publication, pending tool-session-id recovery, and Telegram supervision |
+| Rust core watchdog | `_watchdog-run` in the session's `_watchdog` pane | Per-cycle observation, quota-state advisories, liveness decisions, nudges, alerts, status publication, pending tool-session-id recovery, and Telegram supervision |
 
 ## Live Rust core loop
 
@@ -51,6 +51,13 @@ The sections below describe the Rust core's per-cycle state machine and effects.
 Set them in the shell before `ae <name>`, or via your shell rc.
 For the orchestrator only, launch persists `[workspace] sweep` as `sweep_sec`;
 that session fact outranks `AE_WATCHDOG_SWEEP_SEC`, which outranks 120.
+
+Launch also persists `[workspace] quota_every_secs` (default 300, `0` disables) for every session.
+The daemon rounds that cadence up to whole verdict cycles. Each due pass performs one bounded
+`ae quota` observation, keeps state by canonical source, rollout, bucket, qualifier, and window,
+then advises only the session's main and optional colead on threshold transitions. A refused paste
+is retried once at the next quota observation; newer state, silence, expiry, or changed recipient
+identity cancels the old booking. No quota state survives a watchdog restart.
 
 For an orchestrator main, each verdict cycle calls `current_world` once and
 builds the same detail cards as `ae brief --all`. The pure overview renderer
@@ -94,6 +101,11 @@ finishes it before acknowledging; an overview is a notification, never a
 replacement task. The seat never runs `ae brief --all` on a timer.
 
 ## Per-cycle state machine
+
+Before walking panes, a due quota pass refreshes the session-local advisory state. The first sample
+is silent. `headroom` is below 80%, `low` begins at 80%, and `critical` at 95%; downward hysteresis
+leaves those states below 75% and 90% respectively. Unsupported, unreadable, truncated, unknown,
+or older-than-60-minute rows are silent and drop prior state.
 
 For each agent pane, the watchdog walks a fixed branch order. First match wins; later branches don't fire.
 
@@ -175,6 +187,12 @@ When detected:
 2. First detection of a streak → emit `throttled` event.
 3. After `THROTTLE_ALERT_CYCLES` consecutive throttled cycles → emit `alert` event + tmux banner. Once.
 4. When the pattern no longer matches → emit `throttle-cleared` event, reset streak.
+
+On the first throttle event only, the watchdog may append the worst row from its last scheduled
+quota observation. The source must exactly match the seat's recorded config-home mode/base; Codex
+also requires the recorded rollout id. Missing or legacy identity, another rollout, and expired or
+silent rows leave the existing throttle event unchanged. This lookup uses the uncapped observation
+and never reads a vendor cache from the throttle path.
 
 The streak state per pane is a small machine:
 

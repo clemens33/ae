@@ -31,6 +31,7 @@ main = lead
 workers = colead
 layout = lead-pair
 watchdog = true
+quota_every_secs = 300
 # auto_upgrade = on
 
 [prompt]
@@ -131,6 +132,7 @@ Old seat files that still carry `[profiles]`/`[roster]` are ignored for identity
 | `layout`  | `lead-pair` (lead left at 60% + colead right at 40% in window 0, other workers in window 1), `lead-solo` (lead alone in window 0, workers in window 1), `vertical` (side-by-side splits), `horizontal` (stacked splits) | `lead-pair`   |
 | `copy`    | Working directory mode (see below)                   | `local`       |
 | `watchdog`    | Auto-start the watchdog (`true` / `false`)            | `true`        |
+| `quota_every_secs` | Watchdog quota-observation cadence in seconds, rounded to whole watchdog cycles (`0` disables) | `300` |
 | `orchestrator` | Mark this session as the fleet overview seat (`true`); grants its panes the bare human-authority `relay` helper | `false`       |
 | `sweep` | Persist this orchestrator's changed-overview minimum spacing in seconds (`0` disables; positive values below `60` become `60`) | `AE_WATCHDOG_SWEEP_SEC`, then `120` |
 | `auto_upgrade` | Let an installed ae quietly check for and apply strictly newer releases (`on` / `off`); global config only | `on` |
@@ -233,6 +235,10 @@ The watchdog reads its tunables from environment variables (set them in the sess
 | `AE_WATCHDOG_SWEEP_RETRY_MAX` | 6 | Fast retries allowed before falling back to normal cadence and raising one `meta-agent unreachable` alert |
 
 The legacy `AE_LOOP_*` names are still honoured as fallbacks for each tunable. To turn the watchdog off for a single session, run `~/.ae/sessions/<name>/watchdog stop` once. The setting persists across resume.
+
+Quota observation is configured by `[workspace] quota_every_secs`, not an environment fallback.
+Launch persists the value in session meta so rename and resume keep the same cadence. It accepts
+unsigned integer seconds only; `0` disables quota advisories.
 
 ## Model tiers (recommended profiles)
 

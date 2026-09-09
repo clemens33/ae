@@ -610,6 +610,15 @@ quota source. They render `unsupported` with an operator hint rather than treati
 history as quota. This command makes no network request, reads no credentials, invokes neither
 tmux nor a vendor process, and writes no state.
 
+### Advisories
+
+Each session watchdog reuses this bounded local observation every
+`[workspace] quota_every_secs` (default 300 seconds; `0` disables). The first sample establishes a
+baseline. Later transitions into `low` (80%), `critical` (95%), or back to `headroom` are pasted to
+that session's main seat and, for a lead-pair, its colead. No advisory crosses sessions and ae never
+reroutes work: the recipient decides which client should receive new spawns. Silent or older-than-
+60-minute rows clear the in-memory baseline; recovery starts with a new silent first sample.
+
 ## Session helpers
 
 Session delivery helpers stay inside their own ae session by default:
@@ -646,6 +655,13 @@ session's `watchdog` helper is a shim that execs the core's `_watchdog-run`, whi
 whole command of the monitor pane. `ae loop` is the deprecated spelling, kept as an alias.
 
 The [watchdog](../internals/watchdog.md) is on by default — only an explicit `false` / `no` / `off` / `0` in config or session meta keeps it off. `watchdog start` is idempotent; running it again just confirms the meta flag.
+
+The watchdog also observes the same local quota caches as `ae quota` on its persisted
+`[workspace] quota_every_secs` cadence. It sends state changes only to its own leadership seats,
+retries a refused paste once on the next quota sweep, and records cancelled retries as
+`quota-advisory-dropped`. A throttle event includes the worst current quota row only when the last
+scheduled observation exactly matches that seat's recorded client source and, for Codex, rollout.
+It never performs an extra quota read for throttling.
 
 ### Meta-agent (orchestrator) overview spacing
 

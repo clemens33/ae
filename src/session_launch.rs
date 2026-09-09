@@ -1484,6 +1484,39 @@ fn launch(
         .as_deref()
         .and_then(|value| value.parse::<u64>().ok())
         .map(|value| value.to_string());
+    let recorded_quota_every_secs = if meta_present {
+        meta_value(&dir, "quota_every_secs")
+    } else {
+        None
+    };
+    let configured_quota_every_secs = if recorded_quota_every_secs.is_none() {
+        match configured_quota_every_secs(env.global.as_deref(), env.local.as_deref()) {
+            Ok(value) => value,
+            Err(value) => {
+                writeln!(
+                    err,
+                    "Error: [workspace] quota_every_secs must be an unsigned integer in seconds; got '{value}'."
+                )?;
+                return Ok(EXIT_USAGE);
+            }
+        }
+    } else {
+        None
+    };
+    let quota_every_secs = recorded_quota_every_secs
+        .or(configured_quota_every_secs)
+        .unwrap_or_else(|| {
+            crate::watchdog_daemon::Knobs::default()
+                .quota_every_secs
+                .to_string()
+        });
+    if quota_every_secs.parse::<u64>().is_err() {
+        writeln!(
+            err,
+            "Error: [workspace] quota_every_secs must be an unsigned integer in seconds; got '{quota_every_secs}'."
+        )?;
+        return Ok(EXIT_USAGE);
+    }
 
     if let Some(workers) = &plan.workers {
         cfg.workers = Some(workers.clone());
@@ -1722,6 +1755,7 @@ fn launch(
         seat_overrides.as_ref(),
         meta_agent,
         sweep_sec.as_deref(),
+        &quota_every_secs,
         parent.as_ref(),
         lifecycle.take(),
         out,
@@ -1732,6 +1766,34 @@ fn launch(
 // ---------------------------------------------------------------------------
 // the build: tmux, meta, assets, agents
 // ---------------------------------------------------------------------------
+
+/// Read the quota cadence through the existing strict workspace-key reader,
+/// layering the project-local occurrence over the global one. That reader
+/// preserves an explicit empty assignment as an error; here its logical value
+/// is the empty string so the launch diagnostic can name it exactly.
+fn configured_quota_every_secs(
+    global: Option<&Path>,
+    local: Option<&Path>,
+) -> Result<Option<String>, String> {
+    let read = |file: Option<&Path>| -> Result<Option<String>, String> {
+        let Some(file) = file else {
+            return Ok(None);
+        };
+        crate::config::read_global_workspace_key(file, "quota_every_secs").map_err(|why| {
+            if why == "quota_every_secs has an invalid value" {
+                String::new()
+            } else {
+                why
+            }
+        })
+    };
+    let global = read(global);
+    match read(local) {
+        Ok(Some(value)) => Ok(Some(value)),
+        Ok(None) => global,
+        Err(value) => Err(value),
+    }
+}
 
 /// One seat, resolved to what the launch needs to start it.
 struct Launching {
@@ -1761,6 +1823,7 @@ fn build(
     seat_overrides: Option<&SeatOverrideSnapshot>,
     meta_agent: bool,
     sweep_sec: Option<&str>,
+    quota_every_secs: &str,
     parent: Option<&FromProof>,
     lifecycle: Option<std::fs::File>,
     out: &mut impl Write,
@@ -1993,7 +2056,15 @@ fn build(
     }
 
     // ---- the meta, published as ONE document ----
-    let document = match meta_document(env, shape, &launching, meta_agent, sweep_sec, parent) {
+    let document = match meta_document(
+        env,
+        shape,
+        &launching,
+        meta_agent,
+        sweep_sec,
+        quota_every_secs,
+        parent,
+    ) {
         Ok(document) => document,
         Err(why) => return rollback_launch(shape, &dir, &server, &format!("Error: {why}"), err),
     };
@@ -2440,6 +2511,7 @@ fn meta_document(
     launching: &[Launching],
     meta_agent: bool,
     sweep_sec: Option<&str>,
+    quota_every_secs: &str,
     parent: Option<&FromProof>,
 ) -> Result<String, String> {
     let dir = env.sessions().join(&shape.name);
@@ -2541,6 +2613,7 @@ fn meta_document(
             row(key, &value);
         }
     }
+    row("quota_every_secs", quota_every_secs);
     if let Some(id) = parent_id {
         row("parent_archive_id", &id);
         row(
