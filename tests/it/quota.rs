@@ -511,6 +511,43 @@ fn quota_self_referential_claude_config_dir_fallback_is_unknown_before_launch_in
 }
 
 #[test]
+fn quota_nested_home_plus_claude_config_dir_fallback_is_unknown_before_launch_injection() {
+    let root = rig("nested-home-plus-claude-config-dir");
+    let config = "[profiles]\np = CLAUDE_CONFIG_DIR=${HOME:+${CLAUDE_CONFIG_DIR:-$HOME/.claude-mic}} claude\n";
+    std::fs::write(root.join("config"), config).expect("profile config");
+    let cfg = ae::config::parse_identity(config).expect("identity config");
+    let command = cfg
+        .command("p", Some(&root))
+        .expect("profile command")
+        .expect("profile");
+    let other = root.join("other");
+    let resolved =
+        ae::launch_cmd::config_home(&command, ae::tool::ToolKind::Claude, &|name| match name {
+            "HOME" => Some(root.display().to_string()),
+            "CLAUDE_CONFIG_DIR" => Some(other.display().to_string()),
+            _ => None,
+        });
+    assert_eq!(resolved, ae::launch_cmd::Resolved::Path(other));
+    let quota_text = run_quota(&root);
+    eprintln!(
+        "quota output:\n{quota_text}launch resolved home: {}",
+        resolved.shown()
+    );
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert!(!quota_text.contains("77%"), "{quota_text}");
+    assert!(
+        quota_text.contains("unknown")
+            || quota_text
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .contains("depends on pane variable CLAUDE_CONFIG_DIR"),
+        "{quota_text}"
+    );
+}
+
+#[test]
 fn mixed_recorded_and_legacy_codex_same_profile_do_not_cross_attribute_rollouts() {
     let root = rig("mixed-recorded-legacy");
     let a = root.join("codex-a");

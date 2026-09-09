@@ -433,11 +433,7 @@ fn configured_scopes(cfg: &crate::config::IdentityConfig, home: Option<&Path>) -
         let client = resolved
             .client_label()
             .and_then(|label| displayed_client(cfg, label, tool));
-        let unknown_variable = std::cell::RefCell::new(None);
-        let account_variable = tool.adapter().config_home_env;
-        if let Some(variable) = account_variable
-            && crate::launch_cmd::references_variable(&resolved, variable)
-        {
+        if let Some(variable) = word_expansion_dependency(&resolved, home) {
             scopes.push(unknown_scope(
                 profile,
                 tool,
@@ -446,6 +442,8 @@ fn configured_scopes(cfg: &crate::config::IdentityConfig, home: Option<&Path>) -
             ));
             continue;
         }
+        let unknown_variable = std::cell::RefCell::new(None);
+        let account_variable = tool.adapter().config_home_env;
         let resolution = crate::launch_cmd::config_home_resolution(&resolved, tool, &|name| {
             if name == "HOME" {
                 return home.map(|path| path.display().to_string());
@@ -505,6 +503,24 @@ fn configured_scopes(cfg: &crate::config::IdentityConfig, home: Option<&Path>) -
         }
     }
     scopes
+}
+
+fn word_expansion_dependency(
+    command: &crate::config::ResolvedCommand,
+    home: Option<&Path>,
+) -> Option<String> {
+    let unknown_variable = std::cell::RefCell::new(None);
+    let _ = crate::words::split_words(command.as_str(), &|name| {
+        if name == "HOME" {
+            return home.map(|path| path.display().to_string());
+        }
+        let mut unknown = unknown_variable.borrow_mut();
+        if unknown.is_none() {
+            *unknown = Some(name.to_owned());
+        }
+        None
+    });
+    unknown_variable.into_inner()
 }
 
 fn resolved_tool(command: &str) -> ToolKind {
