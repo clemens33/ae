@@ -969,9 +969,26 @@ fn quota_is_a_real_public_read_only_command() {
     let root = scratch("quota-public");
     std::fs::write(
         root.join("config"),
-        "[profiles]\nclaude = claude\ngrok = grok\n",
+        "[profiles]\nclaude = claude\ncodex = codex\ngrok = grok\n",
     )
     .expect("quota config");
+    let id = "01a08046-1974-7352-ade3-81a786200795";
+    std::fs::create_dir_all(root.join("sessions/fleet-one")).expect("fleet session");
+    std::fs::write(
+        root.join("sessions/fleet-one/meta"),
+        format!(
+            "schema=2\nseat.main=lead\nprofile.main=codex\nharness_session.main={id}\nagent_bin.main=codex\n"
+        ),
+    )
+    .expect("fleet meta");
+    std::fs::create_dir_all(root.join(".codex/sessions/2026/09/08")).expect("Codex day directory");
+    std::fs::write(
+        root.join(format!(
+            ".codex/sessions/2026/09/08/rollout-2026-09-08T09-00-00-{id}.jsonl"
+        )),
+        include_bytes!("../fixtures/quota/codex-rollout.jsonl"),
+    )
+    .expect("Codex rollout");
     let bin = root.join("bin");
     std::fs::create_dir_all(&bin).expect("sentinel bin");
     let marker = root.join("invoked");
@@ -1013,6 +1030,10 @@ fn quota_is_a_real_public_read_only_command() {
     let stdout = String::from_utf8(out.stdout).expect("UTF-8 table");
     assert!(stdout.starts_with("PROFILES"), "{stdout}");
     assert!(stdout.contains("claude · ~/.claude"), "{stdout}");
+    assert!(
+        stdout.contains("codex · ~/.codex · unidentified") && stdout.contains("(fleet-one:lead)"),
+        "{stdout}"
+    );
     assert!(stdout.contains("unknown"), "{stdout}");
     assert!(
         stdout.contains("unsupported") && stdout.contains("/usage in grok"),

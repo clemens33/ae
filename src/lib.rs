@@ -311,13 +311,14 @@ fn run_public_quota(
     let global = doors::config_file(shape, &root);
     let local = doors::local_config(&cwd);
     let home = doors::home();
+    let roots = inventory::Roots::under(&root);
     quota::run(
         &quota::Inputs {
             home: home.as_deref(),
             cwd: &cwd,
             global: Some(&global),
             local: local.as_deref(),
-            meta: None,
+            sessions: Some(roots.sessions()),
             now: time::Timestamp::now().epoch(),
         },
         out,
@@ -1533,13 +1534,14 @@ fn run_quota_helper(
         .as_deref()
         .map(|root| doors::config_file(shape::current(), root));
     let home = doors::home();
+    let roots = root.as_deref().map(inventory::Roots::under);
     quota::run(
         &quota::Inputs {
             home: home.as_deref(),
             cwd: &cwd,
             global: global.as_deref(),
             local: local.as_deref(),
-            meta: meta.as_ref(),
+            sessions: roots.as_ref().map(inventory::Roots::sessions),
             now: time::Timestamp::now().epoch(),
         },
         out,

@@ -17,7 +17,7 @@ fn rig(tag: &str) -> PathBuf {
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(root.join(".codex/sessions/2026/09/08"))
         .expect("quota rig directories");
-    std::fs::create_dir_all(root.join("session")).expect("session directory");
+    std::fs::create_dir_all(root.join("sessions/session")).expect("session directory");
     std::fs::write(
         root.join("config"),
         concat!(
@@ -36,7 +36,7 @@ fn rig(tag: &str) -> PathBuf {
     )
     .expect("config");
     std::fs::write(
-        root.join("session/meta"),
+        root.join("sessions/session/meta"),
         format!(
             "schema=2\nmode=local\norigin={}\nwork_dir={}\nseat.main=lead\nprofile.main=astrax\nharness_session.main={FIRST_ID}\nagent_bin.main=codex\nseat.worker.0=reviewer\nprofile.worker.0=solx\nharness_session.worker.0={SECOND_ID}\nagent_bin.worker.0=codex\n",
             root.display(),
@@ -66,14 +66,13 @@ fn ae_quota_renders_fixture_caches_missing_scopes_and_unsupported_clients() {
     let root = rig("golden");
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
-    let meta = ae::session::read_meta(&root.join("session")).expect("readable session meta");
     let code = ae::quota::run(
         &ae::quota::Inputs {
             home: Some(&root),
             cwd: &root,
             global: Some(&root.join("config")),
             local: None,
-            meta: Some(&meta),
+            sessions: Some(&root.join("sessions")),
             now: NOW,
         },
         &mut stdout,
@@ -105,7 +104,7 @@ fn absent_and_unexpected_sources_are_unknown_and_read_error() {
             cwd: &root,
             global: Some(&root.join("config")),
             local: None,
-            meta: None,
+            sessions: Some(&root.join("sessions")),
             now: NOW,
         },
         &mut stdout,
@@ -119,7 +118,7 @@ fn absent_and_unexpected_sources_are_unknown_and_read_error() {
         "{text}"
     );
     assert!(
-        text.contains("claude · unknown") && text.contains("unknown"),
+        text.contains("claude · ~/.claude-work") && text.contains("unknown"),
         "{text}"
     );
     assert!(stderr.is_empty());
@@ -135,7 +134,7 @@ fn changed_config_home_never_relabels_a_retained_rollout() {
         String::from_utf8_lossy(include_bytes!("../fixtures/quota/codex-rollout.jsonl"))
             .replace("7.0", "91.0");
     std::fs::write(
-        changed.join(format!("rollout-2026-09-08T09-00-00-{FIRST_ID}.jsonl")),
+        changed.join(format!("rollout-2026-09-08T09-00-00-{SECOND_ID}.jsonl")),
         changed_rollout,
     )
     .expect("changed-home rollout");
@@ -145,13 +144,12 @@ fn changed_config_home_never_relabels_a_retained_rollout() {
     )
     .expect("changed profile");
     std::fs::write(
-        root.join("session/meta"),
+        root.join("sessions/session/meta"),
         format!(
             "schema=2\nseat.main=lead\nprofile.main=changed\nharness_session.main={FIRST_ID}\nagent_bin.main=codex\n"
         ),
     )
     .expect("changed meta");
-    let meta = ae::session::read_meta(&root.join("session")).expect("readable meta");
     let mut stdout = Vec::new();
     let code = ae::quota::run(
         &ae::quota::Inputs {
@@ -159,7 +157,7 @@ fn changed_config_home_never_relabels_a_retained_rollout() {
             cwd: &root,
             global: Some(&root.join("config")),
             local: None,
-            meta: Some(&meta),
+            sessions: Some(&root.join("sessions")),
             now: NOW,
         },
         &mut stdout,
@@ -168,7 +166,10 @@ fn changed_config_home_never_relabels_a_retained_rollout() {
     .expect("quota runs");
     let text = String::from_utf8(stdout).expect("UTF-8 table");
     assert_eq!(code, 0);
-    assert!(text.contains("codex · unknown · unidentified"), "{text}");
+    assert!(
+        text.contains("codex · ~/.codex-b · unidentified") && text.contains("(session:lead)"),
+        "{text}"
+    );
     assert!(!text.contains("91%") && !text.contains("7%"), "{text}");
     let _ = std::fs::remove_dir_all(root);
 }
@@ -199,7 +200,7 @@ fn quota_helper_is_read_only_and_starts_no_tmux_or_vendor_process() {
         }
     }
     let before = crate::cli::byte_tree(&root);
-    let session = root.join("session");
+    let session = root.join("sessions/session");
     let out = crate::cli::ae()
         .env("HOME", &root)
         .env("AE_HOME", &root)
@@ -215,10 +216,10 @@ fn quota_helper_is_read_only_and_starts_no_tmux_or_vendor_process() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
+    let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        String::from_utf8_lossy(&out.stdout).contains("codex · ~/.codex · unidentified"),
-        "{}",
-        String::from_utf8_lossy(&out.stdout)
+        stdout.contains("codex · ~/.codex · unidentified") && stdout.contains("(session:lead)"),
+        "{stdout}"
     );
     assert_eq!(
         crate::cli::byte_tree(&root),
@@ -242,7 +243,6 @@ fn fifo_and_symlink_vendor_sources_are_read_errors_without_being_opened() {
     ));
     std::fs::remove_file(&rollout).expect("remove regular Codex rollout");
     symlink(root.join("config"), &rollout).expect("rollout symlink");
-    let meta = ae::session::read_meta(&root.join("session")).expect("readable meta");
     let mut stdout = Vec::new();
     ae::quota::run(
         &ae::quota::Inputs {
@@ -250,7 +250,7 @@ fn fifo_and_symlink_vendor_sources_are_read_errors_without_being_opened() {
             cwd: &root,
             global: Some(&root.join("config")),
             local: None,
-            meta: Some(&meta),
+            sessions: Some(&root.join("sessions")),
             now: NOW,
         },
         &mut stdout,

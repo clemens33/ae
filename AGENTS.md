@@ -194,7 +194,7 @@ dirname. Names and argv are the compatibility contract.
 | `goal [text\|--clear]` | The session's one-line objective. Survives resume; shown in `ae list` |
 | `peek <agent> [lines]` / `peak` | Capture recent pane output. Inspection only, never a reply channel |
 | `agents [--all]` | List agents with pane IDs and processes. `focus <agent>` switches tmux focus |
-| `quota` | Show each configured client scope's locally cached quota windows and freshness |
+| `quota` | Show each configured client scope's locally cached quota windows and freshness; Codex rollout owners are read across the local fleet |
 | `interrupt [--cross-session] <agent> [msg]` | Cancel in the same session; another session needs `--cross-session` |
 | `spawn <name> --using <profile> [prompt]` | Add an agent to the workspace |
 | `retire <name>` \| `retire %pane` | Remove a spawned agent. Exact name only; `main`/`worker` refuse |

@@ -18,6 +18,7 @@ use crate::tool::{QuotaSource, ToolKind};
 
 const CLAUDE_MAX_BYTES: u64 = 4 * 1024 * 1024;
 const CODEX_TAIL_BYTES: u64 = 1024 * 1024;
+const SESSION_META_MAX_BYTES: u64 = 1024 * 1024;
 const QUOTA_MAX_FILES: usize = 4_096;
 const QUOTA_MAX_BYTES: u64 = 16 * 1024 * 1024;
 const QUOTA_MAX_ELAPSED: Duration = Duration::from_secs(2);
@@ -168,8 +169,8 @@ pub struct Inputs<'a> {
     pub global: Option<&'a Path>,
     /// Selected project-local ae config.
     pub local: Option<&'a Path>,
-    /// Current ae session meta, when invoked through a helper or from a pane.
-    pub meta: Option<&'a crate::meta::Meta>,
+    /// Canonical ae sessions directory whose durable metas name Codex rollouts.
+    pub sessions: Option<&'a Path>,
     /// Observation instant.
     pub now: i64,
 }
@@ -187,7 +188,7 @@ struct Group {
     tool: ToolKind,
     home: Option<PathBuf>,
     rollout: Option<String>,
-    seat: Option<String>,
+    owner: Option<String>,
     rows: Vec<Row>,
     hint: Option<&'static str>,
 }
@@ -202,6 +203,25 @@ enum ReadRows {
 enum Bounded<T> {
     Ready(T),
     Truncated,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FleetRollout {
+    owner: String,
+    profile: String,
+    id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FleetStatus {
+    Complete,
+    Failed,
+    Truncated,
+}
+
+struct FleetRollouts {
+    rollouts: Vec<FleetRollout>,
+    status: FleetStatus,
 }
 
 struct Budget {
@@ -265,6 +285,10 @@ pub fn run(inputs: &Inputs<'_>, out: &mut impl Write, err: &mut impl Write) -> c
     let scopes = configured_scopes(&cfg, inputs.home, inputs.cwd);
     let mut groups = Vec::new();
     let mut budget = Budget::new();
+    let fleet = scopes
+        .iter()
+        .any(|scope| scope.tool.adapter().quota.source == QuotaSource::CodexRollouts)
+        .then(|| fleet_rollouts(inputs.sessions, &mut budget));
     for scope in &scopes {
         let quota = scope.tool.adapter().quota;
         match quota.source {
@@ -273,19 +297,21 @@ pub fn run(inputs: &Inputs<'_>, out: &mut impl Write, err: &mut impl Write) -> c
                 tool: scope.tool,
                 home: scope.home.clone(),
                 rollout: None,
-                seat: None,
+                owner: None,
                 rows: rows_or_placeholder(read_claude(scope, inputs.home, inputs.now, &mut budget)),
                 hint: None,
             }),
             QuotaSource::CodexRollouts => {
-                groups.extend(codex_groups(scope, inputs.meta, inputs.now, &mut budget));
+                if let Some(fleet) = &fleet {
+                    groups.extend(codex_groups(scope, fleet, inputs.now, &mut budget));
+                }
             }
             QuotaSource::Unsupported => groups.push(Group {
                 profiles: scope.profiles.clone(),
                 tool: scope.tool,
                 home: scope.home.clone(),
                 rollout: None,
-                seat: None,
+                owner: None,
                 rows: vec![placeholder(Status::Unsupported)],
                 hint: quota.unsupported_hint,
             }),
@@ -322,12 +348,13 @@ fn configured_scopes(
 
 fn config_home(tool: ToolKind, command: &str, home: Option<&Path>, cwd: &Path) -> Option<PathBuf> {
     let quota = tool.adapter().quota;
-    if ambiguous_config_prefix(command, quota.config_home_env, home) {
-        return None;
-    }
-    let path = quota
-        .default_home
-        .and_then(|name| home.map(|base| base.join(name)))?;
+    let path = match profile_home(command, quota.config_home_env, home) {
+        ProfileHome::Default => quota
+            .default_home
+            .and_then(|name| home.map(|base| base.join(name)))?,
+        ProfileHome::Assigned(path) => path,
+        ProfileHome::Unknown => return None,
+    };
     Some(if path.is_absolute() {
         path
     } else {
@@ -335,25 +362,51 @@ fn config_home(tool: ToolKind, command: &str, home: Option<&Path>, cwd: &Path) -
     })
 }
 
-fn ambiguous_config_prefix(command: &str, variable: Option<&str>, home: Option<&Path>) -> bool {
+enum ProfileHome {
+    Default,
+    Assigned(PathBuf),
+    Unknown,
+}
+
+fn profile_home(command: &str, variable: Option<&str>, home: Option<&Path>) -> ProfileHome {
     let Some(split) = crate::launch_cmd::split_binary(command) else {
-        return true;
+        return ProfileHome::Unknown;
     };
+    let unknown_expansion = std::cell::Cell::new(false);
+    let missing_home = std::cell::Cell::new(false);
     let Ok(words) = crate::words::split_words(&split.prefix, &|name| {
-        (name == "HOME")
-            .then(|| home.map(|path| path.to_string_lossy().into_owned()))
-            .flatten()
+        if name != "HOME" {
+            unknown_expansion.set(true);
+            return None;
+        }
+        let value = home.map(|path| path.to_string_lossy().into_owned());
+        if value.is_none() {
+            missing_home.set(true);
+        }
+        value
     }) else {
-        return true;
+        return ProfileHome::Unknown;
     };
-    words.iter().any(|word| {
-        matches!(word.value.as_str(), "-i" | "-u")
-            || (word.assignment
-                && word
-                    .value
-                    .split_once('=')
-                    .is_some_and(|(name, _)| Some(name) == variable))
-    })
+    if unknown_expansion.get() || missing_home.get() {
+        return ProfileHome::Unknown;
+    }
+    let mut assigned = None;
+    for word in words {
+        if matches!(word.value.as_str(), "-i" | "-u") {
+            return ProfileHome::Unknown;
+        }
+        if !word.assignment {
+            continue;
+        }
+        let Some((name, value)) = word.value.split_once('=') else {
+            return ProfileHome::Unknown;
+        };
+        if Some(name) != variable {
+            return ProfileHome::Unknown;
+        }
+        assigned = Some(PathBuf::from(value));
+    }
+    assigned.map_or(ProfileHome::Default, ProfileHome::Assigned)
 }
 
 fn read_claude(
@@ -380,50 +433,170 @@ fn read_claude(
 }
 
 fn claude_cache_path(config_home: &Path, operator_home: Option<&Path>) -> PathBuf {
-    if operator_home.is_some_and(|home| config_home == home.join(".claude")) {
-        config_home.with_extension("json")
-    } else {
-        config_home.join(".claude.json")
+    if let Some(home) = operator_home
+        && config_home == home.join(".claude")
+    {
+        return home.join(".claude.json");
     }
+    config_home.join(".claude.json")
 }
 
-fn codex_groups(
-    scope: &Scope,
-    meta: Option<&crate::meta::Meta>,
-    now: i64,
-    budget: &mut Budget,
-) -> Vec<Group> {
-    let mut groups = Vec::new();
-    if let Some(meta) = meta {
+fn fleet_rollouts(sessions: Option<&Path>, budget: &mut Budget) -> FleetRollouts {
+    let Some(sessions) = sessions else {
+        return FleetRollouts {
+            rollouts: Vec::new(),
+            status: FleetStatus::Complete,
+        };
+    };
+    let paths = match session_paths(sessions, budget) {
+        Ok(Bounded::Ready(paths)) => paths,
+        Ok(Bounded::Truncated) => {
+            return FleetRollouts {
+                rollouts: Vec::new(),
+                status: FleetStatus::Truncated,
+            };
+        }
+        Err(_) => {
+            return FleetRollouts {
+                rollouts: Vec::new(),
+                status: FleetStatus::Failed,
+            };
+        }
+    };
+    let mut rollouts = Vec::new();
+    let mut status = FleetStatus::Complete;
+    for path in paths {
+        let meta_path = crate::store::open(&path).meta_path();
+        let bytes = match bounded_whole_file(&meta_path, SESSION_META_MAX_BYTES, budget) {
+            Ok(Bounded::Ready(Some(bytes))) => bytes,
+            Ok(Bounded::Ready(None)) => continue,
+            Ok(Bounded::Truncated) => {
+                status = FleetStatus::Truncated;
+                break;
+            }
+            Err(_) => {
+                status = FleetStatus::Failed;
+                continue;
+            }
+        };
+        let Ok(text) = std::str::from_utf8(&bytes) else {
+            status = FleetStatus::Failed;
+            continue;
+        };
+        let meta = crate::meta::Meta::parse(text);
+        let session = path
+            .file_name()
+            .unwrap_or(path.as_os_str())
+            .to_string_lossy();
         for seat in meta.roster() {
-            if !seat
-                .profile
-                .as_ref()
-                .is_some_and(|profile| scope.profiles.contains(profile))
+            let Some(binary) = seat.binary.as_deref() else {
+                continue;
+            };
+            if ToolKind::from_binary_name(binary).adapter().quota.source
+                != QuotaSource::CodexRollouts
             {
                 continue;
             }
-            let rollout = seat.harness_session.clone();
-            if rollout.as_ref().is_some_and(|id| {
-                groups
-                    .iter()
-                    .any(|group: &Group| group.rollout.as_ref() == Some(id))
-            }) {
+            let (Some(profile), Some(id)) = (&seat.profile, &seat.harness_session) else {
                 continue;
-            }
-            let rows = rollout.as_deref().map_or(ReadRows::Missing, |id| {
-                read_codex(scope.home.as_deref(), id, now, budget)
-            });
-            groups.push(Group {
-                profiles: scope.profiles.clone(),
-                tool: scope.tool,
-                home: scope.home.clone(),
-                rollout,
-                seat: Some(seat.name.clone()),
-                rows: rows_or_placeholder(rows),
-                hint: None,
+            };
+            rollouts.push(FleetRollout {
+                owner: format!("{session}:{}", seat.name),
+                profile: profile.clone(),
+                id: id.clone(),
             });
         }
+    }
+    FleetRollouts { rollouts, status }
+}
+
+fn session_paths(root: &Path, budget: &mut Budget) -> io::Result<Bounded<Vec<PathBuf>>> {
+    if !budget.claim_file() {
+        return Ok(Bounded::Truncated);
+    }
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: bounded canonical-session enumeration for quota rollout provenance"
+    )]
+    let metadata = match std::fs::symlink_metadata(root) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(Bounded::Ready(Vec::new()));
+        }
+        Err(error) => return Err(error),
+    };
+    if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "sessions root is not a directory",
+        ));
+    }
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: enumerates only bounded direct children of the canonical ae sessions root"
+    )]
+    let entries = std::fs::read_dir(root)?;
+    let mut paths = Vec::new();
+    for entry in entries {
+        if !budget.claim_file() {
+            return Ok(Bounded::Truncated);
+        }
+        let entry = entry?;
+        if entry.file_name().to_string_lossy().starts_with('.') {
+            continue;
+        }
+        let kind = entry.file_type()?;
+        if kind.is_dir() && !kind.is_symlink() {
+            paths.push(entry.path());
+        }
+    }
+    if budget.expired() {
+        return Ok(Bounded::Truncated);
+    }
+    paths.sort();
+    Ok(Bounded::Ready(paths))
+}
+
+fn codex_groups(scope: &Scope, fleet: &FleetRollouts, now: i64, budget: &mut Budget) -> Vec<Group> {
+    let mut groups = Vec::new();
+    for rollout in &fleet.rollouts {
+        if !scope.profiles.contains(&rollout.profile)
+            || groups
+                .iter()
+                .any(|group: &Group| group.rollout.as_ref() == Some(&rollout.id))
+        {
+            continue;
+        }
+        let rows = read_codex(scope.home.as_deref(), &rollout.id, now, budget);
+        let exhausted = matches!(&rows, ReadRows::Truncated);
+        groups.push(Group {
+            profiles: scope.profiles.clone(),
+            tool: scope.tool,
+            home: scope.home.clone(),
+            rollout: Some(rollout.id.clone()),
+            owner: Some(rollout.owner.clone()),
+            rows: rows_or_placeholder(rows),
+            hint: None,
+        });
+        if exhausted {
+            break;
+        }
+    }
+    let fleet_status = match fleet.status {
+        FleetStatus::Complete => None,
+        FleetStatus::Failed => Some(Status::ReadError),
+        FleetStatus::Truncated => Some(Status::Truncated),
+    };
+    if let Some(status) = fleet_status {
+        groups.push(Group {
+            profiles: scope.profiles.clone(),
+            tool: scope.tool,
+            home: scope.home.clone(),
+            rollout: None,
+            owner: None,
+            rows: vec![placeholder(status)],
+            hint: None,
+        });
     }
     if groups.is_empty() {
         groups.push(Group {
@@ -431,7 +604,7 @@ fn codex_groups(
             tool: scope.tool,
             home: scope.home.clone(),
             rollout: None,
-            seat: None,
+            owner: None,
             rows: vec![placeholder(Status::Unknown)],
             hint: None,
         });
@@ -493,8 +666,8 @@ fn scope_label(group: &Group, home: Option<&Path>) -> String {
     let mut label = format!("{} · {path}", group.tool.as_str());
     if group.tool.adapter().quota.source == QuotaSource::CodexRollouts {
         label.push_str(" · unidentified");
-        if let Some(seat) = group.seat.as_deref() {
-            let _ = write!(label, " ({seat})");
+        if let Some(owner) = group.owner.as_deref() {
+            let _ = write!(label, " ({owner})");
         }
     }
     label
@@ -822,60 +995,60 @@ fn find_codex_rollout(
     id: &str,
     budget: &mut Budget,
 ) -> io::Result<Bounded<Option<PathBuf>>> {
-    let Some(dir) = codex_rollout_dir(root, id) else {
+    let Some(dirs) = codex_rollout_dirs(root, id) else {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "recorded Codex id carries no usable start time",
         ));
     };
-    if !budget.claim_file() {
-        return Ok(Bounded::Truncated);
-    }
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "a door: quota lstat classifies only the Codex day encoded by the ae-recorded session id"
-    )]
-    let metadata = match std::fs::symlink_metadata(&dir) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return Ok(Bounded::Ready(None));
-        }
-        Err(error) => return Err(error),
-    };
-    if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "rollout root is not a directory",
-        ));
-    }
     let mut found = None;
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "a door: bounded enumeration of one recorded Codex start day, selecting only its exact session id"
-    )]
-    let entries = std::fs::read_dir(&dir)?;
-    for entry in entries {
+    let suffix = format!("-{id}.jsonl");
+    for dir in dirs {
         if !budget.claim_file() {
             return Ok(Bounded::Truncated);
         }
-        let entry = entry?;
-        let kind = entry.file_type()?;
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if name.ends_with(&format!("-{id}.jsonl")) {
-            if !kind.is_file() || kind.is_symlink() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "recorded rollout is not a regular file",
-                ));
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "a door: quota lstat classifies only the three UTC neighbours of the Codex id day"
+        )]
+        let metadata = match std::fs::symlink_metadata(&dir) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "rollout root is not a directory",
+            ));
+        }
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "a door: bounded enumeration of three possible local-clock days for one exact Codex id"
+        )]
+        let entries = std::fs::read_dir(&dir)?;
+        for entry in entries {
+            if !budget.claim_file() {
+                return Ok(Bounded::Truncated);
             }
-            if found.is_some() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "recorded rollout id is not unique",
-                ));
+            let entry = entry?;
+            let kind = entry.file_type()?;
+            let name = entry.file_name();
+            if name.to_string_lossy().ends_with(&suffix) {
+                if !kind.is_file() || kind.is_symlink() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "recorded rollout is not a regular file",
+                    ));
+                }
+                if found.is_some() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "recorded rollout id is not unique",
+                    ));
+                }
+                found = Some(entry.path());
             }
-            found = Some(entry.path());
         }
     }
     if budget.expired() {
@@ -884,12 +1057,19 @@ fn find_codex_rollout(
     Ok(Bounded::Ready(found))
 }
 
-fn codex_rollout_dir(root: &Path, id: &str) -> Option<PathBuf> {
+fn codex_rollout_dirs(root: &Path, id: &str) -> Option<Vec<PathBuf>> {
     if crate::archive::canonical_uuid(id) != id || id.as_bytes().get(14) != Some(&b'7') {
         return None;
     }
     let millis = u64::from_str_radix(&format!("{}{}", id.get(..8)?, id.get(9..13)?), 16).ok()?;
     let seconds = i64::try_from(millis / 1_000).ok()?;
+    [0, -86_400, 86_400]
+        .into_iter()
+        .map(|offset| dated_dir(root, seconds.saturating_add(offset)))
+        .collect()
+}
+
+fn dated_dir(root: &Path, seconds: i64) -> Option<PathBuf> {
     let timestamp = Timestamp::from_epoch(seconds).to_string();
     let (date, _) = timestamp.split_once('T')?;
     let mut fields = date.split('-');
@@ -904,9 +1084,9 @@ fn codex_rollout_dir(root: &Path, id: &str) -> Option<PathBuf> {
 mod tests {
     use super::{
         Bounded, Budget, CLAUDE_MAX_BYTES, FRESH_SECS, FUTURE_SKEW_SECS, ReadRows, Scope, Status,
-        bounded_tail, bounded_whole_file, claude_cache_path, config_home, find_codex_rollout,
-        freshness, percent_label, profiles_label, read_bounded_tail, read_claude, render_table,
-        rows_or_placeholder, vendor_timestamp,
+        bounded_tail, bounded_whole_file, claude_cache_path, codex_rollout_dirs, config_home,
+        find_codex_rollout, freshness, percent_label, profiles_label, read_bounded_tail,
+        read_claude, render_table, rows_or_placeholder, vendor_timestamp,
     };
     use crate::tool::ToolKind;
 
@@ -947,7 +1127,43 @@ mod tests {
     }
 
     #[test]
-    fn uncertain_profile_prefixes_never_guess_a_config_home() {
+    fn codex_uuidv7_lookup_probes_its_utc_day_then_both_local_clock_neighbours() {
+        let root = std::path::Path::new("/rollouts");
+        let id = "01a08046-1974-7352-ade3-81a786200795";
+        assert_eq!(
+            codex_rollout_dirs(root, id),
+            Some(vec![
+                root.join("2026/09/08"),
+                root.join("2026/09/07"),
+                root.join("2026/09/09"),
+            ])
+        );
+        assert_eq!(codex_rollout_dirs(root, "not-a-session-id"), None);
+    }
+
+    #[test]
+    fn codex_uuidv7_lookup_finds_an_exact_rollout_on_a_neighbour_day() {
+        let root = std::path::PathBuf::from(format!(
+            "/tmp/ae-quota-neighbour-day-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let day = root.join("2026/09/07");
+        std::fs::create_dir_all(&day).expect("neighbour day");
+        let id = "01a08046-1974-7352-ade3-81a786200795";
+        let rollout = day.join(format!("rollout-local-clock-{id}.jsonl"));
+        std::fs::write(&rollout, b"{}\n").expect("neighbour rollout");
+        let found = find_codex_rollout(&root, id, &mut Budget::new())
+            .expect("bounded lookup on neighbours");
+        let Bounded::Ready(Some(found)) = found else {
+            panic!("neighbour rollout was not found");
+        };
+        assert_eq!(found, rollout);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn plain_tool_home_assignments_resolve_and_ambiguous_prefixes_do_not() {
         let home = std::path::Path::new("/users/c");
         assert_eq!(
             config_home(ToolKind::Claude, "claude", Some(home), home),
@@ -960,7 +1176,7 @@ mod tests {
                 Some(home),
                 home,
             ),
-            None
+            Some(home.join(".claude-work"))
         );
         assert_eq!(
             config_home(
@@ -969,7 +1185,7 @@ mod tests {
                 Some(home),
                 std::path::Path::new("/work"),
             ),
-            None
+            Some(std::path::PathBuf::from("/work/relative"))
         );
         assert_eq!(
             config_home(
@@ -990,7 +1206,25 @@ mod tests {
         );
         assert_eq!(
             config_home(ToolKind::Claude, "OTHER=1 claude", Some(home), home),
-            Some(home.join(".claude"))
+            None
+        );
+        assert_eq!(
+            config_home(
+                ToolKind::Claude,
+                "HOME=/other CLAUDE_CONFIG_DIR=$HOME/.claude-work claude",
+                Some(home),
+                home,
+            ),
+            None
+        );
+        assert_eq!(
+            config_home(
+                ToolKind::Claude,
+                "CLAUDE_CONFIG_DIR=$OTHER/.claude-work claude",
+                Some(home),
+                home,
+            ),
+            None
         );
     }
 

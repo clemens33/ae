@@ -562,8 +562,8 @@ ae doctor --refresh my-fix  # one session
 
 ## `ae quota`
 
-Shows each configured agent profile's locally cached subscription-quota windows. Inside a
-session, its `quota` helper also uses the recorded Codex conversation ids for that session:
+Shows each configured agent profile's locally cached subscription-quota windows. Both the public
+command and session helper use Codex conversation ids recorded across the local ae fleet:
 
 ```bash
 ae quota
@@ -573,9 +573,11 @@ ae quota
 Rows preserve canonical tool, config home, rollout, vendor bucket, and actual window even when
 their display labels wrap. Claude Code reads `$HOME/.claude.json` for its default home and
 `<CLAUDE_CONFIG_DIR>/.claude.json` for a custom home. Codex reads at most the final 1 MiB of the
-rollout named by each ae-recorded harness session id, looking only in the date encoded by that
-UUID. A profile that manipulates `CLAUDE_CONFIG_DIR` or `CODEX_HOME` through an ambiguous shell
-prefix is reported with an `unknown` home rather than guessed.
+rollout named by each fleet session's ae-recorded harness id, looking only in the UUIDv7 UTC day
+and its two neighbouring local-clock days. Its owner is labelled `<session>:<seat>`. A plain
+`CLAUDE_CONFIG_DIR` or `CODEX_HOME` assignment using only `$HOME` is resolved exactly. `env -i`,
+`env -u`, `HOME=`, another assignment, or another variable expansion makes the home `unknown`
+rather than guessed.
 
 `fresh` means the vendor observation is at most 15 minutes old. Older unexpired observations are
 `stale`; expired, missing, or clock-skewed observations are `unknown`. Unexpected file kinds,
