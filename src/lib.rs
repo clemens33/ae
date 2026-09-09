@@ -1736,6 +1736,7 @@ pub fn run_with(
                 &own_session,
                 time::Timestamp::now(),
                 send_defer(),
+                out,
                 err,
             )?
         }

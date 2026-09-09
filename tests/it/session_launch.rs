@@ -516,7 +516,8 @@ fn quota_cadence_is_validated_before_launch_and_persisted_for_the_daemon() {
         let (code, stdout, stderr) = rig.launch(&["--local", &session]);
         assert_eq!(code, Some(2), "stdout: {stdout}\nstderr: {stderr}");
         assert!(
-            stderr.contains("[workspace] quota_every_secs") && stderr.contains(value),
+            stderr.contains("[workspace] quota_every_secs")
+                && stderr.contains(&format!("got '{value}'.")),
             "{stderr}"
         );
         assert!(

@@ -257,10 +257,10 @@ struct QuotaKey {
 }
 
 #[derive(Debug, Clone)]
-struct QuotaSample {
+struct QuotaSample<'a> {
     key: QuotaKey,
-    group: crate::quota::Group,
-    row: crate::quota::Row,
+    group: &'a crate::quota::Group,
+    row: &'a crate::quota::Row,
     used: f64,
     observed_at: i64,
 }
@@ -276,6 +276,10 @@ struct QuotaTracked {
 struct QuotaRecipient {
     slot: String,
     agent: String,
+    harness_session: Option<String>,
+    config_home: crate::meta::RecordedConfigHome,
+    config_home_base: crate::meta::RecordedConfigHomeBase,
+    binary: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -284,14 +288,21 @@ struct PendingAdvisory {
     observed_at: i64,
     level: QuotaLevel,
     recipient: QuotaRecipient,
-    text: String,
+    advisory: crate::quota::Advisory,
     attempts: u8,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum QuotaAction {
-    Deliver(PendingAdvisory),
+    Deliver(Box<PendingAdvisory>),
     Dropped { recipient: String, summary: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QuotaDelivery {
+    Delivered,
+    Retryable,
+    Uncertain,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -318,8 +329,8 @@ fn classify_quota(used: f64, prior: Option<QuotaLevel>) -> QuotaLevel {
     }
 }
 
-fn quota_samples(observation: &crate::quota::Observation) -> Vec<QuotaSample> {
-    let mut samples: Vec<QuotaSample> = Vec::new();
+fn quota_samples_at(observation: &crate::quota::Observation, now: i64) -> Vec<QuotaSample<'_>> {
+    let mut samples: Vec<QuotaSample<'_>> = Vec::new();
     for group in &observation.groups {
         let Some(source) = group.source.clone() else {
             continue;
@@ -327,6 +338,12 @@ fn quota_samples(observation: &crate::quota::Observation) -> Vec<QuotaSample> {
         for row in &group.rows {
             if !matches!(
                 row.status,
+                crate::quota::Status::Fresh | crate::quota::Status::Stale
+            ) {
+                continue;
+            }
+            if !matches!(
+                crate::quota::freshness(row.observed_at, row.resets_at, now),
                 crate::quota::Status::Fresh | crate::quota::Status::Stale
             ) {
                 continue;
@@ -340,7 +357,7 @@ fn quota_samples(observation: &crate::quota::Observation) -> Vec<QuotaSample> {
             ) else {
                 continue;
             };
-            if observation.now.saturating_sub(observed_at) > 60 * 60 {
+            if now.saturating_sub(observed_at) > 60 * 60 {
                 continue;
             }
             let key = QuotaKey {
@@ -352,8 +369,8 @@ fn quota_samples(observation: &crate::quota::Observation) -> Vec<QuotaSample> {
             };
             let sample = QuotaSample {
                 key: key.clone(),
-                group: group.clone(),
-                row: row.clone(),
+                group,
+                row,
                 used,
                 observed_at,
             };
@@ -370,6 +387,10 @@ fn quota_samples(observation: &crate::quota::Observation) -> Vec<QuotaSample> {
     samples
 }
 
+fn quota_samples(observation: &crate::quota::Observation) -> Vec<QuotaSample<'_>> {
+    quota_samples_at(observation, observation.now)
+}
+
 fn quota_recipients(roster: &[RosterEntry], lead_pair: bool) -> Vec<QuotaRecipient> {
     roster
         .iter()
@@ -377,6 +398,10 @@ fn quota_recipients(roster: &[RosterEntry], lead_pair: bool) -> Vec<QuotaRecipie
         .map(|entry| QuotaRecipient {
             slot: entry.slot.clone(),
             agent: entry.name.clone(),
+            harness_session: entry.harness_session.clone(),
+            config_home: entry.config_home.clone(),
+            config_home_base: entry.config_home_base.clone(),
+            binary: entry.binary.clone(),
         })
         .collect()
 }
@@ -407,6 +432,8 @@ impl QuotaCarry {
         &mut self,
         predicate: impl Fn(&PendingAdvisory) -> bool,
         reason: &str,
+        meta_dir: &Path,
+        now: i64,
         actions: &mut Vec<QuotaAction>,
     ) {
         let mut retained = Vec::new();
@@ -414,7 +441,7 @@ impl QuotaCarry {
             if predicate(&pending) {
                 actions.push(QuotaAction::Dropped {
                     recipient: pending.recipient.agent,
-                    summary: format!("{reason}: {}", pending.text),
+                    summary: format!("{reason}: {}", pending.advisory.render(meta_dir, now)),
                 });
             } else {
                 retained.push(pending);
@@ -433,6 +460,15 @@ impl QuotaCarry {
         self.cancel_where(
             |pending| !recipients.contains(&pending.recipient),
             "recipient identity changed",
+            meta_dir,
+            observation.now,
+            &mut actions,
+        );
+        self.cancel_where(
+            |pending| !pending.advisory.current_at(observation.now),
+            "quota advisory expired",
+            meta_dir,
+            observation.now,
             &mut actions,
         );
 
@@ -449,6 +485,8 @@ impl QuotaCarry {
         self.cancel_where(
             |pending| silent_keys.contains(&pending.key),
             "quota observation went silent",
+            meta_dir,
+            observation.now,
             &mut actions,
         );
 
@@ -478,6 +516,8 @@ impl QuotaCarry {
             self.cancel_where(
                 |pending| pending.key == sample.key,
                 "superseded by newer quota transition",
+                meta_dir,
+                observation.now,
                 &mut actions,
             );
             let state = if after == QuotaLevel::Headroom {
@@ -485,20 +525,26 @@ impl QuotaCarry {
             } else {
                 after.label()
             };
-            let text = observation.advisory_line(&sample.group, &sample.row, state, meta_dir);
+            let advisory = observation.advisory(sample.group, sample.row, state);
             for recipient in recipients {
                 self.pending.push(PendingAdvisory {
                     key: sample.key.clone(),
                     observed_at: sample.observed_at,
                     level: after,
                     recipient: recipient.clone(),
-                    text: text.clone(),
+                    advisory: advisory.clone(),
                     attempts: 0,
                 });
             }
         }
 
-        actions.extend(self.pending.iter().cloned().map(QuotaAction::Deliver));
+        actions.extend(
+            self.pending
+                .iter()
+                .cloned()
+                .map(Box::new)
+                .map(QuotaAction::Deliver),
+        );
         self.last_observation = Some(observation.clone());
         actions
     }
@@ -506,7 +552,9 @@ impl QuotaCarry {
     fn record_delivery(
         &mut self,
         delivered: &PendingAdvisory,
-        success: bool,
+        result: QuotaDelivery,
+        meta_dir: &Path,
+        now: i64,
     ) -> Option<QuotaAction> {
         let index = self.pending.iter().position(|pending| {
             pending.key == delivered.key
@@ -514,9 +562,22 @@ impl QuotaCarry {
                 && pending.level == delivered.level
                 && pending.recipient == delivered.recipient
         })?;
-        if success {
-            self.pending.remove(index);
-            return None;
+        match result {
+            QuotaDelivery::Delivered => {
+                self.pending.remove(index);
+                return None;
+            }
+            QuotaDelivery::Uncertain => {
+                let pending = self.pending.remove(index);
+                return Some(QuotaAction::Dropped {
+                    recipient: pending.recipient.agent,
+                    summary: format!(
+                        "delivery result uncertain; not retrying: {}",
+                        pending.advisory.render(meta_dir, now)
+                    ),
+                });
+            }
+            QuotaDelivery::Retryable => {}
         }
         self.pending[index].attempts = self.pending[index].attempts.saturating_add(1);
         if self.pending[index].attempts < 2 {
@@ -525,7 +586,10 @@ impl QuotaCarry {
         let pending = self.pending.remove(index);
         Some(QuotaAction::Dropped {
             recipient: pending.recipient.agent,
-            summary: format!("delivery failed twice: {}", pending.text),
+            summary: format!(
+                "delivery failed twice: {}",
+                pending.advisory.render(meta_dir, now)
+            ),
         })
     }
 }
@@ -538,17 +602,16 @@ fn throttle_quota_line(
     now: i64,
 ) -> Option<String> {
     let identity = crate::quota::recorded_identity(entry)?;
-    let mut matches: Vec<QuotaSample> = quota_samples(observation)
+    let mut matches: Vec<QuotaSample<'_>> = quota_samples_at(observation, now)
         .into_iter()
         .filter(|sample| {
             sample.group.tool == identity.tool
                 && sample.key.source == identity.source
                 && sample.key.rollout == identity.rollout
-                && now.saturating_sub(sample.observed_at) <= 60 * 60
         })
         .collect();
     matches.sort_by(|left, right| {
-        let level = |sample: &QuotaSample| {
+        let level = |sample: &QuotaSample<'_>| {
             tracked
                 .iter()
                 .find(|held| held.key == sample.key)
@@ -566,7 +629,7 @@ fn throttle_quota_line(
         .iter()
         .find(|held| held.key == sample.key)
         .map_or_else(|| classify_quota(sample.used, None), |held| held.level);
-    Some(observation.advisory_line_at(&sample.group, &sample.row, level.label(), meta_dir, now))
+    Some(observation.advisory_line_at(sample.group, sample.row, level.label(), meta_dir, now))
 }
 
 /// The result of accounting for one pane in one cycle.
@@ -1002,6 +1065,20 @@ fn quota_seconds(meta_bytes: &[u8], fallback: u64) -> Result<u64, String> {
     };
     let value = String::from_utf8_lossy(raw);
     value.parse::<u64>().map_err(|_| value.into_owned())
+}
+
+fn quota_delivery(delivery: &transport::Delivery) -> QuotaDelivery {
+    if delivery.code == Some(0) {
+        QuotaDelivery::Delivered
+    } else if delivery
+        .stdout
+        .lines()
+        .any(|line| line == crate::send::RETRYABLE_MARKER)
+    {
+        QuotaDelivery::Retryable
+    } else {
+        QuotaDelivery::Uncertain
+    }
 }
 
 /// The session's own send helper, at the FIXED path `<meta-dir>/send`.
@@ -2067,6 +2144,7 @@ impl Cycle<'_> {
         &self,
         carry: &mut QuotaCarry,
         actions: Vec<QuotaAction>,
+        now: i64,
         err: &mut impl Write,
     ) -> crate::Result<()> {
         for action in actions {
@@ -2075,14 +2153,11 @@ impl Cycle<'_> {
                     self.emit("quota-advisory-dropped", &recipient, &summary, err)?;
                 }
                 QuotaAction::Deliver(pending) => {
-                    let success = self.deliver(
-                        &pending.recipient.agent,
-                        &pending.text,
-                        "quota-advisory",
-                        &pending.text,
-                    );
-                    if let Some(QuotaAction::Dropped { recipient, summary }) =
-                        carry.record_delivery(&pending, success)
+                    let text = pending.advisory.render(self.meta_dir, now);
+                    let delivery =
+                        self.deliver(&pending.recipient.agent, &text, "quota-advisory", &text);
+                    if let Some(QuotaAction::Dropped { recipient, summary }) = carry
+                        .record_delivery(&pending, quota_delivery(&delivery), self.meta_dir, now)
                     {
                         self.emit("quota-advisory-dropped", &recipient, &summary, err)?;
                     }
@@ -2105,7 +2180,7 @@ impl Cycle<'_> {
             Ok(observation) => {
                 let recipients = quota_recipients(&self.roster, self.lead_pair);
                 let actions = carry.reconcile(&observation, &recipients, self.meta_dir);
-                self.apply_quota_actions(carry, actions, err)
+                self.apply_quota_actions(carry, actions, now, err)
             }
             Err(why) => {
                 writeln!(
@@ -2237,12 +2312,15 @@ impl Cycle<'_> {
             live.push(agent.to_owned());
             let slot = pane.slot.clone().unwrap_or_default();
             let agent_bin = self.agent_bin(&slot);
-            let throttle_quota = self.throttle_quota(&carry.quota, &slot, now);
 
             // The main loop tolerates a failed capture: an unreadable pane
             // hashes as empty here.
             let capture = transport::capture_pane(self.server, &pane.pane_id).unwrap_or_default();
             let hash = quiet_hash(&capture);
+            let is_throttled = shows_throttle(&capture, agent_bin.as_deref().unwrap_or_default());
+            let throttle_quota = is_throttled
+                .then(|| self.throttle_quota(&carry.quota, &slot, now))
+                .flatten();
             let carried = entry_mut(&mut carry.panes, &pane.pane_id);
             let seen = Observation {
                 now_epoch: now,
@@ -2251,7 +2329,7 @@ impl Cycle<'_> {
                     &pane.current_command,
                     descendancy_of(table.as_deref(), pane.pane_pid, agent_bin.as_deref()),
                 ),
-                is_throttled: shows_throttle(&capture, agent_bin.as_deref().unwrap_or_default()),
+                is_throttled,
                 throttle_quota,
                 quiet: self.resolve_quiet(
                     &QuietQuery {
@@ -2782,7 +2860,7 @@ impl Cycle<'_> {
                 let display = stale_display(on.seen.last_actor_event_age_secs);
                 let text = nudge_text(self.goal.as_deref(), self.meta_dir);
                 let summary = format!("{display}, no recent ae activity");
-                let delivered = self.deliver(agent, &text, "nudge", &summary);
+                let delivered = self.deliver(agent, &text, "nudge", &summary).code == Some(0);
                 for effect in record_nudge(state, delivered, &self.knobs, &display) {
                     self.apply(&effect, on, state, err)?;
                 }
@@ -2821,7 +2899,10 @@ impl Cycle<'_> {
         };
         // Delivery is CHECKED.
         let body = overview.body();
-        let delivered = self.deliver(on.agent, &body, "nudge", "fleet overview changed");
+        let delivered = self
+            .deliver(on.agent, &body, "nudge", "fleet overview changed")
+            .code
+            == Some(0);
         // This is intentionally AFTER the checked delivery. A deferred submit
         // cannot be acknowledged by a `done` event that preceded the paste,
         // and the minimum spacing begins when the paste actually landed.
@@ -2855,7 +2936,7 @@ impl Cycle<'_> {
     /// route through it rather than each spawning for itself: a second delivery
     /// site is a second thing to audit, and a unit guard in this file holds the
     /// count at one.
-    fn deliver(&self, agent: &str, text: &str, action: &str, summary: &str) -> bool {
+    fn deliver(&self, agent: &str, text: &str, action: &str, summary: &str) -> transport::Delivery {
         transport::deliver(
             self.helper.path(),
             agent,
@@ -2867,8 +2948,6 @@ impl Cycle<'_> {
                 ("_AE_EVENT_SUMMARY", summary),
             ],
         )
-        .code
-            == Some(0)
     }
 
     /// Append one watchdog event for `agent`.
@@ -3088,14 +3167,14 @@ mod tests {
     use super::{
         ACTOR, Carry, Continuation, Cycle, Effect, Journal, Knobs, MissingState, MotionState,
         MotionVerdict, Observation, OverviewReading, PaneState, PendingAdvisory, QuietCycle,
-        QuietQuery, QuotaAction, QuotaCarry, QuotaLevel, QuotaRecipient, Rebind, SendHelper,
-        UNKNOWN_ALERT_CYCLES, Verdict, account, adopt_server, age_secs, bar_glyph, classify_quota,
-        continuation, entry_mut, is_meta_agent, last_actor_event_age, last_done_event_at,
-        last_working_declaration_at, motion_cadence, motion_failure, motion_observation_due,
-        motion_publish_failure, motion_ticker_enabled, nudge_text, quota_observation_due,
-        quota_recipients, quota_seconds, read_events, rebind, record_nudge, session_name,
-        slot_mark, stale_display, sweep_effects, sweep_seconds, system_time_from_epoch,
-        throttle_quota_line, window_agents_line,
+        QuietQuery, QuotaAction, QuotaCarry, QuotaDelivery, QuotaLevel, QuotaRecipient, Rebind,
+        SendHelper, UNKNOWN_ALERT_CYCLES, Verdict, account, adopt_server, age_secs, bar_glyph,
+        classify_quota, continuation, entry_mut, is_meta_agent, last_actor_event_age,
+        last_done_event_at, last_working_declaration_at, motion_cadence, motion_failure,
+        motion_observation_due, motion_publish_failure, motion_ticker_enabled, nudge_text,
+        quota_delivery, quota_observation_due, quota_recipients, quota_seconds, read_events,
+        rebind, record_nudge, session_name, slot_mark, stale_display, sweep_effects, sweep_seconds,
+        system_time_from_epoch, throttle_quota_line, window_agents_line,
     };
     use super::{Look, Mark, PaneMark, session_mark};
     use crate::events::Event;
@@ -3177,6 +3256,10 @@ mod tests {
         QuotaRecipient {
             slot: slot.to_owned(),
             agent: agent.to_owned(),
+            harness_session: None,
+            config_home: RecordedConfigHome::Missing,
+            config_home_base: RecordedConfigHomeBase::Missing,
+            binary: None,
         }
     }
 
@@ -3202,7 +3285,7 @@ mod tests {
         actions
             .iter()
             .filter_map(|action| match action {
-                QuotaAction::Deliver(pending) => Some(pending),
+                QuotaAction::Deliver(pending) => Some(pending.as_ref()),
                 QuotaAction::Dropped { .. } => None,
             })
             .collect()
@@ -3261,6 +3344,59 @@ mod tests {
             ))
             .len(),
             1
+        );
+    }
+
+    #[test]
+    fn throttle_quota_respects_cached_row_reset_boundary() {
+        let rollout = "018f1f70-7b2c-7000-8000-000000000001";
+        let entry = RosterEntry {
+            slot: "main".to_owned(),
+            name: "lead".to_owned(),
+            profile: None,
+            harness_session: Some(rollout.to_owned()),
+            config_home: RecordedConfigHome::Path(PathBuf::from("/tmp/cx")),
+            config_home_base: RecordedConfigHomeBase::Missing,
+            binary: Some("codex".to_owned()),
+        };
+        let identity = crate::quota::recorded_identity(&entry).expect("recorded identity");
+        let mut observation = quota_observation(
+            vec![quota_group(
+                &identity.source,
+                Some(rollout),
+                Some("demo:lead"),
+                vec![quota_row(
+                    "weekly_scoped",
+                    Some("pro"),
+                    "96",
+                    9_900,
+                    crate::quota::Status::Fresh,
+                )],
+            )],
+            10_000,
+        );
+        observation.groups[0].rows[0].resets_at = Some(10_050);
+        let mut carry = QuotaCarry::default();
+        let _ = carry.reconcile(&observation, &[], Path::new("/m"));
+        assert!(
+            throttle_quota_line(
+                &observation,
+                &carry.tracked,
+                &entry,
+                Path::new("/m"),
+                10_049
+            )
+            .is_some()
+        );
+        assert!(
+            throttle_quota_line(
+                &observation,
+                &carry.tracked,
+                &entry,
+                Path::new("/m"),
+                10_050
+            )
+            .is_none()
         );
     }
 
@@ -3350,9 +3486,15 @@ mod tests {
         assert_eq!(deliveries.len(), 2);
         let lead = deliveries[0].clone();
         let colead = deliveries[1].clone();
-        assert!(carry.record_delivery(&lead, true).is_none());
         assert!(
-            carry.record_delivery(&colead, false).is_none(),
+            carry
+                .record_delivery(&lead, QuotaDelivery::Delivered, Path::new("/m"), 10_000)
+                .is_none()
+        );
+        assert!(
+            carry
+                .record_delivery(&colead, QuotaDelivery::Retryable, Path::new("/m"), 10_000)
+                .is_none(),
             "first refusal stays pending"
         );
         let retry = carry.reconcile(&quota_for("81", 9_902), &recipients, Path::new("/m"));
@@ -3360,10 +3502,223 @@ mod tests {
         assert_eq!(retry.len(), 1);
         assert_eq!(retry[0].recipient.agent, "colead");
         assert!(matches!(
-            carry.record_delivery(retry[0], false),
+            carry.record_delivery(
+                retry[0],
+                QuotaDelivery::Retryable,
+                Path::new("/m"),
+                10_000
+            ),
             Some(QuotaAction::Dropped { recipient, .. }) if recipient == "colead"
         ));
         assert!(carry.pending.is_empty(), "there is no third attempt");
+    }
+
+    #[test]
+    fn quota_delivery_retries_only_the_helpers_proven_refusal_marker() {
+        assert_eq!(
+            quota_delivery(&crate::transport::Delivery {
+                code: Some(0),
+                stdout: String::new(),
+            }),
+            QuotaDelivery::Delivered,
+            "confirmed and UNCONFIRMED sends both exit zero"
+        );
+        assert_eq!(
+            quota_delivery(&crate::transport::Delivery {
+                code: Some(1),
+                stdout: format!("{}\n", crate::send::RETRYABLE_MARKER),
+            }),
+            QuotaDelivery::Retryable
+        );
+        assert_eq!(
+            quota_delivery(&crate::transport::Delivery {
+                code: Some(1),
+                stdout: String::new(),
+            }),
+            QuotaDelivery::Uncertain,
+            "post-submit logging failure must not duplicate a paste"
+        );
+
+        let recipients = [quota_recipient("main", "lead")];
+        let mut carry = QuotaCarry::default();
+        let _ = carry.reconcile(&quota_for("79", 9_900), &recipients, Path::new("/m"));
+        let first = carry.reconcile(&quota_for("80", 9_901), &recipients, Path::new("/m"));
+        let pending = transition_deliveries(&first)[0];
+        assert!(matches!(
+            carry.record_delivery(
+                pending,
+                QuotaDelivery::Uncertain,
+                Path::new("/m"),
+                10_000
+            ),
+            Some(QuotaAction::Dropped { recipient, summary })
+                if recipient == "lead" && summary.contains("not retrying")
+        ));
+        assert!(carry.pending.is_empty());
+    }
+
+    #[test]
+    fn expired_quota_pending_drops_old_booking_while_fresh_same_level_advances_state() {
+        let recipients = [quota_recipient("main", "lead")];
+        let mut carry = QuotaCarry::default();
+        let _ = carry.reconcile(&quota_for("79", 9_900), &recipients, Path::new("/m"));
+        let first = carry.reconcile(&quota_for("80", 9_901), &recipients, Path::new("/m"));
+        let pending = transition_deliveries(&first)[0].clone();
+        let old_text = pending.advisory.render(Path::new("/m"), 10_000);
+        assert!(
+            carry
+                .record_delivery(&pending, QuotaDelivery::Retryable, Path::new("/m"), 10_000)
+                .is_none()
+        );
+
+        let mut control = QuotaCarry::default();
+        let _ = control.reconcile(&quota_for("79", 9_900), &recipients, Path::new("/m"));
+        let control_first =
+            control.reconcile(&quota_for("80", 9_901), &recipients, Path::new("/m"));
+        let control_pending = transition_deliveries(&control_first)[0].clone();
+        assert!(
+            control
+                .record_delivery(
+                    &control_pending,
+                    QuotaDelivery::Retryable,
+                    Path::new("/m"),
+                    10_000
+                )
+                .is_none()
+        );
+        let control_retry =
+            control.reconcile(&quota_for("80", 9_902), &recipients, Path::new("/m"));
+        assert_eq!(transition_deliveries(&control_retry).len(), 1);
+        assert!(
+            transition_deliveries(&control_retry)[0]
+                .advisory
+                .render(Path::new("/m"), 10_001)
+                .contains("resets in 59m"),
+            "retry text is rendered against its delivery clock"
+        );
+
+        let mut expired = quota_for("80", 13_601);
+        expired.now = 13_602;
+        expired.groups[0].rows[0].resets_at = Some(14_000);
+        expired.groups[0].rows[0].status = crate::quota::freshness(
+            expired.groups[0].rows[0].observed_at,
+            expired.groups[0].rows[0].resets_at,
+            expired.now,
+        );
+        assert_eq!(
+            expired.groups[0].rows[0].status,
+            crate::quota::Status::Fresh
+        );
+        let expired_actions = carry.reconcile(&expired, &recipients, Path::new("/m"));
+        assert!(
+            expired_actions
+                .iter()
+                .all(|action| !matches!(action, QuotaAction::Deliver(_)))
+        );
+        assert!(matches!(
+            expired_actions.as_slice(),
+            [QuotaAction::Dropped { recipient, summary }]
+                if recipient == "lead"
+                    && summary.starts_with("quota advisory expired: quota:")
+                    && !summary.contains(&old_text)
+        ));
+    }
+
+    #[test]
+    fn changed_roster_identity_cancels_old_quota_pending() {
+        let base = RosterEntry {
+            slot: "main".to_owned(),
+            name: "lead".to_owned(),
+            profile: None,
+            harness_session: Some("018f1f70-7b2c-7000-8000-000000000001".to_owned()),
+            config_home: RecordedConfigHome::Path(PathBuf::from("/tmp/cx")),
+            config_home_base: RecordedConfigHomeBase::Missing,
+            binary: Some("codex".to_owned()),
+        };
+        let mut changed = base.clone();
+        changed.harness_session = Some("018f1f70-7b2c-7000-8000-000000000002".to_owned());
+        changed.config_home = RecordedConfigHome::Path(PathBuf::from("/tmp/cx-new"));
+        let old_recipients = quota_recipients(std::slice::from_ref(&base), false);
+        let new_recipients = quota_recipients(std::slice::from_ref(&changed), false);
+        let mut profile_only = base.clone();
+        profile_only.profile = Some("changed-profile".to_owned());
+        assert_eq!(
+            old_recipients,
+            quota_recipients(std::slice::from_ref(&profile_only), false),
+            "profile labels do not replace a recorded conversation"
+        );
+
+        let mut control = QuotaCarry::default();
+        let _ = control.reconcile(&quota_for("79", 9_900), &old_recipients, Path::new("/m"));
+        let control_first =
+            control.reconcile(&quota_for("80", 9_901), &old_recipients, Path::new("/m"));
+        let control_pending = transition_deliveries(&control_first)[0].clone();
+        assert!(
+            control
+                .record_delivery(
+                    &control_pending,
+                    QuotaDelivery::Retryable,
+                    Path::new("/m"),
+                    10_000
+                )
+                .is_none()
+        );
+        let control_retry =
+            control.reconcile(&quota_for("80", 9_902), &old_recipients, Path::new("/m"));
+        assert_eq!(transition_deliveries(&control_retry).len(), 1);
+
+        let mut carry = QuotaCarry::default();
+        let _ = carry.reconcile(&quota_for("79", 9_900), &old_recipients, Path::new("/m"));
+        let first = carry.reconcile(&quota_for("80", 9_901), &old_recipients, Path::new("/m"));
+        let pending = transition_deliveries(&first)[0].clone();
+        assert!(
+            carry
+                .record_delivery(&pending, QuotaDelivery::Retryable, Path::new("/m"), 10_000)
+                .is_none()
+        );
+        let changed_actions =
+            carry.reconcile(&quota_for("80", 9_902), &new_recipients, Path::new("/m"));
+        assert!(
+            changed_actions
+                .iter()
+                .all(|action| !matches!(action, QuotaAction::Deliver(_)))
+        );
+        assert!(matches!(
+            changed_actions.as_slice(),
+            [QuotaAction::Dropped { recipient, .. }] if recipient == "lead"
+        ));
+    }
+
+    #[test]
+    fn quota_samples_borrow_their_group_instead_of_cloning_its_rows() {
+        let rows: Vec<_> = (0..64)
+            .map(|index| {
+                quota_row(
+                    "weekly_scoped",
+                    Some(&format!("qualifier-{index:02}")),
+                    "10",
+                    9_900,
+                    crate::quota::Status::Fresh,
+                )
+            })
+            .collect();
+        let observation = quota_observation(
+            vec![quota_group(
+                Path::new("/tmp/cx/sessions"),
+                Some("018f1f70-7b2c-7000-8000-000000000001"),
+                None,
+                rows,
+            )],
+            10_000,
+        );
+        let samples = super::quota_samples(&observation);
+        assert_eq!(samples.len(), 64);
+        let original = &raw const observation.groups[0];
+        assert!(
+            samples
+                .iter()
+                .all(|sample| { std::ptr::eq(std::ptr::from_ref(sample.group), original) })
+        );
     }
 
     #[test]
@@ -3374,7 +3729,12 @@ mod tests {
         let low = carry.reconcile(&quota_for("80", 9_901), &recipients, Path::new("/m"));
         assert!(
             carry
-                .record_delivery(transition_deliveries(&low)[0], false)
+                .record_delivery(
+                    transition_deliveries(&low)[0],
+                    QuotaDelivery::Retryable,
+                    Path::new("/m"),
+                    10_000
+                )
                 .is_none()
         );
         let reset = carry.reconcile(&quota_for("74", 9_902), &recipients, Path::new("/m"));
@@ -3387,8 +3747,22 @@ mod tests {
         );
         let reset_delivery = transition_deliveries(&reset);
         assert_eq!(reset_delivery.len(), 1);
-        assert!(reset_delivery[0].text.contains("back to headroom"));
-        assert!(carry.record_delivery(reset_delivery[0], false).is_none());
+        assert!(
+            reset_delivery[0]
+                .advisory
+                .render(Path::new("/m"), 10_000)
+                .contains("back to headroom")
+        );
+        assert!(
+            carry
+                .record_delivery(
+                    reset_delivery[0],
+                    QuotaDelivery::Retryable,
+                    Path::new("/m"),
+                    10_000
+                )
+                .is_none()
+        );
         let mut expired = quota_for("74", 3_000);
         expired.now = 10_000;
         let cancelled = carry.reconcile(&expired, &recipients, Path::new("/m"));
@@ -3492,15 +3866,37 @@ mod tests {
         );
         let sample = &super::quota_samples(&observation)[0];
         assert_eq!(
-            observation.advisory_line(&sample.group, &sample.row, "low", Path::new("/m/demo")),
+            observation.advisory_line(sample.group, sample.row, "low", Path::new("/m/demo")),
             "quota: codex · cx · demo:lead weekly_scoped Fable 5h 80% (low, observed 2m ago), resets in 1h00m — prefer another client for new spawns; table: /m/demo/quota"
         );
+
+        let reset = quota_for("74", 9_902);
+        assert_eq!(
+            reset.advisory_line(
+                &reset.groups[0],
+                &reset.groups[0].rows[0],
+                "back to headroom",
+                Path::new("/m/demo")
+            ),
+            "quota: codex · cx · demo:lead codex pro 5h 74% (headroom, observed 1m ago), resets in 1h00m — back to headroom; table: /m/demo/quota"
+        );
+
+        let mut precise = observation.clone();
+        precise.groups[0].rows[0].used_percent = Some(format!("80.{}", "1".repeat(300)));
+        let line = precise.advisory_line(
+            &precise.groups[0],
+            &precise.groups[0].rows[0],
+            "low",
+            Path::new("/m"),
+        );
+        assert!(line.contains(" 80.1% (low,"), "{line}");
+        assert!(line.len() < 240, "numeric display stayed bounded: {line}");
 
         let mut hostile = observation.clone();
         hostile.groups[0].rows[0].bucket = format!("bad\u{1b}[2J\r\n{}", "x".repeat(300));
         hostile.groups[0].rows[0].qualifier = Some("q\u{7f}\n".repeat(100));
         let sample = &super::quota_samples(&hostile)[0];
-        let line = hostile.advisory_line(&sample.group, &sample.row, "low", Path::new("/m"));
+        let line = hostile.advisory_line(sample.group, sample.row, "low", Path::new("/m"));
         assert!(!line.contains('\u{1b}'));
         assert!(!line.contains('\r'));
         assert!(!line.contains('\n'));
@@ -3593,6 +3989,109 @@ mod tests {
                 10_000,
             )
             .is_none()
+        );
+    }
+
+    #[test]
+    fn throttle_quota_never_falls_back_from_the_recorded_identity() {
+        let rollout = "018f1f70-7b2c-7000-8000-000000000001";
+        let entry = RosterEntry {
+            slot: "main".to_owned(),
+            name: "lead".to_owned(),
+            profile: Some("changed-profile".to_owned()),
+            harness_session: Some(rollout.to_owned()),
+            config_home: RecordedConfigHome::Path(PathBuf::from("/tmp/cx-recorded")),
+            config_home_base: RecordedConfigHomeBase::Missing,
+            binary: Some("codex".to_owned()),
+        };
+        let recorded = crate::quota::recorded_identity(&entry).expect("recorded identity");
+        let current_source = Path::new("/tmp/cx-current/sessions");
+        let current = quota_group(
+            current_source,
+            Some(rollout),
+            None,
+            vec![quota_row(
+                "codex",
+                None,
+                "99",
+                9_900,
+                crate::quota::Status::Fresh,
+            )],
+        );
+        let recorded_group = quota_group(
+            &recorded.source,
+            Some(rollout),
+            None,
+            vec![quota_row(
+                "codex",
+                None,
+                "85",
+                9_900,
+                crate::quota::Status::Fresh,
+            )],
+        );
+        let observation = quota_observation(vec![current.clone(), recorded_group], 10_000);
+        let line = throttle_quota_line(&observation, &[], &entry, Path::new("/m"), 10_000)
+            .expect("recorded source row");
+        assert!(line.contains(" 85% (low,"), "{line}");
+
+        assert!(
+            throttle_quota_line(
+                &quota_observation(vec![current], 10_000),
+                &[],
+                &entry,
+                Path::new("/m"),
+                10_000
+            )
+            .is_none(),
+            "current profile source never replaces an absent recorded row"
+        );
+        for status in [
+            crate::quota::Status::Unknown,
+            crate::quota::Status::ReadError,
+            crate::quota::Status::Truncated,
+        ] {
+            let silent = quota_observation(
+                vec![quota_group(
+                    &recorded.source,
+                    Some(rollout),
+                    None,
+                    vec![quota_row("codex", None, "99", 9_900, status)],
+                )],
+                10_000,
+            );
+            assert!(
+                throttle_quota_line(&silent, &[], &entry, Path::new("/m"), 10_000).is_none(),
+                "{status:?} row must stay silent"
+            );
+        }
+
+        let mut default_home = entry.clone();
+        default_home.config_home = RecordedConfigHome::Missing;
+        assert!(
+            throttle_quota_line(
+                &quota_observation(
+                    vec![quota_group(
+                        Path::new("/home/test/.codex/sessions"),
+                        Some(rollout),
+                        None,
+                        vec![quota_row(
+                            "codex",
+                            None,
+                            "99",
+                            9_900,
+                            crate::quota::Status::Fresh,
+                        )],
+                    )],
+                    10_000,
+                ),
+                &[],
+                &default_home,
+                Path::new("/m"),
+                10_000
+            )
+            .is_none(),
+            "default home is never an identity fallback"
         );
     }
 

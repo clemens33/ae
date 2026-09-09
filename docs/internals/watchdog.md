@@ -57,7 +57,9 @@ The daemon rounds that cadence up to whole verdict cycles. Each due pass perform
 `ae quota` observation, keeps state by canonical source, rollout, bucket, qualifier, and window,
 then advises only the session's main and optional colead on threshold transitions. A refused paste
 is retried once at the next quota observation; newer state, silence, expiry, or changed recipient
-identity cancels the old booking. No quota state survives a watchdog restart.
+identity cancels the old booking. A helper's `UNCONFIRMED` submit counts as delivered because the
+paste may have landed; only its explicit pre-submit-refusal marker permits a retry. No quota state
+survives a watchdog restart.
 
 For an orchestrator main, each verdict cycle calls `current_world` once and
 builds the same detail cards as `ae brief --all`. The pure overview renderer

@@ -266,6 +266,18 @@ fn write_claude_quota(path: &Path, used: u8, observed_at: i64) {
     assert!(fs::write(path, cache).is_ok(), "a Claude quota cache");
 }
 
+fn next_observed_at(after: i64) -> i64 {
+    let deadline = Instant::now() + BUDGET;
+    loop {
+        let now = ae::time::Timestamp::now().epoch();
+        if now > after {
+            return now;
+        }
+        assert!(Instant::now() < deadline, "wall clock did not advance");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 fn wait_for_advisories(delivered: &Path, expected: usize) {
     let deadline = Instant::now() + BUDGET;
     while Instant::now() < deadline
@@ -350,10 +362,11 @@ fn a_changing_cache_emits_each_expected_quota_advisory_once() {
         "the first quota sample is silent"
     );
 
-    write_claude_quota(&cache, 80, now + 2);
+    let low_at = next_observed_at(now);
+    write_claude_quota(&cache, 80, low_at);
     let delivered = meta_dir.join("delivered");
     wait_for_advisories(&delivered, 1);
-    write_claude_quota(&cache, 95, now + 3);
+    write_claude_quota(&cache, 95, next_observed_at(low_at));
     wait_for_advisories(&delivered, 2);
 
     stop_watchdog(&mut child, &socket, &scratch, "quota");

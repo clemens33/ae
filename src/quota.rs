@@ -228,10 +228,66 @@ pub(crate) struct RecordedIdentity {
     pub(crate) rollout: Option<String>,
 }
 
+/// Sanitized, bounded quota facts retained across a deferred advisory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Advisory {
+    tool: ToolKind,
+    scope: String,
+    owner: Option<String>,
+    bucket: String,
+    window: String,
+    used: String,
+    observed_at: Option<i64>,
+    resets_at: Option<i64>,
+    state: String,
+    recovered: bool,
+}
+
+impl Advisory {
+    pub(crate) fn current_at(&self, now: i64) -> bool {
+        matches!(
+            freshness(self.observed_at, self.resets_at, now),
+            Status::Fresh | Status::Stale
+        ) && self
+            .observed_at
+            .is_some_and(|at| now.saturating_sub(at) <= 60 * 60)
+    }
+
+    pub(crate) fn render(&self, meta_dir: &Path, now: i64) -> String {
+        let observed = self.observed_at.map_or_else(
+            || "unknown".to_owned(),
+            |at| age_label(now.saturating_sub(at)),
+        );
+        let reset = self.resets_at.map_or_else(
+            || "unknown".to_owned(),
+            |at| span_label(at.saturating_sub(now)),
+        );
+        let advice = if self.recovered {
+            " — back to headroom"
+        } else {
+            " — prefer another client for new spawns"
+        };
+        format!(
+            "quota: {} · {}{} {} {} {} ({}, observed {observed}), resets in {reset}{advice}; table: {}/quota",
+            self.tool.as_str(),
+            self.scope,
+            self.owner
+                .as_deref()
+                .map_or_else(String::new, |owner| format!(" · {owner}")),
+            self.bucket,
+            self.window,
+            self.used,
+            self.state,
+            meta_dir.display()
+        )
+    }
+}
+
 impl Observation {
     /// Render one advisory line from the same sanitized, width-bounded cells
     /// as the operator table. The helper path is ae-owned rather than vendor
     /// input and remains complete so the recipient can invoke it verbatim.
+    #[cfg(test)]
     pub(crate) fn advisory_line(
         &self,
         group: &Group,
@@ -250,6 +306,10 @@ impl Observation {
         meta_dir: &Path,
         now: i64,
     ) -> String {
+        self.advisory(group, row, state).render(meta_dir, now)
+    }
+
+    pub(crate) fn advisory(&self, group: &Group, row: &Row, state: &str) -> Advisory {
         let scope = bounded_cell(&scope_identity(group, self.home.as_deref()), 1);
         let owner = group.owner.as_deref().map(|owner| bounded_cell(owner, 0));
         let bucket = row.qualifier.as_deref().map_or_else(
@@ -260,24 +320,20 @@ impl Observation {
         let window = row
             .window_minutes
             .map_or_else(|| "-".to_owned(), window_label);
-        let used = row
-            .used_percent
-            .as_deref()
-            .map_or_else(|| "-".to_owned(), percent_label);
-        let observed = row.observed_at.map_or_else(
-            || "unknown".to_owned(),
-            |at| age_label(now.saturating_sub(at)),
-        );
-        let reset = row.resets_at.map_or_else(
-            || "unknown".to_owned(),
-            |at| span_label(at.saturating_sub(now)),
-        );
-        format!(
-            "quota: {} · {scope}{} {bucket} {window} {used} ({state}, observed {observed}), resets in {reset} — prefer another client for new spawns; table: {}/quota",
-            group.tool.as_str(),
-            owner.map_or_else(String::new, |owner| format!(" · {owner}")),
-            meta_dir.display()
-        )
+        let used = advisory_percent(row.used_percent.as_deref());
+        let recovered = state == "back to headroom";
+        Advisory {
+            tool: group.tool,
+            scope,
+            owner,
+            bucket,
+            window,
+            used,
+            observed_at: row.observed_at,
+            resets_at: row.resets_at,
+            state: if recovered { "headroom" } else { state }.to_owned(),
+            recovered,
+        }
     }
 }
 
@@ -1553,6 +1609,16 @@ fn percent_label(value: &str) -> String {
         value
     };
     format!("{}%", if trimmed.is_empty() { "0" } else { trimmed })
+}
+
+fn advisory_percent(value: Option<&str>) -> String {
+    value
+        .and_then(|value| value.parse::<f64>().ok())
+        .filter(|value| value.is_finite())
+        .map_or_else(
+            || "-".to_owned(),
+            |value| percent_label(&format!("{:.1}", value.clamp(0.0, 100.0))),
+        )
 }
 
 fn reset_label(reset: i64, now: i64) -> String {

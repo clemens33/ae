@@ -53,6 +53,10 @@ pub const USAGE: &str = "Usage: send [--cross-session] <agent-name|pane-id|@sess
 /// The default action.
 pub const ACTION: &str = "send";
 
+/// Machine-readable stdout written only for a quota advisory that was proven
+/// refused before submission. The watchdog retries only this exact marker.
+pub(crate) const RETRYABLE_MARKER: &str = "ae-send: retryable-before-submit";
+
 /// What the argv said.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Parsed {
@@ -253,6 +257,7 @@ pub fn run(
     own_session: &str,
     now: Timestamp,
     defer: std::time::Duration,
+    out: &mut impl Write,
     err: &mut impl Write,
 ) -> io::Result<u8> {
     let Ok(parsed) = parse(tail) else {
@@ -341,11 +346,30 @@ pub fn run(
         event.target_session = &resolved.session;
     }
     let delivery = deliver::deliver(&request, err)?;
+    write_retryable_marker(&action, &delivery, out)?;
     let cross = cross_session.then_some(tracked::CrossSession {
         caller: caller_session,
         target: &resolved.session,
     });
     record_send_delivery(dir, &event, delivery, env, cross, err)
+}
+
+fn retryable_delivery(delivery: &Result<deliver::Delivered, deliver::Failure>) -> bool {
+    matches!(
+        delivery,
+        Err(deliver::Failure::DeadPane | deliver::Failure::Lock | deliver::Failure::Abandoned)
+    )
+}
+
+fn write_retryable_marker(
+    action: &str,
+    delivery: &Result<deliver::Delivered, deliver::Failure>,
+    out: &mut impl Write,
+) -> io::Result<()> {
+    if action == "quota-advisory" && retryable_delivery(delivery) {
+        writeln!(out, "{RETRYABLE_MARKER}")?;
+    }
+    Ok(())
 }
 
 /// Record a send after its body was delivered or its submit was left
@@ -426,13 +450,43 @@ fn record_send_delivery(
 #[cfg(test)]
 mod tests {
     use super::{
-        Env, EventFields, Parsed, Usage, actor, delivered_summary, delivery_env, envelope_sender,
-        extract_req_id, fields, parse, record_send_delivery,
+        Env, EventFields, Parsed, RETRYABLE_MARKER, Usage, actor, delivered_summary, delivery_env,
+        envelope_sender, extract_req_id, fields, parse, record_send_delivery,
+        write_retryable_marker,
     };
     use crate::time::Timestamp;
 
     fn words(items: &[&str]) -> Vec<String> {
         items.iter().map(|item| (*item).to_owned()).collect()
+    }
+
+    #[test]
+    fn quota_retry_marker_names_only_proven_pre_submit_refusals() {
+        for failure in [
+            crate::deliver::Failure::DeadPane,
+            crate::deliver::Failure::Lock,
+            crate::deliver::Failure::Abandoned,
+        ] {
+            let delivery: Result<crate::deliver::Delivered, crate::deliver::Failure> = Err(failure);
+            let mut out = Vec::new();
+            write_retryable_marker("quota-advisory", &delivery, &mut out)
+                .expect("the marker writes");
+            assert_eq!(out, format!("{RETRYABLE_MARKER}\n").as_bytes());
+        }
+
+        let paste: Result<crate::deliver::Delivered, crate::deliver::Failure> =
+            Err(crate::deliver::Failure::Paste {
+                body_file: "/m/body".to_owned(),
+            });
+        let mut out = Vec::new();
+        write_retryable_marker("quota-advisory", &paste, &mut out)
+            .expect("the marker check writes");
+        assert!(out.is_empty(), "transport ambiguity is never retried");
+
+        let refused: Result<crate::deliver::Delivered, crate::deliver::Failure> =
+            Err(crate::deliver::Failure::Abandoned);
+        write_retryable_marker("send", &refused, &mut out).expect("the public send stays silent");
+        assert!(out.is_empty(), "ordinary send stdout remains unchanged");
     }
 
     #[test]
