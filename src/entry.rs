@@ -433,9 +433,6 @@ pub enum Route {
     ArchivePreview(Option<String>),
     /// `ae archive <anything else>` — [`ARCHIVE_USAGE`], exit 1.
     ArchiveUsage,
-    /// `ae quota` — selected config and the optional calling session are still
-    /// carried by the preamble, so the entry answers it directly.
-    Quota(Vec<String>),
     /// A word the core already answers: the effective argv, environmental facts
     /// appended, for the ordinary dispatch.
     Core(Vec<String>),
@@ -479,7 +476,7 @@ pub fn route(preamble: &Preamble, argv: &[String], pane: Option<&str>) -> Route 
         }
         Some("next" | "jump") => Route::Core(with_head("next", &tail())),
         Some("brief") => Route::Core(with_head("brief", &tail())),
-        Some("quota") => Route::Quota(tail()),
+        Some("quota") => Route::Core(with_head("quota", &tail())),
         Some("compact") => Route::Core(with_head(crate::cli::COMPACT, &tail())),
         Some("archive") => match argv.get(1).map(String::as_str) {
             Some("preview") => Route::ArchivePreview(argv.get(2).cloned()),
@@ -604,14 +601,14 @@ mod tests {
     }
 
     #[test]
-    fn quota_is_a_public_read_only_route() {
+    fn quota_is_carried_as_the_public_command_the_early_dispatch_answers() {
         assert_eq!(
             route(&preamble(), &argv(&["quota"]), None),
-            Route::Quota(Vec::new())
+            Route::Core(argv(&["quota"]))
         );
         assert_eq!(
             route(&preamble(), &argv(&["quota", "extra"]), None),
-            Route::Quota(argv(&["extra"]))
+            Route::Core(argv(&["quota", "extra"]))
         );
     }
 

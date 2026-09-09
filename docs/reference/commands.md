@@ -20,6 +20,7 @@ ae next [--attach]     Name the top running session needing attention (read-only
 ae brief [name] [--all] [--since <dur>]
                        Card a session: goal, the latest note per memo topic, each agent's
                        declared state, and who is waiting on you. Read-only
+ae quota               Show bounded local quota snapshots for configured profiles
 ae orchestrator        Start or reattach the orchestrator seat: a local session named
                        orchestrator, pinned first in the fleet strip
 ae orchestrator --popup
@@ -569,17 +570,23 @@ ae quota
 ~/.ae/sessions/my-feature/quota
 ```
 
-Rows are keyed by client config home and preserve every vendor bucket and actual window. Claude
-Code reads `~/.claude.json` (or the cache beside a custom `CLAUDE_CONFIG_DIR`); Codex reads only
-the bounded tail of rollouts named by ae-recorded harness session ids under `CODEX_HOME`.
+Rows preserve canonical tool, config home, rollout, vendor bucket, and actual window even when
+their display labels wrap. Claude Code reads `$HOME/.claude.json` for its default home and
+`<CLAUDE_CONFIG_DIR>/.claude.json` for a custom home. Codex reads at most the final 1 MiB of the
+rollout named by each ae-recorded harness session id, looking only in the date encoded by that
+UUID. A profile that manipulates `CLAUDE_CONFIG_DIR` or `CODEX_HOME` through an ambiguous shell
+prefix is reported with an `unknown` home rather than guessed.
+
 `fresh` means the vendor observation is at most 15 minutes old. Older unexpired observations are
 `stale`; expired, missing, or clock-skewed observations are `unknown`. Unexpected file kinds,
-oversized files, and malformed complete records are `read-error`.
+oversized files, and malformed complete records are `read-error`. An invocation stops with
+explicit `truncated` rows after 4,096 filesystem entries, 16 MiB of reads, or two seconds. All
+table lines are at most 160 columns.
 
 Grok Build, Antigravity, OpenCode, and Gemini CLI have no verified reusable local subscription
 quota source. They render `unsupported` with an operator hint rather than treating token or cost
-history as quota. This command makes no network request, reads no credentials, starts no vendor
-process, and writes no state.
+history as quota. This command makes no network request, reads no credentials, invokes neither
+tmux nor a vendor process, and writes no state.
 
 ## Session helpers
 

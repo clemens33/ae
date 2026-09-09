@@ -972,15 +972,38 @@ fn quota_is_a_real_public_read_only_command() {
         "[profiles]\nclaude = claude\ngrok = grok\n",
     )
     .expect("quota config");
+    let bin = root.join("bin");
+    std::fs::create_dir_all(&bin).expect("sentinel bin");
+    let marker = root.join("invoked");
+    for name in [
+        "tmux", "claude", "codex", "grok", "agy", "opencode", "gemini",
+    ] {
+        let path = bin.join(name);
+        std::fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\nprintf called > '{}'\nexit 99\n",
+                marker.display()
+            ),
+        )
+        .expect("sentinel program");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+                .expect("executable sentinel");
+        }
+    }
+    let before = byte_tree(&root);
     let out = ae()
         .env("HOME", &root)
         .env("AE_HOME", &root)
         .env("CONFIG_FILE", root.join("config"))
+        .env("PATH", &bin)
         .current_dir(&root)
         .arg("quota")
         .output()
         .expect("ae quota should run");
-    let _ = std::fs::remove_dir_all(&root);
     assert!(out.status.success(), "{:?}", out.status);
     assert!(
         out.stderr.is_empty(),
@@ -992,9 +1015,62 @@ fn quota_is_a_real_public_read_only_command() {
     assert!(stdout.contains("claude · ~/.claude"), "{stdout}");
     assert!(stdout.contains("unknown"), "{stdout}");
     assert!(
-        stdout.contains("unsupported (run /usage in grok)"),
+        stdout.contains("unsupported") && stdout.contains("/usage in grok"),
         "{stdout}"
     );
+    assert!(
+        stdout.lines().all(|line| line.chars().count() <= 160),
+        "{stdout}"
+    );
+    assert_eq!(
+        byte_tree(&root),
+        before,
+        "ae quota changed scratch HOME bytes"
+    );
+    assert!(!marker.exists(), "ae quota executed a sentinel program");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+pub(crate) fn byte_tree(root: &std::path::Path) -> Vec<(String, Option<Vec<u8>>)> {
+    fn visit(
+        root: &std::path::Path,
+        dir: &std::path::Path,
+        out: &mut Vec<(String, Option<Vec<u8>>)>,
+    ) {
+        let mut entries: Vec<_> = std::fs::read_dir(dir)
+            .unwrap_or_else(|error| panic!("snapshot directory: {error}"))
+            .map(|entry| entry.unwrap_or_else(|error| panic!("snapshot entry: {error}")))
+            .collect();
+        entries.sort_by_key(std::fs::DirEntry::file_name);
+        for entry in entries {
+            let path = entry.path();
+            let relative = path
+                .strip_prefix(root)
+                .unwrap_or_else(|error| panic!("snapshot path below root: {error}"))
+                .to_string_lossy()
+                .into_owned();
+            if entry
+                .file_type()
+                .unwrap_or_else(|error| panic!("snapshot kind: {error}"))
+                .is_dir()
+            {
+                out.push((relative, None));
+                visit(root, &path, out);
+            } else {
+                out.push((
+                    relative,
+                    Some(
+                        std::fs::read(path)
+                            .unwrap_or_else(|error| panic!("snapshot file: {error}")),
+                    ),
+                ));
+            }
+        }
+    }
+
+    let mut out = Vec::new();
+    visit(root, root, &mut out);
+    out
 }
 
 /// A scratch state root, short-lived and per-test.

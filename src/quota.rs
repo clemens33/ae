@@ -10,6 +10,7 @@ use std::fmt::Write as _;
 use std::fs::File;
 use std::io::{self, Read, Seek, Write};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use crate::json::Value;
 use crate::time::Timestamp;
@@ -17,7 +18,10 @@ use crate::tool::{QuotaSource, ToolKind};
 
 const CLAUDE_MAX_BYTES: u64 = 4 * 1024 * 1024;
 const CODEX_TAIL_BYTES: u64 = 1024 * 1024;
-const CODEX_MAX_ENTRIES: usize = 16_384;
+const QUOTA_MAX_FILES: usize = 4_096;
+const QUOTA_MAX_BYTES: u64 = 16 * 1024 * 1024;
+const QUOTA_MAX_ELAPSED: Duration = Duration::from_secs(2);
+const TABLE_MAX_WIDTHS: [usize; 8] = [40, 35, 22, 6, 5, 9, 9, 20];
 
 /// Maximum age of an observation that may be called fresh.
 pub const FRESH_SECS: i64 = 15 * 60;
@@ -38,6 +42,8 @@ pub enum Status {
     Unsupported,
     /// A present source could not be read or parsed.
     ReadError,
+    /// The invocation-wide file, byte, or wall-clock budget was exhausted.
+    Truncated,
 }
 
 impl Status {
@@ -50,6 +56,7 @@ impl Status {
             Self::Unknown => "unknown",
             Self::Unsupported => "unsupported",
             Self::ReadError => "read-error",
+            Self::Truncated => "truncated",
         }
     }
 }
@@ -177,7 +184,10 @@ struct Scope {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Group {
     profiles: Vec<String>,
-    scope: String,
+    tool: ToolKind,
+    home: Option<PathBuf>,
+    rollout: Option<String>,
+    seat: Option<String>,
     rows: Vec<Row>,
     hint: Option<&'static str>,
 }
@@ -186,6 +196,54 @@ enum ReadRows {
     Rows(Vec<Row>),
     Missing,
     Failed,
+    Truncated,
+}
+
+enum Bounded<T> {
+    Ready(T),
+    Truncated,
+}
+
+struct Budget {
+    files_left: usize,
+    bytes_left: u64,
+    started: Instant,
+    max_elapsed: Duration,
+}
+
+impl Budget {
+    fn new() -> Self {
+        Self {
+            files_left: QUOTA_MAX_FILES,
+            bytes_left: QUOTA_MAX_BYTES,
+            started: Instant::now(),
+            max_elapsed: QUOTA_MAX_ELAPSED,
+        }
+    }
+
+    fn expired(&self) -> bool {
+        self.started.elapsed() >= self.max_elapsed
+    }
+
+    fn claim_file(&mut self) -> bool {
+        if self.expired() || self.files_left == 0 {
+            return false;
+        }
+        self.files_left -= 1;
+        true
+    }
+
+    fn reserve_bytes(&mut self, bytes: u64) -> bool {
+        if self.expired() || bytes > self.bytes_left {
+            return false;
+        }
+        self.bytes_left -= bytes;
+        true
+    }
+
+    fn refund_bytes(&mut self, bytes: u64) {
+        self.bytes_left = self.bytes_left.saturating_add(bytes);
+    }
 }
 
 /// Read configured client scopes and print the local quota table.
@@ -206,27 +264,34 @@ pub fn run(inputs: &Inputs<'_>, out: &mut impl Write, err: &mut impl Write) -> c
     };
     let scopes = configured_scopes(&cfg, inputs.home, inputs.cwd);
     let mut groups = Vec::new();
+    let mut budget = Budget::new();
     for scope in &scopes {
         let quota = scope.tool.adapter().quota;
         match quota.source {
             QuotaSource::ClaudeCache => groups.push(Group {
                 profiles: scope.profiles.clone(),
-                scope: scope_label(scope, inputs.home, None),
-                rows: rows_or_placeholder(read_claude(scope, inputs.now)),
+                tool: scope.tool,
+                home: scope.home.clone(),
+                rollout: None,
+                seat: None,
+                rows: rows_or_placeholder(read_claude(scope, inputs.home, inputs.now, &mut budget)),
                 hint: None,
             }),
             QuotaSource::CodexRollouts => {
-                groups.extend(codex_groups(scope, inputs.meta, inputs.home, inputs.now));
+                groups.extend(codex_groups(scope, inputs.meta, inputs.now, &mut budget));
             }
             QuotaSource::Unsupported => groups.push(Group {
                 profiles: scope.profiles.clone(),
-                scope: scope_label(scope, inputs.home, None),
+                tool: scope.tool,
+                home: scope.home.clone(),
+                rollout: None,
+                seat: None,
                 rows: vec![placeholder(Status::Unsupported)],
                 hint: quota.unsupported_hint,
             }),
         }
     }
-    write!(out, "{}", render_at(&groups, inputs.now))?;
+    write!(out, "{}", render_at(&groups, inputs.home, inputs.now))?;
     Ok(0)
 }
 
@@ -257,14 +322,12 @@ fn configured_scopes(
 
 fn config_home(tool: ToolKind, command: &str, home: Option<&Path>, cwd: &Path) -> Option<PathBuf> {
     let quota = tool.adapter().quota;
-    let assigned = quota
-        .config_home_env
-        .and_then(|name| assigned_config_home(command, name, home));
-    let path = assigned.or_else(|| {
-        quota
-            .default_home
-            .and_then(|name| home.map(|base| base.join(name)))
-    })?;
+    if ambiguous_config_prefix(command, quota.config_home_env, home) {
+        return None;
+    }
+    let path = quota
+        .default_home
+        .and_then(|name| home.map(|base| base.join(name)))?;
     Some(if path.is_absolute() {
         path
     } else {
@@ -272,37 +335,41 @@ fn config_home(tool: ToolKind, command: &str, home: Option<&Path>, cwd: &Path) -
     })
 }
 
-fn assigned_config_home(command: &str, variable: &str, home: Option<&Path>) -> Option<PathBuf> {
-    let split = crate::launch_cmd::split_binary(command)?;
-    let words = crate::words::split_words(&split.prefix, &|name| {
+fn ambiguous_config_prefix(command: &str, variable: Option<&str>, home: Option<&Path>) -> bool {
+    let Some(split) = crate::launch_cmd::split_binary(command) else {
+        return true;
+    };
+    let Ok(words) = crate::words::split_words(&split.prefix, &|name| {
         (name == "HOME")
             .then(|| home.map(|path| path.to_string_lossy().into_owned()))
             .flatten()
+    }) else {
+        return true;
+    };
+    words.iter().any(|word| {
+        matches!(word.value.as_str(), "-i" | "-u")
+            || (word.assignment
+                && word
+                    .value
+                    .split_once('=')
+                    .is_some_and(|(name, _)| Some(name) == variable))
     })
-    .ok()?;
-    let mut value: Option<String> = None;
-    for word in words {
-        if word.assignment
-            && let Some((name, next)) = word.value.split_once('=')
-            && name == variable
-        {
-            // `_run` applies every collected unset before every collected set,
-            // so an explicit assignment wins regardless of its position around
-            // the one peeled `env` word. Scope keying must match that exec.
-            value = Some(next.to_owned());
-        }
-    }
-    value.map(PathBuf::from)
 }
 
-fn read_claude(scope: &Scope, now: i64) -> ReadRows {
+fn read_claude(
+    scope: &Scope,
+    operator_home: Option<&Path>,
+    now: i64,
+    budget: &mut Budget,
+) -> ReadRows {
     let Some(home) = scope.home.as_deref() else {
         return ReadRows::Missing;
     };
-    let path = home.with_extension("json");
-    let bytes = match bounded_whole_file(&path, CLAUDE_MAX_BYTES) {
-        Ok(Some(bytes)) => bytes,
-        Ok(None) => return ReadRows::Missing,
+    let path = claude_cache_path(home, operator_home);
+    let bytes = match bounded_whole_file(&path, CLAUDE_MAX_BYTES, budget) {
+        Ok(Bounded::Ready(Some(bytes))) => bytes,
+        Ok(Bounded::Ready(None)) => return ReadRows::Missing,
+        Ok(Bounded::Truncated) => return ReadRows::Truncated,
         Err(_) => return ReadRows::Failed,
     };
     match claude::parse(&bytes, now) {
@@ -312,11 +379,19 @@ fn read_claude(scope: &Scope, now: i64) -> ReadRows {
     }
 }
 
+fn claude_cache_path(config_home: &Path, operator_home: Option<&Path>) -> PathBuf {
+    if operator_home.is_some_and(|home| config_home == home.join(".claude")) {
+        config_home.with_extension("json")
+    } else {
+        config_home.join(".claude.json")
+    }
+}
+
 fn codex_groups(
     scope: &Scope,
     meta: Option<&crate::meta::Meta>,
-    display_home: Option<&Path>,
     now: i64,
+    budget: &mut Budget,
 ) -> Vec<Group> {
     let mut groups = Vec::new();
     if let Some(meta) = meta {
@@ -328,15 +403,23 @@ fn codex_groups(
             {
                 continue;
             }
-            let rows = seat
-                .harness_session
-                .as_deref()
-                .map_or(ReadRows::Missing, |id| {
-                    read_codex(scope.home.as_deref(), id, now)
-                });
+            let rollout = seat.harness_session.clone();
+            if rollout.as_ref().is_some_and(|id| {
+                groups
+                    .iter()
+                    .any(|group: &Group| group.rollout.as_ref() == Some(id))
+            }) {
+                continue;
+            }
+            let rows = rollout.as_deref().map_or(ReadRows::Missing, |id| {
+                read_codex(scope.home.as_deref(), id, now, budget)
+            });
             groups.push(Group {
                 profiles: scope.profiles.clone(),
-                scope: scope_label(scope, display_home, Some(&seat.name)),
+                tool: scope.tool,
+                home: scope.home.clone(),
+                rollout,
+                seat: Some(seat.name.clone()),
                 rows: rows_or_placeholder(rows),
                 hint: None,
             });
@@ -345,7 +428,10 @@ fn codex_groups(
     if groups.is_empty() {
         groups.push(Group {
             profiles: scope.profiles.clone(),
-            scope: scope_label(scope, display_home, None),
+            tool: scope.tool,
+            home: scope.home.clone(),
+            rollout: None,
+            seat: None,
             rows: vec![placeholder(Status::Unknown)],
             hint: None,
         });
@@ -353,20 +439,23 @@ fn codex_groups(
     groups
 }
 
-fn read_codex(home: Option<&Path>, id: &str, now: i64) -> ReadRows {
+fn read_codex(home: Option<&Path>, id: &str, now: i64, budget: &mut Budget) -> ReadRows {
     let Some(home) = home else {
         return ReadRows::Missing;
     };
     if crate::archive::canonical_uuid(id) != id {
         return ReadRows::Failed;
     }
-    let path = match find_codex_rollout(&home.join("sessions"), id) {
-        Ok(Some(path)) => path,
-        Ok(None) => return ReadRows::Missing,
+    let path = match find_codex_rollout(&home.join("sessions"), id, budget) {
+        Ok(Bounded::Ready(Some(path))) => path,
+        Ok(Bounded::Ready(None)) => return ReadRows::Missing,
+        Ok(Bounded::Truncated) => return ReadRows::Truncated,
         Err(_) => return ReadRows::Failed,
     };
-    let Ok((bytes, starts_at_boundary)) = bounded_tail(&path, CODEX_TAIL_BYTES) else {
-        return ReadRows::Failed;
+    let (bytes, starts_at_boundary) = match bounded_tail(&path, CODEX_TAIL_BYTES, budget) {
+        Ok(Bounded::Ready(tail)) => tail,
+        Ok(Bounded::Truncated) => return ReadRows::Truncated,
+        Err(_) => return ReadRows::Failed,
     };
     match codex::parse(&bytes, starts_at_boundary, now) {
         Ok(rows) if !rows.is_empty() => ReadRows::Rows(rows),
@@ -380,6 +469,7 @@ fn rows_or_placeholder(read: ReadRows) -> Vec<Row> {
         ReadRows::Rows(rows) => rows,
         ReadRows::Missing => vec![placeholder(Status::Unknown)],
         ReadRows::Failed => vec![placeholder(Status::ReadError)],
+        ReadRows::Truncated => vec![placeholder(Status::Truncated)],
     }
 }
 
@@ -395,15 +485,15 @@ fn placeholder(status: Status) -> Row {
     }
 }
 
-fn scope_label(scope: &Scope, home: Option<&Path>, seat: Option<&str>) -> String {
-    let path = scope
+fn scope_label(group: &Group, home: Option<&Path>) -> String {
+    let path = group
         .home
         .as_deref()
-        .map_or_else(|| "?".to_owned(), |path| short_path(path, home));
-    let mut label = format!("{} · {path}", scope.tool.as_str());
-    if scope.tool.adapter().quota.source == QuotaSource::CodexRollouts {
+        .map_or_else(|| "unknown".to_owned(), |path| short_path(path, home));
+    let mut label = format!("{} · {path}", group.tool.as_str());
+    if group.tool.adapter().quota.source == QuotaSource::CodexRollouts {
         label.push_str(" · unidentified");
-        if let Some(seat) = seat {
+        if let Some(seat) = group.seat.as_deref() {
             let _ = write!(label, " ({seat})");
         }
     }
@@ -422,7 +512,7 @@ fn short_path(path: &Path, home: Option<&Path>) -> String {
     path.display().to_string()
 }
 
-fn render_at(groups: &[Group], now: i64) -> String {
+fn render_at(groups: &[Group], home: Option<&Path>, now: i64) -> String {
     const HEADER: [&str; 8] = [
         "PROFILES", "SCOPE", "BUCKET", "WINDOW", "USED", "RESETS", "OBSERVED", "STATUS",
     ];
@@ -436,12 +526,12 @@ fn render_at(groups: &[Group], now: i64) -> String {
             );
             table.push([
                 if index == 0 {
-                    group.profiles.join(" ")
+                    profiles_label(&group.profiles)
                 } else {
                     String::new()
                 },
                 if index == 0 {
-                    group.scope.clone()
+                    scope_label(group, home)
                 } else {
                     String::new()
                 },
@@ -473,26 +563,79 @@ fn render_table(table: &[[String; 8]]) -> String {
     let mut widths = [0_usize; 8];
     for row in table {
         for (column, value) in row.iter().enumerate() {
-            widths[column] = widths[column].max(value.chars().count());
+            widths[column] = widths[column]
+                .max(value.chars().count())
+                .min(TABLE_MAX_WIDTHS[column]);
         }
     }
     let mut out = String::new();
     for row in table {
-        for (column, value) in row.iter().enumerate() {
-            if column > 0 {
-                out.push_str("  ");
+        let wrapped: Vec<Vec<String>> = row
+            .iter()
+            .enumerate()
+            .map(|(column, value)| wrap_cell(value, widths[column]))
+            .collect();
+        let height = wrapped.iter().map(Vec::len).max().unwrap_or(1);
+        for line in 0..height {
+            let line_start = out.len();
+            for (column, values) in wrapped.iter().enumerate() {
+                if column > 0 {
+                    out.push_str("  ");
+                }
+                let value = values.get(line).map_or("", String::as_str);
+                out.push_str(value);
+                if column + 1 < row.len() {
+                    out.extend(std::iter::repeat_n(
+                        ' ',
+                        widths[column] - value.chars().count(),
+                    ));
+                }
             }
-            out.push_str(value);
-            if column + 1 < row.len() {
-                out.extend(std::iter::repeat_n(
-                    ' ',
-                    widths[column] - value.chars().count(),
-                ));
-            }
+            let line_end = out.trim_end().len().max(line_start);
+            out.truncate(line_end);
+            out.push('\n');
         }
-        out.push('\n');
     }
     out
+}
+
+fn profiles_label(profiles: &[String]) -> String {
+    let joined = profiles.join(" ");
+    if joined.chars().count() <= TABLE_MAX_WIDTHS[0] {
+        return joined;
+    }
+    format!(
+        "{} profiles: {}",
+        profiles.len(),
+        profiles
+            .iter()
+            .take(3)
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join(" ")
+    )
+}
+
+fn wrap_cell(value: &str, width: usize) -> Vec<String> {
+    if value.is_empty() || width == 0 {
+        return vec![String::new()];
+    }
+    let mut rest: Vec<char> = value.chars().collect();
+    let mut lines = Vec::new();
+    while rest.len() > width {
+        let cut = rest[..=width]
+            .iter()
+            .rposition(|ch| ch.is_whitespace())
+            .filter(|cut| *cut > 0)
+            .unwrap_or(width);
+        lines.push(rest[..cut].iter().collect());
+        rest.drain(..cut);
+        while rest.first().is_some_and(|ch| ch.is_whitespace()) {
+            rest.remove(0);
+        }
+    }
+    lines.push(rest.iter().collect());
+    lines
 }
 
 fn bucket_label(row: &Row) -> String {
@@ -549,14 +692,23 @@ fn span_label(seconds: i64) -> String {
     }
 }
 
-fn bounded_whole_file(path: &Path, cap: u64) -> io::Result<Option<Vec<u8>>> {
+fn bounded_whole_file(
+    path: &Path,
+    cap: u64,
+    budget: &mut Budget,
+) -> io::Result<Bounded<Option<Vec<u8>>>> {
+    if !budget.claim_file() {
+        return Ok(Bounded::Truncated);
+    }
     #[allow(
         clippy::disallowed_methods,
         reason = "a door: quota lstat refuses symlinks and oversized hostile client caches before opening them"
     )]
     let metadata = match std::fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(Bounded::Ready(None));
+        }
         Err(error) => return Err(error),
     };
     if !metadata.file_type().is_file() || metadata.file_type().is_symlink() || metadata.len() > cap
@@ -571,18 +723,34 @@ fn bounded_whole_file(path: &Path, cap: u64) -> io::Result<Option<Vec<u8>>> {
         reason = "a door: opens only the lstat-checked Claude quota cache, bounded again while reading"
     )]
     let file = File::open(path)?;
-    let mut bytes = Vec::new();
-    file.take(cap + 1).read_to_end(&mut bytes)?;
-    if u64::try_from(bytes.len()).map_or(true, |len| len > cap) {
+    let opened = file.metadata()?;
+    if !opened.file_type().is_file() || !same_file(&metadata, &opened) || opened.len() > cap {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "quota cache grew beyond its byte bound",
+            "quota cache changed identity or size before the bounded read",
         ));
     }
-    Ok(Some(bytes))
+    if !budget.reserve_bytes(opened.len()) {
+        return Ok(Bounded::Truncated);
+    }
+    let mut bytes = Vec::new();
+    file.take(opened.len()).read_to_end(&mut bytes)?;
+    let actual = u64::try_from(bytes.len()).unwrap_or(opened.len());
+    budget.refund_bytes(opened.len().saturating_sub(actual));
+    if budget.expired() {
+        return Ok(Bounded::Truncated);
+    }
+    Ok(Bounded::Ready(Some(bytes)))
 }
 
-fn bounded_tail(path: &Path, cap: u64) -> io::Result<(Vec<u8>, bool)> {
+fn bounded_tail(
+    path: &Path,
+    cap: u64,
+    budget: &mut Budget,
+) -> io::Result<Bounded<(Vec<u8>, bool)>> {
+    if cap == 0 || !budget.claim_file() {
+        return Ok(Bounded::Truncated);
+    }
     #[allow(
         clippy::disallowed_methods,
         reason = "a door: quota lstat refuses a symlink or non-file before opening one ae-owned Codex rollout"
@@ -599,23 +767,79 @@ fn bounded_tail(path: &Path, cap: u64) -> io::Result<(Vec<u8>, bool)> {
         reason = "a door: opens only the exact rollout named by an ae-recorded harness session id"
     )]
     let mut file = File::open(path)?;
-    let starts_at_boundary = metadata.len() <= cap;
-    if !starts_at_boundary {
-        file.seek(io::SeekFrom::Start(metadata.len() - cap))?;
+    let opened = file.metadata()?;
+    if !opened.file_type().is_file() || !same_file(&metadata, &opened) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "rollout changed identity before the bounded read",
+        ));
     }
-    let mut bytes = Vec::new();
-    file.take(cap).read_to_end(&mut bytes)?;
-    Ok((bytes, starts_at_boundary))
+    read_bounded_tail(&mut file, opened.len(), cap, budget)
 }
 
-fn find_codex_rollout(root: &Path, id: &str) -> io::Result<Option<PathBuf>> {
+fn read_bounded_tail(
+    file: &mut (impl Read + Seek),
+    opened_len: u64,
+    cap: u64,
+    budget: &mut Budget,
+) -> io::Result<Bounded<(Vec<u8>, bool)>> {
+    let planned = opened_len.min(cap);
+    if !budget.reserve_bytes(planned) {
+        return Ok(Bounded::Truncated);
+    }
+    let starts_at_file = opened_len <= cap;
+    if !starts_at_file {
+        file.seek(io::SeekFrom::Start(opened_len - cap))?;
+    }
+    let mut raw = Vec::new();
+    Read::by_ref(file).take(planned).read_to_end(&mut raw)?;
+    let actual = u64::try_from(raw.len()).unwrap_or(planned);
+    budget.refund_bytes(planned.saturating_sub(actual));
+    if budget.expired() {
+        return Ok(Bounded::Truncated);
+    }
+    if starts_at_file {
+        return Ok(Bounded::Ready((raw, true)));
+    }
+    let starts_at_boundary = raw.first() == Some(&b'\n');
+    let bytes = raw.get(1..).unwrap_or_default().to_vec();
+    Ok(Bounded::Ready((bytes, starts_at_boundary)))
+}
+
+#[cfg(unix)]
+fn same_file(left: &std::fs::Metadata, right: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+    left.dev() == right.dev() && left.ino() == right.ino()
+}
+
+#[cfg(not(unix))]
+fn same_file(_: &std::fs::Metadata, _: &std::fs::Metadata) -> bool {
+    true
+}
+
+fn find_codex_rollout(
+    root: &Path,
+    id: &str,
+    budget: &mut Budget,
+) -> io::Result<Bounded<Option<PathBuf>>> {
+    let Some(dir) = codex_rollout_dir(root, id) else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "recorded Codex id carries no usable start time",
+        ));
+    };
+    if !budget.claim_file() {
+        return Ok(Bounded::Truncated);
+    }
     #[allow(
         clippy::disallowed_methods,
-        reason = "a door: quota lstat classifies the Codex dated-rollout root without following a link"
+        reason = "a door: quota lstat classifies only the Codex day encoded by the ae-recorded session id"
     )]
-    let metadata = match std::fs::symlink_metadata(root) {
+    let metadata = match std::fs::symlink_metadata(&dir) {
         Ok(metadata) => metadata,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(Bounded::Ready(None));
+        }
         Err(error) => return Err(error),
     };
     if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
@@ -624,64 +848,65 @@ fn find_codex_rollout(root: &Path, id: &str) -> io::Result<Option<PathBuf>> {
             "rollout root is not a directory",
         ));
     }
-    let mut visited = 0_usize;
     let mut found = None;
-    find_rollout_at(root, id, 0, &mut visited, &mut found)?;
-    Ok(found)
-}
-
-fn find_rollout_at(
-    dir: &Path,
-    id: &str,
-    depth: usize,
-    visited: &mut usize,
-    found: &mut Option<PathBuf>,
-) -> io::Result<()> {
     #[allow(
         clippy::disallowed_methods,
-        reason = "a door: bounded enumeration of Codex's year/month/day rollout tree, selecting only an ae-recorded id"
+        reason = "a door: bounded enumeration of one recorded Codex start day, selecting only its exact session id"
     )]
-    let entries = std::fs::read_dir(dir)?;
+    let entries = std::fs::read_dir(&dir)?;
     for entry in entries {
-        *visited += 1;
-        if *visited > CODEX_MAX_ENTRIES {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "rollout search exceeded its entry bound",
-            ));
+        if !budget.claim_file() {
+            return Ok(Bounded::Truncated);
         }
         let entry = entry?;
         let kind = entry.file_type()?;
-        if depth < 3 && kind.is_dir() && !kind.is_symlink() {
-            find_rollout_at(&entry.path(), id, depth + 1, visited, found)?;
-        } else if depth == 3 {
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            if name.ends_with(&format!("-{id}.jsonl")) {
-                if !kind.is_file() || kind.is_symlink() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "recorded rollout is not a regular file",
-                    ));
-                }
-                if found.is_some() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "recorded rollout id is not unique",
-                    ));
-                }
-                *found = Some(entry.path());
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.ends_with(&format!("-{id}.jsonl")) {
+            if !kind.is_file() || kind.is_symlink() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "recorded rollout is not a regular file",
+                ));
             }
+            if found.is_some() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "recorded rollout id is not unique",
+                ));
+            }
+            found = Some(entry.path());
         }
     }
-    Ok(())
+    if budget.expired() {
+        return Ok(Bounded::Truncated);
+    }
+    Ok(Bounded::Ready(found))
+}
+
+fn codex_rollout_dir(root: &Path, id: &str) -> Option<PathBuf> {
+    if crate::archive::canonical_uuid(id) != id || id.as_bytes().get(14) != Some(&b'7') {
+        return None;
+    }
+    let millis = u64::from_str_radix(&format!("{}{}", id.get(..8)?, id.get(9..13)?), 16).ok()?;
+    let seconds = i64::try_from(millis / 1_000).ok()?;
+    let timestamp = Timestamp::from_epoch(seconds).to_string();
+    let (date, _) = timestamp.split_once('T')?;
+    let mut fields = date.split('-');
+    let (year, month, day) = (fields.next()?, fields.next()?, fields.next()?);
+    if year.len() != 4 || fields.next().is_some() {
+        return None;
+    }
+    Some(root.join(year).join(month).join(day))
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        CLAUDE_MAX_BYTES, FRESH_SECS, FUTURE_SKEW_SECS, Status, bounded_whole_file, config_home,
-        find_codex_rollout, freshness, percent_label, vendor_timestamp,
+        Bounded, Budget, CLAUDE_MAX_BYTES, FRESH_SECS, FUTURE_SKEW_SECS, ReadRows, Scope, Status,
+        bounded_tail, bounded_whole_file, claude_cache_path, config_home, find_codex_rollout,
+        freshness, percent_label, profiles_label, read_bounded_tail, read_claude, render_table,
+        rows_or_placeholder, vendor_timestamp,
     };
     use crate::tool::ToolKind;
 
@@ -722,7 +947,7 @@ mod tests {
     }
 
     #[test]
-    fn profile_assignments_key_distinct_config_homes() {
+    fn uncertain_profile_prefixes_never_guess_a_config_home() {
         let home = std::path::Path::new("/users/c");
         assert_eq!(
             config_home(ToolKind::Claude, "claude", Some(home), home),
@@ -735,7 +960,7 @@ mod tests {
                 Some(home),
                 home,
             ),
-            Some(home.join(".claude-work"))
+            None
         );
         assert_eq!(
             config_home(
@@ -744,7 +969,7 @@ mod tests {
                 Some(home),
                 std::path::Path::new("/work"),
             ),
-            Some(std::path::PathBuf::from("/work/relative"))
+            None
         );
         assert_eq!(
             config_home(
@@ -753,8 +978,59 @@ mod tests {
                 Some(home),
                 home,
             ),
-            Some(std::path::PathBuf::from("/old"))
+            None
         );
+        assert_eq!(
+            config_home(ToolKind::Claude, "env -u OTHER claude", Some(home), home),
+            None
+        );
+        assert_eq!(
+            config_home(ToolKind::Claude, "env -i claude", Some(home), home),
+            None
+        );
+        assert_eq!(
+            config_home(ToolKind::Claude, "OTHER=1 claude", Some(home), home),
+            Some(home.join(".claude"))
+        );
+    }
+
+    #[test]
+    fn default_and_custom_claude_homes_read_only_their_own_cache() {
+        let root =
+            std::path::PathBuf::from(format!("/tmp/ae-quota-claude-homes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let default = root.join(".claude");
+        let custom = root.join(".claude-mic");
+        std::fs::create_dir_all(&custom).expect("custom client home");
+        let cache = |percent| {
+            format!(
+                "{{\"cachedUsageUtilization\":{{\"fetchedAtMs\":1000000,\"utilization\":{{\"limits\":[{{\"kind\":\"session\",\"percent\":{percent},\"resets_at\":\"1970-01-01T01:00:00Z\"}}]}}}}}}"
+            )
+        };
+        std::fs::write(root.join(".claude.json"), cache(11)).expect("default cache");
+        std::fs::write(custom.join(".claude.json"), cache(77)).expect("custom cache");
+        assert_eq!(
+            claude_cache_path(&default, Some(&root)),
+            root.join(".claude.json")
+        );
+        assert_eq!(
+            claude_cache_path(&custom, Some(&root)),
+            custom.join(".claude.json")
+        );
+        let read = |home: std::path::PathBuf| {
+            let scope = Scope {
+                tool: ToolKind::Claude,
+                home: Some(home),
+                profiles: vec!["p".to_owned()],
+            };
+            match read_claude(&scope, Some(&root), 1_001, &mut Budget::new()) {
+                ReadRows::Rows(rows) => rows[0].used_percent.clone(),
+                _ => None,
+            }
+        };
+        assert_eq!(read(default), Some("11".to_owned()));
+        assert_eq!(read(custom), Some("77".to_owned()));
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -762,6 +1038,28 @@ mod tests {
         assert_eq!(percent_label("100"), "100%");
         assert_eq!(percent_label("12.0"), "12%");
         assert_eq!(percent_label("3.50"), "3.5%");
+    }
+
+    #[test]
+    fn long_profile_lists_are_summarized_within_the_column_cap() {
+        let profiles: Vec<_> = (0..50).map(|index| format!("profile-{index}")).collect();
+        let label = profiles_label(&profiles);
+        assert_eq!(
+            label, "50 profiles: profile-0 profile-1 profile-2",
+            "the first three profile names stay intact"
+        );
+        let rendered = render_table(&[[
+            label,
+            "scope".to_owned(),
+            "bucket".to_owned(),
+            "5h".to_owned(),
+            "1%".to_owned(),
+            "in 1h".to_owned(),
+            "1m ago".to_owned(),
+            "fresh".to_owned(),
+        ]]);
+        assert!(rendered.contains("profile-2"), "{rendered}");
+        assert!(rendered.lines().all(|line| line.chars().count() <= 160));
     }
 
     #[cfg(unix)]
@@ -776,23 +1074,151 @@ mod tests {
         std::fs::write(&regular, b"{}").expect("regular source");
         let link = dir.join("link");
         symlink(&regular, &link).expect("source symlink");
-        assert!(bounded_whole_file(&link, CLAUDE_MAX_BYTES).is_err());
+        assert!(bounded_whole_file(&link, CLAUDE_MAX_BYTES, &mut Budget::new()).is_err());
 
         let oversized = dir.join("oversized");
         let file = std::fs::File::create(&oversized).expect("oversized source");
         file.set_len(CLAUDE_MAX_BYTES + 1)
             .expect("sparse oversized source");
-        assert!(bounded_whole_file(&oversized, CLAUDE_MAX_BYTES).is_err());
+        assert!(bounded_whole_file(&oversized, CLAUDE_MAX_BYTES, &mut Budget::new()).is_err());
 
         let rollouts = dir.join("sessions/2026/09/08");
         std::fs::create_dir_all(&rollouts).expect("rollout tree");
-        let id = "11111111-2222-4333-8444-555555555555";
+        let id = "01a08046-1974-7352-ade3-81a786200795";
         symlink(
             &regular,
             rollouts.join(format!("rollout-2026-09-08T09-00-00-{id}.jsonl")),
         )
         .expect("rollout symlink");
-        assert!(find_codex_rollout(&dir.join("sessions"), id).is_err());
+        assert!(find_codex_rollout(&dir.join("sessions"), id, &mut Budget::new()).is_err());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn codex_tail_defines_left_and_right_record_boundaries_within_its_cap() {
+        let dir = std::path::PathBuf::from(format!("/tmp/ae-quota-tail-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("tail fixture directory");
+        let line = concat!(
+            r#"{"timestamp":"2026-09-08T09:00:00Z","type":"event_msg","payload":{"type":"token_count","rate_limits":{"limit_id":"codex","primary":{"used_percent":7,"window_minutes":300,"resets_at":1788861600}}}}"#,
+            "\n"
+        );
+        let aligned = dir.join("aligned");
+        std::fs::write(&aligned, format!("x\n{line}")).expect("aligned tail");
+        let cap = u64::try_from(line.len() + 1).expect("bounded cap");
+        let Bounded::Ready((bytes, starts)) =
+            bounded_tail(&aligned, cap, &mut Budget::new()).expect("bounded aligned tail")
+        else {
+            panic!("aligned tail was truncated");
+        };
+        assert!(starts);
+        assert_eq!(
+            super::codex::parse(&bytes, starts, 1_788_858_600)
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let unaligned = dir.join("unaligned");
+        std::fs::write(&unaligned, format!("abcdef\n{line}")).expect("unaligned tail");
+        let cap = u64::try_from(line.len() + 4).expect("bounded cap");
+        let Bounded::Ready((bytes, starts)) =
+            bounded_tail(&unaligned, cap, &mut Budget::new()).expect("bounded unaligned tail")
+        else {
+            panic!("unaligned tail was truncated");
+        };
+        assert!(!starts);
+        assert_eq!(
+            super::codex::parse(&bytes, starts, 1_788_858_600)
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let growing = dir.join("growing");
+        std::fs::write(&growing, vec![b'x'; 128]).expect("oversized record");
+        let Bounded::Ready((bytes, starts)) =
+            bounded_tail(&growing, 32, &mut Budget::new()).expect("bounded growing file")
+        else {
+            panic!("growing file was truncated by invocation budget");
+        };
+        assert!(bytes.len() <= 31);
+        assert!(
+            super::codex::parse(&bytes, starts, 1_788_858_600)
+                .unwrap()
+                .is_empty()
+        );
+
+        let eof = dir.join("eof");
+        std::fs::write(&eof, line.trim_end()).expect("incomplete EOF record");
+        let Bounded::Ready((bytes, starts)) =
+            bounded_tail(&eof, 1_024, &mut Budget::new()).expect("bounded EOF tail")
+        else {
+            panic!("EOF file was truncated");
+        };
+        assert!(
+            super::codex::parse(&bytes, starts, 1_788_858_600)
+                .unwrap()
+                .is_empty()
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn codex_tail_stays_bounded_when_the_open_file_grows_or_truncates() {
+        let line = concat!(
+            r#"{"timestamp":"2026-09-08T09:00:00Z","type":"event_msg","payload":{"type":"token_count","rate_limits":{"limit_id":"codex","primary":{"used_percent":7,"window_minutes":300,"resets_at":1788861600}}}}"#,
+            "\n"
+        );
+        let initial_len = u64::try_from(line.len()).expect("bounded fixture length");
+        let mut grown = std::io::Cursor::new(format!("{line}incomplete growth").into_bytes());
+        let Bounded::Ready((bytes, starts)) =
+            read_bounded_tail(&mut grown, initial_len, 1_024, &mut Budget::new())
+                .expect("bounded growth-race read")
+        else {
+            panic!("growth-race read was truncated");
+        };
+        assert_eq!(bytes.len(), line.len());
+        assert_eq!(
+            super::codex::parse(&bytes, starts, 1_788_858_600)
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let mut truncated = std::io::Cursor::new(Vec::new());
+        let Bounded::Ready((bytes, starts)) =
+            read_bounded_tail(&mut truncated, initial_len, 1_024, &mut Budget::new())
+                .expect("bounded truncation-race read")
+        else {
+            panic!("truncation-race read was truncated");
+        };
+        assert!(bytes.is_empty());
+        assert!(
+            super::codex::parse(&bytes, starts, 1_788_858_600)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn every_invocation_budget_limit_has_an_explicit_truncated_row() {
+        let mut budget = Budget {
+            files_left: 0,
+            bytes_left: 1,
+            started: std::time::Instant::now(),
+            max_elapsed: std::time::Duration::from_secs(1),
+        };
+        assert!(!budget.claim_file());
+        budget.files_left = 1;
+        assert!(!budget.reserve_bytes(2));
+        budget.bytes_left = 2;
+        budget.max_elapsed = std::time::Duration::ZERO;
+        assert!(!budget.claim_file());
+        assert_eq!(
+            rows_or_placeholder(ReadRows::Truncated)[0].status,
+            Status::Truncated
+        );
     }
 }

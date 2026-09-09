@@ -277,11 +277,52 @@ pub fn run(args: &[String], out: &mut impl Write, err: &mut impl Write) -> Resul
         err.flush()?;
         return Ok(code);
     }
+    // Quota reads only selected config and bounded vendor caches. Route it
+    // before the ordinary preamble, whose tmux facts would violate that
+    // observational boundary and make a missing server block the report.
+    if args.first().map(String::as_str) == Some("quota") {
+        let code = run_public_quota(shape, &args[1..], out, err)?;
+        out.flush()?;
+        err.flush()?;
+        return Ok(code);
+    }
     let Some(preamble) = resolve_facts(shape, err)? else {
         err.flush()?;
         return Ok(EXIT_UNAVAILABLE);
     };
     run_entry(&preamble, args, out, err)
+}
+
+fn run_public_quota(
+    shape: &shape::Shape,
+    tail: &[String],
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> Result<u8> {
+    if let Some(extra) = tail.first() {
+        writeln!(err, "ae quota: unknown argument: {extra}")?;
+        return Ok(entry::EXIT_USAGE);
+    }
+    let Some(root) = doors::state_root(shape) else {
+        writeln!(err, "ae: {NO_STATE_ROOT}")?;
+        return Ok(EXIT_UNAVAILABLE);
+    };
+    let cwd = doors::cwd();
+    let global = doors::config_file(shape, &root);
+    let local = doors::local_config(&cwd);
+    let home = doors::home();
+    quota::run(
+        &quota::Inputs {
+            home: home.as_deref(),
+            cwd: &cwd,
+            global: Some(&global),
+            local: local.as_deref(),
+            meta: None,
+            now: time::Timestamp::now().epoch(),
+        },
+        out,
+        err,
+    )
 }
 
 /// The structural install gate — the ONE place every effectful invocation
@@ -679,30 +720,6 @@ fn run_entry(
         entry::Route::ArchiveUsage => {
             write!(err, "{}", entry::ARCHIVE_USAGE)?;
             entry::EXIT_FAILED
-        }
-        entry::Route::Quota(tail) => {
-            if let Some(extra) = tail.first() {
-                writeln!(err, "ae quota: unknown argument: {extra}")?;
-                entry::EXIT_USAGE
-            } else {
-                let session_dir =
-                    calling_session_name().map(|session| preamble.sessions().join(session));
-                let meta = session_dir
-                    .as_deref()
-                    .and_then(|dir| session::read_meta(dir).ok());
-                quota::run(
-                    &quota::Inputs {
-                        home: doors::home().as_deref(),
-                        cwd: &preamble.cwd,
-                        global: preamble.global.as_deref(),
-                        local: preamble.local.as_deref(),
-                        meta: meta.as_ref(),
-                        now: time::Timestamp::now().epoch(),
-                    },
-                    out,
-                    err,
-                )?
-            }
         }
         entry::Route::ArchivePreview(name) => {
             return run_archive_preview(preamble, name.as_deref(), out, err);
@@ -2258,6 +2275,7 @@ mod tests {
             argv(&["brief", "--since", "bad"]),
             argv(&["orchestrator", "--unknown"]),
             argv(&["next"]),
+            argv(&["quota"]),
             argv(&[crate::cli::MONITOR, "sweep"]),
         ];
         for args in refused_or_unrelated {
