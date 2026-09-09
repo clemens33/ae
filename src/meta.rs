@@ -84,8 +84,10 @@ pub enum RecordedConfigHome {
     /// Legacy meta: no row has been recorded yet.
     #[default]
     Missing,
-    /// A canonical absolute config-home directory.
+    /// A canonical absolute config-home selected by the tool-specific variable.
     Path(PathBuf),
+    /// A canonical absolute config-home derived from an unset variable and HOME.
+    Implicit(PathBuf),
     /// The first-start environment exposed no effective config home.
     Absent,
     /// The first-start environment could not be resolved safely.
@@ -101,19 +103,26 @@ impl RecordedConfigHome {
         match self {
             Self::Missing | Self::Invalid => None,
             Self::Path(path) => Some(path.display().to_string()),
+            Self::Implicit(path) => Some(format!("implicit:{}", path.display())),
             Self::Absent => Some("absent".to_owned()),
             Self::Unknown => Some("unknown".to_owned()),
         }
     }
 
     fn parse(value: &str) -> Self {
-        match value {
-            "absent" => Self::Absent,
-            "unknown" => Self::Unknown,
-            value if Path::new(value).is_absolute() && !value.chars().any(char::is_control) => {
-                Self::Path(PathBuf::from(value))
-            }
-            _ => Self::Invalid,
+        if value == "absent" {
+            Self::Absent
+        } else if value == "unknown" {
+            Self::Unknown
+        } else if let Some(path) = value.strip_prefix("implicit:")
+            && Path::new(path).is_absolute()
+            && !path.chars().any(char::is_control)
+        {
+            Self::Implicit(PathBuf::from(path))
+        } else if Path::new(value).is_absolute() && !value.chars().any(char::is_control) {
+            Self::Path(PathBuf::from(value))
+        } else {
+            Self::Invalid
         }
     }
 }
@@ -339,6 +348,15 @@ impl Meta {
                 // A bare `agent.main` / `seat.main` is still a CLAIM on the
                 // slot, so it is noted before the line is refused.
                 meta.note_claim(raw, line, false);
+                if let Some(slot) = raw.strip_prefix(CONFIG_HOME_PREFIX) {
+                    let already_seen = seen.iter().any(|previous| previous == raw);
+                    if already_seen {
+                        meta.invalidate(raw);
+                    } else {
+                        seen.push(raw.to_owned());
+                        meta.set_metadata(Metadata::ConfigHome, slot, raw, "", line);
+                    }
+                }
                 meta.anomalies.push(Anomaly::MalformedLine { line });
                 continue;
             };
@@ -1563,6 +1581,10 @@ agent_bin.main=claude
                 "/accounts/claude",
                 RecordedConfigHome::Path(PathBuf::from("/accounts/claude")),
             ),
+            (
+                "implicit:/accounts/claude",
+                RecordedConfigHome::Implicit(PathBuf::from("/accounts/claude")),
+            ),
             ("absent", RecordedConfigHome::Absent),
             ("unknown", RecordedConfigHome::Unknown),
         ] {
@@ -1579,6 +1601,8 @@ agent_bin.main=claude
         for text in [
             "seat.main=lead\nconfig_home.main=relative\n",
             "config_home.main=\nseat.main=lead\n",
+            "seat.main=lead\nconfig_home.main\n",
+            "config_home.main\nseat.main=lead\n",
             "seat.main=lead\nconfig_home.main=/one\nconfig_home.main=/two\n",
             "config_home.main=/one\nconfig_home.main=/two\nseat.main=lead\n",
         ] {

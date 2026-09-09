@@ -79,9 +79,11 @@ fablemic = "cc-mic --permission-mode bypassPermissions --model fable --effort xh
 solmic = "codex-mic --yolo -m gpt-5.6-sol -c model_reasoning_effort=xhigh"
 ```
 
-Each client gets its own login, settings, usage pool, and conversation store, so one workspace can
-mix work and personal subscriptions seat by seat. Bind the profiles to different `[roster]` names
-and run the tool's login flow once per new client.
+Each distinct config home isolates local login state, settings, and conversation files, so one
+workspace can mix work and personal identities seat by seat. It does not create an independent
+provider quota: two homes may authenticate the same account, while two client labels may share one
+home. Bind the profiles to different `[roster]` names and run the tool's login flow once per new
+home.
 
 **Claude default-state trap:** never set `CLAUDE_CONFIG_DIR` (directly or through `config_home`) to
 the default `$HOME/.claude` directory. Without the variable, Claude Code reads its account state
@@ -89,8 +91,9 @@ from `$HOME/.claude.json`; with the variable set, it reads
 `$CLAUDE_CONFIG_DIR/.claude.json` instead. The default client must stay `claude = claude` with no
 `config_home`, or the same-looking path selects a different state file and can appear logged out.
 
-The config home becomes seat identity on first start: ae records its canonical path before exec,
-then uses that recorded value for resume probes, Codex session-id capture, and optional history
+The config home becomes seat identity on first start: ae records its canonical path and whether the
+tool-specific variable was explicit or the default was derived from an unset variable. It uses that
+recorded value and mode for resume probes, execution, Codex session-id capture, and optional history
 purge. Changing `cc-mic` from directory A to B while a session is retained therefore prints:
 
 ```text

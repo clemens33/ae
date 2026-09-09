@@ -300,7 +300,8 @@ impl IdentityConfig {
                     ),
                 });
             };
-            let expanded = expand_client_home(profile, binary.word, config_home, home)?;
+            let expanded =
+                expand_client_home(profile, binary.word, config_home, client.tool, home)?;
             replacement = format!(
                 "{variable}={} {replacement}",
                 crate::launch::shell_quote(&expanded)
@@ -789,7 +790,23 @@ fn parse_client_home(
             ),
         ));
     }
+    if tool
+        .adapter()
+        .config_home_default
+        .is_some_and(|default| Path::new(expanded) == Path::new("/__ae_home__").join(default))
+    {
+        return Err(client_error(
+            file,
+            label,
+            line,
+            default_client_home_refusal(tool),
+        ));
+    }
     Ok(raw_path.to_owned())
+}
+
+fn default_client_home_refusal(tool: crate::tool::ToolKind) -> String {
+    tool.adapter().config_home_default_refusal.to_owned()
 }
 
 fn client_error(file: &Path, client: &str, line: usize, reason: String) -> ConfigError {
@@ -847,6 +864,7 @@ fn expand_client_home(
     profile: &str,
     client: &str,
     raw: &str,
+    tool: crate::tool::ToolKind,
     home: Option<&Path>,
 ) -> Result<String, ConfigError> {
     use std::cell::Cell;
@@ -888,6 +906,15 @@ fn expand_client_home(
             profile: profile.to_owned(),
             client: client.to_owned(),
             reason: "config_home did not resolve to an absolute path".to_owned(),
+        });
+    }
+    if let (Some(home), Some(default)) = (home, tool.adapter().config_home_default)
+        && Path::new(path) == home.join(default)
+    {
+        return Err(ConfigError::ClientHome {
+            profile: profile.to_owned(),
+            client: client.to_owned(),
+            reason: default_client_home_refusal(tool),
         });
     }
     Ok(path.clone())
@@ -1738,6 +1765,38 @@ mod tests {
                     "config_home is not supported for {tool}: its account variable is unverified"
                 )),
                 "{err}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_client_cannot_relocate_to_its_tools_default_home() {
+        for (tool, default) in [("claude", ".claude"), ("codex", ".codex")] {
+            let rooted = NamedTemp::new(
+                "client-default-home",
+                &format!("[clients]\nx = {tool} config_home=$HOME/{default}\n"),
+            );
+            let err = read_identity(Some(rooted.path()), None).unwrap_err();
+            assert!(
+                err.to_string().contains("use the default client"),
+                "{tool}: {err}"
+            );
+
+            let absolute = NamedTemp::new(
+                "client-absolute-default-home",
+                &format!(
+                    "[clients]\nx = {tool} config_home=/home/person/{default}\n\
+                     [profiles]\np = \"x\"\n"
+                ),
+            );
+            let cfg =
+                read_identity(Some(absolute.path()), None).expect("structurally valid config");
+            let err = cfg
+                .command("p", Some(Path::new("/home/person")))
+                .unwrap_err();
+            assert!(
+                err.to_string().contains("use the default client"),
+                "{tool}: {err}"
             );
         }
     }

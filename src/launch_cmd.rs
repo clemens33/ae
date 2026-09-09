@@ -283,6 +283,16 @@ pub enum Resolved {
     Unknown(String),
 }
 
+/// The effective store plus how the command selected it.
+///
+/// Claude distinguishes an unset account variable from one explicitly set to
+/// its default directory, so callers that persist identity must keep this bit.
+pub(crate) struct ConfigHomeResolution {
+    pub(crate) home: Resolved,
+    pub(crate) default: Resolved,
+    pub(crate) explicit: bool,
+}
+
 impl Resolved {
     /// Stable spelling for a persisted `config_home.<slot>` row.
     #[must_use]
@@ -318,37 +328,48 @@ pub fn config_home(
     tool: ToolKind,
     lookup: &dyn Fn(&str) -> Option<String>,
 ) -> Resolved {
-    let adapter = tool.adapter();
-    let (Some(variable), Some(default)) = (adapter.config_home_env, adapter.config_home_default)
-    else {
-        return Resolved::Absent;
-    };
-    let environment = match command_environment(cmd, lookup) {
-        Ok(environment) => environment,
-        Err(why) => return Resolved::Unknown(why),
-    };
-    if let Some(value) = environment.value(variable, lookup) {
-        return absolute_value(variable, &value);
-    }
-    default_home(&environment, default, lookup)
+    config_home_resolution(cmd, tool, lookup).home
 }
 
-/// The default config home below the command's effective `HOME`, ignoring the
-/// tool-specific relocation variable.
-#[must_use]
-pub(crate) fn default_config_home(
+/// Resolve the store and preserve whether the tool-specific variable selected
+/// it. `_run` records that mode so a resume cannot switch Claude state files.
+pub(crate) fn config_home_resolution(
     cmd: &ResolvedCommand,
     tool: ToolKind,
     lookup: &dyn Fn(&str) -> Option<String>,
-) -> Resolved {
-    let Some(default) = tool.adapter().config_home_default else {
-        return Resolved::Absent;
+) -> ConfigHomeResolution {
+    let adapter = tool.adapter();
+    let (Some(variable), Some(default)) = (adapter.config_home_env, adapter.config_home_default)
+    else {
+        return ConfigHomeResolution {
+            home: Resolved::Absent,
+            default: Resolved::Absent,
+            explicit: false,
+        };
     };
     let environment = match command_environment(cmd, lookup) {
         Ok(environment) => environment,
-        Err(why) => return Resolved::Unknown(why),
+        Err(why) => {
+            return ConfigHomeResolution {
+                home: Resolved::Unknown(why.clone()),
+                default: Resolved::Unknown(why),
+                explicit: false,
+            };
+        }
     };
-    default_home(&environment, default, lookup)
+    if let Some(value) = environment.value(variable, lookup) {
+        return ConfigHomeResolution {
+            home: absolute_value(variable, &value),
+            default: default_home(&environment, default, lookup),
+            explicit: true,
+        };
+    }
+    let default = default_home(&environment, default, lookup);
+    ConfigHomeResolution {
+        home: default.clone(),
+        default,
+        explicit: false,
+    }
 }
 
 struct CommandEnvironment {

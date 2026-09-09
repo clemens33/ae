@@ -242,7 +242,8 @@ fn facts(dir: &Path, slot: &str) -> Option<Facts> {
 /// Codex's recorded config root, or the pre-row default for legacy metadata.
 fn codex_config_home(facts: &Facts, ambient_home: Option<&Path>) -> Option<PathBuf> {
     match &facts.config_home {
-        crate::meta::RecordedConfigHome::Path(path) => Some(path.clone()),
+        crate::meta::RecordedConfigHome::Path(path)
+        | crate::meta::RecordedConfigHome::Implicit(path) => Some(path.clone()),
         crate::meta::RecordedConfigHome::Missing => ambient_home.map(|home| home.join(".codex")),
         crate::meta::RecordedConfigHome::Absent
         | crate::meta::RecordedConfigHome::Unknown

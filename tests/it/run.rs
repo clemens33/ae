@@ -32,6 +32,7 @@ const REPORTING_TOOL: &str = "#!/bin/sh\n\
      \"${CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION-<unset>}\" >> \"__OUT__\"\n\
      printf 'CLAUDE_CONFIG_DIR=%s\\036CODEX_HOME=%s\\036' \
      \"${CLAUDE_CONFIG_DIR-<unset>}\" \"${CODEX_HOME-<unset>}\" >> \"__OUT__\"\n\
+     printf 'HOME=%s\\036' \"${HOME-<unset>}\" >> \"__OUT__\"\n\
      if [ -n \"${AE_META_FILE-}\" ]; then \
        if grep -q '^config_home.main=' \"$AE_META_FILE\"; then \
          printf 'META_ROW=present\\036' >> \"__OUT__\"; \
@@ -884,7 +885,10 @@ fn a_default_claude_home_is_recorded_without_becoming_an_explicit_override() {
     let meta = std::fs::read_to_string(rig.dir.join("meta")).expect("meta");
     let expected = std::fs::canonicalize(rig.home.join(".claude")).expect("default store");
     assert!(
-        meta.contains(&format!("config_home.main={}\n", expected.display())),
+        meta.contains(&format!(
+            "config_home.main=implicit:{}\n",
+            expected.display()
+        )),
         "the probe and purge still receive the recorded store: {meta}"
     );
 
@@ -901,6 +905,167 @@ fn a_default_claude_home_is_recorded_without_becoming_an_explicit_override() {
         reported.contains(&"CLAUDE_CONFIG_DIR=<unset>".to_owned()),
         "default -> client unsets the relocation variable: {reported:?}"
     );
+}
+
+#[test]
+fn a_client_config_cannot_name_the_default_claude_store() {
+    let rig = Rig::new("default-claude-to-same-client");
+    let id = "66666666-6666-4666-8666-666666666666";
+    rig.seat("claude", id);
+    let (reported, _) = rig.exec();
+    assert!(
+        reported.contains(&"CLAUDE_CONFIG_DIR=<unset>".to_owned()),
+        "first default run leaves Claude variable unset: {reported:?}"
+    );
+    let meta_before = std::fs::read_to_string(rig.dir.join("meta")).expect("meta");
+    let expected = std::fs::canonicalize(rig.home.join(".claude")).expect("default store");
+    assert!(
+        meta_before.contains(&format!(
+            "config_home.main=implicit:{}\n",
+            expected.display()
+        )),
+        "first run records canonical default store: {meta_before}"
+    );
+
+    rig.client_profile("claude", "claude", &rig.home.join(".claude"));
+    let _ = std::fs::remove_file(&rig.out);
+    let result = rig.run_raw(&[]);
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert_eq!(result.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains("switches the Claude state file; use the default client"),
+        "{stderr}"
+    );
+    assert!(!rig.out.exists(), "a refused config never execs");
+    let meta_after = std::fs::read_to_string(rig.dir.join("meta")).expect("meta");
+    assert_eq!(
+        meta_after, meta_before,
+        "resume keeps recorded metadata stable"
+    );
+}
+
+#[test]
+fn an_explicit_claude_client_at_default_store_stays_explicit_after_client_removal() {
+    let rig = Rig::new("same-client-claude-to-default");
+    let id = "77777777-7777-4777-8777-777777777777";
+    let expected = std::fs::canonicalize(rig.home.join(".claude")).expect("default store");
+    rig.profile(
+        "claude",
+        &format!(
+            "CLAUDE_CONFIG_DIR=$HOME/.claude {} --flag",
+            rig.tool("claude")
+        ),
+    );
+    rig.seat("claude", id);
+
+    let (reported, _) = rig.exec();
+    assert!(
+        reported.contains(&format!("CLAUDE_CONFIG_DIR={}", expected.display())),
+        "explicit raw prefix reaches first exec at canonical default store: {reported:?}"
+    );
+    let meta_before = std::fs::read_to_string(rig.dir.join("meta")).expect("meta");
+    assert!(
+        meta_before.contains(&format!("config_home.main={}\n", expected.display())),
+        "first run records explicit mode without an implicit prefix: {meta_before}"
+    );
+
+    rig.transcript("claude", id);
+    rig.profile("claude", &format!("{} --flag", rig.tool("claude")));
+    let (reported, _) = rig.exec();
+    assert!(
+        carries(&reported, &["--resume", id]),
+        "second run resumes retained conversation: {reported:?}"
+    );
+    assert!(
+        reported.contains(&format!("CLAUDE_CONFIG_DIR={}", expected.display())),
+        "explicit -> default retains the recorded explicit variable: {reported:?}"
+    );
+}
+
+#[test]
+fn an_implicit_claude_home_stays_unset_after_a_raw_prefix_is_added() {
+    let rig = Rig::new("default-claude-to-raw-prefix");
+    let id = "88888888-7777-4777-8777-777777777777";
+    rig.seat("claude", id);
+    let _ = rig.exec();
+    let expected = std::fs::canonicalize(rig.home.join(".claude")).expect("default store");
+    let meta_before = std::fs::read_to_string(rig.dir.join("meta")).expect("meta");
+    assert!(
+        meta_before.contains(&format!(
+            "config_home.main=implicit:{}\n",
+            expected.display()
+        )),
+        "first run records implicit mode: {meta_before}"
+    );
+
+    rig.transcript("claude", id);
+    rig.profile(
+        "claude",
+        &format!(
+            "CLAUDE_CONFIG_DIR=$HOME/.claude {} --flag",
+            rig.tool("claude")
+        ),
+    );
+    let (reported, _) = rig.exec();
+    assert!(carries(&reported, &["--resume", id]), "{reported:?}");
+    assert!(
+        reported.contains(&"CLAUDE_CONFIG_DIR=<unset>".to_owned()),
+        "recorded implicit mode removes a later raw prefix: {reported:?}"
+    );
+}
+
+#[test]
+fn a_recorded_implicit_home_survives_changed_cleared_and_aliased_home() {
+    use std::os::unix::fs::symlink;
+
+    for next in ["changed", "cleared", "alias"] {
+        let rig = Rig::new(&format!("implicit-home-{next}"));
+        let id = "99999999-7777-4777-8777-777777777777";
+        rig.seat("claude", id);
+        let _ = rig.exec();
+        rig.transcript("claude", id);
+
+        let expected_home = std::fs::canonicalize(&rig.home).expect("canonical HOME");
+        let reported_home = match next {
+            "changed" => {
+                let changed = rig.scratch.join("changed-home");
+                std::fs::create_dir_all(changed.join(".claude")).expect("changed HOME");
+                rig.profile(
+                    "claude",
+                    &format!("HOME={} {} --flag", changed.display(), rig.tool("claude")),
+                );
+                expected_home.clone()
+            }
+            "cleared" => {
+                rig.profile("claude", &format!("env -i {} --flag", rig.tool("claude")));
+                expected_home.clone()
+            }
+            "alias" => {
+                let alias = rig.scratch.join("home-alias");
+                symlink(&rig.home, &alias).expect("HOME alias");
+                rig.profile(
+                    "claude",
+                    &format!("HOME={} {} --flag", alias.display(), rig.tool("claude")),
+                );
+                alias
+            }
+            _ => unreachable!(),
+        };
+
+        let (reported, _) = rig.exec();
+        assert!(
+            carries(&reported, &["--resume", id]),
+            "{next}: {reported:?}"
+        );
+        assert!(
+            reported.contains(&"CLAUDE_CONFIG_DIR=<unset>".to_owned()),
+            "{next}: implicit mode keeps the variable unset: {reported:?}"
+        );
+        assert!(
+            reported.contains(&format!("HOME={}", reported_home.display())),
+            "{next}: execution selects the retained default store: {reported:?}"
+        );
+    }
 }
 
 #[test]
@@ -1040,6 +1205,7 @@ fn uncertain_recorded_config_homes_resume_exactly_and_hostile_rows_refuse() {
     }
 
     for rows in [
+        "config_home.main\n",
         "config_home.main=relative\n",
         "config_home.main=/one\nconfig_home.main=/two\n",
     ] {

@@ -1214,9 +1214,13 @@ fn a_resume_reruns_with_the_resume_variant() {
         .unwrap_or_default()
         .to_owned();
     assert!(!sid.is_empty(), "claude's id is known upfront:\n{fresh}");
-    let config_home = fresh
+    let config_home_row = fresh
         .lines()
         .find_map(|line| line.strip_prefix("config_home.main="))
+        .unwrap_or_default()
+        .to_owned();
+    let config_home = config_home_row
+        .strip_prefix("implicit:")
         .unwrap_or_default()
         .to_owned();
     assert_eq!(
@@ -1296,7 +1300,7 @@ fn a_resume_reruns_with_the_resume_variant() {
     );
     assert!(
         rig.meta("lnres")
-            .contains(&format!("config_home.main={config_home}\n")),
+            .contains(&format!("config_home.main={config_home_row}\n")),
         "the recorded config home survives the full meta rebuild"
     );
     assert!(

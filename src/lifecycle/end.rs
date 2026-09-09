@@ -1545,7 +1545,9 @@ fn purge_config_home(
     err: &mut impl Write,
 ) -> io::Result<Option<PathBuf>> {
     let (candidate, recorded) = match &entry.config_home {
-        meta::RecordedConfigHome::Path(path) => (path.clone(), true),
+        meta::RecordedConfigHome::Path(path) | meta::RecordedConfigHome::Implicit(path) => {
+            (path.clone(), true)
+        }
         meta::RecordedConfigHome::Missing => {
             let Some(home) = state_root.parent() else {
                 warn_config_home(entry, tool, "legacy HOME is unavailable", err)?;
@@ -2142,6 +2144,7 @@ mod tests {
         std::fs::create_dir_all(&root).expect("state root");
         std::fs::write(&file, "keep").expect("conversation");
         for row in [
+            "config_home.main\n",
             "config_home.main=unknown\n",
             "config_home.main=absent\n",
             "config_home.main=relative\n",

@@ -221,6 +221,8 @@ pub(crate) struct ToolAdapter {
     /// Default config-home directory below `HOME`, for a verified account
     /// variable.
     pub(crate) config_home_default: Option<&'static str>,
+    /// Refusal when a client names that default directory explicitly.
+    pub(crate) config_home_default_refusal: &'static str,
     /// Fresh-launch and initial-turn behaviour.
     pub(crate) launch: LaunchSpec,
     /// Exact/fallback resume behaviour and its store evidence.
@@ -238,6 +240,7 @@ const CLAUDE: ToolAdapter = ToolAdapter {
     launch_marker: None,
     config_home_env: Some("CLAUDE_CONFIG_DIR"),
     config_home_default: Some(".claude"),
+    config_home_default_refusal: "config_home equals Claude's default directory under HOME; this switches the Claude state file; use the default client",
     launch: LaunchSpec {
         session_flags: SessionFlags::Common,
         id: IdStyle::Flag {
@@ -270,6 +273,7 @@ const CODEX: ToolAdapter = ToolAdapter {
     launch_marker: Some("CODEX"),
     config_home_env: Some("CODEX_HOME"),
     config_home_default: Some(".codex"),
+    config_home_default_refusal: "config_home equals codex's default directory under HOME; use the default client",
     launch: LaunchSpec {
         session_flags: SessionFlags::Common,
         id: IdStyle::None,
@@ -299,6 +303,7 @@ const GEMINI: ToolAdapter = ToolAdapter {
     launch_marker: Some("GEMINI"),
     config_home_env: None,
     config_home_default: None,
+    config_home_default_refusal: "",
     launch: LaunchSpec {
         session_flags: SessionFlags::Common,
         id: IdStyle::None,
@@ -328,6 +333,7 @@ const AGY: ToolAdapter = ToolAdapter {
     launch_marker: Some("AGY"),
     config_home_env: None,
     config_home_default: None,
+    config_home_default_refusal: "",
     launch: LaunchSpec {
         session_flags: SessionFlags::Conversation,
         id: IdStyle::None,
@@ -358,6 +364,7 @@ const GROK: ToolAdapter = ToolAdapter {
     launch_marker: None,
     config_home_env: None,
     config_home_default: None,
+    config_home_default_refusal: "",
     launch: LaunchSpec {
         session_flags: SessionFlags::Common,
         id: IdStyle::Flag {
@@ -392,6 +399,7 @@ const OPENCODE: ToolAdapter = ToolAdapter {
     launch_marker: None,
     config_home_env: None,
     config_home_default: None,
+    config_home_default_refusal: "",
     launch: LaunchSpec {
         session_flags: SessionFlags::Common,
         id: IdStyle::None,
@@ -421,6 +429,7 @@ const UNKNOWN: ToolAdapter = ToolAdapter {
     launch_marker: None,
     config_home_env: None,
     config_home_default: None,
+    config_home_default_refusal: "",
     launch: LaunchSpec {
         session_flags: SessionFlags::Common,
         id: IdStyle::None,
@@ -516,6 +525,7 @@ mod tests {
                     launch_marker: None,
                     config_home_env: Some("CLAUDE_CONFIG_DIR"),
                     config_home_default: Some(".claude"),
+                    config_home_default_refusal: "config_home equals Claude's default directory under HOME; this switches the Claude state file; use the default client",
                     launch: LaunchSpec {
                         session_flags: SessionFlags::Common,
                         id: IdStyle::Flag {
@@ -547,6 +557,7 @@ mod tests {
                     launch_marker: Some("CODEX"),
                     config_home_env: Some("CODEX_HOME"),
                     config_home_default: Some(".codex"),
+                    config_home_default_refusal: "config_home equals codex's default directory under HOME; use the default client",
                     launch: LaunchSpec {
                         session_flags: SessionFlags::Common,
                         id: IdStyle::None,
@@ -575,6 +586,7 @@ mod tests {
                     launch_marker: Some("GEMINI"),
                     config_home_env: None,
                     config_home_default: None,
+                    config_home_default_refusal: "",
                     launch: LaunchSpec {
                         session_flags: SessionFlags::Common,
                         id: IdStyle::None,
@@ -603,6 +615,7 @@ mod tests {
                     launch_marker: Some("AGY"),
                     config_home_env: None,
                     config_home_default: None,
+                    config_home_default_refusal: "",
                     launch: LaunchSpec {
                         session_flags: SessionFlags::Conversation,
                         id: IdStyle::None,
@@ -632,6 +645,7 @@ mod tests {
                     launch_marker: None,
                     config_home_env: None,
                     config_home_default: None,
+                    config_home_default_refusal: "",
                     launch: LaunchSpec {
                         session_flags: SessionFlags::Common,
                         id: IdStyle::Flag {
@@ -664,6 +678,7 @@ mod tests {
                     launch_marker: None,
                     config_home_env: None,
                     config_home_default: None,
+                    config_home_default_refusal: "",
                     launch: LaunchSpec {
                         session_flags: SessionFlags::Common,
                         id: IdStyle::None,
@@ -700,6 +715,7 @@ mod tests {
                 launch_marker: None,
                 config_home_env: None,
                 config_home_default: None,
+                config_home_default_refusal: "",
                 launch: LaunchSpec {
                     session_flags: SessionFlags::Common,
                     id: IdStyle::None,

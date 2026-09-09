@@ -149,10 +149,12 @@ the choices in session metadata, so a later stop/resume keeps them. A stopped se
 re-paired to another profile of the same tool kind while keeping its conversation; changing tool
 kind is refused. A running session must be stopped before any seat profile changes.
 
-On a seat's first start, ae records the canonical config home selected by its client before the
-tool execs. A retained session keeps that home even if its client later changes or disappears;
-the resume prints a `config now points ... retained conversation lives in ...` notice and the
-recorded home wins. This keeps the resume probe, Codex id capture, and execution on one account.
+On a seat's first start, ae records the canonical config home and whether the tool-specific
+variable selected it explicitly or remained unset for the default, before the tool execs. A
+retained session keeps that home and mode even if its client later changes or disappears; the
+resume prints a `config now points ... retained conversation lives in ...` notice when the path
+moves, and the recorded identity wins. This keeps the resume probe, Codex id capture, and execution
+on one account without changing Claude's default state-file lookup.
 
 Use `--solo` on a first launch to start only the configured main seat, even when
 `[workspace] workers` names standing workers. The main-only roster is recorded, so later resumes

@@ -297,63 +297,48 @@ fn build_with_snapshot(
         slot,
         &seat.config_files,
     );
-    let current = crate::launch_cmd::config_home(&seat.command, seat.tool, &env_lookup);
-    let canonical_current = canonical_config_home(&current);
-    let (current_for_notice, effective, config_home_row) = match &seat.config_home {
-        crate::meta::RecordedConfigHome::Missing => {
-            let canonical = canonical_current?;
-            (
-                canonical.clone(),
-                canonical.clone(),
-                Some(canonical.record_value()),
-            )
-        }
-        crate::meta::RecordedConfigHome::Path(path) => (
-            current_notice(canonical_current),
-            crate::launch_cmd::Resolved::Path(path.clone()),
-            None,
-        ),
-        crate::meta::RecordedConfigHome::Absent => (
-            current_notice(canonical_current),
-            crate::launch_cmd::Resolved::Absent,
-            None,
-        ),
-        crate::meta::RecordedConfigHome::Unknown => (
-            current_notice(canonical_current),
-            crate::launch_cmd::Resolved::Unknown("recorded as unknown".to_owned()),
-            None,
-        ),
-        crate::meta::RecordedConfigHome::Invalid => {
-            return Err(format!(
-                "seat '{slot}' has malformed or duplicate config_home metadata"
-            ));
-        }
-    };
+    let current = crate::launch_cmd::config_home_resolution(&seat.command, seat.tool, &env_lookup);
+    let canonical_current = canonical_config_home(&current.home);
+    let identity =
+        config_home_identity(slot, &seat.config_home, current.explicit, canonical_current)?;
     let config_home_notice = (mode == Mode::Resume
         && seat.config_home != crate::meta::RecordedConfigHome::Missing
-        && current_for_notice != effective)
+        && identity.current != identity.effective)
         .then(|| {
             format!(
                 "ae: seat {slot}: config now points {} at {}; the retained conversation lives in {}, resuming there — end the session to adopt {}",
                 seat.tool.as_str(),
-                current_for_notice.shown(),
-                effective.shown(),
-                current_for_notice.shown()
+                identity.current.shown(),
+                identity.effective.shown(),
+                identity.current.shown()
             )
         });
-    let composed = compose(dir, slot, &seat, &ctx, mode, &effective);
+    let composed = compose(dir, slot, &seat, &ctx, mode, &identity.effective);
     let words = crate::words::split_words(&composed, &env_lookup)?;
-    let (mut prefix, argv) = peel_env(words)?;
-    let default = crate::launch_cmd::default_config_home(&seat.command, seat.tool, &env_lookup);
-    let canonical_default = canonical_config_home(&default).ok();
-    reconcile_config_home(
-        &mut prefix,
-        seat.tool,
-        &current,
-        &current_for_notice,
-        &effective,
-        canonical_default.as_ref(),
-    );
+    let (mut prefix, mut argv) = peel_env(words)?;
+    let canonical_default = canonical_config_home(&current.default).ok();
+    if let Some((mut inner, binary_at)) = nested_env_prefix(&argv) {
+        reconcile_config_home(
+            &mut inner,
+            seat.tool,
+            &current.home,
+            current.explicit,
+            &identity.current,
+            &identity.recorded,
+            canonical_default.as_ref(),
+        );
+        rebuild_nested_env(&mut argv, inner, binary_at);
+    } else {
+        reconcile_config_home(
+            &mut prefix,
+            seat.tool,
+            &current.home,
+            current.explicit,
+            &identity.current,
+            &identity.recorded,
+            canonical_default.as_ref(),
+        );
+    }
     Ok(Plan {
         mode,
         tool: seat.tool,
@@ -361,8 +346,67 @@ fn build_with_snapshot(
         unset: prefix.unset,
         set: prefix.assign,
         argv,
-        config_home_row,
+        config_home_row: identity.new_row,
         config_home_notice,
+    })
+}
+
+struct ConfigHomeIdentity {
+    current: crate::launch_cmd::Resolved,
+    recorded: crate::meta::RecordedConfigHome,
+    effective: crate::launch_cmd::Resolved,
+    new_row: Option<String>,
+}
+
+fn config_home_identity(
+    slot: &str,
+    stored: &crate::meta::RecordedConfigHome,
+    current_explicit: bool,
+    canonical_current: Result<crate::launch_cmd::Resolved, String>,
+) -> Result<ConfigHomeIdentity, String> {
+    let was_missing = stored == &crate::meta::RecordedConfigHome::Missing;
+    let current = if was_missing {
+        canonical_current?
+    } else {
+        current_notice(canonical_current)
+    };
+    let recorded = match stored {
+        crate::meta::RecordedConfigHome::Missing => match &current {
+            crate::launch_cmd::Resolved::Path(path) if current_explicit => {
+                crate::meta::RecordedConfigHome::Path(path.clone())
+            }
+            crate::launch_cmd::Resolved::Path(path) => {
+                crate::meta::RecordedConfigHome::Implicit(path.clone())
+            }
+            crate::launch_cmd::Resolved::Absent => crate::meta::RecordedConfigHome::Absent,
+            crate::launch_cmd::Resolved::Unknown(_) => crate::meta::RecordedConfigHome::Unknown,
+        },
+        crate::meta::RecordedConfigHome::Invalid => {
+            return Err(format!(
+                "seat '{slot}' has malformed or duplicate config_home metadata"
+            ));
+        }
+        other => other.clone(),
+    };
+    let effective = match &recorded {
+        crate::meta::RecordedConfigHome::Path(path)
+        | crate::meta::RecordedConfigHome::Implicit(path) => {
+            crate::launch_cmd::Resolved::Path(path.clone())
+        }
+        crate::meta::RecordedConfigHome::Absent => crate::launch_cmd::Resolved::Absent,
+        crate::meta::RecordedConfigHome::Unknown => {
+            crate::launch_cmd::Resolved::Unknown("recorded as unknown".to_owned())
+        }
+        crate::meta::RecordedConfigHome::Missing | crate::meta::RecordedConfigHome::Invalid => {
+            return Err(format!("seat '{slot}' has unusable config_home metadata"));
+        }
+    };
+    let new_row = was_missing.then(|| recorded.record_value()).flatten();
+    Ok(ConfigHomeIdentity {
+        current,
+        recorded,
+        effective,
+        new_row,
     })
 }
 
@@ -658,25 +702,104 @@ fn peel_env(words: Vec<crate::words::Word>) -> Result<(EnvPrefix, Vec<String>), 
     Ok((prefix, argv))
 }
 
+/// Read the original command's `env` prefix when ae's own injected prefix has
+/// become the outer layer. Reconciliation must happen in the innermost layer:
+/// an inner `env -i` would otherwise discard the recorded HOME override.
+fn nested_env_prefix(argv: &[String]) -> Option<(EnvPrefix, usize)> {
+    if argv.first().is_none_or(|word| word != "env") {
+        return None;
+    }
+    let mut prefix = EnvPrefix::default();
+    let mut index = 1;
+    while let Some(word) = argv.get(index) {
+        match word.as_str() {
+            "-i" => {
+                prefix.clear = true;
+                index += 1;
+            }
+            "-u" => {
+                let name = argv.get(index + 1)?;
+                prefix.unset.push(name.clone());
+                index += 2;
+            }
+            value if crate::launch_cmd::is_assignment(value) => {
+                if let Some((name, value)) = value.split_once('=') {
+                    prefix.assign.push((name.to_owned(), value.to_owned()));
+                }
+                index += 1;
+            }
+            _ => break,
+        }
+    }
+    (index < argv.len()).then_some((prefix, index))
+}
+
+fn rebuild_nested_env(argv: &mut Vec<String>, prefix: EnvPrefix, binary_at: usize) {
+    let command = argv.split_off(binary_at);
+    argv.clear();
+    argv.push("env".to_owned());
+    if prefix.clear {
+        argv.push("-i".to_owned());
+    }
+    for name in prefix.unset {
+        argv.push("-u".to_owned());
+        argv.push(name);
+    }
+    for (name, value) in prefix.assign {
+        argv.push(format!("{name}={value}"));
+    }
+    argv.extend(command);
+}
+
 /// Reconcile mutable config with the store identity recorded by the seat.
 fn reconcile_config_home(
     prefix: &mut EnvPrefix,
     tool: ToolKind,
     current: &crate::launch_cmd::Resolved,
+    current_explicit: bool,
     canonical_current: &crate::launch_cmd::Resolved,
-    effective: &crate::launch_cmd::Resolved,
+    recorded: &crate::meta::RecordedConfigHome,
     default: Option<&crate::launch_cmd::Resolved>,
 ) {
-    if !matches!(effective, crate::launch_cmd::Resolved::Path(_)) {
+    match recorded {
+        crate::meta::RecordedConfigHome::Implicit(path) => {
+            let effective = crate::launch_cmd::Resolved::Path(path.clone());
+            if current_explicit || canonical_current != &effective {
+                use_default_config_home(prefix, tool);
+            }
+            if default != Some(&effective) {
+                apply_recorded_home(prefix, tool, path);
+            }
+        }
+        crate::meta::RecordedConfigHome::Path(path) => {
+            let effective = crate::launch_cmd::Resolved::Path(path.clone());
+            if !current_explicit || current != &effective {
+                apply_config_home(prefix, tool, &effective);
+            }
+        }
+        crate::meta::RecordedConfigHome::Missing
+        | crate::meta::RecordedConfigHome::Absent
+        | crate::meta::RecordedConfigHome::Unknown
+        | crate::meta::RecordedConfigHome::Invalid => {}
+    }
+}
+
+/// Restore the HOME whose tool-default child is a retained implicit store.
+fn apply_recorded_home(prefix: &mut EnvPrefix, tool: ToolKind, config_home: &Path) {
+    let Some(default) = tool.adapter().config_home_default else {
+        return;
+    };
+    if !config_home.ends_with(default) {
         return;
     }
-    if default == Some(effective) {
-        if canonical_current != effective {
-            use_default_config_home(prefix, tool);
-        }
-    } else if current != effective {
-        apply_config_home(prefix, tool, effective);
-    }
+    let Some(home) = config_home.parent() else {
+        return;
+    };
+    prefix.unset.retain(|name| name != "HOME");
+    prefix.assign.retain(|(name, _)| name != "HOME");
+    prefix
+        .assign
+        .push(("HOME".to_owned(), home.display().to_string()));
 }
 
 /// Select a recorded default store without relocating the harness into it.
