@@ -1,0 +1,17 @@
+fablex
+[clients]
+claude = claude config_home=$HOME/.claude-x
+codex = codex
+
+[profiles]
+fablex = claude --model fable
+solx = codex --model sol
+direct = /usr/bin/cc --model sol
+
+[roster]
+lead = fablex
+worker = solx
+
+[workspace]
+main = lead
+workers = worker

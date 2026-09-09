@@ -1,0 +1,12 @@
+solx
+[clients]
+codex = codex config_home=$HOME/.codex-x
+
+[profiles]
+solx = env -i codex --model sol
+
+[roster]
+lead = solx
+
+[workspace]
+main = lead

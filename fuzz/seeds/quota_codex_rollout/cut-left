@@ -1,0 +1,2 @@
+0imestamp":"2026-09-08T08:59:00.000Z","type":"session_meta","payload":{"id":"[REDACTED]"}}
+{"timestamp":"2026-09-08T09:01:00.000Z","type":"event_msg","payload":{"type":"token_count","rate_limits":{"limit_id":"codex","limit_name":null,"primary":{"used_percent":7.0,"window_minutes":10080,"resets_at":1789466400},"secondary":null,"plan_type":"pro"}}}

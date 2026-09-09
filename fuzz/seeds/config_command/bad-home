@@ -1,0 +1,13 @@
+fablex
+[clients]
+claude = claude config_home=/relative
+other = codex config_home=$OTHER/x
+
+[profiles]
+fablex = claude --model fable
+
+[roster]
+lead = fablex
+
+[workspace]
+main = lead

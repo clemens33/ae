@@ -1,0 +1,12 @@
+idle
+[profiles]
+idle = "sleep 600"
+codex = "codex --model gpt-5.6"
+
+[roster]
+lead = idle
+worker = codex
+
+[workspace]
+main = lead
+workers = worker

@@ -56,20 +56,9 @@ A crash writes its input under `artifacts/<target>/`; reproduce it with
 | `config_parse` | `config::parse_identity` | one identity v2 config text |
 | `meta_parse` | `meta::Meta::parse` | one session meta document |
 | `launch_cmd_lex` | `launch_cmd::lex_simple_command` | one profile command string |
-
-## TODO — targets that wait on their parser
-
-- `config_command` — the `[clients]` expansion, not just the lexing. Blocked on
-  worker `clients`, whose branch lands the API at a3ca1774:
-  `ae::config::IdentityConfig::command(&self, profile: &str, home:
-  Option<&std::path::Path>) -> Result<Option<ae::config::ResolvedCommand>,
-  ae::config::ConfigError>`. Once that is on main, the target is
-  `parse_identity(&text)` then `.command(profile, Some(Path::new("/home/x")))`
-  with the profile name taken from the same fuzz bytes — no filesystem in the
-  loop. This branch is cut from 9a56eda8 and cannot compile it yet.
-- `quota_claude_cache`, `quota_codex_rollout` — added when the quota parsers
-  land. Both read vendor-written state ae does not control, which is the
-  definition of hostile.
+| `config_command` | `config::IdentityConfig::command` | first line the profile, the rest one config text |
+| `quota_claude_cache` | `quota::claude::parse` | one Claude settings file, at a fixed and a chosen clock |
+| `quota_codex_rollout` | `quota::codex::parse` | first byte the record boundary, the rest a rollout tail |
 
 ## Lock refresh after a release
 

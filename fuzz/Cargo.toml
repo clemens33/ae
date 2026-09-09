@@ -40,3 +40,24 @@ path = "fuzz_targets/launch_cmd_lex.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "config_command"
+path = "fuzz_targets/config_command.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "quota_claude_cache"
+path = "fuzz_targets/quota_claude_cache.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "quota_codex_rollout"
+path = "fuzz_targets/quota_codex_rollout.rs"
+test = false
+doc = false
+bench = false
