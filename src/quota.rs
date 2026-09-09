@@ -179,8 +179,16 @@ struct Scope {
     tool: ToolKind,
     home: Option<PathBuf>,
     source: Option<PathBuf>,
+    source_key: Option<PathBuf>,
     profiles: Vec<String>,
     clients: Vec<String>,
+    hint: Option<String>,
+}
+
+struct ScopePaths {
+    home: Option<PathBuf>,
+    source: Option<PathBuf>,
+    source_key: Option<PathBuf>,
     hint: Option<String>,
 }
 
@@ -223,6 +231,19 @@ struct FleetRollout {
     owner: String,
     profile: String,
     id: String,
+    tool: ToolKind,
+    location: RolloutLocation,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RolloutLocation {
+    Configured,
+    Recorded {
+        home: PathBuf,
+        source: PathBuf,
+        source_key: PathBuf,
+    },
+    Unknown(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -323,13 +344,11 @@ pub fn run(inputs: &Inputs<'_>, out: &mut impl Write, err: &mut impl Write) -> c
             return Ok(1);
         }
     };
-    let scopes = configured_scopes(&cfg, inputs.home);
+    let mut scopes = configured_scopes(&cfg, inputs.home);
     let mut groups = Vec::new();
     let mut budget = Budget::new();
-    let fleet = scopes
-        .iter()
-        .any(|scope| scope.tool.adapter().quota.source == QuotaSource::CodexRollouts)
-        .then(|| fleet_rollouts(inputs.sessions, &mut budget));
+    let fleet = fleet_rollouts(inputs.sessions, &mut budget);
+    add_recorded_codex_scopes(&mut scopes, &fleet);
     for scope in &scopes {
         let quota = scope.tool.adapter().quota;
         match quota.source {
@@ -345,9 +364,7 @@ pub fn run(inputs: &Inputs<'_>, out: &mut impl Write, err: &mut impl Write) -> c
                 summary: None,
             }),
             QuotaSource::CodexRollouts => {
-                if let Some(fleet) = &fleet {
-                    groups.extend(codex_groups(scope, fleet, inputs.now, &mut budget));
-                }
+                groups.extend(codex_groups(scope, &fleet, inputs.now, &mut budget));
             }
             QuotaSource::Unsupported => groups.push(Group {
                 profiles: scope.profiles.clone(),
@@ -415,22 +432,46 @@ fn configured_scopes(cfg: &crate::config::IdentityConfig, home: Option<&Path>) -
         let client = resolved
             .client_label()
             .and_then(|label| displayed_client(cfg, label, tool));
+        let unknown_variable = std::cell::RefCell::new(None);
+        let account_variable = tool.adapter().config_home_env;
         let resolution = crate::launch_cmd::config_home_resolution(&resolved, tool, &|name| {
-            (name == "HOME")
-                .then(|| home.map(|path| path.display().to_string()))
-                .flatten()
+            if name == "HOME" {
+                return home.map(|path| path.display().to_string());
+            }
+            if account_variable == Some(name) {
+                return None;
+            }
+            let mut unknown = unknown_variable.borrow_mut();
+            if unknown.is_none() {
+                *unknown = Some(name.to_owned());
+            }
+            None
         });
-        let (config_home, source) = match resolved_scope_paths(tool, &resolution, home) {
+        if let Some(variable) = unknown_variable.into_inner() {
+            scopes.push(unknown_scope(
+                profile,
+                tool,
+                client,
+                Some(format!("depends on pane variable {variable}")),
+            ));
+            continue;
+        }
+        let paths = match resolved_scope_paths(tool, &resolution, home) {
             Ok(paths) => paths,
             Err(error) => {
                 scopes.push(unknown_scope(profile, tool, client, Some(error)));
                 continue;
             }
         };
-        if let Some(scope) = scopes
-            .iter_mut()
-            .find(|scope| scope.tool == tool && scope.home == config_home)
-        {
+        let ScopePaths {
+            home: config_home,
+            source,
+            source_key,
+            hint,
+        } = paths;
+        if let Some(scope) = scopes.iter_mut().find(|scope| {
+            scope.tool == tool && scope.source_key == source_key && scope.hint == hint
+        }) {
             scope.profiles.push(profile.clone());
             if let Some(client) = client
                 && !scope.clients.contains(&client)
@@ -442,9 +483,10 @@ fn configured_scopes(cfg: &crate::config::IdentityConfig, home: Option<&Path>) -
                 tool,
                 home: config_home,
                 source,
+                source_key,
                 profiles: vec![profile.clone()],
                 clients: client.into_iter().collect(),
-                hint: None,
+                hint,
             });
         }
     }
@@ -479,11 +521,12 @@ fn resolved_scope_paths(
     tool: ToolKind,
     resolution: &crate::launch_cmd::ConfigHomeResolution,
     operator_home: Option<&Path>,
-) -> Result<(Option<PathBuf>, Option<PathBuf>), String> {
+) -> Result<ScopePaths, String> {
     let canonical_home = crate::run::canonical_config_home(&resolution.home)?;
-    let home = match canonical_home {
-        crate::launch_cmd::Resolved::Path(path) => Some(path),
-        crate::launch_cmd::Resolved::Absent | crate::launch_cmd::Resolved::Unknown(_) => None,
+    let (home, mut hint) = match canonical_home {
+        crate::launch_cmd::Resolved::Path(path) => (Some(path), None),
+        crate::launch_cmd::Resolved::Absent => (None, None),
+        crate::launch_cmd::Resolved::Unknown(reason) => (None, Some(reason)),
     };
     if tool.adapter().quota.source == QuotaSource::Unsupported {
         let fallback = tool
@@ -501,24 +544,54 @@ fn resolved_scope_paths(
             }
             None => None,
         };
-        return Ok((fallback, None));
+        return Ok(ScopePaths {
+            home: fallback,
+            source: None,
+            source_key: None,
+            hint,
+        });
     }
-    let source = match (tool.adapter().quota.source, home.as_ref()) {
-        (QuotaSource::ClaudeCache, Some(config_home)) if resolution.explicit => {
-            Some(config_home.join(".claude.json"))
-        }
-        (QuotaSource::ClaudeCache, Some(_)) => {
-            match crate::run::canonical_config_home(&resolution.base)? {
-                crate::launch_cmd::Resolved::Path(base) => Some(base.join(".claude.json")),
-                crate::launch_cmd::Resolved::Absent | crate::launch_cmd::Resolved::Unknown(_) => {
-                    None
+    let source = match tool.adapter().quota.source {
+        QuotaSource::ClaudeCache if resolution.explicit => home
+            .as_ref()
+            .map(|config_home| config_home.join(".claude.json")),
+        QuotaSource::ClaudeCache => match &resolution.base {
+            crate::launch_cmd::Resolved::Path(_) => {
+                match crate::run::canonical_config_home(&resolution.base)? {
+                    crate::launch_cmd::Resolved::Path(base) => Some(base.join(".claude.json")),
+                    crate::launch_cmd::Resolved::Absent
+                    | crate::launch_cmd::Resolved::Unknown(_) => None,
                 }
             }
-        }
-        (QuotaSource::CodexRollouts, Some(config_home)) => Some(config_home.join("sessions")),
-        _ => None,
+            crate::launch_cmd::Resolved::Absent => None,
+            crate::launch_cmd::Resolved::Unknown(reason) => {
+                if hint.is_none() {
+                    hint = Some(reason.clone());
+                }
+                None
+            }
+        },
+        QuotaSource::CodexRollouts => home
+            .as_ref()
+            .map(|config_home| config_home.join("sessions")),
+        QuotaSource::Unsupported => None,
     };
-    Ok((home, source))
+    let source_key = source.clone().map(canonical_source).transpose()?;
+    Ok(ScopePaths {
+        home,
+        source,
+        source_key,
+        hint,
+    })
+}
+
+fn canonical_source(path: PathBuf) -> Result<PathBuf, String> {
+    match crate::run::canonical_config_home(&crate::launch_cmd::Resolved::Path(path))? {
+        crate::launch_cmd::Resolved::Path(path) => Ok(path),
+        crate::launch_cmd::Resolved::Absent | crate::launch_cmd::Resolved::Unknown(_) => {
+            Err("quota source did not resolve to a path".to_owned())
+        }
+    }
 }
 
 fn unknown_scope(
@@ -531,6 +604,7 @@ fn unknown_scope(
         tool,
         home: None,
         source: None,
+        source_key: None,
         profiles: vec![profile.to_owned()],
         clients: client.into_iter().collect(),
         hint,
@@ -605,22 +679,103 @@ fn fleet_rollouts(sessions: Option<&Path>, budget: &mut Budget) -> FleetRollouts
             let Some(binary) = seat.binary.as_deref() else {
                 continue;
             };
-            if ToolKind::from_binary_name(binary).adapter().quota.source
-                != QuotaSource::CodexRollouts
-            {
+            let tool = ToolKind::from_binary_name(binary);
+            if tool.adapter().quota.source != QuotaSource::CodexRollouts {
                 continue;
             }
             let (Some(profile), Some(id)) = (&seat.profile, &seat.harness_session) else {
                 continue;
             };
+            let location = recorded_rollout_location(&seat.config_home);
             rollouts.push(FleetRollout {
                 owner: format!("{session}:{}", seat.name),
                 profile: profile.clone(),
                 id: id.clone(),
+                tool,
+                location,
             });
         }
     }
     FleetRollouts { rollouts, status }
+}
+
+fn recorded_rollout_location(home: &crate::meta::RecordedConfigHome) -> RolloutLocation {
+    match home {
+        crate::meta::RecordedConfigHome::Missing => RolloutLocation::Configured,
+        crate::meta::RecordedConfigHome::Path(home)
+        | crate::meta::RecordedConfigHome::Implicit(home) => {
+            let source = home.join("sessions");
+            match canonical_source(source.clone()) {
+                Ok(source_key) => RolloutLocation::Recorded {
+                    home: home.clone(),
+                    source,
+                    source_key,
+                },
+                Err(reason) => RolloutLocation::Unknown(reason),
+            }
+        }
+        crate::meta::RecordedConfigHome::Absent => {
+            RolloutLocation::Unknown("recorded config home is absent".to_owned())
+        }
+        crate::meta::RecordedConfigHome::Unknown => {
+            RolloutLocation::Unknown("recorded config home is unknown".to_owned())
+        }
+        crate::meta::RecordedConfigHome::Invalid => {
+            RolloutLocation::Unknown("recorded config home is invalid".to_owned())
+        }
+    }
+}
+
+fn add_recorded_codex_scopes(scopes: &mut Vec<Scope>, fleet: &FleetRollouts) {
+    for rollout in &fleet.rollouts {
+        match &rollout.location {
+            RolloutLocation::Configured => {}
+            RolloutLocation::Recorded {
+                home,
+                source,
+                source_key,
+            } => {
+                if let Some(scope) = scopes.iter_mut().find(|scope| {
+                    scope.tool == rollout.tool && scope.source_key.as_ref() == Some(source_key)
+                }) {
+                    if !scope.profiles.contains(&rollout.profile) {
+                        scope.profiles.push(rollout.profile.clone());
+                    }
+                } else {
+                    scopes.push(Scope {
+                        tool: rollout.tool,
+                        home: Some(home.clone()),
+                        source: Some(source.clone()),
+                        source_key: Some(source_key.clone()),
+                        profiles: vec![rollout.profile.clone()],
+                        clients: Vec::new(),
+                        hint: None,
+                    });
+                }
+            }
+            RolloutLocation::Unknown(reason) => {
+                if let Some(scope) = scopes.iter_mut().find(|scope| {
+                    scope.tool == rollout.tool
+                        && scope.source.is_none()
+                        && scope.hint.as_ref() == Some(reason)
+                }) {
+                    if !scope.profiles.contains(&rollout.profile) {
+                        scope.profiles.push(rollout.profile.clone());
+                    }
+                } else {
+                    scopes.push(Scope {
+                        tool: rollout.tool,
+                        home: None,
+                        source: None,
+                        source_key: None,
+                        profiles: vec![rollout.profile.clone()],
+                        clients: Vec::new(),
+                        hint: Some(reason.clone()),
+                    });
+                }
+            }
+        }
+    }
 }
 
 fn session_paths(root: &Path, budget: &mut Budget) -> io::Result<Bounded<Vec<PathBuf>>> {
@@ -713,7 +868,17 @@ fn scope_rollouts<'a>(scope: &Scope, fleet: &'a FleetRollouts) -> Vec<&'a FleetR
     fleet
         .rollouts
         .iter()
-        .filter(|rollout| scope.profiles.contains(&rollout.profile))
+        .filter(|rollout| match &rollout.location {
+            RolloutLocation::Configured => scope.profiles.contains(&rollout.profile),
+            RolloutLocation::Recorded { source_key, .. } => {
+                scope.source_key.as_ref() == Some(source_key)
+            }
+            RolloutLocation::Unknown(reason) => {
+                scope.source.is_none()
+                    && scope.hint.as_ref() == Some(reason)
+                    && scope.profiles.contains(&rollout.profile)
+            }
+        })
         .fold(Vec::new(), |mut unique, rollout| {
             if !unique
                 .iter()
@@ -733,7 +898,12 @@ fn locate_rollouts<'a>(
 ) -> Vec<LocatedRollout<'a>> {
     let mut located = Vec::new();
     for &rollout in candidates {
-        let source = match scope.source.as_deref() {
+        let sessions = match &rollout.location {
+            RolloutLocation::Configured => scope.source.as_deref(),
+            RolloutLocation::Recorded { source, .. } => Some(source.as_path()),
+            RolloutLocation::Unknown(_) => None,
+        };
+        let source = match sessions {
             Some(sessions) => match find_codex_rollout(sessions, &rollout.id, budget) {
                 Ok(Bounded::Ready(Some(file))) => RolloutSource::File(file),
                 Ok(Bounded::Ready(None)) => RolloutSource::Missing,
@@ -1460,8 +1630,8 @@ mod tests {
     use super::{
         Bounded, Budget, CLAUDE_MAX_BYTES, CODEX_TAIL_BYTES, FRESH_SECS, FUTURE_SKEW_SECS,
         FleetRollout, FleetRollouts, FleetStatus, LocatedRollout, ReadRows, RenderLine,
-        RolloutSource, Scope, Status, bounded_tail, bounded_whole_file, codex_groups,
-        codex_rollout_dirs, configured_scopes, find_codex_rollout, freshness,
+        RolloutLocation, RolloutSource, Scope, Status, bounded_tail, bounded_whole_file,
+        codex_groups, codex_rollout_dirs, configured_scopes, find_codex_rollout, freshness,
         order_located_rollouts, percent_label, profiles_label, read_bounded_tail, read_claude,
         render_at, render_table, rows_or_placeholder, sanitize_cell, vendor_timestamp,
     };
@@ -1577,12 +1747,15 @@ mod tests {
                 owner: format!("session:seat-{index}"),
                 profile: "codex-profile".to_owned(),
                 id: id.to_owned(),
+                tool: ToolKind::Codex,
+                location: RolloutLocation::Configured,
             });
         }
         let scope = Scope {
             tool: ToolKind::Codex,
             home: Some(root.join(".codex")),
             source: Some(root.join(".codex/sessions")),
+            source_key: Some(root.join(".codex/sessions")),
             profiles: vec!["codex-profile".to_owned()],
             clients: Vec::new(),
             hint: None,
@@ -1608,11 +1781,15 @@ mod tests {
             owner: "older".to_owned(),
             profile: "p".to_owned(),
             id: ids[0].to_owned(),
+            tool: ToolKind::Codex,
+            location: RolloutLocation::Configured,
         };
         let newer = FleetRollout {
             owner: "newer".to_owned(),
             profile: "p".to_owned(),
             id: ids[1].to_owned(),
+            tool: ToolKind::Codex,
+            location: RolloutLocation::Configured,
         };
         let epoch = std::time::UNIX_EPOCH;
         let mut located = [
@@ -1654,12 +1831,15 @@ mod tests {
                 owner: format!("session:seat-{index}"),
                 profile: "codex-profile".to_owned(),
                 id,
+                tool: ToolKind::Codex,
+                location: RolloutLocation::Configured,
             });
         }
         let scope = Scope {
             tool: ToolKind::Codex,
             home: Some(root.join(".codex")),
             source: Some(root.join(".codex/sessions")),
+            source_key: Some(root.join(".codex/sessions")),
             profiles: vec!["codex-profile".to_owned()],
             clients: Vec::new(),
             hint: None,
@@ -1775,6 +1955,7 @@ mod tests {
                 tool: ToolKind::Claude,
                 home: Some(home),
                 source: Some(source),
+                source_key: None,
                 profiles: vec!["p".to_owned()],
                 clients: Vec::new(),
                 hint: None,

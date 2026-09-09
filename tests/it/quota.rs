@@ -292,6 +292,190 @@ fn client_resolution_error_is_unknown_without_hiding_other_scopes() {
     assert!(text.contains("goodx") && text.contains("77%"), "{text}");
 }
 
+#[cfg(unix)]
+#[test]
+fn implicit_claude_profiles_do_not_merge_distinct_sources_after_home_canonicalization() {
+    use std::os::unix::fs::symlink;
+
+    let make_root = |tag: &str, profile: &str| {
+        let root = rig(tag);
+        let shared = root.join("shared-store");
+        let a = root.join("a");
+        let b = root.join("b");
+        std::fs::create_dir_all(shared.join(".claude")).expect("shared Claude store");
+        std::fs::create_dir_all(&a).expect("home a");
+        std::fs::create_dir_all(&b).expect("home b");
+        symlink(shared.join(".claude"), a.join(".claude")).expect("a store symlink");
+        symlink(shared.join(".claude"), b.join(".claude")).expect("b store symlink");
+        let fixture =
+            String::from_utf8_lossy(include_bytes!("../fixtures/quota/claude-cache.json"));
+        std::fs::write(
+            a.join(".claude.json"),
+            fixture.replace("\"percent\": 66", "\"percent\": 11"),
+        )
+        .expect("a cache");
+        std::fs::write(
+            b.join(".claude.json"),
+            fixture.replace("\"percent\": 66", "\"percent\": 77"),
+        )
+        .expect("b cache");
+        let home = if profile == "a" { &a } else { &b };
+        std::fs::write(
+            root.join("config"),
+            format!("[profiles]\n{profile} = HOME={} claude\n", home.display()),
+        )
+        .expect("profile config");
+        root
+    };
+    let a_root = make_root("implicit-claude-a", "a");
+    let a_text = run_quota(&a_root);
+    let _ = std::fs::remove_dir_all(&a_root);
+    let b_root = make_root("implicit-claude-b", "b");
+    let b_text = run_quota(&b_root);
+    let _ = std::fs::remove_dir_all(&b_root);
+
+    // Rebuild with scratch-root HOME assignments so canonicalized stores collide.
+    let both_root = rig("implicit-claude-both");
+    let shared = both_root.join("shared-store");
+    let a = both_root.join("a");
+    let b = both_root.join("b");
+    std::fs::create_dir_all(shared.join(".claude")).expect("shared Claude store");
+    std::fs::create_dir_all(&a).expect("home a");
+    std::fs::create_dir_all(&b).expect("home b");
+    symlink(shared.join(".claude"), a.join(".claude")).expect("a store symlink");
+    symlink(shared.join(".claude"), b.join(".claude")).expect("b store symlink");
+    let fixture = String::from_utf8_lossy(include_bytes!("../fixtures/quota/claude-cache.json"));
+    std::fs::write(
+        a.join(".claude.json"),
+        fixture.replace("\"percent\": 66", "\"percent\": 11"),
+    )
+    .expect("a cache");
+    std::fs::write(
+        b.join(".claude.json"),
+        fixture.replace("\"percent\": 66", "\"percent\": 77"),
+    )
+    .expect("b cache");
+    std::fs::write(
+        both_root.join("config"),
+        format!(
+            "[profiles]\na = HOME={} claude\nb = HOME={} claude\n",
+            a.display(),
+            b.display()
+        ),
+    )
+    .expect("profile config");
+    let both_text = run_quota(&both_root);
+    let _ = std::fs::remove_dir_all(&both_root);
+
+    assert!(a_text.contains("11%"), "{a_text}");
+    assert!(b_text.contains("77%"), "{b_text}");
+    let separate_evidence = both_text.contains("11%") && both_text.contains("77%");
+    let explicit_ambiguity =
+        both_text.contains("unknown") && !both_text.contains("11%") && !both_text.contains("77%");
+    assert!(separate_evidence || explicit_ambiguity, "{both_text}");
+}
+
+#[test]
+fn retained_codex_rollout_uses_recorded_config_home_after_profile_change() {
+    let root = rig("retained-recorded-home");
+    let a = root.join("codex-a");
+    let b = root.join("codex-b");
+    let day_a = a.join("sessions/2026/09/08");
+    let day_b = b.join("sessions/2026/09/08");
+    std::fs::create_dir_all(&day_a).expect("A rollout dir");
+    std::fs::create_dir_all(&day_b).expect("B rollout dir");
+    let recorded_a = std::fs::canonicalize(&a).expect("canonical A home");
+    let fixture = include_bytes!("../fixtures/quota/codex-rollout.jsonl");
+    std::fs::write(
+        day_a.join(format!("rollout-2026-09-08T09-00-00-{FIRST_ID}.jsonl")),
+        fixture,
+    )
+    .expect("A rollout");
+    let changed = String::from_utf8_lossy(fixture).replace("7.0", "91.0");
+    std::fs::write(
+        day_b.join(format!("rollout-2026-09-08T09-00-00-{FIRST_ID}.jsonl")),
+        changed,
+    )
+    .expect("B rollout");
+    std::fs::write(
+        root.join("sessions/session/meta"),
+        format!(
+            "schema=2\nseat.main=lead\nprofile.main=p\nharness_session.main={FIRST_ID}\nagent_bin.main=codex\nconfig_home.main={}\n",
+            recorded_a.display()
+        ),
+    )
+    .expect("recorded meta");
+    let meta_before =
+        std::fs::read_to_string(root.join("sessions/session/meta")).expect("read recorded meta");
+    let parsed_meta = ae::meta::Meta::parse(&meta_before);
+    assert_eq!(
+        parsed_meta.roster()[0].config_home,
+        ae::meta::RecordedConfigHome::Path(recorded_a.clone())
+    );
+    std::fs::write(
+        root.join("config"),
+        format!("[profiles]\np = CODEX_HOME={} codex\n", a.display()),
+    )
+    .expect("control config");
+    let control = run_quota(&root);
+    std::fs::write(
+        root.join("config"),
+        format!("[profiles]\np = CODEX_HOME={} codex\n", b.display()),
+    )
+    .expect("changed config");
+    let changed = run_quota(&root);
+    let meta_after =
+        std::fs::read_to_string(root.join("sessions/session/meta")).expect("read unchanged meta");
+    assert_eq!(meta_after, meta_before);
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert!(control.contains("7%"), "{control}");
+    assert!(!changed.contains("91%"), "{changed}");
+    assert!(
+        changed.contains("7%") || changed.contains("unknown"),
+        "{changed}"
+    );
+}
+
+#[test]
+fn quota_marks_unobserved_parameter_home_unknown_but_launch_resolves_injected_value() {
+    let root = rig("parameter-home");
+    std::fs::write(
+        root.join("config"),
+        "[profiles]\np = CLAUDE_CONFIG_DIR=${AE_QUOTA_HOME:-$HOME/.claude-mic} claude\n",
+    )
+    .expect("profile config");
+    let quota_text = run_quota(&root);
+    let cfg = ae::config::parse_identity(
+        "[profiles]\np = CLAUDE_CONFIG_DIR=${AE_QUOTA_HOME:-$HOME/.claude-mic} claude\n",
+    )
+    .expect("identity config");
+    let command = cfg
+        .command("p", Some(&root))
+        .expect("profile command")
+        .expect("profile");
+    let other = root.join("other");
+    let resolved =
+        ae::launch_cmd::config_home(&command, ae::tool::ToolKind::Claude, &|name| match name {
+            "HOME" => Some(root.display().to_string()),
+            "AE_QUOTA_HOME" => Some(other.display().to_string()),
+            _ => None,
+        });
+    eprintln!(
+        "quota output:\n{quota_text}launch resolved home: {}",
+        resolved.shown()
+    );
+    assert_eq!(resolved, ae::launch_cmd::Resolved::Path(other));
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert!(!quota_text.contains("77%"), "{quota_text}");
+    let normalized = quota_text.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        normalized.contains("depends on pane variable AE_QUOTA_HOME"),
+        "{quota_text}"
+    );
+}
+
 #[test]
 fn changed_config_home_never_relabels_a_retained_rollout() {
     let root = rig("retained-home");

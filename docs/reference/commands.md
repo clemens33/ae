@@ -571,19 +571,24 @@ ae quota
 ```
 
 Rows preserve canonical tool, config home, rollout, vendor bucket, and actual window even when
-their display labels wrap. Scopes are keyed by tool and canonical config home, so client labels
-whose homes resolve through the same symlink are grouped together. A client-selected scope lists
-its distinct client labels; a raw profile keeps the shortened home label.
+their display labels wrap. Scopes are keyed by tool and canonical vendor source path, so client
+labels whose quota files resolve through the same symlink are grouped together while distinct
+Claude caches stay separate even when their conversation stores coincide. A client-selected scope
+lists its distinct client labels; a raw profile keeps the shortened home label.
 
 Quota resolves each configured command through the same client expansion and environment rules as
 the launcher. Claude Code reads `<effective HOME>/.claude.json` when `CLAUDE_CONFIG_DIR` is absent
 and `<CLAUDE_CONFIG_DIR>/.claude.json` when it is explicit. Codex reads at most the final 256 KiB of
-the rollout named by each fleet session's ae-recorded harness id below its resolved `CODEX_HOME`,
-looking only in the UUIDv7 UTC day and its two neighbouring local-clock days. Exact rollout files
-are ordered by mtime before their tails are read so the bounded budget reaches recent activity
-first; mtime never supplies the displayed observation age. Its owner is labelled
-`<session>:<seat>`, and a retained rollout remains attached to its recorded profile rather than
-being relabelled when that profile's configured client changes.
+the rollout named by each fleet session's ae-recorded harness id below that seat's recorded config
+home. Legacy session metadata without a recorded home uses the profile's configured source. Lookup
+checks only the UUIDv7 UTC day and its two neighbouring local-clock days. Exact rollout files are
+ordered by mtime before their tails are read so the bounded budget reaches recent activity first;
+mtime never supplies the displayed observation age. Its owner is labelled `<session>:<seat>`, and
+a retained rollout remains attached to its recorded profile and source rather than being relabelled
+when that profile's configured client changes.
+
+Resolution knows the operator's `HOME`, but does not inspect arbitrary pane variables. A configured
+home that depends on another variable is reported `unknown` with that variable named in the hint.
 
 At most three Codex rollout groups appear per scope, newest record observation first. A summary
 line counts hidden rollouts and reports the oldest known record observation among parsed hidden
