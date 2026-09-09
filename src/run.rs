@@ -311,6 +311,7 @@ fn build_with_snapshot(
         canonical_current,
         canonical_base,
     )?;
+    prove_implicit_store(slot, seat.tool, &identity)?;
     let config_home_notice = (mode == Mode::Resume
         && seat.config_home != crate::meta::RecordedConfigHome::Missing
         && identity.current != identity.effective)
@@ -458,6 +459,54 @@ fn current_notice(
     })
 }
 
+/// Prove that a retained implicit environment still selects its recorded
+/// conversation store. The store path alone cannot prove this because the
+/// default directory below `HOME` may be a retargeted symbolic link.
+fn prove_implicit_store(
+    slot: &str,
+    tool: ToolKind,
+    identity: &ConfigHomeIdentity,
+) -> Result<(), String> {
+    let (
+        crate::meta::RecordedConfigHome::Implicit(recorded),
+        crate::meta::RecordedConfigHomeBase::Path(base),
+    ) = (&identity.recorded, &identity.recorded_base)
+    else {
+        return Ok(());
+    };
+    let Some(default) = tool.adapter().config_home_default else {
+        return Err(format!(
+            "seat {slot}: {} has no implicit config-home default",
+            tool.as_str()
+        ));
+    };
+    let selected_path = base.join(default);
+    let selected = canonical_config_home(&crate::launch_cmd::Resolved::Path(selected_path.clone()))
+        .map_err(|why| {
+            format!(
+                "seat {slot}: could not resolve {} against the retained conversation store {} ({why}) — restore the link or end the session",
+                selected_path.display(),
+                recorded.display()
+            )
+        })?;
+    let crate::launch_cmd::Resolved::Path(selected) = selected else {
+        return Err(format!(
+            "seat {slot}: could not resolve {} against the retained conversation store {} — restore the link or end the session",
+            selected_path.display(),
+            recorded.display()
+        ));
+    };
+    if selected == *recorded {
+        return Ok(());
+    }
+    Err(format!(
+        "seat {slot}: {} now resolves to {}; the retained conversation lives in {} — restore the link or end the session",
+        selected_path.display(),
+        selected.display(),
+        recorded.display()
+    ))
+}
+
 /// The composed shell command line, in builder order.
 fn compose(
     dir: &Path,
@@ -566,7 +615,8 @@ fn contains_id(root: &Path, id: &str, depth: usize) -> bool {
     false
 }
 
-/// Canonicalize a first-start config home before it becomes seat identity.
+/// Canonicalize a config home before it becomes or is compared with seat
+/// identity.
 ///
 /// A tool may create its account directory on first launch. In that case the
 /// longest existing ancestor is canonicalized and the still-missing tail is
@@ -582,7 +632,7 @@ fn canonical_config_home(
     loop {
         #[allow(
             clippy::disallowed_methods,
-            reason = "a door: first start pins the tool store's longest existing canonical ancestor before exec"
+            reason = "a door: launch pins or proves the tool store's longest existing canonical ancestor before exec"
         )]
         match std::fs::canonicalize(probe) {
             Ok(mut canonical) => {

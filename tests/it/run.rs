@@ -205,8 +205,18 @@ impl Rig {
 
     /// `_run --print` for the `main` seat.
     fn plan(&self) -> String {
-        let out = ae()
-            .env_remove("TMUX")
+        let out = self.plan_raw();
+        assert!(
+            out.status.success(),
+            "_run --print: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    /// `_run --print` without asserting success, for refusal proofs.
+    fn plan_raw(&self) -> std::process::Output {
+        ae().env_remove("TMUX")
             .env_remove("TMUX_PANE")
             .env_remove("CLAUDE_CONFIG_DIR")
             .env_remove("CODEX_HOME")
@@ -216,13 +226,7 @@ impl Rig {
             .arg(&self.dir)
             .arg("main")
             .output()
-            .unwrap_or_else(|why| panic!("the ae binary should run: {why}"));
-        assert!(
-            out.status.success(),
-            "_run --print: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        String::from_utf8_lossy(&out.stdout).into_owned()
+            .unwrap_or_else(|why| panic!("the ae binary should run: {why}"))
     }
 
     /// The argv `--print` reports, decoded out of its JSON.
@@ -1193,6 +1197,105 @@ fn a_recorded_implicit_home_survives_a_storage_claude_symlink() {
     assert_recorded_implicit_home_survives_symlinked_claude_store(
         "storage-dot-claude",
         "storage/.claude",
+    );
+}
+
+#[test]
+#[allow(clippy::expect_used)]
+fn a_recorded_implicit_home_refuses_or_keeps_store_after_symlink_retarget() {
+    use std::os::unix::fs::symlink;
+
+    let rig = Rig::new("implicit-home-symlink-retarget");
+    let id = "88888888-9999-4999-8999-999999999999";
+    let store_a = rig.scratch.join("store-a");
+    let store_b = rig.scratch.join("store-b");
+    std::fs::create_dir_all(&store_a).expect("store A");
+    std::fs::create_dir_all(&store_b).expect("store B");
+    std::fs::remove_dir(rig.home.join(".claude")).expect("default store directory");
+    symlink(&store_a, rig.home.join(".claude")).expect("store A symlink");
+
+    rig.seat("claude", id);
+    let (first, _) = rig.exec();
+    let original_home = std::fs::canonicalize(&rig.home).expect("canonical HOME");
+    let canonical_a = std::fs::canonicalize(&store_a).expect("canonical store A");
+    assert_eq!(
+        std::fs::canonicalize(rig.home.join(".claude")).expect("first store"),
+        canonical_a,
+        "first store is A"
+    );
+    assert!(
+        first.contains(&"CLAUDE_CONFIG_DIR=<unset>".to_owned()),
+        "first env: {first:?}"
+    );
+    let meta_before = std::fs::read_to_string(rig.dir.join("meta")).expect("meta");
+    assert!(
+        meta_before.contains(&format!(
+            "config_home.main=implicit:{}\n",
+            canonical_a.display()
+        )),
+        "implicit store A recorded: {meta_before}"
+    );
+    assert!(
+        meta_before.contains(&format!(
+            "config_home_base.main={}\n",
+            original_home.display()
+        )),
+        "base HOME recorded: {meta_before}"
+    );
+    rig.transcript("claude", id);
+
+    let (unchanged, _) = rig.exec();
+    assert!(
+        carries(&unchanged, &["--resume", id]),
+        "unchanged link resumes: {unchanged:?}"
+    );
+    assert!(
+        unchanged.contains(&"CLAUDE_CONFIG_DIR=<unset>".to_owned()),
+        "unchanged env: {unchanged:?}"
+    );
+    let meta_before_retarget = std::fs::read_to_string(rig.dir.join("meta")).expect("meta");
+
+    std::fs::remove_file(rig.home.join(".claude")).expect("remove store A symlink");
+    symlink(&store_b, rig.home.join(".claude")).expect("store B symlink");
+    let canonical_b = std::fs::canonicalize(rig.home.join(".claude")).expect("retargeted store");
+    assert_ne!(canonical_b, canonical_a, "retargeted store differs from A");
+    let refusal = format!(
+        "ae: seat main: {}/.claude now resolves to {}; the retained conversation lives in {} — restore the link or end the session\n",
+        original_home.display(),
+        canonical_b.display(),
+        canonical_a.display()
+    );
+    let _ = std::fs::remove_file(&rig.out);
+    let preview = rig.plan_raw();
+    assert!(!preview.status.success(), "retargeted preview must refuse");
+    assert!(preview.stdout.is_empty(), "refused preview has no plan");
+    assert_eq!(String::from_utf8_lossy(&preview.stderr), refusal);
+    assert!(!rig.out.exists(), "preview never execs the tool");
+    assert_eq!(
+        std::fs::read_to_string(rig.dir.join("meta")).expect("meta after preview"),
+        meta_before_retarget,
+        "preview leaves meta byte-identical"
+    );
+    assert_eq!(
+        std::fs::canonicalize(rig.home.join(".claude")).expect("link after preview"),
+        canonical_b,
+        "preview never repairs the operator's symlink"
+    );
+
+    let retargeted = rig.run_raw(&[]);
+    let meta_after = std::fs::read_to_string(rig.dir.join("meta")).expect("meta");
+    let output = std::fs::read_to_string(&rig.out).ok();
+    assert!(!retargeted.status.success(), "retargeted link must refuse");
+    assert!(output.is_none(), "refusal must not exec tool: {output:?}");
+    assert_eq!(String::from_utf8_lossy(&retargeted.stderr), refusal);
+    assert_eq!(
+        meta_after, meta_before_retarget,
+        "refusal leaves meta byte-identical"
+    );
+    assert_eq!(
+        std::fs::canonicalize(rig.home.join(".claude")).expect("link remains retargeted"),
+        canonical_b,
+        "ae never repairs the operator's symlink"
     );
 }
 
