@@ -116,6 +116,10 @@ fn init_discovers_claude_and_codex_then_writes_the_selected_checkout_config() {
     assert!(stderr.is_empty(), "{stderr}");
 
     let written = std::fs::read_to_string(&rig.config).expect("written config");
+    assert!(written.contains("\n[clients]\n"));
+    assert!(written.contains("\nclaude = claude\n"));
+    assert!(written.contains("\ncodex = codex\n"));
+    assert!(!written.contains("\ngrok = grok\n"));
     assert!(written.contains("lead = fablex\ncolead = astrax\norchestrator = gpt56solx\n"));
     assert!(written.contains("palette = darcula\n"));
     assert!(ae::config::read_identity(Some(&rig.config), None).is_ok());

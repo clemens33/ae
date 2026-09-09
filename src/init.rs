@@ -255,6 +255,15 @@ fn render(found: &[Discovery], choices: &Choices, now: crate::time::Timestamp) -
         if line.starts_with('[') && line.ends_with(']') {
             section = line;
         }
+        if section == "[clients]"
+            && let Some(name) = catalog_client_line(line)
+        {
+            if is_found(found, name) {
+                output.push_str(line);
+                output.push('\n');
+            }
+            continue;
+        }
         if section == "[profiles]"
             && let Some(name) = catalog_profile_line(line)
         {
@@ -316,6 +325,15 @@ fn render(found: &[Discovery], choices: &Choices, now: crate::time::Timestamp) -
         }
     }
     output
+}
+
+fn catalog_client_line(line: &str) -> Option<&str> {
+    let (name, executable) = line.split_once(" = ")?;
+    (name == executable
+        && PROFILE_CATALOG
+            .iter()
+            .any(|profile| profile.harness == name))
+    .then_some(name)
 }
 
 fn catalog_profile_line(line: &str) -> Option<&str> {
@@ -925,6 +943,10 @@ mod tests {
             crate::time::Timestamp::from_epoch(1_788_825_600),
         );
         assert!(text.starts_with("# written by ae init on 2026-09-08;"));
+        assert!(text.contains("\n[clients]\n"));
+        assert!(text.contains("\nclaude = claude\n"));
+        assert!(text.contains("\ngrok = grok\n"));
+        assert!(!text.contains("\ncodex = codex\n"));
         assert!(text.contains("\nlead = fablex\ncolead = opusx\norchestrator = fablex\n"));
         assert!(text.contains("grok46 = \"grok"));
         assert!(!text.contains("astrax = \"codex"));
@@ -1056,6 +1078,24 @@ mod tests {
 
     #[test]
     fn catalog_and_default_config_cannot_drift_apart() {
+        for harness in SUPPORTED {
+            assert!(
+                crate::entry::DEFAULT_CONFIG
+                    .lines()
+                    .any(|line| catalog_client_line(line) == Some(harness)),
+                "{harness}"
+            );
+        }
+        let client_section = crate::entry::DEFAULT_CONFIG
+            .split_once("[clients]\n")
+            .and_then(|(_, tail)| tail.split_once("\n[profiles]"))
+            .map_or("", |(clients, _)| clients);
+        for line in client_section
+            .lines()
+            .filter(|line| !line.starts_with('#') && line.contains(" = "))
+        {
+            assert!(catalog_client_line(line).is_some(), "uncatalogued: {line}");
+        }
         for profile in PROFILE_CATALOG {
             assert!(
                 crate::entry::DEFAULT_CONFIG

@@ -288,6 +288,7 @@ Each is one rule with one owner. Change the owner, not a copy.
 | Dispatch is on `argv[0]`'s basename; no `/` means exit 2, never a guess | `src/shim.rs` |
 | `current_exe()` has exactly ONE caller | `src/shape.rs::resolved_exe` |
 | `launch.<slot>.started` decides create-vs-resume, before the exec | `src/run.rs` |
+| A seat's config home is resolved once by `launch_cmd::config_home`, recorded canonical at first start as `config_home.<slot>`, carried by every meta rebuild, and the recorded value wins for a retained conversation | `src/run.rs`, `src/session_launch.rs`, `src/session_launch/capture.rs`, `src/lifecycle/end.rs` |
 | The install gate is STRUCTURAL and hashes nothing. Every command and helper passes it EXCEPT `version` and `upgrade`, which diagnose and repair a broken install | `src/shape.rs`, ordered in `src/lib.rs::run` |
 | The one hashing site: both members re-digested against `SHA256SUMS` before publication | `src/install.rs` |
 | Published dir 0555, members 0555/0444; `~/.local/bin/ae` is the current pointer | `src/install.rs` |
@@ -313,8 +314,14 @@ Role doctrine: [docs/gatekeeping.md](docs/gatekeeping.md) before gating or revie
 INI-style, one regex parser, `src/config.rs`. No TOML/YAML/JSON parsing. Do not extend it.
 
 ```toml
+[clients]
+claude = claude
+cc-mic = claude config_home=$HOME/.claude-mic
+codex = codex
+
 [profiles]
-profile = "shell command"
+fable = "claude --model fable"
+fable-mic = "cc-mic --model fable"
 
 [roster]
 name = profile

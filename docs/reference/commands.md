@@ -87,7 +87,10 @@ fall-through reason.
 `ae init` resolves `claude`, `codex`, `grok`, `agy`, `opencode`, and `gemini` through the same
 PATH resolver as `ae doctor`. It runs no child process, performs no network or authentication
 check, and reports those limits beside each found executable. Shell aliases are not executable
-files and are therefore invisible.
+files and are therefore invisible. Its proposal includes one `[clients]` no-op alias per found
+tool (`claude = claude`, for example), followed by the unchanged profiles available for those
+clients. Add `config_home` only to a second Claude or Codex client; see the
+[second-account recipe](../getting-started/config.md#multiple-identities-of-one-cli).
 
 The default roster is derived from the found harnesses:
 
@@ -145,6 +148,11 @@ must be one of its configured main/workers and the profile must exist under `[pr
 the choices in session metadata, so a later stop/resume keeps them. A stopped seat can be
 re-paired to another profile of the same tool kind while keeping its conversation; changing tool
 kind is refused. A running session must be stopped before any seat profile changes.
+
+On a seat's first start, ae records the canonical config home selected by its client before the
+tool execs. A retained session keeps that home even if its client later changes or disappears;
+the resume prints a `config now points ... retained conversation lives in ...` notice and the
+recorded home wins. This keeps the resume probe, Codex id capture, and execution on one account.
 
 Use `--solo` on a first launch to start only the configured main seat, even when
 `[workspace] workers` names standing workers. The main-only roster is recorded, so later resumes
@@ -739,7 +747,12 @@ same working directory instead of creating a second copy under the new session n
 
 ## `ae stop`
 
-Pause a session for later resume. Detaches all agents and kills the tmux session, but leaves everything on disk: ae state at `~/.ae/sessions/<name>/` plus the per-agent conversation files at `~/.claude/projects/.../<uuid>.jsonl` and `~/.codex/sessions/.../<uuid>.jsonl`. The next `ae <name>` resumes with the full conversation history. When the recorded server proves the session absent, that build may move it to the current launch destination; the server pair changes only with the successful build publication.
+Pause a session for later resume. Detaches all agents and kills the tmux session, but leaves
+everything on disk: ae state at `~/.ae/sessions/<name>/` plus each agent's conversation files in
+its recorded default or client-specific config home. The next `ae <name>` resumes with the full
+conversation history. When the recorded server proves the session absent, that build may move it
+to the current launch destination; the server pair changes only with the successful build
+publication.
 
 Use this when you're done for the day or switching contexts.
 
@@ -941,7 +954,8 @@ Wraps up:
    default — they are the only local record of that session's token usage, retained
    for later usage/cost reporting. Purge them with `ae end --purge-history` (or set
    `[workspace] purge_agent_history = true` as the default). Tool detection uses
-   `agent_bin.<slot>` from meta; Gemini and OpenCode files are always left in place.
+   `agent_bin.<slot>` and the canonical `config_home.<slot>` recorded at first start;
+   Gemini and OpenCode files are always left in place.
 
 ### Controlling conversation-file cleanup
 

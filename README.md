@@ -197,6 +197,10 @@ Agents call these automatically when you ask them to collaborate. Full helper ca
 `~/.ae/config` is auto-created on first run; per-project overrides go in `.ae/config`.
 
 ```toml
+[clients]
+claude = claude
+codex = codex
+
 [profiles]
 claude = "claude --permission-mode bypassPermissions --model opus"
 codex = "codex --yolo -m gpt-5.6-sol -c model_reasoning_effort=high"
@@ -218,7 +222,7 @@ layout = vertical
 instructions = "Always write tests. Prefer TypeScript."
 ```
 
-The NAME in `[roster]` is the agent's identity -- it's what you address in `send`/`spawn` and what shows in pane titles and `ae list`; the profile is just metadata (`ae list` shows it alongside the name). Register any CLI tool under `[profiles]`; `[roster]` binds names to profiles; `[workspace]` sets the layout; `[prompt]` injects custom instructions into every agent's system prompt. One binary can serve several logins — e.g. `CLAUDE_CONFIG_DIR=$HOME/.claude-work claude ...` as its own profile gives a seat its own subscription, login, and history ([details and caveats](docs/getting-started/config.md#multiple-identities-of-one-cli)). The default ae writes on first run -- mirrored in the repo as [`config.sample`](config.sample) -- is a documented lead-pair setup. Choose how agents see your code with a working-directory mode:
+The NAME in `[roster]` is the agent's identity -- it's what you address in `send`/`spawn` and what shows in pane titles and `ae list`; the profile is just metadata (`ae list` shows it alongside the name). `[clients]` names executable/config-home instances, so `cc-mic = claude config_home=$HOME/.claude-mic` gives profiles a second login and conversation store ([recipe and Claude default-state caveat](docs/getting-started/config.md#multiple-identities-of-one-cli)); `[profiles]` adds launch flags, `[roster]` binds names to profiles, `[workspace]` sets the layout, and `[prompt]` injects custom instructions. The default ae writes on first run -- mirrored in the repo as [`config.sample`](config.sample) -- is a documented lead-pair setup. Choose how agents see your code with a working-directory mode:
 
 | Mode | Flag | What it does |
 |------|------|------|

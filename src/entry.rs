@@ -6,9 +6,10 @@ use std::path::PathBuf;
 use crate::inventory::ServerId;
 use crate::meta::Selector;
 
-/// One profile `ae init` may offer, tied to the executable whose discovery
-/// makes it usable. Commands stay in [`DEFAULT_CONFIG`], so first-run seeding
-/// and init have one command catalog rather than two copies that can drift.
+/// One profile `ae init` may offer, tied to the client/executable whose
+/// discovery makes it usable. Client and profile commands stay in
+/// [`DEFAULT_CONFIG`], so first-run seeding and init have one command catalog
+/// rather than two copies that can drift.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Profile {
     /// Config key under `[profiles]`.
@@ -20,7 +21,7 @@ pub struct Profile {
     pub provider: Option<&'static str>,
 }
 
-/// The profile catalog shared by the seeded config and `ae init`.
+/// The client/profile catalog shared by the seeded config and `ae init`.
 pub const PROFILE_CATALOG: &[Profile] = &[
     Profile {
         name: "opus5",
@@ -108,6 +109,19 @@ pub const DEFAULT_CONFIG: &str = r##"# ae config — auto-created on first run, 
 # roster (main/workers), layout, and watchdog stay pinned in session meta, so edits to those
 # take effect for NEW sessions only. (ae doctor --refresh regenerates the on-disk session
 # helpers + workspace.md after you upgrade ae; it changes neither running agents nor config.)
+
+[clients]
+# A CLIENT names one installed CLI executable. Profiles below build model flags and permissions
+# on these names. `ae init` keeps one no-op client alias per executable it finds on PATH.
+# Add `config_home=$HOME/<dir>` to a SECOND Claude or Codex client to give it an independent
+# login and conversation store; see docs/getting-started/config.md. Do not add config_home to
+# the default client.
+claude = claude
+codex = codex
+grok = grok
+agy = agy
+opencode = opencode
+gemini = gemini
 
 [profiles]
 # Register any CLI tool as a PROFILE: profile = "the shell command that launches it". A
@@ -797,6 +811,7 @@ mod tests {
         assert!(LIST_HELP.starts_with("Usage: ae list ["));
         assert!(LIST_HELP.contains("--needs-attn"));
         assert!(DEFAULT_CONFIG.starts_with("# ae config — auto-created on first run"));
+        assert!(DEFAULT_CONFIG.contains("\n[clients]\n"));
         assert!(DEFAULT_CONFIG.contains("\n[profiles]\n"));
         assert!(DEFAULT_CONFIG.contains("\n[roster]\n"));
         assert!(DEFAULT_CONFIG.contains("\n[workspace]\n"));

@@ -8,6 +8,11 @@ project directory (the project file shadows the global file key by key).
 ## Example
 
 ```toml
+[clients]
+claude = claude
+codex = codex
+grok = grok
+
 [profiles]
 opus5 = "claude --permission-mode bypassPermissions --model claude-opus-5 --effort xhigh"
 gpt56sol = "codex --yolo -m gpt-5.6-sol -c model_reasoning_effort=xhigh"
@@ -32,41 +37,69 @@ watchdog = true
 instructions = "Always write tests. Prefer TypeScript."
 ```
 
+## `[clients]`
+
+A client names one installed CLI instance: its executable plus, optionally, its account/config
+directory. Profiles build flags and permissions on that name. The default entries are no-op
+aliases such as `claude = claude`; this keeps the executable choice in one place without changing
+existing profile commands.
+
+The value is one executable word followed by at most one `config_home=<path>` assignment. The
+path must be absolute or rooted at `$HOME`/`${HOME}`. ae expands it once when it resolves the
+profile; other variables are refused because a client path must not depend on a pane's ambient
+environment. Only Claude Code and Codex have verified account-directory variables:
+
+| Tool | `config_home` sets | Default store |
+|---|---|---|
+| Claude Code | `CLAUDE_CONFIG_DIR` | `$HOME/.claude` |
+| Codex | `CODEX_HOME` | `$HOME/.codex` |
+
+`config_home` is refused for Grok, agy, OpenCode, and Gemini until their account-directory
+contracts are verified.
+
 ## `[profiles]`
 
 Register any CLI tool as a profile — a reusable launch recipe. The value is the shell command to launch it. ae extracts the executable name from the command and verifies it's on `PATH` during `ae doctor`.
 
 ### Multiple identities of one CLI
 
-One binary can serve several logins/subscriptions — Claude Code selects its
-identity via `CLAUDE_CONFIG_DIR`, so an env prefix in the profile command is all
-it takes:
+One binary can serve several logins/subscriptions. Give each non-default account a client, then
+use that client name as the executable word in its profiles:
 
 ```toml
+[clients]
+cc = claude
+cc-mic = claude config_home=$HOME/.claude-mic
+codex = codex
+codex-mic = codex config_home=${HOME}/.codex-mic
+
 [profiles]
-fable5   = "claude --permission-mode bypassPermissions --model fable --effort xhigh"
-fablemic = "CLAUDE_CONFIG_DIR=$HOME/.claude-mic claude --permission-mode bypassPermissions --model fable --effort xhigh"
-claude2  = "CLAUDE_CONFIG_DIR=$HOME/.claude2 claude --permission-mode bypassPermissions --model opus --effort xhigh"
+fable5 = "cc --permission-mode bypassPermissions --model fable --effort xhigh"
+fablemic = "cc-mic --permission-mode bypassPermissions --model fable --effort xhigh"
+solmic = "codex-mic --yolo -m gpt-5.6-sol -c model_reasoning_effort=xhigh"
 ```
 
-Each profile gets its own login (macOS keychain entries are keyed by the config
-dir), its own usage pool, and its own history — so one workspace can mix a work
-subscription and a personal one seat by seat (bind each to its own `[roster]`
-name). `/login` once per identity.
+Each client gets its own login, settings, usage pool, and conversation store, so one workspace can
+mix work and personal subscriptions seat by seat. Bind the profiles to different `[roster]` names
+and run the tool's login flow once per new client.
 
-Two traps:
+**Claude default-state trap:** never set `CLAUDE_CONFIG_DIR` (directly or through `config_home`) to
+the default `$HOME/.claude` directory. Without the variable, Claude Code reads its account state
+from `$HOME/.claude.json`; with the variable set, it reads
+`$CLAUDE_CONFIG_DIR/.claude.json` instead. The default client must stay `claude = claude` with no
+`config_home`, or the same-looking path selects a different state file and can appear logged out.
 
-- **Inline the env var — don't rely on a shell function.** A fish/zsh wrapper
-  like `claude-mic` doesn't exist in the bash that launches agent panes.
-- **Don't create wrapper binaries** (`claude2`, `claude-mic` on `PATH`): ae's
-  session machinery keys on the exact executable name, and a renamed binary is
-  deliberately treated as an unknown tool — no session IDs, no exact resume.
+The config home becomes seat identity on first start: ae records its canonical path before exec,
+then uses that recorded value for resume probes, Codex session-id capture, and optional history
+purge. Changing `cc-mic` from directory A to B while a session is retained therefore prints:
 
-Current limitation: env-prefixed commands are classified by a raw prefix match
-today, so the identity profiles launch fine but degrade to generic-tool handling
-(no `--session-id`, heuristic resume) until
-[#32](https://github.com/clemens33/ae/issues/32) lands. Track that issue if you
-adopt this pattern.
+```text
+ae: seat <slot>: config now points claude at <B>; the retained conversation lives in <A>, resuming there — end the session to adopt <B>
+```
+
+Stopping and resuming keeps A. End that session and start a new one to adopt B. A client entry
+also avoids shell functions and renamed wrapper binaries: ae expands the client label to the real
+executable before it classifies and launches the tool.
 
 ## `[roster]`
 

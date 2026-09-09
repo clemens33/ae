@@ -7,6 +7,19 @@
 # take effect for NEW sessions only. (ae doctor --refresh regenerates the on-disk session
 # helpers + workspace.md after you upgrade ae; it changes neither running agents nor config.)
 
+[clients]
+# A CLIENT names one installed CLI executable. Profiles below build model flags and permissions
+# on these names. `ae init` keeps one no-op client alias per executable it finds on PATH.
+# Add `config_home=$HOME/<dir>` to a SECOND Claude or Codex client to give it an independent
+# login and conversation store; see docs/getting-started/config.md. Do not add config_home to
+# the default client.
+claude = claude
+codex = codex
+grok = grok
+agy = agy
+opencode = opencode
+gemini = gemini
+
 [profiles]
 # Register any CLI tool as a PROFILE: profile = "the shell command that launches it". A
 # profile is a reusable launch recipe, not an identity: an agent IS its NAME, bound to a
