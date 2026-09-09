@@ -73,9 +73,15 @@ A crash writes its input under `artifacts/<target>/`; reproduce it with
 
 ## Lock refresh after a release
 
-`just release` rewrites the root `Cargo.toml` version and the root
-`Cargo.lock`, and does not touch this crate's lock — so the `ae` entry here
-goes stale on every CalVer bump and the lane refuses with the exact remedy:
+This lock records the path dependency as `ae <version>`, so a CalVer bump moves
+it. `just release` refreshes it between the bump and the version commit, with
+the pinned nightly, so one commit carries the whole bump and the lane's
+`--locked` proof agrees with what was written.
+
+That refresh is BEST EFFORT by design: a release must never fail on a dev
+toolchain. On a machine without the nightly the release publishes with this lock
+as committed and warns instead, and the lane then refuses until someone runs the
+remedy the warning prints:
 
 ```sh
 cargo +<pin> metadata --manifest-path fuzz/Cargo.toml --format-version 1 >/dev/null
