@@ -1,6 +1,78 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.33] - 2026-09-09
+
+### Other
+
+- Add the cargo-fuzz lane for the hostile parsers
+
+AGENTS.md requires cargo-fuzz before a parser of hostile persisted state cuts
+over, and no lane existed. fuzz/ is an independent crate — not a workspace
+member, its own lock, its own nightly — so the product's 1.97.1 pin and the
+deny/vet graphs are untouched. Three thin targets call config::parse_identity,
+Meta::parse and lex_simple_command and discard the result through black_box.
+
+`just rust-fuzz target=<name> secs=60` and `rust-fuzz-all secs=60` run it. The
+preflight refuses on an unpinned cargo-fuzz, a missing nightly or rust-src, a
+stale fuzz/Cargo.lock, or unformatted fuzz sources, and a run ends on the
+evidence line a cutover report pastes. CI never runs the lane: no nightly there.
+
+FUZZ_TOOLCHAIN in the justfile is the lane's ONE nightly pin — there is no
+fuzz/rust-toolchain.toml to drift from it. cargo-fuzz 0.13.2 has no --locked
+pass-through, so the committed lock is proven with `cargo metadata --locked`
+before anything builds. Named seeds are tracked under fuzz/seeds/<target>/ and
+byte-exact by .gitattributes; libFuzzer's own corpus/ stays ignored.
+
+parse_identity is the pure parser behind read_identity, exposed so the fuzz
+loop holds no filesystem door, and tested against the file reader so the two
+cannot become separate grammars.
+
+First measurement, 30s per target: 1.24M, 1.03M and 1.05M runs at 33-40k
+exec/s. No crash, no leak, no timeout.
+- Refresh the fuzz lock in the release's version commit
+
+The fuzz crate is outside the workspace, so `just bump` never reached its
+lock — and that lock records the ae version, so every CalVer bump left it
+stale and the fuzz lane refused until someone refreshed it by hand.
+
+The release now refreshes it between the bump and the commit, with the lane's
+own nightly so the lane's `cargo metadata --locked` proof agrees with what was
+written. The probe and the refresh are ONE condition: a machine without the
+nightly publishes with the lock as committed and says so in a warning, and the
+`git checkout` beside it means that promise holds even when a metadata run
+failed half-way. A dev toolchain cannot fail a release.
+
+tests/it/gate.rs pins all four rules — after the bump, before the commit,
+guarded, and unable to refuse — each against a justfile that breaks it.
+- Bound the fuzz lane's duration to a positive integer
+
+The duration guard refused the literal `0` and every non-digit, which reads as
+sufficient and is not. `00` is all digits and is not `0`, so it passed, and
+libFuzzer imposes a total-time limit only when the value is positive — it reads
+`-max_total_time` into an int and treats zero as no limit. `just rust-fuzz
+target=meta_parse secs=00` therefore started the one thing this lane exists to
+avoid: an unbounded run. A value past the int range wrapped the same way.
+
+The test is now anchored and bounded, `^[1-9][0-9]{0,5}$` — 1 to 999999
+seconds, which is eleven days at the top and far inside the int range.
+
+tests/it/gate.rs pins what text can prove: the anchoring, the absence of the
+digits-only pattern, the order against the cargo-fuzz call, and the sweep's
+single route through the guarded recipe. A synthetic green lane sits beside the
+four red ones so a passing run cannot come from a rule that matches nothing.
+
+The evidence line also said TRACKED seeds while counting every file on disk;
+it counts `git ls-files` now, and a target with no seed directory refuses.
+- Say that the release refreshes the fuzz lock
+
+The README still described the state before the release did it: a lock nobody
+refreshed and a manual remedy after every bump. The remedy is still there,
+because the refresh is best effort on purpose — a release must never fail on a
+dev toolchain, so a machine without the nightly publishes with this lock as
+committed and warns instead.
+- Widen colead pane to 40 percent of the lead-pair window
+- Add pane flip menu to session strip
 ## [v2026.9.32] - 2026-09-08
 
 ### Other
