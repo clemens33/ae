@@ -21,7 +21,8 @@ use crate::inventory::ServerId;
 use crate::meta::Selector;
 use crate::tmux::{
     MOUSE_DOWN_STATUS_MENU_ACTION, MOUSE_STATUS_AE, MOUSE_STATUS_AE_MORE, MOUSE_STATUS_PICKER,
-    MOUSE_STATUS_SESSION, MOUSE_STATUS_WINDOW, server_args, session_target, status_picker_command,
+    MOUSE_STATUS_SESSION, MOUSE_STATUS_WINDOW, mouse_dispatch_literal, server_args, session_target,
+    status_picker_command, tmux_current_format_double_quote,
 };
 
 /// The `-P -F` format every pane-creating call here prints.
@@ -369,73 +370,34 @@ fn left_click_dispatch(picker: &str) -> Vec<String> {
     mouse_dispatch(format_if(MOUSE_STATUS_AE_MORE, picker, &orchestrator))
 }
 
-fn current_format_double_quote(text: &str) -> String {
-    let mut out = String::with_capacity(text.len() + 2);
-    out.push('"');
-    for ch in text.chars() {
-        match ch {
-            '\\' => out.push_str("\\\\"),
-            '"' => out.push_str("\\\""),
-            '$' => out.push_str("\\$"),
-            _ => out.push(ch),
-        }
-    }
-    out.push('"');
-    out
+fn fixed_mouse_shell_word(word: &str) -> String {
+    mouse_dispatch_literal(&crate::launch::shell_quote(word))
 }
 
 fn flip_menu_command(server: &ServerId, action: &str) -> String {
-    let mut words = vec!["tmux".to_owned()];
-    words.extend(server_args(server));
-    words.extend(
-        [
-            "display-menu",
-            "-c",
-            "#{q:client_name}",
-            "-t",
-            "#{pane_id}",
-            "-T",
-            "#{session_name}",
-            "-x",
-            "M",
-            "-y",
-            "S",
-            "Flip lead/colead panes",
-            "f",
-            action,
-        ]
-        .map(ToOwned::to_owned),
+    let mut shell_words = vec![fixed_mouse_shell_word("tmux")];
+    shell_words.extend(
+        server_args(server)
+            .iter()
+            .map(|word| fixed_mouse_shell_word(word)),
     );
-    let shell = words
-        .iter()
-        .map(|word| crate::launch::shell_quote(word))
-        .collect::<Vec<_>>()
-        .join(" ");
-    format!("run-shell -b {}", current_format_double_quote(&shell))
-}
-
-fn action_through_mouse_dispatch(action: &str) -> String {
-    let mut out = String::with_capacity(action.len() * 2);
-    for ch in action.chars() {
-        match ch {
-            // The action crosses the mouse dispatch and its nested run-shell
-            // before display-menu consumes the original `##` layer.
-            '#' => out.push_str("####"),
-            // At this first boundary the hashes above make these braces and
-            // commas literal text inside the surrounding format conditional.
-            ',' => out.push_str("#,"),
-            '}' => out.push_str("#}"),
-            _ => out.push(ch),
-        }
-    }
-    out
+    shell_words.extend(["display-menu", "-c"].map(fixed_mouse_shell_word));
+    shell_words.push("#{q:client_name}".to_owned());
+    shell_words.push(fixed_mouse_shell_word("-t"));
+    shell_words.push(crate::launch::shell_quote("#{pane_id}"));
+    shell_words.push(fixed_mouse_shell_word("-T"));
+    shell_words.push(crate::launch::shell_quote("#{session_name}"));
+    shell_words.extend(
+        ["-x", "M", "-y", "S", "Flip lead/colead panes", "f", action].map(fixed_mouse_shell_word),
+    );
+    format!(
+        "run-shell -b {}",
+        tmux_current_format_double_quote(&shell_words.join(" "))
+    )
 }
 
 fn right_click_dispatch(server: &ServerId, picker: &str) -> Vec<String> {
-    let flip = flip_menu_command(
-        server,
-        &action_through_mouse_dispatch(MOUSE_DOWN_STATUS_MENU_ACTION),
-    );
+    let flip = flip_menu_command(server, MOUSE_DOWN_STATUS_MENU_ACTION);
     let session = format_if(MOUSE_STATUS_SESSION, &flip, "");
     mouse_dispatch(format_if(MOUSE_STATUS_PICKER, picker, &session))
 }
@@ -672,7 +634,7 @@ mod tests {
                 "-C",
                 "-t",
                 "{mouse}",
-                "#{?#{||:#{==:#{mouse_status_range},ae},#{==:#{mouse_status_range},ae-more}},run-shell -b \"'/opt/ae' 'orchestrator' '--popup' '--client' #{q:client_name}\",#{?#{==:#{mouse_status_range},session},run-shell -b \"'tmux' '-L' 'ae' 'display-menu' '-c' '#{q:client_name}' '-t' '#{pane_id}' '-T' '#{session_name}' '-x' 'M' '-y' 'S' 'Flip lead/colead panes' 'f' 'if-shell -F '\\\\''########{&&:########{==:########{window_panes#}#,2#}#,########{==:########{window_zoomed_flag#}#,0#}#}'\\\\'' '\\\\''swap-pane -d -s \\\"{top-left#}\\\" -t \\\"{bottom-right#}\\\"'\\\\'' '\\\\''display-message \\\"flip needs an unzoomed two-pane window\\\"'\\\\'''\",}}"
+                "#{?#{||:#{==:#{mouse_status_range},ae},#{==:#{mouse_status_range},ae-more}},run-shell -b \"'/opt/ae' 'orchestrator' '--popup' '--client' #{q:client_name}\",#{?#{==:#{mouse_status_range},session},run-shell -b \"'tmux' '-L' 'ae' 'display-menu' '-c' #{q:client_name} '-t' '#{pane_id}' '-T' '#{session_name}' '-x' 'M' '-y' 'S' 'Flip lead/colead panes' 'f' 'if-shell -F '\\\\''########{&&:########{==:########{window_panes#}#,2#}#,########{==:########{window_zoomed_flag#}#,0#}#}'\\\\'' '\\\\''swap-pane -d -s \\\"{top-left#}\\\" -t \\\"{bottom-right#}\\\"'\\\\'' '\\\\''display-message \\\"flip needs an unzoomed two-pane window\\\"'\\\\'''\",}}"
             ]
         );
         assert!(

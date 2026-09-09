@@ -926,19 +926,56 @@ pub fn run_shell_background_command(argv: &[String]) -> String {
 
 /// A background picker launch whose last word is the client that clicked.
 ///
-/// Fixed words take the same two quoting layers as
-/// [`run_shell_background_command`]. The one unescaped format is deliberate:
-/// tmux's `q` modifier makes the expanded client name one safe shell word.
+/// Fixed words cross both the outer mouse-dispatch format and the nested
+/// `run-shell` format. The one unescaped format is deliberate: tmux's `q`
+/// modifier makes the expanded client name one safe shell word.
 #[must_use]
 pub(crate) fn status_picker_command(launcher: &[String]) -> String {
     let mut argv = launcher.to_vec();
     argv.extend(["orchestrator", "--popup", "--client"].map(ToOwned::to_owned));
-    let mut command = run_shell_background_command(&argv);
-    if command.ends_with('"') {
-        command.pop();
-        command.push_str(" #{q:client_name}\"");
+    let shell = argv
+        .iter()
+        .map(|word| mouse_dispatch_literal(&crate::launch::shell_quote(word)))
+        .chain(std::iter::once("#{q:client_name}".to_owned()))
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!("run-shell -b {}", tmux_current_format_double_quote(&shell))
+}
+
+/// Carry literal text through the mouse dispatch and its nested `run-shell`.
+///
+/// Each hash crosses two format expansions. Commas and closing braces need one
+/// escape because the outer expansion embeds the text in a format conditional.
+pub(crate) fn mouse_dispatch_literal(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() * 2);
+    for ch in text.chars() {
+        match ch {
+            '#' => out.push_str("####"),
+            ',' => out.push_str("#,"),
+            '}' => out.push_str("#}"),
+            _ => out.push(ch),
+        }
     }
-    command
+    out
+}
+
+/// One double-quoted argument in the current tmux command language.
+///
+/// Hashes remain untouched: callers deliberately mix layer-counted literals
+/// with formats which the outer mouse dispatch must expand.
+pub(crate) fn tmux_current_format_double_quote(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 2);
+    out.push('"');
+    for ch in text.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '$' => out.push_str("\\$"),
+            _ => out.push(ch),
+        }
+    }
+    out.push('"');
+    out
 }
 
 /// One argument in tmux's deferred command language.
@@ -2148,6 +2185,14 @@ mod tests {
         assert_eq!(
             status_picker_command(&launcher),
             r#"run-shell -b "'env' 'AE_HOME=/tmp/ae home' '/tmp/ae checkout/target/debug/ae' 'orchestrator' '--popup' '--client' #{q:client_name}""#
+        );
+        assert_eq!(
+            status_picker_command(&[
+                "env".to_owned(),
+                "AE_HOME=/tmp/ae#,state".to_owned(),
+                "/tmp/ae}core".to_owned(),
+            ]),
+            r#"run-shell -b "'env' 'AE_HOME=/tmp/ae#####,state' '/tmp/ae#}core' 'orchestrator' '--popup' '--client' #{q:client_name}""#
         );
     }
 

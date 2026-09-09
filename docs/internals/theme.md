@@ -156,9 +156,10 @@ selection colours mark it in place; it never jumps into the fleet strip. Three
 spaces separate it from the fleet and one space separates it from `ae <version>`.
 Each strip entry is a tmux `range=session` region, so
 ae's root `MouseDown1Status` binding sends it through tmux's default
-`switch-client -t =` action. `MouseDown3Status` opens the context menu for the
-clicked session's current window. The bindings are the server-global exception
-described above and are installed only on an ae-owned server.
+`switch-client -t #{session_id}` action. Window ranges use
+`select-window -t #{window_id}`. `MouseDown3Status` opens the context menu for
+the clicked session's current window. The bindings are the server-global
+exception described above and are installed only on an ae-owned server.
 The bottom-right `ae <version>` segment is always the user range `ae`:
 left-click switches to the recorded orchestrator when one exists and otherwise
 does nothing; right-click opens the fleet picker. When the strip hides rows,

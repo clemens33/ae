@@ -399,6 +399,155 @@ fn launch_ae_session(
     );
 }
 
+/// Launch two sessions with one real client pair, then prove a right-click on
+/// the product's installed `ae` status range opens the picker on that client.
+/// Paths are inputs to the actual checkout launch and tmux binding, not argv
+/// assertions. Each case owns and tears down its private server.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one real-click punctuation-path witness with same-pane client isolation"
+)]
+fn assert_version_picker_case(tag: &str, root_name: &str, config_name: &str) {
+    let scratch = scratch(tag);
+    if !tmux_present(&scratch) {
+        let _ = fs::remove_dir_all(&scratch);
+        panic!("tmux is not runnable here, so a status-range click cannot be proven");
+    }
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let root = scratch.join(root_name);
+    let project = scratch.join("project");
+    let config = scratch.join(config_name);
+    assert!(fs::create_dir_all(&project).is_ok());
+    assert!(
+        fs::write(
+            &config,
+            "[profiles]\nidle = \"sleep 600\"\n\n[roster]\nlead = idle\n\n[workspace]\nmain = lead\nlayout = vertical\nwatchdog = false\n",
+        )
+        .is_ok()
+    );
+    for session in ["fleet-a", "fleet-b"] {
+        launch_ae_session(&socket, &scratch, &root, &project, &config, session);
+    }
+
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &[
+                "set-option",
+                "-t",
+                "fleet-a",
+                "status-format[1]",
+                "#[range=user|ae]ae #{@ae_version}#[norange]",
+            ],
+        )
+        .0
+    );
+    let clicked = nested_client(&socket, &scratch, "fleet-a", "clicked-viewer");
+    let untouched = nested_client(&socket, &scratch, "fleet-a", "untouched-viewer");
+    let clients = wait_for(
+        "two clients on fleet-a's pane",
+        || {
+            tmux(
+                &socket,
+                &scratch,
+                &[
+                    "list-clients",
+                    "-F",
+                    "#{client_name}|#{client_session}|#{pane_id}",
+                ],
+            )
+            .1
+        },
+        |seen| {
+            seen.lines()
+                .filter(|line| line.contains("|fleet-a|"))
+                .count()
+                == 2
+        },
+    );
+    let clicked_pane = clients
+        .lines()
+        .find_map(|line| line.strip_prefix(&format!("{clicked}|fleet-a|")))
+        .unwrap_or_else(|| panic!("clicked client: {clients}"));
+    assert!(
+        clients.contains(&format!("{untouched}|fleet-a|{clicked_pane}")),
+        "both clients must watch the SAME pane: {clients}"
+    );
+
+    click_status(&socket, &scratch, "clicked-viewer", &clicked, 2, 2);
+    let menu = wait_for(
+        "the fleet menu from a real version click",
+        || {
+            tmux(
+                &socket,
+                &scratch,
+                &["capture-pane", "-p", "-t", "clicked-viewer"],
+            )
+            .1
+        },
+        |seen| seen.contains("ae fleet") && seen.contains("fleet-b"),
+    );
+    assert!(
+        menu.contains("fleet-a") && menu.contains("fleet-b"),
+        "{menu}"
+    );
+    let other = tmux(
+        &socket,
+        &scratch,
+        &["capture-pane", "-p", "-t", "untouched-viewer"],
+    )
+    .1;
+    assert!(
+        !other.contains("ae fleet"),
+        "menu leaked to other client: {other}"
+    );
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &["send-keys", "-t", "clicked-viewer", "q"]
+        )
+        .0
+    );
+    wait_for(
+        "the fleet menu to close",
+        || {
+            tmux(
+                &socket,
+                &scratch,
+                &["capture-pane", "-p", "-t", "clicked-viewer"],
+            )
+            .1
+        },
+        |seen| !seen.contains("ae fleet"),
+    );
+}
+
+/// Plain paths establish the control; comma paths exercise the actual binding's
+/// quoting while preserving the two-client proof.
+#[test]
+fn right_clicking_version_picker_survives_comma_paths() {
+    assert_version_picker_case("status-picker-control", "custom-state", "nondefault.config");
+    assert_version_picker_case("status-picker-comma", "state,comma", "config,comma");
+}
+
+/// Plain paths establish the control; closing-brace paths exercise the actual
+/// binding's quoting while preserving the two-client proof.
+#[test]
+fn right_clicking_version_picker_survives_closing_brace_paths() {
+    assert_version_picker_case(
+        "status-picker-control-brace",
+        "custom-state",
+        "nondefault.config",
+    );
+    assert_version_picker_case("status-picker-brace", "state}brace", "config}brace");
+}
+
 fn nested_client(socket: &Path, scratch: &Path, session: &str, viewer: &str) -> String {
     let attach = format!(
         "env -u TMUX tmux -S {} attach -t {session}",
