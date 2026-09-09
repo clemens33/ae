@@ -1,6 +1,14 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.36] - 2026-09-09
+
+### Other
+
+- Advise session leads on quota transitions
+- Harden quota advisory delivery
+- Add fleet picker status menu
+- Escape picker commands across tmux formats
 ## [v2026.9.35] - 2026-09-09
 
 ### Other
