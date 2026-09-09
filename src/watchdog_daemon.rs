@@ -3761,6 +3761,7 @@ mod tests {
             profile: Some(alias.to_owned()),
             harness_session: None,
             config_home: crate::meta::RecordedConfigHome::Missing,
+            config_home_base: crate::meta::RecordedConfigHomeBase::Missing,
             binary: None,
         }
     }

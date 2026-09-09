@@ -94,7 +94,9 @@ from `$HOME/.claude.json`; with the variable set, it reads
 The config home becomes seat identity on first start: ae records its canonical path and whether the
 tool-specific variable was explicit or the default was derived from an unset variable. It uses that
 recorded value and mode for resume probes, execution, Codex session-id capture, and optional history
-purge. Changing `cc-mic` from directory A to B while a session is retained therefore prints:
+purge. For a default-derived store, ae also records the effective `HOME`; this keeps the tool's login
+and state files aligned even when the default store is a symlink. Changing `cc-mic` from directory A
+to B while a session is retained therefore prints:
 
 ```text
 ae: seat <slot>: config now points claude at <B>; the retained conversation lives in <A>, resuming there — end the session to adopt <B>

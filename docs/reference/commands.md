@@ -151,6 +151,8 @@ kind is refused. A running session must be stopped before any seat profile chang
 
 On a seat's first start, ae records the canonical config home and whether the tool-specific
 variable selected it explicitly or remained unset for the default, before the tool execs. A
+default-derived store also records the canonical effective `HOME`, because a symlinked default
+store does not reveal which home owns the tool's login and state files. A
 retained session keeps that home and mode even if its client later changes or disappears; the
 resume prints a `config now points ... retained conversation lives in ...` notice when the path
 moves, and the recorded identity wins. This keeps the resume probe, Codex id capture, and execution

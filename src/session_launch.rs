@@ -1742,6 +1742,7 @@ struct Launching {
     tool: ToolKind,
     session_id: String,
     config_home: Option<String>,
+    config_home_base: Option<String>,
     launch_id: String,
     pane: String,
     command_snapshot: Option<config::ResolvedCommand>,
@@ -1911,6 +1912,11 @@ fn build(
                 .then(|| meta_value(&dir, &format!("config_home.{}", seat.slot)))
                 .flatten()
                 .filter(|value| !value.is_empty()),
+            config_home_base: shape
+                .resuming
+                .then(|| meta_value(&dir, &format!("config_home_base.{}", seat.slot)))
+                .flatten()
+                .filter(|value| !value.is_empty()),
             launch_id,
             pane: panes[index].clone(),
             command_snapshot: seat_overrides.map(|_| seat.command.clone()),
@@ -1959,6 +1965,7 @@ fn build(
                 tool,
                 session_id: entry.harness_session,
                 config_home: entry.config_home,
+                config_home_base: entry.config_home_base,
                 launch_id,
                 pane,
                 command_snapshot: seat_overrides
@@ -2566,6 +2573,7 @@ fn meta_document(
             binary: (!agent.binary.is_empty()).then(|| agent.binary.clone()),
             harness_session: (!agent.session_id.is_empty()).then(|| agent.session_id.clone()),
             config_home: agent.config_home.clone(),
+            config_home_base: agent.config_home_base.clone(),
         })
         .collect();
     if let Some(bad) = seats
@@ -3363,6 +3371,7 @@ struct Spawned {
     binary: String,
     harness_session: String,
     config_home: Option<String>,
+    config_home_base: Option<String>,
 }
 
 /// The `spawned.<n>` seats a resuming session's meta records, in slot order.
@@ -3383,6 +3392,7 @@ fn spawned_entries(dir: &Path) -> Vec<Spawned> {
             binary: entry.binary.clone().unwrap_or_default(),
             harness_session: entry.harness_session.clone().unwrap_or_default(),
             config_home: entry.config_home.record_value(),
+            config_home_base: entry.config_home_base.record_value(),
         })
         .collect();
     out.sort_by_key(|entry| {

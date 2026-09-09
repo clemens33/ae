@@ -1175,6 +1175,7 @@ mod tests {
             profile: Some("p".to_owned()),
             harness_session: id.map(ToOwned::to_owned),
             config_home: crate::meta::RecordedConfigHome::Missing,
+            config_home_base: crate::meta::RecordedConfigHomeBase::Missing,
             binary: Some(binary.to_owned()),
         }
     }

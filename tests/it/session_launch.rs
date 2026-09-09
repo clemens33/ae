@@ -1223,12 +1223,24 @@ fn a_resume_reruns_with_the_resume_variant() {
         .strip_prefix("implicit:")
         .unwrap_or_default()
         .to_owned();
+    let config_home_base_row = fresh
+        .lines()
+        .find_map(|line| line.strip_prefix("config_home_base.main="))
+        .unwrap_or_default()
+        .to_owned();
     assert_eq!(
         Path::new(&config_home),
         std::fs::canonicalize(rig.scratch.join(".claude"))
             .expect("canonical default")
             .as_path(),
         "first start pins its canonical store: {fresh}"
+    );
+    assert_eq!(
+        Path::new(&config_home_base_row),
+        std::fs::canonicalize(&rig.scratch)
+            .expect("canonical HOME")
+            .as_path(),
+        "first start pins the HOME that selected its implicit store: {fresh}"
     );
 
     // The session stops; its state stays.
@@ -1302,6 +1314,11 @@ fn a_resume_reruns_with_the_resume_variant() {
         rig.meta("lnres")
             .contains(&format!("config_home.main={config_home_row}\n")),
         "the recorded config home survives the full meta rebuild"
+    );
+    assert!(
+        rig.meta("lnres")
+            .contains(&format!("config_home_base.main={config_home_base_row}\n")),
+        "the recorded implicit HOME survives the full meta rebuild"
     );
     assert!(
         !rig.dir("lnres").join("launch.main.sh").exists(),
@@ -1647,6 +1664,11 @@ fn a_hostile_config_home_row_refuses_a_stopped_resume_without_rewriting_meta() {
     for (tag, session, damage) in [
         ("bad-config-home", "lnbadconfighome", "relative"),
         ("dup-config-home", "lndupconfighome", "duplicate"),
+        (
+            "missing-config-home-base",
+            "lnmissconfighome",
+            "missing-base",
+        ),
     ] {
         let rig = Rig::new(tag, &["claude"], None);
         let (code, stdout, stderr) = rig.launch(&["--local", session]);
@@ -1658,12 +1680,17 @@ fn a_hostile_config_home_row_refuses_a_stopped_resume_without_rewriting_meta() {
         );
         let path = rig.dir(session).join("meta");
         let original = std::fs::read_to_string(&path).expect("meta");
-        let damaged = if damage == "relative" {
+        let damaged = if damage == "duplicate" {
+            format!("{original}config_home.main=/second\n")
+        } else {
             original
                 .lines()
                 .map(|line| {
-                    if line.starts_with("config_home.main=") {
+                    if damage == "relative" && line.starts_with("config_home.main=") {
                         "config_home.main=relative"
+                    } else if damage == "missing-base" && line.starts_with("config_home_base.main=")
+                    {
+                        ""
                     } else {
                         line
                     }
@@ -1671,8 +1698,6 @@ fn a_hostile_config_home_row_refuses_a_stopped_resume_without_rewriting_meta() {
                 .collect::<Vec<_>>()
                 .join("\n")
                 + "\n"
-        } else {
-            format!("{original}config_home.main=/second\n")
         };
         std::fs::write(&path, &damaged).expect("hostile meta");
         let (code, stdout, stderr) = rig.launch(&["--local", session]);
@@ -2450,7 +2475,7 @@ fn resumable_rig(tag: &str, session: &str, profile: &str) -> (Rig, PathBuf) {
                  work_dir={home}\norigin={home}\nschema=2\nseat.main=lead\n\
                  profile.main=idle\nagent_bin.main=sleep\nconfig_home.main=absent\n\
                  seat.spawned.0=helper\nprofile.spawned.0=bad\nagent_bin.spawned.0=sleep\n\
-                 config_home.spawned.0=unknown\n",
+                 config_home.spawned.0=implicit:{home}/.agent\nconfig_home_base.spawned.0={home}\n",
                 version = ae::migrate::CURRENT,
                 server = rig.sock.display(),
                 home = rig.project.display(),
@@ -2513,8 +2538,18 @@ fn a_restored_spawned_seat_with_a_valid_profile_still_resumes() {
     let rebuilt = rig.meta("lnspwo");
     assert!(rebuilt.contains("config_home.main=absent\n"), "{rebuilt}");
     assert!(
-        rebuilt.contains("config_home.spawned.0=unknown\n"),
+        rebuilt.contains(&format!(
+            "config_home.spawned.0=implicit:{}/.agent\n",
+            rig.project.display()
+        )),
         "restored spawned seats carry the named row: {rebuilt}"
+    );
+    assert!(
+        rebuilt.contains(&format!(
+            "config_home_base.spawned.0={}\n",
+            rig.project.display()
+        )),
+        "restored spawned seats carry the implicit HOME row: {rebuilt}"
     );
 }
 

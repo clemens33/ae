@@ -48,6 +48,8 @@ pub struct Plan {
     pub argv: Vec<String>,
     /// A first start publishes this row before its marker and exec.
     config_home_row: Option<String>,
+    /// An implicit first start publishes its effective `HOME` with the store.
+    config_home_base_row: Option<String>,
     /// A retained conversation whose current config points elsewhere.
     config_home_notice: Option<String>,
 }
@@ -178,7 +180,8 @@ pub fn run(
         return Ok(0);
     }
     if let Some(value) = plan.config_home_row.as_deref()
-        && let Err(why) = crate::meta::rewrite(dir, &format!("config_home.{slot}"), Some(value))
+        && let Err(why) =
+            crate::meta::record_config_home(dir, slot, value, plan.config_home_base_row.as_deref())
     {
         writeln!(
             err,
@@ -299,8 +302,15 @@ fn build_with_snapshot(
     );
     let current = crate::launch_cmd::config_home_resolution(&seat.command, seat.tool, &env_lookup);
     let canonical_current = canonical_config_home(&current.home);
-    let identity =
-        config_home_identity(slot, &seat.config_home, current.explicit, canonical_current)?;
+    let canonical_base = canonical_config_home(&current.base);
+    let identity = config_home_identity(
+        slot,
+        &seat.config_home,
+        &seat.config_home_base,
+        current.explicit,
+        canonical_current,
+        canonical_base,
+    )?;
     let config_home_notice = (mode == Mode::Resume
         && seat.config_home != crate::meta::RecordedConfigHome::Missing
         && identity.current != identity.effective)
@@ -316,28 +326,11 @@ fn build_with_snapshot(
     let composed = compose(dir, slot, &seat, &ctx, mode, &identity.effective);
     let words = crate::words::split_words(&composed, &env_lookup)?;
     let (mut prefix, mut argv) = peel_env(words)?;
-    let canonical_default = canonical_config_home(&current.default).ok();
     if let Some((mut inner, binary_at)) = nested_env_prefix(&argv) {
-        reconcile_config_home(
-            &mut inner,
-            seat.tool,
-            &current.home,
-            current.explicit,
-            &identity.current,
-            &identity.recorded,
-            canonical_default.as_ref(),
-        );
+        reconcile_config_home(&mut inner, seat.tool, &current, &identity);
         rebuild_nested_env(&mut argv, inner, binary_at);
     } else {
-        reconcile_config_home(
-            &mut prefix,
-            seat.tool,
-            &current.home,
-            current.explicit,
-            &identity.current,
-            &identity.recorded,
-            canonical_default.as_ref(),
-        );
+        reconcile_config_home(&mut prefix, seat.tool, &current, &identity);
     }
     Ok(Plan {
         mode,
@@ -347,6 +340,7 @@ fn build_with_snapshot(
         set: prefix.assign,
         argv,
         config_home_row: identity.new_row,
+        config_home_base_row: identity.new_base_row,
         config_home_notice,
     })
 }
@@ -355,14 +349,19 @@ struct ConfigHomeIdentity {
     current: crate::launch_cmd::Resolved,
     recorded: crate::meta::RecordedConfigHome,
     effective: crate::launch_cmd::Resolved,
+    current_base: crate::launch_cmd::Resolved,
+    recorded_base: crate::meta::RecordedConfigHomeBase,
     new_row: Option<String>,
+    new_base_row: Option<String>,
 }
 
 fn config_home_identity(
     slot: &str,
     stored: &crate::meta::RecordedConfigHome,
+    stored_base: &crate::meta::RecordedConfigHomeBase,
     current_explicit: bool,
     canonical_current: Result<crate::launch_cmd::Resolved, String>,
+    canonical_base: Result<crate::launch_cmd::Resolved, String>,
 ) -> Result<ConfigHomeIdentity, String> {
     let was_missing = stored == &crate::meta::RecordedConfigHome::Missing;
     let current = if was_missing {
@@ -388,6 +387,43 @@ fn config_home_identity(
         }
         other => other.clone(),
     };
+    let needs_base = matches!(recorded, crate::meta::RecordedConfigHome::Implicit(_));
+    let current_base = if was_missing && needs_base {
+        canonical_base?
+    } else {
+        current_notice(canonical_base)
+    };
+    let recorded_base = if was_missing && needs_base {
+        match &current_base {
+            crate::launch_cmd::Resolved::Path(path) => {
+                crate::meta::RecordedConfigHomeBase::Path(path.clone())
+            }
+            _ => {
+                return Err(format!(
+                    "seat '{slot}' has no usable HOME for its implicit config home"
+                ));
+            }
+        }
+    } else {
+        stored_base.clone()
+    };
+    let base_is_valid = matches!(
+        (&recorded, &recorded_base),
+        (
+            crate::meta::RecordedConfigHome::Implicit(_),
+            crate::meta::RecordedConfigHomeBase::Path(_)
+        ) | (
+            crate::meta::RecordedConfigHome::Path(_)
+                | crate::meta::RecordedConfigHome::Absent
+                | crate::meta::RecordedConfigHome::Unknown,
+            crate::meta::RecordedConfigHomeBase::Missing
+        )
+    );
+    if !base_is_valid {
+        return Err(format!(
+            "seat '{slot}' has malformed or inconsistent config_home_base metadata"
+        ));
+    }
     let effective = match &recorded {
         crate::meta::RecordedConfigHome::Path(path)
         | crate::meta::RecordedConfigHome::Implicit(path) => {
@@ -402,11 +438,15 @@ fn config_home_identity(
         }
     };
     let new_row = was_missing.then(|| recorded.record_value()).flatten();
+    let new_base_row = was_missing.then(|| recorded_base.record_value()).flatten();
     Ok(ConfigHomeIdentity {
         current,
         recorded,
         effective,
+        current_base,
+        recorded_base,
         new_row,
+        new_base_row,
     })
 }
 
@@ -755,25 +795,23 @@ fn rebuild_nested_env(argv: &mut Vec<String>, prefix: EnvPrefix, binary_at: usiz
 fn reconcile_config_home(
     prefix: &mut EnvPrefix,
     tool: ToolKind,
-    current: &crate::launch_cmd::Resolved,
-    current_explicit: bool,
-    canonical_current: &crate::launch_cmd::Resolved,
-    recorded: &crate::meta::RecordedConfigHome,
-    default: Option<&crate::launch_cmd::Resolved>,
+    current: &crate::launch_cmd::ConfigHomeResolution,
+    identity: &ConfigHomeIdentity,
 ) {
-    match recorded {
-        crate::meta::RecordedConfigHome::Implicit(path) => {
-            let effective = crate::launch_cmd::Resolved::Path(path.clone());
-            if current_explicit || canonical_current != &effective {
+    match &identity.recorded {
+        crate::meta::RecordedConfigHome::Implicit(_) => {
+            if current.explicit {
                 use_default_config_home(prefix, tool);
             }
-            if default != Some(&effective) {
-                apply_recorded_home(prefix, tool, path);
+            if let crate::meta::RecordedConfigHomeBase::Path(base) = &identity.recorded_base
+                && identity.current_base != crate::launch_cmd::Resolved::Path(base.clone())
+            {
+                apply_recorded_home(prefix, base);
             }
         }
         crate::meta::RecordedConfigHome::Path(path) => {
             let effective = crate::launch_cmd::Resolved::Path(path.clone());
-            if !current_explicit || current != &effective {
+            if !current.explicit || current.home != effective {
                 apply_config_home(prefix, tool, &effective);
             }
         }
@@ -784,17 +822,8 @@ fn reconcile_config_home(
     }
 }
 
-/// Restore the HOME whose tool-default child is a retained implicit store.
-fn apply_recorded_home(prefix: &mut EnvPrefix, tool: ToolKind, config_home: &Path) {
-    let Some(default) = tool.adapter().config_home_default else {
-        return;
-    };
-    if !config_home.ends_with(default) {
-        return;
-    }
-    let Some(home) = config_home.parent() else {
-        return;
-    };
+/// Restore the HOME recorded alongside a retained implicit store.
+fn apply_recorded_home(prefix: &mut EnvPrefix, home: &Path) {
     prefix.unset.retain(|name| name != "HOME");
     prefix.assign.retain(|(name, _)| name != "HOME");
     prefix
@@ -841,6 +870,7 @@ struct Seat {
     harness_session: String,
     launch_id: String,
     config_home: crate::meta::RecordedConfigHome,
+    config_home_base: crate::meta::RecordedConfigHomeBase,
 }
 
 /// Read the seat `slot` names, refusing anything that is not launchable.
@@ -861,6 +891,12 @@ fn read_seat(dir: &Path, slot: &str, command_snapshot: Option<&str>) -> Result<S
         .iter()
         .find(|entry| entry.slot == slot)
         .map(|entry| entry.config_home.clone())
+        .unwrap_or_default();
+    let config_home_base = parsed_meta
+        .roster()
+        .iter()
+        .find(|entry| entry.slot == slot)
+        .map(|entry| entry.config_home_base.clone())
         .unwrap_or_default();
     let profile = value(&format!("profile.{slot}"));
     if profile.is_empty() {
@@ -928,6 +964,7 @@ fn read_seat(dir: &Path, slot: &str, command_snapshot: Option<&str>) -> Result<S
         harness_session: value(&format!("harness_session.{slot}")),
         launch_id: value(&format!("launch_id.{slot}")),
         config_home,
+        config_home_base,
     })
 }
 
@@ -1008,6 +1045,7 @@ mod tests {
             set: vec![("K".to_owned(), "0".to_owned())],
             argv: vec!["claude".to_owned(), "a\nb".to_owned()],
             config_home_row: None,
+            config_home_base_row: None,
             config_home_notice: None,
         };
         let line = plan.render();
@@ -1152,6 +1190,7 @@ mod tests {
             set: Vec::new(),
             argv: vec!["/usr/bin/env".to_owned()],
             config_home_row: None,
+            config_home_base_row: None,
             config_home_notice: None,
         };
         assert!(

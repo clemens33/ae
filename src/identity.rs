@@ -346,6 +346,7 @@ fn parse_seat_records(stdin: &str, restored: bool) -> Result<Vec<SeatLines>, Str
             binary: optional(binary),
             harness_session: optional(sid),
             config_home: None,
+            config_home_base: None,
         });
     }
     Ok(seats)
@@ -622,6 +623,7 @@ pub fn add_seat_slot(
         binary: Some(binary.to_owned()),
         harness_session: sid.map(ToOwned::to_owned),
         config_home: None,
+        config_home_base: None,
     }]);
     // `render` opens the block it builds with `schema=2`.
     next.push_str(block.strip_prefix("schema=2\n").unwrap_or(&block));

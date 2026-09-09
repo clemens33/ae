@@ -884,12 +884,20 @@ fn a_default_claude_home_is_recorded_without_becoming_an_explicit_override() {
     );
     let meta = std::fs::read_to_string(rig.dir.join("meta")).expect("meta");
     let expected = std::fs::canonicalize(rig.home.join(".claude")).expect("default store");
+    let expected_base = std::fs::canonicalize(&rig.home).expect("default HOME");
     assert!(
         meta.contains(&format!(
             "config_home.main=implicit:{}\n",
             expected.display()
         )),
         "the probe and purge still receive the recorded store: {meta}"
+    );
+    assert!(
+        meta.contains(&format!(
+            "config_home_base.main={}\n",
+            expected_base.display()
+        )),
+        "implicit mode records its original HOME: {meta}"
     );
 
     let (reported, _) = rig.exec();
@@ -1018,7 +1026,7 @@ fn an_implicit_claude_home_stays_unset_after_a_raw_prefix_is_added() {
 fn a_recorded_implicit_home_survives_changed_cleared_and_aliased_home() {
     use std::os::unix::fs::symlink;
 
-    for next in ["changed", "cleared", "alias"] {
+    for next in ["changed", "cleared", "alias", "shared-store"] {
         let rig = Rig::new(&format!("implicit-home-{next}"));
         let id = "99999999-7777-4777-8777-777777777777";
         rig.seat("claude", id);
@@ -1049,6 +1057,17 @@ fn a_recorded_implicit_home_survives_changed_cleared_and_aliased_home() {
                 );
                 alias
             }
+            "shared-store" => {
+                let changed = rig.scratch.join("same-store-other-home");
+                std::fs::create_dir_all(&changed).expect("other HOME");
+                symlink(rig.home.join(".claude"), changed.join(".claude"))
+                    .expect("shared default store");
+                rig.profile(
+                    "claude",
+                    &format!("HOME={} {} --flag", changed.display(), rig.tool("claude")),
+                );
+                expected_home.clone()
+            }
             _ => unreachable!(),
         };
 
@@ -1066,6 +1085,115 @@ fn a_recorded_implicit_home_survives_changed_cleared_and_aliased_home() {
             "{next}: execution selects the retained default store: {reported:?}"
         );
     }
+}
+
+#[allow(clippy::expect_used)]
+fn assert_recorded_implicit_home_survives_symlinked_claude_store(label: &str, target: &str) {
+    use std::os::unix::fs::symlink;
+
+    let rig = Rig::new(&format!("implicit-home-symlinked-{label}"));
+    let id = "88888888-8888-4888-8888-888888888888";
+    let relocated = rig.scratch.join(target);
+    std::fs::create_dir_all(&relocated).expect("relocated store");
+    std::fs::remove_dir(rig.home.join(".claude")).expect("default store directory");
+    symlink(&relocated, rig.home.join(".claude")).expect("symlinked default store");
+
+    rig.seat("claude", id);
+    let (first, _) = rig.exec();
+    assert!(
+        first.contains(&"CLAUDE_CONFIG_DIR=<unset>".to_owned()),
+        "{label}: first implicit run leaves Claude variable unset: {first:?}"
+    );
+    let original_home = std::fs::canonicalize(&rig.home).expect("canonical original HOME");
+    let recorded_store =
+        std::fs::canonicalize(rig.home.join(".claude")).expect("canonical recorded store");
+    let meta_before = std::fs::read_to_string(rig.dir.join("meta")).expect("meta");
+    assert!(
+        meta_before.contains(&format!(
+            "config_home.main=implicit:{}\n",
+            recorded_store.display()
+        )),
+        "{label}: first run records canonical implicit store: {meta_before}"
+    );
+    assert!(
+        meta_before.contains(&format!(
+            "config_home_base.main={}\n",
+            original_home.display()
+        )),
+        "{label}: first run records canonical implicit HOME: {meta_before}"
+    );
+    let first_home = first
+        .iter()
+        .find_map(|word| word.strip_prefix("HOME="))
+        .expect("first tool reports HOME");
+    assert_eq!(
+        std::fs::canonicalize(first_home).expect("canonical first HOME"),
+        original_home,
+        "{label}: first run uses original HOME"
+    );
+    rig.transcript("claude", id);
+
+    let other_home = rig.scratch.join("other-home");
+    std::fs::create_dir_all(other_home.join(".claude")).expect("other default store");
+    rig.profile(
+        "claude",
+        &format!(
+            "HOME={} {} --flag",
+            other_home.display(),
+            rig.tool("claude")
+        ),
+    );
+    let _ = std::fs::remove_file(&rig.out);
+    let second = rig.run_raw(&[]);
+    let meta_after = std::fs::read_to_string(rig.dir.join("meta")).expect("meta");
+    let output = std::fs::read_to_string(&rig.out).ok();
+    if !second.status.success() {
+        assert!(output.is_none(), "{label}: refusal must not exec tool");
+        assert_eq!(
+            meta_after, meta_before,
+            "{label}: refusal leaves meta intact"
+        );
+        return;
+    }
+    let reported: Vec<String> = output
+        .expect("successful resume executes tool")
+        .split(RS)
+        .filter(|word| !word.is_empty())
+        .map(ToOwned::to_owned)
+        .collect();
+    assert!(
+        carries(&reported, &["--resume", id]),
+        "{label}: second run resumes retained conversation: {reported:?}"
+    );
+    let reported_home = reported
+        .iter()
+        .find_map(|word| word.strip_prefix("HOME="))
+        .expect("successful tool reports HOME");
+    assert_eq!(
+        std::fs::canonicalize(reported_home).expect("canonical reported HOME"),
+        original_home,
+        "{label}: implicit mode retains original HOME"
+    );
+    assert!(
+        reported.contains(&"CLAUDE_CONFIG_DIR=<unset>".to_owned()),
+        "{label}: implicit mode keeps the variable unset: {reported:?}"
+    );
+}
+
+#[test]
+fn a_recorded_implicit_home_survives_a_relocated_symlinked_claude_store() {
+    assert_recorded_implicit_home_survives_symlinked_claude_store(
+        "relocated-store",
+        "relocated-store",
+    );
+}
+
+#[test]
+fn a_recorded_implicit_home_survives_a_storage_claude_symlink() {
+    assert_recorded_implicit_home_survives_symlinked_claude_store(
+        "storage-dot-claude",
+        "storage/.claude",
+    );
 }
 
 #[test]
@@ -1186,6 +1314,9 @@ fn config_home_publication_failure_refuses_before_marker_or_exec() {
     );
     assert!(!rig.dir.join("launch.main.started").exists());
     assert!(!rig.out.exists(), "the tool did not run");
+    let meta = std::fs::read_to_string(rig.dir.join("meta")).expect("meta survives");
+    assert!(!meta.contains("config_home.main="), "{meta}");
+    assert!(!meta.contains("config_home_base.main="), "{meta}");
 }
 
 #[test]
@@ -1207,6 +1338,7 @@ fn uncertain_recorded_config_homes_resume_exactly_and_hostile_rows_refuse() {
     for rows in [
         "config_home.main\n",
         "config_home.main=relative\n",
+        "config_home.main=implicit:/store\n",
         "config_home.main=/one\nconfig_home.main=/two\n",
     ] {
         let rig = Rig::new("config-home-hostile");

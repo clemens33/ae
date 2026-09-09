@@ -289,7 +289,7 @@ pub enum Resolved {
 /// its default directory, so callers that persist identity must keep this bit.
 pub(crate) struct ConfigHomeResolution {
     pub(crate) home: Resolved,
-    pub(crate) default: Resolved,
+    pub(crate) base: Resolved,
     pub(crate) explicit: bool,
 }
 
@@ -343,7 +343,7 @@ pub(crate) fn config_home_resolution(
     else {
         return ConfigHomeResolution {
             home: Resolved::Absent,
-            default: Resolved::Absent,
+            base: Resolved::Absent,
             explicit: false,
         };
     };
@@ -352,22 +352,23 @@ pub(crate) fn config_home_resolution(
         Err(why) => {
             return ConfigHomeResolution {
                 home: Resolved::Unknown(why.clone()),
-                default: Resolved::Unknown(why),
+                base: Resolved::Unknown(why),
                 explicit: false,
             };
         }
     };
+    let base = effective_home(&environment, lookup);
     if let Some(value) = environment.value(variable, lookup) {
         return ConfigHomeResolution {
             home: absolute_value(variable, &value),
-            default: default_home(&environment, default, lookup),
+            base,
             explicit: true,
         };
     }
-    let default = default_home(&environment, default, lookup);
+    let home = default_home(&base, default);
     ConfigHomeResolution {
-        home: default.clone(),
-        default,
+        home,
+        base,
         explicit: false,
     }
 }
@@ -443,18 +444,21 @@ fn command_environment(
     })
 }
 
-fn default_home(
+fn effective_home(
     environment: &CommandEnvironment,
-    default: &str,
     lookup: &dyn Fn(&str) -> Option<String>,
 ) -> Resolved {
     let home = environment.value("HOME", lookup);
     let Some(home) = home else {
         return Resolved::Absent;
     };
-    match absolute_value("HOME", &home) {
+    absolute_value("HOME", &home)
+}
+
+fn default_home(base: &Resolved, default: &str) -> Resolved {
+    match base {
         Resolved::Path(home) => Resolved::Path(home.join(default)),
-        other => other,
+        other => other.clone(),
     }
 }
 
@@ -712,7 +716,8 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{
-        Refusal, Resolved, Split, ToolKind, config_home, lex_simple_command, split_binary,
+        Refusal, Resolved, Split, ToolKind, config_home, config_home_resolution,
+        lex_simple_command, split_binary,
     };
 
     fn bin(cmd: &str) -> Option<String> {
@@ -1187,5 +1192,24 @@ mod tests {
             ),
             Resolved::Path(PathBuf::from("/accounts/claude"))
         );
+
+        let command = crate::config::IdentityConfig::resolved_snapshot("HOME=/other codex");
+        let implicit = config_home_resolution(&command, ToolKind::Codex, &|name| {
+            (name == "HOME").then(|| "/pane".to_owned())
+        });
+        assert_eq!(
+            implicit.home,
+            Resolved::Path(PathBuf::from("/other/.codex"))
+        );
+        assert_eq!(implicit.base, Resolved::Path(PathBuf::from("/other")));
+        assert!(!implicit.explicit);
+
+        let command = crate::config::IdentityConfig::resolved_snapshot(
+            "HOME=/other CODEX_HOME=/account codex",
+        );
+        let explicit = config_home_resolution(&command, ToolKind::Codex, &|_| None);
+        assert_eq!(explicit.home, Resolved::Path(PathBuf::from("/account")));
+        assert_eq!(explicit.base, Resolved::Path(PathBuf::from("/other")));
+        assert!(explicit.explicit);
     }
 }

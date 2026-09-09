@@ -44,6 +44,7 @@ const SEAT_PREFIX: &str = "seat.";
 const PROFILE_PREFIX: &str = "profile.";
 const HARNESS_SESSION_PREFIX: &str = "harness_session.";
 const CONFIG_HOME_PREFIX: &str = "config_home.";
+const CONFIG_HOME_BASE_PREFIX: &str = "config_home_base.";
 /// `schema=<n>` — the identity schema the writer used.
 const SCHEMA_KEY: &str = "schema";
 /// The VERSION of the core a session is pinned to, and the shape its meta is
@@ -74,6 +75,9 @@ pub struct RosterEntry {
     pub harness_session: Option<String>,
     /// `config_home.<slot>` — the conversation store pinned at first start.
     pub config_home: RecordedConfigHome,
+    /// `config_home_base.<slot>` — the effective `HOME` that selected an
+    /// implicit config home.
+    pub config_home_base: RecordedConfigHomeBase,
     /// `agent_bin.<slot>` — the recorded binary, where the meta carries one.
     pub binary: Option<String>,
 }
@@ -120,6 +124,37 @@ impl RecordedConfigHome {
         {
             Self::Implicit(PathBuf::from(path))
         } else if Path::new(value).is_absolute() && !value.chars().any(char::is_control) {
+            Self::Path(PathBuf::from(value))
+        } else {
+            Self::Invalid
+        }
+    }
+}
+
+/// What a seat's optional `config_home_base.<slot>` row says.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum RecordedConfigHomeBase {
+    /// No base belongs to a legacy or explicit config-home row.
+    #[default]
+    Missing,
+    /// The canonical effective `HOME` that selected an implicit store.
+    Path(PathBuf),
+    /// A malformed, duplicated, or inconsistent base row.
+    Invalid,
+}
+
+impl RecordedConfigHomeBase {
+    /// The value emitted when this state belongs in a meta row.
+    #[must_use]
+    pub fn record_value(&self) -> Option<String> {
+        match self {
+            Self::Path(path) => Some(path.display().to_string()),
+            Self::Missing | Self::Invalid => None,
+        }
+    }
+
+    fn parse(value: &str) -> Self {
+        if Path::new(value).is_absolute() && !value.chars().any(char::is_control) {
             Self::Path(PathBuf::from(value))
         } else {
             Self::Invalid
@@ -232,6 +267,11 @@ pub enum Anomaly {
         /// 1-based line number of the row that revealed the collision.
         line: usize,
     },
+    /// The config-home mode and its optional effective-HOME base disagree.
+    InconsistentConfigHome {
+        /// The affected seat slot.
+        slot: String,
+    },
 }
 
 impl fmt::Display for Anomaly {
@@ -258,6 +298,10 @@ impl fmt::Display for Anomaly {
                     "roster name {name} is claimed by more than one seat (line {line})"
                 )
             }
+            Self::InconsistentConfigHome { slot } => write!(
+                f,
+                "inconsistent config_home.{slot}/config_home_base.{slot} metadata"
+            ),
         }
     }
 }
@@ -290,6 +334,7 @@ pub struct Meta {
     pending_profiles: Vec<PendingRow>,
     pending_harness: Vec<PendingRow>,
     pending_config_homes: Vec<PendingRow>,
+    pending_config_home_bases: Vec<PendingRow>,
     /// Every `seat.<slot>` KEY met so far — `=` or not, valid or not, first or
     /// repeated.
     claims: Vec<SlotClaim>,
@@ -348,13 +393,20 @@ impl Meta {
                 // A bare `agent.main` / `seat.main` is still a CLAIM on the
                 // slot, so it is noted before the line is refused.
                 meta.note_claim(raw, line, false);
-                if let Some(slot) = raw.strip_prefix(CONFIG_HOME_PREFIX) {
+                let metadata = raw
+                    .strip_prefix(CONFIG_HOME_PREFIX)
+                    .map(|slot| (Metadata::ConfigHome, slot))
+                    .or_else(|| {
+                        raw.strip_prefix(CONFIG_HOME_BASE_PREFIX)
+                            .map(|slot| (Metadata::ConfigHomeBase, slot))
+                    });
+                if let Some((which, slot)) = metadata {
                     let already_seen = seen.iter().any(|previous| previous == raw);
                     if already_seen {
                         meta.invalidate(raw);
                     } else {
                         seen.push(raw.to_owned());
-                        meta.set_metadata(Metadata::ConfigHome, slot, raw, "", line);
+                        meta.set_metadata(which, slot, raw, "", line);
                     }
                 }
                 meta.anomalies.push(Anomaly::MalformedLine { line });
@@ -377,6 +429,7 @@ impl Meta {
             seen.push(key.to_owned());
             meta.absorb(key, value, line);
         }
+        meta.validate_config_home_pairs();
         meta
     }
 
@@ -421,6 +474,11 @@ impl Meta {
                         entry.config_home = RecordedConfigHome::Invalid;
                     }
                     self.mark_metadata_duplicated(key);
+                } else if let Some(slot) = key.strip_prefix(CONFIG_HOME_BASE_PREFIX) {
+                    if let Some(entry) = self.roster.iter_mut().find(|e| e.slot == slot) {
+                        entry.config_home_base = RecordedConfigHomeBase::Invalid;
+                    }
+                    self.mark_metadata_duplicated(key);
                 } else if let Some(slot) = key.strip_prefix(SEAT_PREFIX) {
                     // A doubly-named slot is a slot whose identity is in doubt,
                     // and agents[] membership is roster-defined —
@@ -461,6 +519,8 @@ impl Meta {
                     self.set_metadata(Metadata::HarnessSession, slot, key, value, line);
                 } else if let Some(slot) = key.strip_prefix(CONFIG_HOME_PREFIX) {
                     self.set_metadata(Metadata::ConfigHome, slot, key, value, line);
+                } else if let Some(slot) = key.strip_prefix(CONFIG_HOME_BASE_PREFIX) {
+                    self.set_metadata(Metadata::ConfigHomeBase, slot, key, value, line);
                 } else if let Some(slot) = key.strip_prefix(ROSTER_PREFIX) {
                     self.note_legacy(slot, line);
                 } else if let Some(slot) = key.strip_prefix(SEAT_PREFIX) {
@@ -528,12 +588,23 @@ impl Meta {
                 }
             },
         );
+        let config_home_base = take_pending(&mut self.pending_config_home_bases, slot).map_or(
+            RecordedConfigHomeBase::Missing,
+            |row| {
+                if row.duplicated {
+                    RecordedConfigHomeBase::Invalid
+                } else {
+                    RecordedConfigHomeBase::parse(&row.value)
+                }
+            },
+        );
         self.roster.push(RosterEntry {
             slot: slot.to_owned(),
             name: value.to_owned(),
             profile,
             harness_session,
             config_home,
+            config_home_base,
             binary,
         });
     }
@@ -573,6 +644,7 @@ impl Meta {
             &mut self.pending_profiles,
             &mut self.pending_harness,
             &mut self.pending_config_homes,
+            &mut self.pending_config_home_bases,
         ] {
             for row in list.iter_mut() {
                 if row.key == key {
@@ -605,10 +677,15 @@ impl Meta {
     /// not been read yet.
     fn set_metadata(&mut self, which: Metadata, slot: &str, key: &str, value: &str, line: usize) {
         let config_home = (which == Metadata::ConfigHome).then(|| RecordedConfigHome::parse(value));
+        let config_home_base =
+            (which == Metadata::ConfigHomeBase).then(|| RecordedConfigHomeBase::parse(value));
         if slot.is_empty()
             || config_home
                 .as_ref()
                 .is_some_and(|value| *value == RecordedConfigHome::Invalid)
+            || config_home_base
+                .as_ref()
+                .is_some_and(|value| *value == RecordedConfigHomeBase::Invalid)
         {
             self.anomalies.push(Anomaly::MalformedRosterEntry {
                 key: key.to_owned(),
@@ -625,6 +702,10 @@ impl Meta {
                 Metadata::ConfigHome => {
                     existing.config_home = config_home.unwrap_or(RecordedConfigHome::Invalid);
                 }
+                Metadata::ConfigHomeBase => {
+                    existing.config_home_base =
+                        config_home_base.unwrap_or(RecordedConfigHomeBase::Invalid);
+                }
             }
             return;
         }
@@ -639,6 +720,33 @@ impl Meta {
             Metadata::Profile => self.pending_profiles.push(row),
             Metadata::HarnessSession => self.pending_harness.push(row),
             Metadata::ConfigHome => self.pending_config_homes.push(row),
+            Metadata::ConfigHomeBase => self.pending_config_home_bases.push(row),
+        }
+    }
+
+    /// Only an implicit store has a base, and every implicit store needs one.
+    fn validate_config_home_pairs(&mut self) {
+        for entry in &mut self.roster {
+            let valid = matches!(
+                (&entry.config_home, &entry.config_home_base),
+                (
+                    RecordedConfigHome::Implicit(_),
+                    RecordedConfigHomeBase::Path(_)
+                ) | (
+                    RecordedConfigHome::Missing
+                        | RecordedConfigHome::Path(_)
+                        | RecordedConfigHome::Absent
+                        | RecordedConfigHome::Unknown,
+                    RecordedConfigHomeBase::Missing
+                )
+            );
+            if !valid {
+                entry.config_home = RecordedConfigHome::Invalid;
+                entry.config_home_base = RecordedConfigHomeBase::Invalid;
+                self.anomalies.push(Anomaly::InconsistentConfigHome {
+                    slot: entry.slot.clone(),
+                });
+            }
         }
     }
 
@@ -815,6 +923,7 @@ enum Metadata {
     Profile,
     HarnessSession,
     ConfigHome,
+    ConfigHomeBase,
 }
 
 /// A persisted epoch that can produce a meaningful age.
@@ -959,6 +1068,23 @@ impl RewriteError {
 /// or any read, write, sync or rename failure. [`RewriteError::Unknown`] when
 /// the rename returned but the directory sync did not.
 pub fn rewrite(dir: &Path, key: &str, value: Option<&str>) -> Result<(), RewriteError> {
+    rewrite_rows(dir, &[(key, value)])
+}
+
+/// Publish a config-home row and its optional implicit-HOME base in one
+/// replacement. No reader can observe an implicit store without its base.
+pub(crate) fn record_config_home(
+    dir: &Path,
+    slot: &str,
+    value: &str,
+    base: Option<&str>,
+) -> Result<(), RewriteError> {
+    let home_key = format!("{CONFIG_HOME_PREFIX}{slot}");
+    let base_key = format!("{CONFIG_HOME_BASE_PREFIX}{slot}");
+    rewrite_rows(dir, &[(&home_key, Some(value)), (&base_key, base)])
+}
+
+fn rewrite_rows(dir: &Path, rows: &[(&str, Option<&str>)]) -> Result<(), RewriteError> {
     let path = crate::store::open(dir).meta_path();
     let _held = crate::store::lock(
         &crate::store::open(dir).meta_lock(),
@@ -972,10 +1098,18 @@ pub fn rewrite(dir: &Path, key: &str, value: Option<&str>) -> Result<(), Rewrite
     let current = fs::read_to_string(&path);
     let current = match current {
         Ok(text) => text,
-        Err(why) if why.kind() == io::ErrorKind::NotFound && value.is_none() => return Ok(()),
+        Err(why)
+            if why.kind() == io::ErrorKind::NotFound
+                && rows.iter().all(|(_, value)| value.is_none()) =>
+        {
+            return Ok(());
+        }
         Err(why) => return Err(RewriteError::NotWritten(why)),
     };
-    let next = rewritten(&current, key, value);
+    let mut next = current;
+    for (key, value) in rows {
+        next = rewritten(&next, key, *value);
+    }
     publish_bytes(dir, &path, next.as_bytes())
 }
 
@@ -1318,7 +1452,9 @@ agent_bin.main=claude
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    use super::{Anomaly, Meta, RecordedConfigHome, Selector, ServerSelector};
+    use super::{
+        Anomaly, Meta, RecordedConfigHome, RecordedConfigHomeBase, Selector, ServerSelector,
+    };
     use std::path::PathBuf;
 
     #[test]
@@ -1581,10 +1717,6 @@ agent_bin.main=claude
                 "/accounts/claude",
                 RecordedConfigHome::Path(PathBuf::from("/accounts/claude")),
             ),
-            (
-                "implicit:/accounts/claude",
-                RecordedConfigHome::Implicit(PathBuf::from("/accounts/claude")),
-            ),
             ("absent", RecordedConfigHome::Absent),
             ("unknown", RecordedConfigHome::Unknown),
         ] {
@@ -1597,6 +1729,23 @@ agent_bin.main=claude
                 assert!(meta.anomalies().is_empty(), "{text:?}");
             }
         }
+        for text in [
+            "seat.main=lead\nconfig_home.main=implicit:/accounts/claude\nconfig_home_base.main=/people/lead\n",
+            "config_home_base.main=/people/lead\nconfig_home.main=implicit:/accounts/claude\nseat.main=lead\n",
+        ] {
+            let meta = Meta::parse(text);
+            assert_eq!(
+                meta.roster()[0].config_home,
+                RecordedConfigHome::Implicit(PathBuf::from("/accounts/claude")),
+                "{text:?}"
+            );
+            assert_eq!(
+                meta.roster()[0].config_home_base,
+                RecordedConfigHomeBase::Path(PathBuf::from("/people/lead")),
+                "{text:?}"
+            );
+            assert!(meta.anomalies().is_empty(), "{text:?}");
+        }
 
         for text in [
             "seat.main=lead\nconfig_home.main=relative\n",
@@ -1605,6 +1754,9 @@ agent_bin.main=claude
             "config_home.main\nseat.main=lead\n",
             "seat.main=lead\nconfig_home.main=/one\nconfig_home.main=/two\n",
             "config_home.main=/one\nconfig_home.main=/two\nseat.main=lead\n",
+            "seat.main=lead\nconfig_home.main=implicit:/one\nconfig_home_base.main=relative\n",
+            "config_home_base.main\nconfig_home.main=implicit:/one\nseat.main=lead\n",
+            "config_home_base.main=/one\nconfig_home_base.main=/two\nconfig_home.main=implicit:/store\nseat.main=lead\n",
         ] {
             let meta = Meta::parse(text);
             assert_eq!(
@@ -1624,6 +1776,12 @@ agent_bin.main=claude
             Meta::parse("seat.main=lead\n").roster()[0].config_home,
             RecordedConfigHome::Missing,
             "the optional row keeps old v2 metadata readable"
+        );
+        assert_eq!(
+            Meta::parse("seat.main=lead\nconfig_home.main=implicit:/store\n").roster()[0]
+                .config_home,
+            RecordedConfigHome::Invalid,
+            "an implicit store without its HOME base is unusable"
         );
     }
 

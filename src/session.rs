@@ -617,7 +617,8 @@ fn roster_complete(meta: &Meta) -> bool {
         Anomaly::MalformedLine { .. }
         | Anomaly::MalformedRosterEntry { .. }
         | Anomaly::LegacyRoster { .. }
-        | Anomaly::DuplicateName { .. } => true,
+        | Anomaly::DuplicateName { .. }
+        | Anomaly::InconsistentConfigHome { .. } => true,
         Anomaly::DuplicateKey { key, .. } => key.starts_with("agent.") || key.starts_with("seat."),
         Anomaly::UnknownKey { .. } => false,
     })
@@ -689,7 +690,8 @@ fn anomalies_degrade(anomalies: &[Anomaly]) -> bool {
         | Anomaly::DuplicateKey { .. }
         | Anomaly::MalformedRosterEntry { .. }
         | Anomaly::LegacyRoster { .. }
-        | Anomaly::DuplicateName { .. } => true,
+        | Anomaly::DuplicateName { .. }
+        | Anomaly::InconsistentConfigHome { .. } => true,
     })
 }
 

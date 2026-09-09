@@ -2148,6 +2148,7 @@ mod tests {
             "config_home.main=unknown\n",
             "config_home.main=absent\n",
             "config_home.main=relative\n",
+            "config_home.main=implicit:/recorded/store\n",
             "config_home.main=/one\nconfig_home.main=/two\n",
         ] {
             let meta = format!(
