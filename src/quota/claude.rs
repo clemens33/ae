@@ -7,8 +7,6 @@ use super::{ParseError, Row, Status, epoch, freshness, percent, vendor_timestamp
 /// One parsed Claude cache observation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Snapshot {
-    /// Account identity used only to detect cache switches; never display it.
-    pub account_uuid: Option<String>,
     /// The cache's own fetch time.
     pub observed_at: Option<i64>,
     /// Every vendor limit bucket, without collapsing scoped limits.
@@ -34,7 +32,14 @@ pub fn parse(bytes: &[u8], now: i64) -> Result<Option<Snapshot>, ParseError> {
     }
 
     let observed_at = epoch(cache.get("fetchedAtMs")).map(|millis| millis.div_euclid(1_000));
-    let account_uuid = cache.get_str("accountUuid").map(str::to_owned);
+    let account_switched = matches!(
+        (
+            root.get("oauthAccount")
+                .and_then(|account| account.get_str("accountUuid")),
+            cache.get_str("accountUuid"),
+        ),
+        (Some(current), Some(cached)) if current != cached
+    );
     let utilization = cache.get("utilization").unwrap_or(cache);
     if !matches!(utilization, Value::Obj(_)) {
         return Err(ParseError::Shape);
@@ -53,12 +58,13 @@ pub fn parse(bytes: &[u8], now: i64) -> Result<Option<Snapshot>, ParseError> {
             .cmp(&right.bucket)
             .then_with(|| left.qualifier.cmp(&right.qualifier))
     });
+    if account_switched {
+        for row in &mut rows {
+            row.status = Status::Unknown;
+        }
+    }
 
-    Ok(Some(Snapshot {
-        account_uuid,
-        observed_at,
-        rows,
-    }))
+    Ok(Some(Snapshot { observed_at, rows }))
 }
 
 fn limit_row(limit: &Value, observed_at: Option<i64>, now: i64) -> Option<Row> {
@@ -142,7 +148,6 @@ mod tests {
         let snapshot = parse(FIXTURE, epoch("2026-09-08T09:10:00Z"))
             .expect("fixture parses")
             .expect("fixture carries cache");
-        assert_eq!(snapshot.account_uuid.as_deref(), Some("[REDACTED]"));
         assert_eq!(snapshot.rows.len(), 3);
         assert_eq!(snapshot.rows[0].bucket, "session");
         assert_eq!(snapshot.rows[0].window_minutes, Some(300));
@@ -164,6 +169,32 @@ mod tests {
             .expect("fixture parses")
             .expect("cache");
         assert_eq!(at_reset.rows[0].status, Status::Unknown);
+    }
+
+    #[test]
+    fn a_cached_account_switch_invalidates_numbers_without_retaining_ids() {
+        let mismatch = br#"{
+            "oauthAccount":{"accountUuid":"current"},
+            "cachedUsageUtilization":{
+                "accountUuid":"cached",
+                "fetchedAtMs":10000,
+                "utilization":{"limits":[{
+                    "kind":"session",
+                    "percent":66,
+                    "resets_at":"1970-01-01T01:00:00Z"
+                }]}
+            }
+        }"#;
+        let parsed = parse(mismatch, 11).expect("valid document").expect("cache");
+        assert_eq!(parsed.rows[0].status, Status::Unknown);
+
+        for missing in [
+            br#"{"cachedUsageUtilization":{"accountUuid":"cached","fetchedAtMs":10000,"utilization":{"limits":[{"kind":"session","percent":66,"resets_at":"1970-01-01T01:00:00Z"}]}}}"#.as_slice(),
+            br#"{"oauthAccount":{"accountUuid":"current"},"cachedUsageUtilization":{"fetchedAtMs":10000,"utilization":{"limits":[{"kind":"session","percent":66,"resets_at":"1970-01-01T01:00:00Z"}]}}}"#.as_slice(),
+        ] {
+            let parsed = parse(missing, 11).expect("valid document").expect("cache");
+            assert_eq!(parsed.rows[0].status, Status::Fresh);
+        }
     }
 
     #[test]

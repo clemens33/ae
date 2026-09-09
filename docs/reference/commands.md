@@ -579,17 +579,23 @@ tails are read so the bounded budget reaches recent activity first; mtime never 
 displayed observation age. Its owner is labelled `<session>:<seat>`. A plain
 `CLAUDE_CONFIG_DIR` or `CODEX_HOME` assignment using only `$HOME` is resolved exactly. `env -i`,
 `env -u`, `HOME=`, another assignment, or another variable expansion makes the home `unknown`
-rather than guessed.
+rather than guessed. Quoting that assignment also makes the home `unknown` until the shared
+launch-command resolver replaces this narrow parser.
 
 At most three Codex rollout groups appear per scope, newest record observation first. A summary
-line counts older hidden rollouts and reports their oldest known record observation; if discovery
-or reads exhaust the invocation budget, that summary line carries `truncated`.
+line counts hidden rollouts and reports the oldest known record observation among parsed hidden
+rows. Hidden unreadable rollouts are counted and make the summary `read-error`; if discovery or
+reads exhaust the invocation budget, the summary instead carries `truncated` and reports rollouts
+that could not be read.
 
 `fresh` means the vendor observation is at most 15 minutes old. Older unexpired observations are
 `stale`; expired, missing, or clock-skewed observations are `unknown`. Unexpected file kinds,
 oversized files, and malformed complete records are `read-error`. An invocation stops with
 an explicit `truncated` summary after 4,096 filesystem entries, 16 MiB of reads, or two seconds. All
 table lines are at most 160 columns.
+Cached Claude numbers become `unknown` when the file's current and cached account UUIDs disagree;
+the UUIDs are neither retained nor displayed. Untrusted cache labels and terminal escape sequences
+are reduced to printable table cells before widths or wrapping are calculated.
 
 Grok Build, Antigravity, OpenCode, and Gemini CLI have no verified reusable local subscription
 quota source. They render `unsupported` with an operator hint rather than treating token or cost

@@ -198,7 +198,9 @@ struct Group {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RolloutSummary {
     hidden: usize,
+    unreadable: usize,
     oldest_observed: Option<i64>,
+    not_read: bool,
     status: Option<Status>,
 }
 
@@ -430,22 +432,33 @@ fn profile_home(command: &str, variable: Option<&str>, home: Option<&Path>) -> P
         return ProfileHome::Unknown;
     }
     let mut assigned = None;
-    for word in words {
-        if matches!(word.value.as_str(), "-i" | "-u") {
-            return ProfileHome::Unknown;
+    for (index, word) in words.into_iter().enumerate() {
+        if index == 0 && word.raw == "env" {
+            continue;
         }
         if !word.assignment {
-            continue;
+            return ProfileHome::Unknown;
         }
         let Some((name, value)) = word.value.split_once('=') else {
             return ProfileHome::Unknown;
         };
-        if Some(name) != variable {
+        if Some(name) != variable || !plain_home_assignment(&word.raw, name) {
             return ProfileHome::Unknown;
         }
         assigned = Some(PathBuf::from(value));
     }
     assigned.map_or(ProfileHome::Default, ProfileHome::Assigned)
+}
+
+fn plain_home_assignment(raw: &str, variable: &str) -> bool {
+    let prefix = format!("{variable}=$HOME");
+    raw == prefix
+        || raw.strip_prefix(&prefix).is_some_and(|rest| {
+            rest.starts_with('/')
+                && !rest
+                    .chars()
+                    .any(|ch| matches!(ch, '\'' | '"' | '\\' | '$' | '`'))
+        })
 }
 
 fn read_claude(
@@ -699,6 +712,17 @@ fn summarize_codex_groups(
         .flat_map(|ranked| ranked.group.rows.iter())
         .filter_map(|row| row.observed_at)
         .min();
+    let unreadable = ranked
+        .iter()
+        .skip(shown)
+        .filter(|ranked| {
+            ranked
+                .group
+                .rows
+                .iter()
+                .any(|row| row.status == Status::ReadError)
+        })
+        .count();
     let mut groups: Vec<Group> = ranked
         .into_iter()
         .take(CODEX_DISPLAY_ROLLOUTS)
@@ -718,7 +742,7 @@ fn summarize_codex_groups(
     }
     let summary_status = if truncated {
         Some(Status::Truncated)
-    } else if fleet_status == FleetStatus::Failed {
+    } else if fleet_status == FleetStatus::Failed || unreadable > 0 {
         Some(Status::ReadError)
     } else {
         None
@@ -734,7 +758,9 @@ fn summarize_codex_groups(
             hint: None,
             summary: Some(RolloutSummary {
                 hidden,
+                unreadable,
                 oldest_observed,
+                not_read: truncated && shown == 0,
                 status: summary_status,
             }),
         });
@@ -889,7 +915,15 @@ fn rollout_summary_label(summary: &RolloutSummary, now: i64) -> String {
     } else {
         "rollouts"
     };
-    let mut label = format!("+{} older {noun} not shown", summary.hidden);
+    let disposition = if summary.not_read {
+        "not read"
+    } else {
+        "not shown"
+    };
+    let mut label = format!("+{} {noun} {disposition}", summary.hidden);
+    if summary.unreadable > 0 {
+        let _ = write!(label, " ({} unreadable)", summary.unreadable);
+    }
     if let Some(observed) = summary.oldest_observed {
         let _ = write!(
             label,
@@ -901,6 +935,19 @@ fn rollout_summary_label(summary: &RolloutSummary, now: i64) -> String {
 }
 
 fn render_table(table: &[RenderLine]) -> String {
+    let sanitized: Vec<RenderLine> = table
+        .iter()
+        .map(|line| match line {
+            RenderLine::Cells(row) => {
+                RenderLine::Cells(std::array::from_fn(|column| sanitize_cell(&row[column])))
+            }
+            RenderLine::Summary { label, status } => RenderLine::Summary {
+                label: sanitize_cell(label),
+                status: sanitize_cell(status),
+            },
+        })
+        .collect();
+    let table = sanitized.as_slice();
     let mut widths = [0_usize; 8];
     for row in table.iter().filter_map(|line| match line {
         RenderLine::Cells(row) => Some(row),
@@ -960,6 +1007,45 @@ fn render_table(table: &[RenderLine]) -> String {
         }
     }
     out
+}
+
+fn sanitize_cell(text: &str) -> String {
+    let mut chars = text.chars().peekable();
+    let mut clean = String::with_capacity(text.len());
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' {
+            clean.push('?');
+            consume_escape(&mut chars);
+        } else if ch.is_control() {
+            clean.push('?');
+        } else {
+            clean.push(ch);
+        }
+    }
+    clean
+}
+
+fn consume_escape(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
+    match chars.next() {
+        Some('[') => {
+            for ch in chars.by_ref() {
+                if ('@'..='~').contains(&ch) {
+                    break;
+                }
+            }
+        }
+        Some(']') => {
+            while let Some(ch) = chars.next() {
+                if ch == '\u{7}' {
+                    break;
+                }
+                if ch == '\u{1b}' && chars.next_if_eq(&'\\').is_some() {
+                    break;
+                }
+            }
+        }
+        Some(_) | None => {}
+    }
 }
 
 fn profiles_label(profiles: &[String]) -> String {
@@ -1309,7 +1395,7 @@ mod tests {
         RolloutSource, Scope, Status, bounded_tail, bounded_whole_file, claude_cache_path,
         codex_groups, codex_rollout_dirs, config_home, find_codex_rollout, freshness,
         order_located_rollouts, percent_label, profiles_label, read_bounded_tail, read_claude,
-        render_at, render_table, rows_or_placeholder, vendor_timestamp,
+        render_at, render_table, rows_or_placeholder, sanitize_cell, vendor_timestamp,
     };
     use crate::tool::ToolKind;
 
@@ -1441,10 +1527,7 @@ mod tests {
             ["session:seat-4", "session:seat-3", "session:seat-2"]
         );
         let rendered = render_at(&groups, Some(&root), NOW);
-        assert!(
-            rendered.contains("+2 older rollouts not shown"),
-            "{rendered}"
-        );
+        assert!(rendered.contains("+2 rollouts not shown"), "{rendered}");
         assert!(rendered.contains("oldest observed 10m ago"), "{rendered}");
         assert!(!rendered.contains("session:seat-0"), "{rendered}");
         assert!(rendered.lines().all(|line| line.chars().count() <= 160));
@@ -1522,11 +1605,13 @@ mod tests {
             .find_map(|group| group.summary.as_ref())
             .expect("truncated summary");
         assert_eq!(summary.hidden, 5);
+        assert_eq!(summary.unreadable, 0);
+        assert!(summary.not_read);
         assert_eq!(summary.status, Some(Status::Truncated));
         let rendered = render_at(&groups, Some(&root), NOW);
         assert!(
             rendered.lines().any(|line| {
-                line.contains("+5 older rollouts not shown") && line.contains("truncated")
+                line.contains("+5 rollouts not read") && line.contains("truncated")
             }),
             "{rendered}"
         );
@@ -1543,7 +1628,7 @@ mod tests {
         assert_eq!(
             config_home(
                 ToolKind::Claude,
-                "CLAUDE_CONFIG_DIR=\"$HOME/.claude-work\" claude",
+                "CLAUDE_CONFIG_DIR=$HOME/.claude-work claude",
                 Some(home),
                 home,
             ),
@@ -1552,11 +1637,29 @@ mod tests {
         assert_eq!(
             config_home(
                 ToolKind::Codex,
+                "env CODEX_HOME=$HOME/.codex-work codex",
+                Some(home),
+                home,
+            ),
+            Some(home.join(".codex-work"))
+        );
+        assert_eq!(
+            config_home(
+                ToolKind::Claude,
+                "env \"CLAUDE_CONFIG_DIR=$HOME/.claude-work\" claude",
+                Some(home),
+                home,
+            ),
+            None
+        );
+        assert_eq!(
+            config_home(
+                ToolKind::Codex,
                 "env CODEX_HOME=relative codex",
                 Some(home),
                 std::path::Path::new("/work"),
             ),
-            Some(std::path::PathBuf::from("/work/relative"))
+            None
         );
         assert_eq!(
             config_home(
@@ -1643,6 +1746,12 @@ mod tests {
         assert_eq!(percent_label("100"), "100%");
         assert_eq!(percent_label("12.0"), "12%");
         assert_eq!(percent_label("3.50"), "3.5%");
+    }
+
+    #[test]
+    fn table_cells_replace_controls_and_terminal_escape_sequences() {
+        assert_eq!(sanitize_cell("safe\u{1b}[2J\r\n\u{7f}tail"), "safe????tail");
+        assert_eq!(sanitize_cell("a\u{1b}]0;title\u{7}b"), "a?b");
     }
 
     #[test]
