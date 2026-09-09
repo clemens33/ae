@@ -3494,12 +3494,12 @@ mod tests {
     }
 
     #[test]
-    fn the_lead_pair_sets_two_thirds_before_selecting_the_main_vertical_layout() {
+    fn the_lead_pair_sets_sixty_forty_before_selecting_the_main_vertical_layout() {
         let panes = ["%0".to_owned(), "%1".to_owned()];
         assert_eq!(
             pair_policy_words("lead-pair", &panes[0]),
             vec![
-                vec!["set-window-option", "-t", "%0", "main-pane-width", "66%"],
+                vec!["set-window-option", "-t", "%0", "main-pane-width", "60%"],
                 vec![
                     "if-shell",
                     "-F",

@@ -116,8 +116,8 @@ pub(crate) enum Op<'a> {
     },
     /// `select-layout -t <target> <layout>`.
     SelectLayout { target: &'a str, layout: &'a str },
-    /// `set-window-option -t <target> main-pane-width 66%` — the lead-pair
-    /// window's persistent two-thirds main column.
+    /// `set-window-option -t <target> main-pane-width 60%` — the lead-pair
+    /// window's persistent 60/40 main column.
     SetLeadPairWidth { target: &'a str },
     /// Apply `main-vertical` to the lead-pair window unless one of its panes
     /// is zoomed.
@@ -249,7 +249,7 @@ pub(crate) fn argv(server: &ServerId, op: &Op<'_>) -> TmuxArgv {
         }
         Op::SetLeadPairWidth { target } => {
             args.extend(
-                ["set-window-option", "-t", target, "main-pane-width", "66%"]
+                ["set-window-option", "-t", target, "main-pane-width", "60%"]
                     .map(ToOwned::to_owned),
             );
         }
@@ -434,7 +434,7 @@ mod tests {
     fn the_lead_pair_width_is_window_scoped_and_percentage_based() {
         assert_eq!(
             words(&Op::SetLeadPairWidth { target: "%1" }),
-            vec!["set-window-option", "-t", "%1", "main-pane-width", "66%"]
+            vec!["set-window-option", "-t", "%1", "main-pane-width", "60%"]
         );
     }
 
