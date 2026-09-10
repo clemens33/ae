@@ -656,14 +656,19 @@ same raw token counters, micro-USD cost, coverage, observation time, retirement 
 facts. Supported unreadable, unlocated or truncated sources show `?` and make known token and cost
 totals `(partial)`; unsupported harnesses show `n/a`. A truncated event scan says exactly
 `retired seats: unread (events scan truncated)` rather than treating missing history as zero.
-Pre-2026.9.38 retire events carry no conversation identity. They collapse into one
+Failed session-meta or non-truncated event reads are named in the table, exposed as
+`meta_scan_failure` / `retired_scan_failure` in JSON, and make totals partial. A missing optional
+events file remains distinct and is not a failure.
+Retire events without typed conversation identity collapse into one
 `<session>  retired: N seats unlocated (legacy retire events)` line, are excluded from totals and
 do not make those totals partial: their usage is unknowable. Retired events that do carry typed
 identity keep their own rows and make totals partial when that source cannot be read.
 
 Usage is derived offline from the conversation identity and config home captured when each seat
 first started. Claude assistant records include parent and subagent transcripts, deduplicate growing
-stream snapshots, skip parent replays in sidechains and aggregate by model. Codex uses the last
+stream snapshots, skip parent replays in sidechains and aggregate by model. An overlong Claude
+record is skipped, but marks the known subtotal truncated and approximate rather than complete.
+Codex uses the last
 cumulative token event, splits cached and cache-write subsets from ordinary input, and counts
 reasoning only once inside output. It prices that total at the last turn-context model seen in the
 bounded tail, or the bounded head when the tail names none. A `~` model prefix means the rollout
@@ -683,7 +688,8 @@ two seconds. Claude transcripts stream line by line under a 512 MiB total cap pe
 1 MiB is skipped without buffering the rest. Codex reads a 256 KiB head and 256 KiB tail. This is an
 explicit, transcript-sized report rather than a cheap status probe: a measured 5 GiB local fleet
 took 14.5 seconds wall / 11.6 seconds user per run. The command makes no network request, invokes no
-vendor process and writes no state. Ended archives stay out of scope: retained vendor transcripts
+vendor process and writes no state. A model without a cumulative counter in the bounded tail is
+unknown and partial, never a priced zero. Ended archives stay out of scope: retained vendor transcripts
 may remain unless `--purge-history` was used, but archive metadata carries no harness ids.
 
 ## Session helpers

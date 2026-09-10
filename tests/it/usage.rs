@@ -52,6 +52,7 @@ fn codex_uses_last_cumulative_total_and_does_not_double_reasoning_output() {
         true,
     );
     assert_eq!(parsed.models, ["gpt-5.6-luna", "gpt-5.6-sol"]);
+    assert!(parsed.has_token_count);
     assert!(parsed.approximate);
     assert_eq!(
         parsed.tokens,
@@ -69,6 +70,21 @@ fn codex_uses_last_cumulative_total_and_does_not_double_reasoning_output() {
         )
         .models
         .is_empty()
+    );
+    let zero = codex::parse(
+        br#"{"type":"turn_context","payload":{"model":"gpt-5.6-sol"}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":0,"output_tokens":0}}}}
+"#,
+        true,
+    );
+    assert!(zero.has_token_count);
+    assert_eq!(zero.tokens, Tokens::default());
+    assert!(
+        !codex::parse(
+            br#"{"type":"turn_context","payload":{"model":"gpt-5.6-sol"}}"#,
+            true,
+        )
+        .has_token_count
     );
 }
 
@@ -123,8 +139,57 @@ fn claude_observer_streams_large_files_and_skips_an_overlong_line() {
         prices: &prices::Book::default(),
         now: 1_788_858_600,
     });
-    assert_eq!(observed.sessions[0].seats[0].coverage, Coverage::Read);
+    assert_eq!(observed.sessions[0].seats[0].coverage, Coverage::Truncated);
     assert_eq!(observed.sessions[0].seats[0].tokens.input, 120);
+    assert!(observed.sessions[0].seats[0].approximate);
+    assert!(observed.sessions[0].total.partial);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn claude_large_valid_record_marks_partial_after_short_control() {
+    let root = rig("large-valid-claude");
+    let store = root.join("claude");
+    let path = store.join(format!("projects/work/{CLAUDE_ID}.jsonl"));
+    std::fs::create_dir_all(store.join("projects/work")).expect("Claude project");
+    std::fs::write(
+        &path,
+        br#"{"type":"assistant","message":{"id":"small","model":"claude-fable-5-1-20260901","usage":{"input_tokens":3,"output_tokens":2}}}
+"#,
+    )
+    .expect("short transcript");
+    std::fs::write(
+        root.join("sessions/live/meta"),
+        format!("schema=2\nseat.main=lead\nharness_session.main={CLAUDE_ID}\nagent_bin.main=claude\nconfig_home.main={}\n", store.display()),
+    ).expect("meta");
+    let sessions = [SessionInput {
+        name: "live".to_owned(),
+        path: root.join("sessions/live"),
+    }];
+    let short = ae::usage::observe(&Inputs {
+        home: Some(&root),
+        sessions: &sessions,
+        prices: &prices::Book::default(),
+        now: 1_788_858_600,
+    });
+    assert_eq!(short.sessions[0].seats[0].coverage, Coverage::Read);
+    assert!(!short.sessions[0].total.partial);
+    let mut large = std::fs::read(&path).expect("short transcript read");
+    large.extend_from_slice(format!("{{\"type\":\"assistant\",\"message\":{{\"id\":\"large\",\"model\":\"claude-fable-5-1-20260901\",\"usage\":{{\"input_tokens\":5}},\"padding\":\"{}\"}}}}\n", "x".repeat(1024 * 1024)).as_bytes());
+    std::fs::write(path, large).expect("large transcript");
+    let observed = ae::usage::observe(&Inputs {
+        home: Some(&root),
+        sessions: &sessions,
+        prices: &prices::Book::default(),
+        now: 1_788_858_600,
+    });
+    let seat = &observed.sessions[0].seats[0];
+    assert_eq!(seat.coverage, Coverage::Truncated);
+    assert!(seat.approximate);
+    assert_eq!(seat.tokens.input, 3);
+    assert_eq!(seat.tokens.output, 2);
+    assert_eq!(observed.sessions[0].total.tokens, seat.tokens);
+    assert!(observed.sessions[0].total.partial);
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -175,6 +240,51 @@ fn codex_observer_unions_head_and_tail_models() {
     assert_eq!(observed.sessions[0].seats[0].tokens.input, 70);
     assert!(observed.sessions[0].seats[0].usd_micro.is_some());
     assert!(observed.sessions[0].seats[0].approximate);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn codex_head_usage_requires_tail_evidence_after_short_control() {
+    let root = rig("codex-head-no-tail-count");
+    let store = root.join("codex");
+    let path = store.join(format!(
+        "sessions/2026/09/08/rollout-2026-09-08T09-00-00-{CODEX_ID}.jsonl"
+    ));
+    std::fs::create_dir_all(store.join("sessions/2026/09/08")).expect("Codex day");
+    let head = br#"{"type":"turn_context","payload":{"model":"gpt-5.6-sol"}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":11,"cached_input_tokens":2,"cache_write_input_tokens":1,"output_tokens":3,"reasoning_output_tokens":1}}}}
+"#;
+    std::fs::write(&path, head).expect("short rollout");
+    std::fs::write(root.join("sessions/live/meta"), format!("schema=2\nseat.main=lead\nharness_session.main={CODEX_ID}\nagent_bin.main=codex\nconfig_home.main={}\n", store.display())).expect("meta");
+    let sessions = [SessionInput {
+        name: "live".to_owned(),
+        path: root.join("sessions/live"),
+    }];
+    let short = ae::usage::observe(&Inputs {
+        home: Some(&root),
+        sessions: &sessions,
+        prices: &prices::Book::default(),
+        now: 1_788_858_600,
+    });
+    assert_eq!(short.sessions[0].seats[0].coverage, Coverage::Read);
+    assert!(short.sessions[0].seats[0].tokens.input > 0);
+    let mut large = head.to_vec();
+    while large.len() <= 512 * 1024 {
+        large.extend_from_slice(
+            br#"{"type":"event_msg","payload":{"type":"other"}}
+"#,
+        );
+    }
+    std::fs::write(path, large).expect("large rollout");
+    let observed = ae::usage::observe(&Inputs {
+        home: Some(&root),
+        sessions: &sessions,
+        prices: &prices::Book::default(),
+        now: 1_788_858_600,
+    });
+    assert_eq!(observed.sessions[0].seats[0].coverage, Coverage::Truncated);
+    assert_eq!(observed.sessions[0].seats[0].tokens, Tokens::default());
+    assert!(observed.sessions[0].total.partial);
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -431,6 +541,53 @@ fn implicit_claude_home_uses_the_recorded_store_not_its_base() {
 }
 
 #[test]
+fn claude_intermediate_symlink_never_combines_outside_sidechain_usage() {
+    let root = rig("claude-sidechain-symlink");
+    let store = root.join("claude");
+    let project = store.join("projects/work");
+    let uuid_dir = project.join(CLAUDE_ID);
+    let outside = root.join("outside");
+    std::fs::create_dir_all(project.join(CLAUDE_ID).join("subagents")).expect("sidechain");
+    std::fs::create_dir_all(outside.join("subagents")).expect("outside");
+    std::fs::write(
+        project.join(format!("{CLAUDE_ID}.jsonl")),
+        include_bytes!("../fixtures/usage/claude-main.jsonl"),
+    )
+    .expect("parent");
+    std::fs::write(uuid_dir.join("subagents/control.jsonl"), br#"{"type":"assistant","message":{"id":"control","model":"claude-fable-5-1-20260901","usage":{"input_tokens":7}}}
+"#).expect("control");
+    std::fs::write(outside.join("subagents/outside.jsonl"), br#"{"type":"assistant","message":{"id":"outside","model":"claude-fable-5-1-20260901","usage":{"input_tokens":999}}}
+"#).expect("outside transcript");
+    std::fs::write(root.join("sessions/live/meta"), format!("schema=2\nseat.main=lead\nharness_session.main={CLAUDE_ID}\nagent_bin.main=claude\nconfig_home.main={}\n", store.display())).expect("meta");
+    let sessions = [SessionInput {
+        name: "live".to_owned(),
+        path: root.join("sessions/live"),
+    }];
+    let control = ae::usage::observe(&Inputs {
+        home: Some(&root),
+        sessions: &sessions,
+        prices: &prices::Book::default(),
+        now: 1_788_858_600,
+    });
+    assert_eq!(control.sessions[0].seats[0].tokens.input, 127);
+    std::fs::remove_dir_all(&uuid_dir).expect("replace UUID dir");
+    std::os::unix::fs::symlink(&outside, &uuid_dir).expect("intermediate symlink");
+    let observed = ae::usage::observe(&Inputs {
+        home: Some(&root),
+        sessions: &sessions,
+        prices: &prices::Book::default(),
+        now: 1_788_858_600,
+    });
+    assert!(matches!(
+        observed.sessions[0].seats[0].coverage,
+        Coverage::Unreadable(_)
+    ));
+    assert_eq!(observed.sessions[0].seats[0].tokens, Tokens::default());
+    assert!(observed.sessions[0].total.partial);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn price_config_uses_alias_rows_and_refuses_duplicate_models() {
     let root = rig("prices");
     let good = root.join("good");
@@ -537,6 +694,8 @@ fn usage_table_and_json_pin_partial_coverage() {
             },
             retired_scan_truncated: false,
             legacy_retired_unlocated: 0,
+            meta_scan_failure: None,
+            retired_scan_failure: None,
         }],
         unpriced: Vec::new(),
         now: 1_788_858_600,
@@ -660,4 +819,93 @@ fn an_oversized_events_scan_is_explicitly_truncated_and_partial() {
             .contains("retired seats: unread (events scan truncated)")
     );
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn meta_and_events_read_failures_are_visible_and_partial_but_missing_events_are_not() {
+    let meta_root = rig("meta-read-failure");
+    std::fs::create_dir_all(meta_root.join("sessions/live/meta")).expect("invalid meta directory");
+    std::fs::write(
+        meta_root.join("sessions/live/events.jsonl"),
+        format!(
+            "{{\"ts\":\"2026-09-10T09:00:00Z\",\"actor\":\"lead\",\"action\":\"retire\",\"target\":\"past\",\"ref\":\"{RETIRED_ID}\",\"target_slot\":\"spawned.1\",\"summary\":\"tool=grok profile=grok46 config_home= config_home_base=\"}}\n"
+        ),
+    )
+    .expect("retire event");
+    let meta_sessions = [SessionInput {
+        name: "live".to_owned(),
+        path: meta_root.join("sessions/live"),
+    }];
+    let meta_observed = ae::usage::observe(&Inputs {
+        home: Some(&meta_root),
+        sessions: &meta_sessions,
+        prices: &prices::Book::default(),
+        now: 1_788_858_600,
+    });
+    let meta_table = ae::usage::render(&meta_observed, false);
+    assert!(meta_observed.sessions[0].total.partial);
+    assert!(meta_observed.sessions[0].meta_scan_failure.is_some());
+    assert!(
+        meta_table.contains("live  seats: unread (session meta scan failed:"),
+        "{meta_table}"
+    );
+    assert!(
+        ae::usage::render(&meta_observed, true).contains("\"meta_scan_failure\":"),
+        "meta failure missing from JSON"
+    );
+
+    let events_root = rig("events-read-failure");
+    std::fs::write(
+        events_root.join("sessions/live/meta"),
+        "schema=2\nseat.main=other\nagent_bin.main=grok\n",
+    )
+    .expect("meta");
+    std::fs::create_dir_all(events_root.join("sessions/live/events.jsonl"))
+        .expect("invalid events directory");
+    let events_sessions = [SessionInput {
+        name: "live".to_owned(),
+        path: events_root.join("sessions/live"),
+    }];
+    let events_observed = ae::usage::observe(&Inputs {
+        home: Some(&events_root),
+        sessions: &events_sessions,
+        prices: &prices::Book::default(),
+        now: 1_788_858_600,
+    });
+    let events_table = ae::usage::render(&events_observed, false);
+    assert!(events_observed.sessions[0].total.partial);
+    assert!(events_observed.sessions[0].retired_scan_failure.is_some());
+    assert!(
+        events_table.contains("live  retired seats: unread (events scan failed:"),
+        "{events_table}"
+    );
+    assert!(
+        ae::usage::render(&events_observed, true).contains("\"retired_scan_failure\":"),
+        "events failure missing from JSON"
+    );
+
+    let missing_root = rig("events-missing");
+    std::fs::write(
+        missing_root.join("sessions/live/meta"),
+        "schema=2\nseat.main=other\nagent_bin.main=grok\n",
+    )
+    .expect("meta");
+    let missing_sessions = [SessionInput {
+        name: "live".to_owned(),
+        path: missing_root.join("sessions/live"),
+    }];
+    let missing_observed = ae::usage::observe(&Inputs {
+        home: Some(&missing_root),
+        sessions: &missing_sessions,
+        prices: &prices::Book::default(),
+        now: 1_788_858_600,
+    });
+    let missing_table = ae::usage::render(&missing_observed, false);
+    assert!(!missing_observed.sessions[0].total.partial);
+    assert!(missing_observed.sessions[0].retired_scan_failure.is_none());
+    assert!(!missing_table.contains("scan failed"), "{missing_table}");
+
+    let _ = std::fs::remove_dir_all(meta_root);
+    let _ = std::fs::remove_dir_all(events_root);
+    let _ = std::fs::remove_dir_all(missing_root);
 }

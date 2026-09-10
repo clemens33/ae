@@ -60,7 +60,7 @@ A crash writes its input under `artifacts/<target>/`; reproduce it with
 | `quota_claude_cache` | `quota::claude::parse` | one Claude settings file, at a fixed and a chosen clock |
 | `quota_codex_rollout` | `quota::codex::parse` | first byte the record boundary, the rest a rollout tail |
 | `usage_claude_transcript` | `usage::claude::parse` | one Claude assistant transcript JSONL stream |
-| `usage_codex_rollout` | `usage::codex::parse` | first byte the record boundary, the rest a Codex rollout tail |
+| `usage_codex_rollout` | `usage::codex::parse_with_head` | first byte the record boundary, then split bounded head/tail Codex rollout bytes |
 | `usage_prices` | `usage::prices::parse_row` | one `[prices]` alias row |
 
 ## Lock refresh after a release

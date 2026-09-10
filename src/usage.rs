@@ -157,6 +157,8 @@ pub struct SessionUsage {
     pub total: UsageTotal,
     pub retired_scan_truncated: bool,
     pub legacy_retired_unlocated: usize,
+    pub meta_scan_failure: Option<String>,
+    pub retired_scan_failure: Option<String>,
 }
 
 /// Stable data API consumed by the command and later watchdog integration.
@@ -174,7 +176,7 @@ pub fn observe(inputs: &Inputs<'_>) -> Observation {
     let mut sessions = Vec::new();
     for input in inputs.sessions {
         let mut meta_budget = Budget::new();
-        let mut seats = match read_meta(&input.path, &mut meta_budget) {
+        let (mut seats, meta_scan_failure) = match read_meta(&input.path, &mut meta_budget) {
             Ok(meta) => {
                 let mut seats = Vec::new();
                 for entry in meta.roster() {
@@ -187,9 +189,9 @@ pub fn observe(inputs: &Inputs<'_>) -> Observation {
                         false,
                     ));
                 }
-                seats
+                (seats, None)
             }
-            Err(_) => Vec::new(),
+            Err(coverage) => (Vec::new(), Some(scan_failure_reason(coverage))),
         };
         let mut retired_budget = Budget::new();
         let retired_scan = add_retired(
@@ -200,7 +202,11 @@ pub fn observe(inputs: &Inputs<'_>) -> Observation {
             &mut unpriced,
         );
         let mut total = total_of(&seats);
-        if (seats.is_empty() && retired_scan.legacy_unlocated == 0) || retired_scan.truncated {
+        if (seats.is_empty() && retired_scan.legacy_unlocated == 0)
+            || retired_scan.truncated
+            || meta_scan_failure.is_some()
+            || retired_scan.failure.is_some()
+        {
             total.partial = true;
         }
         sessions.push(SessionUsage {
@@ -209,6 +215,8 @@ pub fn observe(inputs: &Inputs<'_>) -> Observation {
             total,
             retired_scan_truncated: retired_scan.truncated,
             legacy_retired_unlocated: retired_scan.legacy_unlocated,
+            meta_scan_failure,
+            retired_scan_failure: retired_scan.failure,
         });
     }
     Observation {
@@ -314,17 +322,20 @@ fn observe_claude(
         Ok(found) => found,
         Err(coverage) => return vec![coverage_row(entry, tool, coverage, retired)],
     };
-    let Some((parent, sidechains, observed_at)) = found else {
+    let Some((parent, sidechains, observed_at, truncated)) = found else {
         return vec![unreadable(entry, tool, "transcript not found", retired)];
     };
     let models = claude::reduce(&parent, &sidechains);
     if models.is_empty() {
+        if truncated {
+            return vec![coverage_row(entry, tool, Coverage::Truncated, retired)];
+        }
         return vec![unreadable(entry, tool, "transcript has no usage", retired)];
     }
     models
         .into_iter()
         .map(|model| {
-            priced_row(
+            let mut row = priced_row(
                 entry,
                 model.model,
                 model.tokens,
@@ -336,7 +347,12 @@ fn observe_claude(
                 },
                 inputs.prices,
                 unpriced,
-            )
+            );
+            if truncated {
+                row.coverage = Coverage::Truncated;
+                row.approximate = true;
+            }
+            row
         })
         .collect()
 }
@@ -391,6 +407,13 @@ fn observe_codex(
             Err(_) => return unreadable(entry, tool, "rollout unreadable", retired),
         };
     let parsed = codex::parse_with_head(&head, &bytes, boundary);
+    if !parsed.has_token_count {
+        return if head.is_empty() {
+            unreadable(entry, tool, "rollout has no token usage", retired)
+        } else {
+            coverage_row(entry, tool, Coverage::Truncated, retired)
+        };
+    }
     match parsed.last_model {
         Some(model) => priced_row(
             entry,
@@ -409,7 +432,7 @@ fn observe_codex(
     }
 }
 
-type ClaudeFiles = Option<(claude::Parsed, Vec<claude::Parsed>, Option<i64>)>;
+type ClaudeFiles = Option<(claude::Parsed, Vec<claude::Parsed>, Option<i64>, bool)>;
 
 struct TranscriptFile {
     path: PathBuf,
@@ -468,7 +491,12 @@ fn claude_files(store: &Path, id: &str, budget: &mut Budget) -> Result<ClaudeFil
             observed_at = newer(observed_at, found.modified.and_then(epoch));
             parent = Some(found);
         }
-        let subagents = project.join(id).join("subagents");
+        let Some(conversation) = derived_directory(&project, id, budget)? else {
+            continue;
+        };
+        let Some(subagents) = derived_directory(&conversation, "subagents", budget)? else {
+            continue;
+        };
         for path in child_files(&subagents, budget)? {
             if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
                 continue;
@@ -483,12 +511,40 @@ fn claude_files(store: &Path, id: &str, budget: &mut Budget) -> Result<ClaudeFil
         return Ok(None);
     };
     let mut transcript_budget = TranscriptBudget::new();
-    let parent = parse_transcript(&parent, &mut transcript_budget)?;
+    let (parent, mut truncated) = parse_transcript(&parent, &mut transcript_budget)?;
     let mut parsed_sidechains = Vec::new();
     for sidechain in sidechains {
-        parsed_sidechains.push(parse_transcript(&sidechain, &mut transcript_budget)?);
+        let (parsed, sidechain_truncated) = parse_transcript(&sidechain, &mut transcript_budget)?;
+        truncated |= sidechain_truncated;
+        parsed_sidechains.push(parsed);
     }
-    Ok(Some((parent, parsed_sidechains, observed_at)))
+    Ok(Some((parent, parsed_sidechains, observed_at, truncated)))
+}
+
+fn derived_directory(
+    parent: &Path,
+    name: &str,
+    budget: &mut Budget,
+) -> Result<Option<PathBuf>, Coverage> {
+    let path = parent.join(name);
+    if path.parent() != Some(parent) || !budget.claim_file() {
+        return Err(Coverage::Truncated);
+    }
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: every derived usage directory is lstat-checked before enumeration"
+    )]
+    let metadata = match std::fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(Coverage::Unreadable("directory unreadable".to_owned())),
+    };
+    if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() {
+        return Err(Coverage::Unreadable(
+            "directory is not a regular directory".to_owned(),
+        ));
+    }
+    Ok(Some(path))
 }
 
 fn locate_transcript(path: &Path, budget: &mut Budget) -> Result<Option<TranscriptFile>, Coverage> {
@@ -520,7 +576,7 @@ fn locate_transcript(path: &Path, budget: &mut Budget) -> Result<Option<Transcri
 fn parse_transcript(
     transcript: &TranscriptFile,
     budget: &mut TranscriptBudget,
-) -> Result<claude::Parsed, Coverage> {
+) -> Result<(claude::Parsed, bool), Coverage> {
     if !budget.claim(transcript.metadata.len()) {
         return Err(Coverage::Truncated);
     }
@@ -544,11 +600,14 @@ fn parse_transcript(
     let mut reader = BufReader::new(file.take(transcript.metadata.len()));
     let mut line = Vec::new();
     let mut parser = claude::Parser::default();
+    let mut truncated = false;
     while let Some(usable) = read_capped_line(&mut reader, &mut line)
         .map_err(|_| Coverage::Unreadable("transcript unreadable".to_owned()))?
     {
         if usable {
             parser.push(&line);
+        } else {
+            truncated = true;
         }
     }
     if reader.into_inner().limit() != 0 {
@@ -556,7 +615,7 @@ fn parse_transcript(
             "transcript changed during read".to_owned(),
         ));
     }
-    Ok(parser.finish())
+    Ok((parser.finish(), truncated))
 }
 
 fn read_capped_line(
@@ -820,23 +879,27 @@ fn unsupported(entry: &RosterEntry, tool: ToolKind, retired: bool) -> SeatUsage 
 fn total_of(seats: &[SeatUsage]) -> UsageTotal {
     let mut total = UsageTotal::default();
     for seat in seats {
-        if seat.coverage == Coverage::Read {
-            total.tokens = total.tokens.saturating_add(seat.tokens);
-            match seat.usd_micro {
-                Some(cost) => total.usd_micro = total.usd_micro.saturating_add(cost),
-                None => total.partial = true,
+        match seat.coverage {
+            Coverage::Read | Coverage::Truncated => {
+                total.tokens = total.tokens.saturating_add(seat.tokens);
+                match seat.usd_micro {
+                    Some(cost) => total.usd_micro = total.usd_micro.saturating_add(cost),
+                    None => total.partial = true,
+                }
+                total.partial |= matches!(seat.coverage, Coverage::Truncated);
             }
-        } else if !matches!(seat.coverage, Coverage::Unsupported) {
-            total.partial = true;
+            Coverage::Unreadable(_) | Coverage::Unlocated => total.partial = true,
+            Coverage::Unsupported => {}
         }
     }
     total
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 struct RetiredScan {
     truncated: bool,
     legacy_unlocated: usize,
+    failure: Option<String>,
 }
 
 fn add_retired(
@@ -853,9 +916,16 @@ fn add_retired(
             return RetiredScan {
                 truncated: true,
                 legacy_unlocated: 0,
+                failure: None,
             };
         }
-        Ok(None) | Err(_) => return RetiredScan::default(),
+        Ok(None) => return RetiredScan::default(),
+        Err(coverage) => {
+            return RetiredScan {
+                failure: Some(scan_failure_reason(coverage)),
+                ..RetiredScan::default()
+            };
+        }
     };
     let text = String::from_utf8_lossy(&bytes);
     let mut scan = RetiredScan::default();
@@ -924,6 +994,16 @@ fn add_retired(
         ));
     }
     scan
+}
+
+fn scan_failure_reason(coverage: Coverage) -> String {
+    match coverage {
+        Coverage::Unreadable(reason) => reason,
+        Coverage::Truncated => "scan truncated".to_owned(),
+        Coverage::Read | Coverage::Unsupported | Coverage::Unlocated => {
+            "scan coverage unavailable".to_owned()
+        }
+    }
 }
 
 fn retired_fields(summary: &str) -> Option<(String, String, String, String)> {
@@ -1008,6 +1088,18 @@ fn render_table(observation: &Observation) -> String {
             lines.push(TableLine::Note(
                 "retired seats: unread (events scan truncated)".to_owned(),
             ));
+        }
+        if let Some(reason) = &session.meta_scan_failure {
+            lines.push(TableLine::Note(format!(
+                "{}  seats: unread (session meta scan failed: {reason})",
+                session.name
+            )));
+        }
+        if let Some(reason) = &session.retired_scan_failure {
+            lines.push(TableLine::Note(format!(
+                "{}  retired seats: unread (events scan failed: {reason})",
+                session.name
+            )));
         }
         if session.legacy_retired_unlocated > 0 {
             lines.push(TableLine::Note(format!(
@@ -1237,6 +1329,20 @@ fn session_json(session: &SessionUsage) -> crate::json::Value {
         (
             "legacy_retired_unlocated",
             json_usize(session.legacy_retired_unlocated),
+        ),
+        (
+            "meta_scan_failure",
+            session
+                .meta_scan_failure
+                .as_ref()
+                .map_or(crate::json::Value::Null, crate::json::Value::str),
+        ),
+        (
+            "retired_scan_failure",
+            session
+                .retired_scan_failure
+                .as_ref()
+                .map_or(crate::json::Value::Null, crate::json::Value::str),
         ),
     ])
 }

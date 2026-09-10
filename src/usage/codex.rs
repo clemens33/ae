@@ -17,6 +17,8 @@ pub struct Parsed {
     pub last_model: Option<String>,
     /// At least two observed turn contexts named different models.
     pub model_changed: bool,
+    /// At least one valid cumulative token counter was observed.
+    pub has_token_count: bool,
 }
 
 /// Parse a bounded Codex rollout tail.
@@ -89,6 +91,7 @@ fn parse_tail(bytes: &[u8], starts_at_boundary: bool) -> Parsed {
                 else {
                     continue;
                 };
+                parsed.has_token_count = true;
                 let raw_input = count(total.get("input_tokens"));
                 let cached = count(total.get("cached_input_tokens")).min(raw_input);
                 let cache_write = count(total.get("cache_write_input_tokens"))
