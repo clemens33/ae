@@ -28,7 +28,8 @@ ae orchestrator        Start or reattach the orchestrator seat: a local session 
                        orchestrator, pinned first in the fleet strip
 ae orchestrator --popup
                        Pick a live session in a tmux menu; its lead pane gets the
-                       client. Opened above the far-right status-bar ☰/= button
+                       client. Opened above the bottom-left status-bar ☰/= button,
+                       before the session list,
                        or +N overflow count. Needs tmux >= 3.4
 ae doctor              Check local environment and ae config
 ae doctor --refresh [name|all]
