@@ -63,14 +63,18 @@ survives a watchdog restart.
 
 Launch persists `[workspace] idle_nudge_secs` too (default 300, `0` disables).
 This clock starts when the current Claude Code or Codex frame is positively
-recognized as an empty input box. An ambiguous frame pauses the idle verdict
-but preserves the episode; only Busy, a declaration, or a human draft resets
-it. Pane hashes, cursor animation, and redraws cannot re-arm its budget. The
-clock and delivery counters ride in the watchdog-owned `@ae_observed` pane
-option, guarded by the slot+agent identity, so a watchdog restart preserves an
-episode while a reused pane id does not inherit it. The option also carries the
-latest applied declaration fingerprint: each new declaration resets the idle
-clock and reminder budget once, including across a watchdog restart.
+recognized as an empty input box. A Claude Code frame qualifies only when the
+input box is framed by both borders and is followed by the status line (`🧠`)
+and permission-mode footer (`⏵`). Other Claude setups, including default
+permission mode or a missing status line, stay Unknown and keep the legacy
+motion rule. An ambiguous frame pauses the idle verdict but preserves the
+episode; only Busy, a declaration, or a human draft resets it. Pane hashes,
+cursor animation, and redraws cannot re-arm its budget. The clock and delivery
+counters ride in the watchdog-owned `@ae_observed` pane option, guarded by the
+slot+agent identity, so a watchdog restart preserves an episode while a reused
+pane id does not inherit it. The option also carries the latest applied
+declaration fingerprint: each new declaration resets the idle clock and
+reminder budget once, including across a watchdog restart.
 
 For an orchestrator main, each verdict cycle calls `current_world` once and
 builds the same detail cards as `ae brief --all`. The pure overview renderer
