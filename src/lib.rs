@@ -28,6 +28,7 @@ pub mod events_tail;
 pub mod filters;
 pub mod git;
 pub mod goal;
+pub mod harness_state;
 pub mod identity;
 pub mod init;
 pub mod install;

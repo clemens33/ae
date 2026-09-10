@@ -7,6 +7,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::digest::Status;
 use crate::events::Event;
+use crate::harness_state::HarnessState;
 use crate::meta::{Meta, RosterEntry, ServerSelector};
 use crate::procs::{self, Descendancy};
 use crate::store;
@@ -53,6 +54,8 @@ pub struct Knobs {
     pub interval_secs: u64,
     /// Seconds between bounded local quota observations; zero disables them.
     pub quota_every_secs: u64,
+    /// Seconds of continuously observed idle before the state reminder; zero disables it.
+    pub idle_nudge_secs: u64,
     /// The window under which a pane change or an event counts as recent.
     pub stale_secs: u64,
     /// How many nudges may be DELIVERED before the alert replaces them.
@@ -78,6 +81,7 @@ impl Default for Knobs {
         Self {
             interval_secs: 60,
             quota_every_secs: 300,
+            idle_nudge_secs: 300,
             stale_secs: 900,
             max_nudges: 2,
             throttle_alert_cycles: 5,
@@ -94,6 +98,8 @@ impl Default for Knobs {
 /// What one pane carries from cycle to cycle, gathered into one value.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PaneState {
+    /// The slot+agent generation this carry belongs to.
+    pub identity: Option<u64>,
     /// Dead is LATCHED: once alerted, the pane is skipped every later cycle and
     /// there is no watchdog-emitted clear.
     pub dead_latched: bool,
@@ -101,6 +107,8 @@ pub struct PaneState {
     pub prev_hash: Option<u64>,
     /// When the hash last changed, in epoch seconds; `None` if it never has.
     pub last_hash_change: Option<i64>,
+    /// First positive idle observation in the current uninterrupted episode.
+    pub idle_since_epoch: Option<i64>,
     /// DELIVERIES, never attempts.
     pub nudge_count: u32,
     /// Consecutive throttled cycles.
@@ -126,6 +134,10 @@ pub struct Observation {
     pub now_epoch: i64,
     /// The filtered pane hash.
     pub hash: u64,
+    /// Facts derived from this cycle's existing harness capture.
+    pub harness: HarnessObservation,
+    /// Stable hash of this pane's slot+agent identity.
+    pub identity: u64,
     /// [`classify_dead`]'s answer.
     pub is_dead: bool,
     /// [`shows_throttle`]'s answer.
@@ -144,6 +156,17 @@ pub struct Observation {
     pub sweep: Option<SweepObservation>,
 }
 
+/// Related facts derived without another pane capture or transcript read.
+#[derive(Debug, Clone, Copy)]
+pub struct HarnessObservation {
+    /// Positive harness-frame recognition.
+    pub frame: HarnessState,
+    /// A modeled current input box contains human-authored draft text.
+    pub human_draft: bool,
+    /// A prior max-nudges stale alert still stands in the durable event log.
+    pub durable_stale: bool,
+}
+
 /// The roster glyph a pane earned this cycle — derived only from branches that
 /// were actually judged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -154,6 +177,8 @@ pub enum Verdict {
     Quiet(QuietKind),
     /// Upstream is rate-limiting this agent.
     Throttled,
+    /// The modeled harness is positively waiting at an empty input box.
+    Idle,
     /// Silent past the window, with nothing recent anywhere.
     Stale,
     /// Moving, recently moved, or recently active in the log.
@@ -178,6 +203,7 @@ impl Verdict {
             | Self::Throttled
             | Self::Meta(SweepVerdict::MetaWedged) => Mark::NeedsYou,
             Self::Quiet(QuietKind::Done) => Mark::Done,
+            Self::Idle => Mark::Idle,
             Self::Stale | Self::Meta(SweepVerdict::MetaStarting) => Mark::Stale,
             Self::Active | Self::Meta(SweepVerdict::MetaSweeping) => Mark::Working,
         }
@@ -192,6 +218,7 @@ impl Verdict {
             Self::Quiet(QuietKind::WaitingUser) => "waiting-user",
             Self::Quiet(QuietKind::Blocked) => "blocked",
             Self::Throttled => "throttled",
+            Self::Idle => "idle",
             Self::Stale => "stale",
             Self::Active => "working",
             Self::Meta(SweepVerdict::MetaSweeping) => "sweeping",
@@ -668,6 +695,18 @@ pub fn nudge_text(goal: Option<&str>, meta_dir: &Path) -> String {
     )
 }
 
+/// The idle reminder uses the same delivery path but names the positive
+/// observation that started its independent clock.
+#[must_use]
+pub fn idle_nudge_text(goal: Option<&str>, meta_dir: &Path) -> String {
+    let prefix = goal.map_or_else(String::new, |goal| format!("Session goal: {goal}. "));
+    format!(
+        "{prefix}you look idle: declare state or continue. State helper: {}/state \
+         <waiting-user|blocked|done> \"<reason>\"",
+        meta_dir.display()
+    )
+}
+
 /// Count consecutive unusable process snapshots, and say so once.
 fn book_unknown(next: &mut PaneState, effects: &mut Vec<Effect>, descendancy: Descendancy) {
     if !matches!(descendancy, Descendancy::Unknown) {
@@ -716,6 +755,7 @@ fn book_throttle(
     }
     next.prev_hash = Some(seen.hash);
     next.last_hash_change = Some(seen.now_epoch);
+    next.idle_since_epoch = None;
     next.nudge_count = 0;
 }
 
@@ -724,8 +764,8 @@ fn book_stale(
     prior: &PaneState,
     next: &mut PaneState,
     effects: &mut Vec<Effect>,
-    seen: &Observation,
     knobs: &Knobs,
+    display_age_secs: u64,
 ) {
     if prior.undelivered_streak >= knobs.undelivered_max {
         return;
@@ -733,7 +773,7 @@ fn book_stale(
     if prior.nudge_count < knobs.max_nudges {
         effects.push(Effect::Nudge);
     } else if prior.nudge_count == knobs.max_nudges {
-        let display = stale_display(seen.last_actor_event_age_secs);
+        let display = stale_display(display_age_secs);
         effects.push(Effect::Emit {
             action: "alert",
             summary: format!("max nudges reached ({display}), needs attention"),
@@ -767,7 +807,17 @@ fn book_sweep(
 /// any of it is decided.
 #[must_use]
 pub fn account(prior: &PaneState, seen: &Observation, knobs: &Knobs) -> Accounting {
+    let reset = PaneState::default();
+    let prior = if prior
+        .identity
+        .is_some_and(|identity| identity != seen.identity)
+    {
+        &reset
+    } else {
+        prior
+    };
     let mut next = prior.clone();
+    next.identity = Some(seen.identity);
     let mut effects = Vec::new();
     book_unknown(&mut next, &mut effects, seen.descendancy);
 
@@ -801,6 +851,7 @@ pub fn account(prior: &PaneState, seen: &Observation, knobs: &Knobs) -> Accounti
 
     // 3.
     if let Some(verdict) = book_sweep(prior, &mut next, &mut effects, seen, knobs) {
+        next.idle_since_epoch = None;
         return Accounting {
             next,
             effects,
@@ -821,6 +872,8 @@ pub fn account(prior: &PaneState, seen: &Observation, knobs: &Knobs) -> Accounti
     // 5.
     if let Some(kind) = seen.quiet {
         next.nudge_count = 0;
+        next.undelivered_streak = 0;
+        next.idle_since_epoch = None;
         return Accounting {
             next,
             effects,
@@ -840,13 +893,99 @@ pub fn account(prior: &PaneState, seen: &Observation, knobs: &Knobs) -> Accounti
         };
     }
 
-    // 7.
+    // 7. Harness frames outrank the legacy motion heuristic.
+    if let Some(verdict) = account_harness(prior, &mut next, &mut effects, seen, knobs) {
+        return Accounting {
+            next,
+            effects,
+            verdict,
+            moved: false,
+        };
+    }
+
+    // 8. Unknown frames retain the legacy motion and actor-event rule.
+    account_unknown(prior, next, effects, seen, knobs)
+}
+
+/// Positive harness-frame branches. `None` means the caller must use the
+/// conservative legacy heuristic.
+fn account_harness(
+    prior: &PaneState,
+    next: &mut PaneState,
+    effects: &mut Vec<Effect>,
+    seen: &Observation,
+    knobs: &Knobs,
+) -> Option<Verdict> {
+    // A human draft is recovery of the idle episode but remains Unknown as an
+    // execution fact.
+    if seen.harness.human_draft {
+        next.idle_since_epoch = None;
+        next.nudge_count = 0;
+        next.undelivered_streak = 0;
+        return Some(if seen.harness.durable_stale {
+            Verdict::Stale
+        } else {
+            Verdict::Active
+        });
+    }
+    match seen.harness.frame {
+        HarnessState::Busy => {
+            next.prev_hash = Some(seen.hash);
+            next.last_hash_change = Some(seen.now_epoch);
+            next.idle_since_epoch = None;
+            next.nudge_count = 0;
+            next.undelivered_streak = 0;
+            if seen.harness.durable_stale {
+                effects.push(Effect::Emit {
+                    action: "alert-cleared",
+                    summary: "agent busy again — stale alert cleared".to_owned(),
+                });
+            }
+            Some(Verdict::Active)
+        }
+        HarnessState::Idle => {
+            next.prev_hash = Some(seen.hash);
+            let idle_since = next.idle_since_epoch.get_or_insert(seen.now_epoch);
+            let idle_age = age_secs(seen.now_epoch, *idle_since);
+            if seen.harness.durable_stale || prior.nudge_count > knobs.max_nudges {
+                return Some(Verdict::Stale);
+            }
+            if knobs.idle_nudge_secs > 0 && idle_age >= knobs.idle_nudge_secs {
+                book_stale(prior, next, effects, knobs, idle_age);
+            }
+            Some(if next.nudge_count > knobs.max_nudges {
+                Verdict::Stale
+            } else {
+                Verdict::Idle
+            })
+        }
+        HarnessState::Unknown => {
+            if seen.harness.durable_stale {
+                Some(Verdict::Stale)
+            } else {
+                None
+            }
+        }
+    }
+}
+
+/// The pre-frame watchdog heuristic, retained for unsupported or ambiguous
+/// current frames.
+fn account_unknown(
+    prior: &PaneState,
+    mut next: PaneState,
+    mut effects: Vec<Effect>,
+    seen: &Observation,
+    knobs: &Knobs,
+) -> Accounting {
     let hash_unchanged = prior.prev_hash == Some(seen.hash);
     if !hash_unchanged {
         next.prev_hash = Some(seen.hash);
         next.last_hash_change = Some(seen.now_epoch);
-        next.nudge_count = 0;
-        next.undelivered_streak = 0;
+        if prior.idle_since_epoch.is_none() {
+            next.nudge_count = 0;
+            next.undelivered_streak = 0;
+        }
         return Accounting {
             next,
             effects,
@@ -856,7 +995,6 @@ pub fn account(prior: &PaneState, seen: &Observation, knobs: &Knobs) -> Accounti
         };
     }
 
-    // 8.
     let hash_change_age = prior
         .last_hash_change
         .map_or(u64::MAX, |at| age_secs(seen.now_epoch, at));
@@ -877,12 +1015,55 @@ pub fn account(prior: &PaneState, seen: &Observation, knobs: &Knobs) -> Accounti
         };
     }
 
-    book_stale(prior, &mut next, &mut effects, seen, knobs);
+    book_stale(
+        prior,
+        &mut next,
+        &mut effects,
+        knobs,
+        seen.last_actor_event_age_secs,
+    );
     Accounting {
         next,
         effects,
         verdict: Verdict::Stale,
         moved: false,
+    }
+}
+
+/// Restore only the idle clock fields owned by the public observed option.
+/// The identity guard prevents a reused pane id inheriting another seat's clock.
+fn restore_idle(state: &mut PaneState, raw: &str, identity: u64) {
+    if state.identity.is_some() {
+        return;
+    }
+    let Some(carry) =
+        crate::harness_state::decode_idle(raw).filter(|carry| carry.identity == identity)
+    else {
+        return;
+    };
+    state.identity = Some(identity);
+    state.idle_since_epoch = Some(carry.since_epoch);
+    state.nudge_count = carry.nudges;
+    state.undelivered_streak = carry.undelivered;
+}
+
+/// Publish the current frame and, for idle, enough episode state to survive a
+/// daemon restart without inventing a second observation call.
+fn observed_option(frame: HarnessState, state: &PaneState) -> String {
+    if frame == HarnessState::Busy {
+        return frame.as_str().to_owned();
+    }
+    match (state.idle_since_epoch, state.identity) {
+        (Some(since_epoch), Some(identity)) => crate::harness_state::encode_carry(
+            frame,
+            crate::harness_state::IdleCarry {
+                since_epoch,
+                nudges: state.nudge_count,
+                undelivered: state.undelivered_streak,
+                identity,
+            },
+        ),
+        _ => frame.as_str().to_owned(),
     }
 }
 
@@ -1057,8 +1238,17 @@ fn sweep_seconds(meta_bytes: &[u8], env: Option<&str>, fallback: u64) -> u64 {
 
 /// Resolve the session-pinned quota cadence before the internal flag/default.
 fn quota_seconds(meta_bytes: &[u8], fallback: u64) -> Result<u64, String> {
-    let Some(raw) = crate::meta::sole_value(meta_bytes, "quota_every_secs") else {
-        return match crate::meta::first_value(meta_bytes, "quota_every_secs") {
+    pinned_seconds(meta_bytes, "quota_every_secs", fallback)
+}
+
+/// Resolve the session-pinned idle reminder cadence before the flag/default.
+fn idle_nudge_seconds(meta_bytes: &[u8], fallback: u64) -> Result<u64, String> {
+    pinned_seconds(meta_bytes, "idle_nudge_secs", fallback)
+}
+
+fn pinned_seconds(meta_bytes: &[u8], key: &str, fallback: u64) -> Result<u64, String> {
+    let Some(raw) = crate::meta::sole_value(meta_bytes, key) else {
+        return match crate::meta::first_value(meta_bytes, key) {
             Some(value) => Err(String::from_utf8_lossy(value).into_owned()),
             None => Ok(fallback),
         };
@@ -1126,6 +1316,8 @@ struct PaneMark {
     pane: String,
     /// What the accounting made of it.
     verdict: Verdict,
+    /// The watchdog-owned public observation, including restart carry.
+    observed: String,
 }
 
 /// One cycle verdict in the window layout the ticker animates between cycles.
@@ -1494,6 +1686,16 @@ pub fn run(
             writeln!(
                 err,
                 "ae: watchdog: quota_every_secs must be an unsigned integer in seconds; got '{value}'."
+            )?;
+            return Ok(crate::state::EXIT_USAGE);
+        }
+    };
+    knobs.idle_nudge_secs = match idle_nudge_seconds(&bytes, knobs.idle_nudge_secs) {
+        Ok(seconds) => seconds,
+        Err(value) => {
+            writeln!(
+                err,
+                "ae: watchdog: idle_nudge_secs must be an unsigned integer in seconds; got '{value}'."
             )?;
             return Ok(crate::state::EXIT_USAGE);
         }
@@ -2039,7 +2241,11 @@ pub(crate) fn clear_published(server: &crate::inventory::ServerId, session: &str
     // The per-pane half: a border title that outlived its watchdog would keep
     // naming a state nothing is judging any more.
     for pane in &panes {
-        for name in [theme::PANE_STATE_OPTION, theme::PANE_ACCENT_OPTION] {
+        for name in [
+            theme::PANE_STATE_OPTION,
+            theme::PANE_ACCENT_OPTION,
+            theme::OBSERVED_OPTION,
+        ] {
             ok &= transport::clear_option(server, OptionScope::Pane, &pane.pane_id, name);
         }
     }
@@ -2286,6 +2492,22 @@ impl Cycle<'_> {
             })
     }
 
+    fn harness_observation(
+        &self,
+        capture: &str,
+        tool: crate::tool::ToolKind,
+        events: &[Event],
+        slot: &str,
+        agent: &str,
+    ) -> HarnessObservation {
+        HarnessObservation {
+            frame: crate::harness_state::classify(capture, tool),
+            human_draft: crate::harness_state::has_human_draft(capture, tool),
+            durable_stale: crate::session::alert_reason_in(events, self.session, slot, agent)
+                == Some(crate::attention::Reason::Stale),
+        }
+    }
+
     /// One pass over the session's panes.
     fn run(&self, carry: &mut Carry, err: &mut impl Write) -> crate::Result<()> {
         // An enumeration that FAILED is not evidence that anything is gone.
@@ -2324,6 +2546,8 @@ impl Cycle<'_> {
             live.push(agent.to_owned());
             let slot = pane.slot.clone().unwrap_or_default();
             let agent_bin = self.agent_bin(&slot);
+            let tool =
+                crate::tool::ToolKind::from_binary_name(agent_bin.as_deref().unwrap_or_default());
 
             // The main loop tolerates a failed capture: an unreadable pane
             // hashes as empty here.
@@ -2333,10 +2557,14 @@ impl Cycle<'_> {
             let throttle_quota = is_throttled
                 .then(|| self.throttle_quota(&carry.quota, &slot, now))
                 .flatten();
+            let identity = quiet_hash(&format!("{slot}\n{agent}"));
             let carried = entry_mut(&mut carry.panes, &pane.pane_id);
+            restore_idle(carried, &pane.observed, identity);
             let seen = Observation {
                 now_epoch: now,
                 hash,
+                harness: self.harness_observation(&capture, tool, &events, &slot, agent),
+                identity,
                 is_dead: classify_dead(
                     &pane.current_command,
                     descendancy_of(table.as_deref(), pane.pane_pid, agent_bin.as_deref()),
@@ -2378,6 +2606,7 @@ impl Cycle<'_> {
             by_pane.push(PaneMark {
                 pane: pane.pane_id.clone(),
                 verdict: booked.verdict,
+                observed: observed_option(seen.harness.frame, carried),
             });
         }
         carry.quiet.end(index);
@@ -2755,28 +2984,31 @@ impl Cycle<'_> {
             return;
         };
         let mark = entry.verdict.mark();
-        let _ = transport::publish_option(
-            self.server,
-            OptionScope::Pane,
-            pane,
-            theme::PANE_STATE_OPTION,
-            &theme::pane_state(
-                &look.palette,
-                mark,
-                mark.glyph(look.icons),
-                entry.verdict.reason(),
-            ),
+        let state = theme::pane_state(
+            &look.palette,
+            mark,
+            mark.glyph(look.icons),
+            entry.verdict.reason(),
         );
         // The ACCENT alone, for the active border: a style option is
         // format-expanded, so the border colour follows the pane it belongs to
         // without a style written per pane.
-        let _ = transport::publish_option(
-            self.server,
-            OptionScope::Pane,
-            pane,
-            theme::PANE_ACCENT_OPTION,
-            look.palette.accent(mark),
-        );
+        let writes = [
+            tmux::OptionWrite::new(OptionScope::Pane, pane, theme::PANE_STATE_OPTION, &state),
+            tmux::OptionWrite::new(
+                OptionScope::Pane,
+                pane,
+                theme::PANE_ACCENT_OPTION,
+                look.palette.accent(mark),
+            ),
+            tmux::OptionWrite::new(
+                OptionScope::Pane,
+                pane,
+                theme::OBSERVED_OPTION,
+                &entry.observed,
+            ),
+        ];
+        let _ = transport::publish_options(self.server, &writes);
     }
 
     /// The recorded binary for a slot, or `None` when the roster has none —
@@ -2880,9 +3112,24 @@ impl Cycle<'_> {
                 Ok(())
             }
             Effect::Nudge => {
-                let display = stale_display(on.seen.last_actor_event_age_secs);
-                let text = nudge_text(self.goal.as_deref(), self.meta_dir);
-                let summary = format!("{display}, no recent ae activity");
+                let idle_age = (on.seen.harness.frame == HarnessState::Idle)
+                    .then(|| {
+                        state
+                            .idle_since_epoch
+                            .map(|at| age_secs(on.seen.now_epoch, at))
+                    })
+                    .flatten();
+                let display = stale_display(idle_age.unwrap_or(on.seen.last_actor_event_age_secs));
+                let text = if idle_age.is_some() {
+                    idle_nudge_text(self.goal.as_deref(), self.meta_dir)
+                } else {
+                    nudge_text(self.goal.as_deref(), self.meta_dir)
+                };
+                let summary = if idle_age.is_some() {
+                    format!("{display}, harness waiting at input")
+                } else {
+                    format!("{display}, no recent ae activity")
+                };
                 let delivered = self.deliver(agent, &text, "nudge", &summary).code == Some(0);
                 for effect in record_nudge(state, delivered, &self.knobs, &display) {
                     self.apply(&effect, on, state, err)?;
@@ -3188,16 +3435,18 @@ fn bar_glyph(dead: usize, stale: usize, icons: bool) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        ACTOR, Carry, Continuation, Cycle, Effect, Journal, Knobs, MissingState, MotionState,
-        MotionVerdict, Observation, OverviewReading, PaneState, PendingAdvisory, QuietCycle,
-        QuietQuery, QuotaAction, QuotaCarry, QuotaDelivery, QuotaLevel, QuotaRecipient, Rebind,
-        SendHelper, UNKNOWN_ALERT_CYCLES, Verdict, account, adopt_server, age_secs, bar_glyph,
-        classify_quota, continuation, entry_mut, is_meta_agent, last_actor_event_age,
+        ACTOR, Carry, Continuation, Cycle, Effect, HarnessObservation, Journal, Knobs,
+        MissingState, MotionState, MotionVerdict, Observation, OverviewReading, PaneState,
+        PendingAdvisory, QuietCycle, QuietQuery, QuotaAction, QuotaCarry, QuotaDelivery,
+        QuotaLevel, QuotaRecipient, Rebind, SendHelper, UNKNOWN_ALERT_CYCLES, Verdict, account,
+        adopt_server, age_secs, bar_glyph, classify_quota, continuation, entry_mut,
+        idle_nudge_seconds, idle_nudge_text, is_meta_agent, last_actor_event_age,
         last_done_event_at, last_working_declaration_at, motion_cadence, motion_failure,
         motion_observation_due, motion_publish_failure, motion_ticker_enabled, nudge_text,
-        quota_delivery, quota_observation_due, quota_recipients, quota_seconds, read_events,
-        rebind, record_nudge, session_name, slot_mark, stale_display, sweep_effects, sweep_seconds,
-        system_time_from_epoch, throttle_quota_line, window_agents_line,
+        observed_option, quota_delivery, quota_observation_due, quota_recipients, quota_seconds,
+        read_events, rebind, record_nudge, restore_idle, session_name, slot_mark, stale_display,
+        sweep_effects, sweep_seconds, system_time_from_epoch, throttle_quota_line,
+        window_agents_line,
     };
     use super::{Look, Mark, PaneMark, session_mark};
     use crate::events::Event;
@@ -3218,6 +3467,12 @@ mod tests {
         Observation {
             now_epoch: 10_000,
             hash: 7,
+            harness: HarnessObservation {
+                frame: crate::harness_state::HarnessState::Unknown,
+                human_draft: false,
+                durable_stale: false,
+            },
+            identity: 1,
             is_dead: false,
             is_throttled: false,
             throttle_quota: None,
@@ -3875,6 +4130,22 @@ mod tests {
         );
         assert_eq!(
             quota_seconds(b"quota_every_secs=60\nquota_every_secs=120\n", 300),
+            Err("60".to_owned()),
+            "ambiguous persisted state must not enable an arbitrary cadence"
+        );
+    }
+
+    #[test]
+    fn persisted_idle_nudge_cadence_wins_and_invalid_state_is_refused() {
+        assert_eq!(idle_nudge_seconds(b"idle_nudge_secs=420\n", 300), Ok(420));
+        assert_eq!(idle_nudge_seconds(b"idle_nudge_secs=0\n", 300), Ok(0));
+        assert_eq!(idle_nudge_seconds(b"session=demo\n", 300), Ok(300));
+        assert_eq!(
+            idle_nudge_seconds(b"idle_nudge_secs=soon\n", 300),
+            Err("soon".to_owned())
+        );
+        assert_eq!(
+            idle_nudge_seconds(b"idle_nudge_secs=60\nidle_nudge_secs=120\n", 300),
             Err("60".to_owned()),
             "ambiguous persisted state must not enable an arbitrary cadence"
         );
@@ -4855,6 +5126,252 @@ mod tests {
         assert_eq!(knobs.quiet_tries, 4);
         assert_eq!(knobs.quiet_panes_per_cycle, 2);
         assert_eq!(knobs.quota_every_secs, 300);
+        assert_eq!(knobs.idle_nudge_secs, 300);
+    }
+
+    #[test]
+    fn precedence_is_dead_meta_declared_throttled_idle_then_legacy() {
+        let mut all = seen();
+        all.is_dead = true;
+        all.sweep = Some(SweepObservation::new(std::time::UNIX_EPOCH, None));
+        all.quiet = Some(QuietKind::Done);
+        all.is_throttled = true;
+        all.harness.frame = crate::harness_state::HarnessState::Idle;
+        assert_eq!(
+            account(&PaneState::default(), &all, &Knobs::default()).verdict,
+            Verdict::Dead
+        );
+
+        all.is_dead = false;
+        let idle_due = PaneState {
+            identity: Some(all.identity),
+            idle_since_epoch: Some(all.now_epoch - 300),
+            ..PaneState::default()
+        };
+        let orchestrator = account(&idle_due, &all, &Knobs::default());
+        assert!(matches!(orchestrator.verdict, Verdict::Meta(_)));
+        assert!(
+            !orchestrator.effects.contains(&Effect::Nudge),
+            "the overview sweep owns orchestrator reminders"
+        );
+        all.sweep = None;
+        assert_eq!(
+            account(&PaneState::default(), &all, &Knobs::default()).verdict,
+            Verdict::Quiet(QuietKind::Done)
+        );
+        all.quiet = None;
+        assert_eq!(
+            account(&PaneState::default(), &all, &Knobs::default()).verdict,
+            Verdict::Throttled
+        );
+        all.is_throttled = false;
+        assert_eq!(
+            account(&PaneState::default(), &all, &Knobs::default()).verdict,
+            Verdict::Idle
+        );
+        all.harness.frame = crate::harness_state::HarnessState::Unknown;
+        assert_eq!(
+            account(&PaneState::default(), &all, &Knobs::default()).verdict,
+            Verdict::Active
+        );
+    }
+
+    #[test]
+    fn idle_carry_survives_restart_but_not_pane_identity_reuse() {
+        let carry = PaneState {
+            identity: Some(77),
+            idle_since_epoch: Some(9_700),
+            nudge_count: 1,
+            undelivered_streak: 2,
+            ..PaneState::default()
+        };
+        let raw = observed_option(crate::harness_state::HarnessState::Idle, &carry);
+        let mut restarted = PaneState::default();
+        restore_idle(&mut restarted, &raw, 77);
+        assert_eq!(restarted.identity, Some(77));
+        assert_eq!(restarted.idle_since_epoch, Some(9_700));
+        assert_eq!(restarted.nudge_count, 1);
+        assert_eq!(restarted.undelivered_streak, 2);
+
+        let mut reused = PaneState::default();
+        restore_idle(&mut reused, &raw, 78);
+        assert_eq!(reused, PaneState::default());
+
+        let unknown_raw = observed_option(crate::harness_state::HarnessState::Unknown, &carry);
+        assert_eq!(
+            crate::harness_state::observed_from_option(&unknown_raw),
+            crate::harness_state::HarnessState::Unknown
+        );
+        let mut restarted_after_noise = PaneState::default();
+        restore_idle(&mut restarted_after_noise, &unknown_raw, 77);
+        assert_eq!(
+            restarted_after_noise.idle_since_epoch, carry.idle_since_epoch,
+            "an ambiguous capture does not erase the independent episode on restart"
+        );
+        assert_eq!(restarted_after_noise.nudge_count, carry.nudge_count);
+        assert_eq!(
+            observed_option(
+                crate::harness_state::HarnessState::Unknown,
+                &PaneState::default()
+            ),
+            "unknown"
+        );
+
+        let mut observed = seen();
+        observed.identity = 77;
+        observed.harness.frame = crate::harness_state::HarnessState::Idle;
+        assert!(
+            account(&restarted, &observed, &Knobs::default())
+                .effects
+                .contains(&Effect::Nudge),
+            "the restored 300-second clock is already due"
+        );
+    }
+
+    #[test]
+    fn durable_stale_attention_survives_a_daemon_restart() {
+        let mut observed = seen();
+        observed.harness.frame = crate::harness_state::HarnessState::Idle;
+        observed.harness.durable_stale = true;
+        let booked = account(&PaneState::default(), &observed, &Knobs::default());
+        assert_eq!(booked.verdict, Verdict::Stale);
+        assert!(booked.effects.is_empty());
+    }
+
+    #[test]
+    fn a_positive_idle_frame_is_idle_before_motion_can_call_it_working() {
+        let mut observed = seen();
+        observed.harness.frame = crate::harness_state::HarnessState::Idle;
+        observed.last_actor_event_age_secs = 10_000;
+        let booked = account(&PaneState::default(), &observed, &Knobs::default());
+        assert_eq!(booked.verdict, Verdict::Idle);
+        assert_eq!(booked.next.idle_since_epoch, Some(observed.now_epoch));
+        assert!(!booked.effects.contains(&Effect::Nudge));
+    }
+
+    #[test]
+    fn the_idle_nudge_clock_fires_at_300_not_299_seconds() {
+        let mut observed = seen();
+        observed.harness.frame = crate::harness_state::HarnessState::Idle;
+        let prior = PaneState {
+            identity: Some(observed.identity),
+            idle_since_epoch: Some(observed.now_epoch - 299),
+            ..PaneState::default()
+        };
+        let early = account(&prior, &observed, &Knobs::default());
+        assert_eq!(early.verdict, Verdict::Idle);
+        assert!(!early.effects.contains(&Effect::Nudge));
+
+        let due = PaneState {
+            idle_since_epoch: Some(observed.now_epoch - 300),
+            ..early.next
+        };
+        let booked = account(&due, &observed, &Knobs::default());
+        assert_eq!(booked.verdict, Verdict::Idle);
+        assert!(booked.effects.contains(&Effect::Nudge));
+        assert_eq!(booked.next.idle_since_epoch, due.idle_since_epoch);
+    }
+
+    #[test]
+    fn repeated_idle_frames_exhaust_once_and_stay_stale_until_real_recovery() {
+        let knobs = Knobs::default();
+        let mut observed = seen();
+        observed.harness.frame = crate::harness_state::HarnessState::Idle;
+        let mut prior = PaneState {
+            identity: Some(observed.identity),
+            idle_since_epoch: Some(observed.now_epoch - 300),
+            nudge_count: knobs.max_nudges,
+            ..PaneState::default()
+        };
+        let exhausted = account(&prior, &observed, &knobs);
+        assert_eq!(exhausted.verdict, Verdict::Stale);
+        assert_eq!(
+            emitted(&exhausted.effects),
+            vec![("alert", "max nudges reached (idle 5m), needs attention")]
+        );
+        prior = exhausted.next;
+        observed.hash = 99;
+        let repeated = account(&prior, &observed, &knobs);
+        assert_eq!(repeated.verdict, Verdict::Stale);
+        assert!(repeated.effects.is_empty());
+
+        observed.harness.frame = crate::harness_state::HarnessState::Busy;
+        observed.harness.durable_stale = true;
+        let recovered = account(&repeated.next, &observed, &knobs);
+        assert_eq!(recovered.verdict, Verdict::Active);
+        assert_eq!(recovered.next.idle_since_epoch, None);
+        assert_eq!(recovered.next.nudge_count, 0);
+        assert_eq!(
+            emitted(&recovered.effects),
+            vec![("alert-cleared", "agent busy again — stale alert cleared")]
+        );
+    }
+
+    #[test]
+    fn a_human_draft_resets_the_idle_episode_without_claiming_busy() {
+        let mut observed = seen();
+        observed.harness.frame = crate::harness_state::HarnessState::Unknown;
+        observed.harness.human_draft = true;
+        observed.last_actor_event_age_secs = 10_000;
+        let prior = PaneState {
+            identity: Some(observed.identity),
+            prev_hash: Some(observed.hash),
+            last_hash_change: Some(observed.now_epoch - 10_000),
+            idle_since_epoch: Some(observed.now_epoch - 600),
+            nudge_count: 2,
+            undelivered_streak: 2,
+            ..PaneState::default()
+        };
+        let booked = account(&prior, &observed, &Knobs::default());
+        assert_eq!(booked.verdict, Verdict::Active);
+        assert_eq!(booked.next.idle_since_epoch, None);
+        assert_eq!(booked.next.nudge_count, 0);
+        assert_eq!(booked.next.undelivered_streak, 0);
+        assert!(booked.effects.is_empty(), "never paste over a human draft");
+    }
+
+    #[test]
+    fn an_unknown_frame_preserves_but_does_not_spend_the_idle_episode() {
+        let mut observed = seen();
+        observed.harness.frame = crate::harness_state::HarnessState::Unknown;
+        observed.hash = 99;
+        let prior = PaneState {
+            identity: Some(observed.identity),
+            prev_hash: Some(7),
+            last_hash_change: Some(observed.now_epoch - 600),
+            idle_since_epoch: Some(observed.now_epoch - 299),
+            nudge_count: 1,
+            undelivered_streak: 2,
+            ..PaneState::default()
+        };
+        let booked = account(&prior, &observed, &Knobs::default());
+        assert_eq!(booked.verdict, Verdict::Active);
+        assert_eq!(booked.next.idle_since_epoch, prior.idle_since_epoch);
+        assert_eq!(booked.next.nudge_count, 1);
+        assert_eq!(booked.next.undelivered_streak, 2);
+        assert!(booked.effects.is_empty());
+    }
+
+    #[test]
+    fn a_durable_idle_alert_survives_unknown_and_human_draft_frames() {
+        let mut observed = seen();
+        observed.harness.frame = crate::harness_state::HarnessState::Unknown;
+        observed.harness.human_draft = true;
+        observed.harness.durable_stale = true;
+        let prior = PaneState {
+            identity: Some(observed.identity),
+            idle_since_epoch: Some(observed.now_epoch - 600),
+            nudge_count: 3,
+            ..PaneState::default()
+        };
+        let booked = account(&prior, &observed, &Knobs::default());
+        assert_eq!(booked.verdict, Verdict::Stale);
+        assert_eq!(booked.next.idle_since_epoch, None);
+        assert_eq!(booked.next.nudge_count, 0);
+        assert!(
+            booked.effects.is_empty(),
+            "only Busy or declaration clears it"
+        );
     }
 
     #[test]
@@ -5161,6 +5678,13 @@ mod tests {
         );
         let goaled = nudge_text(Some("ship P4.1"), meta);
         assert!(goaled.starts_with("Session goal: ship P4.1. Status check:"));
+        let idle = idle_nudge_text(Some("ship P4.1"), meta);
+        assert!(idle.contains("you look idle: declare state or continue"));
+        assert!(
+            idle.ends_with(
+                "/home/x/.ae/sessions/demo/state <waiting-user|blocked|done> \"<reason>\""
+            )
+        );
     }
 
     #[test]
@@ -5481,6 +6005,7 @@ mod tests {
         let pane = |pane: &str, verdict| PaneMark {
             pane: pane.to_owned(),
             verdict,
+            observed: "unknown".to_owned(),
         };
         assert_eq!(session_mark(&[], &[]), Mark::Idle);
         assert_eq!(

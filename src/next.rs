@@ -212,6 +212,7 @@ mod tests {
             name: reference.to_owned(),
             session_id: None,
             alive: Some(true),
+            observed: crate::harness_state::HarnessState::Unknown,
             state: None,
             reason,
         }

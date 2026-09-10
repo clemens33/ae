@@ -195,24 +195,36 @@ pub fn agent_runtimes(panes: &[ObservedPane], slots: &[String]) -> Vec<AgentRunt
     slots
         .iter()
         .map(|slot| {
-            let (alive, alert) = match slot_observation(panes, slot) {
-                SlotObservation::Unique => (
-                    panes
+            let (alive, alert, observed) = match slot_observation(panes, slot) {
+                SlotObservation::Unique => {
+                    let pane = panes
                         .iter()
-                        .find(|pane| pane.slot.as_deref() == Some(slot.as_str()))
-                        .map(pane_alive),
-                    None,
+                        .find(|pane| pane.slot.as_deref() == Some(slot.as_str()));
+                    (
+                        pane.map(pane_alive),
+                        None,
+                        pane.map_or(crate::harness_state::HarnessState::Unknown, |pane| {
+                            pane.observed
+                        }),
+                    )
+                }
+                SlotObservation::Absent { unidentified: 0 } => (
+                    Some(false),
+                    Some(Reason::Dead),
+                    crate::harness_state::HarnessState::Unknown,
                 ),
-                SlotObservation::Absent { unidentified: 0 } => (Some(false), Some(Reason::Dead)),
                 // Two different unprovabilities, one answer: several panes
                 // carry the slot so the association is ambiguous, or an
                 // unmarked pane could be this agent's.
-                SlotObservation::Duplicated { .. } | SlotObservation::Absent { .. } => (None, None),
+                SlotObservation::Duplicated { .. } | SlotObservation::Absent { .. } => {
+                    (None, None, crate::harness_state::HarnessState::Unknown)
+                }
             };
             AgentRuntime {
                 slot: slot.clone(),
                 alive,
                 alert,
+                observed,
             }
         })
         .collect()
@@ -1041,6 +1053,7 @@ mod tests {
             dead,
             slot: slot.map(ToOwned::to_owned),
             command: command.map(ToOwned::to_owned),
+            observed: crate::harness_state::HarnessState::Unknown,
         }
     }
 
@@ -1053,9 +1066,12 @@ mod tests {
 
     #[test]
     fn a_seat_running_its_agent_is_alive_and_raises_nothing() {
-        let observed = only(&[pane(Some(false), Some("main"), Some("claude"))], "main");
+        let mut pane = pane(Some(false), Some("main"), Some("claude"));
+        pane.observed = crate::harness_state::HarnessState::Busy;
+        let observed = only(&[pane], "main");
         assert_eq!(observed.alive, Some(true));
         assert_eq!(observed.alert, None);
+        assert_eq!(observed.observed, crate::harness_state::HarnessState::Busy);
     }
 
     #[test]
@@ -1089,6 +1105,10 @@ mod tests {
         let identified = [pane(Some(false), Some("main"), Some("claude"))];
         let vanished = only(&identified, "worker.0");
         assert_eq!(vanished.alive, Some(false));
+        assert_eq!(
+            vanished.observed,
+            crate::harness_state::HarnessState::Unknown
+        );
         assert_eq!(
             vanished.alert,
             Some(Reason::Dead),

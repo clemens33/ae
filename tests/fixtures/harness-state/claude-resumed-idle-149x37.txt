@@ -1,0 +1,9 @@
+[redacted prior conversation recap]
+
+✻ Cooked for 9s · done 9:07 AM
+                                                            ✔ Update installed · Restart to update
+────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────
+  🧠 Opus 5 (xhigh)  📁 ckriech  ctx 6%  $0.34  cache cold
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents

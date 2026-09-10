@@ -349,6 +349,7 @@ icons = on                 # off swaps the glyph set for its ASCII fallback
 theme = on                 # off keeps YOUR status line; ae still fills @ae_*
 motion = on                # off freezes the spinner
 quota_every_secs = 300     # watchdog quota advisory cadence; 0 disables
+idle_nudge_secs = 300      # positive empty-input reminder cadence; 0 disables
 
 [prompt]
 instructions = "Custom instructions injected into agent system prompts"

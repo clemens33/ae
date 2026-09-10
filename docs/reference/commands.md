@@ -212,8 +212,11 @@ Checkout runs may override the destination with the typed `AE_TMUX_SERVER_KIND` 
 
 ## `ae list`
 
-Tabular view of ae sessions with per-agent health, declared state, and a
-session-level `attn:<reason>` marker when a session needs attention.
+Tabular view of ae sessions with per-agent health, declared state, current
+`observed:<busy|idle|unknown>` harness frame, and a session-level
+`attn:<reason>` marker when a session needs attention. `observed` is distinct
+from the agent's own declaration: it reports only what the watchdog positively
+recognized in the current terminal frame.
 Each session's indented detail line ends with three lifecycle ages:
 `created` is the first launch, `started` is the latest launch or resume, and
 `active` is the newest ae event. Legacy sessions derive creation from the
@@ -272,7 +275,7 @@ script or agent; no `jq` is required to produce it. The filters
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "generated_at": "2026-05-29T14:00:00Z",
   "sessions": [
     {
@@ -283,7 +286,7 @@ script or agent; no `jq` is required to produce it. The filters
       "needs_attention": true, "attention": "blocked", "attention_rank": 3,
       "agents": [
         {"ref": "claude:lead", "alias": "claude", "name": "lead",
-         "session_id": "e795c9e9", "alive": true, "state": "blocked",
+         "session_id": "e795c9e9", "alive": true, "observed": "idle", "state": "blocked",
          "reason": "blocked"}
       ]
     }
@@ -292,7 +295,9 @@ script or agent; no `jq` is required to produce it. The filters
 ```
 
 `attention` is the session's single most-actionable reason (see the reason
-table above); each agent's `reason` is its own contribution. `goal_set_epoch`
+table above); each agent's `reason` is its own contribution. `observed` is
+always `busy`, `idle`, or `unknown`; unsupported, incomplete, modal, and
+ambiguous frames are `unknown`. `goal_set_epoch`
 is when the goal was last set (age it for staleness); `branch` is the
 session's live git branch (from the watchdog's status segment, with a git
 fallback) — together with `name`, `origin` and `mode` they give a consumer
@@ -738,6 +743,11 @@ retries a refused paste once on the next quota sweep, and records cancelled retr
 `quota-advisory-dropped`. A throttle event includes the worst current quota row only when the last
 scheduled observation exactly matches that seat's recorded client source and, for Codex, rollout.
 It never performs an extra quota read for throttling.
+
+For modeled Claude Code and Codex frames, a positive empty input box starts the
+independent `[workspace] idle_nudge_secs` clock (default 300 seconds; `0`
+disables). Pane redraws do not reset this clock. The reminder uses the existing
+session `send` path and says `you look idle: declare state or continue`.
 
 ### Meta-agent (orchestrator) overview spacing
 

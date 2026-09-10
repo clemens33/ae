@@ -1,0 +1,8 @@
+[redacted live transcript]
+
+✻ Crunched for 16s · done 4:01 PM
+────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────
+  🧠 Fable 5.1 (xhigh)  📁 ae  🌿 main  ctx 41%  $234.88  cache warm
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents

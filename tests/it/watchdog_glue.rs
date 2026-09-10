@@ -443,6 +443,161 @@ fn a_stale_pane_is_nudged_by_a_pane_running_only_the_core() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines, reason = "one end-to-end observed-state story")]
+fn an_idle_frame_is_observed_without_overwriting_the_declared_list_state() {
+    use std::fmt::Write as _;
+
+    let scratch = scratch("observed-idle");
+    require_tmux(&scratch);
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup::new(&socket, &scratch);
+    let root = scratch.join("home");
+    let project = scratch.join("project");
+    assert!(fs::create_dir_all(&project).is_ok(), "the work dir");
+    let meta_dir = plant(&root, "observed", &socket, Some(&project));
+    let mut meta = fs::read_to_string(meta_dir.join("meta"))
+        .expect("the planted meta")
+        .replace("agent_bin.main=claude", "agent_bin.main=codex");
+    let _ = write!(
+        meta,
+        "schema=2\norigin={}\nlayout=vertical\nquota_every_secs=0\n",
+        project.display()
+    );
+    assert!(
+        fs::write(meta_dir.join("meta"), meta).is_ok(),
+        "complete meta"
+    );
+    assert!(
+        fs::write(
+            meta_dir.join("events.jsonl"),
+            concat!(
+                r#"{"ts":"2026-09-10T09:00:00Z","actor":"lead","action":"state","ref":"blocked","summary":"fixture declaration"}"#,
+                "\n"
+            )
+        )
+        .is_ok(),
+        "the declaration"
+    );
+
+    let fake = scratch.join("codex");
+    assert!(
+        fs::write(
+            &fake,
+            concat!(
+                "#!/usr/bin/perl\n",
+                "use strict; use warnings; binmode(STDOUT, ':utf8'); $| = 1;\n",
+                "print qq{[redacted]\\n\\n\\x{203a} Ask Codex to do anything\\n\\n  gpt-5.6-sol xhigh ",
+                "\\x{b7} /tmp/project\\n};\n",
+                "sleep 120;\n"
+            )
+        )
+        .is_ok(),
+        "the fixture harness"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        assert!(
+            fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).is_ok(),
+            "the fixture harness is executable"
+        );
+    }
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &[
+                "new-session",
+                "-d",
+                "-x",
+                "112",
+                "-y",
+                "40",
+                "-s",
+                "observed",
+                &fake.display().to_string(),
+            ]
+        )
+        .0,
+        "the watched session"
+    );
+    stamp_agent(&socket, &scratch, "observed");
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &[
+                "set-environment",
+                "-t",
+                "observed",
+                "AE_HOME",
+                &root.display().to_string(),
+            ]
+        )
+        .0,
+        "the session ownership stamp"
+    );
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &["set-environment", "-t", "observed", "AE_SESSION", "1"]
+        )
+        .0,
+        "the session marker"
+    );
+
+    let daemon_out = scratch.join("daemon-out");
+    let daemon_err = scratch.join("daemon-err");
+    let mut child = spawn_watchdog(&meta_dir, &root, &daemon_out, &daemon_err, "1")
+        .expect("the watchdog binary should spawn");
+    let deadline = Instant::now() + BUDGET;
+    let mut observed = String::new();
+    while Instant::now() < deadline {
+        observed = tmux(
+            &socket,
+            &scratch,
+            &["show-options", "-pv", "-t", "observed", "@ae_observed"],
+        )
+        .1
+        .trim()
+        .to_owned();
+        if observed.starts_with("idle") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    let list = super::cli::ae()
+        .args(["list", "--all", "--json"])
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
+        .env("HOME", &scratch)
+        .env("AE_HOME", &root)
+        .env("CONFIG_FILE", root.join("config"))
+        .env("AE_NO_AUTOSTART", "1")
+        .env("AE_TMUX_SERVER_KIND", "socket")
+        .env("AE_TMUX_SERVER", &socket)
+        .output();
+    stop_watchdog(&mut child, &socket, &scratch, "observed");
+    let diagnostics = fs::read_to_string(&daemon_err).unwrap_or_default();
+    let list = list.expect("ae list should run");
+    let stdout = String::from_utf8_lossy(&list.stdout);
+    let stderr = String::from_utf8_lossy(&list.stderr);
+
+    assert!(
+        observed.starts_with("idle"),
+        "observed={observed:?}\n{diagnostics}"
+    );
+    assert!(list.status.success(), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(stdout.contains(r#""observed":"idle""#), "{stdout}");
+    assert!(
+        stdout.contains(r#""state":"blocked""#),
+        "the frame observation overwrote the declaration: {stdout}"
+    );
+}
+
+#[test]
 fn a_pane_that_dropped_to_a_shell_is_alerted_once() {
     let scratch = scratch("dead");
     require_tmux(&scratch);

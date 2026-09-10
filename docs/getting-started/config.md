@@ -35,6 +35,7 @@ workers = colead
 layout = lead-pair
 watchdog = true
 quota_every_secs = 300
+idle_nudge_secs = 300
 # auto_upgrade = on
 
 [prompt]
@@ -156,6 +157,7 @@ Old seat files that still carry `[profiles]`/`[roster]` are ignored for identity
 | `copy`    | Working directory mode (see below)                   | `local`       |
 | `watchdog`    | Auto-start the watchdog (`true` / `false`)            | `true`        |
 | `quota_every_secs` | Watchdog quota-observation cadence in seconds, rounded to whole watchdog cycles (`0` disables) | `300` |
+| `idle_nudge_secs` | Continuous positively observed empty-input time before the watchdog reminds the seat (`0` disables) | `300` |
 | `orchestrator` | Mark this session as the fleet overview seat (`true`); grants its panes the bare human-authority `relay` helper | `false`       |
 | `sweep` | Persist this orchestrator's changed-overview minimum spacing in seconds (`0` disables; positive values below `60` become `60`) | `AE_WATCHDOG_SWEEP_SEC`, then `120` |
 | `auto_upgrade` | Let an installed ae quietly check for and apply strictly newer releases (`on` / `off`); global config only | `on` |
@@ -210,11 +212,12 @@ The marks are the **watchdog's verdict**, never a claim about what an agent is "
 | `●` | `*` | working according to the latest liveness verdict |
 | `✓` | `+` | declared done or paused |
 | `◌` | `?` | stale, or a fact ae could not establish |
-| `·` | `-` | no agent, or no verdict yet |
+| `·` | `-` | positively idle at an empty modeled input, no agent, or no verdict yet |
 
 While somebody is attached, a Working verdict shows a pulsing `●` in its place.
 The pulse is the cached verdict, not terminal motion; silence past the liveness
-window changes the next watchdog verdict to stale.
+window changes the next watchdog verdict to stale. A positively recognized
+empty Claude Code or Codex input is idle immediately and does not pulse.
 
 Session attention is keyed by the agents in session meta, so an agent whose
 pane vanished still holds its slot as `⚠` rather than quietly disappearing.
@@ -269,6 +272,10 @@ The legacy `AE_LOOP_*` names are still honoured as fallbacks for each tunable. T
 Quota observation is configured by `[workspace] quota_every_secs`, not an environment fallback.
 Launch persists the value in session meta so rename and resume keep the same cadence. It accepts
 unsigned integer seconds only; `0` disables quota advisories.
+
+Idle reminders use `[workspace] idle_nudge_secs`, also persisted at launch and
+validated as unsigned integer seconds. The default is 300; `0` disables idle
+reminders without disabling legacy stale detection for unmodeled frames.
 
 ## Model tiers (recommended profiles)
 

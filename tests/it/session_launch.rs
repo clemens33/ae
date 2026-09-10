@@ -560,6 +560,63 @@ fn quota_cadence_is_validated_before_launch_and_persisted_for_the_daemon() {
 }
 
 #[test]
+fn idle_nudge_cadence_defaults_validates_and_survives_resume() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::new("idle-nudge-cadence", &["claude"], None);
+    let base = std::fs::read_to_string(&rig.config).expect("the rig config");
+
+    let (code, stdout, stderr) = rig.launch(&["--local", "defaultidle"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        rig.meta("defaultidle").contains("idle_nudge_secs=300\n"),
+        "the default cadence is a durable launch fact"
+    );
+
+    let invalid = base.replace(
+        "watchdog = false\n",
+        "watchdog = false\nidle_nudge_secs = soon\n",
+    );
+    assert!(std::fs::write(&rig.config, invalid).is_ok(), "bad config");
+    let (code, stdout, stderr) = rig.launch(&["--local", "badidle"]);
+    assert_eq!(code, Some(2), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        stderr.contains("[workspace] idle_nudge_secs") && stderr.contains("got 'soon'."),
+        "{stderr}"
+    );
+    assert!(!rig.dir("badidle").exists());
+
+    let configured = base.replace(
+        "watchdog = false\n",
+        "watchdog = false\nidle_nudge_secs = 420\n",
+    );
+    assert!(
+        std::fs::write(&rig.config, configured).is_ok(),
+        "valid config"
+    );
+    let (code, stdout, stderr) = rig.launch(&["--local", "goodidle"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(rig.meta("goodidle").contains("idle_nudge_secs=420\n"));
+    assert!(
+        rig.tmux(&["kill-session", "-t", "=goodidle"]).0,
+        "stop runtime without removing state"
+    );
+    let changed = base.replace(
+        "watchdog = false\n",
+        "watchdog = false\nidle_nudge_secs = 7\n",
+    );
+    assert!(std::fs::write(&rig.config, changed).is_ok());
+    let (code, stdout, stderr) = rig.launch(&["--local", "goodidle"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        rig.meta("goodidle").contains("idle_nudge_secs=420\n"),
+        "resume replaced persisted cadence"
+    );
+    rig.kill_server_at(&["-S", &rig.sock.display().to_string()]);
+}
+
+#[test]
 #[allow(clippy::too_many_lines, reason = "one end-to-end retained-store story")]
 fn a_client_profile_launches_the_configured_executable_and_home() {
     if skip() {

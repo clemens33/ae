@@ -1444,6 +1444,7 @@ fn watchdog_knobs(flags: &[String]) -> std::result::Result<crate::watchdog_daemo
         match flag.as_str() {
             "--interval" => knobs.interval_secs = number(value)?,
             "--quota-every-secs" => knobs.quota_every_secs = number(value)?,
+            "--idle-nudge-secs" => knobs.idle_nudge_secs = number(value)?,
             "--stale-secs" => knobs.stale_secs = number(value)?,
             "--max-nudges" => knobs.max_nudges = count(value)?,
             "--throttle-alert-cycles" => knobs.throttle_alert_cycles = count(value)?,
@@ -2448,6 +2449,8 @@ mod tests {
             "600",
             "--quota-every-secs",
             "420",
+            "--idle-nudge-secs",
+            "360",
             "--sweep-retry-secs",
             "45",
         ])) else {
@@ -2463,6 +2466,7 @@ mod tests {
         assert_eq!(knobs.quiet_tries, 9);
         assert_eq!(knobs.quiet_panes_per_cycle, 3);
         assert_eq!(knobs.quota_every_secs, 420);
+        assert_eq!(knobs.idle_nudge_secs, 360);
         assert_eq!(knobs.sweep.sweep_secs, 600);
         assert_eq!(knobs.sweep.retry_secs, 45);
         assert_eq!(knobs.sweep.retry_max, 2);
@@ -2486,6 +2490,12 @@ mod tests {
             panic!("the knob flags did not parse");
         };
         assert_eq!(knobs.quota_every_secs, 0);
+        let Request::WatchdogRun { knobs, .. } =
+            Request::parse(&argv(&[WATCHDOG_RUN, "/s/demo", "--idle-nudge-secs", "0"]))
+        else {
+            panic!("the knob flags did not parse");
+        };
+        assert_eq!(knobs.idle_nudge_secs, 0);
         let Request::WatchdogRun { knobs, .. } = Request::parse(&argv(&[WATCHDOG_RUN, "/s/demo"]))
         else {
             panic!("the flagless call did not parse");

@@ -58,6 +58,8 @@ pub struct AgentEntry {
     pub session_id: Option<String>,
     /// Whether the agent's pane is alive, three-valued.
     pub alive: Option<bool>,
+    /// The watchdog's positive current harness-frame observation.
+    pub observed: crate::harness_state::HarnessState,
     /// The agent's declared work state.
     pub state: Option<String>,
     /// "each agent's `reason` is its own contribution" to the session marker.
@@ -121,6 +123,7 @@ impl AgentEntry {
             "alive".to_owned(),
             self.alive.map_or(Value::Null, Value::Bool),
         ));
+        fields.push(("observed".to_owned(), Value::str(self.observed.as_str())));
         if events_complete {
             push_str_or_null(&mut fields, "state", self.state.as_deref());
         }
@@ -552,6 +555,7 @@ mod tests {
                 name: "lead".to_owned(),
                 session_id: recorded.map(ToOwned::to_owned),
                 alive: Some(true),
+                observed: crate::harness_state::HarnessState::Unknown,
                 state: None,
                 reason: None,
             };
@@ -581,6 +585,7 @@ mod tests {
                 "\u{3b1}\u{3b1}\u{3b1}\u{3b1}\u{3b1}\u{3b1}\u{3b1}\u{3b1}\u{3b2}\u{3b2}".to_owned(),
             ),
             alive: None,
+            observed: crate::harness_state::HarnessState::Unknown,
             state: None,
             reason: None,
         };
@@ -625,6 +630,7 @@ mod tests {
             name: "lead".to_owned(),
             session_id: Some("e795c9e9".to_owned()),
             alive: Some(true),
+            observed: crate::harness_state::HarnessState::Idle,
             state: Some("blocked".to_owned()),
             reason: Some(Reason::Blocked),
         }];
@@ -647,7 +653,7 @@ mod tests {
             r#""branch":"feature/login","last_active_epoch":1780000000,"#,
             r#""needs_attention":true,"attention":"blocked","attention_rank":3,"#,
             r#""agents":[{"ref":"claude:lead","alias":"claude","name":"lead","#,
-            r#""session_id":"e795c9e9","alive":true,"state":"blocked","reason":"blocked"}]"#,
+            r#""session_id":"e795c9e9","alive":true,"observed":"idle","state":"blocked","reason":"blocked"}]"#,
             r#"}],"inventory_complete":true}"#
         );
         let actual = json::parse(&rendered).expect("the digest is json");
@@ -940,13 +946,14 @@ mod tests {
     #[test]
     fn sc_509_an_agent_entry_renders_every_documented_member() {
         // An AgentEntry exists only because the roster was READ, so there is no
-        // unreadable case here and no conditional: all seven members, always.
+        // unreadable case here and no conditional: all eight members, always.
         let value = AgentEntry {
             reference: "claude:lead".to_owned(),
             alias: "claude".to_owned(),
             name: "lead".to_owned(),
             session_id: None,
             alive: None,
+            observed: crate::harness_state::HarnessState::Unknown,
             state: None,
             reason: None,
         }
@@ -963,6 +970,7 @@ mod tests {
                 "name",
                 "session_id",
                 "alive",
+                "observed",
                 "state",
                 "reason"
             ]),

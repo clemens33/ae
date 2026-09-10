@@ -324,6 +324,8 @@ pub fn table_at(sessions: &[&SessionEntry], now: Timestamp) -> String {
                     (false, _) => "unknown",
                 },
             );
+            out.push_str(" · observed:");
+            out.push_str(agent.observed.as_str());
             // The `!` marker: a pane query fills this.
             if session.status == Status::Running && agent.alive == Some(false) {
                 out.push_str(" !");
@@ -488,6 +490,7 @@ mod tests {
             name: reference.split(':').nth(1).unwrap_or("").to_owned(),
             session_id: None,
             alive,
+            observed: crate::harness_state::HarnessState::Unknown,
             state: state.map(ToOwned::to_owned),
             reason: None,
         }
@@ -1095,8 +1098,8 @@ mod tests {
         let agent = row_fields(&rendered, "cl:lead");
         assert_eq!(
             agent,
-            ["cl:lead", "-", "working"],
-            "reference, short id, declared state — and nothing else: {rendered}"
+            ["cl:lead", "-", "working", "·", "observed:unknown"],
+            "reference, short id, declared state, observed frame: {rendered}"
         );
     }
 
@@ -1391,6 +1394,7 @@ mod tests {
                 slot: "main".to_owned(),
                 alive: Some(true),
                 alert: None,
+                observed: crate::harness_state::HarnessState::Busy,
             }],
         };
         let world = Presentation::enter(&snapshot).world_with(
@@ -1403,6 +1407,10 @@ mod tests {
         assert_eq!(
             entry.agents.first().and_then(|agent| agent.alive),
             Some(true)
+        );
+        assert_eq!(
+            entry.agents.first().map(|agent| agent.observed),
+            Some(crate::harness_state::HarnessState::Busy)
         );
 
         let mismatched = SessionRuntime {
@@ -1467,7 +1475,8 @@ mod tests {
         // The dash in the id cell is the RULED outcome for an arm that NO
         // standing authority reaches.
         assert!(
-            row_fields(&human, "lead") == ["lead", "claude", "-", "unknown"],
+            row_fields(&human, "lead")
+                == ["lead", "claude", "-", "unknown", "·", "observed:unknown"],
             "the malformed event hides stale blocked state behind the human unknown: {human}"
         );
         assert!(
@@ -1509,19 +1518,22 @@ mod tests {
                 // the id cell, and a `false` would append the `!` marker and
                 // make the assertion below about two things at once.
                 alive: None,
+                observed: crate::harness_state::HarnessState::Unknown,
                 state: Some("working".to_owned()),
                 reason: None,
             }];
             let rendered = table(&[&session]);
             assert!(
-                row_fields(&rendered, "fake:lead") == ["fake:lead", "11111111", "working"],
+                row_fields(&rendered, "fake:lead")
+                    == ["fake:lead", "11111111", "working", "·", "observed:unknown"],
                 "the captured specimen renders on {status:?}: {rendered}"
             );
 
             session.agents[0].session_id = None;
             let rendered = table(&[&session]);
             assert!(
-                row_fields(&rendered, "fake:lead") == ["fake:lead", "-", "working"],
+                row_fields(&rendered, "fake:lead")
+                    == ["fake:lead", "-", "working", "·", "observed:unknown"],
                 "an absent id is frozen's dash on {status:?}: {rendered}"
             );
         }
@@ -1538,6 +1550,7 @@ mod tests {
                 name: "lead".to_owned(),
                 session_id: Some("11111111".to_owned()),
                 alive,
+                observed: crate::harness_state::HarnessState::Unknown,
                 state: Some("working".to_owned()),
                 reason: None,
             }];
@@ -1546,22 +1559,29 @@ mod tests {
 
         assert_eq!(
             seat(Status::Running, Some(false)),
-            ["fake:lead", "11111111", "working", "!"],
+            [
+                "fake:lead",
+                "11111111",
+                "working",
+                "·",
+                "observed:unknown",
+                "!"
+            ],
             "a running seat dropped to a shell is frozen's `!`"
         );
         assert_eq!(
             seat(Status::Running, Some(true)),
-            ["fake:lead", "11111111", "working"],
+            ["fake:lead", "11111111", "working", "·", "observed:unknown"],
             "a live agent is unmarked"
         );
         assert_eq!(
             seat(Status::Running, None),
-            ["fake:lead", "11111111", "working"],
+            ["fake:lead", "11111111", "working", "·", "observed:unknown"],
             "unobserved liveness makes no claim either way"
         );
         assert_eq!(
             seat(Status::Stopped, Some(false)),
-            ["fake:lead", "11111111", "working"],
+            ["fake:lead", "11111111", "working", "·", "observed:unknown"],
             "a stopped session's seats are dead by its status, not by a marker"
         );
     }
@@ -1578,6 +1598,7 @@ mod tests {
             name: "lead".to_owned(),
             session_id: Some("e795c9e9-1c2b-4a3d-8e5f-0a1b2c3d4e5f".to_owned()),
             alive: Some(true),
+            observed: crate::harness_state::HarnessState::Idle,
             state: Some("blocked".to_owned()),
             reason: None,
         }];
@@ -1589,8 +1610,8 @@ mod tests {
         let cells: Vec<&str> = row.split_whitespace().collect();
         assert_eq!(
             cells,
-            ["fake:lead", "e795c9e9", "blocked"],
-            "reference, short id, declared state — in that order: {rendered}"
+            ["fake:lead", "e795c9e9", "blocked", "·", "observed:idle"],
+            "reference, short id, declared state, observed frame: {rendered}"
         );
     }
 
@@ -1603,6 +1624,7 @@ mod tests {
             name: "lead".to_owned(),
             session_id: None,
             alive: Some(true),
+            observed: crate::harness_state::HarnessState::Unknown,
             state: Some("blocked".to_owned()),
             reason: None,
         }];
@@ -1611,7 +1633,7 @@ mod tests {
         // (running, stopped) and our table omitted it.
         assert_eq!(
             row_fields(&table(&[&session]), "lead"),
-            ["lead", "claude", "-", "blocked"],
+            ["lead", "claude", "-", "blocked", "·", "observed:unknown"],
             "name, profile, short id, declared state"
         );
 
@@ -1620,7 +1642,7 @@ mod tests {
         // the second is exact no-declaration.
         assert_eq!(
             row_fields(&table(&[&session]), "lead"),
-            ["lead", "claude", "-", "-"],
+            ["lead", "claude", "-", "-", "·", "observed:unknown"],
             "no declaration renders the dash cell"
         );
     }
@@ -1635,6 +1657,7 @@ mod tests {
                 name: "lead".to_owned(),
                 session_id: Some("11111111".to_owned()),
                 alive: Some(true),
+                observed: crate::harness_state::HarnessState::Busy,
                 state: Some("working".to_owned()),
                 reason: None,
             },
@@ -1644,6 +1667,7 @@ mod tests {
                 name: "colead".to_owned(),
                 session_id: Some("22222222".to_owned()),
                 alive: Some(true),
+                observed: crate::harness_state::HarnessState::Idle,
                 state: Some("working".to_owned()),
                 reason: None,
             },
@@ -1652,7 +1676,14 @@ mod tests {
         let rendered = table(&[&session]);
         assert_eq!(
             row_fields(&rendered, "22222222"),
-            ["colead", "gpt6astra-rev…", "22222222", "working"],
+            [
+                "colead",
+                "gpt6astra-rev…",
+                "22222222",
+                "working",
+                "·",
+                "observed:idle"
+            ],
             "the profile is a clipped field between name and id: {rendered}"
         );
         let id_offset = |id: &str| {

@@ -1,0 +1,5 @@
+[redacted live transcript]
+  Allow command? Press enter to confirm or esc to cancel
+› Ask Codex to do anything
+
+  gpt-6-astra xhigh · ~/.ae/worktrees/419

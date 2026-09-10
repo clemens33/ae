@@ -1519,6 +1519,43 @@ fn launch(
         )?;
         return Ok(EXIT_USAGE);
     }
+    let recorded_idle_nudge_secs = if meta_present {
+        meta_value(&dir, "idle_nudge_secs")
+    } else {
+        None
+    };
+    let configured_idle_nudge_secs = if recorded_idle_nudge_secs.is_none() {
+        match configured_unsigned_workspace_seconds(
+            env.global.as_deref(),
+            env.local.as_deref(),
+            "idle_nudge_secs",
+        ) {
+            Ok(value) => value,
+            Err(value) => {
+                writeln!(
+                    err,
+                    "Error: [workspace] idle_nudge_secs must be an unsigned integer in seconds; got '{value}'."
+                )?;
+                return Ok(EXIT_USAGE);
+            }
+        }
+    } else {
+        None
+    };
+    let idle_nudge_secs = recorded_idle_nudge_secs
+        .or(configured_idle_nudge_secs)
+        .unwrap_or_else(|| {
+            crate::watchdog_daemon::Knobs::default()
+                .idle_nudge_secs
+                .to_string()
+        });
+    if idle_nudge_secs.parse::<u64>().is_err() {
+        writeln!(
+            err,
+            "Error: [workspace] idle_nudge_secs must be an unsigned integer in seconds; got '{idle_nudge_secs}'."
+        )?;
+        return Ok(EXIT_USAGE);
+    }
 
     if let Some(workers) = &plan.workers {
         cfg.workers = Some(workers.clone());
@@ -1755,9 +1792,12 @@ fn launch(
         &seats,
         &cfg,
         seat_overrides.as_ref(),
-        meta_agent,
-        sweep_sec.as_deref(),
-        &quota_every_secs,
+        WatchdogFacts {
+            meta_agent,
+            sweep_sec: sweep_sec.as_deref(),
+            quota_every_secs: &quota_every_secs,
+            idle_nudge_secs: &idle_nudge_secs,
+        },
         parent.as_ref(),
         lifecycle.take(),
         out,
@@ -1797,6 +1837,33 @@ fn configured_quota_every_secs(
     }
 }
 
+/// Read a strict unsigned-seconds knob while preserving malformed assignment
+/// text for the launch diagnostic.
+fn configured_unsigned_workspace_seconds(
+    global: Option<&Path>,
+    local: Option<&Path>,
+    key: &str,
+) -> Result<Option<String>, String> {
+    let read = |file: Option<&Path>| -> Result<Option<String>, String> {
+        let Some(file) = file else {
+            return Ok(None);
+        };
+        crate::config::read_global_workspace_key(file, key).map_err(|why| {
+            if why == format!("{key} has an invalid value") {
+                String::new()
+            } else {
+                why
+            }
+        })
+    };
+    let global = read(global);
+    match read(local) {
+        Ok(Some(value)) => Ok(Some(value)),
+        Ok(None) => global,
+        Err(value) => Err(value),
+    }
+}
+
 /// One seat, resolved to what the launch needs to start it.
 struct Launching {
     slot: String,
@@ -1812,6 +1879,15 @@ struct Launching {
     command_snapshot: Option<config::ResolvedCommand>,
 }
 
+/// Watchdog launch facts published atomically with the rest of session meta.
+#[derive(Clone, Copy)]
+struct WatchdogFacts<'a> {
+    meta_agent: bool,
+    sweep_sec: Option<&'a str>,
+    quota_every_secs: &'a str,
+    idle_nudge_secs: &'a str,
+}
+
 #[allow(
     clippy::too_many_lines,
     clippy::too_many_arguments,
@@ -1823,9 +1899,7 @@ fn build(
     seats: &[Seat],
     cfg: &IdentityConfig,
     seat_overrides: Option<&SeatOverrideSnapshot>,
-    meta_agent: bool,
-    sweep_sec: Option<&str>,
-    quota_every_secs: &str,
+    watchdog: WatchdogFacts<'_>,
     parent: Option<&FromProof>,
     lifecycle: Option<std::fs::File>,
     out: &mut impl Write,
@@ -2063,15 +2137,7 @@ fn build(
     }
 
     // ---- the meta, published as ONE document ----
-    let document = match meta_document(
-        env,
-        shape,
-        &launching,
-        meta_agent,
-        sweep_sec,
-        quota_every_secs,
-        parent,
-    ) {
+    let document = match meta_document(env, shape, &launching, watchdog, parent) {
         Ok(document) => document,
         Err(why) => return rollback_launch(shape, &dir, &server, &format!("Error: {why}"), err),
     };
@@ -2586,9 +2652,7 @@ fn meta_document(
     env: &Env,
     shape: &Session,
     launching: &[Launching],
-    meta_agent: bool,
-    sweep_sec: Option<&str>,
-    quota_every_secs: &str,
+    watchdog: WatchdogFacts<'_>,
     parent: Option<&FromProof>,
 ) -> Result<String, String> {
     let dir = env.sessions().join(&shape.name);
@@ -2690,7 +2754,8 @@ fn meta_document(
             row(key, &value);
         }
     }
-    row("quota_every_secs", quota_every_secs);
+    row("quota_every_secs", watchdog.quota_every_secs);
+    row("idle_nudge_secs", watchdog.idle_nudge_secs);
     if let Some(id) = parent_id {
         row("parent_archive_id", &id);
         row(
@@ -2702,9 +2767,9 @@ fn meta_document(
             pending.as_deref().unwrap_or("0"),
         );
     }
-    if meta_agent {
+    if watchdog.meta_agent {
         row("meta_agent", "true");
-        if let Some(seconds) = sweep_sec {
+        if let Some(seconds) = watchdog.sweep_sec {
             row("sweep_sec", seconds);
         }
     }

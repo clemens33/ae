@@ -571,6 +571,9 @@ pub const PANE_STATE_OPTION: &str = "@ae_pane_state";
 /// PANE — the accent that pane's ACTIVE border is drawn in.
 pub const PANE_ACCENT_OPTION: &str = "@ae_pane_accent";
 
+/// PANE — the watchdog's positive current harness-frame observation.
+pub const OBSERVED_OPTION: &str = "@ae_observed";
+
 /// WINDOW — the stamp saying this window already carries the theme.
 pub const WINDOW_STAMP_OPTION: &str = "@ae_theme";
 

@@ -1,0 +1,8 @@
+[redacted live transcript]
+✢ Whisking… (28m 17s · ↓ 79.3k tokens · thinking with xhigh effort)
+  ⎿  Tip: [redacted]
+────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────
+  🧠 Opus 5 (xhigh)  📁 assistant  🌿 main  ctx 0%  $44.07  cache warm
+  ⏵⏵ bypass permissions on · 1 shell · ← for agents · /diff to hide diff

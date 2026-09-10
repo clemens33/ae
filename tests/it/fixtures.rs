@@ -407,6 +407,7 @@ fn sc_405g_the_branch_is_a_runtime_input_not_a_meta_key() {
             slot: "main".to_owned(),
             alive: Some(true),
             alert: None,
+            observed: ae::harness_state::HarnessState::Unknown,
         }],
     };
     let built = entry_for(
@@ -437,6 +438,7 @@ fn sc_980_a_typed_alert_outranks_a_self_declaration() {
             slot: "worker.0".to_owned(),
             alive: Some(false),
             alert: Some(Reason::Dead),
+            observed: ae::harness_state::HarnessState::Unknown,
         }],
     };
     let built = entry_for(

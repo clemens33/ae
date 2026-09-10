@@ -61,6 +61,15 @@ identity cancels the old booking. A helper's `UNCONFIRMED` submit counts as deli
 paste may have landed; only its explicit pre-submit-refusal marker permits a retry. No quota state
 survives a watchdog restart.
 
+Launch persists `[workspace] idle_nudge_secs` too (default 300, `0` disables).
+This clock starts when the current Claude Code or Codex frame is positively
+recognized as an empty input box. An ambiguous frame pauses the idle verdict
+but preserves the episode; only Busy, a declaration, or a human draft resets
+it. Pane hashes, cursor animation, and redraws cannot re-arm its budget. The
+clock and delivery counters ride in the watchdog-owned `@ae_observed` pane
+option, guarded by the slot+agent identity, so a watchdog restart preserves an
+episode while a reused pane id does not inherit it.
+
 For an orchestrator main, each verdict cycle calls `current_world` once and
 builds the same detail cards as `ae brief --all`. The pure overview renderer
 omits the orchestrator's own session and bounds data lines to 100 characters.
@@ -115,12 +124,16 @@ For each agent pane, the watchdog walks a fixed branch order. First match wins; 
 flowchart TD
     Start([cycle start]) --> Dead{Dead?}
     Dead -- yes --> AlertDead[alert + skip forever]
-    Dead -- no --> PreCheck[Capture pane buf<br/>hash, quiet_reason, is_throttled]
-    PreCheck --> Done{Quiet state<br/>latest?}
+    Dead -- no --> Meta{Orchestrator main?}
+    Meta -- yes --> Sweep[overview sweep verdict]
+    Meta -- no --> Done{Quiet state<br/>latest?}
     Done -- yes --> SkipDone[skip — honor quiet<br/>done: event-only<br/>waiting/blocked: until pane touched]
     Done -- no --> Throttled{Throttle phrase<br/>in pane?}
     Throttled -- yes --> SkipThrottle[skip + emit throttled<br/>escalate after N cycles]
-    Throttled -- no --> Active{Hash<br/>changed?}
+    Throttled -- no --> Frame{Current harness frame}
+    Frame -- Busy --> MarkActive[working — clear stale alert]
+    Frame -- Idle --> MarkIdle[idle — independent reminder clock]
+    Frame -- Unknown --> Active{Hash<br/>changed?}
     Active -- yes --> MarkActive[skip — active]
     Active -- no --> RecentVis{Last change<br/>&lt; 15min?}
     RecentVis -- yes --> SkipVis[skip — recently visible]
@@ -129,15 +142,21 @@ flowchart TD
     RecentAlive -- no --> Stale[NUDGE / ALERT]
 ```
 
+The classifier reads only the same current 40-row `capture-pane` result the
+watchdog already takes. It never opens a harness transcript or conversation
+store. Claude Code and Codex have positive frame grammars; unsupported,
+partial, modal, or ambiguous frames are `Unknown` and retain the legacy
+hash/event heuristic.
+
 In source order:
 
 1. **Dead** — pane's foreground command is a shell AND no agent binary is in the descendant process tree. Alert once, mark dead, ignore in future cycles.
-2. **Declared quiet state** *(strongest)* — agent's latest relevant event is its own `state` declaration of `done`, `waiting-user`, or `blocked` (`mark-done`/`done` events count as `done`), AND no newer ae event mentions them as actor or target. `done` is skipped silently and is event-only (pane churn never revives it). `waiting-user`/`blocked` are also skipped, but yield to pane activity: if the pane changed since the declaration (e.g. the human replied directly in it, leaving no event), the quiet state no longer holds and the normal branches resume — so a post-reply hang is still caught.
-3. **Throttled** — pane buffer contains a known upstream rate-limit / overload phrase for the agent's binary. Skip nudge, emit `throttled` event first time per streak, escalate to `alert` after `THROTTLE_ALERT_CYCLES` continuous cycles.
-4. **Active** — pane content hash differs from last cycle. Update hash, reset nudge counter.
-5. **Recently visible** — pane changed within the stale window. Skip.
-6. **Recently alive** — agent's latest event in `events.jsonl` is younger than the stale window. Skip.
-7. **Stale** — none of the above. Send "Status check" message via `send`. Up to `MAX_NUDGES` nudges. At `MAX_NUDGES` exactly, emit `alert` + tmux display banner. After that, silent waiting.
+2. **Orchestrator main** — use overview-sweep accounting; no harness-idle reminder competes with it.
+3. **Declared quiet state** — agent's latest relevant event is its own `state` declaration of `done`, `waiting-user`, or `blocked` (`mark-done`/`done` events count as `done`), AND no newer ae event mentions them as actor or target. `done` is skipped silently and is event-only (pane churn never revives it). `waiting-user`/`blocked` are also skipped, but yield to pane activity: if the pane changed since the declaration (e.g. the human replied directly in it, leaving no event), the quiet state no longer holds and the normal branches resume — so a post-reply hang is still caught.
+4. **Throttled** — the current capture contains a known upstream rate-limit / overload phrase for the agent's binary. Skip nudge, emit `throttled` event first time per streak, escalate to `alert` after `THROTTLE_ALERT_CYCLES` continuous cycles.
+5. **Busy frame** — positively recognized execution. Mark working, reset idle and reminder state, and clear a durable stale alert.
+6. **Idle frame** — positively recognized empty input. Mark idle immediately; after `idle_nudge_secs`, send `you look idle: declare state or continue` through the existing `send` path. At the normal maximum, emit the same durable stale alert and keep it across daemon restarts until real Busy recovery.
+7. **Unknown frame** — run the legacy hash/event heuristic: changed or recently changed is active; a recent ae event is active; otherwise send the legacy status check, then alert at the same maximum.
 
 After the per-pane pass:
 
@@ -216,7 +235,8 @@ There is no repeat-alert. Once an agent has been alerted for a streak, it stays 
 - **Restart a dead agent.** Marks it dead and stops checking.
 - **Detect CLI-internal hangs that produce no pane output.** The dead-check only fires when the foreground command drops to a shell.
 - **Push notifications externally.** Alerts are tmux banners + `events.jsonl` entries. Passive.
-- **Distinguish slow-but-progressing from genuinely-stuck.** Both look like a static pane to the hash-based check.
+- **Prove progress inside a long-lived Busy frame.** A stuck spinner still looks Busy; unsupported
+  or ambiguous harness frames keep the conservative legacy hash/event fallback.
 
 For overnight runs, pair the watchdog with an external tail process on `events.jsonl` if you actually need to be paged:
 

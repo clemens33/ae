@@ -590,6 +590,12 @@ impl ToolKind {
         self.adapter().name
     }
 
+    /// The adapter-owned grammar for observing this harness's current input frame.
+    #[must_use]
+    pub(crate) const fn input_model(self) -> InputModel {
+        self.adapter().input.model
+    }
+
     /// The capabilities of this harness.
     #[must_use]
     pub(crate) const fn adapter(self) -> &'static ToolAdapter {

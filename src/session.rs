@@ -190,6 +190,8 @@ pub struct AgentRuntime {
     pub alive: Option<bool>,
     /// The watchdog's typed reason for this agent, if any.
     pub alert: Option<Reason>,
+    /// Positive harness-frame observation from the watchdog-owned pane fact.
+    pub observed: crate::harness_state::HarnessState,
 }
 
 /// What a session's RUNTIME says — the facts tmux and git own rather than the
@@ -668,6 +670,10 @@ fn agent_entries(
                 name: slot.name.clone(),
                 session_id: slot.harness_session.clone(),
                 alive: agent_liveness(runtime, runtime_agent),
+                observed: runtime_agent
+                    .map_or(crate::harness_state::HarnessState::Unknown, |agent| {
+                        agent.observed
+                    }),
                 state: declared.map(ToOwned::to_owned),
                 // This agent's OWN contribution, from the two evidence classes:
                 // ALERT-DERIVED dead/stale/throttled, and SELF-DECLARED
@@ -1641,6 +1647,7 @@ mod tests {
                 slot: "main".to_owned(),
                 alive: None,
                 alert: Some(Reason::Dead),
+                observed: crate::harness_state::HarnessState::Unknown,
             }],
         };
         let entry = entry_for(&scratch.0, "live", &runtime, NOW, DEFAULT_UNANSWERED_SECS);
@@ -1872,6 +1879,7 @@ mod tests {
                 slot: "main".to_owned(),
                 alive: None,
                 alert: Some(Reason::Blocked),
+                observed: crate::harness_state::HarnessState::Unknown,
             }],
         };
         let entry = entry_for(&scratch.0, "live", &runtime, NOW, DEFAULT_UNANSWERED_SECS);
@@ -2159,6 +2167,7 @@ mod tests {
                 slot: "main".to_owned(),
                 alive: Some(false),
                 alert: Some(Reason::Dead),
+                observed: crate::harness_state::HarnessState::Unknown,
             }],
         };
         let entry = entry_for(&scratch.0, "live", &runtime, NOW, DEFAULT_UNANSWERED_SECS);
@@ -2240,6 +2249,7 @@ mod tests {
                 slot: "main".to_owned(),
                 alive: observed,
                 alert: None,
+                observed: crate::harness_state::HarnessState::Unknown,
             }];
             let entry = entry_for(&scratch.0, "s", &runtime, NOW, DEFAULT_UNANSWERED_SECS);
             assert_eq!(entry.agents[0].alive, expected, "observed {observed:?}");
@@ -2285,6 +2295,7 @@ mod tests {
                 slot: "main".to_owned(),
                 alive: Some(true),
                 alert: Some(Reason::Dead),
+                observed: crate::harness_state::HarnessState::Unknown,
             }],
         };
         let entry = entry_for(&scratch.0, "live", &runtime, NOW, DEFAULT_UNANSWERED_SECS);
@@ -2606,6 +2617,7 @@ mod tests {
                 slot: "main".to_owned(),
                 alive: Some(false),
                 alert: Some(Reason::Dead),
+                observed: crate::harness_state::HarnessState::Unknown,
             }],
         };
         let entry = entry_for(&scratch.0, "pair", &runtime, NOW, DEFAULT_UNANSWERED_SECS);
@@ -2854,6 +2866,7 @@ mod tests {
                 slot: "main".to_owned(),
                 alive: Some(true),
                 alert: Some(Reason::Stale),
+                observed: crate::harness_state::HarnessState::Unknown,
             }],
         };
         let entry = entry_for(&scratch.0, "pair", &runtime, NOW, DEFAULT_UNANSWERED_SECS);
