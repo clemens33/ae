@@ -328,15 +328,15 @@ fn blend_hex(low: &str, high: &str, progress: u16) -> String {
     out
 }
 
-/// The smooth 2-second working pulse: near-background at ticks 0 and 20, bright at 10.
+/// The smooth 2-second working pulse: dim accent at ticks 0 and 20, bright at 10.
 #[must_use]
 pub fn working_frame(tick: u64, palette: &Palette, icons: bool) -> WorkingFrame {
     let phase = u16::try_from(tick % 20).unwrap_or(0);
     let linear = if phase <= 10 { phase } else { 20 - phase };
     let eased = linear * linear * (30 - 2 * linear);
     let accent = palette.accent(Mark::Working);
-    let low = blend_hex(palette.base, accent, 400);
-    let high = blend_hex(accent, "#FFFFFF", 450);
+    let low = blend_hex(palette.base, accent, 600);
+    let high = blend_hex(accent, "#FFFFFF", 200);
     WorkingFrame {
         glyph: Mark::Working.glyph(icons),
         fg: blend_hex(&low, &high, eased),
@@ -2193,20 +2193,31 @@ mod tests {
     fn working_frame_pulses_between_faded_and_bright() {
         for palette in PALETTES {
             let accent = palette.accent(Mark::Working);
-            let low = super::blend_hex(palette.base, accent, 400);
-            let high = super::blend_hex(accent, "#FFFFFF", 450);
+            let low = super::blend_hex(palette.base, accent, 600);
+            let high = super::blend_hex(accent, "#FFFFFF", 200);
             assert_eq!(working_frame(0, &palette, true).fg, low);
             assert_eq!(working_frame(10, &palette, true).fg, high);
             assert_eq!(working_frame(20, &palette, true).fg, low);
+            let brightness = |hex: &str| {
+                [1, 3, 5]
+                    .into_iter()
+                    .map(|offset| u16::from(super::hex_byte(hex, offset)))
+                    .sum::<u16>()
+            };
+            let mid = working_frame(5, &palette, true).fg;
+            assert!(brightness(&low) < brightness(&mid));
+            assert!(brightness(&mid) < brightness(&high));
+            assert_ne!(low, palette.base);
+            assert_ne!(high, "#FFFFFF");
         }
         assert_eq!(working_frame(0, &Palette::DARCULA, true).glyph, "●");
         assert_eq!(working_frame(0, &Palette::DARCULA, false).glyph, "*");
         let darcula_low = super::blend_hex(
             Palette::DARCULA.base,
             Palette::DARCULA.accent(Mark::Working),
-            400,
+            600,
         );
-        let darcula_high = super::blend_hex(Palette::DARCULA.accent(Mark::Working), "#FFFFFF", 450);
+        let darcula_high = super::blend_hex(Palette::DARCULA.accent(Mark::Working), "#FFFFFF", 200);
         assert_ne!(working_frame(5, &Palette::DARCULA, true).fg, darcula_low);
         assert_ne!(working_frame(5, &Palette::DARCULA, true).fg, darcula_high);
     }
