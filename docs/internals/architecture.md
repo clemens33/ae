@@ -385,13 +385,16 @@ The full helper catalog lives in `workspace.md`, which the prompt points at.
 | Agent | Capture method |
 |---|---|
 | Claude Code | ae generates the UUID up-front and passes it via `--session-id UUID`. Immediate. |
-| Codex | No launch-time flag exists, so the core runs a chain in a detached child: the `codex.<slot>.sid` file codex's own first-task instruction writes, then a launch-token scan of `~/.codex/sessions/YYYY/MM/DD/*.jsonl`, then a cwd scan of the same files, then the TUI header. |
+| Codex | No launch-time flag exists. The detached child accepts `codex.<slot>.sid` only when the rollout carrying the current launch token proves the same id, then scans rollouts by that token. A token miss stays pending; cwd and TUI are legacy no-token fallbacks only. |
 | Gemini | Post-launch scan of `~/.gemini/tmp/<project>/chats/session-*.json` by launch token. |
 | Grok Build | ae generates the UUID up-front and passes it via `--session-id UUID`. Immediate — same as Claude Code, no post-launch scan. |
 | OpenCode | Post-launch `opencode session list --format json` filtered by CWD. |
 
-Every scan is filtered by the seat's recorded launch time, so a stale conversation in the
-same directory cannot be captured as this one. Capture runs in its own detached process,
+Every Codex rollout is filtered by its immutable creation timestamp, not its mutable file
+mtime, and every other scan is filtered by the seat's recorded launch time. Capture results
+also carry the observed agent, tool and launch token; those facts are compared under the same
+lock as publication, so a retired and reused slot cannot receive a late result. A token-proven
+Codex handshake may replace a wrong earlier capture for the same launch. Capture runs in its own detached process,
 never on the launch's thread, so a tool that takes half a minute to answer does not delay the
 attach — and if that child dies before its tool answers, the watchdog closes the gap: each
 cycle it takes one look at every seat still pending and registers whatever it finds. The next

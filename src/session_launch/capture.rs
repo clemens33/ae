@@ -5,13 +5,13 @@
 //!
 //! | Tool | How the id is found |
 //! |---|---|
-//! | codex | the `codex.<slot>.sid` file its own `developer_instructions` write, then a launch-token scan of the recorded config home's `sessions/<day>/*.jsonl`, then a cwd scan of the same files, then its TUI header |
+//! | codex | the `codex.<slot>.sid` file its own `developer_instructions` write, verified against the current launch token; then a launch-token scan of the recorded config home's `sessions/<day>/*.jsonl`; legacy seats with no token may fall back to cwd and their TUI header |
 //! | opencode | `opencode session list --format json`, matched on the session's `directory` |
 //! | gemini | `~/.gemini/tmp/<project>/chats/session-*.json`, matched on the launch token, then on the project root alone |
 //! | agy | the launch token, searched in the BYTES of `~/.gemini/antigravity-cli/conversations/<id>.db` — OR, for a seat that has no token at all, the CLI log that names both the workspace and the conversation it created. Alternatives, not a chain: a token miss stays pending, because falling through cross-wires two seats sharing one directory |
 //!
-//! Every scan is filtered by the seat's `launch_time.<slot>`, so a stale
-//! conversation in the same directory cannot be captured as this one.
+//! Every scan is filtered by the seat's `launch_time.<slot>`. Codex checks the
+//! rollout's immutable creation timestamp as well as its mutable file mtime.
 //!
 //! Runs in ITS OWN DETACHED PROCESS, never on the launch's thread, so a tool
 //! that takes half a minute to print its id does not delay the attach.
@@ -125,7 +125,8 @@ pub fn run(dir: &Path, slot: &str, pane: &str, server: &ServerId) -> u8 {
         CaptureSpec::None => None,
     };
     if let Some(id) = captured {
-        register(dir, slot, &id);
+        let captured = Captured::new(&facts, id);
+        let _ = commit(dir, slot, &captured);
     }
     0
 }
@@ -143,6 +144,32 @@ pub struct Pending {
     pub agent: String,
     /// The harness sitting in the seat, read from `agent_bin.<slot>`.
     pub tool: ToolKind,
+}
+
+/// One captured id, bound to the launch facts observed before the scan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Captured {
+    id: String,
+    agent: String,
+    tool: ToolKind,
+    launch_id: String,
+}
+
+impl Captured {
+    fn new(facts: &Facts, id: String) -> Self {
+        Self {
+            id,
+            agent: facts.agent.clone(),
+            tool: facts.tool,
+            launch_id: facts.launch_id.clone(),
+        }
+    }
+
+    /// The harness session id this launch proved.
+    #[must_use]
+    pub fn id(&self) -> &str {
+        &self.id
+    }
 }
 
 /// The seats one recovery pass tries: an id still unrecorded, in a seat whose
@@ -169,11 +196,17 @@ fn is_pending(id: Option<&str>) -> bool {
 }
 
 /// ONE look for a seat's id: no sleeping, no pane, no handshake file.
+///
+/// The pending row came from the watchdog's roster snapshot. A reused slot is
+/// not that row, even when its current occupant already has a capturable id.
 #[must_use]
-pub fn attempt(dir: &Path, slot: &str) -> Option<String> {
-    let facts = facts(dir, slot)?;
+pub fn attempt(dir: &Path, pending: &Pending) -> Option<Captured> {
+    let facts = facts(dir, &pending.slot)?;
+    if facts.agent != pending.agent || facts.tool != pending.tool {
+        return None;
+    }
     let home = home_dir();
-    match facts.tool.adapter().capture {
+    let id = match facts.tool.adapter().capture {
         CaptureSpec::HandshakeRolloutOrTui => codex_config_home(&facts, home.as_deref())
             .as_deref()
             .and_then(|config_home| scan_codex(config_home, &facts)),
@@ -183,7 +216,8 @@ pub fn attempt(dir: &Path, slot: &str) -> Option<String> {
         }
         CaptureSpec::SessionList => scan_opencode(&facts),
         CaptureSpec::None => None,
-    }
+    }?;
+    Some(Captured::new(&facts, id))
 }
 
 // ---------------------------------------------------------------------------
@@ -192,6 +226,8 @@ pub fn attempt(dir: &Path, slot: &str) -> Option<String> {
 
 /// What one seat's capture needs to know, all of it from the session's meta.
 struct Facts {
+    /// The agent occupying the slot when these facts were read.
+    agent: String,
     /// Which harness the seat holds — read from `agent_bin.<slot>`, because the
     /// roster is the core's record of what a seat is.
     tool: ToolKind,
@@ -217,8 +253,14 @@ fn facts(dir: &Path, slot: &str) -> Option<Facts> {
             .unwrap_or_default()
     };
     let launch_time = value(&format!("launch_time.{slot}"));
-    let tool = ToolKind::from_binary_name(&value(&format!("agent_bin.{slot}")));
+    let entry = parsed.roster().iter().find(|entry| entry.slot == slot);
+    let tool = ToolKind::from_binary_name(
+        entry
+            .and_then(|entry| entry.binary.as_deref())
+            .unwrap_or_default(),
+    );
     Some(Facts {
+        agent: entry.map(|entry| entry.name.clone()).unwrap_or_default(),
         tool,
         work_dir: value("work_dir"),
         // A non-numeric value is 0, never a refusal: a scan with no lower bound
@@ -230,10 +272,7 @@ fn facts(dir: &Path, slot: &str) -> Option<Facts> {
         },
         launch_id: value(&format!("launch_id.{slot}")),
         launch_marker: tool.adapter().launch_marker,
-        config_home: parsed
-            .roster()
-            .iter()
-            .find(|entry| entry.slot == slot)
+        config_home: entry
             .map(|entry| entry.config_home.clone())
             .unwrap_or_default(),
     })
@@ -261,16 +300,74 @@ fn home_dir() -> Option<PathBuf> {
     raw.filter(|value| !value.is_empty()).map(PathBuf::from)
 }
 
-/// Write the captured id into the roster, under the meta lock the core holds.
-pub(crate) fn register(dir: &Path, slot: &str, id: &str) {
-    let tail = [
-        "set-harness-session".to_owned(),
-        slot.to_owned(),
-        id.to_owned(),
-    ];
-    let mut out = Vec::new();
-    let mut err = Vec::new();
-    let _ = crate::identity::roster(dir, &tail, &mut out, &mut err);
+/// Publish a captured id only while the exact observed launch still owns the
+/// slot and its id remains pending. The compare and write share one meta lock.
+#[must_use]
+pub fn commit(dir: &Path, slot: &str, captured: &Captured) -> bool {
+    commit_inner(dir, slot, captured, false)
+}
+
+/// Publish codex's token-proven handshake even when a scan recorded a wrong id
+/// earlier in this same launch.
+fn commit_authoritative(dir: &Path, slot: &str, captured: &Captured) -> bool {
+    commit_inner(dir, slot, captured, true)
+}
+
+/// The launch-bound compare and write shared by ordinary and authoritative
+/// capture paths.
+fn commit_inner(dir: &Path, slot: &str, captured: &Captured, may_replace: bool) -> bool {
+    if captured.id.is_empty() || captured.id.chars().any(char::is_control) {
+        return false;
+    }
+    let Ok(_held) = crate::meta::lock(dir) else {
+        return false;
+    };
+    let Ok(bytes) = crate::meta::read_bytes(dir) else {
+        return false;
+    };
+    let Ok(text) = String::from_utf8(bytes) else {
+        return false;
+    };
+    let parsed = crate::meta::Meta::parse(&text);
+    if parsed.schema() != Some("2") {
+        return false;
+    }
+    let Some(entry) = parsed.roster().iter().find(|entry| entry.slot == slot) else {
+        return false;
+    };
+    let current_tool = ToolKind::from_binary_name(entry.binary.as_deref().unwrap_or_default());
+    if entry.name != captured.agent
+        || current_tool != captured.tool
+        || (!may_replace && !is_pending(entry.harness_session.as_deref()))
+    {
+        return false;
+    }
+    let launch_key = format!("launch_id.{slot}");
+    let first_launch = crate::meta::first_value(text.as_bytes(), &launch_key);
+    let sole_launch = crate::meta::sole_value(text.as_bytes(), &launch_key);
+    if first_launch.is_some() && sole_launch.is_none() {
+        return false;
+    }
+    let current_launch = sole_launch
+        .map(String::from_utf8_lossy)
+        .map(std::borrow::Cow::into_owned)
+        .unwrap_or_default();
+    if current_launch != captured.launch_id {
+        return false;
+    }
+    let next = crate::meta::rewritten(
+        &text,
+        &format!("harness_session.{slot}"),
+        Some(&captured.id),
+    );
+    let published = match crate::meta::publish_locked(dir, &next) {
+        Ok(()) | Err(crate::meta::RewriteError::Unknown(_)) => true,
+        Err(crate::meta::RewriteError::NotWritten(_)) => false,
+    };
+    if published && captured.tool.adapter().launch.initial_turn == InitialTurn::RegisterSessionId {
+        let _ = std::fs::remove_file(sid_file(dir, slot));
+    }
+    published
 }
 
 // ---------------------------------------------------------------------------
@@ -299,7 +396,17 @@ pub fn register_sid(
         writeln!(err, "{REGISTER_SID_USAGE}")?;
         return Ok(crate::state::EXIT_USAGE);
     }
-    let id = if let Some(given) = id {
+    let Some(facts) = facts(dir, slot)
+        .filter(|facts| facts.tool.adapter().launch.initial_turn == InitialTurn::RegisterSessionId)
+    else {
+        writeln!(
+            err,
+            "Error: seat '{slot}' is not a codex seat in {}.",
+            dir.display()
+        )?;
+        return Ok(crate::state::EXIT_USAGE);
+    };
+    let given = if let Some(given) = id {
         let given = given.trim();
         if !is_lowercase_uuid(given) {
             writeln!(
@@ -308,31 +415,30 @@ pub fn register_sid(
             )?;
             return Ok(crate::state::EXIT_USAGE);
         }
-        given.to_owned()
+        Some(given)
     } else {
-        let Some(facts) = facts(dir, slot).filter(|facts| {
-            facts.tool.adapter().launch.initial_turn == InitialTurn::RegisterSessionId
-        }) else {
-            writeln!(
-                err,
-                "Error: seat '{slot}' is not a codex seat in {}.",
-                dir.display()
-            )?;
-            return Ok(crate::state::EXIT_USAGE);
-        };
-        let ambient_home = home_dir();
-        let Some(found) = codex_config_home(&facts, ambient_home.as_deref())
-            .as_deref()
-            .and_then(|config_home| scan_codex(config_home, &facts))
-        else {
-            writeln!(err, "No codex session matched seat '{slot}' yet.")?;
-            return Ok(crate::state::EXIT_FAILED);
-        };
-        found
+        None
+    };
+    let ambient_home = home_dir();
+    let Some(found) = codex_config_home(&facts, ambient_home.as_deref())
+        .as_deref()
+        .and_then(|config_home| scan_codex(config_home, &facts))
+        .filter(|found| given.is_none_or(|given| found == given))
+    else {
+        writeln!(err, "No codex session matched seat '{slot}' yet.")?;
+        return Ok(crate::state::EXIT_FAILED);
     };
     let file = sid_file(dir, slot);
-    if let Err(why) = super::assets::publish_document(&file, &format!("{id}\n")) {
+    if let Err(why) = super::assets::publish_document(&file, &format!("{found}\n")) {
         writeln!(err, "Error: could not write {} ({why})", file.display())?;
+        return Ok(crate::state::EXIT_FAILED);
+    }
+    let captured = Captured::new(&facts, found);
+    if !commit_authoritative(dir, slot, &captured) {
+        writeln!(
+            err,
+            "Error: seat '{slot}' changed before its session id could be recorded."
+        )?;
         return Ok(crate::state::EXIT_FAILED);
     }
     writeln!(out, "Registered session id for '{slot}'.")?;
@@ -362,7 +468,9 @@ fn is_lowercase_uuid(value: &str) -> bool {
     parts.next().is_none()
 }
 
-/// Poll for the self-registered id, then the two history scans, then the TUI.
+/// Poll for the self-registered id, verify it against the rollout carrying
+/// this launch's token, then scan that rollout directly. Only a legacy seat
+/// with no launch token may use the TUI fallback.
 fn capture_codex(
     dir: &Path,
     slot: &str,
@@ -380,37 +488,40 @@ fn capture_codex(
         )]
         let read = std::fs::read_to_string(&file);
         if let Ok(text) = read {
-            let _ = std::fs::remove_file(&file);
             let id: String = text.chars().filter(|c| !c.is_whitespace()).collect();
-            if !id.is_empty() {
+            let verified = config_home
+                .and_then(|home| scan_codex(home, facts))
+                .is_some_and(|found| found == id);
+            if verified {
                 return Some(id);
             }
         }
-    }
-    if let Some(id) = config_home.and_then(|home| scan_codex(home, facts)) {
-        return Some(id);
+        if let Some(id) = config_home.and_then(|home| scan_codex(home, facts)) {
+            return Some(id);
+        }
     }
     // The TUI scrape, least reliable and therefore last: codex prints
     // `session id: <uuid>` once in its header.
-    let screen = crate::transport::capture_pane(server, pane)?;
-    scrape_session_id(&screen)
+    if facts.launch_id.is_empty() {
+        let screen = crate::transport::capture_pane(server, pane)?;
+        return scrape_session_id(&screen);
+    }
+    None
 }
 
-/// One look through codex's own history: the launch token first, this
-/// directory's newest conversation second.
+/// One look through codex's own history. A seat with a launch token accepts
+/// only that positive proof; the cwd fallback exists for legacy seats alone.
 fn scan_codex(config_home: &Path, facts: &Facts) -> Option<String> {
     let days = day_dirs(Timestamp::now());
-    if !facts.launch_id.is_empty()
-        && let Some(marker) = facts.launch_marker
-        && let Some(id) = find_codex_by_launch_id(
+    if !facts.launch_id.is_empty() {
+        let marker = facts.launch_marker?;
+        return find_codex_by_launch_id(
             config_home,
             marker,
             &facts.launch_id,
             facts.launch_time,
             &days,
-        )
-    {
-        return Some(id);
+        );
     }
     if facts.work_dir.is_empty() {
         return None;
@@ -446,7 +557,7 @@ pub(crate) fn find_codex_by_launch_id(
 ) -> Option<String> {
     let marker = format!("AE_{marker_prefix}_LAUNCH_ID={launch_id}");
     newest(codex_logs(config_home, days), launch_time, |text| {
-        if !text.contains(&marker) {
+        if !codex_started_since_launch(text, launch_time) || !text.contains(&marker) {
             return None;
         }
         first_hex_field(text.lines().next().unwrap_or_default(), "id")
@@ -463,6 +574,9 @@ pub(crate) fn find_codex_by_cwd(
 ) -> Option<String> {
     let target = canonical(work_dir);
     newest(codex_logs(config_home, days), launch_time, |text| {
+        if !codex_started_since_launch(text, launch_time) {
+            return None;
+        }
         let first = text.lines().next().unwrap_or_default();
         let cwd = first_string_field(first, "cwd")?;
         if canonical(&cwd) != target {
@@ -470,6 +584,21 @@ pub(crate) fn find_codex_by_cwd(
         }
         first_hex_field(first, "id")
     })
+}
+
+/// Whether a codex rollout's own creation timestamp belongs to this launch.
+/// File mtime is not identity: a live older rollout keeps changing as codex
+/// appends turns to it.
+fn codex_started_since_launch(text: &str, launch_time: i64) -> bool {
+    if launch_time <= 0 {
+        return true;
+    }
+    text.lines()
+        .next()
+        .and_then(|first| first_string_field(first, "timestamp"))
+        .as_deref()
+        .and_then(crate::quota::vendor_timestamp)
+        .is_some_and(|started| started >= launch_time)
 }
 
 /// Every `*.jsonl` under the named day directories of a Codex config home.
@@ -1386,6 +1515,7 @@ mod tests {
 
         // The seat HAS a token, and no database carries it yet.
         let facts = Facts {
+            agent: "lead".to_owned(),
             tool: ToolKind::Agy,
             work_dir: work.clone(),
             launch_time: 0,
@@ -1598,6 +1728,121 @@ mod tests {
     }
 
     #[test]
+    fn a_codex_token_miss_does_not_fall_back_to_another_launch_in_the_same_cwd() {
+        let root = scratch("codex-token-miss");
+        let config_home = root.join("home").join(".codex");
+        let work = root.join("project");
+        std::fs::create_dir_all(&work).expect("a project dir");
+        let day = day_dirs(Timestamp::now())
+            .into_iter()
+            .next()
+            .expect("today");
+        write(
+            &config_home
+                .join("sessions")
+                .join(day)
+                .join("rollout-retired.jsonl"),
+            &format!(
+                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"aaaa1111-bbbb-4ccc-8ddd-eeeeeeeeeeee\",\"cwd\":\"{}\"}}}}\n\
+                 {{\"text\":\"AE_CODEX_LAUNCH_ID=retired-token\"}}\n",
+                work.display()
+            ),
+        );
+        let facts = Facts {
+            agent: "lead".to_owned(),
+            tool: ToolKind::Codex,
+            work_dir: work.display().to_string(),
+            launch_time: 0,
+            launch_id: "current-token".to_owned(),
+            launch_marker: Some("CODEX"),
+            config_home: crate::meta::RecordedConfigHome::Path(config_home.clone()),
+        };
+
+        assert_eq!(
+            scan_codex(&config_home, &facts),
+            None,
+            "a present launch token is the identity boundary; cwd alone cannot replace it"
+        );
+    }
+
+    #[test]
+    fn a_codex_rollout_started_before_the_launch_is_never_a_candidate() {
+        let root = scratch("codex-before-launch");
+        let config_home = root.join("home").join(".codex");
+        let day = "2026/09/10";
+        let id = "aaaa1111-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+        write(
+            &config_home
+                .join("sessions")
+                .join(day)
+                .join("rollout-retired.jsonl"),
+            &format!(
+                "{{\"timestamp\":\"2026-09-10T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"cwd\":\"/work\"}}}}\n\
+                 {{\"text\":\"AE_CODEX_LAUNCH_ID=reused-token\"}}\n"
+            ),
+        );
+        let launched = Timestamp::parse("2026-09-10T10:01:00Z")
+            .expect("the launch timestamp")
+            .epoch();
+
+        assert_eq!(
+            find_codex_by_launch_id(
+                &config_home,
+                "CODEX",
+                "reused-token",
+                launched,
+                &[day.to_owned()],
+            ),
+            None,
+            "a later mtime cannot turn an older rollout into this launch"
+        );
+    }
+
+    #[test]
+    fn a_late_capture_cannot_commit_after_its_slot_is_reoccupied() {
+        let dir = scratch("late-commit");
+        write(
+            &dir.join("meta"),
+            "schema=2\nseat.spawned.0=current\nprofile.spawned.0=p\n\
+             agent_bin.spawned.0=codex\nharness_session.spawned.0=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\n\
+             launch_id.spawned.0=current-token\n",
+        );
+        let retired = Captured {
+            id: "aaaa1111-bbbb-4ccc-8ddd-eeeeeeeeeeee".to_owned(),
+            agent: "retired".to_owned(),
+            tool: ToolKind::Codex,
+            launch_id: "retired-token".to_owned(),
+        };
+
+        assert!(
+            !commit(&dir, "spawned.0", &retired),
+            "the capture result belongs to the retired launch"
+        );
+        let meta = std::fs::read_to_string(dir.join("meta")).expect("the meta remains");
+        assert!(
+            meta.contains("harness_session.spawned.0=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+            "{meta}"
+        );
+
+        let current = Captured {
+            id: "bbbb2222-cccc-4ddd-8eee-ffffffffffff".to_owned(),
+            agent: "current".to_owned(),
+            tool: ToolKind::Codex,
+            launch_id: "current-token".to_owned(),
+        };
+        assert!(
+            !commit(&dir, "spawned.0", &current),
+            "an ordinary late scan cannot replace an already recorded id"
+        );
+        assert!(commit_authoritative(&dir, "spawned.0", &current));
+        let meta = std::fs::read_to_string(dir.join("meta")).expect("the committed meta");
+        assert!(
+            meta.contains("harness_session.spawned.0=bbbb2222-cccc-4ddd-8eee-ffffffffffff"),
+            "{meta}"
+        );
+    }
+
+    #[test]
     fn register_sid_scans_the_recorded_codex_home_not_the_capture_process_home() {
         let dir = scratch("recorded-codex-home");
         let config_home = dir.join("account");
@@ -1623,6 +1868,7 @@ mod tests {
             &dir.join("meta"),
             &format!(
                 "schema=2\nwork_dir={}\nseat.main=lead\nagent_bin.main=codex\n\
+                 harness_session.main=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\n\
                  config_home.main={}\nlaunch_id.main=tok-recorded\nlaunch_time.main=0\n",
                 work.display(),
                 config_home.display()
@@ -1636,9 +1882,14 @@ mod tests {
             "{}",
             String::from_utf8_lossy(&err)
         );
-        assert_eq!(
-            std::fs::read_to_string(sid_file(&dir, "main")).expect("sid file"),
-            format!("{id}\n")
+        let meta = std::fs::read_to_string(dir.join("meta")).expect("the committed meta");
+        assert!(
+            meta.contains(&format!("harness_session.main={id}")),
+            "the token-proven handshake must replace a wrong earlier capture: {meta}"
+        );
+        assert!(
+            !sid_file(&dir, "main").exists(),
+            "a successful direct commit leaves no handshake artifact"
         );
     }
 
@@ -1651,6 +1902,7 @@ mod tests {
              config_home.main=/account/codex\nlaunch_time.main=not-a-number\nlaunch_id.main=tok-9\n",
         );
         let read = facts(&dir, "main").expect("the meta reads");
+        assert_eq!(read.agent, "lead");
         assert_eq!(read.tool, ToolKind::OpenCode);
         assert_eq!(read.work_dir, "/w");
         assert_eq!(read.launch_time, 0);

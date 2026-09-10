@@ -370,17 +370,19 @@ pub struct Recovered {
 pub fn recover(dir: &Path, roster: &[crate::meta::RosterEntry]) -> Vec<Recovered> {
     let mut rows = Vec::new();
     for seat in crate::session_launch::capture::pending_seats(roster) {
-        let Some(captured) = crate::session_launch::capture::attempt(dir, &seat.slot) else {
+        let Some(captured) = crate::session_launch::capture::attempt(dir, &seat) else {
             continue;
         };
-        // The write goes through the roster the core owns, under its own meta
-        // lock — the same call the launch's capture child makes, so a recovery
-        // racing a late child rewrites one fact with itself.
-        crate::session_launch::capture::register(dir, &seat.slot, &captured);
+        // The launch witness is rechecked under the same meta lock as the
+        // write. A slot retired and reused since this roster
+        // snapshot was read is therefore not writable by this recovery.
+        if !crate::session_launch::capture::commit(dir, &seat.slot, &captured) {
+            continue;
+        }
         rows.push(Recovered {
             agent: seat.agent,
             tool: seat.tool.as_str().to_owned(),
-            captured,
+            captured: captured.id().to_owned(),
         });
     }
     rows
@@ -661,6 +663,59 @@ mod tests {
         );
         let none = crate::meta::Meta::parse("mode=local\n");
         assert!(recover(&dir, none.roster()).is_empty(), "the control");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the test fixture builds and inspects a session meta directory"
+    )]
+    fn a_recovery_snapshot_cannot_publish_for_a_reoccupied_slot() {
+        let dir = std::env::temp_dir().join(format!("ae-wdglue-reoccupied-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let config_home = dir.join("codex-home");
+        let project = dir.join("project");
+        std::fs::create_dir_all(&project).expect("a project dir");
+        let old = crate::meta::Meta::parse(
+            "schema=2\nseat.spawned.0=retired\nprofile.spawned.0=p\n\
+             agent_bin.spawned.0=codex\nharness_session.spawned.0=pending\n",
+        );
+        std::fs::create_dir_all(&dir).expect("a session dir");
+        std::fs::write(
+            dir.join("meta"),
+            format!(
+                "schema=2\nwork_dir={}\nseat.spawned.0=current\nprofile.spawned.0=p\n\
+                 agent_bin.spawned.0=codex\nharness_session.spawned.0=pending\n\
+                 config_home.spawned.0={}\nlaunch_time.spawned.0=0\n\
+                 launch_id.spawned.0=current-token\n",
+                project.display(),
+                config_home.display()
+            ),
+        )
+        .expect("current occupant meta");
+        let day = crate::time::Timestamp::now().to_string()[..10].replace('-', "/");
+        let logs = config_home.join("sessions").join(day);
+        std::fs::create_dir_all(&logs).expect("a codex day directory");
+        std::fs::write(
+            logs.join("rollout-current.jsonl"),
+            format!(
+                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"bbbb2222-cccc-4ddd-8eee-ffffffffffff\",\"cwd\":\"{}\"}}}}\n\
+                 {{\"text\":\"AE_CODEX_LAUNCH_ID=current-token\"}}\n",
+                project.display()
+            ),
+        )
+        .expect("current occupant rollout");
+
+        assert!(
+            recover(&dir, old.roster()).is_empty(),
+            "a stale roster snapshot must not recover the current occupant under the retired name"
+        );
+        let meta = std::fs::read_to_string(dir.join("meta")).expect("the meta remains");
+        assert!(
+            meta.contains("harness_session.spawned.0=pending"),
+            "a stale recovery wrote through slot reuse: {meta}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

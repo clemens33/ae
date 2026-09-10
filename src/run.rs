@@ -85,14 +85,21 @@ impl Plan {
     }
 }
 
-/// Forget whatever a previous occupant of `slot` left behind: the start marker
-/// and the recorded first message.
+/// Forget every generated file a previous occupant of `slot` left behind.
 ///
 /// # Errors
 ///
 /// A removal that failed for any reason but absence.
 pub fn clear_slot(dir: &Path, slot: &str) -> std::io::Result<()> {
-    for path in [started_marker(dir, slot), prompt_file(dir, slot)] {
+    let safe = launch::safe_slot(slot);
+    for path in [
+        started_marker(dir, slot),
+        prompt_file(dir, slot),
+        dir.join(format!("launch.{safe}.sh")),
+        dir.join(format!("codex.{safe}.sid")),
+        dir.join(format!("opencode.{safe}.md")),
+        dir.join(format!("opencode.{safe}.json")),
+    ] {
         match std::fs::remove_file(&path) {
             Err(why) if why.kind() != std::io::ErrorKind::NotFound => return Err(why),
             _ => {}
@@ -1051,6 +1058,38 @@ fn working_dir() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the test fixture creates and inspects the complete artifact set"
+    )]
+    fn clearing_a_slot_removes_every_launch_artifact() {
+        let dir = std::env::temp_dir().join(format!("ae-clear-slot-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a fixture dir");
+        let artifacts = [
+            "launch.spawned.7.started",
+            "launch.spawned.7.prompt",
+            "launch.spawned.7.sh",
+            "codex.spawned.7.sid",
+            "opencode.spawned.7.md",
+            "opencode.spawned.7.json",
+        ];
+        for name in artifacts {
+            std::fs::write(dir.join(name), "stale").expect("a stale artifact");
+        }
+
+        clear_slot(&dir, "spawned.7").expect("the slot clears");
+
+        for name in artifacts {
+            assert!(
+                !dir.join(name).exists(),
+                "a future occupant could inherit {name}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn the_env_prefix_becomes_environment_deltas_and_the_tool_becomes_argv() {

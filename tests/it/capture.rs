@@ -360,22 +360,47 @@ fn the_register_sid_handshake_is_the_id_the_capture_reports() {
     );
 
     let id = "0199c0de-1234-4890-abcd-ef0123456789";
+    let wrong = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    rig.write(
+        &rig.session.join("meta"),
+        &rig.meta().replace(
+            "harness_session.main=pending",
+            &format!("harness_session.main={wrong}"),
+        ),
+    );
+    let day = ae::time::Timestamp::now().to_string()[..10].replace('-', "/");
+    let started = ae::time::Timestamp::now();
+    rig.write(
+        &rig.home
+            .join(".codex")
+            .join("sessions")
+            .join(day)
+            .join(format!("rollout-{id}.jsonl")),
+        &format!(
+            "{{\"timestamp\":\"{started}\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"cwd\":\"{}\"}}}}\n\
+             {{\"text\":\"AE_CODEX_LAUNCH_ID=tok-1\"}}\n",
+            rig.project.display()
+        ),
+    );
     let registered = helper(&shim)
         .args(["main", id])
+        .env("HOME", &rig.home)
         .output()
         .unwrap_or_else(|why| panic!("the shim should run: {why}"));
     assert!(
         registered.status.success(),
-        "the handshake: {}",
+        "the rollout-proven handshake: {}",
         String::from_utf8_lossy(&registered.stderr)
     );
 
-    let (code, stderr) = rig.capture();
-    assert_eq!((code, stderr.as_str()), (Some(0), ""));
     let meta = rig.meta();
     assert!(
         meta.contains(&format!("harness_session.main={id}")),
         "the capture must report the handshake's id:\n{meta}"
+    );
+    assert!(
+        !meta.contains(wrong),
+        "the wrong prior capture survived:\n{meta}"
     );
     assert!(
         !rig.session.join("codex.main.sid").exists(),

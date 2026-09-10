@@ -232,7 +232,7 @@ Name resolution takes the exact name, `%pane-id`, or `session:agent` / `@session
 |---|---|---|---|---|---|---|
 | **Prompt injection** | `--append-system-prompt` | `-c developer_instructions=` | `-i` | none — rides `-i` as a user turn | none — rides positional `[PROMPT]`; never `--system-prompt-override` | `OPENCODE_CONFIG` json `instructions` |
 | **Session id at launch** | `--session-id UUID` | none | none | none | `--session-id UUID` | none |
-| **Id capture** | immediate | post-launch: sid file, token scan, cwd scan, TUI header | post-launch chat-history scan | post-launch: `<id>.db` bytes with a token, else `cli-*.log`. A token miss stays `pending` | immediate | post-launch `session list --format json` |
+| **Id capture** | immediate | post-launch: sid file verified by launch-token rollout created after launch, then token scan. A token miss stays `pending`; cwd/TUI are legacy no-token fallbacks | post-launch chat-history scan | post-launch: `<id>.db` bytes with a token, else `cli-*.log`. A token miss stays `pending` | immediate | post-launch `session list --format json` |
 | **Exact resume** | `--resume UUID` | `resume UUID` (subcommand) | `--resume UUID` | `--conversation UUID` | `--resume UUID` | `--session ID` |
 | **Resume fallback** | `--continue` | fresh start | `--resume latest` | `--continue` | `--continue` | `--continue` |
 | **TUI modelled for delivery** | yes | yes | no | no | no | no |

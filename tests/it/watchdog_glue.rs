@@ -819,12 +819,13 @@ fn a_pending_codex_seat_is_recovered_by_the_running_watchdog() {
     // Codex partitions its logs by UTC day.
     let day = ae::time::Timestamp::now().to_string()[..10].replace('-', "/");
     let logs = home.join(".codex").join("sessions").join(&day);
+    let started = ae::time::Timestamp::now();
     assert!(fs::create_dir_all(&logs).is_ok(), "a codex day directory");
     assert!(
         fs::write(
             logs.join("rollout-mine.jsonl"),
             format!(
-                "{{\"id\":\"0191aaaa-bbbb-cccc\",\"cwd\":\"{}\"}}\n\
+                "{{\"timestamp\":\"{started}\",\"id\":\"0191aaaa-bbbb-cccc\",\"cwd\":\"{}\"}}\n\
                  {{\"text\":\"AE_CODEX_LAUNCH_ID=tok-recover\"}}\n",
                 project.display()
             ),

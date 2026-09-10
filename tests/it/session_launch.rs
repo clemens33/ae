@@ -2691,17 +2691,51 @@ fn a_codex_launch_captures_the_session_id_it_registers() {
     if skip() {
         return;
     }
-    let rig = Rig::new("cap", &["codex"], Some("main"));
+    let rig = Rig::new("cap", &["codex"], None);
     let (code, stdout, stderr) = rig.launch(&["--local", "cap"]);
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let meta = rig.meta("cap");
+    assert!(meta.contains("harness_session.main=pending"), "{meta}");
+    let launch_id = meta
+        .lines()
+        .find_map(|line| line.strip_prefix("launch_id.main="))
+        .expect("the codex launch token");
+    let id = "0199c0de-1234-4890-abcd-ef0123456789";
+    let day = ae::time::Timestamp::now().to_string()[..10].replace('-', "/");
+    let started = ae::time::Timestamp::now();
+    let logs = rig.scratch.join(".codex").join("sessions").join(day);
     assert!(
-        rig.meta("cap").contains("harness_session.main=pending"),
-        "codex has no launch-time id:\n{}",
-        rig.meta("cap")
+        std::fs::create_dir_all(&logs).is_ok(),
+        "a rollout directory"
     );
-    // The capture polls on its own thread; the first look is one interval in.
+    assert!(
+        std::fs::write(
+            logs.join(format!("rollout-{id}.jsonl")),
+            format!(
+                "{{\"timestamp\":\"{started}\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"cwd\":\"{}\"}}}}\n\
+                 {{\"text\":\"AE_CODEX_LAUNCH_ID={launch_id}\"}}\n",
+                rig.project.display()
+            )
+        )
+        .is_ok(),
+        "the launch's rollout"
+    );
+    let registered = helper(&rig.dir("cap").join("_register-sid"))
+        .arg("main")
+        .env("HOME", &rig.scratch)
+        .output()
+        .unwrap_or_else(|why| panic!("the handshake should run: {why}"));
+    assert!(
+        registered.status.success(),
+        "the launch-token handshake: {}",
+        String::from_utf8_lossy(&registered.stderr)
+    );
+    // The handshake commits immediately; tolerate scheduling around the shim.
     for _ in 0..80 {
-        if rig.meta("cap").contains("harness_session.main=cafe-1234") {
+        if rig
+            .meta("cap")
+            .contains(&format!("harness_session.main={id}"))
+        {
             return;
         }
         std::thread::sleep(Duration::from_millis(250));

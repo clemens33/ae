@@ -154,7 +154,7 @@ pub(crate) struct ResumeSpec {
 /// How a harness-created conversation id is found after launch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CaptureSpec {
-    /// Read the handshake file, scan rollouts by token or cwd, or read the TUI header.
+    /// Verify the handshake/rollout by token; cwd/TUI are legacy no-token fallbacks.
     HandshakeRolloutOrTui,
     /// Scan project chat history.
     ChatHistory,

@@ -80,11 +80,13 @@ tail -F ~/.ae/sessions/<name>/events.jsonl \
 
 ## Codex session id capture failed
 
-Codex has no launch-time UUID flag, so the core runs a chain in a detached child: the id
-file codex's own first-task instruction writes, then a launch-token scan of
-`~/.codex/sessions/YYYY/MM/DD/*.jsonl`, then a cwd scan of the same files, then the TUI
-header. Every scan is filtered by the seat's recorded launch time, so a stale conversation in
-the same directory cannot be captured as this one.
+Codex has no launch-time UUID flag. Its first-task instruction writes an id file, which the
+detached capture verifies against the rollout carrying that seat's launch token; the fallback
+scans `~/.codex/sessions/YYYY/MM/DD/*.jsonl` for the same token. A token miss stays pending.
+Only a legacy seat with no token may fall back to cwd and the TUI header. Every scan is also
+filtered by the seat's recorded launch time; Codex uses the rollout's creation timestamp, not
+its mutable file mtime. A token-proven handshake commits immediately and repairs a wrong id
+already recorded for the same launch.
 
 You do not have to do anything if it fails. The capture child can die before codex answers —
 the machine sleeps, the session is resumed, the process is killed with the pane it was

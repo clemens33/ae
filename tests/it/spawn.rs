@@ -257,6 +257,90 @@ impl Rig {
     fn launch_argv(&self) -> String {
         std::fs::read_to_string(&self.launched).unwrap_or_default()
     }
+
+    fn launch_id(&self, slot: &str) -> String {
+        self.meta()
+            .lines()
+            .find_map(|line| line.strip_prefix(&format!("launch_id.{slot}=")))
+            .unwrap_or_else(|| panic!("{slot} has no launch token"))
+            .to_owned()
+    }
+
+    fn enable_codex_profile(&self) {
+        use std::fmt::Write as _;
+        use std::os::unix::fs::PermissionsExt;
+        let codex = self.scratch.join("codex");
+        assert!(
+            std::fs::copy(self.scratch.join("claude"), &codex).is_ok(),
+            "a codex-shaped fake"
+        );
+        assert!(
+            std::fs::set_permissions(&codex, std::fs::Permissions::from_mode(0o755)).is_ok(),
+            "an executable codex fake"
+        );
+        let config = self.scratch.join("config");
+        let mut body = std::fs::read_to_string(&config).unwrap_or_default();
+        assert!(
+            write!(
+                body,
+                "\n[clients]\ncodex-test = {} config_home={}\n\n[profiles]\ncodexfake = \"codex-test\"\n",
+                codex.display(),
+                self.scratch.join("codex-home").display()
+            )
+            .is_ok(),
+            "the config string"
+        );
+        assert!(std::fs::write(config, body).is_ok(), "the codex profile");
+    }
+
+    fn write_codex_rollout(&self, id: &str, launch_id: &str) {
+        let day = ae::time::Timestamp::now().to_string()[..10].replace('-', "/");
+        let started = ae::time::Timestamp::now();
+        let logs = self.scratch.join("codex-home").join("sessions").join(day);
+        assert!(
+            std::fs::create_dir_all(&logs).is_ok(),
+            "a rollout directory"
+        );
+        assert!(
+            std::fs::write(
+                logs.join(format!("rollout-{id}.jsonl")),
+                format!(
+                    "{{\"timestamp\":\"{started}\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"cwd\":\"{}\"}}}}\n\
+                     {{\"text\":\"AE_CODEX_LAUNCH_ID={launch_id}\"}}\n",
+                    self.scratch.display()
+                )
+            )
+            .is_ok(),
+            "the rollout for {id}"
+        );
+    }
+
+    fn register_sid(&self, slot: &str, id: &str) -> (Option<i32>, String) {
+        let out = ae()
+            .arg(ae::cli::REGISTER_SID)
+            .arg(&self.dir)
+            .args([slot, id])
+            .output()
+            .unwrap_or_else(|why| panic!("the handshake should run: {why}"));
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    }
+
+    fn wait_for_sid(&self, slot: &str, id: &str, forbidden: Option<&str>) -> bool {
+        for _ in 0..80 {
+            let meta = self.meta();
+            if let Some(forbidden) = forbidden {
+                assert!(!meta.contains(forbidden), "retired id landed late: {meta}");
+            }
+            if meta.contains(&format!("harness_session.{slot}={id}")) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        false
+    }
 }
 
 impl Drop for Rig {
@@ -518,6 +602,81 @@ fn a_retire_purges_the_seat_and_refuses_what_is_not_its_to_take() {
     assert!(
         events.contains("tool=claude profile=fake config_home="),
         "{events}"
+    );
+}
+
+#[test]
+fn a_reused_codex_slot_never_inherits_the_retired_seats_session_id() {
+    let probe = PathBuf::from(format!("/tmp/aesp-probe-sid.{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&probe);
+    let present = tmux_present(&probe);
+    let _ = std::fs::remove_dir_all(&probe);
+    if !present {
+        return;
+    }
+    let rig = Rig::new("sidreuse");
+    rig.enable_codex_profile();
+    let (code, _, stderr) = rig.run(
+        ae::cli::SPAWN,
+        &["first", "--using", "codexfake", "--", "first task"],
+    );
+    assert_eq!(code, Some(0), "{stderr}");
+    let first_token = rig.launch_id("spawned.0");
+    let first_id = "11111111-1111-4111-8111-111111111111";
+    rig.write_codex_rollout(first_id, &first_token);
+    let (code, stderr) = rig.register_sid("spawned.0", first_id);
+    assert_eq!(code, Some(0), "first handshake: {stderr}");
+    assert!(
+        rig.wait_for_sid("spawned.0", first_id, None),
+        "first capture never landed: {}",
+        rig.meta()
+    );
+
+    // Recreate the exact artifact an older core or interrupted detached
+    // capture could leave behind after the first id was committed.
+    assert!(
+        std::fs::write(rig.dir.join("codex.spawned.0.sid"), first_id).is_ok(),
+        "a stale first handshake"
+    );
+    assert!(rig.dir.join("codex.spawned.0.sid").is_file());
+    let (code, _, stderr) = rig.run(ae::cli::RETIRE, &["first"]);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(
+        !rig.dir.join("codex.spawned.0.sid").exists(),
+        "retire must remove the old handshake"
+    );
+
+    let (code, _, stderr) = rig.run(
+        ae::cli::SPAWN,
+        &["second", "--using", "codexfake", "--", "second task"],
+    );
+    assert_eq!(code, Some(0), "{stderr}");
+    let second_meta = rig.meta();
+    assert!(
+        second_meta.contains("seat.spawned.0=second"),
+        "{second_meta}"
+    );
+    let second_roster = ae::meta::Meta::parse(&second_meta);
+    let second_session = second_roster
+        .roster()
+        .iter()
+        .find(|entry| entry.slot == "spawned.0")
+        .and_then(|entry| entry.harness_session.as_deref());
+    assert!(
+        second_session.is_none_or(|id| id.is_empty() || id == "pending")
+            && !second_meta.contains(first_id),
+        "the new occupant inherited the retired id: {second_meta}"
+    );
+    let second_token = rig.launch_id("spawned.0");
+    assert_ne!(second_token, first_token);
+    let second_id = "22222222-2222-4222-8222-222222222222";
+    rig.write_codex_rollout(second_id, &second_token);
+    let (code, stderr) = rig.register_sid("spawned.0", second_id);
+    assert_eq!(code, Some(0), "second handshake: {stderr}");
+    assert!(
+        rig.wait_for_sid("spawned.0", second_id, Some(first_id)),
+        "second capture never landed: {}",
+        rig.meta()
     );
 }
 
