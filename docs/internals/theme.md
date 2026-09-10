@@ -149,22 +149,23 @@ name. A session keeps its place
 while its attention changes, so a click never moves the thing that was clicked;
 the current session uses the palette's selection ground, ink and weight, never
 extra leading or trailing blanks, so selection never changes row width. The
-orchestrator is rendered immediately before the version segment —
+orchestrator is rendered immediately before the menu button —
 the ONE place the seat is drawn — with its own verdict mark and a tmux
 `range=session` target for the canonical `orchestrator` session. When current,
 selection colours mark it in place; it never jumps into the fleet strip. Three
-spaces separate it from the fleet and one space separates it from `ae <version>`.
+spaces separate it from the fleet and one space separates it from the menu glyph.
 Each strip entry is a tmux `range=session` region, so
 ae's root left-click binding sends it through tmux's default
 `switch-client -t #{session_id}` action. Window ranges use
 `select-window -t #{window_id}`. The right-click binding opens the context menu
 for the clicked session's current window. The bindings are the server-global
 exception described above and are installed only on an ae-owned server.
-The bottom-right `ae <version>` segment is always the user range `ae`, and its
-`+N` overflow counter is the user range `ae-more`. Both are raised pills using
-the selection ground and ink; the version pill reads `☰ ae <version>` (`=` in
-ASCII mode). Either mouse button on either range, or `prefix a`, opens the same
-fleet picker. Every menu uses `display-menu -O`. On tmux 3.5 and newer, Down
+The bottom-right menu button is always the user range `ae`; it reads only `☰`
+(`=` in ASCII mode). Its `+N` overflow counter is the user range `ae-more`.
+Both inherit the line's dim style, without a raised background or bold text.
+Either mouse button on either range, or `prefix a`, opens the same fleet picker,
+whose title starts with the running core's `ae <version>`. Every menu uses
+`display-menu -O`. On tmux 3.5 and newer, Down
 opens it with `-M`, the trailing release leaves it open, and rows are
 mouse-selectable. On the supported 3.4 floor, status clicks open on release,
 menus are keyboard-driven, row shortcut keys choose, and `q` closes. Each row

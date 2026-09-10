@@ -65,6 +65,11 @@ fn menu_mouse(socket: &Path) -> bool {
         .menu_mouse()
 }
 
+/// Whether a capture contains the versioned fleet-picker title.
+fn picker_is_open(text: &str) -> bool {
+    text.contains(&format!("ae {} —", ae::VERSION))
+}
+
 /// Poll `read` until it answers something `settled` accepts, or fail saying
 /// what it last answered.
 fn wait_for(
@@ -269,7 +274,7 @@ fn the_menu_ae_builds_draws_on_a_real_server_and_its_rows_land_the_client() {
             let seen = wait_for(
                 "the menu",
                 || tmux(&socket, &watcher, &["capture-pane", "-p", "-t", "viewer"]).1,
-                |text| text.contains("ae fleet"),
+                picker_is_open,
             );
             // One row, one action: the session drops straight into its lead.
             assert!(tmux(&socket, &watcher, &["send-keys", "-t", "viewer", "1"]).0);
@@ -284,6 +289,13 @@ fn the_menu_ae_builds_draws_on_a_real_server_and_its_rows_land_the_client() {
     assert!(
         drawn.contains("100% of #{everything}"),
         "one hash and one percent, as measured: {drawn}"
+    );
+    assert!(
+        drawn.contains(&format!(
+            "ae {} — 1 running · 0 need you — prefix a",
+            ae::VERSION
+        )),
+        "the drawn picker title names its running core: {drawn}"
     );
     // …and where the row LANDED the client.
     let landed = wait_for(
@@ -406,7 +418,7 @@ fn stale_lead_row_lands_in_session(tag: &str, stale: StaleLead, focus_hook: bool
             wait_for(
                 "the stale-lead menu",
                 || tmux(&socket, &watcher, &["capture-pane", "-p", "-t", "viewer"]).1,
-                |text| text.contains("ae fleet"),
+                picker_is_open,
             );
             match stale {
                 StaleLead::Moved => {
@@ -565,7 +577,7 @@ fn launch_ae_session(
     clippy::too_many_lines,
     reason = "one real-click punctuation-path witness with same-pane client isolation"
 )]
-fn assert_version_picker_case(tag: &str, root_name: &str, config_name: &str) {
+fn assert_menu_picker_case(tag: &str, root_name: &str, config_name: &str) {
     let scratch = scratch(tag);
     if !tmux_present(&scratch) {
         let _ = fs::remove_dir_all(&scratch);
@@ -599,7 +611,7 @@ fn assert_version_picker_case(tag: &str, root_name: &str, config_name: &str) {
                 "-t",
                 "fleet-a",
                 "status-format[1]",
-                "#[range=user|ae]ae #{@ae_version}#[norange]",
+                "#[range=user|ae] ☰ #[norange]",
             ],
         )
         .0
@@ -638,7 +650,7 @@ fn assert_version_picker_case(tag: &str, root_name: &str, config_name: &str) {
 
     click_status(&socket, &scratch, "clicked-viewer", &clicked, 2, 2);
     let menu = wait_for(
-        "the fleet menu from a real version click",
+        "the fleet menu from a real menu-button click",
         || {
             tmux(
                 &socket,
@@ -647,7 +659,7 @@ fn assert_version_picker_case(tag: &str, root_name: &str, config_name: &str) {
             )
             .1
         },
-        |seen| seen.contains("ae fleet") && seen.contains("fleet-b"),
+        |seen| picker_is_open(seen) && seen.contains("fleet-b"),
     );
     assert!(
         menu.contains("fleet-a") && menu.contains("fleet-b"),
@@ -660,7 +672,7 @@ fn assert_version_picker_case(tag: &str, root_name: &str, config_name: &str) {
     )
     .1;
     assert!(
-        !other.contains("ae fleet"),
+        !picker_is_open(&other),
         "menu leaked to other client: {other}"
     );
     assert!(
@@ -681,28 +693,28 @@ fn assert_version_picker_case(tag: &str, root_name: &str, config_name: &str) {
             )
             .1
         },
-        |seen| !seen.contains("ae fleet"),
+        |seen| !picker_is_open(seen),
     );
 }
 
 /// Plain paths establish the control; comma paths exercise the actual binding's
 /// quoting while preserving the two-client proof.
 #[test]
-fn right_clicking_version_picker_survives_comma_paths() {
-    assert_version_picker_case("status-picker-control", "custom-state", "nondefault.config");
-    assert_version_picker_case("status-picker-comma", "state,comma", "config,comma");
+fn right_clicking_menu_picker_survives_comma_paths() {
+    assert_menu_picker_case("status-picker-control", "custom-state", "nondefault.config");
+    assert_menu_picker_case("status-picker-comma", "state,comma", "config,comma");
 }
 
 /// Plain paths establish the control; closing-brace paths exercise the actual
 /// binding's quoting while preserving the two-client proof.
 #[test]
-fn right_clicking_version_picker_survives_closing_brace_paths() {
-    assert_version_picker_case(
+fn right_clicking_menu_picker_survives_closing_brace_paths() {
+    assert_menu_picker_case(
         "status-picker-control-brace",
         "custom-state",
         "nondefault.config",
     );
-    assert_version_picker_case("status-picker-brace", "state}brace", "config}brace");
+    assert_menu_picker_case("status-picker-brace", "state}brace", "config}brace");
 }
 
 /// The mnemonic binding carries punctuation-heavy checkout namespace words
@@ -769,7 +781,7 @@ fn prefix_a_opens_the_picker_on_only_its_nested_client_with_punctuation_paths() 
             )
             .1
         },
-        |seen| seen.contains("ae fleet") && seen.contains("fleet-b"),
+        |seen| picker_is_open(seen) && seen.contains("fleet-b"),
     );
     assert!(menu.contains("prefix a"), "{menu}");
     assert!(menu.contains("feat  menubad"), "sanitized branch: {menu}");
@@ -796,7 +808,7 @@ fn prefix_a_opens_the_picker_on_only_its_nested_client_with_punctuation_paths() 
     )
     .1;
     assert!(
-        !other.contains("ae fleet"),
+        !picker_is_open(&other),
         "menu leaked to {untouched}: {other}"
     );
     assert!(
@@ -883,7 +895,7 @@ fn mouse_event(
 }
 
 /// This starts from the binding ae installed, feeds a real SGR mouse event to
-/// the version range, and observes the resulting menu on the exact client.
+/// the menu range, and observes the resulting menu on the exact client.
 /// A second client watches the same pane: `$TMUX_PANE` alone cannot distinguish
 /// them, which is the regression the explicit `--client` contract prevents.
 #[test]
@@ -891,7 +903,7 @@ fn mouse_event(
     clippy::too_many_lines,
     reason = "one end-to-end two-client status mouse story"
 )]
-fn clicking_the_version_range_opens_the_fleet_and_a_row_lands_on_the_lead() {
+fn clicking_the_menu_range_opens_the_fleet_and_a_row_lands_on_the_lead() {
     let scratch = scratch("status-picker");
     if !tmux_present(&scratch) {
         let _ = fs::remove_dir_all(&scratch);
@@ -917,7 +929,7 @@ fn clicking_the_version_range_opens_the_fleet_and_a_row_lands_on_the_lead() {
         launch_ae_session(&socket, &scratch, &root, &project, &config, session);
     }
 
-    // Put the real version range at a deterministic coordinate while keeping
+    // Put the real menu range at a deterministic coordinate while keeping
     // the launch-installed binding and the product's two-line status shape.
     let status_set = tmux(
         &socket,
@@ -927,7 +939,7 @@ fn clicking_the_version_range_opens_the_fleet_and_a_row_lands_on_the_lead() {
             "-t",
             "fleet-a",
             "status-format[1]",
-            "#[range=user|ae]ae #{@ae_version}#[norange]",
+            "#[range=user|ae] ☰ #[norange]",
         ],
     );
     assert!(status_set.0, "set deterministic status");
@@ -982,7 +994,7 @@ fn clicking_the_version_range_opens_the_fleet_and_a_row_lands_on_the_lead() {
     mouse_event(&socket, &scratch, "clicked-viewer", 0, 2, height, 'M');
     let menu = if menu_mouse {
         let menu = wait_for(
-            "the fleet menu from a real version press",
+            "the fleet menu from a real menu-button press",
             || {
                 tmux(
                     &socket,
@@ -991,7 +1003,7 @@ fn clicking_the_version_range_opens_the_fleet_and_a_row_lands_on_the_lead() {
                 )
                 .1
             },
-            |seen| seen.contains("ae fleet") && seen.contains("fleet-b"),
+            |seen| picker_is_open(seen) && seen.contains("fleet-b"),
         );
         mouse_event(&socket, &scratch, "clicked-viewer", 0, 2, height, 'm');
         menu
@@ -1004,12 +1016,12 @@ fn clicking_the_version_range_opens_the_fleet_and_a_row_lands_on_the_lead() {
         )
         .1;
         assert!(
-            !held.contains("ae fleet"),
+            !picker_is_open(&held),
             "tmux 3.4 dispatched the picker before release: {held}"
         );
         mouse_event(&socket, &scratch, "clicked-viewer", 0, 2, height, 'm');
         wait_for(
-            "the fleet menu from a real version release",
+            "the fleet menu from a real menu-button release",
             || {
                 tmux(
                     &socket,
@@ -1018,7 +1030,7 @@ fn clicking_the_version_range_opens_the_fleet_and_a_row_lands_on_the_lead() {
                 )
                 .1
             },
-            |seen| seen.contains("ae fleet") && seen.contains("fleet-b"),
+            |seen| picker_is_open(seen) && seen.contains("fleet-b"),
         )
     };
     assert!(
@@ -1033,7 +1045,7 @@ fn clicking_the_version_range_opens_the_fleet_and_a_row_lands_on_the_lead() {
     )
     .1;
     assert!(
-        menu.contains("ae fleet") && menu.contains("fleet-b"),
+        picker_is_open(&menu) && menu.contains("fleet-b"),
         "the menu closed after the status-button click: {menu}"
     );
     let other = tmux(
@@ -1043,7 +1055,7 @@ fn clicking_the_version_range_opens_the_fleet_and_a_row_lands_on_the_lead() {
     )
     .1;
     assert!(
-        !other.contains("ae fleet"),
+        !picker_is_open(&other),
         "menu leaked to other client: {other}"
     );
     let fleet_b_main = tmux(
@@ -1138,7 +1150,7 @@ fn clicking_the_version_range_opens_the_fleet_and_a_row_lands_on_the_lead() {
             )
             .1
         },
-        |seen| seen.contains("ae fleet") && seen.contains("fleet-b"),
+        |seen| picker_is_open(seen) && seen.contains("fleet-b"),
     );
     assert!(
         tmux(
@@ -1158,7 +1170,7 @@ fn clicking_the_version_range_opens_the_fleet_and_a_row_lands_on_the_lead() {
             )
             .1
         },
-        |seen| !seen.contains("ae fleet"),
+        |seen| !picker_is_open(seen),
     );
 
     // The same binding keeps the existing session-tab context menu. This is a
@@ -1261,7 +1273,7 @@ fn clicking_the_version_range_opens_the_fleet_and_a_row_lands_on_the_lead() {
                 "-t",
                 "fleet-a",
                 "status-format[1]",
-                "#[range=user|ae]ae #{@ae_version}#[norange]",
+                "#[range=user|ae] ☰ #[norange]",
             ],
         )
         .0

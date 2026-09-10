@@ -279,8 +279,9 @@ pub fn menu_for_client(
     assign_keys(&mut items);
     Menu {
         title: format!(
-            " ae fleet — {} running · {need_you} need you — prefix a ",
-            ranked.len()
+            " ae {} — {} running · {need_you} need you — prefix a ",
+            crate::VERSION,
+            ranked.len(),
         ),
         title_style: crate::theme::menu_title_style(palette),
         items,
@@ -592,7 +593,10 @@ mod tests {
         ];
         assert_eq!(
             menu(&sessions, &[], true, &Palette::DARCULA).title,
-            " ae fleet — 3 running · 2 need you — prefix a "
+            format!(
+                " ae {} — 3 running · 2 need you — prefix a ",
+                crate::VERSION
+            )
         );
     }
 

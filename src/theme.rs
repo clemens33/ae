@@ -500,15 +500,16 @@ pub const MAIN_PANE_OPTION: &str = "@ae_main_pane";
 /// SESSION — the ae core this session's watchdog runs on, as `ae <version>`.
 ///
 /// Published by the WATCHDOG rather than the launch: an upgrade restarts the
-/// watchdog on the new core, so the bar answers "did the upgrade reach this
-/// session" without a relaunch.
+/// watchdog on the new core. The built-in picker title consumes the running
+/// core's compile-time version instead; this fact stays available to `ae list`
+/// and custom status lines.
 pub const VERSION_OPTION: &str = "@ae_version";
 
 /// SESSION — the `$<n>` id of the fleet's orchestrator for custom consumers.
 ///
 /// Published by the WATCHDOG from this server's fleet listing. The
 /// orchestrator's own session and a fleet with no orchestrator leave it unset,
-/// because there is no remote orchestrator to name. The built-in version range
+/// because there is no remote orchestrator to name. The built-in menu range
 /// opens the fleet picker and no longer consumes this compatibility fact.
 pub const ORCHESTRATOR_ID_OPTION: &str = "@ae_orchestrator_id";
 
@@ -578,7 +579,7 @@ pub const WINDOW_STAMP_OPTION: &str = "@ae_theme";
 /// changes shape: the version leads both stamps, so a session or window carrying
 /// an older one is rewritten by the next watchdog cycle rather than left on the
 /// layout an older core wrote.
-pub const FORMAT_VERSION: &str = "12";
+pub const FORMAT_VERSION: &str = "13";
 
 /// What [`WINDOW_STAMP_OPTION`] is set to: the LOOK the window was dressed in,
 /// formats version first.
@@ -725,8 +726,8 @@ pub fn status_line_zero(palette: &Palette) -> String {
 // ---------------------------------------------------------------------------
 
 /// `status-format[1]`: every ae session on this server, then the orchestrator
-/// and core they run on — dim, at the far right, where a reader looks once
-/// after an upgrade and clicks to open the fleet picker.
+/// and a quiet menu glyph — dim, at the far right, where a reader clicks to
+/// open the fleet picker.
 #[must_use]
 pub fn status_line_one(look: &Look) -> String {
     let palette = &look.palette;
@@ -742,18 +743,10 @@ pub fn status_line_one(look: &Look) -> String {
     )
 }
 
-/// The bottom-right `ae <version>` segment: a named range whose mouse binding
-/// opens the fleet picker with either button.
+/// The bottom-right menu glyph: a named range whose mouse binding opens the
+/// fleet picker with either button. It inherits the line's dim style.
 fn version_segment(look: &Look) -> String {
-    format!(
-        "#[range=user|ae bg={selected} fg={ink} bold] {glyph} #{{{VERSION_OPTION}}} \
-         #[norange bg={base} fg={dim} nobold]",
-        selected = look.palette.selected,
-        ink = look.palette.selected_ink,
-        glyph = picker_glyph(look.icons),
-        base = look.palette.base,
-        dim = look.palette.dim,
-    )
+    format!("#[range=user|ae] {} #[norange]", picker_glyph(look.icons))
 }
 
 /// One session as the fleet strip carries it.
@@ -843,7 +836,7 @@ pub fn fleet_strip(look: &Look, rows: &[FleetRow], working_frame: Option<&Workin
     // wants nothing is the one the reader loses least by not seeing, and the
     // rows that remain keep their order. The current session is never shed —
     // a strip that cannot show you where you are is not a map. The
-    // orchestrator is rendered beside the version instead.
+    // orchestrator is rendered beside the menu button instead.
     let hidden = ordered.len().saturating_sub(STRIP_ROWS);
     if hidden > 0 {
         let mut shed: Vec<usize> = (0..ordered.len())
@@ -900,20 +893,12 @@ pub fn fleet_strip(look: &Look, rows: &[FleetRow], working_frame: Option<&Workin
         out
     });
     if hidden > 0 {
-        let _ = write!(
-            strip,
-            "#[range=user|ae-more bg={selected} fg={ink} bold] +{hidden} \
-             #[norange bg={base} fg={dim} nobold]",
-            selected = palette.selected,
-            ink = palette.selected_ink,
-            dim = palette.dim,
-            base = palette.base,
-        );
+        let _ = write!(strip, "#[range=user|ae-more]+{hidden} #[norange]");
     }
     strip
 }
 
-/// The orchestrator segment shown immediately before the version on line two.
+/// The orchestrator segment shown immediately before the menu glyph on line two.
 ///
 /// It keeps the same verdict glyph and motion rules as a fleet row, but is
 /// rendered separately so the fleet list can stay focused on other sessions.
@@ -1319,11 +1304,10 @@ mod tests {
     /// Every palette a session can be drawn in.
     const PALETTES: [Palette; 3] = [Palette::DARCULA, Palette::NEUTRAL, Palette::WARM];
 
-    /// Line two ends in the core version, so a reader can tell whether an
-    /// upgrade reached this session without leaving the bar. The conditional
-    /// keeps that same segment when no orchestrator target is published.
+    /// Line two ends in the quiet picker button. Its range stays present when
+    /// no orchestrator target is published.
     #[test]
-    fn line_one_carries_the_core_version_at_its_right_end() {
+    fn line_one_carries_the_menu_button_at_its_right_end() {
         for palette in PALETTES {
             let look = Look {
                 palette,
@@ -1334,11 +1318,12 @@ mod tests {
                 line.ends_with(&format!("{} ", super::version_segment(&look))),
                 "{line}"
             );
+            assert!(!line.contains(super::VERSION_OPTION), "{line}");
         }
     }
 
     #[test]
-    fn line_one_places_optional_orchestrator_before_version() {
+    fn line_one_places_optional_orchestrator_before_menu_button() {
         let line = status_line_one(&Look::DEFAULT);
         let marker = format!(
             "#{{?#{{{}}},  #{{{}}} ,}}",
@@ -1348,8 +1333,8 @@ mod tests {
         assert!(line.contains(&marker), "{line}");
         assert!(
             line.find(&marker).unwrap_or(usize::MAX)
-                < line.find(super::VERSION_OPTION).unwrap_or(usize::MAX),
-            "orchestrator conditional must precede version: {line}"
+                < line.find("#[range=user|ae]").unwrap_or(usize::MAX),
+            "orchestrator conditional must precede menu button: {line}"
         );
     }
 
@@ -1807,16 +1792,19 @@ mod tests {
     }
 
     #[test]
-    fn version_and_overflow_have_stable_user_ranges() {
+    fn menu_button_and_overflow_are_quiet_stable_user_ranges() {
         assert_eq!(
             super::version_segment(&Look::DEFAULT),
-            "#[range=user|ae bg=#214283 fg=#A9B7C6 bold] ☰ #{@ae_version} #[norange bg=#313335 fg=#808080 nobold]"
+            "#[range=user|ae] ☰ #[norange]"
         );
         let ascii = Look {
             icons: false,
             ..Look::DEFAULT
         };
-        assert!(super::version_segment(&ascii).contains("] = #{@ae_version} "));
+        assert_eq!(
+            super::version_segment(&ascii),
+            "#[range=user|ae] = #[norange]"
+        );
         let rows: Vec<FleetRow> = (0..=super::STRIP_ROWS)
             .map(|index| FleetRow {
                 name: format!("s{index}"),
@@ -1827,7 +1815,7 @@ mod tests {
             .collect();
         let strip = fleet_strip(&Look::DEFAULT, &rows, None);
         assert!(
-            strip.contains("#[range=user|ae-more bg=#214283 fg=#A9B7C6 bold] +1 "),
+            strip.ends_with("#[range=user|ae-more]+1 #[norange]"),
             "{strip}"
         );
         assert_eq!(strip.matches("range=user|ae-more").count(), 1, "{strip}");
@@ -1925,7 +1913,7 @@ mod tests {
         let strip = fleet_strip(&Look::DEFAULT, &rows, None);
         assert!(
             !strip.contains("orchestrator"),
-            "orchestrator belongs beside the version: {strip}"
+            "orchestrator belongs beside the menu button: {strip}"
         );
         assert!(
             strip.contains("+2"),
@@ -1936,7 +1924,7 @@ mod tests {
     #[test]
     fn terminal_titles_are_part_of_the_drawn_layout() {
         let options = super::layout_options(&Look::DEFAULT);
-        assert_eq!(super::FORMAT_VERSION, "12");
+        assert_eq!(super::FORMAT_VERSION, "13");
         assert_eq!(
             options
                 .iter()

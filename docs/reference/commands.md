@@ -25,7 +25,7 @@ ae orchestrator        Start or reattach the orchestrator seat: a local session 
                        orchestrator, pinned first in the fleet strip
 ae orchestrator --popup
                        Pick a live session in a tmux menu; its lead pane gets the
-                       client. Opened from status-bar ae and +N. Needs tmux >= 3.4
+                       client. Opened from status-bar ☰/= and +N. Needs tmux >= 3.4
 ae doctor              Check local environment and ae config
 ae doctor --refresh [name|all]
                        Regenerate helper scripts and workspace.md in existing sessions
@@ -429,8 +429,9 @@ still overlay. Add `--no-attach` to build or reattach without attaching; ae prin
 attach command and exits successfully. The seat keeps its fixed launch shape, so `--dir` remains
 an ordinary-session flag. The seat is pinned first in the status
 bar's fleet strip, marked `◆`. The `--popup` form is the picker, next. From any
-ae session on the same tmux server, click the `☰ ae <version>` or `+N` pill at
-the bottom-right of the status bar, or press `prefix a`, to open it.
+ae session on the same tmux server, click the quiet `☰` menu glyph (`=` with
+icons off) or `+N` overflow count at the bottom-right of the status bar, or
+press `prefix a`, to open it.
 
 ## `ae orchestrator --popup`
 
@@ -440,16 +441,17 @@ rows come only from one live `list-sessions` call on the calling server; one
 their sessions. It never builds [`ae list`](#ae-list)'s durable inventory,
 walks session directories, reads events or probes git.
 
-Left- or right-click the version or overflow pill, or press `prefix a`, to open
-it. The picker shows at most 30 attention-ordered sessions. The title counts
-running sessions and those whose mark is needs-you or dead. An invocation
+Left- or right-click the menu glyph or overflow count, or press `prefix a`, to
+open it. The picker shows at most 30 attention-ordered sessions. Its title starts
+with the running core's `ae <version>`, then counts sessions and those whose mark
+is needs-you or dead. An invocation
 names its tmux client explicitly through the menu and every action, so another
 client watching the same pane is untouched; if that client vanishes, the
 picker refuses instead of choosing another.
 
 ```text
 $ ae orchestrator --popup
-┌─ ae fleet — 3 running · 1 need you — prefix a ──────────────────────────┐
+┌─ ae <version> — 3 running · 1 need you — prefix a ──────────────────────┐
 │ gamma              ✖ dead      fix/menu       restore its lead pane (1) │
 │ beta               ◌ stale     main           port the watchdog     (2) │
 │ alpha              · idle      picker         ship the S0 picker    (3) │

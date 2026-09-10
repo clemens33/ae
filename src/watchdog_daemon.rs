@@ -1373,7 +1373,7 @@ impl MotionState {
     }
 }
 
-/// The fleet target the version segment may jump to: absent for this session
+/// The fleet target the orchestrator segment may jump to: absent for this session
 /// when it is itself the orchestrator, or when the fleet has none. The exact
 /// canonical seat name is intentional: a renamed seat loses the click target.
 fn orchestrator_id_for<'a>(sessions: &'a [tmux::FleetSession], session: &str) -> Option<&'a str> {
