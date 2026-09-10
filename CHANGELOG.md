@@ -1,6 +1,13 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.45] - 2026-09-10
+
+### Other
+
+- Show agents in the fleet picker
+- Document the picker client requirement
+- Carry picker freshness in agent facts
 ## [v2026.9.44] - 2026-09-10
 
 ### Bug Fixes
