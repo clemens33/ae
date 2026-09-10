@@ -258,6 +258,19 @@ impl Mark {
             .unwrap_or(Self::Idle)
     }
 
+    /// The stable state word shown beside this mark in the fleet picker.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Dead => "dead",
+            Self::NeedsYou => "needs-you",
+            Self::Working => "working",
+            Self::Done => "done",
+            Self::Stale => "stale",
+            Self::Idle => "idle",
+        }
+    }
+
     /// The mark an attention [`Reason`] shows as.
     ///
     /// `dead` and `stale` keep their own marks; the rest are a human's turn.
@@ -278,6 +291,12 @@ impl Mark {
             }
         }
     }
+}
+
+/// The fleet-picker button mark in the configured glyph vocabulary.
+#[must_use]
+pub const fn picker_glyph(icons: bool) -> &'static str {
+    if icons { "☰" } else { "=" }
 }
 
 /// The working mark and its eased breathing colour at one motion tick.
@@ -552,7 +571,7 @@ pub const WINDOW_STAMP_OPTION: &str = "@ae_theme";
 /// changes shape: the version leads both stamps, so a session or window carrying
 /// an older one is rewritten by the next watchdog cycle rather than left on the
 /// layout an older core wrote.
-pub const FORMAT_VERSION: &str = "11";
+pub const FORMAT_VERSION: &str = "12";
 
 /// What [`WINDOW_STAMP_OPTION`] is set to: the LOOK the window was dressed in,
 /// formats version first.
@@ -702,7 +721,8 @@ pub fn status_line_zero(palette: &Palette) -> String {
 /// and core they run on — dim, at the far right, where a reader looks once
 /// after an upgrade and clicks to open the fleet picker.
 #[must_use]
-pub fn status_line_one(palette: &Palette) -> String {
+pub fn status_line_one(look: &Look) -> String {
+    let palette = &look.palette;
     // The conditional splits on format-text commas, so a comma-free option
     // value is safe; this follows the same contract as @ae_fleet_strip.
     format!(
@@ -711,14 +731,22 @@ pub fn status_line_one(palette: &Palette) -> String {
          #{{?#{{{ORCHESTRATOR_STRIP_OPTION}}},  #{{{ORCHESTRATOR_STRIP_OPTION}}} ,}}{version} ",
         dim = palette.dim,
         base = palette.base,
-        version = version_segment(),
+        version = version_segment(look),
     )
 }
 
 /// The bottom-right `ae <version>` segment: a named range whose mouse binding
 /// opens the fleet picker with either button.
-fn version_segment() -> String {
-    format!("#[range=user|ae]#{{{VERSION_OPTION}}}#[norange]")
+fn version_segment(look: &Look) -> String {
+    format!(
+        "#[range=user|ae bg={selected} fg={ink} bold] {glyph} #{{{VERSION_OPTION}}} \
+         #[norange bg={base} fg={dim} nobold]",
+        selected = look.palette.selected,
+        ink = look.palette.selected_ink,
+        glyph = picker_glyph(look.icons),
+        base = look.palette.base,
+        dim = look.palette.dim,
+    )
 }
 
 /// One session as the fleet strip carries it.
@@ -867,7 +895,10 @@ pub fn fleet_strip(look: &Look, rows: &[FleetRow], working_frame: Option<&Workin
     if hidden > 0 {
         let _ = write!(
             strip,
-            "#[range=user|ae-more fg={dim} bg={base}]+{hidden} #[norange]",
+            "#[range=user|ae-more bg={selected} fg={ink} bold] +{hidden} \
+             #[norange bg={base} fg={dim} nobold]",
+            selected = palette.selected,
+            ink = palette.selected_ink,
             dim = palette.dim,
             base = palette.base,
         );
@@ -1133,7 +1164,7 @@ pub fn layout_options(look: &Look) -> Vec<(String, String)> {
             "#{?#{@ae_attn_glyph},#{@ae_attn_glyph} ,}ae".to_owned(),
         ),
         ("status-format[0]".to_owned(), status_line_zero(palette)),
-        ("status-format[1]".to_owned(), status_line_one(palette)),
+        ("status-format[1]".to_owned(), status_line_one(look)),
     ]
 }
 
@@ -1287,9 +1318,13 @@ mod tests {
     #[test]
     fn line_one_carries_the_core_version_at_its_right_end() {
         for palette in PALETTES {
-            let line = status_line_one(&palette);
+            let look = Look {
+                palette,
+                ..Look::DEFAULT
+            };
+            let line = status_line_one(&look);
             assert!(
-                line.ends_with(&format!("{} ", super::version_segment())),
+                line.ends_with(&format!("{} ", super::version_segment(&look))),
                 "{line}"
             );
         }
@@ -1297,7 +1332,7 @@ mod tests {
 
     #[test]
     fn line_one_places_optional_orchestrator_before_version() {
-        let line = status_line_one(&Palette::DARCULA);
+        let line = status_line_one(&Look::DEFAULT);
         let marker = format!(
             "#{{?#{{{}}},  #{{{}}} ,}}",
             super::ORCHESTRATOR_STRIP_OPTION,
@@ -1344,7 +1379,10 @@ mod tests {
     fn every_format() -> Vec<String> {
         let mut out = vec![
             status_line_zero(&Palette::NEUTRAL),
-            status_line_one(&Palette::NEUTRAL),
+            status_line_one(&Look {
+                palette: Palette::NEUTRAL,
+                ..Look::DEFAULT
+            }),
             pane_border_format(),
             super::pane_active_border_style(&Palette::NEUTRAL),
             fleet_strip(
@@ -1478,7 +1516,10 @@ mod tests {
             attention_style(&darcula, Mark::NeedsYou),
             mark_style(&darcula, Mark::NeedsYou),
             super::status_line_zero(&darcula),
-            super::status_line_one(&darcula),
+            super::status_line_one(&Look {
+                palette: darcula,
+                ..Look::DEFAULT
+            }),
         ] {
             assert!(!drawn.contains(darcula.title), "{drawn}");
         }
@@ -1761,9 +1802,14 @@ mod tests {
     #[test]
     fn version_and_overflow_have_stable_user_ranges() {
         assert_eq!(
-            super::version_segment(),
-            "#[range=user|ae]#{@ae_version}#[norange]"
+            super::version_segment(&Look::DEFAULT),
+            "#[range=user|ae bg=#214283 fg=#A9B7C6 bold] ☰ #{@ae_version} #[norange bg=#313335 fg=#808080 nobold]"
         );
+        let ascii = Look {
+            icons: false,
+            ..Look::DEFAULT
+        };
+        assert!(super::version_segment(&ascii).contains("] = #{@ae_version} "));
         let rows: Vec<FleetRow> = (0..=super::STRIP_ROWS)
             .map(|index| FleetRow {
                 name: format!("s{index}"),
@@ -1773,7 +1819,10 @@ mod tests {
             })
             .collect();
         let strip = fleet_strip(&Look::DEFAULT, &rows, None);
-        assert!(strip.contains("#[range=user|ae-more "), "{strip}");
+        assert!(
+            strip.contains("#[range=user|ae-more bg=#214283 fg=#A9B7C6 bold] +1 "),
+            "{strip}"
+        );
         assert_eq!(strip.matches("range=user|ae-more").count(), 1, "{strip}");
     }
 
@@ -1880,7 +1929,7 @@ mod tests {
     #[test]
     fn terminal_titles_are_part_of_the_drawn_layout() {
         let options = super::layout_options(&Look::DEFAULT);
-        assert_eq!(super::FORMAT_VERSION, "11");
+        assert_eq!(super::FORMAT_VERSION, "12");
         assert_eq!(
             options
                 .iter()
@@ -2070,6 +2119,10 @@ mod tests {
         assert_eq!(Mark::from_rank(""), Mark::Idle);
         assert_eq!(Mark::from_rank("nonsense"), Mark::Idle);
         assert_eq!(Mark::from_rank("99"), Mark::Idle);
+        assert_eq!(
+            Mark::BY_URGENCY.map(Mark::word),
+            ["dead", "needs-you", "stale", "working", "done", "idle"]
+        );
     }
 
     /// The window stamp is a VALUE, not a presence: a window dressed by an

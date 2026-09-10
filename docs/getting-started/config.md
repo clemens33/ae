@@ -169,9 +169,12 @@ Right-click a session tab in the fleet strip to open its context menu. **Flip
 lead/colead panes** swaps the clicked session's current window when it has exactly
 two panes and is not zoomed; otherwise ae leaves it alone and explains why. The
 tmux keys `prefix {` and `prefix }` provide the same pane swap directly.
-Click `ae <version>` or the `+N` overflow count with either mouse button to open
-the fleet picker. It shows up to 30 attention-ordered live sessions; choosing a
-row drops the clicking client into that session's lead pane.
+Click the raised `☰ ae <version>` pill (`=` with `icons = off`) or the matching
+`+N` overflow pill with either mouse button, or press `prefix a`, to open the
+fleet picker. Its title counts running sessions and those needing you; up to 30
+attention-ordered rows show name, mark, state, branch and goal. Choosing a row
+drops the invoking client into that session's lead pane. On tmux 3.4 use the
+row shortcut keys; tmux 3.5 and newer also supports mouse selection.
 
 The marks are the **watchdog's verdict**, never a claim about what an agent is "doing"
 (it cannot see that):

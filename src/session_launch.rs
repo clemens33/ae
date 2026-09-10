@@ -15,7 +15,7 @@ use crate::inventory::ServerId;
 use crate::launch::{self, PENDING};
 use crate::meta::{self, Meta, ServerSelector};
 use crate::session_tmux::{
-    Op, Split, TmuxArgv, argv, interpret_pane_id, mouse_status_bindings_argv, picker_launcher,
+    Op, Split, TmuxArgv, argv, interpret_pane_id, picker_launcher, status_bindings_argv,
 };
 use crate::state::{EXIT_FAILED, EXIT_USAGE};
 use crate::tool::ToolKind;
@@ -1360,7 +1360,7 @@ fn launch(
             return Ok(EXIT_FAILED);
         };
         if let Some(core) = env.core.clone().or_else(crate::shape::resolved_exe) {
-            assert_mouse_status_bindings(&server, &env, &core);
+            assert_status_bindings(&server, &env, &core);
         }
         let layout = meta_value(&dir, "layout").unwrap_or_default();
         let main_pane = meta_value(&dir, "main_pane").unwrap_or_default();
@@ -2274,7 +2274,7 @@ fn stamp_session(server: &ServerId, env: &Env, shape: &Session, main_pane: &str,
         ),
         &shape.look,
     );
-    assert_mouse_status_bindings(server, env, core);
+    assert_status_bindings(server, env, core);
     let _ = transport::run_tmux_op(&argv(server, &Op::SelectPane { pane: main_pane }));
 }
 
@@ -2347,13 +2347,14 @@ fn stamp_client_session_hook(
     }
 }
 
-fn assert_mouse_status_bindings(server: &ServerId, env: &Env, core: &Path) {
+fn assert_status_bindings(server: &ServerId, env: &Env, core: &Path) {
     let config = env
         .global
         .clone()
         .unwrap_or_else(|| env.home.join("config"));
     let launcher = picker_launcher(crate::shape::current(), core, &env.home, &config, server);
-    for binding in mouse_status_bindings_argv(server, &launcher) {
+    let menu_mouse = transport::observe_tmux_floor(server).menu_mouse();
+    for binding in status_bindings_argv(server, &launcher, menu_mouse) {
         let _ = transport::run_tmux_op(&binding);
     }
 }

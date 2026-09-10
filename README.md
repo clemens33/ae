@@ -129,12 +129,8 @@ Its privileged `relay <session[:agent]> <text…>` helper delivers only explicit
 human instructions as bare text and audits them in the orchestrator session.
 It never stops or ends its own session (the seat named `orchestrator`) and never all sessions: on such a request it runs nothing and answers that the seat cannot stop or end itself; the human does that from a terminal.
 
-Bind the picker to a key (ae needs tmux 3.4+); `switch-client -l` (prefix + `L`) is the
-way back:
-
-```tmux
-bind o run-shell "ae orchestrator --popup"
-```
+On an ae-owned server, `prefix a` opens the picker; `switch-client -l`
+(`prefix L`) is the way back. ae needs tmux 3.4+.
 
 `ae status` was retired. `ae list` answers the same question from one implementation, and
 inside a session the `peek` helper shows one agent's recent output.

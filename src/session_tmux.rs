@@ -21,8 +21,8 @@ use crate::inventory::ServerId;
 use crate::meta::Selector;
 use crate::tmux::{
     MOUSE_DOWN_STATUS_MENU_ACTION, MOUSE_STATUS_PICKER, MOUSE_STATUS_SESSION, MOUSE_STATUS_WINDOW,
-    mouse_dispatch_literal, server_args, session_target, status_picker_command,
-    tmux_current_format_double_quote,
+    hotkey_picker_shell, mouse_dispatch_literal, server_args, session_target,
+    status_picker_command, tmux_current_format_double_quote,
 };
 
 /// The `-P -F` format every pane-creating call here prints.
@@ -152,7 +152,9 @@ pub(crate) enum Op<'a> {
     /// window-range click selects the window without firing the session hook.
     BindMouseDownStatus { picker: &'a str },
     /// Bind ae's root `MouseDown3Status` context menu on an ae-owned server.
-    BindMouseDownStatusMenu { picker: &'a str },
+    BindMouseDownStatusMenu { picker: &'a str, menu_mouse: bool },
+    /// Bind the fleet picker to mnemonic `prefix a` on an ae-owned server.
+    BindPickerHotkey { shell: &'a str },
     /// `rename-session -t <target> <name>` — `ae rename`'s tmux half.
     RenameSession { target: &'a str, name: &'a str },
     /// `set-window-option -t <target> <name> <value>` — the monitor window's
@@ -325,9 +327,14 @@ pub(crate) fn argv(server: &ServerId, op: &Op<'_>) -> TmuxArgv {
             args.extend(["bind-key", "-T", "root", "MouseDown1Status"].map(ToOwned::to_owned));
             args.extend(left_click_dispatch(picker));
         }
-        Op::BindMouseDownStatusMenu { picker } => {
+        Op::BindMouseDownStatusMenu { picker, menu_mouse } => {
             args.extend(["bind-key", "-T", "root", "MouseDown3Status"].map(ToOwned::to_owned));
-            args.extend(right_click_dispatch(server, picker));
+            args.extend(right_click_dispatch(server, picker, menu_mouse));
+        }
+        Op::BindPickerHotkey { shell } => {
+            args.extend(
+                ["bind-key", "-T", "prefix", "a", "run-shell", "-b", shell].map(ToOwned::to_owned),
+            );
         }
         Op::RenameSession { target, name } => {
             args.extend(["rename-session", "-t"].map(ToOwned::to_owned));
@@ -380,14 +387,18 @@ fn fixed_mouse_shell_word(word: &str) -> String {
     mouse_dispatch_literal(&crate::launch::shell_quote(word))
 }
 
-fn flip_menu_command(server: &ServerId, action: &str) -> String {
+fn flip_menu_command(server: &ServerId, action: &str, menu_mouse: bool) -> String {
     let mut shell_words = vec![fixed_mouse_shell_word("tmux")];
     shell_words.extend(
         server_args(server)
             .iter()
             .map(|word| fixed_mouse_shell_word(word)),
     );
-    shell_words.extend(["display-menu", "-c"].map(fixed_mouse_shell_word));
+    shell_words.push(fixed_mouse_shell_word("display-menu"));
+    if menu_mouse {
+        shell_words.push(fixed_mouse_shell_word("-M"));
+    }
+    shell_words.extend(["-O", "-c"].map(fixed_mouse_shell_word));
     shell_words.push("#{q:client_name}".to_owned());
     shell_words.push(fixed_mouse_shell_word("-t"));
     shell_words.push(crate::launch::shell_quote("#{pane_id}"));
@@ -402,8 +413,8 @@ fn flip_menu_command(server: &ServerId, action: &str) -> String {
     )
 }
 
-fn right_click_dispatch(server: &ServerId, picker: &str) -> Vec<String> {
-    let flip = flip_menu_command(server, MOUSE_DOWN_STATUS_MENU_ACTION);
+fn right_click_dispatch(server: &ServerId, picker: &str, menu_mouse: bool) -> Vec<String> {
+    let flip = flip_menu_command(server, MOUSE_DOWN_STATUS_MENU_ACTION, menu_mouse);
     let session = format_if(MOUSE_STATUS_SESSION, &flip, "");
     mouse_dispatch(format_if(MOUSE_STATUS_PICKER, picker, &session))
 }
@@ -445,14 +456,26 @@ pub(crate) fn picker_launcher(
 
 /// The server-global status bindings for a positively selected, ae-owned
 /// server. Ambient means the user's own root table, which launch never writes.
-pub(crate) fn mouse_status_bindings_argv(server: &ServerId, launcher: &[String]) -> Vec<TmuxArgv> {
+pub(crate) fn status_bindings_argv(
+    server: &ServerId,
+    launcher: &[String],
+    menu_mouse: bool,
+) -> Vec<TmuxArgv> {
     match server {
         ServerId::Ambient => Vec::new(),
         ServerId::Selected(_) => {
             let picker = status_picker_command(launcher);
+            let hotkey = hotkey_picker_shell(launcher);
             vec![
                 argv(server, &Op::BindMouseDownStatus { picker: &picker }),
-                argv(server, &Op::BindMouseDownStatusMenu { picker: &picker }),
+                argv(
+                    server,
+                    &Op::BindMouseDownStatusMenu {
+                        picker: &picker,
+                        menu_mouse,
+                    },
+                ),
+                argv(server, &Op::BindPickerHotkey { shell: &hotkey }),
             ]
         }
     }
@@ -614,10 +637,14 @@ mod tests {
     }
 
     #[test]
-    fn the_status_mouse_bindings_are_only_minted_for_an_ae_owned_server() {
+    fn the_status_bindings_are_only_minted_for_an_ae_owned_server() {
         let server = ServerId::Selected(crate::meta::Selector::Name("ae".to_owned()));
-        let bindings = mouse_status_bindings_argv(&server, &["/opt/ae".to_owned()]);
-        assert_eq!(bindings.len(), 2, "an owned server gets both root bindings");
+        let bindings = status_bindings_argv(&server, &["/opt/ae".to_owned()], true);
+        assert_eq!(
+            bindings.len(),
+            3,
+            "an owned server gets all status bindings"
+        );
         assert_eq!(
             bindings[0].as_args(),
             [
@@ -653,11 +680,43 @@ mod tests {
                 "-C",
                 "-t",
                 "{mouse}",
-                "#{?#{||:#{==:#{mouse_status_range},ae},#{==:#{mouse_status_range},ae-more}},run-shell -b \"'/opt/ae' 'orchestrator' '--popup' '--client' #{q:client_name}\",#{?#{==:#{mouse_status_range},session},run-shell -b \"'tmux' '-L' 'ae' 'display-menu' '-c' #{q:client_name} '-t' '#{pane_id}' '-T' '#{session_name}' '-x' 'M' '-y' 'S' 'Flip lead/colead panes' 'f' 'if-shell -F '\\\\''########{&&:########{==:########{window_panes#}#,2#}#,########{==:########{window_zoomed_flag#}#,0#}#}'\\\\'' '\\\\''swap-pane -d -s \\\"{top-left#}\\\" -t \\\"{bottom-right#}\\\"'\\\\'' '\\\\''display-message \\\"flip needs an unzoomed two-pane window\\\"'\\\\'''\",}}"
+                "#{?#{||:#{==:#{mouse_status_range},ae},#{==:#{mouse_status_range},ae-more}},run-shell -b \"'/opt/ae' 'orchestrator' '--popup' '--client' #{q:client_name}\",#{?#{==:#{mouse_status_range},session},run-shell -b \"'tmux' '-L' 'ae' 'display-menu' '-M' '-O' '-c' #{q:client_name} '-t' '#{pane_id}' '-T' '#{session_name}' '-x' 'M' '-y' 'S' 'Flip lead/colead panes' 'f' 'if-shell -F '\\\\''########{&&:########{==:########{window_panes#}#,2#}#,########{==:########{window_zoomed_flag#}#,0#}#}'\\\\'' '\\\\''swap-pane -d -s \\\"{top-left#}\\\" -t \\\"{bottom-right#}\\\"'\\\\'' '\\\\''display-message \\\"flip needs an unzoomed two-pane window\\\"'\\\\'''\",}}"
             ]
         );
+        assert_eq!(
+            bindings[2].as_args(),
+            [
+                "-L",
+                "ae",
+                "bind-key",
+                "-T",
+                "prefix",
+                "a",
+                "run-shell",
+                "-b",
+                "'/opt/ae' 'orchestrator' '--popup' '--client' #{q:client_name}",
+            ]
+        );
+        let keyboard = status_bindings_argv(&server, &["/opt/ae".to_owned()], false);
+        assert_eq!(keyboard.len(), 3);
         assert!(
-            mouse_status_bindings_argv(&ServerId::Ambient, &["/opt/ae".to_owned()]).is_empty(),
+            keyboard[1]
+                .as_args()
+                .iter()
+                .any(|word| word.contains("'display-menu' '-O' '-c'")),
+            "tmux 3.4 flip menu keeps release protection: {:?}",
+            keyboard[1].as_args()
+        );
+        assert!(
+            !keyboard[1]
+                .as_args()
+                .iter()
+                .any(|word| word.contains("'-M'")),
+            "tmux 3.4 has no display-menu -M: {:?}",
+            keyboard[1].as_args()
+        );
+        assert!(
+            status_bindings_argv(&ServerId::Ambient, &["/opt/ae".to_owned()], true).is_empty(),
             "an ambient server's root table belongs to its user"
         );
     }

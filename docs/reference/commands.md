@@ -429,8 +429,8 @@ still overlay. Add `--no-attach` to build or reattach without attaching; ae prin
 attach command and exits successfully. The seat keeps its fixed launch shape, so `--dir` remains
 an ordinary-session flag. The seat is pinned first in the status
 bar's fleet strip, marked `◆`. The `--popup` form is the picker, next. From any
-ae session on the same tmux server, click `ae <version>` or `+N` at the
-bottom-right of the status bar to open it.
+ae session on the same tmux server, click the `☰ ae <version>` or `+N` pill at
+the bottom-right of the status bar, or press `prefix a`, to open it.
 
 ## `ae orchestrator --popup`
 
@@ -440,26 +440,28 @@ rows come only from one live `list-sessions` call on the calling server; one
 their sessions. It never builds [`ae list`](#ae-list)'s durable inventory,
 walks session directories, reads events or probes git.
 
-Left- or right-click `ae <version>` or the fleet strip's `+N` counter to open
-it. The picker shows at most 30 attention-ordered sessions. A status click
+Left- or right-click the version or overflow pill, or press `prefix a`, to open
+it. The picker shows at most 30 attention-ordered sessions. The title counts
+running sessions and those whose mark is needs-you or dead. An invocation
 names its tmux client explicitly through the menu and every action, so another
 client watching the same pane is untouched; if that client vanishes, the
 picker refuses instead of choosing another.
 
 ```text
 $ ae orchestrator --popup
-┌─ ae fleet — 3 running ───────────────────────────────┐
-│ gamma              ✖ restore its lead pane       (1) │
-│ beta               ◌ port the watchdog           (2) │
-│ alpha              · ship the S0 picker          (3) │
-└──────────────────────────────────────────────────────┘
+┌─ ae fleet — 3 running · 1 need you — prefix a ──────────────────────────┐
+│ gamma              ✖ dead      fix/menu       restore its lead pane (1) │
+│ beta               ◌ stale     main           port the watchdog     (2) │
+│ alpha              · idle      picker         ship the S0 picker    (3) │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
 
 Sessions come in **attention rank order**, then tmux creation order, then name.
 Every live admitted ae session on the calling server stays eligible, including
-the current and orchestrator sessions. Each row carries the session name, its
-live mark and its bounded goal. At most 30 rows; a disabled note names how many
-were left out.
+the current and orchestrator sessions. Each row carries bounded name, mark,
+state word, branch and goal columns. The branch is sanitized in the tmux reader
+without changing its raw option, so delimiters and control bytes cannot split
+the record. At most 30 rows; a disabled note names how many were left out.
 
 Choosing a row first runs `switch-client` against the captured `$<id>`, so a
 rename after the menu opened cannot redirect it. When the one pane snapshot
@@ -479,15 +481,18 @@ lists only live sessions on the calling server. Sessions recorded on other
 servers are absent. If the live session listing fails, ae refuses instead of
 drawing a confident empty fleet.
 
-### Bind it
+### Hotkey and mouse
 
-```tmux
-bind o run-shell "ae orchestrator --popup"
-```
+On an ae-owned server, launch and upgrade bind `prefix a` and the two status
+mouse actions. All three capture `#{client_name}` and the picker uses
+`display-menu -c <name>` because two clients can watch the same pane. An
+ambient server keeps all of the user's bindings untouched.
 
-The manual keyboard binding uses tmux's invoking client. ae's built-in status
-binding is stricter: it captures `#{client_name}` and the picker uses
-`display-menu -c <name>` because two clients can watch the same pane.
+Every picker and context menu uses `display-menu -O`, so the release that
+follows a status press does not immediately close it. tmux 3.5 and newer also
+gets `-M`, allowing mouse row selection even though the background picker is
+not opened directly by a mouse binding. tmux 3.4 has no `-M`; its menu remains
+keyboard-driven with the displayed row keys, while `q` or Escape closes it.
 
 ### The tmux floor
 

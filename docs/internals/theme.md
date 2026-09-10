@@ -25,9 +25,10 @@ those lands on that session's *current* window and silently leaves the others on
 the global table — so ae stamps each window individually and never touches `-g`.
 The launch also stamps a session-scoped `client-session-changed` hook that
 selects the lead window and pane by pane id; it is a focus rule, not a look
-option, and is present when `theme = off` too. Two input rules cannot be
+option, and is present when `theme = off` too. Three input rules cannot be
 session-scoped: on a positively selected ae-owned server, launch replaces the
-root `MouseDown1Status` and `MouseDown3Status` bindings. Left-click sends a
+root `MouseDown1Status` and `MouseDown3Status` bindings and binds `prefix a`.
+Left-click sends a
 window range through `select-window -t =`, a session range through
 `switch-client -t =`, and both `ae` and `ae-more` to the fleet picker.
 Right-click also sends `ae` and `ae-more` to the picker, a session range to its
@@ -39,10 +40,10 @@ chosen, not frozen when the menu opens. A status click also carries
 `#{client_name}` into `ae orchestrator --popup --client`, and the menu and its
 actions retain it: two clients may watch one pane, so `$TMUX_PANE`
 cannot identify the one that clicked. Launch never
-writes these server-global bindings on an ambient server, where the root key
+writes these server-global bindings on an ambient server, where the key
 table belongs to the user. Every launch and upgrade of a running session on an
 owned server reasserts the same bindings, so the writes are idempotent and
-pre-release servers adopt them without a session rebuild. Both bindings remain
+pre-release servers adopt them without a session rebuild. All three bindings remain
 when `theme = off`; like the focus and resize hooks, they are input rules, not
 part of the look. An installed binding launches the public `~/.local/bin/ae`
 pointer so pruning an old core cannot strand it; a checkout binding carries its
@@ -161,8 +162,16 @@ ae's root `MouseDown1Status` binding sends it through tmux's default
 the clicked session's current window. The bindings are the server-global
 exception described above and are installed only on an ae-owned server.
 The bottom-right `ae <version>` segment is always the user range `ae`, and its
-`+N` overflow counter is the user range `ae-more`. Either mouse button on
-either range opens the same fleet picker. Choosing a row switches to its
+`+N` overflow counter is the user range `ae-more`. Both are raised pills using
+the selection ground and ink; the version pill reads `☰ ae <version>` (`=` in
+ASCII mode). Either mouse button on either range, or `prefix a`, opens the same
+fleet picker. Every menu uses `display-menu -O`, so releasing the status click
+cannot close the newly opened picker. On tmux 3.5 and newer `-M` also makes its
+rows mouse-selectable; the supported 3.4 floor uses row shortcut keys and `q`
+to close. Each row shows bounded name, mark, state word, branch and goal
+columns. The tmux reader strips pipes and control bytes from the branch field
+without changing the raw session option, preserving the record boundary.
+Choosing a row switches to its
 captured session id and then selects its published lead pane only while that
 pane still belongs to the chosen session. The orchestrator's own segment
 remains its separate session range.

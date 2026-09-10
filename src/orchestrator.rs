@@ -30,13 +30,13 @@ The bare seat also accepts `_launch`'s `--attach`, `--no-attach`,
 are picker usage errors.
 
 The menu lists this tmux server's running ae sessions in attention order, then
-creation order and name. Each row carries its live mark and goal. Choosing one
-switches this client to the captured session id and selects its lead pane when
-that pane still belongs there.
+creation order and name. Each row carries its live state, branch and goal.
+Choosing one switches this client to the captured session id and selects its
+lead pane when that pane still belongs there.
 
 Coming back is tmux's own: switch-client -l (prefix + L by default).
 
-Bind it:  bind o run-shell \"ae orchestrator --popup\"
+Open it with prefix a on an ae-owned server.
 
 Sessions on another tmux server are absent: tmux cannot switch a client across
 servers, and the picker reads only the calling server.
@@ -223,8 +223,14 @@ const KEYS: &str = "123456789abcdefghijklmnoprstuvwxyz";
 /// How wide a session name is drawn before it is cut.
 const NAME_WIDTH: usize = 18;
 
+/// How wide the state-word column is drawn.
+const STATE_WIDTH: usize = 9;
+
+/// How wide the branch column is drawn before it is cut.
+const BRANCH_WIDTH: usize = 14;
+
 /// How much of a goal survives into a row.
-const GOAL_WIDTH: usize = 30;
+const GOAL_WIDTH: usize = 36;
 
 /// The picker, as a menu model — the whole pure step.
 #[must_use]
@@ -247,6 +253,15 @@ pub fn menu_for_client(
     client: Option<&str>,
 ) -> Menu {
     let ranked = ranked_sessions(sessions);
+    let need_you = ranked
+        .iter()
+        .filter(|session| {
+            matches!(
+                Mark::from_rank(&session.rank.to_string()),
+                Mark::NeedsYou | Mark::Dead
+            )
+        })
+        .count();
     let shown = ranked.len().min(ROW_CAP);
     let mut items: Vec<MenuItem> = Vec::with_capacity(shown + 1);
     for session in ranked.iter().take(shown) {
@@ -263,7 +278,10 @@ pub fn menu_for_client(
     }
     assign_keys(&mut items);
     Menu {
-        title: format!(" ae fleet — {} running ", ranked.len()),
+        title: format!(
+            " ae fleet — {} running · {need_you} need you — prefix a ",
+            ranked.len()
+        ),
         title_style: crate::theme::menu_title_style(palette),
         items,
     }
@@ -299,10 +317,13 @@ fn session_item(
     } else {
         &session.glyph
     };
+    let mark = Mark::from_rank(&session.rank.to_string());
     let label = format!(
-        "{} {} {}",
+        "{} {} {} {} {}",
         pad(&clean(&session.name), NAME_WIDTH),
-        clean(glyph),
+        pad(&clean(glyph), 1),
+        pad(&clean(mark.word()), STATE_WIDTH),
+        pad(&clean(&session.branch), BRANCH_WIDTH),
         truncate(&clean(&session.goal), GOAL_WIDTH),
     );
     let pane_is_member = !session.main_pane.is_empty()
@@ -420,6 +441,7 @@ mod tests {
             rank,
             glyph: String::new(),
             main_pane: main_pane.to_owned(),
+            branch: String::new(),
             goal: String::new(),
         }
     }
@@ -519,7 +541,8 @@ mod tests {
 
     #[test]
     fn the_usage_names_the_binding_lead_destination_and_way_back() {
-        assert!(super::USAGE.contains("run-shell"));
+        assert!(super::USAGE.contains("prefix a"));
+        assert!(!super::USAGE.contains("Bind it:"));
         assert!(super::USAGE.contains("lead pane"));
         assert!(super::USAGE.contains("switch-client -l"));
     }
@@ -535,6 +558,41 @@ mod tests {
         assert_eq!(
             names(&menu(&sessions, &[], true, &Palette::DARCULA)),
             ["hot-old-a", "hot-old-b", "hot-new", "quiet-new"]
+        );
+    }
+
+    #[test]
+    fn rows_show_bounded_state_branch_and_goal_columns() {
+        let mut shown = session("hub", "$1", 4, "");
+        shown.glyph = "⚠".to_owned();
+        shown.branch = "feat/menu".to_owned();
+        shown.goal = "ship it".to_owned();
+        assert_eq!(
+            labels(&menu(&[shown], &[], true, &Palette::DARCULA)),
+            [concat!(
+                "hub               ",
+                " ",
+                "⚠",
+                " ",
+                "needs-you",
+                " ",
+                "feat/menu     ",
+                " ",
+                "ship it"
+            )]
+        );
+    }
+
+    #[test]
+    fn the_title_counts_only_sessions_that_need_a_human() {
+        let sessions = [
+            session("dead", "$1", 5, ""),
+            session("waiting", "$2", 4, ""),
+            session("working", "$3", 2, ""),
+        ];
+        assert_eq!(
+            menu(&sessions, &[], true, &Palette::DARCULA).title,
+            " ae fleet — 3 running · 2 need you — prefix a "
         );
     }
 
@@ -606,19 +664,21 @@ mod tests {
     #[test]
     fn goal_bytes_are_cleaned_then_escaped_at_the_menu_boundary() {
         let mut hostile = session("hub", "$1", 0, "");
-        hostile.glyph = "#[fg=red]\u{7}".to_owned();
+        hostile.glyph = "!\u{7}".to_owned();
+        hostile.branch = "bad\nbranch#[fg=blue]".to_owned();
         hostile.goal = "100% | #[bg=red] don't\nstop".to_owned();
         let drawn = menu(&[hostile], &[], true, &Palette::DARCULA);
         let label = &drawn.items[0].label;
         assert!(!label.chars().any(char::is_control), "{label:?}");
         assert!(!label.contains('\''), "{label:?}");
-        let words = display_menu_args(&ServerId::Ambient, &drawn);
+        assert!(label.contains("badbranch#[fg…"), "{label:?}");
+        let words = display_menu_args(&ServerId::Ambient, &drawn, true);
         let rendered = words.iter().find(|word| word.contains("hub")).expect("row");
         assert!(
             rendered.contains("100% | ##[bg=red] donʼtstop"),
             "{rendered}"
         );
-        assert!(rendered.contains("##[fg=red]"), "{rendered}");
+        assert!(rendered.contains("badbranch##[fg…"), "{rendered}");
     }
 
     #[test]
@@ -630,8 +690,12 @@ mod tests {
             &Palette::DARCULA,
             Some("client"),
         );
-        let words = display_menu_for_client_args(&ServerId::Ambient, Some("client"), &drawn);
-        assert_eq!(&words[..3], ["display-menu", "-c", "client"]);
+        let words = display_menu_for_client_args(&ServerId::Ambient, Some("client"), &drawn, true);
+        assert_eq!(&words[..5], ["display-menu", "-M", "-O", "-c", "client"]);
+        let keyboard =
+            display_menu_for_client_args(&ServerId::Ambient, Some("client"), &drawn, false);
+        assert_eq!(&keyboard[..4], ["display-menu", "-O", "-c", "client"]);
+        assert!(!keyboard.iter().any(|word| word == "-M"));
         assert_eq!(words.iter().filter(|word| word.as_str() == "--").count(), 1);
         assert!(
             words

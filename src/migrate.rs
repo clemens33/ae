@@ -661,7 +661,8 @@ fn restart_daemons(
         );
     let launcher =
         crate::session_tmux::picker_launcher(crate::shape::current(), core, root, &config, &server);
-    for binding in crate::session_tmux::mouse_status_bindings_argv(&server, &launcher) {
+    let menu_mouse = crate::transport::observe_tmux_floor(&server).menu_mouse();
+    for binding in crate::session_tmux::status_bindings_argv(&server, &launcher, menu_mouse) {
         let _ = crate::transport::run_tmux_op(&binding);
     }
     let main_pane = meta_bytes

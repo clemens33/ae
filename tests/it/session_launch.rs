@@ -2079,7 +2079,7 @@ fn a_spawned_seat_launches_its_preflighted_command_after_a_config_swap() {
     assert!(!launched.contains("spawned-swapped"), "{launched}");
 }
 
-fn assert_ae_mouse_bindings(rig: &Rig) {
+fn assert_ae_status_bindings(rig: &Rig) {
     let (_, keys) = rig.tmux(&["list-keys", "-T", "root"]);
     let click = keys
         .lines()
@@ -2133,6 +2133,21 @@ fn assert_ae_mouse_bindings(rig: &Rig) {
         2,
         "one left-click and one context-menu binding: {keys}"
     );
+    let (_, prefix) = rig.tmux(&["list-keys", "-T", "prefix"]);
+    let hotkey = prefix
+        .lines()
+        .find(|line| line.contains("-T prefix a "))
+        .unwrap_or_else(|| panic!("one prefix a binding: {prefix}"));
+    assert!(
+        hotkey.contains("run-shell -b")
+            && hotkey.contains("orchestrator")
+            && hotkey.contains("--popup")
+            && hotkey.contains("--client")
+            && hotkey.contains("#{q:client_name}")
+            && hotkey.contains(&format!("AE_HOME={}", rig.home.display()))
+            && hotkey.contains(&format!("CONFIG_FILE={}", rig.config.display())),
+        "the hotkey carries the checkout picker namespace: {hotkey}"
+    );
 }
 
 /// Every entry into a session returns the client to its lead pane. The hook is
@@ -2151,7 +2166,7 @@ fn the_session_focus_hook_follows_the_lead_through_resume_and_rename() {
     let (code, stdout, stderr) = rig.launch(&["--local", "lnfocus"]);
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
 
-    assert_ae_mouse_bindings(&rig);
+    assert_ae_status_bindings(&rig);
 
     let main_pane = || {
         rig.panes("lnfocus")
@@ -2242,7 +2257,7 @@ fn the_session_focus_hook_follows_the_lead_through_resume_and_rename() {
         "the live reattach branch: {stdout}"
     );
     assert_hook("lnfocus", &first_pane);
-    assert_ae_mouse_bindings(&rig);
+    assert_ae_status_bindings(&rig);
 
     assert!(
         rig.tmux(&["kill-session", "-t", "=lnfocus"]).0,
@@ -2264,7 +2279,7 @@ fn the_session_focus_hook_follows_the_lead_through_resume_and_rename() {
         resumed_pane,
         "the resume republishes its proven lead"
     );
-    assert_ae_mouse_bindings(&rig);
+    assert_ae_status_bindings(&rig);
 
     let renamed = ae()
         .env("HOME", &rig.scratch)
@@ -2324,6 +2339,18 @@ fn an_ambient_launch_does_not_replace_mouse_down_status() {
         .0,
         "the user owns the ambient context-menu binding"
     );
+    assert!(
+        ambient(&[
+            "bind-key",
+            "-T",
+            "prefix",
+            "a",
+            "display-message",
+            "ambient-hotkey"
+        ])
+        .0,
+        "the user owns the ambient prefix binding"
+    );
     let (code, stdout, stderr) = rig.launch_with_server("", "", &["--local", "lnfocus-ambient"]);
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
 
@@ -2344,6 +2371,15 @@ fn an_ambient_launch_does_not_replace_mouse_down_status() {
     assert!(
         menu.contains("display-message ambient-menu") && !menu.contains("display-menu"),
         "an ambient launch leaves the server-global menu binding alone: {menu}"
+    );
+    let (_, prefix) = ambient(&["list-keys", "-T", "prefix"]);
+    let hotkey = prefix
+        .lines()
+        .find(|line| line.contains("-T prefix a "))
+        .unwrap_or_default();
+    assert!(
+        hotkey.contains("display-message ambient-hotkey") && !hotkey.contains("orchestrator"),
+        "an ambient launch leaves the server-global hotkey alone: {hotkey}"
     );
 }
 
@@ -3123,7 +3159,8 @@ fn a_session_with_the_theme_off_keeps_the_users_own_look() {
     assert!(!session(ae::theme::ATTENTION_GLYPH_OPTION).is_empty());
     assert!(!session(ae::theme::PATHS_OPTION).is_empty());
 
-    // Input policy is not part of the look: both root bindings remain.
+    // Input policy is not part of the look: both root bindings and the picker
+    // hotkey remain.
     let (_, keys) = rig.tmux(&["list-keys", "-T", "root"]);
     assert!(
         keys.lines()
@@ -3136,6 +3173,15 @@ fn a_session_with_the_theme_off_keeps_the_users_own_look() {
                 && line.contains("Flip lead/colead panes")
         }),
         "theme off keeps the strip context menu: {keys}"
+    );
+    let (_, prefix) = rig.tmux(&["list-keys", "-T", "prefix"]);
+    let hotkey = prefix
+        .lines()
+        .find(|line| line.contains("-T prefix a "))
+        .unwrap_or_default();
+    assert!(
+        hotkey.contains("orchestrator --popup") || hotkey.contains("'orchestrator' '--popup'"),
+        "theme off keeps the fleet hotkey: {hotkey}"
     );
 }
 

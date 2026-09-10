@@ -23,6 +23,9 @@ use crate::meta::Selector;
 /// common Linux install needs nothing beyond `apt install tmux`.
 pub const REQUIRED: Version = Version { major: 3, minor: 4 };
 
+/// The first tmux whose detached `display-menu` can handle mouse events.
+const MENU_MOUSE: Version = Version { major: 3, minor: 5 };
+
 /// The exit a refused gate takes — "everything else", not a usage error.
 pub const EXIT_REFUSED: u8 = 1;
 
@@ -101,6 +104,23 @@ impl Probe {
         match self {
             Self::Server(found) | Self::Executable(found) => clears(found),
             // Nothing answered, so nothing was proven: the gate fails closed.
+            Self::Silent | Self::Unreachable => false,
+        }
+    }
+
+    /// Whether this tmux accepts `display-menu -M`.
+    ///
+    /// tmux 3.4 has `-O` but not `-M`, so its ae menus stay keyboard-driven.
+    /// The same parsed reading that owns the floor comparison owns this
+    /// capability; callers never infer it from version text themselves.
+    #[must_use]
+    pub fn menu_mouse(&self) -> bool {
+        match self {
+            Self::Server(found) | Self::Executable(found) => match read(found) {
+                Reading::Release(version) => version >= MENU_MOUSE,
+                Reading::Development => true,
+                Reading::Unreadable => false,
+            },
             Self::Silent | Self::Unreachable => false,
         }
     }
@@ -435,6 +455,12 @@ mod tests {
             !Probe::Silent.clears_floor(),
             "nothing answered, so nothing was proven"
         );
+
+        assert!(!Probe::Server("3.4".to_owned()).menu_mouse());
+        assert!(!Probe::Executable("3.4a".to_owned()).menu_mouse());
+        assert!(Probe::Server("3.5".to_owned()).menu_mouse());
+        assert!(Probe::Server("3.7b".to_owned()).menu_mouse());
+        assert!(Probe::Server("master".to_owned()).menu_mouse());
     }
 
     #[test]

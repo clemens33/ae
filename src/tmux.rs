@@ -942,6 +942,22 @@ pub(crate) fn status_picker_command(launcher: &[String]) -> String {
     format!("run-shell -b {}", tmux_current_format_double_quote(&shell))
 }
 
+/// The shell command run by the server-global `prefix a` picker binding.
+///
+/// Unlike [`status_picker_command`], this crosses no format conditional: the
+/// fixed words need one hash escape for `run-shell`, while commas and closing
+/// braces remain literal. The client format is deliberately left live.
+#[must_use]
+pub(crate) fn hotkey_picker_shell(launcher: &[String]) -> String {
+    let mut argv = launcher.to_vec();
+    argv.extend(["orchestrator", "--popup", "--client"].map(ToOwned::to_owned));
+    argv.iter()
+        .map(|word| menu_literal(&crate::launch::shell_quote(word)))
+        .chain(std::iter::once("#{q:client_name}".to_owned()))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Carry literal text through the mouse dispatch and its nested `run-shell`.
 ///
 /// Each hash crosses two format expansions. Commas and closing braces need one
@@ -1119,8 +1135,8 @@ const END_OF_FLAGS: &str = "--";
 
 /// The arguments that draw `menu` on `server`'s current client.
 #[must_use]
-pub fn display_menu_args(server: &ServerId, menu: &Menu) -> Vec<String> {
-    display_menu_for_client_args(server, None, menu)
+pub fn display_menu_args(server: &ServerId, menu: &Menu, menu_mouse: bool) -> Vec<String> {
+    display_menu_for_client_args(server, None, menu, menu_mouse)
 }
 
 /// The arguments that draw `menu` on one explicit client.
@@ -1134,9 +1150,14 @@ pub fn display_menu_for_client_args(
     server: &ServerId,
     client: Option<&str>,
     menu: &Menu,
+    menu_mouse: bool,
 ) -> Vec<String> {
     let mut args = server_args(server);
     args.push("display-menu".to_owned());
+    if menu_mouse {
+        args.push("-M".to_owned());
+    }
+    args.push("-O".to_owned());
     if let Some(client) = client {
         args.extend(["-c".to_owned(), client.to_owned()]);
     }
@@ -1538,10 +1559,10 @@ pub fn interpret_fleet_sessions(succeeded: bool, stdout: &str) -> Option<Vec<Fle
 /// navigation hints and may be absent. Keeping the goal last lets
 /// [`interpret_picker_sessions`] use `splitn`, so a literal pipe in operator
 /// text cannot shift a pane id into another field.
-pub const PICKER_SESSION_FORMAT: &str = "#{session_name} | #{session_id} | #{@ae_attn_rank} | #{@ae_attn_glyph} | #{@ae_main_pane} | #{@ae_goal_status}";
+pub const PICKER_SESSION_FORMAT: &str = "#{session_name} | #{session_id} | #{@ae_attn_rank} | #{@ae_attn_glyph} | #{@ae_main_pane} | #{s/#{l:[|[:cntrl:]]}//:@ae_branch_name} | #{@ae_goal_status}";
 
 /// How many fields [`PICKER_SESSION_FORMAT`] yields.
-const PICKER_SESSION_FIELDS: usize = 6;
+const PICKER_SESSION_FIELDS: usize = 7;
 
 /// One live ae session admitted into the picker.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1556,6 +1577,8 @@ pub struct PickerSession {
     pub glyph: String,
     /// The recorded lead pane hint; empty when an older session lacks it.
     pub main_pane: String,
+    /// The reader-sanitized branch fact; empty when unset or unavailable.
+    pub branch: String,
     /// The already-bounded status goal; empty when unset or unavailable.
     pub goal: String,
 }
@@ -1610,6 +1633,7 @@ pub fn interpret_picker_sessions(succeeded: bool, stdout: &str) -> Option<Vec<Pi
                     rank,
                     glyph: fields.next().unwrap_or_default().trim().to_owned(),
                     main_pane: fields.next().unwrap_or_default().trim().to_owned(),
+                    branch: fields.next().unwrap_or_default().trim().to_owned(),
                     goal: fields.next().unwrap_or_default().trim().to_owned(),
                 })
             })
@@ -2158,9 +2182,10 @@ pub fn rename_window_args(server: &ServerId, pane: &str, name: &str) -> Vec<Stri
 mod tests {
     use super::{
         CLIENT_FORMAT, Key, ObservedClient, ObservedPaneProbe, PANE_PROBE_FORMAT, Styling,
-        capture_screen_args, confirm_before_args, display_client_message_args, interpret_clients,
-        interpret_pane_probe, list_clients_args, load_buffer_args, pane_probe_args,
-        paste_buffer_args, run_shell_background_command, send_keys_args, status_picker_command,
+        capture_screen_args, confirm_before_args, display_client_message_args, hotkey_picker_shell,
+        interpret_clients, interpret_pane_probe, list_clients_args, load_buffer_args,
+        pane_probe_args, paste_buffer_args, run_shell_background_command, send_keys_args,
+        status_picker_command,
     };
 
     #[test]
@@ -2345,6 +2370,18 @@ mod tests {
                 "/tmp/ae}core".to_owned(),
             ]),
             r#"run-shell -b "'env' 'AE_HOME=/tmp/ae#####,state' '/tmp/ae#}core' 'orchestrator' '--popup' '--client' #{q:client_name}""#
+        );
+    }
+
+    #[test]
+    fn the_hotkey_picker_crosses_one_format_layer_without_conditional_escapes() {
+        assert_eq!(
+            hotkey_picker_shell(&[
+                "env".to_owned(),
+                "AE_HOME=/tmp/ae#,state".to_owned(),
+                "/tmp/ae}core".to_owned(),
+            ]),
+            "'env' 'AE_HOME=/tmp/ae##,state' '/tmp/ae}core' 'orchestrator' '--popup' '--client' #{q:client_name}"
         );
     }
 
@@ -2615,7 +2652,7 @@ mod tests {
         use super::{PickerSession, interpret_picker_sessions};
 
         let listing = concat!(
-            "good | $1 | 4 | ⚠ | %7 | ship | keep #[bg=red]",
+            "good | $1 | 4 | ⚠ | %7 | featuremenu | ship | keep #[bg=red]",
             "\u{7}",
             " now\n",
             "missing-display | $2 | 0\n",
@@ -2633,6 +2670,7 @@ mod tests {
                     rank: 4,
                     glyph: "⚠".to_owned(),
                     main_pane: "%7".to_owned(),
+                    branch: "featuremenu".to_owned(),
                     goal: "ship | keep #[bg=red]\u{7} now".to_owned(),
                 },
                 PickerSession {
@@ -2641,12 +2679,17 @@ mod tests {
                     rank: 0,
                     glyph: String::new(),
                     main_pane: String::new(),
+                    branch: String::new(),
                     goal: String::new(),
                 },
             ])
         );
         assert_eq!(interpret_picker_sessions(true, ""), Some(Vec::new()));
         assert!(interpret_picker_sessions(false, listing).is_none());
+        assert!(
+            super::PICKER_SESSION_FORMAT.contains("#{s/#{l:[|[:cntrl:]]}//:@ae_branch_name}"),
+            "the tmux reader strips delimiters and control bytes before splitting"
+        );
     }
 
     #[test]

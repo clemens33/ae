@@ -208,6 +208,7 @@ fn picker_argv(socket: &Path, staged: &Staged) -> Vec<String> {
         rank: 0,
         glyph: "·".to_owned(),
         main_pane: staged.ids[0].clone(),
+        branch: "menu-fix".to_owned(),
         goal: "100% of #{everything} | don't stop".to_owned(),
     }];
     let panes = staged
@@ -229,6 +230,7 @@ fn picker_argv(socket: &Path, staged: &Staged) -> Vec<String> {
         &ServerId::Selected(Selector::Socket(socket.to_path_buf())),
         Some(&staged.client),
         &menu,
+        true,
     )
 }
 
@@ -581,7 +583,6 @@ fn assert_version_picker_case(tag: &str, root_name: &str, config_name: &str) {
     for session in ["fleet-a", "fleet-b"] {
         launch_ae_session(&socket, &scratch, &root, &project, &config, session);
     }
-
     assert!(
         tmux(
             &socket,
@@ -697,6 +698,111 @@ fn right_clicking_version_picker_survives_closing_brace_paths() {
     assert_version_picker_case("status-picker-brace", "state}brace", "config}brace");
 }
 
+/// The mnemonic binding carries punctuation-heavy checkout namespace words
+/// through its one `run-shell` format layer and targets only the client that
+/// pressed it.
+#[test]
+fn prefix_a_opens_the_picker_on_only_its_nested_client_with_punctuation_paths() {
+    let scratch = scratch("hotkey-punctuation");
+    if !tmux_present(&scratch) {
+        let _ = fs::remove_dir_all(&scratch);
+        panic!("tmux is not runnable here, so the picker hotkey cannot be proven");
+    }
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let root = scratch.join("state,comma}brace");
+    let project = scratch.join("project");
+    let config = scratch.join("config,comma}brace");
+    assert!(fs::create_dir_all(&project).is_ok());
+    assert!(
+        fs::write(
+            &config,
+            "[profiles]\nidle = \"sleep 600\"\n\n[roster]\nlead = idle\n\n[workspace]\nmain = lead\nlayout = vertical\nwatchdog = false\n",
+        )
+        .is_ok()
+    );
+    for session in ["fleet-a", "fleet-b"] {
+        launch_ae_session(&socket, &scratch, &root, &project, &config, session);
+    }
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &[
+                "set-option",
+                "-t",
+                "fleet-b",
+                ae::tmux::BRANCH_OPTION,
+                "feat | menu\nbad",
+            ],
+        )
+        .0
+    );
+
+    let clicked = nested_client(&socket, &scratch, "fleet-a", "clicked-viewer");
+    let untouched = nested_client(&socket, &scratch, "fleet-a", "untouched-viewer");
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &["send-keys", "-t", "clicked-viewer", "C-b", "a"],
+        )
+        .0
+    );
+    let menu = wait_for(
+        "the fleet menu from prefix a",
+        || {
+            tmux(
+                &socket,
+                &scratch,
+                &["capture-pane", "-p", "-t", "clicked-viewer"],
+            )
+            .1
+        },
+        |seen| seen.contains("ae fleet") && seen.contains("fleet-b"),
+    );
+    assert!(menu.contains("prefix a"), "{menu}");
+    assert!(menu.contains("feat  menubad"), "sanitized branch: {menu}");
+    assert_eq!(
+        tmux(
+            &socket,
+            &scratch,
+            &[
+                "show-option",
+                "-qv",
+                "-t",
+                "fleet-b",
+                ae::tmux::BRANCH_OPTION,
+            ],
+        )
+        .1,
+        "feat | menu\nbad\n",
+        "the picker reader must not rewrite the raw branch fact"
+    );
+    let other = tmux(
+        &socket,
+        &scratch,
+        &["capture-pane", "-p", "-t", "untouched-viewer"],
+    )
+    .1;
+    assert!(
+        !other.contains("ae fleet"),
+        "menu leaked to {untouched}: {other}"
+    );
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &["send-keys", "-t", "clicked-viewer", "q"],
+        )
+        .0
+    );
+    assert!(!clicked.is_empty());
+}
+
 fn nested_client(socket: &Path, scratch: &Path, session: &str, viewer: &str) -> String {
     let attach = format!(
         "env -u TMUX tmux -S {} attach -t {session}",
@@ -749,13 +855,24 @@ fn click_status(socket: &Path, scratch: &Path, viewer: &str, client: &str, butto
         .trim()
         .parse::<usize>()
         .unwrap_or_else(|_| panic!("client height: {height_text:?}"));
-    for suffix in ['M', 'm'] {
-        let event = format!("\u{1b}[<{button};{x};{height}{suffix}");
-        assert!(
-            tmux(socket, scratch, &["send-keys", "-t", viewer, "-l", &event],).0,
-            "button {button} on {viewer} at {x},{height}"
-        );
-    }
+    mouse_event(socket, scratch, viewer, button, x, height, 'M');
+    mouse_event(socket, scratch, viewer, button, x, height, 'm');
+}
+
+fn mouse_event(
+    socket: &Path,
+    scratch: &Path,
+    viewer: &str,
+    button: u8,
+    x: usize,
+    y: usize,
+    suffix: char,
+) {
+    let event = format!("\u{1b}[<{button};{x};{y}{suffix}");
+    assert!(
+        tmux(socket, scratch, &["send-keys", "-t", viewer, "-l", &event],).0,
+        "button {button}{suffix} on {viewer} at {x},{y}"
+    );
 }
 
 /// This starts from the binding ae installed, feeds a real SGR mouse event to
@@ -840,11 +957,23 @@ fn clicking_the_version_range_opens_the_fleet_and_a_row_lands_on_the_lead() {
         "both clients must watch the SAME pane: {clients}"
     );
 
-    // A normal click on `ae` opens the picker, and choosing fleet-b drops only
-    // that exact client into fleet-b's published lead pane.
-    click_status(&socket, &scratch, "clicked-viewer", &clicked, 0, 2);
+    // Hold the press until the fast background picker is visible, then
+    // release. The menu must survive that release: this is the exact timing
+    // that made the status button look as though it existed only while held.
+    std::thread::sleep(Duration::from_millis(600));
+    let height_text = tmux(
+        &socket,
+        &scratch,
+        &["display-message", "-p", "-c", &clicked, "#{client_height}"],
+    )
+    .1;
+    let height = height_text
+        .trim()
+        .parse::<usize>()
+        .unwrap_or_else(|_| panic!("client height: {height_text:?}"));
+    mouse_event(&socket, &scratch, "clicked-viewer", 0, 2, height, 'M');
     let menu = wait_for(
-        "the fleet menu from a real version click",
+        "the fleet menu from a real version press",
         || {
             tmux(
                 &socket,
@@ -858,6 +987,18 @@ fn clicking_the_version_range_opens_the_fleet_and_a_row_lands_on_the_lead() {
     assert!(
         menu.contains("fleet-a") && menu.contains("fleet-b"),
         "{menu}"
+    );
+    mouse_event(&socket, &scratch, "clicked-viewer", 0, 2, height, 'm');
+    std::thread::sleep(Duration::from_secs(1));
+    let menu = tmux(
+        &socket,
+        &scratch,
+        &["capture-pane", "-p", "-t", "clicked-viewer"],
+    )
+    .1;
+    assert!(
+        menu.contains("ae fleet") && menu.contains("fleet-b"),
+        "the menu closed on the status-button release: {menu}"
     );
     let other = tmux(
         &socket,
@@ -884,14 +1025,18 @@ fn clicking_the_version_range_opens_the_fleet_and_a_row_lands_on_the_lead() {
     .trim()
     .to_owned();
     assert!(fleet_b_main.starts_with('%'), "{fleet_b_main:?}");
-    assert!(
-        tmux(
-            &socket,
-            &scratch,
-            &["send-keys", "-t", "clicked-viewer", "2"]
-        )
-        .0
-    );
+    let (row_y, row_x) = menu
+        .lines()
+        .enumerate()
+        .find_map(|(y, line)| line.find("fleet-b").map(|x| (y + 1, x + 1)))
+        .unwrap_or_else(|| panic!("fleet-b row coordinates: {menu}"));
+    // A real pointer moves onto the row before clicking it. In SGR mouse
+    // mode, 35 is motion with no button held; tmux uses it to highlight the
+    // choice that the following press selects.
+    mouse_event(&socket, &scratch, "clicked-viewer", 35, row_x, row_y, 'M');
+    mouse_event(&socket, &scratch, "clicked-viewer", 0, row_x, row_y, 'M');
+    std::thread::sleep(Duration::from_millis(100));
+    mouse_event(&socket, &scratch, "clicked-viewer", 0, row_x, row_y, 'm');
     let landed = wait_for(
         "the fleet-b lead jump",
         || {

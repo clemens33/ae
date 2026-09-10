@@ -640,11 +640,16 @@ pub fn observe_picker_panes(server: &ServerId) -> Option<Vec<tmux::PickerPane>> 
 
 /// Draw `menu` on `client`, or the server's current client when absent.
 #[must_use]
-pub fn display_menu(server: &ServerId, client: Option<&str>, menu: &tmux::Menu) -> bool {
+pub fn display_menu(
+    server: &ServerId,
+    client: Option<&str>,
+    menu: &tmux::Menu,
+    menu_mouse: bool,
+) -> bool {
     addressable(server)
         && run(
             PROGRAM,
-            &tmux::display_menu_for_client_args(server, client, menu),
+            &tmux::display_menu_for_client_args(server, client, menu, menu_mouse),
         )
         .0
 }

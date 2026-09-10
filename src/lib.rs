@@ -498,7 +498,7 @@ fn run_orchestrator(tail: &[String], err: &mut impl Write) -> Result<u8> {
     });
     let client = args.client.as_deref();
     let menu = orchestrator::menu_for_client(&sessions, &panes, look.icons, &look.palette, client);
-    if !transport::display_menu(&server, client, &menu) {
+    if !transport::display_menu(&server, client, &menu, probe.menu_mouse()) {
         if let Some(client) = client {
             writeln!(
                 err,

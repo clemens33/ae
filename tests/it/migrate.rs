@@ -1001,7 +1001,7 @@ fn assert_tmux_default_mouse_binding(socket: &Path, scratch: &Path) {
     );
 }
 
-fn assert_ae_mouse_bindings(socket: &Path, scratch: &Path) {
+fn assert_ae_status_bindings(socket: &Path, scratch: &Path) {
     let binding = mouse_down_status_binding(socket, scratch, "MouseDown1Status");
     assert!(
         binding.contains("#{||:#{==:#{mouse_status_range},ae}")
@@ -1035,6 +1035,19 @@ fn assert_ae_mouse_bindings(socket: &Path, scratch: &Path) {
     ] {
         assert!(menu.contains(needle), "missing {needle:?}: {menu}");
     }
+    let (prefix_ok, prefix) = tmux(socket, scratch, &["list-keys", "-T", "prefix"]);
+    let hotkey = prefix
+        .lines()
+        .find(|line| line.contains("-T prefix a "))
+        .unwrap_or_default();
+    assert!(
+        prefix_ok
+            && hotkey.contains("run-shell -b")
+            && hotkey.contains("orchestrator")
+            && hotkey.contains("--client")
+            && hotkey.contains("#{q:client_name}"),
+        "the upgrade reasserts prefix a (query ok={prefix_ok}): {hotkey}"
+    );
 }
 
 #[test]
@@ -1497,7 +1510,7 @@ fn a_running_sessions_daemons_are_restarted_on_the_new_core() {
 
     let notes = ae::migrate::onto(&root, &new_core, "2026.9.9").expect("the sweep");
 
-    assert_ae_mouse_bindings(&socket, &scratch);
+    assert_ae_status_bindings(&socket, &scratch);
     assert_lead_pair_policy(&socket, &scratch, &agent_pane, session);
     let (_, focus_hook) = tmux(
         &socket,
@@ -1691,13 +1704,18 @@ fn upgrading_a_running_session_without_an_orchestrator_rewrites_the_version_rang
             ],
         )
         .1;
-        if line.contains("#[range=user|ae]") && stamp.trim() == ae::theme::Look::DEFAULT.stamp() {
+        if line.contains("#[range=user|ae bg=#214283 fg=#A9B7C6 bold]")
+            && line.contains("☰ #{@ae_version}")
+            && stamp.trim() == ae::theme::Look::DEFAULT.stamp()
+        {
             break;
         }
         std::thread::sleep(Duration::from_millis(100));
     }
     assert!(
-        line.contains("#[range=user|ae]") && line.contains("#[norange]"),
+        line.contains("#[range=user|ae bg=#214283 fg=#A9B7C6 bold]")
+            && line.contains("☰ #{@ae_version}")
+            && line.contains("#[norange bg=#313335 fg=#808080 nobold]"),
         "running session kept its pre-upgrade version layout: {line:?}; stamp={stamp:?}; notes={notes:?}"
     );
     assert_eq!(
@@ -1705,6 +1723,7 @@ fn upgrading_a_running_session_without_an_orchestrator_rewrites_the_version_rang
         ae::theme::Look::DEFAULT.stamp(),
         "the new format stamp did not land"
     );
+    assert_ae_status_bindings(&socket, &scratch);
     assert_eq!(
         fs::read_link(dir.join("watchdog")).ok(),
         Some(actual_core.to_path_buf())
