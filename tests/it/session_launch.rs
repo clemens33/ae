@@ -2387,22 +2387,34 @@ fn an_ambient_launch_does_not_replace_mouse_down_status() {
     );
     let (listed, stock_keys) = ambient(&["list-keys", "-T", "root"]);
     assert!(listed, "the user's untouched root table: {stock_keys}");
-    for key in [
-        "MouseDown3Pane",
-        "M-MouseDown3Pane",
-        "MouseDown3StatusLeft",
-        "M-MouseDown3Status",
-        "M-MouseDown3StatusLeft",
-    ] {
-        let stock = stock_keys
-            .lines()
-            .find(|line| line.starts_with(&format!("bind-key  -T root {key} ")))
-            .unwrap_or_else(|| panic!("tmux's stock right-click binding for {key}: {stock_keys}"));
-        assert!(
-            stock.contains("display-menu"),
-            "tmux's stock right-click binding still opens its menu: {stock}"
-        );
-    }
+    let assert_stock_menus = |keys: &str| {
+        for key in [
+            "MouseDown3Pane",
+            "M-MouseDown3Pane",
+            "MouseDown3StatusLeft",
+            "M-MouseDown3Status",
+            "M-MouseDown3StatusLeft",
+        ] {
+            let stock = keys
+                .lines()
+                .find(|line| line.starts_with(&format!("bind-key  -T root {key} ")))
+                .unwrap_or_else(|| panic!("tmux's stock right-click binding for {key}: {keys}"));
+            assert!(
+                stock.contains("display-menu"),
+                "tmux's stock right-click binding still opens its menu: {stock}"
+            );
+        }
+    };
+    assert_stock_menus(&stock_keys);
+    let (code, stdout, stderr) =
+        rig.launch_with_server("", "", &["--local", "lnfocus-ambient-stock"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let (listed, post_launch_stock_keys) = ambient(&["list-keys", "-T", "root"]);
+    assert!(
+        listed,
+        "the ambient root table after launch: {post_launch_stock_keys}"
+    );
+    assert_stock_menus(&post_launch_stock_keys);
     assert!(
         ambient(&[
             "bind-key",
