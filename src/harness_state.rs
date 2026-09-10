@@ -427,4 +427,24 @@ mod tests {
             assert_eq!(decode_idle(malformed), None, "{malformed}");
         }
     }
+
+    #[test]
+    fn every_intended_valid_observed_fuzz_seed_decodes_without_normalization() {
+        for (name, seed) in [
+            (
+                "current-idle",
+                include_str!("../fuzz/seeds/harness_observed/current-idle"),
+            ),
+            (
+                "current-unknown",
+                include_str!("../fuzz/seeds/harness_observed/current-unknown"),
+            ),
+            (
+                "legacy-idle",
+                include_str!("../fuzz/seeds/harness_observed/legacy-idle"),
+            ),
+        ] {
+            assert!(decode_idle(seed).is_some(), "{name}: {seed:?}");
+        }
+    }
 }
