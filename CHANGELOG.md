@@ -1,6 +1,12 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.40] - 2026-09-10
+
+### Other
+
+- Light the fleet picker button while open
+- Fix picker highlight and split-pane anchoring
 ## [v2026.9.39] - 2026-09-10
 
 ### Features
