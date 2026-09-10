@@ -41,8 +41,9 @@ chosen, not frozen when the menu opens. A status click also carries
 `#{client_name}` into `ae orchestrator --popup --client`, and the menu and its
 actions retain it: two clients may watch one pane, so `$TMUX_PANE`
 cannot identify the one that clicked. One `list-clients` snapshot resolves that
-exact client's current session; the mouse target's `#{session_id}` may name a
-different session and is never used for the open marker. The picker uses
+exact client's current session, height and width; the mouse target's
+`#{session_id}` may name a different session and is never used for the open
+marker. The picker uses
 `display-menu -x 0 -y S`: tmux 3.4 expands numeric `-x` as its bottom-left
 position, so column zero anchors it at the client left without a pane read
 ([`cmd-display-menu.c`](https://github.com/tmux/tmux/blob/3.4/cmd-display-menu.c#L214-L233)). Launch never
@@ -177,14 +178,22 @@ core's `ae <version>`.
 Every menu uses `display-menu -O`. On tmux 3.5 and newer, Down
 opens it with `-M`, the trailing release leaves it open, and rows are
 mouse-selectable. On the supported 3.4 floor, status clicks open on release,
-menus are keyboard-driven, row shortcut keys choose, and `q` closes. Each row
-shows bounded name, mark, state word, branch and goal columns. The tmux reader
+menus are keyboard-driven, session-row shortcut keys choose, keyless agent rows
+use arrows plus Enter, and `q` closes. Each session row shows bounded name,
+mark, state word, branch and goal columns, followed by indented frozen
+mark/name/profile/state rows from the watchdog's `@ae_agents` snapshot. The tmux reader
 strips pipes and control bytes from the branch field
 without changing the raw session option, preserving the record boundary.
 Choosing a row switches to its
 captured session id and then selects its published lead pane only while that
 pane still belongs to the chosen session. The orchestrator's own segment
 remains its separate session range.
+
+Before drawing, the picker fits its title and rows to the captured client in
+terminal cells. It first collapses agents under non-current sessions, then all
+agents, then session rows with an honest omitted count. A missing or hostile
+agent fact draws `agents: unavailable`; a missing or too-small client dimension
+refuses instead of asking tmux to silently reject an oversized menu.
 
 The picker writes `@ae_menu_open=<epoch>` on the explicitly named client's
 current session before drawing. Every reopen refreshes that epoch and stays lit;
@@ -226,6 +235,7 @@ lines; `[workspace] theme = off` leaves the user's title settings untouched.
 | `@ae_look_stamp`, `@ae_paths` | session | launch, rename, watchdog |
 | `@ae_attn_glyph`, `@ae_attn_rank`, `@ae_attn_style` | session | launch seeds them once, watchdog owns them after |
 | `@ae_fleet_strip`, `@ae_orchestrator_strip`, `@ae_watchdog_status` | session | watchdog |
+| `@ae_agents` | session | watchdog |
 | `@ae_goal_status` | session | watchdog |
 | `@ae_version` | session | watchdog (the core it runs on, `ae <version>`) |
 | `@ae_menu_open` | session | picker sets/refreshes it; picker rows and watchdog clear it |
@@ -245,6 +255,16 @@ every pane lookup match on it, so it is stored exactly as it was given.
 format reads. The watchdog rewrites the label every cycle from the identity
 beside it, which is how a session upgraded in place gets one without being
 relaunched.
+
+`@ae_agents` is one atomic, watchdog-owned verdict snapshot:
+`v1;<epoch>;<name>:<profile>:<state>:<pane>;…`. Entries follow recorded roster
+order, include missing seats as `dead` with an empty pane, and exclude monitor
+panes. The writer and hostile-state parser cap it at 4 KiB and 64 agents; the
+parser also requires the exact version and field count, allowlisted identities
+and states, printable ASCII without tmux style/format bytes, and a valid `%pane`
+or empty hint. A fact older than two watchdog intervals is unavailable. The
+snapshot is a verdict fact, not a look fact, so it does not change
+`@ae_look_stamp` or `FORMAT_VERSION`.
 
 The attention trio is the one place where "launch writes it" and "the watchdog
 owns it" meet. A launch SEEDS it, so a session says something true in the

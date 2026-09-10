@@ -857,7 +857,7 @@ LLVM_COV_VERSION := "0.9.0"
 # `cargo +{{ FUZZ_TOOLCHAIN }}`, and the product's 1.97.1 pin never moves.
 CARGO_FUZZ_VERSION := "0.13.2"
 FUZZ_TOOLCHAIN := "nightly-2026-08-20"
-FUZZ_TARGETS := "config_parse meta_parse launch_cmd_lex config_command quota_claude_cache quota_codex_rollout usage_claude_transcript usage_codex_rollout usage_prices harness_observed"
+FUZZ_TARGETS := "config_parse meta_parse launch_cmd_lex config_command quota_claude_cache quota_codex_rollout usage_claude_transcript usage_codex_rollout usage_prices harness_observed picker_agents"
 # Arrived with the FIRST runtime dependency (P4.3): cargo-deny gates the graph's
 # advisories/licenses/bans/sources, cargo-vet gates its PROVENANCE (who reviewed
 # the code). See `rust-vet`.

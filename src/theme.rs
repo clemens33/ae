@@ -472,6 +472,12 @@ pub const ATTENTION_STYLE_OPTION: &str = "@ae_attn_style";
 /// SESSION — the whole fleet strip, ranges included.
 pub const FLEET_STRIP_OPTION: &str = "@ae_fleet_strip";
 
+/// SESSION — one versioned snapshot of the recorded agents and their verdicts.
+///
+/// Published atomically by the watchdog for the fleet picker. It is verdict
+/// state, not a look fact, and therefore never participates in the look stamp.
+pub const AGENTS_OPTION: &str = "@ae_agents";
+
 /// SESSION — the orchestrator's fleet segment, ranges included.
 ///
 /// Published separately because the orchestrator sits immediately before the

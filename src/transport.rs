@@ -638,9 +638,12 @@ pub fn observe_picker_panes(server: &ServerId) -> Option<Vec<tmux::PickerPane>> 
     tmux::interpret_picker_panes(succeeded, &stdout)
 }
 
-/// The validated session id currently viewed by one explicit picker client.
+/// The validated live snapshot for one explicit picker client.
 #[must_use]
-pub fn observe_picker_client_session(server: &ServerId, client: &str) -> Option<String> {
+pub fn observe_picker_client_session(
+    server: &ServerId,
+    client: &str,
+) -> Option<tmux::PickerClient> {
     if !addressable(server) {
         return None;
     }

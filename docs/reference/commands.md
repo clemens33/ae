@@ -447,12 +447,13 @@ press `<prefix> a` (default `C-b a`), to open it.
 
 The fleet picker is drawn by tmux itself at the left edge above its status button.
 Its rows come only from one live `list-sessions` call on the calling server; one
-`list-panes -a` call proves which published lead-pane hints still belong to
-their sessions. One `list-clients` call resolves the explicitly named client's
-current session. Numeric `display-menu -x 0` is the menu's bottom-left client
-column on tmux 3.4 ([source](https://github.com/tmux/tmux/blob/3.4/cmd-display-menu.c#L214-L233)),
-so the picker needs no target pane. It never builds [`ae list`](#ae-list)'s
-durable inventory, walks session directories, reads events or probes git.
+`list-panes -a` call proves which published lead and agent pane hints still
+belong to their sessions. One `list-clients` call resolves the explicitly named
+client's current session and drawable height and width. Numeric
+`display-menu -x 0` is the menu's bottom-left client column on tmux 3.4
+([source](https://github.com/tmux/tmux/blob/3.4/cmd-display-menu.c#L214-L233)), so the picker
+needs no target pane. It never builds [`ae list`](#ae-list)'s durable inventory,
+walks session directories, reads events or probes git.
 
 Left- or right-click the menu glyph or overflow count, or press `<prefix> a`
 (default `C-b a`), to open it. The picker shows at most 30 attention-ordered sessions. Its title starts
@@ -472,11 +473,14 @@ watchdog sample: about a minute, at most 90 seconds with the default 60-second
 cycle.
 
 ```text
-$ ae orchestrator --popup
+# opened with prefix a; its binding supplies --client
 ┌─ ae <version> — 3 running · 1 need you — prefix a ──────────────────────┐
 │ gamma              ✖ dead      fix/menu       restore its lead pane (1) │
+│   ✖ lead               fable5       dead                              │
 │ beta               ◌ stale     main           port the watchdog     (2) │
+│   ● lead               gpt56sol     working                           │
 │ alpha              · idle      picker         ship the S0 picker    (3) │
+│   ✓ lead               gpt56luna    done                              │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -485,7 +489,21 @@ Every live admitted ae session on the calling server stays eligible, including
 the current and orchestrator sessions. Each row carries bounded name, mark,
 state word, branch and goal columns. The branch is sanitized in the tmux reader
 without changing its raw option, so delimiters and control bytes cannot split
-the record. At most 30 rows; a disabled note names how many were left out.
+the record. Each session is followed by an indented `mark name profile state`
+row for every recorded agent. The working mark is a frozen static mark: tmux
+draws a menu once and does not animate an open menu. Missing, malformed or more
+than two-watchdog-interval-old agent facts draw `agents: unavailable`, never a
+confident zero. At most 30 session rows; a disabled note names how many were
+left out.
+
+The client snapshot is also the hard draw budget: item rows plus two borders
+must fit its height, and row/title cells plus four borders must fit its width.
+When the full expansion is too tall, ae expands only the client's current
+session and collapses every other session to `N agents, M working`; then it
+collapses all sessions; finally it caps session rows and adds an honest
+`+N sessions omitted` row. Text is clipped by terminal cells, not UTF-8 bytes.
+A missing or malformed client size, fewer than 6 rows, or fewer than 8 columns
+refuses before tmux can silently drop the menu.
 
 Choosing a row first runs `switch-client` against the captured `$<id>`, so a
 rename after the menu opened cannot redirect it. When the one pane snapshot
@@ -494,6 +512,13 @@ session id again at execution and selects its window and pane. If the pane
 moved or vanished meanwhile, the guarded tail does not follow it: the client
 remains in the chosen session. A missing or unproven lead hint gives the row a
 plain session switch.
+
+Session shortcuts are assigned before agent rows are inserted, so the same
+session keeps the same key in every expansion mode. Agent rows are keyless and
+use arrow plus Enter on tmux 3.4+, or the mouse where tmux supports menu mouse
+selection. Their pane jump uses the same build-time membership and
+execution-time session-id guard as a session's lead hint; an empty, moved or
+vanished agent pane therefore switches only to its captured session.
 
 **Coming back is tmux's own.** `switch-client -l` (prefix + `L`) returns the client to the
 session it came from; within one session, `last-pane` (prefix + `;`) is the equivalent. ae

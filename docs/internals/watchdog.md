@@ -16,6 +16,15 @@ supervision.
   stays absent.
 - **Self-terminates** if the tmux session or `meta` file disappears.
 
+Each completed verdict cycle replaces one session-scoped `@ae_agents` value:
+`v1;<epoch>;<name>:<profile>:<state>:<pane>;…`. It contains every seat in the
+recorded roster's creation order, including missing panes as `dead` with an
+empty pane hint, and excludes the monitor panes. Present seats reuse that
+cycle's per-agent verdict and recorded profile. The whole value is one bounded
+atomic option write; an unrepresentable roster unsets it instead of publishing
+a partial fact. `watchdog stop` also unsets it, so a stopped daemon cannot leave
+the picker claiming a live roster snapshot.
+
 The `_watchdog` pane runs the core directly: its command is the session's `watchdog` link,
 which is a symlink to the core binary under another name, dispatching to `_watchdog-run`.
 There is no generated script or shell process between tmux and the core.

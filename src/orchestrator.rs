@@ -3,7 +3,7 @@
 //! One menu and no program: it lists the calling tmux server's live ae
 //! sessions in attention order, and choosing a row hands the client to that
 //! session's lead pane when the captured pane still belongs there. Nothing is
-//! polled or stored; the rows and membership proof are two tmux listings.
+//! polled or stored; sessions, client bounds and membership are three tmux listings.
 //!
 //! Coming BACK is tmux's own `switch-client -l`: a picker that remembered
 //! where you were would be a second answer to a question tmux already answers,
@@ -19,11 +19,12 @@ use crate::tmux::{
 
 /// `--help`, verbatim.
 pub const USAGE: &str = "\
-Usage: ae orchestrator [--popup [--client <name>] | --attach | --no-attach | --inside-tmux | --no-autostart]
+Usage: ae orchestrator [--popup --client <name> | --attach | --no-attach | --inside-tmux | --no-autostart]
 
 Bare `ae orchestrator` starts or reattaches the orchestrator seat from its
-dedicated config under ae's state home. With `--popup`, pick a live session in
-a tmux menu and land in its lead pane.
+dedicated config under ae's state home. With `--popup --client`, pick a live
+session in a tmux menu and land in its lead pane. Installed bindings supply the
+client name.
 
 The bare seat also accepts `_launch`'s `--attach`, `--no-attach`,
 `--inside-tmux` and `--no-autostart` flags. Working-directory and archive flags
@@ -232,6 +233,55 @@ const BRANCH_WIDTH: usize = 14;
 /// How much of a goal survives into a row.
 const GOAL_WIDTH: usize = 36;
 
+/// How wide an agent name is drawn.
+const AGENT_NAME_WIDTH: usize = 18;
+
+/// How wide an agent profile is drawn.
+const AGENT_PROFILE_WIDTH: usize = 12;
+
+/// How wide an agent verdict word is drawn.
+const AGENT_STATE_WIDTH: usize = 9;
+
+/// The terminal facts that bound one menu draw.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PickerBounds {
+    /// Client rows, including the two menu-border rows.
+    pub height: usize,
+    /// Client columns, including the four menu-border columns.
+    pub width: usize,
+    /// Clock used to reject stale watchdog facts.
+    pub now_epoch: i64,
+    /// The watchdog cadence whose two intervals define freshness.
+    pub watchdog_interval_secs: u64,
+}
+
+/// Why a picker is refused before tmux can silently drop it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PickerRefusal {
+    /// The client snapshot cannot hold a useful bordered menu.
+    TinyClient,
+}
+
+impl PickerRefusal {
+    /// Stable stderr detail for the command boundary.
+    #[must_use]
+    pub const fn message(self) -> &'static str {
+        match self {
+            Self::TinyClient => {
+                "client is too small for the picker (need at least 6 rows and 8 columns)"
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Expansion {
+    All,
+    Current,
+    Collapsed,
+    Capped,
+}
+
 /// The picker, as a menu model — the whole pure step.
 #[must_use]
 pub fn menu(
@@ -266,6 +316,65 @@ pub fn menu_for_client_session(
     client: Option<&str>,
     opened_session: Option<&str>,
 ) -> Menu {
+    build_menu(
+        sessions,
+        panes,
+        icons,
+        palette,
+        client,
+        opened_session,
+        PickerBounds {
+            height: usize::MAX,
+            width: usize::MAX,
+            now_epoch: crate::time::Timestamp::now().epoch(),
+            watchdog_interval_secs: crate::watchdog_daemon::Knobs::default().interval_secs,
+        },
+    )
+}
+
+/// The picker model constrained by the exact calling-client snapshot.
+///
+/// # Errors
+///
+/// [`PickerRefusal::TinyClient`] before any tmux draw when the border itself
+/// would leave no useful menu surface.
+pub fn menu_for_client_session_in(
+    sessions: &[PickerSession],
+    panes: &[PickerPane],
+    icons: bool,
+    palette: &Palette,
+    client: Option<&str>,
+    opened_session: Option<&str>,
+    bounds: PickerBounds,
+) -> Result<Menu, PickerRefusal> {
+    if bounds.height < 6 || bounds.width < 8 {
+        return Err(PickerRefusal::TinyClient);
+    }
+    Ok(build_menu(
+        sessions,
+        panes,
+        icons,
+        palette,
+        client,
+        opened_session,
+        bounds,
+    ))
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "one ordered fit-and-render pass over the picker snapshot"
+)]
+fn build_menu(
+    sessions: &[PickerSession],
+    panes: &[PickerPane],
+    icons: bool,
+    palette: &Palette,
+    client: Option<&str>,
+    opened_session: Option<&str>,
+    bounds: PickerBounds,
+) -> Menu {
     let ranked = ranked_sessions(sessions);
     let need_you = ranked
         .iter()
@@ -277,29 +386,123 @@ pub fn menu_for_client_session(
         })
         .count();
     let shown = ranked.len().min(ROW_CAP);
-    let mut items: Vec<MenuItem> = Vec::with_capacity(shown + 1);
-    for session in ranked.iter().take(shown) {
-        items.push(session_item(session, panes, icons, client, opened_session));
+    let visible = &ranked[..shown];
+    let agents: Vec<Option<Vec<crate::tmux::PickerAgent>>> = visible
+        .iter()
+        .map(|session| {
+            crate::tmux::parse_picker_agents(
+                &session.agents,
+                bounds.now_epoch,
+                bounds.watchdog_interval_secs,
+            )
+        })
+        .collect();
+    let overflow = usize::from(ranked.len() > shown);
+    let item_capacity = bounds.height.saturating_sub(2);
+    let expanded_rows = agents
+        .iter()
+        .map(|agents| agent_row_count(agents.as_deref()))
+        .fold(shown.saturating_add(overflow), usize::saturating_add);
+    let current = opened_session.and_then(|id| visible.iter().position(|row| row.id == id));
+    let current_rows = current.map_or(usize::MAX, |index| {
+        shown
+            .saturating_add(overflow)
+            .saturating_add(agent_row_count(agents[index].as_deref()))
+    });
+    let expansion = if expanded_rows <= item_capacity {
+        Expansion::All
+    } else if current_rows <= item_capacity {
+        Expansion::Current
+    } else if shown.saturating_add(overflow) <= item_capacity {
+        Expansion::Collapsed
+    } else {
+        Expansion::Capped
+    };
+    let inner_width = bounds.width.saturating_sub(4);
+    let displayed = if expansion == Expansion::Capped {
+        shown.min(item_capacity.saturating_sub(1))
+    } else {
+        shown
+    };
+    let mut session_items = Vec::with_capacity(displayed);
+    for (index, session) in visible.iter().take(displayed).enumerate() {
+        let expanded = expansion == Expansion::All
+            || (expansion == Expansion::Current && Some(index) == current);
+        let suffix = (!expanded).then(|| agents_suffix(agents[index].as_deref()));
+        session_items.push(session_item(
+            session,
+            panes,
+            icons,
+            client,
+            opened_session,
+            suffix.as_deref(),
+            inner_width,
+        ));
     }
-    if ranked.len() > shown {
-        items.push(disabled(format!(
-            "… {} more — see ae list",
-            ranked.len() - shown
+    assign_keys(&mut session_items);
+    let mut items = Vec::with_capacity(item_capacity.min(expanded_rows));
+    for (index, session_item) in session_items.into_iter().enumerate() {
+        items.push(session_item);
+        let expanded = expansion == Expansion::All
+            || (expansion == Expansion::Current && Some(index) == current);
+        if expanded {
+            match &agents[index] {
+                Some(found) => items.extend(found.iter().map(|agent| {
+                    agent_item(
+                        visible[index],
+                        agent,
+                        panes,
+                        icons,
+                        client,
+                        opened_session,
+                        inner_width,
+                    )
+                })),
+                None => items.push(disabled(clip_cells("  agents: unavailable", inner_width))),
+            }
+        }
+    }
+    let omitted = if expansion == Expansion::Capped {
+        ranked.len().saturating_sub(displayed)
+    } else {
+        ranked.len().saturating_sub(shown)
+    };
+    if omitted > 0 {
+        items.push(disabled(clip_cells(
+            &format!("+{omitted} sessions omitted"),
+            inner_width,
         )));
     }
     if items.is_empty() {
-        items.push(disabled("no running ae sessions".to_owned()));
+        items.push(disabled(clip_cells("no running ae sessions", inner_width)));
     }
-    assign_keys(&mut items);
+    let title = format!(
+        " ae {} — {} running · {need_you} need you — prefix a ",
+        crate::VERSION,
+        ranked.len(),
+    );
     Menu {
-        title: format!(
-            " ae {} — {} running · {need_you} need you — prefix a ",
-            crate::VERSION,
-            ranked.len(),
-        ),
+        title: clip_cells(&title, inner_width),
         title_style: crate::theme::menu_title_style(palette),
         items,
     }
+}
+
+fn agent_row_count(agents: Option<&[crate::tmux::PickerAgent]>) -> usize {
+    agents.map_or(1, <[crate::tmux::PickerAgent]>::len)
+}
+
+fn agents_suffix(agents: Option<&[crate::tmux::PickerAgent]>) -> String {
+    agents.map_or_else(
+        || " · agents unavailable".to_owned(),
+        |agents| {
+            let working = agents
+                .iter()
+                .filter(|agent| agent.mark() == Mark::Working)
+                .count();
+            format!(" · {} agents, {working} working", agents.len())
+        },
+    )
 }
 
 /// The live server's admitted sessions, most actionable first.
@@ -327,6 +530,8 @@ fn session_item(
     icons: bool,
     client: Option<&str>,
     opened_session: Option<&str>,
+    suffix: Option<&str>,
+    max_width: usize,
 ) -> MenuItem {
     let glyph = if session.glyph.is_empty() {
         Mark::Idle.glyph(icons)
@@ -334,22 +539,71 @@ fn session_item(
         &session.glyph
     };
     let mark = Mark::from_rank_value(session.rank);
+    let label = if let Some(suffix) = suffix {
+        format!(
+            "{} {} {} {}{}",
+            pad(&clean(&session.name), NAME_WIDTH),
+            pad(&clean(glyph), 1),
+            pad(&clean(mark.word()), STATE_WIDTH),
+            pad(&clean(&session.branch), BRANCH_WIDTH),
+            suffix,
+        )
+    } else {
+        format!(
+            "{} {} {} {} {}",
+            pad(&clean(&session.name), NAME_WIDTH),
+            pad(&clean(glyph), 1),
+            pad(&clean(mark.word()), STATE_WIDTH),
+            pad(&clean(&session.branch), BRANCH_WIDTH),
+            truncate(&clean(&session.goal), GOAL_WIDTH),
+        )
+    };
+    MenuItem {
+        label: clip_cells(&label, max_width),
+        key: String::new(),
+        action: picker_action(session, &session.main_pane, panes, client, opened_session),
+    }
+}
+
+/// One agent row, sharing the session row's two-phase pane-membership guard.
+fn agent_item(
+    session: &PickerSession,
+    agent: &crate::tmux::PickerAgent,
+    panes: &[PickerPane],
+    icons: bool,
+    client: Option<&str>,
+    opened_session: Option<&str>,
+    max_width: usize,
+) -> MenuItem {
     let label = format!(
-        "{} {} {} {} {}",
-        pad(&clean(&session.name), NAME_WIDTH),
-        pad(&clean(glyph), 1),
-        pad(&clean(mark.word()), STATE_WIDTH),
-        pad(&clean(&session.branch), BRANCH_WIDTH),
-        truncate(&clean(&session.goal), GOAL_WIDTH),
+        "  {} {} {} {}",
+        agent.mark().glyph(icons),
+        pad(&agent.name, AGENT_NAME_WIDTH),
+        pad(&agent.profile, AGENT_PROFILE_WIDTH),
+        pad(&agent.state, AGENT_STATE_WIDTH),
     );
-    let pane_is_member = !session.main_pane.is_empty()
+    MenuItem {
+        label: clip_cells(&label, max_width),
+        key: String::new(),
+        action: picker_action(session, &agent.pane, panes, client, opened_session),
+    }
+}
+
+fn picker_action(
+    session: &PickerSession,
+    pane_hint: &str,
+    panes: &[PickerPane],
+    client: Option<&str>,
+    opened_session: Option<&str>,
+) -> MenuAction {
+    let pane_is_member = !pane_hint.is_empty()
         && panes
             .iter()
-            .any(|pane| pane.session_id == session.id && pane.pane == session.main_pane);
+            .any(|pane| pane.session_id == session.id && pane.pane == pane_hint);
     let action = if pane_is_member {
         MenuAction::Run(client.map_or_else(
-            || guarded_jump_id_command(&session.id, &session.main_pane),
-            |client| guarded_jump_client_id_command(client, &session.id, &session.main_pane),
+            || guarded_jump_id_command(&session.id, pane_hint),
+            |client| guarded_jump_client_id_command(client, &session.id, pane_hint),
         ))
     } else {
         MenuAction::Run(client.map_or_else(
@@ -357,7 +611,7 @@ fn session_item(
             |client| switch_client_id_command(client, &session.id),
         ))
     };
-    let action = match (action, opened_session) {
+    match (action, opened_session) {
         (MenuAction::Run(command), Some(opened_session))
             if crate::tmux::session_id_is_valid(opened_session) =>
         {
@@ -367,11 +621,6 @@ fn session_item(
             ))
         }
         (action, _) => action,
-    };
-    MenuItem {
-        label,
-        key: String::new(),
-        action,
     }
 }
 
@@ -404,25 +653,79 @@ fn key_at(index: usize) -> String {
         .unwrap_or_default()
 }
 
-/// `text` cut to `width` CHARACTERS, the last of them an ellipsis when it was
-/// cut. Nothing is padded: a row's last column has no column after it.
+/// `text` cut to `width` terminal cells, the last cell an ellipsis when cut.
 fn truncate(text: &str, width: usize) -> String {
-    if text.chars().count() <= width {
+    clip_cells(text, width)
+}
+
+/// `text` cut to `width` cells and padded so the next column stays aligned.
+fn pad(text: &str, width: usize) -> String {
+    let mut out = truncate(text, width);
+    for _ in terminal_cells(&out)..width {
+        out.push(' ');
+    }
+    out
+}
+
+/// Clip text by terminal cells, not UTF-8 bytes or scalar count.
+fn clip_cells(text: &str, width: usize) -> String {
+    if terminal_cells(text) <= width {
         return text.to_owned();
     }
-    let mut out: String = text.chars().take(width.saturating_sub(1)).collect();
+    if width == 0 {
+        return String::new();
+    }
+    let content_width = width.saturating_sub(1);
+    let mut used = 0_usize;
+    let mut out = String::new();
+    for character in text.chars() {
+        let cells = terminal_cell_width(character);
+        if used.saturating_add(cells) > content_width {
+            break;
+        }
+        out.push(character);
+        used = used.saturating_add(cells);
+    }
     out.push('…');
     out
 }
 
-/// `text` cut to `width` characters and then padded to it, so the column after
-/// it starts in the same place on every row.
-fn pad(text: &str, width: usize) -> String {
-    let mut out = truncate(text, width);
-    for _ in out.chars().count()..width {
-        out.push(' ');
+fn terminal_cells(text: &str) -> usize {
+    text.chars().map(terminal_cell_width).sum()
+}
+
+/// The terminal widths relevant to picker text, following the usual wcwidth
+/// split: combining marks are zero, East Asian wide/fullwidth and emoji are
+/// two, and the remaining printable scalars are one.
+fn terminal_cell_width(character: char) -> usize {
+    let code = u32::from(character);
+    if character.is_control()
+        || (0x0300..=0x036f).contains(&code)
+        || (0x1ab0..=0x1aff).contains(&code)
+        || (0x1dc0..=0x1dff).contains(&code)
+        || (0x20d0..=0x20ff).contains(&code)
+        || (0xfe00..=0xfe0f).contains(&code)
+        || (0xfe20..=0xfe2f).contains(&code)
+        || (0xe0100..=0xe01ef).contains(&code)
+    {
+        0
+    } else if (0x1100..=0x115f).contains(&code)
+        || code == 0x2329
+        || code == 0x232a
+        || (0x2e80..=0xa4cf).contains(&code)
+        || (0xac00..=0xd7a3).contains(&code)
+        || (0xf900..=0xfaff).contains(&code)
+        || (0xfe10..=0xfe19).contains(&code)
+        || (0xfe30..=0xfe6f).contains(&code)
+        || (0xff00..=0xff60).contains(&code)
+        || (0xffe0..=0xffe6).contains(&code)
+        || (0x1f000..=0x1faff).contains(&code)
+        || (0x20000..=0x3fffd).contains(&code)
+    {
+        2
+    } else {
+        1
     }
-    out
 }
 
 /// The apostrophe a quote is rewritten to — U+02BC, which reads as one and is
@@ -469,6 +772,7 @@ mod tests {
             glyph: String::new(),
             main_pane: main_pane.to_owned(),
             branch: String::new(),
+            agents: String::new(),
             goal: String::new(),
         }
     }
@@ -487,6 +791,7 @@ mod tests {
     fn names(menu: &Menu) -> Vec<String> {
         labels(menu)
             .iter()
+            .filter(|label| !label.starts_with("  ") && !label.starts_with('+'))
             .filter_map(|label| label.split_whitespace().next().map(ToOwned::to_owned))
             .collect()
     }
@@ -595,8 +900,8 @@ mod tests {
         shown.branch = "feat/menu".to_owned();
         shown.goal = "ship it".to_owned();
         assert_eq!(
-            labels(&menu(&[shown], &[], true, &Palette::DARCULA)),
-            [concat!(
+            labels(&menu(&[shown], &[], true, &Palette::DARCULA))[0],
+            concat!(
                 "hub               ",
                 " ",
                 "⚠",
@@ -606,8 +911,260 @@ mod tests {
                 "feat/menu     ",
                 " ",
                 "ship it"
-            )]
+            )
         );
+    }
+
+    #[test]
+    fn expanded_agent_rows_are_indented_static_and_guarded_by_membership() {
+        let mut hub = session("hub", "$7", 2, "%10");
+        hub.agents =
+            "v1;2000;lead:fable5:working:%10;builder:gpt56sol:done:%11;gone:gpt56luna:dead:"
+                .to_owned();
+        let drawn = super::menu_for_client_session_in(
+            &[hub],
+            &[pane("$7", "%10"), pane("$7", "%11")],
+            true,
+            &Palette::DARCULA,
+            Some("client"),
+            Some("$7"),
+            super::PickerBounds {
+                height: 10,
+                width: 100,
+                now_epoch: 2_000,
+                watchdog_interval_secs: 60,
+            },
+        )
+        .expect("room for one session and three agents");
+        assert_eq!(drawn.items.len(), 4);
+        assert_eq!(drawn.items[0].key, "1");
+        assert_eq!(
+            drawn.items[1].label,
+            "  ● lead               fable5       working  "
+        );
+        assert_eq!(
+            drawn.items[2].label,
+            "  ✓ builder            gpt56sol     done     "
+        );
+        assert_eq!(
+            drawn.items[3].label,
+            "  ✖ gone               gpt56luna    dead     "
+        );
+        assert!(drawn.items[1..].iter().all(|item| item.key.is_empty()));
+        let MenuAction::Run(jump) = &drawn.items[2].action else {
+            panic!("live agent row is selectable");
+        };
+        assert!(jump.contains("switch-client -c 'client' -t $7"), "{jump}");
+        assert!(jump.contains("-t %11"), "{jump}");
+        let MenuAction::Run(fallback) = &drawn.items[3].action else {
+            panic!("missing agent row still switches session");
+        };
+        assert_eq!(
+            fallback,
+            "set-option -u -t $7 @ae_menu_open ; switch-client -c 'client' -t $7"
+        );
+    }
+
+    #[test]
+    fn missing_invalid_and_stale_agent_facts_are_unavailable_not_partial() {
+        let mut missing = session("missing", "$1", 0, "");
+        let mut invalid = session("invalid", "$2", 0, "");
+        invalid.agents = "v1;2000;ok:fable5:done:%2;bad:fable5:unknown:%3".to_owned();
+        let mut stale = session("stale", "$3", 0, "");
+        stale.agents = "v1;1879;lead:fable5:working:%3".to_owned();
+        let drawn = super::menu_for_client_session_in(
+            &[missing.clone(), invalid, stale],
+            &[],
+            true,
+            &Palette::DARCULA,
+            None,
+            Some("$1"),
+            super::PickerBounds {
+                height: 12,
+                width: 100,
+                now_epoch: 2_000,
+                watchdog_interval_secs: 60,
+            },
+        )
+        .expect("room for every unavailable row");
+        let unavailable = drawn
+            .items
+            .iter()
+            .filter(|item| item.label == "  agents: unavailable")
+            .count();
+        assert_eq!(unavailable, 3);
+        missing.agents = "v1;1880;lead:fable5:working:%1".to_owned();
+        assert!(
+            super::menu_for_client_session_in(
+                &[missing],
+                &[],
+                true,
+                &Palette::DARCULA,
+                None,
+                Some("$1"),
+                super::PickerBounds {
+                    height: 6,
+                    width: 100,
+                    now_epoch: 2_000,
+                    watchdog_interval_secs: 60,
+                },
+            )
+            .expect("boundary is fresh")
+            .items
+            .iter()
+            .any(|item| item.label.contains("lead"))
+        );
+    }
+
+    fn with_agents(mut session: PickerSession, epoch: i64, count: usize) -> PickerSession {
+        session.agents = format!(
+            "v1;{epoch};{}",
+            (0..count)
+                .map(|index| format!("a{index}:p:working:%{}", index + 10))
+                .collect::<Vec<_>>()
+                .join(";")
+        );
+        session
+    }
+
+    fn bounded_menu(sessions: &[PickerSession], height: usize) -> Menu {
+        super::menu_for_client_session_in(
+            sessions,
+            &[],
+            true,
+            &Palette::DARCULA,
+            None,
+            Some("$1"),
+            super::PickerBounds {
+                height,
+                width: 100,
+                now_epoch: 2_000,
+                watchdog_interval_secs: 60,
+            },
+        )
+        .expect("test dimensions")
+    }
+
+    #[test]
+    fn height_degrades_current_then_all_then_caps_sessions() {
+        let sessions = [
+            with_agents(session("current", "$1", 0, ""), 2_000, 3),
+            with_agents(session("other", "$2", 0, ""), 2_000, 3),
+        ];
+        let all = bounded_menu(&sessions, 10);
+        assert_eq!(all.items.len(), 8, "two sessions and all six agents");
+        let current = bounded_menu(&sessions, 7);
+        assert_eq!(
+            current.items.len(),
+            5,
+            "two sessions and current's three agents"
+        );
+        assert!(current.items[4].label.contains("3 agents, 3 working"));
+        let collapsed = bounded_menu(&sessions, 6);
+        assert_eq!(collapsed.items.len(), 2);
+        assert!(
+            collapsed
+                .items
+                .iter()
+                .all(|item| item.label.contains("3 agents, 3 working"))
+        );
+        for drawn in [&all, &current, &collapsed] {
+            assert_eq!(
+                drawn
+                    .items
+                    .iter()
+                    .filter(|item| !item.key.is_empty())
+                    .map(|item| item.key.as_str())
+                    .collect::<Vec<_>>(),
+                ["1", "2"],
+                "agent expansion never renumbers session shortcuts"
+            );
+        }
+
+        let packed = [
+            with_agents(session("current", "$1", 0, ""), 2_000, 20),
+            with_agents(session("other", "$2", 0, ""), 2_000, 20),
+        ];
+        let current_exact = bounded_menu(&packed, 24);
+        assert_eq!(
+            current_exact.items.len(),
+            22,
+            "20 current agents and two sessions exactly fit 24 lines"
+        );
+        assert!(
+            current_exact
+                .items
+                .last()
+                .is_some_and(|item| item.label.contains("20 agents, 20 working")),
+            "the other session is the only collapsed roster"
+        );
+
+        let many: Vec<PickerSession> = (0..30)
+            .map(|index| {
+                with_agents(
+                    session(&format!("s{index:02}"), &format!("${}", index + 1), 0, ""),
+                    2_000,
+                    1,
+                )
+            })
+            .collect();
+        let capped = bounded_menu(&many, 24);
+        assert_eq!(capped.items.len(), 22, "items + two borders equals 24");
+        assert_eq!(
+            capped.items.last().expect("omission row").label,
+            "+9 sessions omitted"
+        );
+        assert_eq!(capped.items[0].key, "1");
+        assert_eq!(capped.items[20].key, "l");
+    }
+
+    #[test]
+    fn clipping_counts_terminal_cells_and_tiny_clients_refuse() {
+        assert_eq!(super::clip_cells("ab界cd", 5), "ab界…");
+        let mut wide = session("wide", "$1", 0, "");
+        wide.goal = "界".repeat(40);
+        let drawn = super::menu_for_client_session_in(
+            &[wide],
+            &[],
+            true,
+            &Palette::DARCULA,
+            None,
+            Some("$1"),
+            super::PickerBounds {
+                height: 6,
+                width: 32,
+                now_epoch: 2_000,
+                watchdog_interval_secs: 60,
+            },
+        )
+        .expect("32 columns");
+        assert!(super::terminal_cells(&drawn.title) <= 28);
+        assert!(
+            drawn
+                .items
+                .iter()
+                .all(|item| super::terminal_cells(&item.label) <= 28)
+        );
+        for (height, width) in [(5, 80), (24, 7)] {
+            assert_eq!(
+                super::menu_for_client_session_in(
+                    &[],
+                    &[],
+                    true,
+                    &Palette::DARCULA,
+                    None,
+                    None,
+                    super::PickerBounds {
+                        height,
+                        width,
+                        now_epoch: 2_000,
+                        watchdog_interval_secs: 60,
+                    },
+                )
+                .err(),
+                Some(super::PickerRefusal::TinyClient)
+            );
+        }
     }
 
     #[test]
@@ -669,9 +1226,9 @@ mod tests {
             .map(|index| session(&format!("s{index:03}"), &format!("${index}"), 0, ""))
             .collect();
         let drawn = menu(&sessions, &[], true, &Palette::DARCULA);
-        assert_eq!(drawn.items.len(), ROW_CAP + 1);
+        assert_eq!(drawn.items.len(), ROW_CAP * 2 + 1);
         let last = drawn.items.last().expect("overflow note");
-        assert_eq!(last.label, "… 7 more — see ae list");
+        assert_eq!(last.label, "+7 sessions omitted");
         assert!(matches!(last.action, MenuAction::Disabled));
     }
 
@@ -747,8 +1304,8 @@ mod tests {
         assert_eq!(words.iter().filter(|word| word.as_str() == "--").count(), 1);
         assert!(
             words
-                .last()
-                .is_some_and(|word| word == "switch-client -c 'client' -t $1")
+                .iter()
+                .any(|word| word == "switch-client -c 'client' -t $1")
         );
     }
 }

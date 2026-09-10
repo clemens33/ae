@@ -1654,6 +1654,9 @@ struct Published<'a> {
     total: usize,
     /// Per-pane verdicts, in pane order.
     by_pane: &'a [PaneMark],
+    /// The whole versioned roster snapshot, absent when the recorded roster
+    /// cannot be represented by the strict picker grammar.
+    agents: Option<&'a str>,
     /// The session's rolled-up mark.
     attention: Mark,
     /// The look to draw all of it in.
@@ -2227,6 +2230,7 @@ pub(crate) fn clear_published(server: &crate::inventory::ServerId, session: &str
         theme::ATTENTION_GLYPH_OPTION,
         theme::ATTENTION_RANK_OPTION,
         theme::ATTENTION_STYLE_OPTION,
+        theme::AGENTS_OPTION,
         theme::FLEET_STRIP_OPTION,
         theme::ORCHESTRATOR_STRIP_OPTION,
         theme::ORCHESTRATOR_ID_OPTION,
@@ -2553,6 +2557,7 @@ impl Cycle<'_> {
         let mut live: Vec<String> = Vec::new();
         let mut counts = Counts::default();
         let mut by_slot: Vec<(String, Verdict)> = Vec::new();
+        let mut by_agent: Vec<(String, String, Verdict)> = Vec::new();
         let mut by_pane: Vec<PaneMark> = Vec::new();
 
         for pane in &observed {
@@ -2622,7 +2627,8 @@ impl Cycle<'_> {
                 self.apply(effect, &acting, carried, err)?;
             }
             counts.record(booked.verdict);
-            by_slot.push((slot, booked.verdict));
+            by_slot.push((slot.clone(), booked.verdict));
+            by_agent.push((slot, pane.pane_id.clone(), booked.verdict));
             by_pane.push(PaneMark {
                 pane: pane.pane_id.clone(),
                 verdict: booked.verdict,
@@ -2630,19 +2636,27 @@ impl Cycle<'_> {
             });
         }
         carry.quiet.end(index);
-        self.close(carry, &counts, &by_slot, &by_pane, &live, err)
-            .inspect(|()| schedule_automatic_upgrade())
+        self.close(
+            carry, &counts, &by_slot, &by_agent, &by_pane, &live, now, err,
+        )
+        .inspect(|()| schedule_automatic_upgrade())
     }
 
     /// The cycle's last step: compose the strips in this session's look, then
     /// publish everything one pass produced.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one cycle handoff keeps every derived verdict slice borrowed"
+    )]
     fn close(
         &self,
         carry: &mut Carry,
         counts: &Counts,
         by_slot: &[(String, Verdict)],
+        by_agent: &[(String, String, Verdict)],
         by_pane: &[PaneMark],
         live: &[String],
+        now_epoch: i64,
         err: &mut impl Write,
     ) -> crate::Result<()> {
         // The LOOK is re-read every cycle, so flipping `@ae_icons` on a live
@@ -2671,12 +2685,14 @@ impl Cycle<'_> {
             .map(|entry| slot_mark(entry, by_slot, &carry.missing))
             .collect();
         self.sweep_missing(live, &mut carry.missing, err)?;
+        let agents = agents_fact(&self.roster, by_agent, now_epoch);
         self.publish(
             &Published {
                 bar: bar_glyph(counts.dead, counts.stale, look.icons),
                 active: counts.active,
                 total: counts.total,
                 by_pane,
+                agents: agents.as_deref(),
                 attention: session_mark(by_pane, &slots),
                 look: &look,
             },
@@ -2828,6 +2844,17 @@ impl Cycle<'_> {
             theme::ATTENTION_STYLE_OPTION,
             &theme::attention_style(&look.palette, published.attention),
         );
+        match published.agents {
+            Some(agents) => set(theme::AGENTS_OPTION, agents),
+            None => {
+                let _ = transport::clear_option(
+                    self.server,
+                    OptionScope::Session,
+                    &session_id,
+                    theme::AGENTS_OPTION,
+                );
+            }
+        }
         // The GOAL, ahead of the path on the right: what this session is for
         // outranks where its files are, and the path is the fact the reader's
         // own shell prompt already carries.
@@ -3361,6 +3388,53 @@ fn slot_mark(
     )
 }
 
+/// The watchdog-owned agent fact in recorded roster order.
+///
+/// Present panes carry the verdict this cycle already computed. A roster seat
+/// with no pane remains visible as `dead` with an empty navigation hint. Any
+/// unrepresentable recorded identity rejects the whole value rather than
+/// publishing a partial roster the picker could mistake for complete.
+fn agents_fact(
+    roster: &[RosterEntry],
+    by_slot: &[(String, String, Verdict)],
+    now_epoch: i64,
+) -> Option<String> {
+    if roster.is_empty() || roster.len() > tmux::PICKER_AGENTS_MAX_COUNT || now_epoch < 0 {
+        return None;
+    }
+    let mut value = format!("v1;{now_epoch}");
+    let mut names: Vec<&str> = Vec::new();
+    for entry in roster {
+        let profile = entry.profile.as_deref()?;
+        if !crate::config::is_agent_name(&entry.name)
+            || !crate::config::is_config_key(profile)
+            || names.contains(&entry.name.as_str())
+        {
+            return None;
+        }
+        names.push(&entry.name);
+        let found = by_slot.iter().find(|(slot, _, _)| *slot == entry.slot);
+        let (state, pane) = found.map_or(("dead", ""), |(_, pane, verdict)| {
+            (verdict.reason(), pane.as_str())
+        });
+        if !pane.is_empty() && !tmux::pane_id_is_valid(pane) {
+            return None;
+        }
+        value.push(';');
+        value.push_str(&entry.name);
+        value.push(':');
+        value.push_str(profile);
+        value.push(':');
+        value.push_str(state);
+        value.push(':');
+        value.push_str(pane);
+        if value.len() > tmux::PICKER_AGENTS_MAX_BYTES {
+            return None;
+        }
+    }
+    Some(value)
+}
+
 /// The carried state for `key`, created on first sight.
 fn entry_mut<'a, V: Default>(list: &'a mut Vec<(String, V)>, key: &str) -> &'a mut V {
     let index = list
@@ -3459,7 +3533,7 @@ mod tests {
         MissingState, MotionState, MotionVerdict, Observation, OverviewReading, PaneState,
         PendingAdvisory, QuietCycle, QuietQuery, QuotaAction, QuotaCarry, QuotaDelivery,
         QuotaLevel, QuotaRecipient, Rebind, SendHelper, UNKNOWN_ALERT_CYCLES, Verdict, account,
-        adopt_server, age_secs, bar_glyph, classify_quota, continuation, entry_mut,
+        adopt_server, age_secs, agents_fact, bar_glyph, classify_quota, continuation, entry_mut,
         idle_nudge_seconds, idle_nudge_text, is_meta_agent, last_actor_event_age,
         last_done_event_at, last_working_declaration_at, motion_cadence, motion_failure,
         motion_observation_due, motion_publish_failure, motion_ticker_enabled, nudge_text,
@@ -6118,6 +6192,35 @@ mod tests {
             .map(|entry| slot_mark(entry, &by_slot, &[]))
             .collect();
         assert_eq!(marks, [Mark::Working, Mark::Stale, Mark::Done]);
+    }
+
+    #[test]
+    fn picker_agents_fact_keeps_roster_order_and_replaces_missing_panes() {
+        let roster = [
+            entry("main", "fable5", "lead"),
+            entry("worker.0", "gpt56sol", "builder"),
+            entry("spawned.0", "gpt56luna", "tests"),
+        ];
+        let observed = vec![
+            (
+                "worker.0".to_owned(),
+                "%8".to_owned(),
+                Verdict::Quiet(QuietKind::Done),
+            ),
+            ("main".to_owned(), "%3".to_owned(), Verdict::Active),
+        ];
+        assert_eq!(
+            agents_fact(&roster, &observed, 2_000),
+            Some(
+                "v1;2000;lead:fable5:working:%3;builder:gpt56sol:done:%8;tests:gpt56luna:dead:"
+                    .to_owned()
+            )
+        );
+        assert_eq!(
+            crate::theme::AGENTS_OPTION,
+            "@ae_agents",
+            "one session-scoped fact, never per-agent options"
+        );
     }
 
     #[test]

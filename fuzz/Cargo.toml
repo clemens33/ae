@@ -89,3 +89,10 @@ path = "fuzz_targets/harness_observed.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "picker_agents"
+path = "fuzz_targets/picker_agents.rs"
+test = false
+doc = false
+bench = false

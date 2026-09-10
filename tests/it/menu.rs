@@ -220,6 +220,12 @@ fn picker_argv(socket: &Path, staged: &Staged) -> Vec<String> {
         glyph: "·".to_owned(),
         main_pane: staged.ids[0].clone(),
         branch: "menu-fix".to_owned(),
+        agents: format!(
+            "v1;{};lead:fable5:working:{};builder:gpt56sol:done:{};gone:gpt56luna:dead:",
+            ae::time::Timestamp::now().epoch(),
+            staged.ids[0],
+            staged.ids[1],
+        ),
         goal: "100% of #{everything} | don't stop".to_owned(),
     }];
     let panes = staged
@@ -244,6 +250,361 @@ fn picker_argv(socket: &Path, staged: &Staged) -> Vec<String> {
         &menu,
         ae::transport::observe_tmux_floor(&server).menu_mouse(),
     )
+}
+
+#[test]
+fn agent_rows_draw_and_live_or_missing_rows_take_the_guarded_destination() {
+    let scratch = scratch("agent-rows");
+    if !tmux_present(&scratch) {
+        let _ = fs::remove_dir_all(&scratch);
+        panic!("tmux is not runnable here, so agent-row navigation cannot be proven");
+    }
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let main = scratch.join("main");
+    let watcher = scratch.join("watcher");
+    let staged = stage(&socket, &main);
+
+    let builder_argv = picker_argv(&socket, &staged);
+    let drawn = std::thread::scope(|scope| {
+        let driver = scope.spawn(|| {
+            let seen = wait_for(
+                "agent rows",
+                || tmux(&socket, &watcher, &["capture-pane", "-p", "-t", "viewer"]).1,
+                |seen| picker_is_open(seen) && seen.contains("builder") && seen.contains("gone"),
+            );
+            assert!(tmux(&socket, &watcher, &["send-keys", "-t", "viewer", "Home"]).0);
+            assert!(tmux(&socket, &watcher, &["send-keys", "-t", "viewer", "Down"]).0);
+            assert!(tmux(&socket, &watcher, &["send-keys", "-t", "viewer", "Down"]).0);
+            assert!(tmux(&socket, &watcher, &["send-keys", "-t", "viewer", "Enter"]).0);
+            seen
+        });
+        let (succeeded, _) = run_tmux(&builder_argv, &main);
+        assert!(succeeded, "tmux refused agent-row menu");
+        driver.join().expect("agent key driver")
+    });
+    assert!(drawn.contains("● lead"), "frozen working mark: {drawn}");
+    let landed = wait_for(
+        "builder pane",
+        || {
+            tmux(
+                &socket,
+                &main,
+                &[
+                    "list-clients",
+                    "-F",
+                    "#{client_name}|#{client_session}|#{pane_id}",
+                ],
+            )
+            .1
+        },
+        |seen| seen.contains(&format!("{}|hub|{}", staged.client, staged.ids[1])),
+    );
+    assert!(landed.contains(&format!("{}|hub|{}", staged.client, staged.ids[1])));
+
+    assert!(
+        tmux(
+            &socket,
+            &main,
+            &["switch-client", "-c", &staged.client, "-t", "home"]
+        )
+        .0
+    );
+    let missing_argv = picker_argv(&socket, &staged);
+    std::thread::scope(|scope| {
+        let driver = scope.spawn(|| {
+            wait_for(
+                "missing agent row",
+                || tmux(&socket, &watcher, &["capture-pane", "-p", "-t", "viewer"]).1,
+                |seen| picker_is_open(seen) && seen.contains("gone"),
+            );
+            assert!(tmux(&socket, &watcher, &["send-keys", "-t", "viewer", "Home"]).0);
+            for _ in 0..3 {
+                assert!(tmux(&socket, &watcher, &["send-keys", "-t", "viewer", "Down"]).0);
+            }
+            assert!(tmux(&socket, &watcher, &["send-keys", "-t", "viewer", "Enter"]).0);
+        });
+        let (succeeded, _) = run_tmux(&missing_argv, &main);
+        assert!(succeeded, "tmux refused missing-row menu");
+        driver.join().expect("missing-row key driver");
+    });
+    let landed = wait_for(
+        "missing row session switch",
+        || {
+            tmux(
+                &socket,
+                &main,
+                &[
+                    "list-clients",
+                    "-F",
+                    "#{client_name}|#{client_session}|#{pane_id}",
+                ],
+            )
+            .1
+        },
+        |seen| seen.contains(&format!("{}|hub|{}", staged.client, staged.ids[1])),
+    );
+    assert!(
+        landed.contains(&format!("{}|hub|{}", staged.client, staged.ids[1])),
+        "empty pane hint switches session without changing its active pane: {landed}"
+    );
+}
+
+#[test]
+fn a_seven_line_client_draws_only_its_current_sessions_agents() {
+    let scratch = scratch("short-agents");
+    if !tmux_present(&scratch) {
+        let _ = fs::remove_dir_all(&scratch);
+        panic!("tmux is not runnable here, so height degradation cannot be proven");
+    }
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let main = scratch.join("main");
+    let watcher = scratch.join("watcher");
+    let staged = stage(&socket, &main);
+    assert!(
+        tmux(
+            &socket,
+            &main,
+            &["resize-window", "-t", "viewer", "-x", "100", "-y", "7"]
+        )
+        .0
+    );
+    let server = ServerId::Selected(Selector::Socket(socket.clone()));
+    let snapshot = wait_for(
+        "seven-line client snapshot",
+        || {
+            ae::transport::observe_picker_client_session(&server, &staged.client)
+                .map(|client| format!("{}|{}|{}", client.session_id, client.height, client.width))
+                .unwrap_or_default()
+        },
+        |seen| seen.split('|').nth(1) == Some("7"),
+    );
+    let mut snapshot_fields = snapshot.split('|');
+    let home_id = snapshot_fields.next().unwrap_or_default().to_owned();
+    let height = snapshot_fields
+        .next()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or_default();
+    let width = snapshot_fields
+        .next()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or_default();
+    let now = ae::time::Timestamp::now().epoch();
+    let session = |name: &str, id: &str, prefix: &str| PickerSession {
+        name: name.to_owned(),
+        id: id.to_owned(),
+        rank: 0,
+        glyph: "·".to_owned(),
+        main_pane: String::new(),
+        branch: String::new(),
+        agents: format!("v1;{now};{prefix}0:p:working:;{prefix}1:p:working:;{prefix}2:p:working:"),
+        goal: String::new(),
+    };
+    let sessions = [
+        session("hub", &staged.hub_id, "hidden"),
+        session("home", &home_id, "shown"),
+    ];
+    let menu = ae::orchestrator::menu_for_client_session_in(
+        &sessions,
+        &[],
+        true,
+        &ae::theme::Palette::DARCULA,
+        Some(&staged.client),
+        Some(&home_id),
+        ae::orchestrator::PickerBounds {
+            height,
+            width,
+            now_epoch: now,
+            watchdog_interval_secs: 60,
+        },
+    )
+    .expect("seven rows is the accepted boundary");
+    assert_eq!(menu.items.len(), 5, "five items plus two border rows");
+    let argv = display_menu_for_client_args(&server, Some(&staged.client), &menu, false);
+    let drawn = std::thread::scope(|scope| {
+        let driver = scope.spawn(|| {
+            let seen = wait_for(
+                "short-client menu",
+                || tmux(&socket, &watcher, &["capture-pane", "-p", "-t", "viewer"]).1,
+                |seen| picker_is_open(seen) && seen.contains("shown2"),
+            );
+            assert!(tmux(&socket, &watcher, &["send-keys", "-t", "viewer", "q"]).0);
+            seen
+        });
+        let (succeeded, _) = run_tmux(&argv, &main);
+        assert!(succeeded, "exact fit must draw");
+        driver.join().expect("short client driver")
+    });
+    assert!(drawn.contains("3 agents, 3 working"), "{drawn}");
+    assert!(
+        drawn.contains("shown0") && drawn.contains("shown2"),
+        "{drawn}"
+    );
+    assert!(
+        !drawn.contains("hidden0"),
+        "other session stays collapsed: {drawn}"
+    );
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one real watchdog lifecycle proves whole-fact replacement"
+)]
+fn watchdog_replaces_the_agent_fact_across_spawn_and_retire_then_unsets_it_on_stop() {
+    let scratch = scratch("agent-fact-lifecycle");
+    if !tmux_present(&scratch) {
+        let _ = fs::remove_dir_all(&scratch);
+        panic!("tmux is not runnable here, so the watchdog fact lifecycle cannot be proven");
+    }
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let root = scratch.join("state");
+    let project = scratch.join("project");
+    let config = scratch.join("config");
+    write_watchdog_picker_config(&project, &config, &scratch);
+    let session = "factlife";
+    launch_ae_session(&socket, &scratch, &root, &project, &config, session);
+    let meta_dir = root.join("sessions").join(session);
+    let main_pane = tmux(
+        &socket,
+        &scratch,
+        &[
+            "show-options",
+            "-qv",
+            "-t",
+            session,
+            ae::theme::MAIN_PANE_OPTION,
+        ],
+    )
+    .1
+    .trim()
+    .to_owned();
+    assert!(
+        main_pane.starts_with('%'),
+        "launched main pane: {main_pane:?}"
+    );
+
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    let code = ae::watchdog_lifecycle::run(
+        &root,
+        &[
+            "start".to_owned(),
+            session.to_owned(),
+            "--".to_owned(),
+            "--interval".to_owned(),
+            "1".to_owned(),
+            "--quiet-beat-ms".to_owned(),
+            "10".to_owned(),
+            "--tg-supervise-secs".to_owned(),
+            "0".to_owned(),
+        ],
+        &mut out,
+        &mut err,
+    )
+    .expect("watchdog start writes to buffers");
+    assert_eq!(code, 0, "watchdog start: {}", String::from_utf8_lossy(&err));
+
+    let read_fact = || {
+        tmux(
+            &socket,
+            &scratch,
+            &[
+                "show-options",
+                "-qv",
+                "-t",
+                session,
+                ae::theme::AGENTS_OPTION,
+            ],
+        )
+        .1
+        .trim()
+        .to_owned()
+    };
+    let initial = wait_for("initial agent fact", read_fact, |fact| {
+        ae::tmux::parse_picker_agents(fact, ae::time::Timestamp::now().epoch(), 1)
+            .is_some_and(|agents| agents.len() == 1 && agents[0].name == "lead")
+    });
+    assert!(initial.contains(";lead:idle:"), "initial fact: {initial}");
+
+    let spawned = ae()
+        .env("HOME", &scratch)
+        .env("AE_HOME", &root)
+        .env("CONFIG_FILE", &config)
+        .env("TMUX", format!("{},fixture,0", socket.display()))
+        .env("TMUX_PANE", &main_pane)
+        .arg(ae::cli::SPAWN)
+        .arg(&meta_dir)
+        .args(["builder", "--using", "idle"])
+        .output()
+        .expect("spawn runs");
+    assert_eq!(
+        spawned.status.code(),
+        Some(0),
+        "spawn: stdout={} stderr={}",
+        String::from_utf8_lossy(&spawned.stdout),
+        String::from_utf8_lossy(&spawned.stderr)
+    );
+    let with_builder = wait_for("spawned agent fact", read_fact, |fact| {
+        ae::tmux::parse_picker_agents(fact, ae::time::Timestamp::now().epoch(), 1).is_some_and(
+            |agents| agents.len() == 2 && agents[0].name == "lead" && agents[1].name == "builder",
+        )
+    });
+    assert_eq!(
+        with_builder.matches(";builder:").count(),
+        1,
+        "{with_builder}"
+    );
+
+    let retired = ae()
+        .env("HOME", &scratch)
+        .env("AE_HOME", &root)
+        .env("CONFIG_FILE", &config)
+        .env("TMUX", format!("{},fixture,0", socket.display()))
+        .env("TMUX_PANE", &main_pane)
+        .arg(ae::cli::RETIRE)
+        .arg(&meta_dir)
+        .arg("builder")
+        .output()
+        .expect("retire runs");
+    assert_eq!(
+        retired.status.code(),
+        Some(0),
+        "retire: stdout={} stderr={}",
+        String::from_utf8_lossy(&retired.stdout),
+        String::from_utf8_lossy(&retired.stderr)
+    );
+    let after_retire = wait_for("retired agent fact", read_fact, |fact| {
+        ae::tmux::parse_picker_agents(fact, ae::time::Timestamp::now().epoch(), 1)
+            .is_some_and(|agents| agents.len() == 1 && agents[0].name == "lead")
+    });
+    assert!(
+        !after_retire.contains("builder"),
+        "replaced fact: {after_retire}"
+    );
+
+    out.clear();
+    err.clear();
+    let code = ae::watchdog_lifecycle::run(
+        &root,
+        &["stop".to_owned(), session.to_owned()],
+        &mut out,
+        &mut err,
+    )
+    .expect("watchdog stop writes to buffers");
+    assert_eq!(code, 0, "watchdog stop: {}", String::from_utf8_lossy(&err));
+    assert!(read_fact().is_empty(), "watchdog stop unsets @ae_agents");
 }
 
 #[test]
@@ -662,6 +1023,31 @@ fn write_picker_config(project: &Path, config: &Path) {
         fs::write(
             config,
             "[profiles]\nidle = \"sleep 600\"\n\n[roster]\nlead = idle\n\n[workspace]\nmain = lead\nlayout = vertical\nwatchdog = false\n",
+        )
+        .is_ok()
+    );
+}
+
+fn write_watchdog_picker_config(project: &Path, config: &Path, scratch: &Path) {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    assert!(fs::create_dir_all(project).is_ok());
+    let codex = scratch.join("codex");
+    assert!(
+        fs::write(&codex, "#!/bin/sh\nexec sleep 600\n").is_ok(),
+        "a long-lived fake codex"
+    );
+    assert!(
+        fs::set_permissions(&codex, fs::Permissions::from_mode(0o755)).is_ok(),
+        "an executable fake codex"
+    );
+    assert!(
+        fs::write(
+            config,
+            format!(
+                "[profiles]\nidle = \"{}\"\n\n[roster]\nlead = idle\n\n[workspace]\nmain = lead\nlayout = vertical\nwatchdog = false\n",
+                codex.display()
+            ),
         )
         .is_ok()
     );

@@ -11,6 +11,7 @@ use std::path::Path;
 
 use crate::inventory::{QueryFailed, ServerId};
 use crate::meta::Selector;
+use crate::theme::Mark;
 
 /// The format `list-sessions` is asked for: one exact session name per line.
 pub const SESSION_NAME_FORMAT: &str = "#{session_name}";
@@ -1564,8 +1565,20 @@ pub fn interpret_fleet_sessions(succeeded: bool, stdout: &str) -> Option<Vec<Fle
 // The fleet picker's live-server reads.
 // ---------------------------------------------------------------------------
 
-/// The explicit client and the session id it is currently viewing.
-pub const PICKER_CLIENT_SESSION_FORMAT: &str = "#{client_name} | #{session_id}";
+/// The explicit client, its current session id and its drawable dimensions.
+pub const PICKER_CLIENT_SESSION_FORMAT: &str =
+    "#{client_name} | #{session_id} | #{client_height} | #{client_width}";
+
+/// One exact picker client's live snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PickerClient {
+    /// The captured rename-safe session id.
+    pub session_id: String,
+    /// The client's terminal rows.
+    pub height: usize,
+    /// The client's terminal columns.
+    pub width: usize,
+}
 
 /// List every attached client once so the picker can resolve its explicit
 /// client to the session whose button owns the open marker.
@@ -1582,16 +1595,26 @@ pub fn interpret_picker_client_session(
     succeeded: bool,
     stdout: &str,
     client: &str,
-) -> Option<String> {
+) -> Option<PickerClient> {
     if !succeeded {
         return None;
     }
     let mut matches = stdout.lines().filter_map(|line| {
-        let (found, session_id) = line.split_once(FIELD_SEPARATOR)?;
-        (found == client && session_id_is_valid(session_id)).then(|| session_id.to_owned())
+        let fields: Vec<&str> = line.split(FIELD_SEPARATOR).collect();
+        let [found, session_id, height, width] = fields.as_slice() else {
+            return None;
+        };
+        if *found != client || !session_id_is_valid(session_id) {
+            return None;
+        }
+        Some(PickerClient {
+            session_id: (*session_id).to_owned(),
+            height: height.parse().ok()?,
+            width: width.parse().ok()?,
+        })
     });
-    let session_id = matches.next()?;
-    matches.next().is_none().then_some(session_id)
+    let snapshot = matches.next()?;
+    matches.next().is_none().then_some(snapshot)
 }
 
 /// One picker row, identity first and its free-text goal last.
@@ -1600,10 +1623,107 @@ pub fn interpret_picker_client_session(
 /// navigation hints and may be absent. Keeping the goal last lets
 /// [`interpret_picker_sessions`] use `splitn`, so a literal pipe in operator
 /// text cannot shift a pane id into another field.
-pub const PICKER_SESSION_FORMAT: &str = "#{session_name} | #{session_id} | #{@ae_attn_rank} | #{@ae_attn_glyph} | #{@ae_main_pane} | #{s/#{l:[|[:cntrl:]]}//:@ae_branch_name} | #{@ae_goal_status}";
+pub const PICKER_SESSION_FORMAT: &str = "#{session_name} | #{session_id} | #{@ae_attn_rank} | #{@ae_attn_glyph} | #{@ae_main_pane} | #{s/#{l:[|[:cntrl:]]}//:@ae_branch_name} | #{s/#{l:[|[:cntrl:]]}/!/:@ae_agents} | #{@ae_goal_status}";
 
 /// How many fields [`PICKER_SESSION_FORMAT`] yields.
-const PICKER_SESSION_FIELDS: usize = 7;
+const PICKER_SESSION_FIELDS: usize = 8;
+
+/// Maximum bytes accepted from the watchdog-owned `@ae_agents` fact.
+pub const PICKER_AGENTS_MAX_BYTES: usize = 4_096;
+
+/// Maximum roster entries accepted from one `@ae_agents` fact.
+pub const PICKER_AGENTS_MAX_COUNT: usize = 64;
+
+/// One strictly parsed agent row from the watchdog-owned session fact.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PickerAgent {
+    /// The allowlisted agent identity.
+    pub name: String,
+    /// The allowlisted recorded profile alias.
+    pub profile: String,
+    /// The watchdog verdict word.
+    pub state: String,
+    /// The captured pane id, empty when that roster seat has no pane.
+    pub pane: String,
+}
+
+impl PickerAgent {
+    /// The shared static picker mark for this verdict word.
+    #[must_use]
+    pub fn mark(&self) -> Mark {
+        picker_agent_mark(&self.state).unwrap_or(Mark::Stale)
+    }
+}
+
+/// Parse one bounded, versioned `@ae_agents` value.
+///
+/// Any malformed byte rejects the whole snapshot. `None` therefore means
+/// unavailable, never a partially trusted roster. A snapshot becomes stale
+/// only once it is older than two complete watchdog intervals.
+#[must_use]
+pub fn parse_picker_agents(
+    raw: &str,
+    now_epoch: i64,
+    watchdog_interval_secs: u64,
+) -> Option<Vec<PickerAgent>> {
+    if raw.is_empty()
+        || raw.len() > PICKER_AGENTS_MAX_BYTES
+        || !raw.bytes().all(|byte| (b' '..=b'~').contains(&byte))
+        || raw.bytes().any(|byte| matches!(byte, b'|' | b',' | b'#'))
+    {
+        return None;
+    }
+    let mut parts = raw.split(';');
+    if parts.next() != Some("v1") {
+        return None;
+    }
+    let epoch = parts
+        .next()?
+        .parse::<i64>()
+        .ok()
+        .filter(|epoch| *epoch >= 0)?;
+    let max_age = i64::try_from(watchdog_interval_secs.saturating_mul(2)).unwrap_or(i64::MAX);
+    if now_epoch.saturating_sub(epoch) > max_age {
+        return None;
+    }
+    let mut agents = Vec::new();
+    for entry in parts {
+        if entry.is_empty() || agents.len() == PICKER_AGENTS_MAX_COUNT {
+            return None;
+        }
+        let fields: Vec<&str> = entry.split(':').collect();
+        let [name, profile, state, pane] = fields.as_slice() else {
+            return None;
+        };
+        if !crate::config::is_agent_name(name)
+            || !crate::config::is_config_key(profile)
+            || picker_agent_mark(state).is_none()
+            || (!pane.is_empty() && !pane_id_is_valid(pane))
+            || agents.iter().any(|agent: &PickerAgent| agent.name == *name)
+        {
+            return None;
+        }
+        agents.push(PickerAgent {
+            name: (*name).to_owned(),
+            profile: (*profile).to_owned(),
+            state: (*state).to_owned(),
+            pane: (*pane).to_owned(),
+        });
+    }
+    (!agents.is_empty()).then_some(agents)
+}
+
+fn picker_agent_mark(state: &str) -> Option<Mark> {
+    match state {
+        "dead" => Some(Mark::Dead),
+        "waiting-user" | "blocked" | "throttled" | "wedged" => Some(Mark::NeedsYou),
+        "working" | "sweeping" | "busy" => Some(Mark::Working),
+        "done" => Some(Mark::Done),
+        "stale" | "starting" => Some(Mark::Stale),
+        "idle" => Some(Mark::Idle),
+        _ => None,
+    }
+}
 
 /// One live ae session admitted into the picker.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1620,6 +1740,8 @@ pub struct PickerSession {
     pub main_pane: String,
     /// The reader-sanitized branch fact; empty when unset or unavailable.
     pub branch: String,
+    /// The raw watchdog-owned roster snapshot; parsed at draw time for age.
+    pub agents: String,
     /// The already-bounded status goal; empty when unset or unavailable.
     pub goal: String,
 }
@@ -1675,6 +1797,7 @@ pub fn interpret_picker_sessions(succeeded: bool, stdout: &str) -> Option<Vec<Pi
                     glyph: fields.next().unwrap_or_default().trim().to_owned(),
                     main_pane: fields.next().unwrap_or_default().trim().to_owned(),
                     branch: fields.next().unwrap_or_default().trim().to_owned(),
+                    agents: fields.next().unwrap_or_default().trim().to_owned(),
                     goal: fields.next().unwrap_or_default().trim().to_owned(),
                 })
             })
@@ -1731,7 +1854,7 @@ pub(crate) fn session_id_is_valid(id: &str) -> bool {
         .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
 }
 
-fn pane_id_is_valid(pane: &str) -> bool {
+pub(crate) fn pane_id_is_valid(pane: &str) -> bool {
     pane.strip_prefix('%')
         .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
 }
@@ -2317,14 +2440,24 @@ mod tests {
 
     #[test]
     fn picker_client_session_is_one_exact_client_listing() {
+        use super::PickerClient;
+
         assert_eq!(
             super::picker_client_sessions_args(&ServerId::Ambient),
-            ["list-clients", "-F", "#{client_name} | #{session_id}",]
+            [
+                "list-clients",
+                "-F",
+                "#{client_name} | #{session_id} | #{client_height} | #{client_width}",
+            ]
         );
-        let listing = "/dev/ttys001 | $1\n/dev/ttys002 | $7\n";
+        let listing = "/dev/ttys001 | $1 | 24 | 80\n/dev/ttys002 | $7 | 40 | 140\n";
         assert_eq!(
             super::interpret_picker_client_session(true, listing, "/dev/ttys002"),
-            Some("$7".to_owned())
+            Some(PickerClient {
+                session_id: "$7".to_owned(),
+                height: 40,
+                width: 140,
+            })
         );
         assert_eq!(
             super::interpret_picker_client_session(true, listing, "/dev/ttys00"),
@@ -2332,10 +2465,26 @@ mod tests {
             "client names never prefix-match"
         );
         assert_eq!(
-            super::interpret_picker_client_session(true, "/dev/ttys002 | named\n", "/dev/ttys002"),
+            super::interpret_picker_client_session(
+                true,
+                "/dev/ttys002 | named | 40 | 140\n",
+                "/dev/ttys002",
+            ),
             None,
             "only a tmux session id can become a write target"
         );
+        for malformed in [
+            "/dev/ttys002 | $7 | | 140\n",
+            "/dev/ttys002 | $7 | 40 | \n",
+            "/dev/ttys002 | $7 | tall | 140\n",
+            "/dev/ttys002 | $7 | 40 | wide\n",
+        ] {
+            assert_eq!(
+                super::interpret_picker_client_session(true, malformed, "/dev/ttys002"),
+                None,
+                "{malformed:?}"
+            );
+        }
         assert_eq!(
             super::interpret_picker_client_session(false, listing, "/dev/ttys002"),
             None
@@ -2660,6 +2809,7 @@ mod tests {
             WATCH_PANE_FORMAT,
             WINDOW_PANE_FORMAT,
             super::FLEET_SESSION_FORMAT,
+            super::PICKER_CLIENT_SESSION_FORMAT,
             super::PICKER_PANE_FORMAT,
             super::PICKER_SESSION_FORMAT,
             super::LOOK_FORMAT,
@@ -2725,7 +2875,7 @@ mod tests {
         use super::{PickerSession, interpret_picker_sessions};
 
         let listing = concat!(
-            "good | $1 | 4 | ⚠ | %7 | featuremenu | ship | keep #[bg=red]",
+            "good | $1 | 4 | ⚠ | %7 | featuremenu | v1;2000;lead:fable5:working:%7 | ship | v1;9;tuple:p:done:%8 | keep #[bg=red]",
             "\u{7}",
             " now\n",
             "missing-display | $2 | 0\n",
@@ -2744,7 +2894,8 @@ mod tests {
                     glyph: "⚠".to_owned(),
                     main_pane: "%7".to_owned(),
                     branch: "featuremenu".to_owned(),
-                    goal: "ship | keep #[bg=red]\u{7} now".to_owned(),
+                    agents: "v1;2000;lead:fable5:working:%7".to_owned(),
+                    goal: "ship | v1;9;tuple:p:done:%8 | keep #[bg=red]\u{7} now".to_owned(),
                 },
                 PickerSession {
                     name: "missing-display".to_owned(),
@@ -2753,6 +2904,7 @@ mod tests {
                     glyph: String::new(),
                     main_pane: String::new(),
                     branch: String::new(),
+                    agents: String::new(),
                     goal: String::new(),
                 },
             ])
@@ -2763,6 +2915,78 @@ mod tests {
             super::PICKER_SESSION_FORMAT.contains("#{s/#{l:[|[:cntrl:]]}//:@ae_branch_name}"),
             "the tmux reader strips delimiters and control bytes before splitting"
         );
+        assert!(
+            super::PICKER_SESSION_FORMAT.contains("#{s/#{l:[|[:cntrl:]]}/!/:@ae_agents}"),
+            "hostile fact delimiters become a byte the strict parser always rejects"
+        );
+    }
+
+    #[test]
+    fn picker_agents_fact_is_typed_bounded_and_all_or_nothing() {
+        use super::{PickerAgent, parse_picker_agents};
+
+        let now = 2_000;
+        assert_eq!(
+            parse_picker_agents(
+                "v1;1900;lead:fable5:working:%1;builder:gpt56sol:done:%2",
+                now,
+                60,
+            ),
+            Some(vec![
+                PickerAgent {
+                    name: "lead".to_owned(),
+                    profile: "fable5".to_owned(),
+                    state: "working".to_owned(),
+                    pane: "%1".to_owned(),
+                },
+                PickerAgent {
+                    name: "builder".to_owned(),
+                    profile: "gpt56sol".to_owned(),
+                    state: "done".to_owned(),
+                    pane: "%2".to_owned(),
+                },
+            ])
+        );
+        assert_eq!(
+            parse_picker_agents("v1;1880;lead:fable5:working:", now, 60),
+            Some(vec![PickerAgent {
+                name: "lead".to_owned(),
+                profile: "fable5".to_owned(),
+                state: "working".to_owned(),
+                pane: String::new(),
+            }]),
+            "exactly two intervals old is still fresh"
+        );
+
+        for invalid in [
+            "",
+            "v1;2000",
+            "v2;2000;lead:fable5:working:%1",
+            "v1;old;lead:fable5:working:%1",
+            "v1;1879;lead:fable5:working:%1",
+            "v1;2000;bad name:fable5:working:%1",
+            "v1;2000;lead:bad profile:working:%1",
+            "v1;2000;lead:fable5:unknown:%1",
+            "v1;2000;lead:fable5:working:pane",
+            "v1;2000;lead:fable5:working:%1:extra",
+            "v1;2000;lead:fable5:working:%1;lead:fable5:done:%2",
+            "v1;2000;lead:fable5:working:%1|shift",
+            "v1;2000;lead:fable5:working:%1,shift",
+            "v1;2000;lead:fable5:working:%1!shift",
+            "v1;2000;lead:fable5:working:%1\n",
+            "v1;2000;lead:fable5:working:%1#[fg=red]",
+        ] {
+            assert_eq!(parse_picker_agents(invalid, now, 60), None, "{invalid}");
+        }
+        let too_many = format!(
+            "v1;2000;{}",
+            (0..65)
+                .map(|index| format!("a{index}:p:idle:"))
+                .collect::<Vec<_>>()
+                .join(";")
+        );
+        assert_eq!(parse_picker_agents(&too_many, now, 60), None);
+        assert_eq!(parse_picker_agents(&"x".repeat(4_097), now, 60), None);
     }
 
     #[test]

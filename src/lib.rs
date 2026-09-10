@@ -469,7 +469,7 @@ fn run_dispatch(args: &[String], out: &mut impl Write, err: &mut impl Write) -> 
         autoupgrade::schedule();
     }
     // The popup is deliberately dispatched BEFORE the world edge: its latency
-    // contract is two live tmux listings, never the durable inventory, event
+    // contract is three live tmux listings, never the durable inventory, event
     // journals, git probes or liveness model behind `current_world`.
     if popup && let cli::Request::Orchestrator { tail } = &request {
         return run_orchestrator(tail, err);
@@ -509,6 +509,10 @@ fn schedules_automatic_upgrade(request: &cli::Request) -> bool {
 }
 
 /// `ae orchestrator --popup` — gate the tmux version, then hand tmux the menu.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one ordered read-budget-mark-draw command boundary"
+)]
 fn run_orchestrator(tail: &[String], err: &mut impl Write) -> Result<u8> {
     let args = match orchestrator::parse(tail) {
         Ok(args) => args,
@@ -549,19 +553,24 @@ fn run_orchestrator(tail: &[String], err: &mut impl Write) -> Result<u8> {
     // Resolve the CLIENT'S session rather than the mouse target's session.
     // A status binding may be evaluated with another session as `{mouse}`;
     // only this explicit client row says which bottom-left button was used.
-    let opened_session = if let Some(client) = client {
-        let Some(session_id) = transport::observe_picker_client_session(&server, client) else {
-            writeln!(
-                err,
-                "ae orchestrator: tmux did not resolve client {client:?} to one live session (it may have vanished)."
-            )?;
-            err.flush()?;
-            return Ok(EXIT_UNAVAILABLE);
-        };
-        Some(session_id)
-    } else {
-        None
+    let Some(client_name) = client else {
+        writeln!(
+            err,
+            "ae orchestrator: no explicit client snapshot, so ae cannot budget the picker."
+        )?;
+        err.flush()?;
+        return Ok(EXIT_UNAVAILABLE);
     };
+    let Some(client_snapshot) = transport::observe_picker_client_session(&server, client_name)
+    else {
+        writeln!(
+            err,
+            "ae orchestrator: tmux did not resolve client {client_name:?} to one live session with dimensions (it may have vanished)."
+        )?;
+        err.flush()?;
+        return Ok(EXIT_UNAVAILABLE);
+    };
+    let opened_session = Some(client_snapshot.session_id.clone());
     // A FAILED listing is not an empty fleet. The server just cleared the
     // version probe, so losing its identity snapshot is a refusal rather than
     // a confident "no sessions" menu.
@@ -583,14 +592,27 @@ fn run_orchestrator(tail: &[String], err: &mut impl Write) -> Result<u8> {
     // a transient surface that writes nothing, so a wrong palette on it costs
     // one keystroke rather than a session's appearance.
     let look = picker_look(&server, opened_session.as_deref());
-    let menu = orchestrator::menu_for_client_session(
+    let menu = match orchestrator::menu_for_client_session_in(
         &sessions,
         &panes,
         look.icons,
         &look.palette,
         client,
         opened_session.as_deref(),
-    );
+        orchestrator::PickerBounds {
+            height: client_snapshot.height,
+            width: client_snapshot.width,
+            now_epoch: crate::time::Timestamp::now().epoch(),
+            watchdog_interval_secs: watchdog_daemon::Knobs::default().interval_secs,
+        },
+    ) {
+        Ok(menu) => menu,
+        Err(refusal) => {
+            writeln!(err, "ae orchestrator: {}.", refusal.message())?;
+            err.flush()?;
+            return Ok(EXIT_UNAVAILABLE);
+        }
+    };
     if let Some(session_id) = opened_session.as_deref()
         && !mark_picker_open(&server, session_id)
     {
