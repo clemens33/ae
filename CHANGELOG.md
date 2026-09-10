@@ -1,6 +1,24 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.44] - 2026-09-10
+
+### Bug Fixes
+
+- Harden harness state recovery
+- Preserve declarations past later activity
+
+### Documentation
+
+- Define Claude frame recognition
+
+### Features
+
+- Classify harness state in watchdog
+
+### Testing
+
+- Keep observed fuzz seeds live
 ## [v2026.9.43] - 2026-09-10
 
 ### Other
