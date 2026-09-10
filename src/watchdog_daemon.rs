@@ -2517,11 +2517,8 @@ impl Cycle<'_> {
         slot: &str,
         agent: &str,
     ) -> HarnessObservation {
-        let declaration =
-            latest_relevant_event(events, agent, self.session).and_then(|(event, _)| {
-                (event.actor == agent && event.declared_state().is_some())
-                    .then(|| quiet_hash(&declaration_key(event)))
-            });
+        let declaration = crate::session::latest_declaration_in(events, self.session, slot, agent)
+            .map(|event| quiet_hash(&declaration_key(event)));
         HarnessObservation {
             frame: crate::harness_state::classify(capture, tool),
             human_draft: crate::harness_state::has_human_draft(capture, tool),
@@ -5582,7 +5579,7 @@ mod tests {
         assert_eq!(state.quiet_base, Some((key, 9, 0)));
     }
 
-    fn witness_b_idle_after_new_working() -> Observation {
+    fn witness_b_idle_after_new_working_then_memo() -> Observation {
         let scratch = Scratch::new("working-resets-idle");
         let helper = SendHelper::for_session(&scratch.0);
         let server = ServerId::Ambient;
@@ -5607,6 +5604,10 @@ mod tests {
                 r#"{"ts":"2026-09-10T15:00:00Z","actor":"codex:agent","action":"state","ref":"working","actor_slot":"main","actor_session":"demo"}"#,
             )
             .expect("well-formed working declaration"),
+            Event::parse_line(
+                r#"{"ts":"2026-09-10T15:01:00Z","actor":"codex:agent","action":"memo","ref":"hstate","summary":"checkpoint","actor_slot":"main","actor_session":"demo"}"#,
+            )
+            .expect("well-formed later own memo"),
         ];
         assert_eq!(
             crate::session::alert_reason_in(&events[..1], "demo", "main", "codex:agent"),
@@ -5615,11 +5616,12 @@ mod tests {
         );
         let (latest, looked_past) =
             crate::watchdog::latest_relevant_event(&events, "codex:agent", "demo")
-                .expect("the working declaration is relevant");
+                .expect("the later memo is relevant");
+        assert_eq!(latest.action, "memo");
         assert_eq!(
             crate::watchdog::quiet_reason(latest, "codex:agent", looked_past),
             None,
-            "working is activity, not a quiet declaration"
+            "the later memo is activity, not a quiet declaration"
         );
         let capture = include_str!("../tests/fixtures/harness-state/codex-idle-112x40.txt");
         let harness = cycle.harness_observation(
@@ -5634,8 +5636,12 @@ mod tests {
             !harness.durable_stale,
             "newer own activity clears the alert"
         );
+        assert!(
+            harness.declaration.is_some(),
+            "a later own memo does not hide the newest own declaration"
+        );
         let mut observed = seen();
-        observed.now_epoch = events[1].ts.epoch();
+        observed.now_epoch = events[2].ts.epoch();
         observed.harness = harness;
         observed.last_actor_event_age_secs = 0;
         observed
@@ -5644,7 +5650,7 @@ mod tests {
     #[test]
     fn witness_b_new_working_clears_an_exhausted_idle_episode() {
         let knobs = Knobs::default();
-        let observed = witness_b_idle_after_new_working();
+        let observed = witness_b_idle_after_new_working_then_memo();
         let prior = PaneState {
             identity: Some(observed.identity),
             idle_since_epoch: Some(observed.now_epoch - 600),
@@ -5681,7 +5687,7 @@ mod tests {
     #[test]
     fn witness_b_new_working_restarts_a_due_nonexhausted_idle_clock() {
         let knobs = Knobs::default();
-        let observed = witness_b_idle_after_new_working();
+        let observed = witness_b_idle_after_new_working_then_memo();
         let prior = PaneState {
             identity: Some(observed.identity),
             idle_since_epoch: Some(observed.now_epoch - 600),

@@ -149,11 +149,8 @@ impl SessionRead {
     /// The work state this agent last declared.
     #[must_use]
     pub fn declared_state_of(&self, session: &str, slot: &str, reference: &str) -> Option<&str> {
-        self.events
-            .iter()
-            .filter(|event| is_actor(event, session, slot, reference))
-            .filter_map(Event::declared_state)
-            .next_back()
+        latest_declaration_in(&self.events, session, slot, reference)
+            .and_then(Event::declared_state)
     }
 
     /// The watchdog's standing verdict on this agent, or `None`.
@@ -233,6 +230,20 @@ fn is_actor(event: &Event, session: &str, slot: &str, reference: &str) -> bool {
         // Partial, or present-and-empty: routed, to nobody nameable.
         _ => false,
     }
+}
+
+/// The newest declaration made by this agent, independent of later activity.
+#[must_use]
+pub fn latest_declaration_in<'a>(
+    events: &'a [Event],
+    session: &str,
+    slot: &str,
+    reference: &str,
+) -> Option<&'a Event> {
+    events
+        .iter()
+        .rev()
+        .find(|event| is_actor(event, session, slot, reference) && event.declared_state().is_some())
 }
 
 /// The alert the durable log still shows for one agent, or `None`.
