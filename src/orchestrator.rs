@@ -257,7 +257,7 @@ pub fn menu_for_client(
         .iter()
         .filter(|session| {
             matches!(
-                Mark::from_rank(&session.rank.to_string()),
+                Mark::from_rank_value(session.rank),
                 Mark::NeedsYou | Mark::Dead
             )
         })
@@ -317,7 +317,7 @@ fn session_item(
     } else {
         &session.glyph
     };
-    let mark = Mark::from_rank(&session.rank.to_string());
+    let mark = Mark::from_rank_value(session.rank);
     let label = format!(
         "{} {} {} {} {}",
         pad(&clean(&session.name), NAME_WIDTH),

@@ -4,7 +4,7 @@
 //! The tmux calls the launch path makes: `new-session`, `set-environment`,
 //! `split-window`, `new-window`,
 //! `respawn-pane`, `select-layout`, `select-pane`, `select-window`, `set-hook`,
-//! `bind-key`, `set-window-option`.
+//! `bind-key`, `unbind-key`, `set-window-option`.
 //!
 //! Same shape as [`crate::git`] and for the same reason: the inner vector of
 //! [`TmuxArgv`] is private to this module, so no other module can hand the
@@ -152,7 +152,17 @@ pub(crate) enum Op<'a> {
     /// window-range click selects the window without firing the session hook.
     BindMouseDownStatus { picker: &'a str },
     /// Bind ae's root `MouseDown3Status` context menu on an ae-owned server.
-    BindMouseDownStatusMenu { picker: &'a str, menu_mouse: bool },
+    BindMouseDownStatusMenu {
+        picker: &'a str,
+        menu_mouse: bool,
+        flip: bool,
+    },
+    /// Bind the keyboard-driven picker's root `MouseUp1Status` release.
+    BindMouseUpStatus { picker: &'a str },
+    /// Bind the keyboard-driven picker's root `MouseUp3Status` release.
+    BindMouseUpStatusMenu { picker: &'a str, menu_mouse: bool },
+    /// Remove one stale root binding when the server capability changes.
+    UnbindRootKey { key: &'a str },
     /// Bind the fleet picker to mnemonic `prefix a` on an ae-owned server.
     BindPickerHotkey { shell: &'a str },
     /// `rename-session -t <target> <name>` — `ae rename`'s tmux half.
@@ -327,9 +337,24 @@ pub(crate) fn argv(server: &ServerId, op: &Op<'_>) -> TmuxArgv {
             args.extend(["bind-key", "-T", "root", "MouseDown1Status"].map(ToOwned::to_owned));
             args.extend(left_click_dispatch(picker));
         }
-        Op::BindMouseDownStatusMenu { picker, menu_mouse } => {
+        Op::BindMouseDownStatusMenu {
+            picker,
+            menu_mouse,
+            flip,
+        } => {
             args.extend(["bind-key", "-T", "root", "MouseDown3Status"].map(ToOwned::to_owned));
-            args.extend(right_click_dispatch(server, picker, menu_mouse));
+            args.extend(right_click_dispatch(server, picker, menu_mouse, flip));
+        }
+        Op::BindMouseUpStatus { picker } => {
+            args.extend(["bind-key", "-T", "root", "MouseUp1Status"].map(ToOwned::to_owned));
+            args.extend(picker_click_dispatch(picker));
+        }
+        Op::BindMouseUpStatusMenu { picker, menu_mouse } => {
+            args.extend(["bind-key", "-T", "root", "MouseUp3Status"].map(ToOwned::to_owned));
+            args.extend(right_click_dispatch(server, picker, menu_mouse, true));
+        }
+        Op::UnbindRootKey { key } => {
+            args.extend(["unbind-key", "-T", "root", key].map(ToOwned::to_owned));
         }
         Op::BindPickerHotkey { shell } => {
             args.extend(
@@ -383,6 +408,10 @@ fn left_click_dispatch(picker: &str) -> Vec<String> {
     mouse_dispatch(format_if(MOUSE_STATUS_PICKER, picker, &window))
 }
 
+fn picker_click_dispatch(picker: &str) -> Vec<String> {
+    mouse_dispatch(format_if(MOUSE_STATUS_PICKER, picker, ""))
+}
+
 fn fixed_mouse_shell_word(word: &str) -> String {
     mouse_dispatch_literal(&crate::launch::shell_quote(word))
 }
@@ -413,8 +442,17 @@ fn flip_menu_command(server: &ServerId, action: &str, menu_mouse: bool) -> Strin
     )
 }
 
-fn right_click_dispatch(server: &ServerId, picker: &str, menu_mouse: bool) -> Vec<String> {
-    let flip = flip_menu_command(server, MOUSE_DOWN_STATUS_MENU_ACTION, menu_mouse);
+fn right_click_dispatch(
+    server: &ServerId,
+    picker: &str,
+    menu_mouse: bool,
+    flip_enabled: bool,
+) -> Vec<String> {
+    let flip = if flip_enabled {
+        flip_menu_command(server, MOUSE_DOWN_STATUS_MENU_ACTION, menu_mouse)
+    } else {
+        String::new()
+    };
     let session = format_if(MOUSE_STATUS_SESSION, &flip, "");
     mouse_dispatch(format_if(MOUSE_STATUS_PICKER, picker, &session))
 }
@@ -466,17 +504,53 @@ pub(crate) fn status_bindings_argv(
         ServerId::Selected(_) => {
             let picker = status_picker_command(launcher);
             let hotkey = hotkey_picker_shell(launcher);
-            vec![
-                argv(server, &Op::BindMouseDownStatus { picker: &picker }),
-                argv(
-                    server,
-                    &Op::BindMouseDownStatusMenu {
-                        picker: &picker,
-                        menu_mouse,
-                    },
-                ),
-                argv(server, &Op::BindPickerHotkey { shell: &hotkey }),
-            ]
+            if menu_mouse {
+                vec![
+                    argv(server, &Op::BindMouseDownStatus { picker: &picker }),
+                    argv(
+                        server,
+                        &Op::BindMouseDownStatusMenu {
+                            picker: &picker,
+                            menu_mouse,
+                            flip: true,
+                        },
+                    ),
+                    argv(server, &Op::BindPickerHotkey { shell: &hotkey }),
+                    argv(
+                        server,
+                        &Op::UnbindRootKey {
+                            key: "MouseUp1Status",
+                        },
+                    ),
+                    argv(
+                        server,
+                        &Op::UnbindRootKey {
+                            key: "MouseUp3Status",
+                        },
+                    ),
+                ]
+            } else {
+                vec![
+                    argv(server, &Op::BindMouseDownStatus { picker: "" }),
+                    argv(
+                        server,
+                        &Op::BindMouseDownStatusMenu {
+                            picker: "",
+                            menu_mouse,
+                            flip: false,
+                        },
+                    ),
+                    argv(server, &Op::BindMouseUpStatus { picker: &picker }),
+                    argv(
+                        server,
+                        &Op::BindMouseUpStatusMenu {
+                            picker: &picker,
+                            menu_mouse,
+                        },
+                    ),
+                    argv(server, &Op::BindPickerHotkey { shell: &hotkey }),
+                ]
+            }
         }
     }
 }
@@ -637,13 +711,17 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the two exact capability argv sets are one canonical binding contract"
+    )]
     fn the_status_bindings_are_only_minted_for_an_ae_owned_server() {
         let server = ServerId::Selected(crate::meta::Selector::Name("ae".to_owned()));
         let bindings = status_bindings_argv(&server, &["/opt/ae".to_owned()], true);
         assert_eq!(
             bindings.len(),
-            3,
-            "an owned server gets all status bindings"
+            5,
+            "mouse-aware servers assert Down bindings and clear stale Up bindings"
         );
         assert_eq!(
             bindings[0].as_args(),
@@ -697,23 +775,97 @@ mod tests {
                 "'/opt/ae' 'orchestrator' '--popup' '--client' #{q:client_name}",
             ]
         );
-        let keyboard = status_bindings_argv(&server, &["/opt/ae".to_owned()], false);
-        assert_eq!(keyboard.len(), 3);
-        assert!(
-            keyboard[1]
-                .as_args()
-                .iter()
-                .any(|word| word.contains("'display-menu' '-O' '-c'")),
-            "tmux 3.4 flip menu keeps release protection: {:?}",
-            keyboard[1].as_args()
+        assert_eq!(
+            bindings[3].as_args(),
+            ["-L", "ae", "unbind-key", "-T", "root", "MouseUp1Status"]
         );
-        assert!(
-            !keyboard[1]
-                .as_args()
-                .iter()
-                .any(|word| word.contains("'-M'")),
-            "tmux 3.4 has no display-menu -M: {:?}",
-            keyboard[1].as_args()
+        assert_eq!(
+            bindings[4].as_args(),
+            ["-L", "ae", "unbind-key", "-T", "root", "MouseUp3Status"]
+        );
+        let keyboard = status_bindings_argv(&server, &["/opt/ae".to_owned()], false);
+        assert_eq!(
+            keyboard.len(),
+            5,
+            "keyboard-driven servers bind release without double-dispatching press"
+        );
+        assert_eq!(
+            keyboard[0].as_args(),
+            [
+                "-L",
+                "ae",
+                "bind-key",
+                "-T",
+                "root",
+                "MouseDown1Status",
+                "run-shell",
+                "-C",
+                "-t",
+                "{mouse}",
+                "#{?#{||:#{==:#{mouse_status_range},ae},#{==:#{mouse_status_range},ae-more}},,#{?#{==:#{mouse_status_range},window},select-window -t #{window_id},#{?#{==:#{mouse_status_range},session},switch-client -c #{q:client_name} -t #{session_id},}}}"
+            ]
+        );
+        assert_eq!(
+            keyboard[1].as_args(),
+            [
+                "-L",
+                "ae",
+                "bind-key",
+                "-T",
+                "root",
+                "MouseDown3Status",
+                "run-shell",
+                "-C",
+                "-t",
+                "{mouse}",
+                "#{?#{||:#{==:#{mouse_status_range},ae},#{==:#{mouse_status_range},ae-more}},,#{?#{==:#{mouse_status_range},session},,}}"
+            ]
+        );
+        assert_eq!(
+            keyboard[2].as_args(),
+            [
+                "-L",
+                "ae",
+                "bind-key",
+                "-T",
+                "root",
+                "MouseUp1Status",
+                "run-shell",
+                "-C",
+                "-t",
+                "{mouse}",
+                "#{?#{||:#{==:#{mouse_status_range},ae},#{==:#{mouse_status_range},ae-more}},run-shell -b \"'/opt/ae' 'orchestrator' '--popup' '--client' #{q:client_name}\",}"
+            ]
+        );
+        assert_eq!(
+            keyboard[3].as_args(),
+            [
+                "-L",
+                "ae",
+                "bind-key",
+                "-T",
+                "root",
+                "MouseUp3Status",
+                "run-shell",
+                "-C",
+                "-t",
+                "{mouse}",
+                "#{?#{||:#{==:#{mouse_status_range},ae},#{==:#{mouse_status_range},ae-more}},run-shell -b \"'/opt/ae' 'orchestrator' '--popup' '--client' #{q:client_name}\",#{?#{==:#{mouse_status_range},session},run-shell -b \"'tmux' '-L' 'ae' 'display-menu' '-O' '-c' #{q:client_name} '-t' '#{pane_id}' '-T' '#{session_name}' '-x' 'M' '-y' 'S' 'Flip lead/colead panes' 'f' 'if-shell -F '\\\\''########{&&:########{==:########{window_panes#}#,2#}#,########{==:########{window_zoomed_flag#}#,0#}#}'\\\\'' '\\\\''swap-pane -d -s \\\"{top-left#}\\\" -t \\\"{bottom-right#}\\\"'\\\\'' '\\\\''display-message \\\"flip needs an unzoomed two-pane window\\\"'\\\\'''\",}}"
+            ]
+        );
+        assert_eq!(
+            keyboard[4].as_args(),
+            [
+                "-L",
+                "ae",
+                "bind-key",
+                "-T",
+                "prefix",
+                "a",
+                "run-shell",
+                "-b",
+                "'/opt/ae' 'orchestrator' '--popup' '--client' #{q:client_name}",
+            ]
         );
         assert!(
             status_bindings_argv(&ServerId::Ambient, &["/opt/ae".to_owned()], true).is_empty(),

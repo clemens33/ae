@@ -59,6 +59,12 @@ fn tmux(socket: &Path, dir: &Path, words: &[&str]) -> (bool, String) {
     run_tmux(&args, dir)
 }
 
+/// Whether the real server under test supports mouse-driven menus.
+fn menu_mouse(socket: &Path) -> bool {
+    ae::transport::observe_tmux_floor(&ServerId::Selected(Selector::Socket(socket.to_path_buf())))
+        .menu_mouse()
+}
+
 /// Poll `read` until it answers something `settled` accepts, or fail saying
 /// what it last answered.
 fn wait_for(
@@ -226,11 +232,12 @@ fn picker_argv(socket: &Path, staged: &Staged) -> Vec<String> {
         &ae::theme::Palette::DARCULA,
         Some(&staged.client),
     );
+    let server = ServerId::Selected(Selector::Socket(socket.to_path_buf()));
     display_menu_for_client_args(
-        &ServerId::Selected(Selector::Socket(socket.to_path_buf())),
+        &server,
         Some(&staged.client),
         &menu,
-        true,
+        ae::transport::observe_tmux_floor(&server).menu_mouse(),
     )
 }
 
@@ -957,9 +964,9 @@ fn clicking_the_version_range_opens_the_fleet_and_a_row_lands_on_the_lead() {
         "both clients must watch the SAME pane: {clients}"
     );
 
-    // Hold the press until the fast background picker is visible, then
-    // release. The menu must survive that release: this is the exact timing
-    // that made the status button look as though it existed only while held.
+    // Mouse-aware servers open on press and must survive the trailing release.
+    // The 3.4 floor opens on release, after the event that would close its
+    // keyboard-driven menu, and therefore must not also dispatch on press.
     std::thread::sleep(Duration::from_millis(600));
     let height_text = tmux(
         &socket,
@@ -971,24 +978,53 @@ fn clicking_the_version_range_opens_the_fleet_and_a_row_lands_on_the_lead() {
         .trim()
         .parse::<usize>()
         .unwrap_or_else(|_| panic!("client height: {height_text:?}"));
+    let menu_mouse = menu_mouse(&socket);
     mouse_event(&socket, &scratch, "clicked-viewer", 0, 2, height, 'M');
-    let menu = wait_for(
-        "the fleet menu from a real version press",
-        || {
-            tmux(
-                &socket,
-                &scratch,
-                &["capture-pane", "-p", "-t", "clicked-viewer"],
-            )
-            .1
-        },
-        |seen| seen.contains("ae fleet") && seen.contains("fleet-b"),
-    );
+    let menu = if menu_mouse {
+        let menu = wait_for(
+            "the fleet menu from a real version press",
+            || {
+                tmux(
+                    &socket,
+                    &scratch,
+                    &["capture-pane", "-p", "-t", "clicked-viewer"],
+                )
+                .1
+            },
+            |seen| seen.contains("ae fleet") && seen.contains("fleet-b"),
+        );
+        mouse_event(&socket, &scratch, "clicked-viewer", 0, 2, height, 'm');
+        menu
+    } else {
+        std::thread::sleep(Duration::from_millis(250));
+        let held = tmux(
+            &socket,
+            &scratch,
+            &["capture-pane", "-p", "-t", "clicked-viewer"],
+        )
+        .1;
+        assert!(
+            !held.contains("ae fleet"),
+            "tmux 3.4 dispatched the picker before release: {held}"
+        );
+        mouse_event(&socket, &scratch, "clicked-viewer", 0, 2, height, 'm');
+        wait_for(
+            "the fleet menu from a real version release",
+            || {
+                tmux(
+                    &socket,
+                    &scratch,
+                    &["capture-pane", "-p", "-t", "clicked-viewer"],
+                )
+                .1
+            },
+            |seen| seen.contains("ae fleet") && seen.contains("fleet-b"),
+        )
+    };
     assert!(
         menu.contains("fleet-a") && menu.contains("fleet-b"),
         "{menu}"
     );
-    mouse_event(&socket, &scratch, "clicked-viewer", 0, 2, height, 'm');
     std::thread::sleep(Duration::from_secs(1));
     let menu = tmux(
         &socket,
@@ -998,7 +1034,7 @@ fn clicking_the_version_range_opens_the_fleet_and_a_row_lands_on_the_lead() {
     .1;
     assert!(
         menu.contains("ae fleet") && menu.contains("fleet-b"),
-        "the menu closed on the status-button release: {menu}"
+        "the menu closed after the status-button click: {menu}"
     );
     let other = tmux(
         &socket,
@@ -1025,18 +1061,30 @@ fn clicking_the_version_range_opens_the_fleet_and_a_row_lands_on_the_lead() {
     .trim()
     .to_owned();
     assert!(fleet_b_main.starts_with('%'), "{fleet_b_main:?}");
-    let (row_y, row_x) = menu
-        .lines()
-        .enumerate()
-        .find_map(|(y, line)| line.find("fleet-b").map(|x| (y + 1, x + 1)))
-        .unwrap_or_else(|| panic!("fleet-b row coordinates: {menu}"));
-    // A real pointer moves onto the row before clicking it. In SGR mouse
-    // mode, 35 is motion with no button held; tmux uses it to highlight the
-    // choice that the following press selects.
-    mouse_event(&socket, &scratch, "clicked-viewer", 35, row_x, row_y, 'M');
-    mouse_event(&socket, &scratch, "clicked-viewer", 0, row_x, row_y, 'M');
-    std::thread::sleep(Duration::from_millis(100));
-    mouse_event(&socket, &scratch, "clicked-viewer", 0, row_x, row_y, 'm');
+    if menu_mouse {
+        let (row_y, row_x) = menu
+            .lines()
+            .enumerate()
+            .find_map(|(y, line)| line.find("fleet-b").map(|x| (y + 1, x + 1)))
+            .unwrap_or_else(|| panic!("fleet-b row coordinates: {menu}"));
+        // A real pointer moves onto the row before clicking it. In SGR mouse
+        // mode, 35 is motion with no button held; tmux uses it to highlight
+        // the choice that the following press selects.
+        mouse_event(&socket, &scratch, "clicked-viewer", 35, row_x, row_y, 'M');
+        mouse_event(&socket, &scratch, "clicked-viewer", 0, row_x, row_y, 'M');
+        std::thread::sleep(Duration::from_millis(100));
+        mouse_event(&socket, &scratch, "clicked-viewer", 0, row_x, row_y, 'm');
+    } else {
+        assert!(
+            tmux(
+                &socket,
+                &scratch,
+                &["send-keys", "-t", "clicked-viewer", "2"],
+            )
+            .0,
+            "tmux 3.4 chooses the second row by its key"
+        );
+    }
     let landed = wait_for(
         "the fleet-b lead jump",
         || {

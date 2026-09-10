@@ -2079,36 +2079,68 @@ fn a_spawned_seat_launches_its_preflighted_command_after_a_config_swap() {
     assert!(!launched.contains("spawned-swapped"), "{launched}");
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one live assertion of the capability-canonical server binding set"
+)]
 fn assert_ae_status_bindings(rig: &Rig) {
     let (_, keys) = rig.tmux(&["list-keys", "-T", "root"]);
-    let click = keys
-        .lines()
-        .find(|line| line.starts_with("bind-key  -T root MouseDown1Status "))
-        .unwrap_or_else(|| panic!("one MouseDown1Status binding: {keys}"));
+    let binding = |key: &str| {
+        let prefix = format!("bind-key  -T root {key} ");
+        keys.lines()
+            .find(|line| line.starts_with(&prefix))
+            .unwrap_or_else(|| panic!("one {key} binding: {keys}"))
+    };
+    let server = ae::inventory::ServerId::Selected(ae::meta::Selector::Socket(rig.sock.clone()));
+    let menu_mouse = ae::transport::observe_tmux_floor(&server).menu_mouse();
+    let down_click = binding("MouseDown1Status");
     assert!(
-        click.contains("run-shell -C")
-            && click.contains("#{||:#{==:#{mouse_status_range},ae}")
-            && click.contains("#{==:#{mouse_status_range},ae-more}")
-            && !click.contains("@ae_orchestrator_id")
-            && click.contains("mouse_status_range},window")
-            && click.contains("mouse_status_range},session")
-            && click.contains("select-window -t #{window_id}")
-            && click.contains("switch-client -c #{q:client_name} -t #{session_id}")
-            && click.contains("orchestrator")
-            && click.contains("--popup")
-            && click.contains("--client")
-            && click.contains("#{q:client_name}")
-            && click.contains(&format!("AE_HOME={}", rig.home.display()))
-            && click.contains(&format!("CONFIG_FILE={}", rig.config.display()))
-            && click.contains(&format!("AE_TMUX_SERVER={}", rig.sock.display()))
-            && click.contains("AE_TMUX_SERVER_KIND=socket")
-            && click.contains(env!("CARGO_BIN_EXE_ae")),
-        "the left-click dispatch and checkout picker namespace are complete: {click}"
+        down_click.contains("run-shell -C")
+            && down_click.contains("#{||:#{==:#{mouse_status_range},ae}")
+            && down_click.contains("#{==:#{mouse_status_range},ae-more}")
+            && !down_click.contains("@ae_orchestrator_id")
+            && down_click.contains("mouse_status_range},window")
+            && down_click.contains("mouse_status_range},session")
+            && down_click.contains("select-window -t #{window_id}")
+            && down_click.contains("switch-client -c #{q:client_name} -t #{session_id}"),
+        "MouseDown1Status keeps strip navigation: {down_click}"
     );
-    let menu = keys
-        .lines()
-        .find(|line| line.starts_with("bind-key  -T root MouseDown3Status "))
-        .unwrap_or_else(|| panic!("one MouseDown3Status binding: {keys}"));
+    let picker_click = if menu_mouse {
+        assert!(
+            !keys.contains("bind-key  -T root MouseUp1Status ")
+                && !keys.contains("bind-key  -T root MouseUp3Status "),
+            "mouse-aware servers clear stale Up bindings: {keys}"
+        );
+        down_click
+    } else {
+        assert!(
+            !down_click.contains("orchestrator"),
+            "tmux 3.4 must not open twice: {down_click}"
+        );
+        binding("MouseUp1Status")
+    };
+    assert!(
+        picker_click.contains("orchestrator")
+            && picker_click.contains("--popup")
+            && picker_click.contains("--client")
+            && picker_click.contains("#{q:client_name}")
+            && picker_click.contains(&format!("AE_HOME={}", rig.home.display()))
+            && picker_click.contains(&format!("CONFIG_FILE={}", rig.config.display()))
+            && picker_click.contains(&format!("AE_TMUX_SERVER={}", rig.sock.display()))
+            && picker_click.contains("AE_TMUX_SERVER_KIND=socket")
+            && picker_click.contains(env!("CARGO_BIN_EXE_ae")),
+        "the capability-selected picker binding carries its checkout namespace: {picker_click}"
+    );
+    let down_menu = binding("MouseDown3Status");
+    let menu = if menu_mouse {
+        down_menu
+    } else {
+        assert!(
+            !down_menu.contains("orchestrator") && !down_menu.contains("display-menu"),
+            "tmux 3.4 MouseDown3Status must be a no-op: {down_menu}"
+        );
+        binding("MouseUp3Status")
+    };
     for needle in [
         "#{||:#{==:#{mouse_status_range},ae}",
         "mouse_status_range},ae-more",
@@ -2126,12 +2158,18 @@ fn assert_ae_status_bindings(rig: &Rig) {
     assert_eq!(
         keys.lines()
             .filter(|line| {
-                line.starts_with("bind-key  -T root MouseDown1Status ")
-                    || line.starts_with("bind-key  -T root MouseDown3Status ")
+                [
+                    "MouseDown1Status",
+                    "MouseDown3Status",
+                    "MouseUp1Status",
+                    "MouseUp3Status",
+                ]
+                .iter()
+                .any(|key| line.starts_with(&format!("bind-key  -T root {key} ")))
             })
             .count(),
-        2,
-        "one left-click and one context-menu binding: {keys}"
+        if menu_mouse { 2 } else { 4 },
+        "one canonical binding set for the server capability: {keys}"
     );
     let (_, prefix) = rig.tmux(&["list-keys", "-T", "prefix"]);
     let hotkey = prefix
@@ -2250,6 +2288,20 @@ fn the_session_focus_hook_follows_the_lead_through_resume_and_rename() {
         .0,
         "plant a pre-release right-click binding"
     );
+    for key in ["MouseUp1Status", "MouseUp3Status"] {
+        assert!(
+            rig.tmux(&[
+                "bind-key",
+                "-T",
+                "root",
+                key,
+                "display-message",
+                "stale-release"
+            ])
+            .0,
+            "plant stale {key} binding"
+        );
+    }
     let (code, stdout, stderr) = rig.launch(&["--local", "lnfocus"]);
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
     assert!(
@@ -2297,6 +2349,10 @@ fn the_session_focus_hook_follows_the_lead_through_resume_and_rename() {
 /// An ambient server may carry the user's own root table. A launch there keeps
 /// tmux's default status click instead of replacing a server-global binding.
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one ambient server owns both Down and Up status bindings plus the hotkey"
+)]
 fn an_ambient_launch_does_not_replace_mouse_down_status() {
     if skip() {
         return;
@@ -2339,6 +2395,15 @@ fn an_ambient_launch_does_not_replace_mouse_down_status() {
         .0,
         "the user owns the ambient context-menu binding"
     );
+    for (key, message) in [
+        ("MouseUp1Status", "ambient-up-click"),
+        ("MouseUp3Status", "ambient-up-menu"),
+    ] {
+        assert!(
+            ambient(&["bind-key", "-T", "root", key, "display-message", message]).0,
+            "the user owns ambient {key}"
+        );
+    }
     assert!(
         ambient(&[
             "bind-key",
@@ -2372,6 +2437,19 @@ fn an_ambient_launch_does_not_replace_mouse_down_status() {
         menu.contains("display-message ambient-menu") && !menu.contains("display-menu"),
         "an ambient launch leaves the server-global menu binding alone: {menu}"
     );
+    for (key, message) in [
+        ("MouseUp1Status", "ambient-up-click"),
+        ("MouseUp3Status", "ambient-up-menu"),
+    ] {
+        let line = keys
+            .lines()
+            .find(|line| line.starts_with(&format!("bind-key  -T root {key} ")))
+            .unwrap_or_else(|| panic!("ambient {key} remains: {keys}"));
+        assert!(
+            line.contains(&format!("display-message {message}")),
+            "ambient {key} changed: {line}"
+        );
+    }
     let (_, prefix) = ambient(&["list-keys", "-T", "prefix"]);
     let hotkey = prefix
         .lines()
@@ -3159,30 +3237,9 @@ fn a_session_with_the_theme_off_keeps_the_users_own_look() {
     assert!(!session(ae::theme::ATTENTION_GLYPH_OPTION).is_empty());
     assert!(!session(ae::theme::PATHS_OPTION).is_empty());
 
-    // Input policy is not part of the look: both root bindings and the picker
-    // hotkey remain.
-    let (_, keys) = rig.tmux(&["list-keys", "-T", "root"]);
-    assert!(
-        keys.lines()
-            .any(|line| line.starts_with("bind-key  -T root MouseDown1Status ")),
-        "theme off keeps strip navigation: {keys}"
-    );
-    assert!(
-        keys.lines().any(|line| {
-            line.starts_with("bind-key  -T root MouseDown3Status ")
-                && line.contains("Flip lead/colead panes")
-        }),
-        "theme off keeps the strip context menu: {keys}"
-    );
-    let (_, prefix) = rig.tmux(&["list-keys", "-T", "prefix"]);
-    let hotkey = prefix
-        .lines()
-        .find(|line| line.contains("-T prefix a "))
-        .unwrap_or_default();
-    assert!(
-        hotkey.contains("orchestrator --popup") || hotkey.contains("'orchestrator' '--popup'"),
-        "theme off keeps the fleet hotkey: {hotkey}"
-    );
+    // Input policy is not part of the look: the capability-selected status
+    // bindings and picker hotkey remain.
+    assert_ae_status_bindings(&rig);
 }
 
 #[test]

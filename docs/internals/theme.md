@@ -25,14 +25,13 @@ those lands on that session's *current* window and silently leaves the others on
 the global table — so ae stamps each window individually and never touches `-g`.
 The launch also stamps a session-scoped `client-session-changed` hook that
 selects the lead window and pane by pane id; it is a focus rule, not a look
-option, and is present when `theme = off` too. Three input rules cannot be
-session-scoped: on a positively selected ae-owned server, launch replaces the
-root `MouseDown1Status` and `MouseDown3Status` bindings and binds `prefix a`.
-Left-click sends a
-window range through `select-window -t =`, a session range through
-`switch-client -t =`, and both `ae` and `ae-more` to the fleet picker.
-Right-click also sends `ae` and `ae-more` to the picker, a session range to its
-context menu, and a window range nowhere.
+option, and is present when `theme = off` too. Input rules cannot be
+session-scoped: on a positively selected ae-owned server, launch binds
+`prefix a` and installs one capability-canonical status map. tmux 3.5+ uses
+`MouseDown1Status` and `MouseDown3Status` for menus and removes stale Up
+bindings. tmux 3.4 keeps window and session navigation on Down but makes menu
+ranges no-ops there; `MouseUp1Status` opens the picker and `MouseUp3Status`
+opens the picker or session context menu, exactly once after release.
 The context menu targets the clicked session's current window; its Flip action
 swaps an unzoomed two-pane window. The guard's format hashes are escaped
 through menu construction, so pane count and zoom are read when the row is
@@ -43,7 +42,7 @@ cannot identify the one that clicked. Launch never
 writes these server-global bindings on an ambient server, where the key
 table belongs to the user. Every launch and upgrade of a running session on an
 owned server reasserts the same bindings, so the writes are idempotent and
-pre-release servers adopt them without a session rebuild. All three bindings remain
+pre-release servers adopt them without a session rebuild. These bindings remain
 when `theme = off`; like the focus and resize hooks, they are input rules, not
 part of the look. An installed binding launches the public `~/.local/bin/ae`
 pointer so pruning an old core cannot strand it; a checkout binding carries its
@@ -156,20 +155,21 @@ the ONE place the seat is drawn — with its own verdict mark and a tmux
 selection colours mark it in place; it never jumps into the fleet strip. Three
 spaces separate it from the fleet and one space separates it from `ae <version>`.
 Each strip entry is a tmux `range=session` region, so
-ae's root `MouseDown1Status` binding sends it through tmux's default
+ae's root left-click binding sends it through tmux's default
 `switch-client -t #{session_id}` action. Window ranges use
-`select-window -t #{window_id}`. `MouseDown3Status` opens the context menu for
-the clicked session's current window. The bindings are the server-global
+`select-window -t #{window_id}`. The right-click binding opens the context menu
+for the clicked session's current window. The bindings are the server-global
 exception described above and are installed only on an ae-owned server.
 The bottom-right `ae <version>` segment is always the user range `ae`, and its
 `+N` overflow counter is the user range `ae-more`. Both are raised pills using
 the selection ground and ink; the version pill reads `☰ ae <version>` (`=` in
 ASCII mode). Either mouse button on either range, or `prefix a`, opens the same
-fleet picker. Every menu uses `display-menu -O`, so releasing the status click
-cannot close the newly opened picker. On tmux 3.5 and newer `-M` also makes its
-rows mouse-selectable; the supported 3.4 floor uses row shortcut keys and `q`
-to close. Each row shows bounded name, mark, state word, branch and goal
-columns. The tmux reader strips pipes and control bytes from the branch field
+fleet picker. Every menu uses `display-menu -O`. On tmux 3.5 and newer, Down
+opens it with `-M`, the trailing release leaves it open, and rows are
+mouse-selectable. On the supported 3.4 floor, status clicks open on release,
+menus are keyboard-driven, row shortcut keys choose, and `q` closes. Each row
+shows bounded name, mark, state word, branch and goal columns. The tmux reader
+strips pipes and control bytes from the branch field
 without changing the raw session option, preserving the record boundary.
 Choosing a row switches to its
 captured session id and then selects its published lead pane only while that

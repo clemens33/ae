@@ -483,16 +483,19 @@ drawing a confident empty fleet.
 
 ### Hotkey and mouse
 
-On an ae-owned server, launch and upgrade bind `prefix a` and the two status
-mouse actions. All three capture `#{client_name}` and the picker uses
-`display-menu -c <name>` because two clients can watch the same pane. An
-ambient server keeps all of the user's bindings untouched.
+On an ae-owned server, launch and upgrade bind `prefix a` and the
+capability-specific status mouse actions. Each picker action captures
+`#{client_name}` and uses `display-menu -c <name>` because two clients can
+watch the same pane. An ambient server keeps all of the user's bindings
+untouched.
 
-Every picker and context menu uses `display-menu -O`, so the release that
-follows a status press does not immediately close it. tmux 3.5 and newer also
-gets `-M`, allowing mouse row selection even though the background picker is
-not opened directly by a mouse binding. tmux 3.4 has no `-M`; its menu remains
-keyboard-driven with the displayed row keys, while `q` or Escape closes it.
+Every picker and context menu uses `display-menu -O`. On tmux 3.5 and newer,
+Down opens menus with `-M`, the trailing release leaves them open, and rows are
+mouse-selectable; launch also removes stale Up bindings. tmux 3.4 has no `-M`:
+status clicks open menus on release, menus are keyboard-driven, displayed row
+keys choose rows, and `q` or Escape closes. Its Down bindings retain session
+and window navigation but do nothing on picker and context-menu ranges, so one
+click cannot dispatch twice.
 
 ### The tmux floor
 

@@ -252,10 +252,17 @@ impl Mark {
     #[must_use]
     pub fn from_rank(raw: &str) -> Self {
         let rank = raw.trim().parse::<u8>().unwrap_or(0);
-        Self::BY_URGENCY
-            .into_iter()
-            .find(|mark| mark.rank() == rank)
-            .unwrap_or(Self::Idle)
+        Self::from_rank_value(rank)
+    }
+
+    /// The mark a parsed rank names, or [`Mark::Idle`] for anything else.
+    #[must_use]
+    pub const fn from_rank_value(rank: u8) -> Self {
+        if rank <= 5 {
+            Self::BY_URGENCY[(5 - rank) as usize]
+        } else {
+            Self::Idle
+        }
     }
 
     /// The stable state word shown beside this mark in the fleet picker.
@@ -2113,12 +2120,14 @@ mod tests {
     fn a_published_rank_round_trips_through_the_strip() {
         for mark in Mark::BY_URGENCY {
             assert_eq!(Mark::from_rank(&mark.rank().to_string()), mark, "{mark:?}");
+            assert_eq!(Mark::from_rank_value(mark.rank()), mark, "{mark:?}");
         }
         // A session with nothing published, or something ae cannot read, is
         // idle — never a verdict ae does not have.
         assert_eq!(Mark::from_rank(""), Mark::Idle);
         assert_eq!(Mark::from_rank("nonsense"), Mark::Idle);
         assert_eq!(Mark::from_rank("99"), Mark::Idle);
+        assert_eq!(Mark::from_rank_value(99), Mark::Idle);
         assert_eq!(
             Mark::BY_URGENCY.map(Mark::word),
             ["dead", "needs-you", "stale", "working", "done", "idle"]
