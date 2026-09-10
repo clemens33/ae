@@ -1,6 +1,13 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.43] - 2026-09-10
+
+### Other
+
+- Bind session ID capture to launch identity
+- Preserve capture origin across resume
+- Search token-proven Codex partitions
 ## [v2026.9.42] - 2026-09-10
 
 ### Documentation
