@@ -1,6 +1,16 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.41] - 2026-09-10
+
+### Other
+
+- Add offline session usage reporting
+- Harden usage readers for real transcripts
+- Refine usage retirement and model attribution
+- Exercise Codex head-tail usage reducer
+- Preserve incomplete usage scan coverage
+- Reject malformed Codex token counters
 ## [v2026.9.40] - 2026-09-10
 
 ### Other
