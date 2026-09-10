@@ -802,10 +802,6 @@ When the human asks about one session, it runs `ae brief <session>` and presents
 the card verbatim — including the full `needs you:` reasons — then relays the
 human's answer to that session's lead.
 
-**Pausing it.** `ae stop orchestrator` pauses the seat and keeps its state;
-`ae orchestrator` resumes or reattaches it. `ae end orchestrator -f
---keep-history` retires it. The seat never stops or ends itself.
-
 One quoted text argument works; otherwise remaining argv are joined with single
 spaces. The delivery is bare human-authority text, audited with target and full
 text only in the orchestrator session. Free text without a leading target is
@@ -836,6 +832,10 @@ or delete history. It never stops or ends its own session (the seat named
 answers that the seat cannot stop or end itself; the human does that from a terminal. After a lifecycle command it runs nothing else and declares `done`
 after the watchdog reports the result. See
 [`contrib/aeorchestrator`](../../contrib/aeorchestrator/).
+
+**Pausing it.** `ae stop orchestrator` pauses the seat and keeps its state;
+`ae orchestrator` resumes or reattaches it. `ae end orchestrator -f
+--keep-history` retires it. The seat never stops or ends itself.
 
 **Starting it.** Run it from anywhere:
 

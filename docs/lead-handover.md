@@ -162,12 +162,13 @@ knowledge: what to trust, what to distrust, where to look first.
   workers take new parallel slices; fix rounds return to the worker and reviewer
   with the context. Judgment is never outsourced — the lead reads every gated
   diff personally.
-- **Brief the pain and the invariant, never the mechanism.** Every mechanism-brief
-  in the 2026-07 campaign was corrected by its worker (3/3 on one addendum alone),
-  each costing a round of rebuttal; briefs naming a pain, an invariant, or a
-  verification duty held up. Corollaries: require a real specimen before designing
-  any sensor, and name both failure directions of any bound in the brief ("false
-  IDLE clobbers a human's draft silently; false OCCUPIED defers loudly — fail loud").
+- **Brief the pain and the invariant, never an unruled mechanism.** Carry mechanisms
+  already ruled; leave the rest open. Every mechanism-brief in the 2026-07 campaign
+  was corrected by its worker (3/3 on one addendum alone), each costing a round of
+  rebuttal; briefs naming a pain, an invariant, or a verification duty held up.
+  Corollaries: require a real specimen before designing any sensor, and name both
+  failure directions of any bound in the brief ("false IDLE clobbers a human's draft
+  silently; false OCCUPIED defers loudly — fail loud").
 - **Reconcile the tree, not the pane.** Turn-boundary stalls are real: an agent can
   finish the work and stop before committing or reporting — no event,
   `state=working`, watchdog quiet. Caught twice only by the lead reconciling
