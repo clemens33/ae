@@ -713,7 +713,7 @@ mod tests {
     }
 
     #[test]
-    fn display_argv_targets_the_explicit_client_and_has_one_triplet_per_row() {
+    fn display_argv_anchors_the_explicit_client_menu_at_the_left() {
         let drawn = menu_for_client(
             &[session("hub", "$1", 0, "")],
             &[],
@@ -721,54 +721,28 @@ mod tests {
             &Palette::DARCULA,
             Some("client"),
         );
-        let words = crate::tmux::display_menu_for_client_on_pane_args(
-            &ServerId::Ambient,
-            Some("client"),
-            Some("%9"),
-            &drawn,
-            true,
-        );
+        let words = display_menu_for_client_args(&ServerId::Ambient, Some("client"), &drawn, true);
         assert_eq!(
-            &words[..11],
+            &words[..9],
             [
                 "display-menu",
                 "-M",
                 "-O",
                 "-c",
                 "client",
-                "-t",
-                "%9",
                 "-x",
-                "R",
+                "0",
                 "-y",
                 "S",
             ]
         );
-        let keyboard = crate::tmux::display_menu_for_client_on_pane_args(
-            &ServerId::Ambient,
-            Some("client"),
-            Some("%9"),
-            &drawn,
-            false,
-        );
-        assert_eq!(
-            &keyboard[..10],
-            [
-                "display-menu",
-                "-O",
-                "-c",
-                "client",
-                "-t",
-                "%9",
-                "-x",
-                "R",
-                "-y",
-                "S",
-            ]
-        );
-        let fallback =
+        let keyboard =
             display_menu_for_client_args(&ServerId::Ambient, Some("client"), &drawn, false);
-        assert!(!fallback.iter().any(|word| word == "-t"));
+        assert_eq!(
+            &keyboard[..8],
+            ["display-menu", "-O", "-c", "client", "-x", "0", "-y", "S",]
+        );
+        assert!(!words.iter().any(|word| word == "-t"));
         assert!(!keyboard.iter().any(|word| word == "-M"));
         assert_eq!(words.iter().filter(|word| word.as_str() == "--").count(), 1);
         assert!(

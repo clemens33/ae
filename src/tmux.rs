@@ -1118,9 +1118,12 @@ pub struct Menu {
     pub items: Vec<MenuItem>,
 }
 
-/// Where the fleet picker is drawn — against the right edge, immediately
-/// above the status line and its bottom-right button.
-const MENU_POSITION: [&str; 4] = ["-x", "R", "-y", "S"];
+/// Where the fleet picker is drawn — at client column zero, immediately above
+/// the status line and its bottom-left button.
+///
+/// tmux 3.4 expands a numeric `-x` directly as the menu's bottom-left
+/// position: <https://github.com/tmux/tmux/blob/3.4/cmd-display-menu.c#L214-L233>.
+const MENU_POSITION: [&str; 4] = ["-x", "0", "-y", "S"];
 
 /// tmux's marker for a row that is drawn dim and cannot be chosen.
 const DISABLED_PREFIX: char = '-';
@@ -1152,22 +1155,6 @@ pub fn display_menu_for_client_args(
     menu: &Menu,
     menu_mouse: bool,
 ) -> Vec<String> {
-    display_menu_for_client_on_pane_args(server, client, None, menu, menu_mouse)
-}
-
-/// The arguments that draw `menu` relative to an optional target pane.
-///
-/// `-x R` is pane-relative, so the fleet picker supplies a pane whose right
-/// edge is also the client's right edge. A missing or invalid hint falls back
-/// to tmux's own target selection.
-#[must_use]
-pub fn display_menu_for_client_on_pane_args(
-    server: &ServerId,
-    client: Option<&str>,
-    target_pane: Option<&str>,
-    menu: &Menu,
-    menu_mouse: bool,
-) -> Vec<String> {
     let mut args = server_args(server);
     args.push("display-menu".to_owned());
     if menu_mouse {
@@ -1176,9 +1163,6 @@ pub fn display_menu_for_client_on_pane_args(
     args.push("-O".to_owned());
     if let Some(client) = client {
         args.extend(["-c".to_owned(), client.to_owned()]);
-    }
-    if let Some(pane) = target_pane.filter(|pane| pane_id_is_valid(pane)) {
-        args.extend(["-t".to_owned(), pane.to_owned()]);
     }
     args.extend(MENU_POSITION.map(ToOwned::to_owned));
     args.push("-T".to_owned());
@@ -1600,35 +1584,6 @@ pub fn interpret_picker_client_session(
     });
     let session_id = matches.next()?;
     matches.next().is_none().then_some(session_id)
-}
-
-/// A pane in the client's active window whose right edge reaches client width.
-pub const PICKER_RIGHT_PANE_FORMAT: &str = "#{pane_id} | #{window_active} | #{pane_at_right}";
-
-/// Read the panes in `session_id`'s active window once.
-#[must_use]
-pub fn picker_right_pane_args(server: &ServerId, session_id: &str) -> Vec<String> {
-    let mut args = server_args(server);
-    args.extend(["list-panes".to_owned(), "-t".to_owned()]);
-    args.push(session_target(session_id));
-    args.extend(["-F", PICKER_RIGHT_PANE_FORMAT].map(ToOwned::to_owned));
-    args
-}
-
-/// The first valid pane proven active and against the window's right edge.
-#[must_use]
-pub fn interpret_picker_right_pane(succeeded: bool, stdout: &str) -> Option<String> {
-    if !succeeded {
-        return None;
-    }
-    stdout.lines().find_map(|line| {
-        let mut fields = line.split(FIELD_SEPARATOR);
-        let pane = fields.next()?;
-        let active = fields.next()?;
-        let at_right = fields.next()?;
-        (fields.next().is_none() && pane_id_is_valid(pane) && active == "1" && at_right == "1")
-            .then(|| pane.to_owned())
-    })
 }
 
 /// One picker row, identity first and its free-text goal last.
@@ -2380,27 +2335,8 @@ mod tests {
     }
 
     #[test]
-    fn picker_right_pane_is_from_the_active_window_and_client_right_edge() {
-        assert_eq!(
-            super::picker_right_pane_args(&ServerId::Ambient, "$3"),
-            [
-                "list-panes",
-                "-t",
-                "=$3",
-                "-F",
-                "#{pane_id} | #{window_active} | #{pane_at_right}",
-            ]
-        );
-        let listing = "%1 | 1 | 0\n%2 | 1 | 1\n%3 | 0 | 1\n";
-        assert_eq!(
-            super::interpret_picker_right_pane(true, listing),
-            Some("%2".to_owned())
-        );
-        assert_eq!(super::interpret_picker_right_pane(false, listing), None);
-        assert_eq!(
-            super::interpret_picker_right_pane(true, "%bad | 1 | 1\n%2 | 1 | 0\n"),
-            None
-        );
+    fn picker_menu_anchors_at_the_client_left_above_the_status_line() {
+        assert_eq!(super::MENU_POSITION, ["-x", "0", "-y", "S"]);
     }
 
     #[test]

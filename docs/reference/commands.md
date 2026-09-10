@@ -434,19 +434,19 @@ attach command and exits successfully. The seat keeps its fixed launch shape, so
 an ordinary-session flag. The seat is pinned first in the status
 bar's fleet strip, marked `◆`. The `--popup` form is the picker, next. From any
 ae session on the same tmux server, click the `☰` menu glyph (`=` with icons
-off) at the far-right edge of the status bar or its `+N` overflow count, or
+off) at the bottom-left, before the session list, or its `+N` overflow count, or
 press `<prefix> a` (default `C-b a`), to open it.
 
 ## `ae orchestrator --popup`
 
-The fleet picker is drawn by tmux itself, right-aligned above its status button.
+The fleet picker is drawn by tmux itself at the left edge above its status button.
 Its rows come only from one live `list-sessions` call on the calling server; one
 `list-panes -a` call proves which published lead-pane hints still belong to
 their sessions. One `list-clients` call resolves the explicitly named client's
-current session, then one targeted `list-panes` call finds a pane on the right
-edge of its active window so pane-relative `-x R` reaches client width. It never
-builds [`ae list`](#ae-list)'s durable inventory, walks session directories,
-reads events or probes git.
+current session. Numeric `display-menu -x 0` is the menu's bottom-left client
+column on tmux 3.4 ([source](https://github.com/tmux/tmux/blob/3.4/cmd-display-menu.c#L214-L233)),
+so the picker needs no target pane. It never builds [`ae list`](#ae-list)'s
+durable inventory, walks session directories, reads events or probes git.
 
 Left- or right-click the menu glyph or overflow count, or press `<prefix> a`
 (default `C-b a`), to open it. The picker shows at most 30 attention-ordered sessions. Its title starts
@@ -456,7 +456,7 @@ names its tmux client explicitly through the menu and every action, so another
 client watching the same pane is untouched; if that client vanishes, the
 picker refuses instead of choosing another.
 
-While the picker is open, the final-cell menu glyph uses the palette's selected
+While the picker is open, the first-cell menu glyph uses the palette's selected
 background and ink. The marker belongs to the named client's current session,
 never the session under a mouse target. Choosing a row clears it before the
 switch; opening the picker again refreshes the epoch and keeps it lit; the

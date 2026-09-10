@@ -585,7 +585,7 @@ pub const MENU_OPEN_OPTION: &str = "@ae_menu_open";
 /// changes shape: the version leads both stamps, so a session or window carrying
 /// an older one is rewritten by the next watchdog cycle rather than left on the
 /// layout an older core wrote.
-pub const FORMAT_VERSION: &str = "14";
+pub const FORMAT_VERSION: &str = "15";
 
 /// What [`WINDOW_STAMP_OPTION`] is set to: the LOOK the window was dressed in,
 /// formats version first.
@@ -731,25 +731,24 @@ pub fn status_line_zero(palette: &Palette) -> String {
 // status-format[1] — the fleet strip
 // ---------------------------------------------------------------------------
 
-/// `status-format[1]`: every ae session on this server, then the orchestrator
-/// and a quiet menu glyph — dim, at the far right, where a reader clicks to
-/// open the fleet picker.
+/// `status-format[1]`: a quiet menu glyph, then every ae session on this
+/// server; the optional orchestrator stays on the right.
 #[must_use]
 pub fn status_line_one(look: &Look) -> String {
     let palette = &look.palette;
     // The conditional splits on format-text commas, so a comma-free option
     // value is safe; this follows the same contract as @ae_fleet_strip.
     format!(
-        "#[align=left fg={dim} bg={base}] #{{{FLEET_STRIP_OPTION}}}\
-         #[align=right fg={dim} bg={base}] \
-         #{{?#{{{ORCHESTRATOR_STRIP_OPTION}}},  #{{{ORCHESTRATOR_STRIP_OPTION}}} ,}}{version}",
+        "#[align=left fg={dim} bg={base}]{version} #{{{FLEET_STRIP_OPTION}}}\
+         #[align=right fg={dim} bg={base}]\
+         #{{?#{{{ORCHESTRATOR_STRIP_OPTION}}},  #{{{ORCHESTRATOR_STRIP_OPTION}}} ,}}",
         dim = palette.dim,
         base = palette.base,
         version = version_segment(look),
     )
 }
 
-/// The bottom-right menu glyph: a named range whose mouse binding opens the
+/// The bottom-left menu glyph: a named range whose mouse binding opens the
 /// fleet picker with either button. It inherits the line's dim style until
 /// [`MENU_OPEN_OPTION`] lights it with the menu-selection palette.
 fn version_segment(look: &Look) -> String {
@@ -1316,17 +1315,31 @@ mod tests {
     /// Every palette a session can be drawn in.
     const PALETTES: [Palette; 3] = [Palette::DARCULA, Palette::NEUTRAL, Palette::WARM];
 
-    /// Line two ends in the quiet picker button. Its range stays present when
-    /// no orchestrator target is published.
+    /// Line two leads with the quiet picker button, then the fleet strip. Its
+    /// range stays present when no orchestrator target is published.
     #[test]
-    fn line_one_carries_the_menu_button_at_its_right_end() {
+    fn line_one_leads_with_the_menu_button_then_the_fleet_strip() {
         for palette in PALETTES {
             let look = Look {
                 palette,
                 ..Look::DEFAULT
             };
             let line = status_line_one(&look);
-            assert!(line.ends_with(&super::version_segment(&look)), "{line}");
+            assert_eq!(
+                line,
+                format!(
+                    "#[align=left fg={} bg={}]{} #{{{}}}#[align=right fg={} bg={}]#{{?#{{{}}},  #{{{}}} ,}}",
+                    palette.dim,
+                    palette.base,
+                    super::version_segment(&look),
+                    super::FLEET_STRIP_OPTION,
+                    palette.dim,
+                    palette.base,
+                    super::ORCHESTRATOR_STRIP_OPTION,
+                    super::ORCHESTRATOR_STRIP_OPTION,
+                ),
+                "{line}"
+            );
             assert_eq!(
                 super::version_segment(&look),
                 format!(
@@ -1341,7 +1354,7 @@ mod tests {
     }
 
     #[test]
-    fn line_one_places_optional_orchestrator_before_menu_button() {
+    fn line_one_places_optional_orchestrator_on_its_right_side() {
         let line = status_line_one(&Look::DEFAULT);
         let marker = format!(
             "#{{?#{{{}}},  #{{{}}} ,}}",
@@ -1350,9 +1363,13 @@ mod tests {
         );
         assert!(line.contains(&marker), "{line}");
         assert!(
-            line.find(&marker).unwrap_or(usize::MAX)
-                < line.find("#[range=user|ae]").unwrap_or(usize::MAX),
-            "orchestrator conditional must precede menu button: {line}"
+            line.find("#[range=user|ae]").unwrap_or(usize::MAX)
+                < line.find(super::FLEET_STRIP_OPTION).unwrap_or(usize::MAX)
+                && line.find(super::FLEET_STRIP_OPTION).unwrap_or(usize::MAX)
+                    < line.find("#[align=right").unwrap_or(usize::MAX)
+                && line.find("#[align=right").unwrap_or(usize::MAX)
+                    < line.find(&marker).unwrap_or(usize::MAX),
+            "menu, fleet and orchestrator must keep their left-to-right order: {line}"
         );
     }
 
@@ -1942,7 +1959,7 @@ mod tests {
     #[test]
     fn terminal_titles_are_part_of_the_drawn_layout() {
         let options = super::layout_options(&Look::DEFAULT);
-        assert_eq!(super::FORMAT_VERSION, "14");
+        assert_eq!(super::FORMAT_VERSION, "15");
         assert_eq!(
             options
                 .iter()

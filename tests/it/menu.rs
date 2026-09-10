@@ -529,6 +529,10 @@ fn a_main_pane_killed_after_open_still_leaves_the_client_in_the_session() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one client-marker fixture also proves picker placement and pane stability"
+)]
 fn popup_marks_the_clients_session_not_the_calling_panes_session() {
     let scratch = scratch("open-marker-client-session");
     if !tmux_present(&scratch) {
@@ -556,6 +560,7 @@ fn popup_marks_the_clients_session_not_the_calling_panes_session() {
         .0
     );
     let client = nested_client(&socket, &scratch, "viewed", "viewer");
+    let viewed_right_pane = select_client_right_pane(&socket, &scratch, "viewed", &client);
     let clicked_pane = tmux(
         &socket,
         &scratch,
@@ -577,8 +582,16 @@ fn popup_marks_the_clients_session_not_the_calling_panes_session() {
                     picker_is_open,
                 );
                 let marks = (option("viewed"), option("clicked"));
+                let active_pane = tmux(
+                    &socket,
+                    &scratch,
+                    &["display-message", "-p", "-c", &client, "#{pane_id}"],
+                )
+                .1
+                .trim()
+                .to_owned();
                 assert!(tmux(&socket, &scratch, &["send-keys", "-t", "viewer", key]).0);
-                (marks, menu)
+                (marks, active_pane, menu)
             });
             let output = ae()
                 .env("HOME", &scratch)
@@ -595,15 +608,22 @@ fn popup_marks_the_clients_session_not_the_calling_panes_session() {
         })
     };
 
-    let ((viewed_mark, clicked_mark), menu) = open_and_choose("q");
-    let title_width = menu
+    let ((viewed_mark, clicked_mark), active_pane, menu) = open_and_choose("q");
+    let title_left = menu
         .lines()
         .find(|line| picker_is_open(line))
-        .map(|line| line.chars().count());
+        .and_then(|line| {
+            line.chars()
+                .position(|character| matches!(character, '╭' | '┌'))
+        });
     assert_eq!(
-        title_width,
-        Some(140),
-        "picker must reach client right edge:\n{menu}"
+        title_left,
+        Some(0),
+        "picker must touch client left edge:\n{menu}"
+    );
+    assert_eq!(
+        active_pane, viewed_right_pane,
+        "opening the picker must not move the client off its active right pane"
     );
     assert!(
         viewed_mark.parse::<i64>().is_ok(),
@@ -621,14 +641,14 @@ fn popup_marks_the_clients_session_not_the_calling_panes_session() {
 
     let first_epoch = viewed_mark.parse::<i64>().unwrap_or_default();
     std::thread::sleep(Duration::from_secs(1));
-    let ((reopened_mark, _), _) = open_and_choose("q");
+    let ((reopened_mark, _), _, _) = open_and_choose("q");
     let reopened_epoch = reopened_mark.parse::<i64>().unwrap_or_default();
     assert!(
         reopened_epoch > first_epoch && option("viewed") == reopened_mark,
         "reopening refreshes the epoch and keeps the open menu lit: {reopened_mark:?}"
     );
 
-    let ((selected_mark, _), _) = open_and_choose("1");
+    let ((selected_mark, _), _, _) = open_and_choose("1");
     assert!(selected_mark.parse::<i64>().is_ok(), "{selected_mark:?}");
     assert!(
         option("viewed").is_empty(),
@@ -662,6 +682,42 @@ fn picker_marker(socket: &Path, scratch: &Path, session: &str) -> String {
     .1
     .trim()
     .to_owned()
+}
+
+/// Put `client` on `session`'s right pane and prove it is the live view.
+fn select_client_right_pane(socket: &Path, scratch: &Path, session: &str, client: &str) -> String {
+    let listing = tmux(
+        socket,
+        scratch,
+        &[
+            "list-panes",
+            "-t",
+            session,
+            "-F",
+            "#{pane_id}|#{pane_at_right}",
+        ],
+    )
+    .1;
+    let right = listing
+        .lines()
+        .find_map(|line| line.strip_suffix("|1"))
+        .unwrap_or_else(|| panic!("{session} right pane: {listing}"));
+    assert!(
+        tmux(socket, scratch, &["select-pane", "-t", right]).0,
+        "the picker opens while the right pane is active"
+    );
+    assert_eq!(
+        tmux(
+            socket,
+            scratch,
+            &["display-message", "-p", "-c", client, "#{pane_id}"],
+        )
+        .1
+        .trim(),
+        right,
+        "the nested client must start on the right pane"
+    );
+    right.to_owned()
 }
 
 fn launch_ae_session(

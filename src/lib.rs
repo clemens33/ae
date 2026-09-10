@@ -547,7 +547,7 @@ fn run_orchestrator(tail: &[String], err: &mut impl Write) -> Result<u8> {
     let client = args.client.as_deref();
     // Resolve the CLIENT'S session rather than the mouse target's session.
     // A status binding may be evaluated with another session as `{mouse}`;
-    // only this explicit client row says which bottom-right button was used.
+    // only this explicit client row says which bottom-left button was used.
     let opened_session = if let Some(client) = client {
         let Some(session_id) = transport::observe_picker_client_session(&server, client) else {
             writeln!(
@@ -600,13 +600,7 @@ fn run_orchestrator(tail: &[String], err: &mut impl Write) -> Result<u8> {
         err.flush()?;
         return Ok(EXIT_UNAVAILABLE);
     }
-    if !draw_picker(
-        &server,
-        client,
-        opened_session.as_deref(),
-        &menu,
-        probe.menu_mouse(),
-    ) {
+    if !draw_picker(&server, client, &menu, probe.menu_mouse()) {
         if let Some(client) = client {
             writeln!(
                 err,
@@ -646,17 +640,14 @@ fn picker_look(server: &inventory::ServerId, session_id: Option<&str>) -> theme:
     })
 }
 
-/// Anchor the picker to a pane whose right edge reaches the client edge.
+/// Draw the picker at the calling client's left edge.
 fn draw_picker(
     server: &inventory::ServerId,
     client: Option<&str>,
-    session_id: Option<&str>,
     menu: &tmux::Menu,
     menu_mouse: bool,
 ) -> bool {
-    let right_pane =
-        session_id.and_then(|session_id| transport::observe_picker_right_pane(server, session_id));
-    transport::display_menu_on_pane(server, client, right_pane.as_deref(), menu, menu_mouse)
+    transport::display_menu(server, client, menu, menu_mouse)
 }
 
 /// The socket path each server answers with, asked once per server.

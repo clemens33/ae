@@ -42,10 +42,10 @@ chosen, not frozen when the menu opens. A status click also carries
 actions retain it: two clients may watch one pane, so `$TMUX_PANE`
 cannot identify the one that clicked. One `list-clients` snapshot resolves that
 exact client's current session; the mouse target's `#{session_id}` may name a
-different session and is never used for the open marker. One targeted
-`list-panes` snapshot then finds a pane at the right edge of that session's
-active window; `display-menu -t <pane> -x R` therefore reaches client width even
-when the client's active pane is on the left. Launch never
+different session and is never used for the open marker. The picker uses
+`display-menu -x 0 -y S`: tmux 3.4 expands numeric `-x` as its bottom-left
+position, so column zero anchors it at the client left without a pane read
+([`cmd-display-menu.c`](https://github.com/tmux/tmux/blob/3.4/cmd-display-menu.c#L214-L233)). Launch never
 writes these server-global bindings on an ambient server, where the key
 table belongs to the user. Every launch and upgrade of a running session on an
 owned server reasserts the same bindings, so the writes are idempotent and
@@ -150,31 +150,30 @@ The selected window uses the palette's selection ground and ink. The right
 side carries the branch, goal, shortened path and watch segment. The session
 name is shown once in the fleet strip below.
 
-`status-format[1]` — the **fleet strip**: every non-orchestrator ae session in
-the order it was created, each drawn as its live glyph, one blank, then its
-name. A session keeps its place
-while its attention changes, so a click never moves the thing that was clicked;
-the current session uses the palette's selection ground, ink and weight, never
-extra leading or trailing blanks, so selection never changes row width. The
-orchestrator is rendered immediately before the menu button —
-the ONE place the seat is drawn — with its own verdict mark and a tmux
-`range=session` target for the canonical `orchestrator` session. When current,
-selection colours mark it in place; it never jumps into the fleet strip. Three
-spaces separate it from the fleet and one space separates it from the menu glyph.
-Each strip entry is a tmux `range=session` region, so
+`status-format[1]` — the bottom-left menu glyph comes first, followed by the
+**fleet strip**: every non-orchestrator ae session in the order it was created,
+each drawn as its live glyph, one blank, then its name. A session keeps its
+place while its attention changes, so a click never moves the thing that was
+clicked; the current session uses the palette's selection ground, ink and
+weight, never extra leading or trailing blanks, so selection never changes row
+width. The optional orchestrator remains on the right — the ONE place the seat
+is drawn — with its own verdict mark and a tmux `range=session` target for the
+canonical `orchestrator` session. When current, selection colours mark it in
+place; it never jumps into the fleet strip. Each strip entry is a tmux
+`range=session` region, so
 ae's root left-click binding sends it through tmux's default
 `switch-client -t #{session_id}` action. Window ranges use
 `select-window -t #{window_id}`. The right-click binding opens the context menu
 for the clicked session's current window. The bindings are the server-global
 exception described above and are installed only on an ae-owned server.
-The bottom-right menu button is always the user range `ae`; it reads only `☰`
-(`=` in ASCII mode), and the glyph is the line's final cell. Its `+N` overflow
+The bottom-left menu button is always the first user range `ae`; it reads only
+`☰` (`=` in ASCII mode), one space before the fleet strip. Its `+N` overflow
 counter is the user range `ae-more`. The button inherits the line's dim style
 while quiet; while `@ae_menu_open` is set it uses the palette's selected
 background and ink. Either mouse button on either range, or `<prefix> a`
-(default `C-b a`), opens the same fleet picker right-aligned above the status
-line with `display-menu -t <right-pane> -x R -y S`; a failed right-pane read
-falls back to no `-t`. Its title starts with the running core's `ae <version>`.
+(default `C-b a`), opens the same fleet picker at the left edge above the
+status line with `display-menu -x 0 -y S`. Its title starts with the running
+core's `ae <version>`.
 Every menu uses `display-menu -O`. On tmux 3.5 and newer, Down
 opens it with `-M`, the trailing release leaves it open, and rows are
 mouse-selectable. On the supported 3.4 floor, status clicks open on release,
