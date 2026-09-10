@@ -1,10 +1,7 @@
 //! Bundled API-equivalent list prices and fixed-point price arithmetic.
 
 use crate::usage::Tokens;
-use std::io::Read as _;
 use std::path::{Path, PathBuf};
-
-const CONFIG_MAX_BYTES: u64 = 1024 * 1024;
 
 /// Token rates in micro-USD per one million tokens (`$0.20/M` = `200_000`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -147,7 +144,8 @@ impl std::fmt::Display for ConfigError {
 pub fn read(global: Option<&Path>, local: Option<&Path>) -> Result<Book, ConfigError> {
     let mut aliases: Vec<(String, String, Price)> = Vec::new();
     for file in [global, local].into_iter().flatten() {
-        let text = read_config(file)?;
+        let text = crate::config::read_selected(file)
+            .map_err(|_| ConfigError::Unreadable(file.to_owned()))?;
         overlay(file, &text, &mut aliases)?;
     }
     for (index, (first_alias, first_model, _)) in aliases.iter().enumerate() {
@@ -169,29 +167,6 @@ pub fn read(global: Option<&Path>, local: Option<&Path>) -> Result<Book, ConfigE
             .map(|(_, model, price)| (model, price))
             .collect(),
     })
-}
-
-fn read_config(file: &Path) -> Result<String, ConfigError> {
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "a door: usage opens the same selected INI files as the shared config reader"
-    )]
-    let opened = std::fs::File::open(file).map_err(|_| ConfigError::Unreadable(file.to_owned()))?;
-    let metadata = opened
-        .metadata()
-        .map_err(|_| ConfigError::Unreadable(file.to_owned()))?;
-    if !metadata.file_type().is_file() || metadata.len() > CONFIG_MAX_BYTES {
-        return Err(ConfigError::Unreadable(file.to_owned()));
-    }
-    let mut bytes = Vec::new();
-    opened
-        .take(CONFIG_MAX_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|_| ConfigError::Unreadable(file.to_owned()))?;
-    if u64::try_from(bytes.len()).unwrap_or(CONFIG_MAX_BYTES + 1) > CONFIG_MAX_BYTES {
-        return Err(ConfigError::Unreadable(file.to_owned()));
-    }
-    String::from_utf8(bytes).map_err(|_| ConfigError::Unreadable(file.to_owned()))
 }
 
 fn overlay(

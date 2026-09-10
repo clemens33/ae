@@ -4,9 +4,8 @@ pub mod claude;
 pub mod codex;
 pub mod prices;
 
-use std::fmt::Write as _;
 use std::fs::File;
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read as _};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -14,8 +13,11 @@ use crate::meta::{RecordedConfigHome, RecordedConfigHomeBase, RosterEntry};
 use crate::quota::{Bounded, Budget};
 use crate::tool::{ToolKind, UsageSource};
 
-const TRANSCRIPT_MAX_BYTES: u64 = 4 * 1024 * 1024;
+const EVENTS_MAX_BYTES: u64 = 4 * 1024 * 1024;
+const CLAUDE_SEAT_MAX_BYTES: u64 = 512 * 1024 * 1024;
+const CLAUDE_LINE_MAX_BYTES: usize = 1024 * 1024;
 const SESSION_META_MAX_BYTES: u64 = 1024 * 1024;
+const CODEX_HEAD_BYTES: u64 = 256 * 1024;
 const CODEX_TAIL_BYTES: u64 = 256 * 1024;
 const MODEL_MAX_BYTES: usize = 256;
 
@@ -167,20 +169,35 @@ pub struct Observation {
 /// Observe only the roots and live sessions handed in by the command boundary.
 #[must_use]
 pub fn observe(inputs: &Inputs<'_>) -> Observation {
-    let mut budget = Budget::new();
     let mut unpriced = Vec::new();
     let mut sessions = Vec::new();
     for input in inputs.sessions {
-        let mut seats = match read_meta(&input.path, &mut budget) {
-            Ok(meta) => meta
-                .roster()
-                .iter()
-                .flat_map(|entry| observe_entry(entry, inputs, &mut budget, &mut unpriced, false))
-                .collect(),
+        let mut meta_budget = Budget::new();
+        let mut seats = match read_meta(&input.path, &mut meta_budget) {
+            Ok(meta) => {
+                let mut seats = Vec::new();
+                for entry in meta.roster() {
+                    let mut seat_budget = Budget::new();
+                    seats.extend(observe_entry(
+                        entry,
+                        inputs,
+                        &mut seat_budget,
+                        &mut unpriced,
+                        false,
+                    ));
+                }
+                seats
+            }
             Err(_) => Vec::new(),
         };
-        let retired_scan_truncated =
-            add_retired(&input.path, inputs, &mut budget, &mut seats, &mut unpriced);
+        let mut retired_budget = Budget::new();
+        let retired_scan_truncated = add_retired(
+            &input.path,
+            inputs,
+            &mut retired_budget,
+            &mut seats,
+            &mut unpriced,
+        );
         let mut total = total_of(&seats);
         if seats.is_empty() || retired_scan_truncated {
             total.partial = true;
@@ -298,11 +315,6 @@ fn observe_claude(
     let Some((parent, sidechains, observed_at)) = found else {
         return vec![unreadable(entry, tool, "transcript not found", retired)];
     };
-    let parent = claude::parse(&parent);
-    let sidechains = sidechains
-        .iter()
-        .map(|bytes| claude::parse(bytes))
-        .collect::<Vec<_>>();
     let models = claude::reduce(&parent, &sidechains);
     if models.is_empty() {
         return vec![unreadable(entry, tool, "transcript has no usage", retired)];
@@ -357,6 +369,17 @@ fn observe_codex(
         Err(_) => return unreadable(entry, tool, "rollout unreadable", retired),
     };
     let observed_at = file.modified().and_then(epoch);
+    let head = if file.len() > CODEX_TAIL_BYTES {
+        match crate::quota::bounded_head_after_lstat(&file, CODEX_HEAD_BYTES, budget) {
+            Ok(Bounded::Ready(head)) => head,
+            Ok(Bounded::Truncated) => {
+                return coverage_row(entry, tool, Coverage::Truncated, retired);
+            }
+            Err(_) => return unreadable(entry, tool, "rollout unreadable", retired),
+        }
+    } else {
+        Vec::new()
+    };
     let (bytes, boundary) =
         match crate::quota::bounded_tail_after_lstat(&file, CODEX_TAIL_BYTES, budget) {
             Ok(Bounded::Ready(found)) => found,
@@ -365,7 +388,7 @@ fn observe_codex(
             }
             Err(_) => return unreadable(entry, tool, "rollout unreadable", retired),
         };
-    let parsed = codex::parse(&bytes, boundary);
+    let parsed = codex::parse_with_head(&head, &bytes, boundary);
     match parsed.models.as_slice() {
         [model] => priced_row(
             entry,
@@ -400,7 +423,33 @@ fn observe_codex(
     }
 }
 
-type ClaudeFiles = Option<(Vec<u8>, Vec<Vec<u8>>, Option<i64>)>;
+type ClaudeFiles = Option<(claude::Parsed, Vec<claude::Parsed>, Option<i64>)>;
+
+struct TranscriptFile {
+    path: PathBuf,
+    metadata: std::fs::Metadata,
+    modified: Option<SystemTime>,
+}
+
+struct TranscriptBudget {
+    bytes_left: u64,
+}
+
+impl TranscriptBudget {
+    const fn new() -> Self {
+        Self {
+            bytes_left: CLAUDE_SEAT_MAX_BYTES,
+        }
+    }
+
+    fn claim(&mut self, bytes: u64) -> bool {
+        if bytes > self.bytes_left {
+            return false;
+        }
+        self.bytes_left -= bytes;
+        true
+    }
+}
 
 fn claude_files(store: &Path, id: &str, budget: &mut Budget) -> Result<ClaudeFiles, Coverage> {
     if !budget.claim_file() {
@@ -419,32 +468,140 @@ fn claude_files(store: &Path, id: &str, budget: &mut Budget) -> Result<ClaudeFil
     }
     let projects = store.join("projects");
     let dirs = child_dirs(&projects, budget)?;
-    let mut parent: Option<Vec<u8>> = None;
-    let mut sidechains = Vec::new();
+    let mut parent: Option<TranscriptFile> = None;
+    let mut sidechains: Vec<TranscriptFile> = Vec::new();
     let mut observed_at = None;
     for project in dirs {
         let main = project.join(format!("{id}.jsonl"));
-        if let Some((bytes, modified)) = read_regular(&main, TRANSCRIPT_MAX_BYTES, budget)? {
+        if let Some(found) = locate_transcript(&main, budget)? {
             if parent.is_some() {
                 return Err(Coverage::Unreadable(
                     "conversation id is not unique".to_owned(),
                 ));
             }
-            parent = Some(bytes);
-            observed_at = newer(observed_at, modified.and_then(epoch));
+            observed_at = newer(observed_at, found.modified.and_then(epoch));
+            parent = Some(found);
         }
         let subagents = project.join(id).join("subagents");
         for path in child_files(&subagents, budget)? {
             if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
                 continue;
             }
-            if let Some((bytes, modified)) = read_regular(&path, TRANSCRIPT_MAX_BYTES, budget)? {
-                sidechains.push(bytes);
-                observed_at = newer(observed_at, modified.and_then(epoch));
+            if let Some(found) = locate_transcript(&path, budget)? {
+                observed_at = newer(observed_at, found.modified.and_then(epoch));
+                sidechains.push(found);
             }
         }
     }
-    Ok(parent.map(|parent| (parent, sidechains, observed_at)))
+    let Some(parent) = parent else {
+        return Ok(None);
+    };
+    let mut transcript_budget = TranscriptBudget::new();
+    let parent = parse_transcript(&parent, &mut transcript_budget)?;
+    let mut parsed_sidechains = Vec::new();
+    for sidechain in sidechains {
+        parsed_sidechains.push(parse_transcript(&sidechain, &mut transcript_budget)?);
+    }
+    Ok(Some((parent, parsed_sidechains, observed_at)))
+}
+
+fn locate_transcript(path: &Path, budget: &mut Budget) -> Result<Option<TranscriptFile>, Coverage> {
+    if !budget.claim_file() {
+        return Err(Coverage::Truncated);
+    }
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: usage lstat validates an agent-owned transcript before opening"
+    )]
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(Coverage::Unreadable("transcript unreadable".to_owned())),
+    };
+    if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+        return Err(Coverage::Unreadable(
+            "transcript is not a regular file".to_owned(),
+        ));
+    }
+    let modified = metadata.modified().ok();
+    Ok(Some(TranscriptFile {
+        path: path.to_owned(),
+        metadata,
+        modified,
+    }))
+}
+
+fn parse_transcript(
+    transcript: &TranscriptFile,
+    budget: &mut TranscriptBudget,
+) -> Result<claude::Parsed, Coverage> {
+    if !budget.claim(transcript.metadata.len()) {
+        return Err(Coverage::Truncated);
+    }
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: streams only the lstat-checked agent transcript"
+    )]
+    let file = File::open(&transcript.path)
+        .map_err(|_| Coverage::Unreadable("transcript unreadable".to_owned()))?;
+    let opened = file
+        .metadata()
+        .map_err(|_| Coverage::Unreadable("transcript unreadable".to_owned()))?;
+    if !opened.file_type().is_file()
+        || opened.len() != transcript.metadata.len()
+        || !same_file(&transcript.metadata, &opened)
+    {
+        return Err(Coverage::Unreadable(
+            "transcript changed during read".to_owned(),
+        ));
+    }
+    let mut reader = BufReader::new(file.take(opened.len()));
+    let mut line = Vec::new();
+    let mut parser = claude::Parser::default();
+    while let Some(usable) = read_capped_line(&mut reader, &mut line)
+        .map_err(|_| Coverage::Unreadable("transcript unreadable".to_owned()))?
+    {
+        if usable {
+            parser.push(&line);
+        }
+    }
+    if reader.into_inner().limit() != 0 {
+        return Err(Coverage::Unreadable(
+            "transcript changed during read".to_owned(),
+        ));
+    }
+    Ok(parser.finish())
+}
+
+fn read_capped_line(
+    reader: &mut impl BufRead,
+    line: &mut Vec<u8>,
+) -> std::io::Result<Option<bool>> {
+    line.clear();
+    let mut overlong = false;
+    let mut saw_bytes = false;
+    loop {
+        let buffer = reader.fill_buf()?;
+        if buffer.is_empty() {
+            return Ok((saw_bytes || overlong).then_some(!overlong));
+        }
+        let newline = buffer.iter().position(|byte| *byte == b'\n');
+        let consumed = newline.map_or(buffer.len(), |at| at + 1);
+        let body = newline.map_or(buffer, |at| &buffer[..at]);
+        saw_bytes |= !body.is_empty();
+        if !overlong {
+            if line.len().saturating_add(body.len()) > CLAUDE_LINE_MAX_BYTES {
+                line.clear();
+                overlong = true;
+            } else {
+                line.extend_from_slice(body);
+            }
+        }
+        reader.consume(consumed);
+        if newline.is_some() {
+            return Ok(Some(!overlong));
+        }
+    }
 }
 
 fn child_dirs(root: &Path, budget: &mut Budget) -> Result<Vec<PathBuf>, Coverage> {
@@ -698,7 +855,7 @@ fn add_retired(
     unpriced: &mut Vec<String>,
 ) -> bool {
     let events = dir.join(crate::store::EVENTS);
-    let bytes = match read_regular(&events, TRANSCRIPT_MAX_BYTES, budget) {
+    let bytes = match read_regular(&events, EVENTS_MAX_BYTES, budget) {
         Ok(Some((bytes, _))) => bytes,
         Err(Coverage::Truncated) => return true,
         Ok(None) | Err(_) => return false,
@@ -717,27 +874,29 @@ fn add_retired(
         else {
             continue;
         };
-        let Some(slot) = event
+        let slot = event
             .target_slot
             .value()
             .filter(|slot| crate::requests::is_slot(slot))
-        else {
-            continue;
-        };
+            .map(str::to_owned);
         let fields = event.summary.as_deref().and_then(retired_fields);
         let reference = event
             .reference
             .filter(|id| crate::archive::canonical_uuid(id) == *id);
         let Some((tool, profile, config_home, config_home_base)) = fields else {
-            seats.push(unlocated_retired(&name, slot));
+            seats.push(unlocated_retired(&name, slot.as_deref().unwrap_or("?")));
             continue;
         };
         let Some(reference) = reference else {
-            seats.push(unlocated_retired(&name, slot));
+            seats.push(unlocated_retired(&name, slot.as_deref().unwrap_or("?")));
+            continue;
+        };
+        let Some(slot) = slot else {
+            seats.push(unlocated_retired(&name, "?"));
             continue;
         };
         let entry = RosterEntry {
-            slot: slot.to_owned(),
+            slot,
             name,
             profile: Some(profile),
             harness_session: Some(reference),
@@ -753,7 +912,14 @@ fn add_retired(
             },
             binary: Some(tool),
         };
-        seats.extend(observe_entry(&entry, inputs, budget, unpriced, true));
+        let mut seat_budget = Budget::new();
+        seats.extend(observe_entry(
+            &entry,
+            inputs,
+            &mut seat_budget,
+            unpriced,
+            true,
+        ));
     }
     false
 }
@@ -814,57 +980,32 @@ pub fn run(inputs: &Inputs<'_>, json: bool, out: &mut impl std::io::Write) -> cr
     Ok(0)
 }
 
+enum TableLine {
+    Cells(Vec<String>),
+    Note(String),
+}
+
 fn render_table(observation: &Observation) -> String {
-    let mut out = String::from("session  seat  tool  model  in  cache-w  cache-r  out  usd  age\n");
+    let mut lines = vec![TableLine::Cells(
+        [
+            "session", "seat", "tool", "model", "in", "cache-w", "cache-r", "out", "usd", "age",
+        ]
+        .map(str::to_owned)
+        .into(),
+    )];
     for session in &observation.sessions {
         for seat in &session.seats {
-            let (input, write, read, output) = token_cells(seat);
-            let usd = seat.usd_micro.map_or_else(
-                || {
-                    if seat.coverage == Coverage::Unsupported {
-                        "n/a".to_owned()
-                    } else {
-                        "?".to_owned()
-                    }
-                },
-                dollars,
-            );
-            let age = if seat.coverage == Coverage::Unsupported {
-                "n/a".to_owned()
-            } else {
-                seat.observed_at.map_or_else(
-                    || "?".to_owned(),
-                    |at| age(observation.now.saturating_sub(at)),
-                )
-            };
-            let model = if seat.approximate {
-                format!("~{}", seat.model)
-            } else {
-                seat.model.clone()
-            };
-            let _ = writeln!(
-                out,
-                "{}  {}  {}  {}  {input}  {write}  {read}  {output}  {usd}  {age}",
-                session.name, seat.seat, seat.tool, model
-            );
+            lines.push(TableLine::Cells(seat_cells(
+                &session.name,
+                seat,
+                observation.now,
+            )));
         }
-        let marker = if session.total.partial {
-            " (partial)"
-        } else {
-            ""
-        };
-        let _ = writeln!(
-            out,
-            "{}  total  -  -  {}  {}  {}  {}  {}{marker}  -",
-            session.name,
-            human(session.total.tokens.input),
-            human(session.total.tokens.cache_write),
-            human(session.total.tokens.cache_read),
-            human(session.total.tokens.output),
-            dollars(session.total.usd_micro)
-        );
+        lines.push(TableLine::Cells(total_cells(&session.name, &session.total)));
         if session.retired_scan_truncated {
-            out.push_str("retired seats: unread (events scan truncated)\n");
+            lines.push(TableLine::Note(
+                "retired seats: unread (events scan truncated)".to_owned(),
+            ));
         }
     }
     let fleet = observation
@@ -876,16 +1017,103 @@ fn render_table(observation: &Observation) -> String {
             total.partial |= session.total.partial;
             total
         });
-    let marker = if fleet.partial { " (partial)" } else { "" };
-    let _ = writeln!(
-        out,
-        "fleet  total  -  -  {}  {}  {}  {}  {}{marker}  -",
-        human(fleet.tokens.input),
-        human(fleet.tokens.cache_write),
-        human(fleet.tokens.cache_read),
-        human(fleet.tokens.output),
-        dollars(fleet.usd_micro)
+    lines.push(TableLine::Cells(total_cells("fleet", &fleet)));
+    aligned_table(lines)
+}
+
+fn seat_cells(session: &str, seat: &SeatUsage, now: i64) -> Vec<String> {
+    let (input, write, read, output) = token_cells(seat);
+    let usd = seat.usd_micro.map_or_else(
+        || {
+            if seat.coverage == Coverage::Unsupported {
+                "n/a".to_owned()
+            } else {
+                "?".to_owned()
+            }
+        },
+        dollars,
     );
+    let observed = if seat.coverage == Coverage::Unsupported {
+        "n/a".to_owned()
+    } else {
+        seat.observed_at
+            .map_or_else(|| "?".to_owned(), |at| age(now.saturating_sub(at)))
+    };
+    let model = if seat.approximate {
+        format!("~{}", seat.model)
+    } else {
+        seat.model.clone()
+    };
+    vec![
+        session.to_owned(),
+        seat.seat.clone(),
+        seat.tool.clone(),
+        model,
+        input,
+        write,
+        read,
+        output,
+        usd,
+        observed,
+    ]
+}
+
+fn total_cells(label: &str, total: &UsageTotal) -> Vec<String> {
+    let marker = if total.partial { " (partial)" } else { "" };
+    vec![
+        label.to_owned(),
+        "total".to_owned(),
+        "-".to_owned(),
+        "-".to_owned(),
+        human(total.tokens.input),
+        human(total.tokens.cache_write),
+        human(total.tokens.cache_read),
+        human(total.tokens.output),
+        format!("{}{marker}", dollars(total.usd_micro)),
+        "-".to_owned(),
+    ]
+}
+
+fn aligned_table(lines: Vec<TableLine>) -> String {
+    let mut widths = [0_usize; 10];
+    for row in lines.iter().filter_map(|line| match line {
+        TableLine::Cells(row) => Some(row),
+        TableLine::Note(_) => None,
+    }) {
+        for (column, value) in row.iter().enumerate() {
+            if let Some(width) = widths.get_mut(column) {
+                *width = (*width).max(value.chars().count());
+            }
+        }
+    }
+    let mut out = String::new();
+    for line in lines {
+        match line {
+            TableLine::Cells(row) => {
+                for (column, value) in row.iter().enumerate() {
+                    if column > 0 {
+                        out.push_str("  ");
+                    }
+                    out.push_str(value);
+                    if column + 1 < row.len() {
+                        out.extend(std::iter::repeat_n(
+                            ' ',
+                            widths
+                                .get(column)
+                                .copied()
+                                .unwrap_or_default()
+                                .saturating_sub(value.chars().count()),
+                        ));
+                    }
+                }
+                out.push('\n');
+            }
+            TableLine::Note(note) => {
+                out.push_str(&note);
+                out.push('\n');
+            }
+        }
+    }
     out
 }
 

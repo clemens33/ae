@@ -442,6 +442,10 @@ impl RolloutFile {
     pub(crate) fn modified(&self) -> Option<SystemTime> {
         self.modified
     }
+
+    pub(crate) fn len(&self) -> u64 {
+        self.metadata.len()
+    }
 }
 
 enum RolloutSource {
@@ -1757,6 +1761,46 @@ pub(crate) fn bounded_tail_after_lstat(
         ));
     }
     read_bounded_tail(&mut file, opened.len(), cap, budget)
+}
+
+pub(crate) fn bounded_head_after_lstat(
+    rollout: &RolloutFile,
+    cap: u64,
+    budget: &mut Budget,
+) -> io::Result<Bounded<Vec<u8>>> {
+    if cap == 0 {
+        return Ok(Bounded::Truncated);
+    }
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: opens the exact rollout once more for its bounded model header"
+    )]
+    let file = File::open(&rollout.path)?;
+    let opened = file.metadata()?;
+    if !opened.file_type().is_file() || !same_file(&rollout.metadata, &opened) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "rollout changed identity before the bounded read",
+        ));
+    }
+    let planned = opened.len().min(cap);
+    if !budget.reserve_bytes(planned) {
+        return Ok(Bounded::Truncated);
+    }
+    let mut bytes = Vec::new();
+    file.take(planned).read_to_end(&mut bytes)?;
+    let actual = u64::try_from(bytes.len()).unwrap_or(planned);
+    budget.refund_bytes(planned.saturating_sub(actual));
+    if actual != planned {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "rollout changed length during the bounded read",
+        ));
+    }
+    if budget.expired() {
+        return Ok(Bounded::Truncated);
+    }
+    Ok(Bounded::Ready(bytes))
 }
 
 fn read_bounded_tail(

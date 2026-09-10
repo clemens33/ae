@@ -15,7 +15,34 @@
 //! and copy-mode keys stay with the glue's reader.
 
 use std::fmt;
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
+
+const CONFIG_MAX_BYTES: u64 = 1024 * 1024;
+
+/// Read one selected INI file through the shared bounded config door.
+pub(crate) fn read_selected(file: &Path) -> Result<String, ConfigError> {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: one bounded reader owns selected INI config loading"
+    )]
+    let opened = std::fs::File::open(file).map_err(|_| ConfigError::Unreadable(file.to_owned()))?;
+    let metadata = opened
+        .metadata()
+        .map_err(|_| ConfigError::Unreadable(file.to_owned()))?;
+    if !metadata.file_type().is_file() || metadata.len() > CONFIG_MAX_BYTES {
+        return Err(ConfigError::Unreadable(file.to_owned()));
+    }
+    let mut bytes = Vec::new();
+    opened
+        .take(CONFIG_MAX_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| ConfigError::Unreadable(file.to_owned()))?;
+    if u64::try_from(bytes.len()).unwrap_or(CONFIG_MAX_BYTES + 1) > CONFIG_MAX_BYTES {
+        return Err(ConfigError::Unreadable(file.to_owned()));
+    }
+    String::from_utf8(bytes).map_err(|_| ConfigError::Unreadable(file.to_owned()))
+}
 
 /// The persisted path of a nonstandard per-session config overlay.
 pub(crate) const LOCAL_CONFIG_KEY: &str = "local_config";
@@ -76,12 +103,7 @@ fn apply_file(
     workers: &mut Option<String>,
     purge: &mut Option<String>,
 ) -> Result<(), ()> {
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "a door: reads the INI config the frozen parse_config reads — see clippy.toml"
-    )]
-    let read = std::fs::read_to_string(file);
-    let text = read.map_err(|_| ())?;
+    let text = read_selected(file).map_err(|_| ())?;
     let mut section = String::new();
     for raw in text.lines() {
         let line = raw.trim();
@@ -567,12 +589,7 @@ pub fn read_identity_with_global_default(
 const IDENTITY_SECTIONS: [&str; 4] = ["clients", "profiles", "roster", "workspace"];
 
 fn overlay_identity(file: &Path, cfg: &mut IdentityConfig) -> Result<(), ConfigError> {
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "a door: reads the INI config the frozen parse_config reads — see clippy.toml"
-    )]
-    let read = std::fs::read_to_string(file);
-    let text = read.map_err(|_| ConfigError::Unreadable(file.to_owned()))?;
+    let text = read_selected(file)?;
     overlay_identity_text(file, &text, cfg)
 }
 
@@ -1345,12 +1362,9 @@ pub fn read_workspace_keys_with_identity_sections(
     let mut local_has_roster = false;
     for (is_local, file) in [(false, global), (true, local)] {
         let Some(file) = file else { continue };
-        #[allow(
-            clippy::disallowed_methods,
-            reason = "a door: reads the INI config the frozen parse_config reads — see clippy.toml"
-        )]
-        let read = std::fs::read_to_string(file);
-        let Ok(text) = read else { continue };
+        let Ok(text) = read_selected(file) else {
+            continue;
+        };
         let mut section = String::new();
         for raw in text.lines() {
             let line = raw.trim();

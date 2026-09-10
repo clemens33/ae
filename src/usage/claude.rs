@@ -10,6 +10,13 @@ pub struct Parsed {
     entries: Vec<Entry>,
 }
 
+/// Incremental transcript parser used by the bounded file reader.
+#[derive(Debug, Default)]
+pub struct Parser {
+    parsed: Parsed,
+    keyed: HashMap<(String, Option<String>), usize>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Entry {
     message_id: Option<String>,
@@ -28,33 +35,45 @@ pub struct ModelUsage {
 /// Parse one transcript and keep the greater streaming snapshot per message/request pair.
 #[must_use]
 pub fn parse(bytes: &[u8]) -> Parsed {
-    let text = String::from_utf8_lossy(bytes);
-    let mut entries: Vec<Entry> = Vec::new();
-    let mut keyed: HashMap<(String, Option<String>), usize> = HashMap::new();
-    for line in text.lines() {
-        let Ok(value) = json::parse(line) else {
-            continue;
+    let mut parser = Parser::default();
+    for line in bytes.split(|byte| *byte == b'\n') {
+        parser.push(line);
+    }
+    parser.finish()
+}
+
+impl Parser {
+    /// Parse one complete JSONL record, ignoring malformed or irrelevant input.
+    pub fn push(&mut self, line: &[u8]) {
+        let text = String::from_utf8_lossy(line);
+        let Ok(value) = json::parse(&text) else {
+            return;
         };
         let Some(entry) = entry(&value) else {
-            continue;
+            return;
         };
         let key = entry
             .message_id
             .as_ref()
             .map(|message_id| (message_id.clone(), entry.request_id.clone()));
-        let duplicate = key.as_ref().and_then(|key| keyed.get(key).copied());
+        let duplicate = key.as_ref().and_then(|key| self.keyed.get(key).copied());
         if let Some(at) = duplicate {
-            if entry.tokens.total() > entries[at].tokens.total() {
-                entries[at] = entry;
+            if entry.tokens.total() > self.parsed.entries[at].tokens.total() {
+                self.parsed.entries[at] = entry;
             }
         } else {
             if let Some(key) = key {
-                keyed.insert(key, entries.len());
+                self.keyed.insert(key, self.parsed.entries.len());
             }
-            entries.push(entry);
+            self.parsed.entries.push(entry);
         }
     }
-    Parsed { entries }
+
+    /// Finish the stream and return its deduplicated entries.
+    #[must_use]
+    pub fn finish(self) -> Parsed {
+        self.parsed
+    }
 }
 
 /// Reduce a parent transcript and its sidechains, skipping parent-message replays.

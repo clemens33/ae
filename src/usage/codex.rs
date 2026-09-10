@@ -18,6 +18,24 @@ pub struct Parsed {
 /// Parse a bounded Codex rollout tail.
 #[must_use]
 pub fn parse(bytes: &[u8], starts_at_boundary: bool) -> Parsed {
+    parse_with_head(&[], bytes, starts_at_boundary)
+}
+
+/// Parse model context from a bounded rollout head and counters/models from its tail.
+#[must_use]
+pub fn parse_with_head(head: &[u8], tail: &[u8], tail_starts_at_boundary: bool) -> Parsed {
+    let mut parsed = parse_tail(tail, tail_starts_at_boundary);
+    let mut models = model_names(head, true);
+    for model in parsed.models.drain(..) {
+        if !models.iter().any(|known| known == &model) {
+            models.push(model);
+        }
+    }
+    parsed.models = models;
+    parsed
+}
+
+fn parse_tail(bytes: &[u8], starts_at_boundary: bool) -> Parsed {
     let text = String::from_utf8_lossy(bytes);
     let mut parsed = Parsed::default();
     let mut models = HashSet::new();
@@ -70,4 +88,29 @@ pub fn parse(bytes: &[u8], starts_at_boundary: bool) -> Parsed {
         }
     }
     parsed
+}
+
+fn model_names(bytes: &[u8], starts_at_boundary: bool) -> Vec<String> {
+    let text = String::from_utf8_lossy(bytes);
+    let mut found = Vec::new();
+    for (index, line) in text.lines().enumerate() {
+        if index == 0 && !starts_at_boundary {
+            continue;
+        }
+        let Ok(value) = json::parse(line) else {
+            continue;
+        };
+        if value.get_str("type") != Some("turn_context") {
+            continue;
+        }
+        if let Some(model) = value
+            .get("payload")
+            .and_then(|payload| payload.get_str("model"))
+            && super::is_model_id(model)
+            && !found.iter().any(|known| known == model)
+        {
+            found.push(model.to_owned());
+        }
+    }
+    found
 }

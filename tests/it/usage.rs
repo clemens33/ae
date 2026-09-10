@@ -85,6 +85,124 @@ fn bundled_prices_match_exact_then_longest_prefix_and_unknown_stays_unpriced() {
     assert_eq!(prices::lookup("claude-opus-5-preview"), None);
     assert_eq!(prices::lookup("claude-opus-5-2026090"), None);
     assert_eq!(prices::lookup("unlisted-model"), None);
+    assert_eq!(
+        prices::lookup("claude-fable-5").map(|p| p.cache_read),
+        Some(1_000_000),
+        "the pinned source deliberately differs from Fable 5.1"
+    );
+}
+
+#[test]
+fn claude_observer_streams_large_files_and_skips_an_overlong_line() {
+    let root = rig("large-claude");
+    let store = root.join("claude");
+    std::fs::create_dir_all(store.join("projects/work")).expect("Claude project");
+    let mut transcript = vec![b'x'; 4 * 1024 * 1024 + 1];
+    transcript.push(b'\n');
+    transcript.extend_from_slice(include_bytes!("../fixtures/usage/claude-main.jsonl"));
+    std::fs::write(
+        store.join(format!("projects/work/{CLAUDE_ID}.jsonl")),
+        transcript,
+    )
+    .expect("large transcript");
+    std::fs::write(
+        root.join("sessions/live/meta"),
+        format!(
+            "schema=2\nseat.main=lead\nharness_session.main={CLAUDE_ID}\nagent_bin.main=claude\nconfig_home.main={}\n",
+            store.display()
+        ),
+    )
+    .expect("meta");
+    let sessions = [SessionInput {
+        name: "live".to_owned(),
+        path: root.join("sessions/live"),
+    }];
+    let observed = ae::usage::observe(&Inputs {
+        home: Some(&root),
+        sessions: &sessions,
+        prices: &prices::Book::default(),
+        now: 1_788_858_600,
+    });
+    assert_eq!(observed.sessions[0].seats[0].coverage, Coverage::Read);
+    assert_eq!(observed.sessions[0].seats[0].tokens.input, 120);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn codex_observer_unions_head_and_tail_models() {
+    let root = rig("codex-head-tail");
+    let store = root.join("codex");
+    std::fs::create_dir_all(store.join("sessions/2026/09/08")).expect("Codex day");
+    let mut rollout = vec![b'x'; 128 * 1024];
+    rollout.extend_from_slice(
+        br#"
+{"type":"turn_context","payload":{"model":"gpt-5.6-sol"}}
+"#,
+    );
+    rollout.extend(std::iter::repeat_n(b'\n', 300 * 1024));
+    rollout.extend_from_slice(
+        br#"{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"cache_write_input_tokens":10,"output_tokens":40,"reasoning_output_tokens":9}}}}
+"#,
+    );
+    std::fs::write(
+        store.join(format!(
+            "sessions/2026/09/08/rollout-2026-09-08T09-00-00-{CODEX_ID}.jsonl"
+        )),
+        rollout,
+    )
+    .expect("large rollout");
+    std::fs::write(
+        root.join("sessions/live/meta"),
+        format!(
+            "schema=2\nseat.main=lead\nharness_session.main={CODEX_ID}\nagent_bin.main=codex\nconfig_home.main={}\n",
+            store.display()
+        ),
+    )
+    .expect("meta");
+    let sessions = [SessionInput {
+        name: "live".to_owned(),
+        path: root.join("sessions/live"),
+    }];
+    let observed = ae::usage::observe(&Inputs {
+        home: Some(&root),
+        sessions: &sessions,
+        prices: &prices::Book::default(),
+        now: 1_788_858_600,
+    });
+    assert_eq!(observed.sessions[0].seats[0].coverage, Coverage::Read);
+    assert_eq!(observed.sessions[0].seats[0].model, "gpt-5.6-sol");
+    assert_eq!(observed.sessions[0].seats[0].tokens.input, 70);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn legacy_retire_event_is_an_explicit_unlocated_row() {
+    let root = rig("legacy-retire");
+    std::fs::write(
+        root.join("sessions/live/meta"),
+        "schema=2\nseat.main=lead\nagent_bin.main=grok\n",
+    )
+    .expect("meta");
+    std::fs::write(
+        root.join("sessions/live/events.jsonl"),
+        "{\"ts\":\"2026-09-10T09:00:00Z\",\"actor\":\"lead\",\"action\":\"retire\",\"target\":\"aemenu3\"}\n",
+    )
+    .expect("legacy retire event");
+    let sessions = [SessionInput {
+        name: "live".to_owned(),
+        path: root.join("sessions/live"),
+    }];
+    let observed = ae::usage::observe(&Inputs {
+        home: Some(&root),
+        sessions: &sessions,
+        prices: &prices::Book::default(),
+        now: 1_788_858_600,
+    });
+    let retired = &observed.sessions[0].seats[1];
+    assert_eq!(retired.seat, "aemenu3 (retired)");
+    assert_eq!(retired.slot, "?");
+    assert_eq!(retired.coverage, Coverage::Unlocated);
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]
@@ -458,7 +576,13 @@ fn usage_helper_reads_only_its_own_session() {
         .expect("usage helper");
     assert!(output.status.success(), "{:?}", output.status);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("live  lead  grok  n/a  n/a"), "{stdout}");
+    assert!(
+        stdout.lines().any(|line| line
+            .split_whitespace()
+            .take(5)
+            .eq(["live", "lead", "grok", "n/a", "n/a"])),
+        "{stdout}"
+    );
     assert_eq!(crate::cli::byte_tree(&root), before, "helper wrote state");
     let _ = std::fs::remove_dir_all(root);
 }
