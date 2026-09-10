@@ -689,8 +689,10 @@ two seconds. Claude transcripts stream line by line under a 512 MiB total cap pe
 explicit, transcript-sized report rather than a cheap status probe: a measured 5 GiB local fleet
 took 14.5 seconds wall / 11.6 seconds user per run. The command makes no network request, invokes no
 vendor process and writes no state. A model without a cumulative counter in the bounded tail is
-unknown and partial, never a priced zero. Ended archives stay out of scope: retained vendor transcripts
-may remain unless `--purge-history` was used, but archive metadata carries no harness ids.
+unknown and partial, never a priced zero. Malformed required counters are unreadable; when a malformed
+final event follows a valid counter, the valid counter remains as an approximate observation. Ended
+archives stay out of scope: retained vendor transcripts may remain unless `--purge-history` was used,
+but archive metadata carries no harness ids.
 
 ## Session helpers
 

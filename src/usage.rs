@@ -407,8 +407,10 @@ fn observe_codex(
             Err(_) => return unreadable(entry, tool, "rollout unreadable", retired),
         };
     let parsed = codex::parse_with_head(&head, &bytes, boundary);
-    if !parsed.has_token_count {
-        return if head.is_empty() {
+    if !parsed.has_token_count() {
+        return if parsed.malformed_token_count() {
+            unreadable(entry, tool, "malformed token usage", retired)
+        } else if head.is_empty() {
             unreadable(entry, tool, "rollout has no token usage", retired)
         } else {
             coverage_row(entry, tool, Coverage::Truncated, retired)

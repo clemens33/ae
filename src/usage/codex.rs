@@ -17,8 +17,36 @@ pub struct Parsed {
     pub last_model: Option<String>,
     /// At least two observed turn contexts named different models.
     pub model_changed: bool,
-    /// At least one valid cumulative token counter was observed.
-    pub has_token_count: bool,
+    counter_state: CounterState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum CounterState {
+    #[default]
+    Missing,
+    Valid,
+    Malformed,
+    ValidThenMalformed,
+}
+
+impl Parsed {
+    /// Whether at least one valid cumulative token counter was observed.
+    #[must_use]
+    pub const fn has_token_count(&self) -> bool {
+        matches!(
+            self.counter_state,
+            CounterState::Valid | CounterState::ValidThenMalformed
+        )
+    }
+
+    /// Whether the last token-count event had no valid cumulative counter object.
+    #[must_use]
+    pub const fn malformed_token_count(&self) -> bool {
+        matches!(
+            self.counter_state,
+            CounterState::Malformed | CounterState::ValidThenMalformed
+        )
+    }
 }
 
 /// Parse a bounded Codex rollout tail.
@@ -85,14 +113,25 @@ fn parse_tail(bytes: &[u8], starts_at_boundary: bool) -> Parsed {
                 if payload.get_str("type") != Some("token_count") {
                     continue;
                 }
-                let Some(total) = payload
+                let total = payload
                     .get("info")
-                    .and_then(|info| info.get("total_token_usage"))
-                else {
+                    .and_then(|info| info.get("total_token_usage"));
+                let Some((total, raw_input, output)) = total.and_then(|total| {
+                    Some((
+                        total,
+                        valid_count(total.get("input_tokens"))?,
+                        valid_count(total.get("output_tokens"))?,
+                    ))
+                }) else {
+                    parsed.counter_state = match parsed.counter_state {
+                        CounterState::Valid | CounterState::ValidThenMalformed => {
+                            CounterState::ValidThenMalformed
+                        }
+                        CounterState::Missing | CounterState::Malformed => CounterState::Malformed,
+                    };
                     continue;
                 };
-                parsed.has_token_count = true;
-                let raw_input = count(total.get("input_tokens"));
+                parsed.counter_state = CounterState::Valid;
                 let cached = count(total.get("cached_input_tokens")).min(raw_input);
                 let cache_write = count(total.get("cache_write_input_tokens"))
                     .min(raw_input.saturating_sub(cached));
@@ -101,7 +140,7 @@ fn parse_tail(bytes: &[u8], starts_at_boundary: bool) -> Parsed {
                     cache_write,
                     cache_read: cached,
                     // reasoning_output_tokens is reported as a subset of output_tokens.
-                    output: count(total.get("output_tokens")),
+                    output,
                 };
                 if next.total() < parsed.tokens.total() {
                     parsed.approximate = true;
@@ -111,5 +150,14 @@ fn parse_tail(bytes: &[u8], starts_at_boundary: bool) -> Parsed {
             _ => {}
         }
     }
+    parsed.approximate |= matches!(parsed.counter_state, CounterState::ValidThenMalformed);
     parsed
+}
+
+fn valid_count(value: Option<&json::Value>) -> Option<u64> {
+    match value? {
+        json::Value::Num(number) => u64::try_from(*number).ok(),
+        json::Value::Raw(raw) => raw.parse().ok(),
+        _ => None,
+    }
 }

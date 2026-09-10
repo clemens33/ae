@@ -52,7 +52,7 @@ fn codex_uses_last_cumulative_total_and_does_not_double_reasoning_output() {
         true,
     );
     assert_eq!(parsed.models, ["gpt-5.6-luna", "gpt-5.6-sol"]);
-    assert!(parsed.has_token_count);
+    assert!(parsed.has_token_count());
     assert!(parsed.approximate);
     assert_eq!(
         parsed.tokens,
@@ -77,15 +77,112 @@ fn codex_uses_last_cumulative_total_and_does_not_double_reasoning_output() {
 "#,
         true,
     );
-    assert!(zero.has_token_count);
+    assert!(zero.has_token_count());
     assert_eq!(zero.tokens, Tokens::default());
     assert!(
         !codex::parse(
             br#"{"type":"turn_context","payload":{"model":"gpt-5.6-sol"}}"#,
             true,
         )
-        .has_token_count
+        .has_token_count()
     );
+    assert!(
+        !codex::parse(
+            br#"{"type":"turn_context","payload":{"model":"gpt-5.6-sol"}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":null}}}
+"#,
+            true,
+        )
+        .has_token_count()
+    );
+    assert!(
+        !codex::parse(
+            br#"{"type":"turn_context","payload":{"model":"gpt-5.6-sol"}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{}}}}
+"#,
+            true,
+        )
+        .has_token_count()
+    );
+}
+
+#[test]
+fn codex_malformed_counters_never_become_zero_and_last_valid_survives() {
+    let malformed = [
+        r#"{"input_tokens":"10","output_tokens":2}"#,
+        r#"{"input_tokens":10,"output_tokens":"2"}"#,
+        r#"{"input_tokens":-10,"output_tokens":2}"#,
+        r#"{"input_tokens":10,"output_tokens":-2}"#,
+    ];
+    for total in malformed {
+        let rollout = concat!(
+            r#"{"type":"turn_context","payload":{"model":"gpt-5.6-sol"}}"#,
+            "\n",
+            r#"{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":TOTAL}}}"#,
+            "\n"
+        )
+        .replace("TOTAL", total);
+        let parsed = codex::parse(rollout.as_bytes(), true);
+        assert!(
+            !parsed.has_token_count(),
+            "accepted malformed total: {total}"
+        );
+        assert!(
+            parsed.malformed_token_count(),
+            "lost malformed total: {total}"
+        );
+    }
+
+    let valid_then_malformed = codex::parse(
+        br#"{"type":"turn_context","payload":{"model":"gpt-5.6-sol"}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":11,"cached_input_tokens":2,"cache_write_input_tokens":1,"output_tokens":3}}}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":null}}}
+"#,
+        true,
+    );
+    assert!(valid_then_malformed.has_token_count());
+    assert!(valid_then_malformed.malformed_token_count());
+    assert_eq!(
+        valid_then_malformed.tokens,
+        Tokens {
+            input: 8,
+            cache_write: 1,
+            cache_read: 2,
+            output: 3,
+        }
+    );
+    assert!(valid_then_malformed.approximate);
+
+    let root = rig("codex-malformed-counter");
+    let store = root.join("codex");
+    let path = store.join(format!(
+        "sessions/2026/09/08/rollout-2026-09-08T09-00-00-{CODEX_ID}.jsonl"
+    ));
+    std::fs::create_dir_all(store.join("sessions/2026/09/08")).expect("Codex day");
+    std::fs::write(
+        path,
+        br#"{"type":"turn_context","payload":{"model":"gpt-5.6-sol"}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":null}}}
+"#,
+    )
+    .expect("malformed rollout");
+    std::fs::write(root.join("sessions/live/meta"), format!("schema=2\nseat.main=lead\nharness_session.main={CODEX_ID}\nagent_bin.main=codex\nconfig_home.main={}\n", store.display())).expect("meta");
+    let sessions = [SessionInput {
+        name: "live".to_owned(),
+        path: root.join("sessions/live"),
+    }];
+    let observed = ae::usage::observe(&Inputs {
+        home: Some(&root),
+        sessions: &sessions,
+        prices: &prices::Book::default(),
+        now: 1_788_858_600,
+    });
+    assert_eq!(
+        observed.sessions[0].seats[0].coverage,
+        Coverage::Unreadable("malformed token usage".to_owned())
+    );
+    assert!(observed.sessions[0].total.partial);
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]
