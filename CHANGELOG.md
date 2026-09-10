@@ -1,6 +1,12 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.38] - 2026-09-10
+
+### Other
+
+- Improve fleet picker interaction
+- Handle tmux 3.4 menu clicks on release
 ## [v2026.9.37] - 2026-09-10
 
 ### Other
