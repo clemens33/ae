@@ -1004,6 +1004,21 @@ fn assert_tmux_default_mouse_binding(socket: &Path, scratch: &Path) {
 fn assert_ae_status_bindings(socket: &Path, scratch: &Path) {
     let server = ae::inventory::ServerId::Selected(ae::meta::Selector::Socket(socket.to_owned()));
     let menu_mouse = ae::transport::observe_tmux_floor(&server).menu_mouse();
+    let (_, keys) = tmux(socket, scratch, &["list-keys", "-T", "root"]);
+    for key in [
+        "MouseDown3Pane",
+        "M-MouseDown3Pane",
+        "MouseDown3StatusLeft",
+        "M-MouseDown3Status",
+        "M-MouseDown3StatusLeft",
+    ] {
+        assert!(
+            !keys
+                .lines()
+                .any(|line| line.starts_with(&format!("bind-key  -T root {key} "))),
+            "the upgraded ae-owned server removes tmux's stock right-click menu for {key}: {keys}"
+        );
+    }
     let down = root_status_binding(socket, scratch, "MouseDown1Status");
     assert!(
         down.contains("#{||:#{==:#{mouse_status_range},ae}")

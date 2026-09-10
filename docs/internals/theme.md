@@ -29,7 +29,9 @@ option, and is present when `theme = off` too. Input rules cannot be
 session-scoped: on a positively selected ae-owned server, launch binds
 `prefix a` and installs one capability-canonical status map. tmux 3.5+ uses
 `MouseDown1Status` and `MouseDown3Status` for menus and removes stale Up
-bindings. tmux 3.4 keeps window and session navigation on Down but makes menu
+bindings. On either capability, ae removes tmux's stock right-click pane,
+window, and session menus, while keeping its own `MouseDown3Status` action.
+tmux 3.4 keeps window and session navigation on Down but makes menu
 ranges no-ops there; `MouseUp1Status` opens the picker and `MouseUp3Status`
 opens the picker or session context menu, exactly once after release.
 The context menu targets the clicked session's current window; its Flip action

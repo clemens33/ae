@@ -2085,6 +2085,20 @@ fn a_spawned_seat_launches_its_preflighted_command_after_a_config_swap() {
 )]
 fn assert_ae_status_bindings(rig: &Rig) {
     let (_, keys) = rig.tmux(&["list-keys", "-T", "root"]);
+    for key in [
+        "MouseDown3Pane",
+        "M-MouseDown3Pane",
+        "MouseDown3StatusLeft",
+        "M-MouseDown3Status",
+        "M-MouseDown3StatusLeft",
+    ] {
+        assert!(
+            !keys
+                .lines()
+                .any(|line| line.starts_with(&format!("bind-key  -T root {key} "))),
+            "the ae-owned server removes tmux's stock right-click menu for {key}: {keys}"
+        );
+    }
     let binding = |key: &str| {
         let prefix = format!("bind-key  -T root {key} ");
         keys.lines()
@@ -2371,6 +2385,24 @@ fn an_ambient_launch_does_not_replace_mouse_down_status() {
         ambient(&["new-session", "-d", "-s", "ambient-owner", "sleep", "600"]).0,
         "the user's ambient server starts"
     );
+    let (listed, stock_keys) = ambient(&["list-keys", "-T", "root"]);
+    assert!(listed, "the user's untouched root table: {stock_keys}");
+    for key in [
+        "MouseDown3Pane",
+        "M-MouseDown3Pane",
+        "MouseDown3StatusLeft",
+        "M-MouseDown3Status",
+        "M-MouseDown3StatusLeft",
+    ] {
+        let stock = stock_keys
+            .lines()
+            .find(|line| line.starts_with(&format!("bind-key  -T root {key} ")))
+            .unwrap_or_else(|| panic!("tmux's stock right-click binding for {key}: {stock_keys}"));
+        assert!(
+            stock.contains("display-menu"),
+            "tmux's stock right-click binding still opens its menu: {stock}"
+        );
+    }
     assert!(
         ambient(&[
             "bind-key",

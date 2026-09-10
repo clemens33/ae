@@ -27,6 +27,13 @@ use crate::tmux::{
 
 /// The `-P -F` format every pane-creating call here prints.
 const PANE_ID_FORMAT: &str = "#{pane_id}";
+const STOCK_RIGHT_CLICK_MENU_KEYS: [&str; 5] = [
+    "MouseDown3Pane",
+    "M-MouseDown3Pane",
+    "MouseDown3StatusLeft",
+    "M-MouseDown3Status",
+    "M-MouseDown3StatusLeft",
+];
 
 /// The main layout must never collapse a zoomed pane back into its window.
 const LEAD_PAIR_NOT_ZOOMED: &str = "#{==:#{window_zoomed_flag},0}";
@@ -504,7 +511,7 @@ pub(crate) fn status_bindings_argv(
         ServerId::Selected(_) => {
             let picker = status_picker_command(launcher);
             let hotkey = hotkey_picker_shell(launcher);
-            if menu_mouse {
+            let mut bindings = if menu_mouse {
                 vec![
                     argv(server, &Op::BindMouseDownStatus { picker: &picker }),
                     argv(
@@ -550,7 +557,11 @@ pub(crate) fn status_bindings_argv(
                     ),
                     argv(server, &Op::BindPickerHotkey { shell: &hotkey }),
                 ]
-            }
+            };
+            bindings.extend(
+                STOCK_RIGHT_CLICK_MENU_KEYS.map(|key| argv(server, &Op::UnbindRootKey { key })),
+            );
+            bindings
         }
     }
 }
@@ -720,8 +731,8 @@ mod tests {
         let bindings = status_bindings_argv(&server, &["/opt/ae".to_owned()], true);
         assert_eq!(
             bindings.len(),
-            5,
-            "mouse-aware servers assert Down bindings and clear stale Up bindings"
+            10,
+            "mouse-aware servers assert Down bindings and remove every stock right-click menu"
         );
         assert_eq!(
             bindings[0].as_args(),
@@ -783,11 +794,24 @@ mod tests {
             bindings[4].as_args(),
             ["-L", "ae", "unbind-key", "-T", "root", "MouseUp3Status"]
         );
+        for (binding, key) in bindings[5..].iter().zip([
+            "MouseDown3Pane",
+            "M-MouseDown3Pane",
+            "MouseDown3StatusLeft",
+            "M-MouseDown3Status",
+            "M-MouseDown3StatusLeft",
+        ]) {
+            assert_eq!(
+                binding.as_args(),
+                ["-L", "ae", "unbind-key", "-T", "root", key],
+                "remove the stock right-click menu for {key}"
+            );
+        }
         let keyboard = status_bindings_argv(&server, &["/opt/ae".to_owned()], false);
         assert_eq!(
             keyboard.len(),
-            5,
-            "keyboard-driven servers bind release without double-dispatching press"
+            10,
+            "keyboard-driven servers bind release and remove every stock right-click menu"
         );
         assert_eq!(
             keyboard[0].as_args(),
@@ -867,6 +891,19 @@ mod tests {
                 "'/opt/ae' 'orchestrator' '--popup' '--client' #{q:client_name}",
             ]
         );
+        for (binding, key) in keyboard[5..].iter().zip([
+            "MouseDown3Pane",
+            "M-MouseDown3Pane",
+            "MouseDown3StatusLeft",
+            "M-MouseDown3Status",
+            "M-MouseDown3StatusLeft",
+        ]) {
+            assert_eq!(
+                binding.as_args(),
+                ["-L", "ae", "unbind-key", "-T", "root", key],
+                "remove the stock right-click menu for {key}"
+            );
+        }
         assert!(
             status_bindings_argv(&ServerId::Ambient, &["/opt/ae".to_owned()], true).is_empty(),
             "an ambient server's root table belongs to its user"
