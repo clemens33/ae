@@ -1,6 +1,24 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.42] - 2026-09-10
+
+### Documentation
+
+- Clarify fleet picker position
+
+### Features
+
+- Move fleet picker to bottom left
+
+### Other
+
+- Remove stock tmux right-click menus
+- Pin ambient tmux menu preservation
+- Fan out lead delegation by default
+- Clarify delegation briefing limit
+- Apply delegation documentation nits
+- Narrow working pulse amplitude
 ## [v2026.9.41] - 2026-09-10
 
 ### Other
