@@ -82,10 +82,12 @@ tail -F ~/.ae/sessions/<name>/events.jsonl \
 
 Codex has no launch-time UUID flag. Its first-task instruction writes an id file, which the
 detached capture verifies against the rollout carrying that seat's launch token; the fallback
-scans `~/.codex/sessions/YYYY/MM/DD/*.jsonl` for the same token. A token miss stays pending.
-Only a legacy seat with no token may fall back to cwd and the TUI header. Every scan is also
-filtered by `capture_floor.<slot>`, published before the tool starts; Codex uses the rollout's
-creation timestamp, not its mutable file mtime. An exact resume preserves the original floor.
+scans `~/.codex/sessions/YYYY/MM/DD/*.jsonl` for the same token from the capture floor's UTC
+day through today. A missing legacy floor is bounded to the last 30 days. A token miss stays
+pending. Only a legacy seat with no token may fall back to cwd and the TUI header, and its cwd
+scan stays restricted to today and yesterday. Every scan is also filtered by
+`capture_floor.<slot>`, published before the tool starts; Codex uses the rollout's creation
+timestamp, not its mutable file mtime. An exact resume preserves the original floor.
 A token-proven handshake commits immediately and repairs a wrong id already recorded for the
 same launch. A tokenless legacy handshake may fill `pending`, but never replace an id.
 

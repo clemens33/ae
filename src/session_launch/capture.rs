@@ -5,7 +5,7 @@
 //!
 //! | Tool | How the id is found |
 //! |---|---|
-//! | codex | the `codex.<slot>.sid` file its own `developer_instructions` write, verified against the current launch token; then a launch-token scan of the recorded config home's `sessions/<day>/*.jsonl`; legacy seats with no token may fall back to cwd and their TUI header |
+//! | codex | the `codex.<slot>.sid` file its own `developer_instructions` write, verified against the current launch token; then a launch-token scan of the recorded config home's UTC day partitions from capture birth through today (last 30 days when the birth is unknown); legacy seats with no token may scan only today/yesterday by cwd and fall back to their TUI header |
 //! | opencode | `opencode session list --format json`, matched on the session's `directory` |
 //! | gemini | `~/.gemini/tmp/<project>/chats/session-*.json`, matched on the launch token, then on the project root alone |
 //! | agy | the launch token, searched in the BYTES of `~/.gemini/antigravity-cli/conversations/<id>.db` — OR, for a seat that has no token at all, the CLI log that names both the workspace and the conversation it created. Alternatives, not a chain: a token miss stays pending, because falling through cross-wires two seats sharing one directory |
@@ -29,6 +29,13 @@ const POLLS: u32 = 6;
 
 /// The pause between looks.
 const POLL: Duration = Duration::from_secs(5);
+
+/// UTC partition width in the Codex session store.
+const SECONDS_PER_DAY: i64 = 86_400;
+
+/// A legacy retained seat has no recorded birth. Its positive launch token is
+/// strong proof, but the search still needs a finite boundary.
+const CODEX_UNKNOWN_FLOOR_DAYS: i64 = 30;
 
 /// How many sessions `opencode session list` is asked for.
 const OPENCODE_LIST_LIMIT: &str = "20";
@@ -542,20 +549,14 @@ fn capture_codex(
 /// One look through codex's own history. A seat with a launch token accepts
 /// only that positive proof; the cwd fallback exists for legacy seats alone.
 fn scan_codex(config_home: &Path, facts: &Facts) -> Option<String> {
-    let days = day_dirs(Timestamp::now());
     if !facts.launch_id.is_empty() {
         let marker = facts.launch_marker?;
-        return find_codex_by_launch_id(
-            config_home,
-            marker,
-            &facts.launch_id,
-            facts.capture_floor,
-            &days,
-        );
+        return find_codex_by_launch_id(config_home, marker, &facts.launch_id, facts.capture_floor);
     }
     if facts.work_dir.is_empty() {
         return None;
     }
+    let days = day_dirs(Timestamp::now());
     find_codex_by_cwd(config_home, &facts.work_dir, facts.capture_floor, &days)
 }
 
@@ -579,6 +580,17 @@ pub(crate) fn scrape_session_id(screen: &str) -> Option<String> {
 /// The newest codex session whose log carries this launch token.
 #[must_use]
 pub(crate) fn find_codex_by_launch_id(
+    config_home: &Path,
+    marker_prefix: &str,
+    launch_id: &str,
+    capture_floor: i64,
+) -> Option<String> {
+    let days = codex_token_day_dirs(Timestamp::now(), capture_floor);
+    find_codex_by_launch_id_in_days(config_home, marker_prefix, launch_id, capture_floor, &days)
+}
+
+/// The token lookup within an already resolved set of UTC partitions.
+fn find_codex_by_launch_id_in_days(
     config_home: &Path,
     marker_prefix: &str,
     launch_id: &str,
@@ -1138,16 +1150,37 @@ fn json_records(listed: &str) -> Vec<&str> {
 fn day_dirs(now: Timestamp) -> Vec<String> {
     [
         now,
-        Timestamp::from_epoch(now.epoch().saturating_sub(86_400)),
+        Timestamp::from_epoch(now.epoch().saturating_sub(SECONDS_PER_DAY)),
     ]
     .iter()
-    .map(|at| {
-        at.to_string()
-            .get(..10)
-            .map(|day| day.replace('-', "/"))
-            .unwrap_or_default()
-    })
+    .map(|at| day_dir(*at))
     .collect()
+}
+
+/// Every UTC Codex partition from a known capture birth through today. A
+/// legacy retained seat with no birth is bounded to thirty partitions; its
+/// launch token remains the positive identity proof within that range.
+fn codex_token_day_dirs(now: Timestamp, capture_floor: i64) -> Vec<String> {
+    let today = now.epoch().div_euclid(SECONDS_PER_DAY);
+    let first = if capture_floor > 0 {
+        capture_floor.div_euclid(SECONDS_PER_DAY)
+    } else {
+        today.saturating_sub(CODEX_UNKNOWN_FLOOR_DAYS - 1)
+    };
+    if first > today {
+        return Vec::new();
+    }
+    (first..=today)
+        .map(|day| day_dir(Timestamp::from_epoch(day.saturating_mul(SECONDS_PER_DAY))))
+        .collect()
+}
+
+/// One UTC day in Codex's `YYYY/MM/DD` partition spelling.
+fn day_dir(at: Timestamp) -> String {
+    at.to_string()
+        .get(..10)
+        .map(|day| day.replace('-', "/"))
+        .unwrap_or_default()
 }
 
 /// The candidate with the greatest mtime whose text `read` accepts.
@@ -1422,6 +1455,104 @@ mod tests {
         // 2026-03-01T00:30:00Z — the previous day is in another month.
         let at = Timestamp::parse("2026-03-01T00:30:00Z").expect("the documented form");
         assert_eq!(day_dirs(at), vec!["2026/03/01", "2026/02/28"]);
+        let floor = Timestamp::parse("2026-02-27T23:59:59Z")
+            .expect("the capture floor")
+            .epoch();
+        assert_eq!(
+            codex_token_day_dirs(at, floor),
+            vec!["2026/02/27", "2026/02/28", "2026/03/01"],
+            "a known origin includes its UTC day through today"
+        );
+        let unknown = codex_token_day_dirs(at, 0);
+        assert_eq!(unknown.len(), 30);
+        assert_eq!(unknown.first().map(String::as_str), Some("2026/01/31"));
+        assert_eq!(unknown.last().map(String::as_str), Some("2026/03/01"));
+        assert!(
+            codex_token_day_dirs(at, at.epoch().saturating_add(SECONDS_PER_DAY)).is_empty(),
+            "a floor in a future UTC day cannot name a rollout partition"
+        );
+    }
+
+    #[test]
+    fn a_token_proven_codex_scan_reaches_old_partitions_but_legacy_cwd_stays_narrow() {
+        let root = scratch("codex-token-days");
+        let config_home = root.join("home").join(".codex");
+        let work = root.join("project");
+        std::fs::create_dir_all(&work).expect("a project dir");
+        let now = Timestamp::now();
+        let today = day_dirs(now).into_iter().next().expect("today");
+        let older = day_dirs(Timestamp::from_epoch(
+            now.epoch().saturating_sub(3 * 86_400),
+        ))
+        .into_iter()
+        .next()
+        .expect("three days ago");
+        let outside_unknown_bound = day_dirs(Timestamp::from_epoch(
+            now.epoch().saturating_sub(30 * 86_400),
+        ))
+        .into_iter()
+        .next()
+        .expect("thirty days ago");
+        let old_id = "aaaa1111-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+        let today_id = "bbbb2222-cccc-4ddd-8eee-ffffffffffff";
+        let outside_id = "cccc3333-dddd-4eee-8fff-aaaaaaaaaaaa";
+        let old_work = work.display().to_string();
+        for (day, name, id, token, cwd) in [
+            (&older, "old", old_id, "old-token", old_work.as_str()),
+            (&today, "today", today_id, "today-token", "/today-control"),
+            (
+                &outside_unknown_bound,
+                "outside",
+                outside_id,
+                "outside-token",
+                "/outside-control",
+            ),
+        ] {
+            write(
+                &config_home
+                    .join("sessions")
+                    .join(day)
+                    .join(format!("rollout-{name}.jsonl")),
+                &format!(
+                    "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"cwd\":\"{cwd}\"}}}}\n\
+                     {{\"text\":\"AE_CODEX_LAUNCH_ID={token}\"}}\n"
+                ),
+            );
+        }
+        let facts_for = |launch_id: &str| Facts {
+            agent: "lead".to_owned(),
+            tool: ToolKind::Codex,
+            work_dir: work.display().to_string(),
+            capture_floor: 0,
+            launch_id: launch_id.to_owned(),
+            launch_marker: Some("CODEX"),
+            config_home: crate::meta::RecordedConfigHome::Path(config_home.clone()),
+        };
+
+        assert_eq!(
+            scan_codex(&config_home, &facts_for("old-token")).as_deref(),
+            Some(old_id),
+            "positive token proof reaches a rollout partition older than yesterday"
+        );
+        assert_eq!(
+            scan_codex(&config_home, &facts_for("today-token")).as_deref(),
+            Some(today_id),
+            "the same-day control still resolves"
+        );
+        let legacy = Facts {
+            launch_id: String::new(),
+            ..facts_for("")
+        };
+        assert_eq!(
+            scan_codex(&config_home, &legacy),
+            None,
+            "tokenless cwd discovery stays restricted to today and yesterday"
+        );
+        assert_eq!(
+            scan_codex(&config_home, &facts_for("outside-token")),
+            None,
+            "an unknown origin scans at most the last thirty UTC day partitions"
+        );
     }
 
     #[test]
@@ -1733,11 +1864,11 @@ mod tests {
         write(&day.join("notes.txt"), "AE_CODEX_LAUNCH_ID=tok-1\n");
         let work = work.display().to_string();
         assert_eq!(
-            find_codex_by_launch_id(&config_home, "CODEX", "tok-1", 0, &days).as_deref(),
+            find_codex_by_launch_id_in_days(&config_home, "CODEX", "tok-1", 0, &days).as_deref(),
             Some("c0de-01")
         );
         assert_eq!(
-            find_codex_by_launch_id(&config_home, "CODEX", "tok-2", 0, &days),
+            find_codex_by_launch_id_in_days(&config_home, "CODEX", "tok-2", 0, &days),
             None
         );
         assert_eq!(
@@ -1750,7 +1881,7 @@ mod tests {
         );
         // A day that was never written is not an error.
         assert_eq!(
-            find_codex_by_launch_id(
+            find_codex_by_launch_id_in_days(
                 &config_home,
                 "CODEX",
                 "tok-1",
@@ -1767,10 +1898,12 @@ mod tests {
         let config_home = root.join("home").join(".codex");
         let work = root.join("project");
         std::fs::create_dir_all(&work).expect("a project dir");
-        let day = day_dirs(Timestamp::now())
-            .into_iter()
-            .next()
-            .expect("today");
+        let day = day_dirs(Timestamp::from_epoch(
+            Timestamp::now().epoch().saturating_sub(3 * SECONDS_PER_DAY),
+        ))
+        .into_iter()
+        .next()
+        .expect("three days ago");
         write(
             &config_home
                 .join("sessions")
@@ -1820,7 +1953,7 @@ mod tests {
             .epoch();
 
         assert_eq!(
-            find_codex_by_launch_id(
+            find_codex_by_launch_id_in_days(
                 &config_home,
                 "CODEX",
                 "reused-token",
@@ -1882,10 +2015,12 @@ mod tests {
         let config_home = dir.join("account");
         let work = dir.join("project");
         std::fs::create_dir_all(&work).expect("project");
-        let day = day_dirs(Timestamp::now())
-            .into_iter()
-            .next()
-            .expect("today");
+        let day = day_dirs(Timestamp::from_epoch(
+            Timestamp::now().epoch().saturating_sub(3 * SECONDS_PER_DAY),
+        ))
+        .into_iter()
+        .next()
+        .expect("three days ago");
         let id = "88888888-8888-4888-8888-888888888888";
         write(
             &config_home
