@@ -43,12 +43,13 @@ for the recommended `fast` / `standard` / `optimal` / `best` + `codex` /
 ## When to spawn a worker
 
 Leads delegate by default. Keep only the judgment: architecture, ambiguous
-debugging, final integration, and user-facing decisions. A worker starts with
-fresh context and one brief, preserving the lead's judgment context; lower
-tiers tune shared quota, never create separate headroom. Cut independent work
-into parallel slices with one writer per file. Give every **new** slice a fresh
-worker; return fix rounds to the worker and reviewer who already hold its
-context.
+debugging, final integration, user-facing decisions, or a task whose brief
+would require half your conversation (the hygiene gain is gone). A worker
+starts with fresh context and one brief, preserving the lead's judgment
+context; lower tiers tune shared quota, never create separate headroom. Cut
+independent work into parallel slices with one writer per file. Give every
+**new** slice a fresh worker; return fix rounds to the worker and reviewer who
+already hold its context.
 
 Use workers for work describable in ~10 lines with a clear stop condition and
 a result verifiable by tests, grep, or focused review. That is the brief floor,
