@@ -1,6 +1,12 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.37] - 2026-09-10
+
+### Other
+
+- Make the fleet picker direct and fast
+- Guard focus hooks by session ID
 ## [v2026.9.36] - 2026-09-09
 
 ### Other
