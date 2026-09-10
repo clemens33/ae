@@ -1471,12 +1471,44 @@ fn a_running_sessions_daemons_are_restarted_on_the_new_core() {
     let dir = plant_running(&scratch, &socket, &root, session, &old_core);
     let before = ae::watchdog_glue::read_pid(&dir).expect("a pidfile");
     let agent_pane = make_unhooked_lead_pair(&socket, &scratch, &dir, session);
+    let (_, session_id) = tmux(
+        &socket,
+        &scratch,
+        &["display-message", "-p", "-t", session, "#{session_id}"],
+    );
+    let session_id = session_id.trim().to_owned();
+    let old_hook = format!("select-window -t {agent_pane} ; select-pane -t {agent_pane}");
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &[
+                "set-hook",
+                "-t",
+                &agent_pane,
+                "client-session-changed",
+                &old_hook,
+            ],
+        )
+        .0,
+        "plant the unguarded pre-upgrade focus hook"
+    );
     assert_tmux_default_mouse_binding(&socket, &scratch);
 
     let notes = ae::migrate::onto(&root, &new_core, "2026.9.9").expect("the sweep");
 
     assert_ae_mouse_bindings(&socket, &scratch);
     assert_lead_pair_policy(&socket, &scratch, &agent_pane, session);
+    let (_, focus_hook) = tmux(
+        &socket,
+        &scratch,
+        &["show-hooks", "-t", session, "client-session-changed"],
+    );
+    assert!(
+        focus_hook.contains(&format!("#{{==:#{{session_id}},{session_id}}}"))
+            && focus_hook.contains(&old_hook),
+        "upgrade guards the focus hook with its captured session id: {focus_hook}"
+    );
     let (_, published) = tmux(
         &socket,
         &scratch,

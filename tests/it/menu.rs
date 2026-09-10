@@ -320,7 +320,7 @@ enum StaleLead {
     clippy::too_many_lines,
     reason = "one open-mutate-choose race with all observable postconditions"
 )]
-fn stale_lead_row_lands_in_session(tag: &str, stale: StaleLead) {
+fn stale_lead_row_lands_in_session(tag: &str, stale: StaleLead, focus_hook: bool) {
     let scratch = scratch(tag);
     if !tmux_present(&scratch) {
         let _ = fs::remove_dir_all(&scratch);
@@ -336,7 +336,7 @@ fn stale_lead_row_lands_in_session(tag: &str, stale: StaleLead) {
     let staged = stage(&socket, &main);
     let argv = picker_argv(&socket, &staged);
 
-    let foreign_window = if matches!(stale, StaleLead::Moved) {
+    let foreign_view = if matches!(stale, StaleLead::Moved) {
         assert!(
             tmux(
                 &socket,
@@ -353,7 +353,13 @@ fn stale_lead_row_lands_in_session(tag: &str, stale: StaleLead) {
             tmux(
                 &socket,
                 &main,
-                &["display-message", "-p", "-t", "foreign", "#{window_id}"],
+                &[
+                    "display-message",
+                    "-p",
+                    "-t",
+                    "foreign",
+                    "#{window_id}|#{pane_id}",
+                ],
             )
             .1
             .trim()
@@ -363,6 +369,29 @@ fn stale_lead_row_lands_in_session(tag: &str, stale: StaleLead) {
         None
     };
 
+    if focus_hook {
+        let hook = format!(
+            "if-shell -F -t {} \"#{{==:#{{session_id}},{}}}\" \
+             \"select-window -t {} ; select-pane -t {}\"",
+            staged.ids[0], staged.hub_id, staged.ids[0], staged.ids[0]
+        );
+        assert!(
+            tmux(
+                &socket,
+                &main,
+                &[
+                    "set-hook",
+                    "-t",
+                    &staged.ids[0],
+                    "client-session-changed",
+                    &hook,
+                ],
+            )
+            .0,
+            "install the production focus hook"
+        );
+    }
+
     std::thread::scope(|scope| {
         let driver = scope.spawn(|| {
             wait_for(
@@ -371,15 +400,36 @@ fn stale_lead_row_lands_in_session(tag: &str, stale: StaleLead) {
                 |text| text.contains("ae fleet"),
             );
             match stale {
-                StaleLead::Moved => assert!(
-                    tmux(
-                        &socket,
-                        &watcher,
-                        &["join-pane", "-d", "-s", &staged.ids[0], "-t", "foreign:1"]
-                    )
-                    .0,
-                    "move the captured lead after the menu opened"
-                ),
+                StaleLead::Moved => {
+                    assert!(
+                        tmux(
+                            &socket,
+                            &watcher,
+                            &["join-pane", "-d", "-s", &staged.ids[0], "-t", "foreign:1"]
+                        )
+                        .0,
+                        "move the captured lead after the menu opened"
+                    );
+                    if focus_hook {
+                        let after_join = tmux(
+                            &socket,
+                            &watcher,
+                            &[
+                                "display-message",
+                                "-p",
+                                "-t",
+                                "foreign",
+                                "#{window_id}|#{pane_id}",
+                            ],
+                        )
+                        .1;
+                        assert_eq!(
+                            after_join.trim(),
+                            foreign_view.as_deref().unwrap_or_default(),
+                            "join-pane -d changed the foreign view before the choice"
+                        );
+                    }
+                }
                 StaleLead::Vanished => assert!(
                     tmux(&socket, &watcher, &["kill-pane", "-t", &staged.ids[0]]).0,
                     "kill the captured lead after the menu opened"
@@ -421,11 +471,17 @@ fn stale_lead_row_lands_in_session(tag: &str, stale: StaleLead) {
         )),
         "the other client moved: {landed}"
     );
-    if let Some(before) = foreign_window {
+    if let Some(before) = foreign_view {
         let after = tmux(
             &socket,
             &main,
-            &["display-message", "-p", "-t", "foreign", "#{window_id}"],
+            &[
+                "display-message",
+                "-p",
+                "-t",
+                "foreign",
+                "#{window_id}|#{pane_id}",
+            ],
         )
         .1;
         assert_eq!(
@@ -438,12 +494,17 @@ fn stale_lead_row_lands_in_session(tag: &str, stale: StaleLead) {
 
 #[test]
 fn a_main_pane_moved_after_open_cannot_pull_the_client_into_its_new_session() {
-    stale_lead_row_lands_in_session("moved-lead", StaleLead::Moved);
+    stale_lead_row_lands_in_session("moved-lead", StaleLead::Moved, false);
+}
+
+#[test]
+fn the_focus_hook_cannot_change_a_foreign_view_after_its_lead_moved() {
+    stale_lead_row_lands_in_session("moved-lead-hook", StaleLead::Moved, true);
 }
 
 #[test]
 fn a_main_pane_killed_after_open_still_leaves_the_client_in_the_session() {
-    stale_lead_row_lands_in_session("vanished-lead", StaleLead::Vanished);
+    stale_lead_row_lands_in_session("vanished-lead", StaleLead::Vanished, false);
 }
 
 fn launch_ae_session(

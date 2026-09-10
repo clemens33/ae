@@ -2162,13 +2162,16 @@ fn the_session_focus_hook_follows_the_lead_through_resume_and_rename() {
     let assert_hook = |name: &str, pane: &str| {
         let target = format!("={name}:");
         let (_, hooks) = rig.tmux(&["show-hooks", "-t", &target]);
-        // `show-hooks` prints tmux's quoted target form; quotes are not in our argv.
-        let command = format!("select-window -t \"{pane}\" ; select-pane -t \"{pane}\"");
+        let (_, session_id) = rig.tmux(&["display-message", "-p", "-t", &target, "#{session_id}"]);
+        let command = format!("select-window -t {pane} ; select-pane -t {pane}");
+        let predicate = format!("#{{==:#{{session_id}},{}}}", session_id.trim());
         assert_eq!(
             hooks
                 .lines()
                 .filter(|line| {
-                    line.starts_with("client-session-changed[0] ") && line.contains(&command)
+                    line.starts_with("client-session-changed[0] ")
+                        && line.contains(&predicate)
+                        && line.contains(&command)
                 })
                 .count(),
             1,
@@ -2196,6 +2199,17 @@ fn the_session_focus_hook_follows_the_lead_through_resume_and_rename() {
         "the launch publishes its lead"
     );
 
+    assert!(
+        rig.tmux(&[
+            "set-hook",
+            "-t",
+            &first_pane,
+            "client-session-changed",
+            &format!("select-window -t {first_pane} ; select-pane -t {first_pane}"),
+        ])
+        .0,
+        "plant the unguarded pre-release focus hook"
+    );
     assert!(
         rig.tmux(&[
             "bind-key",
@@ -2227,6 +2241,7 @@ fn the_session_focus_hook_follows_the_lead_through_resume_and_rename() {
         stdout.contains("is running"),
         "the live reattach branch: {stdout}"
     );
+    assert_hook("lnfocus", &first_pane);
     assert_ae_mouse_bindings(&rig);
 
     assert!(

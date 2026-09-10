@@ -92,8 +92,9 @@ Other rules of the loop:
   rewrites or UNSETS the layout only when `@ae_look_stamp` says the look has changed under
   it. Never write a global (`-g`) option, never `#()` in a format, and prove a look change
   by rendering it in `ae-dev` before it touches a live session. The launch also stamps, by
-  main-pane ID, a session-scoped focus hook and a lead-pair window-scoped resize hook, never
-  by name or globally; both apply with `theme = off` and are not part of the look. Launch and
+  main-pane ID, a session-scoped focus hook guarded by its captured session ID and a lead-pair
+  window-scoped resize hook, never by name or globally; both apply with `theme = off` and are
+  not part of the look. Launch and
   upgrade reassert TWO server-global key bindings on ae-owned servers only. `MouseDown1Status`
   sends session/window ranges through tmux navigation and `ae` / `ae-more` to the fleet picker.
   `MouseDown3Status` sends `ae` / `ae-more` to that picker and session ranges to the guarded Flip

@@ -2275,7 +2275,6 @@ fn stamp_session(server: &ServerId, env: &Env, shape: &Session, main_pane: &str,
         &shape.look,
     );
     assert_mouse_status_bindings(server, env, core);
-    let _ = transport::run_tmux_op(&argv(server, &Op::SetClientSessionHook { pane: main_pane }));
     let _ = transport::run_tmux_op(&argv(server, &Op::SelectPane { pane: main_pane }));
 }
 
@@ -2304,6 +2303,47 @@ pub(crate) fn stamp_main_pane(
             session,
             crate::theme::MAIN_PANE_OPTION,
         );
+    }
+    stamp_client_session_hook(server, session, main_pane, pane_belongs);
+}
+
+/// Install the session focus hook with the session id captured NOW.
+///
+/// The hook fires after `switch-client`; its pane may have moved by then. The
+/// runtime predicate prevents that stale pane from selecting a foreign
+/// session's window. Reattach and migration pass through here too, replacing
+/// the unguarded hook published by an older core.
+fn stamp_client_session_hook(
+    server: &ServerId,
+    session: &str,
+    main_pane: &str,
+    pane_belongs: bool,
+) {
+    let session_target = tmux::session_target(session);
+    let Some(session_id) = transport::observe_session_id(server, session) else {
+        let _ = transport::run_tmux_op(&argv(
+            server,
+            &Op::UnsetClientSessionHook {
+                target: &session_target,
+            },
+        ));
+        return;
+    };
+    if pane_belongs && !main_pane.is_empty() {
+        let _ = transport::run_tmux_op(&argv(
+            server,
+            &Op::SetClientSessionHook {
+                session_id: &session_id,
+                pane: main_pane,
+            },
+        ));
+    } else {
+        let _ = transport::run_tmux_op(&argv(
+            server,
+            &Op::UnsetClientSessionHook {
+                target: &session_id,
+            },
+        ));
     }
 }
 
