@@ -768,6 +768,12 @@ pub fn run_retire(
         )?;
         return Ok(EXIT_FAILED);
     }
+    let retired_identity = crate::session::read_meta(dir).ok().and_then(|meta| {
+        meta.roster()
+            .iter()
+            .find(|entry| entry.name == agent)
+            .cloned()
+    });
     let slot = match crate::identity::remove_seat_slot(dir, &agent) {
         Ok(slot) => slot,
         Err(why) => {
@@ -789,17 +795,39 @@ pub fn run_retire(
     // pane closed that window and the main window's layout was never touched.
     facts.regenerate_manifest(dir);
     writeln!(out, "Retired {agent} (pane {resolved})")?;
+    let reference = retired_identity
+        .as_ref()
+        .and_then(|entry| entry.harness_session.as_deref())
+        .filter(|id| crate::archive::canonical_uuid(id) == *id)
+        .unwrap_or("");
+    let summary = retired_identity.as_ref().map_or_else(String::new, |entry| {
+        let config_home = match &entry.config_home {
+            crate::meta::RecordedConfigHome::Invalid => "invalid".to_owned(),
+            value => value.record_value().unwrap_or_default(),
+        };
+        let config_home_base = match &entry.config_home_base {
+            crate::meta::RecordedConfigHomeBase::Invalid => "invalid".to_owned(),
+            value => value.record_value().unwrap_or_default(),
+        };
+        format!(
+            "tool={} profile={} config_home={} config_home_base={}",
+            entry.binary.as_deref().unwrap_or(""),
+            entry.profile.as_deref().unwrap_or(""),
+            config_home,
+            config_home_base,
+        )
+    });
     let _ = store::open(dir).append_event(&tracked::event_line(&EventFields {
         ts: now,
         actor: actor_of(caller),
         action: RETIRE_ACTION,
         target: &agent,
-        reference: "",
+        reference,
         actor_slot: "",
         actor_session: "",
-        target_slot: "",
+        target_slot: &slot,
         target_session: "",
-        summary: "",
+        summary: &summary,
         body_file: "",
     }));
     Ok(0)

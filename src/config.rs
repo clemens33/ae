@@ -108,7 +108,7 @@ fn apply_file(
 }
 
 /// A `[section]` header line → the section name.
-fn section_header(line: &str) -> Option<String> {
+pub(crate) fn section_header(line: &str) -> Option<String> {
     let inner = line.strip_prefix('[')?.strip_suffix(']')?;
     if !inner.is_empty()
         && inner
@@ -122,7 +122,7 @@ fn section_header(line: &str) -> Option<String> {
 }
 
 /// A `key = value` line → `(key, value)`.
-fn parse_entry(line: &str) -> Option<(&str, String)> {
+pub(crate) fn parse_entry(line: &str) -> Option<(&str, String)> {
     parse_entry_with(line, is_config_key)
 }
 
@@ -176,7 +176,7 @@ fn entry_value(line: &str) -> Option<String> {
 }
 
 /// The key grammar `^[a-zA-Z_][a-zA-Z0-9_-]*`.
-fn is_config_key(s: &str) -> bool {
+pub(crate) fn is_config_key(s: &str) -> bool {
     let mut bytes = s.bytes();
     match bytes.next() {
         Some(b) if b.is_ascii_alphabetic() || b == b'_' => {}

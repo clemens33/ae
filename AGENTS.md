@@ -18,7 +18,8 @@ reasoning, the retired rules and every measurement narrative are in
 ## What ae is NOT
 
 - Not a CI/CD pipeline. Use your existing workflow for that.
-- Not a cost tracker. Agents track their own usage.
+- Not a billing system. `ae usage` prices the agents' own transcripts at list price, offline;
+  it never meters, caps or bills, and never substitutes a profile; the lead steps down.
 - Not a logging system. tmux already does `capture-pane` and `pipe-pane`.
 - Not a git workflow tool. It does the minimum (commit + push), nothing more.
 - Not a plugin framework. Wrap `ae` in a script if you need custom behavior.
@@ -183,7 +184,7 @@ Pins, not channels. CI, laptop and agent sandbox must resolve to the same compil
 
 ## Session helpers
 
-The core LINKS 23 names into `~/.ae/sessions/<name>/`. Every one is a **symlink to the core
+The core LINKS 24 names into `~/.ae/sessions/<name>/`. Every one is a **symlink to the core
 binary**; the core dispatches on `argv[0]`'s basename and derives the session from its
 dirname. Names and argv are the compatibility contract.
 
@@ -202,6 +203,7 @@ dirname. Names and argv are the compatibility contract.
 | `peek <agent> [lines]` / `peak` | Capture recent pane output. Inspection only, never a reply channel |
 | `agents [--all]` | List agents with pane IDs and processes. `focus <agent>` switches tmux focus |
 | `quota` | Show each configured client scope's locally cached quota windows and freshness; Codex rollout owners are read across the local fleet |
+| `usage` | Show this live session's offline API-equivalent token usage and reference-price spend |
 | `interrupt [--cross-session] <agent> [msg]` | Cancel in the same session; another session needs `--cross-session` |
 | `spawn <name> --using <profile> [prompt]` | Add an agent to the workspace |
 | `retire <name>` \| `retire %pane` | Remove a spawned agent. Exact name only; `main`/`worker` refuse |

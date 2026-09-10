@@ -178,6 +178,9 @@ pub const AGENTS: &str = "_agents";
 /// The read-only quota helper surface: `_quota <dir>`.
 pub const QUOTA: &str = "_quota";
 
+/// The read-only usage helper surface: `_usage <dir>`.
+pub const USAGE: &str = "_usage";
+
 /// The `focus` helper's surface: `_focus <dir> <target>`.
 pub const FOCUS: &str = "_focus";
 
@@ -645,6 +648,11 @@ pub enum Request {
         /// The session directory the helper derives from `$0`.
         dir: PathBuf,
     },
+    /// `_usage <dir>` — read the caller session's agent transcripts.
+    Usage {
+        /// The session directory the helper derives from `$0`.
+        dir: PathBuf,
+    },
     /// `rename [old] <new>` — validated by [`crate::rename`].
     Rename {
         /// Everything after the subcommand, as typed.
@@ -778,6 +786,11 @@ impl Request {
                 [dir] => Self::Quota { dir: dir.into() },
                 [_, extra, ..] => Self::UsageError(extra.clone()),
                 _ => Self::MissingOperand(QUOTA),
+            },
+            Some(USAGE) => match &args[1..] {
+                [dir] => Self::Usage { dir: dir.into() },
+                [_, extra, ..] => Self::UsageError(extra.clone()),
+                _ => Self::MissingOperand(USAGE),
             },
             Some(SAY) => match &args[1..] {
                 [] => Self::MissingOperand(SAY),
@@ -1316,6 +1329,7 @@ impl Request {
             | Self::Orchestrator { .. }
             | Self::Brief { .. }
             | Self::Quota { .. }
+            | Self::Usage { .. }
             | Self::LaunchCandidate(_)
             | Self::Requests { .. }
             | Self::Say { .. }
@@ -1520,7 +1534,7 @@ mod tests {
         COMPACT_FREEZE, COMPACT_MEMO_BASELINE, COMPACT_REVALIDATE, COMPACT_TEARDOWN, COMPACT_WAIT,
         DEFAULT_REVALIDATE_WHEN, END_NONLOCAL_TEARDOWN, EVENTS_TAIL, GOAL, INIT, INTERRUPT, MEMO,
         NET_PROBE, QUOTA, RELAY, REPLY, REQUESTS, REVIEW, RUN, Request, SEND, STATE, TELEGRAM_RUN,
-        WATCHDOG_RUN,
+        USAGE, WATCHDOG_RUN,
     };
     use crate::filters::{ListArgs, Scope};
     use crate::requests::Mode;
@@ -1762,6 +1776,24 @@ mod tests {
     }
 
     #[test]
+    fn usage_helper_requires_exactly_its_session_directory() {
+        assert_eq!(
+            Request::parse(&[USAGE.to_owned(), "/s/work".to_owned()]),
+            Request::Usage {
+                dir: "/s/work".into()
+            }
+        );
+        assert_eq!(
+            Request::parse(&[USAGE.to_owned()]),
+            Request::MissingOperand(USAGE)
+        );
+        assert_eq!(
+            Request::parse(&[USAGE.to_owned(), "/s/work".to_owned(), "extra".to_owned()]),
+            Request::UsageError("extra".to_owned())
+        );
+    }
+
+    #[test]
     fn the_helper_spellings_all_begin_with_an_underscore() {
         // Not decoration: this is the property that keeps the usage-error rule
         // whole.
@@ -1778,6 +1810,7 @@ mod tests {
             SEND,
             RELAY,
             INTERRUPT,
+            USAGE,
         ] {
             assert!(spelling.starts_with('_'), "{spelling}");
             assert!(
@@ -1869,6 +1902,7 @@ mod tests {
             SEND,
             RELAY,
             INTERRUPT,
+            USAGE,
         ] {
             let request = Request::parse(&argv(&[spelling]));
             assert_eq!(request, Request::MissingOperand(spelling));

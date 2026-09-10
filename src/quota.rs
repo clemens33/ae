@@ -395,7 +395,7 @@ enum ReadRows {
     Truncated,
 }
 
-enum Bounded<T> {
+pub(crate) enum Bounded<T> {
     Ready(T),
     Truncated,
 }
@@ -432,10 +432,16 @@ struct FleetRollouts {
     status: FleetStatus,
 }
 
-struct RolloutFile {
+pub(crate) struct RolloutFile {
     path: PathBuf,
     metadata: std::fs::Metadata,
     modified: Option<SystemTime>,
+}
+
+impl RolloutFile {
+    pub(crate) fn modified(&self) -> Option<SystemTime> {
+        self.modified
+    }
 }
 
 enum RolloutSource {
@@ -460,7 +466,7 @@ enum RenderLine {
     Summary { label: String, status: String },
 }
 
-struct Budget {
+pub(crate) struct Budget {
     files_left: usize,
     bytes_left: u64,
     started: Instant,
@@ -468,7 +474,7 @@ struct Budget {
 }
 
 impl Budget {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             files_left: QUOTA_MAX_FILES,
             bytes_left: QUOTA_MAX_BYTES,
@@ -477,11 +483,11 @@ impl Budget {
         }
     }
 
-    fn expired(&self) -> bool {
+    pub(crate) fn expired(&self) -> bool {
         self.started.elapsed() >= self.max_elapsed
     }
 
-    fn claim_file(&mut self) -> bool {
+    pub(crate) fn claim_file(&mut self) -> bool {
         if self.expired() || self.files_left == 0 {
             return false;
         }
@@ -489,7 +495,7 @@ impl Budget {
         true
     }
 
-    fn reserve_bytes(&mut self, bytes: u64) -> bool {
+    pub(crate) fn reserve_bytes(&mut self, bytes: u64) -> bool {
         if self.expired() || bytes > self.bytes_left {
             return false;
         }
@@ -497,7 +503,7 @@ impl Budget {
         true
     }
 
-    fn refund_bytes(&mut self, bytes: u64) {
+    pub(crate) fn refund_bytes(&mut self, bytes: u64) {
         self.bytes_left = self.bytes_left.saturating_add(bytes);
     }
 }
@@ -1730,7 +1736,7 @@ fn bounded_tail(
     )
 }
 
-fn bounded_tail_after_lstat(
+pub(crate) fn bounded_tail_after_lstat(
     rollout: &RolloutFile,
     cap: u64,
     budget: &mut Budget,
@@ -1793,7 +1799,7 @@ fn same_file(_: &std::fs::Metadata, _: &std::fs::Metadata) -> bool {
     true
 }
 
-fn find_codex_rollout(
+pub(crate) fn find_codex_rollout(
     root: &Path,
     id: &str,
     budget: &mut Budget,

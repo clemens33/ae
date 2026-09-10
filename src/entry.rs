@@ -222,6 +222,8 @@ Usage:
                          Card one session or the fleet: goal, the latest note per memo
                          topic, each agent's declared state, and who is waiting on you
   ae quota               Show local cached quota windows for configured agent profiles
+  ae usage [name…] [--json]
+                         Show API-equivalent list-price usage for live sessions
   ae orchestrator        Start or reattach the orchestrator seat (a session named
                          orchestrator; config: ~/.ae/orchestrator.config)
   ae orchestrator --popup
@@ -260,7 +262,7 @@ When inside an ae session, stop/end/compact work without specifying the name.
 
 Config: ~/.ae/config (per-project override: .ae/config in project dir)
 Session helpers, in every session dir: send, relay, ask, review, reply, requests, state,
-  mark-done, goal, memo, say, peek (peak), agents, quota, focus, interrupt, spawn, retire.
+  mark-done, goal, memo, say, peek (peak), agents, quota, usage, focus, interrupt, spawn, retire.
 Run 'ae doctor' after install or agent CLI upgrades.
 Run 'ae doctor --refresh' after updating ae to regenerate existing session helpers.
 ";
@@ -477,6 +479,7 @@ pub fn route(preamble: &Preamble, argv: &[String], pane: Option<&str>) -> Route 
         Some("next" | "jump") => Route::Core(with_head("next", &tail())),
         Some("brief") => Route::Core(with_head("brief", &tail())),
         Some("quota") => Route::Core(with_head("quota", &tail())),
+        Some("usage") => Route::Core(with_head("usage", &tail())),
         Some("compact") => Route::Core(with_head(crate::cli::COMPACT, &tail())),
         Some("archive") => match argv.get(1).map(String::as_str) {
             Some("preview") => Route::ArchivePreview(argv.get(2).cloned()),
@@ -609,6 +612,14 @@ mod tests {
         assert_eq!(
             route(&preamble(), &argv(&["quota", "extra"]), None),
             Route::Core(argv(&["quota", "extra"]))
+        );
+    }
+
+    #[test]
+    fn usage_is_carried_as_the_public_command_the_early_dispatch_answers() {
+        assert_eq!(
+            route(&preamble(), &argv(&["usage", "demo", "--json"]), None),
+            Route::Core(argv(&["usage", "demo", "--json"]))
         );
     }
 

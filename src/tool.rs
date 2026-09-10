@@ -229,6 +229,24 @@ pub(crate) struct QuotaSpec {
     pub(crate) unsupported_hint: Option<&'static str>,
 }
 
+/// Which local transcript shape, if any, can provide usage observations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UsageSource {
+    /// Claude Code parent and subagent transcripts.
+    ClaudeTranscripts,
+    /// Codex cumulative rollout events.
+    CodexRollout,
+    /// No usage adapter exists yet.
+    Unsupported,
+}
+
+/// Static usage discovery behaviour for one harness.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct UsageSpec {
+    /// Client-owned transcript shape.
+    pub(crate) source: UsageSource,
+}
+
 /// Everything ae needs to know about one agent harness.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ToolAdapter {
@@ -257,6 +275,8 @@ pub(crate) struct ToolAdapter {
     pub(crate) input: InputSpec,
     /// Local quota discovery behaviour.
     pub(crate) quota: QuotaSpec,
+    /// Local usage discovery behaviour.
+    pub(crate) usage: UsageSpec,
 }
 
 const CLAUDE: ToolAdapter = ToolAdapter {
@@ -296,6 +316,9 @@ const CLAUDE: ToolAdapter = ToolAdapter {
         default_home: Some(".claude"),
         unsupported_hint: None,
     },
+    usage: UsageSpec {
+        source: UsageSource::ClaudeTranscripts,
+    },
 };
 
 const CODEX: ToolAdapter = ToolAdapter {
@@ -331,6 +354,9 @@ const CODEX: ToolAdapter = ToolAdapter {
         config_home_env: Some("CODEX_HOME"),
         default_home: Some(".codex"),
         unsupported_hint: None,
+    },
+    usage: UsageSpec {
+        source: UsageSource::CodexRollout,
     },
 };
 
@@ -368,6 +394,9 @@ const GEMINI: ToolAdapter = ToolAdapter {
         default_home: Some(".gemini"),
         unsupported_hint: Some("no verified local quota source"),
     },
+    usage: UsageSpec {
+        source: UsageSource::Unsupported,
+    },
 };
 
 const AGY: ToolAdapter = ToolAdapter {
@@ -404,6 +433,9 @@ const AGY: ToolAdapter = ToolAdapter {
         config_home_env: None,
         default_home: Some(".gemini/antigravity-cli"),
         unsupported_hint: Some("run agy -p \"/quota\""),
+    },
+    usage: UsageSpec {
+        source: UsageSource::Unsupported,
     },
 };
 
@@ -446,6 +478,9 @@ const GROK: ToolAdapter = ToolAdapter {
         default_home: Some(".grok"),
         unsupported_hint: Some("run /usage in grok"),
     },
+    usage: UsageSpec {
+        source: UsageSource::Unsupported,
+    },
 };
 
 const OPENCODE: ToolAdapter = ToolAdapter {
@@ -482,6 +517,9 @@ const OPENCODE: ToolAdapter = ToolAdapter {
         default_home: Some(".local/share/opencode"),
         unsupported_hint: Some("local stats are cost history, not quota"),
     },
+    usage: UsageSpec {
+        source: UsageSource::Unsupported,
+    },
 };
 
 const UNKNOWN: ToolAdapter = ToolAdapter {
@@ -515,18 +553,27 @@ const UNKNOWN: ToolAdapter = ToolAdapter {
         default_home: None,
         unsupported_hint: Some("no local quota adapter"),
     },
+    usage: UsageSpec {
+        source: UsageSource::Unsupported,
+    },
 };
 
 const KNOWN: [&ToolAdapter; 6] = [&CLAUDE, &CODEX, &GEMINI, &AGY, &GROK, &OPENCODE];
 
 impl ToolKind {
-    /// Classify one bare binary name.
+    /// Classify one known bare binary name, preserving absence as `None`.
     #[must_use]
-    pub fn from_binary_name(name: &str) -> Self {
+    pub(crate) fn from_known_binary_name(name: &str) -> Option<Self> {
         KNOWN
             .iter()
             .find(|adapter| adapter.name == name)
-            .map_or(Self::Unknown, |adapter| adapter.kind)
+            .map(|adapter| adapter.kind)
+    }
+
+    /// Classify one bare binary name.
+    #[must_use]
+    pub fn from_binary_name(name: &str) -> Self {
+        Self::from_known_binary_name(name).unwrap_or(Self::Unknown)
     }
 
     /// Classify a whole profile command, failing toward unknown.
@@ -623,6 +670,9 @@ mod tests {
                         default_home: Some(".claude"),
                         unsupported_hint: None,
                     },
+                    usage: UsageSpec {
+                        source: UsageSource::ClaudeTranscripts,
+                    },
                 },
                 ToolAdapter {
                     kind: ToolKind::Codex,
@@ -657,6 +707,9 @@ mod tests {
                         config_home_env: Some("CODEX_HOME"),
                         default_home: Some(".codex"),
                         unsupported_hint: None,
+                    },
+                    usage: UsageSpec {
+                        source: UsageSource::CodexRollout,
                     },
                 },
                 ToolAdapter {
@@ -693,6 +746,9 @@ mod tests {
                         default_home: Some(".gemini"),
                         unsupported_hint: Some("no verified local quota source"),
                     },
+                    usage: UsageSpec {
+                        source: UsageSource::Unsupported,
+                    },
                 },
                 ToolAdapter {
                     kind: ToolKind::Agy,
@@ -728,6 +784,9 @@ mod tests {
                         config_home_env: None,
                         default_home: Some(".gemini/antigravity-cli"),
                         unsupported_hint: Some("run agy -p \"/quota\""),
+                    },
+                    usage: UsageSpec {
+                        source: UsageSource::Unsupported,
                     },
                 },
                 ToolAdapter {
@@ -768,6 +827,9 @@ mod tests {
                         default_home: Some(".grok"),
                         unsupported_hint: Some("run /usage in grok"),
                     },
+                    usage: UsageSpec {
+                        source: UsageSource::Unsupported,
+                    },
                 },
                 ToolAdapter {
                     kind: ToolKind::OpenCode,
@@ -802,6 +864,9 @@ mod tests {
                         config_home_env: None,
                         default_home: Some(".local/share/opencode"),
                         unsupported_hint: Some("local stats are cost history, not quota"),
+                    },
+                    usage: UsageSpec {
+                        source: UsageSource::Unsupported,
                     },
                 },
             ]
@@ -842,6 +907,9 @@ mod tests {
                     config_home_env: None,
                     default_home: None,
                     unsupported_hint: Some("no local quota adapter"),
+                },
+                usage: UsageSpec {
+                    source: UsageSource::Unsupported,
                 },
             }
         );

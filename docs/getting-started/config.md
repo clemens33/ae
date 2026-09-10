@@ -21,6 +21,9 @@ gpt6astra = "codex --yolo -m gpt-6-astra -c model_reasoning_effort=xhigh"
 gpt56luna = "codex -m gpt-5.6-luna -c model_reasoning_effort=xhigh -a never"
 grok46 = "grok --always-approve -m grok-4.6 --effort high"
 
+[prices]
+sol_discount = gpt-5.6-sol,1.25,2.5,0.125,10
+
 [roster]
 lead = fable5
 colead = gpt6astra
@@ -107,6 +110,26 @@ ae: seat <slot>: config now points claude at <B>; the retained conversation live
 Stopping and resuming keeps A. End that session and start a new one to adopt B. A client entry
 also avoids shell functions and renamed wrapper binaries: ae expands the client label to the real
 executable before it classifies and launches the tool.
+
+## `[prices]`
+
+Override an exact model's API reference price without extending the INI grammar:
+
+```toml
+[prices]
+sol_discount = gpt-5.6-sol,1.25,2.5,0.125,10
+```
+
+The key is an arbitrary config-safe alias because model ids may contain dots. The value is
+`model,input,cache_write,cache_read,output`; rates are USD per one million tokens with at most six
+decimal places. Project rows overlay global rows by alias. If two surviving aliases name the same
+model, `ae usage` refuses with exit 2 and names both aliases rather than choosing one silently.
+
+An override wins over the bundled exact model row. Bundled rows also match an exact `-YYYYMMDD`
+release suffix; broader prefixes do not match. These are API-equivalent reference prices for the
+base service tier, base context window and five-minute cache writes. Long-context surcharges and
+priority or flex tiers are not modelled. Subscription access incurs no additional charge from an
+`ae usage` report: ae reads local transcripts offline and is not a billing system.
 
 ## `[roster]`
 

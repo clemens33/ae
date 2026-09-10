@@ -113,7 +113,7 @@ impl RecordedConfigHome {
         }
     }
 
-    fn parse(value: &str) -> Self {
+    pub(crate) fn parse(value: &str) -> Self {
         if value == "absent" {
             Self::Absent
         } else if value == "unknown" {
@@ -153,7 +153,7 @@ impl RecordedConfigHomeBase {
         }
     }
 
-    fn parse(value: &str) -> Self {
+    pub(crate) fn parse(value: &str) -> Self {
         if Path::new(value).is_absolute() && !value.chars().any(char::is_control) {
             Self::Path(PathBuf::from(value))
         } else {

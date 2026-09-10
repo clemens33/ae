@@ -1,0 +1,2 @@
+not-json
+{"type":"assistant","message":{"model":7,"usage":{"input_tokens":-1,"output_tokens":18446744073709551616}}}

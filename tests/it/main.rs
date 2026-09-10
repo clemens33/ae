@@ -38,4 +38,5 @@ mod spawn;
 mod teardown;
 mod telegram;
 mod transport;
+mod usage;
 mod watchdog_glue;

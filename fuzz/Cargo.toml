@@ -61,3 +61,24 @@ path = "fuzz_targets/quota_codex_rollout.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "usage_claude_transcript"
+path = "fuzz_targets/usage_claude_transcript.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "usage_codex_rollout"
+path = "fuzz_targets/usage_codex_rollout.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "usage_prices"
+path = "fuzz_targets/usage_prices.rs"
+test = false
+doc = false
+bench = false

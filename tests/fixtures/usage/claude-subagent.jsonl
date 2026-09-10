@@ -1,0 +1,2 @@
+{"type":"assistant","requestId":"req-sidechain","message":{"id":"msg-1","model":"claude-fable-5-1-20260901","usage":{"input_tokens":999,"cache_creation_input_tokens":999,"cache_read_input_tokens":999,"output_tokens":999}}}
+{"type":"assistant","message":{"model":"claude-fable-5-1-20260901","usage":{"input_tokens":7,"cache_creation_input_tokens":0,"cache_read_input_tokens":3,"output_tokens":2}}}

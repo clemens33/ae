@@ -59,6 +59,9 @@ A crash writes its input under `artifacts/<target>/`; reproduce it with
 | `config_command` | `config::IdentityConfig::command` | first line the profile, the rest one config text |
 | `quota_claude_cache` | `quota::claude::parse` | one Claude settings file, at a fixed and a chosen clock |
 | `quota_codex_rollout` | `quota::codex::parse` | first byte the record boundary, the rest a rollout tail |
+| `usage_claude_transcript` | `usage::claude::parse` | one Claude assistant transcript JSONL stream |
+| `usage_codex_rollout` | `usage::codex::parse` | first byte the record boundary, the rest a Codex rollout tail |
+| `usage_prices` | `usage::prices::parse_row` | one `[prices]` alias row |
 
 ## Lock refresh after a release
 

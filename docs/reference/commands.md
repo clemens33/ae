@@ -21,6 +21,9 @@ ae brief [name] [--all] [--since <dur>]
                        Card a session: goal, the latest note per memo topic, each agent's
                        declared state, and who is waiting on you. Read-only
 ae quota               Show bounded local quota snapshots for configured profiles
+ae usage [name…] [--json]
+                       Show offline API-equivalent usage for all live sessions, or
+                       only the named live sessions
 ae orchestrator        Start or reattach the orchestrator seat: a local session named
                        orchestrator, pinned first in the fleet strip
 ae orchestrator --popup
@@ -636,6 +639,42 @@ baseline. Later transitions into `low` (80%), `critical` (95%), or back to `head
 that session's main seat and, for a lead-pair, its colead. No advisory crosses sessions and ae never
 reroutes work: the recipient decides which client should receive new spawns. Silent or older-than-
 60-minute rows clear the in-memory baseline; recovery starts with a new silent first sample.
+
+## `ae usage`
+
+Shows token usage and API-equivalent reference-price spend for live sessions. With no names it
+reports every running session in this ae home; named sessions keep caller order, and a name that
+is not live exits 1. The session helper reads only its own session:
+
+```bash
+ae usage my-feature --json
+~/.ae/sessions/my-feature/usage
+```
+
+The table has one row per seat and model, session totals, then a fleet total. JSON carries the
+same raw token counters, micro-USD cost, coverage, observation time, retirement and approximation
+facts. Supported unreadable, unlocated or truncated sources show `?` and make known token and cost
+totals `(partial)`; unsupported harnesses show `n/a`. A truncated event scan says exactly
+`retired seats: unread (events scan truncated)` rather than treating missing history as zero.
+
+Usage is derived offline from the conversation identity and config home captured when each seat
+first started. Claude assistant records include parent and subagent transcripts, deduplicate growing
+stream snapshots, skip parent replays in sidechains and aggregate by model. Codex uses the last
+cumulative token event, splits cached and cache-write subsets from ordinary input, and counts
+reasoning only once inside output. A rollout that names multiple models keeps its token total but
+has unknown cost. Retire events preserve enough typed identity to retain a worker row after its
+roster entry is removed. Grok Build, Antigravity, OpenCode and Gemini have no adapter in this slice.
+
+Prices answer one narrow question: what the same tokens would cost at API list price. A subscription
+seat pays nothing extra, and ae neither meters nor bills it. Bundled rates are reference prices for
+the base service tier, base context window and five-minute cache writes. Long-context surcharges and
+priority or flex tiers are not modelled. Exact model ids and their exact `-YYYYMMDD` releases match;
+unknown models keep tokens and show `?` cost. `[prices]` aliases can override exact model ids.
+
+Reads are bounded to 4,096 filesystem entries, 16 MiB and two seconds; an individual transcript or
+event log is capped at 4 MiB and a Codex rollout tail at 256 KiB. The command makes no network request,
+invokes no vendor process and writes no state. Ended archives stay out of scope: retained vendor
+transcripts may remain unless `--purge-history` was used, but archive metadata carries no harness ids.
 
 ## Session helpers
 

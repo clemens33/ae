@@ -78,6 +78,7 @@ pub mod tool;
 pub mod tracked;
 pub mod transport;
 pub mod upgrade;
+pub mod usage;
 pub mod watchdog;
 pub mod watchdog_daemon;
 pub mod watchdog_glue;
@@ -119,6 +120,7 @@ pub fn help_text() -> String {
          Commands:\n  \
          list, ls       List ae sessions (--json for the machine-readable digest)\n\n\
          quota          Show local cached quota windows for configured profiles\n\n\
+         usage          Show API-equivalent list-price usage for live sessions\n\n\
          Internal commands (a session's own helpers call these):\n  \
          {} <dir> [mine|inbox|all]\n                 \
          Request state from a session's event log\n  \
@@ -286,6 +288,14 @@ pub fn run(args: &[String], out: &mut impl Write, err: &mut impl Write) -> Resul
         err.flush()?;
         return Ok(code);
     }
+    // Usage shares quota's observational boundary: the command classifies
+    // sessions once, then hands only live durable roots to the pure reader.
+    if args.first().map(String::as_str) == Some("usage") {
+        let code = run_public_usage(shape, &args[1..], out, err)?;
+        out.flush()?;
+        err.flush()?;
+        return Ok(code);
+    }
     let Some(preamble) = resolve_facts(shape, err)? else {
         err.flush()?;
         return Ok(EXIT_UNAVAILABLE);
@@ -322,6 +332,67 @@ fn run_public_quota(
         },
         out,
         err,
+    )
+}
+
+fn run_public_usage(
+    shape: &shape::Shape,
+    tail: &[String],
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> Result<u8> {
+    let parsed = match usage::parse_args(tail) {
+        Ok(parsed) => parsed,
+        Err(extra) => {
+            writeln!(err, "ae usage: unknown argument: {extra}")?;
+            return Ok(entry::EXIT_USAGE);
+        }
+    };
+    let Some(root) = doors::state_root(shape) else {
+        writeln!(err, "ae: {NO_STATE_ROOT}")?;
+        return Ok(EXIT_UNAVAILABLE);
+    };
+    let roots = inventory::Roots::under(&root);
+    let (snapshot, _) = current_world(&root);
+    let live = snapshot
+        .sessions
+        .iter()
+        .filter(|session| session.status == digest::Status::Running)
+        .map(|session| usage::SessionInput {
+            name: session.candidate.name.clone(),
+            path: session.candidate.durable.as_ref().map_or_else(
+                || roots.sessions().join(&session.candidate.name),
+                |record| record.path.clone(),
+            ),
+        })
+        .collect::<Vec<_>>();
+    let sessions = match usage::select_sessions(&live, &parsed.sessions) {
+        Ok(sessions) => sessions,
+        Err(name) => {
+            writeln!(err, "ae usage: live session not found: {name}")?;
+            return Ok(EXIT_UNAVAILABLE);
+        }
+    };
+    let cwd = doors::cwd();
+    let global = doors::config_file(shape, &root);
+    let local = doors::local_config(&cwd);
+    let prices = match usage::prices::read(Some(&global), local.as_deref()) {
+        Ok(prices) => prices,
+        Err(error) => {
+            writeln!(err, "{error}")?;
+            return Ok(error.exit_code());
+        }
+    };
+    let home = doors::home();
+    usage::run(
+        &usage::Inputs {
+            home: home.as_deref(),
+            sessions: &sessions,
+            prices: &prices,
+            now: time::Timestamp::now().epoch(),
+        },
+        parsed.json,
+        out,
     )
 }
 
@@ -1547,6 +1618,45 @@ fn run_quota_helper(
     )
 }
 
+/// The session helper's usage entry: read only its durable session.
+fn run_usage_helper(
+    dir: &std::path::Path,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> Result<u8> {
+    let local = usage::local_config(dir);
+    let root = state_root().or_else(|| {
+        dir.parent()
+            .and_then(std::path::Path::parent)
+            .map(std::path::Path::to_path_buf)
+    });
+    let global = root
+        .as_deref()
+        .map(|root| doors::config_file(shape::current(), root));
+    let prices = match usage::prices::read(global.as_deref(), local.as_deref()) {
+        Ok(prices) => prices,
+        Err(error) => {
+            writeln!(err, "{error}")?;
+            return Ok(error.exit_code());
+        }
+    };
+    let home = doors::home();
+    let sessions = [usage::SessionInput {
+        name: own_session(dir),
+        path: dir.to_owned(),
+    }];
+    usage::run(
+        &usage::Inputs {
+            home: home.as_deref(),
+            sessions: &sessions,
+            prices: &prices,
+            now: time::Timestamp::now().epoch(),
+        },
+        false,
+        out,
+    )
+}
+
 /// Where this invocation's state lives — [`doors::state_root`] for this
 /// process's [`shape`], which is the one derivation.
 pub(crate) fn state_root() -> Option<std::path::PathBuf> {
@@ -1774,6 +1884,7 @@ pub fn run_with(
             panes::agents(dir, tail, &own_session(dir), out, err)?
         }
         cli::Request::Quota { dir } => run_quota_helper(dir, out, err)?,
+        cli::Request::Usage { dir } => run_usage_helper(dir, out, err)?,
         cli::Request::Focus { dir, tail } => {
             panes::focus(dir, tail, &own_session(dir), time::Timestamp::now(), err)?
         }

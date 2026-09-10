@@ -1846,6 +1846,12 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
             // custody rules. Registered deliberately: a command that can start a
             // daemon holding a secret is not one to gain a quiet new read.
             "src/telegram_lifecycle.rs".to_owned(),
+            // `ae usage` reads only bounded, lstat-checked session metadata,
+            // retire events and agent-owned transcripts selected from the
+            // recorded seat identity. Price overrides use the same selected
+            // INI paths as config and are capped before parsing.
+            "src/usage.rs".to_owned(),
+            "src/usage/prices.rs".to_owned(),
             "src/watchdog_daemon.rs".to_owned(),
             // The watchdog PANE's own pidfile read: the ownership check
             // that decides whether this daemon may still remove its own

@@ -1,0 +1,5 @@
+{"type":"assistant","requestId":"req-1","message":{"id":"msg-1","model":"claude-fable-5-1-20260901","usage":{"input_tokens":100,"cache_creation_input_tokens":10,"cache_read_input_tokens":20,"output_tokens":30}}}
+{"type":"assistant","requestId":"req-1","message":{"id":"msg-1","model":"claude-fable-5-1-20260901","usage":{"input_tokens":120,"cache_creation_input_tokens":20,"cache_read_input_tokens":30,"output_tokens":40}}}
+{"type":"assistant","requestId":"req-1","message":{"id":"msg-1","model":"claude-fable-5-1-20260901","usage":{"input_tokens":110,"cache_creation_input_tokens":10,"cache_read_input_tokens":20,"output_tokens":30}}}
+{"type":"assistant","requestId":"req-synthetic","message":{"id":"msg-synthetic","model":"<synthetic>","usage":{"input_tokens":999,"cache_creation_input_tokens":999,"cache_read_input_tokens":999,"output_tokens":999}}}
+{"type":"user","message":{"model":"claude-fable-5-1-20260901","usage":{"input_tokens":999}}}

@@ -438,6 +438,28 @@ fn a_retire_purges_the_seat_and_refuses_what_is_not_its_to_take() {
     let rig = Rig::new("retire");
     let (code, _, stderr) = rig.run(ae::cli::SPAWN, &["worker", "--using", "fake", "--", "hi"]);
     assert_eq!(code, Some(0), "{stderr}");
+    assert!(
+        ae::meta::rewrite(
+            &rig.dir,
+            "harness_session.spawned.0",
+            Some("0199c0de-1234-4890-abcd-ef0123456789"),
+        )
+        .is_ok(),
+        "captured harness identity"
+    );
+    assert!(
+        ae::meta::rewrite(
+            &rig.dir,
+            "config_home.spawned.0",
+            Some(&rig.scratch.display().to_string()),
+        )
+        .is_ok(),
+        "captured config home"
+    );
+    assert!(
+        ae::meta::rewrite(&rig.dir, "config_home_base.spawned.0", None).is_ok(),
+        "explicit config home has no base"
+    );
     let windows_with_worker = rig.windows().len();
 
     // A pane that is not in this session is refused, and nothing is touched.
@@ -486,10 +508,16 @@ fn a_retire_purges_the_seat_and_refuses_what_is_not_its_to_take() {
         "the pane is gone: {:?}",
         rig.windows()
     );
+    let events = rig.events();
+    assert!(events.contains("\"action\":\"retire\""), "{events}");
     assert!(
-        rig.events().contains("\"action\":\"retire\""),
-        "{}",
-        rig.events()
+        events.contains("\"ref\":\"0199c0de-1234-4890-abcd-ef0123456789\""),
+        "{events}"
+    );
+    assert!(events.contains("\"target_slot\":\"spawned.0\""), "{events}");
+    assert!(
+        events.contains("tool=claude profile=fake config_home="),
+        "{events}"
     );
 }
 

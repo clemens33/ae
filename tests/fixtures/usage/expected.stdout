@@ -1,0 +1,5 @@
+session  seat  tool  model  in  cache-w  cache-r  out  usd  age
+demo  lead  codex  gpt-5.6-sol  1.2M  89k  42  7k  1.25  1m
+demo  worker (retired)  claude  ?  ?  ?  ?  ?  ?  ?
+demo  total  -  -  1.2M  89k  42  7k  1.25 (partial)  -
+fleet  total  -  -  1.2M  89k  42  7k  1.25 (partial)  -
