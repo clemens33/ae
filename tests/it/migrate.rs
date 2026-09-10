@@ -1735,21 +1735,22 @@ fn upgrading_a_running_session_without_an_orchestrator_rewrites_the_menu_range()
             ],
         )
         .1;
-        if line.contains("#[range=user|ae] ☰ #[norange]")
+        if line.contains("#[range=user|ae]#{?@ae_menu_open,#[bg=#214283 fg=#A9B7C6],} ☰#[norange]")
             && !line.contains(ae::theme::VERSION_OPTION)
-            && stamp.trim() == "13:darcula:on:on"
+            && stamp.trim() == "14:darcula:on:on"
         {
             break;
         }
         std::thread::sleep(Duration::from_millis(100));
     }
     assert!(
-        line.contains("#[range=user|ae] ☰ #[norange]") && !line.contains(ae::theme::VERSION_OPTION),
+        line.contains("#[range=user|ae]#{?@ae_menu_open,#[bg=#214283 fg=#A9B7C6],} ☰#[norange]")
+            && !line.contains(ae::theme::VERSION_OPTION),
         "running session kept its pre-upgrade menu layout: {line:?}; stamp={stamp:?}; notes={notes:?}"
     );
     assert_eq!(
         stamp.trim(),
-        "13:darcula:on:on",
+        "14:darcula:on:on",
         "the new format stamp did not land"
     );
     assert_ae_status_bindings(&socket, &scratch);

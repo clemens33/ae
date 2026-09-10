@@ -252,6 +252,20 @@ pub fn menu_for_client(
     palette: &Palette,
     client: Option<&str>,
 ) -> Menu {
+    menu_for_client_session(sessions, panes, icons, palette, client, None)
+}
+
+/// The picker model with actions that clear the open marker from the session
+/// where this menu was drawn before they switch the client elsewhere.
+#[must_use]
+pub fn menu_for_client_session(
+    sessions: &[PickerSession],
+    panes: &[PickerPane],
+    icons: bool,
+    palette: &Palette,
+    client: Option<&str>,
+    opened_session: Option<&str>,
+) -> Menu {
     let ranked = ranked_sessions(sessions);
     let need_you = ranked
         .iter()
@@ -265,7 +279,7 @@ pub fn menu_for_client(
     let shown = ranked.len().min(ROW_CAP);
     let mut items: Vec<MenuItem> = Vec::with_capacity(shown + 1);
     for session in ranked.iter().take(shown) {
-        items.push(session_item(session, panes, icons, client));
+        items.push(session_item(session, panes, icons, client, opened_session));
     }
     if ranked.len() > shown {
         items.push(disabled(format!(
@@ -312,6 +326,7 @@ fn session_item(
     panes: &[PickerPane],
     icons: bool,
     client: Option<&str>,
+    opened_session: Option<&str>,
 ) -> MenuItem {
     let glyph = if session.glyph.is_empty() {
         Mark::Idle.glyph(icons)
@@ -341,6 +356,17 @@ fn session_item(
             || switch_id_command(&session.id),
             |client| switch_client_id_command(client, &session.id),
         ))
+    };
+    let action = match (action, opened_session) {
+        (MenuAction::Run(command), Some(opened_session))
+            if crate::tmux::session_id_is_valid(opened_session) =>
+        {
+            MenuAction::Run(format!(
+                "set-option -u -t {opened_session} {} ; {command}",
+                crate::theme::MENU_OPEN_OPTION,
+            ))
+        }
+        (action, _) => action,
     };
     MenuItem {
         label,
@@ -425,8 +451,8 @@ fn clean(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        Args, KEYS, ROW_CAP, Usage, launch_tail_is_valid, menu, menu_for_client, parse,
-        parse_launch_tail,
+        Args, KEYS, ROW_CAP, Usage, launch_tail_is_valid, menu, menu_for_client,
+        menu_for_client_session, parse, parse_launch_tail,
     };
     use crate::inventory::ServerId;
     use crate::theme::Palette;
@@ -604,19 +630,20 @@ mod tests {
     fn row_jumps_to_a_membership_proven_main_pane_without_opening_a_submenu() {
         let sessions = [session("hub", "$7", 3, "%12")];
         let panes = [pane("$7", "%12")];
-        let drawn = menu_for_client(
+        let drawn = menu_for_client_session(
             &sessions,
             &panes,
             true,
             &Palette::DARCULA,
             Some("/dev/ttys007"),
+            Some("$3"),
         );
         let MenuAction::Run(command) = &drawn.items[0].action else {
             panic!("the session row runs one command");
         };
         assert_eq!(
             command,
-            "switch-client -c '/dev/ttys007' -t $7 ; if-shell -F -t %12 '##{==:##{session_id},$7}' 'select-window -t %12 ; select-pane -t %12'"
+            "set-option -u -t $3 @ae_menu_open ; switch-client -c '/dev/ttys007' -t $7 ; if-shell -F -t %12 '##{==:##{session_id},$7}' 'select-window -t %12 ; select-pane -t %12'"
         );
         assert!(
             !command.contains("display-menu"),
@@ -695,10 +722,26 @@ mod tests {
             Some("client"),
         );
         let words = display_menu_for_client_args(&ServerId::Ambient, Some("client"), &drawn, true);
-        assert_eq!(&words[..5], ["display-menu", "-M", "-O", "-c", "client"]);
+        assert_eq!(
+            &words[..9],
+            [
+                "display-menu",
+                "-M",
+                "-O",
+                "-c",
+                "client",
+                "-x",
+                "R",
+                "-y",
+                "S",
+            ]
+        );
         let keyboard =
             display_menu_for_client_args(&ServerId::Ambient, Some("client"), &drawn, false);
-        assert_eq!(&keyboard[..4], ["display-menu", "-O", "-c", "client"]);
+        assert_eq!(
+            &keyboard[..8],
+            ["display-menu", "-O", "-c", "client", "-x", "R", "-y", "S"]
+        );
         assert!(!keyboard.iter().any(|word| word == "-M"));
         assert_eq!(words.iter().filter(|word| word.as_str() == "--").count(), 1);
         assert!(

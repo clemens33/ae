@@ -1118,9 +1118,9 @@ pub struct Menu {
     pub items: Vec<MenuItem>,
 }
 
-/// Where every ae menu is drawn — the centre of the client, which is the one
-/// position that needs neither a mouse nor a pane geometry to be sensible.
-const MENU_POSITION: [&str; 4] = ["-x", "C", "-y", "C"];
+/// Where the fleet picker is drawn — against the right edge, immediately
+/// above the status line and its bottom-right button.
+const MENU_POSITION: [&str; 4] = ["-x", "R", "-y", "S"];
 
 /// tmux's marker for a row that is drawn dim and cannot be chosen.
 const DISABLED_PREFIX: char = '-';
@@ -1550,8 +1550,38 @@ pub fn interpret_fleet_sessions(succeeded: bool, stdout: &str) -> Option<Vec<Fle
 }
 
 // ---------------------------------------------------------------------------
-// The fleet picker's two live-server reads.
+// The fleet picker's live-server reads.
 // ---------------------------------------------------------------------------
+
+/// The explicit client and the session id it is currently viewing.
+pub const PICKER_CLIENT_SESSION_FORMAT: &str = "#{client_name} | #{session_id}";
+
+/// List every attached client once so the picker can resolve its explicit
+/// client to the session whose button owns the open marker.
+#[must_use]
+pub fn picker_client_sessions_args(server: &ServerId) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(["list-clients", "-F", PICKER_CLIENT_SESSION_FORMAT].map(ToOwned::to_owned));
+    args
+}
+
+/// The validated session id belonging to exactly one `client` row.
+#[must_use]
+pub fn interpret_picker_client_session(
+    succeeded: bool,
+    stdout: &str,
+    client: &str,
+) -> Option<String> {
+    if !succeeded {
+        return None;
+    }
+    let mut matches = stdout.lines().filter_map(|line| {
+        let (found, session_id) = line.split_once(FIELD_SEPARATOR)?;
+        (found == client && session_id_is_valid(session_id)).then(|| session_id.to_owned())
+    });
+    let session_id = matches.next()?;
+    matches.next().is_none().then_some(session_id)
+}
 
 /// One picker row, identity first and its free-text goal last.
 ///
@@ -1685,7 +1715,7 @@ pub fn interpret_picker_panes(succeeded: bool, stdout: &str) -> Option<Vec<Picke
     )
 }
 
-fn session_id_is_valid(id: &str) -> bool {
+pub(crate) fn session_id_is_valid(id: &str) -> bool {
     id.strip_prefix('$')
         .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
 }
@@ -2272,6 +2302,33 @@ mod tests {
             "the free-text command is last, so it may carry the separator"
         );
         assert_eq!(interpret_pane_probe(true, ""), None);
+    }
+
+    #[test]
+    fn picker_client_session_is_one_exact_client_listing() {
+        assert_eq!(
+            super::picker_client_sessions_args(&ServerId::Ambient),
+            ["list-clients", "-F", "#{client_name} | #{session_id}",]
+        );
+        let listing = "/dev/ttys001 | $1\n/dev/ttys002 | $7\n";
+        assert_eq!(
+            super::interpret_picker_client_session(true, listing, "/dev/ttys002"),
+            Some("$7".to_owned())
+        );
+        assert_eq!(
+            super::interpret_picker_client_session(true, listing, "/dev/ttys00"),
+            None,
+            "client names never prefix-match"
+        );
+        assert_eq!(
+            super::interpret_picker_client_session(true, "/dev/ttys002 | named\n", "/dev/ttys002"),
+            None,
+            "only a tmux session id can become a write target"
+        );
+        assert_eq!(
+            super::interpret_picker_client_session(false, listing, "/dev/ttys002"),
+            None
+        );
     }
 
     #[test]

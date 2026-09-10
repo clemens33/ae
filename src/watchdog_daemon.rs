@@ -1423,6 +1423,18 @@ const fn motion_publish_failure(prior: u8, observed: bool) -> (u8, bool) {
     }
 }
 
+/// Whether a fleet-picker marker has reached one watchdog interval.
+/// Malformed transient state expires too, so it cannot pin the highlight.
+fn menu_open_expired(opened: &str, now_epoch: i64, interval_secs: u64) -> bool {
+    let Ok(opened_epoch) = opened.parse::<i64>() else {
+        return true;
+    };
+    let Ok(interval) = i64::try_from(interval_secs) else {
+        return false;
+    };
+    now_epoch.saturating_sub(opened_epoch) >= interval
+}
+
 /// Everything one cycle publishes, gathered so the call reads as one statement.
 struct Published<'a> {
     /// The watch bar's own glyph.
@@ -2528,6 +2540,17 @@ impl Cycle<'_> {
         let Some(session_id) = transport::observe_session_id(self.server, self.session) else {
             return;
         };
+        if let Some(opened) =
+            transport::observe_session_option(self.server, self.session, theme::MENU_OPEN_OPTION)
+            && menu_open_expired(&opened, Timestamp::now().epoch(), self.knobs.interval_secs)
+        {
+            let _ = transport::clear_option(
+                self.server,
+                OptionScope::Session,
+                &session_id,
+                theme::MENU_OPEN_OPTION,
+            );
+        }
         let look = published.look;
         let set = |name: &str, value: &str| {
             let _ = transport::publish_option(
@@ -3828,6 +3851,17 @@ mod tests {
                 ..Knobs::default()
             }
         )));
+    }
+
+    #[test]
+    fn picker_marker_expires_at_one_watchdog_interval() {
+        assert!(super::menu_open_expired("100", 160, 60));
+        assert!(!super::menu_open_expired("100", 159, 60));
+        assert!(!super::menu_open_expired("200", 161, 60));
+        assert!(
+            super::menu_open_expired("not-an-epoch", 161, 60),
+            "malformed transient state must not light the button forever"
+        );
     }
 
     #[test]

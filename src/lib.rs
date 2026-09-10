@@ -473,6 +473,23 @@ fn run_orchestrator(tail: &[String], err: &mut impl Write) -> Result<u8> {
         err.flush()?;
         return Ok(tmux_floor::EXIT_REFUSED);
     }
+    let client = args.client.as_deref();
+    // Resolve the CLIENT'S session rather than the mouse target's session.
+    // A status binding may be evaluated with another session as `{mouse}`;
+    // only this explicit client row says which bottom-right button was used.
+    let opened_session = if let Some(client) = client {
+        let Some(session_id) = transport::observe_picker_client_session(&server, client) else {
+            writeln!(
+                err,
+                "ae orchestrator: tmux did not resolve client {client:?} to one live session (it may have vanished)."
+            )?;
+            err.flush()?;
+            return Ok(EXIT_UNAVAILABLE);
+        };
+        Some(session_id)
+    } else {
+        None
+    };
     // A FAILED listing is not an empty fleet. The server just cleared the
     // version probe, so losing its identity snapshot is a refusal rather than
     // a confident "no sessions" menu.
@@ -493,11 +510,31 @@ fn run_orchestrator(tail: &[String], err: &mut impl Write) -> Result<u8> {
     // A look ae could not read draws the picker in the default one: a menu is
     // a transient surface that writes nothing, so a wrong palette on it costs
     // one keystroke rather than a session's appearance.
-    let look = transport::observe_look_here(&server).map_or(theme::Look::DEFAULT, |read| {
+    let look_read = opened_session.as_deref().map_or_else(
+        || transport::observe_look_here(&server),
+        |session_id| transport::observe_look(&server, session_id),
+    );
+    let look = look_read.map_or(theme::Look::DEFAULT, |read| {
         theme::Look::read(&read.icons, &read.palette, &read.drawn, &read.motion)
     });
-    let client = args.client.as_deref();
-    let menu = orchestrator::menu_for_client(&sessions, &panes, look.icons, &look.palette, client);
+    let menu = orchestrator::menu_for_client_session(
+        &sessions,
+        &panes,
+        look.icons,
+        &look.palette,
+        client,
+        opened_session.as_deref(),
+    );
+    if let Some(session_id) = opened_session.as_deref()
+        && !toggle_picker_marker(&server, session_id)
+    {
+        writeln!(
+            err,
+            "ae orchestrator: tmux refused to update the picker marker for client {client:?}."
+        )?;
+        err.flush()?;
+        return Ok(EXIT_UNAVAILABLE);
+    }
     if !transport::display_menu(&server, client, &menu, probe.menu_mouse()) {
         if let Some(client) = client {
             writeln!(
@@ -514,6 +551,26 @@ fn run_orchestrator(tail: &[String], err: &mut impl Write) -> Result<u8> {
         return Ok(EXIT_UNAVAILABLE);
     }
     Ok(0)
+}
+
+/// Set the fleet-picker marker, or clear an existing one when reopening.
+fn toggle_picker_marker(server: &inventory::ServerId, session_id: &str) -> bool {
+    if transport::observe_session_option(server, session_id, theme::MENU_OPEN_OPTION).is_some() {
+        transport::clear_option(
+            server,
+            tmux::OptionScope::Session,
+            session_id,
+            theme::MENU_OPEN_OPTION,
+        )
+    } else {
+        transport::publish_option(
+            server,
+            tmux::OptionScope::Session,
+            session_id,
+            theme::MENU_OPEN_OPTION,
+            &crate::time::Timestamp::now().epoch().to_string(),
+        )
+    }
 }
 
 /// The socket path each server answers with, asked once per server.

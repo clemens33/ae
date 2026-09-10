@@ -574,12 +574,18 @@ pub const PANE_ACCENT_OPTION: &str = "@ae_pane_accent";
 /// WINDOW — the stamp saying this window already carries the theme.
 pub const WINDOW_STAMP_OPTION: &str = "@ae_theme";
 
+/// SESSION — epoch second when this session's fleet picker was opened.
+///
+/// This is transient UI state, not part of the look stamp: changing it lights
+/// the existing button format without redressing the session or its windows.
+pub const MENU_OPEN_OPTION: &str = "@ae_menu_open";
+
 /// The version of every FORMAT this module draws — the session lines, the
 /// window entries, the pane borders, the menu styles and terminal titles. Bump it when any of them
 /// changes shape: the version leads both stamps, so a session or window carrying
 /// an older one is rewritten by the next watchdog cycle rather than left on the
 /// layout an older core wrote.
-pub const FORMAT_VERSION: &str = "13";
+pub const FORMAT_VERSION: &str = "14";
 
 /// What [`WINDOW_STAMP_OPTION`] is set to: the LOOK the window was dressed in,
 /// formats version first.
@@ -736,7 +742,7 @@ pub fn status_line_one(look: &Look) -> String {
     format!(
         "#[align=left fg={dim} bg={base}] #{{{FLEET_STRIP_OPTION}}}\
          #[align=right fg={dim} bg={base}] \
-         #{{?#{{{ORCHESTRATOR_STRIP_OPTION}}},  #{{{ORCHESTRATOR_STRIP_OPTION}}} ,}}{version} ",
+         #{{?#{{{ORCHESTRATOR_STRIP_OPTION}}},  #{{{ORCHESTRATOR_STRIP_OPTION}}} ,}}{version}",
         dim = palette.dim,
         base = palette.base,
         version = version_segment(look),
@@ -744,9 +750,15 @@ pub fn status_line_one(look: &Look) -> String {
 }
 
 /// The bottom-right menu glyph: a named range whose mouse binding opens the
-/// fleet picker with either button. It inherits the line's dim style.
+/// fleet picker with either button. It inherits the line's dim style until
+/// [`MENU_OPEN_OPTION`] lights it with the menu-selection palette.
 fn version_segment(look: &Look) -> String {
-    format!("#[range=user|ae] {} #[norange]", picker_glyph(look.icons))
+    format!(
+        "#[range=user|ae]#{{?{MENU_OPEN_OPTION},#[bg={} fg={}],}} {}#[norange]",
+        look.palette.selected,
+        look.palette.selected_ink,
+        picker_glyph(look.icons),
+    )
 }
 
 /// One session as the fleet strip carries it.
@@ -1314,9 +1326,15 @@ mod tests {
                 ..Look::DEFAULT
             };
             let line = status_line_one(&look);
-            assert!(
-                line.ends_with(&format!("{} ", super::version_segment(&look))),
-                "{line}"
+            assert!(line.ends_with(&super::version_segment(&look)), "{line}");
+            assert_eq!(
+                super::version_segment(&look),
+                format!(
+                    "#[range=user|ae]#{{?@ae_menu_open,#[bg={} fg={}],}} {}#[norange]",
+                    palette.selected,
+                    palette.selected_ink,
+                    super::picker_glyph(look.icons),
+                )
             );
             assert!(!line.contains(super::VERSION_OPTION), "{line}");
         }
@@ -1792,10 +1810,10 @@ mod tests {
     }
 
     #[test]
-    fn menu_button_and_overflow_are_quiet_stable_user_ranges() {
+    fn menu_button_and_overflow_are_stable_user_ranges() {
         assert_eq!(
             super::version_segment(&Look::DEFAULT),
-            "#[range=user|ae] ☰ #[norange]"
+            "#[range=user|ae]#{?@ae_menu_open,#[bg=#214283 fg=#A9B7C6],} ☰#[norange]"
         );
         let ascii = Look {
             icons: false,
@@ -1803,7 +1821,7 @@ mod tests {
         };
         assert_eq!(
             super::version_segment(&ascii),
-            "#[range=user|ae] = #[norange]"
+            "#[range=user|ae]#{?@ae_menu_open,#[bg=#214283 fg=#A9B7C6],} =#[norange]"
         );
         let rows: Vec<FleetRow> = (0..=super::STRIP_ROWS)
             .map(|index| FleetRow {
@@ -1924,7 +1942,7 @@ mod tests {
     #[test]
     fn terminal_titles_are_part_of_the_drawn_layout() {
         let options = super::layout_options(&Look::DEFAULT);
-        assert_eq!(super::FORMAT_VERSION, "13");
+        assert_eq!(super::FORMAT_VERSION, "14");
         assert_eq!(
             options
                 .iter()

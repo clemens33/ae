@@ -528,6 +528,118 @@ fn a_main_pane_killed_after_open_still_leaves_the_client_in_the_session() {
     stale_lead_row_lands_in_session("vanished-lead", StaleLead::Vanished, false);
 }
 
+#[test]
+fn popup_marks_the_clients_session_not_the_calling_panes_session() {
+    let scratch = scratch("open-marker-client-session");
+    if !tmux_present(&scratch) {
+        let _ = fs::remove_dir_all(&scratch);
+        panic!("tmux is not runnable here, so the picker marker cannot be proven");
+    }
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let root = scratch.join("state");
+    let project = scratch.join("project");
+    let config = scratch.join("config");
+    assert!(fs::create_dir_all(&project).is_ok());
+    assert!(
+        fs::write(
+            &config,
+            "[profiles]\nidle = \"sleep 600\"\n\n[roster]\nlead = idle\n\n[workspace]\nmain = lead\nlayout = vertical\nwatchdog = false\n",
+        )
+        .is_ok()
+    );
+    for session in ["clicked", "viewed"] {
+        launch_ae_session(&socket, &scratch, &root, &project, &config, session);
+    }
+    let client = nested_client(&socket, &scratch, "viewed", "viewer");
+    let clicked_pane = tmux(
+        &socket,
+        &scratch,
+        &["list-panes", "-t", "clicked", "-F", "#{pane_id}"],
+    )
+    .1
+    .lines()
+    .next()
+    .unwrap_or_else(|| panic!("clicked session has a pane"))
+    .to_owned();
+
+    let option = |session: &str| picker_marker(&socket, &scratch, session);
+    let open_and_choose = |key: &str| {
+        std::thread::scope(|scope| {
+            let driver = scope.spawn(|| {
+                wait_for(
+                    "the marked picker",
+                    || tmux(&socket, &scratch, &["capture-pane", "-p", "-t", "viewer"]).1,
+                    picker_is_open,
+                );
+                let marks = (option("viewed"), option("clicked"));
+                assert!(tmux(&socket, &scratch, &["send-keys", "-t", "viewer", key]).0);
+                marks
+            });
+            let output = ae()
+                .env("HOME", &scratch)
+                .env("AE_HOME", &root)
+                .env("CONFIG_FILE", &config)
+                .env("TMUX_TMPDIR", &scratch)
+                .env("TMUX", format!("{},0,0", socket.display()))
+                .env("TMUX_PANE", &clicked_pane)
+                .args(["orchestrator", "--popup", "--client", &client])
+                .output()
+                .expect("the picker invocation runs");
+            assert_eq!(output.status.code(), Some(0), "{:?}", output.stderr);
+            driver.join().expect("the marker reader")
+        })
+    };
+
+    let (viewed_mark, clicked_mark) = open_and_choose("q");
+    assert!(
+        viewed_mark.parse::<i64>().is_ok(),
+        "the client's session owns the epoch marker: {viewed_mark:?}"
+    );
+    assert!(
+        clicked_mark.is_empty(),
+        "the calling pane's different session stays unmarked: {clicked_mark:?}"
+    );
+    assert_eq!(
+        option("viewed"),
+        viewed_mark,
+        "Escape has no close hook, so the mark remains until another clear path"
+    );
+
+    let (reopened_mark, _) = open_and_choose("q");
+    assert!(
+        reopened_mark.is_empty() && option("viewed").is_empty(),
+        "reopening toggles the stale Escape mark off: {reopened_mark:?}"
+    );
+
+    let (selected_mark, _) = open_and_choose("1");
+    assert!(selected_mark.parse::<i64>().is_ok(), "{selected_mark:?}");
+    assert!(
+        option("viewed").is_empty(),
+        "choosing a row clears the originating session's marker"
+    );
+}
+
+fn picker_marker(socket: &Path, scratch: &Path, session: &str) -> String {
+    tmux(
+        socket,
+        scratch,
+        &[
+            "show-options",
+            "-qv",
+            "-t",
+            session,
+            ae::theme::MENU_OPEN_OPTION,
+        ],
+    )
+    .1
+    .trim()
+    .to_owned()
+}
+
 fn launch_ae_session(
     socket: &Path,
     scratch: &Path,

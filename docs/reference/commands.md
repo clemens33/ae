@@ -25,7 +25,8 @@ ae orchestrator        Start or reattach the orchestrator seat: a local session 
                        orchestrator, pinned first in the fleet strip
 ae orchestrator --popup
                        Pick a live session in a tmux menu; its lead pane gets the
-                       client. Opened from status-bar ☰/= and +N. Needs tmux >= 3.4
+                       client. Opened above the far-right status-bar ☰/= button
+                       or +N overflow count. Needs tmux >= 3.4
 ae doctor              Check local environment and ae config
 ae doctor --refresh [name|all]
                        Regenerate helper scripts and workspace.md in existing sessions
@@ -429,25 +430,33 @@ still overlay. Add `--no-attach` to build or reattach without attaching; ae prin
 attach command and exits successfully. The seat keeps its fixed launch shape, so `--dir` remains
 an ordinary-session flag. The seat is pinned first in the status
 bar's fleet strip, marked `◆`. The `--popup` form is the picker, next. From any
-ae session on the same tmux server, click the quiet `☰` menu glyph (`=` with
-icons off) or `+N` overflow count at the bottom-right of the status bar, or
-press `prefix a`, to open it.
+ae session on the same tmux server, click the `☰` menu glyph (`=` with icons
+off) at the far-right edge of the status bar or its `+N` overflow count, or
+press `<prefix> a` (default `C-b a`), to open it.
 
 ## `ae orchestrator --popup`
 
-The fleet picker is drawn by tmux itself and thrown away when you choose. Its
-rows come only from one live `list-sessions` call on the calling server; one
+The fleet picker is drawn by tmux itself, right-aligned above its status button.
+Its rows come only from one live `list-sessions` call on the calling server; one
 `list-panes -a` call proves which published lead-pane hints still belong to
-their sessions. It never builds [`ae list`](#ae-list)'s durable inventory,
+their sessions. One `list-clients` call resolves the explicitly named client's
+current session. It never builds [`ae list`](#ae-list)'s durable inventory,
 walks session directories, reads events or probes git.
 
-Left- or right-click the menu glyph or overflow count, or press `prefix a`, to
-open it. The picker shows at most 30 attention-ordered sessions. Its title starts
+Left- or right-click the menu glyph or overflow count, or press `<prefix> a`
+(default `C-b a`), to open it. The picker shows at most 30 attention-ordered sessions. Its title starts
 with the running core's `ae <version>`, then counts sessions and those whose mark
 is needs-you or dead. An invocation
 names its tmux client explicitly through the menu and every action, so another
 client watching the same pane is untouched; if that client vanishes, the
 picker refuses instead of choosing another.
+
+While the picker is open, the final-cell menu glyph uses the palette's selected
+background and ink. The marker belongs to the named client's current session,
+never the session under a mouse target. Choosing a row clears it before the
+switch; opening the picker again toggles it off; the watchdog clears it after
+one 60-second cycle. tmux exposes no menu-close hook, so Escape, `q`, or an
+outside click can leave the glyph lit until that watchdog pass.
 
 ```text
 $ ae orchestrator --popup
@@ -485,7 +494,7 @@ drawing a confident empty fleet.
 
 ### Hotkey and mouse
 
-On an ae-owned server, launch and upgrade bind `prefix a` and the
+On an ae-owned server, launch and upgrade bind `<prefix> a` (default `C-b a`) and the
 capability-specific status mouse actions. Each picker action captures
 `#{client_name}` and uses `display-menu -c <name>` because two clients can
 watch the same pane. An ambient server keeps all of the user's bindings
