@@ -1075,8 +1075,6 @@ pub enum MenuAction {
     /// Run this tmux command — built from ids this crate validated, never from
     /// text a session named itself.
     Run(String),
-    /// Open a second menu.
-    Open(Menu),
     /// Nothing: the row is drawn dim and cannot be chosen.
     Disabled,
 }
@@ -1129,7 +1127,7 @@ pub fn display_menu_args(server: &ServerId, menu: &Menu) -> Vec<String> {
 ///
 /// A status binding can run outside either attached client's command queue,
 /// and `$TMUX` identifies only the server. Carrying `client` through this menu
-/// and every nested menu prevents tmux from choosing whichever client was most
+/// and every action prevents tmux from choosing whichever client was most
 /// recently active when two clients watch the same pane.
 #[must_use]
 pub fn display_menu_for_client_args(
@@ -1147,21 +1145,16 @@ pub fn display_menu_for_client_args(
     args.push(titled(menu));
     args.push(END_OF_FLAGS.to_owned());
     for item in &menu.items {
-        args.extend(item_words(item, client));
+        args.extend(item_words(item));
     }
     args
 }
 
 /// One row as the three arguments tmux reads it from.
-fn item_words(item: &MenuItem, client: Option<&str>) -> Vec<String> {
+fn item_words(item: &MenuItem) -> Vec<String> {
     let label = menu_literal(&item.label);
     match &item.action {
         MenuAction::Run(command) => vec![label, item.key.clone(), command.clone()],
-        MenuAction::Open(inner) => vec![
-            label,
-            item.key.clone(),
-            menu_command_for_client(client, inner),
-        ],
         // The leading hyphen is tmux's own dim-and-unselectable marker; the two
         // empty arguments keep the row a triplet like every other.
         MenuAction::Disabled => vec![
@@ -1175,33 +1168,6 @@ fn item_words(item: &MenuItem, client: Option<&str>) -> Vec<String> {
 /// The `-T` argument: the style ae chose, then the title it was given.
 fn titled(menu: &Menu) -> String {
     format!("{}{}", menu.title_style, menu_literal(&menu.title))
-}
-
-/// `menu` as ONE tmux command word — what a row that opens a second menu runs.
-#[must_use]
-pub fn menu_command(menu: &Menu) -> String {
-    menu_command_for_client(None, menu)
-}
-
-/// `menu` as one tmux command word, pinned to `client` at every level.
-#[must_use]
-pub fn menu_command_for_client(client: Option<&str>, menu: &Menu) -> String {
-    let mut words = vec!["display-menu".to_owned()];
-    if let Some(client) = client {
-        words.extend(["-c".to_owned(), client.to_owned()]);
-    }
-    words.extend(MENU_POSITION.map(ToOwned::to_owned));
-    words.push("-T".to_owned());
-    words.push(titled(menu));
-    words.push(END_OF_FLAGS.to_owned());
-    for item in &menu.items {
-        words.extend(item_words(item, client));
-    }
-    words
-        .iter()
-        .map(|word| single_quoted(word))
-        .collect::<Vec<String>>()
-        .join(" ")
 }
 
 /// `word` as one token of a tmux command line.
@@ -1274,9 +1240,7 @@ pub fn switch_client_command(client: &str, session: &str) -> String {
     )
 }
 
-/// Predicates shared by the two root status bindings.
-pub(crate) const MOUSE_STATUS_AE: &str = "#{==:#{mouse_status_range},ae}";
-pub(crate) const MOUSE_STATUS_AE_MORE: &str = "#{==:#{mouse_status_range},ae-more}";
+/// Predicate shared by the two root status bindings.
 pub(crate) const MOUSE_STATUS_PICKER: &str =
     "#{||:#{==:#{mouse_status_range},ae},#{==:#{mouse_status_range},ae-more}}";
 pub(crate) const MOUSE_STATUS_SESSION: &str = "#{==:#{mouse_status_range},session}";
@@ -1323,6 +1287,51 @@ pub fn jump_client_command(client: &str, session: &str, pane: &str) -> String {
     format!(
         "{} ; select-window -t {pane} ; select-pane -t {pane}",
         switch_client_command(client, session)
+    )
+}
+
+/// Hand the calling client to a captured session id, then select `pane` only
+/// if it STILL belongs to that session when the menu row runs.
+///
+/// `display-menu` consumes one format-expansion layer when it opens, so the
+/// predicate's hashes are doubled here and survive until `if-shell` evaluates
+/// them after the switch. A pane that vanished or moved makes only the guarded
+/// tail fail; the client has already landed in the intended session.
+#[must_use]
+pub fn guarded_jump_id_command(session_id: &str, pane: &str) -> String {
+    guarded_jump(&switch_id_command(session_id), session_id, pane)
+}
+
+/// The explicit-client form of [`guarded_jump_id_command`].
+#[must_use]
+pub fn guarded_jump_client_id_command(client: &str, session_id: &str, pane: &str) -> String {
+    guarded_jump(
+        &switch_client_id_command(client, session_id),
+        session_id,
+        pane,
+    )
+}
+
+fn guarded_jump(switch: &str, session_id: &str, pane: &str) -> String {
+    format!(
+        "{switch} ; if-shell -F -t {pane} '##{{==:##{{session_id}},{session_id}}}' \
+         'select-window -t {pane} ; select-pane -t {pane}'"
+    )
+}
+
+/// Hand the calling client to a captured tmux `$<n>` session id.
+#[must_use]
+pub fn switch_id_command(session_id: &str) -> String {
+    format!("{} -t {session_id}", FocusVerb::SwitchClient.as_str())
+}
+
+/// Hand one explicit client to a captured tmux `$<n>` session id.
+#[must_use]
+pub fn switch_client_id_command(client: &str, session_id: &str) -> String {
+    format!(
+        "{} -c {} -t {session_id}",
+        FocusVerb::SwitchClient.as_str(),
+        single_quoted(client)
     )
 }
 
@@ -1517,6 +1526,149 @@ pub fn interpret_fleet_sessions(succeeded: bool, stdout: &str) -> Option<Vec<Fle
             })
             .collect(),
     )
+}
+
+// ---------------------------------------------------------------------------
+// The fleet picker's two live-server reads.
+// ---------------------------------------------------------------------------
+
+/// One picker row, identity first and its free-text goal last.
+///
+/// The first three fields admit the row. The remaining fields are display or
+/// navigation hints and may be absent. Keeping the goal last lets
+/// [`interpret_picker_sessions`] use `splitn`, so a literal pipe in operator
+/// text cannot shift a pane id into another field.
+pub const PICKER_SESSION_FORMAT: &str = "#{session_name} | #{session_id} | #{@ae_attn_rank} | #{@ae_attn_glyph} | #{@ae_main_pane} | #{@ae_goal_status}";
+
+/// How many fields [`PICKER_SESSION_FORMAT`] yields.
+const PICKER_SESSION_FIELDS: usize = 6;
+
+/// One live ae session admitted into the picker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PickerSession {
+    /// The allowlisted session name.
+    pub name: String,
+    /// The tmux `$<n>` id captured with the row, used as its rename-safe target.
+    pub id: String,
+    /// The proven attention rank.
+    pub rank: u8,
+    /// The already-rendered attention glyph; empty when an older session lacks it.
+    pub glyph: String,
+    /// The recorded lead pane hint; empty when an older session lacks it.
+    pub main_pane: String,
+    /// The already-bounded status goal; empty when unset or unavailable.
+    pub goal: String,
+}
+
+impl PickerSession {
+    /// The session's creation order, encoded in tmux's monotonically assigned id.
+    #[must_use]
+    pub fn created(&self) -> u64 {
+        self.id
+            .strip_prefix('$')
+            .and_then(|digits| digits.parse().ok())
+            .unwrap_or(u64::MAX)
+    }
+}
+
+/// The arguments reading every picker row from the live server in one call.
+#[must_use]
+pub fn picker_sessions_args(server: &ServerId) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(["list-sessions", "-F", PICKER_SESSION_FORMAT].map(ToOwned::to_owned));
+    args
+}
+
+/// Parse the live picker rows.
+///
+/// Name, session id and rank are identity: a malformed one rejects the row,
+/// matching the fleet-strip reader. Missing display fields become empty. A
+/// failed listing remains `None`, distinct from a successful empty server.
+#[must_use]
+pub fn interpret_picker_sessions(succeeded: bool, stdout: &str) -> Option<Vec<PickerSession>> {
+    if !succeeded {
+        return None;
+    }
+    Some(
+        stdout
+            .lines()
+            .map(|line| line.trim_end_matches('\r'))
+            .filter(|line| !line.is_empty())
+            .filter_map(|line| {
+                let mut fields = line.splitn(PICKER_SESSION_FIELDS, FIELD_SEPARATOR);
+                let name = fields.next().unwrap_or_default().trim();
+                let id = fields.next().unwrap_or_default().trim();
+                let rank = fields.next().unwrap_or_default().trim();
+                let named = crate::session_launch::name::is_session_name(name);
+                let identified = session_id_is_valid(id);
+                let rank = rank.parse::<u8>().ok().filter(|rank| *rank <= HIGHEST_RANK);
+                (named && identified).then_some(())?;
+                let rank = rank?;
+                Some(PickerSession {
+                    name: name.to_owned(),
+                    id: id.to_owned(),
+                    rank,
+                    glyph: fields.next().unwrap_or_default().trim().to_owned(),
+                    main_pane: fields.next().unwrap_or_default().trim().to_owned(),
+                    goal: fields.next().unwrap_or_default().trim().to_owned(),
+                })
+            })
+            .collect(),
+    )
+}
+
+/// The one build-time membership snapshot: session id then pane id.
+pub const PICKER_PANE_FORMAT: &str = "#{session_id} | #{pane_id}";
+
+/// One pane and the session that owns it in the picker snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PickerPane {
+    /// The tmux `$<n>` session id.
+    pub session_id: String,
+    /// The tmux `%<n>` pane id.
+    pub pane: String,
+}
+
+/// The arguments reading every pane membership from the live server once.
+#[must_use]
+pub fn picker_panes_args(server: &ServerId) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(["list-panes", "-a", "-F", PICKER_PANE_FORMAT].map(ToOwned::to_owned));
+    args
+}
+
+/// Parse the membership snapshot, dropping only malformed identities.
+#[must_use]
+pub fn interpret_picker_panes(succeeded: bool, stdout: &str) -> Option<Vec<PickerPane>> {
+    if !succeeded {
+        return None;
+    }
+    Some(
+        stdout
+            .lines()
+            .map(|line| line.trim_end_matches('\r'))
+            .filter(|line| !line.is_empty())
+            .filter_map(|line| {
+                let mut fields = line.splitn(2, FIELD_SEPARATOR);
+                let session_id = fields.next().unwrap_or_default().trim();
+                let pane = fields.next().unwrap_or_default().trim();
+                (session_id_is_valid(session_id) && pane_id_is_valid(pane)).then(|| PickerPane {
+                    session_id: session_id.to_owned(),
+                    pane: pane.to_owned(),
+                })
+            })
+            .collect(),
+    )
+}
+
+fn session_id_is_valid(id: &str) -> bool {
+    id.strip_prefix('$')
+        .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
+}
+
+fn pane_id_is_valid(pane: &str) -> bool {
+    pane.strip_prefix('%')
+        .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// The two look knobs the watchdog re-reads every cycle, in ONE query — so a
@@ -2375,11 +2527,10 @@ mod tests {
     fn no_tmux_format_carries_a_control_character() {
         use super::{
             AGENTS_FORMAT, CLIENT_FORMAT, FLEET_PANE_FORMAT, MOTION_PANE_FORMAT,
-            MOUSE_DOWN_STATUS_MENU_ACTION, MOUSE_STATUS_AE, MOUSE_STATUS_AE_MORE,
-            MOUSE_STATUS_PICKER, MOUSE_STATUS_SESSION, MOUSE_STATUS_WINDOW, PANE_FORMAT,
-            PANE_ID_FORMAT, PANE_PROBE_FORMAT, PANE_TTY_FORMAT, SESSION_ID_FORMAT,
-            SESSION_NAME_FORMAT, SLOTS_FORMAT, VERSION_FORMAT, VIEWER_FORMAT, WATCH_PANE_FORMAT,
-            WINDOW_PANE_FORMAT,
+            MOUSE_DOWN_STATUS_MENU_ACTION, MOUSE_STATUS_PICKER, MOUSE_STATUS_SESSION,
+            MOUSE_STATUS_WINDOW, PANE_FORMAT, PANE_ID_FORMAT, PANE_PROBE_FORMAT, PANE_TTY_FORMAT,
+            SESSION_ID_FORMAT, SESSION_NAME_FORMAT, SLOTS_FORMAT, VERSION_FORMAT, VIEWER_FORMAT,
+            WATCH_PANE_FORMAT, WINDOW_PANE_FORMAT,
         };
 
         for format in [
@@ -2399,6 +2550,8 @@ mod tests {
             WATCH_PANE_FORMAT,
             WINDOW_PANE_FORMAT,
             super::FLEET_SESSION_FORMAT,
+            super::PICKER_PANE_FORMAT,
+            super::PICKER_SESSION_FORMAT,
             super::LOOK_FORMAT,
         ] {
             assert!(
@@ -2407,8 +2560,6 @@ mod tests {
             );
         }
         for format in [
-            MOUSE_STATUS_AE,
-            MOUSE_STATUS_AE_MORE,
             MOUSE_STATUS_PICKER,
             MOUSE_STATUS_SESSION,
             MOUSE_STATUS_WINDOW,
@@ -2457,6 +2608,66 @@ mod tests {
             "only rows whose name, id and rank all check out"
         );
         assert!(interpret_fleet_sessions(false, listing).is_none());
+    }
+
+    #[test]
+    fn picker_rows_admit_identity_default_display_fields_and_keep_the_goal_last() {
+        use super::{PickerSession, interpret_picker_sessions};
+
+        let listing = concat!(
+            "good | $1 | 4 | ⚠ | %7 | ship | keep #[bg=red]",
+            "\u{7}",
+            " now\n",
+            "missing-display | $2 | 0\n",
+            "bad name | $3 | 1 | x | %3 | no\n",
+            "bad-id | @4 | 1 | x | %4 | no\n",
+            "bad-rank | $5 | many | x | %5 | no\n",
+            "too-high | $6 | 6 | x | %6 | no\n",
+        );
+        assert_eq!(
+            interpret_picker_sessions(true, listing),
+            Some(vec![
+                PickerSession {
+                    name: "good".to_owned(),
+                    id: "$1".to_owned(),
+                    rank: 4,
+                    glyph: "⚠".to_owned(),
+                    main_pane: "%7".to_owned(),
+                    goal: "ship | keep #[bg=red]\u{7} now".to_owned(),
+                },
+                PickerSession {
+                    name: "missing-display".to_owned(),
+                    id: "$2".to_owned(),
+                    rank: 0,
+                    glyph: String::new(),
+                    main_pane: String::new(),
+                    goal: String::new(),
+                },
+            ])
+        );
+        assert_eq!(interpret_picker_sessions(true, ""), Some(Vec::new()));
+        assert!(interpret_picker_sessions(false, listing).is_none());
+    }
+
+    #[test]
+    fn picker_pane_membership_keeps_only_tmux_ids() {
+        use super::{PickerPane, interpret_picker_panes};
+
+        let listing = "$1 | %7\r\n$2 | %8\nname | %9\n$3 | pane\nshort\n";
+        assert_eq!(
+            interpret_picker_panes(true, listing),
+            Some(vec![
+                PickerPane {
+                    session_id: "$1".to_owned(),
+                    pane: "%7".to_owned(),
+                },
+                PickerPane {
+                    session_id: "$2".to_owned(),
+                    pane: "%8".to_owned(),
+                },
+            ])
+        );
+        assert!(interpret_picker_panes(false, listing).is_none());
     }
 
     #[test]
@@ -3219,7 +3430,10 @@ mod tests {
 
     #[test]
     fn a_menu_jump_spells_its_verb_with_the_one_focus_verb_and_takes_the_window_first() {
-        use super::{FocusVerb, jump_command, switch_command};
+        use super::{
+            FocusVerb, guarded_jump_client_id_command, guarded_jump_id_command, jump_command,
+            switch_command,
+        };
 
         // The verb has ONE owner; a second spelling here could drift from it.
         assert!(switch_command("hub").starts_with(FocusVerb::SwitchClient.as_str()));
@@ -3233,15 +3447,18 @@ mod tests {
         let window = jump.find("select-window").expect("a window step");
         let pane = jump.find("select-pane").expect("a pane step");
         assert!(window < pane, "{jump}");
+        assert_eq!(
+            guarded_jump_id_command("$7", "%12"),
+            "switch-client -t $7 ; if-shell -F -t %12 '##{==:##{session_id},$7}' 'select-window -t %12 ; select-pane -t %12'"
+        );
+        assert_eq!(
+            guarded_jump_client_id_command("/dev/ttys001", "$7", "%12"),
+            "switch-client -c '/dev/ttys001' -t $7 ; if-shell -F -t %12 '##{==:##{session_id},$7}' 'select-window -t %12 ; select-pane -t %12'"
+        );
     }
 
     #[test]
     fn status_click_predicates_name_each_owned_range() {
-        assert_eq!(super::MOUSE_STATUS_AE, "#{==:#{mouse_status_range},ae}");
-        assert_eq!(
-            super::MOUSE_STATUS_AE_MORE,
-            "#{==:#{mouse_status_range},ae-more}"
-        );
         assert_eq!(
             super::MOUSE_STATUS_PICKER,
             "#{||:#{==:#{mouse_status_range},ae},#{==:#{mouse_status_range},ae-more}}"

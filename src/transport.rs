@@ -618,6 +618,26 @@ pub fn observe_fleet_panes(server: &ServerId) -> Option<Vec<tmux::FleetPane>> {
     tmux::interpret_fleet_panes(succeeded, &stdout)
 }
 
+/// Every live ae session as the fleet picker reads it in one server call.
+#[must_use]
+pub fn observe_picker_sessions(server: &ServerId) -> Option<Vec<tmux::PickerSession>> {
+    if !addressable(server) {
+        return None;
+    }
+    let (succeeded, stdout) = run(PROGRAM, &tmux::picker_sessions_args(server));
+    tmux::interpret_picker_sessions(succeeded, &stdout)
+}
+
+/// Every live pane membership as the picker verifies it in one server call.
+#[must_use]
+pub fn observe_picker_panes(server: &ServerId) -> Option<Vec<tmux::PickerPane>> {
+    if !addressable(server) {
+        return None;
+    }
+    let (succeeded, stdout) = run(PROGRAM, &tmux::picker_panes_args(server));
+    tmux::interpret_picker_panes(succeeded, &stdout)
+}
+
 /// Draw `menu` on `client`, or the server's current client when absent.
 #[must_use]
 pub fn display_menu(server: &ServerId, client: Option<&str>, menu: &tmux::Menu) -> bool {

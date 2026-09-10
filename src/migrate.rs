@@ -664,15 +664,18 @@ fn restart_daemons(
     for binding in crate::session_tmux::mouse_status_bindings_argv(&server, &launcher) {
         let _ = crate::transport::run_tmux_op(&binding);
     }
+    let main_pane = meta_bytes
+        .as_deref()
+        .and_then(|bytes| crate::meta::first_value(bytes, "main_pane"))
+        .map(|value| String::from_utf8_lossy(value).into_owned())
+        .unwrap_or_default();
+    let pane_belongs = crate::transport::observe_agents(&server, name)
+        .is_some_and(|panes| panes.into_iter().any(|pane| pane.pane == main_pane));
+    crate::session_launch::stamp_main_pane(&server, name, &main_pane, pane_belongs);
     if let Some(bytes) = meta_bytes {
         let layout = crate::meta::first_value(&bytes, "layout")
             .map(|value| String::from_utf8_lossy(value).into_owned())
             .unwrap_or_default();
-        let main_pane = crate::meta::first_value(&bytes, "main_pane")
-            .map(|value| String::from_utf8_lossy(value).into_owned())
-            .unwrap_or_default();
-        let pane_belongs = crate::transport::observe_agents(&server, name)
-            .is_some_and(|panes| panes.into_iter().any(|pane| pane.pane == main_pane));
         if pane_belongs {
             crate::session_launch::stamp_lead_pair_policy(&server, &layout, &main_pane);
         }

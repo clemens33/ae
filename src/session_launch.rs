@@ -1364,7 +1364,9 @@ fn launch(
         }
         let layout = meta_value(&dir, "layout").unwrap_or_default();
         let main_pane = meta_value(&dir, "main_pane").unwrap_or_default();
-        if observed.iter().any(|pane| pane.pane == main_pane) {
+        let pane_belongs = observed.iter().any(|pane| pane.pane == main_pane);
+        stamp_main_pane(&server, &session, &main_pane, pane_belongs);
+        if pane_belongs {
             stamp_lead_pair_policy(&server, &layout, &main_pane);
         }
         // The guard protects only the resume decision and its verification.
@@ -2260,6 +2262,7 @@ fn stamp_session(server: &ServerId, env: &Env, shape: &Session, main_pane: &str,
     ] {
         let _ = transport::publish_option(server, tmux::OptionScope::Session, name, option, value);
     }
+    stamp_main_pane(server, name, main_pane, true);
     apply_status_bar(
         server,
         &shape.name,
@@ -2274,6 +2277,34 @@ fn stamp_session(server: &ServerId, env: &Env, shape: &Session, main_pane: &str,
     assert_mouse_status_bindings(server, env, core);
     let _ = transport::run_tmux_op(&argv(server, &Op::SetClientSessionHook { pane: main_pane }));
     let _ = transport::run_tmux_op(&argv(server, &Op::SelectPane { pane: main_pane }));
+}
+
+/// Publish the lead-pane navigation fact only after membership was proven.
+///
+/// A stale hint is actively unset: leaving one behind would let a future pane
+/// with the same text appear authoritative even though this pass disproved it.
+pub(crate) fn stamp_main_pane(
+    server: &ServerId,
+    session: &str,
+    main_pane: &str,
+    pane_belongs: bool,
+) {
+    if pane_belongs && !main_pane.is_empty() {
+        let _ = transport::publish_option(
+            server,
+            tmux::OptionScope::Session,
+            session,
+            crate::theme::MAIN_PANE_OPTION,
+            main_pane,
+        );
+    } else {
+        let _ = transport::clear_option(
+            server,
+            tmux::OptionScope::Session,
+            session,
+            crate::theme::MAIN_PANE_OPTION,
+        );
+    }
 }
 
 fn assert_mouse_status_bindings(server: &ServerId, env: &Env, core: &Path) {

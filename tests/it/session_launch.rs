@@ -2087,9 +2087,9 @@ fn assert_ae_mouse_bindings(rig: &Rig) {
         .unwrap_or_else(|| panic!("one MouseDown1Status binding: {keys}"));
     assert!(
         click.contains("run-shell -C")
+            && click.contains("#{||:#{==:#{mouse_status_range},ae}")
             && click.contains("#{==:#{mouse_status_range},ae-more}")
-            && click.contains("#{&&:#{==:#{mouse_status_range},ae},#{@ae_orchestrator_id}}")
-            && click.contains("@ae_orchestrator_id")
+            && !click.contains("@ae_orchestrator_id")
             && click.contains("mouse_status_range},window")
             && click.contains("mouse_status_range},session")
             && click.contains("select-window -t #{window_id}")
@@ -2139,6 +2139,10 @@ fn assert_ae_mouse_bindings(rig: &Rig) {
 /// session-scoped through the lead pane id, so a resume installs the new id and
 /// a rename keeps the old one.
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one launch-reattach-resume-rename focus contract"
+)]
 fn the_session_focus_hook_follows_the_lead_through_resume_and_rename() {
     if skip() {
         return;
@@ -2179,6 +2183,18 @@ fn the_session_focus_hook_follows_the_lead_through_resume_and_rename() {
 
     let first_pane = main_pane();
     assert_hook("lnfocus", &first_pane);
+    let (_, published) = rig.tmux(&[
+        "show-options",
+        "-v",
+        "-t",
+        "=lnfocus:",
+        ae::theme::MAIN_PANE_OPTION,
+    ]);
+    assert_eq!(
+        published.trim(),
+        first_pane,
+        "the launch publishes its lead"
+    );
 
     assert!(
         rig.tmux(&[
@@ -2221,6 +2237,18 @@ fn the_session_focus_hook_follows_the_lead_through_resume_and_rename() {
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
     let resumed_pane = main_pane();
     assert_hook("lnfocus", &resumed_pane);
+    let (_, published) = rig.tmux(&[
+        "show-options",
+        "-v",
+        "-t",
+        "=lnfocus:",
+        ae::theme::MAIN_PANE_OPTION,
+    ]);
+    assert_eq!(
+        published.trim(),
+        resumed_pane,
+        "the resume republishes its proven lead"
+    );
     assert_ae_mouse_bindings(&rig);
 
     let renamed = ae()

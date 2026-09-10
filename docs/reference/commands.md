@@ -24,9 +24,8 @@ ae quota               Show bounded local quota snapshots for configured profile
 ae orchestrator        Start or reattach the orchestrator seat: a local session named
                        orchestrator, pinned first in the fleet strip
 ae orchestrator --popup
-                       Pick a session, then one of its agents, in a tmux menu; the
-                       chosen agent's pane gets the client. Also opened from the
-                       status bar's ae version and +N ranges. Needs tmux >= 3.4
+                       Pick a live session in a tmux menu; its lead pane gets the
+                       client. Opened from status-bar ae and +N. Needs tmux >= 3.4
 ae doctor              Check local environment and ae config
 ae doctor --refresh [name|all]
                        Regenerate helper scripts and workspace.md in existing sessions
@@ -429,68 +428,56 @@ workspace and prompt settings. Existing seat files that still carry
 still overlay. Add `--no-attach` to build or reattach without attaching; ae prints the exact
 attach command and exits successfully. The seat keeps its fixed launch shape, so `--dir` remains
 an ordinary-session flag. The seat is pinned first in the status
-bar's fleet strip, marked `◆`. The `--popup` form is the picker, next. From another
-ae session on the same tmux server, click `ae <version>` at the bottom-right of
-the status bar to jump to the orchestrator.
+bar's fleet strip, marked `◆`. The `--popup` form is the picker, next. From any
+ae session on the same tmux server, click `ae <version>` or `+N` at the
+bottom-right of the status bar to open it.
 
 ## `ae orchestrator --popup`
 
-The fleet picker, drawn by tmux itself. No daemon, no polling, no dependency: one
-`display-menu` built from the same [`ae list`](#ae-list) digest, thrown away when you
-choose.
+The fleet picker is drawn by tmux itself and thrown away when you choose. Its
+rows come only from one live `list-sessions` call on the calling server; one
+`list-panes -a` call proves which published lead-pane hints still belong to
+their sessions. It never builds [`ae list`](#ae-list)'s durable inventory,
+walks session directories, reads events or probes git.
 
-Right-click `ae <version>` or the fleet strip's `+N` counter to open it; left-click
-`+N` does the same. The picker shows at most 30 urgency-ordered sessions. A session
-row opens that session's agent submenu. A status click names its tmux client
-explicitly through both menus and every action, so another client watching the
-same pane is untouched; if that client vanishes, the picker refuses instead of
-choosing another.
+Left- or right-click `ae <version>` or the fleet strip's `+N` counter to open
+it. The picker shows at most 30 attention-ordered sessions. A status click
+names its tmux client explicitly through the menu and every action, so another
+client watching the same pane is untouched; if that client vanishes, the
+picker refuses instead of choosing another.
 
 ```text
 $ ae orchestrator --popup
-┌─ ae fleet — 3 running ──────────────────────────────────────────────────┐
-│ gamma              dead         tmux -L ae-dev2 attach -t "=gamma"     │
-│ alpha              -             2ag ship the S0 picker                 │ (1)
-│ beta               stale         3ag port the watchdog                  │ (2)
-└─────────────────────────────────────────────────────────────────────────┘
+┌─ ae fleet — 3 running ───────────────────────────────┐
+│ gamma              ✖ restore its lead pane       (1) │
+│ beta               ◌ port the watchdog           (2) │
+│ alpha              · ship the S0 picker          (3) │
+└──────────────────────────────────────────────────────┘
 ```
 
-Sessions come in **attention order** — `dead > stale > waiting-user > blocked >
-throttled > unanswered`, then the quiet ones — and ties break on the name, ascending, so
-the list is the same on every invocation. Each row carries the session name, the attention
-word (`-` when nothing wants a human, `?` when the evidence behind the marker was
-incomplete), how many agents the roster holds, and the goal, cut to fit. At most 30 rows;
-a note names how many were left out.
+Sessions come in **attention rank order**, then tmux creation order, then name.
+Every live admitted ae session on the calling server stays eligible, including
+the current and orchestrator sessions. Each row carries the session name, its
+live mark and its bounded goal. At most 30 rows; a disabled note names how many
+were left out.
 
-Choosing a session opens its agents, each with its declared state, its own attention
-reason and its pane id:
-
-```text
-┌─ alpha — attn:- — active 13m ───────────────────────────┐
-│ lead                   working      -            %0 (1) │
-│ helper                 blocked      blocked      %1 (2) │
-└─────────────────────────────────────────────────────────┘
-```
-
-Choosing an agent runs `switch-client`, then `select-window`, then `select-pane` on the
-recorded ids — the window first, because a worker lives in its own and `select-pane` alone
-does not change which window is viewed. tmux resolves all three when you choose, so a pane
-that died in the meantime fails the jump instead of landing you somewhere else. The core's
-own monitor panes (`_watchdog`, `_events`) are stamped outside the agent grammar and are
-not listed.
+Choosing a row first runs `switch-client` against the captured `$<id>`, so a
+rename after the menu opened cannot redirect it. When the one pane snapshot
+proved `@ae_main_pane` belonged to that session, the row then checks the pane's
+session id again at execution and selects its window and pane. If the pane
+moved or vanished meanwhile, the guarded tail does not follow it: the client
+remains in the chosen session. A missing or unproven lead hint gives the row a
+plain session switch.
 
 **Coming back is tmux's own.** `switch-client -l` (prefix + `L`) returns the client to the
 session it came from; within one session, `last-pane` (prefix + `;`) is the equivalent. ae
 remembers nothing about where you were — a second answer to a question tmux already answers
 is a second chance to disagree with it.
 
-**One server only, and proven.** `switch-client` cannot cross tmux servers, and it targets a
-session by NAME on the server it is given — so a session ae recorded elsewhere, with a
-same-named stranger here, would otherwise take your jump. The picker compares the socket
-path each server reports for itself, and a session it cannot prove is on this one becomes a
-row you cannot choose, showing the `tmux … attach -t "=<name>"` command that reaches it — with
-its attention word intact, because a session ae cannot reach can still be the one that needs
-you.
+**One server only.** `switch-client` cannot cross tmux servers, so the picker
+lists only live sessions on the calling server. Sessions recorded on other
+servers are absent. If the live session listing fails, ae refuses instead of
+drawing a confident empty fleet.
 
 ### Bind it
 

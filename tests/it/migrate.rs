@@ -1004,9 +1004,9 @@ fn assert_tmux_default_mouse_binding(socket: &Path, scratch: &Path) {
 fn assert_ae_mouse_bindings(socket: &Path, scratch: &Path) {
     let binding = mouse_down_status_binding(socket, scratch, "MouseDown1Status");
     assert!(
-        binding.contains("#{==:#{mouse_status_range},ae-more}")
-            && binding.contains("#{&&:#{==:#{mouse_status_range},ae},#{@ae_orchestrator_id}}")
-            && binding.contains("@ae_orchestrator_id")
+        binding.contains("#{||:#{==:#{mouse_status_range},ae}")
+            && binding.contains("#{==:#{mouse_status_range},ae-more}")
+            && !binding.contains("@ae_orchestrator_id")
             && binding.contains("mouse_status_range},window")
             && binding.contains("mouse_status_range},session")
             && binding.contains("select-window -t #{window_id}")
@@ -1442,6 +1442,10 @@ fn assert_lead_pair_policy(socket: &Path, scratch: &Path, main_pane: &str, sessi
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one running-session upgrade and daemon restart contract"
+)]
 fn a_running_sessions_daemons_are_restarted_on_the_new_core() {
     let scratch = tmux_scratch("run");
     if !tmux_present(&scratch) {
@@ -1473,6 +1477,22 @@ fn a_running_sessions_daemons_are_restarted_on_the_new_core() {
 
     assert_ae_mouse_bindings(&socket, &scratch);
     assert_lead_pair_policy(&socket, &scratch, &agent_pane, session);
+    let (_, published) = tmux(
+        &socket,
+        &scratch,
+        &[
+            "show-options",
+            "-v",
+            "-t",
+            "=wdmig:",
+            ae::theme::MAIN_PANE_OPTION,
+        ],
+    );
+    assert_eq!(
+        published.trim(),
+        agent_pane,
+        "the upgrade publishes the main pane only after the live membership proof"
+    );
 
     // The meta and every helper now name the new core.
     let text = meta_of(&dir);

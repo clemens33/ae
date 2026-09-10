@@ -1,25 +1,16 @@
 //! The fleet picker against a REAL tmux server.
 //!
-//! Three of the picker's claims are claims about tmux, not about ae, and a
-//! pure argv assertion cannot hold any of them: that a menu name is expanded by
-//! the plain format expander, so `##` collapses and `%%` does not; that the
-//! flags must be ended before a row whose name begins with a hyphen, or getopt
-//! reads that name as flags; and that a nested menu survives being quoted into
-//! one command word. This arm asks a real server all three at once, and then
-//! chooses a row and proves where the client landed.
+//! A pure argv assertion cannot hold tmux's format timing or client focus. This
+//! arm draws the menu, chooses rows, and proves both the ordinary lead-pane jump
+//! and the execution-time guard when that pane moves or vanishes.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use ae::attention::Reason;
-use ae::digest::{AgentEntry, SessionEntry, Status};
 use ae::inventory::ServerId;
-use ae::listing::World;
 use ae::meta::Selector;
-use ae::orchestrator::{AgentPane, Located, Placement};
-use ae::time::Timestamp;
-use ae::tmux::display_menu_for_client_args;
+use ae::tmux::{PickerPane, PickerSession, display_menu_for_client_args};
 
 use super::cli::ae;
 use super::phase2::{run_tmux, tmux_present};
@@ -87,48 +78,17 @@ fn wait_for(
     panic!("{what} never settled; tmux last said {last:?}");
 }
 
-/// The world the menu is built from: one reachable session and one that is not.
-fn fleet() -> World {
-    let mut hub = SessionEntry::new("hub", Status::Running);
-    // Every character the escaping claims are about, in text an operator wrote.
-    hub.goal = Some("100% of #{everything}, don't stop".to_owned());
-    hub.last_active_epoch = Some(1_780_000_000);
-    hub.agents = vec![
-        AgentEntry {
-            reference: "lead".to_owned(),
-            alias: "cl".to_owned(),
-            name: "lead".to_owned(),
-            session_id: None,
-            alive: Some(true),
-            state: Some("working".to_owned()),
-            reason: None,
-        },
-        AgentEntry {
-            reference: "helper".to_owned(),
-            alias: "cl".to_owned(),
-            name: "helper".to_owned(),
-            session_id: None,
-            alive: Some(true),
-            state: Some("blocked".to_owned()),
-            reason: Some(Reason::Blocked),
-        },
-    ];
-    // `dead` outranks everything, so this one is drawn FIRST — and it is the row
-    // that cannot be chosen, which is the getopt hazard.
-    let mut far = SessionEntry::new("far", Status::Running);
-    far.attention = Some(Reason::Dead);
-    World::new(Timestamp::from_epoch(1_780_000_000), vec![hub, far])
-}
-
 /// The two sessions the arm needs, a real client watching one of them, and the
 /// ids of the panes the picker will target.
 struct Staged {
     ids: Vec<String>,
+    hub_id: String,
     client: String,
     other_client: String,
     home_pane: String,
 }
 
+#[allow(clippy::too_many_lines, reason = "one real two-client fixture")]
 fn stage(socket: &Path, main: &Path) -> Staged {
     // The session the picker jumps INTO, and the one the client starts in, so
     // "it switched" is observable rather than assumed.
@@ -221,48 +181,53 @@ fn stage(socket: &Path, main: &Path) -> Staged {
     .1;
     let ids: Vec<String> = panes.lines().map(|line| line.trim().to_owned()).collect();
     assert_eq!(ids.len(), 2, "two panes in hub: {panes:?}");
+    let hub_id = tmux(
+        socket,
+        main,
+        &["display-message", "-p", "-t", "hub", "#{session_id}"],
+    )
+    .1
+    .trim()
+    .to_owned();
+    assert!(hub_id.starts_with('$'), "{hub_id:?}");
 
     Staged {
         ids,
+        hub_id,
         client,
         other_client,
         home_pane,
     }
 }
 
-/// The menu the picker builds for `ids`, as the argv that draws it on `socket`.
-fn picker_argv(socket: &Path, ids: &[String], client: &str) -> Vec<String> {
-    let world = fleet();
-    let located = [
-        Located {
-            session: "hub".to_owned(),
-            placement: Placement::Here(vec![
-                AgentPane {
-                    agent: "lead".to_owned(),
-                    pane: ids[0].clone(),
-                },
-                AgentPane {
-                    agent: "helper".to_owned(),
-                    pane: ids[1].clone(),
-                },
-            ]),
-        },
-        Located {
-            session: "far".to_owned(),
-            placement: Placement::Elsewhere("tmux -L elsewhere attach -t far".to_owned()),
-        },
-    ];
+/// The menu the picker builds, as the argv that draws it on `socket`.
+fn picker_argv(socket: &Path, staged: &Staged) -> Vec<String> {
+    let sessions = [PickerSession {
+        name: "hub".to_owned(),
+        id: staged.hub_id.clone(),
+        rank: 0,
+        glyph: "·".to_owned(),
+        main_pane: staged.ids[0].clone(),
+        goal: "100% of #{everything} | don't stop".to_owned(),
+    }];
+    let panes = staged
+        .ids
+        .iter()
+        .map(|pane| PickerPane {
+            session_id: staged.hub_id.clone(),
+            pane: pane.clone(),
+        })
+        .collect::<Vec<_>>();
     let menu = ae::orchestrator::menu_for_client(
-        &world,
-        &located,
-        world.now,
+        &sessions,
+        &panes,
         true,
         &ae::theme::Palette::DARCULA,
-        Some(client),
+        Some(&staged.client),
     );
     display_menu_for_client_args(
         &ServerId::Selected(Selector::Socket(socket.to_path_buf())),
-        Some(client),
+        Some(&staged.client),
         &menu,
     )
 }
@@ -286,7 +251,7 @@ fn the_menu_ae_builds_draws_on_a_real_server_and_its_rows_land_the_client() {
     let watcher = scratch.join("watcher");
 
     let staged = stage(&socket, &main);
-    let argv = picker_argv(&socket, &staged.ids, &staged.client);
+    let argv = picker_argv(&socket, &staged);
 
     // `display-menu` holds its client until the menu closes, so the keys come
     // from a second thread while this one waits on tmux.
@@ -297,15 +262,8 @@ fn the_menu_ae_builds_draws_on_a_real_server_and_its_rows_land_the_client() {
                 || tmux(&socket, &watcher, &["capture-pane", "-p", "-t", "viewer"]).1,
                 |text| text.contains("ae fleet"),
             );
-            // `far` is the first row and cannot be chosen, so `1` is `hub`.
+            // One row, one action: the session drops straight into its lead.
             assert!(tmux(&socket, &watcher, &["send-keys", "-t", "viewer", "1"]).0);
-            wait_for(
-                "the agent menu",
-                || tmux(&socket, &watcher, &["capture-pane", "-p", "-t", "viewer"]).1,
-                |text| text.contains("helper"),
-            );
-            // …and `2` is `helper`, the SECOND pane of hub.
-            assert!(tmux(&socket, &watcher, &["send-keys", "-t", "viewer", "2"]).0);
             seen
         });
         let (succeeded, _) = run_tmux(&argv, &main);
@@ -318,15 +276,6 @@ fn the_menu_ae_builds_draws_on_a_real_server_and_its_rows_land_the_client() {
         drawn.contains("100% of #{everything}"),
         "one hash and one percent, as measured: {drawn}"
     );
-    assert!(
-        drawn.contains("tmux -L elsewhere attach -t far"),
-        "the unreachable session names the command that reaches it: {drawn}"
-    );
-    assert!(
-        drawn.contains("dead"),
-        "…and keeps the attention word: {drawn}"
-    );
-
     // …and where the row LANDED the client.
     let landed = wait_for(
         "the jump",
@@ -345,9 +294,9 @@ fn the_menu_ae_builds_draws_on_a_real_server_and_its_rows_land_the_client() {
         |seen| seen.contains("hub|"),
     );
     assert!(
-        landed.contains(&format!("{}|hub|{}", staged.client, staged.ids[1])),
-        "the client should sit in helper's pane {}: {landed:?}",
-        staged.ids[1]
+        landed.contains(&format!("{}|hub|{}", staged.client, staged.ids[0])),
+        "the client should sit in the lead pane {}: {landed:?}",
+        staged.ids[0]
     );
     assert!(
         landed.contains(&format!(
@@ -356,6 +305,145 @@ fn the_menu_ae_builds_draws_on_a_real_server_and_its_rows_land_the_client() {
         )),
         "the other client watching the same pane must stay untouched: {landed:?}"
     );
+}
+
+#[derive(Clone, Copy)]
+enum StaleLead {
+    Moved,
+    Vanished,
+}
+
+/// Open a row while its build-time-proven lead becomes stale. The row must
+/// still switch to the captured session id, but must never follow that stale
+/// pane into another session.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one open-mutate-choose race with all observable postconditions"
+)]
+fn stale_lead_row_lands_in_session(tag: &str, stale: StaleLead) {
+    let scratch = scratch(tag);
+    if !tmux_present(&scratch) {
+        let _ = fs::remove_dir_all(&scratch);
+        panic!("tmux is not runnable here, so the guarded picker row cannot be proven");
+    }
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let main = scratch.join("main");
+    let watcher = scratch.join("watcher");
+    let staged = stage(&socket, &main);
+    let argv = picker_argv(&socket, &staged);
+
+    let foreign_window = if matches!(stale, StaleLead::Moved) {
+        assert!(
+            tmux(
+                &socket,
+                &main,
+                &["new-session", "-d", "-s", "foreign", "-x", "80", "-y", "24"]
+            )
+            .0
+        );
+        assert!(
+            tmux(&socket, &main, &["new-window", "-d", "-t", "foreign"]).0,
+            "a second foreign window"
+        );
+        Some(
+            tmux(
+                &socket,
+                &main,
+                &["display-message", "-p", "-t", "foreign", "#{window_id}"],
+            )
+            .1
+            .trim()
+            .to_owned(),
+        )
+    } else {
+        None
+    };
+
+    std::thread::scope(|scope| {
+        let driver = scope.spawn(|| {
+            wait_for(
+                "the stale-lead menu",
+                || tmux(&socket, &watcher, &["capture-pane", "-p", "-t", "viewer"]).1,
+                |text| text.contains("ae fleet"),
+            );
+            match stale {
+                StaleLead::Moved => assert!(
+                    tmux(
+                        &socket,
+                        &watcher,
+                        &["join-pane", "-d", "-s", &staged.ids[0], "-t", "foreign:1"]
+                    )
+                    .0,
+                    "move the captured lead after the menu opened"
+                ),
+                StaleLead::Vanished => assert!(
+                    tmux(&socket, &watcher, &["kill-pane", "-t", &staged.ids[0]]).0,
+                    "kill the captured lead after the menu opened"
+                ),
+            }
+            assert!(tmux(&socket, &watcher, &["send-keys", "-t", "viewer", "1"]).0);
+        });
+        // A vanished `-t` may make tmux report the guarded tail as failed; the
+        // externally visible contract is that the preceding session switch won.
+        let _ = run_tmux(&argv, &main);
+        driver
+            .join()
+            .unwrap_or_else(|_| panic!("the stale-lead key driver"));
+    });
+
+    let landed = wait_for(
+        "the stale-lead session switch",
+        || {
+            tmux(
+                &socket,
+                &main,
+                &[
+                    "list-clients",
+                    "-F",
+                    "#{client_name}|#{client_session}|#{pane_id}",
+                ],
+            )
+            .1
+        },
+        |seen| {
+            seen.lines()
+                .any(|line| line.starts_with(&format!("{}|hub|", staged.client)))
+        },
+    );
+    assert!(
+        landed.contains(&format!(
+            "{}|home|{}",
+            staged.other_client, staged.home_pane
+        )),
+        "the other client moved: {landed}"
+    );
+    if let Some(before) = foreign_window {
+        let after = tmux(
+            &socket,
+            &main,
+            &["display-message", "-p", "-t", "foreign", "#{window_id}"],
+        )
+        .1;
+        assert_eq!(
+            after.trim(),
+            before,
+            "the stale pane must not select its new session's window"
+        );
+    }
+}
+
+#[test]
+fn a_main_pane_moved_after_open_cannot_pull_the_client_into_its_new_session() {
+    stale_lead_row_lands_in_session("moved-lead", StaleLead::Moved);
+}
+
+#[test]
+fn a_main_pane_killed_after_open_still_leaves_the_client_in_the_session() {
+    stale_lead_row_lands_in_session("vanished-lead", StaleLead::Vanished);
 }
 
 fn launch_ae_session(
@@ -618,7 +706,7 @@ fn click_status(socket: &Path, scratch: &Path, viewer: &str, client: &str, butto
     clippy::too_many_lines,
     reason = "one end-to-end two-client status mouse story"
 )]
-fn right_clicking_the_version_range_opens_the_fleet_on_only_that_client() {
+fn clicking_the_version_range_opens_the_fleet_and_a_row_lands_on_the_lead() {
     let scratch = scratch("status-picker");
     if !tmux_present(&scratch) {
         let _ = fs::remove_dir_all(&scratch);
@@ -685,12 +773,15 @@ fn right_clicking_the_version_range_opens_the_fleet_on_only_that_client() {
         .lines()
         .find_map(|line| line.strip_prefix(&format!("{clicked}|fleet-a|")))
         .unwrap_or_else(|| panic!("clicked client: {clients}"));
+    let clicked_pane = clicked_pane.to_owned();
     assert!(
         clients.contains(&format!("{untouched}|fleet-a|{clicked_pane}")),
         "both clients must watch the SAME pane: {clients}"
     );
 
-    click_status(&socket, &scratch, "clicked-viewer", &clicked, 2, 2);
+    // A normal click on `ae` opens the picker, and choosing fleet-b drops only
+    // that exact client into fleet-b's published lead pane.
+    click_status(&socket, &scratch, "clicked-viewer", &clicked, 0, 2);
     let menu = wait_for(
         "the fleet menu from a real version click",
         || {
@@ -717,16 +808,94 @@ fn right_clicking_the_version_range_opens_the_fleet_on_only_that_client() {
         !other.contains("ae fleet"),
         "menu leaked to other client: {other}"
     );
+    let fleet_b_main = tmux(
+        &socket,
+        &scratch,
+        &[
+            "show-options",
+            "-v",
+            "-t",
+            "=fleet-b:",
+            ae::theme::MAIN_PANE_OPTION,
+        ],
+    )
+    .1
+    .trim()
+    .to_owned();
+    assert!(fleet_b_main.starts_with('%'), "{fleet_b_main:?}");
     assert!(
         tmux(
             &socket,
             &scratch,
-            &["send-keys", "-t", "clicked-viewer", "q"],
+            &["send-keys", "-t", "clicked-viewer", "2"]
+        )
+        .0
+    );
+    let landed = wait_for(
+        "the fleet-b lead jump",
+        || {
+            tmux(
+                &socket,
+                &scratch,
+                &[
+                    "list-clients",
+                    "-F",
+                    "#{client_name}|#{client_session}|#{pane_id}",
+                ],
+            )
+            .1
+        },
+        |seen| seen.contains(&format!("{clicked}|fleet-b|{fleet_b_main}")),
+    );
+    assert!(
+        landed.contains(&format!("{untouched}|fleet-a|{clicked_pane}")),
+        "the other same-pane client moved with the row: {landed}"
+    );
+
+    // Context-clicking the same range still opens the same picker.
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &["switch-client", "-c", &clicked, "-t", "=fleet-a"],
         )
         .0
     );
     wait_for(
-        "the fleet menu to close",
+        "the clicked client to return to fleet-a",
+        || {
+            tmux(
+                &socket,
+                &scratch,
+                &["list-clients", "-F", "#{client_name}|#{client_session}"],
+            )
+            .1
+        },
+        |seen| seen.contains(&format!("{clicked}|fleet-a")),
+    );
+    click_status(&socket, &scratch, "clicked-viewer", &clicked, 2, 2);
+    wait_for(
+        "the fleet menu from a context click",
+        || {
+            tmux(
+                &socket,
+                &scratch,
+                &["capture-pane", "-p", "-t", "clicked-viewer"],
+            )
+            .1
+        },
+        |seen| seen.contains("ae fleet") && seen.contains("fleet-b"),
+    );
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &["send-keys", "-t", "clicked-viewer", "q"]
+        )
+        .0
+    );
+    wait_for(
+        "the context-click fleet menu to close",
         || {
             tmux(
                 &socket,
@@ -842,75 +1011,6 @@ fn right_clicking_the_version_range_opens_the_fleet_on_only_that_client() {
             ],
         )
         .0
-    );
-
-    // Left-clicking the version is inert without an orchestrator target.
-    click_status(&socket, &scratch, "clicked-viewer", &clicked, 0, 2);
-    let before_orchestrator = tmux(
-        &socket,
-        &scratch,
-        &[
-            "list-clients",
-            "-F",
-            "#{client_name}|#{client_session}|#{pane_id}",
-        ],
-    )
-    .1;
-    assert!(
-        before_orchestrator.contains(&format!("{clicked}|fleet-a|{clicked_pane}"))
-            && before_orchestrator.contains(&format!("{untouched}|fleet-a|{clicked_pane}")),
-        "an absent orchestrator must be a no-op: {before_orchestrator}"
-    );
-
-    // Once the session publishes the orchestrator id, the same range hands
-    // only the clicking client to it.
-    let orchestrator_id = tmux(
-        &socket,
-        &scratch,
-        &["display-message", "-p", "-t", "fleet-b", "#{session_id}"],
-    )
-    .1;
-    assert!(
-        orchestrator_id.trim().starts_with('$'),
-        "{orchestrator_id:?}"
-    );
-    assert!(
-        tmux(
-            &socket,
-            &scratch,
-            &[
-                "set-option",
-                "-t",
-                "fleet-a",
-                ae::theme::ORCHESTRATOR_ID_OPTION,
-                orchestrator_id.trim(),
-            ],
-        )
-        .0
-    );
-    click_status(&socket, &scratch, "clicked-viewer", &clicked, 0, 2);
-    let switched = wait_for(
-        "the version's orchestrator jump",
-        || {
-            tmux(
-                &socket,
-                &scratch,
-                &[
-                    "list-clients",
-                    "-F",
-                    "#{client_name}|#{client_session}|#{pane_id}",
-                ],
-            )
-            .1
-        },
-        |seen| {
-            seen.lines()
-                .any(|line| line.starts_with(&format!("{clicked}|fleet-b|")))
-        },
-    );
-    assert!(
-        switched.contains(&format!("{untouched}|fleet-a|{clicked_pane}")),
-        "the other same-pane client moved with the click: {switched}"
     );
 
     // Once that client disappears, the public command refuses it instead of

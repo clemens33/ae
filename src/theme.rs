@@ -464,6 +464,13 @@ pub const GOAL_OPTION: &str = "@ae_goal_status";
 /// SESSION — the shortened work paths, as the bar shows them.
 pub const PATHS_OPTION: &str = "@ae_paths";
 
+/// SESSION — the `%<n>` id of this session's lead pane.
+///
+/// Launch, resume and upgrade publish it only after proving the pane belongs
+/// to this session. It is a navigation fact, never a watchdog verdict and not
+/// part of the look stamp.
+pub const MAIN_PANE_OPTION: &str = "@ae_main_pane";
+
 /// SESSION — the ae core this session's watchdog runs on, as `ae <version>`.
 ///
 /// Published by the WATCHDOG rather than the launch: an upgrade restarts the
@@ -471,11 +478,12 @@ pub const PATHS_OPTION: &str = "@ae_paths";
 /// session" without a relaunch.
 pub const VERSION_OPTION: &str = "@ae_version";
 
-/// SESSION — the `$<n>` id of the fleet's orchestrator, for the version click.
+/// SESSION — the `$<n>` id of the fleet's orchestrator for custom consumers.
 ///
 /// Published by the WATCHDOG from this server's fleet listing. The
 /// orchestrator's own session and a fleet with no orchestrator leave it unset,
-/// because there is nowhere else for a click to jump.
+/// because there is no remote orchestrator to name. The built-in version range
+/// opens the fleet picker and no longer consumes this compatibility fact.
 pub const ORCHESTRATOR_ID_OPTION: &str = "@ae_orchestrator_id";
 
 /// SESSION — the look the LAYOUT was written for.
@@ -692,7 +700,7 @@ pub fn status_line_zero(palette: &Palette) -> String {
 
 /// `status-format[1]`: every ae session on this server, then the orchestrator
 /// and core they run on — dim, at the far right, where a reader looks once
-/// after an upgrade and never otherwise.
+/// after an upgrade and clicks to open the fleet picker.
 #[must_use]
 pub fn status_line_one(palette: &Palette) -> String {
     // The conditional splits on format-text commas, so a comma-free option
@@ -708,7 +716,7 @@ pub fn status_line_one(palette: &Palette) -> String {
 }
 
 /// The bottom-right `ae <version>` segment: a named range whose mouse binding
-/// opens the fleet picker, or jumps to the published orchestrator on left-click.
+/// opens the fleet picker with either button.
 fn version_segment() -> String {
     format!("#[range=user|ae]#{{{VERSION_OPTION}}}#[norange]")
 }
