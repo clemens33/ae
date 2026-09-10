@@ -1,6 +1,11 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.39] - 2026-09-10
+
+### Features
+
+- Quiet fleet menu button
 ## [v2026.9.38] - 2026-09-10
 
 ### Other
