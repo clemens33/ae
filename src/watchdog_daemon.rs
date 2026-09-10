@@ -109,6 +109,8 @@ pub struct PaneState {
     pub last_hash_change: Option<i64>,
     /// First positive idle observation in the current uninterrupted episode.
     pub idle_since_epoch: Option<i64>,
+    /// Fingerprint of the newest declaration that already reset that episode.
+    pub last_declaration: Option<u64>,
     /// DELIVERIES, never attempts.
     pub nudge_count: u32,
     /// Consecutive throttled cycles.
@@ -165,6 +167,8 @@ pub struct HarnessObservation {
     pub human_draft: bool,
     /// A prior max-nudges stale alert still stands in the durable event log.
     pub durable_stale: bool,
+    /// Stable fingerprint of the latest relevant self-declaration, if current.
+    pub declaration: Option<u64>,
 }
 
 /// The roster glyph a pane earned this cycle — derived only from branches that
@@ -860,7 +864,18 @@ pub fn account(prior: &PaneState, seen: &Observation, knobs: &Knobs) -> Accounti
         };
     }
 
-    // 4.
+    // 4. A declaration starts a new idle episode exactly once. Its fingerprint
+    // rides the observed carry so a daemon restart cannot spend the reset again.
+    if let Some(declaration) = seen.harness.declaration
+        && prior.last_declaration != Some(declaration)
+    {
+        next.last_declaration = Some(declaration);
+        next.idle_since_epoch = None;
+        next.nudge_count = 0;
+        next.undelivered_streak = 0;
+    }
+
+    // 5.
     if !seen.is_throttled && prior.throttle_streak > 0 {
         effects.push(Effect::Emit {
             action: "throttle-cleared",
@@ -869,7 +884,7 @@ pub fn account(prior: &PaneState, seen: &Observation, knobs: &Knobs) -> Accounti
         next.throttle_streak = 0;
     }
 
-    // 5.
+    // 6.
     if let Some(kind) = seen.quiet {
         next.nudge_count = 0;
         next.undelivered_streak = 0;
@@ -882,7 +897,7 @@ pub fn account(prior: &PaneState, seen: &Observation, knobs: &Knobs) -> Accounti
         };
     }
 
-    // 6.
+    // 7.
     if seen.is_throttled {
         book_throttle(&mut next, &mut effects, seen, knobs);
         return Accounting {
@@ -893,7 +908,7 @@ pub fn account(prior: &PaneState, seen: &Observation, knobs: &Knobs) -> Accounti
         };
     }
 
-    // 7. Harness frames outrank the legacy motion heuristic.
+    // 8. Harness frames outrank the legacy motion heuristic.
     if let Some(verdict) = account_harness(prior, &mut next, &mut effects, seen, knobs) {
         return Accounting {
             next,
@@ -903,7 +918,7 @@ pub fn account(prior: &PaneState, seen: &Observation, knobs: &Knobs) -> Accounti
         };
     }
 
-    // 8. Unknown frames retain the legacy motion and actor-event rule.
+    // 9. Unknown frames retain the legacy motion and actor-event rule.
     account_unknown(prior, next, effects, seen, knobs)
 }
 
@@ -947,7 +962,7 @@ fn account_harness(
             next.prev_hash = Some(seen.hash);
             let idle_since = next.idle_since_epoch.get_or_insert(seen.now_epoch);
             let idle_age = age_secs(seen.now_epoch, *idle_since);
-            if seen.harness.durable_stale || prior.nudge_count > knobs.max_nudges {
+            if seen.harness.durable_stale || next.nudge_count > knobs.max_nudges {
                 return Some(Verdict::Stale);
             }
             if knobs.idle_nudge_secs > 0 && idle_age >= knobs.idle_nudge_secs {
@@ -1045,6 +1060,7 @@ fn restore_idle(state: &mut PaneState, raw: &str, identity: u64) {
     state.idle_since_epoch = Some(carry.since_epoch);
     state.nudge_count = carry.nudges;
     state.undelivered_streak = carry.undelivered;
+    state.last_declaration = carry.declaration;
 }
 
 /// Publish the current frame and, for idle, enough episode state to survive a
@@ -1061,6 +1077,7 @@ fn observed_option(frame: HarnessState, state: &PaneState) -> String {
                 nudges: state.nudge_count,
                 undelivered: state.undelivered_streak,
                 identity,
+                declaration: state.last_declaration,
             },
         ),
         _ => frame.as_str().to_owned(),
@@ -2500,11 +2517,17 @@ impl Cycle<'_> {
         slot: &str,
         agent: &str,
     ) -> HarnessObservation {
+        let declaration =
+            latest_relevant_event(events, agent, self.session).and_then(|(event, _)| {
+                (event.actor == agent && event.declared_state().is_some())
+                    .then(|| quiet_hash(&declaration_key(event)))
+            });
         HarnessObservation {
             frame: crate::harness_state::classify(capture, tool),
             human_draft: crate::harness_state::has_human_draft(capture, tool),
             durable_stale: crate::session::alert_reason_in(events, self.session, slot, agent)
                 == Some(crate::attention::Reason::Stale),
+            declaration,
         }
     }
 
@@ -3471,6 +3494,7 @@ mod tests {
                 frame: crate::harness_state::HarnessState::Unknown,
                 human_draft: false,
                 durable_stale: false,
+                declaration: None,
             },
             identity: 1,
             is_dead: false,
@@ -5556,6 +5580,124 @@ mod tests {
         let settled = cycle.resolve_quiet(&query, &mut state, &mut quiet_cycle);
         assert_eq!(settled, Some(QuietKind::WaitingUser));
         assert_eq!(state.quiet_base, Some((key, 9, 0)));
+    }
+
+    fn witness_b_idle_after_new_working() -> Observation {
+        let scratch = Scratch::new("working-resets-idle");
+        let helper = SendHelper::for_session(&scratch.0);
+        let server = ServerId::Ambient;
+        let cycle = Cycle {
+            knobs: Knobs::default(),
+            meta_dir: &scratch.0,
+            helper: &helper,
+            server: &server,
+            session: "demo",
+            goal: None,
+            roster: Vec::new(),
+            local_config: None,
+            lead_pair: false,
+            meta_agent: false,
+        };
+        let events = vec![
+            Event::parse_line(
+                r#"{"ts":"2026-09-10T14:59:00Z","actor":"_watchdog","action":"alert","target":"codex:agent","target_slot":"main","target_session":"demo","summary":"max nudges reached (idle 5m), needs attention"}"#,
+            )
+            .expect("well-formed addressed stale alert"),
+            Event::parse_line(
+                r#"{"ts":"2026-09-10T15:00:00Z","actor":"codex:agent","action":"state","ref":"working","actor_slot":"main","actor_session":"demo"}"#,
+            )
+            .expect("well-formed working declaration"),
+        ];
+        assert_eq!(
+            crate::session::alert_reason_in(&events[..1], "demo", "main", "codex:agent"),
+            Some(crate::attention::Reason::Stale),
+            "the addressed prior alert is the positive control"
+        );
+        let (latest, looked_past) =
+            crate::watchdog::latest_relevant_event(&events, "codex:agent", "demo")
+                .expect("the working declaration is relevant");
+        assert_eq!(
+            crate::watchdog::quiet_reason(latest, "codex:agent", looked_past),
+            None,
+            "working is activity, not a quiet declaration"
+        );
+        let capture = include_str!("../tests/fixtures/harness-state/codex-idle-112x40.txt");
+        let harness = cycle.harness_observation(
+            capture,
+            crate::tool::ToolKind::Codex,
+            &events,
+            "main",
+            "codex:agent",
+        );
+        assert_eq!(harness.frame, crate::harness_state::HarnessState::Idle);
+        assert!(
+            !harness.durable_stale,
+            "newer own activity clears the alert"
+        );
+        let mut observed = seen();
+        observed.now_epoch = events[1].ts.epoch();
+        observed.harness = harness;
+        observed.last_actor_event_age_secs = 0;
+        observed
+    }
+
+    #[test]
+    fn witness_b_new_working_clears_an_exhausted_idle_episode() {
+        let knobs = Knobs::default();
+        let observed = witness_b_idle_after_new_working();
+        let prior = PaneState {
+            identity: Some(observed.identity),
+            idle_since_epoch: Some(observed.now_epoch - 600),
+            nudge_count: knobs.max_nudges + 1,
+            ..PaneState::default()
+        };
+        let mut busy = observed.clone();
+        busy.harness.frame = crate::harness_state::HarnessState::Busy;
+        let positive = account(&prior, &busy, &knobs);
+        assert_eq!(positive.verdict, Verdict::Active);
+        assert_eq!(positive.next.idle_since_epoch, None);
+        assert_eq!(positive.next.nudge_count, 0);
+        let booked = account(&prior, &observed, &knobs);
+        assert_eq!(booked.verdict, Verdict::Idle);
+        assert_eq!(booked.next.idle_since_epoch, Some(observed.now_epoch));
+        assert_eq!(booked.next.nudge_count, 0);
+        assert!(!booked.effects.contains(&Effect::Nudge));
+
+        let raw = observed_option(crate::harness_state::HarnessState::Idle, &booked.next);
+        let mut restarted = PaneState::default();
+        restore_idle(&mut restarted, &raw, observed.identity);
+        assert_eq!(
+            restarted.last_declaration, booked.next.last_declaration,
+            "the applied declaration survives a daemon restart"
+        );
+        let mut later = observed.clone();
+        later.now_epoch += 299;
+        let continued = account(&restarted, &later, &knobs);
+        assert_eq!(continued.next.idle_since_epoch, Some(observed.now_epoch));
+        assert_eq!(continued.next.nudge_count, 0);
+        assert!(!continued.effects.contains(&Effect::Nudge));
+    }
+
+    #[test]
+    fn witness_b_new_working_restarts_a_due_nonexhausted_idle_clock() {
+        let knobs = Knobs::default();
+        let observed = witness_b_idle_after_new_working();
+        let prior = PaneState {
+            identity: Some(observed.identity),
+            idle_since_epoch: Some(observed.now_epoch - 600),
+            nudge_count: 1,
+            ..PaneState::default()
+        };
+        let mut busy = observed.clone();
+        busy.harness.frame = crate::harness_state::HarnessState::Busy;
+        let positive = account(&prior, &busy, &knobs);
+        assert_eq!(positive.verdict, Verdict::Active);
+        assert_eq!(positive.next.nudge_count, 0);
+        let booked = account(&prior, &observed, &knobs);
+        assert_eq!(booked.verdict, Verdict::Idle);
+        assert_eq!(booked.next.idle_since_epoch, Some(observed.now_epoch));
+        assert_eq!(booked.next.nudge_count, 0);
+        assert!(!booked.effects.contains(&Effect::Nudge));
     }
 
     #[test]

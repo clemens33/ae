@@ -62,6 +62,7 @@ A crash writes its input under `artifacts/<target>/`; reproduce it with
 | `usage_claude_transcript` | `usage::claude::parse` | one Claude assistant transcript JSONL stream |
 | `usage_codex_rollout` | `usage::codex::parse_with_head` | first byte the record boundary, then split bounded head/tail Codex rollout bytes |
 | `usage_prices` | `usage::prices::parse_row` | one `[prices]` alias row |
+| `harness_observed` | `harness_state::{decode_idle, observed_from_option}` | one watchdog-owned `@ae_observed` pane option |
 
 ## Lock refresh after a release
 

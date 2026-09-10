@@ -82,3 +82,10 @@ path = "fuzz_targets/usage_prices.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "harness_observed"
+path = "fuzz_targets/harness_observed.rs"
+test = false
+doc = false
+bench = false

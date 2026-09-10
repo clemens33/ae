@@ -37,6 +37,8 @@ pub struct IdleCarry {
     pub undelivered: u32,
     /// Stable slot+agent identity hash guarding pane-id reuse.
     pub identity: u64,
+    /// Stable fingerprint of the newest declaration already applied.
+    pub declaration: Option<u64>,
 }
 
 /// Read the public state from a watchdog-owned pane option.
@@ -67,8 +69,14 @@ pub(crate) fn encode_carry(frame: HarnessState, carry: IdleCarry) -> String {
         HarnessState::Busy => return HarnessState::Busy.as_str().to_owned(),
     };
     format!(
-        "{frame}:{}:{}:{}:{}",
-        carry.since_epoch, carry.nudges, carry.undelivered, carry.identity,
+        "{frame}:{}:{}:{}:{}:{}",
+        carry.since_epoch,
+        carry.nudges,
+        carry.undelivered,
+        carry.identity,
+        carry
+            .declaration
+            .map_or_else(|| "-".to_owned(), |value| value.to_string()),
     )
 }
 
@@ -90,6 +98,10 @@ fn decode_carry(value: &str) -> Option<(HarnessState, IdleCarry)> {
         nudges: fields.next()?.parse().ok()?,
         undelivered: fields.next()?.parse().ok()?,
         identity: fields.next()?.parse().ok()?,
+        declaration: match fields.next() {
+            None | Some("-") => None,
+            Some(value) => Some(value.parse().ok()?),
+        },
     };
     (fields.next().is_none() && carry.since_epoch >= 0).then_some((frame, carry))
 }
@@ -114,14 +126,19 @@ pub fn has_human_draft(capture: &str, tool: ToolKind) -> bool {
     let model = tool.input_model();
     let lines = clean_lines(capture);
     match model {
-        InputModel::StyleDelimited => lines
-            .iter()
-            .rfind(|line| line.starts_with('›'))
-            .is_some_and(|line| *line != "› Ask Codex to do anything"),
+        InputModel::StyleDelimited => {
+            let Some((before, [prompt, footer])) = lines.as_slice().split_last_chunk::<2>() else {
+                return false;
+            };
+            codex_footer(footer)
+                && !before.last().is_some_and(|line| codex_modal(line))
+                && prompt.starts_with('›')
+                && *prompt != "› Ask Codex to do anything"
+        }
         InputModel::BorderDelimited => lines
             .iter()
-            .rfind(|line| line.starts_with('❯'))
-            .is_some_and(|line| *line != "❯"),
+            .rposition(|line| line.starts_with('❯'))
+            .is_some_and(|index| claude_input_frame(&lines, index) && lines[index] != "❯"),
         InputModel::Unmodelled => false,
     }
 }
@@ -167,10 +184,7 @@ fn classify_claude(capture: &str) -> HarnessState {
     let Some(prompt_index) = lines.iter().rposition(|line| *line == "❯") else {
         return HarnessState::Unknown;
     };
-    if lines[prompt_index + 1..]
-        .iter()
-        .any(|line| !claude_chrome(line))
-    {
+    if !claude_input_frame(&lines, prompt_index) {
         return HarnessState::Unknown;
     }
     let current = lines[..prompt_index]
@@ -185,6 +199,21 @@ fn classify_claude(capture: &str) -> HarnessState {
     }
 }
 
+fn claude_input_frame(lines: &[&str], prompt_index: usize) -> bool {
+    let Some(before) = prompt_index
+        .checked_sub(1)
+        .and_then(|index| lines.get(index))
+    else {
+        return false;
+    };
+    let after = &lines[prompt_index + 1..];
+    claude_border(before)
+        && after.first().is_some_and(|line| claude_border(line))
+        && after.iter().all(|line| claude_chrome(line))
+        && after.iter().any(|line| line.starts_with('🧠'))
+        && after.iter().any(|line| line.starts_with('⏵'))
+}
+
 fn claude_spinner(line: &str) -> bool {
     let mut chars = line.chars();
     matches!(chars.next(), Some('✻' | '✽' | '✳' | '✢' | '·')) && chars.as_str().contains("… (")
@@ -195,11 +224,15 @@ fn claude_done(line: &str) -> bool {
 }
 
 fn claude_chrome(line: &str) -> bool {
-    line.chars().all(|c| matches!(c, '─' | '━' | '═'))
+    claude_border(line)
         || line.starts_with('🧠')
         || line.starts_with('⏵')
         || line.starts_with('✔')
         || line.starts_with("⎿  Tip:")
+}
+
+fn claude_border(line: &str) -> bool {
+    !line.is_empty() && line.chars().all(|c| matches!(c, '─' | '━' | '═'))
 }
 
 fn codex_footer(line: &str) -> bool {
@@ -282,6 +315,26 @@ mod tests {
     }
 
     #[test]
+    fn witness_a_clipped_prompt_only_frames_are_unknown() {
+        let live = include_str!("../tests/fixtures/harness-state/claude-idle-167x40.txt");
+        assert_eq!(classify(live, ToolKind::Claude), HarnessState::Idle);
+
+        assert_eq!(
+            classify("❯\n", ToolKind::Claude),
+            HarnessState::Unknown,
+            "a bare prompt has no positive current-frame evidence"
+        );
+
+        let border = "────────────────────────────────────────────────────────────────";
+        let clipped = format!("{border}\n❯\n{border}\n");
+        assert_eq!(
+            classify(&clipped, ToolKind::Claude),
+            HarnessState::Unknown,
+            "a clipped input box has no positive current-frame evidence"
+        );
+    }
+
+    #[test]
     fn an_old_quoted_busy_line_does_not_override_the_current_codex_idle_frame() {
         let capture =
             include_str!("../tests/fixtures/harness-state/codex-idle-old-busy-280x40.txt");
@@ -316,11 +369,25 @@ mod tests {
     fn only_current_modeled_input_text_is_a_human_draft() {
         let draft = "[redacted]\n› keep this unsent\n\n  gpt-5.6-sol xhigh · ~/ae\n";
         assert!(has_human_draft(draft, ToolKind::Codex));
+        let border = "────────────────────────────────────────────────────────────────";
+        let claude = format!(
+            "{border}\n❯ keep this unsent\n{border}\n  🧠 Opus 5 (xhigh)  📁 ae\n  ⏵⏵ bypass permissions on\n"
+        );
+        assert!(has_human_draft(&claude, ToolKind::Claude));
         assert!(!has_human_draft(
             include_str!("../tests/fixtures/harness-state/codex-busy-280x40.txt"),
             ToolKind::Codex
         ));
         assert!(!has_human_draft("❯ draft", ToolKind::Grok));
+    }
+
+    #[test]
+    fn a_historical_prompt_above_a_modal_is_not_a_current_human_draft() {
+        let codex = "› [redacted submitted turn]\nAllow command? Press enter to confirm\n\n  gpt-6-astra xhigh · ~/ae\n";
+        assert!(!has_human_draft(codex, ToolKind::Codex));
+
+        let claude = "❯ [redacted submitted turn]\nAllow command? Press enter to confirm\n";
+        assert!(!has_human_draft(claude, ToolKind::Claude));
     }
 
     #[test]
@@ -330,12 +397,28 @@ mod tests {
             nudges: 2,
             undelivered: 1,
             identity: 99,
+            declaration: Some(7),
         };
         let encoded = encode_idle(carry);
         assert_eq!(decode_idle(&encoded), Some(carry));
         assert_eq!(observed_from_option(&encoded), HarnessState::Idle);
+        assert_eq!(
+            decode_idle("idle:42:2:1:99"),
+            Some(IdleCarry {
+                declaration: None,
+                ..carry
+            }),
+            "the pre-declaration-marker carry stays readable"
+        );
         assert_eq!(observed_from_option("busy"), HarnessState::Busy);
-        for malformed in ["", "idle:x:2:1:99", "idle:42:2:1", "busy:junk", "modal"] {
+        for malformed in [
+            "",
+            "idle:x:2:1:99",
+            "idle:42:2:1",
+            "idle:42:2:1:99:x",
+            "busy:junk",
+            "modal",
+        ] {
             assert_eq!(
                 observed_from_option(malformed),
                 HarnessState::Unknown,
