@@ -157,9 +157,11 @@ knowledge: what to trust, what to distrust, where to look first.
   distill-then-execute split lets judgment-heavy scoping happen once, at the
   strongest available tier, and execution happen anywhere.
 - **Delegation decision rule**: lead tokens are for triage, rulings, gates,
-  adjudication, and the human. If a subtask fits a 10-line spec with a verifiable
-  stop condition, it goes to a worker. Judgment is never outsourced — the lead reads
-  every gated diff personally.
+  adjudication, and the human. Fan out execution by default; a 10-line spec
+  with a verifiable stop condition is the brief floor, not a threshold. Fresh
+  workers take new parallel slices; fix rounds return to the worker and reviewer
+  with the context. Judgment is never outsourced — the lead reads every gated
+  diff personally.
 - **Brief the pain and the invariant, never the mechanism.** Every mechanism-brief
   in the 2026-07 campaign was corrected by its worker (3/3 on one addendum alone),
   each costing a round of rebuttal; briefs naming a pain, an invariant, or a

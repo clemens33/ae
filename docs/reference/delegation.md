@@ -42,18 +42,23 @@ for the recommended `fast` / `standard` / `optimal` / `best` + `codex` /
 
 ## When to spawn a worker
 
-Delegate when the task **specs in ~10 lines, has a clear stop condition, and
-the result is verifiable** by tests, grep, or a focused review:
+Leads delegate by default. Keep only the judgment: architecture, ambiguous
+debugging, final integration, and user-facing decisions. A worker starts with
+fresh context and one brief, preserving the lead's judgment context; lower
+tiers tune shared quota, never create separate headroom. Cut independent work
+into parallel slices with one writer per file. Give every **new** slice a fresh
+worker; return fix rounds to the worker and reviewer who already hold its
+context.
+
+Use workers for work describable in ~10 lines with a clear stop condition and
+a result verifiable by tests, grep, or focused review. That is the brief floor,
+not a threshold:
 
 - test/CI runs ("run `just test-unit`; report failures only")
 - read-heavy scans ("find every caller of X; reply file:line list")
 - scoped mechanical edits (renames, doc-table updates, fixture refreshes)
 - log/bug triage, reproduction, exact-failure collection
 - independent review lanes (security, test-gaps, API compatibility)
-
-Keep it yourself when the hard part is judgment: architecture, ambiguous
-debugging, final integration, user-facing decisions — or when briefing the
-worker would require half your conversation (the hygiene gain is gone).
 
 **Prefer ae `spawn` over your harness's in-process subagents** (e.g. Claude
 Code's Task tool) for anything beyond a quick — or
@@ -70,8 +75,11 @@ result the lead consumes immediately.
 **Naming**: name = role, profile = tier. `tests`, `callers`, `docs-sync`, `slice7`
 — never `worker`, `helper-3`. Pick the tier per spawn: `spawn tests --using chore`.
 
-**Brief** (what the spawner sends): objective, allowed scope/files, verification
-command, expected reply shape, whether edits are allowed.
+**Brief** (what the spawner sends): objective; scope (files, base commit,
+absolute worktree path, expected HEAD); edit/commit/push authority; non-goals;
+rulings, including decided mechanisms; verification command; proof and reply
+shape; stop condition; cap. Name the pain and invariant; leave unspecified
+implementation open.
 
 **Result** (what the worker replies): `Outcome / Changed / Verified (command +
 result) / Risks / Need from spawner`. No raw logs unless asked.
