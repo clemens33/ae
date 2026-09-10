@@ -110,7 +110,8 @@ ae next                        # name the top session needing attention (--attac
 ae brief [name] [--all]        # why a session needs you: goal, latest note per memo topic,
                                # each agent's declared state, and every unanswered ask
 ae orchestrator                # start or reattach the local orchestrator seat
-ae orchestrator --popup        # pick a session, then an agent, in a tmux menu; Enter lands in its pane
+ae orchestrator --popup --client <name>
+                               # status button / prefix a bindings supply the client name
 watch -n 10 'ae list'          # live dashboard
 ```
 

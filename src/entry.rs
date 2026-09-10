@@ -226,9 +226,10 @@ Usage:
                          Show API-equivalent list-price usage for live sessions
   ae orchestrator        Start or reattach the orchestrator seat (a session named
                          orchestrator; config: ~/.ae/orchestrator.config)
-  ae orchestrator --popup
+  ae orchestrator --popup --client <name>
                          Pick a session, then one of its agents, in a tmux menu and
-                         hand this client to that agent's pane (needs tmux 3.4+)
+                         hand this client to that agent's pane (needs tmux 3.4+).
+                         Status button and prefix a bindings supply the client name
   ae doctor [--refresh [name|all]]
                          Check local environment and optionally refresh existing session helpers
   ae init [--yes]        Discover installed harnesses and propose a global config
