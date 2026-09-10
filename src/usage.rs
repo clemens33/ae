@@ -156,6 +156,7 @@ pub struct SessionUsage {
     pub seats: Vec<SeatUsage>,
     pub total: UsageTotal,
     pub retired_scan_truncated: bool,
+    pub legacy_retired_unlocated: usize,
 }
 
 /// Stable data API consumed by the command and later watchdog integration.
@@ -191,7 +192,7 @@ pub fn observe(inputs: &Inputs<'_>) -> Observation {
             Err(_) => Vec::new(),
         };
         let mut retired_budget = Budget::new();
-        let retired_scan_truncated = add_retired(
+        let retired_scan = add_retired(
             &input.path,
             inputs,
             &mut retired_budget,
@@ -199,14 +200,15 @@ pub fn observe(inputs: &Inputs<'_>) -> Observation {
             &mut unpriced,
         );
         let mut total = total_of(&seats);
-        if seats.is_empty() || retired_scan_truncated {
+        if (seats.is_empty() && retired_scan.legacy_unlocated == 0) || retired_scan.truncated {
             total.partial = true;
         }
         sessions.push(SessionUsage {
             name: input.name.clone(),
             seats,
             total,
-            retired_scan_truncated,
+            retired_scan_truncated: retired_scan.truncated,
+            legacy_retired_unlocated: retired_scan.legacy_unlocated,
         });
     }
     Observation {
@@ -389,37 +391,21 @@ fn observe_codex(
             Err(_) => return unreadable(entry, tool, "rollout unreadable", retired),
         };
     let parsed = codex::parse_with_head(&head, &bytes, boundary);
-    match parsed.models.as_slice() {
-        [model] => priced_row(
+    match parsed.last_model {
+        Some(model) => priced_row(
             entry,
-            model.clone(),
+            model,
             parsed.tokens,
             RowFacts {
                 tool,
                 observed_at,
                 retired,
-                approximate: parsed.approximate,
+                approximate: parsed.approximate || parsed.model_changed,
             },
             inputs.prices,
             unpriced,
         ),
-        [] => unreadable(entry, tool, "rollout has no model", retired),
-        _ => SeatUsage {
-            seat: if retired {
-                format!("{} (retired)", entry.name)
-            } else {
-                entry.name.clone()
-            },
-            slot: entry.slot.clone(),
-            tool: tool.as_str().to_owned(),
-            model: "mixed models".to_owned(),
-            tokens: parsed.tokens,
-            usd_micro: None,
-            observed_at,
-            retired,
-            coverage: Coverage::Read,
-            approximate: parsed.approximate,
-        },
+        None => unreadable(entry, tool, "rollout has no model", retired),
     }
 }
 
@@ -548,14 +534,14 @@ fn parse_transcript(
         .metadata()
         .map_err(|_| Coverage::Unreadable("transcript unreadable".to_owned()))?;
     if !opened.file_type().is_file()
-        || opened.len() != transcript.metadata.len()
+        || opened.len() < transcript.metadata.len()
         || !same_file(&transcript.metadata, &opened)
     {
         return Err(Coverage::Unreadable(
             "transcript changed during read".to_owned(),
         ));
     }
-    let mut reader = BufReader::new(file.take(opened.len()));
+    let mut reader = BufReader::new(file.take(transcript.metadata.len()));
     let mut line = Vec::new();
     let mut parser = claude::Parser::default();
     while let Some(usable) = read_capped_line(&mut reader, &mut line)
@@ -847,20 +833,32 @@ fn total_of(seats: &[SeatUsage]) -> UsageTotal {
     total
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct RetiredScan {
+    truncated: bool,
+    legacy_unlocated: usize,
+}
+
 fn add_retired(
     dir: &Path,
     inputs: &Inputs<'_>,
     budget: &mut Budget,
     seats: &mut Vec<SeatUsage>,
     unpriced: &mut Vec<String>,
-) -> bool {
+) -> RetiredScan {
     let events = dir.join(crate::store::EVENTS);
     let bytes = match read_regular(&events, EVENTS_MAX_BYTES, budget) {
         Ok(Some((bytes, _))) => bytes,
-        Err(Coverage::Truncated) => return true,
-        Ok(None) | Err(_) => return false,
+        Err(Coverage::Truncated) => {
+            return RetiredScan {
+                truncated: true,
+                legacy_unlocated: 0,
+            };
+        }
+        Ok(None) | Err(_) => return RetiredScan::default(),
     };
     let text = String::from_utf8_lossy(&bytes);
+    let mut scan = RetiredScan::default();
     for line in text.lines() {
         let Ok(event) = crate::events::Event::parse_line(line) else {
             continue;
@@ -874,6 +872,10 @@ fn add_retired(
         else {
             continue;
         };
+        if event.reference.is_none() && event.summary.is_none() {
+            scan.legacy_unlocated = scan.legacy_unlocated.saturating_add(1);
+            continue;
+        }
         let slot = event
             .target_slot
             .value()
@@ -921,7 +923,7 @@ fn add_retired(
             true,
         ));
     }
-    false
+    scan
 }
 
 fn retired_fields(summary: &str) -> Option<(String, String, String, String)> {
@@ -1006,6 +1008,12 @@ fn render_table(observation: &Observation) -> String {
             lines.push(TableLine::Note(
                 "retired seats: unread (events scan truncated)".to_owned(),
             ));
+        }
+        if session.legacy_retired_unlocated > 0 {
+            lines.push(TableLine::Note(format!(
+                "{}  retired: {} seats unlocated (legacy retire events)",
+                session.name, session.legacy_retired_unlocated
+            )));
         }
     }
     let fleet = observation
@@ -1167,70 +1175,7 @@ fn age(delta: i64) -> String {
 }
 
 fn render_json(observation: &Observation) -> String {
-    let sessions = observation
-        .sessions
-        .iter()
-        .map(|session| {
-            let seats = session
-                .seats
-                .iter()
-                .map(|seat| {
-                    crate::json::Value::obj([
-                        ("seat", crate::json::Value::str(&seat.seat)),
-                        ("slot", crate::json::Value::str(&seat.slot)),
-                        ("tool", crate::json::Value::str(&seat.tool)),
-                        ("model", crate::json::Value::str(&seat.model)),
-                        ("input_tokens", json_u64(seat.tokens.input)),
-                        ("cache_write_tokens", json_u64(seat.tokens.cache_write)),
-                        ("cache_read_tokens", json_u64(seat.tokens.cache_read)),
-                        ("output_tokens", json_u64(seat.tokens.output)),
-                        (
-                            "usd_micro",
-                            seat.usd_micro.map_or(crate::json::Value::Null, json_u64),
-                        ),
-                        (
-                            "observed_at",
-                            seat.observed_at
-                                .map_or(crate::json::Value::Null, crate::json::Value::Num),
-                        ),
-                        (
-                            "coverage",
-                            crate::json::Value::str(coverage_name(&seat.coverage)),
-                        ),
-                        (
-                            "coverage_reason",
-                            match &seat.coverage {
-                                Coverage::Unreadable(reason) => crate::json::Value::str(reason),
-                                _ => crate::json::Value::Null,
-                            },
-                        ),
-                        ("retired", crate::json::Value::Bool(seat.retired)),
-                        ("approximate", crate::json::Value::Bool(seat.approximate)),
-                    ])
-                })
-                .collect();
-            crate::json::Value::obj([
-                ("name", crate::json::Value::str(&session.name)),
-                ("seats", crate::json::Value::Arr(seats)),
-                ("total_input_tokens", json_u64(session.total.tokens.input)),
-                (
-                    "total_cache_write_tokens",
-                    json_u64(session.total.tokens.cache_write),
-                ),
-                (
-                    "total_cache_read_tokens",
-                    json_u64(session.total.tokens.cache_read),
-                ),
-                ("total_output_tokens", json_u64(session.total.tokens.output)),
-                ("total_usd_micro", json_u64(session.total.usd_micro)),
-                ("partial", crate::json::Value::Bool(session.total.partial)),
-                (
-                    "retired_scan_truncated",
-                    crate::json::Value::Bool(session.retired_scan_truncated),
-                ),
-            ])
-        })
-        .collect();
+    let sessions = observation.sessions.iter().map(session_json).collect();
     let fleet = observation
         .sessions
         .iter()
@@ -1266,9 +1211,81 @@ fn render_json(observation: &Observation) -> String {
     format!("{}\n", root.render())
 }
 
+fn session_json(session: &SessionUsage) -> crate::json::Value {
+    crate::json::Value::obj([
+        ("name", crate::json::Value::str(&session.name)),
+        (
+            "seats",
+            crate::json::Value::Arr(session.seats.iter().map(seat_json).collect()),
+        ),
+        ("total_input_tokens", json_u64(session.total.tokens.input)),
+        (
+            "total_cache_write_tokens",
+            json_u64(session.total.tokens.cache_write),
+        ),
+        (
+            "total_cache_read_tokens",
+            json_u64(session.total.tokens.cache_read),
+        ),
+        ("total_output_tokens", json_u64(session.total.tokens.output)),
+        ("total_usd_micro", json_u64(session.total.usd_micro)),
+        ("partial", crate::json::Value::Bool(session.total.partial)),
+        (
+            "retired_scan_truncated",
+            crate::json::Value::Bool(session.retired_scan_truncated),
+        ),
+        (
+            "legacy_retired_unlocated",
+            json_usize(session.legacy_retired_unlocated),
+        ),
+    ])
+}
+
+fn seat_json(seat: &SeatUsage) -> crate::json::Value {
+    crate::json::Value::obj([
+        ("seat", crate::json::Value::str(&seat.seat)),
+        ("slot", crate::json::Value::str(&seat.slot)),
+        ("tool", crate::json::Value::str(&seat.tool)),
+        ("model", crate::json::Value::str(&seat.model)),
+        ("input_tokens", json_u64(seat.tokens.input)),
+        ("cache_write_tokens", json_u64(seat.tokens.cache_write)),
+        ("cache_read_tokens", json_u64(seat.tokens.cache_read)),
+        ("output_tokens", json_u64(seat.tokens.output)),
+        (
+            "usd_micro",
+            seat.usd_micro.map_or(crate::json::Value::Null, json_u64),
+        ),
+        (
+            "observed_at",
+            seat.observed_at
+                .map_or(crate::json::Value::Null, crate::json::Value::Num),
+        ),
+        (
+            "coverage",
+            crate::json::Value::str(coverage_name(&seat.coverage)),
+        ),
+        (
+            "coverage_reason",
+            match &seat.coverage {
+                Coverage::Unreadable(reason) => crate::json::Value::str(reason),
+                _ => crate::json::Value::Null,
+            },
+        ),
+        ("retired", crate::json::Value::Bool(seat.retired)),
+        ("approximate", crate::json::Value::Bool(seat.approximate)),
+    ])
+}
+
 fn json_u64(value: u64) -> crate::json::Value {
     i64::try_from(value).map_or_else(
         |_| crate::json::Value::Raw(value.to_string()),
+        crate::json::Value::Num,
+    )
+}
+
+fn json_usize(value: usize) -> crate::json::Value {
+    i64::try_from(value).map_or(
+        crate::json::Value::Raw(value.to_string()),
         crate::json::Value::Num,
     )
 }

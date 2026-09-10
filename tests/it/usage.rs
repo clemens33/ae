@@ -141,7 +141,8 @@ fn codex_observer_unions_head_and_tail_models() {
     );
     rollout.extend(std::iter::repeat_n(b'\n', 300 * 1024));
     rollout.extend_from_slice(
-        br#"{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"cache_write_input_tokens":10,"output_tokens":40,"reasoning_output_tokens":9}}}}
+        br#"{"type":"turn_context","payload":{"model":"gpt-5.6-luna"}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"cache_write_input_tokens":10,"output_tokens":40,"reasoning_output_tokens":9}}}}
 "#,
     );
     std::fs::write(
@@ -170,13 +171,15 @@ fn codex_observer_unions_head_and_tail_models() {
         now: 1_788_858_600,
     });
     assert_eq!(observed.sessions[0].seats[0].coverage, Coverage::Read);
-    assert_eq!(observed.sessions[0].seats[0].model, "gpt-5.6-sol");
+    assert_eq!(observed.sessions[0].seats[0].model, "gpt-5.6-luna");
     assert_eq!(observed.sessions[0].seats[0].tokens.input, 70);
+    assert!(observed.sessions[0].seats[0].usd_micro.is_some());
+    assert!(observed.sessions[0].seats[0].approximate);
     let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]
-fn legacy_retire_event_is_an_explicit_unlocated_row() {
+fn legacy_retire_events_collapse_without_making_totals_partial() {
     let root = rig("legacy-retire");
     std::fs::write(
         root.join("sessions/live/meta"),
@@ -185,7 +188,9 @@ fn legacy_retire_event_is_an_explicit_unlocated_row() {
     .expect("meta");
     std::fs::write(
         root.join("sessions/live/events.jsonl"),
-        "{\"ts\":\"2026-09-10T09:00:00Z\",\"actor\":\"lead\",\"action\":\"retire\",\"target\":\"aemenu3\"}\n",
+        "{\"ts\":\"2026-09-10T09:00:00Z\",\"actor\":\"lead\",\"action\":\"retire\",\"target\":\"aemenu1\"}\n\
+         {\"ts\":\"2026-09-10T09:01:00Z\",\"actor\":\"lead\",\"action\":\"retire\",\"target\":\"aemenu2\"}\n\
+         {\"ts\":\"2026-09-10T09:02:00Z\",\"actor\":\"lead\",\"action\":\"retire\",\"target\":\"aemenu3\"}\n",
     )
     .expect("legacy retire event");
     let sessions = [SessionInput {
@@ -198,10 +203,47 @@ fn legacy_retire_event_is_an_explicit_unlocated_row() {
         prices: &prices::Book::default(),
         now: 1_788_858_600,
     });
-    let retired = &observed.sessions[0].seats[1];
-    assert_eq!(retired.seat, "aemenu3 (retired)");
-    assert_eq!(retired.slot, "?");
-    assert_eq!(retired.coverage, Coverage::Unlocated);
+    assert_eq!(observed.sessions[0].seats.len(), 1);
+    assert!(!observed.sessions[0].total.partial);
+    assert!(
+        ae::usage::render(&observed, false)
+            .contains("live  retired: 3 seats unlocated (legacy retire events)\n")
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn legacy_summary_and_identified_retire_keep_distinct_coverage() {
+    let root = rig("mixed-retire");
+    std::fs::write(
+        root.join("sessions/live/meta"),
+        "schema=2\nseat.main=lead\nagent_bin.main=grok\n",
+    )
+    .expect("meta");
+    std::fs::write(
+        root.join("sessions/live/events.jsonl"),
+        include_bytes!("../fixtures/usage/retired-events.jsonl"),
+    )
+    .expect("retire events");
+    let sessions = [SessionInput {
+        name: "live".to_owned(),
+        path: root.join("sessions/live"),
+    }];
+    let observed = ae::usage::observe(&Inputs {
+        home: Some(&root),
+        sessions: &sessions,
+        prices: &prices::Book::default(),
+        now: 1_788_858_600,
+    });
+    assert_eq!(observed.sessions[0].seats.len(), 2);
+    assert_eq!(observed.sessions[0].seats[1].seat, "identified (retired)");
+    assert!(matches!(
+        observed.sessions[0].seats[1].coverage,
+        Coverage::Unreadable(_)
+    ));
+    assert!(observed.sessions[0].total.partial);
+    let json = ae::usage::render(&observed, true);
+    assert!(json.contains("\"legacy_retired_unlocated\":3"), "{json}");
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -494,6 +536,7 @@ fn usage_table_and_json_pin_partial_coverage() {
                 partial: true,
             },
             retired_scan_truncated: false,
+            legacy_retired_unlocated: 0,
         }],
         unpriced: Vec::new(),
         now: 1_788_858_600,

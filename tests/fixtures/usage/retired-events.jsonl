@@ -1,0 +1,4 @@
+{"ts":"2026-09-10T09:00:00Z","actor":"lead","action":"retire","target":"aemenu1"}
+{"ts":"2026-09-10T09:01:00Z","actor":"lead","action":"retire","target":"aemenu2"}
+{"ts":"2026-09-10T09:02:00Z","actor":"lead","action":"retire","target":"aemenu3"}
+{"ts":"2026-09-10T09:03:00Z","actor":"lead","action":"retire","target":"identified","ref":"0199c0de-1234-4890-abcd-ef0123456790","target_slot":"spawned.1","summary":"tool=claude profile=fable5 config_home= config_home_base="}

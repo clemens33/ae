@@ -13,6 +13,10 @@ pub struct Parsed {
     pub tokens: Tokens,
     /// A later cumulative total decreased and is therefore approximate.
     pub approximate: bool,
+    /// Last model named by a turn context in chronological segment order.
+    pub last_model: Option<String>,
+    /// At least two observed turn contexts named different models.
+    pub model_changed: bool,
 }
 
 /// Parse a bounded Codex rollout tail.
@@ -24,12 +28,23 @@ pub fn parse(bytes: &[u8], starts_at_boundary: bool) -> Parsed {
 /// Parse model context from a bounded rollout head and counters/models from its tail.
 #[must_use]
 pub fn parse_with_head(head: &[u8], tail: &[u8], tail_starts_at_boundary: bool) -> Parsed {
+    let head = parse_tail(head, true);
     let mut parsed = parse_tail(tail, tail_starts_at_boundary);
-    let mut models = model_names(head, true);
+    let tail_first_model = parsed.models.first().cloned();
+    let mut models = head.models;
     for model in parsed.models.drain(..) {
         if !models.iter().any(|known| known == &model) {
             models.push(model);
         }
+    }
+    let boundary_changed = head
+        .last_model
+        .as_ref()
+        .zip(tail_first_model.as_ref())
+        .is_some_and(|(left, right)| left != right);
+    parsed.model_changed |= head.model_changed || boundary_changed;
+    if parsed.last_model.is_none() {
+        parsed.last_model = head.last_model;
     }
     parsed.models = models;
     parsed
@@ -50,9 +65,15 @@ fn parse_tail(bytes: &[u8], starts_at_boundary: bool) -> Parsed {
             Some("turn_context") => {
                 if let Some(model) = value.get("payload").and_then(|p| p.get_str("model"))
                     && super::is_model_id(model)
-                    && models.insert(model.to_owned())
                 {
-                    parsed.models.push(model.to_owned());
+                    parsed.model_changed |= parsed
+                        .last_model
+                        .as_deref()
+                        .is_some_and(|previous| previous != model);
+                    parsed.last_model = Some(model.to_owned());
+                    if models.insert(model.to_owned()) {
+                        parsed.models.push(model.to_owned());
+                    }
                 }
             }
             Some("event_msg") => {
@@ -88,29 +109,4 @@ fn parse_tail(bytes: &[u8], starts_at_boundary: bool) -> Parsed {
         }
     }
     parsed
-}
-
-fn model_names(bytes: &[u8], starts_at_boundary: bool) -> Vec<String> {
-    let text = String::from_utf8_lossy(bytes);
-    let mut found = Vec::new();
-    for (index, line) in text.lines().enumerate() {
-        if index == 0 && !starts_at_boundary {
-            continue;
-        }
-        let Ok(value) = json::parse(line) else {
-            continue;
-        };
-        if value.get_str("type") != Some("turn_context") {
-            continue;
-        }
-        if let Some(model) = value
-            .get("payload")
-            .and_then(|payload| payload.get_str("model"))
-            && super::is_model_id(model)
-            && !found.iter().any(|known| known == model)
-        {
-            found.push(model.to_owned());
-        }
-    }
-    found
 }

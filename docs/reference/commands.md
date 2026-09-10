@@ -656,14 +656,21 @@ same raw token counters, micro-USD cost, coverage, observation time, retirement 
 facts. Supported unreadable, unlocated or truncated sources show `?` and make known token and cost
 totals `(partial)`; unsupported harnesses show `n/a`. A truncated event scan says exactly
 `retired seats: unread (events scan truncated)` rather than treating missing history as zero.
+Pre-2026.9.38 retire events carry no conversation identity. They collapse into one
+`<session>  retired: N seats unlocated (legacy retire events)` line, are excluded from totals and
+do not make those totals partial: their usage is unknowable. Retired events that do carry typed
+identity keep their own rows and make totals partial when that source cannot be read.
 
 Usage is derived offline from the conversation identity and config home captured when each seat
 first started. Claude assistant records include parent and subagent transcripts, deduplicate growing
 stream snapshots, skip parent replays in sidechains and aggregate by model. Codex uses the last
 cumulative token event, splits cached and cache-write subsets from ordinary input, and counts
-reasoning only once inside output. A rollout that names multiple models keeps its token total but
-has unknown cost. Retire events preserve enough typed identity to retain a worker row after its
-roster entry is removed. Grok Build, Antigravity, OpenCode and Gemini have no adapter in this slice.
+reasoning only once inside output. It prices that total at the last turn-context model seen in the
+bounded tail, or the bounded head when the tail names none. A `~` model prefix means the rollout
+changed model (or its cumulative total decreased), so the last-model estimate is approximate; a
+named model never becomes an unknown cost merely because the rollout switched. Retire events
+preserve enough typed identity to retain a worker row after its roster entry is removed. Grok
+Build, Antigravity, OpenCode and Gemini have no adapter in this slice.
 
 Prices answer one narrow question: what the same tokens would cost at API list price. A subscription
 seat pays nothing extra, and ae neither meters nor bills it. Bundled rates are reference prices for
@@ -671,10 +678,13 @@ the base service tier, base context window and five-minute cache writes. Long-co
 priority or flex tiers are not modelled. Exact model ids and their exact `-YYYYMMDD` releases match;
 unknown models keep tokens and show `?` cost. `[prices]` aliases can override exact model ids.
 
-Reads are bounded to 4,096 filesystem entries, 16 MiB and two seconds; an individual transcript or
-event log is capped at 4 MiB and a Codex rollout tail at 256 KiB. The command makes no network request,
-invokes no vendor process and writes no state. Ended archives stay out of scope: retained vendor
-transcripts may remain unless `--purge-history` was used, but archive metadata carries no harness ids.
+Metadata, event and rollout discovery use per-seat bounds of 4,096 filesystem entries, 16 MiB and
+two seconds. Claude transcripts stream line by line under a 512 MiB total cap per seat; a line over
+1 MiB is skipped without buffering the rest. Codex reads a 256 KiB head and 256 KiB tail. This is an
+explicit, transcript-sized report rather than a cheap status probe: a measured 5 GiB local fleet
+took 14.5 seconds wall / 11.6 seconds user per run. The command makes no network request, invokes no
+vendor process and writes no state. Ended archives stay out of scope: retained vendor transcripts
+may remain unless `--purge-history` was used, but archive metadata carries no harness ids.
 
 ## Session helpers
 
