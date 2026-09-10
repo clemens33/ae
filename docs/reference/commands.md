@@ -491,10 +491,11 @@ state word, branch and goal columns. The branch is sanitized in the tmux reader
 without changing its raw option, so delimiters and control bytes cannot split
 the record. Each session is followed by an indented `mark name profile state`
 row for every recorded agent. The working mark is a frozen static mark: tmux
-draws a menu once and does not animate an open menu. Missing, malformed or more
-than two-watchdog-interval-old agent facts draw `agents: unavailable`, never a
-confident zero. At most 30 session rows; a disabled note names how many were
-left out.
+draws a menu once and does not animate an open menu. Missing, malformed, more
+than two of their own published watchdog intervals old, or more than one such
+interval ahead of the local clock, agent facts draw `agents: unavailable`,
+never a confident zero. Each fact's interval is bounded to 1–3600 seconds. At
+most 30 session rows; a disabled note names how many were left out.
 
 The client snapshot is also the hard draw budget: item rows plus two borders
 must fit its height, and row/title cells plus four borders must fit its width.

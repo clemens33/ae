@@ -1634,6 +1634,9 @@ pub const PICKER_AGENTS_MAX_BYTES: usize = 4_096;
 /// Maximum roster entries accepted from one `@ae_agents` fact.
 pub const PICKER_AGENTS_MAX_COUNT: usize = 64;
 
+/// Highest watchdog cadence an `@ae_agents` fact may carry.
+pub const PICKER_AGENTS_MAX_INTERVAL_SECS: u64 = 3_600;
+
 /// One strictly parsed agent row from the watchdog-owned session fact.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PickerAgent {
@@ -1659,13 +1662,10 @@ impl PickerAgent {
 ///
 /// Any malformed byte rejects the whole snapshot. `None` therefore means
 /// unavailable, never a partially trusted roster. A snapshot becomes stale
-/// only once it is older than two complete watchdog intervals.
+/// only once it is older than two of its own watchdog intervals, or more than
+/// one interval ahead of the reader's clock.
 #[must_use]
-pub fn parse_picker_agents(
-    raw: &str,
-    now_epoch: i64,
-    watchdog_interval_secs: u64,
-) -> Option<Vec<PickerAgent>> {
+pub fn parse_picker_agents(raw: &str, now_epoch: i64) -> Option<Vec<PickerAgent>> {
     if raw.is_empty()
         || raw.len() > PICKER_AGENTS_MAX_BYTES
         || !raw.bytes().all(|byte| (b' '..=b'~').contains(&byte))
@@ -1682,8 +1682,14 @@ pub fn parse_picker_agents(
         .parse::<i64>()
         .ok()
         .filter(|epoch| *epoch >= 0)?;
-    let max_age = i64::try_from(watchdog_interval_secs.saturating_mul(2)).unwrap_or(i64::MAX);
-    if now_epoch.saturating_sub(epoch) > max_age {
+    let interval_secs = parts
+        .next()?
+        .parse::<u64>()
+        .ok()
+        .filter(|interval| (1..=PICKER_AGENTS_MAX_INTERVAL_SECS).contains(interval))?;
+    let interval = i64::try_from(interval_secs).ok()?;
+    let max_age = interval.saturating_mul(2);
+    if now_epoch.saturating_sub(epoch) > max_age || epoch.saturating_sub(now_epoch) > interval {
         return None;
     }
     let mut agents = Vec::new();
@@ -2875,7 +2881,7 @@ mod tests {
         use super::{PickerSession, interpret_picker_sessions};
 
         let listing = concat!(
-            "good | $1 | 4 | ⚠ | %7 | featuremenu | v1;2000;lead:fable5:working:%7 | ship | v1;9;tuple:p:done:%8 | keep #[bg=red]",
+            "good | $1 | 4 | ⚠ | %7 | featuremenu | v1;2000;60;lead:fable5:working:%7 | ship | v1;9;tuple:p:done:%8 | keep #[bg=red]",
             "\u{7}",
             " now\n",
             "missing-display | $2 | 0\n",
@@ -2894,7 +2900,7 @@ mod tests {
                     glyph: "⚠".to_owned(),
                     main_pane: "%7".to_owned(),
                     branch: "featuremenu".to_owned(),
-                    agents: "v1;2000;lead:fable5:working:%7".to_owned(),
+                    agents: "v1;2000;60;lead:fable5:working:%7".to_owned(),
                     goal: "ship | v1;9;tuple:p:done:%8 | keep #[bg=red]\u{7} now".to_owned(),
                 },
                 PickerSession {
@@ -2928,9 +2934,8 @@ mod tests {
         let now = 2_000;
         assert_eq!(
             parse_picker_agents(
-                "v1;1900;lead:fable5:working:%1;builder:gpt56sol:done:%2",
+                "v1;1900;300;lead:fable5:working:%1;builder:gpt56sol:done:%2",
                 now,
-                60,
             ),
             Some(vec![
                 PickerAgent {
@@ -2948,7 +2953,7 @@ mod tests {
             ])
         );
         assert_eq!(
-            parse_picker_agents("v1;1880;lead:fable5:working:", now, 60),
+            parse_picker_agents("v1;1880;60;lead:fable5:working:", now),
             Some(vec![PickerAgent {
                 name: "lead".to_owned(),
                 profile: "fable5".to_owned(),
@@ -2957,36 +2962,93 @@ mod tests {
             }]),
             "exactly two intervals old is still fresh"
         );
+        assert_eq!(
+            parse_picker_agents("v1;1879;60;lead:fable5:working:%1", now),
+            None,
+            "one second past two intervals is stale"
+        );
+        assert!(
+            parse_picker_agents("v1;1900;300;lead:fable5:idle:%1", now).is_some(),
+            "a 300-second publisher remains fresh after 100 seconds"
+        );
+        assert!(
+            parse_picker_agents("v1;2000;1;lead:fable5:busy:%1", now).is_some(),
+            "harness-observed busy is a valid live state"
+        );
+        assert_eq!(
+            parse_picker_agents("v1;1997;1;lead:fable5:busy:%1", now),
+            None,
+            "a one-second publisher is stale after three seconds"
+        );
+        assert!(
+            parse_picker_agents("v1;2060;60;lead:fable5:working:%1", now).is_some(),
+            "one interval of future clock skew stays usable"
+        );
+        assert_eq!(
+            parse_picker_agents("v1;2061;60;lead:fable5:working:%1", now),
+            None,
+            "one second beyond the future-skew allowance is stale"
+        );
+        assert_eq!(
+            parse_picker_agents("v1;9223372036854775807;3600;lead:fable5:working:%1", now,),
+            None,
+            "a hostile far-future epoch never stays trusted"
+        );
 
         for invalid in [
             "",
             "v1;2000",
-            "v2;2000;lead:fable5:working:%1",
-            "v1;old;lead:fable5:working:%1",
-            "v1;1879;lead:fable5:working:%1",
-            "v1;2000;bad name:fable5:working:%1",
-            "v1;2000;lead:bad profile:working:%1",
-            "v1;2000;lead:fable5:unknown:%1",
-            "v1;2000;lead:fable5:working:pane",
-            "v1;2000;lead:fable5:working:%1:extra",
-            "v1;2000;lead:fable5:working:%1;lead:fable5:done:%2",
-            "v1;2000;lead:fable5:working:%1|shift",
-            "v1;2000;lead:fable5:working:%1,shift",
-            "v1;2000;lead:fable5:working:%1!shift",
-            "v1;2000;lead:fable5:working:%1\n",
-            "v1;2000;lead:fable5:working:%1#[fg=red]",
+            "v1;2000;0;lead:fable5:working:%1",
+            "v1;2000;3601;lead:fable5:working:%1",
+            "v1;2000;soon;lead:fable5:working:%1",
+            "v2;2000;60;lead:fable5:working:%1",
+            "v1;old;60;lead:fable5:working:%1",
+            "v1;2000;60;bad name:fable5:working:%1",
+            "v1;2000;60;lead:bad profile:working:%1",
+            "v1;2000;60;lead:fable5:unknown:%1",
+            "v1;2000;60;lead:fable5:working:pane",
+            "v1;2000;60;lead:fable5:working:%1:extra",
+            "v1;2000;60;lead:fable5:working:%1;lead:fable5:done:%2",
+            "v1;2000;60;lead:fable5:working:%1|shift",
+            "v1;2000;60;lead:fable5:working:%1,shift",
+            "v1;2000;60;lead:fable5:working:%1!shift",
+            "v1;2000;60;lead:fable5:working:%1\n",
+            "v1;2000;60;lead:fable5:working:%1#[fg=red]",
         ] {
-            assert_eq!(parse_picker_agents(invalid, now, 60), None, "{invalid}");
+            assert_eq!(parse_picker_agents(invalid, now), None, "{invalid}");
         }
         let too_many = format!(
-            "v1;2000;{}",
+            "v1;2000;60;{}",
             (0..65)
                 .map(|index| format!("a{index}:p:idle:"))
                 .collect::<Vec<_>>()
                 .join(";")
         );
-        assert_eq!(parse_picker_agents(&too_many, now, 60), None);
-        assert_eq!(parse_picker_agents(&"x".repeat(4_097), now, 60), None);
+        assert_eq!(parse_picker_agents(&too_many, now), None);
+        assert_eq!(parse_picker_agents(&"x".repeat(4_097), now), None);
+    }
+
+    #[test]
+    fn picker_agents_fuzz_seeds_reach_their_named_parser_paths() {
+        let valid = include_str!("../fuzz/seeds/picker_agents/valid");
+        let empty_pane = include_str!("../fuzz/seeds/picker_agents/empty-pane");
+        let duplicate = include_str!("../fuzz/seeds/picker_agents/duplicate");
+        let style_byte = include_str!("../fuzz/seeds/picker_agents/style-byte");
+        for seed in [valid, empty_pane, duplicate, style_byte] {
+            assert!(
+                seed.bytes().all(|byte| (b' '..=b'~').contains(&byte)),
+                "seed must reach its named parser branch"
+            );
+        }
+        assert!(super::parse_picker_agents(valid, 2_000_000_000).is_some());
+        assert!(
+            super::parse_picker_agents(empty_pane, 2_000_000_000)
+                .is_some_and(|agents| agents[0].pane.is_empty())
+        );
+        assert_eq!(duplicate.matches(";lead:").count(), 2);
+        assert_eq!(super::parse_picker_agents(duplicate, 2_000_000_000), None);
+        assert!(style_byte.contains('#'));
+        assert_eq!(super::parse_picker_agents(style_byte, 2_000_000_000), None);
     }
 
     #[test]

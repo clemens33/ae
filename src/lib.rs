@@ -603,7 +603,6 @@ fn run_orchestrator(tail: &[String], err: &mut impl Write) -> Result<u8> {
             height: client_snapshot.height,
             width: client_snapshot.width,
             now_epoch: crate::time::Timestamp::now().epoch(),
-            watchdog_interval_secs: watchdog_daemon::Knobs::default().interval_secs,
         },
     ) {
         Ok(menu) => menu,

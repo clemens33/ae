@@ -257,13 +257,14 @@ beside it, which is how a session upgraded in place gets one without being
 relaunched.
 
 `@ae_agents` is one atomic, watchdog-owned verdict snapshot:
-`v1;<epoch>;<name>:<profile>:<state>:<pane>;…`. Entries follow recorded roster
-order, include missing seats as `dead` with an empty pane, and exclude monitor
-panes. The writer and hostile-state parser cap it at 4 KiB and 64 agents; the
-parser also requires the exact version and field count, allowlisted identities
-and states, printable ASCII without tmux style/format bytes, and a valid `%pane`
-or empty hint. A fact older than two watchdog intervals is unavailable. The
-snapshot is a verdict fact, not a look fact, so it does not change
+`v1;<epoch>;<interval_secs>;<name>:<profile>:<state>:<pane>;…`. Entries follow
+recorded roster order, include missing seats as `dead` with an empty pane, and
+exclude monitor panes. The writer and hostile-state parser cap it at 4 KiB and
+64 agents; the parser also requires the exact version and field count, a
+1–3600-second interval, allowlisted identities and states, printable ASCII
+without tmux style/format bytes, and a valid `%pane` or empty hint. A fact older
+than twice its own interval or ahead by more than one interval is unavailable.
+The snapshot is a verdict fact, not a look fact, so it does not change
 `@ae_look_stamp` or `FORMAT_VERSION`.
 
 The attention trio is the one place where "launch writes it" and "the watchdog

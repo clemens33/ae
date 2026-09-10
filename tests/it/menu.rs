@@ -221,7 +221,7 @@ fn picker_argv(socket: &Path, staged: &Staged) -> Vec<String> {
         main_pane: staged.ids[0].clone(),
         branch: "menu-fix".to_owned(),
         agents: format!(
-            "v1;{};lead:fable5:working:{};builder:gpt56sol:done:{};gone:gpt56luna:dead:",
+            "v1;{};60;lead:fable5:working:{};builder:gpt56sol:done:{};gone:gpt56luna:dead:",
             ae::time::Timestamp::now().epoch(),
             staged.ids[0],
             staged.ids[1],
@@ -404,7 +404,9 @@ fn a_seven_line_client_draws_only_its_current_sessions_agents() {
         glyph: "·".to_owned(),
         main_pane: String::new(),
         branch: String::new(),
-        agents: format!("v1;{now};{prefix}0:p:working:;{prefix}1:p:working:;{prefix}2:p:working:"),
+        agents: format!(
+            "v1;{now};60;{prefix}0:p:working:;{prefix}1:p:working:;{prefix}2:p:working:"
+        ),
         goal: String::new(),
     };
     let sessions = [
@@ -422,7 +424,6 @@ fn a_seven_line_client_draws_only_its_current_sessions_agents() {
             height,
             width,
             now_epoch: now,
-            watchdog_interval_secs: 60,
         },
     )
     .expect("seven rows is the accepted boundary");
@@ -533,10 +534,15 @@ fn watchdog_replaces_the_agent_fact_across_spawn_and_retire_then_unsets_it_on_st
         .to_owned()
     };
     let initial = wait_for("initial agent fact", read_fact, |fact| {
-        ae::tmux::parse_picker_agents(fact, ae::time::Timestamp::now().epoch(), 1)
+        ae::tmux::parse_picker_agents(fact, ae::time::Timestamp::now().epoch())
             .is_some_and(|agents| agents.len() == 1 && agents[0].name == "lead")
     });
     assert!(initial.contains(";lead:idle:"), "initial fact: {initial}");
+    assert_eq!(
+        initial.split(';').nth(2),
+        Some("1"),
+        "fact carries this daemon's one-second cadence"
+    );
 
     let spawned = ae()
         .env("HOME", &scratch)
@@ -557,7 +563,7 @@ fn watchdog_replaces_the_agent_fact_across_spawn_and_retire_then_unsets_it_on_st
         String::from_utf8_lossy(&spawned.stderr)
     );
     let with_builder = wait_for("spawned agent fact", read_fact, |fact| {
-        ae::tmux::parse_picker_agents(fact, ae::time::Timestamp::now().epoch(), 1).is_some_and(
+        ae::tmux::parse_picker_agents(fact, ae::time::Timestamp::now().epoch()).is_some_and(
             |agents| agents.len() == 2 && agents[0].name == "lead" && agents[1].name == "builder",
         )
     });
@@ -586,7 +592,7 @@ fn watchdog_replaces_the_agent_fact_across_spawn_and_retire_then_unsets_it_on_st
         String::from_utf8_lossy(&retired.stderr)
     );
     let after_retire = wait_for("retired agent fact", read_fact, |fact| {
-        ae::tmux::parse_picker_agents(fact, ae::time::Timestamp::now().epoch(), 1)
+        ae::tmux::parse_picker_agents(fact, ae::time::Timestamp::now().epoch())
             .is_some_and(|agents| agents.len() == 1 && agents[0].name == "lead")
     });
     assert!(

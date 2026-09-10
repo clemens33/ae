@@ -251,8 +251,6 @@ pub struct PickerBounds {
     pub width: usize,
     /// Clock used to reject stale watchdog facts.
     pub now_epoch: i64,
-    /// The watchdog cadence whose two intervals define freshness.
-    pub watchdog_interval_secs: u64,
 }
 
 /// Why a picker is refused before tmux can silently drop it.
@@ -327,7 +325,6 @@ pub fn menu_for_client_session(
             height: usize::MAX,
             width: usize::MAX,
             now_epoch: crate::time::Timestamp::now().epoch(),
-            watchdog_interval_secs: crate::watchdog_daemon::Knobs::default().interval_secs,
         },
     )
 }
@@ -389,13 +386,7 @@ fn build_menu(
     let visible = &ranked[..shown];
     let agents: Vec<Option<Vec<crate::tmux::PickerAgent>>> = visible
         .iter()
-        .map(|session| {
-            crate::tmux::parse_picker_agents(
-                &session.agents,
-                bounds.now_epoch,
-                bounds.watchdog_interval_secs,
-            )
-        })
+        .map(|session| crate::tmux::parse_picker_agents(&session.agents, bounds.now_epoch))
         .collect();
     let overflow = usize::from(ranked.len() > shown);
     let item_capacity = bounds.height.saturating_sub(2);
@@ -919,7 +910,7 @@ mod tests {
     fn expanded_agent_rows_are_indented_static_and_guarded_by_membership() {
         let mut hub = session("hub", "$7", 2, "%10");
         hub.agents =
-            "v1;2000;lead:fable5:working:%10;builder:gpt56sol:done:%11;gone:gpt56luna:dead:"
+            "v1;2000;60;lead:fable5:working:%10;builder:gpt56sol:done:%11;gone:gpt56luna:dead:"
                 .to_owned();
         let drawn = super::menu_for_client_session_in(
             &[hub],
@@ -932,7 +923,6 @@ mod tests {
                 height: 10,
                 width: 100,
                 now_epoch: 2_000,
-                watchdog_interval_secs: 60,
             },
         )
         .expect("room for one session and three agents");
@@ -969,9 +959,9 @@ mod tests {
     fn missing_invalid_and_stale_agent_facts_are_unavailable_not_partial() {
         let mut missing = session("missing", "$1", 0, "");
         let mut invalid = session("invalid", "$2", 0, "");
-        invalid.agents = "v1;2000;ok:fable5:done:%2;bad:fable5:unknown:%3".to_owned();
+        invalid.agents = "v1;2000;60;ok:fable5:done:%2;bad:fable5:unknown:%3".to_owned();
         let mut stale = session("stale", "$3", 0, "");
-        stale.agents = "v1;1879;lead:fable5:working:%3".to_owned();
+        stale.agents = "v1;1879;60;lead:fable5:working:%3".to_owned();
         let drawn = super::menu_for_client_session_in(
             &[missing.clone(), invalid, stale],
             &[],
@@ -983,7 +973,6 @@ mod tests {
                 height: 12,
                 width: 100,
                 now_epoch: 2_000,
-                watchdog_interval_secs: 60,
             },
         )
         .expect("room for every unavailable row");
@@ -993,7 +982,7 @@ mod tests {
             .filter(|item| item.label == "  agents: unavailable")
             .count();
         assert_eq!(unavailable, 3);
-        missing.agents = "v1;1880;lead:fable5:working:%1".to_owned();
+        missing.agents = "v1;1880;60;lead:fable5:working:%1".to_owned();
         assert!(
             super::menu_for_client_session_in(
                 &[missing],
@@ -1006,7 +995,6 @@ mod tests {
                     height: 6,
                     width: 100,
                     now_epoch: 2_000,
-                    watchdog_interval_secs: 60,
                 },
             )
             .expect("boundary is fresh")
@@ -1018,7 +1006,7 @@ mod tests {
 
     fn with_agents(mut session: PickerSession, epoch: i64, count: usize) -> PickerSession {
         session.agents = format!(
-            "v1;{epoch};{}",
+            "v1;{epoch};60;{}",
             (0..count)
                 .map(|index| format!("a{index}:p:working:%{}", index + 10))
                 .collect::<Vec<_>>()
@@ -1039,7 +1027,6 @@ mod tests {
                 height,
                 width: 100,
                 now_epoch: 2_000,
-                watchdog_interval_secs: 60,
             },
         )
         .expect("test dimensions")
@@ -1134,7 +1121,6 @@ mod tests {
                 height: 6,
                 width: 32,
                 now_epoch: 2_000,
-                watchdog_interval_secs: 60,
             },
         )
         .expect("32 columns");
@@ -1158,7 +1144,6 @@ mod tests {
                         height,
                         width,
                         now_epoch: 2_000,
-                        watchdog_interval_secs: 60,
                     },
                 )
                 .err(),

@@ -6,5 +6,5 @@ use libfuzzer_sys::fuzz_target;
 // still reaches the parser, whose ASCII contract must reject every replacement.
 fuzz_target!(|data: &[u8]| {
     let text = String::from_utf8_lossy(data);
-    let _ = std::hint::black_box(ae::tmux::parse_picker_agents(&text, 2_000_000_000, 60));
+    let _ = std::hint::black_box(ae::tmux::parse_picker_agents(&text, 2_000_000_000));
 });

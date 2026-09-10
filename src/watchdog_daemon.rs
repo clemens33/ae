@@ -2685,7 +2685,7 @@ impl Cycle<'_> {
             .map(|entry| slot_mark(entry, by_slot, &carry.missing))
             .collect();
         self.sweep_missing(live, &mut carry.missing, err)?;
-        let agents = agents_fact(&self.roster, by_agent, now_epoch);
+        let agents = agents_fact(&self.roster, by_agent, now_epoch, self.knobs.interval_secs);
         self.publish(
             &Published {
                 bar: bar_glyph(counts.dead, counts.stale, look.icons),
@@ -3398,11 +3398,16 @@ fn agents_fact(
     roster: &[RosterEntry],
     by_slot: &[(String, String, Verdict)],
     now_epoch: i64,
+    interval_secs: u64,
 ) -> Option<String> {
-    if roster.is_empty() || roster.len() > tmux::PICKER_AGENTS_MAX_COUNT || now_epoch < 0 {
+    if roster.is_empty()
+        || roster.len() > tmux::PICKER_AGENTS_MAX_COUNT
+        || now_epoch < 0
+        || !(1..=tmux::PICKER_AGENTS_MAX_INTERVAL_SECS).contains(&interval_secs)
+    {
         return None;
     }
-    let mut value = format!("v1;{now_epoch}");
+    let mut value = format!("v1;{now_epoch};{interval_secs}");
     let mut names: Vec<&str> = Vec::new();
     for entry in roster {
         let profile = entry.profile.as_deref()?;
@@ -6210,12 +6215,14 @@ mod tests {
             ("main".to_owned(), "%3".to_owned(), Verdict::Active),
         ];
         assert_eq!(
-            agents_fact(&roster, &observed, 2_000),
+            agents_fact(&roster, &observed, 2_000, 60),
             Some(
-                "v1;2000;lead:fable5:working:%3;builder:gpt56sol:done:%8;tests:gpt56luna:dead:"
+                "v1;2000;60;lead:fable5:working:%3;builder:gpt56sol:done:%8;tests:gpt56luna:dead:"
                     .to_owned()
             )
         );
+        assert_eq!(agents_fact(&roster, &observed, 2_000, 0), None);
+        assert_eq!(agents_fact(&roster, &observed, 2_000, 3_601), None);
         assert_eq!(
             crate::theme::AGENTS_OPTION,
             "@ae_agents",
