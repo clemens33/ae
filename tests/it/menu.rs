@@ -543,17 +543,18 @@ fn popup_marks_the_clients_session_not_the_calling_panes_session() {
     let root = scratch.join("state");
     let project = scratch.join("project");
     let config = scratch.join("config");
-    assert!(fs::create_dir_all(&project).is_ok());
-    assert!(
-        fs::write(
-            &config,
-            "[profiles]\nidle = \"sleep 600\"\n\n[roster]\nlead = idle\n\n[workspace]\nmain = lead\nlayout = vertical\nwatchdog = false\n",
-        )
-        .is_ok()
-    );
+    write_picker_config(&project, &config);
     for session in ["clicked", "viewed"] {
         launch_ae_session(&socket, &scratch, &root, &project, &config, session);
     }
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &["split-window", "-d", "-h", "-t", "viewed"]
+        )
+        .0
+    );
     let client = nested_client(&socket, &scratch, "viewed", "viewer");
     let clicked_pane = tmux(
         &socket,
@@ -570,14 +571,14 @@ fn popup_marks_the_clients_session_not_the_calling_panes_session() {
     let open_and_choose = |key: &str| {
         std::thread::scope(|scope| {
             let driver = scope.spawn(|| {
-                wait_for(
+                let menu = wait_for(
                     "the marked picker",
                     || tmux(&socket, &scratch, &["capture-pane", "-p", "-t", "viewer"]).1,
                     picker_is_open,
                 );
                 let marks = (option("viewed"), option("clicked"));
                 assert!(tmux(&socket, &scratch, &["send-keys", "-t", "viewer", key]).0);
-                marks
+                (marks, menu)
             });
             let output = ae()
                 .env("HOME", &scratch)
@@ -594,7 +595,16 @@ fn popup_marks_the_clients_session_not_the_calling_panes_session() {
         })
     };
 
-    let (viewed_mark, clicked_mark) = open_and_choose("q");
+    let ((viewed_mark, clicked_mark), menu) = open_and_choose("q");
+    let title_width = menu
+        .lines()
+        .find(|line| picker_is_open(line))
+        .map(|line| line.chars().count());
+    assert_eq!(
+        title_width,
+        Some(140),
+        "picker must reach client right edge:\n{menu}"
+    );
     assert!(
         viewed_mark.parse::<i64>().is_ok(),
         "the client's session owns the epoch marker: {viewed_mark:?}"
@@ -609,17 +619,31 @@ fn popup_marks_the_clients_session_not_the_calling_panes_session() {
         "Escape has no close hook, so the mark remains until another clear path"
     );
 
-    let (reopened_mark, _) = open_and_choose("q");
+    let first_epoch = viewed_mark.parse::<i64>().unwrap_or_default();
+    std::thread::sleep(Duration::from_secs(1));
+    let ((reopened_mark, _), _) = open_and_choose("q");
+    let reopened_epoch = reopened_mark.parse::<i64>().unwrap_or_default();
     assert!(
-        reopened_mark.is_empty() && option("viewed").is_empty(),
-        "reopening toggles the stale Escape mark off: {reopened_mark:?}"
+        reopened_epoch > first_epoch && option("viewed") == reopened_mark,
+        "reopening refreshes the epoch and keeps the open menu lit: {reopened_mark:?}"
     );
 
-    let (selected_mark, _) = open_and_choose("1");
+    let ((selected_mark, _), _) = open_and_choose("1");
     assert!(selected_mark.parse::<i64>().is_ok(), "{selected_mark:?}");
     assert!(
         option("viewed").is_empty(),
         "choosing a row clears the originating session's marker"
+    );
+}
+
+fn write_picker_config(project: &Path, config: &Path) {
+    assert!(fs::create_dir_all(project).is_ok());
+    assert!(
+        fs::write(
+            config,
+            "[profiles]\nidle = \"sleep 600\"\n\n[roster]\nlead = idle\n\n[workspace]\nmain = lead\nlayout = vertical\nwatchdog = false\n",
+        )
+        .is_ok()
     );
 }
 

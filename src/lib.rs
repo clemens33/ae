@@ -510,13 +510,7 @@ fn run_orchestrator(tail: &[String], err: &mut impl Write) -> Result<u8> {
     // A look ae could not read draws the picker in the default one: a menu is
     // a transient surface that writes nothing, so a wrong palette on it costs
     // one keystroke rather than a session's appearance.
-    let look_read = opened_session.as_deref().map_or_else(
-        || transport::observe_look_here(&server),
-        |session_id| transport::observe_look(&server, session_id),
-    );
-    let look = look_read.map_or(theme::Look::DEFAULT, |read| {
-        theme::Look::read(&read.icons, &read.palette, &read.drawn, &read.motion)
-    });
+    let look = picker_look(&server, opened_session.as_deref());
     let menu = orchestrator::menu_for_client_session(
         &sessions,
         &panes,
@@ -526,7 +520,7 @@ fn run_orchestrator(tail: &[String], err: &mut impl Write) -> Result<u8> {
         opened_session.as_deref(),
     );
     if let Some(session_id) = opened_session.as_deref()
-        && !toggle_picker_marker(&server, session_id)
+        && !mark_picker_open(&server, session_id)
     {
         writeln!(
             err,
@@ -535,7 +529,13 @@ fn run_orchestrator(tail: &[String], err: &mut impl Write) -> Result<u8> {
         err.flush()?;
         return Ok(EXIT_UNAVAILABLE);
     }
-    if !transport::display_menu(&server, client, &menu, probe.menu_mouse()) {
+    if !draw_picker(
+        &server,
+        client,
+        opened_session.as_deref(),
+        &menu,
+        probe.menu_mouse(),
+    ) {
         if let Some(client) = client {
             writeln!(
                 err,
@@ -553,24 +553,39 @@ fn run_orchestrator(tail: &[String], err: &mut impl Write) -> Result<u8> {
     Ok(0)
 }
 
-/// Set the fleet-picker marker, or clear an existing one when reopening.
-fn toggle_picker_marker(server: &inventory::ServerId, session_id: &str) -> bool {
-    if transport::observe_session_option(server, session_id, theme::MENU_OPEN_OPTION).is_some() {
-        transport::clear_option(
-            server,
-            tmux::OptionScope::Session,
-            session_id,
-            theme::MENU_OPEN_OPTION,
-        )
-    } else {
-        transport::publish_option(
-            server,
-            tmux::OptionScope::Session,
-            session_id,
-            theme::MENU_OPEN_OPTION,
-            &crate::time::Timestamp::now().epoch().to_string(),
-        )
-    }
+/// Refresh the fleet-picker marker whenever a menu opens.
+fn mark_picker_open(server: &inventory::ServerId, session_id: &str) -> bool {
+    transport::publish_option(
+        server,
+        tmux::OptionScope::Session,
+        session_id,
+        theme::MENU_OPEN_OPTION,
+        &crate::time::Timestamp::now().epoch().to_string(),
+    )
+}
+
+/// Read the client's session look, with the transient default fallback.
+fn picker_look(server: &inventory::ServerId, session_id: Option<&str>) -> theme::Look {
+    let read = session_id.map_or_else(
+        || transport::observe_look_here(server),
+        |session_id| transport::observe_look(server, session_id),
+    );
+    read.map_or(theme::Look::DEFAULT, |read| {
+        theme::Look::read(&read.icons, &read.palette, &read.drawn, &read.motion)
+    })
+}
+
+/// Anchor the picker to a pane whose right edge reaches the client edge.
+fn draw_picker(
+    server: &inventory::ServerId,
+    client: Option<&str>,
+    session_id: Option<&str>,
+    menu: &tmux::Menu,
+    menu_mouse: bool,
+) -> bool {
+    let right_pane =
+        session_id.and_then(|session_id| transport::observe_picker_right_pane(server, session_id));
+    transport::display_menu_on_pane(server, client, right_pane.as_deref(), menu, menu_mouse)
 }
 
 /// The socket path each server answers with, asked once per server.

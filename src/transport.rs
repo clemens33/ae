@@ -648,6 +648,16 @@ pub fn observe_picker_client_session(server: &ServerId, client: &str) -> Option<
     tmux::interpret_picker_client_session(succeeded, &stdout, client)
 }
 
+/// One right-edge pane in the explicit client's active session window.
+#[must_use]
+pub fn observe_picker_right_pane(server: &ServerId, session_id: &str) -> Option<String> {
+    if !addressable(server) {
+        return None;
+    }
+    let (succeeded, stdout) = run(PROGRAM, &tmux::picker_right_pane_args(server, session_id));
+    tmux::interpret_picker_right_pane(succeeded, &stdout)
+}
+
 /// Draw `menu` on `client`, or the server's current client when absent.
 #[must_use]
 pub fn display_menu(
@@ -656,10 +666,28 @@ pub fn display_menu(
     menu: &tmux::Menu,
     menu_mouse: bool,
 ) -> bool {
+    display_menu_on_pane(server, client, None, menu, menu_mouse)
+}
+
+/// Draw `menu` on `client`, positioned relative to `target_pane` when proven.
+#[must_use]
+pub fn display_menu_on_pane(
+    server: &ServerId,
+    client: Option<&str>,
+    target_pane: Option<&str>,
+    menu: &tmux::Menu,
+    menu_mouse: bool,
+) -> bool {
     addressable(server)
         && run(
             PROGRAM,
-            &tmux::display_menu_for_client_args(server, client, menu, menu_mouse),
+            &tmux::display_menu_for_client_on_pane_args(
+                server,
+                client,
+                target_pane,
+                menu,
+                menu_mouse,
+            ),
         )
         .0
 }

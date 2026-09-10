@@ -40,7 +40,10 @@ chosen, not frozen when the menu opens. A status click also carries
 actions retain it: two clients may watch one pane, so `$TMUX_PANE`
 cannot identify the one that clicked. One `list-clients` snapshot resolves that
 exact client's current session; the mouse target's `#{session_id}` may name a
-different session and is never used for the open marker. Launch never
+different session and is never used for the open marker. One targeted
+`list-panes` snapshot then finds a pane at the right edge of that session's
+active window; `display-menu -t <pane> -x R` therefore reaches client width even
+when the client's active pane is on the left. Launch never
 writes these server-global bindings on an ambient server, where the key
 table belongs to the user. Every launch and upgrade of a running session on an
 owned server reasserts the same bindings, so the writes are idempotent and
@@ -168,8 +171,9 @@ counter is the user range `ae-more`. The button inherits the line's dim style
 while quiet; while `@ae_menu_open` is set it uses the palette's selected
 background and ink. Either mouse button on either range, or `<prefix> a`
 (default `C-b a`), opens the same fleet picker right-aligned above the status
-line with `display-menu -x R -y S`. Its title starts with the running core's
-`ae <version>`. Every menu uses `display-menu -O`. On tmux 3.5 and newer, Down
+line with `display-menu -t <right-pane> -x R -y S`; a failed right-pane read
+falls back to no `-t`. Its title starts with the running core's `ae <version>`.
+Every menu uses `display-menu -O`. On tmux 3.5 and newer, Down
 opens it with `-M`, the trailing release leaves it open, and rows are
 mouse-selectable. On the supported 3.4 floor, status clicks open on release,
 menus are keyboard-driven, row shortcut keys choose, and `q` closes. Each row
@@ -182,11 +186,12 @@ pane still belongs to the chosen session. The orchestrator's own segment
 remains its separate session range.
 
 The picker writes `@ae_menu_open=<epoch>` on the explicitly named client's
-current session before drawing. Every row clears it before switching; reopening
-the picker toggles it off; the watchdog clears it after one cycle. tmux gives
-`display-menu` no close callback, so Escape, `q`, and outside-click dismissal
-run no clear command and the button can remain lit until the next watchdog pass.
-This transient marker is not part of `@ae_look_stamp`.
+current session before drawing. Every reopen refreshes that epoch and stays lit;
+every row clears it before switching; the watchdog clears it once it is half a
+cycle old. tmux gives `display-menu` no close callback, so Escape, `q`, and
+outside-click dismissal run no clear command. With the default 60-second cycle,
+the next eligible sample clears it in about a minute and no later than 90
+seconds. This transient marker is not part of `@ae_look_stamp`.
 
 The ticker refreshes the strip from one `list-sessions` call every 500 ms and
 rewrites it only when a rank, name, order or working frame changed. Each
@@ -222,7 +227,7 @@ lines; `[workspace] theme = off` leaves the user's title settings untouched.
 | `@ae_fleet_strip`, `@ae_orchestrator_strip`, `@ae_watchdog_status` | session | watchdog |
 | `@ae_goal_status` | session | watchdog |
 | `@ae_version` | session | watchdog (the core it runs on, `ae <version>`) |
-| `@ae_menu_open` | session | picker sets/toggles it; picker rows and watchdog clear it |
+| `@ae_menu_open` | session | picker sets/refreshes it; picker rows and watchdog clear it |
 | `@ae_main_pane` | session | launch, resume, upgrade (after membership proof) |
 | `@ae_orchestrator_id` | session | watchdog (the local fleet's orchestrator target) |
 | `@ae_branch_status`, `@ae_branch_name` | session | watchdog |

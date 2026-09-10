@@ -440,8 +440,10 @@ The fleet picker is drawn by tmux itself, right-aligned above its status button.
 Its rows come only from one live `list-sessions` call on the calling server; one
 `list-panes -a` call proves which published lead-pane hints still belong to
 their sessions. One `list-clients` call resolves the explicitly named client's
-current session. It never builds [`ae list`](#ae-list)'s durable inventory,
-walks session directories, reads events or probes git.
+current session, then one targeted `list-panes` call finds a pane on the right
+edge of its active window so pane-relative `-x R` reaches client width. It never
+builds [`ae list`](#ae-list)'s durable inventory, walks session directories,
+reads events or probes git.
 
 Left- or right-click the menu glyph or overflow count, or press `<prefix> a`
 (default `C-b a`), to open it. The picker shows at most 30 attention-ordered sessions. Its title starts
@@ -454,9 +456,11 @@ picker refuses instead of choosing another.
 While the picker is open, the final-cell menu glyph uses the palette's selected
 background and ink. The marker belongs to the named client's current session,
 never the session under a mouse target. Choosing a row clears it before the
-switch; opening the picker again toggles it off; the watchdog clears it after
-one 60-second cycle. tmux exposes no menu-close hook, so Escape, `q`, or an
-outside click can leave the glyph lit until that watchdog pass.
+switch; opening the picker again refreshes the epoch and keeps it lit; the
+watchdog clears it once it is half a cycle old. tmux exposes no menu-close hook,
+so Escape, `q`, or an outside click can leave the glyph lit until a later
+watchdog sample: about a minute, at most 90 seconds with the default 60-second
+cycle.
 
 ```text
 $ ae orchestrator --popup

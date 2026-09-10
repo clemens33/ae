@@ -1423,13 +1423,13 @@ const fn motion_publish_failure(prior: u8, observed: bool) -> (u8, bool) {
     }
 }
 
-/// Whether a fleet-picker marker has reached one watchdog interval.
+/// Whether a fleet-picker marker has reached half a watchdog interval.
 /// Malformed transient state expires too, so it cannot pin the highlight.
 fn menu_open_expired(opened: &str, now_epoch: i64, interval_secs: u64) -> bool {
     let Ok(opened_epoch) = opened.parse::<i64>() else {
         return true;
     };
-    let Ok(interval) = i64::try_from(interval_secs) else {
+    let Ok(interval) = i64::try_from(interval_secs / 2) else {
         return false;
     };
     now_epoch.saturating_sub(opened_epoch) >= interval
@@ -3854,9 +3854,9 @@ mod tests {
     }
 
     #[test]
-    fn picker_marker_expires_at_one_watchdog_interval() {
-        assert!(super::menu_open_expired("100", 160, 60));
-        assert!(!super::menu_open_expired("100", 159, 60));
+    fn picker_marker_expires_at_half_a_watchdog_interval() {
+        assert!(super::menu_open_expired("100", 130, 60));
+        assert!(!super::menu_open_expired("100", 129, 60));
         assert!(!super::menu_open_expired("200", 161, 60));
         assert!(
             super::menu_open_expired("not-an-epoch", 161, 60),

@@ -721,27 +721,54 @@ mod tests {
             &Palette::DARCULA,
             Some("client"),
         );
-        let words = display_menu_for_client_args(&ServerId::Ambient, Some("client"), &drawn, true);
+        let words = crate::tmux::display_menu_for_client_on_pane_args(
+            &ServerId::Ambient,
+            Some("client"),
+            Some("%9"),
+            &drawn,
+            true,
+        );
         assert_eq!(
-            &words[..9],
+            &words[..11],
             [
                 "display-menu",
                 "-M",
                 "-O",
                 "-c",
                 "client",
+                "-t",
+                "%9",
                 "-x",
                 "R",
                 "-y",
                 "S",
             ]
         );
-        let keyboard =
-            display_menu_for_client_args(&ServerId::Ambient, Some("client"), &drawn, false);
-        assert_eq!(
-            &keyboard[..8],
-            ["display-menu", "-O", "-c", "client", "-x", "R", "-y", "S"]
+        let keyboard = crate::tmux::display_menu_for_client_on_pane_args(
+            &ServerId::Ambient,
+            Some("client"),
+            Some("%9"),
+            &drawn,
+            false,
         );
+        assert_eq!(
+            &keyboard[..10],
+            [
+                "display-menu",
+                "-O",
+                "-c",
+                "client",
+                "-t",
+                "%9",
+                "-x",
+                "R",
+                "-y",
+                "S",
+            ]
+        );
+        let fallback =
+            display_menu_for_client_args(&ServerId::Ambient, Some("client"), &drawn, false);
+        assert!(!fallback.iter().any(|word| word == "-t"));
         assert!(!keyboard.iter().any(|word| word == "-M"));
         assert_eq!(words.iter().filter(|word| word.as_str() == "--").count(), 1);
         assert!(
