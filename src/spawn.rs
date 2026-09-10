@@ -367,6 +367,24 @@ pub fn run_spawn(
             parsed.name
         )?;
     }
+    // The capture lower bound is a BIRTH fact: publish it before the pane can
+    // exec the tool. `launch_time` remains the post-exec lifecycle stamp.
+    if tool.adapter().capture.is_needed()
+        && meta::rewrite(
+            dir,
+            &format!("capture_floor.{slot}"),
+            Some(&now.epoch().to_string()),
+        )
+        .is_err()
+    {
+        let _ = crate::identity::remove_seat_slot(dir, &parsed.name);
+        writeln!(
+            err,
+            "Error: '{}' capture floor could not be recorded — nothing was spawned.",
+            parsed.name
+        )?;
+        return Ok(EXIT_FAILED);
+    }
 
     // New window per spawned agent: the main window keeps the lead layout
     // untouched and N parallel workers stay usable.
@@ -440,10 +458,8 @@ pub fn run_spawn(
         &crate::run::pane_command_with_snapshot(&core, dir, &slot, command.as_str()),
     );
     wait_for_agent_start(&facts.server, &pane, tool);
-    // The capture tools need the launch instant to filter stale sessions, so it
-    // is recorded BEFORE the capture child is started — the child reads it back
-    // out of meta, and a capture with no floor would accept a conversation this
-    // spawn did not create.
+    // Preserve the post-exec lifecycle stamp separately from the pre-exec
+    // capture floor, then start the detached capture.
     if tool.adapter().capture.is_needed() {
         let _ = meta::rewrite(
             dir,

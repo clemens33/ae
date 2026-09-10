@@ -794,7 +794,7 @@ fn plant_pending_codex(root: &Path, session: &str, socket: &Path, work_dir: &Pat
     let meta = format!(
         "mode=local\nsession={session}\ntmux_server_kind=socket\ntmux_server={socket}\n\
          work_dir={work_dir}\nschema=2\nseat.main=lead\nprofile.main=cx\n\
-         agent_bin.main=codex\nharness_session.main=pending\nlaunch_time.main=1\n\
+         agent_bin.main=codex\nharness_session.main=pending\ncapture_floor.main=1\n\
          launch_id.main=tok-recover\n",
         socket = socket.display(),
         work_dir = work_dir.display(),

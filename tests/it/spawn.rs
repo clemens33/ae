@@ -621,6 +621,18 @@ fn a_reused_codex_slot_never_inherits_the_retired_seats_session_id() {
         &["first", "--using", "codexfake", "--", "first task"],
     );
     assert_eq!(code, Some(0), "{stderr}");
+    let first_meta = rig.meta();
+    let first_floor = first_meta
+        .lines()
+        .find_map(|line| line.strip_prefix("capture_floor.spawned.0="))
+        .and_then(|value| value.parse::<i64>().ok())
+        .expect("spawn publishes its capture floor before exec");
+    let first_launch_time = first_meta
+        .lines()
+        .find_map(|line| line.strip_prefix("launch_time.spawned.0="))
+        .and_then(|value| value.parse::<i64>().ok())
+        .expect("spawn records its post-exec launch time");
+    assert!(first_floor <= first_launch_time);
     let first_token = rig.launch_id("spawned.0");
     let first_id = "11111111-1111-4111-8111-111111111111";
     rig.write_codex_rollout(first_id, &first_token);
@@ -666,6 +678,10 @@ fn a_reused_codex_slot_never_inherits_the_retired_seats_session_id() {
         second_session.is_none_or(|id| id.is_empty() || id == "pending")
             && !second_meta.contains(first_id),
         "the new occupant inherited the retired id: {second_meta}"
+    );
+    assert!(
+        second_meta.contains("capture_floor.spawned.0="),
+        "the fresh incarnation has no pre-exec capture floor: {second_meta}"
     );
     let second_token = rig.launch_id("spawned.0");
     assert_ne!(second_token, first_token);

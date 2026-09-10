@@ -232,7 +232,7 @@ Name resolution takes the exact name, `%pane-id`, or `session:agent` / `@session
 |---|---|---|---|---|---|---|
 | **Prompt injection** | `--append-system-prompt` | `-c developer_instructions=` | `-i` | none — rides `-i` as a user turn | none — rides positional `[PROMPT]`; never `--system-prompt-override` | `OPENCODE_CONFIG` json `instructions` |
 | **Session id at launch** | `--session-id UUID` | none | none | none | `--session-id UUID` | none |
-| **Id capture** | immediate | post-launch: sid file verified by launch-token rollout created after launch, then token scan. A token miss stays `pending`; cwd/TUI are legacy no-token fallbacks | post-launch chat-history scan | post-launch: `<id>.db` bytes with a token, else `cli-*.log`. A token miss stays `pending` | immediate | post-launch `session list --format json` |
+| **Id capture** | immediate | post-launch: sid file verified by launch-token rollout born at/after the pre-exec capture floor, then token scan. A token miss stays `pending`; cwd/TUI are legacy no-token fallbacks and may never replace an id | post-launch chat-history scan | post-launch: `<id>.db` bytes with a token, else `cli-*.log`. A token miss stays `pending` | immediate | post-launch `session list --format json` |
 | **Exact resume** | `--resume UUID` | `resume UUID` (subcommand) | `--resume UUID` | `--conversation UUID` | `--resume UUID` | `--session ID` |
 | **Resume fallback** | `--continue` | fresh start | `--resume latest` | `--continue` | `--continue` | `--continue` |
 | **TUI modelled for delivery** | yes | yes | no | no | no | no |
@@ -300,6 +300,7 @@ Each is one rule with one owner. Change the owner, not a copy.
 | `current_exe()` has exactly ONE caller | `src/shape.rs::resolved_exe` |
 | `launch.<slot>.started` decides create-vs-resume, before the exec | `src/run.rs` |
 | A seat's config home is resolved once by `launch_cmd::config_home`; first start records explicit-variable mode as `config_home.<slot>=<canonical path>` or implicit-default mode as `config_home.<slot>=implicit:<canonical path>` plus `config_home_base.<slot>=<canonical effective HOME>`. Both implicit rows are one identity and are published atomically; every meta rebuild carries them, and the recorded store, mode and base win for a retained conversation | `src/run.rs`, `src/meta.rs`, `src/session_launch.rs`, `src/session_launch/capture.rs`, `src/lifecycle/end.rs` |
+| `capture_floor.<slot>` is published before a capture tool starts. A retained exact conversation keeps its original floor; a still-pending resume gets a fresh one. Every session-store scan uses this floor, while `launch_time.<slot>` remains a separate post-exec lifecycle stamp | `src/session_launch.rs`, `src/spawn.rs`, `src/session_launch/capture.rs` |
 | The install gate is STRUCTURAL and hashes nothing. Every command and helper passes it EXCEPT `version` and `upgrade`, which diagnose and repair a broken install | `src/shape.rs`, ordered in `src/lib.rs::run` |
 | The one hashing site: both members re-digested against `SHA256SUMS` before publication | `src/install.rs` |
 | Published dir 0555, members 0555/0444; `~/.local/bin/ae` is the current pointer | `src/install.rs` |

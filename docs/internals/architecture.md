@@ -390,11 +390,13 @@ The full helper catalog lives in `workspace.md`, which the prompt points at.
 | Grok Build | ae generates the UUID up-front and passes it via `--session-id UUID`. Immediate — same as Claude Code, no post-launch scan. |
 | OpenCode | Post-launch `opencode session list --format json` filtered by CWD. |
 
-Every Codex rollout is filtered by its immutable creation timestamp, not its mutable file
-mtime, and every other scan is filtered by the seat's recorded launch time. Capture results
-also carry the observed agent, tool and launch token; those facts are compared under the same
-lock as publication, so a retired and reused slot cannot receive a late result. A token-proven
-Codex handshake may replace a wrong earlier capture for the same launch. Capture runs in its own detached process,
+Every scan is filtered by `capture_floor.<slot>`, published before the tool starts. A retained
+exact conversation keeps its original floor across resume; a still-pending seat gets a fresh
+pre-exec floor. Codex additionally checks the rollout's immutable creation timestamp, not its
+mutable file mtime. Capture results carry the observed agent, tool and launch token; those
+facts are compared under the same lock as publication, so a retired and reused slot cannot
+receive a late result. A token-proven Codex handshake may replace a wrong earlier capture for
+the same launch; a tokenless legacy handshake may only fill `pending`. Capture runs in its own detached process,
 never on the launch's thread, so a tool that takes half a minute to answer does not delay the
 attach — and if that child dies before its tool answers, the watchdog closes the gap: each
 cycle it takes one look at every seat still pending and registers whatever it finds. The next

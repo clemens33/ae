@@ -10,7 +10,8 @@
 //! | gemini | `~/.gemini/tmp/<project>/chats/session-*.json`, matched on the launch token, then on the project root alone |
 //! | agy | the launch token, searched in the BYTES of `~/.gemini/antigravity-cli/conversations/<id>.db` — OR, for a seat that has no token at all, the CLI log that names both the workspace and the conversation it created. Alternatives, not a chain: a token miss stays pending, because falling through cross-wires two seats sharing one directory |
 //!
-//! Every scan is filtered by the seat's `launch_time.<slot>`. Codex checks the
+//! Every scan is filtered by the seat's `capture_floor.<slot>`, published
+//! before the tool starts. Codex checks the
 //! rollout's immutable creation timestamp as well as its mutable file mtime.
 //!
 //! Runs in ITS OWN DETACHED PROCESS, never on the launch's thread, so a tool
@@ -233,8 +234,8 @@ struct Facts {
     tool: ToolKind,
     /// The session's working directory, which every cwd match compares against.
     work_dir: String,
-    /// The launch instant, in epoch seconds.
-    launch_time: i64,
+    /// The oldest conversation birth this seat may accept, in epoch seconds.
+    capture_floor: i64,
     /// The launch token, empty when none was minted.
     launch_id: String,
     /// The adapter-owned marker prefix written into the tool store.
@@ -252,7 +253,6 @@ fn facts(dir: &Path, slot: &str) -> Option<Facts> {
             .map(|raw| String::from_utf8_lossy(raw).into_owned())
             .unwrap_or_default()
     };
-    let launch_time = value(&format!("launch_time.{slot}"));
     let entry = parsed.roster().iter().find(|entry| entry.slot == slot);
     let tool = ToolKind::from_binary_name(
         entry
@@ -263,19 +263,39 @@ fn facts(dir: &Path, slot: &str) -> Option<Facts> {
         agent: entry.map(|entry| entry.name.clone()).unwrap_or_default(),
         tool,
         work_dir: value("work_dir"),
-        // A non-numeric value is 0, never a refusal: a scan with no lower bound
-        // still cannot pick a session in another directory.
-        launch_time: if launch_time.bytes().all(|byte| byte.is_ascii_digit()) {
-            launch_time.parse().unwrap_or(0)
-        } else {
-            0
-        },
+        // New launches always publish this before exec. A retained conversation
+        // from metadata predating the row gets an unbounded floor: its token or
+        // recorded id is stronger evidence than a later resume timestamp. A
+        // still-pending legacy seat keeps the old launch-time safety floor.
+        capture_floor: crate::meta::first_value(&bytes, &format!("capture_floor.{slot}"))
+            .map_or_else(
+                || {
+                    if entry.is_some_and(|entry| !is_pending(entry.harness_session.as_deref())) {
+                        0
+                    } else {
+                        crate::meta::first_value(&bytes, &format!("launch_time.{slot}"))
+                            .map_or(0, epoch_or_zero)
+                    }
+                },
+                epoch_or_zero,
+            ),
         launch_id: value(&format!("launch_id.{slot}")),
         launch_marker: tool.adapter().launch_marker,
         config_home: entry
             .map(|entry| entry.config_home.clone())
             .unwrap_or_default(),
     })
+}
+
+/// An invalid persisted epoch removes the lower bound rather than inventing
+/// one. Identity proof still comes from token/cwd matching.
+fn epoch_or_zero(raw: &[u8]) -> i64 {
+    let text = String::from_utf8_lossy(raw);
+    if text.bytes().all(|byte| byte.is_ascii_digit()) {
+        text.parse().unwrap_or(0)
+    } else {
+        0
+    }
 }
 
 /// Codex's recorded config root, or the pre-row default for legacy metadata.
@@ -310,6 +330,9 @@ pub fn commit(dir: &Path, slot: &str, captured: &Captured) -> bool {
 /// Publish codex's token-proven handshake even when a scan recorded a wrong id
 /// earlier in this same launch.
 fn commit_authoritative(dir: &Path, slot: &str, captured: &Captured) -> bool {
+    if captured.launch_id.is_empty() {
+        return false;
+    }
     commit_inner(dir, slot, captured, true)
 }
 
@@ -434,7 +457,14 @@ pub fn register_sid(
         return Ok(crate::state::EXIT_FAILED);
     }
     let captured = Captured::new(&facts, found);
-    if !commit_authoritative(dir, slot, &captured) {
+    let committed = if captured.launch_id.is_empty() {
+        commit(dir, slot, &captured)
+    } else {
+        // `scan_codex` takes the token-only arm when this value is nonempty,
+        // so replacement authority is backed by positive rollout provenance.
+        commit_authoritative(dir, slot, &captured)
+    };
+    if !committed {
         writeln!(
             err,
             "Error: seat '{slot}' changed before its session id could be recorded."
@@ -519,14 +549,14 @@ fn scan_codex(config_home: &Path, facts: &Facts) -> Option<String> {
             config_home,
             marker,
             &facts.launch_id,
-            facts.launch_time,
+            facts.capture_floor,
             &days,
         );
     }
     if facts.work_dir.is_empty() {
         return None;
     }
-    find_codex_by_cwd(config_home, &facts.work_dir, facts.launch_time, &days)
+    find_codex_by_cwd(config_home, &facts.work_dir, facts.capture_floor, &days)
 }
 
 /// The first `session id: <hex-and-dashes>` a screen carries.
@@ -552,12 +582,12 @@ pub(crate) fn find_codex_by_launch_id(
     config_home: &Path,
     marker_prefix: &str,
     launch_id: &str,
-    launch_time: i64,
+    capture_floor: i64,
     days: &[String],
 ) -> Option<String> {
     let marker = format!("AE_{marker_prefix}_LAUNCH_ID={launch_id}");
-    newest(codex_logs(config_home, days), launch_time, |text| {
-        if !codex_started_since_launch(text, launch_time) || !text.contains(&marker) {
+    newest(codex_logs(config_home, days), capture_floor, |text| {
+        if !codex_started_since_floor(text, capture_floor) || !text.contains(&marker) {
             return None;
         }
         first_hex_field(text.lines().next().unwrap_or_default(), "id")
@@ -569,12 +599,12 @@ pub(crate) fn find_codex_by_launch_id(
 pub(crate) fn find_codex_by_cwd(
     config_home: &Path,
     work_dir: &str,
-    launch_time: i64,
+    capture_floor: i64,
     days: &[String],
 ) -> Option<String> {
     let target = canonical(work_dir);
-    newest(codex_logs(config_home, days), launch_time, |text| {
-        if !codex_started_since_launch(text, launch_time) {
+    newest(codex_logs(config_home, days), capture_floor, |text| {
+        if !codex_started_since_floor(text, capture_floor) {
             return None;
         }
         let first = text.lines().next().unwrap_or_default();
@@ -589,8 +619,8 @@ pub(crate) fn find_codex_by_cwd(
 /// Whether a codex rollout's own creation timestamp belongs to this launch.
 /// File mtime is not identity: a live older rollout keeps changing as codex
 /// appends turns to it.
-fn codex_started_since_launch(text: &str, launch_time: i64) -> bool {
-    if launch_time <= 0 {
+fn codex_started_since_floor(text: &str, capture_floor: i64) -> bool {
+    if capture_floor <= 0 {
         return true;
     }
     text.lines()
@@ -598,7 +628,7 @@ fn codex_started_since_launch(text: &str, launch_time: i64) -> bool {
         .and_then(|first| first_string_field(first, "timestamp"))
         .as_deref()
         .and_then(crate::quota::vendor_timestamp)
-        .is_some_and(|started| started >= launch_time)
+        .is_some_and(|started| started >= capture_floor)
 }
 
 /// Every `*.jsonl` under the named day directories of a Codex config home.
@@ -649,12 +679,12 @@ fn scan_gemini(home: &Path, facts: &Facts) -> Option<String> {
             &facts.work_dir,
             marker,
             &facts.launch_id,
-            facts.launch_time,
+            facts.capture_floor,
         )
     {
         return Some(id);
     }
-    find_gemini_by_cwd(home, &facts.work_dir, facts.launch_time)
+    find_gemini_by_cwd(home, &facts.work_dir, facts.capture_floor)
 }
 
 /// The newest gemini chat for this project whose file carries the launch token.
@@ -664,10 +694,10 @@ pub(crate) fn find_gemini_by_launch_id(
     work_dir: &str,
     marker_prefix: &str,
     launch_id: &str,
-    launch_time: i64,
+    capture_floor: i64,
 ) -> Option<String> {
     let marker = format!("AE_{marker_prefix}_LAUNCH_ID={launch_id}");
-    newest(gemini_chats(home, work_dir), launch_time, |text| {
+    newest(gemini_chats(home, work_dir), capture_floor, |text| {
         if !text.contains(&marker) {
             return None;
         }
@@ -677,8 +707,12 @@ pub(crate) fn find_gemini_by_launch_id(
 
 /// The newest gemini chat for this project, whichever launch wrote it.
 #[must_use]
-pub(crate) fn find_gemini_by_cwd(home: &Path, work_dir: &str, launch_time: i64) -> Option<String> {
-    newest(gemini_chats(home, work_dir), launch_time, |text| {
+pub(crate) fn find_gemini_by_cwd(
+    home: &Path,
+    work_dir: &str,
+    capture_floor: i64,
+) -> Option<String> {
+    newest(gemini_chats(home, work_dir), capture_floor, |text| {
         first_string_field(text, "sessionId")
     })
 }
@@ -742,13 +776,13 @@ fn capture_agy(home: &Path, facts: &Facts) -> Option<String> {
 fn scan_agy(home: &Path, facts: &Facts) -> Option<String> {
     if !facts.launch_id.is_empty() {
         return facts.launch_marker.and_then(|marker| {
-            find_agy_by_launch_id(home, marker, &facts.launch_id, facts.launch_time)
+            find_agy_by_launch_id(home, marker, &facts.launch_id, facts.capture_floor)
         });
     }
     if facts.work_dir.is_empty() {
         return None;
     }
-    find_agy_by_cwd(home, &facts.work_dir, facts.launch_time)
+    find_agy_by_cwd(home, &facts.work_dir, facts.capture_floor)
 }
 
 /// The newest agy conversation whose database carries the launch token.
@@ -757,7 +791,7 @@ pub(crate) fn find_agy_by_launch_id(
     home: &Path,
     marker_prefix: &str,
     launch_id: &str,
-    launch_time: i64,
+    capture_floor: i64,
 ) -> Option<String> {
     let marker = format!("AE_{marker_prefix}_LAUNCH_ID={launch_id}").into_bytes();
     let mut best: Option<(i64, String)> = None;
@@ -767,7 +801,7 @@ pub(crate) fn find_agy_by_launch_id(
         let Some(at) = mtime(&path) else {
             continue;
         };
-        if at < launch_time {
+        if at < capture_floor {
             continue;
         }
         if best.as_ref().is_some_and(|(seen, _)| at <= *seen) {
@@ -786,14 +820,14 @@ pub(crate) fn find_agy_by_launch_id(
 /// The ONE conversation an agy run in this working directory created, read out
 /// of agy's own CLI log — or nothing, when there is more than one.
 #[must_use]
-pub(crate) fn find_agy_by_cwd(home: &Path, work_dir: &str, launch_time: i64) -> Option<String> {
+pub(crate) fn find_agy_by_cwd(home: &Path, work_dir: &str, capture_floor: i64) -> Option<String> {
     let target = canonical(work_dir);
     let mut candidates: Vec<String> = Vec::new();
     for path in agy_logs(home) {
         let Some(at) = mtime(&path) else {
             continue;
         };
-        if at < launch_time {
+        if at < capture_floor {
             continue;
         }
         let Some(text) = read_text(&path) else {
@@ -1014,7 +1048,7 @@ fn scan_opencode(facts: &Facts) -> Option<String> {
         return None;
     }
     // opencode timestamps are MILLISECONDS.
-    let since = facts.launch_time.saturating_mul(1000);
+    let since = facts.capture_floor.saturating_mul(1000);
     // A failed run is "no answer", never an empty one: opencode may not be
     // installed at all.
     let (ran, listed) = crate::transport::run_opencode(&opencode_list_argv());
@@ -1117,7 +1151,7 @@ fn day_dirs(now: Timestamp) -> Vec<String> {
 }
 
 /// The candidate with the greatest mtime whose text `read` accepts.
-fn newest<F>(mut candidates: Vec<PathBuf>, launch_time: i64, read: F) -> Option<String>
+fn newest<F>(mut candidates: Vec<PathBuf>, capture_floor: i64, read: F) -> Option<String>
 where
     F: Fn(&str) -> Option<String>,
 {
@@ -1127,7 +1161,7 @@ where
         let Some(at) = mtime(&path) else {
             continue;
         };
-        if at < launch_time {
+        if at < capture_floor {
             continue;
         }
         if best.as_ref().is_some_and(|(seen, _)| at <= *seen) {
@@ -1518,7 +1552,7 @@ mod tests {
             agent: "lead".to_owned(),
             tool: ToolKind::Agy,
             work_dir: work.clone(),
-            launch_time: 0,
+            capture_floor: 0,
             launch_id: "own-token".to_owned(),
             launch_marker: Some("AGY"),
             config_home: crate::meta::RecordedConfigHome::Missing,
@@ -1752,7 +1786,7 @@ mod tests {
             agent: "lead".to_owned(),
             tool: ToolKind::Codex,
             work_dir: work.display().to_string(),
-            launch_time: 0,
+            capture_floor: 0,
             launch_id: "current-token".to_owned(),
             launch_marker: Some("CODEX"),
             config_home: crate::meta::RecordedConfigHome::Path(config_home.clone()),
@@ -1894,18 +1928,18 @@ mod tests {
     }
 
     #[test]
-    fn the_capture_facts_come_from_the_roster_and_a_bad_launch_time_is_zero() {
+    fn the_capture_facts_use_the_capture_floor_and_a_bad_value_is_zero() {
         let dir = scratch("facts");
         write(
             &dir.join("meta"),
             "session=s\nwork_dir=/w\nschema=2\nseat.main=lead\nagent_bin.main=opencode\n\
-             config_home.main=/account/codex\nlaunch_time.main=not-a-number\nlaunch_id.main=tok-9\n",
+             config_home.main=/account/codex\ncapture_floor.main=not-a-number\nlaunch_id.main=tok-9\n",
         );
         let read = facts(&dir, "main").expect("the meta reads");
         assert_eq!(read.agent, "lead");
         assert_eq!(read.tool, ToolKind::OpenCode);
         assert_eq!(read.work_dir, "/w");
-        assert_eq!(read.launch_time, 0);
+        assert_eq!(read.capture_floor, 0);
         assert_eq!(read.launch_id, "tok-9");
         assert_eq!(
             read.config_home,

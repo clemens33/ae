@@ -2712,6 +2712,21 @@ fn meta_document(
         if !agent.launch_id.is_empty() {
             row(&format!("launch_id.{}", agent.slot), &agent.launch_id);
         }
+        if agent.tool.adapter().capture.is_needed() {
+            let key = format!("capture_floor.{}", agent.slot);
+            let retained = shape.resuming && launch::id_probeable(&agent.session_id);
+            let floor = if retained {
+                // A retained exact conversation was born under the original
+                // floor. Metadata predating this row gets 0 so a later resume
+                // instant cannot exclude that already-proved origin.
+                preserved(&key)
+                    .filter(|value| value.parse::<i64>().is_ok_and(|epoch| epoch >= 0))
+                    .unwrap_or_else(|| "0".to_owned())
+            } else {
+                started.clone()
+            };
+            row(&key, &floor);
+        }
     }
 
     let seats: Vec<roster::SeatLines> = launching
@@ -2779,6 +2794,8 @@ fn start_agent(
     let _ = deliver::submit_shell_text(server, &agent.pane, &command);
     wait_for_agent_start(server, &agent.pane, agent.tool);
     if agent.tool.adapter().capture.is_needed() {
+        // Kept as the legacy/lifecycle launch stamp. Capture safety uses the
+        // separate `capture_floor` already published before this exec.
         let _ = meta::rewrite(
             dir,
             &format!("launch_time.{}", agent.slot),

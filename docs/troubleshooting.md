@@ -84,9 +84,15 @@ Codex has no launch-time UUID flag. Its first-task instruction writes an id file
 detached capture verifies against the rollout carrying that seat's launch token; the fallback
 scans `~/.codex/sessions/YYYY/MM/DD/*.jsonl` for the same token. A token miss stays pending.
 Only a legacy seat with no token may fall back to cwd and the TUI header. Every scan is also
-filtered by the seat's recorded launch time; Codex uses the rollout's creation timestamp, not
-its mutable file mtime. A token-proven handshake commits immediately and repairs a wrong id
-already recorded for the same launch.
+filtered by `capture_floor.<slot>`, published before the tool starts; Codex uses the rollout's
+creation timestamp, not its mutable file mtime. An exact resume preserves the original floor.
+A token-proven handshake commits immediately and repairs a wrong id already recorded for the
+same launch. A tokenless legacy handshake may fill `pending`, but never replace an id.
+
+If a running Codex seat already records the wrong id, run
+`<meta_dir>/_register-sid <slot>` in that seat's still-running pane; its rollout token proves
+the repair. If that is unavailable, retire and re-spawn the seat as a fresh incarnation. Never
+blindly stop/resume it: resume retains `harness_session.<slot>` and reopens the wrong conversation.
 
 You do not have to do anything if it fails. The capture child can die before codex answers —
 the machine sleeps, the session is resumed, the process is killed with the pane it was

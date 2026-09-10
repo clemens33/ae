@@ -55,7 +55,7 @@ impl Rig {
             &format!(
                 "session=cap\nwork_dir={}\nmode=local\nschema=2\nseat.main=lead\n\
                  profile.main=tool\nagent_bin.main={binary}\nharness_session.main=pending\n\
-                 launch_time.main={launch_time}\nlaunch_id.main=tok-1\n",
+                 launch_time.main={launch_time}\ncapture_floor.main={launch_time}\nlaunch_id.main=tok-1\n",
                 rig.project.display()
             ),
         );
@@ -234,7 +234,7 @@ fn an_agy_seat_with_no_token_falls_back_to_the_cli_log_for_its_own_workspace() {
         &format!(
             "session=cap\nwork_dir={}\nmode=local\nschema=2\nseat.main=lead\n\
              profile.main=tool\nagent_bin.main=agy\nharness_session.main=pending\n\
-             launch_time.main=1\n",
+             capture_floor.main=1\n",
             rig.project.display()
         ),
     );
@@ -279,7 +279,7 @@ fn an_agy_seat_with_no_token_falls_back_to_the_cli_log_for_its_own_workspace() {
 fn an_opencode_seat_captures_the_newest_session_in_its_own_directory() {
     let rig = Rig::new("opencode", "opencode", 1);
     // `updated` is milliseconds, so everything here is at or after the seat's
-    // `launch_time.main=1`.
+    // `capture_floor.main=1`.
     rig.fake_opencode(&format!(
         r#"[{{"id":"ses_old","directory":"{project}","time":{{"updated":2000}}}},
   {{"id":"ses_new","directory":"{project}","time":{{"updated":5000}}}},
@@ -405,5 +405,62 @@ fn the_register_sid_handshake_is_the_id_the_capture_reports() {
     assert!(
         !rig.session.join("codex.main.sid").exists(),
         "a consumed handshake file is removed:\n{meta}"
+    );
+}
+
+/// A legacy tokenless seat may discover by cwd, but cwd is not proof strong
+/// enough to redirect an already recorded conversation.
+#[test]
+fn a_tokenless_register_sid_never_replaces_a_recorded_id_by_cwd() {
+    use super::cli::helper;
+
+    let rig = Rig::new("regsid-tokenless", "codex", 1);
+    let rendered = ae()
+        .arg(ae::cli::SHIMS_RENDER)
+        .arg(&rig.session)
+        .output()
+        .unwrap_or_else(|why| panic!("the ae binary should run: {why}"));
+    assert!(rendered.status.success(), "the shims render: {rendered:?}");
+
+    let recorded = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    rig.write(
+        &rig.session.join("meta"),
+        &rig.meta()
+            .replace(
+                "harness_session.main=pending",
+                &format!("harness_session.main={recorded}"),
+            )
+            .replace("launch_id.main=tok-1\n", ""),
+    );
+    let found = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    let day = ae::time::Timestamp::now().to_string()[..10].replace('-', "/");
+    rig.write(
+        &rig
+            .home
+            .join(".codex")
+            .join("sessions")
+            .join(day)
+            .join(format!("rollout-{found}.jsonl")),
+        &format!(
+            "{{\"timestamp\":\"{}\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"{found}\",\"cwd\":\"{}\"}}}}\n",
+            ae::time::Timestamp::now(),
+            rig.project.display()
+        ),
+    );
+
+    let attempted = helper(&rig.session.join("_register-sid"))
+        .args(["main", found])
+        .env("HOME", &rig.home)
+        .output()
+        .unwrap_or_else(|why| panic!("the shim should run: {why}"));
+    assert_eq!(attempted.status.code(), Some(1), "{attempted:?}");
+    let meta = rig.meta();
+    assert!(
+        meta.contains(&format!("harness_session.main={recorded}")),
+        "cwd-only discovery redirected the recorded conversation: {meta}"
+    );
+    assert!(
+        !meta.contains(found),
+        "the unproved id reached meta: {meta}"
     );
 }

@@ -39,12 +39,13 @@ if (length("__SID__")) {
 }
 print "\e[?2004h";
 my $border = "\xe2\x94\x80" x 400;
-my $ornament = "\xe2\x9d\xaf";
+my $codex = $0 =~ /codex\z/;
+my $ornament = $codex ? "\xe2\x80\xba" : "\xe2\x9d\xaf";
 my $nbsp = "\xc2\xa0";
 print "\e[H\e[2J";
 print "fake agent transcript\r\n";
 print "\e[1m$ornament\e[0m$nbsp\r\n";
-print "$border\r\n";
+if ($codex) { print "\r\n"; } else { print "$border\r\n"; }
 print "  fake-model  ~/x\r\n";
 while (1) { sleep 1; }
 "#;
@@ -2741,6 +2742,158 @@ fn a_codex_launch_captures_the_session_id_it_registers() {
         std::thread::sleep(Duration::from_millis(250));
     }
     panic!("the capture never registered the id:\n{}", rig.meta("cap"));
+}
+
+/// A rollout can be created as soon as codex takes the pane, before ae's
+/// post-exec process observation finishes. Its immutable birth must still be
+/// on or after the floor published before exec.
+#[test]
+fn a_fresh_codex_rollout_born_before_the_post_exec_stamp_is_captured() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::new("capture-floor-fresh", &["codex"], None);
+    let (code, stdout, stderr) = rig.launch(&["--local", "lncapfloor"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let meta = rig.meta("lncapfloor");
+    let floor = meta
+        .lines()
+        .find_map(|line| line.strip_prefix("capture_floor.main="))
+        .and_then(|value| value.parse::<i64>().ok())
+        .expect("a pre-exec capture floor");
+    let launch_time = meta
+        .lines()
+        .find_map(|line| line.strip_prefix("launch_time.main="))
+        .and_then(|value| value.parse::<i64>().ok())
+        .expect("the post-exec launch stamp");
+    assert!(
+        floor <= launch_time,
+        "floor={floor}, launch_time={launch_time}"
+    );
+    ae::meta::rewrite(
+        &rig.dir("lncapfloor"),
+        "launch_time.main",
+        Some(&(floor + 1).to_string()),
+    )
+    .expect("make the post-exec ordering observable");
+
+    let launch_id = meta
+        .lines()
+        .find_map(|line| line.strip_prefix("launch_id.main="))
+        .expect("the launch token");
+    let id = "0199c0de-1111-4890-abcd-ef0123456789";
+    let day = ae::time::Timestamp::from_epoch(floor).to_string()[..10].replace('-', "/");
+    let rollout = rig
+        .scratch
+        .join(".codex")
+        .join("sessions")
+        .join(day)
+        .join(format!("rollout-{id}.jsonl"));
+    assert!(
+        std::fs::create_dir_all(rollout.parent().unwrap_or(&rig.scratch)).is_ok(),
+        "a rollout directory"
+    );
+    assert!(
+        std::fs::write(
+            &rollout,
+            format!(
+                "{{\"timestamp\":\"{}\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"cwd\":\"{}\"}}}}\n\
+                 {{\"text\":\"AE_CODEX_LAUNCH_ID={launch_id}\"}}\n",
+                ae::time::Timestamp::from_epoch(floor),
+                rig.project.display()
+            )
+        )
+        .is_ok(),
+        "the launch's rollout"
+    );
+    let registered = helper(&rig.dir("lncapfloor").join("_register-sid"))
+        .args(["main", id])
+        .env("HOME", &rig.scratch)
+        .output()
+        .unwrap_or_else(|why| panic!("the handshake should run: {why}"));
+    assert!(
+        registered.status.success(),
+        "the pre-exec floor admits the rollout: {}",
+        String::from_utf8_lossy(&registered.stderr)
+    );
+}
+
+/// An exact resume reopens the already-proved rollout. A later lifecycle stamp
+/// must not move the lower bound beyond that conversation's immutable birth.
+#[test]
+fn an_exact_codex_resume_keeps_the_original_capture_floor() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::new("capture-floor-resume", &["codex"], None);
+    let (code, stdout, stderr) = rig.launch(&["--local", "lncapresume"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let first = rig.meta("lncapresume");
+    let floor = first
+        .lines()
+        .find_map(|line| line.strip_prefix("capture_floor.main="))
+        .and_then(|value| value.parse::<i64>().ok())
+        .expect("the original capture floor");
+    let launch_id = first
+        .lines()
+        .find_map(|line| line.strip_prefix("launch_id.main="))
+        .expect("the launch token");
+    let id = "0199c0de-2222-4890-abcd-ef0123456789";
+    let day = ae::time::Timestamp::from_epoch(floor).to_string()[..10].replace('-', "/");
+    let rollout = rig
+        .scratch
+        .join(".codex")
+        .join("sessions")
+        .join(day)
+        .join(format!("rollout-{id}.jsonl"));
+    assert!(
+        std::fs::create_dir_all(rollout.parent().unwrap_or(&rig.scratch)).is_ok(),
+        "a rollout directory"
+    );
+    assert!(
+        std::fs::write(
+            &rollout,
+            format!(
+                "{{\"timestamp\":\"{}\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"cwd\":\"{}\"}}}}\n\
+                 {{\"text\":\"AE_CODEX_LAUNCH_ID={launch_id}\"}}\n",
+                ae::time::Timestamp::from_epoch(floor),
+                rig.project.display()
+            )
+        )
+        .is_ok(),
+        "the original rollout"
+    );
+    let first_registration = helper(&rig.dir("lncapresume").join("_register-sid"))
+        .args(["main", id])
+        .env("HOME", &rig.scratch)
+        .output()
+        .unwrap_or_else(|why| panic!("the first handshake should run: {why}"));
+    assert!(
+        first_registration.status.success(),
+        "{first_registration:?}"
+    );
+    assert!(
+        rig.tmux(&["kill-session", "-t", "=lncapresume"]).0,
+        "stop before exact resume"
+    );
+
+    let (code, stdout, stderr) = rig.launch(&["--local", "lncapresume"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let resumed = rig.meta("lncapresume");
+    assert!(
+        resumed.contains(&format!("capture_floor.main={floor}\n")),
+        "exact resume moved or dropped the proved origin: {resumed}"
+    );
+    let registered = helper(&rig.dir("lncapresume").join("_register-sid"))
+        .args(["main", id])
+        .env("HOME", &rig.scratch)
+        .output()
+        .unwrap_or_else(|why| panic!("the resumed handshake should run: {why}"));
+    assert!(
+        registered.status.success(),
+        "the retained rollout remains admissible: {}",
+        String::from_utf8_lossy(&registered.stderr)
+    );
 }
 
 /// `--glue` is GONE, and an unknown flag is refused exactly as before.

@@ -1433,6 +1433,7 @@ mod tests {
             scratch.dir().join("meta"),
             format!(
                 "{}launch_id.spawned.0=uuid-1\nlaunch_time.spawned.0=12345\n\
+                 capture_floor.spawned.0=12344\n\
                  claude_launch_id.spawned.0=uuid-2\nlaunch_id.spawned.10=keep-me\n",
                 scratch.meta()
             ),

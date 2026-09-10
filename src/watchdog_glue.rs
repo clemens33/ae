@@ -687,7 +687,7 @@ mod tests {
             format!(
                 "schema=2\nwork_dir={}\nseat.spawned.0=current\nprofile.spawned.0=p\n\
                  agent_bin.spawned.0=codex\nharness_session.spawned.0=pending\n\
-                 config_home.spawned.0={}\nlaunch_time.spawned.0=0\n\
+                 config_home.spawned.0={}\ncapture_floor.spawned.0=0\n\
                  launch_id.spawned.0=current-token\n",
                 project.display(),
                 config_home.display()
