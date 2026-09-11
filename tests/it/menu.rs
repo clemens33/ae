@@ -1350,10 +1350,10 @@ fn choose_settings_row(
             let menu = wait_for(
                 "settings menu",
                 || tmux(socket, scratch, &["capture-pane", "-p", "-t", viewer]).1,
-                |seen| seen.contains("ae settings") && seen.contains(expected),
+                |seen| seen.contains("settings") && seen.contains(expected),
             );
             let other = tmux(socket, scratch, &["capture-pane", "-p", "-t", other_viewer]).1;
-            assert!(!other.contains("ae settings"), "menu leaked: {other}");
+            assert!(!other.contains(expected), "menu leaked: {other}");
             assert!(tmux(socket, scratch, &["send-keys", "-t", viewer, key]).0);
             menu
         });
@@ -1396,6 +1396,20 @@ fn settings_starts_then_resumes_the_exact_renamed_role_without_switching_its_cli
         tmux(
             &socket,
             &scratch,
+            &[
+                "set-option",
+                "-t",
+                "viewed",
+                ae::theme::VERSION_OPTION,
+                "ae 2099.1.2",
+            ],
+        )
+        .0
+    );
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
             &["split-window", "-d", "-h", "-t", "viewed"]
         )
         .0
@@ -1416,9 +1430,10 @@ fn settings_starts_then_resumes_the_exact_renamed_role_without_switching_its_cli
         "Start orchestrator",
         "s",
     );
+    assert!(start_menu.contains("ae 2099.1.2 settings"), "{start_menu}");
     let title_left = start_menu
         .lines()
-        .find(|line| line.contains("ae settings"))
+        .find(|line| line.contains("ae 2099.1.2 settings"))
         .and_then(|line| {
             line.chars()
                 .position(|character| matches!(character, '╭' | '┌'))
@@ -2032,9 +2047,10 @@ fn settings_range_measures_renders_clicks_and_cancels_on_the_exact_client() {
     );
     let wide = rendered_status(&socket, &scratch, &clicked);
     assert!(
-        wide.contains("#[range=user|ae-settings]⚙ ae 2099.1.2#[norange]"),
+        wide.contains("#[range=user|ae-settings]⚙#[norange]"),
         "{wide}"
     );
+    assert!(!wide.contains("2099.1.2"), "{wide}");
 
     assert!(
         tmux(
@@ -2151,9 +2167,10 @@ fn settings_range_measures_renders_clicks_and_cancels_on_the_exact_client() {
     );
     let ascii = rendered_status(&socket, &scratch, &clicked);
     assert!(
-        ascii.contains("#[range=user|ae-settings]* ae 2099.1.2#[norange]"),
+        ascii.contains("#[range=user|ae-settings]*#[norange]"),
         "{ascii}"
     );
+    assert!(!ascii.contains("2099.1.2"), "{ascii}");
 
     // Put only the real range at a deterministic coordinate while retaining
     // the launch-installed bindings. Left click Starts; right click reaches
@@ -2183,7 +2200,7 @@ fn settings_range_measures_renders_clicks_and_cancels_on_the_exact_client() {
             )
             .1
         },
-        |seen| seen.contains("ae settings") && seen.contains("Start orchestrator"),
+        |seen| seen.contains("ae 2099.1.2 settings") && seen.contains("Start orchestrator"),
     );
     assert!(
         tmux(
@@ -2230,7 +2247,7 @@ fn settings_range_measures_renders_clicks_and_cancels_on_the_exact_client() {
             )
             .1
         },
-        |seen| seen.contains("ae settings") && seen.contains("Pause orchestrator"),
+        |seen| seen.contains("ae 2099.1.2 settings") && seen.contains("Pause orchestrator"),
     );
     assert!(
         tmux(

@@ -705,6 +705,8 @@ fn run_settings_menu(
         |launch_server| settings_menu::discover(&root, server, &launch_server),
     );
     let look = picker_look(server, Some(&client.session_id));
+    let version =
+        transport::observe_session_option(server, &client.session_id, theme::VERSION_OPTION);
     let config = doors::config_file(shape::current(), &root);
     let launcher = session_tmux::picker_launcher(shape::current(), &core, &root, &config, server);
     let menu = settings_menu::menu(
@@ -717,6 +719,7 @@ fn run_settings_menu(
             server_start: &identity.start,
             deadline: time::Timestamp::now().epoch() + session_menu::CONFIRM_WINDOW_SECS,
         },
+        version.as_deref(),
         &look.palette,
     );
     let (columns, rows) = session_menu::menu_budget(&menu);

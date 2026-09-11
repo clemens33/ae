@@ -336,6 +336,7 @@ pub(crate) fn menu(
     control: &Control,
     launcher: &[String],
     snapshot: &Snapshot<'_>,
+    version: Option<&str>,
     palette: &crate::theme::Palette,
 ) -> Menu {
     let (status, label, key, action) = match control {
@@ -379,7 +380,7 @@ pub(crate) fn menu(
         ),
     };
     Menu {
-        title: "ae settings".to_owned(),
+        title: title(version),
         title_style: crate::theme::menu_title_style(palette),
         items: vec![
             MenuItem {
@@ -395,6 +396,25 @@ pub(crate) fn menu(
             MenuItem { label, key, action },
         ],
     }
+}
+
+/// The title names only a complete session-published ae `CalVer`.
+///
+/// The session fact may belong to an older core during an upgrade, so it is
+/// intentionally not replaced with the binary building this menu. A valid but
+/// long fact remains a truthful title; the existing menu budget then visibly
+/// refuses clients too narrow to draw it.
+fn title(version: Option<&str>) -> String {
+    let Some(version) = version else {
+        return "ae settings".to_owned();
+    };
+    let Some(calver) = version.strip_prefix("ae ") else {
+        return "ae settings".to_owned();
+    };
+    if !crate::install::is_version(calver) {
+        return "ae settings".to_owned();
+    }
+    format!("{version} settings")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -703,6 +723,7 @@ mod tests {
                 Path::new("/tmp/ae core#,}").display().to_string(),
             ],
             &snapshot(),
+            None,
             &crate::theme::Palette::DARCULA,
         );
         match &built.items[2].action {
@@ -836,6 +857,38 @@ mod tests {
         assert_eq!(pause.matches("'--action'").count(), 1, "{pause}");
 
         assert!(action(&Control::Unavailable("damaged role".to_owned())).is_empty());
+    }
+
+    #[test]
+    fn settings_title_uses_only_the_exact_session_version_fact() {
+        let other_core = "ae 2099.1.2";
+        assert_ne!(other_core, crate::version_line());
+        let long_calver = format!("ae {}.1.1", "9".repeat(500));
+        let cases = [
+            (Some(other_core), "ae 2099.1.2 settings"),
+            (None, "ae settings"),
+            (Some(""), "ae settings"),
+            (Some("AE 2026.9.52"), "ae settings"),
+            (Some(" ae 2026.9.52"), "ae settings"),
+            (Some("ae  2026.9.52"), "ae settings"),
+            (Some("ae 2026.9"), "ae settings"),
+            (Some("ae 2026.9.x"), "ae settings"),
+            (Some("ae 2026.9.52\n"), "ae settings"),
+            (Some("ae 2026.9.52\0"), "ae settings"),
+        ];
+        for (version, expected) in cases {
+            assert_eq!(super::title(version), expected, "{version:?}");
+        }
+        let long_title = super::title(Some(&long_calver));
+        assert_eq!(long_title, format!("{long_calver} settings"));
+        let menu = menu(
+            &Control::Start,
+            &[],
+            &snapshot(),
+            Some(&long_calver),
+            &crate::theme::Palette::DARCULA,
+        );
+        assert!(crate::session_menu::menu_budget(&menu).0 > 140);
     }
 
     #[test]

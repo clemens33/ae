@@ -519,8 +519,8 @@ pub const MAIN_PANE_OPTION: &str = "@ae_main_pane";
 /// SESSION — the ae core this session's watchdog runs on, as `ae <version>`.
 ///
 /// Published by the WATCHDOG rather than the launch: an upgrade restarts the
-/// watchdog on the new core. The bottom-right settings range consumes this
-/// dynamic fact; absence leaves its glyph usable without inventing a version.
+/// watchdog on the new core. The settings menu reads this dynamic fact for the
+/// exact client session; its status-range glyph deliberately does not render it.
 pub const VERSION_OPTION: &str = "@ae_version";
 
 /// SESSION — the `$<n>` id of the fleet's orchestrator for custom consumers.
@@ -606,7 +606,7 @@ pub const MENU_OPEN_OPTION: &str = "@ae_menu_open";
 /// changes shape: the version leads both stamps, so a session or window carrying
 /// an older one is rewritten by the next watchdog cycle rather than left on the
 /// layout an older core wrote.
-pub const FORMAT_VERSION: &str = "17";
+pub const FORMAT_VERSION: &str = "18";
 
 /// What [`WINDOW_STAMP_OPTION`] is set to: the LOOK the window was dressed in,
 /// formats version first.
@@ -771,14 +771,12 @@ pub fn status_line_one(look: &Look) -> String {
 }
 
 /// The final bottom-right settings range. The project width model measures
-/// both glyph spellings as one cell. Below the existing narrow threshold the
-/// actionable glyph goes first; the dynamic version text follows it.
+/// both glyph spellings as one cell. The dynamic version belongs only in the
+/// settings menu title, never in this one-cell button.
 fn settings_segment(look: &Look) -> String {
     let glyph = if look.icons { "⚙" } else { "*" };
     debug_assert_eq!(crate::orchestrator::terminal_cells(glyph), 1);
-    format!(
-        "#[range=user|ae-settings]{glyph}#{{?#{{&&:#{{e|>=:#{{client_width}},{NARROW}}},#{{{VERSION_OPTION}}}}}, #{{{VERSION_OPTION}}},}}#[norange]"
-    )
+    format!("#[range=user|ae-settings]{glyph}#[norange]")
 }
 
 /// The bottom-left menu glyph: a named range whose mouse binding opens the
@@ -1383,7 +1381,7 @@ mod tests {
                     super::picker_glyph(look.icons),
                 )
             );
-            assert!(line.contains(super::VERSION_OPTION), "{line}");
+            assert!(!line.contains(super::VERSION_OPTION), "{line}");
             assert!(line.contains("range=user|ae-settings"), "{line}");
             assert!(line.ends_with("#[norange]"), "{line}");
         }
@@ -1410,20 +1408,19 @@ mod tests {
     }
 
     #[test]
-    fn settings_keeps_a_one_cell_button_when_version_is_missing_or_narrow() {
+    fn settings_range_is_one_bare_cell_without_a_version_fact() {
         let icons = super::settings_segment(&Look::DEFAULT);
-        assert!(icons.starts_with("#[range=user|ae-settings]⚙"), "{icons}");
+        assert_eq!(icons, "#[range=user|ae-settings]⚙#[norange]");
         assert_eq!(crate::orchestrator::terminal_cells("⚙"), 1);
-        assert!(icons.contains(super::VERSION_OPTION), "{icons}");
-        assert!(icons.contains("client_width"), "{icons}");
-        assert!(icons.ends_with("#[norange]"), "{icons}");
-        assert!(!icons.ends_with(" #[norange]"), "{icons}");
+        assert!(!icons.contains(super::VERSION_OPTION), "{icons}");
+        assert!(!icons.contains("client_width"), "{icons}");
+        assert!(!icons.contains('\u{fe0f}'), "{icons}");
 
         let ascii = super::settings_segment(&Look {
             icons: false,
             ..Look::DEFAULT
         });
-        assert!(ascii.starts_with("#[range=user|ae-settings]*"), "{ascii}");
+        assert_eq!(ascii, "#[range=user|ae-settings]*#[norange]");
         assert_eq!(crate::orchestrator::terminal_cells("*"), 1);
     }
 
@@ -2013,7 +2010,7 @@ mod tests {
     #[test]
     fn terminal_titles_are_part_of_the_drawn_layout() {
         let options = super::layout_options(&Look::DEFAULT);
-        assert_eq!(super::FORMAT_VERSION, "17");
+        assert_eq!(super::FORMAT_VERSION, "18");
         assert_eq!(
             options
                 .iter()

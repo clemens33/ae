@@ -178,11 +178,13 @@ while quiet; while `@ae_menu_open` is set it uses the palette's selected
 background and ink. Either mouse button on either range, or `<prefix> a`
 (default `C-b a`), opens the same fleet picker at the left edge above the
 status line with `display-menu -x 0 -y S`. Its title starts with `ae session`.
-The final cell on the right is the distinct user range `ae-settings`: `⚙` (`*`
-in ASCII mode). On wide clients the dynamic `@ae_version` fact follows
-it; narrow clients keep only the glyph. Either mouse button opens the settings
-menu centred on the exact invoking client. The settings button remains quiet;
-the transient selected styling belongs only to the fleet button.
+The final cell on the right is the distinct user range `ae-settings`: exactly
+`⚙` (`*` in ASCII mode). It never carries version text. Either mouse button
+opens the settings menu centred on the exact invoking client. Its title reads
+that client's session-owned `@ae_version` fact when it is exactly `ae <CalVer>`:
+`ae <CalVer> settings`; an absent or malformed fact honestly leaves `ae settings`.
+The settings button remains quiet; the transient selected styling belongs only
+to the fleet button.
 Every menu uses `display-menu -O`. On tmux 3.5 and newer, Down
 opens it with `-M`, the trailing release leaves it open, and rows are
 mouse-selectable. On the supported 3.4 floor, status clicks open on release,
@@ -250,7 +252,7 @@ lines; `[workspace] theme = off` leaves the user's title settings untouched.
 | `@ae_agents` | session | watchdog |
 | `@ae_spend` | session | watchdog (at the quota cadence, not every cycle) |
 | `@ae_goal_status` | session | watchdog |
-| `@ae_version` | session | watchdog (the core it runs on, `ae <version>`) |
+| `@ae_version` | session | watchdog (the core it runs on, `ae <version>`; the exact client session's settings-menu title) |
 | `@ae_menu_open` | session | picker sets/refreshes it; picker rows and watchdog clear it |
 | `@ae_main_pane` | session | launch, resume, upgrade (after membership proof) |
 | `@ae_orchestrator_id` | session | watchdog (the local fleet's orchestrator target) |

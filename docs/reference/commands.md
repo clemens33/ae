@@ -446,12 +446,12 @@ ae session on the same tmux server, click the `≡` menu glyph (`=` with icons
 off) at the bottom-left, before the session list, or its `+N` overflow count, or
 press `<prefix> a` (default `C-b a`), to open it.
 
-The final bottom-right status range is settings: `⚙ ae <version>` (`*` with
-icons off). The version comes from the running session's watchdog fact; before
-that fact exists, or on clients narrower than 100 columns, the one-cell button
-remains and the version text drops. Either mouse button opens one centred menu
-on the explicitly captured client. Drawing or dismissing it does not start,
-stop or rewrite anything.
+The final bottom-right status range is settings: exactly `⚙` (`*` with icons
+off). It never renders a version. Either mouse button opens one centred menu on
+the explicitly captured client. Its title uses that client's session-owned
+watchdog fact only when it is exactly `ae <CalVer>`, rendering
+`ae <CalVer> settings`; a missing or malformed fact renders `ae settings`.
+Drawing or dismissing the menu does not start, stop or rewrite anything.
 
 The menu offers exactly one orchestrator action from a complete raw metadata
 census. No recorded role plus no canonical saved/live namesake offers **Start**.
