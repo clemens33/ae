@@ -1,6 +1,58 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.51] - 2026-09-11
+
+### Other
+
+- Let a level exist only inside the observation that decided it
+
+The rule that a level and the numbers rendered beside it come from one
+observation held as a convention, and it was bypassed at a caller four times
+in a day. Make the misuse unrepresentable instead.
+
+A classified reading now owns its level. The threshold is private, the only
+producers are the first sight of a window and the adoption of a newer
+reading, the fields are private, and each renderer takes that whole value:
+one for the notice a transition books, which is the only place a return to
+headroom can be spelled, and one for the line that quotes a current state.
+The free-form state parameter is gone, so there is no longer an API that
+accepts a level beside another observation's percentage, derivation or age.
+The tracked entry and the throttle candidate hold that single value, leaving
+no separate level to set.
+
+A policy is assembled only where a scope is read: its constructor is private
+to this file, and the one wider constructor exists in test builds alone.
+Outside the quota module tree the compiler now refuses every one of these
+reaches. Inside it the parsers are descendants, and Rust privacy admits a
+descendant with no way to say "visible to the parent but not to a sibling",
+so there the same rule is a convention and a source guard is its whole
+enforcement. That guard is calibrated against a fixture of catch-and-allow
+samples before it scans the tree, it fails loudly rather than treating an
+unread file as a compliant one, and it names which files it visited. The
+contract says convention, not compiler, for that half.
+
+Behaviour is unchanged: the hysteresis moved file without moving a
+threshold, the first sight of a window is still silent, and two rollouts of
+one scope still merge as they did.
+- Say what the quota boundary guard sees, and what it does not
+
+The guard lists the spellings it catches instead of claiming it sees every
+ordinary one. A UFCS call and the two alias forms are plain Rust rather than
+evasion, so they are named as limits at the type that describes the scope,
+and closing them would need a Rust parser in a test — a worse bargain than
+stating the bound.
+
+The census counts physical files under the quota directory, which is what a
+third file there trips. It cannot see a module written inline in the owner
+file, because that file is skipped whole, and a module whose path attribute
+puts its file elsewhere is read with the needles for everywhere else and
+leaves this count at two. Both of those would be a reviewed change to the
+owner file rather than something a needle finds.
+
+The two literal forms the outside scope had no sample for now have one, so
+every needle is calibrated by the fixture rather than three of five resting
+on a live injection alone.
 ## [v2026.9.50] - 2026-09-11
 
 ### Other
