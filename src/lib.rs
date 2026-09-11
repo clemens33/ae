@@ -632,7 +632,14 @@ fn run_orchestrator(tail: &[String], err: &mut impl Write) -> Result<u8> {
         err.flush()?;
         return Ok(EXIT_UNAVAILABLE);
     }
-    if !draw_picker(&server, client, &menu, probe.menu_mouse()) {
+    if !draw_marked_menu(
+        || draw_picker(&server, client, &menu, probe.menu_mouse()),
+        || {
+            opened_session.as_deref().is_none_or(|session_id| {
+                clear_menu_marker(&server, session_id, theme::MENU_OPEN_OPTION)
+            })
+        },
+    ) {
         if let Some(client) = client {
             writeln!(
                 err,
@@ -650,7 +657,11 @@ fn run_orchestrator(tail: &[String], err: &mut impl Write) -> Result<u8> {
     Ok(0)
 }
 
-/// `ae orchestrator --settings --client …` — one centred, observational menu.
+/// `ae orchestrator --settings --client …` — one bottom-right observational menu.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one exact-client settings snapshot, base proof and quota degradation"
+)]
 fn run_settings_menu(
     server: &inventory::ServerId,
     client_name: &str,
@@ -709,32 +720,100 @@ fn run_settings_menu(
         transport::observe_session_option(server, &client.session_id, theme::VERSION_OPTION);
     let config = doors::config_file(shape::current(), &root);
     let launcher = session_tmux::picker_launcher(shape::current(), &core, &root, &config, server);
-    let menu = settings_menu::menu(
+    let now = time::Timestamp::now().epoch();
+    let snapshot = settings_menu::Snapshot {
+        client: client_name,
+        client_pid: &client.pid,
+        session_id: &client.session_id,
+        server_pid: &identity.pid,
+        server_start: &identity.start,
+        deadline: now + session_menu::CONFIRM_WINDOW_SECS,
+    };
+    let base = settings_menu::menu(
         &control,
         &launcher,
-        &settings_menu::Snapshot {
-            client: client_name,
-            client_pid: &client.pid,
-            server_pid: &identity.pid,
-            server_start: &identity.start,
-            deadline: time::Timestamp::now().epoch() + session_menu::CONFIRM_WINDOW_SECS,
-        },
+        &snapshot,
         version.as_deref(),
         &look.palette,
     );
-    let (columns, rows) = session_menu::menu_budget(&menu);
-    if client.width < columns || client.height < rows {
+    let (base_columns, base_rows) = session_menu::menu_budget(&base);
+    if client.width < base_columns || client.height < base_rows {
         report(
             &format!(
-                "this terminal is {}x{}; settings needs {columns}x{rows}",
+                "this terminal is {}x{}; settings needs {base_columns}x{base_rows}",
                 client.width, client.height
             ),
             err,
         );
         return EXIT_UNAVAILABLE;
     }
-    if !transport::display_menu_centred(server, client_name, &client.session_id, &menu, menu_mouse)
-    {
+
+    let session_dir = lifecycle::sessions_dir(&root).join(&client.session_name);
+    let local_meta = session::read_meta(&session_dir).ok();
+    let local = local_meta
+        .as_ref()
+        .and_then(meta::Meta::origin)
+        .and_then(|origin| config::local_overlay(&session_dir, origin));
+    let home = doors::home();
+    let roots = inventory::Roots::under(&root);
+    let quota = quota::settings_rows(&quota::Inputs {
+        home: home.as_deref(),
+        global: Some(&config),
+        local: local.as_deref(),
+        sessions: Some(roots.sessions()),
+        now,
+    });
+    let full = settings_menu::menu_with_quota(
+        &control,
+        &launcher,
+        &snapshot,
+        version.as_deref(),
+        &look.palette,
+        &quota,
+    );
+    let (full_columns, full_rows) = session_menu::menu_budget(&full);
+    let menu = if client.width >= full_columns && client.height >= full_rows {
+        full
+    } else {
+        let degraded = settings_menu::menu_with_quota_notice(
+            &control,
+            &launcher,
+            &snapshot,
+            version.as_deref(),
+            &look.palette,
+            (
+                full_rows.saturating_sub(client.height),
+                full_columns.saturating_sub(client.width),
+            ),
+            base_columns,
+        );
+        let (columns, rows) = session_menu::menu_budget(&degraded);
+        if columns <= client.width && rows <= client.height {
+            degraded
+        } else {
+            report("quota summary did not fit; drawing original settings", err);
+            base
+        }
+    };
+    if !mark_settings_open(server, &client.session_id) {
+        report(
+            "tmux refused to update the settings marker for the invoking client",
+            err,
+        );
+        return EXIT_UNAVAILABLE;
+    }
+    if !draw_marked_menu(
+        || {
+            transport::display_settings_menu(
+                server,
+                client_name,
+                &client.session_id,
+                &menu,
+                menu_mouse,
+            )
+        },
+        || clear_menu_marker(server, &client.session_id, theme::SETTINGS_OPEN_OPTION),
+    ) {
         report(
             "tmux refused to draw settings (the client may have vanished)",
             err,
@@ -744,15 +823,53 @@ fn run_settings_menu(
     0
 }
 
+/// Draw a menu whose transient marker is already published. A failed draw
+/// retracts exactly the marker owned by this attempt.
+fn draw_marked_menu(draw: impl FnOnce() -> bool, clear_own_marker: impl FnOnce() -> bool) -> bool {
+    if draw() {
+        true
+    } else {
+        let _ = clear_own_marker();
+        false
+    }
+}
+
 /// Refresh the fleet-picker marker whenever a menu opens.
 fn mark_picker_open(server: &inventory::ServerId, session_id: &str) -> bool {
-    transport::publish_option(
+    replace_menu_marker(
         server,
-        tmux::OptionScope::Session,
+        session_id,
+        theme::SETTINGS_OPEN_OPTION,
+        theme::MENU_OPEN_OPTION,
+    )
+}
+
+fn mark_settings_open(server: &inventory::ServerId, session_id: &str) -> bool {
+    replace_menu_marker(
+        server,
         session_id,
         theme::MENU_OPEN_OPTION,
+        theme::SETTINGS_OPEN_OPTION,
+    )
+}
+
+fn replace_menu_marker(
+    server: &inventory::ServerId,
+    session_id: &str,
+    remove: &str,
+    set: &str,
+) -> bool {
+    transport::replace_session_option(
+        server,
+        session_id,
+        remove,
+        set,
         &crate::time::Timestamp::now().epoch().to_string(),
     )
+}
+
+fn clear_menu_marker(server: &inventory::ServerId, session_id: &str, option: &str) -> bool {
+    transport::clear_option(server, tmux::OptionScope::Session, session_id, option)
 }
 
 /// Read the client's session look, with the transient default fallback.
@@ -2310,6 +2427,27 @@ mod tests {
     use crate::digest::{SessionEntry, Status};
     use crate::time::Timestamp;
     use std::io::{self, Write};
+
+    #[test]
+    fn a_marked_menu_retracts_its_own_marker_only_when_the_draw_fails() {
+        let clears = std::cell::Cell::new(0);
+        assert!(!super::draw_marked_menu(
+            || false,
+            || {
+                clears.set(clears.get() + 1);
+                true
+            },
+        ));
+        assert_eq!(clears.get(), 1);
+        assert!(super::draw_marked_menu(
+            || true,
+            || {
+                clears.set(clears.get() + 1);
+                true
+            },
+        ));
+        assert_eq!(clears.get(), 1, "a visible menu keeps its marker");
+    }
 
     #[test]
     fn the_own_session_is_the_meta_key_or_the_directory_name() {

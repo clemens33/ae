@@ -1177,16 +1177,18 @@ fn write_watchdog_picker_config_with(
 }
 
 fn picker_marker(socket: &Path, scratch: &Path, session: &str) -> String {
+    menu_marker(socket, scratch, session, ae::theme::MENU_OPEN_OPTION)
+}
+
+fn settings_marker(socket: &Path, scratch: &Path, session: &str) -> String {
+    menu_marker(socket, scratch, session, ae::theme::SETTINGS_OPEN_OPTION)
+}
+
+fn menu_marker(socket: &Path, scratch: &Path, session: &str, option: &str) -> String {
     tmux(
         socket,
         scratch,
-        &[
-            "show-options",
-            "-qv",
-            "-t",
-            session,
-            ae::theme::MENU_OPEN_OPTION,
-        ],
+        &["show-options", "-qv", "-t", session, option],
     )
     .1
     .trim()
@@ -1281,6 +1283,25 @@ fn write_settings_config(project: &Path, config: &Path) {
     );
 }
 
+fn write_settings_quota_overlay(project: &Path, clients: &str) {
+    let dir = project.join(".ae");
+    assert!(fs::create_dir_all(&dir).is_ok(), "local config directory");
+    assert!(
+        fs::write(dir.join("config"), clients).is_ok(),
+        "local quota config"
+    );
+}
+
+fn write_settings_claude_quota(home: &Path, used: u8, observed_at: i64) {
+    assert!(fs::create_dir_all(home).is_ok(), "Claude config home");
+    let reset = ae::time::Timestamp::from_epoch(observed_at + 7_200);
+    let cache = format!(
+        "{{\"cachedUsageUtilization\":{{\"fetchedAtMs\":{},\"utilization\":{{\"limits\":[{{\"kind\":\"session\",\"group\":\"session\",\"percent\":{used},\"resets_at\":\"{reset}\",\"scope\":null}}]}}}}}}\n",
+        observed_at * 1_000,
+    );
+    assert!(fs::write(home.join(".claude.json"), cache).is_ok());
+}
+
 #[allow(
     clippy::too_many_arguments,
     reason = "one exact settings invocation tuple"
@@ -1330,6 +1351,27 @@ fn settings_invocation(
     command
         .output()
         .unwrap_or_else(|error| panic!("the settings invocation runs: {error}"))
+}
+
+fn picker_invocation(
+    socket: &Path,
+    scratch: &Path,
+    root: &Path,
+    config: &Path,
+    caller_pane: &str,
+    client: &str,
+) -> std::process::Output {
+    ae().env("HOME", scratch)
+        .env("AE_HOME", root)
+        .env("CONFIG_FILE", config)
+        .env("AE_TMUX_SERVER_KIND", "socket")
+        .env("AE_TMUX_SERVER", socket)
+        .env("TMUX_TMPDIR", scratch)
+        .env("TMUX", format!("{},fixture,0", socket.display()))
+        .env("TMUX_PANE", caller_pane)
+        .args(["orchestrator", "--popup", "--client", client])
+        .output()
+        .unwrap_or_else(|error| panic!("the picker invocation runs: {error}"))
 }
 
 #[allow(clippy::too_many_arguments, reason = "one real menu draw tuple")]
@@ -1431,17 +1473,21 @@ fn settings_starts_then_resumes_the_exact_renamed_role_without_switching_its_cli
         "s",
     );
     assert!(start_menu.contains("ae 2099.1.2 settings"), "{start_menu}");
-    let title_left = start_menu
+    let title_line = start_menu
         .lines()
         .find(|line| line.contains("ae 2099.1.2 settings"))
-        .and_then(|line| {
-            line.chars()
-                .position(|character| matches!(character, '╭' | '┌'))
-        })
-        .unwrap_or_default();
+        .unwrap_or_else(|| panic!("the settings title is visible: {start_menu}"));
     assert!(
-        (30..100).contains(&title_left),
-        "settings is not centred on the 140-column client: {start_menu}"
+        title_line
+            .chars()
+            .position(|character| matches!(character, '╭' | '┌'))
+            .is_some_and(|left| left > 0),
+        "the bottom-right settings menu is narrower than its client: {start_menu}"
+    );
+    assert_eq!(
+        title_line.chars().count(),
+        140,
+        "the settings menu reaches the client's right edge: {start_menu}"
     );
     let role_dir = root.join("sessions/orchestrator");
     wait_for(
@@ -1989,6 +2035,666 @@ fn measured_cursor_width(
 #[test]
 #[allow(
     clippy::too_many_lines,
+    reason = "one private-tmux quota provenance and three-boundary settings story"
+)]
+fn settings_quota_uses_the_invoking_overlay_and_degrades_without_losing_the_action() {
+    let scratch = scratch("settings-quota");
+    if !tmux_present(&scratch) {
+        let _ = fs::remove_dir_all(&scratch);
+        panic!("tmux is not runnable here, so settings quota cannot be proven");
+    }
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let root = scratch.join("state");
+    let viewed_project = scratch.join("viewed-project");
+    let other_project = scratch.join("other-project");
+    let config = scratch.join("config");
+    write_settings_config(&viewed_project, &config);
+    assert!(fs::create_dir_all(&other_project).is_ok());
+    write_settings_quota_overlay(
+        &viewed_project,
+        concat!(
+            "[clients]\n",
+            "menu-claude = claude config_home=$HOME/.menu-claude\n",
+            "menu-grok = grok\n",
+            "[profiles]\n",
+            "menu-supported = menu-claude\n",
+            "menu-unsupported = menu-grok\n",
+        ),
+    );
+    write_settings_quota_overlay(
+        &other_project,
+        "[clients]\nleak-client = agy\n[profiles]\nleak-profile = leak-client\n",
+    );
+    let now = ae::time::Timestamp::now().epoch();
+    write_settings_claude_quota(&scratch.join(".menu-claude"), 82, now);
+
+    launch_ae_session(&socket, &scratch, &root, &viewed_project, &config, "viewed");
+    launch_ae_session(&socket, &scratch, &root, &other_project, &config, "other");
+    let clicked = nested_client(&socket, &scratch, "viewed", "quota-viewer");
+    let untouched = nested_client(&socket, &scratch, "viewed", "quota-other");
+    let caller_pane = tmux(
+        &socket,
+        &scratch,
+        &["display-message", "-p", "-c", &clicked, "#{pane_id}"],
+    )
+    .1
+    .trim()
+    .to_owned();
+
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &[
+                "resize-window",
+                "-t",
+                "quota-viewer",
+                "-x",
+                "90",
+                "-y",
+                "40"
+            ]
+        )
+        .0
+    );
+    wait_for(
+        "medium settings quota client",
+        || {
+            tmux(
+                &socket,
+                &scratch,
+                &[
+                    "display-message",
+                    "-p",
+                    "-c",
+                    &clicked,
+                    "#{client_width}x#{client_height}",
+                ],
+            )
+            .1
+        },
+        |seen| seen.trim() == "90x40",
+    );
+    let full = choose_settings_row(
+        &socket,
+        &scratch,
+        &root,
+        &config,
+        &caller_pane,
+        &clicked,
+        "quota-viewer",
+        "quota-other",
+        "quota  claude/menu-claude",
+        "Escape",
+    );
+    assert!(full.contains("82%"), "{full}");
+    assert!(full.contains("fresh"), "{full}");
+    assert!(
+        full.contains("quota  grok/menu-grok | unsupported"),
+        "{full}"
+    );
+    assert!(!full.contains("q +"), "{full}");
+    assert!(!full.contains("leak-client"), "{full}");
+    assert!(full.contains("Start orchestrator"), "{full}");
+    let title_line = full
+        .lines()
+        .find(|line| line.contains("ae settings"))
+        .unwrap_or_else(|| panic!("settings title is visible: {full}"));
+    assert!(
+        title_line
+            .chars()
+            .position(|character| matches!(character, '╭' | '┌'))
+            .is_some_and(|left| left > 0),
+        "the right-anchored menu is narrower than its client: {title_line:?}"
+    );
+    assert_eq!(
+        title_line.chars().count(),
+        90,
+        "the complete title border touches the client right edge: {title_line:?}"
+    );
+    let bottom_line = full
+        .lines()
+        .find(|line| matches!(line.chars().last(), Some('╯' | '┘')))
+        .unwrap_or_else(|| panic!("the complete menu bottom is visible: {full}"));
+    assert_eq!(bottom_line.chars().count(), 90, "{bottom_line:?}");
+    assert!(
+        !tmux(&socket, &scratch, &["has-session", "-t", "=orchestrator"]).0,
+        "a keyless quota row never acted"
+    );
+    let selected_style = format!(
+        "#[bg={} fg={}]",
+        ae::theme::Palette::DARCULA.selected,
+        ae::theme::Palette::DARCULA.selected_ink,
+    );
+    let settings_selected = format!("#[range=user|ae-settings]{selected_style} ⚙ #[norange]");
+    let picker_selected = format!("#[range=user|ae]{selected_style}");
+    let after_escape = rendered_status(&socket, &scratch, &clicked);
+    assert!(
+        settings_marker(&socket, &scratch, "viewed")
+            .parse::<i64>()
+            .is_ok(),
+        "Escape leaves only bounded transient settings state"
+    );
+    assert!(picker_marker(&socket, &scratch, "viewed").is_empty());
+    assert!(after_escape.contains(&settings_selected), "{after_escape}");
+    assert!(!after_escape.contains(&picker_selected), "{after_escape}");
+
+    let (picker, settings_during_picker, picker_during_picker, picker_status) =
+        std::thread::scope(|scope| {
+            let driver = scope.spawn(|| {
+                let picker = wait_for(
+                    "picker replacing an escaped settings menu",
+                    || {
+                        tmux(
+                            &socket,
+                            &scratch,
+                            &["capture-pane", "-p", "-t", "quota-viewer"],
+                        )
+                        .1
+                    },
+                    picker_is_open,
+                );
+                let settings = settings_marker(&socket, &scratch, "viewed");
+                let fleet = picker_marker(&socket, &scratch, "viewed");
+                let status = rendered_status(&socket, &scratch, &clicked);
+                assert!(
+                    tmux(
+                        &socket,
+                        &scratch,
+                        &["send-keys", "-t", "quota-viewer", "Escape"]
+                    )
+                    .0
+                );
+                (picker, settings, fleet, status)
+            });
+            let output =
+                picker_invocation(&socket, &scratch, &root, &config, &caller_pane, &clicked);
+            assert_eq!(
+                output.status.code(),
+                Some(0),
+                "picker: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            driver.join().expect("picker marker driver")
+        });
+    assert!(picker_is_open(&picker), "{picker}");
+    assert!(
+        settings_during_picker.is_empty(),
+        "{settings_during_picker:?}"
+    );
+    assert!(
+        picker_during_picker.parse::<i64>().is_ok(),
+        "{picker_during_picker:?}"
+    );
+    assert!(picker_status.contains(&picker_selected), "{picker_status}");
+    assert!(
+        !picker_status.contains(&settings_selected),
+        "{picker_status}"
+    );
+
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &["resize-window", "-t", "quota-viewer", "-x", "90", "-y", "5"]
+        )
+        .0
+    );
+    wait_for(
+        "base-height-minus-one settings client",
+        || {
+            tmux(
+                &socket,
+                &scratch,
+                &["display-message", "-p", "-c", &clicked, "#{client_height}"],
+            )
+            .1
+        },
+        |seen| seen.trim() == "5",
+    );
+    let refused = settings_invocation(
+        &socket,
+        &scratch,
+        &root,
+        &config,
+        &caller_pane,
+        &clicked,
+        None,
+    );
+    assert_eq!(refused.status.code(), Some(1));
+    let error = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        error.contains("this terminal is 90x5; settings needs") && error.contains("x6"),
+        "{error}"
+    );
+    assert!(
+        !tmux(&socket, &scratch, &["has-session", "-t", "=orchestrator"]).0,
+        "the original base refusal remains side-effect free"
+    );
+    assert!(settings_marker(&socket, &scratch, "viewed").is_empty());
+    assert!(
+        picker_marker(&socket, &scratch, "viewed")
+            .parse::<i64>()
+            .is_ok()
+    );
+
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &[
+                "resize-window",
+                "-t",
+                "quota-viewer",
+                "-x",
+                "90",
+                "-y",
+                "40"
+            ]
+        )
+        .0
+    );
+    wait_for(
+        "settings client restored for watchdog expiry",
+        || {
+            tmux(
+                &socket,
+                &scratch,
+                &["display-message", "-p", "-c", &clicked, "#{client_height}"],
+            )
+            .1
+        },
+        |seen| seen.trim() == "40",
+    );
+    let _ = choose_settings_row(
+        &socket,
+        &scratch,
+        &root,
+        &config,
+        &caller_pane,
+        &clicked,
+        "quota-viewer",
+        "quota-other",
+        "quota  claude/menu-claude",
+        "Escape",
+    );
+    assert!(picker_marker(&socket, &scratch, "viewed").is_empty());
+    assert!(
+        settings_marker(&socket, &scratch, "viewed")
+            .parse::<i64>()
+            .is_ok()
+    );
+    let meta_dir = root.join("sessions/viewed");
+    // Keep this fixture under the test suite's kill-on-Drop owner: a panic in
+    // the expiry assertion must not leave this newly spawned watchdog behind.
+    let mut watchdog: super::cli::OwnedChild = ae()
+        .arg("_watchdog-run")
+        .arg(&meta_dir)
+        .args([
+            "--interval",
+            "1",
+            "--quiet-beat-ms",
+            "10",
+            "--tg-supervise-secs",
+            "0",
+        ])
+        .env("HOME", &scratch)
+        .env("AE_HOME", &root)
+        .env("CONFIG_FILE", &config)
+        .stdout(fs::File::create(scratch.join("expiry-watchdog.out")).expect("stdout sink"))
+        .stderr(fs::File::create(scratch.join("expiry-watchdog.err")).expect("stderr sink"))
+        .spawn()
+        .expect("the expiry watchdog starts");
+    wait_for(
+        "watchdog expiry of an escaped settings marker",
+        || settings_marker(&socket, &scratch, "viewed"),
+        str::is_empty,
+    );
+    let _ = watchdog.kill();
+    watchdog.wait().expect("the expiry watchdog is reaped");
+
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &["resize-window", "-t", "quota-viewer", "-x", "90", "-y", "6"]
+        )
+        .0
+    );
+    wait_for(
+        "exact-base-height settings client",
+        || {
+            tmux(
+                &socket,
+                &scratch,
+                &["display-message", "-p", "-c", &clicked, "#{client_height}"],
+            )
+            .1
+        },
+        |seen| seen.trim() == "6",
+    );
+    let degraded = choose_settings_row(
+        &socket,
+        &scratch,
+        &root,
+        &config,
+        &caller_pane,
+        &clicked,
+        "quota-viewer",
+        "quota-other",
+        "q +",
+        "s",
+    );
+    assert!(degraded.contains("Start orchestrator"), "{degraded}");
+    assert!(
+        !degraded.contains("quota  claude/menu-claude"),
+        "{degraded}"
+    );
+    wait_for(
+        "orchestrator from exact-height degraded settings",
+        || {
+            tmux(&socket, &scratch, &["has-session", "-t", "=orchestrator"])
+                .0
+                .to_string()
+        },
+        |seen| seen == "true",
+    );
+    assert!(tmux(&socket, &scratch, &["has-session", "-t", "=orchestrator"]).0);
+    assert!(settings_marker(&socket, &scratch, "viewed").is_empty());
+    assert!(picker_marker(&socket, &scratch, "viewed").is_empty());
+    assert!(!untouched.is_empty());
+}
+
+#[test]
+fn competing_menu_markers_never_leave_both_options_set() {
+    let scratch = scratch("menu-marker-race");
+    if !tmux_present(&scratch) {
+        let _ = fs::remove_dir_all(&scratch);
+        panic!("tmux is not runnable here, so the marker queue cannot be proven");
+    }
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &["new-session", "-d", "-s", "viewed", "sleep 600"]
+        )
+        .0
+    );
+    let session_id = tmux(
+        &socket,
+        &scratch,
+        &["display-message", "-p", "-t", "viewed", "#{session_id}"],
+    )
+    .1
+    .trim()
+    .to_owned();
+    let server = ServerId::Selected(Selector::Socket(socket.clone()));
+    let picker_race = scratch.join("picker-race");
+    let settings_race = scratch.join("settings-race");
+    assert!(fs::create_dir_all(&picker_race).is_ok());
+    assert!(fs::create_dir_all(&settings_race).is_ok());
+    for round in 0..64 {
+        let picker = ae::tmux::replace_session_option_args(
+            &server,
+            &session_id,
+            ae::theme::SETTINGS_OPEN_OPTION,
+            ae::theme::MENU_OPEN_OPTION,
+            &format!("picker-{round}"),
+        );
+        let settings = ae::tmux::replace_session_option_args(
+            &server,
+            &session_id,
+            ae::theme::MENU_OPEN_OPTION,
+            ae::theme::SETTINGS_OPEN_OPTION,
+            &format!("settings-{round}"),
+        );
+        let barrier = std::sync::Barrier::new(3);
+        let (picker_ok, settings_ok) = std::thread::scope(|scope| {
+            let picker_run = scope.spawn(|| {
+                barrier.wait();
+                run_tmux(&picker, &picker_race).0
+            });
+            let settings_run = scope.spawn(|| {
+                barrier.wait();
+                run_tmux(&settings, &settings_race).0
+            });
+            barrier.wait();
+            (
+                picker_run.join().expect("picker marker command"),
+                settings_run.join().expect("settings marker command"),
+            )
+        });
+        assert!(picker_ok && settings_ok, "round {round}");
+        let picker = picker_marker(&socket, &scratch, "viewed");
+        let settings = settings_marker(&socket, &scratch, "viewed");
+        assert_ne!(
+            picker.is_empty(),
+            settings.is_empty(),
+            "round {round}: {picker:?} {settings:?}"
+        );
+    }
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one real two-client active-menu and marker lifecycle story"
+)]
+fn a_picker_on_a_second_client_takes_the_only_marker_while_settings_remains_active() {
+    let scratch = scratch("active-second-menu");
+    if !tmux_present(&scratch) {
+        let _ = fs::remove_dir_all(&scratch);
+        panic!("tmux is not runnable here, so an active second menu cannot be proven");
+    }
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let root = scratch.join("state");
+    let project = scratch.join("project");
+    let config = scratch.join("config");
+    write_settings_config(&project, &config);
+    launch_ae_session(&socket, &scratch, &root, &project, &config, "viewed");
+    let clicked = nested_client(&socket, &scratch, "viewed", "active-second-viewer");
+    let picker_client = nested_client(&socket, &scratch, "viewed", "active-picker-viewer");
+    let caller_pane = tmux(
+        &socket,
+        &scratch,
+        &["display-message", "-p", "-t", "viewed", "#{pane_id}"],
+    )
+    .1
+    .trim()
+    .to_owned();
+    let selected_style = format!(
+        "#[bg={} fg={}]",
+        ae::theme::Palette::DARCULA.selected,
+        ae::theme::Palette::DARCULA.selected_ink,
+    );
+    let settings_selected = format!("#[range=user|ae-settings]{selected_style} ⚙ #[norange]");
+    let picker_selected = format!("#[range=user|ae]{selected_style}");
+
+    std::thread::scope(|scope| {
+        let settings_run = scope.spawn(|| {
+            settings_invocation(
+                &socket,
+                &scratch,
+                &root,
+                &config,
+                &caller_pane,
+                &clicked,
+                None,
+            )
+        });
+        let settings_menu = wait_for(
+            "active settings menu",
+            || {
+                tmux(
+                    &socket,
+                    &scratch,
+                    &["capture-pane", "-p", "-t", "active-second-viewer"],
+                )
+                .1
+            },
+            |seen| seen.contains("ae settings") && seen.contains("orchestrator"),
+        );
+        assert!(settings_menu.contains("ae settings"), "{settings_menu}");
+        assert!(
+            settings_marker(&socket, &scratch, "viewed")
+                .parse::<i64>()
+                .is_ok()
+        );
+        assert!(picker_marker(&socket, &scratch, "viewed").is_empty());
+        let settings_status = rendered_status(&socket, &scratch, &clicked);
+        assert!(
+            settings_status.contains(&settings_selected),
+            "{settings_status}"
+        );
+        assert!(
+            !settings_status.contains(&picker_selected),
+            "{settings_status}"
+        );
+
+        let picker_driver = scope.spawn(|| {
+            let menu = wait_for(
+                "picker on the second client while settings remains active",
+                || {
+                    tmux(
+                        &socket,
+                        &scratch,
+                        &["capture-pane", "-p", "-t", "active-picker-viewer"],
+                    )
+                    .1
+                },
+                picker_is_open,
+            );
+            let settings_pane = tmux(
+                &socket,
+                &scratch,
+                &["capture-pane", "-p", "-t", "active-second-viewer"],
+            )
+            .1;
+            let settings = settings_marker(&socket, &scratch, "viewed");
+            let picker = picker_marker(&socket, &scratch, "viewed");
+            let status = rendered_status(&socket, &scratch, &picker_client);
+            assert!(
+                tmux(
+                    &socket,
+                    &scratch,
+                    &["send-keys", "-t", "active-picker-viewer", "Escape"],
+                )
+                .0
+            );
+            (menu, settings_pane, settings, picker, status)
+        });
+        let picker_output = picker_invocation(
+            &socket,
+            &scratch,
+            &root,
+            &config,
+            &caller_pane,
+            &picker_client,
+        );
+        let (picker_menu, settings_pane, settings, picker, status) =
+            picker_driver.join().expect("active second-menu driver");
+        assert!(
+            tmux(
+                &socket,
+                &scratch,
+                &["send-keys", "-t", "active-second-viewer", "Escape"],
+            )
+            .0
+        );
+        let settings_output = settings_run.join().expect("active settings invocation");
+        assert_eq!(
+            settings_output.status.code(),
+            Some(0),
+            "{settings_output:?}"
+        );
+        assert_eq!(picker_output.status.code(), Some(0), "{picker_output:?}");
+        assert!(picker_is_open(&picker_menu), "{picker_menu}");
+        assert!(settings_pane.contains("ae settings"), "{settings_pane}");
+        assert!(settings.is_empty(), "{settings:?}");
+        assert!(picker.parse::<i64>().is_ok(), "{picker:?}");
+        assert!(status.contains(&picker_selected), "{status}");
+        assert!(!status.contains(&settings_selected), "{status}");
+    });
+}
+
+#[test]
+fn settings_draw_failure_retracts_its_marker_on_a_surviving_session() {
+    let scratch = scratch("settings-draw-failure");
+    if !tmux_present(&scratch) {
+        let _ = fs::remove_dir_all(&scratch);
+        panic!("tmux is not runnable here, so settings draw failure cannot be proven");
+    }
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let root = scratch.join("state");
+    let project = scratch.join("project");
+    let config = scratch.join("config");
+    write_settings_config(&project, &config);
+    launch_ae_session(&socket, &scratch, &root, &project, &config, "viewed");
+    let clicked = nested_client(&socket, &scratch, "viewed", "draw-failure-viewer");
+    let caller_pane = tmux(
+        &socket,
+        &scratch,
+        &["display-message", "-p", "-t", "viewed", "#{pane_id}"],
+    )
+    .1
+    .trim()
+    .to_owned();
+    // Detach only after the atomic marker publish. The session survives with
+    // its marker set, while display-menu deterministically loses its client.
+    let hook = format!("if-shell -F '#{{@ae_settings_open}}' 'detach-client -t {clicked}' ''");
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &["set-hook", "-g", "after-set-option", &hook],
+        )
+        .0
+    );
+    let output = settings_invocation(
+        &socket,
+        &scratch,
+        &root,
+        &config,
+        &caller_pane,
+        &clicked,
+        None,
+    );
+    assert_eq!(output.status.code(), Some(i32::from(ae::EXIT_UNAVAILABLE)));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("tmux refused to draw settings"),
+        "{output:?}"
+    );
+    assert!(settings_marker(&socket, &scratch, "viewed").is_empty());
+    assert!(picker_marker(&socket, &scratch, "viewed").is_empty());
+    assert!(
+        !tmux(&socket, &scratch, &["list-clients", "-F", "#{client_name}"])
+            .1
+            .lines()
+            .any(|name| name == clicked),
+        "the hook removed the exact client before draw"
+    );
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
     reason = "one real settings-range geometry, render, click and Cancel story"
 )]
 fn settings_range_measures_renders_clicks_and_cancels_on_the_exact_client() {
@@ -2026,7 +2732,9 @@ fn settings_range_measures_renders_clicks_and_cancels_on_the_exact_client() {
         ("1", "1", "2")
     );
     let icons_format = ae::theme::status_line_one(&ae::theme::Look::DEFAULT);
-    assert!(icons_format.contains("#[range=user|ae-settings]\u{2699}"));
+    assert!(icons_format.contains(
+        "#[range=user|ae-settings]#{?@ae_settings_open,#[bg=#214283 fg=#A9B7C6],} ⚙ #[norange]"
+    ));
     assert!(
         !icons_format.contains('\u{fe0f}'),
         "settings uses bare U+2699"
@@ -2047,7 +2755,7 @@ fn settings_range_measures_renders_clicks_and_cancels_on_the_exact_client() {
     );
     let wide = rendered_status(&socket, &scratch, &clicked);
     assert!(
-        wide.contains("#[range=user|ae-settings]⚙#[norange]"),
+        wide.contains("#[range=user|ae-settings] ⚙ #[norange]"),
         "{wide}"
     );
     assert!(!wide.contains("2099.1.2"), "{wide}");
@@ -2068,7 +2776,7 @@ fn settings_range_measures_renders_clicks_and_cancels_on_the_exact_client() {
     );
     let missing = rendered_status(&socket, &scratch, &clicked);
     assert!(
-        missing.contains("#[range=user|ae-settings]⚙#[norange]"),
+        missing.contains("#[range=user|ae-settings] ⚙ #[norange]"),
         "{missing}"
     );
     assert!(!missing.contains("2099.1.2"), "{missing}");
@@ -2117,7 +2825,7 @@ fn settings_range_measures_renders_clicks_and_cancels_on_the_exact_client() {
     );
     let narrow = rendered_status(&socket, &scratch, &clicked);
     assert!(
-        narrow.contains("#[range=user|ae-settings]⚙#[norange]"),
+        narrow.contains("#[range=user|ae-settings] ⚙ #[norange]"),
         "{narrow}"
     );
     assert!(!narrow.contains("2099.1.2"), "{narrow}");
@@ -2167,7 +2875,7 @@ fn settings_range_measures_renders_clicks_and_cancels_on_the_exact_client() {
     );
     let ascii = rendered_status(&socket, &scratch, &clicked);
     assert!(
-        ascii.contains("#[range=user|ae-settings]*#[norange]"),
+        ascii.contains("#[range=user|ae-settings] * #[norange]"),
         "{ascii}"
     );
     assert!(!ascii.contains("2099.1.2"), "{ascii}");
@@ -2189,7 +2897,7 @@ fn settings_range_measures_renders_clicks_and_cancels_on_the_exact_client() {
         )
         .0
     );
-    click_status(&socket, &scratch, "settings-clicked", &clicked, 0, 2);
+    click_status(&socket, &scratch, "settings-clicked", &clicked, 0, 1);
     wait_for(
         "settings from real left click",
         || {
@@ -2236,7 +2944,7 @@ fn settings_range_measures_renders_clicks_and_cancels_on_the_exact_client() {
     );
     let before_cancel = meta_bytes(&role_dir);
 
-    click_status(&socket, &scratch, "settings-clicked", &clicked, 2, 2);
+    click_status(&socket, &scratch, "settings-clicked", &clicked, 2, 3);
     wait_for(
         "settings Pause from real right click",
         || {

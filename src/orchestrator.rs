@@ -24,7 +24,7 @@ Usage: ae orchestrator [--popup|--settings --client <name> | --attach | --no-att
 Bare `ae orchestrator` starts or reattaches the orchestrator seat from its
 dedicated config under ae's state home. With `--popup --client`, pick a live
 session in a tmux menu and land in its lead pane. With `--settings --client`,
-open the centred settings menu. Installed bindings supply the client name.
+open the bottom-right settings menu. Installed bindings supply the client name.
 
 The bare seat also accepts `_launch`'s `--attach`, `--no-attach`,
 `--inside-tmux` and `--no-autostart` flags. Working-directory and archive flags
@@ -71,7 +71,7 @@ pub const EXIT_USAGE: u8 = 2;
 pub struct Args {
     /// `--popup`: draw the picker.
     pub popup: bool,
-    /// `--settings`: draw the centred settings menu.
+    /// `--settings`: draw the bottom-right settings menu.
     pub settings: bool,
     /// `--client <name>`: draw on the client that opened a status menu.
     pub client: Option<String>,

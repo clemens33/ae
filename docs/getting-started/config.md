@@ -220,12 +220,16 @@ attention-ordered rows show name, mark, state, branch and goal. Choosing a row
 drops the invoking client into that session's lead pane. On tmux 3.4 use the
 row shortcut keys; tmux 3.5 and newer also supports mouse selection.
 
-The bottom-right `⚙` (`*` with `icons = off`) opens settings centred on the
-client that clicked it. Wide clients show the running `ae` version beside the
-glyph; narrow clients keep the control and omit only that version text. The
-settings menu reports the recorded orchestrator role and offers exactly one of
-Start, Resume or Pause when that action is safe; otherwise it shows why the
-control is unavailable.
+The bottom-right three-cell range (` ⚙ `, or ` * ` with `icons = off`) opens
+settings against that corner of the client that clicked it. Both surrounding
+spaces are clickable and highlight with the glyph. The range is always
+version-free; the menu title alone shows the running `ae` version when the
+session reports a valid one. While the menu is open, selection colours
+highlight this button only. The settings menu reports compact read-only quota
+rows, then the recorded orchestrator role and exactly one of Start, Resume or
+Pause when that action is safe; otherwise it shows why the control is
+unavailable. Very small clients may omit the quota section entirely; `ae quota`
+remains the full view.
 
 The marks are the **watchdog's verdict**, never a claim about what an agent is "doing"
 (it cannot see that):

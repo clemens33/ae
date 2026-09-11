@@ -54,6 +54,7 @@ pub(crate) enum Control {
 pub(crate) struct Snapshot<'a> {
     pub(crate) client: &'a str,
     pub(crate) client_pid: &'a str,
+    pub(crate) session_id: &'a str,
     pub(crate) server_pid: &'a str,
     pub(crate) server_start: &'a str,
     pub(crate) deadline: i64,
@@ -379,6 +380,23 @@ pub(crate) fn menu(
             MenuAction::Disabled,
         ),
     };
+    let (label, key, action) = match action {
+        MenuAction::Run(command) if crate::tmux::session_id_is_valid(snapshot.session_id) => (
+            label,
+            key,
+            MenuAction::Run(format!(
+                "set-option -u -t {} {} ; {command}",
+                snapshot.session_id,
+                crate::theme::SETTINGS_OPEN_OPTION,
+            )),
+        ),
+        MenuAction::Run(_) => (
+            "settings action unavailable: invoking session identity is invalid".to_owned(),
+            String::new(),
+            MenuAction::Disabled,
+        ),
+        MenuAction::Disabled => (label, key, MenuAction::Disabled),
+    };
     Menu {
         title: title(version),
         title_style: crate::theme::menu_title_style(palette),
@@ -396,6 +414,65 @@ pub(crate) fn menu(
             MenuItem { label, key, action },
         ],
     }
+}
+
+/// Place every display-ready quota row above the existing control section.
+pub(crate) fn menu_with_quota(
+    control: &Control,
+    launcher: &[String],
+    snapshot: &Snapshot<'_>,
+    version: Option<&str>,
+    palette: &crate::theme::Palette,
+    quota: &[crate::quota::SettingsRow],
+) -> Menu {
+    let mut built = menu(control, launcher, snapshot, version, palette);
+    if quota.is_empty() {
+        return built;
+    }
+    let mut items = Vec::with_capacity(quota.len() + built.items.len() + 1);
+    items.extend(quota.iter().map(|row| MenuItem {
+        label: row.label.clone(),
+        key: String::new(),
+        action: MenuAction::Disabled,
+    }));
+    items.push(MenuItem {
+        label: String::new(),
+        key: String::new(),
+        action: MenuAction::Disabled,
+    });
+    items.append(&mut built.items);
+    built.items = items;
+    built
+}
+
+/// Replace the existing blank separator with a bounded quota overflow notice.
+/// The item count stays identical to the base menu, so an exact-height client
+/// never loses the orchestrator action to the informational section.
+pub(crate) fn menu_with_quota_notice(
+    control: &Control,
+    launcher: &[String],
+    snapshot: &Snapshot<'_>,
+    version: Option<&str>,
+    palette: &crate::theme::Palette,
+    missing: (usize, usize),
+    base_columns: usize,
+) -> Menu {
+    let mut built = menu(control, launcher, snapshot, version, palette);
+    let number = |value: usize| {
+        if value > 9 {
+            "9+".to_owned()
+        } else {
+            value.to_string()
+        }
+    };
+    let notice = format!("q +{}r +{}c", number(missing.0), number(missing.1));
+    let max_label = base_columns.saturating_sub(4);
+    let Some(empty_separator) = built.items.get_mut(1) else {
+        return built;
+    };
+    debug_assert!(empty_separator.label.is_empty());
+    empty_separator.label = notice.chars().take(max_label).collect();
+    built
 }
 
 /// The title names only a complete session-published ae `CalVer`.
@@ -708,6 +785,7 @@ mod tests {
         Snapshot {
             client: "/dev/ttys004",
             client_pid: "4242",
+            session_id: "$7",
             server_pid: "911",
             server_start: "1789109660",
             deadline: 1_789_109_780,
@@ -834,6 +912,10 @@ mod tests {
     #[test]
     fn each_control_builds_one_exact_action_and_unavailable_builds_none() {
         let start = action(&Control::Start);
+        assert!(
+            start.starts_with("set-option -u -t $7 @ae_settings_open ; "),
+            "{start}"
+        );
         assert!(start.contains("'--settings-apply' 'start'"), "{start}");
         assert!(start.contains("'--target' 'orchestrator'"), "{start}");
         assert_eq!(start.matches("'--settings-apply'").count(), 1, "{start}");
@@ -857,6 +939,115 @@ mod tests {
         assert_eq!(pause.matches("'--action'").count(), 1, "{pause}");
 
         assert!(action(&Control::Unavailable("damaged role".to_owned())).is_empty());
+    }
+
+    #[test]
+    fn invalid_invoking_session_identity_renders_a_keyless_reason_not_an_action() {
+        let mut invalid = snapshot();
+        invalid.session_id = "not-a-session-id";
+        let built = menu(
+            &Control::Start,
+            &[],
+            &invalid,
+            None,
+            &crate::theme::Palette::DARCULA,
+        );
+        let action = &built.items[2];
+        assert_eq!(
+            action.label,
+            "settings action unavailable: invoking session identity is invalid"
+        );
+        assert!(action.key.is_empty());
+        assert!(matches!(action.action, crate::tmux::MenuAction::Disabled));
+    }
+
+    #[test]
+    fn quota_rows_form_a_disabled_section_above_the_unchanged_control() {
+        let rows = [crate::quota::SettingsRow {
+            label: "quota  claude/~/.claude | 80% | resets 4d | seen 1m | fresh".to_owned(),
+        }];
+        let built = super::menu_with_quota(
+            &Control::Start,
+            &[],
+            &snapshot(),
+            None,
+            &crate::theme::Palette::DARCULA,
+            &rows,
+        );
+        assert_eq!(built.items[0].label, rows[0].label);
+        assert!(matches!(
+            built.items[0].action,
+            crate::tmux::MenuAction::Disabled
+        ));
+        assert!(built.items[0].key.is_empty());
+        assert!(built.items[1].label.is_empty());
+        assert_eq!(built.items[2].label, "orchestrator: absent");
+        assert_eq!(built.items[4].label, "Start orchestrator");
+        assert_eq!(built.items[4].key, "s");
+    }
+
+    #[test]
+    fn quota_overflow_notice_reuses_the_separator_and_never_grows_the_base_budget() {
+        let base = menu(
+            &Control::Start,
+            &[],
+            &snapshot(),
+            None,
+            &crate::theme::Palette::DARCULA,
+        );
+        let base_budget = crate::session_menu::menu_budget(&base);
+        let degraded = super::menu_with_quota_notice(
+            &Control::Start,
+            &[],
+            &snapshot(),
+            None,
+            &crate::theme::Palette::DARCULA,
+            (123, 456),
+            base_budget.0,
+        );
+        assert_eq!(degraded.items.len(), base.items.len());
+        assert_eq!(degraded.items[1].label, "q +9+r +9+c");
+        assert!(matches!(
+            degraded.items[1].action,
+            crate::tmux::MenuAction::Disabled
+        ));
+        assert!(degraded.items[1].key.is_empty());
+        assert_eq!(crate::session_menu::menu_budget(&degraded), base_budget);
+        assert_eq!(degraded.items[2].label, "Start orchestrator");
+        assert_eq!(degraded.items[2].key, "s");
+    }
+
+    #[test]
+    fn quota_fit_uses_each_actual_bounded_label_not_its_component_maximum() {
+        let row = |label: &str| crate::quota::SettingsRow {
+            label: label.to_owned(),
+        };
+        let short = super::menu_with_quota(
+            &Control::Start,
+            &[],
+            &snapshot(),
+            None,
+            &crate::theme::Palette::DARCULA,
+            &[row(
+                "quota  claude/c | 8% | window resets 2h | seen 1m | fresh",
+            )],
+        );
+        let long = super::menu_with_quota(
+            &Control::Start,
+            &[],
+            &snapshot(),
+            None,
+            &crate::theme::Palette::DARCULA,
+            &[row(
+                "quota  claude/a-distinct...claude-mic | weekly...weekly-pro | 100% spend-cap | window resets 106751991167300d 15h | seen 106751991167300d 15h | stale",
+            )],
+        );
+        let short_budget = crate::session_menu::menu_budget(&short);
+        let long_budget = crate::session_menu::menu_budget(&long);
+        let medium_client = (short_budget.0, short_budget.1);
+        assert!(medium_client.0 >= short_budget.0 && medium_client.1 >= short_budget.1);
+        assert!(medium_client.0 < long_budget.0);
+        assert_eq!(short_budget.1, long_budget.1);
     }
 
     #[test]

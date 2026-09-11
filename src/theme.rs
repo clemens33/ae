@@ -601,12 +601,18 @@ pub const WINDOW_STAMP_OPTION: &str = "@ae_theme";
 /// the existing button format without redressing the session or its windows.
 pub const MENU_OPEN_OPTION: &str = "@ae_menu_open";
 
+/// SESSION — epoch second when this session's settings menu was opened.
+///
+/// Separate from [`MENU_OPEN_OPTION`], so each transient marker lights only
+/// the button whose menu was accepted.
+pub const SETTINGS_OPEN_OPTION: &str = "@ae_settings_open";
+
 /// The version of every FORMAT this module draws — the session lines, the
 /// window entries, the pane borders, the menu styles and terminal titles. Bump it when any of them
 /// changes shape: the version leads both stamps, so a session or window carrying
 /// an older one is rewritten by the next watchdog cycle rather than left on the
 /// layout an older core wrote.
-pub const FORMAT_VERSION: &str = "18";
+pub const FORMAT_VERSION: &str = "19";
 
 /// What [`WINDOW_STAMP_OPTION`] is set to: the LOOK the window was dressed in,
 /// formats version first.
@@ -770,13 +776,18 @@ pub fn status_line_one(look: &Look) -> String {
     )
 }
 
-/// The final bottom-right settings range. The project width model measures
-/// both glyph spellings as one cell. The dynamic version belongs only in the
-/// settings menu title, never in this one-cell button.
+/// The final bottom-right settings range: one blank, one one-cell glyph and
+/// one blank. Those blanks are deliberate selected-button padding: its style
+/// begins before the leading one and remains through the trailing one. The
+/// dynamic version belongs only in the settings menu title, never in this
+/// three-cell button.
 fn settings_segment(look: &Look) -> String {
     let glyph = if look.icons { "⚙" } else { "*" };
     debug_assert_eq!(crate::orchestrator::terminal_cells(glyph), 1);
-    format!("#[range=user|ae-settings]{glyph}#[norange]")
+    format!(
+        "#[range=user|ae-settings]#{{?{SETTINGS_OPEN_OPTION},#[bg={} fg={}],}} {glyph} #[norange]",
+        look.palette.selected, look.palette.selected_ink,
+    )
 }
 
 /// The bottom-left menu glyph: a named range whose mouse binding opens the
@@ -1408,10 +1419,14 @@ mod tests {
     }
 
     #[test]
-    fn settings_range_is_one_bare_cell_without_a_version_fact() {
+    fn settings_range_is_three_cells_with_one_bare_glyph_and_no_version_fact() {
         let icons = super::settings_segment(&Look::DEFAULT);
-        assert_eq!(icons, "#[range=user|ae-settings]⚙#[norange]");
+        assert_eq!(
+            icons,
+            "#[range=user|ae-settings]#{?@ae_settings_open,#[bg=#214283 fg=#A9B7C6],} ⚙ #[norange]"
+        );
         assert_eq!(crate::orchestrator::terminal_cells("⚙"), 1);
+        assert_eq!(crate::orchestrator::terminal_cells(" ⚙ "), 3);
         assert!(!icons.contains(super::VERSION_OPTION), "{icons}");
         assert!(!icons.contains("client_width"), "{icons}");
         assert!(!icons.contains('\u{fe0f}'), "{icons}");
@@ -1420,8 +1435,12 @@ mod tests {
             icons: false,
             ..Look::DEFAULT
         });
-        assert_eq!(ascii, "#[range=user|ae-settings]*#[norange]");
+        assert_eq!(
+            ascii,
+            "#[range=user|ae-settings]#{?@ae_settings_open,#[bg=#214283 fg=#A9B7C6],} * #[norange]"
+        );
         assert_eq!(crate::orchestrator::terminal_cells("*"), 1);
+        assert_eq!(crate::orchestrator::terminal_cells(" * "), 3);
     }
 
     /// The monitor window is ae's plumbing and leaves the bar: every window
@@ -2010,7 +2029,7 @@ mod tests {
     #[test]
     fn terminal_titles_are_part_of_the_drawn_layout() {
         let options = super::layout_options(&Look::DEFAULT);
-        assert_eq!(super::FORMAT_VERSION, "18");
+        assert_eq!(super::FORMAT_VERSION, "19");
         assert_eq!(
             options
                 .iter()

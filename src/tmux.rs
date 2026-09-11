@@ -1106,6 +1106,28 @@ pub fn unset_option_args(
     args
 }
 
+/// Replace one transient session option with another in one tmux command
+/// queue. Both commands use the same exact session-id target.
+#[must_use]
+pub fn replace_session_option_args(
+    server: &ServerId,
+    target: &str,
+    remove: &str,
+    set: &str,
+    value: &str,
+) -> Vec<String> {
+    let target = format!("{}:", session_target(target));
+    let mut args = server_args(server);
+    args.extend(["set-option", "-u", "-t"].map(ToOwned::to_owned));
+    args.push(target.clone());
+    args.push(remove.to_owned());
+    args.push(";".to_owned());
+    args.extend(["set-option", "-t"].map(ToOwned::to_owned));
+    args.push(target);
+    args.extend([set, value].map(ToOwned::to_owned));
+    args
+}
+
 /// The session option the watchdog publishes the work tree's branch into.
 pub const BRANCH_OPTION: &str = "@ae_branch_name";
 
@@ -1444,6 +1466,11 @@ const END_OF_FLAGS: &str = "--";
 /// <https://github.com/tmux/tmux/blob/3.4/cmd-display-menu.c#L165-L244>.
 const CENTRE_POSITION: [&str; 4] = ["-x", "C", "-y", "C"];
 
+/// Settings rises from its bottom-right status button on the exact client.
+/// tmux 3.4 resolves `R` from the client's width and `S` from its status edge:
+/// <https://github.com/tmux/tmux/blob/3.4/cmd-display-menu.c#L165-L244>.
+const SETTINGS_MENU_POSITION: [&str; 4] = ["-x", "R", "-y", "S"];
+
 /// The arguments that draw `menu` on `server`'s current client.
 #[must_use]
 pub fn display_menu_args(server: &ServerId, menu: &Menu, menu_mouse: bool) -> Vec<String> {
@@ -1464,6 +1491,37 @@ pub fn display_menu_centred_args(
     menu: &Menu,
     menu_mouse: bool,
 ) -> Vec<String> {
+    display_targeted_menu_args(server, client, target, menu, menu_mouse, CENTRE_POSITION)
+}
+
+/// The arguments that draw settings at one explicit client's bottom-right,
+/// with one explicit target pane supplying every row's command context.
+#[must_use]
+pub fn display_settings_menu_args(
+    server: &ServerId,
+    client: &str,
+    target: &str,
+    menu: &Menu,
+    menu_mouse: bool,
+) -> Vec<String> {
+    display_targeted_menu_args(
+        server,
+        client,
+        target,
+        menu,
+        menu_mouse,
+        SETTINGS_MENU_POSITION,
+    )
+}
+
+fn display_targeted_menu_args(
+    server: &ServerId,
+    client: &str,
+    target: &str,
+    menu: &Menu,
+    menu_mouse: bool,
+    position: [&str; 4],
+) -> Vec<String> {
     let mut args = server_args(server);
     args.push("display-menu".to_owned());
     if menu_mouse {
@@ -1472,7 +1530,7 @@ pub fn display_menu_centred_args(
     args.push("-O".to_owned());
     args.extend(["-c".to_owned(), client.to_owned()]);
     args.extend(["-t".to_owned(), target.to_owned()]);
-    args.extend(CENTRE_POSITION.map(ToOwned::to_owned));
+    args.extend(position.map(ToOwned::to_owned));
     args.push("-T".to_owned());
     args.push(titled(menu));
     args.push(END_OF_FLAGS.to_owned());
@@ -1967,11 +2025,10 @@ pub fn interpret_picker_client_session(
 /// detached and another that attached on the same terminal answer to the same
 /// name. The pid separates them, so a confirmation built for one attachment
 /// cannot be applied by its successor.
-pub const MENU_CLIENT_FORMAT: &str =
-    "#{client_name} | #{client_pid} | #{session_id} | #{client_height} | #{client_width}";
+pub const MENU_CLIENT_FORMAT: &str = "#{client_name} | #{client_pid} | #{session_id} | #{session_name} | #{client_height} | #{client_width}";
 
 /// How many [`FIELD_SEPARATOR`]-separated fields [`MENU_CLIENT_FORMAT`] makes.
-const MENU_CLIENT_FIELDS: usize = 5;
+const MENU_CLIENT_FIELDS: usize = 6;
 
 /// One exact menu client's live snapshot.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1980,6 +2037,8 @@ pub struct MenuClient {
     pub pid: String,
     /// The session this client is currently viewing.
     pub session_id: String,
+    /// The validated durable session name selecting this session's overlay.
+    pub session_name: String,
     /// The client's terminal rows.
     pub height: usize,
     /// The client's terminal columns.
@@ -2008,15 +2067,20 @@ pub fn interpret_menu_client(succeeded: bool, stdout: &str, client: &str) -> Opt
         if fields.len() != MENU_CLIENT_FIELDS {
             return None;
         }
-        let [found, pid, session_id, height, width] = fields.as_slice() else {
+        let [found, pid, session_id, session_name, height, width] = fields.as_slice() else {
             return None;
         };
-        if *found != client || !session_id_is_valid(session_id) || !is_decimal(pid) {
+        if *found != client
+            || !session_id_is_valid(session_id)
+            || !crate::session_launch::name::is_session_name(session_name)
+            || !is_decimal(pid)
+        {
             return None;
         }
         Some(MenuClient {
             pid: (*pid).to_owned(),
             session_id: (*session_id).to_owned(),
+            session_name: (*session_name).to_owned(),
             height: height.parse().ok()?,
             width: width.parse().ok()?,
         })
@@ -3065,6 +3129,42 @@ mod tests {
     }
 
     #[test]
+    fn menu_client_snapshot_carries_one_validated_session_name() {
+        assert_eq!(
+            super::menu_clients_args(&ServerId::Ambient),
+            [
+                "list-clients",
+                "-F",
+                "#{client_name} | #{client_pid} | #{session_id} | #{session_name} | #{client_height} | #{client_width}",
+            ]
+        );
+        let listing = "/dev/ttys001 | 41 | $1 | other | 24 | 80\n/dev/ttys002 | 42 | $7 | viewed | 40 | 140\n";
+        assert_eq!(
+            super::interpret_menu_client(true, listing, "/dev/ttys002"),
+            Some(super::MenuClient {
+                pid: "42".to_owned(),
+                session_id: "$7".to_owned(),
+                session_name: "viewed".to_owned(),
+                height: 40,
+                width: 140,
+            })
+        );
+        for invalid in ["", "../viewed", "viewed space"] {
+            let row = format!("/dev/ttys002 | 42 | $7 | {invalid} | 40 | 140\n");
+            assert_eq!(
+                super::interpret_menu_client(true, &row, "/dev/ttys002"),
+                None,
+                "{invalid:?}"
+            );
+        }
+        assert_eq!(
+            super::interpret_menu_client(true, &format!("{listing}{listing}"), "/dev/ttys002"),
+            None,
+            "duplicate matching rows remain ambiguous"
+        );
+    }
+
+    #[test]
     fn picker_menu_anchors_at_the_client_left_above_the_status_line() {
         assert_eq!(super::MENU_POSITION, ["-x", "0", "-y", "S"]);
     }
@@ -3213,6 +3313,36 @@ mod tests {
     }
 
     #[test]
+    fn quota_hashes_are_budgeted_as_display_cells_then_escaped_in_the_final_menu_argv() {
+        let label = "quota #[fg=red] #";
+        let menu = super::Menu {
+            title: "ae settings".to_owned(),
+            title_style: String::new(),
+            items: vec![super::MenuItem {
+                label: label.to_owned(),
+                key: String::new(),
+                action: super::MenuAction::Disabled,
+            }],
+        };
+        let budget = crate::session_menu::menu_budget(&menu);
+        assert_eq!(budget.0, label.chars().count() + 4);
+        let args = super::display_settings_menu_args(
+            &ServerId::Ambient,
+            "/dev/ttys004",
+            "$7",
+            &menu,
+            false,
+        );
+        assert!(
+            args.windows(4).any(|words| words == ["-x", "R", "-y", "S"]),
+            "{args:?}"
+        );
+        let escaped = "-quota ##[fg=red] ##";
+        assert!(args.iter().any(|word| word == escaped), "{args:?}");
+        assert_ne!(budget.0, escaped.chars().count() + 4);
+    }
+
+    #[test]
     fn a_user_option_write_targets_an_exact_id_in_the_right_table() {
         use super::{OptionScope, set_option_args, unset_option_args};
         use crate::inventory::ServerId;
@@ -3296,6 +3426,32 @@ mod tests {
                 "@7",
                 "@ae_window_agents",
                 "[⠋lead ◌builder]",
+            ]
+        );
+    }
+
+    #[test]
+    fn replacing_a_menu_marker_is_one_exact_session_command_queue() {
+        assert_eq!(
+            super::replace_session_option_args(
+                &crate::inventory::ServerId::Ambient,
+                "$7",
+                "@ae_settings_open",
+                "@ae_menu_open",
+                "123",
+            ),
+            [
+                "set-option",
+                "-u",
+                "-t",
+                "=$7:",
+                "@ae_settings_open",
+                ";",
+                "set-option",
+                "-t",
+                "=$7:",
+                "@ae_menu_open",
+                "123",
             ]
         );
     }

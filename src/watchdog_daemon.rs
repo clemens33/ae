@@ -3025,16 +3025,14 @@ impl Cycle<'_> {
         let Some(session_id) = transport::observe_session_id(self.server, self.session) else {
             return;
         };
-        if let Some(opened) =
-            transport::observe_session_option(self.server, self.session, theme::MENU_OPEN_OPTION)
-            && menu_open_expired(&opened, Timestamp::now().epoch(), self.knobs.interval_secs)
-        {
-            let _ = transport::clear_option(
-                self.server,
-                OptionScope::Session,
-                &session_id,
-                theme::MENU_OPEN_OPTION,
-            );
+        for option in [theme::MENU_OPEN_OPTION, theme::SETTINGS_OPEN_OPTION] {
+            if let Some(opened) =
+                transport::observe_session_option(self.server, self.session, option)
+                && menu_open_expired(&opened, Timestamp::now().epoch(), self.knobs.interval_secs)
+            {
+                let _ =
+                    transport::clear_option(self.server, OptionScope::Session, &session_id, option);
+            }
         }
         let look = published.look;
         let set = |name: &str, value: &str| {
@@ -5099,6 +5097,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one watchdog identity, expiry and rendered/groups divergence story"
+    )]
     fn throttle_quota_uses_worst_exact_recorded_row_and_first_cycle_only() {
         let rollout = "018f1f70-7b2c-7000-8000-000000000001";
         let mut entry = RosterEntry {
@@ -5124,6 +5126,11 @@ mod tests {
             )],
             10_000,
         );
+        let mirrored_rendering = observation.clone();
+        // Production Codex observations may carry a completeness summary in
+        // `rendered` which is absent from `groups`. The watchdog consumes only
+        // groups; settings may read that additive rendering metadata without
+        // changing this output.
         observation.rendered.clear();
         let mut quota = QuotaCarry::default();
         let _ = quota.reconcile(&observation, &[], Path::new("/m"));
@@ -5135,6 +5142,18 @@ mod tests {
             10_000,
         )
         .expect("exact row");
+        assert_eq!(
+            line,
+            throttle_quota_line(
+                &mirrored_rendering,
+                &quota.tracked,
+                &entry,
+                Path::new("/m"),
+                10_000,
+            )
+            .expect("the same exact row"),
+            "rendered/groups divergence is invisible to watchdog output"
+        );
         assert!(
             line.contains(" a 5h 96% (critical,"),
             "tie picks key ascending: {line}"

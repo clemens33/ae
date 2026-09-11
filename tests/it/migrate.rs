@@ -1740,9 +1740,11 @@ fn upgrading_a_running_session_without_an_orchestrator_rewrites_the_menu_range()
             .is_some_and(|(fleet, right)| {
                 fleet.starts_with(fleet_prefix)
                     && !fleet.contains(ae::theme::VERSION_OPTION)
-                    && right.ends_with("#[range=user|ae-settings]⚙#[norange]\n")
+                    && right.ends_with(
+                        "#[range=user|ae-settings]#{?@ae_settings_open,#[bg=#214283 fg=#A9B7C6],} ⚙ #[norange]\n",
+                    )
                     && !right.contains(ae::theme::VERSION_OPTION)
-                    && stamp.trim() == "18:darcula:on:on"
+                    && stamp.trim() == "19:darcula:on:on"
             })
     };
     while Instant::now() < deadline {
@@ -1775,7 +1777,7 @@ fn upgrading_a_running_session_without_an_orchestrator_rewrites_the_menu_range()
     );
     assert_eq!(
         stamp.trim(),
-        "18:darcula:on:on",
+        "19:darcula:on:on",
         "the new format stamp did not land"
     );
     assert_ae_status_bindings(&socket, &scratch);

@@ -3740,7 +3740,7 @@ fn the_window_half_of_the_look_is_stamped_per_window_and_never_globally() {
     );
     // The LOOK STAMP says what the layout was written for, which is what the
     // watchdog compares against to notice a knob turned on a live session.
-    assert_eq!(option(ae::theme::LOOK_STAMP_OPTION), "18:darcula:on:on");
+    assert_eq!(option(ae::theme::LOOK_STAMP_OPTION), "19:darcula:on:on");
     // The GLOBAL tables stay the operator's — every ae option is written at
     // session or window scope, never at `-g`.
     for (flags, name) in [

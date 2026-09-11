@@ -178,13 +178,36 @@ while quiet; while `@ae_menu_open` is set it uses the palette's selected
 background and ink. Either mouse button on either range, or `<prefix> a`
 (default `C-b a`), opens the same fleet picker at the left edge above the
 status line with `display-menu -x 0 -y S`. Its title starts with `ae session`.
-The final cell on the right is the distinct user range `ae-settings`: exactly
-`⚙` (`*` in ASCII mode). It never carries version text. Either mouse button
-opens the settings menu centred on the exact invoking client. Its title reads
+The final three cells on the right are the distinct user range `ae-settings`: exactly
+` ⚙ ` (` * ` in ASCII mode). The selected style starts before the leading blank and remains through
+the trailing blank, so all three clickable cells highlight. It never carries version text. Either mouse button
+opens the settings menu at the exact invoking client's bottom-right corner with
+`display-menu -x R -y S`. Its title reads
 that client's session-owned `@ae_version` fact when it is exactly `ae <CalVer>`:
 `ae <CalVer> settings`; an absent or malformed fact honestly leaves `ae settings`.
-The settings button remains quiet; the transient selected styling belongs only
-to the fleet button.
+While `@ae_settings_open` is set, the settings button uses the same palette selection colours as
+the fleet button uses under `@ae_menu_open`. Opening either menu clears the other's marker before
+setting its own. A selected row clears its menu's marker first; a failed draw retracts the marker
+it just published. Because tmux exposes no close hook, Escape can leave one marker until the
+watchdog expires it at half an interval. With the watchdog disabled, it remains transient UI state
+until the other menu opens or a selectable row clears it.
+The settings menu's quota projection is also exact-client state. The same
+`list-clients` row carries validated session name, session id, pid and client dimensions; the
+session name selects that durable session directory's recorded local overlay. `quota.rs` then
+collapses each client scope to one printable-ASCII, fixed-bound row and chooses the most
+constraining existing derivation. Long scope and bucket cells keep visibly elided head and tail;
+generated percentage, window reset, age and freshness fields remain whole. Literal `#` stays data
+while widths are measured and is doubled only by the final tmux argv renderer.
+Equal percentages prefer the later valid reset horizon, then newer observation and a stable
+bucket/qualifier/window order. A `read-error` or `truncated` sibling suppresses a usable sibling for
+that collapsed scope; `unknown` may coexist with a proven same-source reading.
+
+Menu fit is staged. The original three-item orchestrator menu must fit first. The quota projection
+is added only when every row fits by its actual rendered width and height; otherwise the original
+blank separator becomes one bounded overflow notice, preserving the base item count and selectable
+action. If even the base menu does not fit, settings keeps its original visible refusal. The full
+`ae quota` table remains separate: it preserves per-rollout detail that this one-row-per-scope menu
+intentionally collapses.
 Every menu uses `display-menu -O`. On tmux 3.5 and newer, Down
 opens it with `-M`, the trailing release leaves it open, and rows are
 mouse-selectable. On the supported 3.4 floor, status clicks open on release,
@@ -253,7 +276,8 @@ lines; `[workspace] theme = off` leaves the user's title settings untouched.
 | `@ae_spend` | session | watchdog (at the quota cadence, not every cycle) |
 | `@ae_goal_status` | session | watchdog |
 | `@ae_version` | session | watchdog (the core it runs on, `ae <version>`; the exact client session's settings-menu title) |
-| `@ae_menu_open` | session | picker sets/refreshes it; picker rows and watchdog clear it |
+| `@ae_menu_open` | session | picker sets/refreshes it; settings open, picker rows and watchdog clear it |
+| `@ae_settings_open` | session | settings sets/refreshes it; picker open, settings rows and watchdog clear it |
 | `@ae_main_pane` | session | launch, resume, upgrade (after membership proof) |
 | `@ae_orchestrator_id` | session | watchdog (the local fleet's orchestrator target) |
 | `@ae_branch_status`, `@ae_branch_name` | session | watchdog |

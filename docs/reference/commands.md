@@ -32,8 +32,8 @@ ae orchestrator --popup
                        before the session list,
                        or +N overflow count. Needs tmux >= 3.4
 ae orchestrator --settings
-                       Internal status-button route for the centred, exact-client
-                       settings menu. Installed bindings supply --client
+                       Internal status-button route for the bottom-right,
+                       exact-client settings menu. Installed bindings supply --client
 ae doctor              Check local environment and ae config
 ae doctor --refresh [name|all]
                        Regenerate helper scripts and workspace.md in existing sessions
@@ -446,12 +446,42 @@ ae session on the same tmux server, click the `≡` menu glyph (`=` with icons
 off) at the bottom-left, before the session list, or its `+N` overflow count, or
 press `<prefix> a` (default `C-b a`), to open it.
 
-The final bottom-right status range is settings: exactly `⚙` (`*` with icons
-off). It never renders a version. Either mouse button opens one centred menu on
-the explicitly captured client. Its title uses that client's session-owned
+The final bottom-right status range is settings: exactly one blank, bare `⚙`, and one blank
+(` * ` with icons off). The whole three-cell range highlights and accepts clicks. It never renders
+a version. Either mouse button opens one menu at that
+client's bottom-right corner (`display-menu -x R -y S`). Its title uses that client's session-owned
 watchdog fact only when it is exactly `ae <CalVer>`, rendering
 `ae <CalVer> settings`; a missing or malformed fact renders `ae settings`.
-Drawing or dismissing the menu does not start, stop or rewrite anything.
+Opening settings clears the fleet button's transient selection and highlights only the settings
+button. A selected action clears that highlight before it runs. Escape cannot be observed by ae,
+so the watchdog expires a leftover highlight at half its interval; with the watchdog disabled it
+persists only until another menu opens or a settings action runs. Drawing or dismissing settings
+does not otherwise start, stop or rewrite anything.
+
+Above that control, settings shows one read-only quota row for every configured client scope,
+using the invoking session's recorded project overlay rather than the command's working directory.
+Rows keep `ae quota`'s stable scope order. Client labels that resolve to one source share a row,
+distinct config homes remain distinct, and several Codex rollout owners under one source collapse
+to one compact row. That is why settings can show fewer rows than `ae quota`, whose full table may
+repeat a scope to preserve each rollout owner's provenance.
+
+An observed row selects the scope's most constraining EFFECTIVE window. Multi-window scopes name
+that window's bucket; every row keeps the derived percentage and its reason (`xN`, `unlimited`, or
+`spend-cap`), the window-reset countdown, observation age, and `fresh`/`stale` verdict. With no
+usable observation it says `unknown`, `unsupported`, `read-error`, or `truncated`; a config failure
+becomes `quota: unavailable`. These rows are keyless and cannot trigger an action. `ae quota`
+remains the full view with rollout provenance, raw values, credits, paths, hints, and notes.
+When equal EFFECTIVE percentages compete, the window whose valid reset is later wins before
+observation age, followed by a stable bucket/qualifier/window tie-break. Any `read-error` or
+`truncated` sibling makes the whole collapsed scope report that incomplete status instead of an
+optimistic usable row; an `unknown` sibling does not erase an observed same-source window.
+
+Ae first proves the original orchestrator-only menu fits. It draws all quota rows only when their
+actual sanitized display widths and the complete row count fit the invoking client. Otherwise the
+existing blank separator becomes one bounded `q +Nr +Nc` overflow notice, leaving the original
+Start/Resume/Pause row and base height intact. A client too small for that original menu keeps the
+original refusal; very small clients therefore omit the quota section entirely. Display cells are
+printable ASCII and visibly elide long scope or bucket labels from the middle.
 
 The menu offers exactly one orchestrator action from a complete raw metadata
 census. No recorded role plus no canonical saved/live namesake offers **Start**.
@@ -493,11 +523,12 @@ picker refuses instead of choosing another.
 While the picker is open, the first-cell menu glyph uses the palette's selected
 background and ink. The marker belongs to the named client's current session,
 never the session under a mouse target. Choosing a row clears it before the
-switch; opening the picker again refreshes the epoch and keeps it lit; the
-watchdog clears it once it is half a cycle old. tmux exposes no menu-close hook,
-so Escape, `q`, or an outside click can leave the glyph lit until a later
-watchdog sample: about a minute, at most 90 seconds with the default 60-second
-cycle.
+switch; opening the picker clears the settings marker, and opening settings clears the picker
+marker. Reopening either menu refreshes its own epoch and keeps only that button lit. The watchdog
+clears either marker once it is half a cycle old. tmux exposes no menu-close hook, so Escape, `q`,
+or an outside click can leave the last button lit until a later watchdog sample: about a minute,
+at most 90 seconds with the default 60-second cycle. With the watchdog disabled, another menu or a
+selected action provides the next clear.
 
 ```text
 # opened with prefix a; its binding supplies --client
@@ -764,6 +795,9 @@ an explicit `truncated` summary after 4,096 filesystem entries, 16 MiB of reads,
 table lines are at most 182 columns: the sum of the per-column caps plus the two spaces between
 each pair of columns. The two derived columns were paid for in that ceiling rather than by wrapping
 every scope and status cell.
+The displayed age is when that vendor last wrote its own cache or rollout observation, not when ae
+opened the menu or ran the command. Claude can therefore honestly remain stale while another
+client scope observed more recently is fresh.
 Cached Claude numbers become `unknown` when the file's current and cached account UUIDs disagree;
 the UUIDs are neither retained nor displayed. Untrusted cache labels and terminal escape sequences
 are reduced to printable table cells before widths or wrapping are calculated.

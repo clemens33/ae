@@ -580,6 +580,26 @@ pub fn clear_option(server: &ServerId, scope: tmux::OptionScope, target: &str, n
     succeeded
 }
 
+/// Remove one transient session option and publish its mutually exclusive
+/// replacement in one tmux command queue.
+#[must_use]
+pub fn replace_session_option(
+    server: &ServerId,
+    target: &str,
+    remove: &str,
+    set: &str,
+    value: &str,
+) -> bool {
+    if !addressable(server) {
+        return false;
+    }
+    run(
+        PROGRAM,
+        &tmux::replace_session_option_args(server, target, remove, set, value),
+    )
+    .0
+}
+
 /// Show a transient message on `target`'s clients.
 #[must_use]
 pub fn display_message(server: &ServerId, target: &str, text: &str) -> bool {
@@ -733,6 +753,24 @@ pub fn display_menu_centred(
         && run(
             PROGRAM,
             &tmux::display_menu_centred_args(server, client, target, menu, menu_mouse),
+        )
+        .0
+}
+
+/// Draw settings at one explicit client's bottom-right, with one explicit
+/// target pane supplying the command context.
+#[must_use]
+pub fn display_settings_menu(
+    server: &ServerId,
+    client: &str,
+    target: &str,
+    menu: &tmux::Menu,
+    menu_mouse: bool,
+) -> bool {
+    addressable(server)
+        && run(
+            PROGRAM,
+            &tmux::display_settings_menu_args(server, client, target, menu, menu_mouse),
         )
         .0
 }
