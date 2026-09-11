@@ -417,10 +417,13 @@ fn meta_launch_epochs(dir: &Path) -> crate::tmux::Evidence {
 /// drives, and the one `Meta::parse` does not reach.
 ///
 /// Bytes in, one reading out, in constant space: a hostile meta may carry any
-/// number of rows, and each is folded as it is read rather than collected. A
-/// row that NAMES a launch moment and does not spell one is damage; a row that
-/// spells a non-positive epoch is the documented "no floor" sentinel and says
-/// nothing at all.
+/// number of rows, and each is folded as it is read rather than collected.
+///
+/// A row that NAMES a launch moment and does not spell one is damage, and the
+/// name is recognised BEFORE the `=` is looked for — a bare `launch_time.main`
+/// is a claim nobody can read, never an absent row an older one may speak for.
+/// The grammar is PER SOURCE: only `capture_floor.<slot>` documents a zero,
+/// and it alone stays silent for liveness.
 ///
 /// ```
 /// use ae::inventory::launch_epochs;
@@ -431,25 +434,31 @@ fn meta_launch_epochs(dir: &Path) -> crate::tmux::Evidence {
 /// );
 /// assert_eq!(launch_epochs(b"goal=nothing to do with launches\n"), Evidence::Silent);
 /// assert_eq!(launch_epochs(b"started=whenever\n"), Evidence::Unreadable);
+/// assert_eq!(launch_epochs(b"launch_time.main\n"), Evidence::Unreadable);
+/// assert_eq!(launch_epochs(b"started=0\n"), Evidence::Unreadable);
 /// ```
 #[must_use]
 pub fn launch_epochs(meta: &[u8]) -> crate::tmux::Evidence {
     use crate::tmux::Evidence;
     let mut folded = Evidence::Silent;
     for line in meta.split(|byte| *byte == b'\n') {
-        let Some(split) = line.iter().position(|byte| *byte == b'=') else {
-            continue;
+        let split = line.iter().position(|byte| *byte == b'=');
+        let key = match split {
+            Some(at) => &line[..at],
+            None => line,
         };
-        let (key, value) = line.split_at(split);
-        let names_a_launch = key == b"started"
-            || key.starts_with(b"launch_time.")
-            || key.starts_with(b"capture_floor.");
-        if !names_a_launch {
+        let floor = key.starts_with(b"capture_floor.");
+        if !(floor || key == b"started" || key.starts_with(b"launch_time.")) {
             continue;
         }
-        let reading = match std::str::from_utf8(&value[1..]) {
-            Ok(text) => Evidence::claim(text),
-            Err(_) => Evidence::Unreadable,
+        let reading = match split {
+            // It names a launch moment and spells nothing at all.
+            None => Evidence::Unreadable,
+            Some(at) => match std::str::from_utf8(&line[at + 1..]) {
+                Ok(text) if floor => Evidence::floor_claim(text),
+                Ok(text) => Evidence::claim(text),
+                Err(_) => Evidence::Unreadable,
+            },
         };
         folded = folded.and(reading);
         // Nothing after this can change the answer.
@@ -938,6 +947,12 @@ mod tests {
             ("a meta row claiming a moment it does not spell", 4),
             ("a watchdog pidfile that is a directory", 5),
             ("a start marker that is a directory", 6),
+            ("a stamp claiming the epoch nothing was launched at", 7),
+            ("a stamp claiming a moment before the epoch", 8),
+            ("a meta row that names a moment and spells nothing", 9),
+            ("a capture floor that names a moment and spells nothing", 10),
+            ("a start row claiming the epoch nothing was launched at", 11),
+            ("a start row claiming a moment before the epoch", 12),
         ] {
             let dir = scratch.session(&format!("damaged-{damage}"));
             fs::write(dir.join("meta"), older).expect("a meta");
@@ -954,7 +969,22 @@ mod tests {
                 4 => fs::write(dir.join("meta"), format!("{older}launch_time.main=soon\n"))
                     .expect("a damaged meta row"),
                 5 => fs::create_dir_all(dir.join(".watchdog.pid")).expect("a directory"),
-                _ => fs::create_dir_all(dir.join("launch.main.started")).expect("a directory"),
+                6 => fs::create_dir_all(dir.join("launch.main.started")).expect("a directory"),
+                // I-2a: the stamp is MANDATORY and has no sentinel, so a
+                // present one that spells no moment is damage — not silence
+                // the older row below would then speak for.
+                7 => fs::write(&stamp, "0\n").expect("a zero stamp"),
+                8 => fs::write(&stamp, "-1\n").expect("a negative stamp"),
+                // I-2b: a named claim with no `=` is there and unreadable.
+                // Skipping it hands the answer back to the older row.
+                9 => fs::write(dir.join("meta"), format!("{older}launch_time.main\n"))
+                    .expect("a bare named row"),
+                10 => fs::write(dir.join("meta"), format!("{older}capture_floor.main\n"))
+                    .expect("a bare named floor row"),
+                // I-2a again, in the meta: only `capture_floor` documents a
+                // zero, and `started` is not it.
+                11 => fs::write(dir.join("meta"), "started=0\n").expect("a zero start row"),
+                _ => fs::write(dir.join("meta"), "started=-1\n").expect("a negative start row"),
             }
 
             assert_eq!(
@@ -979,6 +1009,33 @@ mod tests {
                 let _ = fs::set_permissions(&stamp, std::fs::Permissions::from_mode(0o644));
             }
         }
+
+        // And the ONE zero that is legal, pinned here so a later tightening of
+        // the table above cannot quietly strand it. `capture_floor.<slot>=0`
+        // is what a retained exact resume publishes when the legacy
+        // conversation has no known origin: it says nothing about a LAUNCH,
+        // and the readable row beside it still proves the session gone.
+        let legacy = scratch.session("legacy-capture-floor");
+        fs::write(
+            legacy.join("meta"),
+            format!("{older}capture_floor.main=0\n"),
+        )
+        .expect("a legacy meta");
+        assert_eq!(
+            last_live(&legacy),
+            Evidence::At(200),
+            "the no-origin sentinel is no claim, not a broken one"
+        );
+        assert_eq!(
+            crate::tmux::classify_absence(
+                crate::tmux::Absence::SocketMissing,
+                last_live(&legacy),
+                Some(1_000),
+                2_000,
+            ),
+            crate::tmux::StopProbe::Absent,
+            "a session with no known capture origin must still resume after a reboot"
+        );
     }
 
     #[test]
@@ -1022,13 +1079,37 @@ mod tests {
             launch_epochs(b"started=200\nstarted=300\n"),
             Evidence::At(300)
         );
+        // The grammar is PER SOURCE: that zero is legal in exactly one row.
+        assert_eq!(
+            launch_epochs(b"started=0\n"),
+            Evidence::Unreadable,
+            "a launch row has no sentinel to borrow from the capture floor"
+        );
+        assert_eq!(
+            launch_epochs(b"launch_time.main=0\n"),
+            Evidence::Unreadable,
+            "a launch row has no sentinel to borrow from the capture floor"
+        );
+        assert_eq!(
+            launch_epochs(b"capture_floor.main=-1\n"),
+            Evidence::Unreadable,
+            "only ZERO is the documented floor sentinel"
+        );
         // Damage, every shape of it.
         for hostile in [
             &b"started="[..],
             b"started=  ",
             b"started=-",
+            b"started=0",
+            b"started=-1",
             b"launch_time.main=99999999999999999999999999999999999999",
             b"started=\xff\xfe",
+            // Named, and spelling nothing at all: there is no `=` to split on,
+            // and skipping the row hands the answer to whatever is older.
+            b"started",
+            b"launch_time.main",
+            b"capture_floor.main",
+            b"started=200\nlaunch_time.main",
         ] {
             assert_eq!(
                 launch_epochs(hostile),

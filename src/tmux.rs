@@ -216,17 +216,22 @@ const CLAIM_CAP: usize = 32;
 impl Evidence {
     /// One source's claim, read from the text it recorded.
     ///
+    /// A moment is a STRICTLY POSITIVE epoch. Every other present spelling —
+    /// empty, non-numeric, zero, negative, longer than any epoch — is a source
+    /// that is there and says nothing readable, so it is damage. Only
+    /// [`Self::floor_claim`] knows the one row whose zero is legal.
+    ///
     /// PURE, and bounded: the cap is checked before the parse, so a claim of
     /// any size costs the same.
     ///
     /// ```
     /// use ae::tmux::Evidence;
     /// assert_eq!(Evidence::claim("1789105855\n"), Evidence::At(1_789_105_855));
-    /// // `capture_floor.<slot>=0` is the documented "no floor" sentinel, so a
-    /// // non-positive epoch is NO CLAIM rather than a broken one.
-    /// assert_eq!(Evidence::claim("0"), Evidence::Silent);
     /// assert_eq!(Evidence::claim("tomorrow"), Evidence::Unreadable);
     /// assert_eq!(Evidence::claim(""), Evidence::Unreadable);
+    /// // No source but a capture floor may spell a non-positive epoch.
+    /// assert_eq!(Evidence::claim("0"), Evidence::Unreadable);
+    /// assert_eq!(Evidence::claim("-1"), Evidence::Unreadable);
     /// ```
     #[must_use]
     pub fn claim(text: &str) -> Self {
@@ -236,9 +241,32 @@ impl Evidence {
         }
         match trimmed.parse::<i64>() {
             Ok(epoch) if epoch > 0 => Self::At(epoch),
-            Ok(_) => Self::Silent,
-            Err(_) => Self::Unreadable,
+            _ => Self::Unreadable,
         }
+    }
+
+    /// A CAPTURE FLOOR's claim — the one source whose zero is documented.
+    ///
+    /// `capture_floor.<slot>=0` is published by a retained exact resume whose
+    /// legacy conversation has no known origin
+    /// ([`crate::session_launch`] writes it). It means "no floor", says nothing
+    /// about a launch, and must stay silent for liveness: reading it as damage
+    /// would strand every such session after a reboot. A NEGATIVE floor is not
+    /// that sentinel, and is damage like any other unreadable claim.
+    ///
+    /// ```
+    /// use ae::tmux::Evidence;
+    /// assert_eq!(Evidence::floor_claim("0"), Evidence::Silent);
+    /// assert_eq!(Evidence::floor_claim("1789105855"), Evidence::At(1_789_105_855));
+    /// assert_eq!(Evidence::floor_claim("-1"), Evidence::Unreadable);
+    /// assert_eq!(Evidence::floor_claim(""), Evidence::Unreadable);
+    /// ```
+    #[must_use]
+    pub fn floor_claim(text: &str) -> Self {
+        if text.trim() == "0" {
+            return Self::Silent;
+        }
+        Self::claim(text)
     }
 
     /// A file's mtime as evidence — the reading for the two sources whose

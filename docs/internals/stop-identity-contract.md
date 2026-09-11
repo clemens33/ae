@@ -259,6 +259,17 @@ three states, `Evidence::folded` is the rule, and the per-source readings live w
 files they read: `store::SessionStore::launch_attempt`, `inventory::launch_epochs`,
 `watchdog_glue::pidfile_modified`, `run::newest_start_marker`.
 
+**A moment is a strictly positive epoch, and the grammar is PER SOURCE.** A row that NAMES
+a launch moment and spells nothing after it — no `=` at all — is a damaged claim, not an
+absent row, and is recognised by its name before the value is looked for. There is exactly
+one legal non-positive claim: `capture_floor.<slot>=0`, which a retained exact resume
+publishes when the legacy conversation has no known origin (`session_launch`). It means "no
+floor", says nothing about a launch, and stays SILENT for liveness, because reading it as
+damage would strand every such session after a reboot. Nothing else may borrow that
+sentinel: the stamp is mandatory and has none, a negative floor is not it, and `started` and
+`launch_time.<slot>` are launch facts that only ever spell a real moment.
+`Evidence::floor_claim` is the one exception's owner and `Evidence::claim` the strict rule.
+
 **The stamp is hostile persisted state**, so it is read under a byte cap
 (`store::LAUNCH_ATTEMPT_CAP`) checked before the open and again on the read, and it is
 WRITTEN through an exclusive temporary. The temp name is predictable and sits in session

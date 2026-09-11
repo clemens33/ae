@@ -76,13 +76,20 @@ both read files a human edits, so they are fuzzed before the proof they feed is 
 
 - `launch_stamp` reads `.launch-attempt`, whose whole content is one epoch. The reducer is
   BOUNDED (`store::LAUNCH_ATTEMPT_CAP`), so oversize input must be refused rather than
-  parsed — the seeds carry that boundary, an unbounded epoch, invalid UTF-8 and the
-  non-positive sentinel.
+  parsed — the seeds carry that boundary, an unbounded epoch, invalid UTF-8, and the zero
+  and negative moments a mandatory stamp may never claim.
 - `last_live_epochs` reads a session meta for its `started` / `launch_time.<slot>` /
   `capture_floor.<slot>` rows. `meta_parse` does NOT reach it: that target drives
   `Meta::parse`, which asks a different question of the same bytes. This one also drives the
   per-row claim reading and the AGGREGATE fold (`tmux::Evidence::claim` and
-  `Evidence::folded`), because it folds every row as it reads it.
+  `Evidence::folded`), because it folds every row as it reads it. Its seeds carry the two
+  shapes that decide the grammar: a row that names a moment with no `=` after it, and a
+  non-positive epoch in a row that is not the one documented to allow it.
+
+The grammar is PER SOURCE, and the seeds pin both sides of it. Only
+`capture_floor.<slot>=0` is a legal zero — the "no known origin" sentinel a retained exact
+resume publishes — and it stays silent for liveness. Every other non-positive, bare or
+unspellable claim is damage.
 
 Both answer in three states, and the fuzz lane's job is that the third one — damaged
 evidence — is reached rather than silently collapsed into "nothing recorded".

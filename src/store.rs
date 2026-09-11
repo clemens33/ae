@@ -54,12 +54,18 @@ pub const LAUNCH_ATTEMPT_CAP: u64 = 64;
 /// What a launch-attempt stamp's BYTES say — the pure half of
 /// [`SessionStore::launch_attempt`], and the one the fuzz lane drives.
 ///
+/// The stamp is MANDATORY and carries no sentinel: it is written only when a
+/// launch is about to happen, so the only thing it may say is a strictly
+/// positive moment. A present stamp spelling anything else is damage.
+///
 /// ```
 /// use ae::store::parse_launch_attempt;
 /// use ae::tmux::Evidence;
 /// assert_eq!(parse_launch_attempt(b"1789105855\n"), Evidence::At(1_789_105_855));
 /// assert_eq!(parse_launch_attempt(b""), Evidence::Unreadable);
 /// assert_eq!(parse_launch_attempt(b"\xff\xfe"), Evidence::Unreadable);
+/// assert_eq!(parse_launch_attempt(b"0\n"), Evidence::Unreadable);
+/// assert_eq!(parse_launch_attempt(b"-1\n"), Evidence::Unreadable);
 /// ```
 #[must_use]
 pub fn parse_launch_attempt(body: &[u8]) -> crate::tmux::Evidence {
@@ -589,6 +595,16 @@ mod tests {
                 std::fs::symlink_metadata(&temp).is_ok(),
                 "{shape}: the collision was removed, and it was never ours to remove"
             );
+            if !plant {
+                // The collision is the victim here: a regular file already at
+                // the temp name is someone else's too, and refusing it is only
+                // half the promise if its bytes moved.
+                assert_eq!(
+                    std::fs::read(&temp).unwrap(),
+                    bytes,
+                    "{shape}: the file already at the temp name was written through"
+                );
+            }
             let _ = std::fs::remove_file(&temp);
         }
         let _ = std::fs::remove_dir_all(&dir);
