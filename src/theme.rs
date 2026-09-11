@@ -302,10 +302,11 @@ impl Mark {
 
 /// The fleet-picker button mark in the configured glyph vocabulary.
 ///
-/// The icon form is IDENTICAL TO, U+2261: one cell wide both in tmux's width
-/// table and in every monospace font, so the button occupies exactly the
-/// status line's first cell. A trigram mark such as U+2630 is laid out
-/// double-width by tmux, which pads a second cell in before the fleet strip.
+/// The icon form is IDENTICAL TO, U+2261: one cell wide in tmux's width table
+/// and in the terminals this was rendered in (measured on tmux 3.7b), so the
+/// button occupies the status line's first cell. A trigram mark such as
+/// U+2630 is laid out double-width by tmux, which pads a second cell in
+/// before the fleet strip.
 #[must_use]
 pub const fn picker_glyph(icons: bool) -> &'static str {
     if icons { "≡" } else { "=" }
