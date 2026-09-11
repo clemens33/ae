@@ -1,6 +1,24 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.46] - 2026-09-11
+
+### Bug Fixes
+
+- Draw the picker button in one cell
+
+### Documentation
+
+- Scope the picker glyph width claim to what was measured
+
+### Other
+
+- Wait for a spawned seat's launch before playing codex
+
+The codex handshake reads config_home.<slot>, which the seat's own _run
+records after a spawn has returned; the rig raced it and scanned the
+ambient store instead.
+- Restore equal lead-pair widths
 ## [v2026.9.45] - 2026-09-10
 
 ### Other
