@@ -121,41 +121,66 @@ fn plural(count: usize, noun: &str) -> String {
     }
 }
 
-/// One session's outstanding work, read once and answered per seat.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Outstanding {
-    /// `(sender, sent at)` for every request still waiting on its target.
-    sent: Vec<(String, i64)>,
-    /// `(spawner, spawned at)` for every spawn still holding a seat.
-    spawned: Vec<(String, i64)>,
+/// How one seat is named in the ledger: its routing key, and the display name
+/// a record that carries no key falls back to.
+#[derive(Debug, Clone, Copy)]
+pub struct Seat<'a> {
+    /// The ae session the seat belongs to.
+    pub session: &'a str,
+    /// `main` / `worker.<n>` / `spawned.<n>`.
+    pub slot: &'a str,
+    /// The display ref — `alias:name` on a v1 roster, the bare name on v2.
+    pub reference: &'a str,
 }
 
-impl Outstanding {
+impl<'a> Seat<'a> {
+    /// The seat these three name.
+    #[must_use]
+    pub const fn new(session: &'a str, slot: &'a str, reference: &'a str) -> Self {
+        Self {
+            session,
+            slot,
+            reference,
+        }
+    }
+}
+
+/// One session's outstanding work, read once and answered per seat.
+///
+/// It holds the RECORDS, not a flattening of them: a display name churns with
+/// a rename, so the identity a seat is matched on has to be the routing key
+/// wherever the writer recorded one. [`is_actor`] owns that rule for the whole
+/// module and this reader does not get a second copy of it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Outstanding<'a> {
+    /// Every request still waiting on its target, oldest first.
+    sent: Vec<&'a Event>,
+    /// Every spawn still holding a seat.
+    spawned: Vec<&'a Event>,
+}
+
+impl<'a> Outstanding<'a> {
     /// Read one session's ledger.
     ///
-    /// `pending` is [`SessionRead::pending`] — the ONE request sensor, never a
-    /// second copy of it. `live` names the agents that still hold a seat right
-    /// now: the enumerated panes for the watchdog, the answered roster for
-    /// `ae list`. A spawn whose agent is gone from that list is over whether or
-    /// not anybody recorded the retire.
+    /// `live` names the agents that still HOLD a seat right now: the panes this
+    /// cycle proved held for the watchdog, the answered roster for `ae list`. A
+    /// spawn whose agent is gone from that list is over whether or not anybody
+    /// recorded the retire.
     #[must_use]
-    pub fn read(pending: &[PendingRequest], events: &[Event], live: &[String]) -> Self {
+    pub fn read(events: &'a [Event], live: &[String]) -> Self {
         Self {
-            sent: pending
-                .iter()
-                .map(|request| (request.actor.clone(), request.sent_at.epoch()))
-                .collect(),
+            sent: open_requests(events),
             spawned: live_spawns(events, live),
         }
     }
 
-    /// What `agent` alone is owed.
+    /// What `seat` alone is owed.
     #[must_use]
-    pub fn of(&self, agent: &str) -> OwnWork {
-        let mine = |rows: &[(String, i64)]| -> Vec<i64> {
+    pub fn of(&self, seat: Seat<'_>) -> OwnWork {
+        let mine = |rows: &[&'a Event]| -> Vec<i64> {
             rows.iter()
-                .filter(|(actor, _)| actor == agent)
-                .map(|(_, at)| *at)
+                .filter(|event| is_actor(event, seat.session, seat.slot, seat.reference))
+                .map(|event| event.ts.epoch())
                 .collect()
         };
         let requests = mine(&self.sent);
@@ -168,32 +193,35 @@ impl Outstanding {
     }
 }
 
-/// `(spawner, spawned at)` for every agent a `spawn` opened, no `retire`
-/// closed, and that still holds a seat.
+/// Every agent a `spawn` opened, no `retire` closed, and that still holds a
+/// seat — the RECORDS, so the spawner is matched by the same rule as an asker.
 ///
 /// The LAST spawn/retire record for a name decides, so a name spawned, retired
 /// and spawned again is open on its newest spawn. A `spawn-failed` record is
 /// neither: that spawn never delivered its brief, so nobody is waiting on it.
-fn live_spawns(events: &[Event], live: &[String]) -> Vec<(String, i64)> {
-    let mut open: Vec<(&str, &str, i64)> = Vec::new();
+fn live_spawns<'a>(events: &'a [Event], live: &[String]) -> Vec<&'a Event> {
+    let mut open: Vec<&Event> = Vec::new();
     for event in events {
         let Some(target) = event.target.as_deref().filter(|name| !name.is_empty()) else {
             continue;
         };
         match event.action.as_str() {
             "spawn" | "retire" => {
-                open.retain(|(name, _, _)| *name != target);
+                open.retain(|existing| existing.target.as_deref() != Some(target));
                 if event.action == "spawn" {
-                    open.push((target, event.actor.as_str(), event.ts.epoch()));
+                    open.push(event);
                 }
             }
             _ => {}
         }
     }
-    open.into_iter()
-        .filter(|(name, _, _)| live.iter().any(|alive| alive == name))
-        .map(|(_, actor, at)| (actor.to_owned(), at))
-        .collect()
+    open.retain(|event| {
+        event
+            .target
+            .as_deref()
+            .is_some_and(|name| live.iter().any(|held| held == name))
+    });
+    open
 }
 
 /// What one session directory's event stream says.
@@ -824,7 +852,7 @@ fn agent_entries(
         .filter(|slot| agent_liveness(runtime, runtime.agent(&slot.slot)) != Some(false))
         .map(crate::meta::RosterEntry::reference)
         .collect();
-    let outstanding = read.map(|read| Outstanding::read(&read.pending, &read.events, &seats));
+    let outstanding = read.map(|read| Outstanding::read(&read.events, &seats));
     meta.roster()
         .iter()
         .map(|slot| {
@@ -867,7 +895,13 @@ fn agent_entries(
                 own_work: outstanding
                     .as_ref()
                     .filter(|_| seats.contains(&reference))
-                    .map(|outstanding| outstanding.of(&reference)),
+                    .map(|outstanding| {
+                        outstanding.of(Seat {
+                            session,
+                            slot: &slot.slot,
+                            reference: &reference,
+                        })
+                    }),
             }
         })
         .collect()
@@ -895,8 +929,25 @@ fn declared_reason(state: &str) -> Option<Reason> {
     }
 }
 
-/// The `ask`/`review` events nothing has closed, oldest first.
-pub(crate) fn pending_requests(events: &[Event]) -> Vec<PendingRequest> {
+/// The `ask`/`review` requests nothing has closed, oldest first.
+fn pending_requests(events: &[Event]) -> Vec<PendingRequest> {
+    open_requests(events)
+        .into_iter()
+        .filter_map(|event| {
+            Some(PendingRequest {
+                id: event.reference.clone()?,
+                action: event.action.clone(),
+                actor: event.actor.clone(),
+                target: event.target.clone(),
+                sent_at: event.ts,
+            })
+        })
+        .collect()
+}
+
+/// The same sensor's RECORDS, so a reader that needs more than the display
+/// name — the routing key — still has it. ONE definition, two projections.
+fn open_requests(events: &[Event]) -> Vec<&Event> {
     // One forward pass over an append-only log, so a reply or a withdrawal that
     // appears BEFORE its request finds nothing open and closes nothing.
     let mut open: Vec<&Event> = Vec::new();
@@ -914,20 +965,8 @@ pub(crate) fn pending_requests(events: &[Event]) -> Vec<PendingRequest> {
             _ => {}
         }
     }
-    let mut pending: Vec<PendingRequest> = open
-        .into_iter()
-        .filter_map(|event| {
-            Some(PendingRequest {
-                id: event.reference.clone()?,
-                action: event.action.clone(),
-                actor: event.actor.clone(),
-                target: event.target.clone(),
-                sent_at: event.ts,
-            })
-        })
-        .collect();
-    pending.sort_by_key(|request| request.sent_at);
-    pending
+    open.sort_by_key(|event| event.ts);
+    open
 }
 
 /// Whether `cancel` withdraws `request` — its own asker, taking it back.
@@ -981,8 +1020,8 @@ mod tests {
     )]
 
     use super::{
-        AgentRuntime, DEFAULT_UNANSWERED_SECS, Outstanding, OwnWork, SessionRead, SessionRuntime,
-        entry_for, latest_declaration_in,
+        AgentRuntime, DEFAULT_UNANSWERED_SECS, Outstanding, OwnWork, Seat, SessionRead,
+        SessionRuntime, entry_for, latest_declaration_in,
     };
     use crate::attention::Reason;
     use crate::digest::Status;
@@ -1473,6 +1512,23 @@ mod tests {
     /// One tabled row: why, the ledger, the live seats, and the two counts.
     type Row = (&'static str, Vec<String>, Vec<&'static str>, usize, usize);
 
+    /// The seat every own-work fixture reads for: this session's main slot.
+    const LEAD: Seat<'static> = Seat {
+        session: "live",
+        slot: "main",
+        reference: "lead",
+    };
+
+    /// The ledger, read for `seat`, with `live` holding their seats.
+    fn owed(lines: &[String], live: &[&str], seat: Seat<'_>) -> OwnWork {
+        let events: Vec<Event> = lines
+            .iter()
+            .map(|line| Event::parse_line(line).expect("a fixture line must be an event"))
+            .collect();
+        let seats: Vec<String> = live.iter().map(|name| (*name).to_owned()).collect();
+        Outstanding::read(&events, &seats).of(seat)
+    }
+
     /// THE predicate, tabled: what makes a quiet seat something other than idle.
     ///
     /// Each row is one session ledger read for `lead`, with the seats that are
@@ -1562,9 +1618,7 @@ mod tests {
             ("an empty ledger", vec![], vec!["lead"], 0, 0),
         ];
         for (why, lines, live, requests, spawns) in cases {
-            let read = read(&lines);
-            let seats: Vec<String> = live.iter().map(|name| (*name).to_owned()).collect();
-            let work = Outstanding::read(&read.pending, &read.events, &seats).of("lead");
+            let work = owed(&lines, &live, LEAD);
             assert_eq!(work.requests, requests, "{why}: requests");
             assert_eq!(work.spawns, spawns, "{why}: spawns");
             assert_eq!(
@@ -1573,6 +1627,100 @@ mod tests {
                 "{why}: the predicate"
             );
         }
+    }
+
+    /// I-1: a seat is matched on the ROUTING KEY wherever the writer recorded
+    /// one, because a display name churns with a rename and a same-name actor
+    /// in another session is not us.
+    ///
+    /// The matrix is [`is_actor`]'s, not this reader's — the rows exist so a
+    /// future flattening back to names fails here rather than in the fleet.
+    #[test]
+    fn outstanding_work_is_matched_by_routing_key_and_only_then_by_name() {
+        let routed = |extra: &str| {
+            vec![event(
+                &at(600),
+                "claude:renamed",
+                "ask",
+                &format!(r#","target":"cw","ref":"r1"{extra}"#),
+            )]
+        };
+        let cases: [(&str, Vec<String>, usize); 5] = [
+            (
+                "this session's main slot, under a churned display name",
+                routed(r#","actor_slot":"main","actor_session":"live""#),
+                1,
+            ),
+            (
+                "the same slot in ANOTHER session",
+                routed(r#","actor_slot":"main","actor_session":"somewhere-else""#),
+                0,
+            ),
+            (
+                "this session, ANOTHER slot",
+                routed(r#","actor_slot":"worker.0","actor_session":"live""#),
+                0,
+            ),
+            (
+                "half a key routes nowhere",
+                routed(r#","actor_slot":"main""#),
+                0,
+            ),
+            (
+                "a legacy record with no key at all falls back to the name",
+                vec![event(
+                    &at(600),
+                    "lead",
+                    "ask",
+                    r#","target":"cw","ref":"r1""#,
+                )],
+                1,
+            ),
+        ];
+        for (why, lines, requests) in cases {
+            assert_eq!(
+                owed(&lines, &["lead", "cw"], LEAD).requests,
+                requests,
+                "{why}"
+            );
+        }
+
+        // And the routed request STOPS deferring once it is answered.
+        let mut answered = routed(
+            r#","actor_slot":"main","actor_session":"live","target_slot":"worker.0","target_session":"live""#,
+        );
+        answered.push(event(
+            &at(60),
+            "cw",
+            "reply",
+            r#","target":"claude:renamed","ref":"r1","actor_slot":"worker.0","actor_session":"live","target_slot":"main","target_session":"live""#,
+        ));
+        assert_eq!(
+            owed(&answered, &["lead", "cw"], LEAD),
+            OwnWork::default(),
+            "a closed request defers nothing"
+        );
+    }
+
+    /// The spawner is matched by the SAME rule. `spawn` records carry no
+    /// routing key — the writer omits empty ones — so they take the legacy
+    /// display arm, and a spawn by a same-named seat elsewhere is not ours.
+    #[test]
+    fn a_spawn_is_claimed_by_the_same_identity_rule_as_a_request() {
+        let mine = vec![event(&at(900), "lead", "spawn", r#","target":"hand""#)];
+        assert_eq!(owed(&mine, &["lead", "hand"], LEAD).spawns, 1);
+
+        let routed_elsewhere = vec![event(
+            &at(900),
+            "lead",
+            "spawn",
+            r#","target":"hand","actor_slot":"main","actor_session":"somewhere-else""#,
+        )];
+        assert_eq!(
+            owed(&routed_elsewhere, &["lead", "hand"], LEAD).spawns,
+            0,
+            "another session's lead spawned it"
+        );
     }
 
     /// A spawn somebody ELSE opened is not lead's outstanding work, and a
@@ -1584,14 +1732,17 @@ mod tests {
             event(&at(800), "lead", "spawn-failed", r#","target":"never""#),
             event(&at(700), "colead", "ask", r#","target":"cw","ref":"r9""#),
         ];
-        let read = read(&lines);
-        let seats: Vec<String> = ["lead", "colead", "theirs", "never", "cw"]
-            .iter()
-            .map(|name| (*name).to_owned())
-            .collect();
-        let outstanding = Outstanding::read(&read.pending, &read.events, &seats);
-        assert_eq!(outstanding.of("lead"), OwnWork::default());
-        assert!(outstanding.of("colead").outstanding(), "theirs is theirs");
+        let live = ["lead", "colead", "theirs", "never", "cw"];
+        assert_eq!(owed(&lines, &live, LEAD), OwnWork::default());
+        let colead = Seat {
+            reference: "colead",
+            slot: "worker.0",
+            ..LEAD
+        };
+        assert!(
+            owed(&lines, &live, colead).outstanding(),
+            "theirs is theirs"
+        );
     }
 
     /// The ceiling reads an AGE, so the oldest of the two kinds is the one it
@@ -1602,12 +1753,7 @@ mod tests {
             event(&at(900), "lead", "spawn", r#","target":"hand""#),
             event(&at(300), "lead", "ask", r#","target":"cw","ref":"r1""#),
         ];
-        let read = read(&lines);
-        let seats: Vec<String> = ["lead", "hand", "cw"]
-            .iter()
-            .map(|name| (*name).to_owned())
-            .collect();
-        let work = Outstanding::read(&read.pending, &read.events, &seats).of("lead");
+        let work = owed(&lines, &["lead", "hand", "cw"], LEAD);
         assert_eq!(work.requests, 1);
         assert_eq!(work.spawns, 1);
         assert_eq!(work.oldest_secs(NOW.epoch()), 900, "the spawn, not the ask");

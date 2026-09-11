@@ -10,6 +10,7 @@ use crate::events::Event;
 use crate::harness_state::HarnessState;
 use crate::meta::{Meta, RosterEntry, ServerSelector};
 use crate::procs::{self, Descendancy};
+use crate::session::Seat;
 use crate::store;
 use crate::theme::{self, Look, Mark};
 use crate::time::Timestamp;
@@ -1138,28 +1139,47 @@ fn sweep_effects(booked: Vec<SweepEffect>) -> Vec<Effect> {
     out
 }
 
-/// ONE reading of the session's own-work facts per cycle, over the panes this
-/// very enumeration found: a seat is a seat because it is HERE now, whether or
-/// not a retire was ever recorded for it.
+/// Whether one enumerated pane still HOLDS its seat — the deferral's half of
+/// the liveness question, decided on this cycle's own evidence and no probe of
+/// its own.
+///
+/// Two conjuncts, each with an owner elsewhere, because a named pane is not a
+/// working agent: [`classify_dead`] is the watchdog's own Dead verdict, and the
+/// bare-shell test is the second conjunct `liveness::pane_alive` already
+/// renders in `ae list` — so the seat the publisher defers for and the seat the
+/// human is shown are the same seat. A spawned tool that exited into its
+/// retained shell holds nothing, and its owner is not excused by it.
+///
+/// UNKNOWN POLICY: an unusable process snapshot never on its own removes a seat
+/// — `classify_dead` demands positive absence — and it never rescues one
+/// either, because the pane's own foreground command is read first. A snapshot
+/// gap therefore fails CLOSED on the deferral: the owner keeps its nudge.
 #[must_use]
-fn own_work(events: &[Event], observed: &[crate::tmux::WatchPane]) -> crate::session::Outstanding {
-    crate::session::Outstanding::read(
-        &crate::session::pending_requests(events),
-        events,
-        &agent_panes(observed),
-    )
+fn holds_seat(current_command: &str, descendancy: Descendancy) -> bool {
+    !classify_dead(current_command, descendancy)
+        && !crate::watchdog::command_is_shell(current_command)
 }
 
-/// The agent names this enumeration found — the seats that exist RIGHT NOW.
+/// The seats this enumeration proves are still held, by [`holds_seat`].
 ///
 /// The monitor panes are not agents and never hold anybody's work.
 #[must_use]
-fn agent_panes(observed: &[crate::tmux::WatchPane]) -> Vec<String> {
+fn held_seats(
+    observed: &[crate::tmux::WatchPane],
+    table: Option<&[procs::Proc]>,
+    bin_of: &impl Fn(&str) -> Option<String>,
+) -> Vec<String> {
     observed
         .iter()
-        .filter_map(|pane| pane.agent.as_deref())
-        .filter(|agent| !agent.is_empty() && !NON_AGENT_PANES.contains(agent))
-        .map(ToOwned::to_owned)
+        .filter_map(|pane| {
+            let agent = pane
+                .agent
+                .as_deref()
+                .filter(|agent| !agent.is_empty() && !NON_AGENT_PANES.contains(agent))?;
+            let bin = bin_of(pane.slot.as_deref().unwrap_or_default());
+            let descendancy = descendancy_of(table, pane.pane_pid, bin.as_deref());
+            holds_seat(&pane.current_command, descendancy).then(|| agent.to_owned())
+        })
         .collect()
 }
 
@@ -2670,7 +2690,18 @@ impl Cycle<'_> {
         })
     }
 
-    fn throttle_quota(&self, quota: &QuotaCarry, slot: &str, now: i64) -> Option<String> {
+    /// The worst exact-match quota row for this slot — `None` unless the pane
+    /// is ACTUALLY throttled, because that is the only reading it explains.
+    fn throttle_quota(
+        &self,
+        quota: &QuotaCarry,
+        slot: &str,
+        now: i64,
+        throttled: bool,
+    ) -> Option<String> {
+        if !throttled {
+            return None;
+        }
         self.roster
             .iter()
             .find(|entry| entry.slot == slot)
@@ -2726,7 +2757,8 @@ impl Cycle<'_> {
             self.refresh_quota(&mut carry.quota, now, err)?;
         }
 
-        let outstanding = own_work(&events, &observed);
+        let seats = held_seats(&observed, table.as_deref(), &|slot| self.agent_bin(slot));
+        let outstanding = crate::session::Outstanding::read(&events, &seats);
 
         carry.quiet.begin();
         let mut index = 0_usize;
@@ -2755,9 +2787,7 @@ impl Cycle<'_> {
             let capture = transport::capture_pane(self.server, &pane.pane_id).unwrap_or_default();
             let hash = quiet_hash(&capture);
             let is_throttled = shows_throttle(&capture, agent_bin.as_deref().unwrap_or_default());
-            let throttle_quota = is_throttled
-                .then(|| self.throttle_quota(&carry.quota, &slot, now))
-                .flatten();
+            let throttle_quota = self.throttle_quota(&carry.quota, &slot, now, is_throttled);
             // ONE process-tree reading: the dead verdict and the unknown-snapshot
             // counter are two questions about the same answer.
             let descendancy = descendancy_of(table.as_deref(), pane.pane_pid, agent_bin.as_deref());
@@ -2789,7 +2819,7 @@ impl Cycle<'_> {
                 // that is not the orchestrator main gets `None` and no sweep
                 // branch can reach it.
                 sweep: self.sweep_observation(&slot, agent, &events, overview.as_ref(), now),
-                own_work: outstanding.of(agent),
+                own_work: outstanding.of(Seat::new(self.session, &slot, agent)),
             };
             let acting = Acting {
                 agent,
@@ -3767,13 +3797,14 @@ mod tests {
         PendingAdvisory, QuietCycle, QuietQuery, QuotaAction, QuotaCarry, QuotaDelivery,
         QuotaLevel, QuotaRecipient, Rebind, SendHelper, UNKNOWN_ALERT_CYCLES, Verdict, account,
         adopt_server, age_secs, agents_fact, bar_glyph, classify_quota, continuation, deferred,
-        entry_mut, idle_nudge_seconds, idle_nudge_text, idle_nudge_text_waiting, is_meta_agent,
-        last_actor_event_age, last_done_event_at, last_working_declaration_at, motion_cadence,
-        motion_failure, motion_observation_due, motion_publish_failure, motion_ticker_enabled,
-        nudge_text, observed_option, quota_delivery, quota_effective_secs, quota_observation_due,
-        quota_recipients, quota_seconds, quota_sweep_count, read_events, rebind, record_nudge,
-        restore_idle, session_name, slot_mark, spend_fact, stale_display, sweep_effects,
-        sweep_seconds, system_time_from_epoch, throttle_quota_line, window_agents_line,
+        entry_mut, held_seats, holds_seat, idle_nudge_seconds, idle_nudge_text,
+        idle_nudge_text_waiting, is_meta_agent, last_actor_event_age, last_done_event_at,
+        last_working_declaration_at, motion_cadence, motion_failure, motion_observation_due,
+        motion_publish_failure, motion_ticker_enabled, nudge_text, observed_option, quota_delivery,
+        quota_effective_secs, quota_observation_due, quota_recipients, quota_seconds,
+        quota_sweep_count, read_events, rebind, record_nudge, restore_idle, session_name,
+        slot_mark, spend_fact, stale_display, sweep_effects, sweep_seconds, system_time_from_epoch,
+        throttle_quota_line, window_agents_line,
     };
     use super::{Look, Mark, PaneMark, session_mark};
     use crate::events::Event;
@@ -5654,6 +5685,97 @@ mod tests {
             spawns,
             oldest_epoch: Some(now_epoch - age_secs),
         }
+    }
+
+    /// I-2: a NAMED pane is not a working agent. The seat the deferral counts
+    /// is the seat `ae list` shows, so the publisher's decision and the human's
+    /// explanation cannot contradict each other.
+    ///
+    /// The UNKNOWN column is the policy, stated: a snapshot gap never removes a
+    /// seat on its own, and never rescues one whose pane sits at a bare shell.
+    #[test]
+    fn a_pane_holds_its_seat_only_while_it_is_running_something() {
+        let cases: [(&str, &str, Descendancy, bool); 6] = [
+            ("a live worker", "claude", Descendancy::Present, true),
+            (
+                "the pane is retained but the tool has gone",
+                "bash",
+                Descendancy::Absent,
+                false,
+            ),
+            (
+                "a shell with an unusable snapshot is still a shell",
+                "bash",
+                Descendancy::Unknown,
+                false,
+            ),
+            (
+                "a running tool with an unusable snapshot keeps its seat",
+                "claude",
+                Descendancy::Unknown,
+                true,
+            ),
+            (
+                "a tool whose process the snapshot cannot find keeps its pane",
+                "codex",
+                Descendancy::Absent,
+                true,
+            ),
+            (
+                "an empty command reads as a shell",
+                "",
+                Descendancy::Present,
+                false,
+            ),
+        ];
+        for (why, command, descendancy, held) in cases {
+            assert_eq!(holds_seat(command, descendancy), held, "{why}");
+        }
+    }
+
+    /// The same three rows END TO END, through the real seat list: an
+    /// enumeration of panes decides what the spawner's ledger is allowed to
+    /// defer for.
+    #[test]
+    fn a_spawn_defers_only_while_its_seat_is_actually_held() {
+        let events: Vec<Event> = [concat!(
+            r#"{"ts":"2026-05-29T09:00:00Z","actor":"lead","action":"spawn","#,
+            r#""target":"hand","summary":"go"}"#
+        )]
+        .iter()
+        .map(|line| Event::parse_line(line).expect("a fixture line"))
+        .collect();
+        let pane = |slot: &str, agent: &str, command: &str| crate::tmux::WatchPane {
+            pane_id: format!("%{slot}"),
+            slot: Some(slot.to_owned()),
+            agent: Some(agent.to_owned()),
+            current_command: command.to_owned(),
+            pane_pid: None,
+            observed: String::new(),
+        };
+        // No process table: the pane's own foreground command is the evidence.
+        let spawns = |panes: &[crate::tmux::WatchPane]| {
+            let seats = held_seats(panes, None, &|_| Some("claude".to_owned()));
+            crate::session::Outstanding::read(&events, &seats)
+                .of(crate::session::Seat {
+                    session: "live",
+                    slot: "main",
+                    reference: "lead",
+                })
+                .spawns
+        };
+        let lead = pane("main", "lead", "claude");
+        assert_eq!(
+            spawns(&[lead.clone(), pane("spawned.0", "hand", "claude")]),
+            1,
+            "a live worker defers"
+        );
+        assert_eq!(
+            spawns(&[lead.clone(), pane("spawned.0", "hand", "bash")]),
+            0,
+            "the pane is retained but the tool is gone, so it excuses nobody"
+        );
+        assert_eq!(spawns(&[lead]), 0, "and neither does a retired one");
     }
 
     /// THE pain: the seat everybody else is waiting on reads as idle on the
