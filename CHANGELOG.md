@@ -1,6 +1,11 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.55] - 2026-09-11
+
+### Other
+
+- Show quota in highlighted settings menu
 ## [v2026.9.54] - 2026-09-11
 
 ### Other
