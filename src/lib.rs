@@ -62,6 +62,7 @@ pub mod run;
 pub mod send;
 pub mod session;
 pub mod session_launch;
+pub mod session_menu;
 mod session_tmux;
 pub mod shape;
 pub mod shim;
@@ -1978,6 +1979,14 @@ pub fn run_with(
         cli::Request::Stop { tail } => {
             if let Some(root) = state_root() {
                 lifecycle::run_stop(&root, tail, out, err)?
+            } else {
+                writeln!(err, "ae: {NO_STATE_ROOT}")?;
+                EXIT_UNAVAILABLE
+            }
+        }
+        cli::Request::SessionMenu { tail } => {
+            if let Some(root) = state_root() {
+                session_menu::run(&root, tail, out, err)?
             } else {
                 writeln!(err, "ae: {NO_STATE_ROOT}")?;
                 EXIT_UNAVAILABLE

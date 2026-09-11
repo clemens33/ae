@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::inventory::ServerId;
-use crate::meta::{self, ServerSelector};
+use crate::meta::{self, Selector, ServerSelector};
 use crate::state::{EXIT_FAILED, EXIT_USAGE};
 use crate::tmux::StopProbe;
 use crate::transport;
@@ -235,6 +235,15 @@ pub(crate) fn run_stop(
     // the operator's explicit `--pane=<id>` from a run-shell child, where the
     // inherited $TMUX_PANE names a FOREIGN pane).
     let (pane, words) = split_pane_flag(tail);
+    // `--expect-*`: the identity a menu confirmation proved, which only the
+    // detached supervisor re-proves under the target's lifecycle lock.
+    let (expect, words) = match split_expectation(&words) {
+        Ok(split) => split,
+        Err(reason) => {
+            writeln!(err, "Error: {reason}")?;
+            return Ok(EXIT_USAGE);
+        }
+    };
     for arg in &words {
         match arg.as_str() {
             "-y" | "--yes" => yes = true,
@@ -286,7 +295,14 @@ pub(crate) fn run_stop(
         return Ok(EXIT_USAGE);
     }
     if supervise {
-        return run_supervisor(root, &target, out, err);
+        return run_supervisor(root, &target, expect.as_ref(), out, err);
+    }
+    if expect.is_some() {
+        writeln!(
+            err,
+            "Error: --expect-* describes one supervised stop and belongs with --supervise."
+        )?;
+        return Ok(EXIT_USAGE);
     }
     if handoff {
         return start_stop_supervisor(root, &target, out, err);
@@ -317,9 +333,11 @@ pub(crate) fn run_stop(
             // A stopped session in the roster is not a failure of `stop all`:
             // the fleet form's job is that nothing is left running, and one
             // already down satisfies it.
-            match stop_recorded(root, &name, out, err)? {
+            match stop_recorded(root, &name, None, out, err)? {
                 StopOutcome::Stopped | StopOutcome::AlreadyStopped => {}
-                StopOutcome::Failed => failures += 1,
+                // `Refused` belongs to a confirmed stop, which the fleet form
+                // never is; it is counted as a failure rather than ignored.
+                StopOutcome::Failed | StopOutcome::Refused(_) => failures += 1,
             }
         }
         if failures > 0 {
@@ -335,10 +353,229 @@ pub(crate) fn run_stop(
         writeln!(err, "ae: '{target}' is not a usable session name.")?;
         return Ok(EXIT_FAILED);
     }
-    match stop_recorded(root, &target, out, err)? {
+    match stop_recorded(root, &target, None, out, err)? {
         StopOutcome::Stopped => Ok(0),
-        StopOutcome::AlreadyStopped | StopOutcome::Failed => Ok(EXIT_FAILED),
+        StopOutcome::AlreadyStopped | StopOutcome::Failed | StopOutcome::Refused(_) => {
+            Ok(EXIT_FAILED)
+        }
     }
+}
+
+/// What a CONFIRMED stop expects to find when it finally runs.
+///
+/// The session menu proves these when it builds the confirmation and again
+/// when the human answers, but neither moment holds the target's lifecycle
+/// lock. They travel with the operation so the one place that does hold that
+/// lock can prove them a last time, immediately before the kill.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StopExpectation {
+    /// The tmux session id the human was shown.
+    pub(crate) session_id: String,
+    /// ae's own identity for that session's state directory.
+    pub(crate) uuid: String,
+    /// The tmux server process the click happened on.
+    pub(crate) server_pid: String,
+    /// The epoch second that server started.
+    pub(crate) server_start: String,
+    /// The epoch second after which the confirmation is stale. Carried, never
+    /// renewed: a supervisor that starts late is as stale as its answer.
+    pub(crate) deadline: i64,
+    /// The client that asked, for the one-line outcome.
+    pub(crate) client: String,
+    /// That client's process. A tty path is reused, so the name alone cannot
+    /// tell the attachment that answered from the next one to take its place.
+    pub(crate) client_pid: String,
+    /// The server the click happened on, carried explicitly.
+    ///
+    /// NOT read back from the target's metadata: that file is mutable, can
+    /// lose its selector and can disappear, and the human waiting for an
+    /// answer is on this server whatever the target's directory says.
+    pub(crate) server: ServerId,
+}
+
+impl StopExpectation {
+    /// The `--expect-*` words a supervisor argv carries.
+    fn argv_words(&self) -> Vec<String> {
+        vec![
+            "--expect-session-id".to_owned(),
+            self.session_id.clone(),
+            "--expect-uuid".to_owned(),
+            self.uuid.clone(),
+            "--expect-server-pid".to_owned(),
+            self.server_pid.clone(),
+            "--expect-server-start".to_owned(),
+            self.server_start.clone(),
+            "--expect-deadline".to_owned(),
+            self.deadline.to_string(),
+            "--expect-client".to_owned(),
+            self.client.clone(),
+            "--expect-client-pid".to_owned(),
+            self.client_pid.clone(),
+            "--expect-server-kind".to_owned(),
+            server_kind_word(&self.server).to_owned(),
+            "--expect-server".to_owned(),
+            server_value_word(&self.server),
+        ]
+    }
+
+    /// Whether the captured server is still the one that was clicked on.
+    fn server_survives(&self) -> bool {
+        transport::observe_server_identity(&self.server)
+            .is_some_and(|found| found.pid == self.server_pid && found.start == self.server_start)
+    }
+
+    /// Whether the attachment that answered is still the one attached.
+    fn clicker_survives(&self) -> bool {
+        transport::observe_menu_client(&self.server, &self.client)
+            .is_some_and(|client| client.pid == self.client_pid)
+    }
+
+    /// Say `text` to the clicker, and only to it.
+    ///
+    /// The route is the CAPTURED server and the CAPTURED attachment, both
+    /// re-proven here. Nothing falls back to another client, and nothing is
+    /// said at all when the human who asked is no longer there to hear it.
+    fn tell_clicker(&self, text: &str) {
+        if self.server_survives() && self.clicker_survives() {
+            let _ = transport::display_client_message(&self.server, &self.client, text);
+        }
+    }
+
+    /// Prove the expectation against the world, under the caller's lock.
+    ///
+    /// Nothing here writes, reads a migrated meta or trusts a second lookup:
+    /// a target this cannot prove must come out of the operation byte for byte
+    /// as it went in, and the id it returns is the ONLY one authorised to die.
+    fn check(&self, dir: &Path, name: &str, now: i64) -> ExpectCheck {
+        if now > self.deadline {
+            return ExpectCheck::Refused(format!(
+                "the confirmation for '{name}' expired before it could be applied"
+            ));
+        }
+        if now < self.deadline - crate::session_menu::CONFIRM_WINDOW_SECS {
+            return ExpectCheck::Refused(format!(
+                "the confirmation for '{name}' is stamped in the future"
+            ));
+        }
+        // THE RAW META, never a migrated one: proving the identity is what
+        // earns the right to rewrite this directory, so it cannot come after.
+        let Ok(bytes) = meta::read_bytes(dir) else {
+            return ExpectCheck::Refused(format!("ae cannot read the metadata of '{name}'"));
+        };
+        let uuid = crate::archive::canonical_uuid(&meta_value(&bytes, "session_id"));
+        if uuid != self.uuid {
+            return ExpectCheck::Refused(format!(
+                "the state directory of '{name}' was replaced since it was confirmed"
+            ));
+        }
+        // ae's OWN record must still name the server the click happened on.
+        // The captured one is the authority; this only refuses a target that
+        // has since been re-recorded somewhere else.
+        let ServerSelector::Positive(selector) = server_of(&bytes) else {
+            return ExpectCheck::Refused(format!(
+                "'{name}' has no positive server record, so ae cannot prove what was confirmed"
+            ));
+        };
+        let recorded = ServerId::Selected(selector);
+        let mut sockets = crate::SocketPaths::asking(transport::observe_socket_path);
+        if !sockets.proven_same(&self.server, &recorded) {
+            return ExpectCheck::Refused(format!(
+                "'{name}' is recorded on a different tmux server than the one it was confirmed on"
+            ));
+        }
+        if !self.server_survives() {
+            return ExpectCheck::Refused(format!(
+                "the tmux server was replaced since '{name}' was confirmed"
+            ));
+        }
+        // THE HUMAN WHO ANSWERED must still be there to be told what happened,
+        // and must be the same attachment: a tty path outlives its client.
+        if !self.clicker_survives() {
+            return ExpectCheck::Refused(format!(
+                "the client that confirmed '{name}' is gone, so ae will not apply its answer"
+            ));
+        }
+        match live_id(&self.server, name) {
+            // The ONE id this operation may kill. Nothing downstream looks the
+            // name up again: tmux is not under ae's lifecycle lock, so a second
+            // answer could name a session nobody confirmed.
+            Some(live) if live == self.session_id => ExpectCheck::Proven {
+                server: self.server.clone(),
+                id: self.session_id.clone(),
+            },
+            Some(_) => ExpectCheck::Refused(format!(
+                "'{name}' is a different tmux session than the one confirmed"
+            )),
+            // An absent session is not an unmet expectation: it is what a
+            // duplicate application of one confirmation must be.
+            None => ExpectCheck::Absent,
+        }
+    }
+}
+
+/// The `--expect-server-kind` word for one server.
+fn server_kind_word(server: &ServerId) -> &'static str {
+    match server {
+        ServerId::Selected(Selector::Name(_)) => "name",
+        ServerId::Selected(Selector::Socket(_)) => "socket",
+        ServerId::Ambient => "ambient",
+    }
+}
+
+/// The `--expect-server` word for one server.
+fn server_value_word(server: &ServerId) -> String {
+    match server {
+        ServerId::Selected(Selector::Name(name)) => name.clone(),
+        ServerId::Selected(Selector::Socket(path)) => path.display().to_string(),
+        ServerId::Ambient => String::new(),
+    }
+}
+
+/// What proving a [`StopExpectation`] under the lifecycle lock found.
+enum ExpectCheck {
+    /// The target is the confirmed one, and this is the id it answers to.
+    Proven { server: ServerId, id: String },
+    /// The target is provably ae's and provably already gone.
+    Absent,
+    /// Something did not match. NOTHING may be written to the target.
+    Refused(String),
+}
+
+/// `_session-menu apply` — the human confirmed; detach the ONE existing stop
+/// supervisor, carrying the identity it must prove under the lock.
+///
+/// This writes NOTHING to the target. It has not held the target's lifecycle
+/// lock, so it cannot yet know the directory is the one that was confirmed,
+/// and an audit line in a stranger's directory is exactly the unauthorised
+/// write the identity proof exists to prevent. The supervisor records the
+/// human's answer once that proof has passed.
+pub(crate) fn stop_confirmed(
+    root: &Path,
+    expect: &StopExpectation,
+    name: &str,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> io::Result<u8> {
+    if !name_is_usable(root, name) {
+        writeln!(err, "ae: '{name}' is not a usable session name.")?;
+        return Ok(EXIT_FAILED);
+    }
+    let Some(argv) = supervisor_argv_expecting(name, Some(expect)) else {
+        writeln!(
+            err,
+            "Error: ae cannot name its own executable, so it cannot hand '{name}' to a supervisor — nothing was stopped."
+        )?;
+        return Ok(EXIT_FAILED);
+    };
+    if !crate::transport::run_detached(&argv) {
+        writeln!(
+            err,
+            "Error: could not start the supervisor for '{name}' — nothing was stopped."
+        )?;
+        return Ok(EXIT_FAILED);
+    }
+    writeln!(out, "Stopping '{name}'.")?;
+    Ok(0)
 }
 
 /// `stop all` without `-y`: ask on a terminal, refuse without one.
@@ -374,19 +611,41 @@ fn confirm_fleet_stop(
 fn stop_recorded(
     root: &Path,
     name: &str,
+    expect: Option<&StopExpectation>,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> io::Result<StopOutcome> {
     let dir = sessions_dir(root).join(name);
+    // An ORDINARY stop owns its target by construction, so it brackets the
+    // operation from out here. A CONFIRMED one does not own anything yet:
+    // BOTH of its lines are written by `stop_one`, inside the lock it proved
+    // the identity under, so no window exists in which this process has
+    // written to a directory it never proved was the confirmed one.
+    if expect.is_some() {
+        return stop_one(root, name, expect, out, err);
+    }
     emit_stop_event(&dir, name, STOP_REQUEST_ACTION, "stop requested");
     let mut captured_out = Vec::new();
     let mut captured_err = Vec::new();
-    let outcome = stop_one(root, name, &mut captured_out, &mut captured_err)?;
-    let summary = match outcome {
+    let outcome = stop_one(root, name, expect, &mut captured_out, &mut captured_err)?;
+    emit_stop_event(
+        &dir,
+        name,
+        STOP_RESULT_ACTION,
+        &stop_summary(&outcome, &captured_err),
+    );
+    out.write_all(&captured_out)?;
+    err.write_all(&captured_err)?;
+    Ok(outcome)
+}
+
+/// The durable one-line result of one stop.
+fn stop_summary(outcome: &StopOutcome, captured_err: &[u8]) -> String {
+    match outcome {
         StopOutcome::Stopped => {
             // A successful stop may still carry migration or client-handoff
             // warnings; retain every captured warning in the durable result.
-            let warning = String::from_utf8_lossy(&captured_err).trim().to_owned();
+            let warning = String::from_utf8_lossy(captured_err).trim().to_owned();
             if warning.is_empty() {
                 "stopped: verified gone on its recorded server".to_owned()
             } else {
@@ -394,12 +653,11 @@ fn stop_recorded(
             }
         }
         StopOutcome::AlreadyStopped => "already stopped".to_owned(),
-        StopOutcome::Failed => format!("FAILED: {}", String::from_utf8_lossy(&captured_err).trim()),
-    };
-    emit_stop_event(&dir, name, STOP_RESULT_ACTION, &summary);
-    out.write_all(&captured_out)?;
-    err.write_all(&captured_err)?;
-    Ok(outcome)
+        StopOutcome::Failed => format!("FAILED: {}", String::from_utf8_lossy(captured_err).trim()),
+        // NOT OURS TO WRITE TO. A refused identity leaves the directory alone,
+        // and this summary is never emitted for it.
+        StopOutcome::Refused(_) => String::new(),
+    }
 }
 
 /// What one target's stop did — kept distinct so the fleet form can treat an
@@ -409,6 +667,10 @@ enum StopOutcome {
     Stopped,
     AlreadyStopped,
     Failed,
+    /// A CONFIRMED stop whose identity did not hold under the lock. Distinct
+    /// from `Failed` because the target is not provably ae's to write to: a
+    /// refusal leaves the directory byte for byte as it found it.
+    Refused(String),
 }
 
 // ---- `--self`: the stop that cannot run in the process asking for it -------
@@ -556,13 +818,22 @@ pub(crate) fn recorded_caller_session(
 /// can mint, with the session name as its own argv element (no shell, so
 /// nothing to inject) and nothing else settable by a caller.
 fn supervisor_argv(name: &str) -> Option<DetachedArgv> {
+    supervisor_argv_expecting(name, None)
+}
+
+/// The same argv, plus the identity a CONFIRMED stop must still find.
+fn supervisor_argv_expecting(name: &str, expect: Option<&StopExpectation>) -> Option<DetachedArgv> {
     let own = crate::shape::resolved_exe()?;
-    Some(DetachedArgv(vec![
+    let mut argv = vec![
         own.to_string_lossy().into_owned(),
         crate::cli::STOP.to_owned(),
         "--supervise".to_owned(),
         name.to_owned(),
-    ]))
+    ];
+    if let Some(expect) = expect {
+        argv.extend(expect.argv_words());
+    }
+    Some(DetachedArgv(argv))
 }
 
 /// `<core> _stop --handoff <name>` — the short-lived tmux job which starts
@@ -748,22 +1019,164 @@ fn split_pane_flag(tail: &[String]) -> (String, Vec<String>) {
     (pane.unwrap_or_default(), words)
 }
 
+/// Lift the `--expect-*` pairs out of a stop tail; the rest stays in order.
+///
+/// All six or none: a partial expectation is a caller that lost a field, and
+/// proving five of six identities before a kill is not the contract.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one grammar: nine fields lifted, then each proven, in the order a caller reads them"
+)]
+fn split_expectation(
+    tail: &[String],
+) -> std::result::Result<(Option<StopExpectation>, Vec<String>), String> {
+    let mut session_id = None;
+    let mut uuid = None;
+    let mut server_pid = None;
+    let mut server_start = None;
+    let mut deadline = None;
+    let mut client = None;
+    let mut client_pid = None;
+    let mut server_kind = None;
+    let mut server_value = None;
+    let mut words: Vec<String> = Vec::with_capacity(tail.len());
+    let mut rest = tail.iter();
+    while let Some(arg) = rest.next() {
+        let slot = match arg.as_str() {
+            "--expect-session-id" => &mut session_id,
+            "--expect-uuid" => &mut uuid,
+            "--expect-server-pid" => &mut server_pid,
+            "--expect-server-start" => &mut server_start,
+            "--expect-deadline" => &mut deadline,
+            "--expect-client" => &mut client,
+            "--expect-client-pid" => &mut client_pid,
+            "--expect-server-kind" => &mut server_kind,
+            "--expect-server" => &mut server_value,
+            _ => {
+                words.push(arg.clone());
+                continue;
+            }
+        };
+        if slot.is_some() {
+            return Err(format!("{arg} may be given only once."));
+        }
+        let Some(value) = rest.next() else {
+            return Err(format!("{arg} requires a value."));
+        };
+        *slot = Some(value.clone());
+    }
+    let given = [
+        &session_id,
+        &uuid,
+        &server_pid,
+        &server_start,
+        &deadline,
+        &client,
+        &client_pid,
+        &server_kind,
+        &server_value,
+    ]
+    .iter()
+    .filter(|slot| slot.is_some())
+    .count();
+    if given == 0 {
+        return Ok((None, words));
+    }
+    let (
+        Some(session_id),
+        Some(uuid),
+        Some(server_pid),
+        Some(server_start),
+        Some(deadline),
+        Some(client),
+        Some(client_pid),
+        Some(server_kind),
+        Some(server_value),
+    ) = (
+        session_id,
+        uuid,
+        server_pid,
+        server_start,
+        deadline,
+        client,
+        client_pid,
+        server_kind,
+        server_value,
+    )
+    else {
+        return Err(
+            "an --expect-* identity is incomplete; all nine fields travel together.".to_owned(),
+        );
+    };
+    let server = match (server_kind.as_str(), server_value.as_str()) {
+        ("name", name) if !name.is_empty() => ServerId::Selected(Selector::Name(name.to_owned())),
+        ("socket", path) if Path::new(path).is_absolute() => {
+            ServerId::Selected(Selector::Socket(PathBuf::from(path)))
+        }
+        // An ambient server is whichever one the caller happened to be in, so
+        // it names nothing a later process can prove.
+        _ => {
+            return Err(
+                "--expect-server-kind is 'name' with a name, or 'socket' with an absolute path."
+                    .to_owned(),
+            );
+        }
+    };
+    let Ok(deadline) = deadline.parse::<i64>() else {
+        return Err("--expect-deadline is not an epoch second.".to_owned());
+    };
+    if !crate::tmux::session_id_is_valid(&session_id) {
+        return Err("--expect-session-id is not a tmux session id.".to_owned());
+    }
+    let uuid = crate::archive::canonical_uuid(&uuid);
+    if uuid.is_empty() {
+        return Err("--expect-uuid is not a session uuid.".to_owned());
+    }
+    if !crate::tmux::is_decimal(&server_pid)
+        || !crate::tmux::is_decimal(&server_start)
+        || !crate::tmux::is_decimal(&client_pid)
+    {
+        return Err(
+            "--expect-server-pid, --expect-server-start and --expect-client-pid are decimals."
+                .to_owned(),
+        );
+    }
+    Ok((
+        Some(StopExpectation {
+            session_id,
+            uuid,
+            server_pid,
+            server_start,
+            deadline,
+            client,
+            client_pid,
+            server,
+        }),
+        words,
+    ))
+}
+
 /// `_stop --supervise all`: the whole fleet, one session at a time, from a
 /// process no target pane owns.
 fn run_supervisor(
     root: &Path,
     name: &str,
+    expect: Option<&StopExpectation>,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> io::Result<u8> {
-    if name != "all" {
-        return supervise_one(root, name, out, err);
+    // `all` IS a legal session name, and a menu can capture a session called
+    // that. An expectation names ONE captured session, so it never widens into
+    // the fleet form, whatever that session happens to be called. The public
+    // fleet syntax below is untouched.
+    if name != "all" || expect.is_some() {
+        return supervise_one(root, name, expect, out, err);
     }
     // A fleet stop may move a client to the next session that this same sweep
     // will end; once no session remains, tmux detaches it as usual.
     let mut failures = 0_u32;
     for session in all_sessions(root) {
-        if supervise_one(root, &session, out, err)? != 0 {
+        if supervise_one(root, &session, None, out, err)? != 0 {
             failures += 1;
         }
     }
@@ -885,28 +1298,56 @@ fn fleet_supervised(
 fn supervise_one(
     root: &Path,
     name: &str,
+    expect: Option<&StopExpectation>,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> io::Result<u8> {
+    // A CONFIRMED stop has its own route home: the server the click happened
+    // on, carried with it. Every early refusal below reaches the human that
+    // way, including the ones where the target's own directory is gone and
+    // `recorded_server` could answer nothing at all.
+    let refuse = |reason: &str, err: &mut dyn Write| -> io::Result<u8> {
+        if let Some(expect) = expect {
+            expect.tell_clicker(&format!("Not stopped: {reason}."));
+        }
+        writeln!(
+            err,
+            "Error: {reason} — nothing was stopped, state preserved."
+        )?;
+        Ok(EXIT_FAILED)
+    };
     if !name_is_usable(root, name) {
-        return Ok(EXIT_FAILED);
+        return refuse(&format!("'{name}' is not a usable session name"), err);
     }
     if !dir_exists(&sessions_dir(root).join(name)) {
-        return Ok(EXIT_FAILED);
+        return refuse(&format!("ae has no state for '{name}' any more"), err);
     }
-    let server = recorded_server(root, name);
-    // This process has no streams a human can read; the record written by
-    // `stop_recorded` is the durable outcome. Any surviving client also gets
-    // the one-line result.
-    match stop_recorded(root, name, out, err)? {
+    // This process has no streams a human can read; the record written by the
+    // stop itself is the durable outcome. A menu-origin stop answers the ONE
+    // client that asked for it; only an ordinary supervisor announces to every
+    // client, because only it has no particular human to answer.
+    match stop_recorded(root, name, expect, out, err)? {
         StopOutcome::Stopped => {
             let line = format!("Stopped {name}");
-            if let Some(server) = &server {
-                announce_to_clients(server, &line);
+            match expect {
+                Some(expect) => expect.tell_clicker(&line),
+                None => {
+                    if let Some(server) = recorded_server(root, name) {
+                        announce_to_clients(&server, &line);
+                    }
+                }
             }
             Ok(0)
         }
-        StopOutcome::AlreadyStopped | StopOutcome::Failed => Ok(EXIT_FAILED),
+        // The target was NOT proven to be the confirmed one, so nothing was
+        // written to it. The answer goes to the human who asked, and nowhere.
+        StopOutcome::Refused(reason) => refuse(&reason, err),
+        StopOutcome::AlreadyStopped | StopOutcome::Failed => {
+            if let Some(expect) = expect {
+                expect.tell_clicker(&format!("'{name}' was not stopped."));
+            }
+            Ok(EXIT_FAILED)
+        }
     }
 }
 
@@ -914,54 +1355,137 @@ fn supervise_one(
 fn stop_one(
     root: &Path,
     name: &str,
+    expect: Option<&StopExpectation>,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> io::Result<StopOutcome> {
+    let busy =
+        format!("another lifecycle operation (start/resume/end) is in progress for '{name}'");
     let Ok(_guard) = lock(root, name) else {
-        writeln!(
-            err,
-            "Error: another lifecycle operation (start/resume/end) is in progress for '{name}' — retry shortly. Nothing was stopped."
-        )?;
+        // WITHOUT THE LOCK THERE IS NO PROOF. A confirmed stop that cannot
+        // reach the critical section has learnt nothing about this directory,
+        // so it must not write its failure into it either.
+        if expect.is_some() {
+            return Ok(StopOutcome::Refused(busy));
+        }
+        writeln!(err, "Error: {busy} — retry shortly. Nothing was stopped.")?;
         return Ok(StopOutcome::Failed);
     };
     let dir = sessions_dir(root).join(name);
+    // THE AUTHORITATIVE POINT, and it comes FIRST. A confirmed stop proves the
+    // target is the one the human was shown before this operation reads a
+    // migrated meta, rewrites a legacy one or appends a single line to the
+    // directory: proving the identity is what earns the right to touch it.
+    let confirmed = match expect {
+        Some(expect) => match expect.check(&dir, name, crate::time::Timestamp::now().epoch()) {
+            ExpectCheck::Refused(reason) => return Ok(StopOutcome::Refused(reason)),
+            ExpectCheck::Absent => {
+                // Proven ae's and proven already gone: this directory IS the
+                // confirmed one, so the durable result belongs in it.
+                emit_stop_event(&dir, name, STOP_RESULT_ACTION, "already stopped");
+                writeln!(err, "Session '{name}' is not running.")?;
+                return Ok(StopOutcome::AlreadyStopped);
+            }
+            ExpectCheck::Proven { server, id } => {
+                // The human's answer, recorded with its provenance, now that
+                // the directory has proven it is the one that was confirmed.
+                emit_stop_event(
+                    &dir,
+                    name,
+                    STOP_REQUEST_ACTION,
+                    &format!(
+                        "stop confirmed on the session menu by client {} ({id})",
+                        expect.client
+                    ),
+                );
+                Some((server, id))
+            }
+        },
+        None => None,
+    };
     // The chain, under the lifecycle lock this stop already holds. A refusal is
     // REPORTED, never fatal: a session whose shape ae cannot place is exactly
     // the one an operator needs to be able to stop.
     if let Some(note) = crate::migrate::session_noted(&dir, name) {
         writeln!(err, "{note}")?;
     }
-    let Ok(bytes) = meta::read_bytes(&dir) else {
-        writeln!(err, "Session '{name}' not found.")?;
-        return Ok(StopOutcome::Failed);
-    };
-    let ServerSelector::Positive(selector) = server_of(&bytes) else {
-        writeln!(
-            err,
-            "Error: session '{name}' has no positive server record — ae cannot tell which tmux server owns it, and will not guess."
-        )?;
-        writeln!(err, "  Resolve: 'ae doctor --refresh {name}'.")?;
-        writeln!(err, "  Nothing was stopped; state preserved.")?;
-        return Ok(StopOutcome::Failed);
-    };
-    let server = ServerId::Selected(selector);
-    let Some(session_id) = live_id(&server, name) else {
-        // "Empty answer" and "server unreachable" look identical from here, and
-        // only one of them means stopped.
-        if transport::verify_session_absent(&server, name) == StopProbe::Unknown {
-            writeln!(
-                err,
-                "Error: cannot verify session '{name}' (its recorded tmux server is unreachable) — nothing was stopped, state preserved."
-            )?;
-            return Ok(StopOutcome::Failed);
+    // The id a confirmed stop proved is the ONLY one it may kill. Looking the
+    // name up a second time would hand a rename or a recreate between the two
+    // answers the authority the human never gave: ae's lifecycle lock does not
+    // lock tmux.
+    let (server, session_id) = if let Some(proven) = confirmed {
+        proven
+    } else {
+        {
+            let Ok(bytes) = meta::read_bytes(&dir) else {
+                writeln!(err, "Session '{name}' not found.")?;
+                return Ok(StopOutcome::Failed);
+            };
+            let ServerSelector::Positive(selector) = server_of(&bytes) else {
+                writeln!(
+                    err,
+                    "Error: session '{name}' has no positive server record — ae cannot tell which tmux server owns it, and will not guess."
+                )?;
+                writeln!(err, "  Resolve: 'ae doctor --refresh {name}'.")?;
+                writeln!(err, "  Nothing was stopped; state preserved.")?;
+                return Ok(StopOutcome::Failed);
+            };
+            let server = ServerId::Selected(selector);
+            let Some(session_id) = live_id(&server, name) else {
+                // "Empty answer" and "server unreachable" look identical from
+                // here, and only one of them means stopped.
+                if transport::verify_session_absent(&server, name) == StopProbe::Unknown {
+                    writeln!(
+                        err,
+                        "Error: cannot verify session '{name}' (its recorded tmux server is unreachable) — nothing was stopped, state preserved."
+                    )?;
+                    return Ok(StopOutcome::Failed);
+                }
+                writeln!(err, "Session '{name}' is not running.")?;
+                return Ok(StopOutcome::AlreadyStopped);
+            };
+            (server, session_id)
         }
-        writeln!(err, "Session '{name}' is not running.")?;
-        return Ok(StopOutcome::AlreadyStopped);
     };
-    if let Some(note) = handoff_clients_before_kill(&server, name) {
+    if expect.is_none() {
+        return kill_under_lock(&server, name, &session_id, out, err);
+    }
+    // The confirmed path keeps its own streams so it can write the durable
+    // result BEFORE `_guard` drops: the request line, the kill and the result
+    // are ONE critical section over ONE proven identity.
+    let mut confirmed_out = Vec::new();
+    let mut confirmed_err = Vec::new();
+    let outcome = kill_under_lock(
+        &server,
+        name,
+        &session_id,
+        &mut confirmed_out,
+        &mut confirmed_err,
+    )?;
+    emit_stop_event(
+        &dir,
+        name,
+        STOP_RESULT_ACTION,
+        &stop_summary(&outcome, &confirmed_err),
+    );
+    out.write_all(&confirmed_out)?;
+    err.write_all(&confirmed_err)?;
+    Ok(outcome)
+}
+
+/// Hand the clients over and kill one exactly-identified session. The caller
+/// holds the lifecycle lock and has already decided which id may die.
+fn kill_under_lock(
+    server: &ServerId,
+    name: &str,
+    session_id: &str,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> io::Result<StopOutcome> {
+    if let Some(note) = handoff_clients_before_kill(server, name) {
         writeln!(err, "Warning: {note}")?;
     }
-    if !kill_verified(&server, name, "stop", &session_id, err)? {
+    if !kill_verified(server, name, "stop", session_id, err)? {
         return Ok(StopOutcome::Failed);
     }
     writeln!(out, "Stopped {name}")?;

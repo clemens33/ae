@@ -1469,3 +1469,755 @@ fn a_held_lifecycle_lock_refuses_the_end_and_preserves_the_whole_session() {
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
     assert!(!rig.dir.exists(), "the uncontended end removed the session");
 }
+
+/// Attach a REAL client to `rig`'s session and return its name and process.
+///
+/// A confirmed stop answers the human who confirmed it, so from this round on
+/// it refuses when that attachment is gone. Every positive control therefore
+/// needs one.
+fn attach_client(rig: &Rig, viewer: &str) -> (String, String) {
+    let attach = format!(
+        "env -u TMUX tmux -S {} attach -t {}",
+        rig.sock.display(),
+        rig.name
+    );
+    assert!(
+        rig.tmux(&[
+            "-f",
+            "/dev/null",
+            "new-session",
+            "-d",
+            "-s",
+            viewer,
+            "-x",
+            "200",
+            "-y",
+            "50",
+            &attach,
+        ])
+        .0,
+        "the nested client starts"
+    );
+    for _ in 0..100 {
+        let (_, listed) = rig.tmux(&[
+            "list-clients",
+            "-F",
+            "#{client_name}|#{client_pid}|#{client_session}",
+        ]);
+        if let Some(row) = listed
+            .lines()
+            .find(|line| line.ends_with(&format!("|{}", rig.name)))
+        {
+            let mut fields = row.split('|');
+            let name = fields.next().unwrap_or_default().to_owned();
+            let pid = fields.next().unwrap_or_default().to_owned();
+            if !name.is_empty() && !pid.is_empty() {
+                return (name, pid);
+            }
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    panic!("no client attached to {}", rig.name);
+}
+
+/// The `--expect-*` identity a menu confirmation proved, as the supervisor
+/// receives it.
+fn expectation(rig: &Rig, deadline: i64, client: (&str, &str)) -> Vec<String> {
+    let (_, id) = rig.tmux(&["display-message", "-p", "-t", &rig.name, "#{session_id}"]);
+    let (_, identity) = rig.tmux(&["display-message", "-p", "#{pid} | #{start_time}"]);
+    let (pid, start) = identity
+        .trim()
+        .split_once(" | ")
+        .unwrap_or_else(|| panic!("the server identity pair: {identity:?}"));
+    [
+        "--expect-session-id",
+        id.trim(),
+        "--expect-uuid",
+        UUID,
+        "--expect-server-pid",
+        pid,
+        "--expect-server-start",
+        start,
+        "--expect-deadline",
+        &deadline.to_string(),
+        "--expect-client",
+        client.0,
+        "--expect-client-pid",
+        client.1,
+        "--expect-server-kind",
+        "socket",
+        "--expect-server",
+        &rig.sock.display().to_string(),
+    ]
+    .iter()
+    .map(|word| (*word).to_owned())
+    .collect()
+}
+
+fn now() -> i64 {
+    ae::time::Timestamp::now().epoch()
+}
+
+/// The supervisor is the only step that holds the target's lifecycle lock, so
+/// it is the only step whose answer is still true when the kill happens. Every
+/// identity it was given has to be re-proven THERE, not just at the menu.
+#[test]
+fn a_confirmed_stop_proves_its_identity_again_under_the_lifecycle_lock() {
+    for (tag, break_it, reason) in [
+        ("expired", -1_i64, "expired"),
+        ("future", 10_000_i64, "stamped in the future"),
+    ] {
+        let rig = Rig::new(&format!("expect{tag}"));
+        let client = attach_client(&rig, &format!("v{tag}"));
+        let mut argv = vec![
+            "_stop".to_owned(),
+            "--supervise".to_owned(),
+            rig.name.clone(),
+        ];
+        argv.extend(expectation(&rig, now() + break_it, (&client.0, &client.1)));
+        let borrowed: Vec<&str> = argv.iter().map(String::as_str).collect();
+        let (code, out, err) = rig.run(&borrowed);
+        assert_ne!(code, Some(0), "{tag}: stdout={out} stderr={err}");
+        assert!(
+            err.contains(reason),
+            "{tag}: the refusal must name the deadline, not a generic argv error: {err}"
+        );
+        assert!(
+            rig.session_is_live(),
+            "{tag}: a stale confirmation stopped the session anyway"
+        );
+    }
+
+    for (tag, flag, value, reason) in [
+        (
+            "otherid",
+            "--expect-session-id",
+            "$999",
+            "different tmux session",
+        ),
+        (
+            "otheruuid",
+            "--expect-uuid",
+            "44444444-4444-4444-4444-444444444444",
+            "state directory",
+        ),
+        (
+            "otherserver",
+            "--expect-server-pid",
+            "1",
+            "server was replaced",
+        ),
+        (
+            "otherstart",
+            "--expect-server-start",
+            "1",
+            "server was replaced",
+        ),
+    ] {
+        let rig = Rig::new(&format!("expect{tag}"));
+        let client = attach_client(&rig, &format!("v{tag}"));
+        let mut argv = vec![
+            "_stop".to_owned(),
+            "--supervise".to_owned(),
+            rig.name.clone(),
+        ];
+        argv.extend(expectation(&rig, now() + 60, (&client.0, &client.1)));
+        let at = argv
+            .iter()
+            .position(|word| word == flag)
+            .expect("the flag is in the expectation");
+        argv[at + 1] = value.to_owned();
+        let borrowed: Vec<&str> = argv.iter().map(String::as_str).collect();
+        let (code, out, err) = rig.run(&borrowed);
+        assert_ne!(code, Some(0), "{tag}: stdout={out} stderr={err}");
+        assert!(
+            err.contains(reason),
+            "{tag}: the refusal must name the identity that did not match: {err}"
+        );
+        assert!(
+            rig.session_is_live(),
+            "{tag}: a mismatched identity stopped the session anyway"
+        );
+        let events = std::fs::read_to_string(rig.dir.join("events.jsonl")).unwrap_or_default();
+        assert!(
+            !events.contains("\"action\":\"stop-result\"") || events.contains("FAILED"),
+            "{tag}: a refusal must never read as a completed stop: {events}"
+        );
+    }
+}
+
+/// The same expectation, matching, still stops the session: the lock-time
+/// proof is a gate, not a wall.
+#[test]
+fn a_matching_confirmation_reaches_the_existing_stop_and_preserves_the_state() {
+    let rig = Rig::new("expectok");
+    let client = attach_client(&rig, "vok");
+    let mut argv = vec![
+        "_stop".to_owned(),
+        "--supervise".to_owned(),
+        rig.name.clone(),
+    ];
+    argv.extend(expectation(&rig, now() + 60, (&client.0, &client.1)));
+    let borrowed: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let (code, out, err) = rig.run(&borrowed);
+    assert_eq!(code, Some(0), "stdout={out} stderr={err}");
+    assert!(!rig.session_is_live(), "the confirmed session is gone");
+    assert!(exists(&rig.dir.join("meta")), "a stop preserves its state");
+}
+
+/// Applying one confirmation twice must not stop a session a second time: the
+/// second run finds the target already gone and says so.
+#[test]
+fn applying_one_confirmation_twice_has_no_second_effect() {
+    let rig = Rig::new("expecttwice");
+    let client = attach_client(&rig, "vtwice");
+    let mut argv = vec![
+        "_stop".to_owned(),
+        "--supervise".to_owned(),
+        rig.name.clone(),
+    ];
+    argv.extend(expectation(&rig, now() + 60, (&client.0, &client.1)));
+    let borrowed: Vec<&str> = argv.iter().map(String::as_str).collect();
+    assert_eq!(rig.run(&borrowed).0, Some(0));
+    assert!(!rig.session_is_live());
+    let (code, _, err) = rig.run(&borrowed);
+    assert_ne!(code, Some(0), "a repeat is not a second stop");
+    assert!(exists(&rig.dir.join("meta")), "and it destroys nothing");
+    assert!(!err.contains("panicked"), "{err}");
+}
+
+/// A partial identity is a caller that lost a field, and proving five of six
+/// identities before a kill is not the contract.
+#[test]
+fn an_incomplete_expectation_is_a_usage_error_not_a_weaker_proof() {
+    let rig = Rig::new("expectpartial");
+    let (code, out, err) = rig.run(&[
+        "_stop",
+        "--supervise",
+        &rig.name,
+        "--expect-session-id",
+        "$1",
+    ]);
+    assert_eq!(code, Some(2), "stdout={out} stderr={err}");
+    assert!(rig.session_is_live(), "nothing was stopped");
+    assert!(err.contains("incomplete"), "{err}");
+}
+
+/// `--expect-*` describes one supervised stop; the public forms never take it.
+#[test]
+fn the_public_stop_forms_refuse_an_expectation() {
+    let rig = Rig::new("expectpublic");
+    let client = attach_client(&rig, "vpublic");
+    let mut argv = vec!["_stop".to_owned(), rig.name.clone()];
+    argv.extend(expectation(&rig, now() + 60, (&client.0, &client.1)));
+    let borrowed: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let (code, out, err) = rig.run(&borrowed);
+    assert_eq!(code, Some(2), "stdout={out} stderr={err}");
+    assert!(rig.session_is_live(), "nothing was stopped");
+}
+
+/// The apply step answers a question the human was asked. An answer given
+/// after the window closed is about a world that may have moved, so it is
+/// refused before any effect — and the refusal is SHOWN to the human who gave
+/// it, not left in a `run-shell` job's stderr where nobody will ever read it.
+#[test]
+fn an_expired_menu_answer_is_refused_visibly_and_before_any_effect() {
+    let rig = Rig::new("menuexpired");
+    let client = attach_client(&rig, "vexpired");
+    let (_, id) = rig.tmux(&["display-message", "-p", "-t", &rig.name, "#{session_id}"]);
+    let (_, identity) = rig.tmux(&["display-message", "-p", "#{pid} | #{start_time}"]);
+    let (pid, start) = identity
+        .trim()
+        .split_once(" | ")
+        .expect("the identity pair");
+    let before_events = std::fs::read(rig.dir.join("events.jsonl")).unwrap_or_default();
+    let (code, out, err) = rig.run_inside(&[
+        "_session-menu",
+        "apply",
+        "--action",
+        "stop",
+        "--client",
+        &client.0,
+        "--client-pid",
+        &client.1,
+        "--session",
+        &rig.name,
+        "--session-id",
+        id.trim(),
+        "--pane",
+        &rig.pane,
+        "--server-pid",
+        pid,
+        "--server-start",
+        start,
+        "--uuid",
+        UUID,
+        "--deadline",
+        &(now() - 1).to_string(),
+    ]);
+    assert_ne!(code, Some(0), "stdout={out} stderr={err}");
+    assert!(err.contains("expired"), "{err}");
+    assert!(rig.session_is_live(), "nothing was stopped");
+    assert_eq!(
+        std::fs::read(rig.dir.join("events.jsonl")).unwrap_or_default(),
+        before_events,
+        "an expired answer writes nothing to the target"
+    );
+    let mut seen = String::new();
+    for _ in 0..60 {
+        seen = rig.tmux(&["capture-pane", "-p", "-t", "vexpired"]).1;
+        if seen.contains("expired") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        seen.contains("expired"),
+        "the human who answered must SEE that their answer was too late: {seen}"
+    );
+}
+
+/// Every field of the chain is an allowlist, and a refused field never becomes
+/// a lookup.
+#[test]
+fn a_menu_step_refuses_a_field_that_is_not_its_grammar() {
+    let rig = Rig::new("menugrammar");
+    let (code, _, err) = rig.run(&[
+        "_session-menu",
+        "confirm",
+        "--action",
+        "stop",
+        "--client",
+        "/dev/tty; rm -rf /",
+        "--client-pid",
+        "1",
+        "--session",
+        &rig.name,
+        "--session-id",
+        "$1",
+        "--pane",
+        "%1",
+        "--server-pid",
+        "1",
+        "--server-start",
+        "1",
+    ]);
+    assert_ne!(code, Some(0));
+    assert!(err.contains("tmux client name"), "{err}");
+    assert!(rig.session_is_live());
+}
+
+/// `all` is a legal session name. A confirmation names ONE session, so a
+/// session that happens to be called `all` must not turn a confirmed stop into
+/// a fleet stop, and must not drop the identity that authorised it.
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one staged witness: a real session called 'all', a bystander the fleet form would take, and a real client to answer"
+)]
+fn a_confirmed_stop_of_a_session_named_all_never_becomes_a_fleet_stop() {
+    let rig = Rig::new("allname");
+    // A second ae session in the same state root: the fleet form would take it.
+    let bystander = rig.home.join("sessions").join("bystander");
+    std::fs::create_dir_all(&bystander).expect("the bystander's dir");
+    assert!(
+        rig.tmux(&[
+            "-f",
+            "/dev/null",
+            "new-session",
+            "-d",
+            "-s",
+            "bystander",
+            "sh"
+        ])
+        .0
+    );
+    std::fs::write(
+        bystander.join("meta"),
+        std::fs::read(rig.dir.join("meta"))
+            .expect("the rig meta")
+            .iter()
+            .map(|byte| *byte as char)
+            .collect::<String>()
+            .replace(&format!("session={}", rig.name), "session=bystander"),
+    )
+    .expect("the bystander meta");
+    // Rename the rig's own session to the reserved-looking name.
+    assert!(rig.tmux(&["rename-session", "-t", &rig.name, "all"]).0);
+    let renamed = rig.home.join("sessions").join("all");
+    std::fs::rename(&rig.dir, &renamed).expect("the session dir follows the name");
+    std::fs::write(
+        renamed.join("meta"),
+        std::fs::read_to_string(renamed.join("meta"))
+            .expect("the meta")
+            .replace(&format!("session={}", rig.name), "session=all"),
+    )
+    .expect("the renamed meta");
+
+    let attach = format!("env -u TMUX tmux -S {} attach -t all", rig.sock.display());
+    assert!(
+        rig.tmux(&[
+            "-f",
+            "/dev/null",
+            "new-session",
+            "-d",
+            "-s",
+            "vall",
+            "-x",
+            "200",
+            "-y",
+            "50",
+            &attach,
+        ])
+        .0
+    );
+    let mut client = (String::new(), String::new());
+    for _ in 0..100 {
+        let (_, listed) = rig.tmux(&[
+            "list-clients",
+            "-F",
+            "#{client_name}|#{client_pid}|#{client_session}",
+        ]);
+        if let Some(row) = listed.lines().find(|line| line.ends_with("|all")) {
+            let mut fields = row.split('|');
+            client.0 = fields.next().unwrap_or_default().to_owned();
+            client.1 = fields.next().unwrap_or_default().to_owned();
+            if !client.1.is_empty() {
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(!client.1.is_empty(), "a client on 'all'");
+
+    let (_, id) = rig.tmux(&["display-message", "-p", "-t", "all", "#{session_id}"]);
+    let (_, identity) = rig.tmux(&["display-message", "-p", "#{pid} | #{start_time}"]);
+    let (pid, start) = identity
+        .trim()
+        .split_once(" | ")
+        .expect("the identity pair");
+    let deadline = (now() + 60).to_string();
+    let (code, out, err) = rig.run(&[
+        "_stop",
+        "--supervise",
+        "all",
+        "--expect-session-id",
+        id.trim(),
+        "--expect-uuid",
+        UUID,
+        "--expect-server-pid",
+        pid,
+        "--expect-server-start",
+        start,
+        "--expect-deadline",
+        &deadline,
+        "--expect-client",
+        &client.0,
+        "--expect-client-pid",
+        &client.1,
+        "--expect-server-kind",
+        "socket",
+        "--expect-server",
+        &rig.sock.display().to_string(),
+    ]);
+    assert_eq!(code, Some(0), "stdout={out} stderr={err}");
+    let (_, listed) = rig.tmux(&["list-sessions", "-F", "#{session_name}"]);
+    assert!(
+        !listed.lines().any(|line| line == "all"),
+        "the ONE confirmed session is stopped: {listed}"
+    );
+    assert!(
+        listed.lines().any(|line| line == "bystander"),
+        "a session called 'all' must never widen the scope to the fleet: {listed}"
+    );
+    assert!(
+        exists(&bystander.join("meta")),
+        "and the bystander's state is untouched"
+    );
+}
+
+/// A target whose identity does not hold is not ae's to write to. It must come
+/// out of a refused stop byte for byte as it went in — no audit line, and no
+/// migration of its metadata either.
+#[test]
+fn a_refused_confirmation_leaves_the_target_byte_identical() {
+    let rig = Rig::new("refusedbytes");
+    let client = attach_client(&rig, "vrefused");
+    // A DELIBERATELY UNMIGRATED meta: if the refusal came after the migration
+    // chain, this legacy shape would have been rewritten on the way.
+    let legacy = std::fs::read_to_string(rig.dir.join("meta")).expect("the meta");
+    assert!(legacy.contains("schema=2"), "the fixture is pre-chain");
+    std::fs::write(rig.dir.join("events.jsonl"), "sentinel\n").expect("a sentinel log");
+    let before_meta = std::fs::read(rig.dir.join("meta")).expect("the meta bytes");
+    let before_events = std::fs::read(rig.dir.join("events.jsonl")).expect("the log bytes");
+
+    let mut argv = vec![
+        "_stop".to_owned(),
+        "--supervise".to_owned(),
+        rig.name.clone(),
+    ];
+    argv.extend(expectation(&rig, now() + 60, (&client.0, &client.1)));
+    let at = argv
+        .iter()
+        .position(|word| word == "--expect-uuid")
+        .expect("the uuid flag");
+    argv[at + 1] = "44444444-4444-4444-4444-444444444444".to_owned();
+    let borrowed: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let (code, _, err) = rig.run(&borrowed);
+    assert_ne!(code, Some(0), "{err}");
+    assert!(rig.session_is_live(), "nothing was stopped");
+    assert_eq!(
+        std::fs::read(rig.dir.join("meta")).expect("the meta bytes"),
+        before_meta,
+        "a refused target must not be migrated"
+    );
+    assert_eq!(
+        std::fs::read(rig.dir.join("events.jsonl")).expect("the log bytes"),
+        before_events,
+        "a refused target must not be audited"
+    );
+}
+
+/// The human who confirmed is the one owed the answer. When that attachment is
+/// gone — or replaced by another on the same tty — the answer is not applied.
+#[test]
+fn a_confirmed_stop_refuses_once_the_client_that_confirmed_it_is_gone() {
+    let rig = Rig::new("clickergone");
+    let client = attach_client(&rig, "vgone");
+    let mut argv = vec![
+        "_stop".to_owned(),
+        "--supervise".to_owned(),
+        rig.name.clone(),
+    ];
+    argv.extend(expectation(&rig, now() + 60, (&client.0, &client.1)));
+    // The attachment answers to the same name, with a different process.
+    let at = argv
+        .iter()
+        .position(|word| word == "--expect-client-pid")
+        .expect("the client pid flag");
+    argv[at + 1] = "999999".to_owned();
+    let borrowed: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let (code, _, err) = rig.run(&borrowed);
+    assert_ne!(code, Some(0), "{err}");
+    assert!(err.contains("client that confirmed"), "{err}");
+    assert!(rig.session_is_live(), "nothing was stopped");
+
+    // And with the client truly gone.
+    assert!(rig.tmux(&["kill-session", "-t", "vgone"]).0);
+    std::thread::sleep(Duration::from_millis(300));
+    let mut argv = vec![
+        "_stop".to_owned(),
+        "--supervise".to_owned(),
+        rig.name.clone(),
+    ];
+    argv.extend(expectation(&rig, now() + 60, (&client.0, &client.1)));
+    let borrowed: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let (code, _, err) = rig.run(&borrowed);
+    assert_ne!(code, Some(0), "{err}");
+    assert!(rig.session_is_live(), "nothing was stopped");
+}
+
+/// ae's lifecycle lock does not lock tmux. A session renamed away and replaced
+/// by a namesake must not inherit the authority the human gave the original,
+/// and the original must not be killed under its new name either.
+///
+/// This stages the substitution BEFORE the locked check, so what it proves is
+/// that a stale capture refuses. The narrower window it cannot reach — a
+/// substitution between the proof and the kill — is closed by construction
+/// rather than by this test: the confirmed branch of `stop_one` kills the id
+/// `ExpectCheck::Proven` returned and never looks the name up a second time.
+#[test]
+fn a_namesake_created_after_the_confirmation_inherits_no_authority() {
+    let rig = Rig::new("namesake");
+    let client = attach_client(&rig, "vnamesake");
+    let mut argv = vec![
+        "_stop".to_owned(),
+        "--supervise".to_owned(),
+        rig.name.clone(),
+    ];
+    argv.extend(expectation(&rig, now() + 60, (&client.0, &client.1)));
+    let (_, confirmed_id) = rig.tmux(&["display-message", "-p", "-t", &rig.name, "#{session_id}"]);
+    let confirmed_id = confirmed_id.trim().to_owned();
+
+    // Deterministic, not a race: move the confirmed session aside and put a
+    // different session under the name the confirmation carries.
+    let moved = format!("{}-moved", rig.name);
+    assert!(rig.tmux(&["rename-session", "-t", &rig.name, &moved]).0);
+    assert!(
+        rig.tmux(&[
+            "-f",
+            "/dev/null",
+            "new-session",
+            "-d",
+            "-s",
+            &rig.name,
+            "sh"
+        ])
+        .0
+    );
+    let (_, namesake_id) = rig.tmux(&["display-message", "-p", "-t", &rig.name, "#{session_id}"]);
+    assert_ne!(namesake_id.trim(), confirmed_id, "a genuinely new session");
+
+    let borrowed: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let (code, _, err) = rig.run(&borrowed);
+    assert_ne!(code, Some(0), "{err}");
+    assert!(err.contains("different tmux session"), "{err}");
+    let (_, listed) = rig.tmux(&["list-sessions", "-F", "#{session_name}|#{session_id}"]);
+    assert!(
+        listed
+            .lines()
+            .any(|line| line == format!("{moved}|{confirmed_id}")),
+        "the confirmed session must survive under its new name: {listed}"
+    );
+    assert!(
+        listed
+            .lines()
+            .any(|line| line.starts_with(&format!("{}|", rig.name))),
+        "and the namesake must survive too: {listed}"
+    );
+}
+
+/// The lifecycle lock IS the proof. A confirmed stop that could not take it
+/// has learnt nothing about the directory in front of it, so it must not write
+/// its own failure there either — that directory may be a replacement.
+#[test]
+fn a_confirmed_stop_that_cannot_take_the_lock_writes_nothing_to_the_target() {
+    let rig = Rig::new("expectlocked");
+    let client = attach_client(&rig, "vlocked");
+    std::fs::write(rig.dir.join("events.jsonl"), "sentinel\n").expect("a sentinel log");
+    let before_meta = std::fs::read(rig.dir.join("meta")).expect("the meta bytes");
+    let before_events = std::fs::read(rig.dir.join("events.jsonl")).expect("the log bytes");
+
+    // Hold the lock the way any other lifecycle operation would.
+    let held = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(
+            rig.home
+                .join("sessions")
+                .join(format!(".lifecycle.{}.lock", rig.name)),
+        )
+        .expect("the lock file opens");
+    held.try_lock().expect("this test takes the lock first");
+
+    let mut argv = vec![
+        "_stop".to_owned(),
+        "--supervise".to_owned(),
+        rig.name.clone(),
+    ];
+    argv.extend(expectation(&rig, now() + 60, (&client.0, &client.1)));
+    let borrowed: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let (code, _, err) = rig.run(&borrowed);
+    assert_ne!(code, Some(0), "{err}");
+    assert!(rig.session_is_live(), "nothing was stopped");
+    assert_eq!(
+        std::fs::read(rig.dir.join("meta")).expect("the meta bytes"),
+        before_meta,
+        "a stop that never held the lock must not migrate the target"
+    );
+    assert_eq!(
+        std::fs::read(rig.dir.join("events.jsonl")).expect("the log bytes"),
+        before_events,
+        "a stop that never held the lock must not append a result to the target"
+    );
+    drop(held);
+
+    // The positive control: with the lock free, the SAME argv records both its
+    // request and its result in the target it proved.
+    let (code, out, err) = rig.run(&borrowed);
+    assert_eq!(code, Some(0), "stdout={out} stderr={err}");
+    let events = std::fs::read_to_string(rig.dir.join("events.jsonl")).unwrap_or_default();
+    assert!(
+        events.contains("stop confirmed on the session menu by client"),
+        "{events}"
+    );
+    assert!(events.contains("\"action\":\"stop-result\""), "{events}");
+}
+
+/// The human waiting for an answer is on the server they clicked, and that is
+/// where the answer goes — whatever has happened to the target's own metadata
+/// since, including its disappearance.
+#[test]
+fn a_confirmed_refusal_reaches_the_clicker_without_the_targets_metadata() {
+    for (tag, damage) in [("gonedir", true), ("nodeselector", false)] {
+        let rig = Rig::new(&format!("route{tag}"));
+        let client = attach_client(&rig, &format!("v{tag}"));
+        // A bystander client on the same server, which must never be told.
+        let bystander = format!("b{tag}");
+        assert!(
+            rig.tmux(&[
+                "-f",
+                "/dev/null",
+                "new-session",
+                "-d",
+                "-s",
+                &bystander,
+                "-x",
+                "200",
+                "-y",
+                "50",
+                &format!(
+                    "env -u TMUX tmux -S {} attach -t {}",
+                    rig.sock.display(),
+                    rig.name
+                ),
+            ])
+            .0
+        );
+        std::thread::sleep(Duration::from_millis(400));
+        let mut argv = vec![
+            "_stop".to_owned(),
+            "--supervise".to_owned(),
+            rig.name.clone(),
+        ];
+        argv.extend(expectation(&rig, now() + 60, (&client.0, &client.1)));
+
+        if damage {
+            // The state directory is GONE: `recorded_server` can answer nothing
+            // at all, and the old route home died with it.
+            std::fs::remove_dir_all(&rig.dir).expect("remove the session dir");
+        } else {
+            // The metadata survives but has lost its server selector.
+            let meta = std::fs::read_to_string(rig.dir.join("meta")).expect("the meta");
+            let mut stripped = String::new();
+            for line in meta.lines().filter(|line| !line.starts_with("tmux_server")) {
+                stripped.push_str(line);
+                stripped.push('\n');
+            }
+            std::fs::write(rig.dir.join("meta"), stripped).expect("the stripped meta");
+        }
+
+        let borrowed: Vec<&str> = argv.iter().map(String::as_str).collect();
+        let (code, _, err) = rig.run(&borrowed);
+        assert_ne!(code, Some(0), "{tag}: {err}");
+        assert!(rig.session_is_live(), "{tag}: nothing was stopped");
+
+        let mut seen = String::new();
+        for _ in 0..80 {
+            seen = rig
+                .tmux(&["capture-pane", "-p", "-t", &format!("v{tag}")])
+                .1;
+            if seen.contains("Not stopped") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(
+            seen.contains("Not stopped"),
+            "{tag}: the refusal never reached the human who asked: {seen}"
+        );
+        let other = rig.tmux(&["capture-pane", "-p", "-t", &bystander]).1;
+        assert!(
+            !other.contains("Not stopped"),
+            "{tag}: another client was told about someone else's answer: {other}"
+        );
+        if !damage {
+            assert!(
+                !std::fs::read_to_string(rig.dir.join("events.jsonl"))
+                    .unwrap_or_default()
+                    .contains("stop-result"),
+                "{tag}: an unproven target was written to"
+            );
+        }
+    }
+}

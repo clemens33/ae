@@ -700,6 +700,43 @@ pub fn observe_picker_client_session(
     tmux::interpret_picker_client_session(succeeded, &stdout, client)
 }
 
+/// `server`'s identity pair, or `None` when it did not answer with one.
+#[must_use]
+pub fn observe_server_identity(server: &ServerId) -> Option<tmux::ServerIdentity> {
+    if !addressable(server) {
+        return None;
+    }
+    let (succeeded, stdout) = run(PROGRAM, &tmux::server_identity_args(server));
+    tmux::interpret_server_identity(succeeded, &stdout)
+}
+
+/// The one attached client called `client`, with the process behind it.
+#[must_use]
+pub fn observe_menu_client(server: &ServerId, client: &str) -> Option<tmux::MenuClient> {
+    if !addressable(server) {
+        return None;
+    }
+    let (succeeded, stdout) = run(PROGRAM, &tmux::menu_clients_args(server));
+    tmux::interpret_menu_client(succeeded, &stdout, client)
+}
+
+/// Draw `menu` centred on one explicit client, with one explicit target pane.
+#[must_use]
+pub fn display_menu_centred(
+    server: &ServerId,
+    client: &str,
+    target: &str,
+    menu: &tmux::Menu,
+    menu_mouse: bool,
+) -> bool {
+    addressable(server)
+        && run(
+            PROGRAM,
+            &tmux::display_menu_centred_args(server, client, target, menu, menu_mouse),
+        )
+        .0
+}
+
 /// Draw `menu` on `client`, or the server's current client when absent.
 #[must_use]
 pub fn display_menu(

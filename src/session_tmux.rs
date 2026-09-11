@@ -161,13 +161,20 @@ pub(crate) enum Op<'a> {
     /// Bind ae's root `MouseDown3Status` context menu on an ae-owned server.
     BindMouseDownStatusMenu {
         picker: &'a str,
+        /// The words a menu row re-execs ae with.
+        launcher: &'a [String],
         menu_mouse: bool,
-        flip: bool,
+        menu: bool,
     },
     /// Bind the keyboard-driven picker's root `MouseUp1Status` release.
     BindMouseUpStatus { picker: &'a str },
     /// Bind the keyboard-driven picker's root `MouseUp3Status` release.
-    BindMouseUpStatusMenu { picker: &'a str, menu_mouse: bool },
+    BindMouseUpStatusMenu {
+        picker: &'a str,
+        /// The words a menu row re-execs ae with.
+        launcher: &'a [String],
+        menu_mouse: bool,
+    },
     /// Remove one stale root binding when the server capability changes.
     UnbindRootKey { key: &'a str },
     /// Bind the fleet picker to mnemonic `prefix a` on an ae-owned server.
@@ -346,19 +353,28 @@ pub(crate) fn argv(server: &ServerId, op: &Op<'_>) -> TmuxArgv {
         }
         Op::BindMouseDownStatusMenu {
             picker,
+            launcher,
             menu_mouse,
-            flip,
+            menu,
         } => {
             args.extend(["bind-key", "-T", "root", "MouseDown3Status"].map(ToOwned::to_owned));
-            args.extend(right_click_dispatch(server, picker, menu_mouse, flip));
+            args.extend(right_click_dispatch(
+                server, picker, launcher, menu_mouse, menu,
+            ));
         }
         Op::BindMouseUpStatus { picker } => {
             args.extend(["bind-key", "-T", "root", "MouseUp1Status"].map(ToOwned::to_owned));
             args.extend(picker_click_dispatch(picker));
         }
-        Op::BindMouseUpStatusMenu { picker, menu_mouse } => {
+        Op::BindMouseUpStatusMenu {
+            picker,
+            launcher,
+            menu_mouse,
+        } => {
             args.extend(["bind-key", "-T", "root", "MouseUp3Status"].map(ToOwned::to_owned));
-            args.extend(right_click_dispatch(server, picker, menu_mouse, true));
+            args.extend(right_click_dispatch(
+                server, picker, launcher, menu_mouse, true,
+            ));
         }
         Op::UnbindRootKey { key } => {
             args.extend(["unbind-key", "-T", "root", key].map(ToOwned::to_owned));
@@ -423,7 +439,76 @@ fn fixed_mouse_shell_word(word: &str) -> String {
     mouse_dispatch_literal(&crate::launch::shell_quote(word))
 }
 
-fn flip_menu_command(server: &ServerId, action: &str, menu_mouse: bool) -> String {
+/// The clicked session's facts, captured by the mouse dispatch that draws its
+/// menu. Each is spliced in AFTER every escaping layer, so the format itself
+/// crosses no escape and the value it expands to crosses no format.
+const CAPTURED: [(&str, &str); 7] = [
+    ("AEMENUCLIENTNAME", "#{client_name}"),
+    ("AEMENUCLIENTPID", "#{client_pid}"),
+    ("AEMENUSESSIONNAME", "#{session_name}"),
+    ("AEMENUSESSIONID", "#{session_id}"),
+    ("AEMENUPANEID", "#{pane_id}"),
+    ("AEMENUSERVERPID", "#{pid}"),
+    ("AEMENUSERVERSTART", "#{start_time}"),
+];
+
+/// Replace every capture placeholder with the tmux format it stands for.
+fn splice_captured(text: &str) -> String {
+    let mut out = text.to_owned();
+    for (placeholder, format) in CAPTURED {
+        out = out.replace(placeholder, format);
+    }
+    out
+}
+
+/// One context-menu ROW that re-execs ae with the click's captured facts.
+///
+/// The row is written with placeholders, escaped for every layer between the
+/// binding and the shell the chosen row starts, and only then given its
+/// formats: the placeholders are plain letters, so no escaper touches them and
+/// no format is escaped.
+fn session_menu_row_command(launcher: &[String], step: &str, action: &str) -> String {
+    let mut argv: Vec<String> = launcher.to_vec();
+    argv.extend([crate::cli::SESSION_MENU, step, "--action", action].map(ToOwned::to_owned));
+    for (flag, (placeholder, _)) in [
+        "--client",
+        "--client-pid",
+        "--session",
+        "--session-id",
+        "--pane",
+        "--server-pid",
+        "--server-start",
+    ]
+    .into_iter()
+    .zip(CAPTURED)
+    {
+        argv.push(flag.to_owned());
+        argv.push(placeholder.to_owned());
+    }
+    // The shell the ROW starts, then the three expanders above it.
+    let shell = argv
+        .iter()
+        .map(|word| crate::launch::shell_quote(word))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let item = crate::tmux::menu_literal(&format!(
+        "run-shell -b {}",
+        crate::tmux::tmux_double_quote(&shell)
+    ));
+    splice_captured(&mouse_dispatch_literal(&crate::launch::shell_quote(&item)))
+}
+
+/// The centred context menu a right-click on a session's status range opens.
+///
+/// `-x C -y C` is the invoking CLIENT's terminal centre, never the active pane
+/// or the mouse. Drawing it writes nothing: the Flip row keeps its own
+/// deferred guard, and the Stop row only asks ae to prepare a confirmation.
+fn session_menu_command(
+    server: &ServerId,
+    launcher: &[String],
+    action: &str,
+    menu_mouse: bool,
+) -> String {
     let mut shell_words = vec![fixed_mouse_shell_word("tmux")];
     shell_words.extend(
         server_args(server)
@@ -440,9 +525,16 @@ fn flip_menu_command(server: &ServerId, action: &str, menu_mouse: bool) -> Strin
     shell_words.push(crate::launch::shell_quote("#{pane_id}"));
     shell_words.push(fixed_mouse_shell_word("-T"));
     shell_words.push(crate::launch::shell_quote("#{session_name}"));
-    shell_words.extend(
-        ["-x", "M", "-y", "S", "Flip lead/colead panes", "f", action].map(fixed_mouse_shell_word),
-    );
+    shell_words.extend(["-x", "C", "-y", "C"].map(fixed_mouse_shell_word));
+    shell_words.extend(["Flip lead/colead panes", "f", action].map(fixed_mouse_shell_word));
+    if !launcher.is_empty() {
+        shell_words.extend([crate::session_menu::STOP_ROW_LABEL, "s"].map(fixed_mouse_shell_word));
+        shell_words.push(session_menu_row_command(
+            launcher,
+            crate::session_menu::CONFIRM,
+            crate::session_menu::STOP,
+        ));
+    }
     format!(
         "run-shell -b {}",
         tmux_current_format_double_quote(&shell_words.join(" "))
@@ -452,15 +544,16 @@ fn flip_menu_command(server: &ServerId, action: &str, menu_mouse: bool) -> Strin
 fn right_click_dispatch(
     server: &ServerId,
     picker: &str,
+    launcher: &[String],
     menu_mouse: bool,
-    flip_enabled: bool,
+    menu_enabled: bool,
 ) -> Vec<String> {
-    let flip = if flip_enabled {
-        flip_menu_command(server, MOUSE_DOWN_STATUS_MENU_ACTION, menu_mouse)
+    let menu = if menu_enabled {
+        session_menu_command(server, launcher, MOUSE_DOWN_STATUS_MENU_ACTION, menu_mouse)
     } else {
         String::new()
     };
-    let session = format_if(MOUSE_STATUS_SESSION, &flip, "");
+    let session = format_if(MOUSE_STATUS_SESSION, &menu, "");
     mouse_dispatch(format_if(MOUSE_STATUS_PICKER, picker, &session))
 }
 
@@ -518,8 +611,9 @@ pub(crate) fn status_bindings_argv(
                         server,
                         &Op::BindMouseDownStatusMenu {
                             picker: &picker,
+                            launcher,
                             menu_mouse,
-                            flip: true,
+                            menu: true,
                         },
                     ),
                     argv(server, &Op::BindPickerHotkey { shell: &hotkey }),
@@ -543,8 +637,9 @@ pub(crate) fn status_bindings_argv(
                         server,
                         &Op::BindMouseDownStatusMenu {
                             picker: "",
+                            launcher,
                             menu_mouse,
-                            flip: false,
+                            menu: false,
                         },
                     ),
                     argv(server, &Op::BindMouseUpStatus { picker: &picker }),
@@ -552,6 +647,7 @@ pub(crate) fn status_bindings_argv(
                         server,
                         &Op::BindMouseUpStatusMenu {
                             picker: &picker,
+                            launcher,
                             menu_mouse,
                         },
                     ),
@@ -769,7 +865,7 @@ mod tests {
                 "-C",
                 "-t",
                 "{mouse}",
-                "#{?#{||:#{==:#{mouse_status_range},ae},#{==:#{mouse_status_range},ae-more}},run-shell -b \"'/opt/ae' 'orchestrator' '--popup' '--client' #{q:client_name}\",#{?#{==:#{mouse_status_range},session},run-shell -b \"'tmux' '-L' 'ae' 'display-menu' '-M' '-O' '-c' #{q:client_name} '-t' '#{pane_id}' '-T' '#{session_name}' '-x' 'M' '-y' 'S' 'Flip lead/colead panes' 'f' 'if-shell -F '\\\\''########{&&:########{==:########{window_panes#}#,2#}#,########{==:########{window_zoomed_flag#}#,0#}#}'\\\\'' '\\\\''swap-pane -d -s \\\"{top-left#}\\\" -t \\\"{bottom-right#}\\\"'\\\\'' '\\\\''display-message \\\"flip needs an unzoomed two-pane window\\\"'\\\\'''\",}}"
+                "#{?#{||:#{==:#{mouse_status_range},ae},#{==:#{mouse_status_range},ae-more}},run-shell -b \"'/opt/ae' 'orchestrator' '--popup' '--client' #{q:client_name}\",#{?#{==:#{mouse_status_range},session},run-shell -b \"'tmux' '-L' 'ae' 'display-menu' '-M' '-O' '-c' #{q:client_name} '-t' '#{pane_id}' '-T' '#{session_name}' '-x' 'C' '-y' 'C' 'Flip lead/colead panes' 'f' 'if-shell -F '\\\\''########{&&:########{==:########{window_panes#}#,2#}#,########{==:########{window_zoomed_flag#}#,0#}#}'\\\\'' '\\\\''swap-pane -d -s \\\"{top-left#}\\\" -t \\\"{bottom-right#}\\\"'\\\\'' '\\\\''display-message \\\"flip needs an unzoomed two-pane window\\\"'\\\\''' 'Stop session...' 's' 'run-shell -b \\\"'\\\\''/opt/ae'\\\\'' '\\\\''_session-menu'\\\\'' '\\\\''confirm'\\\\'' '\\\\''--action'\\\\'' '\\\\''stop'\\\\'' '\\\\''--client'\\\\'' '\\\\''#{client_name}'\\\\'' '\\\\''--client-pid'\\\\'' '\\\\''#{client_pid}'\\\\'' '\\\\''--session'\\\\'' '\\\\''#{session_name}'\\\\'' '\\\\''--session-id'\\\\'' '\\\\''#{session_id}'\\\\'' '\\\\''--pane'\\\\'' '\\\\''#{pane_id}'\\\\'' '\\\\''--server-pid'\\\\'' '\\\\''#{pid}'\\\\'' '\\\\''--server-start'\\\\'' '\\\\''#{start_time}'\\\\''\\\"'\",}}"
             ]
         );
         assert_eq!(
@@ -874,7 +970,7 @@ mod tests {
                 "-C",
                 "-t",
                 "{mouse}",
-                "#{?#{||:#{==:#{mouse_status_range},ae},#{==:#{mouse_status_range},ae-more}},run-shell -b \"'/opt/ae' 'orchestrator' '--popup' '--client' #{q:client_name}\",#{?#{==:#{mouse_status_range},session},run-shell -b \"'tmux' '-L' 'ae' 'display-menu' '-O' '-c' #{q:client_name} '-t' '#{pane_id}' '-T' '#{session_name}' '-x' 'M' '-y' 'S' 'Flip lead/colead panes' 'f' 'if-shell -F '\\\\''########{&&:########{==:########{window_panes#}#,2#}#,########{==:########{window_zoomed_flag#}#,0#}#}'\\\\'' '\\\\''swap-pane -d -s \\\"{top-left#}\\\" -t \\\"{bottom-right#}\\\"'\\\\'' '\\\\''display-message \\\"flip needs an unzoomed two-pane window\\\"'\\\\'''\",}}"
+                "#{?#{||:#{==:#{mouse_status_range},ae},#{==:#{mouse_status_range},ae-more}},run-shell -b \"'/opt/ae' 'orchestrator' '--popup' '--client' #{q:client_name}\",#{?#{==:#{mouse_status_range},session},run-shell -b \"'tmux' '-L' 'ae' 'display-menu' '-O' '-c' #{q:client_name} '-t' '#{pane_id}' '-T' '#{session_name}' '-x' 'C' '-y' 'C' 'Flip lead/colead panes' 'f' 'if-shell -F '\\\\''########{&&:########{==:########{window_panes#}#,2#}#,########{==:########{window_zoomed_flag#}#,0#}#}'\\\\'' '\\\\''swap-pane -d -s \\\"{top-left#}\\\" -t \\\"{bottom-right#}\\\"'\\\\'' '\\\\''display-message \\\"flip needs an unzoomed two-pane window\\\"'\\\\''' 'Stop session...' 's' 'run-shell -b \\\"'\\\\''/opt/ae'\\\\'' '\\\\''_session-menu'\\\\'' '\\\\''confirm'\\\\'' '\\\\''--action'\\\\'' '\\\\''stop'\\\\'' '\\\\''--client'\\\\'' '\\\\''#{client_name}'\\\\'' '\\\\''--client-pid'\\\\'' '\\\\''#{client_pid}'\\\\'' '\\\\''--session'\\\\'' '\\\\''#{session_name}'\\\\'' '\\\\''--session-id'\\\\'' '\\\\''#{session_id}'\\\\'' '\\\\''--pane'\\\\'' '\\\\''#{pane_id}'\\\\'' '\\\\''--server-pid'\\\\'' '\\\\''#{pid}'\\\\'' '\\\\''--server-start'\\\\'' '\\\\''#{start_time}'\\\\''\\\"'\",}}"
             ]
         );
         assert_eq!(
@@ -908,6 +1004,128 @@ mod tests {
             status_bindings_argv(&ServerId::Ambient, &["/opt/ae".to_owned()], true).is_empty(),
             "an ambient server's root table belongs to its user"
         );
+    }
+
+    /// The context menu is drawn in the middle of the terminal that asked for
+    /// it. `M`/`S` put it at the mouse, which is the bottom status line the
+    /// click happened on, and `0`/`S` is the fleet picker's own corner.
+    #[test]
+    fn the_session_context_menu_is_centred_on_its_client_and_the_picker_is_not() {
+        let server = ServerId::Selected(crate::meta::Selector::Name("ae".to_owned()));
+        let menu = session_menu_command(
+            &server,
+            &["/opt/ae".to_owned()],
+            MOUSE_DOWN_STATUS_MENU_ACTION,
+            true,
+        );
+        assert!(
+            menu.contains("'-x' 'C' '-y' 'C'"),
+            "the session menu centres on the whole client: {menu}"
+        );
+        assert!(
+            !menu.contains("'-x' 'M'") && !menu.contains("'-y' 'S'"),
+            "neither the mouse nor the status line positions it: {menu}"
+        );
+        assert!(
+            crate::tmux::display_menu_args(
+                &server,
+                &crate::tmux::Menu {
+                    title: String::new(),
+                    title_style: String::new(),
+                    items: Vec::new(),
+                },
+                true
+            )
+            .windows(4)
+            .any(|words| words == ["-x", "0", "-y", "S"]),
+            "the fleet picker keeps its bottom-left button"
+        );
+    }
+
+    /// The Flip row is UNCHANGED by the new neighbour: same target pane, same
+    /// deferred predicate, same hash count.
+    #[test]
+    fn the_flip_row_keeps_its_target_and_its_deferred_guard() {
+        let server = ServerId::Selected(crate::meta::Selector::Name("ae".to_owned()));
+        let menu = session_menu_command(
+            &server,
+            &["/opt/ae".to_owned()],
+            MOUSE_DOWN_STATUS_MENU_ACTION,
+            true,
+        );
+        assert!(
+            menu.contains("'-t' '#{pane_id}'"),
+            "the menu acts on the CLICKED pane, not the client's own: {menu}"
+        );
+        assert!(
+            menu.contains("'Flip lead/colead panes' 'f' ")
+                && menu.contains(
+                    crate::tmux::tmux_current_format_double_quote(&fixed_mouse_shell_word(
+                        MOUSE_DOWN_STATUS_MENU_ACTION
+                    ))
+                    .trim_start_matches('"')
+                    .trim_end_matches('"')
+                ),
+            "the guard is still the deferred one: {menu}"
+        );
+    }
+
+    /// The Stop row carries the click's own facts, each as ONE shell word, and
+    /// the formats that produce them are never escaped.
+    /// A single quote inside the row crosses the outer double quote too, so
+    /// the backslash the inner shell needs is written twice by the time the
+    /// binding holds it.
+    const ESC: &str = "\\\\";
+
+    #[test]
+    fn the_stop_row_carries_every_captured_fact_as_one_quoted_word() {
+        let server = ServerId::Selected(crate::meta::Selector::Name("ae".to_owned()));
+        let menu = session_menu_command(
+            &server,
+            &["/opt/ae".to_owned()],
+            MOUSE_DOWN_STATUS_MENU_ACTION,
+            true,
+        );
+        assert!(
+            menu.contains("'Stop session...' 's' "),
+            "the row and its own key: {menu}"
+        );
+        for (flag, format) in [
+            ("--client", "#{client_name}"),
+            ("--client-pid", "#{client_pid}"),
+            ("--session", "#{session_name}"),
+            ("--session-id", "#{session_id}"),
+            ("--pane", "#{pane_id}"),
+            ("--server-pid", "#{pid}"),
+            ("--server-start", "#{start_time}"),
+        ] {
+            assert!(
+                menu.contains(&format!("{flag}'{ESC}'' '{ESC}''{format}")),
+                "{flag} is followed by {format} as its own word: {menu}"
+            );
+        }
+        assert!(
+            !menu.contains("AEMENU"),
+            "no placeholder survives into the binding: {menu}"
+        );
+        assert!(
+            menu.contains(&format!(
+                "'_session-menu'{ESC}'' '{ESC}''confirm'{ESC}'' '{ESC}''--action'{ESC}'' '{ESC}''stop'"
+            )),
+            "the row names the internal step and its action: {menu}"
+        );
+    }
+
+    /// A server ae may not bind gets no row that would re-exec ae at all.
+    #[test]
+    fn a_menu_without_a_launcher_offers_only_the_native_flip() {
+        let server = ServerId::Selected(crate::meta::Selector::Name("ae".to_owned()));
+        let menu = session_menu_command(&server, &[], MOUSE_DOWN_STATUS_MENU_ACTION, true);
+        assert!(
+            !menu.contains("Stop session") && !menu.contains("_session-menu"),
+            "no launcher, no ae row: {menu}"
+        );
+        assert!(menu.contains("'Flip lead/colead panes'"));
     }
 
     #[test]

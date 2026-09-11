@@ -1281,7 +1281,7 @@ pub(crate) fn tmux_current_format_double_quote(text: &str) -> String {
 }
 
 /// One argument in tmux's deferred command language.
-fn tmux_double_quote(text: &str) -> String {
+pub(crate) fn tmux_double_quote(text: &str) -> String {
     let mut out = String::with_capacity(text.len() + 2);
     out.push('"');
     for ch in text.chars() {
@@ -1422,10 +1422,61 @@ const DISABLED_PREFIX: char = '-';
 /// before any name is read, whatever the rows turn out to be.
 const END_OF_FLAGS: &str = "--";
 
+/// Where a session's context menu is drawn — centred on the invoking client's
+/// WHOLE terminal, not on its active pane or the mouse.
+///
+/// tmux 3.4 reads `C` from the client's own `tty->sx`/`tty->sy` and clamps the
+/// result, so a split client centres on the terminal it owns:
+/// <https://github.com/tmux/tmux/blob/3.4/cmd-display-menu.c#L165-L244>.
+const CENTRE_POSITION: [&str; 4] = ["-x", "C", "-y", "C"];
+
 /// The arguments that draw `menu` on `server`'s current client.
 #[must_use]
 pub fn display_menu_args(server: &ServerId, menu: &Menu, menu_mouse: bool) -> Vec<String> {
     display_menu_for_client_args(server, None, menu, menu_mouse)
+}
+
+/// The arguments that draw `menu` CENTRED on one explicit client, with one
+/// explicit target pane supplying the command context every row inherits.
+///
+/// The fleet picker keeps its bottom-left button position; a session's context
+/// menu is a modal answer to a click on that session's own status range, so it
+/// is drawn in the middle of the terminal that asked for it.
+#[must_use]
+pub fn display_menu_centred_args(
+    server: &ServerId,
+    client: &str,
+    target: &str,
+    menu: &Menu,
+    menu_mouse: bool,
+) -> Vec<String> {
+    let mut args = server_args(server);
+    args.push("display-menu".to_owned());
+    if menu_mouse {
+        args.push("-M".to_owned());
+    }
+    args.push("-O".to_owned());
+    args.extend(["-c".to_owned(), client.to_owned()]);
+    args.extend(["-t".to_owned(), target.to_owned()]);
+    args.extend(CENTRE_POSITION.map(ToOwned::to_owned));
+    args.push("-T".to_owned());
+    args.push(titled(menu));
+    args.push(END_OF_FLAGS.to_owned());
+    for item in &menu.items {
+        args.extend(item_words(item));
+    }
+    args
+}
+
+/// A `run-shell -b` re-exec of `argv` written as ONE MENU ITEM command.
+///
+/// Two expanders read it, in this order: `display-menu` expands an item's
+/// command when the menu is built, and `run-shell` expands its shell command
+/// when the chosen row runs. [`run_shell_background_command`] already answers
+/// the second, so this doubles every hash once more for the first.
+#[must_use]
+pub fn menu_run_shell_command(argv: &[String]) -> String {
+    menu_literal(&run_shell_background_command(argv))
 }
 
 /// The arguments that draw `menu` on one explicit client.
@@ -1892,6 +1943,121 @@ pub fn interpret_picker_client_session(
     });
     let snapshot = matches.next()?;
     matches.next().is_none().then_some(snapshot)
+}
+
+/// The explicit client's name, its process, the session it views and its
+/// drawable dimensions.
+///
+/// A client NAME is a tty path, and a tty path is reused: a client that
+/// detached and another that attached on the same terminal answer to the same
+/// name. The pid separates them, so a confirmation built for one attachment
+/// cannot be applied by its successor.
+pub const MENU_CLIENT_FORMAT: &str =
+    "#{client_name} | #{client_pid} | #{session_id} | #{client_height} | #{client_width}";
+
+/// How many [`FIELD_SEPARATOR`]-separated fields [`MENU_CLIENT_FORMAT`] makes.
+const MENU_CLIENT_FIELDS: usize = 5;
+
+/// One exact menu client's live snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MenuClient {
+    /// The client process, as tmux reports it.
+    pub pid: String,
+    /// The session this client is currently viewing.
+    pub session_id: String,
+    /// The client's terminal rows.
+    pub height: usize,
+    /// The client's terminal columns.
+    pub width: usize,
+}
+
+/// List every attached client once so a menu can resolve its explicit client.
+#[must_use]
+pub fn menu_clients_args(server: &ServerId) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(["list-clients", "-F", MENU_CLIENT_FORMAT].map(ToOwned::to_owned));
+    args
+}
+
+/// The one row belonging to exactly one `client`, or `None`.
+///
+/// Two rows for one name is an ambiguity, not a choice: this returns nothing
+/// rather than picking one of them.
+#[must_use]
+pub fn interpret_menu_client(succeeded: bool, stdout: &str, client: &str) -> Option<MenuClient> {
+    if !succeeded {
+        return None;
+    }
+    let mut matches = stdout.lines().filter_map(|line| {
+        let fields: Vec<&str> = line.split(FIELD_SEPARATOR).collect();
+        if fields.len() != MENU_CLIENT_FIELDS {
+            return None;
+        }
+        let [found, pid, session_id, height, width] = fields.as_slice() else {
+            return None;
+        };
+        if *found != client || !session_id_is_valid(session_id) || !is_decimal(pid) {
+            return None;
+        }
+        Some(MenuClient {
+            pid: (*pid).to_owned(),
+            session_id: (*session_id).to_owned(),
+            height: height.parse().ok()?,
+            width: width.parse().ok()?,
+        })
+    });
+    let snapshot = matches.next()?;
+    matches.next().is_none().then_some(snapshot)
+}
+
+/// The running tmux server's process and the moment it started.
+///
+/// tmux 3.4 records `start_time` once, after it daemonises, and renders it as
+/// whole epoch seconds. This pair is a PRACTICAL restart check, not a lifetime
+/// token: neither field identifies a server on its own, and the pair itself
+/// repeats when a replacement server takes a reused pid within the same second.
+/// That residual is the accepted one; the alternative is a new persisted
+/// protocol, which is not worth its own hostile parser.
+pub const SERVER_IDENTITY_FORMAT: &str = "#{pid} | #{start_time}";
+
+/// One server's identity pair.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerIdentity {
+    /// The server process id.
+    pub pid: String,
+    /// The epoch second the server started.
+    pub start: String,
+}
+
+/// Ask `server` for its identity pair.
+#[must_use]
+pub fn server_identity_args(server: &ServerId) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(["display-message", "-p", SERVER_IDENTITY_FORMAT].map(ToOwned::to_owned));
+    args
+}
+
+/// The identity pair a completed [`server_identity_args`] run printed.
+#[must_use]
+pub fn interpret_server_identity(succeeded: bool, stdout: &str) -> Option<ServerIdentity> {
+    if !succeeded {
+        return None;
+    }
+    let line = stdout.lines().next()?;
+    let fields: Vec<&str> = line.split(FIELD_SEPARATOR).collect();
+    let [pid, start] = fields.as_slice() else {
+        return None;
+    };
+    (is_decimal(pid) && is_decimal(start)).then(|| ServerIdentity {
+        pid: (*pid).to_owned(),
+        start: (*start).to_owned(),
+    })
+}
+
+/// A nonempty run of ASCII digits, which is every numeric field tmux prints
+/// here and the only shape this module admits as one.
+pub(crate) fn is_decimal(text: &str) -> bool {
+    !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 /// One picker row, identity first and its free-text goal last.

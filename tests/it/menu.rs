@@ -2232,3 +2232,370 @@ fn a_status_menu_flip_refuses_after_clicked_window_grows() {
         );
     });
 }
+
+/// Whether the session state a stop must PRESERVE is still on disk.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "a fixture reading its own scratch directory; the capability boundary is about what PRODUCT code may reach"
+)]
+fn state_kept(dir: &Path) -> bool {
+    fs::metadata(dir).is_ok()
+}
+
+/// The exact bytes of one session's metadata, for a byte-identical claim.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "a fixture reading its own scratch directory; the capability boundary is about what PRODUCT code may reach"
+)]
+fn meta_bytes(dir: &Path) -> Vec<u8> {
+    fs::read(dir.join("meta")).unwrap_or_default()
+}
+
+/// The events one session recorded, or nothing when it recorded none.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "a fixture reading its own scratch directory; the capability boundary is about what PRODUCT code may reach"
+)]
+fn events_of(dir: &Path) -> String {
+    fs::read_to_string(dir.join("events.jsonl")).unwrap_or_default()
+}
+
+/// Wait until `session` is gone from `socket`, or give up and report.
+fn session_gone(socket: &Path, scratch: &Path, session: &str) -> bool {
+    for _ in 0..80 {
+        let listed = tmux(socket, scratch, &["list-sessions", "-F", "#{session_name}"]).1;
+        if !listed.lines().any(|line| line == session) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    false
+}
+
+/// The row the menu overlay drew `needle` on, counted from the top of the
+/// captured client.
+fn row_of(text: &str, needle: &str) -> usize {
+    text.lines()
+        .position(|line| line.contains(needle))
+        .unwrap_or_else(|| panic!("{needle:?} is not on the client: {text}"))
+}
+
+/// Open the clicked session's context menu from a real right-click and return
+/// what the invoking client then shows.
+fn open_context_menu(socket: &Path, scratch: &Path, viewer: &str, client: &str) -> String {
+    let height_text = tmux(
+        socket,
+        scratch,
+        &["display-message", "-p", "-c", client, "#{client_height}"],
+    )
+    .1;
+    let height = height_text
+        .trim()
+        .parse::<usize>()
+        .unwrap_or_else(|_| panic!("client height: {height_text:?}"));
+    let menu_mouse = menu_mouse(socket);
+    mouse_event(socket, scratch, viewer, 2, 2, height, 'M');
+    if !menu_mouse {
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    mouse_event(socket, scratch, viewer, 2, 2, height, 'm');
+    wait_for(
+        "the clicked session's context menu",
+        || tmux(socket, scratch, &["capture-pane", "-p", "-t", viewer]).1,
+        |seen| seen.contains("Flip lead/colead panes") && seen.contains("Stop session"),
+    )
+}
+
+/// The whole forward chain, from a real right-click to a stopped session.
+///
+/// Two ae sessions, and the client is attached to the one that is NOT clicked:
+/// every step has to carry the clicked session, never the viewed one. Cancel
+/// must leave both alive, and only the confirmed row may stop anything.
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one end-to-end story: click, centred menu, confirm, cancel, confirm again, stop"
+)]
+fn a_right_click_offers_stop_and_only_a_confirmed_row_stops_the_clicked_session() {
+    let scratch = scratch("session-menu-stop");
+    if !tmux_present(&scratch) {
+        let _ = fs::remove_dir_all(&scratch);
+        panic!("tmux is not runnable here, so the session menu chain cannot be proven");
+    }
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let root = scratch.join("state");
+    let project = scratch.join("project");
+    let config = scratch.join("config");
+    assert!(fs::create_dir_all(&project).is_ok());
+    assert!(
+        fs::write(
+            &config,
+            "[profiles]\nidle = \"sleep 600\"\n\n[roster]\nlead = idle\n\n[workspace]\nmain = lead\nlayout = vertical\nwatchdog = false\n",
+        )
+        .is_ok()
+    );
+    for session in ["menu-clicked", "menu-viewed"] {
+        launch_ae_session(&socket, &scratch, &root, &project, &config, session);
+    }
+    let listing = tmux(
+        &socket,
+        &scratch,
+        &["list-sessions", "-F", "#{session_name}|#{session_id}"],
+    )
+    .1;
+    let clicked_id = listing
+        .lines()
+        .find_map(|line| line.strip_prefix("menu-clicked|"))
+        .unwrap_or_else(|| panic!("the clicked session is on the server: {listing}"))
+        .to_owned();
+
+    // A deterministic `session` range on the VIEWED session's status line,
+    // naming the session that is NOT being viewed.
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &[
+                "set-option",
+                "-t",
+                "menu-viewed",
+                "status-format[1]",
+                &format!("#[range=session|{clicked_id}] C #[norange]"),
+            ],
+        )
+        .0,
+        "set a deterministic session range"
+    );
+    // The viewed session gets a second pane: a centred menu must use the
+    // client's whole terminal, not the pane the click landed in.
+    assert!(tmux(&socket, &scratch, &["split-window", "-t", "menu-viewed"]).0);
+    let viewer = "menu-viewer";
+    let client = nested_client(&socket, &scratch, "menu-viewed", viewer);
+    // A SECOND client on the same session. `$TMUX_PANE` cannot tell the two
+    // apart, so only the explicit client carried through the chain can.
+    let bystander = "menu-bystander";
+    let _ = nested_client(&socket, &scratch, "menu-viewed", bystander);
+    std::thread::sleep(Duration::from_millis(600));
+
+    let menu = open_context_menu(&socket, &scratch, viewer, &client);
+    assert!(
+        menu.contains("menu-clicked"),
+        "the menu is titled with the CLICKED session: {menu}"
+    );
+    let height_text = tmux(
+        &socket,
+        &scratch,
+        &["display-message", "-p", "-c", &client, "#{client_height}"],
+    )
+    .1;
+    let height = height_text
+        .trim()
+        .parse::<usize>()
+        .unwrap_or_else(|_| panic!("client height: {height_text:?}"));
+    let flip_row = row_of(&menu, "Flip lead/colead panes");
+    assert!(
+        flip_row > height / 5 && flip_row < height * 4 / 5,
+        "the menu is centred on the client, not parked at the status line: row {flip_row} of {height}\n{menu}"
+    );
+
+    // The first row only ASKS. Cancel must leave both sessions alone.
+    assert!(tmux(&socket, &scratch, &["send-keys", "-t", viewer, "s"]).0);
+    let confirm = wait_for(
+        "the confirmation menu",
+        || tmux(&socket, &scratch, &["capture-pane", "-p", "-t", viewer]).1,
+        |seen| seen.contains("Stop 'menu-clicked' now"),
+    );
+    assert!(
+        confirm.contains("Stop session 'menu-clicked'?") && confirm.contains("Cancel"),
+        "the confirmation names the exact session and offers cancel first: {confirm}"
+    );
+    let other = tmux(&socket, &scratch, &["capture-pane", "-p", "-t", bystander]).1;
+    assert!(
+        !other.contains("Stop 'menu-clicked' now"),
+        "the confirmation reached a client that did not ask for it: {other}"
+    );
+    let clicked_dir = root.join("sessions").join("menu-clicked");
+    let before_meta = meta_bytes(&clicked_dir);
+    let before_events = events_of(&clicked_dir);
+    assert!(
+        !before_meta.is_empty(),
+        "the fixture has metadata to compare"
+    );
+
+    // CANCEL, then ESCAPE: dismissing the question and answering "no" must be
+    // the same act, and neither may touch anything.
+    assert!(tmux(&socket, &scratch, &["send-keys", "-t", viewer, "c"]).0);
+    std::thread::sleep(Duration::from_secs(2));
+    let dismissed = open_context_menu(&socket, &scratch, viewer, &client);
+    assert!(dismissed.contains("Stop session"), "{dismissed}");
+    assert!(tmux(&socket, &scratch, &["send-keys", "-t", viewer, "s"]).0);
+    wait_for(
+        "the confirmation menu before Escape",
+        || tmux(&socket, &scratch, &["capture-pane", "-p", "-t", viewer]).1,
+        |seen| seen.contains("Stop 'menu-clicked' now"),
+    );
+    assert!(tmux(&socket, &scratch, &["send-keys", "-t", viewer, "Escape"]).0);
+    std::thread::sleep(Duration::from_secs(2));
+
+    let listed = tmux(
+        &socket,
+        &scratch,
+        &["list-sessions", "-F", "#{session_name}"],
+    )
+    .1;
+    for session in ["menu-clicked", "menu-viewed"] {
+        assert!(
+            listed.lines().any(|line| line == session),
+            "cancel or escape stopped {session}: {listed}"
+        );
+    }
+    assert!(state_kept(&clicked_dir), "cancel removed session state");
+    assert_eq!(
+        meta_bytes(&clicked_dir),
+        before_meta,
+        "cancel and escape must leave the metadata byte for byte"
+    );
+    assert_eq!(
+        events_of(&clicked_dir),
+        before_events,
+        "cancel and escape must write no event at all"
+    );
+
+    // The destructive row, and only it, hands the stop to the lifecycle owner.
+    let reopened = open_context_menu(&socket, &scratch, viewer, &client);
+    assert!(reopened.contains("Stop session"), "{reopened}");
+    assert!(tmux(&socket, &scratch, &["send-keys", "-t", viewer, "s"]).0);
+    wait_for(
+        "the confirmation menu again",
+        || tmux(&socket, &scratch, &["capture-pane", "-p", "-t", viewer]).1,
+        |seen| seen.contains("Stop 'menu-clicked' now"),
+    );
+    assert!(tmux(&socket, &scratch, &["send-keys", "-t", viewer, "S"]).0);
+    assert!(
+        session_gone(&socket, &scratch, "menu-clicked"),
+        "the confirmed session is still running"
+    );
+    let listed = tmux(
+        &socket,
+        &scratch,
+        &["list-sessions", "-F", "#{session_name}"],
+    )
+    .1;
+    assert!(
+        listed.lines().any(|line| line == "menu-viewed"),
+        "the session the client was VIEWING must be untouched: {listed}"
+    );
+    let bystander_saw = tmux(&socket, &scratch, &["capture-pane", "-p", "-t", bystander]).1;
+    assert!(
+        !bystander_saw.contains("Stopped menu-clicked"),
+        "the outcome of one human's answer was broadcast to another client: {bystander_saw}"
+    );
+    assert!(
+        state_kept(&root.join("sessions").join("menu-clicked")),
+        "a stop preserves the session's state"
+    );
+    let events = events_of(&root.join("sessions").join("menu-clicked"));
+    assert!(
+        events.contains("stop confirmed on the session menu by client"),
+        "the human's confirmation is recorded with its provenance: {events}"
+    );
+}
+
+/// The harder half of the same story: the client is attached to the session it
+/// clicks. The `run-shell` job that answers lives on the server, so the stop
+/// must still complete after the pane the human was looking at is gone — which
+/// is exactly what the detached supervisor is for.
+#[test]
+fn confirming_the_session_you_are_viewing_still_completes_out_of_pane() {
+    let scratch = scratch("session-menu-self");
+    if !tmux_present(&scratch) {
+        let _ = fs::remove_dir_all(&scratch);
+        panic!("tmux is not runnable here, so the self-stop menu chain cannot be proven");
+    }
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let root = scratch.join("state");
+    let project = scratch.join("project");
+    let config = scratch.join("config");
+    assert!(fs::create_dir_all(&project).is_ok());
+    assert!(
+        fs::write(
+            &config,
+            "[profiles]\nidle = \"sleep 600\"\n\n[roster]\nlead = idle\n\n[workspace]\nmain = lead\nlayout = vertical\nwatchdog = false\n",
+        )
+        .is_ok()
+    );
+    // A second session so the fleet is not emptied by the one being stopped.
+    for session in ["self-stopped", "self-other"] {
+        launch_ae_session(&socket, &scratch, &root, &project, &config, session);
+    }
+    let listing = tmux(
+        &socket,
+        &scratch,
+        &["list-sessions", "-F", "#{session_name}|#{session_id}"],
+    )
+    .1;
+    let own_id = listing
+        .lines()
+        .find_map(|line| line.strip_prefix("self-stopped|"))
+        .unwrap_or_else(|| panic!("the session is on the server: {listing}"))
+        .to_owned();
+    // The clicked range names the session the client is ALREADY viewing.
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &[
+                "set-option",
+                "-t",
+                "self-stopped",
+                "status-format[1]",
+                &format!("#[range=session|{own_id}] C #[norange]"),
+            ],
+        )
+        .0
+    );
+    let viewer = "self-viewer";
+    let client = nested_client(&socket, &scratch, "self-stopped", viewer);
+    std::thread::sleep(Duration::from_millis(600));
+
+    let menu = open_context_menu(&socket, &scratch, viewer, &client);
+    assert!(menu.contains("self-stopped"), "{menu}");
+    assert!(tmux(&socket, &scratch, &["send-keys", "-t", viewer, "s"]).0);
+    wait_for(
+        "the confirmation for the session being viewed",
+        || tmux(&socket, &scratch, &["capture-pane", "-p", "-t", viewer]).1,
+        |seen| seen.contains("Stop 'self-stopped' now"),
+    );
+    assert!(tmux(&socket, &scratch, &["send-keys", "-t", viewer, "S"]).0);
+    assert!(
+        session_gone(&socket, &scratch, "self-stopped"),
+        "a session confirmed from inside itself must still be stopped"
+    );
+    let listed = tmux(
+        &socket,
+        &scratch,
+        &["list-sessions", "-F", "#{session_name}"],
+    )
+    .1;
+    assert!(
+        listed.lines().any(|line| line == "self-other"),
+        "and only that one: {listed}"
+    );
+    assert!(
+        state_kept(&root.join("sessions").join("self-stopped")),
+        "a stop preserves the state of the session it was run from"
+    );
+    let events = events_of(&root.join("sessions").join("self-stopped"));
+    assert!(
+        events.contains("stop confirmed on the session menu by client"),
+        "the provenance survives the pane that asked: {events}"
+    );
+}

@@ -133,6 +133,10 @@ pub const END: &str = "_end";
 /// The whole `stop` operation: `_stop <session-name|all> [-y]`.
 pub const STOP: &str = "_stop";
 
+/// The session context menu's own chain: `_session-menu <confirm|apply> …`.
+/// Internal — a status binding runs it, never a helper and never a human.
+pub const SESSION_MENU: &str = "_session-menu";
+
 /// The whole `compact` operation: `_compact [-f] [--keep-history]
 /// [--digest-only] <session-name> [--exec-plan <path>]`.
 pub const COMPACT: &str = "_compact";
@@ -486,6 +490,11 @@ pub enum Request {
     },
     /// `_stop …` — validated by [`crate::lifecycle::run_stop`].
     Stop {
+        /// Everything after the subcommand, as typed.
+        tail: Vec<String>,
+    },
+    /// `_session-menu …` — validated by [`crate::session_menu::parse`].
+    SessionMenu {
         /// Everything after the subcommand, as typed.
         tail: Vec<String>,
     },
@@ -1218,6 +1227,9 @@ impl Request {
             Some(STOP) => Self::Stop {
                 tail: args[1..].to_vec(),
             },
+            Some(SESSION_MENU) => Self::SessionMenu {
+                tail: args[1..].to_vec(),
+            },
             Some(COMPACT) => Self::Compact {
                 tail: args[1..].to_vec(),
             },
@@ -1384,6 +1396,7 @@ impl Request {
             | Self::Retire { .. }
             | Self::End { .. }
             | Self::Stop { .. }
+            | Self::SessionMenu { .. }
             | Self::Compact { .. }
             | Self::ManifestRender { .. }
             | Self::Context { .. } => None,
