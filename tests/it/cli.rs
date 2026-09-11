@@ -2480,6 +2480,68 @@ fn ask_composes_the_frozen_message_delivers_through_send_and_writes_the_slotted_
     );
 }
 
+/// The REQUEST half of the retire rule, against the writer that really records
+/// one: `ask` runs for real here, and what it wrote is what the reader judges.
+///
+/// The point of driving the helper rather than composing the line is that the
+/// rule depends on the tracked writer recording BOTH halves of its target's
+/// routing key. A fixture that builds the event itself cannot notice the writer
+/// dropping one, so it would pin nothing. Drop `target_session` in
+/// `src/tracked.rs` and the retire below stops closing this request.
+#[test]
+fn a_retired_seat_closes_the_request_the_real_ask_writer_recorded() {
+    let fx = Tracked::new("zomb");
+    let asked = fx.run(
+        ae::cli::ASK,
+        Some(&fx.main),
+        &["worker", "still", "there"],
+        &[],
+    );
+    assert_eq!(asked, (Some(0), String::new(), String::new()));
+
+    let open = ae::session::SessionRead::open(&fx.dir).expect("the log reads");
+    assert_eq!(
+        open.pending.len(),
+        1,
+        "the ask is waiting: {:?}",
+        open.events
+    );
+    let recorded = fx.events();
+    assert_eq!(recorded.len(), 1, "{recorded:?}");
+
+    // The seat gives up. `retire` refuses a launch seat, so the record is
+    // planted rather than run; the RETIRE writer's own shape is pinned where it
+    // can be run, in `spawn.rs`.
+    let gave_up = concat!(
+        r#"{"ts":"2026-08-27T07:11:12Z","actor":"lead","action":"retire","#,
+        r#""target":"worker","target_slot":"worker.0","summary":"tool=claude"}"#,
+    );
+    let mut log = recorded.join("\n");
+    log.push('\n');
+    log.push_str(gave_up);
+    log.push('\n');
+    assert!(
+        std::fs::write(fx.dir.join("events.jsonl"), &log).is_ok(),
+        "the ledger takes the retire"
+    );
+
+    // THE RULE, over what the writer actually wrote. This assertion is the pin:
+    // it fails on a writer that stops recording the key, before any assertion
+    // about the recorded text does.
+    let closed = ae::session::SessionRead::open(&fx.dir).expect("the log reads");
+    assert!(
+        closed.pending.is_empty(),
+        "the retire closed the request this writer recorded. The ask as RECORDED: {}",
+        recorded[0],
+    );
+    assert!(
+        recorded[0].contains(r#""target_slot":"worker.0""#)
+            && recorded[0].contains(r#""target_session":"trzomb""#),
+        "and that is because the writer recorded both halves of the key: {}",
+        recorded[0],
+    );
+}
+
 #[test]
 fn review_carries_its_instructions_and_every_target_spelling_resolves_as_the_helper_does() {
     let fx = Tracked::new("rev");

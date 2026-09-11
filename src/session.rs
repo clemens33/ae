@@ -162,14 +162,21 @@ pub struct Outstanding<'a> {
 impl<'a> Outstanding<'a> {
     /// Read one session's ledger.
     ///
+    /// `session` is the session these events belong to — the half of a routing
+    /// key a `retire` record does not spell, because the session that owns a
+    /// seat is the one that retires it. [`open_requests`] needs it to match a
+    /// retire against the seat a request was sent to.
+    ///
     /// `live` names the agents that still HOLD a seat right now: the panes this
     /// cycle proved held for the watchdog, the answered roster for `ae list`. A
     /// spawn whose agent is gone from that list is over whether or not anybody
-    /// recorded the retire.
+    /// recorded the retire. It judges the SPAWN leg alone: the sent leg is
+    /// closed by the ledger and never by a roster, so an absent roster entry
+    /// closes no request.
     #[must_use]
-    pub fn read(events: &'a [Event], live: &[String]) -> Self {
+    pub fn read(events: &'a [Event], session: &str, live: &[String]) -> Self {
         Self {
-            sent: open_requests(events),
+            sent: open_requests(events, session),
             spawned: live_spawns(events, live),
         }
     }
@@ -252,7 +259,10 @@ impl SessionRead {
     pub fn open(dir: &Path) -> io::Result<Self> {
         let log = EventLog::discover(dir);
         let drain = log.drain_all(Cursor::default())?;
-        Ok(Self::from_drain(&drain))
+        // A session directory is named for its session, so a reader that opened
+        // one knows which session's requests it is about to judge.
+        let session = dir.file_name().and_then(|name| name.to_str());
+        Ok(Self::from_drain_in(&drain, session.unwrap_or_default()))
     }
 
     /// Read an already-drained stream.
@@ -285,9 +295,21 @@ impl SessionRead {
     /// ```
     #[must_use]
     pub fn from_drain(drain: &Drain) -> Self {
+        Self::from_drain_in(drain, "")
+    }
+
+    /// Read an already-drained stream, knowing which session it belongs to.
+    ///
+    /// `session` is what [`open_requests`] matches a `retire` against, so a
+    /// caller that names its session has those requests closed and a caller
+    /// that does not keeps them all. The empty name is that second caller, and
+    /// it closes nothing: a routing key's session half is only ever written
+    /// with a value, so an empty name matches no target at all.
+    #[must_use]
+    pub fn from_drain_in(drain: &Drain, session: &str) -> Self {
         Self {
             last_active: drain.events.iter().map(|event| event.ts).max(),
-            pending: pending_requests(&drain.events),
+            pending: pending_requests(&drain.events, session),
             cursor: drain.cursor,
             skipped: drain.skipped.clone(),
             events: drain.events.clone(),
@@ -852,7 +874,7 @@ fn agent_entries(
         .filter(|slot| agent_liveness(runtime, runtime.agent(&slot.slot)) != Some(false))
         .map(crate::meta::RosterEntry::reference)
         .collect();
-    let outstanding = read.map(|read| Outstanding::read(&read.events, &seats));
+    let outstanding = read.map(|read| Outstanding::read(&read.events, session, &seats));
     meta.roster()
         .iter()
         .map(|slot| {
@@ -930,8 +952,8 @@ fn declared_reason(state: &str) -> Option<Reason> {
 }
 
 /// The `ask`/`review` requests nothing has closed, oldest first.
-fn pending_requests(events: &[Event]) -> Vec<PendingRequest> {
-    open_requests(events)
+fn pending_requests(events: &[Event], session: &str) -> Vec<PendingRequest> {
+    open_requests(events, session)
         .into_iter()
         .filter_map(|event| {
             Some(PendingRequest {
@@ -947,11 +969,29 @@ fn pending_requests(events: &[Event]) -> Vec<PendingRequest> {
 
 /// The same sensor's RECORDS, so a reader that needs more than the display
 /// name — the routing key — still has it. ONE definition, two projections.
-fn open_requests(events: &[Event]) -> Vec<&Event> {
+///
+/// THREE records close a request, and nothing else does:
+///
+/// * a `reply`, matched by REQUEST ID;
+/// * a `cancel` by the request's own asker, matched by REQUEST ID;
+/// * a [`retired`] seat, matched by SEAT — the slot the request was sent to,
+///   in this same session, which is what `session` supplies.
+///
+/// Anything else leaves the request open, however unanswerable it has become.
+fn open_requests<'a>(events: &'a [Event], session: &str) -> Vec<&'a Event> {
     // One forward pass over an append-only log, so a reply or a withdrawal that
-    // appears BEFORE its request finds nothing open and closes nothing.
+    // appears BEFORE its request finds nothing open and closes nothing. A
+    // retire rides the same pass for the same reason, and for one more: the
+    // pass only ever REMOVES, so a name or a `spawned.<n>` slot handed to a
+    // replacement cannot reopen a request the retire already closed.
     let mut open: Vec<&Event> = Vec::new();
     for event in events {
+        // Before the `ref` gate: a retire's `ref` is the retired seat's harness
+        // session id, which is not a request id, so the gate would skip it.
+        if event.action == "retire" {
+            open.retain(|request| !retired(request, event, session));
+            continue;
+        }
         let RefMeaning::RequestId(id) = event.ref_meaning() else {
             continue;
         };
@@ -967,6 +1007,46 @@ fn open_requests(events: &[Event]) -> Vec<&Event> {
     }
     open.sort_by_key(|event| event.ts);
     open
+}
+
+/// Whether `retire` closes `request` — closure by SEAT, not by request id.
+///
+/// It holds on exactly two conditions, both required:
+///
+/// 1. the retire names the SLOT the request was sent to, and
+/// 2. the request's recorded `target_session` equals `session`, the session
+///    being read — so the retire is recorded in the SAME session, and that
+///    session has not been renamed since the request was recorded.
+///
+/// Whatever fails either condition stays open. That includes a CROSS-SESSION
+/// request read in the CALLER's log, because the record is written into both
+/// participants' logs carrying the TARGET's session in either copy, so the
+/// sessions agree only in the target's log — which is also the only log the
+/// seat's own retire is written to. It includes a request recorded BEFORE a
+/// rename, because a rename moves the session directory and rewrites the meta
+/// (`crate::rename`) while the record keeps the old name. It includes a target
+/// that vanished with no retire record at all, since there is then nothing to
+/// match. None of these is closed here and none is closed elsewhere.
+///
+/// The identity compared is the ROUTING KEY on both sides, never a display
+/// name: a tracked request records `target_slot` and `target_session` for every
+/// target it resolves (`crate::tracked`), and a retire records the slot it
+/// removed from the roster (`crate::spawn`). A retire spells no
+/// `target_session` because the session that owns a seat is the one that
+/// retires it, so `session` supplies that half. The session comparison is an
+/// EQUALITY, not a presence test, which is why an absent roster entry closes
+/// nothing by itself.
+///
+/// A missing key on either side matches nothing: a retire that names no slot,
+/// and a request missing either half of its own key, which is
+/// [`Identity::Unassociated`].
+fn retired(request: &Event, retire: &Event, session: &str) -> bool {
+    let Some(slot) = retire.target_slot.value() else {
+        return false;
+    };
+    request
+        .target_identity()
+        .is_some_and(|target| target.matches(Identity::Routed { slot, session }))
 }
 
 /// Whether `cancel` withdraws `request` — its own asker, taking it back.
@@ -1521,12 +1601,17 @@ mod tests {
 
     /// The ledger, read for `seat`, with `live` holding their seats.
     fn owed(lines: &[String], live: &[&str], seat: Seat<'_>) -> OwnWork {
+        owed_in(lines, LEAD.session, live, seat)
+    }
+
+    /// The same reading, by a reader that says which session it is reading.
+    fn owed_in(lines: &[String], session: &str, live: &[&str], seat: Seat<'_>) -> OwnWork {
         let events: Vec<Event> = lines
             .iter()
             .map(|line| Event::parse_line(line).expect("a fixture line must be an event"))
             .collect();
         let seats: Vec<String> = live.iter().map(|name| (*name).to_owned()).collect();
-        Outstanding::read(&events, &seats).of(seat)
+        Outstanding::read(&events, session, &seats).of(seat)
     }
 
     /// THE predicate, tabled: what makes a quiet seat something other than idle.
@@ -1627,6 +1712,335 @@ mod tests {
                 "{why}: the predicate"
             );
         }
+    }
+
+    /// One retire-rule row: why, the session being read, the ledger, the live
+    /// seats, and the number of requests `lead` is still owed an answer to.
+    type Case = (
+        &'static str,
+        &'static str,
+        Vec<String>,
+        Vec<&'static str>,
+        usize,
+    );
+
+    /// The routing key a tracked request records for a seat in THIS session.
+    const HOME: &str = r#","target_slot":"spawned.0","target_session":"live""#;
+    /// The same slot, in a session this one does not get to judge.
+    const AWAY: &str = r#","target_slot":"spawned.0","target_session":"elsewhere""#;
+    /// What a retire records: the slot it removed, and no session at all.
+    const GAVE_UP: &str = r#","target":"hand","target_slot":"spawned.0""#;
+
+    /// A request `lead` sent to `to`, carrying `key` as its target's identity.
+    fn ask(id: &str, to: &str, key: &str) -> String {
+        event(
+            &at(900),
+            "lead",
+            "ask",
+            &format!(r#","target":"{to}","ref":"{id}"{key}"#),
+        )
+    }
+
+    /// A retire, later than every [`ask`] above.
+    fn retire(key: &str) -> String {
+        event(&at(600), "lead", "retire", key)
+    }
+
+    /// Read each row for `lead` and answer the one question it asks.
+    fn each(cases: impl IntoIterator<Item = Case>) {
+        for (why, session, lines, live, requests) in cases {
+            assert_eq!(
+                owed_in(&lines, session, &live, LEAD).requests,
+                requests,
+                "{why}"
+            );
+        }
+    }
+
+    /// Closure by SEAT: a `retire` naming the slot a request was sent to closes
+    /// that request, where a reply closes one by its request id.
+    ///
+    /// The closure happens in the forward pass, which only ever removes. That
+    /// is the whole reason a name or a `spawned.<n>` slot handed to a
+    /// replacement raises nothing: the request was dropped at the retire, and
+    /// nothing puts one back.
+    ///
+    /// These rows are read for `lead`, so `live` is only ever the SPAWN leg's
+    /// answer here. The sent leg consults no roster at all.
+    #[test]
+    fn a_request_is_closed_by_the_retire_of_the_seat_it_was_sent_to() {
+        let cases: [Case; 7] = [
+            (
+                "the retire names the slot it was sent to, so it closes",
+                "live",
+                vec![ask("r1", "hand", HOME), retire(GAVE_UP)],
+                vec!["lead"],
+                0,
+            ),
+            (
+                "no retire, so nothing closes it",
+                "live",
+                vec![ask("r1", "hand", HOME)],
+                vec!["lead", "hand"],
+                1,
+            ),
+            (
+                "the name handed back to a replacement raises nothing",
+                "live",
+                vec![
+                    ask("r1", "hand", HOME),
+                    retire(GAVE_UP),
+                    event(&at(300), "lead", "spawn", r#","target":"hand""#),
+                ],
+                vec!["lead", "hand"],
+                0,
+            ),
+            (
+                "nor does the slot handed to somebody else",
+                "live",
+                vec![
+                    ask("r1", "hand", HOME),
+                    retire(GAVE_UP),
+                    event(&at(300), "lead", "spawn", r#","target":"other""#),
+                ],
+                vec!["lead", "other"],
+                0,
+            ),
+            (
+                "a request to whoever took the slot stands on its own",
+                "live",
+                vec![
+                    ask("r1", "hand", HOME),
+                    retire(GAVE_UP),
+                    event(&at(300), "lead", "spawn", r#","target":"other""#),
+                    event(
+                        &at(120),
+                        "lead",
+                        "ask",
+                        &format!(r#","target":"other","ref":"r2"{HOME}"#),
+                    ),
+                ],
+                vec!["lead", "other"],
+                1,
+            ),
+            (
+                "a retire that arrives BEFORE a request closes nothing",
+                "live",
+                vec![retire(GAVE_UP), ask("r1", "hand", HOME)],
+                vec!["lead"],
+                1,
+            ),
+            (
+                "a request the reply already closed stays closed",
+                "live",
+                vec![
+                    ask("r1", "hand", HOME),
+                    event(&at(700), "hand", "reply", r#","target":"lead","ref":"r1""#),
+                    retire(GAVE_UP),
+                ],
+                vec!["lead"],
+                0,
+            ),
+        ];
+        each(cases);
+    }
+
+    /// What this session may NOT close, in both directions.
+    ///
+    /// The session half of the key decides whose retire records may close a
+    /// request at all, and it is an EQUALITY: a request whose target lives
+    /// elsewhere is never closed here, whether or not that target is a stranger
+    /// to this roster, and a request recorded cross-session but resolving home
+    /// IS closed here. Every other gap leaves the request OPEN, one row each.
+    #[test]
+    fn a_request_this_session_cannot_judge_is_never_closed_by_it() {
+        let cases: [Case; 8] = [
+            (
+                "absent from this roster is not an answer about another session",
+                "live",
+                vec![ask("r1", "@far:hand", AWAY)],
+                vec!["lead"],
+                1,
+            ),
+            (
+                "and neither is this session retiring its own spawned.0",
+                "live",
+                vec![ask("r1", "@far:hand", AWAY), retire(GAVE_UP)],
+                vec!["lead"],
+                1,
+            ),
+            (
+                "recorded cross-session but resolving home is judged here",
+                "live",
+                vec![
+                    ask("r1", "hand", &format!(r#"{HOME},"cross_session":true"#)),
+                    retire(GAVE_UP),
+                ],
+                vec!["lead"],
+                0,
+            ),
+            (
+                "a retire that names no slot carries no key",
+                "live",
+                vec![ask("r1", "hand", HOME), retire(r#","target":"hand""#)],
+                vec!["lead"],
+                1,
+            ),
+            (
+                "nor does a request that names no target slot",
+                "live",
+                vec![
+                    ask("r1", "hand", r#","target_session":"live""#),
+                    retire(GAVE_UP),
+                ],
+                vec!["lead"],
+                1,
+            ),
+            (
+                "nor one that names no target session",
+                "live",
+                vec![
+                    ask("r1", "hand", r#","target_slot":"spawned.0""#),
+                    retire(GAVE_UP),
+                ],
+                vec!["lead"],
+                1,
+            ),
+            (
+                "a reader that cannot name its own session closes nothing",
+                "",
+                vec![ask("r1", "hand", HOME), retire(GAVE_UP)],
+                vec!["lead"],
+                1,
+            ),
+            (
+                "not even against a retire whose slot is empty too",
+                "",
+                vec![
+                    ask("r1", "hand", r#","target_slot":"","target_session":"""#),
+                    retire(r#","target":"hand","target_slot":"""#),
+                ],
+                vec!["lead"],
+                1,
+            ),
+        ];
+        each(cases);
+    }
+
+    /// The deferral ceiling is fed by the SURVIVING set: a request the retire
+    /// closed must not go on making the seat's remaining work look older than
+    /// it is, because the ceiling is read off the oldest item still open.
+    #[test]
+    fn the_oldest_outstanding_moment_forgets_a_retired_seats_request() {
+        let lines = vec![
+            event(
+                &at(900),
+                "lead",
+                "ask",
+                r#","target":"hand","ref":"r1","target_slot":"spawned.0","target_session":"live""#,
+            ),
+            event(
+                &at(300),
+                "lead",
+                "ask",
+                r#","target":"still","ref":"r2","target_slot":"spawned.1","target_session":"live""#,
+            ),
+        ];
+        let raw = owed_in(&lines, "live", &["lead", "hand", "still"], LEAD);
+        assert_eq!(raw.requests, 2);
+        assert_eq!(
+            raw.oldest_epoch,
+            Some(NOW.epoch() - 900),
+            "both stand, so the older one is the oldest"
+        );
+
+        let mut retired = lines.clone();
+        retired.push(event(
+            &at(600),
+            "lead",
+            "retire",
+            r#","target":"hand","target_slot":"spawned.0""#,
+        ));
+        let work = owed_in(&retired, "live", &["lead", "still"], LEAD);
+        assert_eq!(work.requests, 1);
+        assert_eq!(
+            work.oldest_epoch,
+            Some(NOW.epoch() - 300),
+            "the surviving request is the oldest one left"
+        );
+    }
+
+    /// The OTHER projection of the same sensor, read the way the product reads
+    /// it: [`SessionRead::open`] on a real session directory, which is where
+    /// the session name comes from and where `Reason::Unanswered` is decided.
+    ///
+    /// The second half is the control, and it is the one that matters: the same
+    /// ledger, read as a session whose name does not match what the request
+    /// recorded, keeps the request pending and keeps raising the attention.
+    /// Without it a rule that closed EVERYTHING would pass the first half.
+    #[test]
+    fn a_session_read_from_disk_closes_a_retired_seats_request_and_no_other() {
+        // Older than DEFAULT_UNANSWERED_SECS, so the request is past the age at
+        // which it asks for attention: this test is about whether it STOPS.
+        let ask = |session: &str| {
+            event(
+                &at(3600),
+                "lead",
+                "ask",
+                &format!(
+                    r#","target":"hand","ref":"r1","target_slot":"spawned.0","target_session":"{session}""#
+                ),
+            )
+        };
+        let retire = event(
+            &at(3000),
+            "lead",
+            "retire",
+            r#","target":"hand","target_slot":"spawned.0""#,
+        );
+
+        let home = Scratch::new("reads-its-own-session");
+        let name = home
+            .0
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("the scratch directory is named")
+            .to_owned();
+        home.events(&[ask(&name)]);
+        let before = SessionRead::open(&home.0).expect("the log reads");
+        assert_eq!(before.pending.len(), 1, "nobody has answered it yet");
+        assert_eq!(
+            before.attention_contribution(NOW, DEFAULT_UNANSWERED_SECS),
+            Some(Reason::Unanswered),
+            "and it is old enough to be asking for attention",
+        );
+
+        home.events(&[ask(&name), retire.clone()]);
+        let after = SessionRead::open(&home.0).expect("the log reads");
+        assert!(
+            after.pending.is_empty(),
+            "the retire closed it, so it is not pending: {:?}",
+            after.pending,
+        );
+        assert_eq!(
+            after.attention_contribution(NOW, DEFAULT_UNANSWERED_SECS),
+            None,
+            "and a closed request raises no Unanswered",
+        );
+
+        let away = Scratch::new("judges-no-other-session");
+        away.events(&[ask("somewhere-else"), retire]);
+        let control = SessionRead::open(&away.0).expect("the log reads");
+        assert_eq!(
+            control.pending.len(),
+            1,
+            "a request whose target lives elsewhere is not this session's to close",
+        );
+        assert_eq!(
+            control.attention_contribution(NOW, DEFAULT_UNANSWERED_SECS),
+            Some(Reason::Unanswered),
+            "and it goes on raising Unanswered",
+        );
     }
 
     /// I-1: a seat is matched on the ROUTING KEY wherever the writer recorded

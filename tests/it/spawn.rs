@@ -621,6 +621,61 @@ fn a_retire_purges_the_seat_and_refuses_what_is_not_its_to_take() {
     );
 }
 
+/// The RETIRE half of the retire rule, against the writer that really records
+/// one: the seat is spawned and retired for real, and the record it leaves is
+/// what closes the request.
+///
+/// Driving `_retire` rather than composing its line is the whole point. The
+/// rule reads the slot off that record, and a fixture that wrote the record
+/// itself could not notice the writer dropping it. Drop `target_slot` in
+/// `src/spawn.rs` and the request below stays open forever, which is the bug
+/// this rule exists to end.
+#[test]
+fn a_real_retire_closes_the_request_that_seat_was_sent() {
+    let probe = PathBuf::from(format!("/tmp/aesp-probe-zomb.{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&probe);
+    let present = tmux_present(&probe);
+    let _ = std::fs::remove_dir_all(&probe);
+    if !present {
+        return;
+    }
+    let rig = Rig::new("zombie");
+    let (code, _, stderr) = rig.run(ae::cli::SPAWN, &["hand", "--using", "fake", "--", "hi"]);
+    assert_eq!(code, Some(0), "{stderr}");
+
+    // A request to that seat, in the shape the tracked writer records one —
+    // whose own shape is pinned where IT can be run, in `cli.rs`.
+    let asked = format!(
+        concat!(
+            r#"{{"ts":"2026-08-27T07:11:12Z","actor":"lead","action":"ask","target":"hand","#,
+            r#""ref":"ae-1","actor_slot":"main","actor_session":"{session}","#,
+            r#""target_slot":"spawned.0","target_session":"{session}","summary":"still there"}}"#,
+        ),
+        session = rig.session,
+    );
+    let mut log = rig.events();
+    log.push_str(&asked);
+    log.push('\n');
+    assert!(
+        std::fs::write(rig.dir.join("events.jsonl"), &log).is_ok(),
+        "the ledger takes the request"
+    );
+    let open = ae::session::SessionRead::open(&rig.dir).expect("the log reads");
+    assert_eq!(open.pending.len(), 1, "the seat has not answered yet");
+
+    let (code, stdout, stderr) = rig.run(ae::cli::RETIRE, &["hand"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let events = rig.events();
+    assert!(events.contains("\"action\":\"retire\""), "{events}");
+
+    let closed = ae::session::SessionRead::open(&rig.dir).expect("the log reads");
+    assert!(
+        closed.pending.is_empty(),
+        "the real retire closed the request: {:?}",
+        closed.pending,
+    );
+}
+
 #[test]
 fn a_reused_codex_slot_never_inherits_the_retired_seats_session_id() {
     let probe = PathBuf::from(format!("/tmp/aesp-probe-sid.{}", std::process::id()));

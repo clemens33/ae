@@ -2771,7 +2771,7 @@ impl Cycle<'_> {
         }
 
         let seats = held_seats(&observed, table.as_deref(), &|slot| self.agent_bin(slot));
-        let outstanding = crate::session::Outstanding::read(&events, &seats);
+        let outstanding = crate::session::Outstanding::read(&events, self.session, &seats);
 
         carry.quiet.begin();
         let mut index = 0_usize;
@@ -6220,7 +6220,7 @@ mod tests {
         // No process table: the pane's own foreground command is the evidence.
         let spawns = |panes: &[crate::tmux::WatchPane]| {
             let seats = held_seats(panes, None, &|_| Some("claude".to_owned()));
-            crate::session::Outstanding::read(&events, &seats)
+            crate::session::Outstanding::read(&events, "live", &seats)
                 .of(crate::session::Seat {
                     session: "live",
                     slot: "main",
