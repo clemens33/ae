@@ -3250,17 +3250,16 @@ fn lead_config(layout: &str, workers: &[&str]) -> String {
     cfg
 }
 
-fn assert_three_to_two_widths(rig: &Rig, target: &str) {
+fn assert_equal_widths(rig: &Rig, target: &str) {
     let (_, listed) = rig.tmux(&["list-panes", "-t", target, "-F", "#{pane_width}"]);
     let widths = listed
         .lines()
         .filter_map(|width| width.parse::<usize>().ok())
         .collect::<Vec<_>>();
     assert_eq!(widths.len(), 2, "two lead-pair panes: {listed}");
-    let percent = widths[0] * 100 / (widths[0] + widths[1]);
     assert!(
-        (59..=61).contains(&percent),
-        "lead pane is {percent}% rather than 60/40: {listed}"
+        widths[0].abs_diff(widths[1]) <= 1,
+        "lead panes differ by more than one cell: {listed}"
     );
 }
 
@@ -3370,7 +3369,7 @@ fn the_lead_layouts_seat_each_agent_in_the_window_their_layout_names() {
     ]);
     assert_eq!(
         main_width.trim(),
-        "60%",
+        "50%",
         "the lead-pair width stays percentage-based across resizes"
     );
     let (_, resize_hook) = pair.tmux(&["show-hooks", "-w", "-t", "lpair:0", "window-resized"]);
@@ -3439,7 +3438,7 @@ fn a_running_lead_pair_reasserts_the_resize_policy_without_a_restart() {
         &main_pane,
         "main-pane-width",
     ]);
-    assert_eq!(main_width.trim(), "60%", "reattach restores pair width");
+    assert_eq!(main_width.trim(), "50%", "reattach restores pair width");
     let (_, resize_hook) = pair.tmux(&["show-hooks", "-w", "-t", &main_pane, "window-resized"]);
     assert!(
         resize_hook.contains("window_zoomed_flag") && resize_hook.contains("main-vertical"),
@@ -3458,7 +3457,7 @@ fn a_running_lead_pair_reasserts_the_resize_policy_without_a_restart() {
         .0,
         "resize the repaired window"
     );
-    assert_three_to_two_widths(&pair, "lpairlive:0");
+    assert_equal_widths(&pair, "lpairlive:0");
 }
 
 /// `[workspace] theme = off` writes the FACTS and NONE of the layout.

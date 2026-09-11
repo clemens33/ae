@@ -966,7 +966,7 @@ fn start_server(scratch: &Path, selector: &[&str], session: &str) -> ServerClean
     }
 }
 
-fn assert_three_to_two_widths(socket: &Path, scratch: &Path, target: &str) {
+fn assert_equal_widths(socket: &Path, scratch: &Path, target: &str) {
     let (_, listed) = tmux(
         socket,
         scratch,
@@ -977,10 +977,9 @@ fn assert_three_to_two_widths(socket: &Path, scratch: &Path, target: &str) {
         .filter_map(|width| width.parse::<usize>().ok())
         .collect::<Vec<_>>();
     assert_eq!(widths.len(), 2, "two lead-pair panes: {listed}");
-    let percent = widths[0] * 100 / (widths[0] + widths[1]);
     assert!(
-        (59..=61).contains(&percent),
-        "lead pane is {percent}% rather than 60/40: {listed}"
+        widths[0].abs_diff(widths[1]) <= 1,
+        "lead panes differ by more than one cell: {listed}"
     );
 }
 
@@ -1478,7 +1477,7 @@ fn assert_lead_pair_policy(socket: &Path, scratch: &Path, main_pane: &str, sessi
             "main-pane-width",
         ],
     );
-    assert_eq!(main_width.trim(), "60%", "upgrade restores pair width");
+    assert_eq!(main_width.trim(), "50%", "upgrade restores pair width");
     let (_, resize_hook) = tmux(
         socket,
         scratch,
@@ -1497,7 +1496,7 @@ fn assert_lead_pair_policy(socket: &Path, scratch: &Path, main_pane: &str, sessi
         .0,
         "resize the upgraded lead-pair window"
     );
-    assert_three_to_two_widths(socket, scratch, session);
+    assert_equal_widths(socket, scratch, session);
 }
 
 #[test]
