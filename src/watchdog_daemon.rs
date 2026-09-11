@@ -3749,7 +3749,7 @@ fn read_events(meta_dir: &Path) -> Vec<Event> {
 
 /// Whether the meta declares this session the fleet orchestrator.
 fn is_meta_agent(meta_bytes: &[u8]) -> bool {
-    crate::meta::sole_value(meta_bytes, "meta_agent") == Some(b"true".as_slice())
+    crate::meta::meta_agent_role(meta_bytes) == crate::meta::MetaAgentRole::Role
 }
 
 /// The session this meta directory serves — its `session=` key, or the
@@ -7961,30 +7961,36 @@ mod tests {
     }
 
     #[test]
-    fn the_orchestrator_flag_is_read_strictly_and_fails_closed_on_a_doubled_record() {
+    fn the_orchestrator_flag_grants_only_the_unambiguous_shared_role() {
         // A session that gets the sweep branch stops being escalated for
         // silence, so the flag is EXACTLY ONE record saying EXACTLY `true`.
-        let cases: [(&str, bool); 9] = [
+        let cases: [(&str, bool); 15] = [
             ("session=x\nmeta_agent=true\n", true),
-            // The two that a first-value read got WRONG, in the dangerous
-            // direction: it answered "orchestrator" and switched OFF stale
-            // escalation on the strength of a record whose meaning is in doubt.
+            ("session=x\n", false),
+            ("meta_agent\n", false),
+            // A bare record makes the claim damaged even beside a valid value.
+            ("meta_agent\nmeta_agent=true\n", false),
+            ("meta_agent=true\nmeta_agent\n", false),
+            ("meta_agent=\n", false),
+            ("meta_agent=false\n", false),
+            ("meta_agent=truth\n", false),
+            ("meta_agent=TRUE\n", false),
+            ("meta_agent=1\n", false),
+            ("meta_agent=yes\n", false),
+            ("meta_agent=true\r\n", false),
             ("meta_agent=true\nmeta_agent=false\n", false),
             ("meta_agent=true\nmeta_agent=true\n", false),
             ("meta_agent=false\nmeta_agent=true\n", false),
-            ("meta_agent=false\n", false),
-            ("session=x\n", false),
-            ("meta_agent=True\n", false),
-            ("meta_agent=1\n", false),
-            ("meta_agent=yes\n", false),
         ];
-        for (meta, want) in cases {
-            assert_eq!(
-                is_meta_agent(meta.as_bytes()),
-                want,
-                "{meta:?} must read orchestrator={want}"
-            );
-        }
+        let observed: Vec<(&str, bool)> = cases
+            .iter()
+            .map(|(meta, _)| (*meta, is_meta_agent(meta.as_bytes())))
+            .collect();
+        assert_eq!(
+            observed,
+            cases.to_vec(),
+            "meta_agent authority observations"
+        );
     }
 
     #[test]

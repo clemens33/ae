@@ -230,9 +230,7 @@ fn session_facts(name: &str, dir: &Path, bytes: &[u8], last_active: Option<i64>)
         session_id: meta::first_value(bytes, "session_id")
             .map(|value| String::from_utf8_lossy(value).into_owned())
             .unwrap_or_default(),
-        // The watchdog's spelling, and the same reason: `sole_value` refuses a
-        // key that appears twice rather than believing the first one.
-        meta_agent: meta::sole_value(bytes, "meta_agent") == Some(b"true".as_slice()),
+        meta_agent: meta::meta_agent_role(bytes) == meta::MetaAgentRole::Role,
         main: meta
             .roster()
             .iter()
@@ -610,8 +608,8 @@ mod tests {
 
     #[test]
     fn a_sessions_facts_come_off_its_meta_including_the_two_keys_meta_does_not_keep() {
-        // `session_id` and `meta_agent` are not fields of `Meta`, so they are
-        // read off the same bytes it was parsed from.
+        // `session_id` is not a field of `Meta`, and the role reducer reads its
+        // exact claim from the same raw bytes.
         let meta = concat!(
             "session_id=abc123def456\n",
             "meta_agent=true\n",
@@ -630,38 +628,52 @@ mod tests {
         assert_eq!(facts.agents, vec!["lead", "coworker"]);
         assert_eq!(facts.last_active, Some(1_800_000_000));
 
-        // A session that is NOT a meta-agent, and one whose flag is any other
-        // value, are both ordinary sessions — `meta_agent` is `true` or it is
-        // not set.
-        for absent in [
+        // The reducer grants this role only to one byte-exact valued claim;
+        // every other spelling is an ordinary session. A bare record makes the
+        // claim damaged even beside a valid value in either order.
+        let ordinary = [
             "",
+            "meta_agent\n",
+            "meta_agent\nmeta_agent=true\n",
+            "meta_agent=true\nmeta_agent\n",
+            "meta_agent=\n",
             "meta_agent=false\n",
+            "meta_agent=truth\n",
             "meta_agent=TRUE\n",
             "meta_agent=1\n",
-        ] {
-            let plain = super::session_facts(
+            "meta_agent=yes\n",
+            "meta_agent=true\r\n",
+            "meta_agent=true\nmeta_agent=true\n",
+            "meta_agent=true\nmeta_agent=false\n",
+            "meta_agent=false\nmeta_agent=true\n",
+        ];
+        let observed: Vec<(&str, bool)> = ordinary
+            .iter()
+            .map(|meta| {
+                (
+                    *meta,
+                    super::session_facts(
+                        "work",
+                        std::path::Path::new("/sessions/work"),
+                        meta.as_bytes(),
+                        None,
+                    )
+                    .meta_agent,
+                )
+            })
+            .collect();
+        let expected: Vec<(&str, bool)> = ordinary.iter().map(|meta| (*meta, false)).collect();
+        assert_eq!(observed, expected, "meta_agent authority observations");
+        for meta in ordinary {
+            let facts = super::session_facts(
                 "work",
                 std::path::Path::new("/sessions/work"),
-                absent.as_bytes(),
+                meta.as_bytes(),
                 None,
             );
-            assert!(!plain.meta_agent, "{absent:?} was read as an orchestrator");
-            assert_eq!(plain.session_id, "");
-            assert_eq!(plain.main, None);
+            assert_eq!(facts.session_id, "");
+            assert_eq!(facts.main, None);
         }
-
-        // A DUPLICATED flag is doubt, not truth: `sole_value` refuses it rather
-        // than believing the first line, which is the watchdog's rule too.
-        let doubled = super::session_facts(
-            "work",
-            std::path::Path::new("/sessions/work"),
-            b"meta_agent=true\nmeta_agent=true\n",
-            None,
-        );
-        assert!(
-            !doubled.meta_agent,
-            "a twice-declared flag must not be read as a declaration"
-        );
     }
 
     #[test]
