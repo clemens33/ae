@@ -1150,10 +1150,16 @@ fn sweep_effects(booked: Vec<SweepEffect>) -> Vec<Effect> {
 /// human is shown are the same seat. A spawned tool that exited into its
 /// retained shell holds nothing, and its owner is not excused by it.
 ///
-/// UNKNOWN POLICY: an unusable process snapshot never on its own removes a seat
-/// — `classify_dead` demands positive absence — and it never rescues one
-/// either, because the pane's own foreground command is read first. A snapshot
-/// gap therefore fails CLOSED on the deferral: the owner keeps its nudge.
+/// UNKNOWN POLICY, and it is TWO cases rather than one blanket rule, because
+/// the pane's own foreground command is read first and already decides most of
+/// them:
+///
+/// - a pane at a BARE SHELL holds no seat whatever the snapshot says, so an
+///   uncertain snapshot never rescues it and its owner keeps its nudge;
+/// - a pane running a FOREGROUND TOOL keeps its seat when the snapshot cannot
+///   confirm the process, because `classify_dead` demands positive absence and
+///   a probe gap is not proof of death. That deferral is RETAINED, not
+///   unbounded: [`deferred`]'s two clocks end it like any other.
 #[must_use]
 fn holds_seat(current_command: &str, descendancy: Descendancy) -> bool {
     !classify_dead(current_command, descendancy)
