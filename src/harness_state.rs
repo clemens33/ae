@@ -14,6 +14,16 @@ pub enum HarnessState {
     Unknown,
 }
 
+/// Independently observed identity fields from the current harness frame.
+///
+/// A missing field is deliberately different from a guessed value: the frame
+/// may prove effort while its model label is unfamiliar (or vice versa).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HarnessIdentity {
+    pub model: Option<String>,
+    pub effort: Option<String>,
+}
+
 impl HarnessState {
     /// The stable low-cardinality spelling published to tmux and `ae list`.
     #[must_use]
@@ -143,6 +153,17 @@ pub fn has_human_draft(capture: &str, tool: ToolKind) -> bool {
     }
 }
 
+/// Extract model and effort independently from the positively bounded current
+/// frame. This never searches transcript text or historical rows.
+#[must_use]
+pub fn current_identity(capture: &str, tool: ToolKind) -> HarnessIdentity {
+    match tool.input_model() {
+        InputModel::BorderDelimited => current_claude_identity(capture),
+        InputModel::StyleDelimited => current_codex_identity(capture),
+        InputModel::Unmodelled => HarnessIdentity::default(),
+    }
+}
+
 fn clean_lines(capture: &str) -> Vec<&str> {
     capture
         .lines()
@@ -236,26 +257,107 @@ fn claude_border(line: &str) -> bool {
 }
 
 fn codex_footer(line: &str) -> bool {
-    let Some((model_effort, path)) = line.split_once(" · ") else {
+    let Some((model, effort, path)) = codex_footer_parts(line) else {
         return false;
     };
+    model.starts_with("gpt-") && valid_effort(effort) && !path.is_empty()
+}
+
+fn current_claude_identity(capture: &str) -> HarnessIdentity {
+    let lines = clean_lines(capture);
+    let Some(prompt_index) = lines.iter().rposition(|line| *line == "❯") else {
+        return HarnessIdentity::default();
+    };
+    if !claude_input_frame(&lines, prompt_index) {
+        return HarnessIdentity::default();
+    }
+    lines[prompt_index + 1..]
+        .iter()
+        .rfind(|line| line.starts_with('🧠'))
+        .map_or_else(HarnessIdentity::default, |line| parse_claude_identity(line))
+}
+
+fn parse_claude_identity(line: &str) -> HarnessIdentity {
+    let Some(rest) = line.strip_prefix("🧠 ") else {
+        return HarnessIdentity::default();
+    };
+    let Some((identity, _chrome)) = rest.split_once("  📁") else {
+        return HarnessIdentity::default();
+    };
+    if let Some(model) = CLAUDE_MODELS
+        .iter()
+        .find(|candidate| **candidate == identity)
+    {
+        return HarnessIdentity {
+            model: Some((*model).to_owned()),
+            effort: None,
+        };
+    }
+    let (model_text, effort) =
+        identity
+            .rsplit_once(" (")
+            .map_or((identity, None), |(model, effort)| {
+                (
+                    model,
+                    effort.strip_suffix(')').filter(|value| valid_effort(value)),
+                )
+            });
+    let model = CLAUDE_MODELS
+        .iter()
+        .find(|candidate| **candidate == model_text)
+        .map(|candidate| (*candidate).to_owned());
+    HarnessIdentity {
+        model,
+        effort: effort.map(str::to_owned),
+    }
+}
+
+const CLAUDE_MODELS: [&str; 4] = ["Fable 5.1", "Opus 4.8", "Opus 5 (1M context)", "Opus 5"];
+
+fn current_codex_identity(capture: &str) -> HarnessIdentity {
+    let lines = clean_lines(capture);
+    let Some((before, [prompt, footer])) = lines.as_slice().split_last_chunk::<2>() else {
+        return HarnessIdentity::default();
+    };
+    if *prompt != "› Ask Codex to do anything"
+        || codex_footer_parts(footer).is_none()
+        || before.last().is_some_and(|line| codex_modal(line))
+    {
+        return HarnessIdentity::default();
+    }
+    parse_codex_identity(footer)
+}
+
+fn codex_footer_parts(line: &str) -> Option<(&str, &str, &str)> {
+    let (model_effort, path) = line.split_once(" · ")?;
     let mut words = model_effort.split_whitespace();
-    let model = words.next().unwrap_or_default();
-    let effort = words.next().unwrap_or_default();
-    words.next().is_none()
-        && model.starts_with("gpt-")
-        && matches!(
-            effort,
-            "low" | "medium" | "high" | "xhigh" | "max" | "ultra"
-        )
-        && !path.is_empty()
+    let model = words.next()?;
+    let effort = words.next()?;
+    (words.next().is_none() && !path.is_empty()).then_some((model, effort, path))
+}
+
+fn parse_codex_identity(line: &str) -> HarnessIdentity {
+    let Some((model_token, effort_token, _path)) = codex_footer_parts(line) else {
+        return HarnessIdentity::default();
+    };
+    let model = matches!(
+        model_token,
+        "gpt-5.6-luna" | "gpt-5.6-sol" | "gpt-5.6-terra" | "gpt-6-astra"
+    )
+    .then(|| model_token.to_owned());
+    let effort = valid_effort(effort_token).then(|| effort_token.to_owned());
+    HarnessIdentity { model, effort }
+}
+
+fn valid_effort(value: &str) -> bool {
+    matches!(value, "low" | "medium" | "high" | "xhigh" | "max" | "ultra")
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        HarnessState, IdleCarry, classify, decode_idle, encode_idle, has_human_draft,
-        observed_from_option,
+        HarnessIdentity, HarnessState, IdleCarry, classify, current_identity, decode_idle,
+        encode_idle, has_human_draft, observed_from_option,
     };
     use crate::tool::ToolKind;
 
@@ -351,6 +453,229 @@ mod tests {
     fn a_narrow_wrapped_live_codex_idle_frame_is_idle() {
         let capture = include_str!("../tests/fixtures/harness-state/codex-idle-wrapped-112x40.txt");
         assert_eq!(classify(capture, ToolKind::Codex), HarnessState::Idle);
+    }
+
+    #[test]
+    fn current_identity_reads_real_claude_and_codex_footer_anchors() {
+        assert_eq!(
+            current_identity(
+                include_str!("../tests/fixtures/harness-state/claude-busy-280x40.txt"),
+                ToolKind::Claude
+            ),
+            HarnessIdentity {
+                model: Some("Opus 5".to_owned()),
+                effort: Some("xhigh".to_owned())
+            }
+        );
+        assert_eq!(
+            current_identity(
+                include_str!("../tests/fixtures/harness-state/codex-idle-112x40.txt"),
+                ToolKind::Codex
+            ),
+            HarnessIdentity {
+                model: Some("gpt-6-astra".to_owned()),
+                effort: Some("xhigh".to_owned())
+            }
+        );
+        assert_eq!(
+            current_identity(
+                include_str!("../tests/fixtures/runtime-identity/claude-opus-1m.txt"),
+                ToolKind::Claude
+            ),
+            HarnessIdentity {
+                model: Some("Opus 5 (1M context)".to_owned()),
+                effort: Some("xhigh".to_owned())
+            }
+        );
+    }
+
+    #[test]
+    fn current_identity_keeps_unknown_fields_independent() {
+        assert_eq!(
+            current_identity(
+                include_str!("../tests/fixtures/runtime-identity/codex-unknown-model.txt"),
+                ToolKind::Codex
+            ),
+            HarnessIdentity {
+                model: None,
+                effort: Some("high".to_owned())
+            }
+        );
+        assert_eq!(
+            current_identity(
+                include_str!("../tests/fixtures/runtime-identity/claude-unknown-model.txt"),
+                ToolKind::Claude
+            ),
+            HarnessIdentity {
+                model: None,
+                effort: Some("medium".to_owned())
+            }
+        );
+        assert_eq!(
+            current_identity(
+                include_str!(
+                    "../tests/fixtures/runtime-identity/codex-known-model-unknown-effort.txt"
+                ),
+                ToolKind::Codex
+            ),
+            HarnessIdentity {
+                model: Some("gpt-5.6-sol".to_owned()),
+                effort: None
+            }
+        );
+        assert_eq!(
+            current_identity(
+                include_str!(
+                    "../tests/fixtures/runtime-identity/claude-known-model-unknown-effort.txt"
+                ),
+                ToolKind::Claude
+            ),
+            HarnessIdentity {
+                model: Some("Opus 5".to_owned()),
+                effort: None
+            }
+        );
+    }
+
+    #[test]
+    fn current_identity_rejects_modal_and_clipped_frames() {
+        assert_eq!(
+            current_identity(
+                include_str!("../tests/fixtures/harness-state/codex-modal-112x40.txt"),
+                ToolKind::Codex
+            ),
+            HarnessIdentity::default()
+        );
+        assert_eq!(
+            current_identity("❯\n", ToolKind::Claude),
+            HarnessIdentity::default()
+        );
+        assert_eq!(
+            current_identity(
+                include_str!("../tests/fixtures/runtime-identity/codex-hostile-footer.txt"),
+                ToolKind::Codex
+            ),
+            HarnessIdentity::default()
+        );
+        assert_eq!(
+            current_identity(
+                include_str!("../tests/fixtures/runtime-identity/codex-control-token.txt"),
+                ToolKind::Codex
+            ),
+            HarnessIdentity {
+                model: None,
+                effort: Some("high".to_owned())
+            }
+        );
+        let two_lines_above =
+            include_str!("../tests/fixtures/runtime-identity/codex-modal-two-lines-above.txt");
+        assert_eq!(
+            classify(two_lines_above, ToolKind::Codex),
+            HarnessState::Idle
+        );
+        assert_eq!(
+            current_identity(two_lines_above, ToolKind::Codex),
+            HarnessIdentity {
+                model: Some("gpt-6-astra".to_owned()),
+                effort: Some("xhigh".to_owned())
+            }
+        );
+    }
+
+    #[test]
+    fn current_identity_bounded_model_table_covers_configured_fleet() {
+        for (model, expected) in [
+            ("gpt-5.6-luna", "gpt-5.6-luna"),
+            ("gpt-5.6-sol", "gpt-5.6-sol"),
+            ("gpt-5.6-terra", "gpt-5.6-terra"),
+            ("gpt-6-astra", "gpt-6-astra"),
+        ] {
+            let capture = format!("› Ask Codex to do anything\n\n  {model} high · ~/ae\n");
+            assert_eq!(
+                current_identity(&capture, ToolKind::Codex).model.as_deref(),
+                Some(expected)
+            );
+        }
+        for model in ["Fable 5.1", "Opus 4.8", "Opus 5"] {
+            let capture =
+                format!("────\n❯\n────\n  🧠 {model} (high)  📁 ae\n  ⏵⏵ bypass permissions on\n");
+            assert_eq!(
+                current_identity(&capture, ToolKind::Claude)
+                    .model
+                    .as_deref(),
+                Some(model)
+            );
+        }
+        for model in ["Opus 50", "Opus 5 (unrecognised context)"] {
+            let capture =
+                format!("────\n❯\n────\n  🧠 {model} (high)  📁 ae\n  ⏵⏵ bypass permissions on\n");
+            assert_eq!(
+                current_identity(&capture, ToolKind::Claude),
+                HarnessIdentity {
+                    model: None,
+                    effort: Some("high".to_owned())
+                }
+            );
+        }
+        let later_path = "────\n❯\n────\n  🧠 Opus 5  📁 ae (high)\n  ⏵⏵ bypass permissions on\n";
+        assert_eq!(
+            current_identity(later_path, ToolKind::Claude),
+            HarnessIdentity {
+                model: Some("Opus 5".to_owned()),
+                effort: None
+            }
+        );
+        let model_without_effort =
+            "────\n❯\n────\n  🧠 Opus 5 (1M context)  📁 ae\n  ⏵⏵ bypass permissions on\n";
+        assert_eq!(
+            current_identity(model_without_effort, ToolKind::Claude),
+            HarnessIdentity {
+                model: Some("Opus 5 (1M context)".to_owned()),
+                effort: None
+            }
+        );
+    }
+
+    #[test]
+    fn current_identity_tracks_changed_effort_and_ignores_historical_footer() {
+        assert_eq!(
+            current_identity(
+                include_str!("../tests/fixtures/runtime-identity/codex-sol-medium.txt"),
+                ToolKind::Codex
+            ),
+            HarnessIdentity {
+                model: Some("gpt-5.6-sol".to_owned()),
+                effort: Some("medium".to_owned())
+            }
+        );
+        assert_eq!(
+            current_identity(
+                include_str!("../tests/fixtures/runtime-identity/codex-historical-conflict.txt"),
+                ToolKind::Codex
+            ),
+            HarnessIdentity {
+                model: Some("gpt-6-astra".to_owned()),
+                effort: Some("low".to_owned())
+            }
+        );
+    }
+
+    #[test]
+    fn current_identity_rejects_draft_and_unsupported_frames() {
+        assert_eq!(
+            current_identity(
+                "[redacted]\n› keep this unsent\n\n  gpt-5.6-sol xhigh · ~/ae\n",
+                ToolKind::Codex
+            ),
+            HarnessIdentity::default()
+        );
+        assert_eq!(
+            current_identity(
+                include_str!("../tests/fixtures/harness-state/codex-idle-112x40.txt"),
+                ToolKind::Grok
+            ),
+            HarnessIdentity::default()
+        );
     }
 
     #[test]
