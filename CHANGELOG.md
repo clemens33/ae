@@ -1,6 +1,11 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.52] - 2026-09-11
+
+### Other
+
+- Add centered settings menu with scoped orchestrator controls
 ## [v2026.9.51] - 2026-09-11
 
 ### Other
