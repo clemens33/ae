@@ -3554,9 +3554,7 @@ fn resume_absence(
     dir: &Path,
 ) -> (tmux::StopProbe, Option<String>) {
     let probe = transport::probe_absence(server, session);
-    let evidence = tmux::Evidence {
-        last_live: crate::inventory::last_live(dir),
-    };
+    let evidence = crate::inventory::last_live(dir);
     let boot = crate::doors::boot_time(crate::shape::current());
     let now = crate::time::Timestamp::now().epoch();
     (

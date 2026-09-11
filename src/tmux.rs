@@ -185,15 +185,118 @@ pub fn read_failure(stderr: &str) -> Absence {
     Absence::Unreachable
 }
 
-/// What ae's OWN durable files say about when a session was last live.
+/// What ae's OWN durable files say about when a session was last live — of ONE
+/// source, or of all of them folded together.
+///
+/// Three states, not two, and the third is the point. A source that is simply
+/// NOT THERE says nothing and is fine: every session written before the stamp
+/// existed is in exactly that position. A source that IS there and cannot be
+/// read is DAMAGE, and damage must never collapse into absence — otherwise a
+/// newer claim nobody can read lets an older, readable one prove the session
+/// gone, which is the one direction this proof may never fail in.
 ///
 /// The facts behind it are gathered by [`crate::inventory::last_live`], which
 /// owns the rule about which writes count.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct Evidence {
-    /// The newest moment a live session or its launch wrote a fact about
-    /// itself, epoch seconds, or `None` when nothing readable says.
-    pub last_live: Option<i64>,
+pub enum Evidence {
+    /// Nothing here says when. Not there, or there and claiming nothing.
+    #[default]
+    Silent,
+    /// The moment recorded, epoch seconds.
+    At(i64),
+    /// It IS there and could not be read, or it claims something that is not a
+    /// moment.
+    Unreadable,
+}
+
+/// The most a recorded moment may spell. A hostile file can claim an epoch of
+/// any length, and an unbounded claim is rejected rather than parsed.
+const CLAIM_CAP: usize = 32;
+
+impl Evidence {
+    /// One source's claim, read from the text it recorded.
+    ///
+    /// PURE, and bounded: the cap is checked before the parse, so a claim of
+    /// any size costs the same.
+    ///
+    /// ```
+    /// use ae::tmux::Evidence;
+    /// assert_eq!(Evidence::claim("1789105855\n"), Evidence::At(1_789_105_855));
+    /// // `capture_floor.<slot>=0` is the documented "no floor" sentinel, so a
+    /// // non-positive epoch is NO CLAIM rather than a broken one.
+    /// assert_eq!(Evidence::claim("0"), Evidence::Silent);
+    /// assert_eq!(Evidence::claim("tomorrow"), Evidence::Unreadable);
+    /// assert_eq!(Evidence::claim(""), Evidence::Unreadable);
+    /// ```
+    #[must_use]
+    pub fn claim(text: &str) -> Self {
+        let trimmed = text.trim();
+        if trimmed.is_empty() || trimmed.len() > CLAIM_CAP {
+            return Self::Unreadable;
+        }
+        match trimmed.parse::<i64>() {
+            Ok(epoch) if epoch > 0 => Self::At(epoch),
+            Ok(_) => Self::Silent,
+            Err(_) => Self::Unreadable,
+        }
+    }
+
+    /// A file's mtime as evidence — the reading for the two sources whose
+    /// moment is an mtime and nothing else.
+    ///
+    /// A clock the filesystem cannot express as an epoch is DAMAGE, not
+    /// silence: the file is there, and what it says cannot be read.
+    #[must_use]
+    pub fn at_mtime(modified: std::io::Result<std::time::SystemTime>) -> Self {
+        let epoch = modified
+            .ok()
+            .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
+            .and_then(|since| i64::try_from(since.as_secs()).ok());
+        match epoch {
+            Some(epoch) if epoch > 0 => Self::At(epoch),
+            _ => Self::Unreadable,
+        }
+    }
+
+    /// Fold every source's reading into the session's one answer.
+    ///
+    /// ONE damaged source is enough to make the whole answer damaged. Otherwise
+    /// the NEWEST moment wins, because more evidence may only ever move the
+    /// answer later, and a later answer only ever refuses.
+    ///
+    /// ```
+    /// use ae::tmux::Evidence;
+    /// assert_eq!(
+    ///     Evidence::folded(&[Evidence::At(10), Evidence::Silent, Evidence::At(20)]),
+    ///     Evidence::At(20)
+    /// );
+    /// assert_eq!(
+    ///     Evidence::folded(&[Evidence::At(10), Evidence::Unreadable]),
+    ///     Evidence::Unreadable,
+    ///     "a damaged newer source must not leave an older readable one proving absence"
+    /// );
+    /// assert_eq!(Evidence::folded(&[]), Evidence::Silent);
+    /// ```
+    #[must_use]
+    pub fn folded(readings: &[Self]) -> Self {
+        let mut newest = Self::Silent;
+        for reading in readings {
+            newest = newest.and(*reading);
+        }
+        newest
+    }
+
+    /// This reading and `other`, folded — the step [`Self::folded`] repeats,
+    /// exposed so a reducer over a stream folds in constant space.
+    #[must_use]
+    pub fn and(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Unreadable, _) | (_, Self::Unreadable) => Self::Unreadable,
+            (Self::At(left), Self::At(right)) => Self::At(left.max(right)),
+            (Self::At(only), Self::Silent) | (Self::Silent, Self::At(only)) => Self::At(only),
+            (Self::Silent, Self::Silent) => Self::Silent,
+        }
+    }
 }
 
 /// The BOOT-TIME proof, for a resume and a listing — never for a stop, an end
@@ -224,8 +327,10 @@ pub fn classify_absence(
         Absence::Listed => StopProbe::Present,
         Absence::Proven => StopProbe::Absent,
         Absence::Unreachable => StopProbe::Unknown,
-        Absence::SocketMissing => match (boot, evidence.last_live) {
-            (Some(boot), Some(last_live)) if boot <= now && last_live < boot => StopProbe::Absent,
+        Absence::SocketMissing => match (boot, evidence) {
+            (Some(boot), Evidence::At(last_live)) if boot <= now && last_live < boot => {
+                StopProbe::Absent
+            }
             _ => StopProbe::Unknown,
         },
     }
@@ -254,15 +359,20 @@ pub fn unproven_reason(
         Absence::Unreachable => "the server could not be reached".to_owned(),
         Absence::SocketMissing => {
             let head = "socket missing; ";
-            match (boot, evidence.last_live) {
+            match (boot, evidence) {
+                // The damaged reading comes FIRST: it is true whatever the boot
+                // time says, and it is the one a human can actually repair.
+                (_, Evidence::Unreadable) => format!(
+                    "{head}a record of this session's own activity is there and could not be read"
+                ),
                 (None, _) => format!("{head}the host's boot time could not be read"),
                 (Some(boot), _) if boot > now => {
                     format!("{head}boot {} is in the future (clock skew)", iso(boot))
                 }
-                (Some(_), None) => {
+                (Some(_), Evidence::Silent) => {
                     format!("{head}this session has no recorded live activity")
                 }
-                (Some(boot), Some(last_live)) => format!(
+                (Some(boot), Evidence::At(last_live)) => format!(
                     "{head}last live activity {} is not before boot {}",
                     iso(last_live),
                     iso(boot)
@@ -3896,7 +4006,7 @@ mod tests {
 
     #[test]
     fn the_boot_time_proof_is_the_documented_table_and_fails_closed() {
-        let live = |epoch: Option<i64>| Evidence { last_live: epoch };
+        let live = |epoch: Option<i64>| epoch.map_or(Evidence::Silent, Evidence::At);
         let table = [
             // A server that ANSWERED needs no boot reasoning at all.
             (
@@ -3954,6 +4064,29 @@ mod tests {
                 Some(BOOT),
                 StopProbe::Unknown,
             ),
+            // DAMAGE IS NOT ABSENCE. This is the row that says an unreadable
+            // record can never be stepped over: the boot is comfortably after
+            // everything, and the answer is still no.
+            (
+                Absence::SocketMissing,
+                Evidence::Unreadable,
+                Some(BOOT),
+                StopProbe::Unknown,
+            ),
+            // And a server that ANSWERED is still answered for — damage in ae's
+            // own files cannot make a listed session disappear.
+            (
+                Absence::Listed,
+                Evidence::Unreadable,
+                Some(BOOT),
+                StopProbe::Present,
+            ),
+            (
+                Absence::Proven,
+                Evidence::Unreadable,
+                Some(BOOT),
+                StopProbe::Absent,
+            ),
         ];
         for (probe, evidence, boot, expected) in table {
             assert_eq!(
@@ -3971,9 +4104,7 @@ mod tests {
         assert_eq!(
             classify_absence(
                 Absence::SocketMissing,
-                Evidence {
-                    last_live: Some(BOOT - 1)
-                },
+                Evidence::At(BOOT - 1),
                 Some(NOW + 1),
                 NOW
             ),
@@ -3983,9 +4114,7 @@ mod tests {
         assert_eq!(
             classify_absence(
                 Absence::SocketMissing,
-                Evidence {
-                    last_live: Some(NOW - 1)
-                },
+                Evidence::At(NOW - 1),
                 Some(NOW),
                 NOW
             ),
@@ -3995,17 +4124,11 @@ mod tests {
 
     #[test]
     fn every_unproven_absence_says_why_and_a_proven_one_says_nothing() {
-        let reason = |probe, last_live, boot| {
-            unproven_reason(
-                "/tmp/tmux-501/default",
-                probe,
-                Evidence { last_live },
-                boot,
-                NOW,
-            )
+        let reason = |probe, evidence, boot| {
+            unproven_reason("/tmp/tmux-501/default", probe, evidence, boot, NOW)
         };
         assert_eq!(
-            reason(Absence::SocketMissing, Some(BOOT + 60), Some(BOOT)),
+            reason(Absence::SocketMissing, Evidence::At(BOOT + 60), Some(BOOT)),
             Some(
                 "recorded server /tmp/tmux-501/default: socket missing; last live activity \
                  2026-09-11T05:51:55Z is not before boot 2026-09-11T05:50:55Z — cannot prove \
@@ -4013,39 +4136,60 @@ mod tests {
                     .to_owned()
             )
         );
-        for (probe, last_live, boot, needle) in [
+        for (probe, evidence, boot, needle) in [
             (
                 Absence::SocketMissing,
-                Some(BOOT - 1),
+                Evidence::At(BOOT - 1),
                 None,
                 "the host's boot time could not be read",
             ),
             (
                 Absence::SocketMissing,
-                None,
+                Evidence::Silent,
                 Some(BOOT),
                 "no recorded live activity",
             ),
             (
                 Absence::SocketMissing,
-                Some(BOOT - 1),
+                Evidence::At(BOOT - 1),
                 Some(NOW + 1),
                 "is in the future (clock skew)",
             ),
             (
                 Absence::Unreachable,
-                Some(BOOT - 1),
+                Evidence::At(BOOT - 1),
                 Some(BOOT),
                 "the server could not be reached",
             ),
+            // DAMAGE says so, and says it whatever the boot time is — including
+            // the boot that would otherwise have PROVEN this session gone.
+            (
+                Absence::SocketMissing,
+                Evidence::Unreadable,
+                Some(BOOT),
+                "is there and could not be read",
+            ),
+            (
+                Absence::SocketMissing,
+                Evidence::Unreadable,
+                None,
+                "is there and could not be read",
+            ),
         ] {
-            let text = reason(probe, last_live, boot).unwrap_or_default();
-            assert!(text.contains(needle), "{probe:?}: {text:?}");
-            assert!(text.contains("ae doctor"), "{probe:?}: {text:?}");
+            let text = reason(probe, evidence, boot).unwrap_or_default();
+            assert!(text.contains(needle), "{probe:?}/{evidence:?}: {text:?}");
+            assert!(
+                text.contains("ae doctor"),
+                "{probe:?}/{evidence:?}: {text:?}"
+            );
         }
         // A PROVEN verdict has nothing to explain.
         for probe in [Absence::Listed, Absence::Proven] {
-            assert_eq!(reason(probe, Some(BOOT - 1), Some(BOOT)), None, "{probe:?}");
+            assert_eq!(
+                reason(probe, Evidence::At(BOOT - 1), Some(BOOT)),
+                None,
+                "{probe:?}"
+            );
         }
     }
 
@@ -4075,9 +4219,7 @@ mod tests {
                     "error connecting to /tmp/x (No such file or directory)\n",
                     "sess"
                 ),
-                Evidence {
-                    last_live: Some(BOOT - 1)
-                },
+                Evidence::At(BOOT - 1),
                 Some(BOOT),
                 NOW
             ),

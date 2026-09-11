@@ -65,6 +65,27 @@ A crash writes its input under `artifacts/<target>/`; reproduce it with
 | `harness_observed` | `harness_state::{decode_idle, observed_from_option}` | one watchdog-owned `@ae_observed` pane option |
 | `picker_agents` | `tmux::parse_picker_agents` | one watchdog-owned `@ae_agents` value at a fixed clock |
 | `picker_spend` | `tmux::parse_picker_spend` | one watchdog-owned `@ae_spend` value at a fixed clock |
+| `launch_stamp` | `store::parse_launch_attempt` | one `.launch-attempt` stamp's bytes |
+| `last_live_epochs` | `inventory::launch_epochs` | one session meta, read for its launch moments |
+
+### The two reboot-proof reducers
+
+`launch_stamp` and `last_live_epochs` are the readers behind the boot-time absence proof
+(`docs/internals/stop-identity-contract.md`). Both are on the RESUME and LISTING paths, and
+both read files a human edits, so they are fuzzed before the proof they feed is trusted:
+
+- `launch_stamp` reads `.launch-attempt`, whose whole content is one epoch. The reducer is
+  BOUNDED (`store::LAUNCH_ATTEMPT_CAP`), so oversize input must be refused rather than
+  parsed — the seeds carry that boundary, an unbounded epoch, invalid UTF-8 and the
+  non-positive sentinel.
+- `last_live_epochs` reads a session meta for its `started` / `launch_time.<slot>` /
+  `capture_floor.<slot>` rows. `meta_parse` does NOT reach it: that target drives
+  `Meta::parse`, which asks a different question of the same bytes. This one also drives the
+  per-row claim reading and the AGGREGATE fold (`tmux::Evidence::claim` and
+  `Evidence::folded`), because it folds every row as it reads it.
+
+Both answer in three states, and the fuzz lane's job is that the third one — damaged
+evidence — is reached rather than silently collapsed into "nothing recorded".
 
 ## Lock refresh after a release
 

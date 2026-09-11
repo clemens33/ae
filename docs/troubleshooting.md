@@ -52,9 +52,37 @@ incomplete" warning.
 `stop`, `end` and `compact` never use this reasoning. They are irreversible, so
 they still require the server's own answer.
 
-If a session really is gone and ae cannot prove it — no recorded activity at all,
-or an unreadable boot time — resume its name on a fresh server by stopping it
-first (`ae stop <name>`), or inspect the evidence with `ae doctor`.
+Three things leave a session unprovable, and `ae doctor` says which:
+
+* **`no recorded live activity`** — a session so old it carries none of the
+  facts ae reads. Nothing is damaged; there is simply nothing to compare.
+* **`is there and could not be read`** — a record that exists and is unreadable:
+  wrong permissions, a directory where a file belongs, or a file whose contents
+  are not a moment. Repair or delete the named file and the session becomes
+  provable again. Damaged evidence never falls back to an older record, because
+  that older record would then authorise an absence the damaged one might
+  contradict.
+* **the boot time itself is unreadable** — nothing to compare against at all.
+
+`ae stop <name>` is **not** a way out of any of them: stop keeps the strict
+proof and refuses the same ENOENT, so it answers exactly the same way a resume
+does.
+
+What does work, when you know the session really is gone: give the recorded
+server something to answer with, so the strict proof applies again. Start a
+throwaway tmux server on that exact socket path, then resume normally — ae sees
+a server that answers and does not list the session, which proves it absent and
+moves it to the configured server.
+
+```bash
+ae doctor | grep -E 'boot|last-live'          # which number is the problem
+tmux -S /tmp/tmux-501/default -f /dev/null \
+     new-session -d -s ae-recovery-probe sleep 300
+ae <name>                                      # resumes and re-homes
+```
+
+The throwaway session is inert and dies with its `sleep`; nothing writes to your
+session metadata but the resume itself.
 
 ## Helpers feel out of date after upgrading ae
 

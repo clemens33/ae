@@ -28,6 +28,20 @@ doc = false
 bench = false
 
 [[bin]]
+name = "launch_stamp"
+path = "fuzz_targets/launch_stamp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "last_live_epochs"
+path = "fuzz_targets/last_live_epochs.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "meta_parse"
 path = "fuzz_targets/meta_parse.rs"
 test = false

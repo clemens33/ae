@@ -386,45 +386,78 @@ fn record_at(path: PathBuf, layout: Layout) -> DurableRecord {
 /// human writing a memo to a stopped session would date it to now and make
 /// every later reboot unprovable. Events are a ledger, not a heartbeat.
 ///
-/// More evidence can only move the answer LATER, and a later answer can only
-/// make the classifier refuse; nothing here can manufacture a proof.
+/// Each source answers in three states, and the fold keeps them apart. A source
+/// that is NOT THERE says nothing, which is what every session older than it
+/// looks like. A source that IS there and cannot be read is DAMAGE, and one
+/// damaged source makes the whole answer damaged — the alternative is that an
+/// unreadable newer claim silently leaves an older readable one proving the
+/// session gone.
 #[must_use]
-pub fn last_live(dir: &Path) -> Option<i64> {
-    let mut newest: Option<i64> = None;
-    let mut note = |epoch: Option<i64>| {
-        if let Some(epoch) = epoch.filter(|epoch| *epoch > 0) {
-            newest = Some(newest.map_or(epoch, |known: i64| known.max(epoch)));
-        }
-    };
-    note(crate::store::open(dir).launch_attempt());
-    note(meta_live_epoch(dir));
-    note(crate::watchdog_glue::pidfile_modified(dir));
-    note(crate::run::newest_start_marker(dir));
-    newest
+pub fn last_live(dir: &Path) -> crate::tmux::Evidence {
+    crate::tmux::Evidence::folded(&[
+        crate::store::open(dir).launch_attempt(),
+        meta_launch_epochs(dir),
+        crate::watchdog_glue::pidfile_modified(dir),
+        crate::run::newest_start_marker(dir),
+    ])
 }
 
-/// The newest launch epoch the meta at `dir` records.
-fn meta_live_epoch(dir: &Path) -> Option<i64> {
-    let bytes = crate::meta::read_bytes(dir).ok()?;
-    let text = String::from_utf8_lossy(&bytes);
-    let mut newest: Option<i64> = None;
-    for line in text.lines() {
-        let Some((key, value)) = line.split_once('=') else {
+/// The launch moments the meta at `dir` records.
+fn meta_launch_epochs(dir: &Path) -> crate::tmux::Evidence {
+    match crate::meta::read_bytes(dir) {
+        Ok(bytes) => launch_epochs(&bytes),
+        // A session directory with no meta at all is not damage — `ae list`
+        // shows those, and they were never launched from here.
+        Err(why) if why.kind() == io::ErrorKind::NotFound => crate::tmux::Evidence::Silent,
+        Err(_) => crate::tmux::Evidence::Unreadable,
+    }
+}
+
+/// The PURE reducer over a raw meta's launch rows — the one the fuzz lane
+/// drives, and the one `Meta::parse` does not reach.
+///
+/// Bytes in, one reading out, in constant space: a hostile meta may carry any
+/// number of rows, and each is folded as it is read rather than collected. A
+/// row that NAMES a launch moment and does not spell one is damage; a row that
+/// spells a non-positive epoch is the documented "no floor" sentinel and says
+/// nothing at all.
+///
+/// ```
+/// use ae::inventory::launch_epochs;
+/// use ae::tmux::Evidence;
+/// assert_eq!(
+///     launch_epochs(b"created=1\nstarted=1789105855\ncapture_floor.main=0\n"),
+///     Evidence::At(1_789_105_855)
+/// );
+/// assert_eq!(launch_epochs(b"goal=nothing to do with launches\n"), Evidence::Silent);
+/// assert_eq!(launch_epochs(b"started=whenever\n"), Evidence::Unreadable);
+/// ```
+#[must_use]
+pub fn launch_epochs(meta: &[u8]) -> crate::tmux::Evidence {
+    use crate::tmux::Evidence;
+    let mut folded = Evidence::Silent;
+    for line in meta.split(|byte| *byte == b'\n') {
+        let Some(split) = line.iter().position(|byte| *byte == b'=') else {
             continue;
         };
-        let live = key == "started"
-            || key.starts_with("launch_time.")
-            || key.starts_with("capture_floor.");
-        if !live {
+        let (key, value) = line.split_at(split);
+        let names_a_launch = key == b"started"
+            || key.starts_with(b"launch_time.")
+            || key.starts_with(b"capture_floor.");
+        if !names_a_launch {
             continue;
         }
-        if let Ok(epoch) = value.trim().parse::<i64>()
-            && epoch > 0
-        {
-            newest = Some(newest.map_or(epoch, |known: i64| known.max(epoch)));
+        let reading = match std::str::from_utf8(&value[1..]) {
+            Ok(text) => Evidence::claim(text),
+            Err(_) => Evidence::Unreadable,
+        };
+        folded = folded.and(reading);
+        // Nothing after this can change the answer.
+        if folded == Evidence::Unreadable {
+            return folded;
         }
     }
-    newest
+    folded
 }
 
 /// Which sessions each positively-selected server is RECORDED to hold.
@@ -475,9 +508,7 @@ impl RecordedOn {
             && dirs.iter().all(|dir| {
                 crate::tmux::classify_absence(
                     crate::tmux::Absence::SocketMissing,
-                    crate::tmux::Evidence {
-                        last_live: last_live(dir),
-                    },
+                    last_live(dir),
                     boot,
                     now,
                 ) == crate::tmux::StopProbe::Absent
@@ -687,7 +718,8 @@ mod tests {
     use super::{
         Candidate, DiscoveredSession, Discovery, DurableRecord, DurableScan, FailedSource,
         Inventory, Layout, LiveSighting, MetaRead, Provenance, QueryFailed, Roots, Selector,
-        ServerId, ServerSelector, durable_records, entitled_servers, last_live, take,
+        ServerId, ServerSelector, durable_records, entitled_servers, last_live, launch_epochs,
+        take,
     };
     use crate::session::RecordSnapshot;
     use std::cell::RefCell;
@@ -834,12 +866,13 @@ mod tests {
 
     #[test]
     fn last_live_reads_every_launch_fact_and_no_ledger_write() {
+        use crate::tmux::Evidence;
         let scratch = Scratch::new("lastlive");
         let dir = scratch.session("proof");
 
         // Nothing at all: an absence of evidence is not evidence, and the
-        // classifier fails closed on the `None`.
-        assert_eq!(last_live(&dir), None);
+        // classifier fails closed on it — but it is SILENCE, not damage.
+        assert_eq!(last_live(&dir), Evidence::Silent);
 
         // The meta's own rows, and only the ones a LAUNCH writes. `created` is
         // preserved across every resume, so it says nothing about liveness.
@@ -849,7 +882,7 @@ mod tests {
              goal=not a launch fact\n",
         )
         .expect("a meta");
-        assert_eq!(last_live(&dir), Some(300));
+        assert_eq!(last_live(&dir), Evidence::At(300));
 
         // THE LEDGER IS NOT A HEARTBEAT. `memo add`, `goal` and the audit
         // records append from outside a live session, so an event dated far in
@@ -861,7 +894,7 @@ mod tests {
         .expect("an event");
         assert_eq!(
             last_live(&dir),
-            Some(300),
+            Evidence::At(300),
             "an event from outside the session counted as liveness"
         );
 
@@ -870,18 +903,143 @@ mod tests {
         crate::store::open(&dir)
             .stamp_launch_attempt(900)
             .expect("the stamp");
-        assert_eq!(last_live(&dir), Some(900));
+        assert_eq!(last_live(&dir), Evidence::At(900));
 
         // And a start marker's mtime is read for the metas that predate every
         // row above — never mistaken for an unrelated file.
         fs::write(dir.join("launch.main.started"), "").expect("a start marker");
         fs::write(dir.join("launch.main.prompt"), "not a marker").expect("a prompt");
         let now = crate::time::Timestamp::now().epoch();
-        let seen = last_live(&dir).expect("the marker's own mtime");
+        let Evidence::At(seen) = last_live(&dir) else {
+            panic!("the marker's own mtime: {:?}", last_live(&dir))
+        };
         assert!(
             (seen - now).abs() <= 120,
             "the newest fact should be the marker just written: {seen} vs {now}"
         );
+    }
+
+    #[test]
+    fn a_damaged_source_is_never_stepped_over_by_an_older_readable_one() {
+        // I-2, and the direction is the whole point. Every source below is
+        // DAMAGED while an older, perfectly readable `started` row sits beside
+        // it. Folding damage into silence would let that older row prove the
+        // session gone — which is the one way this proof must never fail.
+        use crate::tmux::Evidence;
+        use std::os::unix::fs::PermissionsExt as _;
+        let scratch = Scratch::new("damaged");
+        let older = "started=200\n";
+
+        for (shape, damage) in [
+            ("a stamp nobody may read", 0),
+            ("a directory where the stamp belongs", 1),
+            ("a stamp claiming something that is not a moment", 2),
+            ("a stamp larger than any stamp", 3),
+            ("a meta row claiming a moment it does not spell", 4),
+            ("a watchdog pidfile that is a directory", 5),
+            ("a start marker that is a directory", 6),
+        ] {
+            let dir = scratch.session(&format!("damaged-{damage}"));
+            fs::write(dir.join("meta"), older).expect("a meta");
+            let stamp = dir.join(crate::store::LAUNCH_ATTEMPT);
+            match damage {
+                0 => {
+                    fs::write(&stamp, "900\n").expect("a stamp");
+                    fs::set_permissions(&stamp, std::fs::Permissions::from_mode(0o000))
+                        .expect("an unreadable stamp");
+                }
+                1 => fs::create_dir_all(&stamp).expect("a directory"),
+                2 => fs::write(&stamp, "whenever\n").expect("a garbage stamp"),
+                3 => fs::write(&stamp, "9".repeat(4096)).expect("an oversize stamp"),
+                4 => fs::write(dir.join("meta"), format!("{older}launch_time.main=soon\n"))
+                    .expect("a damaged meta row"),
+                5 => fs::create_dir_all(dir.join(".watchdog.pid")).expect("a directory"),
+                _ => fs::create_dir_all(dir.join("launch.main.started")).expect("a directory"),
+            }
+
+            assert_eq!(
+                last_live(&dir),
+                Evidence::Unreadable,
+                "{shape}: damage read as absence"
+            );
+            // And it propagates through the CLASSIFIER, which is what the
+            // resume and the listing actually cross: the boot sits after the
+            // older row, so without this the session would be proven gone.
+            assert_eq!(
+                crate::tmux::classify_absence(
+                    crate::tmux::Absence::SocketMissing,
+                    last_live(&dir),
+                    Some(1_000),
+                    2_000,
+                ),
+                crate::tmux::StopProbe::Unknown,
+                "{shape}: an unreadable source authorised an absence"
+            );
+            if damage == 0 {
+                let _ = fs::set_permissions(&stamp, std::fs::Permissions::from_mode(0o644));
+            }
+        }
+    }
+
+    #[test]
+    fn a_source_that_is_simply_not_there_is_silence_and_not_damage() {
+        // The other half, and the one that keeps this from refusing every
+        // legacy session: `.launch-attempt`, a watchdog pidfile and start
+        // markers are all ABSENT on a session written before they existed.
+        use crate::tmux::Evidence;
+        let scratch = Scratch::new("legacy");
+        let dir = scratch.session("legacy");
+        fs::write(dir.join("meta"), "created=100\nstarted=200\n").expect("a meta");
+        assert_eq!(last_live(&dir), Evidence::At(200));
+        assert_eq!(
+            crate::tmux::classify_absence(
+                crate::tmux::Absence::SocketMissing,
+                last_live(&dir),
+                Some(1_000),
+                2_000,
+            ),
+            crate::tmux::StopProbe::Absent,
+            "a legacy session with a readable row is still provable"
+        );
+    }
+
+    #[test]
+    fn the_meta_reducer_reads_hostile_bytes_without_collecting_them() {
+        use crate::tmux::Evidence;
+        // The rows it reads, the rows it ignores, and the sentinel.
+        assert_eq!(launch_epochs(b"started=200\n"), Evidence::At(200));
+        assert_eq!(
+            launch_epochs(b"created=900\nsession=x\ngoal=started=900\n"),
+            Evidence::Silent,
+            "a value that merely CONTAINS a launch key is not one"
+        );
+        assert_eq!(
+            launch_epochs(b"capture_floor.main=0\n"),
+            Evidence::Silent,
+            "the documented no-floor sentinel is no claim, not a broken one"
+        );
+        assert_eq!(
+            launch_epochs(b"started=200\nstarted=300\n"),
+            Evidence::At(300)
+        );
+        // Damage, every shape of it.
+        for hostile in [
+            &b"started="[..],
+            b"started=  ",
+            b"started=-",
+            b"launch_time.main=99999999999999999999999999999999999999",
+            b"started=\xff\xfe",
+        ] {
+            assert_eq!(
+                launch_epochs(hostile),
+                Evidence::Unreadable,
+                "{:?}",
+                String::from_utf8_lossy(hostile)
+            );
+        }
+        // No trailing newline, and no allocation of the whole document.
+        assert_eq!(launch_epochs(b"started=200"), Evidence::At(200));
+        assert_eq!(launch_epochs(b""), Evidence::Silent);
     }
 
     impl Drop for Scratch {

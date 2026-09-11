@@ -165,14 +165,26 @@ pub fn started_marker(dir: &Path, slot: &str) -> PathBuf {
 /// counts: the question is when ae last put a tool in a pane here, not who the
 /// roster says is seated.
 #[must_use]
-pub fn newest_start_marker(dir: &Path) -> Option<i64> {
+pub fn newest_start_marker(dir: &Path) -> crate::tmux::Evidence {
+    use crate::tmux::Evidence;
     #[allow(
         clippy::disallowed_methods,
         reason = "a door: the start markers this module WRITES are also read here, as the oldest universal record of a pane becoming its tool"
     )]
     let listing = std::fs::read_dir(dir);
-    let mut newest: Option<i64> = None;
-    for entry in listing.ok()?.flatten() {
+    let listing = match listing {
+        Ok(listing) => listing,
+        // A session directory that is not there has no markers and no damage.
+        Err(why) if why.kind() == std::io::ErrorKind::NotFound => return Evidence::Silent,
+        Err(_) => return Evidence::Unreadable,
+    };
+    let mut folded = Evidence::Silent;
+    for entry in listing {
+        // An entry this enumeration could not read might BE a marker, so it is
+        // damage rather than one fewer file.
+        let Ok(entry) = entry else {
+            return Evidence::Unreadable;
+        };
         let name = entry.file_name();
         let Some(name) = name.to_str() else {
             continue;
@@ -180,17 +192,20 @@ pub fn newest_start_marker(dir: &Path) -> Option<i64> {
         if !(name.starts_with("launch.") && name.ends_with(".started")) {
             continue;
         }
-        let modified = entry
-            .metadata()
-            .ok()
-            .and_then(|meta| meta.modified().ok())
-            .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
-            .and_then(|since| i64::try_from(since.as_secs()).ok());
-        if let Some(epoch) = modified.filter(|epoch| *epoch > 0) {
-            newest = Some(newest.map_or(epoch, |known: i64| known.max(epoch)));
+        // `DirEntry::metadata` does not traverse a link, so a marker replaced
+        // by one is classified rather than followed.
+        let Ok(meta) = entry.metadata() else {
+            return Evidence::Unreadable;
+        };
+        if !meta.is_file() {
+            return Evidence::Unreadable;
+        }
+        folded = folded.and(Evidence::at_mtime(meta.modified()));
+        if folded == Evidence::Unreadable {
+            return folded;
         }
     }
-    newest
+    folded
 }
 
 /// The optional first user message a spawn recorded for this seat.

@@ -2319,3 +2319,123 @@ fn a_fleet_listing_reads_a_server_the_host_took_with_it_as_empty() {
         "no row is left unknown: {stdout}"
     );
 }
+
+#[test]
+fn a_damaged_launch_record_refuses_the_resume_an_older_row_would_have_allowed() {
+    if skip() {
+        return;
+    }
+    // I-2, on the path that matters. Every readable row here predates the boot,
+    // so without the damaged stamp this session resumes — the control below
+    // proves exactly that. A record that is THERE and cannot be read must not
+    // step aside and let the older row authorise an absence.
+    let rebooted = Rebooted::build("reboot-damaged", "damaged", false);
+    let dir = rebooted.rig.sessions().join("damaged");
+    let stamp = dir.join(ae::store::LAUNCH_ATTEMPT);
+    let before = rebooted.meta("damaged");
+
+    for (shape, damage) in [
+        ("unreadable", 0),
+        ("a directory in its place", 1),
+        ("claiming something that is not a moment", 2),
+    ] {
+        let _ = std::fs::remove_file(&stamp);
+        let _ = std::fs::remove_dir_all(&stamp);
+        match damage {
+            0 => {
+                assert!(std::fs::write(&stamp, "100\n").is_ok(), "{shape}");
+                assert!(
+                    std::fs::set_permissions(&stamp, std::fs::Permissions::from_mode(0o000))
+                        .is_ok(),
+                    "{shape}"
+                );
+            }
+            1 => assert!(std::fs::create_dir_all(&stamp).is_ok(), "{shape}"),
+            _ => assert!(std::fs::write(&stamp, "whenever\n").is_ok(), "{shape}"),
+        }
+
+        let (code, stdout, stderr) = rebooted.resume("damaged", 1800);
+        assert_eq!(code, Some(1), "{shape}: must refuse: {stdout}{stderr}");
+        assert!(
+            stderr.contains("is there and could not be read"),
+            "{shape}: the refusal must name the damage: {stderr}"
+        );
+        assert_eq!(
+            rebooted.meta("damaged"),
+            before,
+            "{shape}: a refused resume changed metadata"
+        );
+        if damage == 0 {
+            let _ = std::fs::set_permissions(&stamp, std::fs::Permissions::from_mode(0o644));
+        }
+    }
+
+    // THE CONTROL, and it is what makes the three assertions above about the
+    // DAMAGE rather than about the boot time: repair the stamp, change nothing
+    // else, and the same resume succeeds.
+    let _ = std::fs::remove_file(&stamp);
+    let _ = std::fs::remove_dir_all(&stamp);
+    assert!(
+        std::fs::write(&stamp, format!("{}\n", rebooted.last_live)).is_ok(),
+        "a repaired stamp"
+    );
+    let (code, stdout, stderr) = rebooted.resume("damaged", 1800);
+    assert_eq!(code, Some(0), "the repaired resume: {stdout}{stderr}");
+}
+
+#[test]
+fn a_fleet_listing_keeps_its_warning_when_one_session_evidence_is_damaged() {
+    if skip() {
+        return;
+    }
+    // I-2 on the listing. One damaged session is enough: the server it sits on
+    // is not proven empty, so its rows stay `unknown` and the listing keeps
+    // saying it may be hiding something.
+    let mut rig = Rig::idle("reboot-listing-damaged");
+    let sock = rig.sock.clone();
+    for name in ["clean", "broken"] {
+        let (code, stdout, stderr) = rig.run_on(Some(&sock), &[name, "--no-attach"]);
+        assert_eq!(code, Some(0), "{name} must build: {stdout}{stderr}");
+    }
+    let (killed, said) = rig.tmux(&["kill-server"]);
+    assert!(killed, "the recorded server must stop: {said}");
+    assert!(
+        std::fs::remove_file(&sock).is_ok(),
+        "the socket is unlinked"
+    );
+
+    let last_live = it_now() - 3600;
+    for name in ["clean", "broken"] {
+        backdate(&rig.sessions().join(name), last_live);
+    }
+    let elsewhere = rig.scratch.join("sock-listing-damaged");
+    rig.scratch.add_tmux_server(elsewhere.clone());
+    let listing = || {
+        rig.run_on_with_env(
+            Some(&elsewhere),
+            &[("AE_TEST_BOOT_TIME", (last_live + 1800).to_string())],
+            &["list", "--all"],
+        )
+    };
+
+    // Both readable: the vanished server is proven to hold nothing.
+    let (_, stdout, stderr) = listing();
+    assert!(
+        !stderr.contains("inventory incomplete"),
+        "the control must be a proven-empty source: {stderr}{stdout}"
+    );
+
+    // Damage ONE of them, and the whole source goes back to unproven.
+    let stamp = rig
+        .sessions()
+        .join("broken")
+        .join(ae::store::LAUNCH_ATTEMPT);
+    assert!(std::fs::remove_file(&stamp).is_ok(), "the readable stamp");
+    assert!(std::fs::create_dir_all(&stamp).is_ok(), "a damaged stamp");
+    let (_, stdout, stderr) = listing();
+    assert!(
+        stderr.contains("inventory incomplete"),
+        "one damaged session must leave its server unproven: {stderr}{stdout}"
+    );
+    assert!(stdout.contains("unknown"), "and its rows unknown: {stdout}");
+}

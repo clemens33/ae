@@ -148,7 +148,7 @@ pub struct SessionFacts {
     /// When this session last did something only a LIVE session does — the
     /// evidence a reboot refusal rests on. See
     /// [`crate::inventory::last_live`].
-    pub last_live: Option<i64>,
+    pub last_live: crate::tmux::Evidence,
 }
 
 /// One `[profiles]` entry, as the report needs it.
@@ -575,20 +575,29 @@ fn reboot_rows(facts: &Facts, out: &mut Report) {
     for session in &facts.sessions {
         let label = format!("last-live:{}", session.name);
         match (session.last_live, facts.boot) {
-            (Some(last_live), Some(boot)) if last_live < boot => out.push(
+            (crate::tmux::Evidence::At(last_live), Some(boot)) if last_live < boot => out.push(
                 Level::Ok,
                 &label,
                 &format!("{} — before this boot", iso(last_live)),
             ),
-            (Some(last_live), _) => out.push(
+            (crate::tmux::Evidence::At(last_live), _) => out.push(
                 Level::Ok,
                 &label,
                 &format!("{} — this boot", iso(last_live)),
             ),
-            (None, _) => out.push(
+            (crate::tmux::Evidence::Silent, _) => out.push(
                 Level::Warn,
                 &label,
                 "no recorded live activity — a vanished tmux socket cannot be proven gone",
+            ),
+            // DAMAGE, not absence: a record that is there and unreadable is the
+            // one a human can actually repair, so it says so rather than
+            // rendering as "nothing recorded".
+            (crate::tmux::Evidence::Unreadable, _) => out.push(
+                Level::Warn,
+                &label,
+                "a record of this session's own activity is there and could not be read — \
+                 a vanished tmux socket cannot be proven gone",
             ),
         }
     }
@@ -1109,7 +1118,7 @@ mod tests {
             core_usable: true,
             core_version: "2026.9.1".to_owned(),
             glue_version: "2026.9.1".to_owned(),
-            last_live: None,
+            last_live: crate::tmux::Evidence::Silent,
         });
         let document = report(&input);
         assert_eq!(document.failures(), 0);
@@ -1131,7 +1140,7 @@ mod tests {
             core_usable: false,
             core_version: String::new(),
             glue_version: "2026.9.1".to_owned(),
-            last_live: None,
+            last_live: crate::tmux::Evidence::Silent,
         });
         let text = report(&input).render();
         assert!(text.contains("session unbound has no core bound"), "{text}");
@@ -1148,7 +1157,7 @@ mod tests {
             core_usable: true,
             core_version: "2026.8.4".to_owned(),
             glue_version: "2026.8.4".to_owned(),
-            last_live: None,
+            last_live: crate::tmux::Evidence::Silent,
         });
         let text = report(&input).render();
         assert!(

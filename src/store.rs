@@ -46,6 +46,33 @@ pub const META: &str = "meta";
 /// every seat) and earlier than the tmux session it describes.
 pub const LAUNCH_ATTEMPT: &str = ".launch-attempt";
 
+/// The most a launch-attempt stamp may be: one epoch and a newline. A larger
+/// file at that name is damage, and reading it would let whoever planted it
+/// size an allocation on the resume and listing paths.
+pub const LAUNCH_ATTEMPT_CAP: u64 = 64;
+
+/// What a launch-attempt stamp's BYTES say — the pure half of
+/// [`SessionStore::launch_attempt`], and the one the fuzz lane drives.
+///
+/// ```
+/// use ae::store::parse_launch_attempt;
+/// use ae::tmux::Evidence;
+/// assert_eq!(parse_launch_attempt(b"1789105855\n"), Evidence::At(1_789_105_855));
+/// assert_eq!(parse_launch_attempt(b""), Evidence::Unreadable);
+/// assert_eq!(parse_launch_attempt(b"\xff\xfe"), Evidence::Unreadable);
+/// ```
+#[must_use]
+pub fn parse_launch_attempt(body: &[u8]) -> crate::tmux::Evidence {
+    use crate::tmux::Evidence;
+    if body.len() as u64 > LAUNCH_ATTEMPT_CAP {
+        return Evidence::Unreadable;
+    }
+    match std::str::from_utf8(body) {
+        Ok(text) => Evidence::claim(text),
+        Err(_) => Evidence::Unreadable,
+    }
+}
+
 /// What a file's lock is called: its own name plus this. Appending it by hand
 /// is how two writers end up on two different locks.
 pub const LOCK_SUFFIX: &str = ".lock";
@@ -149,6 +176,12 @@ impl SessionStore {
         self.dir.join(LAUNCH_ATTEMPT)
     }
 
+    /// The staged sibling [`Self::stamp_launch_attempt`] publishes from.
+    fn launch_attempt_temp(&self) -> PathBuf {
+        self.dir
+            .join(format!("{LAUNCH_ATTEMPT}.tmp.{}", std::process::id()))
+    }
+
     /// Record `epoch` as this session's newest launch attempt, DURABLY.
     ///
     /// Temp, `fsync`, rename — the shape [`crate::run`]'s start marker uses,
@@ -160,17 +193,37 @@ impl SessionStore {
     ///
     /// # Errors
     ///
-    /// The write, the `fsync` or the rename, whichever failed.
+    /// A temp name that is already taken — which is never overwritten, because
+    /// what is behind it may not be this session's — or the write, the `fsync`
+    /// or the rename, whichever failed.
     pub fn stamp_launch_attempt(&self, epoch: i64) -> io::Result<()> {
         let path = self.launch_attempt_path();
-        let temp = self
-            .dir
-            .join(format!("{LAUNCH_ATTEMPT}.tmp.{}", std::process::id()));
-        let publish = File::create(&temp)
-            .and_then(|mut file| {
-                file.write_all(format!("{epoch}\n").as_bytes())
-                    .and_then(|()| file.sync_all())
-            })
+        let temp = self.launch_attempt_temp();
+        // EXCLUSIVE, and that is not a detail. The name is predictable and it
+        // sits in session state a human edits, so `File::create` would FOLLOW a
+        // link planted there and truncate whatever it points at — a file
+        // outside this session entirely. `create_new` refuses a name that is
+        // taken, whatever is behind it, and refusing is the right answer: a
+        // stamp that cannot be written already means the launch is refused.
+        let created = OpenOptions::new().write(true).create_new(true).open(&temp);
+        let mut file = match created {
+            Ok(file) => file,
+            Err(why) => {
+                // NOT ours, so NOT ours to remove. Say where it is instead.
+                return Err(io::Error::new(
+                    why.kind(),
+                    format!(
+                        "{}: {why} — nothing was overwritten; remove that file if it is stale",
+                        temp.display()
+                    ),
+                ));
+            }
+        };
+        // From here the temp is one this process made, which is what makes the
+        // cleanup below safe.
+        let publish = file
+            .write_all(format!("{epoch}\n").as_bytes())
+            .and_then(|()| file.sync_all())
             .and_then(|()| std::fs::rename(&temp, &path));
         if let Err(why) = publish {
             let _ = std::fs::remove_file(&temp);
@@ -179,45 +232,53 @@ impl SessionStore {
         Ok(())
     }
 
-    /// When ae last tried to launch into this session, or `None` when it never
-    /// left a stamp.
+    /// When ae last tried to launch into this session.
     ///
     /// The epoch is the file's CONTENT — the moment ae deliberately recorded,
-    /// which no copy, restore or archive rewrites. A stamp whose content cannot
-    /// be read falls back to its mtime, because the file's existence is itself
-    /// the fact.
+    /// which no copy, restore or archive rewrites. Three answers, and the
+    /// difference between the last two is the whole reason this is not an
+    /// `Option`: a stamp that is NOT THERE is a session older than the stamp
+    /// and says nothing, while a stamp that is there and unreadable is DAMAGE
+    /// and must refuse the proof rather than step aside for an older row.
+    ///
+    /// Hostile persisted state, so the read is BOUNDED before it happens: the
+    /// file holds one epoch and a newline, and anything larger is damage rather
+    /// than an allocation every resume and every listing has to pay for.
     #[must_use]
-    pub fn launch_attempt(&self) -> Option<i64> {
+    pub fn launch_attempt(&self) -> crate::tmux::Evidence {
+        use crate::tmux::Evidence;
         let path = self.launch_attempt_path();
         #[allow(
             clippy::disallowed_methods,
             reason = "a door: the launch-attempt stamp is classified without following a link to it — see `LAUNCH_ATTEMPT`"
         )]
         let probe = std::fs::symlink_metadata(&path);
-        let meta = probe.ok()?;
-        if !meta.is_file() {
-            return None;
+        let meta = match probe {
+            Ok(meta) => meta,
+            // The ONE benign absence.
+            Err(why) if why.kind() == io::ErrorKind::NotFound => return Evidence::Silent,
+            Err(_) => return Evidence::Unreadable,
+        };
+        if !meta.is_file() || meta.len() > LAUNCH_ATTEMPT_CAP {
+            return Evidence::Unreadable;
         }
         #[allow(
             clippy::disallowed_methods,
             reason = "a door: the stamp's own epoch is the fact ae wrote — see `LAUNCH_ATTEMPT`"
         )]
-        let body = std::fs::read_to_string(&path);
-        let written = body
-            .ok()
-            .and_then(|text| text.trim().parse::<i64>().ok())
-            .filter(|epoch| *epoch > 0);
-        if written.is_some() {
-            return written;
+        let opened = File::open(&path);
+        let Ok(file) = opened else {
+            return Evidence::Unreadable;
+        };
+        let mut body = Vec::new();
+        // The cap AGAIN, on the read itself: the size above was a different
+        // moment, and this one is what actually allocates.
+        if io::Read::read_to_end(&mut io::Read::take(file, LAUNCH_ATTEMPT_CAP + 1), &mut body)
+            .is_err()
+        {
+            return Evidence::Unreadable;
         }
-        // The stamp is there and says nothing readable: its EXISTENCE is still
-        // the fact, so the file's own mtime answers rather than nothing at all.
-        // A reader that took a corrupted stamp for an absent one would be
-        // reading damage as innocence.
-        meta.modified()
-            .ok()
-            .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
-            .and_then(|since| i64::try_from(since.as_secs()).ok())
+        parse_launch_attempt(&body)
     }
 
     /// The session's goal — the FIRST `goal=` record in meta, which is what
@@ -486,6 +547,51 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn a_stamp_never_writes_through_a_name_it_did_not_create() {
+        // I-1. The temp name is PREDICTABLE, and it sits in session state a
+        // human edits. `File::create` would follow a link planted there and
+        // truncate whatever it points at — a file outside this session — and
+        // the error cleanup would then unlink a name this process never owned.
+        let dir = scratch("exclusive");
+        let store = open(&dir);
+        let victim = dir.join("someone-elses-file");
+        let bytes = b"THIS MUST SURVIVE\n";
+
+        for (shape, plant) in [
+            ("a regular file", false),
+            ("a symlink to a file outside the session", true),
+        ] {
+            std::fs::write(&victim, bytes).unwrap();
+            let temp = store.launch_attempt_temp();
+            let _ = std::fs::remove_file(&temp);
+            let _ = std::fs::remove_file(store.launch_attempt_path());
+            if plant {
+                std::os::unix::fs::symlink(&victim, &temp).unwrap();
+            } else {
+                std::fs::write(&temp, bytes).unwrap();
+            }
+
+            let refused = store.stamp_launch_attempt(1_789_105_855);
+            assert!(refused.is_err(), "{shape}: the stamp must refuse");
+            assert_eq!(
+                std::fs::read(&victim).unwrap(),
+                bytes,
+                "{shape}: the foreign target was written through"
+            );
+            assert!(
+                !store.launch_attempt_path().exists(),
+                "{shape}: a refused stamp published itself anyway"
+            );
+            assert!(
+                std::fs::symlink_metadata(&temp).is_ok(),
+                "{shape}: the collision was removed, and it was never ours to remove"
+            );
+            let _ = std::fs::remove_file(&temp);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

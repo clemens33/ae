@@ -471,22 +471,30 @@ pub fn pidfile(meta_dir: &Path) -> PathBuf {
     meta_dir.join(PIDFILE_NAME)
 }
 
-/// When the daemon's pidfile was last written, epoch seconds, or `None` when
-/// there is none.
+/// When the daemon's pidfile was last written.
 ///
 /// A heartbeat: the daemon exists only while its session does, so this is one
 /// of the facts [`crate::inventory::last_live`] weighs against the host's boot
-/// time. Non-following, like every other read of this file.
+/// time. Non-following, like every other read of this file — and a pidfile that
+/// is there but is not a readable regular file is DAMAGE, never absence.
 #[must_use]
-pub fn pidfile_modified(meta_dir: &Path) -> Option<i64> {
+pub fn pidfile_modified(meta_dir: &Path) -> crate::tmux::Evidence {
+    use crate::tmux::Evidence;
     #[allow(
         clippy::disallowed_methods,
         reason = "a door: the pidfile's mtime is a live session's heartbeat — `symlink_metadata`, so a planted link cannot answer for it"
     )]
     let probe = std::fs::symlink_metadata(pidfile(meta_dir));
-    let modified = probe.ok()?.modified().ok()?;
-    let since = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
-    i64::try_from(since.as_secs()).ok()
+    let meta = match probe {
+        Ok(meta) => meta,
+        // No daemon ever ran here, which every stopped session looks like.
+        Err(why) if why.kind() == std::io::ErrorKind::NotFound => return Evidence::Silent,
+        Err(_) => return Evidence::Unreadable,
+    };
+    if !meta.is_file() {
+        return Evidence::Unreadable;
+    }
+    Evidence::at_mtime(meta.modified())
 }
 
 /// The pid a session's pidfile names, or `None` when it names nothing usable.

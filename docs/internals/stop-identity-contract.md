@@ -248,9 +248,30 @@ purpose:
   memo left on a stopped session would date it to now and make every later reboot
   unprovable.
 
-**Fail closed** is every other branch: no boot time, no recorded activity, activity at or
-after the boot, a boot time in the future (the clock moved), or any failure that is not
-ENOENT. The refusal then says which one, and `ae doctor` prints the two numbers.
+**Every source answers in three states, and the third is why this is not an `Option`.** A
+source that is NOT THERE says nothing, which is exactly what every session written before
+that source existed looks like. A source that IS there and cannot be read — wrong mode, a
+directory in its place, contents that are not a moment, a claim longer than any epoch — is
+DAMAGE, and one damaged source makes the whole answer damaged. Folding damage into silence
+would let an unreadable newer claim leave an older readable row proving the session gone,
+which is the single direction this proof may never fail in. `tmux::Evidence` carries the
+three states, `Evidence::folded` is the rule, and the per-source readings live with the
+files they read: `store::SessionStore::launch_attempt`, `inventory::launch_epochs`,
+`watchdog_glue::pidfile_modified`, `run::newest_start_marker`.
+
+**The stamp is hostile persisted state**, so it is read under a byte cap
+(`store::LAUNCH_ATTEMPT_CAP`) checked before the open and again on the read, and it is
+WRITTEN through an exclusive temporary. The temp name is predictable and sits in session
+state a human edits, so a plain create would follow a link planted there and truncate a file
+outside the session entirely; `create_new` refuses a taken name whatever is behind it, and
+only a temp this process made is ever cleaned up. A refused stamp is a refused launch, which
+is the behaviour that was wanted anyway. The two pure reducers — `store::parse_launch_attempt`
+and `inventory::launch_epochs` — carry cargo-fuzz targets, as AGENTS.md requires of any
+parser of hostile persisted state.
+
+**Fail closed** is every other branch: no boot time, no recorded activity, damaged activity,
+activity at or after the boot, a boot time in the future (the clock moved), or any failure
+that is not ENOENT. The refusal then says which one, and `ae doctor` prints the two numbers.
 
 **The residual, documented rather than defended**: a foreign tmux server started after the
 boot, on the same socket path, holding a same-named session ae never launched, whose socket
