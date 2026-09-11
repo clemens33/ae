@@ -1,6 +1,61 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.47] - 2026-09-11
+
+### Other
+
+- Show each session's spend in the fleet picker
+
+The picker could say what every session was doing and never what any of it
+cost. `ae usage` already prices agent transcripts offline, so the number
+existed; it just had no way into a menu that reads one tmux listing.
+
+Publish it as a fact instead. The watchdog writes a session-scoped
+`@ae_spend` — `v1;<epoch>;<interval>;<usd_micro>;<flag>` — from one
+`usage::observe` pass over its own session, priced from the same config
+`ae usage` reads. That pass costs a walk of the session's transcripts, so it
+rides the `quota_every_secs` cadence and its counter rather than the verdict
+interval: one pass per cadence, and `0` disables spend with the advisories.
+Anything the grammar cannot carry unsets the option, as does `watchdog stop`.
+
+The option is hand-editable persisted state, so `parse_picker_spend` is
+strict about all five fields and the fuzz target `picker_spend` gates the
+cutover. Missing, malformed and stale facts are unavailable, never a
+confident zero: the row draws `-` and the title leaves the session out of
+its sum. A flag short of `exact` prefixes `~`, including the sum when any
+counted session carries one. Unaccounted spend counts as short of exact, so
+legacy retire events ae cannot attribute a transcript to take the tilde too.
+
+Column widths now follow the rows a draw actually shows, floored at four
+cells and capped where the old constants were. Session rows and the agent
+rows under them share the name and state columns, so a fleet of short names
+no longer pads every one of them out to eighteen cells of blanks.
+- Name the spend cadence where the knob is documented
+
+The config reference described `quota_every_secs` as the quota-observation
+cadence. It now paces the fleet picker's spend fact on the same counter, and
+`0` takes that column away too, so a reader of this table would have been
+surprised twice.
+- Advertise the cadence spend sampling reaches, not the one asked for
+
+Two readings from the colead's diversity review of the spend slice.
+
+The fact advertised `quota_every_secs` verbatim while the counter that
+produces it fires on whole watchdog cycles. With a one-second request on a
+sixty-second cycle the fact claimed an interval of one and was sampled every
+sixty, and the reader expires a fact after two of its own intervals — so a
+perfectly healthy publisher showed `-` through almost every cycle. The
+advertised interval is now the rounded period sampling actually reaches, and
+the test derives that period from the production counter rather than from an
+expectation, so the two cannot drift apart again. Unequal inputs are pinned
+at the unit level and the integration arm now runs a one-second request
+against a two-second cycle instead of the one-against-one that missed this.
+
+The title also read as whole-fleet coverage when it was not. Three running
+sessions with one unavailable fact summed the other two and drew an
+unqualified figure. An absent reading is missing coverage, not a zero, so it
+now qualifies the sum the same way an inexact reading does.
 ## [v2026.9.46] - 2026-09-11
 
 ### Bug Fixes
