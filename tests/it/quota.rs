@@ -1084,3 +1084,289 @@ fn claude_account_switch_hides_mismatched_cached_usage() {
     assert!(!mismatch_text.contains("11%"), "{mismatch_text}");
     assert!(mismatch_text.contains("unknown"), "{mismatch_text}");
 }
+
+/// One of every `.rs` file in the crate, for a boundary that must see the whole
+/// tree rather than the two files that happen to be under review.
+///
+/// Every failure here is LOUD. A directory that cannot be enumerated or a file
+/// that cannot be read would otherwise read as a compliant one, which is the
+/// one result this guard must never produce.
+fn crate_sources() -> Vec<PathBuf> {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    let mut pending = vec![root.join("src"), root.join("tests")];
+    while let Some(dir) = pending.pop() {
+        let entries = std::fs::read_dir(&dir)
+            .unwrap_or_else(|why| panic!("{} cannot be enumerated: {why}", dir.display()));
+        for entry in entries {
+            let entry = entry
+                .unwrap_or_else(|why| panic!("{} has an unreadable entry: {why}", dir.display()));
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                files.push(path);
+            }
+        }
+    }
+    files
+}
+
+/// The declaration of one item, from its header to the line that closes it.
+fn declaration_of(text: &str, header: &str) -> String {
+    let start = text
+        .find(header)
+        .unwrap_or_else(|| panic!("{header} is no longer declared"));
+    let rest = &text[start..];
+    let end = rest.find("\n}").unwrap_or(rest.len());
+    rest[..end].to_owned()
+}
+
+/// Where a file sits relative to the module that owns the quota boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reach {
+    /// Inside the `quota` tree. Rust privacy admits a descendant, and it cannot
+    /// express "visible to the parent but not to a sibling", so here the guard
+    /// below is the WHOLE enforcement and it must see every ordinary spelling.
+    Child,
+    /// Everywhere else. The items are private to `quota`, so the compiler
+    /// refuses each reach; the guard watches the qualified spellings for a
+    /// widening of that visibility, which is how they became reachable before.
+    Outside,
+}
+
+/// Whether `text` reaches past the quota boundary, and by which spelling.
+///
+/// Needles are assembled from fragments so this file does not match itself, and
+/// the DECLARATION of an item is not a reach: an occurrence introduced by
+/// `struct`, `enum` or `union` is skipped, which is what keeps another module's
+/// unrelated `Policy` or `Classified` out of the `Outside` scan.
+fn reaches_past_boundary(text: &str, reach: Reach) -> Option<String> {
+    let needles: Vec<(&str, String)> = match reach {
+        Reach::Child => vec![
+            ("a policy constructor", ["Policy", "::new("].concat()),
+            ("a policy assembled", ["Policy", " {"].concat()),
+            ("a reading assembled", ["Reading", " {"].concat()),
+            ("a level bound by hand", ["Classified", " {"].concat()),
+            ("the threshold", ["super::", "classify("].concat()),
+            ("the threshold", ["quota::", "classify("].concat()),
+            // A descendant can WRITE a private field too, so default-then-set
+            // is the same reach as assembling the value outright.
+            ("a declaration written", [".manual_resets", " ="].concat()),
+            ("an account written", [".account", " ="].concat()),
+            ("a level written", [".level", " ="].concat()),
+            ("a held row written", [".reading", " ="].concat()),
+        ],
+        Reach::Outside => vec![
+            ("a policy constructor", ["quota::", "Policy::new("].concat()),
+            ("a policy assembled", ["quota::", "Policy {"].concat()),
+            ("a reading assembled", ["quota::", "Reading {"].concat()),
+            (
+                "a level bound by hand",
+                ["quota::", "Classified {"].concat(),
+            ),
+            ("the threshold", ["quota::", "classify("].concat()),
+        ],
+    };
+    for (form, needle) in needles {
+        let mut from = 0;
+        while let Some(at) = text[from..].find(&needle) {
+            let start = from + at;
+            let introducer = text[..start].split_whitespace().next_back().unwrap_or("");
+            let line_start = text[..start].rfind('\n').map_or(0, |at| at + 1);
+            let prefix = &text[line_start..start];
+            // A brace that opens a FUNCTION BODY is not an assembled value, so
+            // a signature naming one of these types as its return type passes.
+            let signature = prefix.contains("->") || prefix.contains("fn ");
+            if !matches!(introducer, "struct" | "enum" | "union") && !signature {
+                return Some(format!("{form} ({needle})"));
+            }
+            from = start + needle.len();
+        }
+    }
+    if reach == Reach::Child {
+        for statement in use_statements(text) {
+            if (statement.contains("super::") || statement.contains("quota::"))
+                && statement
+                    .split(|c: char| !c.is_alphanumeric() && c != '_')
+                    .any(|word| word == "classify")
+            {
+                return Some(format!("the threshold, imported ({statement})"));
+            }
+        }
+    }
+    None
+}
+
+/// Every `use` statement in one file, each flattened onto one line, because the
+/// import that matters is routinely written across several.
+fn use_statements(text: &str) -> Vec<String> {
+    let mut statements = Vec::new();
+    let mut rest = text;
+    while let Some(at) = rest.find("use ") {
+        rest = &rest[at..];
+        let end = rest.find(';').unwrap_or(rest.len());
+        statements.push(rest[..end].split_whitespace().collect::<Vec<_>>().join(" "));
+        rest = rest.get(end + 1..).unwrap_or("");
+    }
+    statements
+}
+
+/// The calibration samples, as data outside the scanned tree.
+fn boundary_samples() -> Vec<(bool, Reach, String, String)> {
+    let text = include_str!("../fixtures/quota/boundary-samples.txt");
+    let mut samples: Vec<(bool, Reach, String, String)> = Vec::new();
+    for line in text.lines() {
+        if line.starts_with('#') {
+            continue;
+        }
+        let marker = line
+            .strip_prefix("catch ")
+            .map(|rest| (true, rest))
+            .or_else(|| line.strip_prefix("allow ").map(|rest| (false, rest)));
+        if let Some((expected, rest)) = marker {
+            let (scope, form) = rest
+                .split_once(' ')
+                .unwrap_or_else(|| panic!("a marker names no scope: {line}"));
+            let reach = match scope {
+                "child" => Reach::Child,
+                "outside" => Reach::Outside,
+                other => panic!("unknown scope {other}: {line}"),
+            };
+            samples.push((expected, reach, form.to_owned(), String::new()));
+        } else if let Some(open) = samples.last_mut() {
+            open.3.push_str(line);
+            open.3.push('\n');
+        } else {
+            assert!(
+                line.trim().is_empty(),
+                "the sample file opens with a line belonging to no entry: {line}"
+            );
+        }
+    }
+    assert!(
+        samples.len() >= 20,
+        "the calibration lost samples: {}",
+        samples.len()
+    );
+    samples
+}
+
+/// The quota boundary, asked of the tree rather than remembered.
+///
+/// The rule is that a LEVEL and the observation it was decided from cannot be
+/// supplied separately, and that a policy cannot be assembled from a
+/// declaration plus somebody's account facts. For every module OUTSIDE the
+/// `quota` tree that is the COMPILER's answer: the constructors and the
+/// threshold are private, the fields are private, and each renderer takes one
+/// value. Inside the tree it is a CONVENTION, and this test is the whole of its
+/// enforcement — Rust privacy admits a descendant, and it has no way to say
+/// "visible to the parent but not to a sibling", so `quota::codex` and
+/// `quota::claude` retain the access their parent has.
+///
+/// A guard nobody has proved is not a guard, so every shape is calibrated
+/// against `tests/fixtures/quota/boundary-samples.txt` before the tree is
+/// scanned: each spelling a child module would actually use must trip it, and
+/// each benign form must not. A compile-fail harness would prove the compiler
+/// half directly, but it needs a dev-dependency, and adding one is a ruling
+/// rather than a commit.
+#[test]
+fn the_quota_surface_cannot_pair_a_level_with_an_observation_it_did_not_judge() {
+    for (expected, reach, form, sample) in boundary_samples() {
+        let found = reaches_past_boundary(&sample, reach);
+        assert_eq!(
+            found.is_some(),
+            expected,
+            "{reach:?} {form}: the guard answered {found:?} for\n{sample}"
+        );
+    }
+
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let quota = std::fs::read_to_string(root.join("src/quota.rs")).expect("src/quota.rs is read");
+    let watchdog = std::fs::read_to_string(root.join("src/watchdog_daemon.rs"))
+        .expect("src/watchdog_daemon.rs is read");
+
+    // A policy is CONSTRUCTED nowhere but inside the one file that reads a
+    // scope. Private fields closed assignment only; this closes construction.
+    assert!(
+        !quota.contains("pub(crate) const fn new("),
+        "the policy constructor is private to src/quota.rs"
+    );
+    assert!(
+        quota.contains("#[cfg(test)]\n    pub(crate) const fn for_tests("),
+        "the only wider constructor exists in test builds alone, so a product \
+         caller does not compile"
+    );
+
+    // Nothing else in the tree — descendant, sibling or test — classifies a
+    // percentage or assembles a policy, a reading or a level.
+    let mut seen = Vec::new();
+    for path in crate_sources() {
+        let name = path
+            .strip_prefix(root)
+            .unwrap_or(&path)
+            .display()
+            .to_string();
+        seen.push(name.clone());
+        if name == "src/quota.rs" {
+            continue;
+        }
+        let reach = if name.starts_with("src/quota/") {
+            Reach::Child
+        } else {
+            Reach::Outside
+        };
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|why| panic!("{name} cannot be read: {why}"));
+        assert_eq!(
+            reaches_past_boundary(&text, reach),
+            None,
+            "{name} reaches past the quota boundary"
+        );
+    }
+
+    // An unseen file is not a compliant one, so the scan says what it saw — and
+    // the descendants are the whole reason this guard exists.
+    for required in [
+        "src/quota.rs",
+        "src/quota/codex.rs",
+        "src/quota/claude.rs",
+        "src/watchdog_daemon.rs",
+        "tests/it/quota.rs",
+    ] {
+        assert!(
+            seen.iter().any(|name| name == required),
+            "{required} was never visited, so this guard proved nothing about it: {seen:?}"
+        );
+    }
+    assert_eq!(
+        seen.iter()
+            .filter(|name| name.starts_with("src/quota/"))
+            .count(),
+        2,
+        "the quota tree gained or lost a descendant, and each one needs the \
+         child scan: {seen:?}"
+    );
+    assert!(
+        seen.len() > 40,
+        "the crate has more sources than this scan saw: {}",
+        seen.len()
+    );
+
+    // The renderer takes a classified reading and nothing else: there is no
+    // free-form state to pair with another observation's numbers.
+    assert!(
+        !quota.contains("state: &str"),
+        "no advisory takes a state beside its reading"
+    );
+
+    // Nothing holds a level beside a reading, which is the pair that produced
+    // the same defect twice.
+    for header in ["struct QuotaTracked {", "struct QuotaReadout<'a> {"] {
+        let block = declaration_of(&watchdog, header);
+        assert!(
+            !block.contains("level:"),
+            "{header} still carries its own level: {block}"
+        );
+    }
+}

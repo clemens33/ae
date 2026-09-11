@@ -1,0 +1,125 @@
+# Calibration for the quota boundary guard in tests/it/quota.rs.
+#
+# Every entry is one code shape and the verdict the guard must reach for it.
+# They live OUTSIDE the .rs tree on purpose: the guard scans the crate's own
+# sources, so a sample written as a Rust literal would make the guard trip over
+# its own calibration.
+#
+#   catch <scope> <form>   the guard MUST report this shape
+#   allow <scope> <form>   the guard MUST NOT report it
+#
+# Scope `child` is a module INSIDE the quota tree, where Rust privacy admits
+# the reach and this guard is the only enforcement. Scope `outside` is every
+# other module, where the compiler already refuses and the guard watches for a
+# widening of that visibility. Lines after a marker are the sample.
+
+catch child relative constructor
+let p = super::Policy::new(None, Account::default());
+
+catch child imported constructor
+use super::Policy;
+let p = Policy::new(None, Account::default());
+
+catch child policy assembled
+let p = super::Policy { manual_resets: None, account };
+
+catch child reading assembled
+let r = Reading { row, policy, used, observed_at };
+
+catch child level bound by hand
+let c = super::Classified { reading, level: super::QuotaLevel::Headroom };
+
+catch child an inherent impl on the owner type
+use super::Policy;
+impl Policy {
+    fn assemble(account: Account) -> Self {
+        Self { manual_resets: None, account }
+    }
+}
+
+catch child relative threshold
+let level = super::classify(95.0, None);
+
+catch child imported threshold
+use super::{Account, classify, Row};
+
+catch child threshold imported across lines
+use super::{
+    Account,
+    classify,
+    Row,
+};
+
+catch outside qualified constructor
+let p = crate::quota::Policy::new(None, Account::default());
+
+catch outside qualified level bound by hand
+let c = crate::quota::Classified { reading, level };
+
+catch outside qualified threshold
+let level = crate::quota::classify(95.0, None);
+
+allow child the test-only constructor
+let p = Policy::for_tests(Some(1), account);
+
+allow child an empty policy
+let p = Policy::default();
+
+allow child the one level producer
+let c = super::Classified::first(reading);
+
+allow child the one reading builder
+let r = super::Reading::of(policy, row);
+
+allow outside another module's own type
+pub enum Policy {
+    Enabled,
+}
+
+allow outside that type's own impl
+impl Policy {
+    fn read() {}
+}
+
+allow outside another module's own literal
+sessions: vec![Classified { candidate, status }]
+
+allow outside another module's own classifier
+let verdict = classify(&frame);
+
+allow outside a level compared
+assert_eq!(held.level(), crate::quota::QuotaLevel::Critical);
+
+allow outside the one level producer
+let c = crate::quota::Classified::first(reading);
+
+allow outside a return type in a signature
+fn quota_classified(group: &crate::quota::Group) -> crate::quota::Classified {
+    crate::quota::Classified::first(quota_reading(group))
+}
+
+allow child a return type in a signature
+fn policy_for(scope: &Scope, account: Account) -> Policy {
+    Policy::default()
+}
+
+catch child a declaration written onto a default policy
+let mut p = Policy::default();
+p.manual_resets = Some(3);
+
+catch child an account written onto a default policy
+let mut p = Policy::default();
+p.account = account;
+
+catch child a level written onto a classified reading
+held.level = super::QuotaLevel::Headroom;
+
+catch child a held row written onto a classified reading
+held.reading = incoming;
+
+allow child a reported account field written while parsing
+account.credits = Credits::Unlimited;
+account.credits_observed_at = Some(observed_at);
+
+allow child a level compared, not written
+assert_eq!(held.level(), QuotaLevel::Critical);

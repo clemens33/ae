@@ -199,11 +199,25 @@ pub(crate) struct Policy {
 
 impl Policy {
     /// Bind a scope's declaration to the account facts read with it.
-    pub(crate) const fn new(manual_resets: Option<u8>, account: Account) -> Self {
+    ///
+    /// Private, and that is the point: a policy is assembled where a scope is
+    /// read and nowhere else, so no other module can pair one scope's
+    /// declaration with another observation's facts. Elsewhere a policy exists
+    /// only by being read from a [`Group`], cloned, or merged.
+    const fn new(manual_resets: Option<u8>, account: Account) -> Self {
         Self {
             manual_resets,
             account,
         }
+    }
+
+    /// The same, for unit tests that build a scope by hand.
+    ///
+    /// Test builds only: a product caller of this does not compile, which is
+    /// what keeps the constructor above the only one that exists.
+    #[cfg(test)]
+    pub(crate) const fn for_tests(manual_resets: Option<u8>, account: Account) -> Self {
+        Self::new(manual_resets, account)
     }
 
     /// Merge `incoming` into this policy, and report whether anything moved.
@@ -445,6 +459,94 @@ impl Reading {
     }
 }
 
+/// Advisory state for one stable vendor quota key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum QuotaLevel {
+    Headroom,
+    Low,
+    Critical,
+}
+
+impl QuotaLevel {
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Headroom => "headroom",
+            Self::Low => "low",
+            Self::Critical => "critical",
+        }
+    }
+}
+
+/// The threshold, with the hysteresis that keeps a window hovering on a
+/// boundary from alternating: a state is left only well inside the next one.
+fn classify(used: f64, prior: Option<QuotaLevel>) -> QuotaLevel {
+    match prior {
+        Some(QuotaLevel::Critical) if used >= 90.0 => QuotaLevel::Critical,
+        Some(QuotaLevel::Critical | QuotaLevel::Low) if used >= 75.0 => {
+            if used >= 95.0 {
+                QuotaLevel::Critical
+            } else {
+                QuotaLevel::Low
+            }
+        }
+        _ if used >= 95.0 => QuotaLevel::Critical,
+        _ if used >= 80.0 => QuotaLevel::Low,
+        _ => QuotaLevel::Headroom,
+    }
+}
+
+/// A reading whose level has been decided, and the ONLY thing that carries one.
+///
+/// The level is a property of this observation, not a separate value beside it.
+/// Nothing can set it, nothing can classify a percentage on its own, and every
+/// renderer takes this whole value — so a level and the number, derivation and
+/// age rendered with it cannot come from different observations. That pairing
+/// is the defect this type exists to make unrepresentable.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Classified {
+    reading: Reading,
+    level: QuotaLevel,
+}
+
+impl Classified {
+    /// Classify a window seen for the first time: there is no prior state for
+    /// the hysteresis to hold on to.
+    pub(crate) fn first(reading: Reading) -> Self {
+        let level = classify(reading.judged(), None);
+        Self { reading, level }
+    }
+
+    /// Offer an incoming reading to this one.
+    ///
+    /// What it may move is the reading's own rule — a raw observation only on a
+    /// strictly newer stamp, account facts on their own stamps. If anything
+    /// moves, the level is decided again from what is then HELD, anchored on
+    /// the level held until now so the hysteresis is unchanged.
+    pub(crate) fn adopt(&mut self, incoming: &Reading) -> Adopted {
+        let adopted = self.reading.adopt(incoming);
+        if adopted != Adopted::Nothing {
+            self.level = classify(self.reading.judged(), Some(self.level));
+        }
+        adopted
+    }
+
+    /// The level this observation was classified at.
+    pub(crate) const fn level(&self) -> QuotaLevel {
+        self.level
+    }
+
+    /// The percentage that level was decided from, for ranking one scope
+    /// against another.
+    pub(crate) fn judged(&self) -> f64 {
+        self.reading.judged()
+    }
+
+    /// When the observation behind the level was made.
+    pub(crate) const fn observed_at(&self) -> i64 {
+        self.reading.observed_at()
+    }
+}
+
 /// Parsing failed before a trustworthy snapshot could be produced.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParseError {
@@ -674,32 +776,46 @@ impl Observation {
     /// as the operator table. The helper path is ae-owned rather than vendor
     /// input and remains complete so the recipient can invoke it verbatim.
     #[cfg(test)]
-    pub(crate) fn advisory_line(
+    pub(crate) fn state_line(
         &self,
         group: &Group,
-        reading: &Reading,
-        state: &str,
+        classified: &Classified,
         meta_dir: &Path,
     ) -> String {
-        self.advisory_line_at(group, reading, state, meta_dir, self.now)
+        self.state_line_at(group, classified, meta_dir, self.now)
     }
 
-    pub(crate) fn advisory_line_at(
+    /// The line that quotes a scope's CURRENT state, such as beside a throttle
+    /// nudge. The same cells as a notice, without the language of a change.
+    pub(crate) fn state_line_at(
         &self,
         group: &Group,
-        reading: &Reading,
-        state: &str,
+        classified: &Classified,
         meta_dir: &Path,
         now: i64,
     ) -> String {
-        self.advisory(group, reading, state).render(meta_dir, now)
+        self.advisory(group, classified, false)
+            .render(meta_dir, now)
     }
 
-    /// Render one advisory from a READING: the group supplies only the labels
-    /// of the scope, while every number, the derivation and the age come from
-    /// the observation that decided the level.
-    pub(crate) fn advisory(&self, group: &Group, reading: &Reading, state: &str) -> Advisory {
+    /// The notice a TRANSITION books. A level that has just arrived at
+    /// headroom says so; there is no other way to spell a state, so no caller
+    /// can describe one observation with another's words.
+    pub(crate) fn transition(&self, group: &Group, classified: &Classified) -> Advisory {
+        self.advisory(
+            group,
+            classified,
+            classified.level() == QuotaLevel::Headroom,
+        )
+    }
+
+    /// Render one advisory from a CLASSIFIED reading: the group supplies only
+    /// the labels of the scope, while the level, every number, the derivation
+    /// and the age all come from the one observation that decided it.
+    fn advisory(&self, group: &Group, classified: &Classified, recovered: bool) -> Advisory {
+        let reading = &classified.reading;
         let row = &reading.row;
+        let state = classified.level().label();
         let scope = bounded_cell(&scope_identity(group, self.home.as_deref()), 1);
         let owner = group.owner.as_deref().map(|owner| bounded_cell(owner, 0));
         let bucket = row.qualifier.as_deref().map_or_else(
@@ -711,7 +827,6 @@ impl Observation {
             .window_minutes
             .map_or_else(|| "-".to_owned(), window_label);
         let used = advisory_percent(row.used_percent.as_deref());
-        let recovered = state == "back to headroom";
         let derivation = reading.derived().derivation();
         Advisory {
             tool: group.tool,
@@ -722,7 +837,7 @@ impl Observation {
             used,
             observed_at: row.observed_at,
             resets_at: row.resets_at,
-            state: if recovered { "headroom" } else { state }.to_owned(),
+            state: state.to_owned(),
             recovered,
             derivation,
             spend_capped: reading.policy.spend_capped(),
@@ -2503,11 +2618,11 @@ mod tests {
     use super::{
         Account, Bounded, Budget, CLAUDE_MAX_BYTES, CODEX_TAIL_BYTES, COLUMNS, Credits,
         Declaration, FRESH_SECS, FUTURE_SKEW_SECS, FleetRollout, FleetRollouts, FleetStatus, Group,
-        LocatedRollout, Policy, ReadRows, RenderLine, RolloutLocation, RolloutSource, Row, Scope,
-        Status, TABLE_MAX_LINE, TABLE_MAX_WIDTHS, bounded_tail, bounded_whole_file, codex_groups,
-        codex_rollout_dirs, configured_scopes, credits_label, derived, effective,
-        find_codex_rollout, freshness, merge_declaration, order_located_rollouts, percent_label,
-        profiles_label, read_bounded_tail, read_claude, render_at, render_table,
+        LocatedRollout, Policy, QuotaLevel, ReadRows, RenderLine, RolloutLocation, RolloutSource,
+        Row, Scope, Status, TABLE_MAX_LINE, TABLE_MAX_WIDTHS, bounded_tail, bounded_whole_file,
+        classify, codex_groups, codex_rollout_dirs, configured_scopes, credits_label, derived,
+        effective, find_codex_rollout, freshness, merge_declaration, order_located_rollouts,
+        percent_label, profiles_label, read_bounded_tail, read_claude, render_at, render_table,
         rows_or_placeholder, sanitize_cell, vendor_timestamp,
     };
     use crate::tool::ToolKind;
@@ -3345,5 +3460,85 @@ mod tests {
             rows_or_placeholder(ReadRows::Truncated).rows[0].status,
             Status::Truncated
         );
+    }
+
+    #[test]
+    fn quota_classification_hysteresis_has_exact_boundaries() {
+        let mut state = None;
+        let mut seen = Vec::new();
+        for used in [79.0, 80.0, 95.0, 94.0, 89.0, 74.0] {
+            let next = classify(used, state);
+            seen.push(next);
+            state = Some(next);
+        }
+        assert_eq!(
+            seen,
+            [
+                QuotaLevel::Headroom,
+                QuotaLevel::Low,
+                QuotaLevel::Critical,
+                QuotaLevel::Critical,
+                QuotaLevel::Low,
+                QuotaLevel::Headroom,
+            ]
+        );
+    }
+
+    #[test]
+    fn a_level_is_only_ever_decided_from_the_reading_it_belongs_to() {
+        let group = declared_group(Some(1), "95.0");
+        let row = group.rows[0].clone();
+        let reading =
+            super::Reading::of(group.policy.clone(), row.clone()).expect("a stamped percentage");
+
+        // One declared reset spreads 95% over two windows, so the level this
+        // reading carries is the level of 47.5% — never of the raw number.
+        let classified = super::Classified::first(reading);
+        assert_eq!(classified.level(), QuotaLevel::Headroom);
+        assert_eq!(classified.judged().to_bits(), 47.5_f64.to_bits());
+        assert_eq!(classified.observed_at(), row.observed_at.expect("stamped"));
+
+        // Withdrawing the declaration re-judges the SAME observation, and the
+        // level that comes back is the one the held reading decided.
+        let withdrawn = super::Reading::of(Policy::for_tests(None, Account::default()), row)
+            .expect("a stamped percentage");
+        let mut held = classified;
+        assert_eq!(held.adopt(&withdrawn), super::Adopted::Policy);
+        assert_eq!(held.level(), QuotaLevel::Critical);
+        assert_eq!(held.judged().to_bits(), 95.0_f64.to_bits());
+    }
+
+    #[test]
+    fn adopting_a_newer_observation_keeps_the_hysteresis_anchor() {
+        // The threshold's hysteresis is only as good as the anchor it is given,
+        // and `Classified::adopt` is the one place that anchor is passed now.
+        // Strictly increasing stamps, so every step is a raw observation the
+        // clock accepts and the level is the only thing under test.
+        let group = declared_group(None, "95.0");
+        let reading = |used: &str, at: i64| {
+            let mut row = group.rows[0].clone();
+            row.used_percent = Some(used.to_owned());
+            row.observed_at = Some(at);
+            super::Reading::of(group.policy.clone(), row).expect("a stamped percentage")
+        };
+
+        let mut held = super::Classified::first(reading("95.0", 9_900));
+        assert_eq!(held.level(), QuotaLevel::Critical);
+        for (used, at, level) in [
+            ("94.0", 9_901, QuotaLevel::Critical),
+            ("89.0", 9_902, QuotaLevel::Low),
+            ("74.0", 9_903, QuotaLevel::Headroom),
+        ] {
+            assert_eq!(
+                held.adopt(&reading(used, at)),
+                super::Adopted::Observation,
+                "{used} at {at} is a newer raw observation"
+            );
+            assert_eq!(
+                held.level(),
+                level,
+                "{used} holds the state it was anchored on"
+            );
+        }
     }
 }

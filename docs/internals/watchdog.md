@@ -147,12 +147,15 @@ is silent. `headroom` is below 80%, `low` begins at 80%, and `critical` at 95%; 
 leaves those states below 75% and 90% respectively. Unsupported, unreadable, truncated, unknown,
 or older-than-60-minute rows are silent and drop prior state.
 
-Per client scope the daemon holds ONE reading: the accepted observation, the policy it was judged
-under, and the provenance of both. A newer observation replaces the row, a changed declaration or a
-newer account fact re-judges the row already held, and an older observation is refused whatever
-arrives with it. Everything a seat is then told — the notice, its booked provenance, and the quota
-line appended to a throttle nudge — is rendered from that one reading, so a refused observation's
-percentage or age never appears beside a level it did not decide.
+Per client scope the daemon holds ONE classified reading: the level, the accepted observation, the
+policy it was judged under, and the provenance of all of it. A newer observation replaces the row, a
+changed declaration or a newer account fact re-judges the row already held, and an older observation
+is refused whatever arrives with it; the level is decided again from whatever is then held, anchored
+on the level held until then, which is where the hysteresis above lives. Everything a seat is then
+told — the notice, its booked provenance, and the quota line appended to a throttle nudge — is
+rendered from that one value, so a refused observation's percentage or age never appears beside a
+level it did not decide. The daemon cannot do otherwise: a level exists only inside a classified
+reading, and no renderer accepts one separately.
 
 For each agent pane, the watchdog walks a fixed branch order. First match wins; later branches don't fire.
 

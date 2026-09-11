@@ -532,7 +532,7 @@ mod tests {
             "a literal ae cannot state exactly is never shown clipped"
         );
         assert_eq!(
-            crate::quota::credits_label(&crate::quota::Policy::new(
+            crate::quota::credits_label(&crate::quota::Policy::for_tests(
                 None,
                 Account {
                     credits: Credits::AvailableUnknown,
