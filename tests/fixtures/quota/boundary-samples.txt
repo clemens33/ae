@@ -123,3 +123,12 @@ account.credits_observed_at = Some(observed_at);
 
 allow child a level compared, not written
 assert_eq!(held.level(), QuotaLevel::Critical);
+
+# Added after the boundary landed: the Outside scope has five needles, and two
+# of them had no catch sample — they rested on a live injection alone.
+
+catch outside qualified policy assembled
+let p = crate::quota::Policy { manual_resets: None, account };
+
+catch outside qualified reading assembled
+let r = crate::quota::Reading { row, policy, used, observed_at };

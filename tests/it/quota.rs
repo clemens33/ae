@@ -1127,7 +1127,15 @@ fn declaration_of(text: &str, header: &str) -> String {
 enum Reach {
     /// Inside the `quota` tree. Rust privacy admits a descendant, and it cannot
     /// express "visible to the parent but not to a sibling", so here the guard
-    /// below is the WHOLE enforcement and it must see every ordinary spelling.
+    /// below is the WHOLE enforcement. What it sees is the ENUMERATED list in
+    /// [`reaches_past_boundary`] — a relative, imported or crate-qualified
+    /// constructor, a literal of any of the three types, an inherent `impl` on
+    /// the owner type, the threshold called relatively or crate-qualified or
+    /// imported, and a write to any of the four private fields. Not covered,
+    /// and these are ordinary Rust rather than anything devious: the UFCS
+    /// `<super::Policy>::new(` form, `use super::Policy as P`, and
+    /// `type P = super::Policy`. Closing those needs a parser, and growing one
+    /// here would be a worse bargain than naming the limit.
     Child,
     /// Everywhere else. The items are private to `quota`, so the compiler
     /// refuses each reach; the guard watches the qualified spellings for a
@@ -1264,12 +1272,14 @@ fn boundary_samples() -> Vec<(bool, Reach, String, String)> {
 /// "visible to the parent but not to a sibling", so `quota::codex` and
 /// `quota::claude` retain the access their parent has.
 ///
-/// A guard nobody has proved is not a guard, so every shape is calibrated
-/// against `tests/fixtures/quota/boundary-samples.txt` before the tree is
-/// scanned: each spelling a child module would actually use must trip it, and
-/// each benign form must not. A compile-fail harness would prove the compiler
-/// half directly, but it needs a dev-dependency, and adding one is a ruling
-/// rather than a commit.
+/// A guard nobody has proved is not a guard, so every shape it claims is
+/// calibrated against `tests/fixtures/quota/boundary-samples.txt` before the
+/// tree is scanned: each ENUMERATED spelling must trip it, and each benign form
+/// must not. The list is bounded, not exhaustive — [`Reach::Child`] names the
+/// three alias and UFCS forms it does not see, and they are normal Rust, so
+/// this guard is a bounded convention and never a proof that no reach exists.
+/// A compile-fail harness would prove the compiler half directly, but it needs
+/// a dev-dependency, and adding one is a ruling rather than a commit.
 #[test]
 fn the_quota_surface_cannot_pair_a_level_with_an_observation_it_did_not_judge() {
     for (expected, reach, form, sample) in boundary_samples() {
@@ -1298,8 +1308,9 @@ fn the_quota_surface_cannot_pair_a_level_with_an_observation_it_did_not_judge() 
          caller does not compile"
     );
 
-    // Nothing else in the tree — descendant, sibling or test — classifies a
-    // percentage or assembles a policy, a reading or a level.
+    // No other FILE in the tree — descendant, sibling or test — spells one of
+    // the enumerated reaches. The unit of this scan is a path on disk, which is
+    // why the census below counts paths and says what that does not see.
     let mut seen = Vec::new();
     for path in crate_sources() {
         let name = path
@@ -1339,12 +1350,19 @@ fn the_quota_surface_cannot_pair_a_level_with_an_observation_it_did_not_judge() 
             "{required} was never visited, so this guard proved nothing about it: {seen:?}"
         );
     }
+    // A census of PHYSICAL PATHS under `src/quota/`, and only that. A third
+    // file there trips this and gets its own review. Two descendants it cannot
+    // see: a module written INLINE inside `src/quota.rs`, because the owner
+    // file is skipped whole, and a `#[path]`-attributed module whose file lives
+    // outside this directory, which is scanned with the Outside needles and
+    // leaves the count at two. Neither is a reach today; both would be a
+    // reviewed change to the owner file rather than something a needle catches.
     assert_eq!(
         seen.iter()
             .filter(|name| name.starts_with("src/quota/"))
             .count(),
         2,
-        "the quota tree gained or lost a descendant, and each one needs the \
+        "the quota directory gained or lost a file, and each one needs the \
          child scan: {seen:?}"
     );
     assert!(
