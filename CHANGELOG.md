@@ -1,6 +1,86 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.48] - 2026-09-11
+
+### Other
+
+- Prove a recorded tmux server dead after a host reboot
+
+A reboot takes every socket under /tmp/tmux-<uid>/ with it, so every
+persisted session answered ENOENT on its recorded server and `ae <name>`
+refused to resume any of them. ENOENT alone cannot be absence: a server
+that is still running answers exactly the same once something unlinks its
+socket.
+
+Separate the two with the host's boot time. On ENOENT, and only there, a
+session whose own last sign of life predates the boot is Absent — no
+process survives a reboot, so nothing started since can be holding it.
+The proof is per session, never a claim that the server is empty.
+
+The evidence is a new launch-attempt stamp, written under the lifecycle
+lock BEFORE every tmux create by launch, resume and spawn, for every
+tool, and checked: a launch that cannot write it creates no session. It
+exists because every other launch fact is published after the create, so
+an attempt that died in between would have left a session ae could then
+prove gone. `started`, `launch_time`, `capture_floor`, the watchdog
+pidfile and `_run`'s start markers carry the sessions that predate it.
+The event ledger is excluded: `memo add`, `goal` and audit records are
+appended from outside a live session.
+
+stop, end and compact keep the strict proof, pinned by a doors guard.
+The fleet listing reads a vanished server whose every recorded session
+predates the boot as holding nothing, instead of unknown rows and an
+incomplete inventory. `ae doctor` prints both numbers.
+- Refuse an absence proof that rests on damaged evidence
+
+Three ways the boot-time proof could be wrong, found by review.
+
+The launch-attempt stamp was staged through a predictable temp name with
+a plain create, which follows a symlink planted in session state and
+truncates whatever it points at, outside the session entirely. The error
+path then unlinked a collision it never owned. Stage it exclusively
+instead: a name that is already taken is refused, whatever is behind it,
+and only a temp this process made is ever cleaned up. A stamp that
+cannot be written already means the launch is refused.
+
+Evidence read in two states folded damage into absence. A stamp nobody
+may read, a directory where a file belongs, contents that are not a
+moment, a meta row that names a launch moment and does not spell one, an
+enumeration that fails partway: each vanished, and an older readable row
+was then free to prove the session gone. Every source now answers in
+three states, and one damaged source makes the whole answer damaged. A
+source that is simply not there still says nothing, which is what every
+session older than it looks like.
+
+The stamp is hostile persisted state on the resume path, so its read is
+bounded before it happens and both pure reducers gain cargo-fuzz targets
+with seeds.
+
+The reboot guidance offered `ae stop` as a way out, which cannot work:
+stop keeps the strict proof and refuses the same error a resume does.
+Replace it with the recovery that does work, and name the three ways a
+session stays unprovable.
+- Read only a real moment as a sign of life
+
+A launch fact spells a strictly positive epoch or it spells nothing
+readable. The shared claim helper folded zero and negative epochs into
+silence, which is the capture floor's grammar and no other source's: a
+`.launch-attempt` or `started` row claiming `0` left an older readable
+row speaking for it, and the boot-time proof then called the session
+gone. The claim helper is now strict, and the one documented exception
+-- `capture_floor.<slot>=0`, the no-origin sentinel a retained exact
+resume publishes -- has its own reader.
+
+The meta reducer also skipped a row that named a launch moment and
+carried no `=` at all, handing the answer back to whatever was older.
+It now recognises the name before it looks for the value, so a bare
+`launch_time.main` reads as the damaged claim it is.
+
+The damage table carries both shapes, and the legacy sentinel sits
+beside it as a control, so tightening this again cannot silently strand
+a session with no known capture origin. The exclusive-temp test now
+also asserts the bytes of a regular file planted at the temp name.
 ## [v2026.9.47] - 2026-09-11
 
 ### Other
