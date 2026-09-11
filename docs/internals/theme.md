@@ -279,7 +279,9 @@ The snapshot is a verdict fact, not a look fact, so it does not change
 `v1;<epoch>;<interval_secs>;<usd_micro>;<flag>`, where `<flag>` is `exact`,
 `partial` or `approx`. The watchdog owns it and publishes it at the quota cadence
 rather than every cycle, because each value costs one pass over the session's
-transcripts. `partial` means some seat was missing, unreadable, truncated,
+transcripts. `interval_secs` is the cadence rounded up to whole watchdog cycles —
+what sampling achieves rather than what the config asked for — because this is the
+number the reader bounds staleness with. `partial` means some seat was missing, unreadable, truncated,
 unpriced or of a tool ae cannot account for; `approx` means full coverage with
 estimated counters. The parser requires the exact version and five fields, a
 1–3600-second interval, a `usd_micro` no greater than 10^12, an allowlisted flag

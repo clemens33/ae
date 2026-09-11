@@ -446,6 +446,19 @@ fn quota_sweep_count(knobs: &Knobs) -> Option<u64> {
     })
 }
 
+/// The cadence a published fact must ADVERTISE: the period sampling actually
+/// achieves, not the one the config asked for.
+///
+/// [`quota_observation_due`] lets one pass through every whole watchdog cycle
+/// count, so a one-second request on a sixty-second cycle is sampled every sixty
+/// seconds — and `@ae_spend`'s reader expires a fact after two of its own
+/// advertised intervals. Advertising the REQUEST would therefore make a healthy
+/// fleet's spend column blink out between samples. `None` when the cadence is
+/// disabled, because then there is nothing to advertise.
+fn quota_effective_secs(knobs: &Knobs) -> Option<u64> {
+    quota_sweep_count(knobs).map(|sweeps| sweeps.saturating_mul(knobs.interval_secs.max(1)))
+}
+
 fn quota_observation_due(carry: &mut QuotaCarry, knobs: &Knobs) -> bool {
     let Some(sweeps) = quota_sweep_count(knobs) else {
         return false;
@@ -2390,18 +2403,23 @@ impl Cycle<'_> {
         let Some(session_id) = transport::observe_session_id(self.server, self.session) else {
             return Ok(());
         };
-        let fact = match self.spend_observation(now) {
-            Ok(observed) => observed
-                .sessions
-                .first()
-                .and_then(|session| spend_fact(session, now, self.knobs.quota_every_secs)),
-            Err(why) => {
-                writeln!(
-                    err,
-                    "ae: watchdog: spend observation failed — skipped: {why}"
-                )?;
-                None
-            }
+        // The ADVERTISED cadence is what sampling achieves, not what the config
+        // asked for: the reader bounds this fact's staleness with it.
+        let fact = match quota_effective_secs(&self.knobs) {
+            None => None,
+            Some(cadence) => match self.spend_observation(now) {
+                Ok(observed) => observed
+                    .sessions
+                    .first()
+                    .and_then(|session| spend_fact(session, now, cadence)),
+                Err(why) => {
+                    writeln!(
+                        err,
+                        "ae: watchdog: spend observation failed — skipped: {why}"
+                    )?;
+                    None
+                }
+            },
         };
         match fact {
             Some(value) => {
@@ -3668,10 +3686,10 @@ mod tests {
         idle_nudge_seconds, idle_nudge_text, is_meta_agent, last_actor_event_age,
         last_done_event_at, last_working_declaration_at, motion_cadence, motion_failure,
         motion_observation_due, motion_publish_failure, motion_ticker_enabled, nudge_text,
-        observed_option, quota_delivery, quota_observation_due, quota_recipients, quota_seconds,
-        read_events, rebind, record_nudge, restore_idle, session_name, slot_mark, spend_fact,
-        stale_display, sweep_effects, sweep_seconds, system_time_from_epoch, throttle_quota_line,
-        window_agents_line,
+        observed_option, quota_delivery, quota_effective_secs, quota_observation_due,
+        quota_recipients, quota_seconds, quota_sweep_count, read_events, rebind, record_nudge,
+        restore_idle, session_name, slot_mark, spend_fact, stale_display, sweep_effects,
+        sweep_seconds, system_time_from_epoch, throttle_quota_line, window_agents_line,
     };
     use super::{Look, Mark, PaneMark, session_mark};
     use crate::events::Event;
@@ -4310,6 +4328,85 @@ mod tests {
             quota_recipients(&orchestrator, false),
             [quota_recipient("main", "orchestrator")]
         );
+    }
+
+    #[test]
+    fn a_published_spend_fact_outlives_the_period_its_own_publisher_samples_at() {
+        use crate::usage::{Coverage, SeatUsage, SessionUsage, Tokens, UsageTotal};
+
+        let observed = SessionUsage {
+            name: "aedev".to_owned(),
+            seats: vec![SeatUsage {
+                seat: "lead".to_owned(),
+                slot: "main".to_owned(),
+                tool: "claude".to_owned(),
+                model: "claude-opus-5".to_owned(),
+                tokens: Tokens::default(),
+                usd_micro: Some(12_340_000),
+                observed_at: Some(1_000),
+                retired: false,
+                coverage: Coverage::Read,
+                approximate: false,
+            }],
+            total: UsageTotal {
+                tokens: Tokens::default(),
+                usd_micro: 12_340_000,
+                partial: false,
+            },
+            retired_scan_truncated: false,
+            legacy_retired_unlocated: 0,
+            meta_scan_failure: None,
+            retired_scan_failure: None,
+        };
+
+        // The reader expires a fact after two of its own advertised intervals.
+        // The publisher samples on WHOLE watchdog cycles. So the advertised
+        // interval has to be the one sampling actually achieves, or a healthy
+        // fleet's spend column blinks out between samples.
+        for (quota_every_secs, interval_secs) in [
+            (1_u64, 60_u64),
+            (301, 60),
+            (300, 60),
+            (60, 60),
+            (1, 1),
+            (3_600, 120),
+        ] {
+            let knobs = Knobs {
+                interval_secs,
+                quota_every_secs,
+                ..Knobs::default()
+            };
+            let sweeps = quota_sweep_count(&knobs).expect("a positive cadence samples");
+            // Derived from the production counter, NOT from an expectation: this
+            // is the period `quota_observation_due` really lets through.
+            let sampled_every =
+                i64::try_from(sweeps.saturating_mul(interval_secs)).expect("a sane period");
+            let cadence = quota_effective_secs(&knobs).expect("a positive cadence publishes");
+            let value = spend_fact(&observed, 2_000, cadence).expect("publishable");
+            assert!(
+                crate::tmux::parse_picker_spend(&value, 2_000 + sampled_every).is_some(),
+                "quota_every_secs={quota_every_secs} interval_secs={interval_secs}: \
+                 {value} is already stale when its own publisher next samples"
+            );
+        }
+
+        // Zero disables both readings, so there is no cadence to advertise.
+        assert_eq!(
+            quota_effective_secs(&Knobs {
+                quota_every_secs: 0,
+                ..Knobs::default()
+            }),
+            None
+        );
+        // A cadence the fact's own grammar cannot carry publishes nothing rather
+        // than a bound the reader would have to invent.
+        let unbounded = Knobs {
+            interval_secs: 3_700,
+            quota_every_secs: 3_600,
+            ..Knobs::default()
+        };
+        assert_eq!(quota_effective_secs(&unbounded), Some(3_700));
+        assert_eq!(spend_fact(&observed, 2_000, 3_700), None);
     }
 
     #[test]

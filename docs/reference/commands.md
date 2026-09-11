@@ -505,10 +505,16 @@ prices, right-aligned in eight cells: `$12.34` below a thousand dollars, then
 watchdog-owned `@ae_spend` fact, which is refreshed on the
 `[workspace] quota_every_secs` cadence (default 300 seconds; `0` disables spend
 too) rather than every verdict cycle, because each refresh costs one transcript
-pass. A missing, malformed or stale fact draws `-`, never a confident zero. The
-title carries the fleet's sum over the sessions whose fact is available, `~` when
-any of them is inexact, and omits the figure entirely when none is. `ae list` and
-`ae usage` are unchanged. The working mark is a frozen static mark: tmux
+pass. That cadence is rounded up to whole watchdog cycles, and the fact carries
+the ROUNDED period, not the requested one — the reader expires a fact after two
+of its own advertised intervals, so a one-second request on a sixty-second cycle
+would otherwise go stale between every pair of samples.
+
+A missing, malformed or stale fact draws `-`, never a confident zero. The title
+carries the fleet's sum over the sessions whose fact is available, and marks it
+`~` whenever the sum is not the whole fleet's: when any counted reading is itself
+inexact, and equally when any running session has no reading at all. The figure
+is omitted entirely when none does. `ae list` and `ae usage` are unchanged. The working mark is a frozen static mark: tmux
 draws a menu once and does not animate an open menu. Missing, malformed, more
 than two of their own published watchdog intervals old, or more than one such
 interval ahead of the local clock, agent facts draw `agents: unavailable`,

@@ -637,8 +637,10 @@ fn the_watchdog_publishes_a_spend_fact_at_its_quota_cadence_and_unsets_it_on_sto
     let root = scratch.join("state");
     let project = scratch.join("project");
     let config = scratch.join("config");
-    // One second, so the quota cadence this fact rides fires on the first cycle
-    // instead of in five minutes.
+    // One second against a two-second verdict cycle: the cadence fires on the
+    // first cycle instead of in five minutes, and the request is DELIBERATELY
+    // unequal to what whole cycles can deliver, so the published interval proves
+    // which of the two the fact advertises.
     write_watchdog_picker_config_with(&project, &config, &scratch, "quota_every_secs = 1\n");
     let session = "spendlife";
     launch_ae_session(&socket, &scratch, &root, &project, &config, session);
@@ -659,7 +661,7 @@ fn the_watchdog_publishes_a_spend_fact_at_its_quota_cadence_and_unsets_it_on_sto
             session.to_owned(),
             "--".to_owned(),
             "--interval".to_owned(),
-            "1".to_owned(),
+            "2".to_owned(),
             "--quiet-beat-ms".to_owned(),
             "10".to_owned(),
             "--tg-supervise-secs".to_owned(),
@@ -692,8 +694,9 @@ fn the_watchdog_publishes_a_spend_fact_at_its_quota_cadence_and_unsets_it_on_sto
     });
     assert_eq!(
         published.split(';').nth(2),
-        Some("1"),
-        "the fact carries the cadence it was published at: {published}"
+        Some("2"),
+        "the fact advertises the cadence whole cycles ACHIEVE, not the one the \
+         config requested — a reader expires it after two of these: {published}"
     );
     let parsed = ae::tmux::parse_picker_spend(&published, ae::time::Timestamp::now().epoch())
         .expect("the waited-for fact still parses");

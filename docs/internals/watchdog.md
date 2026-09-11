@@ -30,7 +30,10 @@ On the quota cadence, and only there, the daemon also replaces one session-scope
 value: `v1;<epoch>;<interval_secs>;<usd_micro>;<flag>`, with `<flag>` one of `exact`, `partial` or
 `approx`. It comes from one `usage::observe` pass over THIS session alone, priced from the same
 config `ae usage` reads, which is why it rides `quota_every_secs` (default 300; `0` disables spend
-too) instead of the verdict interval — one transcript pass per cadence, not per cycle. Any coverage
+too) instead of the verdict interval — one transcript pass per cadence, not per cycle. The
+`interval_secs` it publishes is that cadence ROUNDED UP to whole verdict cycles, which is the period
+the shared counter really lets through; the reader expires a fact after two of them, so advertising
+the unrounded request would strand a healthy fact between samples. Any coverage
 short of a fully read and fully priced session publishes `partial`, so a session ae cannot measure
 never shows a confident zero. A failed or unrepresentable observation UNSETS the option, as does
 `watchdog stop`, because the picker must read an absent fact as unavailable rather than current.

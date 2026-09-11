@@ -573,23 +573,22 @@ struct FleetSpend {
 
 /// Sum every available fact, or `None` when no session published one.
 ///
-/// One uncertain reading makes the whole sum uncertain: a total that silently
-/// dropped a session ae could not fully read would be the most confident number
-/// on the screen and the least true.
+/// The sum is uncertain when ANY counted reading is, and equally when any session
+/// in the fleet has no reading at all: a total that silently left a session out
+/// would be the most confident number on the screen and the least true.
 fn fleet_spend(spend: &[Option<crate::tmux::PickerSpend>]) -> Option<FleetSpend> {
-    spend
-        .iter()
-        .flatten()
-        .fold(None, |held: Option<FleetSpend>, found| {
-            let carried = held.unwrap_or(FleetSpend {
-                usd_micro: 0,
-                uncertain: false,
-            });
-            Some(FleetSpend {
-                usd_micro: carried.usd_micro.saturating_add(found.usd_micro),
-                uncertain: carried.uncertain || found.confidence.uncertain(),
-            })
-        })
+    let mut total: Option<u64> = None;
+    // An absent fact is missing coverage, not a zero, so it qualifies the sum
+    // rather than joining it.
+    let mut uncertain = spend.iter().any(Option::is_none);
+    for found in spend.iter().flatten() {
+        total = Some(total.unwrap_or(0).saturating_add(found.usd_micro));
+        uncertain |= found.confidence.uncertain();
+    }
+    total.map(|usd_micro| FleetSpend {
+        usd_micro,
+        uncertain,
+    })
 }
 
 /// `usd_micro` as the spend column draws it, `~` when the reading is uncertain.
@@ -1190,10 +1189,11 @@ mod tests {
         assert_eq!(
             bounded_menu(&[one.clone(), two.clone(), unreadable], 8).title,
             format!(
-                " ae {} — 3 running · 0 need you · $3.75 — prefix a ",
+                " ae {} — 3 running · 0 need you · ~$3.75 — prefix a ",
                 crate::VERSION
             ),
-            "an unavailable session is left out of the sum, not counted as a zero"
+            "an unavailable session is left out of the sum and marks it incomplete, \
+             so the title never implies whole-fleet coverage it does not have"
         );
         two.spend = format!("v1;{NOW};300;2500000;partial");
         assert_eq!(
