@@ -1,6 +1,69 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.49] - 2026-09-11
+
+### Other
+
+- Read selected model and effort from current harness frames
+- Stop nudging a seat that is waiting on its own open work
+
+A seat with a request it sent that nobody answered, or an agent it
+spawned that still holds a seat, is not idle: it is the thing everybody
+else is waiting on. The empty input box was the right reading of the
+pixels and the wrong reading of the facts, and `working` deliberately
+does not quiet the watchdog, so the only honest state was the one that
+got nudged every cycle.
+
+Both facts are ones ae already owns. `session::Outstanding` reads them
+from the pending-request sensor and the spawn/retire ledger, adds no
+store, no option and no captured state, and counts only requests the
+seat SENT — answering an inbox is the seat's own job.
+
+Suppression is a deferral, never silence. The idle arm holds its
+reminder until the episode has run the whole nudge budget's worth of
+deferred opportunities, or the oldest outstanding item passes four
+nudge periods; past either the seat spends its ordinary budget and each
+reminder names what it is waiting on. `ae list` prints the same reason
+on the agent line, so the human never opens the pane to find out.
+- Claim outstanding work by routing key, and only for a held seat
+
+Two ways the deferral read the wrong seat.
+
+It flattened each record's actor into a display name and compared names.
+A display name churns with a rename, so a routed request from this
+session's own slot went unclaimed under its new name, while a same-named
+actor routed to another session could be claimed as ours. The records
+are kept whole now and matched through is_actor, the rule the rest of
+the module already uses: the routing key wherever the writer recorded
+one, the display name only where both halves are absent, which is how
+spawn records are written.
+
+It also counted every named pane as a held seat, before any liveness
+question. A spawned tool that exited into its retained shell still
+excused its owner, while ae list already excluded that same pane, so the
+publisher's decision and the human-visible explanation disagreed about
+one seat. A seat is now held on the cycle's own evidence, by the two
+conjuncts that each have an owner elsewhere: the Dead verdict does not
+hold, and the pane is not sitting at a bare shell.
+
+Unknown is explicit. An unusable process snapshot never removes a seat
+on its own, because the Dead verdict demands positive absence, and never
+rescues one whose pane is at a shell, because the pane's own foreground
+command is read first. A snapshot gap therefore fails closed on the
+deferral: the owner keeps its nudge.
+- Say the snapshot-gap policy as the two cases it is
+
+The wording claimed a probe gap always fails closed on the deferral. It
+does not: a pane running a foreground tool keeps its seat when the
+snapshot cannot confirm the process, because the Dead verdict demands
+positive absence and a gap is not proof of death. Only a pane already at
+a bare shell is refused a seat regardless of the snapshot.
+
+Both cases now say so, and the retained one says it is bounded by the
+same two clocks as any other deferral rather than open-ended.
+
+Comments and docs only; the predicate is unchanged.
 ## [v2026.9.48] - 2026-09-11
 
 ### Other
