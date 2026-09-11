@@ -474,23 +474,41 @@ cycle.
 
 ```text
 # opened with prefix a; its binding supplies --client
-┌─ ae <version> — 3 running · 1 need you — prefix a ──────────────────────┐
-│ gamma              ✖ dead      fix/menu       restore its lead pane (1) │
-│   ✖ lead               fable5       dead                              │
-│ beta               ◌ stale     main           port the watchdog     (2) │
-│   ● lead               gpt56sol     working                           │
-│ alpha              · idle      picker         ship the S0 picker    (3) │
-│   ✓ lead               gpt56luna    done                              │
-└──────────────────────────────────────────────────────────────────────────┘
+┌─ ae <version> — 3 running · 1 need you · ~$13.21 — prefix a ───────────┐
+│ gamma ✖ dead    fix/menu   $12.34 restore its lead pane            (1) │
+│   ✖ lead  fable5    dead                                               │
+│ beta  ◌ stale   main       ~$0.87 port the watchdog                (2) │
+│   ● lead  gpt56sol  working                                            │
+│ alpha · idle    picker          - ship the S0 picker               (3) │
+│   ✓ lead  gpt56luna done                                               │
+└────────────────────────────────────────────────────────────────────────┘
 ```
 
 Sessions come in **attention rank order**, then tmux creation order, then name.
 Every live admitted ae session on the calling server stays eligible, including
 the current and orchestrator sessions. Each row carries bounded name, mark,
-state word, branch and goal columns. The branch is sanitized in the tmux reader
-without changing its raw option, so delimiters and control bytes cannot split
-the record. Each session is followed by an indented `mark name profile state`
-row for every recorded agent. The working mark is a frozen static mark: tmux
+state word, branch, spend and goal columns. The branch is sanitized in the tmux
+reader without changing its raw option, so delimiters and control bytes cannot
+split the record. Each session is followed by an indented
+`mark name profile state` row for every recorded agent.
+
+Column widths are fitted PER DRAW: name, state word, branch and profile are each
+as wide as the widest content among the rows that draw actually shows, with a
+four-cell floor and the layout's own cap (18, 9, 14 and 12 cells). A session row
+and the agent rows under it share one name column and one state column, so both
+kinds of row stay in a single grid. Two short session names therefore give narrow
+columns instead of a field of blanks, and one long name is cut at the cap.
+
+The SPEND column is the session's offline API-equivalent spend at reference
+prices, right-aligned in eight cells: `$12.34` below a thousand dollars, then
+`$1.2k`, with a leading `~` when the reading is not exact. It comes from the
+watchdog-owned `@ae_spend` fact, which is refreshed on the
+`[workspace] quota_every_secs` cadence (default 300 seconds; `0` disables spend
+too) rather than every verdict cycle, because each refresh costs one transcript
+pass. A missing, malformed or stale fact draws `-`, never a confident zero. The
+title carries the fleet's sum over the sessions whose fact is available, `~` when
+any of them is inexact, and omits the figure entirely when none is. `ae list` and
+`ae usage` are unchanged. The working mark is a frozen static mark: tmux
 draws a menu once and does not animate an open menu. Missing, malformed, more
 than two of their own published watchdog intervals old, or more than one such
 interval ahead of the local clock, agent facts draw `agents: unavailable`,
@@ -666,7 +684,9 @@ tmux nor a vendor process, and writes no state.
 ### Advisories
 
 Each session watchdog reuses this bounded local observation every
-`[workspace] quota_every_secs` (default 300 seconds; `0` disables). The first sample establishes a
+`[workspace] quota_every_secs` (default 300 seconds; `0` disables). That same cadence and the same
+counter also pace the fleet picker's `@ae_spend` fact, so one knob governs both readings. The first
+sample establishes a
 baseline. Later transitions into `low` (80%), `critical` (95%), or back to `headroom` are pasted to
 that session's main seat and, for a lead-pair, its colead. No advisory crosses sessions and ae never
 reroutes work: the recipient decides which client should receive new spawns. Silent or older-than-

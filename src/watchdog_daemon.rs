@@ -2231,6 +2231,7 @@ pub(crate) fn clear_published(server: &crate::inventory::ServerId, session: &str
         theme::ATTENTION_RANK_OPTION,
         theme::ATTENTION_STYLE_OPTION,
         theme::AGENTS_OPTION,
+        theme::SPEND_OPTION,
         theme::FLEET_STRIP_OPTION,
         theme::ORCHESTRATOR_STRIP_OPTION,
         theme::ORCHESTRATOR_ID_OPTION,
@@ -2379,6 +2380,80 @@ impl Cycle<'_> {
         })
     }
 
+    /// Replace this session's spend fact, or take it off.
+    ///
+    /// One transcript pass per quota cadence over THIS session only — the same
+    /// read `ae usage` makes, priced from the same config. An observation that
+    /// cannot be stated exactly UNSETS the option: an absent number reads as
+    /// unavailable in the picker, where a stale one would read as current.
+    fn publish_spend(&self, now: i64, err: &mut impl Write) -> crate::Result<()> {
+        let Some(session_id) = transport::observe_session_id(self.server, self.session) else {
+            return Ok(());
+        };
+        let fact = match self.spend_observation(now) {
+            Ok(observed) => observed
+                .sessions
+                .first()
+                .and_then(|session| spend_fact(session, now, self.knobs.quota_every_secs)),
+            Err(why) => {
+                writeln!(
+                    err,
+                    "ae: watchdog: spend observation failed — skipped: {why}"
+                )?;
+                None
+            }
+        };
+        match fact {
+            Some(value) => {
+                let _ = transport::publish_option(
+                    self.server,
+                    OptionScope::Session,
+                    &session_id,
+                    theme::SPEND_OPTION,
+                    &value,
+                );
+            }
+            None => {
+                let _ = transport::clear_option(
+                    self.server,
+                    OptionScope::Session,
+                    &session_id,
+                    theme::SPEND_OPTION,
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// The same roots, prices and session shape `ae usage` reads, narrowed to
+    /// the one session this daemon watches.
+    fn spend_observation(
+        &self,
+        now: i64,
+    ) -> Result<crate::usage::Observation, crate::usage::prices::ConfigError> {
+        let root = crate::state_root().or_else(|| {
+            self.meta_dir
+                .parent()
+                .and_then(Path::parent)
+                .map(Path::to_path_buf)
+        });
+        let global = root
+            .as_deref()
+            .map(|root| crate::doors::config_file(crate::shape::current(), root));
+        let prices = crate::usage::prices::read(global.as_deref(), self.local_config.as_deref())?;
+        let home = crate::doors::home();
+        let sessions = [crate::usage::SessionInput {
+            name: self.session.to_owned(),
+            path: self.meta_dir.to_path_buf(),
+        }];
+        Ok(crate::usage::observe(&crate::usage::Inputs {
+            home: home.as_deref(),
+            sessions: &sessions,
+            prices: &prices,
+            now,
+        }))
+    }
+
     fn apply_quota_actions(
         &self,
         carry: &mut QuotaCarry,
@@ -2412,9 +2487,6 @@ impl Cycle<'_> {
         now: i64,
         err: &mut impl Write,
     ) -> crate::Result<()> {
-        if !quota_observation_due(carry, &self.knobs) {
-            return Ok(());
-        }
         match self.quota_observation(now) {
             Ok(observation) => {
                 let recipients = quota_recipients(&self.roster, self.lead_pair);
@@ -2550,7 +2622,13 @@ impl Cycle<'_> {
         } else {
             None
         };
-        self.refresh_quota(&mut carry.quota, now, err)?;
+        // ONE cadence, one counter: `quota_every_secs` paces the quota advisory
+        // and the spend fact alike, and zero disables both. Spend costs a
+        // transcript pass, so it must never ride the per-cycle interval.
+        if quota_observation_due(&mut carry.quota, &self.knobs) {
+            self.publish_spend(now, err)?;
+            self.refresh_quota(&mut carry.quota, now, err)?;
+        }
 
         carry.quiet.begin();
         let mut index = 0_usize;
@@ -3440,6 +3518,54 @@ fn agents_fact(
     Some(value)
 }
 
+/// The watchdog-owned spend fact for one observed session.
+///
+/// The flag is the honest half: anything short of a fully read, fully priced
+/// session is `partial`, and a fully covered session whose adapter reports
+/// estimated counters is `approx`. A reading the grammar cannot carry rejects
+/// the whole value, so the picker shows nothing rather than a wrong number.
+fn spend_fact(
+    session: &crate::usage::SessionUsage,
+    now_epoch: i64,
+    interval_secs: u64,
+) -> Option<String> {
+    if now_epoch < 0
+        || !(1..=tmux::PICKER_SPEND_MAX_INTERVAL_SECS).contains(&interval_secs)
+        || session.total.usd_micro > tmux::PICKER_SPEND_MAX_USD_MICRO
+    {
+        return None;
+    }
+    // Every coverage but `Read` leaves spend unaccounted for — an UNSUPPORTED
+    // tool included, whose seat would otherwise let a session ae cannot measure
+    // at all publish a confident zero.
+    //
+    // Legacy retire events are the case `UsageTotal::partial` leaves out: they
+    // name a seat ae cannot attribute any transcript to, and `ae usage` prints
+    // that as its own caveat line. One number in a menu has no room for a
+    // caveat, so the flag carries it instead. Measured on the live aedev
+    // session, 2026-09-11: 25 seats all read, 21 legacy retires unlocated,
+    // `partial` false — this clause is the difference between `$985.47` and
+    // `~$985.47`, and the tilde is the true one.
+    let partial = session.total.partial
+        || session.legacy_retired_unlocated > 0
+        || session
+            .seats
+            .iter()
+            .any(|seat| !matches!(seat.coverage, crate::usage::Coverage::Read));
+    let confidence = if partial {
+        tmux::SpendConfidence::Partial
+    } else if session.seats.iter().any(|seat| seat.approximate) {
+        tmux::SpendConfidence::Approximate
+    } else {
+        tmux::SpendConfidence::Exact
+    };
+    Some(format!(
+        "v1;{now_epoch};{interval_secs};{};{}",
+        session.total.usd_micro,
+        confidence.word()
+    ))
+}
+
 /// The carried state for `key`, created on first sight.
 fn entry_mut<'a, V: Default>(list: &'a mut Vec<(String, V)>, key: &str) -> &'a mut V {
     let index = list
@@ -3543,8 +3669,8 @@ mod tests {
         last_done_event_at, last_working_declaration_at, motion_cadence, motion_failure,
         motion_observation_due, motion_publish_failure, motion_ticker_enabled, nudge_text,
         observed_option, quota_delivery, quota_observation_due, quota_recipients, quota_seconds,
-        read_events, rebind, record_nudge, restore_idle, session_name, slot_mark, stale_display,
-        sweep_effects, sweep_seconds, system_time_from_epoch, throttle_quota_line,
+        read_events, rebind, record_nudge, restore_idle, session_name, slot_mark, spend_fact,
+        stale_display, sweep_effects, sweep_seconds, system_time_from_epoch, throttle_quota_line,
         window_agents_line,
     };
     use super::{Look, Mark, PaneMark, session_mark};
@@ -6197,6 +6323,177 @@ mod tests {
             .map(|entry| slot_mark(entry, &by_slot, &[]))
             .collect();
         assert_eq!(marks, [Mark::Working, Mark::Stale, Mark::Done]);
+    }
+
+    #[test]
+    fn the_spend_fact_states_its_confidence_and_refuses_what_it_cannot_carry() {
+        use crate::usage::{Coverage, SeatUsage, SessionUsage, Tokens, UsageTotal};
+
+        let seat = |coverage: Coverage, approximate: bool| SeatUsage {
+            seat: "lead".to_owned(),
+            slot: "main".to_owned(),
+            tool: "claude".to_owned(),
+            model: "claude-opus-5".to_owned(),
+            tokens: Tokens::default(),
+            usd_micro: Some(12_340_000),
+            observed_at: Some(1_000),
+            retired: false,
+            coverage,
+            approximate,
+        };
+        let session = |seats: Vec<SeatUsage>, usd_micro: u64, partial: bool| SessionUsage {
+            name: "aedev".to_owned(),
+            seats,
+            total: UsageTotal {
+                tokens: Tokens::default(),
+                usd_micro,
+                partial,
+            },
+            retired_scan_truncated: false,
+            legacy_retired_unlocated: 0,
+            meta_scan_failure: None,
+            retired_scan_failure: None,
+        };
+
+        let exact = session(vec![seat(Coverage::Read, false)], 12_340_000, false);
+        assert_eq!(
+            spend_fact(&exact, 2_000, 300).as_deref(),
+            Some("v1;2000;300;12340000;exact")
+        );
+        assert_eq!(
+            spend_fact(
+                &session(vec![seat(Coverage::Read, true)], 12_340_000, false),
+                2_000,
+                300
+            )
+            .as_deref(),
+            Some("v1;2000;300;12340000;approx"),
+            "estimated counters are approximate, not partial"
+        );
+        for coverage in [
+            Coverage::Unreadable("gone".to_owned()),
+            Coverage::Unlocated,
+            Coverage::Truncated,
+            // The case `UsageTotal::partial` alone does NOT catch: an
+            // unsupported tool's seat would otherwise let a session ae cannot
+            // account for at all publish a confident zero.
+            Coverage::Unsupported,
+        ] {
+            assert_eq!(
+                spend_fact(
+                    &session(vec![seat(coverage.clone(), false)], 0, false),
+                    2_000,
+                    300
+                )
+                .as_deref(),
+                Some("v1;2000;300;0;partial"),
+                "{coverage:?}"
+            );
+        }
+        assert_eq!(
+            spend_fact(
+                &session(vec![seat(Coverage::Read, true)], 12_340_000, true),
+                2_000,
+                300
+            )
+            .as_deref(),
+            Some("v1;2000;300;12340000;partial"),
+            "partial outranks approximate"
+        );
+        assert_eq!(
+            spend_fact(&session(Vec::new(), 0, true), 2_000, 300).as_deref(),
+            Some("v1;2000;300;0;partial"),
+            "a session with no readable seat is partial, never an exact zero"
+        );
+        let mut legacy = session(vec![seat(Coverage::Read, false)], 12_340_000, false);
+        legacy.legacy_retired_unlocated = 21;
+        assert_eq!(
+            spend_fact(&legacy, 2_000, 300).as_deref(),
+            Some("v1;2000;300;12340000;partial"),
+            "a retire event ae cannot attribute a transcript to is unaccounted spend"
+        );
+    }
+
+    #[test]
+    fn the_spend_fact_refuses_what_its_grammar_cannot_carry_and_round_trips() {
+        use crate::usage::{Coverage, SeatUsage, SessionUsage, Tokens, UsageTotal};
+
+        let seat = SeatUsage {
+            seat: "lead".to_owned(),
+            slot: "main".to_owned(),
+            tool: "claude".to_owned(),
+            model: "claude-opus-5".to_owned(),
+            tokens: Tokens::default(),
+            usd_micro: Some(12_340_000),
+            observed_at: Some(1_000),
+            retired: false,
+            coverage: Coverage::Read,
+            approximate: false,
+        };
+        let session = |usd_micro: u64| SessionUsage {
+            name: "aedev".to_owned(),
+            seats: vec![seat.clone()],
+            total: UsageTotal {
+                tokens: Tokens::default(),
+                usd_micro,
+                partial: false,
+            },
+            retired_scan_truncated: false,
+            legacy_retired_unlocated: 0,
+            meta_scan_failure: None,
+            retired_scan_failure: None,
+        };
+        let exact = session(12_340_000);
+
+        // What the grammar cannot carry is UNSET rather than published.
+        assert_eq!(spend_fact(&exact, -1, 300), None, "a negative clock");
+        assert_eq!(
+            spend_fact(&exact, 2_000, 0),
+            None,
+            "the cadence is disabled"
+        );
+        assert_eq!(
+            spend_fact(&exact, 2_000, 3_601),
+            None,
+            "past the cadence cap"
+        );
+        assert_eq!(
+            spend_fact(
+                &session(crate::tmux::PICKER_SPEND_MAX_USD_MICRO + 1),
+                2_000,
+                300
+            ),
+            None,
+            "a reading past the cap is a defect, not a number to draw"
+        );
+        assert_eq!(
+            spend_fact(
+                &session(crate::tmux::PICKER_SPEND_MAX_USD_MICRO),
+                2_000,
+                300
+            )
+            .as_deref(),
+            Some("v1;2000;300;1000000000000;exact"),
+            "the cap itself still publishes"
+        );
+
+        // Everything this publisher emits must survive the reader it is for.
+        for interval in [1_u64, 60, 300, 3_600] {
+            let value = spend_fact(&exact, 2_000, interval).expect("publishable");
+            assert_eq!(
+                crate::tmux::parse_picker_spend(&value, 2_000),
+                Some(crate::tmux::PickerSpend {
+                    usd_micro: 12_340_000,
+                    confidence: crate::tmux::SpendConfidence::Exact,
+                }),
+                "{value}"
+            );
+        }
+        assert_eq!(
+            crate::theme::SPEND_OPTION,
+            "@ae_spend",
+            "the published option name is the compatibility contract"
+        );
     }
 
     #[test]

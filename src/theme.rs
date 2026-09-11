@@ -484,6 +484,13 @@ pub const FLEET_STRIP_OPTION: &str = "@ae_fleet_strip";
 /// state, not a look fact, and therefore never participates in the look stamp.
 pub const AGENTS_OPTION: &str = "@ae_agents";
 
+/// SESSION — one versioned snapshot of this session's offline API-equivalent spend.
+///
+/// Published atomically by the watchdog at the quota cadence, from the same
+/// transcript pass `ae usage` makes. Like [`AGENTS_OPTION`] it is verdict state
+/// rather than a look fact, so it never participates in the look stamp.
+pub const SPEND_OPTION: &str = "@ae_spend";
+
 /// SESSION — the orchestrator's fleet segment, ranges included.
 ///
 /// Published separately because the orchestrator sits immediately before the

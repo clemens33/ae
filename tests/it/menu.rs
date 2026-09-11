@@ -226,6 +226,10 @@ fn picker_argv(socket: &Path, staged: &Staged) -> Vec<String> {
             staged.ids[0],
             staged.ids[1],
         ),
+        spend: format!(
+            "v1;{};300;12340000;exact",
+            ae::time::Timestamp::now().epoch()
+        ),
         goal: "100% of #{everything} | don't stop".to_owned(),
     }];
     let panes = staged
@@ -407,6 +411,7 @@ fn a_seven_line_client_draws_only_its_current_sessions_agents() {
         agents: format!(
             "v1;{now};60;{prefix}0:p:working:;{prefix}1:p:working:;{prefix}2:p:working:"
         ),
+        spend: String::new(),
         goal: String::new(),
     };
     let sessions = [
@@ -614,6 +619,105 @@ fn watchdog_replaces_the_agent_fact_across_spawn_and_retire_then_unsets_it_on_st
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one real watchdog lifecycle proves the publish, the cadence and the retraction"
+)]
+fn the_watchdog_publishes_a_spend_fact_at_its_quota_cadence_and_unsets_it_on_stop() {
+    let scratch = scratch("spend-fact");
+    if !tmux_present(&scratch) {
+        let _ = fs::remove_dir_all(&scratch);
+        panic!("tmux is not runnable here, so the spend fact lifecycle cannot be proven");
+    }
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let root = scratch.join("state");
+    let project = scratch.join("project");
+    let config = scratch.join("config");
+    // One second, so the quota cadence this fact rides fires on the first cycle
+    // instead of in five minutes.
+    write_watchdog_picker_config_with(&project, &config, &scratch, "quota_every_secs = 1\n");
+    let session = "spendlife";
+    launch_ae_session(&socket, &scratch, &root, &project, &config, session);
+    // A launched session derives its global config from its state root, the way
+    // an installed ae does; the launch flag is a test convenience.
+    assert!(fs::create_dir_all(&root).is_ok());
+    assert!(
+        fs::copy(&config, root.join("config")).is_ok(),
+        "the daemon reads prices from <root>/config"
+    );
+
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    let code = ae::watchdog_lifecycle::run(
+        &root,
+        &[
+            "start".to_owned(),
+            session.to_owned(),
+            "--".to_owned(),
+            "--interval".to_owned(),
+            "1".to_owned(),
+            "--quiet-beat-ms".to_owned(),
+            "10".to_owned(),
+            "--tg-supervise-secs".to_owned(),
+            "0".to_owned(),
+        ],
+        &mut out,
+        &mut err,
+    )
+    .expect("watchdog start writes to buffers");
+    assert_eq!(code, 0, "watchdog start: {}", String::from_utf8_lossy(&err));
+
+    let read_fact = || {
+        tmux(
+            &socket,
+            &scratch,
+            &[
+                "show-options",
+                "-qv",
+                "-t",
+                session,
+                ae::theme::SPEND_OPTION,
+            ],
+        )
+        .1
+        .trim()
+        .to_owned()
+    };
+    let published = wait_for("the spend fact", read_fact, |fact| {
+        ae::tmux::parse_picker_spend(fact, ae::time::Timestamp::now().epoch()).is_some()
+    });
+    assert_eq!(
+        published.split(';').nth(2),
+        Some("1"),
+        "the fact carries the cadence it was published at: {published}"
+    );
+    let parsed = ae::tmux::parse_picker_spend(&published, ae::time::Timestamp::now().epoch())
+        .expect("the waited-for fact still parses");
+    assert_eq!(parsed.usd_micro, 0, "{published}");
+    assert!(
+        parsed.confidence.uncertain(),
+        "a seat whose transcript ae cannot locate is never an exact zero: {published}"
+    );
+    assert_eq!(published.split(';').nth(4), Some("partial"), "{published}");
+
+    out.clear();
+    err.clear();
+    let code = ae::watchdog_lifecycle::run(
+        &root,
+        &["stop".to_owned(), session.to_owned()],
+        &mut out,
+        &mut err,
+    )
+    .expect("watchdog stop writes to buffers");
+    assert_eq!(code, 0, "watchdog stop: {}", String::from_utf8_lossy(&err));
+    assert!(read_fact().is_empty(), "watchdog stop unsets @ae_spend");
+}
+
+#[test]
 fn the_menu_ae_builds_draws_on_a_real_server_and_its_rows_land_the_client() {
     let scratch = scratch("draw");
     if !tmux_present(&scratch) {
@@ -659,10 +763,14 @@ fn the_menu_ae_builds_draws_on_a_real_server_and_its_rows_land_the_client() {
     );
     assert!(
         drawn.contains(&format!(
-            "ae {} — 1 running · 0 need you — prefix a",
+            "ae {} — 1 running · 0 need you · $12.34 — prefix a",
             ae::VERSION
         )),
-        "the drawn picker title names its running core: {drawn}"
+        "the drawn picker title names its running core and the fleet's spend: {drawn}"
+    );
+    assert!(
+        drawn.contains("  $12.34 100% of"),
+        "the row draws its spend right-aligned before the goal: {drawn}"
     );
     // …and where the row LANDED the client.
     let landed = wait_for(
@@ -1035,6 +1143,15 @@ fn write_picker_config(project: &Path, config: &Path) {
 }
 
 fn write_watchdog_picker_config(project: &Path, config: &Path, scratch: &Path) {
+    write_watchdog_picker_config_with(project, config, scratch, "");
+}
+
+fn write_watchdog_picker_config_with(
+    project: &Path,
+    config: &Path,
+    scratch: &Path,
+    extra_workspace: &str,
+) {
     use std::os::unix::fs::PermissionsExt as _;
 
     assert!(fs::create_dir_all(project).is_ok());
@@ -1051,7 +1168,7 @@ fn write_watchdog_picker_config(project: &Path, config: &Path, scratch: &Path) {
         fs::write(
             config,
             format!(
-                "[profiles]\nidle = \"{}\"\n\n[roster]\nlead = idle\n\n[workspace]\nmain = lead\nlayout = vertical\nwatchdog = false\n",
+                "[profiles]\nidle = \"{}\"\n\n[roster]\nlead = idle\n\n[workspace]\nmain = lead\nlayout = vertical\nwatchdog = false\n{extra_workspace}",
                 codex.display()
             ),
         )

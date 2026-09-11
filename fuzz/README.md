@@ -64,6 +64,7 @@ A crash writes its input under `artifacts/<target>/`; reproduce it with
 | `usage_prices` | `usage::prices::parse_row` | one `[prices]` alias row |
 | `harness_observed` | `harness_state::{decode_idle, observed_from_option}` | one watchdog-owned `@ae_observed` pane option |
 | `picker_agents` | `tmux::parse_picker_agents` | one watchdog-owned `@ae_agents` value at a fixed clock |
+| `picker_spend` | `tmux::parse_picker_spend` | one watchdog-owned `@ae_spend` value at a fixed clock |
 
 ## Lock refresh after a release
 

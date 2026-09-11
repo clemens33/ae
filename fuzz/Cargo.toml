@@ -96,3 +96,10 @@ path = "fuzz_targets/picker_agents.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "picker_spend"
+path = "fuzz_targets/picker_spend.rs"
+test = false
+doc = false
+bench = false

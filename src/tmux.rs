@@ -1623,10 +1623,10 @@ pub fn interpret_picker_client_session(
 /// navigation hints and may be absent. Keeping the goal last lets
 /// [`interpret_picker_sessions`] use `splitn`, so a literal pipe in operator
 /// text cannot shift a pane id into another field.
-pub const PICKER_SESSION_FORMAT: &str = "#{session_name} | #{session_id} | #{@ae_attn_rank} | #{@ae_attn_glyph} | #{@ae_main_pane} | #{s/#{l:[|[:cntrl:]]}//:@ae_branch_name} | #{s/#{l:[|[:cntrl:]]}/!/:@ae_agents} | #{@ae_goal_status}";
+pub const PICKER_SESSION_FORMAT: &str = "#{session_name} | #{session_id} | #{@ae_attn_rank} | #{@ae_attn_glyph} | #{@ae_main_pane} | #{s/#{l:[|[:cntrl:]]}//:@ae_branch_name} | #{s/#{l:[|[:cntrl:]]}/!/:@ae_agents} | #{s/#{l:[|[:cntrl:]]}/!/:@ae_spend} | #{@ae_goal_status}";
 
 /// How many fields [`PICKER_SESSION_FORMAT`] yields.
-const PICKER_SESSION_FIELDS: usize = 8;
+const PICKER_SESSION_FIELDS: usize = 9;
 
 /// Maximum bytes accepted from the watchdog-owned `@ae_agents` fact.
 pub const PICKER_AGENTS_MAX_BYTES: usize = 4_096;
@@ -1719,6 +1719,112 @@ pub fn parse_picker_agents(raw: &str, now_epoch: i64) -> Option<Vec<PickerAgent>
     (!agents.is_empty()).then_some(agents)
 }
 
+/// Maximum bytes accepted from the watchdog-owned `@ae_spend` fact.
+///
+/// The grammar is fixed-shape: five fields, the widest of them a twenty-digit
+/// integer. Anything longer is not a spend fact someone mistyped, it is another
+/// value living in the option.
+pub const PICKER_SPEND_MAX_BYTES: usize = 64;
+
+/// Highest watchdog cadence an `@ae_spend` fact may carry.
+pub const PICKER_SPEND_MAX_INTERVAL_SECS: u64 = 3_600;
+
+/// Highest spend one session may claim, in micro-dollars — a million dollars.
+///
+/// A transcript pass that reports more has a defect behind it, and the picker
+/// refuses the fact rather than drawing the number.
+pub const PICKER_SPEND_MAX_USD_MICRO: u64 = 1_000_000_000_000;
+
+/// How completely one spend snapshot covers the session it names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpendConfidence {
+    /// Every seat's transcript was read, and every model it used was priced.
+    Exact,
+    /// At least one seat was missing, unreadable, truncated, unpriced or of a
+    /// tool ae cannot account for.
+    Partial,
+    /// Fully covered, but at least one adapter reports estimated counters.
+    Approximate,
+}
+
+impl SpendConfidence {
+    /// The fact's flag word — the publisher's and the reader's one vocabulary.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Exact => "exact",
+            Self::Partial => "partial",
+            Self::Approximate => "approx",
+        }
+    }
+
+    /// Whether a reader must mark the number as less than the whole truth.
+    #[must_use]
+    pub const fn uncertain(self) -> bool {
+        !matches!(self, Self::Exact)
+    }
+
+    fn from_word(word: &str) -> Option<Self> {
+        match word {
+            "exact" => Some(Self::Exact),
+            "partial" => Some(Self::Partial),
+            "approx" => Some(Self::Approximate),
+            _ => None,
+        }
+    }
+}
+
+/// One strictly parsed spend snapshot from the watchdog-owned session fact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PickerSpend {
+    /// API-equivalent spend at reference prices, in micro-dollars.
+    pub usd_micro: u64,
+    /// How completely that number covers the session.
+    pub confidence: SpendConfidence,
+}
+
+/// Parse one bounded, versioned `@ae_spend` value.
+///
+/// Any malformed byte rejects the whole snapshot, so `None` means unavailable
+/// and never a confident zero. Freshness follows [`parse_picker_agents`]: a
+/// snapshot is stale once it is older than two of its own publish intervals, or
+/// more than one interval ahead of the reader's clock.
+#[must_use]
+pub fn parse_picker_spend(raw: &str, now_epoch: i64) -> Option<PickerSpend> {
+    if raw.is_empty()
+        || raw.len() > PICKER_SPEND_MAX_BYTES
+        || !raw.bytes().all(|byte| (b' '..=b'~').contains(&byte))
+        || raw.bytes().any(|byte| matches!(byte, b'|' | b',' | b'#'))
+    {
+        return None;
+    }
+    let fields: Vec<&str> = raw.split(';').collect();
+    let [version, epoch, interval, usd_micro, flag] = fields.as_slice() else {
+        return None;
+    };
+    if *version != "v1" {
+        return None;
+    }
+    let epoch = epoch.parse::<i64>().ok().filter(|epoch| *epoch >= 0)?;
+    let interval_secs = interval
+        .parse::<u64>()
+        .ok()
+        .filter(|interval| (1..=PICKER_SPEND_MAX_INTERVAL_SECS).contains(interval))?;
+    let interval = i64::try_from(interval_secs).ok()?;
+    if now_epoch.saturating_sub(epoch) > interval.saturating_mul(2)
+        || epoch.saturating_sub(now_epoch) > interval
+    {
+        return None;
+    }
+    Some(PickerSpend {
+        usd_micro: usd_micro
+            .parse::<u64>()
+            .ok()
+            .filter(|usd_micro| *usd_micro <= PICKER_SPEND_MAX_USD_MICRO)?,
+        confidence: SpendConfidence::from_word(flag)?,
+    })
+}
+
 fn picker_agent_mark(state: &str) -> Option<Mark> {
     match state {
         "dead" => Some(Mark::Dead),
@@ -1748,6 +1854,8 @@ pub struct PickerSession {
     pub branch: String,
     /// The raw watchdog-owned roster snapshot; parsed at draw time for age.
     pub agents: String,
+    /// The raw watchdog-owned spend snapshot; parsed at draw time for age.
+    pub spend: String,
     /// The already-bounded status goal; empty when unset or unavailable.
     pub goal: String,
 }
@@ -1804,6 +1912,7 @@ pub fn interpret_picker_sessions(succeeded: bool, stdout: &str) -> Option<Vec<Pi
                     main_pane: fields.next().unwrap_or_default().trim().to_owned(),
                     branch: fields.next().unwrap_or_default().trim().to_owned(),
                     agents: fields.next().unwrap_or_default().trim().to_owned(),
+                    spend: fields.next().unwrap_or_default().trim().to_owned(),
                     goal: fields.next().unwrap_or_default().trim().to_owned(),
                 })
             })
@@ -2881,7 +2990,7 @@ mod tests {
         use super::{PickerSession, interpret_picker_sessions};
 
         let listing = concat!(
-            "good | $1 | 4 | ⚠ | %7 | featuremenu | v1;2000;60;lead:fable5:working:%7 | ship | v1;9;tuple:p:done:%8 | keep #[bg=red]",
+            "good | $1 | 4 | ⚠ | %7 | featuremenu | v1;2000;60;lead:fable5:working:%7 | v1;2000;300;12340000;exact | ship | v1;9;tuple:p:done:%8 | keep #[bg=red]",
             "\u{7}",
             " now\n",
             "missing-display | $2 | 0\n",
@@ -2901,6 +3010,7 @@ mod tests {
                     main_pane: "%7".to_owned(),
                     branch: "featuremenu".to_owned(),
                     agents: "v1;2000;60;lead:fable5:working:%7".to_owned(),
+                    spend: "v1;2000;300;12340000;exact".to_owned(),
                     goal: "ship | v1;9;tuple:p:done:%8 | keep #[bg=red]\u{7} now".to_owned(),
                 },
                 PickerSession {
@@ -2911,6 +3021,7 @@ mod tests {
                     main_pane: String::new(),
                     branch: String::new(),
                     agents: String::new(),
+                    spend: String::new(),
                     goal: String::new(),
                 },
             ])
@@ -2924,6 +3035,10 @@ mod tests {
         assert!(
             super::PICKER_SESSION_FORMAT.contains("#{s/#{l:[|[:cntrl:]]}/!/:@ae_agents}"),
             "hostile fact delimiters become a byte the strict parser always rejects"
+        );
+        assert!(
+            super::PICKER_SESSION_FORMAT.contains("#{s/#{l:[|[:cntrl:]]}/!/:@ae_spend}"),
+            "the spend fact is sanitized exactly like the agent fact"
         );
     }
 
@@ -3026,6 +3141,112 @@ mod tests {
         );
         assert_eq!(parse_picker_agents(&too_many, now), None);
         assert_eq!(parse_picker_agents(&"x".repeat(4_097), now), None);
+    }
+
+    #[test]
+    fn picker_spend_fact_is_typed_bounded_and_all_or_nothing() {
+        use super::{PickerSpend, SpendConfidence, parse_picker_spend};
+
+        let now = 2_000;
+        assert_eq!(
+            parse_picker_spend("v1;1900;300;12340000;exact", now),
+            Some(PickerSpend {
+                usd_micro: 12_340_000,
+                confidence: SpendConfidence::Exact,
+            })
+        );
+        assert_eq!(
+            parse_picker_spend("v1;1880;60;0;partial", now),
+            Some(PickerSpend {
+                usd_micro: 0,
+                confidence: SpendConfidence::Partial,
+            }),
+            "exactly two intervals old is still fresh, and zero is a real reading"
+        );
+        assert_eq!(
+            parse_picker_spend("v1;1879;60;1;exact", now),
+            None,
+            "one second past two intervals is stale"
+        );
+        assert_eq!(
+            parse_picker_spend("v1;2060;60;1;approx", now).map(|spend| spend.confidence),
+            Some(SpendConfidence::Approximate),
+            "one interval of future clock skew stays usable"
+        );
+        assert_eq!(
+            parse_picker_spend("v1;2061;60;1;approx", now),
+            None,
+            "one second beyond the future-skew allowance is stale"
+        );
+        assert_eq!(
+            parse_picker_spend("v1;9223372036854775807;3600;1;exact", now),
+            None,
+            "a hostile far-future epoch never stays trusted"
+        );
+        assert_eq!(
+            parse_picker_spend("v1;2000;300;1000000000000;exact", now).map(|spend| spend.usd_micro),
+            Some(super::PICKER_SPEND_MAX_USD_MICRO),
+            "the cap itself is representable"
+        );
+
+        for invalid in [
+            "",
+            "v1;2000;300;1",
+            "v1;2000;300;1;exact;extra",
+            "v1;2000;0;1;exact",
+            "v1;2000;3601;1;exact",
+            "v1;2000;soon;1;exact",
+            "v2;2000;300;1;exact",
+            "v1;old;300;1;exact",
+            "v1;-1;300;1;exact",
+            "v1;2000;300;-1;exact",
+            "v1;2000;300;1.5;exact",
+            "v1;2000;300;1000000000001;exact",
+            "v1;2000;300;18446744073709551616;exact",
+            "v1;2000;300;1;unknown",
+            "v1;2000;300;1;Exact",
+            "v1;2000;300;1;exact|shift",
+            "v1;2000;300;1;exact,shift",
+            "v1;2000;300;1;exact!shift",
+            "v1;2000;300;1;exact\n",
+            "v1;2000;300;1;exact#[fg=red]",
+        ] {
+            assert_eq!(parse_picker_spend(invalid, now), None, "{invalid}");
+        }
+        assert_eq!(parse_picker_spend(&"x".repeat(65), now), None);
+        assert_eq!(SpendConfidence::Exact.word(), "exact");
+        assert_eq!(SpendConfidence::Partial.word(), "partial");
+        assert_eq!(SpendConfidence::Approximate.word(), "approx");
+        assert!(!SpendConfidence::Exact.uncertain());
+        assert!(SpendConfidence::Partial.uncertain());
+        assert!(SpendConfidence::Approximate.uncertain());
+    }
+
+    #[test]
+    fn picker_spend_fuzz_seeds_reach_their_named_parser_paths() {
+        let valid = include_str!("../fuzz/seeds/picker_spend/valid");
+        let partial = include_str!("../fuzz/seeds/picker_spend/partial");
+        let oversize = include_str!("../fuzz/seeds/picker_spend/oversize-usd");
+        let style_byte = include_str!("../fuzz/seeds/picker_spend/style-byte");
+        for seed in [valid, partial, oversize, style_byte] {
+            assert!(
+                seed.bytes().all(|byte| (b' '..=b'~').contains(&byte)),
+                "seed must reach its named parser branch"
+            );
+        }
+        assert!(super::parse_picker_spend(valid, 2_000_000_000).is_some());
+        assert_eq!(
+            super::parse_picker_spend(partial, 2_000_000_000)
+                .map(|spend| spend.confidence.uncertain()),
+            Some(true)
+        );
+        assert_eq!(
+            super::parse_picker_spend(oversize, 2_000_000_000),
+            None,
+            "the oversize seed reaches the cap branch"
+        );
+        assert!(style_byte.contains('#'));
+        assert_eq!(super::parse_picker_spend(style_byte, 2_000_000_000), None);
     }
 
     #[test]

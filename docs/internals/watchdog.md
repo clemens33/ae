@@ -26,6 +26,15 @@ atomic option write; an unrepresentable roster or cadence unsets it instead of
 publishing a partial fact. `watchdog stop` also unsets it, so a stopped daemon
 cannot leave the picker claiming a live roster snapshot.
 
+On the quota cadence, and only there, the daemon also replaces one session-scoped `@ae_spend`
+value: `v1;<epoch>;<interval_secs>;<usd_micro>;<flag>`, with `<flag>` one of `exact`, `partial` or
+`approx`. It comes from one `usage::observe` pass over THIS session alone, priced from the same
+config `ae usage` reads, which is why it rides `quota_every_secs` (default 300; `0` disables spend
+too) instead of the verdict interval — one transcript pass per cadence, not per cycle. Any coverage
+short of a fully read and fully priced session publishes `partial`, so a session ae cannot measure
+never shows a confident zero. A failed or unrepresentable observation UNSETS the option, as does
+`watchdog stop`, because the picker must read an absent fact as unavailable rather than current.
+
 The `_watchdog` pane runs the core directly: its command is the session's `watchdog` link,
 which is a symlink to the core binary under another name, dispatching to `_watchdog-run`.
 There is no generated script or shell process between tmux and the core.
@@ -63,7 +72,8 @@ For the orchestrator only, launch persists `[workspace] sweep` as `sweep_sec`;
 that session fact outranks `AE_WATCHDOG_SWEEP_SEC`, which outranks 120.
 
 Launch also persists `[workspace] quota_every_secs` (default 300, `0` disables) for every session.
-The daemon rounds that cadence up to whole verdict cycles. Each due pass performs one bounded
+The daemon rounds that cadence up to whole verdict cycles. One counter paces both readings this
+cadence owns: the spend fact above, then the quota observation. Each due pass performs one bounded
 `ae quota` observation, keeps state by canonical source, rollout, bucket, qualifier, and window,
 then advises only the session's main and optional colead on threshold transitions. A refused paste
 is retried once at the next quota observation; newer state, silence, expiry, or changed recipient

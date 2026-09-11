@@ -184,7 +184,11 @@ mouse-selectable. On the supported 3.4 floor, status clicks open on release,
 menus are keyboard-driven, session-row shortcut keys choose, keyless agent rows
 use arrows plus Enter, and `q` closes. Each session row shows bounded name,
 mark, state word, branch and goal columns, followed by indented frozen
-mark/name/profile/state rows from the watchdog's `@ae_agents` snapshot. The tmux reader
+mark/name/profile/state rows from the watchdog's `@ae_agents` snapshot. Those
+column widths are fitted per draw — the widest content among the drawn rows,
+floored at four cells and capped at the layout's 18/9/14/12 — and a session row
+shares its name and state columns with the agent rows under it. The spend column
+is right-aligned in eight cells and reads the `@ae_spend` snapshot. The tmux reader
 strips pipes and control bytes from the branch field
 without changing the raw session option, preserving the record boundary.
 Choosing a row switches to its
@@ -239,6 +243,7 @@ lines; `[workspace] theme = off` leaves the user's title settings untouched.
 | `@ae_attn_glyph`, `@ae_attn_rank`, `@ae_attn_style` | session | launch seeds them once, watchdog owns them after |
 | `@ae_fleet_strip`, `@ae_orchestrator_strip`, `@ae_watchdog_status` | session | watchdog |
 | `@ae_agents` | session | watchdog |
+| `@ae_spend` | session | watchdog (at the quota cadence, not every cycle) |
 | `@ae_goal_status` | session | watchdog |
 | `@ae_version` | session | watchdog (the core it runs on, `ae <version>`) |
 | `@ae_menu_open` | session | picker sets/refreshes it; picker rows and watchdog clear it |
@@ -269,6 +274,20 @@ without tmux style/format bytes, and a valid `%pane` or empty hint. A fact older
 than twice its own interval or ahead by more than one interval is unavailable.
 The snapshot is a verdict fact, not a look fact, so it does not change
 `@ae_look_stamp` or `FORMAT_VERSION`.
+
+`@ae_spend` is the same kind of fact for money:
+`v1;<epoch>;<interval_secs>;<usd_micro>;<flag>`, where `<flag>` is `exact`,
+`partial` or `approx`. The watchdog owns it and publishes it at the quota cadence
+rather than every cycle, because each value costs one pass over the session's
+transcripts. `partial` means some seat was missing, unreadable, truncated,
+unpriced or of a tool ae cannot account for; `approx` means full coverage with
+estimated counters. The parser requires the exact version and five fields, a
+1–3600-second interval, a `usd_micro` no greater than 10^12, an allowlisted flag
+and printable ASCII without tmux style/format bytes, and applies the same
+two-interval staleness and one-interval skew rule as `@ae_agents`. An
+observation that cannot be stated exactly unsets the option instead of publishing
+a stale or mislabelled one, and `watchdog stop` unsets it too. Like the roster
+snapshot it is a verdict fact, outside `@ae_look_stamp` and `FORMAT_VERSION`.
 
 The attention trio is the one place where "launch writes it" and "the watchdog
 owns it" meet. A launch SEEDS it, so a session says something true in the
