@@ -1,6 +1,12 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.53] - 2026-09-11
+
+### Other
+
+- Use shared orchestrator role claim
+- Move version into settings menu header
 ## [v2026.9.52] - 2026-09-11
 
 ### Other
