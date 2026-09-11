@@ -280,6 +280,62 @@ fn conflicting_declarations_on_one_home_render_the_smallest_count_and_the_confli
 }
 
 #[test]
+fn a_proven_spend_cap_survives_a_sibling_field_that_asserts_nothing() {
+    let record = |timestamp: &str, tail: &str| {
+        format!(
+            r#"{{"timestamp":"{timestamp}","type":"event_msg","payload":{{"type":"token_count","rate_limits":{{"limit_id":"codex","plan_type":"pro","primary":{{"used_percent":95.0,"window_minutes":10080,"resets_at":1789445400}},"secondary":null{tail}}}}}}}
+"#
+        )
+    };
+    let capped = record(
+        "2026-09-08T09:00:00Z",
+        r#","credits":{"has_credits":false,"unlimited":false,"balance":"0"},"spend_control_reached":true"#,
+    );
+    for (label, later) in [
+        (
+            "a null spend field",
+            r#","credits":{"has_credits":true,"unlimited":false,"balance":"5.00"},"spend_control_reached":null"#,
+        ),
+        (
+            "a malformed spend field",
+            r#","credits":{"has_credits":true,"unlimited":false,"balance":"5.00"},"spend_control_reached":"yes""#,
+        ),
+        ("a bucketless unlimited claim", ""),
+    ] {
+        let root = rig("cap-survives");
+        let rollout = if label == "a bucketless unlimited claim" {
+            capped.clone()
+                + r#"{"timestamp":"2026-09-08T09:05:00Z","type":"event_msg","payload":{"type":"token_count","rate_limits":{"credits":{"has_credits":true,"unlimited":true,"balance":"0"}}}}"#
+                + "\n"
+        } else {
+            capped.clone() + &record("2026-09-08T09:05:00Z", later)
+        };
+        std::fs::write(
+            root.join("config"),
+            "[clients]\ncodex = codex manual_resets=1\n[profiles]\nastrax = codex --model astra\n",
+        )
+        .expect("config");
+        std::fs::write(
+            root.join(format!(
+                ".codex/sessions/2026/09/08/rollout-2026-09-08T09-00-00-{FIRST_ID}.jsonl"
+            )),
+            &rollout,
+        )
+        .expect("rollout");
+        let text = run_quota(&root);
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(
+            text.contains(" 100%       spend-cap"),
+            "{label} asserts nothing, so the rendered cap must stand: {text}"
+        );
+        assert!(
+            !text.contains("47.5%") && !text.contains(" 0%"),
+            "{label} must not buy the scope any headroom: {text}"
+        );
+    }
+}
+
+#[test]
 fn an_unusable_declared_reset_count_is_ignored_with_one_visible_note() {
     let root = rig("declared-note");
     std::fs::write(

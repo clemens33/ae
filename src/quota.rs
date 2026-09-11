@@ -119,20 +119,38 @@ pub enum Credits {
 pub struct Account {
     /// Credit state, when the client reports one.
     pub credits: Credits,
+    /// When the credit state was last USABLY reported.
+    pub credits_observed_at: Option<i64>,
     /// Whether the account's own spend control is reached.
     pub spend_control_reached: Option<bool>,
-    /// When these facts were observed, from the record that carried them.
-    /// Account facts never borrow a window's timestamp: an update is adopted
-    /// only when it stamps itself, and only when that stamp is newer than the
-    /// facts already proven.
-    pub observed_at: Option<i64>,
+    /// When the spend-control state was last USABLY reported.
+    pub spend_observed_at: Option<i64>,
 }
 
 impl Account {
     /// The account is spend-capped: no window has headroom until that changes.
+    ///
+    /// This verdict never ages out. A cap ae keeps too long can only understate
+    /// headroom, and that is the error worth making.
     #[must_use]
     pub const fn spend_capped(&self) -> bool {
         matches!(self.spend_control_reached, Some(true))
+    }
+
+    /// Whether an unlimited-credit claim may relieve a window observed at
+    /// `window`.
+    ///
+    /// Credits are the one account fact that ADDS apparent headroom, so the
+    /// claim has to be evidence about the measurement it is changing: a claim
+    /// older than that window says nothing about it, and an unstamped claim
+    /// says nothing at all.
+    #[must_use]
+    pub fn credits_relieve(&self, window: Option<i64>) -> bool {
+        self.credits == Credits::Unlimited
+            && match (self.credits_observed_at, window) {
+                (Some(credits), Some(window)) => credits >= window,
+                _ => false,
+            }
     }
 }
 
@@ -197,11 +215,16 @@ impl Effective {
 
 /// Derive the judged headroom for one window from what was declared and
 /// reported. A spend cap outranks credits, which outrank declared resets.
-pub(crate) fn effective(declared: Option<u8>, account: &Account, used: f64) -> Effective {
+pub(crate) fn effective(
+    declared: Option<u8>,
+    account: &Account,
+    used: f64,
+    window: Option<i64>,
+) -> Effective {
     if account.spend_capped() {
         return Effective::SpendCapped;
     }
-    if account.credits == Credits::Unlimited {
+    if account.credits_relieve(window) {
         return Effective::Unlimited;
     }
     match declared {
@@ -264,7 +287,7 @@ pub(crate) fn derived(group: &Group, row: &Row) -> Option<Derived> {
         .filter(|value| value.is_finite())?;
     Some(Derived {
         used,
-        effective: effective(group.manual_resets, &group.account, used),
+        effective: effective(group.manual_resets, &group.account, used, row.observed_at),
     })
 }
 
@@ -1691,9 +1714,14 @@ fn render_at(groups: &[Group], home: Option<&Path>, now: i64) -> String {
     let mut table = vec![RenderLine::Cells(HEADER.map(str::to_owned))];
     let mut notes: Vec<String> = Vec::new();
     for group in groups {
-        for note in &group.notes {
-            if !notes.contains(note) {
-                notes.push(note.clone());
+        for note in group
+            .notes
+            .iter()
+            .cloned()
+            .chain(untrusted_credit_note(group))
+        {
+            if !notes.contains(&note) {
+                notes.push(note);
             }
         }
         if let Some(summary) = &group.summary {
@@ -1759,6 +1787,13 @@ fn render_at(groups: &[Group], home: Option<&Path>, now: i64) -> String {
         });
     }
     render_table(&table)
+}
+
+/// Say once why a reported unlimited-credit claim did not relieve this scope.
+fn untrusted_credit_note(group: &Group) -> Option<String> {
+    let newest = group.rows.iter().filter_map(|row| row.observed_at).max();
+    (group.account.credits == Credits::Unlimited && !group.account.credits_relieve(newest))
+        .then(|| "credits unlimited was reported older than the window it would relieve; EFFECTIVE keeps the raw window".to_owned())
 }
 
 /// The EFFECTIVE cell for one window, or `None` when its percentage is absent.
@@ -2682,21 +2717,26 @@ mod tests {
         let plain = Account::default();
         let unlimited = Account {
             credits: Credits::Unlimited,
+            credits_observed_at: Some(9_900),
             spend_control_reached: None,
-            observed_at: None,
+            spend_observed_at: None,
         };
         let capped = Account {
             credits: Credits::Exhausted,
+            credits_observed_at: Some(9_900),
             spend_control_reached: Some(true),
-            observed_at: None,
+            spend_observed_at: Some(9_900),
         };
         let balance = Account {
             credits: Credits::Available("12.50".to_owned()),
+            credits_observed_at: Some(9_900),
             spend_control_reached: Some(false),
-            observed_at: None,
+            spend_observed_at: Some(9_900),
         };
+        // Every account here is stamped with the window it is judged against,
+        // so this table is about the arithmetic, not about provenance.
         let case = |declared, account: &Account, used: f64| {
-            let effective = effective(declared, account, used);
+            let effective = effective(declared, account, used, Some(9_900));
             (effective.cell(), effective.judged(used))
         };
         assert_eq!(case(None, &plain, 95.0), ("-".to_owned(), 95.0));
@@ -2733,8 +2773,9 @@ mod tests {
         assert_eq!(
             credits_label(&Account {
                 credits: Credits::Exhausted,
+                credits_observed_at: Some(9_900),
                 spend_control_reached: None,
-                observed_at: None,
+                spend_observed_at: None,
             }),
             "none"
         );
@@ -2844,6 +2885,64 @@ mod tests {
                 &declared_group(Some(1), "not-a-number").rows[0]
             )
             .is_none()
+        );
+    }
+
+    #[test]
+    fn a_permissive_credit_fact_is_not_trusted_older_than_the_window_it_relieves() {
+        let unlimited_at = |at: Option<i64>| Account {
+            credits: Credits::Unlimited,
+            credits_observed_at: at,
+            spend_control_reached: None,
+            spend_observed_at: None,
+        };
+        let row_at = 9_900;
+        let judge = |account: &Account| {
+            let effective = effective(None, account, 95.0, Some(row_at));
+            (effective.cell(), effective.judged(95.0))
+        };
+        assert_eq!(
+            judge(&unlimited_at(Some(row_at))),
+            ("0%".to_owned(), 0.0),
+            "credits reported with the window they relieve are trusted"
+        );
+        assert_eq!(
+            judge(&unlimited_at(Some(row_at + 60))),
+            ("0%".to_owned(), 0.0),
+            "and so are credits newer than it"
+        );
+        assert_eq!(
+            judge(&unlimited_at(Some(row_at - 1))),
+            ("-".to_owned(), 95.0),
+            "a claim older than the window it would relieve is not evidence about it"
+        );
+        assert_eq!(
+            judge(&unlimited_at(None)),
+            ("-".to_owned(), 95.0),
+            "an unstamped claim is never trusted"
+        );
+
+        // The restrictive direction never ages out: keeping a cap can only
+        // understate headroom, which is the safe error.
+        let stale_cap = Account {
+            credits: Credits::Unreported,
+            credits_observed_at: None,
+            spend_control_reached: Some(true),
+            spend_observed_at: Some(row_at - 100_000),
+        };
+        assert_eq!(judge(&stale_cap), ("100%".to_owned(), 100.0));
+
+        // The table says why a reported claim did not move the number.
+        let mut group = declared_group(None, "95.0");
+        group.account = unlimited_at(Some(row_at - 1));
+        let table = render_at(std::slice::from_ref(&group), None, 10_000);
+        assert!(
+            table.contains("unlimited"),
+            "the fact is still reported: {table}"
+        );
+        assert!(
+            table.contains("older than the window"),
+            "and the table says why it was not used: {table}"
         );
     }
 

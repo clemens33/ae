@@ -58,9 +58,7 @@ pub fn parse(
         let Some(limits) = rate_limits(&record) else {
             continue;
         };
-        if let Some(update) = account_update(limits, &record, now, account.observed_at) {
-            account = update;
-        }
+        merge_account(&mut account, limits, &record, now);
         let Some(next) = quota_rows(limits, &record, now) else {
             continue;
         };
@@ -95,32 +93,43 @@ fn rate_limits(record: &Value) -> Option<&Value> {
     }
 }
 
-/// The account facts this record states, or `None` when it states none.
+/// Fold this record's account facts into the ones already proven.
 ///
-/// A record replaces the proven account only when it USABLY reports at least
-/// one account field, stamps itself with its own timestamp, is newer than the
-/// facts already held, and is not skewed into the future. Absent, null and
-/// malformed fields therefore leave proven facts standing — an ordinary bucket
-/// update carries no account fields and must not erase a spend cap — and a
-/// qualifying record is applied whole rather than field by field.
-fn account_update(limits: &Value, record: &Value, now: i64, held: Option<i64>) -> Option<Account> {
-    let credits = reported_credits(limits.get("credits"));
-    let spend_control_reached = reported_spend_control(limits.get("spend_control_reached"));
-    if credits.is_none() && spend_control_reached.is_none() {
-        return None;
+/// Provenance is FIELD-LEVEL. Each fact carries the stamp of the record that
+/// last USABLY reported it, and a record moves only the fields it actually
+/// asserts: an absent, null or malformed field asserts nothing, so it neither
+/// overwrites the held value nor refreshes its age. A proven spend cap is
+/// therefore lifted only by a record that explicitly reports it false.
+///
+/// Every ambiguity here resolves toward LESS apparent headroom, because
+/// overstating headroom is what sends work to a client that is already capped.
+/// A record that names no bucket is not placed against any window at all.
+fn merge_account(account: &mut Account, limits: &Value, record: &Value, now: i64) {
+    if limits.get_str("limit_id").is_none_or(str::is_empty) {
+        return;
     }
-    let observed_at = record.get_str("timestamp").and_then(vendor_timestamp)?;
+    let Some(observed_at) = record.get_str("timestamp").and_then(vendor_timestamp) else {
+        return;
+    };
     if observed_at.saturating_sub(now) >= super::FUTURE_SKEW_SECS {
-        return None;
+        return;
     }
-    if held.is_some_and(|held| observed_at <= held) {
-        return None;
+    if let Some(credits) = reported_credits(limits.get("credits"))
+        && account
+            .credits_observed_at
+            .is_none_or(|held| observed_at > held)
+    {
+        account.credits = credits;
+        account.credits_observed_at = Some(observed_at);
     }
-    Some(Account {
-        credits: credits.unwrap_or_default(),
-        spend_control_reached,
-        observed_at: Some(observed_at),
-    })
+    if let Some(reached) = reported_spend_control(limits.get("spend_control_reached"))
+        && account
+            .spend_observed_at
+            .is_none_or(|held| observed_at > held)
+    {
+        account.spend_control_reached = Some(reached);
+        account.spend_observed_at = Some(observed_at);
+    }
 }
 
 /// One usable credit report, or `None` for absent, null or malformed state.
@@ -379,9 +388,12 @@ mod tests {
         assert_eq!(cleared.spend_control_reached, Some(false));
         assert!(!cleared.spend_capped());
         assert_eq!(
-            cleared.observed_at,
-            Some(epoch("2026-09-08T09:05:00Z")),
-            "the account carries its own provenance, not a window's"
+            (cleared.credits_observed_at, cleared.spend_observed_at),
+            (
+                Some(epoch("2026-09-08T09:05:00Z")),
+                Some(epoch("2026-09-08T09:05:00Z"))
+            ),
+            "each fact carries its own provenance, not a window's"
         );
 
         // The windows are untouched by any of it.
@@ -398,6 +410,103 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].used_percent.as_deref(), Some("95.0"));
         assert_eq!(rows[0].status, Status::Fresh);
+    }
+
+    #[test]
+    fn a_proven_cap_lifts_only_on_an_explicit_false_and_each_fact_ages_on_its_own() {
+        let now = epoch("2026-09-08T09:10:00Z");
+        let at = |text: &str| epoch(text);
+        let limits = |extra: &str| {
+            format!(
+                r#""limit_id":"codex","plan_type":"pro","primary":{{"used_percent":95.0,"window_minutes":10080,"resets_at":1789445400}},"secondary":null{extra}"#
+            )
+        };
+        let record = |timestamp: &str, body: String| {
+            format!(
+                r#"{{"timestamp":"{timestamp}","type":"event_msg","payload":{{"type":"token_count","rate_limits":{{{body}}}}}}}
+"#
+            )
+        };
+        let capped = record(
+            "2026-09-08T09:00:00Z",
+            limits(
+                r#","credits":{"has_credits":false,"unlimited":false,"balance":"0"},"spend_control_reached":true"#,
+            ),
+        );
+        let account = |rollout: String| {
+            parse(rollout.as_bytes(), true, now)
+                .expect("rollout parses")
+                .account
+        };
+
+        let proven = account(capped.clone());
+        assert!(proven.spend_capped(), "control: the cap is proven");
+        assert_eq!(proven.credits, Credits::Exhausted);
+        assert_eq!(proven.spend_observed_at, Some(at("2026-09-08T09:00:00Z")));
+        assert_eq!(proven.credits_observed_at, Some(at("2026-09-08T09:00:00Z")));
+
+        // A newer valid record whose sibling spend field asserts nothing.
+        for (label, spend) in [
+            ("null", r#","spend_control_reached":null"#),
+            ("a malformed string", r#","spend_control_reached":"yes""#),
+            ("absent", ""),
+        ] {
+            let held = account(
+                capped.clone()
+                    + &record(
+                        "2026-09-08T09:05:00Z",
+                        limits(&format!(
+                            r#","credits":{{"has_credits":true,"unlimited":false,"balance":"5.00"}}{spend}"#
+                        )),
+                    ),
+            );
+            assert!(
+                held.spend_capped(),
+                "{label} asserts nothing, so the proven cap stands"
+            );
+            assert_eq!(
+                held.spend_observed_at,
+                Some(at("2026-09-08T09:00:00Z")),
+                "{label} must not refresh the age of the fact it did not report"
+            );
+            assert_eq!(
+                held.credits,
+                Credits::Available("5.00".to_owned()),
+                "{label} still updates the field it does report"
+            );
+            assert_eq!(
+                held.credits_observed_at,
+                Some(at("2026-09-08T09:05:00Z")),
+                "{label} ages the field it does report from its own stamp"
+            );
+        }
+
+        // Only an explicit false lifts it.
+        let lifted = account(
+            capped.clone()
+                + &record(
+                    "2026-09-08T09:05:00Z",
+                    limits(r#","spend_control_reached":false"#),
+                ),
+        );
+        assert!(!lifted.spend_capped(), "an explicit false is an assertion");
+        assert_eq!(lifted.spend_control_reached, Some(false));
+        assert_eq!(lifted.spend_observed_at, Some(at("2026-09-08T09:05:00Z")));
+        assert_eq!(
+            lifted.credits,
+            Credits::Exhausted,
+            "and it leaves the credit fact it did not report alone"
+        );
+
+        // A record that names no bucket is not placed against any window.
+        for bucketless in [
+            r#""credits":{"has_credits":true,"unlimited":true,"balance":"0"}"#,
+            r#""limit_id":"","credits":{"has_credits":true,"unlimited":true,"balance":"0"}"#,
+        ] {
+            let held =
+                account(capped.clone() + &record("2026-09-08T09:05:00Z", bucketless.to_owned()));
+            assert_eq!(held, proven, "a bucketless claim changes nothing");
+        }
     }
 
     #[test]
@@ -431,8 +540,9 @@ mod tests {
         assert_eq!(
             crate::quota::credits_label(&Account {
                 credits: Credits::AvailableUnknown,
+                credits_observed_at: Some(1),
                 spend_control_reached: None,
-                observed_at: None,
+                spend_observed_at: None,
             }),
             "available"
         );

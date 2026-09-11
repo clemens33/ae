@@ -336,6 +336,11 @@ struct QuotaTracked {
     /// The policy the level was classified under. A change in it invalidates
     /// the classification even when the vendor observation has not moved.
     policy: QuotaPolicy,
+    /// The accepted vendor observation itself. A policy change re-derives THIS
+    /// row, so the raw percentage a classification rests on is always one the
+    /// freshness rule admitted — the policy path is not a way in for a sample
+    /// that rule refused.
+    row: crate::quota::Row,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -548,22 +553,7 @@ impl QuotaCarry {
         );
 
         let samples = quota_samples(observation);
-        let live_keys: Vec<QuotaKey> = samples.iter().map(|sample| sample.key.clone()).collect();
-        let silent_keys: Vec<QuotaKey> = self
-            .tracked
-            .iter()
-            .filter(|tracked| !live_keys.contains(&tracked.key))
-            .map(|tracked| tracked.key.clone())
-            .collect();
-        self.tracked
-            .retain(|tracked| live_keys.contains(&tracked.key));
-        self.cancel_where(
-            |pending| silent_keys.contains(&pending.key),
-            "quota observation went silent",
-            meta_dir,
-            observation.now,
-            &mut actions,
-        );
+        self.drop_silent_keys(&samples, meta_dir, observation.now, &mut actions);
 
         for sample in samples {
             let previous = self
@@ -576,24 +566,33 @@ impl QuotaCarry {
                     observed_at: sample.observed_at,
                     level: classify_quota(sample.effective, None),
                     policy: sample.policy,
+                    row: sample.row.clone(),
                 });
                 continue;
             };
-            // Two clocks, one classification. A vendor observation is accepted
-            // only when it is genuinely newer, and an older one stays refused.
-            // A POLICY change carries no vendor clock at all, so it instead
-            // re-derives the observation already held.
+            // Two clocks, one classification. The RAW observation is accepted
+            // or refused by timestamp alone, whatever the policy says: an older
+            // sample never enters a classification. A POLICY change carries no
+            // vendor clock, so it re-derives the observation already HELD.
             let accepted = sample.observed_at > self.tracked[index].observed_at;
             let repolicied = sample.policy != self.tracked[index].policy;
             if !accepted && !repolicied {
                 continue;
             }
-            let before = self.tracked[index].level;
-            let after = classify_quota(sample.effective, Some(before));
             if accepted {
                 self.tracked[index].observed_at = sample.observed_at;
+                self.tracked[index].row = sample.row.clone();
             }
             self.tracked[index].policy = sample.policy.clone();
+            let held = self.tracked[index].row.clone();
+            let held_at = self.tracked[index].observed_at;
+            let Some(judged) =
+                crate::quota::derived(sample.group, &held).map(crate::quota::Derived::judged)
+            else {
+                continue;
+            };
+            let before = self.tracked[index].level;
+            let after = classify_quota(judged, Some(before));
             self.tracked[index].level = after;
             if before == after {
                 continue;
@@ -614,11 +613,13 @@ impl QuotaCarry {
             } else {
                 after.label()
             };
-            let advisory = observation.advisory(sample.group, sample.row, state);
+            let advisory = observation.advisory(sample.group, &held, state);
             for recipient in recipients {
                 self.pending.push(PendingAdvisory {
                     key: sample.key.clone(),
-                    observed_at: sample.observed_at,
+                    // The notice describes the HELD observation, so that is
+                    // the provenance it is booked and matched under.
+                    observed_at: held_at,
                     level: after,
                     recipient: recipient.clone(),
                     advisory: advisory.clone(),
@@ -636,6 +637,33 @@ impl QuotaCarry {
         );
         self.last_observation = Some(observation.clone());
         actions
+    }
+
+    /// Forget every key this observation no longer reports, and cancel the
+    /// notices that were still waiting on them.
+    fn drop_silent_keys(
+        &mut self,
+        samples: &[QuotaSample<'_>],
+        meta_dir: &Path,
+        now: i64,
+        actions: &mut Vec<QuotaAction>,
+    ) {
+        let live_keys: Vec<QuotaKey> = samples.iter().map(|sample| sample.key.clone()).collect();
+        let silent_keys: Vec<QuotaKey> = self
+            .tracked
+            .iter()
+            .filter(|tracked| !live_keys.contains(&tracked.key))
+            .map(|tracked| tracked.key.clone())
+            .collect();
+        self.tracked
+            .retain(|tracked| live_keys.contains(&tracked.key));
+        self.cancel_where(
+            |pending| silent_keys.contains(&pending.key),
+            "quota observation went silent",
+            meta_dir,
+            now,
+            actions,
+        );
     }
 
     fn record_delivery(
@@ -4305,6 +4333,87 @@ mod tests {
     }
 
     #[test]
+    fn an_older_raw_sample_is_refused_even_when_the_policy_changes_with_it() {
+        let source = Path::new("/tmp/cx/sessions");
+        let observation = |used: &str, at: i64, resets: Option<u8>, now: i64| {
+            quota_observation(
+                vec![quota_scope_group(
+                    source,
+                    Some("018f1f70-7b2c-7000-8000-000000000001"),
+                    Some("demo:lead"),
+                    vec![quota_row(
+                        "codex",
+                        Some("pro"),
+                        used,
+                        at,
+                        crate::quota::Status::Fresh,
+                    )],
+                    resets,
+                    crate::quota::Account::default(),
+                )],
+                now,
+            )
+        };
+        let recipients = [quota_recipient("main", "lead")];
+        let dir = Path::new("/m");
+
+        // Held 95% at 9901 under one declared reset is Headroom. Withdrawing
+        // the declaration must classify THAT observation, not the older 20%
+        // that arrives with it.
+        let mut carry = QuotaCarry::default();
+        let _ = carry.reconcile(&observation("95", 9_901, Some(1), 10_000), &recipients, dir);
+        assert_eq!(carry.tracked[0].level, QuotaLevel::Headroom);
+        let actions = carry.reconcile(&observation("20", 9_800, Some(0), 10_001), &recipients, dir);
+        assert_eq!(
+            carry.tracked[0].observed_at, 9_901,
+            "an older raw observation is refused by timestamp alone"
+        );
+        assert_eq!(
+            carry.tracked[0].level,
+            QuotaLevel::Critical,
+            "the held 95% under no declared reset is critical"
+        );
+        let booked = transition_deliveries(&actions);
+        assert_eq!(booked.len(), 1, "and that is what is booked");
+        assert_eq!(booked[0].observed_at, 9_901, "from the held provenance");
+        let text = booked[0].advisory.render(dir, 10_001);
+        assert!(
+            text.contains(" 95% (critical,"),
+            "the held number is quoted: {text}"
+        );
+        assert!(
+            !text.contains("20%"),
+            "the refused number never appears: {text}"
+        );
+
+        // The mirror: a held critical relieved by a declaration must quote the
+        // held observation too, never the refused older sample.
+        let mut mirror = QuotaCarry::default();
+        let _ = mirror.reconcile(&observation("40", 9_900, Some(0), 10_000), &recipients, dir);
+        let _ = mirror.reconcile(&observation("95", 9_901, Some(0), 10_001), &recipients, dir);
+        assert_eq!(mirror.tracked[0].level, QuotaLevel::Critical);
+        let relieved =
+            mirror.reconcile(&observation("20", 9_800, Some(1), 10_002), &recipients, dir);
+        assert_eq!(
+            mirror.tracked[0].observed_at, 9_901,
+            "older raw still refused"
+        );
+        assert_eq!(mirror.tracked[0].level, QuotaLevel::Headroom);
+        let booked = transition_deliveries(&relieved);
+        let text = booked
+            .iter()
+            .map(|pending| pending.advisory.render(dir, 10_002))
+            .find(|line| line.contains("back to headroom"))
+            .expect("one relieved notice");
+        assert!(
+            text.contains(" 95% (headroom; effective 47.5% over 1+1 declared resets"),
+            "the held observation is what was relieved: {text}"
+        );
+        assert!(!text.contains("20%"), "{text}");
+        assert!(!text.contains("effective 10%"), "{text}");
+    }
+
+    #[test]
     fn the_threshold_reads_the_same_derivation_the_table_renders() {
         let source = Path::new("/tmp/cx/sessions");
         let observation = quota_observation(
@@ -4417,8 +4526,9 @@ mod tests {
         let source = Path::new("/tmp/cx/sessions");
         let capped = crate::quota::Account {
             credits: crate::quota::Credits::Exhausted,
+            credits_observed_at: Some(9_900),
             spend_control_reached: Some(true),
-            observed_at: None,
+            spend_observed_at: Some(9_900),
         };
         let observation = quota_observation(
             vec![quota_scope_group(
