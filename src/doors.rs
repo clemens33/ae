@@ -140,6 +140,62 @@ pub fn target_version() -> Option<String> {
         .map(|value| value.to_string_lossy().into_owned())
 }
 
+/// The host's BOOT TIME as epoch seconds, or `None` when it cannot be read.
+///
+/// The one fact that separates the two ways a tmux socket goes missing. A
+/// reboot takes every socket under `/tmp/tmux-<uid>/` with it, and no process
+/// survives it — so a session whose own live facts all predate this moment
+/// cannot be held by anything still running. [`crate::tmux::classify_absence`]
+/// is the only reader, and it fails closed on the `None`.
+///
+/// Two spellings, because the two platforms expose it two ways and ae has no
+/// libc to ask: Linux publishes `btime` in `/proc/stat`, macOS answers
+/// `sysctl -n kern.boottime`. Which one is tried is decided by what EXISTS, not
+/// by a compile-time `cfg` — the file read is free where there is no file.
+///
+/// `AE_TEST_BOOT_TIME` overrides both, and only in the CHECKOUT shape: the
+/// hermetic suite has to place a boot on either side of a fixture's own
+/// activity, and a real reboot is not a thing a test can arrange.
+#[must_use]
+pub fn boot_time(shape: &Shape) -> Option<i64> {
+    if shape.honours_environment() {
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "a door: AE_TEST_BOOT_TIME places the host's boot on either side of a fixture's recorded activity — the hermetic suite, CHECKOUT only"
+        )]
+        let raw = std::env::var_os("AE_TEST_BOOT_TIME");
+        if let Some(declared) = raw.filter(|value| !value.is_empty()) {
+            return declared.to_string_lossy().trim().parse().ok();
+        }
+    }
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: /proc/stat is where Linux publishes the host's boot time, and its absence is how this reader knows it is not on Linux"
+    )]
+    let proc_stat = std::fs::read_to_string("/proc/stat");
+    if let Ok(text) = proc_stat {
+        return parse_proc_stat_btime(&text);
+    }
+    let (succeeded, stdout) = crate::transport::run_sysctl();
+    succeeded.then(|| parse_kern_boottime(&stdout)).flatten()
+}
+
+/// Linux: the `btime <epoch>` record of `/proc/stat`.
+fn parse_proc_stat_btime(text: &str) -> Option<i64> {
+    text.lines()
+        .find_map(|line| line.trim_end().strip_prefix("btime "))
+        .and_then(|value| value.trim().parse().ok())
+}
+
+/// macOS: the `sec` field of `sysctl -n kern.boottime`, which answers
+/// `{ sec = 1789105855, usec = 0 } Thu Sep 11 07:50:55 2026` — measured on
+/// Darwin 25.6.
+fn parse_kern_boottime(text: &str) -> Option<i64> {
+    let after = text.split("sec = ").nth(1)?;
+    let digits: String = after.chars().take_while(char::is_ascii_digit).collect();
+    digits.parse().ok()
+}
+
 /// `$TMUX`, or `None` when unset or empty.
 #[must_use]
 pub fn tmux_env() -> Option<String> {
@@ -530,6 +586,41 @@ mod tests {
         assert_eq!(
             prove_socket(&ServerId::Ambient, "/tmp/tmux-501/ae".to_owned()),
             ("socket".to_owned(), "/tmp/tmux-501/ae".to_owned())
+        );
+    }
+
+    #[test]
+    fn each_platform_spelling_of_the_boot_time_reads_the_same_epoch() {
+        // Linux, with the record it actually sits among.
+        assert_eq!(
+            parse_proc_stat_btime("cpu  1 2 3\nintr 9\nctxt 55\nbtime 1789105855\nprocesses 400\n"),
+            Some(1_789_105_855)
+        );
+        // macOS, whose answer carries a SECOND `sec = ` in `usec`.
+        assert_eq!(
+            parse_kern_boottime("{ sec = 1789105855, usec = 214461 } Thu Sep 11 07:50:55 2026\n"),
+            Some(1_789_105_855)
+        );
+        // Neither reader guesses: a shape it does not know is no boot time,
+        // which `classify_absence` then fails closed on.
+        for absent in ["", "cpu 1 2 3\n", "btime\n", "btime nonsense\n"] {
+            assert_eq!(parse_proc_stat_btime(absent), None, "{absent:?}");
+        }
+        for absent in ["", "{ }\n", "{ sec = , usec = 0 }\n", "sec = -1\n"] {
+            assert_eq!(parse_kern_boottime(absent), None, "{absent:?}");
+        }
+    }
+
+    #[test]
+    fn this_host_can_answer_when_it_booted() {
+        // Non-vacuity for the door itself: the two spellings above are pure
+        // text, and a parser that never meets the real output proves nothing.
+        let boot = boot_time(&Shape::Checkout);
+        let now = crate::time::Timestamp::now().epoch();
+        let boot = boot.unwrap_or_else(|| panic!("this host must be able to name its boot time"));
+        assert!(
+            boot > 1_577_836_800 && boot <= now,
+            "boot {boot} is not a plausible past instant (now {now})"
         );
     }
 

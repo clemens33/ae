@@ -244,6 +244,47 @@ impl Rig {
         )
     }
 
+    /// [`Rig::run_on`] plus extra environment pairs — the boot-time seam the
+    /// reboot proofs place on either side of a session's own activity.
+    fn run_on_with_env(
+        &self,
+        server: Option<&Path>,
+        extra: &[(&str, String)],
+        argv: &[&str],
+    ) -> (Option<i32>, String, String) {
+        let mut command = ae();
+        command
+            .env_remove("TMUX")
+            .env_remove("TMUX_PANE")
+            .env("HOME", &self.scratch)
+            .env("AE_HOME", &self.home)
+            .env("CONFIG_FILE", self.config())
+            .env("AE_NO_AUTOSTART", "1")
+            .env("TMUX_TMPDIR", &self.scratch)
+            .current_dir(&self.project);
+        if let Some(socket) = server {
+            command
+                .env("AE_TMUX_SERVER_KIND", "socket")
+                .env("AE_TMUX_SERVER", socket);
+        } else {
+            command
+                .env_remove("AE_TMUX_SERVER_KIND")
+                .env_remove("AE_TMUX_SERVER");
+        }
+        for (key, value) in extra {
+            command.env(key, value);
+        }
+        let out = command
+            .args(argv)
+            .output()
+            .unwrap_or_else(|why| panic!("the ae binary should run: {why}"));
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    }
+
     fn tmux(&self, tail: &[&str]) -> (bool, String) {
         let mut args = ae::tmux::server_args(&ae::inventory::ServerId::Selected(
             ae::meta::Selector::Socket(self.sock.clone()),
@@ -1792,5 +1833,489 @@ fn the_no_autostart_door_starts_neither_companion() {
     assert!(
         !windows.lines().any(|line| line.contains("watchdog")),
         "the door suppressed the companion the config asked for: {windows}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// (n) the reboot: a recorded server whose socket went with the host
+// ---------------------------------------------------------------------------
+
+/// Now, as the product reads it.
+fn it_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| i64::try_from(since.as_secs()).unwrap_or(0))
+}
+
+/// Remove the facts whose only moment is an mtime — see [`backdate`].
+fn backdate_files_only(dir: &Path) {
+    let _ = std::fs::remove_file(dir.join(".watchdog.pid"));
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with("launch.") && name.ends_with(".started") {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+}
+
+/// Re-date every fact `last_live` reads under `dir` to `epoch`.
+fn backdate(dir: &Path, epoch: i64) {
+    let meta = dir.join("meta");
+    let text = std::fs::read_to_string(&meta).unwrap_or_default();
+    let mut rewritten = String::new();
+    for line in text.lines() {
+        if line.starts_with("started=")
+            || line.starts_with("launch_time.")
+            || line.starts_with("capture_floor.")
+        {
+            let key = line.split_once('=').map_or(line, |(key, _)| key);
+            rewritten.push_str(key);
+            rewritten.push('=');
+            rewritten.push_str(&epoch.to_string());
+        } else {
+            rewritten.push_str(line);
+        }
+        rewritten.push('\n');
+    }
+    assert!(
+        std::fs::write(&meta, rewritten).is_ok(),
+        "the backdated meta"
+    );
+    assert!(
+        std::fs::write(dir.join(ae::store::LAUNCH_ATTEMPT), format!("{epoch}\n")).is_ok(),
+        "the backdated stamp"
+    );
+    // The watchdog's heartbeat and `_run`'s start markers carry their moment in
+    // their mtime and nowhere else, and a fixture cannot set an mtime without
+    // reaching for a crate this repository does not have — so they are removed
+    // rather than pretended to be re-dated.
+    backdate_files_only(dir);
+}
+
+/// One built session, its recorded server killed and its socket UNLINKED —
+/// which is what a host reboot leaves behind for every session ae ever
+/// recorded.
+struct Rebooted {
+    rig: Rig,
+    /// The epoch of the newest fact the launch wrote about this session.
+    last_live: i64,
+    /// The server the resume is offered instead of the vanished one.
+    elsewhere: PathBuf,
+}
+
+impl Rebooted {
+    /// Build `name` on this rig's own server, then take that server away in
+    /// the two steps a reboot takes it: the process, then the socket file.
+    fn build(tag: &str, name: &str, keep_server_running: bool) -> Self {
+        let mut rig = Rig::idle(tag);
+        let sock = rig.sock.clone();
+        let (code, stdout, stderr) = rig.run_on(Some(&sock), &[name, "--no-attach"]);
+        assert_eq!(code, Some(0), "the session must build: {stdout}{stderr}");
+        let meta = rig.sessions().join(name).join("meta");
+        let text = std::fs::read_to_string(&meta).unwrap_or_default();
+        assert!(
+            text.contains(&format!("tmux_server={}\n", sock.display())),
+            "the launch recorded its own server: {text}"
+        );
+        assert!(
+            text.lines().any(|line| line.starts_with("started=")),
+            "the launch stamped a start epoch: {text}"
+        );
+        assert!(
+            rig.sessions()
+                .join(name)
+                .join(ae::store::LAUNCH_ATTEMPT)
+                .exists(),
+            "the launch stamped its attempt before creating anything"
+        );
+        // BACKDATE every live fact by an hour, so a boot can be placed cleanly
+        // on either side of it. A fixture that compares a boot against facts
+        // written a moment ago is a fixture that races the clock.
+        let last_live = it_now() - 3600;
+        backdate(&rig.sessions().join(name), last_live);
+
+        if !keep_server_running {
+            let (killed, said) = rig.tmux(&["kill-server"]);
+            assert!(killed, "the recorded server must stop: {said}");
+        }
+        // THE REBOOT, as the filesystem sees it: the socket is simply not there,
+        // and tmux answers `error connecting to … (No such file or directory)`
+        // whether the server behind it died or is still running.
+        assert!(
+            std::fs::remove_file(&sock).is_ok(),
+            "the socket is unlinked"
+        );
+
+        let elsewhere = rig.scratch.join("sock-after-boot");
+        rig.scratch.add_tmux_server(elsewhere.clone());
+        Self {
+            rig,
+            last_live,
+            elsewhere,
+        }
+    }
+
+    /// Resume `name`, with the host claiming to have booted `offset` seconds
+    /// after the newest thing ae wrote about this session.
+    fn resume(&self, name: &str, offset: i64) -> (Option<i32>, String, String) {
+        self.rig.run_on_with_env(
+            Some(&self.elsewhere),
+            &[("AE_TEST_BOOT_TIME", (self.last_live + offset).to_string())],
+            &[name, "--no-attach"],
+        )
+    }
+
+    fn meta(&self, name: &str) -> String {
+        std::fs::read_to_string(self.rig.sessions().join(name).join("meta")).unwrap_or_default()
+    }
+}
+
+#[test]
+fn a_session_whose_server_died_with_the_host_resumes_onto_the_configured_one() {
+    if skip() {
+        return;
+    }
+    // The bug, as it was met on 2026-09-11: after the host rebooted, every
+    // socket under /tmp/tmux-<uid>/ was gone, so `verify_session_absent`
+    // answered `Unknown` for every persisted session and ae refused to resume
+    // any of them. Nothing ae wrote for this session postdates the boot, so no
+    // server started after the boot can be holding it.
+    let rebooted = Rebooted::build("reboot-resume", "afterboot", false);
+    let (code, stdout, stderr) = rebooted.resume("afterboot", 1800);
+    assert_eq!(code, Some(0), "the resume must succeed: {stdout}{stderr}");
+
+    let meta = rebooted.meta("afterboot");
+    assert!(
+        meta.contains(&format!("tmux_server={}\n", rebooted.elsewhere.display())),
+        "the resume re-homed the session onto the configured server: {meta}"
+    );
+    let (listed, sessions) = run_tmux(
+        &ae::tmux::list_sessions_args(&ae::inventory::ServerId::Selected(
+            ae::meta::Selector::Socket(rebooted.elsewhere.clone()),
+        )),
+        &rebooted.rig.scratch,
+    );
+    assert!(listed, "the new server answers: {sessions}");
+    assert!(
+        sessions.lines().any(|line| line.trim_end() == "afterboot"),
+        "the session is on the new server: {sessions}"
+    );
+}
+
+#[test]
+fn a_session_that_was_live_after_the_boot_is_refused_with_its_evidence() {
+    if skip() {
+        return;
+    }
+    // FAIL CLOSED. The socket is equally gone, and the server behind it is
+    // equally dead — but ae wrote this session's facts AFTER the boot it is
+    // being compared against, so the one thing the proof rests on does not
+    // hold and no verdict is available.
+    let rebooted = Rebooted::build("reboot-refuse", "beforeboot", false);
+    let before = rebooted.meta("beforeboot");
+    let (code, stdout, stderr) = rebooted.resume("beforeboot", -1800);
+    assert_eq!(
+        code,
+        Some(1),
+        "the resume must be refused: {stdout}{stderr}"
+    );
+    assert!(
+        stderr.contains(
+            "Error: cannot verify whether tmux session 'beforeboot' is absent on its \
+             recorded server. Metadata was not changed."
+        ),
+        "the refusal keeps its wording: {stderr}"
+    );
+    assert!(
+        stderr.contains("socket missing; last live activity")
+            && stderr.contains("is not before boot")
+            && stderr.contains("Run 'ae doctor' for the evidence."),
+        "the refusal names the evidence it could not use: {stderr}"
+    );
+    assert_eq!(
+        rebooted.meta("beforeboot"),
+        before,
+        "a refused resume changes no metadata"
+    );
+}
+
+#[test]
+fn a_live_server_whose_socket_was_unlinked_is_still_unproven() {
+    if skip() {
+        return;
+    }
+    // THE CASE THE STRICT PROOF EXISTS FOR, and the reason ENOENT alone can
+    // never be absence: this server is RUNNING and still holds the session.
+    // Its own facts postdate the boot, which is exactly what keeps the new
+    // proof away from it.
+    let rebooted = Rebooted::build("reboot-live", "stillthere", true);
+    let (code, stdout, stderr) = rebooted.resume("stillthere", -1800);
+    assert_eq!(
+        code,
+        Some(1),
+        "a live server must not be resumed around: {stdout}{stderr}"
+    );
+    assert!(
+        stderr.contains("is absent on its recorded server"),
+        "the refusal is the stop-verification one: {stderr}"
+    );
+    // And the session really is still there, on the server whose socket went.
+    let (listed, sessions) = rebooted
+        .rig
+        .tmux(&["list-sessions", "-F", "#{session_name}"]);
+    assert!(
+        !listed,
+        "the unlinked socket cannot be reached by path: {sessions}"
+    );
+    assert!(
+        rebooted
+            .meta("stillthere")
+            .contains(&format!("tmux_server={}\n", rebooted.rig.sock.display())),
+        "the recorded server is untouched"
+    );
+}
+
+impl Rebooted {
+    /// Strip every live fact from the meta but the server rows, leaving the
+    /// launch-attempt stamp as the ONLY thing that says when ae last tried.
+    fn keep_only_the_stamp(&self, name: &str) {
+        let meta = self.rig.sessions().join(name).join("meta");
+        let text = std::fs::read_to_string(&meta).unwrap_or_default();
+        let mut kept = String::new();
+        for line in text.lines().filter(|line| {
+            !(line.starts_with("started=")
+                || line.starts_with("launch_time.")
+                || line.starts_with("capture_floor."))
+        }) {
+            kept.push_str(line);
+            kept.push('\n');
+        }
+        assert!(std::fs::write(&meta, kept).is_ok(), "the stripped meta");
+        backdate_files_only(&self.rig.sessions().join(name));
+    }
+
+    /// Re-date the launch-attempt stamp to `epoch`, as an interrupted attempt
+    /// would have left it.
+    fn restamp(&self, name: &str, epoch: i64) {
+        let stamp = self
+            .rig
+            .sessions()
+            .join(name)
+            .join(ae::store::LAUNCH_ATTEMPT);
+        assert!(
+            std::fs::write(&stamp, format!("{epoch}\n")).is_ok(),
+            "the launch-attempt stamp"
+        );
+    }
+}
+
+#[test]
+fn the_launch_attempt_stamp_alone_decides_an_interrupted_resume() {
+    if skip() {
+        return;
+    }
+    // A resume that died between the tmux create and the meta publication
+    // leaves NOTHING the publication would have written — no `started`, no
+    // `launch_time`, no watchdog. The stamp is written before the create for
+    // exactly this: it is the only fact such an attempt leaves behind, and
+    // without it this session would read as untouched since the boot and be
+    // wrongly resumed around a server that may still hold it.
+    let rebooted = Rebooted::build("reboot-interrupted", "halfway", false);
+    rebooted.keep_only_the_stamp("halfway");
+    rebooted.restamp("halfway", rebooted.last_live);
+
+    let (code, stdout, stderr) = rebooted.resume("halfway", -1800);
+    assert_eq!(
+        code,
+        Some(1),
+        "the stamp must refuse this resume on its own: {stdout}{stderr}"
+    );
+    assert!(
+        stderr.contains("socket missing; last live activity"),
+        "and it must say so: {stderr}"
+    );
+
+    // The control, which is what makes the assertion above about the STAMP:
+    // move the boot past it and the very same session resumes.
+    rebooted.restamp("halfway", rebooted.last_live);
+    let (code, stdout, stderr) = rebooted.resume("halfway", 1800);
+    assert_eq!(code, Some(0), "past the boot it resumes: {stdout}{stderr}");
+}
+
+#[test]
+fn a_non_capture_seat_with_no_watchdog_still_refuses_a_same_boot_resume() {
+    if skip() {
+        return;
+    }
+    // The shape the old evidence could not see: a non-capture tool writes no
+    // `capture_floor` and no `launch_time`, and `AE_NO_AUTOSTART=1` leaves no
+    // watchdog pidfile. Before the stamp, the newest fact such a session had
+    // was its meta's mtime — which a migration rewrites — so the proof had
+    // nothing truthful to stand on.
+    let rebooted = Rebooted::build("reboot-nocapture", "bare", false);
+    let dir = rebooted.rig.sessions().join("bare");
+    let meta = std::fs::read_to_string(dir.join("meta")).unwrap_or_default();
+    assert!(
+        !meta.contains("launch_time.") && !meta.contains("capture_floor."),
+        "this fixture must be the bare shape: {meta}"
+    );
+    assert!(
+        !dir.join(".watchdog.pid").exists(),
+        "this fixture must have no watchdog heartbeat"
+    );
+    assert!(
+        dir.join(ae::store::LAUNCH_ATTEMPT).exists(),
+        "the launch stamped its attempt"
+    );
+
+    let (code, _, stderr) = rebooted.resume("bare", -1800);
+    assert_eq!(
+        code,
+        Some(1),
+        "a same-boot session is not provable: {stderr}"
+    );
+}
+
+#[test]
+fn a_memo_written_to_a_stopped_session_is_not_a_sign_of_life() {
+    if skip() {
+        return;
+    }
+    // A2: the event ledger is a LEDGER. `memo add`, `goal` and the audit
+    // records are appended from outside a session by a human, with no tmux
+    // anywhere — so a memo left on a stopped session must not date it to now
+    // and make every later reboot unprovable.
+    let rebooted = Rebooted::build("reboot-memo", "memoed", false);
+    let dir = rebooted.rig.sessions().join("memoed");
+    let events = dir.join("events.jsonl");
+    let line = format!(
+        "{{\"ts\":\"{}\",\"actor\":\"human\",\"action\":\"memo\",\"ref\":\"parking\"}}\n",
+        // Dated well after the boot the resume below is told about.
+        "2099-01-01T00:00:00Z"
+    );
+    let mut existing = std::fs::read_to_string(&events).unwrap_or_default();
+    existing.push_str(&line);
+    assert!(std::fs::write(&events, existing).is_ok(), "the memo record");
+
+    let (code, stdout, stderr) = rebooted.resume("memoed", 1800);
+    assert_eq!(
+        code,
+        Some(0),
+        "an event from outside the session is not liveness: {stdout}{stderr}"
+    );
+    assert!(
+        rebooted
+            .meta("memoed")
+            .contains(&format!("tmux_server={}\n", rebooted.elsewhere.display())),
+        "and the session still re-homed"
+    );
+}
+
+#[test]
+fn a_launch_that_cannot_stamp_its_attempt_creates_no_tmux_session() {
+    if skip() {
+        return;
+    }
+    // CHECKED, never best-effort. An attempt ae could not record is an attempt
+    // ae must not make: the alternative is a live session whose next reboot
+    // reads as provably dead.
+    let rig = Rig::idle("reboot-unstampable");
+    let dir = rig.sessions().join("unstampable");
+    assert!(std::fs::create_dir_all(&dir).is_ok(), "the state dir");
+    // A DIRECTORY where the stamp belongs: the publishing rename cannot replace
+    // it, whatever the permissions say.
+    let blocked = dir.join(ae::store::LAUNCH_ATTEMPT).join("occupied");
+    assert!(std::fs::create_dir_all(&blocked).is_ok(), "the blocker");
+
+    let sock = rig.sock.clone();
+    let (code, stdout, stderr) = rig.run_on(Some(&sock), &["unstampable", "--no-attach"]);
+    assert_eq!(code, Some(1), "the launch must refuse: {stdout}{stderr}");
+    assert!(
+        stderr.contains("could not record the launch attempt")
+            && stderr.contains("No tmux session was created."),
+        "and say why: {stderr}"
+    );
+    let (listed, sessions) = rig.tmux(&["list-sessions", "-F", "#{session_name}"]);
+    assert!(
+        !listed
+            || !sessions
+                .lines()
+                .any(|line| line.trim_end() == "unstampable"),
+        "a refused launch left a tmux session behind: {sessions}"
+    );
+    assert!(
+        !dir.join("meta").exists(),
+        "a refused launch published metadata"
+    );
+}
+
+#[test]
+fn a_fleet_listing_reads_a_server_the_host_took_with_it_as_empty() {
+    if skip() {
+        return;
+    }
+    // R4. Before this, the reboot made `ae list` useless: every recorded server
+    // was unreachable, so every row was `unknown` and the listing warned that
+    // it might be hiding sessions. When every session on a vanished socket is
+    // provably older than the boot, the server enumerated empty — and the rows
+    // say what is true, which is that nothing is running.
+    let mut rig = Rig::idle("reboot-listing");
+    let sock = rig.sock.clone();
+    for name in ["one", "two"] {
+        let (code, stdout, stderr) = rig.run_on(Some(&sock), &[name, "--no-attach"]);
+        assert_eq!(code, Some(0), "{name} must build: {stdout}{stderr}");
+    }
+    let (killed, said) = rig.tmux(&["kill-server"]);
+    assert!(killed, "the recorded server must stop: {said}");
+    assert!(
+        std::fs::remove_file(&sock).is_ok(),
+        "the socket is unlinked"
+    );
+
+    let last_live = it_now() - 3600;
+    for name in ["one", "two"] {
+        backdate(&rig.sessions().join(name), last_live);
+    }
+    let elsewhere = rig.scratch.join("sock-listing");
+    rig.scratch.add_tmux_server(elsewhere.clone());
+    let listing = |boot: i64| {
+        rig.run_on_with_env(
+            Some(&elsewhere),
+            &[("AE_TEST_BOOT_TIME", boot.to_string())],
+            &["list", "--all"],
+        )
+    };
+
+    // BEFORE: one session was live after this boot, so the source is still
+    // unproven and the listing keeps its warning — for both rows, because a
+    // failed source is failed for everything it may hold.
+    let (_, stdout, stderr) = listing(last_live - 1800);
+    assert!(
+        stderr.contains("inventory incomplete"),
+        "a server with a live-after-boot session stays incomplete: {stderr}{stdout}"
+    );
+    assert!(
+        stdout.contains("unknown"),
+        "and its rows stay unknown: {stdout}"
+    );
+
+    // AFTER: nothing recorded on it can have outlived the boot.
+    let (_, stdout, stderr) = listing(last_live + 1800);
+    assert!(
+        !stderr.contains("inventory incomplete"),
+        "a provably dead server is not a missing one: {stderr}{stdout}"
+    );
+    for name in ["one", "two"] {
+        let row = stdout
+            .lines()
+            .find(|line| line.starts_with(name))
+            .unwrap_or_else(|| panic!("a row for {name}: {stdout}"));
+        assert!(row.contains("stopped"), "{name} reads: {row}");
+    }
+    assert!(
+        !stdout.contains("unknown  "),
+        "no row is left unknown: {stdout}"
     );
 }

@@ -225,6 +225,113 @@ fn run_ps_has_exactly_one_product_caller() {
     );
 }
 
+/// `transport::run_sysctl` is the FIXED-PROGRAM boot-time leg of the one
+/// process door — and it takes no arguments at all, because there is exactly
+/// one question ae asks `sysctl`.
+#[test]
+fn run_sysctl_has_exactly_one_product_caller() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut holders: Vec<String> = rust_sources()
+        .into_iter()
+        .filter(|p| p.starts_with(root.join("src")))
+        .filter(|p| fs::read_to_string(p).is_ok_and(|text| text.contains("run_sysctl(")))
+        .map(|p| {
+            p.strip_prefix(root)
+                .unwrap_or(&p)
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    holders.sort();
+
+    // Control FIRST: a scan that matched nothing would pass this vacuously.
+    assert!(
+        !holders.is_empty(),
+        "the scan found no `run_sysctl` anywhere in src/; it did not run"
+    );
+    assert_eq!(
+        holders,
+        vec!["src/doors.rs".to_owned(), "src/transport.rs".to_owned()],
+        "the sysctl process leg gained (or lost) a product holder"
+    );
+}
+
+/// R3: the BOOT-TIME proof is reachable from a resume and from the fleet
+/// listing, and from nowhere else.
+///
+/// `stop`, `end` and `compact` are destructive and irreversible, and they keep
+/// `verify_session_absent`'s strict proof — a session is gone because the
+/// server said so, never because a socket is missing and the arithmetic worked
+/// out. This is the guard that a later refactor cannot quietly wire the weaker
+/// evidence into them.
+#[test]
+fn the_boot_time_proof_is_reachable_from_exactly_two_operations() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let holders = |needle: &str| {
+        let mut found: Vec<String> = rust_sources()
+            .into_iter()
+            .filter(|p| p.starts_with(root.join("src")))
+            .filter(|p| fs::read_to_string(p).is_ok_and(|text| text.contains(needle)))
+            .map(|p| {
+                p.strip_prefix(root)
+                    .unwrap_or(&p)
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        found.sort();
+        found
+    };
+
+    // Control first, both ways: a needle that matches nothing passes forever,
+    // and one that matches everything says nothing.
+    for needle in ["classify_absence(", "probe_absence(", "boot_time("] {
+        assert!(
+            !holders(needle).is_empty(),
+            "the scan found no `{needle}` anywhere in src/; it did not run"
+        );
+    }
+
+    assert_eq!(
+        holders("classify_absence("),
+        vec![
+            // The listing, through its fleet discovery's `all_predate`.
+            "src/inventory.rs".to_owned(),
+            // The resume, at `resume_absence`.
+            "src/session_launch.rs".to_owned(),
+            // Its own definition and unit table.
+            "src/tmux.rs".to_owned(),
+        ],
+        "the boot-time verdict gained (or lost) a caller"
+    );
+    assert_eq!(
+        holders("probe_absence("),
+        vec![
+            "src/session_launch.rs".to_owned(),
+            "src/transport.rs".to_owned(),
+        ],
+        "the raw absence probe gained (or lost) a caller"
+    );
+
+    // And the destructive gates still ask the STRICT question.
+    for (file, operation) in [
+        ("src/compact.rs", "compact"),
+        ("src/lifecycle.rs", "stop"),
+        ("src/lifecycle/end.rs", "end"),
+    ] {
+        let path = root.join(file);
+        let Ok(code) = fs::read_to_string(&path) else {
+            continue;
+        };
+        assert!(
+            !code.contains("classify_absence(")
+                && !code.contains("probe_absence(")
+                && !code.contains("boot_time("),
+            "{operation} ({file}) reached the boot-time proof; it must keep the strict one"
+        );
+    }
+}
+
 /// reviewer4's round-6 bypasses of this guard, from their tree, byte for byte.
 const CFG_ATTR_EXEMPTION: &str = "#[cfg_attr(all(), allow(clippy::disallowed_types))]";
 

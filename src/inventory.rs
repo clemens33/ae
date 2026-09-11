@@ -355,6 +355,136 @@ fn record_at(path: PathBuf, layout: Layout) -> DurableRecord {
     record
 }
 
+/// When the session at `dir` last did something only a LIVE session does.
+///
+/// The evidence [`crate::tmux::classify_absence`] weighs against the host's
+/// boot time, and the rule about what counts lives here:
+///
+/// * the launch-attempt stamp ([`crate::store::LAUNCH_ATTEMPT`]) — written by
+///   every launch, resume and spawn, for every tool, BEFORE the tmux create it
+///   describes and refused if it cannot be written. The only fact that is both
+///   universal and earlier than the session it is about.
+/// * `started` — rewritten by the launch metadata owner on every launch and
+///   resume, and by nothing else in the crate. It carries the sessions that
+///   predate the stamp.
+/// * `launch_time.<slot>` / `capture_floor.<slot>` — best-effort, capture-tool
+///   only, and here because an older meta may carry nothing else.
+/// * the watchdog pidfile's mtime: the daemon exists only while its session
+///   does.
+/// * every `launch.<slot>.started` marker's mtime — `_run`'s own pre-exec
+///   record that a pane became its tool. Universal across tools and older than
+///   every row above it, so it is what a meta written before `started` existed
+///   still has.
+///
+/// NEVER the meta file's own mtime, and never any other file's. An upgrade
+/// migration rewrites the meta, `ae doctor --refresh` rebinds its core pin and
+/// a rename rewrites its rows — all on a session that is stopped, all leaving a
+/// post-boot mtime behind.
+///
+/// NEVER the event container either, and this one is the trap: `memo add`,
+/// `goal` and the audit records append an event from OUTSIDE the session, so a
+/// human writing a memo to a stopped session would date it to now and make
+/// every later reboot unprovable. Events are a ledger, not a heartbeat.
+///
+/// More evidence can only move the answer LATER, and a later answer can only
+/// make the classifier refuse; nothing here can manufacture a proof.
+#[must_use]
+pub fn last_live(dir: &Path) -> Option<i64> {
+    let mut newest: Option<i64> = None;
+    let mut note = |epoch: Option<i64>| {
+        if let Some(epoch) = epoch.filter(|epoch| *epoch > 0) {
+            newest = Some(newest.map_or(epoch, |known: i64| known.max(epoch)));
+        }
+    };
+    note(crate::store::open(dir).launch_attempt());
+    note(meta_live_epoch(dir));
+    note(crate::watchdog_glue::pidfile_modified(dir));
+    note(crate::run::newest_start_marker(dir));
+    newest
+}
+
+/// The newest launch epoch the meta at `dir` records.
+fn meta_live_epoch(dir: &Path) -> Option<i64> {
+    let bytes = crate::meta::read_bytes(dir).ok()?;
+    let text = String::from_utf8_lossy(&bytes);
+    let mut newest: Option<i64> = None;
+    for line in text.lines() {
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let live = key == "started"
+            || key.starts_with("launch_time.")
+            || key.starts_with("capture_floor.");
+        if !live {
+            continue;
+        }
+        if let Ok(epoch) = value.trim().parse::<i64>()
+            && epoch > 0
+        {
+            newest = Some(newest.map_or(epoch, |known: i64| known.max(epoch)));
+        }
+    }
+    newest
+}
+
+/// Which sessions each positively-selected server is RECORDED to hold.
+///
+/// The fleet listing's half of the boot-time proof. A server that did not
+/// answer is normally an incomplete inventory — its rows go `unknown` and the
+/// listing says so — but after a reboot that is every server ae ever recorded,
+/// and a listing that can say nothing about anything is not a listing.
+#[derive(Debug, Default)]
+pub struct RecordedOn(Vec<(ServerId, Vec<PathBuf>)>);
+
+impl RecordedOn {
+    /// Group `records` by the server each one names.
+    #[must_use]
+    pub fn of(records: &[DurableRecord]) -> Self {
+        let mut grouped: Vec<(ServerId, Vec<PathBuf>)> = Vec::new();
+        for record in records {
+            let Some(selector) = record.server.entitles() else {
+                continue;
+            };
+            let server = ServerId::Selected(selector.clone());
+            match grouped.iter_mut().find(|(known, _)| *known == server) {
+                Some((_, dirs)) => dirs.push(record.path.clone()),
+                None => grouped.push((server, vec![record.path.clone()])),
+            }
+        }
+        Self(grouped)
+    }
+
+    /// Whether EVERY session recorded on `server` is provably gone once its
+    /// socket is known to be missing.
+    ///
+    /// The question is asked ONE SESSION AT A TIME, through the same
+    /// [`crate::tmux::classify_absence`] a resume crosses, because there is one
+    /// boot rule and this is not a second copy of it. A server is only read as
+    /// empty when every session it is recorded to hold answers `Absent`.
+    ///
+    /// Fail-closed at every gap: a server nothing is recorded on, an unreadable
+    /// boot time, a boot in the future, or one single session whose own
+    /// activity ae cannot place before the boot, and the answer is `false`. The
+    /// listing then keeps the incompleteness it would have had.
+    #[must_use]
+    pub fn all_predate(&self, server: &ServerId, boot: Option<i64>, now: i64) -> bool {
+        let Some((_, dirs)) = self.0.iter().find(|(known, _)| known == server) else {
+            return false;
+        };
+        !dirs.is_empty()
+            && dirs.iter().all(|dir| {
+                crate::tmux::classify_absence(
+                    crate::tmux::Absence::SocketMissing,
+                    crate::tmux::Evidence {
+                        last_live: last_live(dir),
+                    },
+                    boot,
+                    now,
+                ) == crate::tmux::StopProbe::Absent
+            })
+    }
+}
+
 /// The servers ae is entitled to enumerate, most-ambient first.
 #[must_use]
 pub fn entitled_servers(ambient: Option<&ServerId>, durable: &[DurableRecord]) -> Vec<ServerId> {
@@ -557,7 +687,7 @@ mod tests {
     use super::{
         Candidate, DiscoveredSession, Discovery, DurableRecord, DurableScan, FailedSource,
         Inventory, Layout, LiveSighting, MetaRead, Provenance, QueryFailed, Roots, Selector,
-        ServerId, ServerSelector, durable_records, entitled_servers, take,
+        ServerId, ServerSelector, durable_records, entitled_servers, last_live, take,
     };
     use crate::session::RecordSnapshot;
     use std::cell::RefCell;
@@ -700,6 +830,58 @@ mod tests {
         fn roots(&self) -> Roots {
             Roots::under(&self.0)
         }
+    }
+
+    #[test]
+    fn last_live_reads_every_launch_fact_and_no_ledger_write() {
+        let scratch = Scratch::new("lastlive");
+        let dir = scratch.session("proof");
+
+        // Nothing at all: an absence of evidence is not evidence, and the
+        // classifier fails closed on the `None`.
+        assert_eq!(last_live(&dir), None);
+
+        // The meta's own rows, and only the ones a LAUNCH writes. `created` is
+        // preserved across every resume, so it says nothing about liveness.
+        fs::write(
+            dir.join("meta"),
+            "created=100\nstarted=200\nlaunch_time.main=300\ncapture_floor.main=250\n\
+             goal=not a launch fact\n",
+        )
+        .expect("a meta");
+        assert_eq!(last_live(&dir), Some(300));
+
+        // THE LEDGER IS NOT A HEARTBEAT. `memo add`, `goal` and the audit
+        // records append from outside a live session, so an event dated far in
+        // the future must not move this at all.
+        fs::write(
+            dir.join(crate::store::EVENTS),
+            "{\"ts\":\"2099-01-01T00:00:00Z\",\"actor\":\"human\",\"action\":\"memo\"}\n",
+        )
+        .expect("an event");
+        assert_eq!(
+            last_live(&dir),
+            Some(300),
+            "an event from outside the session counted as liveness"
+        );
+
+        // The stamp, which is written before the tmux create and so outlives an
+        // attempt that never reached the meta.
+        crate::store::open(&dir)
+            .stamp_launch_attempt(900)
+            .expect("the stamp");
+        assert_eq!(last_live(&dir), Some(900));
+
+        // And a start marker's mtime is read for the metas that predate every
+        // row above — never mistaken for an unrelated file.
+        fs::write(dir.join("launch.main.started"), "").expect("a start marker");
+        fs::write(dir.join("launch.main.prompt"), "not a marker").expect("a prompt");
+        let now = crate::time::Timestamp::now().epoch();
+        let seen = last_live(&dir).expect("the marker's own mtime");
+        assert!(
+            (seen - now).abs() <= 120,
+            "the newest fact should be the marker just written: {seen} vs {now}"
+        );
     }
 
     impl Drop for Scratch {

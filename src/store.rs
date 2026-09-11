@@ -35,6 +35,17 @@ pub const MEMO: &str = "memo.tsv";
 /// The session's own record — roster, mode, origin, goal.
 pub const META: &str = "meta";
 
+/// The LAUNCH-ATTEMPT stamp: when ae last tried to put this session on a tmux
+/// server.
+///
+/// Written BEFORE the create it is about, under the lifecycle lock, by every
+/// launch, resume and spawn — so an attempt that then died between the create
+/// and the meta publication has still left the moment behind. That is what
+/// makes it the evidence [`crate::tmux::classify_absence`] can weigh against
+/// the host's boot time: nothing else ae writes is both universal (every tool,
+/// every seat) and earlier than the tmux session it describes.
+pub const LAUNCH_ATTEMPT: &str = ".launch-attempt";
+
 /// What a file's lock is called: its own name plus this. Appending it by hand
 /// is how two writers end up on two different locks.
 pub const LOCK_SUFFIX: &str = ".lock";
@@ -130,6 +141,83 @@ impl SessionStore {
     #[must_use]
     pub fn meta_lock(&self) -> PathBuf {
         lock_path(&self.meta_path())
+    }
+
+    /// The launch-attempt stamp's path.
+    #[must_use]
+    pub fn launch_attempt_path(&self) -> PathBuf {
+        self.dir.join(LAUNCH_ATTEMPT)
+    }
+
+    /// Record `epoch` as this session's newest launch attempt, DURABLY.
+    ///
+    /// Temp, `fsync`, rename — the shape [`crate::run`]'s start marker uses,
+    /// for the same reason: the caller is about to do something it cannot take
+    /// back, and a stamp that is still in a page cache when the machine stops
+    /// is a stamp that was never written. A caller that cannot write this must
+    /// REFUSE to create the tmux session, so the error is returned rather than
+    /// swallowed.
+    ///
+    /// # Errors
+    ///
+    /// The write, the `fsync` or the rename, whichever failed.
+    pub fn stamp_launch_attempt(&self, epoch: i64) -> io::Result<()> {
+        let path = self.launch_attempt_path();
+        let temp = self
+            .dir
+            .join(format!("{LAUNCH_ATTEMPT}.tmp.{}", std::process::id()));
+        let publish = File::create(&temp)
+            .and_then(|mut file| {
+                file.write_all(format!("{epoch}\n").as_bytes())
+                    .and_then(|()| file.sync_all())
+            })
+            .and_then(|()| std::fs::rename(&temp, &path));
+        if let Err(why) = publish {
+            let _ = std::fs::remove_file(&temp);
+            return Err(why);
+        }
+        Ok(())
+    }
+
+    /// When ae last tried to launch into this session, or `None` when it never
+    /// left a stamp.
+    ///
+    /// The epoch is the file's CONTENT — the moment ae deliberately recorded,
+    /// which no copy, restore or archive rewrites. A stamp whose content cannot
+    /// be read falls back to its mtime, because the file's existence is itself
+    /// the fact.
+    #[must_use]
+    pub fn launch_attempt(&self) -> Option<i64> {
+        let path = self.launch_attempt_path();
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "a door: the launch-attempt stamp is classified without following a link to it — see `LAUNCH_ATTEMPT`"
+        )]
+        let probe = std::fs::symlink_metadata(&path);
+        let meta = probe.ok()?;
+        if !meta.is_file() {
+            return None;
+        }
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "a door: the stamp's own epoch is the fact ae wrote — see `LAUNCH_ATTEMPT`"
+        )]
+        let body = std::fs::read_to_string(&path);
+        let written = body
+            .ok()
+            .and_then(|text| text.trim().parse::<i64>().ok())
+            .filter(|epoch| *epoch > 0);
+        if written.is_some() {
+            return written;
+        }
+        // The stamp is there and says nothing readable: its EXISTENCE is still
+        // the fact, so the file's own mtime answers rather than nothing at all.
+        // A reader that took a corrupted stamp for an absent one would be
+        // reading damage as innocence.
+        meta.modified()
+            .ok()
+            .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
+            .and_then(|since| i64::try_from(since.as_secs()).ok())
     }
 
     /// The session's goal — the FIRST `goal=` record in meta, which is what

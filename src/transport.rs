@@ -56,6 +56,33 @@ pub fn verify_session_absent(server: &ServerId, name: &str) -> tmux::StopProbe {
     tmux::interpret_stopped(succeeded, &stdout, &stderr, name)
 }
 
+/// What a stop-verification run SAW about `name` on `server`, before anything
+/// is concluded from it — the RESUME's and the LISTING's question.
+///
+/// [`verify_session_absent`] is the strict verdict and stays the one the
+/// destructive gates cross. This one keeps the two failure classes apart so
+/// [`tmux::classify_absence`] can weigh a missing socket against the host's
+/// boot time; the decision, and the boot time it needs, belong to the caller.
+#[must_use]
+pub fn probe_absence(server: &ServerId, name: &str) -> tmux::Absence {
+    if !addressable(server) {
+        return tmux::Absence::Unreachable;
+    }
+    let (succeeded, stdout, stderr) = run_captured(PROGRAM, &tmux::list_sessions_args(server));
+    tmux::read_absence(succeeded, &stdout, &stderr, name)
+}
+
+/// Whether `server`'s SOCKET is not there at all — the server-level question,
+/// which names no session.
+#[must_use]
+pub fn server_socket_missing(server: &ServerId) -> bool {
+    if !addressable(server) {
+        return false;
+    }
+    let (succeeded, _, stderr) = run_captured(PROGRAM, &tmux::list_sessions_args(server));
+    !succeeded && tmux::read_failure(&stderr) == tmux::Absence::SocketMissing
+}
+
 /// The pane roster of `session` on `server`, or `None` when the enumeration
 /// failed — see [`tmux::interpret_agents`].
 #[must_use]
@@ -321,6 +348,28 @@ pub(crate) fn run_git(argv: &crate::git::GitArgv) -> (bool, String) {
 /// product code runs `ps`, the program FIXED here.
 pub(crate) fn run_ps(argv: &crate::procs::PsArgv) -> (bool, String) {
     match spawn("ps", argv.as_args(), &[], Streams::Captured, None) {
+        Some(output) => (
+            output.status.success(),
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+        ),
+        None => (false, String::new()),
+    }
+}
+
+/// The boot-time leg of the one process door — the ONLY way product code runs
+/// `sysctl`, and it takes no arguments at all, because there is exactly one
+/// question ae asks it: when did this host boot. Linux answers that from
+/// `/proc/stat` and never reaches here; macOS has no such file and ae has no
+/// libc to call, so the answer comes from a child process. The reading is
+/// [`crate::doors::boot_time`]'s.
+pub(crate) fn run_sysctl() -> (bool, String) {
+    match spawn(
+        "sysctl",
+        &["-n", "kern.boottime"],
+        &[],
+        Streams::Captured,
+        None,
+    ) {
         Some(output) => (
             output.status.success(),
             String::from_utf8_lossy(&output.stdout).into_owned(),

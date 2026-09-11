@@ -154,6 +154,45 @@ pub fn started_marker(dir: &Path, slot: &str) -> PathBuf {
     dir.join(format!("launch.{}.started", launch::safe_slot(slot)))
 }
 
+/// When any seat here last BECAME its tool, epoch seconds.
+///
+/// The marker above is `_run`'s own pre-exec record, written for every tool and
+/// older than every meta row a launch publishes — so it is what a session whose
+/// meta predates `started` still has. One of the facts
+/// [`crate::inventory::last_live`] weighs against the host's boot time.
+///
+/// Read by NAME rather than by roster, so a seat the meta no longer lists still
+/// counts: the question is when ae last put a tool in a pane here, not who the
+/// roster says is seated.
+#[must_use]
+pub fn newest_start_marker(dir: &Path) -> Option<i64> {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: the start markers this module WRITES are also read here, as the oldest universal record of a pane becoming its tool"
+    )]
+    let listing = std::fs::read_dir(dir);
+    let mut newest: Option<i64> = None;
+    for entry in listing.ok()?.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if !(name.starts_with("launch.") && name.ends_with(".started")) {
+            continue;
+        }
+        let modified = entry
+            .metadata()
+            .ok()
+            .and_then(|meta| meta.modified().ok())
+            .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
+            .and_then(|since| i64::try_from(since.as_secs()).ok());
+        if let Some(epoch) = modified.filter(|epoch| *epoch > 0) {
+            newest = Some(newest.map_or(epoch, |known: i64| known.max(epoch)));
+        }
+    }
+    newest
+}
+
 /// The optional first user message a spawn recorded for this seat.
 #[must_use]
 pub fn prompt_file(dir: &Path, slot: &str) -> PathBuf {

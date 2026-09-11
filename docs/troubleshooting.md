@@ -25,6 +25,37 @@ ae <name>
 
 Resume and session capture for external agent CLIs are best-effort and depend on upstream tool storage formats, which can change. All five supported tools get exact-session resume once their session id is captured; if capture failed, ae falls back gracefully (Claude `--continue`, Codex fresh-start with preserved flags, Gemini `--resume latest`, Grok `--continue`, OpenCode `--continue`).
 
+## Every session refuses to resume after a reboot
+
+```
+Error: cannot verify whether tmux session '<name>' is absent on its recorded server.
+       recorded server /tmp/tmux-501/default: socket missing; last live activity
+       2026-09-11T05:40:00Z is not before boot 2026-09-11T05:30:55Z — cannot prove
+       the session gone. Run 'ae doctor' for the evidence.
+```
+
+A reboot takes every tmux socket under `/tmp/tmux-<uid>/` with it, and a missing
+socket is not by itself proof that a session is gone: a server that is still
+running answers exactly the same error once something unlinks its socket. ae
+resolves that with the host's boot time. A session whose own last sign of life
+predates the boot cannot be on any server that is running now, so a resume moves
+it to the configured server and rewrites its `tmux_server` row.
+
+The message above is the case where ae could **not** prove it: this session was
+last live *after* the boot it is being compared against, so it may still be
+running somewhere ae cannot reach. `ae doctor` prints both numbers — a `boot`
+row, and a `last-live:<name>` row per session. The same evidence decides
+`ae list`: a vanished server whose every recorded session predates the boot is
+listed as holding nothing, rather than leaving `unknown` rows and an "inventory
+incomplete" warning.
+
+`stop`, `end` and `compact` never use this reasoning. They are irreversible, so
+they still require the server's own answer.
+
+If a session really is gone and ae cannot prove it — no recorded activity at all,
+or an unreadable boot time — resume its name on a fresh server by stopping it
+first (`ae stop <name>`), or inspect the evidence with `ae doctor`.
+
 ## Helpers feel out of date after upgrading ae
 
 Upgrading needs no refresh: stop/resume moves a session to the installed

@@ -110,30 +110,170 @@ pub enum StopProbe {
 }
 
 /// What a completed stop-verification `list-sessions` means for `name`.
+///
+/// THE STRICT PROOF, and the one the destructive gates cross: a session is
+/// `Absent` only because the server itself said so. A missing socket is
+/// `Unknown` here and stays `Unknown` — [`classify_absence`] is the only reader
+/// that may weigh it, and only for a resume or a listing.
 #[must_use]
 pub fn interpret_stopped(succeeded: bool, stdout: &str, stderr: &str, name: &str) -> StopProbe {
+    match read_absence(succeeded, stdout, stderr, name) {
+        Absence::Listed => StopProbe::Present,
+        Absence::Proven => StopProbe::Absent,
+        // STRICTLY the clean-exit diagnostic, and NOT the connect error the
+        // version probe also reads as absence: a live server whose socket was
+        // unlinked answers ENOENT while it keeps running, so ENOENT proves a
+        // session gone only if you are willing to be wrong about it. The two
+        // probes ask different questions — see [`says_no_server`].
+        Absence::SocketMissing | Absence::Unreachable => StopProbe::Unknown,
+    }
+}
+
+/// What a completed stop-verification `list-sessions` SAW, before anything is
+/// concluded from it.
+///
+/// [`interpret_stopped`] folds the last two together, which is the right answer
+/// for a destructive gate and the wrong one for a resume: after a host reboot
+/// every socket under `/tmp/tmux-<uid>/` is gone, and that is a different
+/// situation from a server that refused to talk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Absence {
+    /// The server answered and the name is among its sessions.
+    Listed,
+    /// PROVEN gone by the server's own answer: it listed its sessions without
+    /// the name, or it reported the stale-socket `no server running on …`
+    /// diagnostic of a clean exit.
+    Proven,
+    /// The socket is not there at all (ENOENT). A live server whose socket was
+    /// unlinked answers exactly this, so on its own it proves NOTHING.
+    SocketMissing,
+    /// Any other failure — permission denied, connection refused, no tmux.
+    Unreachable,
+}
+
+/// What a completed stop-verification `list-sessions` saw about `name`.
+#[must_use]
+pub fn read_absence(succeeded: bool, stdout: &str, stderr: &str, name: &str) -> Absence {
     if succeeded {
         let present = stdout.lines().map(str::trim_end).any(|line| line == name);
         return if present {
-            StopProbe::Present
+            Absence::Listed
         } else {
-            StopProbe::Absent
+            Absence::Proven
         };
     }
-    // STRICTLY the clean-exit diagnostic, and NOT the connect error the version
-    // probe also reads as absence: a live server whose socket was unlinked
-    // answers ENOENT while it keeps running, so ENOENT proves a session gone
-    // only if you are willing to be wrong about it. The two probes ask
-    // different questions — see [`says_no_server`].
-    let clean_dead = stderr
-        .lines()
-        .next()
-        .is_some_and(|line| line.starts_with(NO_SERVER_DIAGNOSTIC));
-    if clean_dead {
-        StopProbe::Absent
-    } else {
-        StopProbe::Unknown
+    read_failure(stderr)
+}
+
+/// What a FAILED run against a server means, from its diagnostic alone.
+///
+/// Split out because the fleet listing asks the server-level question — is this
+/// socket there at all — without naming any session.
+#[must_use]
+pub fn read_failure(stderr: &str) -> Absence {
+    let Some(line) = stderr.lines().next().map(str::trim_end) else {
+        return Absence::Unreachable;
+    };
+    // Anchored at the line start, never a substring: a server literally NAMED
+    // "no server running" once made a permission error CONTAIN the words.
+    if line.starts_with(NO_SERVER_DIAGNOSTIC) {
+        return Absence::Proven;
     }
+    if line.starts_with(CONNECT_PREFIX) && line.ends_with(CONNECT_ABSENT_SUFFIX) {
+        return Absence::SocketMissing;
+    }
+    Absence::Unreachable
+}
+
+/// What ae's OWN durable files say about when a session was last live.
+///
+/// The facts behind it are gathered by [`crate::inventory::last_live`], which
+/// owns the rule about which writes count.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Evidence {
+    /// The newest moment a live session or its launch wrote a fact about
+    /// itself, epoch seconds, or `None` when nothing readable says.
+    pub last_live: Option<i64>,
+}
+
+/// The BOOT-TIME proof, for a resume and a listing — never for a stop, an end
+/// or a compact.
+///
+/// A missing socket means one of two things: the server that held it is gone
+/// (a reboot took every socket under `/tmp/tmux-<uid>/` with it), or it is
+/// still running and something unlinked its socket. The second is why
+/// [`interpret_stopped`] refuses to conclude anything. ae can separate them for
+/// ONE session at a time: it rewrites this session's own live facts on every
+/// launch and resume, so a session ae has not touched since the host booted
+/// cannot be sitting on a server that was started after the host booted. That
+/// makes the ABSENCE this session's, not the server's — a foreign tmux on the
+/// same socket path, holding a same-named session ae never launched, is the
+/// accepted and documented residual.
+///
+/// Every incomplete or contradictory reading is [`StopProbe::Unknown`]: no boot
+/// time, no recorded activity, activity at or after the boot, or a boot time in
+/// the future.
+#[must_use]
+pub fn classify_absence(
+    probe: Absence,
+    evidence: Evidence,
+    boot: Option<i64>,
+    now: i64,
+) -> StopProbe {
+    match probe {
+        Absence::Listed => StopProbe::Present,
+        Absence::Proven => StopProbe::Absent,
+        Absence::Unreachable => StopProbe::Unknown,
+        Absence::SocketMissing => match (boot, evidence.last_live) {
+            (Some(boot), Some(last_live)) if boot <= now && last_live < boot => StopProbe::Absent,
+            _ => StopProbe::Unknown,
+        },
+    }
+}
+
+/// Why [`classify_absence`] could not prove `server` gone, or `None` when it
+/// proved something.
+///
+/// One line, and it names the evidence rather than the verdict: a human who
+/// meets this refusal has to be able to tell "the clock is wrong" from "this
+/// session really was alive after the reboot".
+#[must_use]
+pub fn unproven_reason(
+    server: &str,
+    probe: Absence,
+    evidence: Evidence,
+    boot: Option<i64>,
+    now: i64,
+) -> Option<String> {
+    if classify_absence(probe, evidence, boot, now) != StopProbe::Unknown {
+        return None;
+    }
+    let iso = |epoch: i64| crate::time::Timestamp::from_epoch(epoch).to_string();
+    let why = match probe {
+        Absence::Listed | Absence::Proven => return None,
+        Absence::Unreachable => "the server could not be reached".to_owned(),
+        Absence::SocketMissing => {
+            let head = "socket missing; ";
+            match (boot, evidence.last_live) {
+                (None, _) => format!("{head}the host's boot time could not be read"),
+                (Some(boot), _) if boot > now => {
+                    format!("{head}boot {} is in the future (clock skew)", iso(boot))
+                }
+                (Some(_), None) => {
+                    format!("{head}this session has no recorded live activity")
+                }
+                (Some(boot), Some(last_live)) => format!(
+                    "{head}last live activity {} is not before boot {}",
+                    iso(last_live),
+                    iso(boot)
+                ),
+            }
+        }
+    };
+    Some(format!(
+        "recorded server {server}: {why} — cannot prove the session gone. \
+         Run 'ae doctor' for the evidence."
+    ))
 }
 
 /// tmux's diagnostic after a server exited cleanly and left its socket behind.
@@ -169,11 +309,10 @@ const CONNECT_ABSENT_SUFFIX: &str = "(No such file or directory)";
 /// ```
 #[must_use]
 pub fn says_no_server(stderr: &str) -> bool {
-    let Some(line) = stderr.lines().next().map(str::trim_end) else {
-        return false;
-    };
-    line.starts_with(NO_SERVER_DIAGNOSTIC)
-        || (line.starts_with(CONNECT_PREFIX) && line.ends_with(CONNECT_ABSENT_SUFFIX))
+    matches!(
+        read_failure(stderr),
+        Absence::Proven | Absence::SocketMissing
+    )
 }
 
 /// The ownership marker a completed `show-environment` run reported.
@@ -3544,10 +3683,11 @@ mod tests {
     }
 
     use super::{
-        ObservedPane, SlotObservation, StopProbe, environment_value_args,
-        interpret_environment_value, interpret_marker, interpret_panes, interpret_sessions,
-        interpret_stopped, is_addressable_socket, list_panes_args, list_sessions_args, marker_args,
-        server_args, slot_observation,
+        Absence, Evidence, ObservedPane, SlotObservation, StopProbe, classify_absence,
+        environment_value_args, interpret_environment_value, interpret_marker, interpret_panes,
+        interpret_sessions, interpret_stopped, is_addressable_socket, list_panes_args,
+        list_sessions_args, marker_args, read_absence, server_args, slot_observation,
+        unproven_reason,
     };
     use crate::inventory::{QueryFailed, ServerId};
     use crate::meta::Selector;
@@ -3710,6 +3850,240 @@ mod tests {
                 "sess"
             ),
             StopProbe::Unknown
+        );
+    }
+
+    /// Boot, and a `last_live` on each side of it, as epoch seconds.
+    const BOOT: i64 = 1_789_105_855;
+    const NOW: i64 = 1_789_120_000;
+
+    #[test]
+    fn the_absence_reader_separates_a_missing_socket_from_every_other_failure() {
+        // The WHOLE point of the second reader: `interpret_stopped` folds ENOENT
+        // and permission-denied into one `Unknown`, and the boot-time proof may
+        // reason about exactly one of them.
+        assert_eq!(
+            read_absence(true, "other\nsess\n", "", "sess"),
+            Absence::Listed
+        );
+        assert_eq!(read_absence(true, "other\n", "", "sess"), Absence::Proven);
+        assert_eq!(
+            read_absence(false, "", "no server running on /tmp/x\n", "sess"),
+            Absence::Proven
+        );
+        assert_eq!(
+            read_absence(
+                false,
+                "",
+                "error connecting to /tmp/x (No such file or directory)\n",
+                "sess"
+            ),
+            Absence::SocketMissing
+        );
+        for stderr in [
+            "",
+            "error connecting to /tmp/x (Permission denied)\n",
+            "error connecting to /tmp/x (Connection refused)\n",
+            "error: cannot reach the no server running on host\n",
+        ] {
+            assert_eq!(
+                read_absence(false, "", stderr, "sess"),
+                Absence::Unreachable,
+                "{stderr:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_boot_time_proof_is_the_documented_table_and_fails_closed() {
+        let live = |epoch: Option<i64>| Evidence { last_live: epoch };
+        let table = [
+            // A server that ANSWERED needs no boot reasoning at all.
+            (
+                Absence::Listed,
+                live(Some(BOOT - 1)),
+                Some(BOOT),
+                StopProbe::Present,
+            ),
+            (
+                Absence::Proven,
+                live(Some(BOOT + 1)),
+                Some(BOOT),
+                StopProbe::Absent,
+            ),
+            // The new proof: nothing ae wrote for this session postdates the boot,
+            // so no post-boot server can be holding it.
+            (
+                Absence::SocketMissing,
+                live(Some(BOOT - 1)),
+                Some(BOOT),
+                StopProbe::Absent,
+            ),
+            // Fail closed: the session was live on THIS boot, so the socket may
+            // have been unlinked under a server that is still running.
+            (
+                Absence::SocketMissing,
+                live(Some(BOOT)),
+                Some(BOOT),
+                StopProbe::Unknown,
+            ),
+            (
+                Absence::SocketMissing,
+                live(Some(BOOT + 1)),
+                Some(BOOT),
+                StopProbe::Unknown,
+            ),
+            // No boot time, no proof.
+            (
+                Absence::SocketMissing,
+                live(Some(BOOT - 1)),
+                None,
+                StopProbe::Unknown,
+            ),
+            // No activity recorded at all: an absence of evidence is not evidence.
+            (
+                Absence::SocketMissing,
+                live(None),
+                Some(BOOT),
+                StopProbe::Unknown,
+            ),
+            // Any OTHER failure keeps the strict proof, boot time or not.
+            (
+                Absence::Unreachable,
+                live(Some(BOOT - 1)),
+                Some(BOOT),
+                StopProbe::Unknown,
+            ),
+        ];
+        for (probe, evidence, boot, expected) in table {
+            assert_eq!(
+                classify_absence(probe, evidence, boot, NOW),
+                expected,
+                "{probe:?} / {evidence:?} / boot {boot:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_boot_time_in_the_future_is_clock_skew_and_proves_nothing() {
+        // The clock went backwards under us: every comparison against it is
+        // meaningless, so the proof is refused rather than believed.
+        assert_eq!(
+            classify_absence(
+                Absence::SocketMissing,
+                Evidence {
+                    last_live: Some(BOOT - 1)
+                },
+                Some(NOW + 1),
+                NOW
+            ),
+            StopProbe::Unknown
+        );
+        // The boundary: boot == now is not skew.
+        assert_eq!(
+            classify_absence(
+                Absence::SocketMissing,
+                Evidence {
+                    last_live: Some(NOW - 1)
+                },
+                Some(NOW),
+                NOW
+            ),
+            StopProbe::Absent
+        );
+    }
+
+    #[test]
+    fn every_unproven_absence_says_why_and_a_proven_one_says_nothing() {
+        let reason = |probe, last_live, boot| {
+            unproven_reason(
+                "/tmp/tmux-501/default",
+                probe,
+                Evidence { last_live },
+                boot,
+                NOW,
+            )
+        };
+        assert_eq!(
+            reason(Absence::SocketMissing, Some(BOOT + 60), Some(BOOT)),
+            Some(
+                "recorded server /tmp/tmux-501/default: socket missing; last live activity \
+                 2026-09-11T05:51:55Z is not before boot 2026-09-11T05:50:55Z — cannot prove \
+                 the session gone. Run 'ae doctor' for the evidence."
+                    .to_owned()
+            )
+        );
+        for (probe, last_live, boot, needle) in [
+            (
+                Absence::SocketMissing,
+                Some(BOOT - 1),
+                None,
+                "the host's boot time could not be read",
+            ),
+            (
+                Absence::SocketMissing,
+                None,
+                Some(BOOT),
+                "no recorded live activity",
+            ),
+            (
+                Absence::SocketMissing,
+                Some(BOOT - 1),
+                Some(NOW + 1),
+                "is in the future (clock skew)",
+            ),
+            (
+                Absence::Unreachable,
+                Some(BOOT - 1),
+                Some(BOOT),
+                "the server could not be reached",
+            ),
+        ] {
+            let text = reason(probe, last_live, boot).unwrap_or_default();
+            assert!(text.contains(needle), "{probe:?}: {text:?}");
+            assert!(text.contains("ae doctor"), "{probe:?}: {text:?}");
+        }
+        // A PROVEN verdict has nothing to explain.
+        for probe in [Absence::Listed, Absence::Proven] {
+            assert_eq!(reason(probe, Some(BOOT - 1), Some(BOOT)), None, "{probe:?}");
+        }
+    }
+
+    #[test]
+    fn the_strict_probe_never_reaches_the_boot_time_proof() {
+        // R3: `stop`, `end` and `compact` keep the proof they had. The strict
+        // reader folds BOTH failure classes into `Unknown` and takes no boot
+        // time at all — this is the pin that a later refactor cannot quietly
+        // wire the new evidence into the destructive gate.
+        assert_eq!(
+            interpret_stopped(
+                false,
+                "",
+                "error connecting to /tmp/x (No such file or directory)\n",
+                "sess"
+            ),
+            StopProbe::Unknown,
+            "a missing socket is still unproven for the destructive gate"
+        );
+        // And it CANNOT reach the new proof: the strict reader takes neither a
+        // boot time nor any evidence, so there is no argument to pass it.
+        assert_eq!(
+            classify_absence(
+                read_absence(
+                    false,
+                    "",
+                    "error connecting to /tmp/x (No such file or directory)\n",
+                    "sess"
+                ),
+                Evidence {
+                    last_live: Some(BOOT - 1)
+                },
+                Some(BOOT),
+                NOW
+            ),
+            StopProbe::Absent,
+            "the same bytes ARE provable once the evidence is supplied — which is \
+             the difference the two readers exist to keep"
         );
     }
 

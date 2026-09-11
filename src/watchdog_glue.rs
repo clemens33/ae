@@ -471,6 +471,24 @@ pub fn pidfile(meta_dir: &Path) -> PathBuf {
     meta_dir.join(PIDFILE_NAME)
 }
 
+/// When the daemon's pidfile was last written, epoch seconds, or `None` when
+/// there is none.
+///
+/// A heartbeat: the daemon exists only while its session does, so this is one
+/// of the facts [`crate::inventory::last_live`] weighs against the host's boot
+/// time. Non-following, like every other read of this file.
+#[must_use]
+pub fn pidfile_modified(meta_dir: &Path) -> Option<i64> {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: the pidfile's mtime is a live session's heartbeat — `symlink_metadata`, so a planted link cannot answer for it"
+    )]
+    let probe = std::fs::symlink_metadata(pidfile(meta_dir));
+    let modified = probe.ok()?.modified().ok()?;
+    let since = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
+    i64::try_from(since.as_secs()).ok()
+}
+
 /// The pid a session's pidfile names, or `None` when it names nothing usable.
 #[must_use]
 #[allow(

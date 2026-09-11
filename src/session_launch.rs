@@ -1045,28 +1045,34 @@ fn launch(
         match Meta::parse(&String::from_utf8_lossy(&bytes)).server_selector() {
             ServerSelector::Positive(selector) => {
                 let recorded = ServerId::Selected(selector);
-                match transport::verify_session_absent(&recorded, &session) {
-                    tmux::StopProbe::Absent => proposed_server.clone(),
-                    tmux::StopProbe::Present => recorded,
-                    tmux::StopProbe::Unknown => {
+                match resume_absence(&recorded, &session, &dir) {
+                    (tmux::StopProbe::Absent, _) => proposed_server.clone(),
+                    (tmux::StopProbe::Present, _) => recorded,
+                    (tmux::StopProbe::Unknown, why) => {
                         writeln!(
                             err,
                             "Error: cannot verify whether tmux session '{session}' is absent on its recorded server. Metadata was not changed."
                         )?;
+                        if let Some(why) = why {
+                            writeln!(err, "       {why}")?;
+                        }
                         return Ok(EXIT_FAILED);
                     }
                 }
             }
             ServerSelector::Missing => {
                 let historical = crate::doors::historical_server();
-                match transport::verify_session_absent(&historical, &session) {
-                    tmux::StopProbe::Absent => proposed_server.clone(),
-                    tmux::StopProbe::Present => historical,
-                    tmux::StopProbe::Unknown => {
+                match resume_absence(&historical, &session, &dir) {
+                    (tmux::StopProbe::Absent, _) => proposed_server.clone(),
+                    (tmux::StopProbe::Present, _) => historical,
+                    (tmux::StopProbe::Unknown, why) => {
                         writeln!(
                             err,
                             "Error: cannot verify whether legacy tmux session '{session}' is absent on the historical default server. Metadata was not changed."
                         )?;
+                        if let Some(why) = why {
+                            writeln!(err, "       {why}")?;
+                        }
                         return Ok(EXIT_FAILED);
                     }
                 }
@@ -1160,8 +1166,8 @@ fn launch(
         match Meta::parse(&String::from_utf8_lossy(&bytes)).server_selector() {
             ServerSelector::Positive(selector) => {
                 let recorded = ServerId::Selected(selector);
-                match transport::verify_session_absent(&recorded, &session) {
-                    tmux::StopProbe::Present => {
+                match resume_absence(&recorded, &session, &dir) {
+                    (tmux::StopProbe::Present, _) => {
                         if !plan.seat_profiles.is_empty() {
                             writeln!(err, "{}", running_override_refusal(&session))?;
                             return Ok(EXIT_USAGE);
@@ -1169,24 +1175,27 @@ fn launch(
                         set_env_server(&mut env, &recorded);
                         running_server = Some(recorded);
                     }
-                    tmux::StopProbe::Absent => {
+                    (tmux::StopProbe::Absent, _) => {
                         if !destination_is_absent(&proposed_server, &session, err)? {
                             return Ok(EXIT_FAILED);
                         }
                     }
-                    tmux::StopProbe::Unknown => {
+                    (tmux::StopProbe::Unknown, why) => {
                         writeln!(
                             err,
                             "Error: cannot verify whether tmux session '{session}' is absent on its recorded server. Metadata was not changed."
                         )?;
+                        if let Some(why) = why {
+                            writeln!(err, "       {why}")?;
+                        }
                         return Ok(EXIT_FAILED);
                     }
                 }
             }
             ServerSelector::Missing => {
                 let historical = crate::doors::historical_server();
-                match transport::verify_session_absent(&historical, &session) {
-                    tmux::StopProbe::Present => {
+                match resume_absence(&historical, &session, &dir) {
+                    (tmux::StopProbe::Present, _) => {
                         let ownership = transport::observe_session_ownership(&historical, &session);
                         let main_pane = meta_value(&dir, "main_pane").unwrap_or_default();
                         let pane_belongs = !main_pane.is_empty()
@@ -1223,16 +1232,19 @@ fn launch(
                         set_env_server(&mut env, &recorded);
                         running_server = Some(recorded);
                     }
-                    tmux::StopProbe::Absent => {
+                    (tmux::StopProbe::Absent, _) => {
                         if !destination_is_absent(&proposed_server, &session, err)? {
                             return Ok(EXIT_FAILED);
                         }
                     }
-                    tmux::StopProbe::Unknown => {
+                    (tmux::StopProbe::Unknown, why) => {
                         writeln!(
                             err,
                             "Error: cannot verify whether legacy tmux session '{session}' is absent on the historical default server. Metadata was not changed."
                         )?;
+                        if let Some(why) = why {
+                            writeln!(err, "       {why}")?;
+                        }
                         return Ok(EXIT_FAILED);
                     }
                 }
@@ -1943,18 +1955,41 @@ fn build(
         return Ok(EXIT_FAILED);
     };
 
-    // ---- the session and its first pane ----
-    let Some(main_pane) = new_session(&server, &shape.name, &work_dir) else {
-        writeln!(err, "Error: could not create tmux session '{}'", shape.name)?;
-        return Ok(EXIT_FAILED);
-    };
-    // Ownership as an explicit FACT, recorded at the mkdir.
+    // Ownership as an explicit FACT, decided BEFORE the stamp below needs the
+    // directory to exist — a state dir this attempt found is never a state dir
+    // this attempt may remove.
     shape.dir_created = !node_exists(&dir);
     if let Err(why) = create_private_dir(&dir) {
-        let _ = kill_session(&server, &shape.name);
         writeln!(err, "Error: could not create {} ({why})", dir.display())?;
         return Ok(EXIT_FAILED);
     }
+    // THE LAUNCH-ATTEMPT STAMP, and its position is the whole point: under the
+    // lifecycle lock, AFTER the state directory exists and BEFORE the first
+    // tmux create. A launch that then dies between the create and the meta
+    // publication has still left the moment behind, which is what lets a later
+    // reboot proof say "ae has not touched this session since the host booted"
+    // without trusting facts the publication may never have reached.
+    //
+    // CHECKED, never best-effort: a stamp that could not be written would make
+    // the next reboot silently unprovable, so the launch is refused instead.
+    if let Err(why) =
+        crate::store::open(&dir).stamp_launch_attempt(crate::time::Timestamp::now().epoch())
+    {
+        writeln!(
+            err,
+            "Error: could not record the launch attempt for '{}' ({why}). No tmux session was created.",
+            shape.name
+        )?;
+        rollback_dir(shape, &dir, err)?;
+        return Ok(EXIT_FAILED);
+    }
+
+    // ---- the session and its first pane ----
+    let Some(main_pane) = new_session(&server, &shape.name, &work_dir) else {
+        writeln!(err, "Error: could not create tmux session '{}'", shape.name)?;
+        rollback_dir(shape, &dir, err)?;
+        return Ok(EXIT_FAILED);
+    };
 
     stamp_session(&server, env, shape, &main_pane, &core);
     if let Some(main) = seats.first() {
@@ -3503,6 +3538,40 @@ fn write_private(path: &Path, text: &str) -> io::Result<()> {
     let mut file = std::fs::File::create(path)?;
     file.write_all(text.as_bytes())?;
     file.set_permissions(std::fs::Permissions::from_mode(0o600))
+}
+
+/// The RESUME'S absence verdict for `session` on `server`, and the line to
+/// print when there is none.
+///
+/// The one place the boot-time proof is reached from a launch. `stop`, `end`
+/// and `compact` keep [`transport::verify_session_absent`], whose verdict this
+/// one can only WIDEN: every answer it gives beyond the strict one rests on
+/// evidence ae itself wrote, and every gap in that evidence is
+/// [`tmux::StopProbe::Unknown`].
+fn resume_absence(
+    server: &ServerId,
+    session: &str,
+    dir: &Path,
+) -> (tmux::StopProbe, Option<String>) {
+    let probe = transport::probe_absence(server, session);
+    let evidence = tmux::Evidence {
+        last_live: crate::inventory::last_live(dir),
+    };
+    let boot = crate::doors::boot_time(crate::shape::current());
+    let now = crate::time::Timestamp::now().epoch();
+    (
+        tmux::classify_absence(probe, evidence, boot, now),
+        tmux::unproven_reason(&server_label(server), probe, evidence, boot, now),
+    )
+}
+
+/// How a server is named in a refusal — its socket path, or `-L <name>`.
+fn server_label(server: &ServerId) -> String {
+    match server {
+        ServerId::Ambient => "the ambient server".to_owned(),
+        ServerId::Selected(meta::Selector::Socket(path)) => path.display().to_string(),
+        ServerId::Selected(meta::Selector::Name(name)) => format!("-L {name}"),
+    }
 }
 
 /// Undo a launch that failed after the tmux session existed, and SAY SO.

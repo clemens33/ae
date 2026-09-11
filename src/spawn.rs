@@ -386,6 +386,21 @@ pub fn run_spawn(
         return Ok(EXIT_FAILED);
     }
 
+    // THE LAUNCH-ATTEMPT STAMP, before the window this spawn is about to
+    // create. A spawn is an ae launch into a tmux server exactly as a resume
+    // is, so it owes the same evidence — see [`crate::store::LAUNCH_ATTEMPT`].
+    // CHECKED: an unrecorded attempt would make a later reboot proof read this
+    // session as untouched since the boot, so nothing is spawned instead.
+    if let Err(why) = crate::store::open(dir).stamp_launch_attempt(now.epoch()) {
+        let _ = crate::identity::remove_seat_slot(dir, &parsed.name);
+        writeln!(
+            err,
+            "Error: '{}' launch attempt could not be recorded ({why}) — nothing was spawned.",
+            parsed.name
+        )?;
+        return Ok(EXIT_FAILED);
+    }
+
     // New window per spawned agent: the main window keeps the lead layout
     // untouched and N parallel workers stay usable.
     let Some(pane) = transport::new_window(&facts.server, &facts.session, &facts.work_dir) else {

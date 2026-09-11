@@ -162,9 +162,18 @@ fn doctor_reads_the_real_state_root_and_reports_a_stopped_session_as_an_orphan()
         stdout.contains("session parked has no core bound"),
         "{stdout}"
     );
-    // Six warnings, and the count is pinned so a new row shows up here:
-    // local-config, workspace.workers, orphans + its hint, core-pin + its hint.
-    assert!(stdout.ends_with("failure(s), 6 warning(s)\n"), "{stdout}");
+    // The reboot evidence: the host's boot time, and this session's own last
+    // sign of life — which it has none of, so a vanished tmux socket could
+    // never be proven gone for it.
+    assert!(stdout.contains("boot           host booted "), "{stdout}");
+    assert!(
+        stdout.contains("last-live:parked no recorded live activity"),
+        "{stdout}"
+    );
+    // Seven warnings, and the count is pinned so a new row shows up here:
+    // local-config, workspace.workers, last-live:parked, orphans + its hint,
+    // core-pin + its hint.
+    assert!(stdout.ends_with("failure(s), 7 warning(s)\n"), "{stdout}");
     // The two roots are CREATED by the report.
     assert!(rig.home.join("worktrees").is_dir(), "the worktrees root");
 }

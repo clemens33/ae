@@ -620,6 +620,13 @@ than the core probing `bash --version` itself, which would report whatever is fi
 wrapper re-exec'd itself under a modern bash on macOS's 3.2. That wrapper is gone as of
 Z3; what now supplies `--bash-major` to a directly-run `ae-core` is being reworked with it.
 
+It also prints the REBOOT EVIDENCE: a `boot` row with the host's boot time, and a
+`last-live:<name>` row per session saying when that session last did something only a
+live session does. Those two numbers are exactly what a resume compares when a recorded
+tmux socket has vanished, so a refusal that says "cannot verify whether tmux session
+'<name>' is absent" is read here rather than guessed at. A session with no recorded
+activity at all warns: nothing can prove it gone.
+
 Three rows the frozen bash `doctor` printed are **dropped rather than reported as
 permanently OK**: `flock` and `timeout` are no longer ae's dependencies (the core locks with
 its own `flock(2)` and times out in its own code), and there is no portability-shim layer

@@ -756,6 +756,11 @@ impl SocketPaths {
 struct FleetDiscovery<'a, D> {
     inner: &'a D,
     default_is_optional: bool,
+    /// Which sessions each recorded server holds, for the boot-time reading of
+    /// a server whose socket went with the host.
+    recorded: &'a inventory::RecordedOn,
+    boot: Option<i64>,
+    now: i64,
 }
 
 impl<D: inventory::Discovery> inventory::Discovery for FleetDiscovery<'_, D> {
@@ -771,6 +776,20 @@ impl<D: inventory::Discovery> inventory::Discovery for FleetDiscovery<'_, D> {
                             doors::DEFAULT_SERVER_NAME.to_owned(),
                         )) =>
             {
+                Ok(Vec::new())
+            }
+            // A REBOOT, and the listing's version of the resume's proof: this
+            // server did not answer, its socket is not there at all, and every
+            // session ae recorded on it was last live before the host booted.
+            // None of them can be on it, so it enumerated EMPTY rather than
+            // failing — the rows read `stopped` instead of `unknown` and the
+            // listing stops calling itself incomplete over it. One gap in that
+            // evidence, and it is a failed source again.
+            Err(failed)
+                if self.recorded.all_predate(server, self.boot, self.now)
+                    && transport::server_socket_missing(server) =>
+            {
+                let _ = failed;
                 Ok(Vec::new())
             }
             answer => answer,
@@ -1693,14 +1712,21 @@ pub fn current_world(root: &std::path::Path) -> (liveness::Snapshot, listing::Wo
             == Some(&meta::Selector::Name(doors::DEFAULT_SERVER_NAME.to_owned()))
     });
     let tmux = transport::Tmux;
+    let recorded = inventory::RecordedOn::of(&scan.records);
     let discovery = FleetDiscovery {
         inner: &tmux,
         default_is_optional: !default_recorded,
+        recorded: &recorded,
+        boot: doors::boot_time(shape::current()),
+        now: time::Timestamp::now().epoch(),
     };
     let taken = inventory::take_entitled(scan, entitled, &discovery, |left, right| {
         sockets.equivalent(left, right)
     });
-    let snapshot = liveness::classify(taken, &transport::Tmux);
+    // The SAME discovery for the classification: a server the boot-time proof
+    // read as empty must read as empty in both phases, or the rows would go
+    // `unknown` under a listing that no longer says anything is missing.
+    let snapshot = liveness::classify(taken, &discovery);
     // Criterion 3 only: the opposed disk must change HERE, on this function's
     // path, not after it returns.
     #[cfg(debug_assertions)]

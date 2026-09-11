@@ -145,6 +145,10 @@ pub struct SessionFacts {
     /// `ae_version` — the glue version that built the session, empty when
     /// unset.
     pub glue_version: String,
+    /// When this session last did something only a LIVE session does — the
+    /// evidence a reboot refusal rests on. See
+    /// [`crate::inventory::last_live`].
+    pub last_live: Option<i64>,
 }
 
 /// One `[profiles]` entry, as the report needs it.
@@ -195,6 +199,8 @@ pub struct Facts {
     pub workers: Option<String>,
     /// The profile inventory, sorted by key.
     pub profiles: Vec<ProfileFacts>,
+    /// When this host booted, epoch seconds — the other half of that evidence.
+    pub boot: Option<i64>,
     /// `<AE_HOME>/sessions`.
     pub sessions_dir: PathBuf,
     /// `<AE_HOME>/worktrees`.
@@ -312,6 +318,8 @@ fn session_rows(facts: &Facts, out: &mut Report) {
         "worktrees",
         &facts.worktrees_dir.display().to_string(),
     );
+
+    reboot_rows(facts, out);
 
     // Orphans: state on disk with no running session.
     let orphans: Vec<&str> = facts
@@ -543,6 +551,46 @@ pub fn gather(root: &Path, global: Option<&Path>, local: Option<&Path>) -> Facts
         sessions_dir: roots.sessions().to_owned(),
         worktrees_dir: roots.worktrees().to_owned(),
         sessions: session_facts(root),
+        boot: crate::doors::boot_time(crate::shape::current()),
+    }
+}
+
+/// The rows behind a reboot refusal: when the host booted, and when each
+/// session last did something only a live session does.
+///
+/// A resume that refuses with "cannot verify whether tmux session '<name>' is
+/// absent" is comparing these two numbers, so this is where a human reads them
+/// rather than guessing.
+fn reboot_rows(facts: &Facts, out: &mut Report) {
+    let iso = |epoch: i64| crate::time::Timestamp::from_epoch(epoch).to_string();
+    match facts.boot {
+        Some(boot) => out.push(Level::Ok, "boot", &format!("host booted {}", iso(boot))),
+        None => out.push(
+            Level::Warn,
+            "boot",
+            "this host's boot time could not be read — a session whose tmux socket \
+             has vanished cannot be proven gone",
+        ),
+    }
+    for session in &facts.sessions {
+        let label = format!("last-live:{}", session.name);
+        match (session.last_live, facts.boot) {
+            (Some(last_live), Some(boot)) if last_live < boot => out.push(
+                Level::Ok,
+                &label,
+                &format!("{} — before this boot", iso(last_live)),
+            ),
+            (Some(last_live), _) => out.push(
+                Level::Ok,
+                &label,
+                &format!("{} — this boot", iso(last_live)),
+            ),
+            (None, _) => out.push(
+                Level::Warn,
+                &label,
+                "no recorded live activity — a vanished tmux socket cannot be proven gone",
+            ),
+        }
     }
 }
 
@@ -565,6 +613,7 @@ fn session_facts(root: &Path) -> Vec<SessionFacts> {
                 core_usable: !core_bin.is_empty() && is_executable_file(Path::new(&core_bin)),
                 core_version: crate::lifecycle::meta_value(&bytes, "ae_core_version"),
                 glue_version: crate::lifecycle::meta_value(&bytes, "ae_version"),
+                last_live: crate::inventory::last_live(&dir),
                 core_bin,
                 name,
             }
@@ -885,6 +934,7 @@ mod tests {
             core_published: true,
             tmux: Some(PathBuf::from("/usr/bin/tmux")),
             tmux_floor: crate::tmux_floor::Probe::Executable("3.7b".to_owned()),
+            boot: Some(1_789_105_855),
             git: Some(PathBuf::from("/usr/bin/git")),
             config: PathBuf::from("/home/me/.ae/config"),
             config_error: None,
@@ -1059,6 +1109,7 @@ mod tests {
             core_usable: true,
             core_version: "2026.9.1".to_owned(),
             glue_version: "2026.9.1".to_owned(),
+            last_live: None,
         });
         let document = report(&input);
         assert_eq!(document.failures(), 0);
@@ -1080,6 +1131,7 @@ mod tests {
             core_usable: false,
             core_version: String::new(),
             glue_version: "2026.9.1".to_owned(),
+            last_live: None,
         });
         let text = report(&input).render();
         assert!(text.contains("session unbound has no core bound"), "{text}");
@@ -1096,6 +1148,7 @@ mod tests {
             core_usable: true,
             core_version: "2026.8.4".to_owned(),
             glue_version: "2026.8.4".to_owned(),
+            last_live: None,
         });
         let text = report(&input).render();
         assert!(

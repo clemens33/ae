@@ -264,7 +264,14 @@ inventoried by the clippy `disallowed-methods` boundary. Never read the world ad
 | `CONFIG_FILE` | which global config is read | CHECKOUT only |
 | `AE_TMUX_SERVER` + `AE_TMUX_SERVER_KIND` | which tmux server a launch lands on; absent → named server `ae` | CHECKOUT only |
 | `AE_NO_AUTOSTART` | start no companion: neither the watchdog nor the Telegram bridge | both |
+| `AE_TEST_BOOT_TIME` | the host boot time the absence proof compares against | CHECKOUT only |
 | `TMUX` / `TMUX_PANE` | which pane this shell is, for `stop` and `watchdog` | both |
+
+`doors::boot_time` is the one door with two spellings and no variable of its own: Linux's
+`/proc/stat` `btime` when that file exists, otherwise `transport::run_sysctl` — a fixed-program
+leg of the EXISTING process door (`sysctl -n kern.boottime`, no argument a caller chooses), so
+the `std::process::Command` inventory is unchanged. `tests/it/doors.rs` pins its one product
+caller beside `run_git`'s and `run_ps`'s.
 
 In the core `AE_VERSION` is scoped to `upgrade` alone; `install` reads it too, as the CalVer
 target. `AE_CORE_BIN` and `AE_NEXT_HOME` are dead in both shapes.
@@ -316,6 +323,7 @@ Each is one rule with one owner. Change the owner, not a copy.
 | A resume never rewrites the pair under a running session; a re-pair is written only by the build's publication | `src/session_launch.rs` |
 | Control bytes never reach JSON raw: they are written as JSON escapes | `src/json.rs` |
 | Exit codes: `0` success, `2` usage error, `1` everything else | `src/cli.rs` + `src/lib.rs::run`; `src/main.rs` only maps the byte |
+| A session is `Absent` only on POSITIVE proof. `stop`, `end` and `compact` cross the STRICT proof (`tmux::interpret_stopped`): the server said so, and a missing socket is `Unknown` because a live server whose socket was unlinked answers the same ENOENT. A RESUME and the fleet LISTING may also cross the boot-time proof (`tmux::classify_absence`): on ENOENT alone, a session whose own last sign of life predates the host's boot is `Absent`, because no process survives a reboot. That sign of life is `inventory::last_live` — the `.launch-attempt` stamp (written under the lifecycle lock BEFORE every tmux create, by launch, resume and spawn, for every tool, and CHECKED: a launch that cannot write it creates no session), plus `started`, `launch_time.<slot>`, `capture_floor.<slot>` and the watchdog pidfile's mtime. NEVER the meta's mtime (migration, refresh and rename rewrite it) and NEVER `events.jsonl` (`memo add`, `goal` and audit records are appended from outside a live session). Every gap fails closed to `Unknown` and says which gap | `src/tmux.rs` (`classify_absence` owns the rule, `interpret_stopped` the strict one), `src/inventory.rs::last_live`, `src/store.rs::LAUNCH_ATTEMPT`, `src/doors.rs::boot_time`; the two callers are pinned by `tests/it/doors.rs::the_boot_time_proof_is_reachable_from_exactly_two_operations` |
 | Archive on `ae end` is MANDATORY: a failed archive fails the end with state intact | `src/lifecycle/end.rs::archive_step`, ordered before cleanup; `src/archive/publish.rs` only publishes |
 | An archive under `~/.ae/archive/<uuid>/` is INERT — data only, never an executable file | `src/archive/store.rs` (`write_file_0600`, `mkdir_0700`) |
 

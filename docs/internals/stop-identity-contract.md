@@ -203,3 +203,59 @@ the session doing the enumerating. Stating the interaction is the fix.
       batch.
 ══════════════════════════════════════════════════════════════════════════
 ```
+
+## The absence proof, and who is allowed to weaken it (2026-09-11)
+
+The contract above is about `stop`. The same question — *is that session gone?* — is asked
+by a resume, by the fleet listing and by `compact`, and the answer is `src/tmux.rs`'s
+`StopProbe`. It has one strict reading and one widened one, and which one a caller gets is
+the whole design.
+
+**The strict reading** is `interpret_stopped`. A session is `Absent` only because the server
+said so: it listed its sessions without the name, or it reported the clean-exit
+`no server running on …` diagnostic. Every failure is `Unknown`, including
+`error connecting to … (No such file or directory)` — because a server that is still
+running answers exactly that once something unlinks its socket. `stop`, `end` and `compact`
+cross this one and nothing else. They are irreversible; being wrong costs work.
+
+**The widened reading** is `classify_absence`, and only a RESUME and the fleet LISTING may
+ask for it. It adds one fact the strict reading does not have: the host's boot time
+(`doors::boot_time` — `/proc/stat` `btime` on Linux, `sysctl -n kern.boottime` on macOS,
+through `transport::run_sysctl`). On ENOENT, and on ENOENT alone, a session is `Absent` when
+its own last sign of life predates the boot. No process survives a reboot, so nothing started
+since can be holding it.
+
+**What counts as a sign of life** is `inventory::last_live`, and the rule is narrow on
+purpose:
+
+* `.launch-attempt` (`store::LAUNCH_ATTEMPT`) — the launch-attempt stamp, written by every
+  launch, resume and spawn, for every tool, under the lifecycle lock and BEFORE the tmux
+  create it describes. It is checked, not best-effort: a launch that cannot write it is
+  refused and creates no tmux session. It exists because every other fact is published
+  AFTER the create, so an attempt that died in between would have left a session ae could
+  then prove "gone".
+* `started`, `launch_time.<slot>`, `capture_floor.<slot>` — meta rows, for the sessions that
+  predate the stamp. `launch_time` and `capture_floor` are capture-tool-only and
+  best-effort; they are read, never relied on.
+* the watchdog pidfile's mtime.
+
+**What does NOT count**, and each for a reason that was found the hard way:
+
+* the meta file's own mtime — an upgrade migration, `ae doctor --refresh` and a rename all
+  rewrite the meta of a session that is not running.
+* `events.jsonl` — the event ledger is a ledger, not a heartbeat. `memo add`, `goal` and the
+  audit records are appended from OUTSIDE a session by a human with no tmux anywhere, so a
+  memo left on a stopped session would date it to now and make every later reboot
+  unprovable.
+
+**Fail closed** is every other branch: no boot time, no recorded activity, activity at or
+after the boot, a boot time in the future (the clock moved), or any failure that is not
+ENOENT. The refusal then says which one, and `ae doctor` prints the two numbers.
+
+**The residual, documented rather than defended**: a foreign tmux server started after the
+boot, on the same socket path, holding a same-named session ae never launched, whose socket
+was then unlinked. The proof is about THIS SESSION being unreachable, never about that
+server being empty — and a resume lands on the configured server regardless.
+
+`tests/it/doors.rs::the_boot_time_proof_is_reachable_from_exactly_two_operations` is what
+keeps the destructive gates out of the widened reading.
