@@ -156,6 +156,9 @@ pub struct Observation {
     /// The orchestrator sweep reading, `Some` ONLY for the orchestrator main
     /// agent with the cadence enabled.
     pub sweep: Option<SweepObservation>,
+    /// What this seat is still owed by somebody else: requests it SENT that
+    /// nobody answered, agents it SPAWNED that still hold a seat.
+    pub own_work: crate::session::OwnWork,
 }
 
 /// Related facts derived without another pane capture or transcript read.
@@ -724,6 +727,17 @@ pub fn idle_nudge_text(goal: Option<&str>, meta_dir: &Path) -> String {
     )
 }
 
+/// The same reminder for a seat whose OWN work is outstanding — it reached the
+/// deferral ceiling, so it is told WHAT ae thinks it is waiting on rather than
+/// being asked a question it already answered.
+#[must_use]
+pub fn idle_nudge_text_waiting(goal: Option<&str>, meta_dir: &Path, reason: &str) -> String {
+    format!(
+        "{} ae still shows you {reason} — chase them, or declare state.",
+        idle_nudge_text(goal, meta_dir)
+    )
+}
+
 /// Count consecutive unusable process snapshots, and say so once.
 fn book_unknown(next: &mut PaneState, effects: &mut Vec<Effect>, descendancy: Descendancy) {
     if !matches!(descendancy, Descendancy::Unknown) {
@@ -978,7 +992,13 @@ fn account_harness(
             if seen.harness.durable_stale || next.nudge_count > knobs.max_nudges {
                 return Some(Verdict::Stale);
             }
-            if knobs.idle_nudge_secs > 0 && idle_age >= knobs.idle_nudge_secs {
+            // An empty input box is the right reading of the PIXELS and the
+            // wrong reading of the FACTS when the seat is the one everybody
+            // else is waiting on. Defer the nudge; never suppress it for good.
+            if knobs.idle_nudge_secs > 0
+                && idle_age >= knobs.idle_nudge_secs
+                && !deferred(seen.own_work, seen.now_epoch, idle_age, knobs)
+            {
                 book_stale(prior, next, effects, knobs, idle_age);
             }
             Some(if next.nudge_count > knobs.max_nudges {
@@ -1116,6 +1136,64 @@ fn sweep_effects(booked: Vec<SweepEffect>) -> Vec<Effect> {
         }
     }
     out
+}
+
+/// ONE reading of the session's own-work facts per cycle, over the panes this
+/// very enumeration found: a seat is a seat because it is HERE now, whether or
+/// not a retire was ever recorded for it.
+#[must_use]
+fn own_work(events: &[Event], observed: &[crate::tmux::WatchPane]) -> crate::session::Outstanding {
+    crate::session::Outstanding::read(
+        &crate::session::pending_requests(events),
+        events,
+        &agent_panes(observed),
+    )
+}
+
+/// The agent names this enumeration found — the seats that exist RIGHT NOW.
+///
+/// The monitor panes are not agents and never hold anybody's work.
+#[must_use]
+fn agent_panes(observed: &[crate::tmux::WatchPane]) -> Vec<String> {
+    observed
+        .iter()
+        .filter_map(|pane| pane.agent.as_deref())
+        .filter(|agent| !agent.is_empty() && !NON_AGENT_PANES.contains(agent))
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+/// How many multiples of `idle_nudge_secs` one outstanding item may age before
+/// the deferral gives way. Generous on purpose: the waiting seat is not the
+/// problem, and the ceiling exists for the seat that is.
+const OWN_WORK_AGE_CAP: u64 = 4;
+
+/// Whether a seat that reached its nudge age keeps its quiet a while longer.
+///
+/// Suppression is a DEFERRAL, never silence. A seat with outstanding own work
+/// spends the SAME bounded nudge budget as any other; it just starts spending
+/// it later, so a genuinely wedged lead is still caught. Two ceilings end the
+/// deferral, whichever comes first:
+///
+/// - the idle episode has run as long as the whole nudge budget would have
+///   taken — one deferred nudge opportunity per `idle_nudge_secs`, `max_nudges`
+///   of them — measured on the clock rather than in a counter, so a daemon
+///   restart cannot forget it;
+/// - the oldest outstanding item is older than [`OWN_WORK_AGE_CAP`] nudge
+///   periods, which is the case where the seat's own work has itself gone
+///   wrong.
+///
+/// PURE: it reads the observation and the knobs and nothing else.
+#[must_use]
+fn deferred(own: crate::session::OwnWork, now_epoch: i64, idle_age: u64, knobs: &Knobs) -> bool {
+    if !own.outstanding() || knobs.idle_nudge_secs == 0 {
+        return false;
+    }
+    let budget = knobs
+        .idle_nudge_secs
+        .saturating_mul(u64::from(knobs.max_nudges).saturating_add(1));
+    let cap = knobs.idle_nudge_secs.saturating_mul(OWN_WORK_AGE_CAP);
+    idle_age < budget && own.oldest_secs(now_epoch) < cap
 }
 
 /// Book a nudge attempt's outcome.
@@ -2648,6 +2726,8 @@ impl Cycle<'_> {
             self.refresh_quota(&mut carry.quota, now, err)?;
         }
 
+        let outstanding = own_work(&events, &observed);
+
         carry.quiet.begin();
         let mut index = 0_usize;
         let mut live: Vec<String> = Vec::new();
@@ -2678,6 +2758,9 @@ impl Cycle<'_> {
             let throttle_quota = is_throttled
                 .then(|| self.throttle_quota(&carry.quota, &slot, now))
                 .flatten();
+            // ONE process-tree reading: the dead verdict and the unknown-snapshot
+            // counter are two questions about the same answer.
+            let descendancy = descendancy_of(table.as_deref(), pane.pane_pid, agent_bin.as_deref());
             let identity = quiet_hash(&format!("{slot}\n{agent}"));
             let carried = entry_mut(&mut carry.panes, &pane.pane_id);
             restore_idle(carried, &pane.observed, identity);
@@ -2686,10 +2769,7 @@ impl Cycle<'_> {
                 hash,
                 harness: self.harness_observation(&capture, tool, &events, &slot, agent),
                 identity,
-                is_dead: classify_dead(
-                    &pane.current_command,
-                    descendancy_of(table.as_deref(), pane.pane_pid, agent_bin.as_deref()),
-                ),
+                is_dead: classify_dead(&pane.current_command, descendancy),
                 is_throttled,
                 throttle_quota,
                 quiet: self.resolve_quiet(
@@ -2703,12 +2783,13 @@ impl Cycle<'_> {
                     carried,
                     &mut carry.quiet,
                 ),
-                descendancy: descendancy_of(table.as_deref(), pane.pane_pid, agent_bin.as_deref()),
+                descendancy,
                 last_actor_event_age_secs: last_actor_event_age(&events, agent, now),
                 // Decided HERE, once, and the type carries the answer: a pane
                 // that is not the orchestrator main gets `None` and no sweep
                 // branch can reach it.
                 sweep: self.sweep_observation(&slot, agent, &events, overview.as_ref(), now),
+                own_work: outstanding.of(agent),
             };
             let acting = Acting {
                 agent,
@@ -3263,15 +3344,18 @@ impl Cycle<'_> {
                     })
                     .flatten();
                 let display = stale_display(idle_age.unwrap_or(on.seen.last_actor_event_age_secs));
-                let text = if idle_age.is_some() {
-                    idle_nudge_text(self.goal.as_deref(), self.meta_dir)
-                } else {
-                    nudge_text(self.goal.as_deref(), self.meta_dir)
+                let waiting = on.seen.own_work.reason();
+                let text = match (idle_age.is_some(), waiting.as_deref()) {
+                    (true, Some(reason)) => {
+                        idle_nudge_text_waiting(self.goal.as_deref(), self.meta_dir, reason)
+                    }
+                    (true, None) => idle_nudge_text(self.goal.as_deref(), self.meta_dir),
+                    (false, _) => nudge_text(self.goal.as_deref(), self.meta_dir),
                 };
-                let summary = if idle_age.is_some() {
-                    format!("{display}, harness waiting at input")
-                } else {
-                    format!("{display}, no recent ae activity")
+                let summary = match (idle_age.is_some(), waiting.as_deref()) {
+                    (true, Some(reason)) => format!("{display}, {reason}"),
+                    (true, None) => format!("{display}, harness waiting at input"),
+                    (false, _) => format!("{display}, no recent ae activity"),
                 };
                 let delivered = self.deliver(agent, &text, "nudge", &summary).code == Some(0);
                 for effect in record_nudge(state, delivered, &self.knobs, &display) {
@@ -3682,11 +3766,11 @@ mod tests {
         MissingState, MotionState, MotionVerdict, Observation, OverviewReading, PaneState,
         PendingAdvisory, QuietCycle, QuietQuery, QuotaAction, QuotaCarry, QuotaDelivery,
         QuotaLevel, QuotaRecipient, Rebind, SendHelper, UNKNOWN_ALERT_CYCLES, Verdict, account,
-        adopt_server, age_secs, agents_fact, bar_glyph, classify_quota, continuation, entry_mut,
-        idle_nudge_seconds, idle_nudge_text, is_meta_agent, last_actor_event_age,
-        last_done_event_at, last_working_declaration_at, motion_cadence, motion_failure,
-        motion_observation_due, motion_publish_failure, motion_ticker_enabled, nudge_text,
-        observed_option, quota_delivery, quota_effective_secs, quota_observation_due,
+        adopt_server, age_secs, agents_fact, bar_glyph, classify_quota, continuation, deferred,
+        entry_mut, idle_nudge_seconds, idle_nudge_text, idle_nudge_text_waiting, is_meta_agent,
+        last_actor_event_age, last_done_event_at, last_working_declaration_at, motion_cadence,
+        motion_failure, motion_observation_due, motion_publish_failure, motion_ticker_enabled,
+        nudge_text, observed_option, quota_delivery, quota_effective_secs, quota_observation_due,
         quota_recipients, quota_seconds, quota_sweep_count, read_events, rebind, record_nudge,
         restore_idle, session_name, slot_mark, spend_fact, stale_display, sweep_effects,
         sweep_seconds, system_time_from_epoch, throttle_quota_line, window_agents_line,
@@ -3696,6 +3780,7 @@ mod tests {
     use crate::inventory::ServerId;
     use crate::meta::{Meta, RecordedConfigHome, RecordedConfigHomeBase, RosterEntry, Selector};
     use crate::procs::Descendancy;
+    use crate::session::OwnWork;
     use crate::tmux::StopProbe;
     use crate::watchdog::{
         QuietKind, SweepAlert, SweepEffect, SweepObservation, SweepVerdict, WedgeDetail,
@@ -3724,6 +3809,7 @@ mod tests {
             descendancy: Descendancy::Present,
             last_actor_event_age_secs: 0,
             sweep: None,
+            own_work: crate::session::OwnWork::default(),
         }
     }
 
@@ -5559,6 +5645,258 @@ mod tests {
         let booked = account(&PaneState::default(), &observed, &Knobs::default());
         assert_eq!(booked.verdict, Verdict::Stale);
         assert!(booked.effects.is_empty());
+    }
+
+    /// One outstanding item, as old as `age_secs`, for the seat under test.
+    fn owed(requests: usize, spawns: usize, now_epoch: i64, age_secs: i64) -> OwnWork {
+        OwnWork {
+            requests,
+            spawns,
+            oldest_epoch: Some(now_epoch - age_secs),
+        }
+    }
+
+    /// THE pain: the seat everybody else is waiting on reads as idle on the
+    /// PIXELS and is nudged for it every cycle. Same frame, same clock, two
+    /// ledgers.
+    #[test]
+    fn an_idle_seat_waiting_on_its_own_work_is_not_nudged_for_it() {
+        let knobs = Knobs::default();
+        let mut observed = seen();
+        observed.harness.frame = crate::harness_state::HarnessState::Idle;
+        let prior = PaneState {
+            identity: Some(observed.identity),
+            idle_since_epoch: Some(observed.now_epoch - 300),
+            ..PaneState::default()
+        };
+
+        let alone = account(&prior, &observed, &knobs);
+        assert_eq!(alone.verdict, Verdict::Idle);
+        assert!(
+            alone.effects.contains(&Effect::Nudge),
+            "a seat with an empty ledger still gets its reminder"
+        );
+
+        observed.own_work = owed(1, 0, observed.now_epoch, 120);
+        let waiting = account(&prior, &observed, &knobs);
+        assert_eq!(
+            waiting.verdict,
+            Verdict::Idle,
+            "the FRAME is unchanged — this gates the nudge, not the classification"
+        );
+        assert!(
+            !waiting.effects.contains(&Effect::Nudge),
+            "one pending sent request defers it"
+        );
+
+        observed.own_work = owed(0, 1, observed.now_epoch, 120);
+        assert!(
+            !account(&prior, &observed, &knobs)
+                .effects
+                .contains(&Effect::Nudge),
+            "so does one live spawn"
+        );
+    }
+
+    /// S2: the deferral is bounded on both clocks, so a wedged lead is caught.
+    #[test]
+    fn the_deferral_ceiling_is_the_nudge_budget_or_a_generous_age() {
+        let knobs = Knobs::default();
+        let now = 10_000_i64;
+        // idle_nudge_secs 300, max_nudges 2 → budget 900s, age cap 1200s.
+        let cases: [(&str, OwnWork, u64, bool); 7] = [
+            (
+                "nothing outstanding never defers",
+                OwnWork::default(),
+                300,
+                false,
+            ),
+            (
+                "fresh work, first due cycle",
+                owed(2, 1, now, 60),
+                300,
+                true,
+            ),
+            ("still inside the budget", owed(2, 1, now, 60), 899, true),
+            ("the budget is spent", owed(2, 1, now, 60), 900, false),
+            (
+                "work one second under the cap",
+                owed(1, 0, now, 1199),
+                300,
+                true,
+            ),
+            ("work at the cap", owed(1, 0, now, 1200), 300, false),
+            (
+                "a disabled reminder defers nothing it was never going to send",
+                owed(1, 0, now, 60),
+                300,
+                true,
+            ),
+        ];
+        for (why, own, idle_age, want) in cases {
+            assert_eq!(deferred(own, now, idle_age, &knobs), want, "{why}");
+        }
+        assert!(
+            !deferred(
+                owed(1, 0, now, 60),
+                now,
+                300,
+                &Knobs {
+                    idle_nudge_secs: 0,
+                    ..Knobs::default()
+                }
+            ),
+            "a disabled reminder defers nothing"
+        );
+    }
+
+    /// Past the ceiling the seat spends its ORDINARY budget — deferral, never
+    /// silence — and every reminder says what ae thinks it is waiting on.
+    #[test]
+    fn past_the_ceiling_the_bounded_budget_resumes_and_names_the_reason() {
+        let knobs = Knobs::default();
+        let mut observed = seen();
+        observed.harness.frame = crate::harness_state::HarnessState::Idle;
+        observed.own_work = owed(2, 1, observed.now_epoch, 60);
+        let prior = PaneState {
+            identity: Some(observed.identity),
+            idle_since_epoch: Some(observed.now_epoch - 900),
+            ..PaneState::default()
+        };
+        let booked = account(&prior, &observed, &knobs);
+        assert!(
+            booked.effects.contains(&Effect::Nudge),
+            "the budget's worth of deferred opportunities is spent"
+        );
+
+        let exhausted = PaneState {
+            nudge_count: knobs.max_nudges,
+            ..prior.clone()
+        };
+        let alert = account(&exhausted, &observed, &knobs);
+        assert!(
+            alert.effects.iter().any(|effect| matches!(
+                effect,
+                Effect::Emit {
+                    action: "alert",
+                    ..
+                }
+            )),
+            "and the ordinary alert still ends it"
+        );
+
+        // The OTHER escape hatch, on its own: the idle clock has barely
+        // started, but the work itself has gone stale.
+        let mut aged = seen();
+        aged.harness.frame = crate::harness_state::HarnessState::Idle;
+        aged.own_work = owed(2, 1, aged.now_epoch, 1200);
+        let due = PaneState {
+            identity: Some(aged.identity),
+            idle_since_epoch: Some(aged.now_epoch - 300),
+            ..PaneState::default()
+        };
+        assert!(
+            account(&due, &aged, &knobs)
+                .effects
+                .contains(&Effect::Nudge),
+            "work older than the cap is nudged even inside the budget"
+        );
+
+        let reason = observed.own_work.reason().expect("outstanding work");
+        assert_eq!(reason, "waiting on 2 requests, 1 spawn");
+        let text = idle_nudge_text_waiting(None, Path::new("/m"), &reason);
+        assert!(text.contains(&reason), "the reminder names it: {text}");
+        assert!(
+            text.contains("you look idle"),
+            "on top of the ordinary reminder, not instead of it: {text}"
+        );
+    }
+
+    /// Outstanding work gates ONE branch. Every precedence above it is untouched.
+    #[test]
+    fn outstanding_work_never_outranks_dead_quiet_or_throttled() {
+        let knobs = Knobs::default();
+        let mut observed = seen();
+        observed.harness.frame = crate::harness_state::HarnessState::Idle;
+        observed.own_work = owed(3, 2, observed.now_epoch, 60);
+        let prior = PaneState {
+            identity: Some(observed.identity),
+            idle_since_epoch: Some(observed.now_epoch - 300),
+            ..PaneState::default()
+        };
+
+        let mut dead = observed.clone();
+        dead.is_dead = true;
+        assert_eq!(account(&prior, &dead, &knobs).verdict, Verdict::Dead);
+
+        let mut quiet = observed.clone();
+        quiet.quiet = Some(QuietKind::Done);
+        assert_eq!(
+            account(&prior, &quiet, &knobs).verdict,
+            Verdict::Quiet(QuietKind::Done)
+        );
+
+        let mut throttled = observed.clone();
+        throttled.is_throttled = true;
+        assert_eq!(
+            account(&prior, &throttled, &knobs).verdict,
+            Verdict::Throttled
+        );
+
+        let mut stale = observed.clone();
+        stale.harness.durable_stale = true;
+        assert_eq!(account(&prior, &stale, &knobs).verdict, Verdict::Stale);
+    }
+
+    /// S4: a message a peer delivered changes the PANE, not the seat's own
+    /// declaration — so it must not hand the seat a fresh idle episode.
+    #[test]
+    fn a_delivered_message_does_not_re_arm_the_idle_clock() {
+        let knobs = Knobs::default();
+        let mut observed = seen();
+        observed.harness.frame = crate::harness_state::HarnessState::Idle;
+        observed.harness.declaration = Some(77);
+        let armed = observed.now_epoch - 280;
+        let prior = PaneState {
+            identity: Some(observed.identity),
+            idle_since_epoch: Some(armed),
+            last_declaration: Some(77),
+            ..PaneState::default()
+        };
+
+        // The delivery repaints the pane: a new hash, the same declaration.
+        observed.hash = 999;
+        let after = account(&prior, &observed, &knobs);
+        assert_eq!(
+            after.next.idle_since_epoch,
+            Some(armed),
+            "the episode survives somebody else's message"
+        );
+
+        // Nor does it rescue a seat whose clock HAS run out.
+        let due = PaneState {
+            idle_since_epoch: Some(observed.now_epoch - 300),
+            ..prior.clone()
+        };
+        assert!(
+            account(&due, &observed, &knobs)
+                .effects
+                .contains(&Effect::Nudge),
+            "somebody else's message is not this seat's answer"
+        );
+
+        // The seat's OWN newer declaration is the one thing that restarts it.
+        observed.harness.declaration = Some(78);
+        let declared = account(&due, &observed, &knobs);
+        assert_eq!(
+            declared.next.idle_since_epoch,
+            Some(observed.now_epoch),
+            "a fresh episode, from the declaration forward"
+        );
+        assert!(
+            !declared.effects.contains(&Effect::Nudge),
+            "and only that buys the seat its full clock back"
+        );
     }
 
     #[test]

@@ -47,6 +47,155 @@ impl PendingRequest {
     }
 }
 
+/// What one seat is still owed by somebody else — the facts that make a quiet
+/// seat something other than idle.
+///
+/// A seat that SENT a request nobody has answered, or that SPAWNED an agent
+/// still holding a seat here, is not idle: it is the thing everyone else is
+/// waiting on. `working` still does not quiet the watchdog, because a wedged
+/// seat must still be caught; this reading only DEFERS the nudge and the idle
+/// clock's re-arming, and it is built from facts ae already owns — the pending
+/// request sensor and the spawn/retire ledger. It reads no store of its own.
+///
+/// Requests RECEIVED are deliberately absent: answering one is the seat's own
+/// job, and a seat sitting on its inbox is exactly the seat a nudge is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct OwnWork {
+    /// Requests this seat SENT that no reply or withdrawal has closed.
+    pub requests: usize,
+    /// Agents this seat SPAWNED that still hold a seat in this session.
+    pub spawns: usize,
+    /// When the oldest of those two started, epoch seconds.
+    pub oldest_epoch: Option<i64>,
+}
+
+impl OwnWork {
+    /// Whether anything at all is outstanding — THE predicate.
+    #[must_use]
+    pub const fn outstanding(self) -> bool {
+        self.requests > 0 || self.spawns > 0
+    }
+
+    /// How long the oldest outstanding item has been waiting, as of `now_epoch`.
+    ///
+    /// Nothing outstanding is zero, not a huge number: the callers compare this
+    /// against a ceiling and an absent item must never trip one.
+    #[must_use]
+    pub fn oldest_secs(self, now_epoch: i64) -> u64 {
+        self.oldest_epoch.map_or(0, |at| {
+            u64::try_from(now_epoch.saturating_sub(at)).unwrap_or(0)
+        })
+    }
+
+    /// The human-readable WHY, or `None` when nothing is outstanding.
+    ///
+    /// ```
+    /// use ae::session::OwnWork;
+    ///
+    /// let work = OwnWork { requests: 2, spawns: 1, oldest_epoch: None };
+    /// assert_eq!(work.reason().as_deref(), Some("waiting on 2 requests, 1 spawn"));
+    /// assert_eq!(OwnWork::default().reason(), None);
+    /// ```
+    #[must_use]
+    pub fn reason(self) -> Option<String> {
+        if !self.outstanding() {
+            return None;
+        }
+        let mut parts: Vec<String> = Vec::new();
+        if self.requests > 0 {
+            parts.push(plural(self.requests, "request"));
+        }
+        if self.spawns > 0 {
+            parts.push(plural(self.spawns, "spawn"));
+        }
+        Some(format!("waiting on {}", parts.join(", ")))
+    }
+}
+
+/// `<n> <noun>`, with the plural `s` only when it is earned.
+fn plural(count: usize, noun: &str) -> String {
+    if count == 1 {
+        format!("{count} {noun}")
+    } else {
+        format!("{count} {noun}s")
+    }
+}
+
+/// One session's outstanding work, read once and answered per seat.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Outstanding {
+    /// `(sender, sent at)` for every request still waiting on its target.
+    sent: Vec<(String, i64)>,
+    /// `(spawner, spawned at)` for every spawn still holding a seat.
+    spawned: Vec<(String, i64)>,
+}
+
+impl Outstanding {
+    /// Read one session's ledger.
+    ///
+    /// `pending` is [`SessionRead::pending`] — the ONE request sensor, never a
+    /// second copy of it. `live` names the agents that still hold a seat right
+    /// now: the enumerated panes for the watchdog, the answered roster for
+    /// `ae list`. A spawn whose agent is gone from that list is over whether or
+    /// not anybody recorded the retire.
+    #[must_use]
+    pub fn read(pending: &[PendingRequest], events: &[Event], live: &[String]) -> Self {
+        Self {
+            sent: pending
+                .iter()
+                .map(|request| (request.actor.clone(), request.sent_at.epoch()))
+                .collect(),
+            spawned: live_spawns(events, live),
+        }
+    }
+
+    /// What `agent` alone is owed.
+    #[must_use]
+    pub fn of(&self, agent: &str) -> OwnWork {
+        let mine = |rows: &[(String, i64)]| -> Vec<i64> {
+            rows.iter()
+                .filter(|(actor, _)| actor == agent)
+                .map(|(_, at)| *at)
+                .collect()
+        };
+        let requests = mine(&self.sent);
+        let spawns = mine(&self.spawned);
+        OwnWork {
+            requests: requests.len(),
+            spawns: spawns.len(),
+            oldest_epoch: requests.iter().chain(spawns.iter()).min().copied(),
+        }
+    }
+}
+
+/// `(spawner, spawned at)` for every agent a `spawn` opened, no `retire`
+/// closed, and that still holds a seat.
+///
+/// The LAST spawn/retire record for a name decides, so a name spawned, retired
+/// and spawned again is open on its newest spawn. A `spawn-failed` record is
+/// neither: that spawn never delivered its brief, so nobody is waiting on it.
+fn live_spawns(events: &[Event], live: &[String]) -> Vec<(String, i64)> {
+    let mut open: Vec<(&str, &str, i64)> = Vec::new();
+    for event in events {
+        let Some(target) = event.target.as_deref().filter(|name| !name.is_empty()) else {
+            continue;
+        };
+        match event.action.as_str() {
+            "spawn" | "retire" => {
+                open.retain(|(name, _, _)| *name != target);
+                if event.action == "spawn" {
+                    open.push((target, event.actor.as_str(), event.ts.epoch()));
+                }
+            }
+            _ => {}
+        }
+    }
+    open.into_iter()
+        .filter(|(name, _, _)| live.iter().any(|alive| alive == name))
+        .map(|(_, actor, at)| (actor.to_owned(), at))
+        .collect()
+}
+
 /// What one session directory's event stream says.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionRead {
@@ -667,6 +816,15 @@ fn agent_entries(
     session: &str,
     started_epoch: Option<i64>,
 ) -> Vec<AgentEntry> {
+    // The seats that still exist: a stopped or absent pane holds nobody's
+    // work, and a retired agent is off the roster entirely.
+    let seats: Vec<String> = meta
+        .roster()
+        .iter()
+        .filter(|slot| agent_liveness(runtime, runtime.agent(&slot.slot)) != Some(false))
+        .map(crate::meta::RosterEntry::reference)
+        .collect();
+    let outstanding = read.map(|read| Outstanding::read(&read.pending, &read.events, &seats));
     meta.roster()
         .iter()
         .map(|slot| {
@@ -703,6 +861,13 @@ fn agent_entries(
                         }))
                         .chain(declared.and_then(declared_reason)),
                 ),
+                // A seat that is gone is waiting for nothing: its open requests
+                // are somebody else's problem now, and the line would only be
+                // noise on a stopped session.
+                own_work: outstanding
+                    .as_ref()
+                    .filter(|_| seats.contains(&reference))
+                    .map(|outstanding| outstanding.of(&reference)),
             }
         })
         .collect()
@@ -731,7 +896,7 @@ fn declared_reason(state: &str) -> Option<Reason> {
 }
 
 /// The `ask`/`review` events nothing has closed, oldest first.
-fn pending_requests(events: &[Event]) -> Vec<PendingRequest> {
+pub(crate) fn pending_requests(events: &[Event]) -> Vec<PendingRequest> {
     // One forward pass over an append-only log, so a reply or a withdrawal that
     // appears BEFORE its request finds nothing open and closes nothing.
     let mut open: Vec<&Event> = Vec::new();
@@ -815,7 +980,10 @@ mod tests {
                   what PRODUCT code may reach"
     )]
 
-    use super::{AgentRuntime, DEFAULT_UNANSWERED_SECS, SessionRead, SessionRuntime, entry_for};
+    use super::{
+        AgentRuntime, DEFAULT_UNANSWERED_SECS, Outstanding, OwnWork, SessionRead, SessionRuntime,
+        entry_for, latest_declaration_in,
+    };
     use crate::attention::Reason;
     use crate::digest::Status;
     use crate::events::{Cursor, Drain, Event};
@@ -1300,6 +1468,189 @@ mod tests {
             ),
         ];
         assert_eq!(read(&lines).pending.len(), 1);
+    }
+
+    /// One tabled row: why, the ledger, the live seats, and the two counts.
+    type Row = (&'static str, Vec<String>, Vec<&'static str>, usize, usize);
+
+    /// THE predicate, tabled: what makes a quiet seat something other than idle.
+    ///
+    /// Each row is one session ledger read for `lead`, with the seats that are
+    /// live at the time of the reading.
+    #[test]
+    fn own_outstanding_work_is_sent_requests_and_live_spawns_and_nothing_else() {
+        let cases: [Row; 9] = [
+            (
+                "a request lead SENT and nobody answered",
+                vec![event(
+                    &at(600),
+                    "lead",
+                    "ask",
+                    r#","target":"coworker","ref":"r1""#,
+                )],
+                vec!["lead", "coworker"],
+                1,
+                0,
+            ),
+            (
+                "the reply closes it",
+                vec![
+                    event(&at(600), "lead", "ask", r#","target":"cw","ref":"r1""#),
+                    event(&at(300), "cw", "reply", r#","target":"lead","ref":"r1""#),
+                ],
+                vec!["lead", "cw"],
+                0,
+                0,
+            ),
+            (
+                "so does lead withdrawing it",
+                vec![
+                    event(&at(600), "lead", "ask", r#","target":"cw","ref":"r1""#),
+                    event(&at(300), "lead", "cancel", r#","target":"cw","ref":"r1""#),
+                ],
+                vec!["lead", "cw"],
+                0,
+                0,
+            ),
+            (
+                "a request lead RECEIVED is lead's own job, not somebody else's",
+                vec![event(
+                    &at(600),
+                    "cw",
+                    "ask",
+                    r#","target":"lead","ref":"r1""#,
+                )],
+                vec!["lead", "cw"],
+                0,
+                0,
+            ),
+            (
+                "an agent lead spawned that still holds a seat",
+                vec![event(&at(900), "lead", "spawn", r#","target":"hand""#)],
+                vec!["lead", "hand"],
+                0,
+                1,
+            ),
+            (
+                "the retire closes it",
+                vec![
+                    event(&at(900), "lead", "spawn", r#","target":"hand""#),
+                    event(&at(120), "lead", "retire", r#","target":"hand""#),
+                ],
+                vec!["lead"],
+                0,
+                0,
+            ),
+            (
+                "a spawn whose seat is gone is over, recorded retire or not",
+                vec![event(&at(900), "lead", "spawn", r#","target":"hand""#)],
+                vec!["lead"],
+                0,
+                0,
+            ),
+            (
+                "spawned, retired, spawned again is open on the newest spawn",
+                vec![
+                    event(&at(900), "lead", "spawn", r#","target":"hand""#),
+                    event(&at(600), "lead", "retire", r#","target":"hand""#),
+                    event(&at(300), "lead", "spawn", r#","target":"hand""#),
+                ],
+                vec!["lead", "hand"],
+                0,
+                1,
+            ),
+            ("an empty ledger", vec![], vec!["lead"], 0, 0),
+        ];
+        for (why, lines, live, requests, spawns) in cases {
+            let read = read(&lines);
+            let seats: Vec<String> = live.iter().map(|name| (*name).to_owned()).collect();
+            let work = Outstanding::read(&read.pending, &read.events, &seats).of("lead");
+            assert_eq!(work.requests, requests, "{why}: requests");
+            assert_eq!(work.spawns, spawns, "{why}: spawns");
+            assert_eq!(
+                work.outstanding(),
+                requests + spawns > 0,
+                "{why}: the predicate"
+            );
+        }
+    }
+
+    /// A spawn somebody ELSE opened is not lead's outstanding work, and a
+    /// `spawn-failed` never opened one at all.
+    #[test]
+    fn outstanding_work_belongs_to_the_seat_that_opened_it() {
+        let lines = [
+            event(&at(900), "colead", "spawn", r#","target":"theirs""#),
+            event(&at(800), "lead", "spawn-failed", r#","target":"never""#),
+            event(&at(700), "colead", "ask", r#","target":"cw","ref":"r9""#),
+        ];
+        let read = read(&lines);
+        let seats: Vec<String> = ["lead", "colead", "theirs", "never", "cw"]
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect();
+        let outstanding = Outstanding::read(&read.pending, &read.events, &seats);
+        assert_eq!(outstanding.of("lead"), OwnWork::default());
+        assert!(outstanding.of("colead").outstanding(), "theirs is theirs");
+    }
+
+    /// The ceiling reads an AGE, so the oldest of the two kinds is the one it
+    /// gets, and nothing outstanding is zero rather than a huge number.
+    #[test]
+    fn the_oldest_outstanding_item_is_the_one_the_ceiling_sees() {
+        let lines = [
+            event(&at(900), "lead", "spawn", r#","target":"hand""#),
+            event(&at(300), "lead", "ask", r#","target":"cw","ref":"r1""#),
+        ];
+        let read = read(&lines);
+        let seats: Vec<String> = ["lead", "hand", "cw"]
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect();
+        let work = Outstanding::read(&read.pending, &read.events, &seats).of("lead");
+        assert_eq!(work.requests, 1);
+        assert_eq!(work.spawns, 1);
+        assert_eq!(work.oldest_secs(NOW.epoch()), 900, "the spawn, not the ask");
+        assert_eq!(
+            OwnWork::default().oldest_secs(NOW.epoch()),
+            0,
+            "nothing outstanding trips no ceiling"
+        );
+        assert_eq!(
+            work.reason().as_deref(),
+            Some("waiting on 1 request, 1 spawn"),
+            "singular is earned"
+        );
+    }
+
+    /// S4: a message a PEER delivered is not a declaration of this seat's, so
+    /// it cannot reset the idle episode the watchdog keys off.
+    #[test]
+    fn a_peers_delivered_message_is_not_this_seats_declaration() {
+        let lines = [
+            event(
+                &at(900),
+                "lead",
+                "state",
+                r#","ref":"working","summary":"gating the slice""#,
+            ),
+            event(&at(60), "cw", "send", r#","target":"lead""#),
+            event(&at(30), "cw", "reply", r#","target":"lead","ref":"r1""#),
+        ];
+        let events: Vec<Event> = lines
+            .iter()
+            .map(|line| Event::parse_line(line).expect("a fixture line must be an event"))
+            .collect();
+        let newest = latest_declaration_in(&events, "s", "main", "lead").expect("the declaration");
+        assert_eq!(
+            newest.ts.epoch(),
+            NOW.epoch() - 900,
+            "lead's own state event stays the newest declaration"
+        );
+        assert!(
+            latest_declaration_in(&events, "s", "spawned.0", "cw").is_none(),
+            "a peer that only delivered has declared nothing"
+        );
     }
 
     #[test]

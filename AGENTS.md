@@ -197,7 +197,7 @@ dirname. Names and argv are the compatibility contract.
 | `review [--cross-session] <agent> <request>` | Critical review request in the same session; another session needs `--cross-session` |
 | `reply <request-id> <msg>` | Reply to a logged ask/review. Verified against the request's stored slot |
 | `requests [mine\|inbox\|all]` | Inspect pending and replied requests without peeking panes |
-| `state <working\|waiting-user\|blocked\|done> [reason]` | Declare work state; shows in `ae list`. Only `done`, `waiting-user` and `blocked` quiet the watchdog — `working` does not. `mark-done [msg]` = `state done` plus the legacy `done` event |
+| `state <working\|waiting-user\|blocked\|done> [reason]` | Declare work state; shows in `ae list`. Only `done`, `waiting-user` and `blocked` quiet the watchdog — `working` does not, but OUTSTANDING OWN WORK defers its nudge: a request you sent that nobody answered, or an agent you spawned that still holds a seat, buys quiet until the deferral ceiling, and `ae list` says so on your line. `mark-done [msg]` = `state done` plus the legacy `done` event |
 | `say <text>` | Push a line to the human's Telegram chat. Pane output is NOT forwarded |
 | `memo add [--topic t] <text>` / `memo read` / `memo tail [n]` | Durable shared session memory. Topics are STABLE and reused (`goal`, `decision`, `parking`, `<feature>`) and each record is a CHECKPOINT that supersedes the last one on its topic — `ae brief` shows only the latest per topic |
 | `goal [text\|--clear]` | The session's one-line objective. Survives resume; shown in `ae list` |

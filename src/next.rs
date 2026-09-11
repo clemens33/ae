@@ -215,6 +215,7 @@ mod tests {
             observed: crate::harness_state::HarnessState::Unknown,
             state: None,
             reason,
+            own_work: None,
         }
     }
 

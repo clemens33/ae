@@ -326,6 +326,12 @@ pub fn table_at(sessions: &[&SessionEntry], now: Timestamp) -> String {
             );
             out.push_str(" · observed:");
             out.push_str(agent.observed.as_str());
+            // WHY a seat is quiet without being idle, so the human reads it off
+            // the line instead of opening the pane.
+            if let Some(reason) = agent.own_work.and_then(crate::session::OwnWork::reason) {
+                out.push_str(" · ");
+                out.push_str(&reason);
+            }
             // The `!` marker: a pane query fills this.
             if session.status == Status::Running && agent.alive == Some(false) {
                 out.push_str(" !");
@@ -493,6 +499,7 @@ mod tests {
             observed: crate::harness_state::HarnessState::Unknown,
             state: state.map(ToOwned::to_owned),
             reason: None,
+            own_work: None,
         }
     }
 
@@ -1521,6 +1528,7 @@ mod tests {
                 observed: crate::harness_state::HarnessState::Unknown,
                 state: Some("working".to_owned()),
                 reason: None,
+                own_work: None,
             }];
             let rendered = table(&[&session]);
             assert!(
@@ -1553,6 +1561,7 @@ mod tests {
                 observed: crate::harness_state::HarnessState::Unknown,
                 state: Some("working".to_owned()),
                 reason: None,
+                own_work: None,
             }];
             row_fields(&table(&[&session]), "fake:lead")
         };
@@ -1586,6 +1595,53 @@ mod tests {
         );
     }
 
+    /// S3: a seat that is quiet because somebody else owes it work says so on
+    /// its own line, so the human never opens the pane to find out.
+    #[test]
+    fn an_agent_line_says_what_the_seat_is_waiting_on() {
+        let row = |own_work| {
+            let mut session = SessionEntry::new("owed", Status::Running);
+            session.agents = vec![AgentEntry {
+                reference: "lead".to_owned(),
+                alias: "opus5".to_owned(),
+                name: "lead".to_owned(),
+                session_id: None,
+                alive: Some(true),
+                observed: crate::harness_state::HarnessState::Idle,
+                state: Some("working".to_owned()),
+                reason: None,
+                own_work,
+            }];
+            let rendered = table(&[&session]);
+            rendered
+                .lines()
+                .find(|line| line.contains("lead"))
+                .unwrap_or_else(|| panic!("the agent row renders: {rendered}"))
+                .to_owned()
+        };
+
+        let waiting = row(Some(crate::session::OwnWork {
+            requests: 2,
+            spawns: 1,
+            oldest_epoch: Some(1_780_000_000),
+        }));
+        assert!(
+            waiting.ends_with("working · observed:idle · waiting on 2 requests, 1 spawn"),
+            "the reason follows the observation: {waiting}"
+        );
+
+        let alone = row(Some(crate::session::OwnWork::default()));
+        assert!(
+            alone.ends_with("working · observed:idle"),
+            "nothing outstanding adds nothing: {alone}"
+        );
+        assert_eq!(
+            row(None),
+            alone,
+            "and an unread event stream claims nothing either"
+        );
+    }
+
     /// The id sits INSIDE the row rather than beside it, so this asserts that
     /// nothing was displaced: THREE cells in the ruled order — reference first,
     /// the id next, the declared state last.
@@ -1601,6 +1657,7 @@ mod tests {
             observed: crate::harness_state::HarnessState::Idle,
             state: Some("blocked".to_owned()),
             reason: None,
+            own_work: None,
         }];
         let rendered = table(&[&session]);
         let row = rendered
@@ -1627,6 +1684,7 @@ mod tests {
             observed: crate::harness_state::HarnessState::Unknown,
             state: Some("blocked".to_owned()),
             reason: None,
+            own_work: None,
         }];
         // The short session id now sits between the reference and the semantic
         // fields, on every status, because frozen rendered it on both grammars
@@ -1660,6 +1718,7 @@ mod tests {
                 observed: crate::harness_state::HarnessState::Busy,
                 state: Some("working".to_owned()),
                 reason: None,
+                own_work: None,
             },
             AgentEntry {
                 reference: "colead".to_owned(),
@@ -1670,6 +1729,7 @@ mod tests {
                 observed: crate::harness_state::HarnessState::Idle,
                 state: Some("working".to_owned()),
                 reason: None,
+                own_work: None,
             },
         ];
 

@@ -64,6 +64,11 @@ pub struct AgentEntry {
     pub state: Option<String>,
     /// "each agent's `reason` is its own contribution" to the session marker.
     pub reason: Option<Reason>,
+    /// What this agent is still owed by somebody else, when the event stream
+    /// was readable at all. TABLE only: the JSON digest's key set is a
+    /// published contract, and this is a rendering of facts `events[]` already
+    /// carries rather than a new one.
+    pub own_work: Option<crate::session::OwnWork>,
 }
 
 /// Frozen's placeholder for an agent whose session id is absent or unresolved.
@@ -558,6 +563,7 @@ mod tests {
                 observed: crate::harness_state::HarnessState::Unknown,
                 state: None,
                 reason: None,
+                own_work: None,
             };
             assert_eq!(agent.display_session_id(), want, "{why}");
             // The RAW field is untouched: resume and capture logic still need it.
@@ -588,6 +594,7 @@ mod tests {
             observed: crate::harness_state::HarnessState::Unknown,
             state: None,
             reason: None,
+            own_work: None,
         };
         let short = agent.display_session_id();
         assert_eq!(
@@ -633,6 +640,7 @@ mod tests {
             observed: crate::harness_state::HarnessState::Idle,
             state: Some("blocked".to_owned()),
             reason: Some(Reason::Blocked),
+            own_work: None,
         }];
         Digest::new(
             Timestamp::parse("2026-05-29T14:00:00Z").expect("the documented stamp"),
@@ -956,6 +964,7 @@ mod tests {
             observed: crate::harness_state::HarnessState::Unknown,
             state: None,
             reason: None,
+            own_work: None,
         }
         .to_json();
         let json::Value::Obj(fields) = &value else {
