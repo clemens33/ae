@@ -1,6 +1,11 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.54] - 2026-09-11
+
+### Other
+
+- Close a request when the seat it was sent to is retired
 ## [v2026.9.53] - 2026-09-11
 
 ### Other
