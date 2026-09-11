@@ -28,7 +28,7 @@ ae orchestrator        Start or reattach the orchestrator seat: a local session 
                        orchestrator, pinned first in the fleet strip
 ae orchestrator --popup
                        Pick a live session in a tmux menu; its lead pane gets the
-                       client. Opened above the bottom-left status-bar ☰/= button,
+                       client. Opened above the bottom-left status-bar ≡/= button,
                        before the session list,
                        or +N overflow count. Needs tmux >= 3.4
 ae doctor              Check local environment and ae config
@@ -439,7 +439,7 @@ still overlay. Add `--no-attach` to build or reattach without attaching; ae prin
 attach command and exits successfully. The seat keeps its fixed launch shape, so `--dir` remains
 an ordinary-session flag. The seat is pinned first in the status
 bar's fleet strip, marked `◆`. The `--popup` form is the picker, next. From any
-ae session on the same tmux server, click the `☰` menu glyph (`=` with icons
+ae session on the same tmux server, click the `≡` menu glyph (`=` with icons
 off) at the bottom-left, before the session list, or its `+N` overflow count, or
 press `<prefix> a` (default `C-b a`), to open it.
 

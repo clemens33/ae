@@ -301,9 +301,14 @@ impl Mark {
 }
 
 /// The fleet-picker button mark in the configured glyph vocabulary.
+///
+/// The icon form is IDENTICAL TO, U+2261: one cell wide both in tmux's width
+/// table and in every monospace font, so the button occupies exactly the
+/// status line's first cell. A trigram mark such as U+2630 is laid out
+/// double-width by tmux, which pads a second cell in before the fleet strip.
 #[must_use]
 pub const fn picker_glyph(icons: bool) -> &'static str {
-    if icons { "☰" } else { "=" }
+    if icons { "≡" } else { "=" }
 }
 
 /// The working mark and its eased breathing colour at one motion tick.
@@ -594,7 +599,7 @@ pub const MENU_OPEN_OPTION: &str = "@ae_menu_open";
 /// changes shape: the version leads both stamps, so a session or window carrying
 /// an older one is rewritten by the next watchdog cycle rather than left on the
 /// layout an older core wrote.
-pub const FORMAT_VERSION: &str = "15";
+pub const FORMAT_VERSION: &str = "16";
 
 /// What [`WINDOW_STAMP_OPTION`] is set to: the LOOK the window was dressed in,
 /// formats version first.
@@ -1839,7 +1844,7 @@ mod tests {
     fn menu_button_and_overflow_are_stable_user_ranges() {
         assert_eq!(
             super::version_segment(&Look::DEFAULT),
-            "#[range=user|ae]#{?@ae_menu_open,#[bg=#214283 fg=#A9B7C6],} ☰#[norange]"
+            "#[range=user|ae]#{?@ae_menu_open,#[bg=#214283 fg=#A9B7C6],} ≡#[norange]"
         );
         let ascii = Look {
             icons: false,
@@ -1968,7 +1973,7 @@ mod tests {
     #[test]
     fn terminal_titles_are_part_of_the_drawn_layout() {
         let options = super::layout_options(&Look::DEFAULT);
-        assert_eq!(super::FORMAT_VERSION, "15");
+        assert_eq!(super::FORMAT_VERSION, "16");
         assert_eq!(
             options
                 .iter()

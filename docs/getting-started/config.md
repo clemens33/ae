@@ -194,7 +194,7 @@ Right-click a session tab in the fleet strip to open its context menu. **Flip
 lead/colead panes** swaps the clicked session's current window when it has exactly
 two panes and is not zoomed; otherwise ae leaves it alone and explains why. The
 tmux keys `prefix {` and `prefix }` provide the same pane swap directly.
-Click the quiet `☰` menu glyph (`=` with `icons = off`) or the matching `+N`
+Click the quiet `≡` menu glyph (`=` with `icons = off`) or the matching `+N`
 overflow count with either mouse button, or press `prefix a`, to open the fleet
 picker. Its title starts with the running core's `ae <version>`, then counts
 running sessions and those needing you; up to 30

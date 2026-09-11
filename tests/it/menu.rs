@@ -1195,7 +1195,7 @@ fn assert_menu_picker_case(tag: &str, root_name: &str, config_name: &str) {
                 "-t",
                 "fleet-a",
                 "status-format[1]",
-                "#[range=user|ae] ☰ #[norange]",
+                "#[range=user|ae] ≡ #[norange]",
             ],
         )
         .0
@@ -1523,7 +1523,7 @@ fn clicking_the_menu_range_opens_the_fleet_and_a_row_lands_on_the_lead() {
             "-t",
             "fleet-a",
             "status-format[1]",
-            "#[range=user|ae] ☰ #[norange]",
+            "#[range=user|ae] ≡ #[norange]",
         ],
     );
     assert!(status_set.0, "set deterministic status");
@@ -1857,7 +1857,7 @@ fn clicking_the_menu_range_opens_the_fleet_and_a_row_lands_on_the_lead() {
                 "-t",
                 "fleet-a",
                 "status-format[1]",
-                "#[range=user|ae] ☰ #[norange]",
+                "#[range=user|ae] ≡ #[norange]",
             ],
         )
         .0

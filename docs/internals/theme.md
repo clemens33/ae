@@ -168,7 +168,10 @@ ae's root left-click binding sends it through tmux's default
 for the clicked session's current window. The bindings are the server-global
 exception described above and are installed only on an ae-owned server.
 The bottom-left menu button is always the first user range `ae`; it reads only
-`☰` (`=` in ASCII mode), one space before the fleet strip. Its `+N` overflow
+`≡` (`=` in ASCII mode), one space before the fleet strip. U+2261 is one
+cell wide in tmux's width table, so the button and that single space are all the
+status line spends before the strip; a trigram mark such as U+2630 is
+double-width there and tmux pads a further cell in. Its `+N` overflow
 counter is the user range `ae-more`. The button inherits the line's dim style
 while quiet; while `@ae_menu_open` is set it uses the palette's selected
 background and ink. Either mouse button on either range, or `<prefix> a`
