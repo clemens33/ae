@@ -84,6 +84,20 @@ fablemic = "cc-mic --permission-mode bypassPermissions --model fable --effort xh
 solmic = "codex-mic --yolo -m gpt-5.6-sol -c model_reasoning_effort=xhigh"
 ```
 
+A client row also takes `manual_resets=<0-9>`, in any order beside `config_home=`:
+
+```toml
+[clients]
+codex = codex manual_resets=1
+codex-mic = codex config_home=${HOME}/.codex-mic manual_resets=0
+```
+
+It is the one fact no client reports: how many manual window resets that subscription has in hand.
+`ae quota` spreads the window percentage over `1 + n` windows in its `EFFECTIVE` column, and the
+watchdog advisory and delegation guidance judge that number instead of the raw window, so a 95%
+window with one reset declared no longer pushes work off a client that is not constrained. An
+unusable value is ignored with one visible note rather than refusing the config.
+
 Each distinct config home isolates local login state, settings, and conversation files, so one
 workspace can mix work and personal identities seat by seat. It does not create an independent
 provider quota: two homes may authenticate the same account, while two client labels may share one

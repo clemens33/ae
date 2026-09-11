@@ -23,7 +23,18 @@ const QUOTA_MAX_FILES: usize = 4_096;
 const QUOTA_MAX_BYTES: u64 = 16 * 1024 * 1024;
 const QUOTA_MAX_ELAPSED: Duration = Duration::from_secs(2);
 const CODEX_DISPLAY_ROLLOUTS: usize = 3;
-const TABLE_MAX_WIDTHS: [usize; 8] = [40, 35, 22, 6, 5, 9, 9, 20];
+/// Per-column display caps. Their sum plus two spaces between each pair of
+/// columns is [`TABLE_MAX_LINE`], the table's documented width ceiling: a new
+/// column is paid for here, in width, and the ceiling says what it cost.
+const TABLE_MAX_WIDTHS: [usize; COLUMNS] = [40, 35, 22, 6, 5, 9, 9, 9, 9, 20];
+
+/// Columns in the operator table.
+const COLUMNS: usize = 10;
+
+/// The widest line the table can render, cells and separators together. The
+/// caps above produce it; `docs/reference/commands.md` publishes it.
+#[cfg(test)]
+const TABLE_MAX_LINE: usize = 182;
 
 /// Maximum age of an observation that may be called fresh.
 pub const FRESH_SECS: i64 = 15 * 60;
@@ -80,6 +91,129 @@ pub struct Row {
     pub observed_at: Option<i64>,
     /// Freshness and applicability verdict for this row.
     pub status: Status,
+}
+
+/// Vendor credit state for one client scope, exactly as the client reports it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum Credits {
+    /// The client reports no credit state at all.
+    #[default]
+    Unreported,
+    /// Credits are declared unlimited, so a window percentage does not bind.
+    Unlimited,
+    /// A spendable balance, kept as the vendor's own bounded literal.
+    Available(String),
+    /// The client reports credits and has none.
+    Exhausted,
+}
+
+/// Account-wide facts a client reports beside its windows.
+///
+/// They belong to the scope, not to one window: every window of one account
+/// shares them, and a spend cap constrains work no window reset can free.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Account {
+    /// Credit state, when the client reports one.
+    pub credits: Credits,
+    /// Whether the account's own spend control is reached.
+    pub spend_control_reached: Option<bool>,
+}
+
+impl Account {
+    /// The account is spend-capped: no window has headroom until that changes.
+    #[must_use]
+    pub const fn spend_capped(&self) -> bool {
+        matches!(self.spend_control_reached, Some(true))
+    }
+}
+
+/// Largest characters of a vendor balance literal kept for display.
+pub(crate) const CREDIT_BALANCE_MAX: usize = 9;
+
+/// The percentage ae judges a window by, and how it got there.
+///
+/// The raw window percentage answers "how much of this window is gone", which
+/// is not the operator's question when a manual reset is in hand or credits
+/// carry work past the window. Only declared or reported facts move it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum Effective {
+    /// Nothing declared and nothing reported: the raw window is the story.
+    Raw,
+    /// The same usage spread over `1 + resets` windows of capacity.
+    Resets { resets: u8, percent: f64 },
+    /// Credits are unlimited, so the window does not constrain new work.
+    Unlimited,
+    /// The account's spend control is reached: no headroom at any window.
+    SpendCapped,
+}
+
+impl Effective {
+    /// The percentage an advisory threshold must classify.
+    pub(crate) fn judged(self, used: f64) -> f64 {
+        match self {
+            Self::Raw => used,
+            Self::Resets { percent, .. } => percent,
+            Self::Unlimited => 0.0,
+            Self::SpendCapped => 100.0,
+        }
+    }
+
+    /// The EFFECTIVE cell. `-` whenever nothing was derived, never a guess.
+    pub(crate) fn cell(self) -> String {
+        match self {
+            Self::Raw => "-".to_owned(),
+            Self::Resets { resets: 0, percent } => percent_label(&format!("{percent:.1}")),
+            Self::Resets { resets, percent } => {
+                format!("{} x{resets}", percent_label(&format!("{percent:.1}")))
+            }
+            Self::Unlimited => "0%".to_owned(),
+            Self::SpendCapped => "100%".to_owned(),
+        }
+    }
+
+    /// How the judged percentage was derived, for one advisory line.
+    fn derivation(self) -> Option<String> {
+        match self {
+            Self::Raw | Self::Resets { resets: 0, .. } => None,
+            Self::Resets { resets, percent } => Some(format!(
+                "effective {} over 1+{resets} declared resets",
+                percent_label(&format!("{percent:.1}"))
+            )),
+            Self::Unlimited => Some("credits unlimited".to_owned()),
+            Self::SpendCapped => Some("spend cap reached".to_owned()),
+        }
+    }
+}
+
+/// Derive the judged headroom for one window from what was declared and
+/// reported. A spend cap outranks credits, which outrank declared resets.
+pub(crate) fn effective(declared: Option<u8>, account: &Account, used: f64) -> Effective {
+    if account.spend_capped() {
+        return Effective::SpendCapped;
+    }
+    if account.credits == Credits::Unlimited {
+        return Effective::Unlimited;
+    }
+    match declared {
+        Some(resets) => Effective::Resets {
+            resets,
+            percent: used / (f64::from(resets) + 1.0),
+        },
+        None => Effective::Raw,
+    }
+}
+
+/// The CREDITS cell for one scope.
+pub(crate) fn credits_label(account: &Account) -> String {
+    if account.spend_capped() {
+        return "spend-cap".to_owned();
+    }
+    match &account.credits {
+        Credits::Unreported => "-".to_owned(),
+        Credits::Unlimited => "unlimited".to_owned(),
+        Credits::Available(balance) => balance.clone(),
+        Credits::Exhausted => "none".to_owned(),
+    }
 }
 
 /// Parsing failed before a trustworthy snapshot could be produced.
@@ -184,6 +318,15 @@ struct Scope {
     configured_profiles: Vec<String>,
     clients: Vec<String>,
     hint: Option<String>,
+    manual_resets: Option<u8>,
+    notes: Vec<String>,
+}
+
+/// What one `[clients]` row declared about its own extra headroom.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct Declaration {
+    manual_resets: Option<u8>,
+    note: Option<String>,
 }
 
 struct ScopePaths {
@@ -205,6 +348,12 @@ pub(crate) struct Group {
     pub(crate) rows: Vec<Row>,
     pub(crate) hint: Option<String>,
     pub(crate) summary: Option<RolloutSummary>,
+    /// Manual resets the operator declared for this client scope.
+    pub(crate) manual_resets: Option<u8>,
+    /// Account-wide credit and spend-control state, as the client reports it.
+    pub(crate) account: Account,
+    /// Operator-facing notes about this scope's own declaration.
+    pub(crate) notes: Vec<String>,
 }
 
 /// One bounded read of every configured quota scope.
@@ -225,7 +374,6 @@ pub(crate) struct Observation {
 pub(crate) struct RecordedIdentity {
     pub(crate) tool: ToolKind,
     pub(crate) source: PathBuf,
-    pub(crate) rollout: Option<String>,
 }
 
 /// Sanitized, bounded quota facts retained across a deferred advisory.
@@ -241,6 +389,10 @@ pub(crate) struct Advisory {
     resets_at: Option<i64>,
     state: String,
     recovered: bool,
+    /// How the judged percentage differs from the raw window, when it does.
+    derivation: Option<String>,
+    /// The account is spend-capped, which no window reset can free.
+    spend_capped: bool,
 }
 
 impl Advisory {
@@ -262,13 +414,19 @@ impl Advisory {
             || "unknown".to_owned(),
             |at| span_label(at.saturating_sub(now)),
         );
-        let advice = if self.recovered {
+        let advice = if self.spend_capped {
+            " — spend cap reached: another client or more credits, not a window reset"
+        } else if self.recovered {
             " — back to headroom"
         } else {
             " — prefer another client for new spawns"
         };
+        let derivation = self
+            .derivation
+            .as_deref()
+            .map_or_else(String::new, |why| format!("; {why}"));
         format!(
-            "quota: {} · {}{} {} {} {} ({}, observed {observed}), resets in {reset}{advice}; table: {}/quota",
+            "quota: {} · {}{} {} {} {} ({}{derivation}, observed {observed}), resets in {reset}{advice}; table: {}/quota",
             self.tool.as_str(),
             self.scope,
             self.owner
@@ -322,6 +480,12 @@ impl Observation {
             .map_or_else(|| "-".to_owned(), window_label);
         let used = advisory_percent(row.used_percent.as_deref());
         let recovered = state == "back to headroom";
+        let derivation = row
+            .used_percent
+            .as_deref()
+            .and_then(|value| value.parse::<f64>().ok())
+            .filter(|value| value.is_finite())
+            .and_then(|used| effective(group.manual_resets, &group.account, used).derivation());
         Advisory {
             tool: group.tool,
             scope,
@@ -333,6 +497,8 @@ impl Observation {
             resets_at: row.resets_at,
             state: if recovered { "headroom" } else { state }.to_owned(),
             recovered,
+            derivation,
+            spend_capped: group.account.spend_capped(),
         }
     }
 }
@@ -362,15 +528,16 @@ pub(crate) fn recorded_identity(entry: &crate::meta::RosterEntry) -> Option<Reco
         },
         QuotaSource::Unsupported => return None,
     };
-    let rollout = if tool.adapter().quota.source == QuotaSource::CodexRollouts {
-        Some(entry.harness_session.clone()?)
-    } else {
-        None
-    };
+    // A Codex seat without a recorded conversation is not a proven identity;
+    // the id itself is not part of the identity, because the window it would
+    // name belongs to the config home rather than to one conversation.
+    if tool.adapter().quota.source == QuotaSource::CodexRollouts && entry.harness_session.is_none()
+    {
+        return None;
+    }
     Some(RecordedIdentity {
         tool,
         source: canonical_source(source).ok()?,
-        rollout,
     })
 }
 
@@ -389,10 +556,16 @@ pub(crate) struct RolloutSummary {
 }
 
 enum ReadRows {
-    Rows(Vec<Row>),
+    Rows(Observed),
     Missing,
     Failed,
     Truncated,
+}
+
+/// One source's windows plus the account facts it reported with them.
+struct Observed {
+    rows: Vec<Row>,
+    account: Account,
 }
 
 pub(crate) enum Bounded<T> {
@@ -466,7 +639,7 @@ struct RankedGroup {
 }
 
 enum RenderLine {
-    Cells([String; 8]),
+    Cells([String; COLUMNS]),
     Summary { label: String, status: String },
 }
 
@@ -528,6 +701,7 @@ pub(crate) fn observe(inputs: &Inputs<'_>) -> Result<Observation, crate::config:
         let quota = scope.tool.adapter().quota;
         match quota.source {
             QuotaSource::ClaudeCache => {
+                let observed = rows_or_placeholder(read_claude(scope, inputs.now, &mut budget));
                 let group = Group {
                     profiles: scope.profiles.clone(),
                     tool: scope.tool,
@@ -536,9 +710,12 @@ pub(crate) fn observe(inputs: &Inputs<'_>) -> Result<Observation, crate::config:
                     clients: scope.clients.clone(),
                     rollout: None,
                     owner: None,
-                    rows: rows_or_placeholder(read_claude(scope, inputs.now, &mut budget)),
+                    rows: observed.rows,
                     hint: scope.hint.clone(),
                     summary: None,
+                    manual_resets: scope.manual_resets,
+                    account: observed.account,
+                    notes: scope.notes.clone(),
                 };
                 rendered.push(group.clone());
                 groups.push(group);
@@ -563,6 +740,9 @@ pub(crate) fn observe(inputs: &Inputs<'_>) -> Result<Observation, crate::config:
                         .clone()
                         .or_else(|| quota.unsupported_hint.map(str::to_owned)),
                     summary: None,
+                    manual_resets: scope.manual_resets,
+                    account: Account::default(),
+                    notes: scope.notes.clone(),
                 };
                 rendered.push(group.clone());
                 groups.push(group);
@@ -621,25 +801,16 @@ fn configured_scopes(cfg: &crate::config::IdentityConfig, home: Option<&Path>) -
         let resolved = match cfg.command(profile, home) {
             Ok(Some(resolved)) => resolved,
             Ok(None) => {
-                scopes.push(unknown_scope(profile, resolved_tool(""), None, None));
+                scopes.push(unresolved_scope(cfg, profile, raw, None));
                 continue;
             }
             Err(error) => {
-                let client = config_error_client(&error);
-                let tool = client
-                    .and_then(|label| cfg.client(label))
-                    .map_or_else(|| resolved_tool(raw), |client| client.tool);
-                let client = client.and_then(|label| displayed_client(cfg, label, tool));
-                scopes.push(unknown_scope(
-                    profile,
-                    tool,
-                    client,
-                    Some(error.to_string()),
-                ));
+                scopes.push(unresolved_scope(cfg, profile, raw, Some(&error)));
                 continue;
             }
         };
         let tool = resolved_tool(resolved.as_str());
+        let declaration = declaration_for(cfg, resolved.client_label());
         let client = resolved
             .client_label()
             .and_then(|label| displayed_client(cfg, label, tool));
@@ -649,6 +820,7 @@ fn configured_scopes(cfg: &crate::config::IdentityConfig, home: Option<&Path>) -
                 tool,
                 client,
                 Some(format!("depends on pane variable {variable}")),
+                &declaration,
             ));
             continue;
         }
@@ -673,13 +845,20 @@ fn configured_scopes(cfg: &crate::config::IdentityConfig, home: Option<&Path>) -
                 tool,
                 client,
                 Some(format!("depends on pane variable {variable}")),
+                &declaration,
             ));
             continue;
         }
         let paths = match resolved_scope_paths(tool, &resolution, home) {
             Ok(paths) => paths,
             Err(error) => {
-                scopes.push(unknown_scope(profile, tool, client, Some(error)));
+                scopes.push(unknown_scope(
+                    profile,
+                    tool,
+                    client,
+                    Some(error),
+                    &declaration,
+                ));
                 continue;
             }
         };
@@ -699,6 +878,7 @@ fn configured_scopes(cfg: &crate::config::IdentityConfig, home: Option<&Path>) -
             {
                 scope.clients.push(client);
             }
+            merge_declaration(scope, &declaration);
         } else {
             scopes.push(Scope {
                 tool,
@@ -709,10 +889,41 @@ fn configured_scopes(cfg: &crate::config::IdentityConfig, home: Option<&Path>) -
                 configured_profiles: vec![profile.clone()],
                 clients: client.into_iter().collect(),
                 hint,
+                manual_resets: declaration.manual_resets,
+                notes: declaration.note.clone().into_iter().collect(),
             });
         }
     }
     scopes
+}
+
+/// The scope a profile gets when its own command never resolved to a client.
+fn unresolved_scope(
+    cfg: &crate::config::IdentityConfig,
+    profile: &str,
+    raw: &str,
+    error: Option<&crate::config::ConfigError>,
+) -> Scope {
+    let Some(error) = error else {
+        return unknown_scope(
+            profile,
+            resolved_tool(""),
+            None,
+            None,
+            &Declaration::default(),
+        );
+    };
+    let label = config_error_client(error);
+    let tool = label
+        .and_then(|label| cfg.client(label))
+        .map_or_else(|| resolved_tool(raw), |client| client.tool);
+    unknown_scope(
+        profile,
+        tool,
+        label.and_then(|label| displayed_client(cfg, label, tool)),
+        Some(error.to_string()),
+        &declaration_for(cfg, label),
+    )
 }
 
 fn word_expansion_dependency(
@@ -839,6 +1050,7 @@ fn unknown_scope(
     tool: ToolKind,
     client: Option<String>,
     hint: Option<String>,
+    declaration: &Declaration,
 ) -> Scope {
     Scope {
         tool,
@@ -849,6 +1061,48 @@ fn unknown_scope(
         configured_profiles: vec![profile.to_owned()],
         clients: client.into_iter().collect(),
         hint,
+        manual_resets: declaration.manual_resets,
+        notes: declaration.note.clone().into_iter().collect(),
+    }
+}
+
+/// Read one `[clients]` row's declared extra headroom, if the profile names one.
+fn declaration_for(cfg: &crate::config::IdentityConfig, label: Option<&str>) -> Declaration {
+    let Some(client) = label.and_then(|label| cfg.client(label)) else {
+        return Declaration::default();
+    };
+    Declaration {
+        manual_resets: client.manual_resets,
+        note: client.manual_resets_note.clone(),
+    }
+}
+
+/// Fold another client label's declaration into the scope they share.
+///
+/// Two labels resolving to one config home are one account, so the larger
+/// declared count wins and the disagreement is said out loud rather than
+/// resolved silently by config order.
+fn merge_declaration(scope: &mut Scope, declaration: &Declaration) {
+    if let Some(note) = declaration.note.clone()
+        && !scope.notes.contains(&note)
+    {
+        scope.notes.push(note);
+    }
+    let (Some(next), held) = (declaration.manual_resets, scope.manual_resets) else {
+        return;
+    };
+    let Some(held) = held else {
+        scope.manual_resets = Some(next);
+        return;
+    };
+    if held == next {
+        return;
+    }
+    let (low, high) = (held.min(next), held.max(next));
+    scope.manual_resets = Some(high);
+    let note = format!("manual_resets declared as {low} and {high} for one scope; using {high}");
+    if !scope.notes.contains(&note) {
+        scope.notes.push(note);
     }
 }
 
@@ -863,7 +1117,10 @@ fn read_claude(scope: &Scope, now: i64, budget: &mut Budget) -> ReadRows {
         Err(_) => return ReadRows::Failed,
     };
     match claude::parse(&bytes, now) {
-        Ok(Some(snapshot)) if !snapshot.rows.is_empty() => ReadRows::Rows(snapshot.rows),
+        Ok(Some(snapshot)) if !snapshot.rows.is_empty() => ReadRows::Rows(Observed {
+            rows: snapshot.rows,
+            account: Account::default(),
+        }),
         Ok(_) => ReadRows::Missing,
         Err(_) => ReadRows::Failed,
     }
@@ -992,6 +1249,8 @@ fn add_recorded_codex_scopes(scopes: &mut Vec<Scope>, fleet: &FleetRollouts) {
                         configured_profiles: Vec::new(),
                         clients: Vec::new(),
                         hint: None,
+                        manual_resets: None,
+                        notes: Vec::new(),
                     });
                 }
             }
@@ -1014,6 +1273,8 @@ fn add_recorded_codex_scopes(scopes: &mut Vec<Scope>, fleet: &FleetRollouts) {
                         configured_profiles: Vec::new(),
                         clients: Vec::new(),
                         hint: Some(reason.clone()),
+                        manual_resets: None,
+                        notes: Vec::new(),
                     });
                 }
             }
@@ -1090,8 +1351,8 @@ fn codex_groups(
             truncated = true;
             break;
         }
-        let rows = rows_or_placeholder(rows);
-        let observed = rows.iter().filter_map(|row| row.observed_at).max();
+        let read = rows_or_placeholder(rows);
+        let observed = read.rows.iter().filter_map(|row| row.observed_at).max();
         ranked.push(RankedGroup {
             group: Group {
                 profiles: scope.profiles.clone(),
@@ -1101,9 +1362,12 @@ fn codex_groups(
                 clients: scope.clients.clone(),
                 rollout: Some(located.rollout.id.clone()),
                 owner: Some(located.rollout.owner.clone()),
-                rows,
+                rows: read.rows,
                 hint: scope.hint.clone(),
                 summary: None,
+                manual_resets: scope.manual_resets,
+                account: read.account,
+                notes: scope.notes.clone(),
             },
             observed,
         });
@@ -1228,6 +1492,9 @@ fn summarize_codex_groups(
             rows: vec![placeholder(Status::Unknown)],
             hint: scope.hint.clone(),
             summary: None,
+            manual_resets: scope.manual_resets,
+            account: Account::default(),
+            notes: scope.notes.clone(),
         });
     }
     let summary_status = if truncated {
@@ -1248,6 +1515,9 @@ fn summarize_codex_groups(
             owner: None,
             rows: Vec::new(),
             hint: None,
+            manual_resets: None,
+            account: Account::default(),
+            notes: Vec::new(),
             summary: Some(RolloutSummary {
                 hidden,
                 unreadable,
@@ -1288,18 +1558,25 @@ fn read_codex_file(file: &RolloutFile, now: i64, budget: &mut Budget) -> ReadRow
         Err(_) => return ReadRows::Failed,
     };
     match codex::parse(&bytes, starts_at_boundary, now) {
-        Ok(rows) if !rows.is_empty() => ReadRows::Rows(rows),
+        Ok(snapshot) if !snapshot.rows.is_empty() => ReadRows::Rows(Observed {
+            rows: snapshot.rows,
+            account: snapshot.account,
+        }),
         Ok(_) => ReadRows::Missing,
         Err(_) => ReadRows::Failed,
     }
 }
 
-fn rows_or_placeholder(read: ReadRows) -> Vec<Row> {
-    match read {
-        ReadRows::Rows(rows) => rows,
+fn rows_or_placeholder(read: ReadRows) -> Observed {
+    let rows = match read {
+        ReadRows::Rows(observed) => return observed,
         ReadRows::Missing => vec![placeholder(Status::Unknown)],
         ReadRows::Failed => vec![placeholder(Status::ReadError)],
         ReadRows::Truncated => vec![placeholder(Status::Truncated)],
+    };
+    Observed {
+        rows,
+        account: Account::default(),
     }
 }
 
@@ -1350,11 +1627,26 @@ fn short_path(path: &Path, home: Option<&Path>) -> String {
 }
 
 fn render_at(groups: &[Group], home: Option<&Path>, now: i64) -> String {
-    const HEADER: [&str; 8] = [
-        "PROFILES", "SCOPE", "BUCKET", "WINDOW", "USED", "RESETS", "OBSERVED", "STATUS",
+    const HEADER: [&str; COLUMNS] = [
+        "PROFILES",
+        "SCOPE",
+        "BUCKET",
+        "WINDOW",
+        "USED",
+        "EFFECTIVE",
+        "CREDITS",
+        "RESETS",
+        "OBSERVED",
+        "STATUS",
     ];
     let mut table = vec![RenderLine::Cells(HEADER.map(str::to_owned))];
+    let mut notes: Vec<String> = Vec::new();
     for group in groups {
+        for note in &group.notes {
+            if !notes.contains(note) {
+                notes.push(note.clone());
+            }
+        }
         if let Some(summary) = &group.summary {
             table.push(RenderLine::Summary {
                 label: rollout_summary_label(summary, now),
@@ -1391,6 +1683,15 @@ fn render_at(groups: &[Group], home: Option<&Path>, now: i64) -> String {
                     .flatten()
                     .unwrap_or_else(|| "-".to_owned()),
                 trustworthy
+                    .then(|| effective_cell(group, row))
+                    .flatten()
+                    .unwrap_or_else(|| "-".to_owned()),
+                if index == 0 {
+                    credits_label(&group.account)
+                } else {
+                    String::new()
+                },
+                trustworthy
                     .then(|| row.resets_at.map(|reset| reset_label(reset, now)))
                     .flatten()
                     .unwrap_or_else(|| "-".to_owned()),
@@ -1402,7 +1703,23 @@ fn render_at(groups: &[Group], home: Option<&Path>, now: i64) -> String {
             ]));
         }
     }
+    for note in notes {
+        table.push(RenderLine::Summary {
+            label: note,
+            status: String::new(),
+        });
+    }
     render_table(&table)
+}
+
+/// The EFFECTIVE cell for one window, or `None` when its percentage is absent.
+fn effective_cell(group: &Group, row: &Row) -> Option<String> {
+    let used = row
+        .used_percent
+        .as_deref()
+        .and_then(|value| value.parse::<f64>().ok())
+        .filter(|value| value.is_finite())?;
+    Some(effective(group.manual_resets, &group.account, used).cell())
 }
 
 fn rollout_summary_label(summary: &RolloutSummary, now: i64) -> String {
@@ -1447,7 +1764,7 @@ fn render_table(table: &[RenderLine]) -> String {
         })
         .collect();
     let table = sanitized.as_slice();
-    let mut widths = [0_usize; 8];
+    let mut widths = [0_usize; COLUMNS];
     for row in table.iter().filter_map(|line| match line {
         RenderLine::Cells(row) => Some(row),
         RenderLine::Summary { .. } => None,
@@ -1467,7 +1784,8 @@ fn render_table(table: &[RenderLine]) -> String {
                 out.extend(std::iter::repeat_n(' ', indent));
                 out.push_str(label);
                 if !status.is_empty() {
-                    let status_column = widths[..7].iter().sum::<usize>() + 2 * 7;
+                    let status_column =
+                        widths[..COLUMNS - 1].iter().sum::<usize>() + 2 * (COLUMNS - 1);
                     let used = indent + label.chars().count();
                     out.extend(std::iter::repeat_n(
                         ' ',
@@ -1946,10 +2264,11 @@ fn dated_dir(root: &Path, seconds: i64) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Bounded, Budget, CLAUDE_MAX_BYTES, CODEX_TAIL_BYTES, FRESH_SECS, FUTURE_SKEW_SECS,
-        FleetRollout, FleetRollouts, FleetStatus, LocatedRollout, ReadRows, RenderLine,
-        RolloutLocation, RolloutSource, Scope, Status, bounded_tail, bounded_whole_file,
-        codex_groups, codex_rollout_dirs, configured_scopes, find_codex_rollout, freshness,
+        Account, Bounded, Budget, CLAUDE_MAX_BYTES, CODEX_TAIL_BYTES, COLUMNS, Credits, FRESH_SECS,
+        FUTURE_SKEW_SECS, FleetRollout, FleetRollouts, FleetStatus, LocatedRollout, ReadRows,
+        RenderLine, RolloutLocation, RolloutSource, Scope, Status, TABLE_MAX_LINE,
+        TABLE_MAX_WIDTHS, bounded_tail, bounded_whole_file, codex_groups, codex_rollout_dirs,
+        configured_scopes, credits_label, effective, find_codex_rollout, freshness,
         order_located_rollouts, percent_label, profiles_label, read_bounded_tail, read_claude,
         render_at, render_table, rows_or_placeholder, sanitize_cell, vendor_timestamp,
     };
@@ -2078,6 +2397,8 @@ mod tests {
             configured_profiles: vec!["codex-profile".to_owned()],
             clients: Vec::new(),
             hint: None,
+            manual_resets: None,
+            notes: Vec::new(),
         };
         let groups = codex_groups(&scope, &fleet, NOW, &mut Budget::new());
         let shown: Vec<_> = groups
@@ -2165,6 +2486,8 @@ mod tests {
             configured_profiles: vec!["codex-profile".to_owned()],
             clients: Vec::new(),
             hint: None,
+            manual_resets: None,
+            notes: Vec::new(),
         };
         let mut budget = Budget {
             files_left: 4_096,
@@ -2218,6 +2541,8 @@ mod tests {
                     crate::config::Client {
                         executable: "claude".to_owned(),
                         config_home: None,
+                        manual_resets: None,
+                        manual_resets_note: None,
                         tool: ToolKind::Claude,
                     },
                 ),
@@ -2226,6 +2551,8 @@ mod tests {
                     crate::config::Client {
                         executable: "claude".to_owned(),
                         config_home: Some("$HOME/.claude-mic".to_owned()),
+                        manual_resets: None,
+                        manual_resets_note: None,
                         tool: ToolKind::Claude,
                     },
                 ),
@@ -2283,9 +2610,14 @@ mod tests {
                 configured_profiles: vec!["p".to_owned()],
                 clients: Vec::new(),
                 hint: None,
+                manual_resets: None,
+                notes: Vec::new(),
             };
             match read_claude(&scope, 1_001, &mut Budget::new()) {
-                ReadRows::Rows(rows) => rows[0].used_percent.clone(),
+                ReadRows::Rows(observed) => observed
+                    .rows
+                    .first()
+                    .and_then(|row| row.used_percent.clone()),
                 _ => None,
             }
         };
@@ -2298,6 +2630,84 @@ mod tests {
             Some("77".to_owned())
         );
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn effective_headroom_is_derived_only_from_declared_resets_and_reported_credits() {
+        let plain = Account::default();
+        let unlimited = Account {
+            credits: Credits::Unlimited,
+            spend_control_reached: None,
+        };
+        let capped = Account {
+            credits: Credits::Exhausted,
+            spend_control_reached: Some(true),
+        };
+        let balance = Account {
+            credits: Credits::Available("12.50".to_owned()),
+            spend_control_reached: Some(false),
+        };
+        let case = |declared, account: &Account, used: f64| {
+            let effective = effective(declared, account, used);
+            (effective.cell(), effective.judged(used))
+        };
+        assert_eq!(case(None, &plain, 95.0), ("-".to_owned(), 95.0));
+        assert_eq!(
+            case(Some(0), &plain, 95.0),
+            ("95%".to_owned(), 95.0),
+            "a declared zero derives nothing: no stray x0"
+        );
+        assert_eq!(case(Some(1), &plain, 95.0), ("47.5% x1".to_owned(), 47.5));
+        assert_eq!(
+            case(Some(2), &plain, 95.0),
+            ("31.7% x2".to_owned(), 95.0 / 3.0)
+        );
+        assert_eq!(case(Some(9), &plain, 100.0), ("10% x9".to_owned(), 10.0));
+        assert_eq!(
+            case(None, &unlimited, 95.0),
+            ("0%".to_owned(), 0.0),
+            "unlimited credits mean the window does not bind"
+        );
+        assert_eq!(
+            case(Some(2), &capped, 10.0),
+            ("100%".to_owned(), 100.0),
+            "a spend cap outranks every declared reset"
+        );
+        assert_eq!(
+            case(None, &balance, 95.0),
+            ("-".to_owned(), 95.0),
+            "an unquantifiable balance never invents headroom"
+        );
+        assert_eq!(credits_label(&plain), "-");
+        assert_eq!(credits_label(&unlimited), "unlimited");
+        assert_eq!(credits_label(&capped), "spend-cap");
+        assert_eq!(credits_label(&balance), "12.50");
+        assert_eq!(
+            credits_label(&Account {
+                credits: Credits::Exhausted,
+                spend_control_reached: None,
+            }),
+            "none"
+        );
+    }
+
+    #[test]
+    fn the_documented_width_ceiling_is_the_sum_of_the_column_caps() {
+        let separators = 2 * (COLUMNS - 1);
+        assert_eq!(
+            TABLE_MAX_WIDTHS.iter().sum::<usize>() + separators,
+            TABLE_MAX_LINE,
+            "the documented ceiling and the caps that produce it must agree"
+        );
+        let widest = render_table(&[RenderLine::Cells(std::array::from_fn(|column| {
+            "W".repeat(TABLE_MAX_WIDTHS[column] + 40)
+        }))]);
+        assert!(
+            widest
+                .lines()
+                .all(|line| line.chars().count() <= TABLE_MAX_LINE),
+            "a maximal row stays inside the ceiling"
+        );
     }
 
     #[test]
@@ -2327,6 +2737,8 @@ mod tests {
             "bucket".to_owned(),
             "5h".to_owned(),
             "1%".to_owned(),
+            "-".to_owned(),
+            "-".to_owned(),
             "in 1h".to_owned(),
             "1m ago".to_owned(),
             "fresh".to_owned(),
@@ -2388,6 +2800,7 @@ mod tests {
         assert_eq!(
             super::codex::parse(&bytes, starts, 1_788_858_600)
                 .unwrap()
+                .rows
                 .len(),
             1
         );
@@ -2404,6 +2817,7 @@ mod tests {
         assert_eq!(
             super::codex::parse(&bytes, starts, 1_788_858_600)
                 .unwrap()
+                .rows
                 .len(),
             1
         );
@@ -2419,6 +2833,7 @@ mod tests {
         assert!(
             super::codex::parse(&bytes, starts, 1_788_858_600)
                 .unwrap()
+                .rows
                 .is_empty()
         );
 
@@ -2432,6 +2847,7 @@ mod tests {
         assert!(
             super::codex::parse(&bytes, starts, 1_788_858_600)
                 .unwrap()
+                .rows
                 .is_empty()
         );
 
@@ -2456,6 +2872,7 @@ mod tests {
         assert_eq!(
             super::codex::parse(&bytes, starts, 1_788_858_600)
                 .unwrap()
+                .rows
                 .len(),
             1
         );
@@ -2471,6 +2888,7 @@ mod tests {
         assert!(
             super::codex::parse(&bytes, starts, 1_788_858_600)
                 .unwrap()
+                .rows
                 .is_empty()
         );
     }
@@ -2490,7 +2908,7 @@ mod tests {
         budget.max_elapsed = std::time::Duration::ZERO;
         assert!(!budget.claim_file());
         assert_eq!(
-            rows_or_placeholder(ReadRows::Truncated)[0].status,
+            rows_or_placeholder(ReadRows::Truncated).rows[0].status,
             Status::Truncated
         );
     }

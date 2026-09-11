@@ -117,7 +117,7 @@ Every agent pane carries a stable **slot** — `main`, `worker.<n>`, or `spawned
 
 | Helper | Purpose |
 |---|---|
-| `quota` | Show each configured client scope's locally cached quota windows and freshness. The helper uses Codex rollout ids recorded across the local ae fleet and never reads credentials, starts a vendor process, or makes a network request. |
+| `quota` | Show each configured client scope's locally cached quota windows, freshness, and effective headroom — the declared manual resets and reported credits that say whether a high window percentage is really a limit. The helper uses Codex rollout ids recorded across the local ae fleet and never reads credentials, starts a vendor process, or makes a network request. |
 
 ## Lifecycle
 

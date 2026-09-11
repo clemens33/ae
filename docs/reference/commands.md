@@ -674,6 +674,26 @@ when that profile's configured client changes.
 Resolution knows the operator's `HOME`, but does not inspect arbitrary pane variables. A configured
 home that depends on another variable is reported `unknown` with that variable named in the hint.
 
+### Effective headroom: `EFFECTIVE` and `CREDITS`
+
+`USED` is the vendor's own window percentage. It answers how much of one window is gone, which is
+not the same question as how much headroom the subscription has. Two facts move that answer, and
+ae uses only the ones it was told or was given:
+
+- **Declared manual resets.** No client reports how many manual window resets an account has in
+  hand, so ae cannot discover them. Declare them on the client row:
+  `codex = codex manual_resets=1`. The count is `0`–`9`; an unusable value is ignored, the rows stay
+  usable, and one note under the table says which value was dropped and why. Two client labels that
+  resolve to one config home are one account: the larger count wins and the disagreement is noted.
+- **Reported credits.** Codex rollouts carry `credits` and `spend_control_reached`. `CREDITS` shows
+  the balance literal, `unlimited`, `none`, or `spend-cap`, and `-` when the client reports nothing.
+
+`EFFECTIVE` is the percentage ae judges by, and it is `-` whenever nothing was declared or reported.
+With `n` declared resets the same usage is spread over `1 + n` windows, so the cell reads
+`47.5% x1` for a 95% window with one reset in hand. Unlimited credits read `0%`, because the window
+does not bind. A reached spend cap reads `100%` and outranks every declared reset: no window reset
+frees it. The watchdog advisory and the delegation guidance read this percentage, not `USED`.
+
 At most three Codex rollout groups appear per scope, newest record observation first. A summary
 line counts hidden rollouts and reports the oldest known record observation among parsed hidden
 rows. Hidden unreadable rollouts are counted and make the summary `read-error`; if discovery or
@@ -684,7 +704,9 @@ that could not be read.
 `stale`; expired, missing, or clock-skewed observations are `unknown`. Unexpected file kinds,
 oversized files, and malformed complete records are `read-error`. An invocation stops with
 an explicit `truncated` summary after 4,096 filesystem entries, 16 MiB of reads, or two seconds. All
-table lines are at most 160 columns.
+table lines are at most 182 columns: the sum of the per-column caps plus the two spaces between
+each pair of columns. The two derived columns were paid for in that ceiling rather than by wrapping
+every scope and status cell.
 Cached Claude numbers become `unknown` when the file's current and cached account UUIDs disagree;
 the UUIDs are neither retained nor displayed. Untrusted cache labels and terminal escape sequences
 are reduced to printable table cells before widths or wrapping are calculated.
@@ -701,9 +723,17 @@ Each session watchdog reuses this bounded local observation every
 counter also pace the fleet picker's `@ae_spend` fact, so one knob governs both readings. The first
 sample establishes a
 baseline. Later transitions into `low` (80%), `critical` (95%), or back to `headroom` are pasted to
-that session's main seat and, for a lead-pair, its colead. No advisory crosses sessions and ae never
-reroutes work: the recipient decides which client should receive new spawns. Silent or older-than-
-60-minute rows clear the in-memory baseline; recovery starts with a new silent first sample.
+that session's main seat and, for a lead-pair, its colead. The thresholds classify the `EFFECTIVE`
+percentage, so a window with a declared reset in hand or unlimited credits does not raise one, and a
+spend-capped scope is critical whatever its window says — the line then names the cap and does not
+send the reader to a reset.
+
+A window belongs to the client scope, not to the conversation that observed it: the tracked state is
+keyed by canonical source, bucket, qualifier, and window, never by rollout. Several Codex rollouts
+under one config home therefore report one fact and produce ONE advisory per transition, the newest
+observation winning. No advisory crosses sessions and ae never reroutes work: the recipient decides
+which client should receive new spawns. Silent or older-than-60-minute rows clear the in-memory
+baseline; recovery starts with a new silent first sample.
 
 ## `ae usage`
 

@@ -229,6 +229,12 @@ pub struct Client {
     pub executable: String,
     /// The optional config-home path, preserving its launch-time expansion.
     pub config_home: Option<String>,
+    /// Manual window resets the operator declares are in hand for this client
+    /// scope. A vendor reports none, so ae can only be told; `None` means the
+    /// operator said nothing and no extra headroom may be derived.
+    pub manual_resets: Option<u8>,
+    /// Why a declared `manual_resets=` was ignored, for one visible note.
+    pub manual_resets_note: Option<String>,
     /// The harness selected by the executable basename.
     pub tool: crate::tool::ToolKind,
 }
@@ -738,28 +744,82 @@ fn parse_client(file: &Path, label: &str, line: usize, value: &str) -> Result<Cl
         .next()
         .unwrap_or(executable.word);
     let tool = crate::tool::ToolKind::from_binary_name(binary_name);
-    let config_home = match parsed.words.get(1) {
-        None => None,
-        Some(word) => {
-            if parsed.words.len() > 2 {
-                let offending = &parsed.words[2];
+    let mut config_home = None;
+    let mut manual_resets = None;
+    let mut manual_resets_note = None;
+    for word in parsed.words.iter().skip(1) {
+        if word.starts_with(CLIENT_HOME_KEY) {
+            if config_home.is_some() {
                 return Err(client_error(
                     file,
                     label,
                     line,
-                    format!(
-                        "offending word '{offending}': flags and extra words belong to [profiles]; quote config_home paths containing spaces"
-                    ),
+                    format!("offending word '{word}': config_home is declared twice"),
                 ));
             }
-            Some(parse_client_home(file, label, line, word, tool)?)
+            config_home = Some(parse_client_home(file, label, line, word, tool)?);
+        } else if let Some(raw) = word.strip_prefix(CLIENT_RESETS_KEY) {
+            // A bad count is an operator typo in a hint, not a launch-blocking
+            // fault: ignore the key, keep the client usable, say so once.
+            if manual_resets.is_some() || manual_resets_note.is_some() {
+                manual_resets_note = Some(format!(
+                    "{CLIENT_RESETS_KEY}declared twice; using the first"
+                ));
+            } else {
+                match parse_manual_resets(raw) {
+                    Ok(count) => manual_resets = Some(count),
+                    Err(reason) => manual_resets_note = Some(reason),
+                }
+            }
+        } else {
+            return Err(client_error(
+                file,
+                label,
+                line,
+                format!(
+                    "offending word '{word}': flags and extra words belong to [profiles]; only config_home=<path> and {CLIENT_RESETS_KEY}<0-9> may follow the executable, and config_home paths containing spaces must be quoted"
+                ),
+            ));
         }
-    };
+    }
     Ok(Client {
         executable: executable_source.to_owned(),
         config_home,
+        manual_resets,
+        manual_resets_note,
         tool,
     })
+}
+
+/// The two recognized `[clients]` tail keys.
+const CLIENT_HOME_KEY: &str = "config_home=";
+const CLIENT_RESETS_KEY: &str = "manual_resets=";
+
+/// The largest declared reset count ae believes. Above it the operator is
+/// describing something other than resets in hand.
+const MANUAL_RESETS_MAX: u8 = 9;
+
+/// Read one declared reset count, or say in one line why it was ignored.
+///
+/// The grammar is one decimal digit, so the value needs no numeric conversion
+/// and a hostile spelling has nowhere to overflow.
+fn parse_manual_resets(raw: &str) -> Result<u8, String> {
+    let body = outer_quote_body(raw);
+    let shown: String = body.chars().take(16).collect();
+    let digits = !body.is_empty() && body.bytes().all(|byte| byte.is_ascii_digit());
+    let canonical = match body.trim_start_matches('0') {
+        "" if digits => "0",
+        rest => rest,
+    };
+    match canonical.as_bytes() {
+        [digit] if digit.is_ascii_digit() => Ok(digit.saturating_sub(b'0')),
+        _ if digits => Err(format!(
+            "{CLIENT_RESETS_KEY}{shown} ignored: above {MANUAL_RESETS_MAX}"
+        )),
+        _ => Err(format!(
+            "{CLIENT_RESETS_KEY}{shown} ignored: not a whole count 0-{MANUAL_RESETS_MAX}"
+        )),
+    }
 }
 
 fn parse_client_home(
@@ -1754,6 +1814,78 @@ mod tests {
     }
 
     #[test]
+    fn a_client_declares_its_manual_resets_beside_its_config_home() {
+        let (_f, cfg) = v2(
+            "[clients]\ncx = codex config_home=/srv/codex manual_resets=2\n\
+             cy = codex manual_resets=1\n\
+             cz = codex manual_resets=0\n\
+             cq = codex manual_resets=\"3\"\n\
+             cr = codex manual_resets=1 config_home=/srv/other\n\
+             plain = codex\n\
+             [profiles]\nsol = cx -m sol\n[roster]\nlead = sol\n[workspace]\nmain = lead\n",
+        );
+        let resets = |label: &str| cfg.client(label).and_then(|client| client.manual_resets);
+        assert_eq!(resets("cx"), Some(2));
+        assert_eq!(resets("cy"), Some(1));
+        assert_eq!(
+            resets("cz"),
+            Some(0),
+            "a declared zero is not an absent key"
+        );
+        assert_eq!(resets("cq"), Some(3), "a quoted count is one count");
+        assert_eq!(resets("cr"), Some(1), "the tail is order-free");
+        assert_eq!(resets("plain"), None, "an absent key stays absent");
+        assert_eq!(
+            cfg.client("cr")
+                .and_then(|client| client.config_home.clone()),
+            Some("/srv/other".to_owned())
+        );
+        assert!(
+            cfg.clients
+                .iter()
+                .all(|(_, client)| client.manual_resets_note.is_none())
+        );
+    }
+
+    #[test]
+    fn an_unusable_manual_resets_value_is_ignored_with_one_note() {
+        for (value, expected, needle) in [
+            ("codex manual_resets=abc", None, "not a whole count"),
+            ("codex manual_resets=-1", None, "not a whole count"),
+            ("codex manual_resets=", None, "not a whole count"),
+            ("codex manual_resets=1.5", None, "not a whole count"),
+            ("codex manual_resets=10", None, "above 9"),
+            ("codex manual_resets=99999", None, "above 9"),
+            ("codex manual_resets=1 manual_resets=2", Some(1), "twice"),
+            ("codex manual_resets=99999999999999999999", None, "above 9"),
+        ] {
+            let file = NamedTemp::new("resets-note", &format!("[clients]\ncc = {value}\n"));
+            let cfg = read_identity(Some(file.path()), None)
+                .unwrap_or_else(|err| panic!("{value:?} must not refuse the config: {err}"));
+            let client = cfg.client("cc").expect("client parsed");
+            assert_eq!(client.manual_resets, expected, "{value:?}");
+            let note = client
+                .manual_resets_note
+                .as_deref()
+                .unwrap_or_else(|| panic!("{value:?} needs one visible note"));
+            assert!(note.contains(needle), "{value:?}: {note}");
+            assert!(note.chars().count() <= 80, "{value:?}: {note}");
+        }
+        let hostile = format!("codex manual_resets={}", "9".repeat(4_096));
+        let file = NamedTemp::new("resets-hostile", &format!("[clients]\ncc = {hostile}\n"));
+        let cfg = read_identity(Some(file.path()), None).expect("a hostile count is not a refusal");
+        let client = cfg.client("cc").expect("client parsed");
+        assert_eq!(client.manual_resets, None);
+        assert!(
+            client
+                .manual_resets_note
+                .as_deref()
+                .is_some_and(|note| note.chars().count() <= 80),
+            "a hostile count leaves one bounded note"
+        );
+    }
+
+    #[test]
     fn invalid_client_values_refuse_at_config_load_with_the_offending_word() {
         for (value, offending) in [
             ("env -i claude", "env"),
@@ -1764,6 +1896,8 @@ mod tests {
             ("claude config_home=relative", "config_home=relative"),
             ("claude config_home=~/.claude", "config_home=~/.claude"),
             ("claude config_home=$OTHER/x", "config_home=$OTHER/x"),
+            ("codex mystery=1", "mystery=1"),
+            ("codex config_home=/a config_home=/b", "config_home=/b"),
         ] {
             let file = NamedTemp::new("bad-client", &format!("[clients]\ncc = {value}\n"));
             let err = read_identity(Some(file.path()), None).unwrap_err();
@@ -1894,6 +2028,8 @@ mod tests {
                     Client {
                         executable: "claude".to_owned(),
                         config_home: None,
+                        manual_resets: None,
+                        manual_resets_note: None,
                         tool: crate::tool::ToolKind::Claude,
                     },
                 )],

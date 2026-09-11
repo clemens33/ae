@@ -148,6 +148,109 @@ fn ae_quota_renders_fixture_caches_missing_scopes_and_unsupported_clients() {
 }
 
 #[test]
+fn declared_manual_resets_and_reported_credits_drive_the_effective_columns() {
+    let root = rig("declared-headroom");
+    std::fs::write(
+        root.join("config"),
+        concat!(
+            "[clients]\n",
+            "codex = codex manual_resets=1\n",
+            "[profiles]\n",
+            "astrax = codex --model astra\n",
+        ),
+    )
+    .expect("declared config");
+    let fixture = String::from_utf8_lossy(include_bytes!("../fixtures/quota/codex-rollout.jsonl"))
+        .replace("\"used_percent\":7.0", "\"used_percent\":95.0")
+        .replace(
+            "\"plan_type\":\"pro\"",
+            "\"plan_type\":\"pro\",\"credits\":{\"has_credits\":true,\"unlimited\":false,\"balance\":\"12.50\"},\"spend_control_reached\":false",
+        );
+    for id in [FIRST_ID, SECOND_ID] {
+        std::fs::write(
+            root.join(format!(
+                ".codex/sessions/2026/09/08/rollout-2026-09-08T09-00-00-{id}.jsonl"
+            )),
+            &fixture,
+        )
+        .expect("rollout with credits");
+    }
+    let text = run_quota(&root);
+    assert!(
+        text.contains("EFFECTIVE  CREDITS"),
+        "both derived columns are present: {text}"
+    );
+    assert!(
+        text.contains(" 95%   47.5% x1   12.50"),
+        "one declared reset halves the judged percentage: {text}"
+    );
+    assert!(
+        text.lines().all(|line| line.chars().count() <= 182),
+        "{text}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+
+    let capped = rig("spend-capped");
+    std::fs::write(
+        capped.join("config"),
+        concat!(
+            "[clients]\n",
+            "codex = codex manual_resets=4\n",
+            "[profiles]\n",
+            "astrax = codex --model astra\n",
+        ),
+    )
+    .expect("capped config");
+    let fixture = String::from_utf8_lossy(include_bytes!("../fixtures/quota/codex-rollout.jsonl"))
+        .replace(
+            "\"plan_type\":\"pro\"",
+            "\"plan_type\":\"pro\",\"credits\":{\"has_credits\":false,\"unlimited\":false,\"balance\":\"0\"},\"spend_control_reached\":true",
+        );
+    for id in [FIRST_ID, SECOND_ID] {
+        std::fs::write(
+            capped.join(format!(
+                ".codex/sessions/2026/09/08/rollout-2026-09-08T09-00-00-{id}.jsonl"
+            )),
+            &fixture,
+        )
+        .expect("spend-capped rollout");
+    }
+    let text = run_quota(&capped);
+    assert!(
+        text.contains("100%       spend-cap"),
+        "a spend cap outranks four declared resets: {text}"
+    );
+    let _ = std::fs::remove_dir_all(&capped);
+}
+
+#[test]
+fn an_unusable_declared_reset_count_is_ignored_with_one_visible_note() {
+    let root = rig("declared-note");
+    std::fs::write(
+        root.join("config"),
+        concat!(
+            "[clients]\n",
+            "codex = codex manual_resets=nine\n",
+            "[profiles]\n",
+            "astrax = codex --model astra\n",
+            "solx = codex --model sol\n",
+        ),
+    )
+    .expect("bad declaration config");
+    let text = run_quota(&root);
+    let _ = std::fs::remove_dir_all(&root);
+    assert_eq!(
+        text.matches("manual_resets=nine ignored").count(),
+        1,
+        "one note for the scope, not one per rollout: {text}"
+    );
+    assert!(
+        text.contains("not a whole count 0-9") && text.contains(" 7%    -"),
+        "the rows stay readable and nothing is derived: {text}"
+    );
+}
+
+#[test]
 fn absent_and_unexpected_sources_are_unknown_and_read_error() {
     let root = rig("source-errors");
     std::fs::remove_file(root.join(".claude.json")).expect("remove planted cache");

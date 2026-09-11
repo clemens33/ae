@@ -282,10 +282,13 @@ impl QuotaLevel {
 }
 
 /// Labels are not identity: the canonical source and vendor dimensions are.
+///
+/// A window belongs to the CLIENT SCOPE, not to the conversation that happened
+/// to observe it, so the rollout is deliberately absent: several rollouts under
+/// one config home report one fact and must produce one advisory.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct QuotaKey {
     source: std::path::PathBuf,
-    rollout: Option<String>,
     bucket: String,
     qualifier: Option<String>,
     window_minutes: Option<u32>,
@@ -296,7 +299,10 @@ struct QuotaSample<'a> {
     key: QuotaKey,
     group: &'a crate::quota::Group,
     row: &'a crate::quota::Row,
-    used: f64,
+    /// The percentage ae judges: the raw window spread over the scope's
+    /// declared resets and reported credits. The raw number stays on `row`,
+    /// which is what the advisory displays.
+    effective: f64,
     observed_at: i64,
 }
 
@@ -397,7 +403,6 @@ fn quota_samples_at(observation: &crate::quota::Observation, now: i64) -> Vec<Qu
             }
             let key = QuotaKey {
                 source: source.clone(),
-                rollout: group.rollout.clone(),
                 bucket: row.bucket.clone(),
                 qualifier: row.qualifier.clone(),
                 window_minutes: row.window_minutes,
@@ -406,7 +411,8 @@ fn quota_samples_at(observation: &crate::quota::Observation, now: i64) -> Vec<Qu
                 key: key.clone(),
                 group,
                 row,
-                used,
+                effective: crate::quota::effective(group.manual_resets, &group.account, used)
+                    .judged(used),
                 observed_at,
             };
             if let Some(existing) = samples.iter_mut().find(|sample| sample.key == key) {
@@ -547,7 +553,7 @@ impl QuotaCarry {
                 self.tracked.push(QuotaTracked {
                     key: sample.key,
                     observed_at: sample.observed_at,
-                    level: classify_quota(sample.used, None),
+                    level: classify_quota(sample.effective, None),
                 });
                 continue;
             };
@@ -555,7 +561,7 @@ impl QuotaCarry {
                 continue;
             }
             let before = self.tracked[index].level;
-            let after = classify_quota(sample.used, Some(before));
+            let after = classify_quota(sample.effective, Some(before));
             self.tracked[index].observed_at = sample.observed_at;
             self.tracked[index].level = after;
             if before == after {
@@ -652,31 +658,27 @@ fn throttle_quota_line(
     let identity = crate::quota::recorded_identity(entry)?;
     let mut matches: Vec<QuotaSample<'_>> = quota_samples_at(observation, now)
         .into_iter()
-        .filter(|sample| {
-            sample.group.tool == identity.tool
-                && sample.key.source == identity.source
-                && sample.key.rollout == identity.rollout
-        })
+        .filter(|sample| sample.group.tool == identity.tool && sample.key.source == identity.source)
         .collect();
     matches.sort_by(|left, right| {
         let level = |sample: &QuotaSample<'_>| {
             tracked
                 .iter()
                 .find(|held| held.key == sample.key)
-                .map_or_else(|| classify_quota(sample.used, None), |held| held.level)
+                .map_or_else(|| classify_quota(sample.effective, None), |held| held.level)
         };
         let left_level = level(left);
         let right_level = level(right);
         right_level
             .cmp(&left_level)
-            .then_with(|| right.used.total_cmp(&left.used))
+            .then_with(|| right.effective.total_cmp(&left.effective))
             .then_with(|| left.key.cmp(&right.key))
     });
     let sample = matches.first()?;
     let level = tracked
         .iter()
         .find(|held| held.key == sample.key)
-        .map_or_else(|| classify_quota(sample.used, None), |held| held.level);
+        .map_or_else(|| classify_quota(sample.effective, None), |held| held.level);
     Some(observation.advisory_line_at(sample.group, sample.row, level.label(), meta_dir, now))
 }
 
@@ -3874,6 +3876,24 @@ mod tests {
         owner: Option<&str>,
         rows: Vec<crate::quota::Row>,
     ) -> crate::quota::Group {
+        quota_scope_group(
+            source,
+            rollout,
+            owner,
+            rows,
+            None,
+            crate::quota::Account::default(),
+        )
+    }
+
+    fn quota_scope_group(
+        source: &Path,
+        rollout: Option<&str>,
+        owner: Option<&str>,
+        rows: Vec<crate::quota::Row>,
+        manual_resets: Option<u8>,
+        account: crate::quota::Account,
+    ) -> crate::quota::Group {
         crate::quota::Group {
             profiles: vec!["sol".to_owned()],
             tool: crate::tool::ToolKind::Codex,
@@ -3885,6 +3905,9 @@ mod tests {
             rows,
             hint: None,
             summary: None,
+            manual_resets,
+            account,
+            notes: Vec::new(),
         }
     }
 
@@ -4072,7 +4095,192 @@ mod tests {
     }
 
     #[test]
-    fn quota_keys_separate_rollouts_and_scoped_qualifiers() {
+    fn one_config_home_seen_by_many_rollouts_advises_once_per_transition() {
+        let source = Path::new("/tmp/cx/sessions");
+        let owners = ["demo:lead", "demo:colead", "demo:reviewer"];
+        let observation = |used: &str, at: i64| {
+            quota_observation(
+                owners
+                    .iter()
+                    .enumerate()
+                    .map(|(index, owner)| {
+                        quota_group(
+                            source,
+                            Some(&format!("018f1f70-7b2c-7000-8000-00000000000{index}")),
+                            Some(owner),
+                            vec![quota_row(
+                                "codex",
+                                Some("pro"),
+                                used,
+                                at,
+                                crate::quota::Status::Fresh,
+                            )],
+                        )
+                    })
+                    .collect(),
+                10_000,
+            )
+        };
+        let recipients = [quota_recipient("main", "lead")];
+        let mut carry = QuotaCarry::default();
+        let _ = carry.reconcile(&observation("79", 9_900), &recipients, Path::new("/m"));
+        assert_eq!(
+            carry.tracked.len(),
+            1,
+            "one window fact, whichever rollout observed it"
+        );
+        let actions = carry.reconcile(&observation("95", 9_901), &recipients, Path::new("/m"));
+        let deliveries = transition_deliveries(&actions);
+        assert_eq!(
+            deliveries.len(),
+            1,
+            "three owners on one config home are one interrupt: {:?}",
+            deliveries
+                .iter()
+                .map(|pending| pending.advisory.render(Path::new("/m"), 10_000))
+                .collect::<Vec<_>>()
+        );
+        let delivered = deliveries[0].clone();
+        assert!(
+            carry
+                .record_delivery(
+                    &delivered,
+                    QuotaDelivery::Delivered,
+                    Path::new("/m"),
+                    10_000
+                )
+                .is_none()
+        );
+        assert!(
+            carry
+                .reconcile(&observation("96", 9_902), &recipients, Path::new("/m"))
+                .is_empty(),
+            "an unchanged state re-arms nothing"
+        );
+    }
+
+    #[test]
+    fn a_declared_manual_reset_judges_the_scope_by_its_effective_headroom() {
+        let source = Path::new("/tmp/cx/sessions");
+        let observation = |used: &str, at: i64, resets: Option<u8>| {
+            quota_observation(
+                vec![quota_scope_group(
+                    source,
+                    Some("018f1f70-7b2c-7000-8000-000000000001"),
+                    Some("demo:lead"),
+                    vec![quota_row(
+                        "codex",
+                        Some("pro"),
+                        used,
+                        at,
+                        crate::quota::Status::Fresh,
+                    )],
+                    resets,
+                    crate::quota::Account::default(),
+                )],
+                10_000,
+            )
+        };
+        let recipients = [quota_recipient("main", "lead")];
+        let mut declared = QuotaCarry::default();
+        let _ = declared.reconcile(
+            &observation("40", 9_900, Some(1)),
+            &recipients,
+            Path::new("/m"),
+        );
+        assert!(
+            declared
+                .reconcile(
+                    &observation("95", 9_901, Some(1)),
+                    &recipients,
+                    Path::new("/m")
+                )
+                .is_empty(),
+            "95% of one window is 47.5% of two: no advisory"
+        );
+        let mut raw = QuotaCarry::default();
+        let _ = raw.reconcile(
+            &observation("40", 9_900, None),
+            &recipients,
+            Path::new("/m"),
+        );
+        let actions = raw.reconcile(
+            &observation("95", 9_901, None),
+            &recipients,
+            Path::new("/m"),
+        );
+        assert_eq!(
+            transition_deliveries(&actions).len(),
+            1,
+            "an undeclared scope still fires on the raw window"
+        );
+
+        let mut crossing = QuotaCarry::default();
+        let _ = crossing.reconcile(
+            &observation("100", 9_900, Some(0)),
+            &recipients,
+            Path::new("/m"),
+        );
+        let text = observation("100", 9_901, Some(1)).advisory_line(
+            &observation("100", 9_901, Some(1)).groups[0],
+            &observation("100", 9_901, Some(1)).groups[0].rows[0],
+            "low",
+            Path::new("/m"),
+        );
+        assert!(
+            text.contains("effective 50% over 1+1 declared resets"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_spend_capped_scope_is_critical_and_says_which_constraint_binds() {
+        let source = Path::new("/tmp/cx/sessions");
+        let capped = crate::quota::Account {
+            credits: crate::quota::Credits::Exhausted,
+            spend_control_reached: Some(true),
+        };
+        let observation = quota_observation(
+            vec![quota_scope_group(
+                source,
+                Some("018f1f70-7b2c-7000-8000-000000000001"),
+                Some("demo:lead"),
+                vec![quota_row(
+                    "codex",
+                    Some("pro"),
+                    "3",
+                    9_900,
+                    crate::quota::Status::Fresh,
+                )],
+                Some(2),
+                capped,
+            )],
+            10_000,
+        );
+        let sample = &super::quota_samples(&observation)[0];
+        assert_eq!(
+            classify_quota(sample.effective, None),
+            QuotaLevel::Critical,
+            "a spend cap is not headroom at 3% of a window"
+        );
+        let line = observation.advisory_line(sample.group, sample.row, "critical", Path::new("/m"));
+        assert!(line.contains("spend cap reached"), "{line}");
+        assert!(
+            line.contains("not a window reset"),
+            "the advice must not send the reader to a reset: {line}"
+        );
+        assert!(
+            !line.contains("declared resets"),
+            "two declared resets must not describe a spend-capped client: {line}"
+        );
+        assert!(
+            !line.contains("headroom"),
+            "a spend cap is never headroom: {line}"
+        );
+    }
+
+    #[test]
+    fn quota_keys_separate_scoped_qualifiers_but_never_rollouts_of_one_scope() {
         let source = Path::new("/tmp/cx/sessions");
         let groups = vec![
             quota_group(
@@ -4115,7 +4323,11 @@ mod tests {
                 .reconcile(&quota_observation(groups, 10_000), &[], Path::new("/m"))
                 .is_empty()
         );
-        assert_eq!(carry.tracked.len(), 3);
+        assert_eq!(
+            carry.tracked.len(),
+            2,
+            "qualifiers stay separate; two rollouts of one scope do not"
+        );
     }
 
     #[test]
@@ -4728,8 +4940,22 @@ mod tests {
                 Path::new("/m"),
                 10_000,
             )
-            .is_none()
+            .is_some(),
+            "another conversation under the same config home reads the same window"
         );
+        entry.harness_session = None;
+        assert!(
+            throttle_quota_line(
+                &observation,
+                &quota.tracked,
+                &entry,
+                Path::new("/m"),
+                10_000,
+            )
+            .is_none(),
+            "a Codex seat with no recorded conversation is not a proven identity"
+        );
+        entry.harness_session = Some(rollout.to_owned());
         entry.config_home = RecordedConfigHome::Missing;
         assert!(
             throttle_quota_line(

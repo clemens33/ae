@@ -46,7 +46,11 @@ Leads delegate by default. Keep only the judgment: architecture, ambiguous
 debugging, final integration, user-facing decisions, or a task whose brief
 would require half your conversation (the hygiene gain is gone). A worker
 starts with fresh context and one brief, preserving the lead's judgment
-context; lower tiers tune shared quota, never create separate headroom. Cut
+context; lower tiers tune shared quota, never create separate headroom. Read
+headroom from `ae quota`'s `EFFECTIVE` column when it is filled in, not from
+the raw window: a declared manual reset or unlimited credits means the client
+is not at its limit, while a `spend-cap` scope is blocked until the cap or the
+credits change. Cut
 independent work into parallel slices with one writer per file. Give every
 **new** slice a fresh worker; return fix rounds to the worker and reviewer who
 already hold its context.
