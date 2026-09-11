@@ -1,6 +1,135 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.50] - 2026-09-11
+
+### Other
+
+- Center session context menu and confirm scoped stops
+- Judge quota headroom by declared resets and reported credits
+
+A vendor window percentage answers how much of one window is gone, which is
+not the operator's question when a manual reset is in hand: at 98% used with
+one reset declared, ae fired critical and told every seat to step down off a
+client that was half idle.
+
+No client reports how many manual resets an account holds, so ae must be told.
+A [clients] row now takes manual_resets=<0-9> beside config_home=, in either
+order, and an unusable value is ignored with one visible note rather than
+refusing the config. Codex already reports credits and spend_control_reached,
+so those are read where they are.
+
+ae quota gains EFFECTIVE and CREDITS. EFFECTIVE is the one percentage ae
+judges by: the window spread over 1 + n declared resets, 0% when credits are
+unlimited, 100% when a spend cap is reached, and - when nothing was declared
+or reported. A spend cap outranks every declared reset, in the column and in
+the advisory, which now says a window reset will not free it. The watchdog
+thresholds and the delegation guidance read that percentage instead of the raw
+window. The two columns were paid for in the table's width ceiling, now 182,
+rather than by wrapping every scope and status cell.
+
+The tracked advisory state is keyed by client scope, never by rollout: one
+95% window seen by three rollout owners under one config home fired three
+separate interrupts at the same lead within minutes. It is one fact, so it is
+now one advisory per transition, the newest observation winning.
+- Give account facts their own provenance and keep two quota clocks apart
+
+Review of the previous commit found three ways the derived headroom could be
+wrong in the optimistic direction, which is the dangerous one: it routes work
+toward a client that is actually constrained.
+
+Account facts were adopted from any record that carried a rate_limits key. A
+later record whose rate_limits was null therefore erased a proven spend cap
+while its 95% window survived, and a record with credit fields but no bucket
+and no timestamp could claim unlimited credits for windows it never observed.
+Account facts now carry their own observation time and are replaced only by a
+record that usably reports one, stamps itself, is newer than what is already
+held, and is not skewed into the future. A null container, a malformed field
+and an ordinary account-less bucket update all leave proven facts standing,
+and a qualifying record is applied whole rather than field by field.
+
+Two client labels on one config home merged their declared counts by maximum,
+so an explicit zero beside a one turned 95% into 47.5% and suppressed the
+critical the zero was asking for. The smallest explicit count now wins, with
+the conflict still stated out loud. The table and the watchdog also no longer
+derive separately: one function returns the derivation and both read it.
+
+The watchdog classified against a single clock. Because only a newer vendor
+observation could pass the guard, declaring a reset updated the table to 47.5%
+while a stale Critical stayed tracked and its pending advisory stayed
+deliverable. Raw acceptance is unchanged, an older sample is still refused,
+and a policy change now re-derives the observation already held and cancels
+the advisory it supersedes. Declaring a reset clears a critical; withdrawing
+one re-arms it.
+
+A balance too long to state exactly is reported as available without an
+amount, because nine characters of a ten-digit number is a different number.
+The docs and the delegation guidance now say that ae never consumes a declared
+count, so claimed headroom is only as true as the declaration is current.
+- Read account facts field by field and classify only a held observation
+
+Two defects from the previous round, both measured rather than argued.
+
+An account record was applied whole, so a record that qualified on one usable
+field erased the fields it never mentioned. A newer record carrying credits
+beside a null or malformed spend field therefore cleared a proven spend cap,
+and the rendered table went from a cap to 47.5% of a window with a balance.
+Provenance is now field-level: each fact carries the stamp of the record that
+last usably reported it, and a record moves only the fields it actually
+asserts. Absent, null and malformed all retain the held value and leave its
+age alone, so a cap lifts only on an explicit false. A record that names no
+bucket is not placed against any window at all.
+
+Ambiguity in that file now resolves toward less apparent headroom, because
+overstating headroom is what sends work to a client that is already capped. A
+spend cap never ages out. An unlimited-credit claim, the one fact that adds
+headroom, relieves a window only when it was reported no earlier than that
+window's own observation; a claim that fails the test is still shown, with a
+note saying why the effective number kept the raw window.
+
+The watchdog classified whatever sample arrived once a policy had changed,
+which let an older observation the freshness rule had just refused decide the
+level and even supply the text of a notice. The accepted row is now held on
+the tracked entry. Raw observations are accepted or refused by timestamp
+alone, whatever the policy says, and a policy change re-derives that held row
+and books its notice under the held provenance. The policy path is no longer a
+way past the freshness rule, which was the whole point of separating them.
+- Judge a quota window from one reading, and merge accounts in one place
+
+The field-level provenance this file already had was enforced inside a single
+read of a source and bypassed by both of its callers. Fix the boundary rather
+than the two symptoms.
+
+A policy — the operator's declared resets together with the account facts read
+with them — is now one value with private fields. No other module can
+assemble one, pair one scope's declaration with another observation's facts,
+or move an account field by assignment; it can only read a policy from a
+group, clone it, or merge it. The merge itself has one implementation:
+absorbing an account takes each fact the incoming side actually reports whose
+own stamp is newer, and nothing else. The Codex reader no longer restates that
+rule. It decides only what a record usably reports, which is its own question,
+and hands the result to the same merge that governs a later cycle.
+
+The watchdog was replacing a held account wholesale from whatever sample
+arrived, so an explicit false stamped earlier than a proven cap lifted the cap
+and booked a back-to-headroom notice for a capped scope. Two rollouts of one
+scope in a single scan had the same hole: the newer row won and took its
+accountless policy with it, discarding a cap its sibling reported.
+
+A reading binds the accepted row, the policy it was judged under and the
+provenance of both, and it is the only thing that moves them: a raw
+observation is replaced by a strictly newer stamp whatever the policy says,
+while the declaration and the account facts merge on their own stamps. The
+daemon holds one reading per window, so the next classification, the notice it
+books and the quota line appended to a throttle nudge all read the same
+observation. That line previously carried the held level beside the refused
+sample's percentage and age, which told a seat 20% was critical.
+
+A rendered claim that ae will not use now says the claim was ignored, because
+a declared reset or a cap may still be deciding the cell, and the documented
+retention of a spend cap says what actually holds it: an explicit report lifts
+it, and neither a tail that no longer carries the record nor a restart carries
+it forward.
 ## [v2026.9.49] - 2026-09-11
 
 ### Other
