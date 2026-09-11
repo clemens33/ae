@@ -19,12 +19,12 @@ use crate::tmux::{
 
 /// `--help`, verbatim.
 pub const USAGE: &str = "\
-Usage: ae orchestrator [--popup --client <name> | --attach | --no-attach | --inside-tmux | --no-autostart]
+Usage: ae orchestrator [--popup|--settings --client <name> | --attach | --no-attach | --inside-tmux | --no-autostart]
 
 Bare `ae orchestrator` starts or reattaches the orchestrator seat from its
 dedicated config under ae's state home. With `--popup --client`, pick a live
-session in a tmux menu and land in its lead pane. Installed bindings supply the
-client name.
+session in a tmux menu and land in its lead pane. With `--settings --client`,
+open the centred settings menu. Installed bindings supply the client name.
 
 The bare seat also accepts `_launch`'s `--attach`, `--no-attach`,
 `--inside-tmux` and `--no-autostart` flags. Working-directory and archive flags
@@ -71,6 +71,8 @@ pub const EXIT_USAGE: u8 = 2;
 pub struct Args {
     /// `--popup`: draw the picker.
     pub popup: bool,
+    /// `--settings`: draw the centred settings menu.
+    pub settings: bool,
     /// `--client <name>`: draw on the client that opened a status menu.
     pub client: Option<String>,
 }
@@ -126,13 +128,14 @@ impl Usage {
 /// use ae::orchestrator::{parse, Args, Usage};
 /// assert_eq!(
 ///     parse(&["--popup".to_owned()]),
-///     Ok(Args { popup: true, client: None })
+///     Ok(Args { popup: true, settings: false, client: None })
 /// );
-/// assert_eq!(parse(&[]), Ok(Args { popup: false, client: None }));
+/// assert_eq!(parse(&[]), Ok(Args { popup: false, settings: false, client: None }));
 /// ```
 pub fn parse(tail: &[String]) -> Result<Args, Usage> {
     let mut args = Args {
         popup: false,
+        settings: false,
         client: None,
     };
     let mut rest = tail;
@@ -141,6 +144,7 @@ pub fn parse(tail: &[String]) -> Result<Args, Usage> {
         match word.as_str() {
             "-h" | "--help" => return Err(Usage::Help),
             "--popup" => args.popup = true,
+            "--settings" => args.settings = true,
             "--client" => {
                 if args.client.is_some() {
                     return Err(Usage::DuplicateClient);
@@ -156,6 +160,9 @@ pub fn parse(tail: &[String]) -> Result<Args, Usage> {
             }
             other => return Err(Usage::Unknown(other.to_owned())),
         }
+    }
+    if args.popup && args.settings {
+        return Err(Usage::Unknown("--popup with --settings".to_owned()));
     }
     Ok(args)
 }
@@ -546,8 +553,7 @@ fn build_menu(
         format!(" · {}", money(fleet.usd_micro, fleet.uncertain))
     });
     let title = format!(
-        " ae {} — {} running · {need_you} need you{spend_segment} — prefix a ",
-        crate::VERSION,
+        " ae session — {} running · {need_you} need you{spend_segment} — prefix a ",
         ranked.len(),
     );
     Menu {
@@ -851,7 +857,7 @@ fn clip_cells(text: &str, width: usize) -> String {
     out
 }
 
-fn terminal_cells(text: &str) -> usize {
+pub(crate) fn terminal_cells(text: &str) -> usize {
     text.chars().map(terminal_cell_width).sum()
 }
 
@@ -972,6 +978,7 @@ mod tests {
             ]),
             Ok(Args {
                 popup: true,
+                settings: false,
                 client: Some("/dev/ttys007".to_owned()),
             })
         );
@@ -979,6 +986,7 @@ mod tests {
             parse(&[]),
             Ok(Args {
                 popup: false,
+                settings: false,
                 client: None
             })
         );
@@ -1174,10 +1182,7 @@ mod tests {
     fn the_title_sums_available_facts_and_omits_the_column_when_none_are() {
         assert_eq!(
             bounded_menu(&[session("quiet", "$1", 0, "")], 6).title,
-            format!(
-                " ae {} — 1 running · 0 need you — prefix a ",
-                crate::VERSION
-            ),
+            " ae session — 1 running · 0 need you — prefix a ",
             "no fact at all leaves the title it always had"
         );
         let mut one = session("one", "$1", 0, "");
@@ -1188,20 +1193,14 @@ mod tests {
         unreadable.spend = "garbage".to_owned();
         assert_eq!(
             bounded_menu(&[one.clone(), two.clone(), unreadable], 8).title,
-            format!(
-                " ae {} — 3 running · 0 need you · ~$3.75 — prefix a ",
-                crate::VERSION
-            ),
+            " ae session — 3 running · 0 need you · ~$3.75 — prefix a ",
             "an unavailable session is left out of the sum and marks it incomplete, \
              so the title never implies whole-fleet coverage it does not have"
         );
         two.spend = format!("v1;{NOW};300;2500000;partial");
         assert_eq!(
             bounded_menu(&[one, two], 8).title,
-            format!(
-                " ae {} — 2 running · 0 need you · ~$3.75 — prefix a ",
-                crate::VERSION
-            ),
+            " ae session — 2 running · 0 need you · ~$3.75 — prefix a ",
             "one uncertain reading makes the whole sum uncertain"
         );
     }
@@ -1568,10 +1567,7 @@ mod tests {
         ];
         assert_eq!(
             menu(&sessions, &[], true, &Palette::DARCULA).title,
-            format!(
-                " ae {} — 3 running · 2 need you — prefix a ",
-                crate::VERSION
-            )
+            " ae session — 3 running · 2 need you — prefix a "
         );
     }
 

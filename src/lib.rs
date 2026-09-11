@@ -64,6 +64,7 @@ pub mod session;
 pub mod session_launch;
 pub mod session_menu;
 mod session_tmux;
+mod settings_menu;
 pub mod shape;
 pub mod shim;
 pub mod spawn;
@@ -464,7 +465,7 @@ fn run_dispatch(args: &[String], out: &mut impl Write, err: &mut impl Write) -> 
     let popup = matches!(
         &request,
         cli::Request::Orchestrator { tail }
-            if orchestrator::parse(tail).is_ok_and(|args| args.popup)
+            if orchestrator::parse(tail).is_ok_and(|args| args.popup || args.settings)
     );
     if schedules_automatic_upgrade(&request) {
         autoupgrade::schedule();
@@ -503,7 +504,7 @@ fn schedules_automatic_upgrade(request: &cli::Request) -> bool {
         cli::Request::List(_) => true,
         cli::Request::Brief { tail } => brief::parse(tail).is_ok(),
         cli::Request::Orchestrator { tail } => {
-            orchestrator::parse(tail).is_ok_and(|args| args.popup)
+            orchestrator::parse(tail).is_ok_and(|args| args.popup || args.settings)
         }
         _ => false,
     }
@@ -562,6 +563,14 @@ fn run_orchestrator(tail: &[String], err: &mut impl Write) -> Result<u8> {
         err.flush()?;
         return Ok(EXIT_UNAVAILABLE);
     };
+    if args.settings {
+        return Ok(run_settings_menu(
+            &server,
+            client_name,
+            probe.menu_mouse(),
+            err,
+        ));
+    }
     let Some(client_snapshot) = transport::observe_picker_client_session(&server, client_name)
     else {
         writeln!(
@@ -639,6 +648,97 @@ fn run_orchestrator(tail: &[String], err: &mut impl Write) -> Result<u8> {
         return Ok(EXIT_UNAVAILABLE);
     }
     Ok(0)
+}
+
+/// `ae orchestrator --settings --client …` — one centred, observational menu.
+fn run_settings_menu(
+    server: &inventory::ServerId,
+    client_name: &str,
+    menu_mouse: bool,
+    err: &mut impl Write,
+) -> u8 {
+    let stderr = |text: &str, err: &mut dyn Write| {
+        let _ = writeln!(err, "ae settings: {text}");
+    };
+    let Some(client) = transport::observe_menu_client(server, client_name) else {
+        stderr(
+            "the invoking client vanished before ae could build settings",
+            err,
+        );
+        return EXIT_UNAVAILABLE;
+    };
+    let Some(identity) = transport::observe_server_identity(server) else {
+        stderr(
+            "the invoking tmux server did not answer with its identity",
+            err,
+        );
+        return EXIT_UNAVAILABLE;
+    };
+    let report = |text: &str, err: &mut dyn Write| {
+        let server_survives = transport::observe_server_identity(server)
+            .is_some_and(|live| live.pid == identity.pid && live.start == identity.start);
+        let client_survives = transport::observe_menu_client(server, client_name)
+            .is_some_and(|live| live.pid == client.pid);
+        if server_survives && client_survives {
+            let _ = transport::display_client_message(server, client_name, text);
+        }
+        let _ = writeln!(err, "ae settings: {text}");
+    };
+    let Some(root) = doors::state_root(shape::current()) else {
+        report(NO_STATE_ROOT, err);
+        return EXIT_UNAVAILABLE;
+    };
+    let Some(core) = shape::resolved_exe() else {
+        report(
+            "ae cannot name its own executable, so settings cannot act",
+            err,
+        );
+        return EXIT_UNAVAILABLE;
+    };
+    let declared = doors::declared_server(shape::current());
+    let control = doors::launch_target(declared.as_ref()).map_or_else(
+        || {
+            settings_menu::Control::Unavailable(
+                "the configured launch server is not addressable".to_owned(),
+            )
+        },
+        |launch_server| settings_menu::discover(&root, server, &launch_server),
+    );
+    let look = picker_look(server, Some(&client.session_id));
+    let config = doors::config_file(shape::current(), &root);
+    let launcher = session_tmux::picker_launcher(shape::current(), &core, &root, &config, server);
+    let menu = settings_menu::menu(
+        &control,
+        &launcher,
+        &settings_menu::Snapshot {
+            client: client_name,
+            client_pid: &client.pid,
+            server_pid: &identity.pid,
+            server_start: &identity.start,
+            deadline: time::Timestamp::now().epoch() + session_menu::CONFIRM_WINDOW_SECS,
+        },
+        &look.palette,
+    );
+    let (columns, rows) = session_menu::menu_budget(&menu);
+    if client.width < columns || client.height < rows {
+        report(
+            &format!(
+                "this terminal is {}x{}; settings needs {columns}x{rows}",
+                client.width, client.height
+            ),
+            err,
+        );
+        return EXIT_UNAVAILABLE;
+    }
+    if !transport::display_menu_centred(server, client_name, &client.session_id, &menu, menu_mouse)
+    {
+        report(
+            "tmux refused to draw settings (the client may have vanished)",
+            err,
+        );
+        return EXIT_UNAVAILABLE;
+    }
+    0
 }
 
 /// Refresh the fleet-picker marker whenever a menu opens.
@@ -806,6 +906,11 @@ fn run_entry(
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> Result<u8> {
+    if argv.first().map(String::as_str) == Some(orchestrator::ORCHESTRATOR_SESSION)
+        && settings_menu::is_apply(&argv[1..])
+    {
+        return settings_menu::run_apply(preamble, &argv[1..], out, err);
+    }
     let code = match entry::route(preamble, argv, doors::calling_pane_id().as_deref()) {
         entry::Route::Help => {
             write!(out, "{}", entry::HELP)?;
@@ -2170,7 +2275,7 @@ pub fn run_with(
             if let Err(usage) = orchestrator::parse(tail) {
                 write!(err, "{}", usage.render())?;
                 usage.code()
-            } else if !orchestrator::parse(tail).is_ok_and(|args| args.popup) {
+            } else if !orchestrator::parse(tail).is_ok_and(|args| args.popup || args.settings) {
                 // The bare word reaches the core only WITHOUT a preamble: the
                 // seat is a launch, and a launch needs the ae command.
                 writeln!(
@@ -2318,6 +2423,7 @@ mod tests {
             argv(&["brief"]),
             argv(&["brief", "--all", "--since", "4h"]),
             argv(&["orchestrator", "--popup"]),
+            argv(&["orchestrator", "--settings"]),
         ];
         for args in accepted {
             let request = crate::cli::Request::parse(&args);

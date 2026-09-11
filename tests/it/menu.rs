@@ -65,9 +65,9 @@ fn menu_mouse(socket: &Path) -> bool {
         .menu_mouse()
 }
 
-/// Whether a capture contains the versioned fleet-picker title.
+/// Whether a capture contains the stable fleet-picker title stem.
 fn picker_is_open(text: &str) -> bool {
-    text.contains(&format!("ae {} —", ae::VERSION))
+    text.contains("ae session —")
 }
 
 /// Poll `read` until it answers something `settled` accepts, or fail saying
@@ -765,11 +765,8 @@ fn the_menu_ae_builds_draws_on_a_real_server_and_its_rows_land_the_client() {
         "one hash and one percent, as measured: {drawn}"
     );
     assert!(
-        drawn.contains(&format!(
-            "ae {} — 1 running · 0 need you · $12.34 — prefix a",
-            ae::VERSION
-        )),
-        "the drawn picker title names its running core and the fleet's spend: {drawn}"
+        drawn.contains("ae session — 1 running · 0 need you · $12.34 — prefix a"),
+        "the drawn picker title carries the stable stem and the fleet's spend: {drawn}"
     );
     assert!(
         drawn.contains("  $12.34 100% of"),
@@ -1271,6 +1268,1074 @@ fn launch_ae_session(
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+fn write_settings_config(project: &Path, config: &Path) {
+    assert!(fs::create_dir_all(project).is_ok());
+    assert!(
+        fs::write(
+            config,
+            "[profiles]\nidle = \"sleep 600\"\n\n[roster]\nlead = idle\norchestrator = idle\n\n[workspace]\nmain = lead\nlayout = vertical\nwatchdog = false\n",
+        )
+        .is_ok()
+    );
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one exact settings invocation tuple"
+)]
+fn settings_invocation(
+    socket: &Path,
+    scratch: &Path,
+    root: &Path,
+    config: &Path,
+    caller_pane: &str,
+    client: &str,
+    action: Option<(&str, &str, &str, &str, &str, &str, i64)>,
+) -> std::process::Output {
+    let mut command = ae();
+    command
+        .env("HOME", scratch)
+        .env("AE_HOME", root)
+        .env("CONFIG_FILE", config)
+        .env("AE_TMUX_SERVER_KIND", "socket")
+        .env("AE_TMUX_SERVER", socket)
+        .env("TMUX_TMPDIR", scratch)
+        .env("TMUX", format!("{},fixture,0", socket.display()))
+        .env("TMUX_PANE", caller_pane)
+        .arg("orchestrator");
+    if let Some((target, uuid, client_pid, server_pid, server_start, verb, deadline)) = action {
+        command.args([
+            "--settings-apply",
+            verb,
+            "--target",
+            target,
+            "--uuid",
+            uuid,
+            "--client",
+            client,
+            "--client-pid",
+            client_pid,
+            "--server-pid",
+            server_pid,
+            "--server-start",
+            server_start,
+            "--deadline",
+            &deadline.to_string(),
+        ]);
+    } else {
+        command.args(["--settings", "--client", client]);
+    }
+    command
+        .output()
+        .unwrap_or_else(|error| panic!("the settings invocation runs: {error}"))
+}
+
+#[allow(clippy::too_many_arguments, reason = "one real menu draw tuple")]
+fn choose_settings_row(
+    socket: &Path,
+    scratch: &Path,
+    root: &Path,
+    config: &Path,
+    caller_pane: &str,
+    client: &str,
+    viewer: &str,
+    other_viewer: &str,
+    expected: &str,
+    key: &str,
+) -> String {
+    std::thread::scope(|scope| {
+        let driver = scope.spawn(|| {
+            let menu = wait_for(
+                "settings menu",
+                || tmux(socket, scratch, &["capture-pane", "-p", "-t", viewer]).1,
+                |seen| seen.contains("ae settings") && seen.contains(expected),
+            );
+            let other = tmux(socket, scratch, &["capture-pane", "-p", "-t", other_viewer]).1;
+            assert!(!other.contains("ae settings"), "menu leaked: {other}");
+            assert!(tmux(socket, scratch, &["send-keys", "-t", viewer, key]).0);
+            menu
+        });
+        let output = settings_invocation(socket, scratch, root, config, caller_pane, client, None);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "settings: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        driver
+            .join()
+            .unwrap_or_else(|_| panic!("settings key driver panicked"))
+    })
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one private-tmux Start, renamed Resume and stale-target lifecycle story"
+)]
+fn settings_starts_then_resumes_the_exact_renamed_role_without_switching_its_client() {
+    let scratch = scratch("orchestrator-actions");
+    if !tmux_present(&scratch) {
+        let _ = fs::remove_dir_all(&scratch);
+        panic!("tmux is not runnable here, so settings actions cannot be proven");
+    }
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let root = scratch.join("state");
+    let project = scratch.join("project");
+    let config = scratch.join("config");
+    write_settings_config(&project, &config);
+    launch_ae_session(&socket, &scratch, &root, &project, &config, "viewed");
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &["split-window", "-d", "-h", "-t", "viewed"]
+        )
+        .0
+    );
+    let clicked = nested_client(&socket, &scratch, "viewed", "settings-viewer");
+    let untouched = nested_client(&socket, &scratch, "viewed", "settings-other");
+    let caller_pane = select_client_right_pane(&socket, &scratch, "viewed", &clicked);
+
+    let start_menu = choose_settings_row(
+        &socket,
+        &scratch,
+        &root,
+        &config,
+        &caller_pane,
+        &clicked,
+        "settings-viewer",
+        "settings-other",
+        "Start orchestrator",
+        "s",
+    );
+    let title_left = start_menu
+        .lines()
+        .find(|line| line.contains("ae settings"))
+        .and_then(|line| {
+            line.chars()
+                .position(|character| matches!(character, '╭' | '┌'))
+        })
+        .unwrap_or_default();
+    assert!(
+        (30..100).contains(&title_left),
+        "settings is not centred on the 140-column client: {start_menu}"
+    );
+    let role_dir = root.join("sessions/orchestrator");
+    wait_for(
+        "canonical role Start",
+        || {
+            let live = tmux(&socket, &scratch, &["has-session", "-t", "=orchestrator"]).0;
+            let role = ae::meta::meta_agent_role(&meta_bytes(&role_dir));
+            format!("{live}|{role:?}")
+        },
+        |seen| seen == "true|Role",
+    );
+    let clients = tmux(
+        &socket,
+        &scratch,
+        &["list-clients", "-F", "#{client_name}|#{client_session}"],
+    )
+    .1;
+    assert!(clients.contains(&format!("{clicked}|viewed")), "{clients}");
+    assert!(
+        clients.contains(&format!("{untouched}|viewed")),
+        "{clients}"
+    );
+
+    let renamed = ae()
+        .env("HOME", &scratch)
+        .env("AE_HOME", &root)
+        .env("CONFIG_FILE", &config)
+        .env("TMUX_TMPDIR", &scratch)
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
+        .args([ae::cli::RENAME, "orchestrator", "renamed"])
+        .output()
+        .expect("rename runs");
+    assert_eq!(renamed.status.code(), Some(0), "{renamed:?}");
+    assert!(
+        tmux(&socket, &scratch, &["kill-session", "-t", "=renamed"]).0,
+        "the renamed role stops"
+    );
+    let renamed_dir = root.join("sessions/renamed");
+    let resume_menu = choose_settings_row(
+        &socket,
+        &scratch,
+        &root,
+        &config,
+        &caller_pane,
+        &clicked,
+        "settings-viewer",
+        "settings-other",
+        "Resume orchestrator 'renamed'",
+        "r",
+    );
+    assert!(resume_menu.contains("orchestrator: stopped (renamed)"));
+    wait_for(
+        "exact renamed Resume",
+        || {
+            tmux(&socket, &scratch, &["has-session", "-t", "=renamed"])
+                .0
+                .to_string()
+        },
+        |seen| seen == "true",
+    );
+    wait_for(
+        "renamed Resume completion",
+        || {
+            tmux(
+                &socket,
+                &scratch,
+                &["capture-pane", "-p", "-t", "settings-viewer"],
+            )
+            .1
+        },
+        |seen| seen.contains("Resumed orchestrator 'renamed'"),
+    );
+    assert!(tmux(&socket, &scratch, &["display-message", "-c", &clicked, ""]).0);
+    let clients = tmux(
+        &socket,
+        &scratch,
+        &["list-clients", "-F", "#{client_name}|#{client_session}"],
+    )
+    .1;
+    assert!(clients.contains(&format!("{clicked}|viewed")), "{clients}");
+
+    assert!(
+        tmux(&socket, &scratch, &["kill-session", "-t", "=renamed"]).0,
+        "the resumed role stops for the stale-row case"
+    );
+    let before = meta_bytes(&renamed_dir);
+    assert!(!before.is_empty(), "role bytes before stale Resume");
+    let parked = root.join("parked-role");
+    std::thread::scope(|scope| {
+        let driver = scope.spawn(|| {
+            wait_for(
+                "stale Resume menu",
+                || {
+                    tmux(
+                        &socket,
+                        &scratch,
+                        &["capture-pane", "-p", "-t", "settings-viewer"],
+                    )
+                    .1
+                },
+                |seen| seen.contains("Resume orchestrator 'renamed'"),
+            );
+            fs::rename(&renamed_dir, &parked).expect("remove target before Resume preflight");
+            assert!(
+                tmux(
+                    &socket,
+                    &scratch,
+                    &["send-keys", "-t", "settings-viewer", "r"]
+                )
+                .0
+            );
+        });
+        let output = settings_invocation(
+            &socket,
+            &scratch,
+            &root,
+            &config,
+            &caller_pane,
+            &clicked,
+            None,
+        );
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        driver.join().expect("stale Resume driver");
+    });
+    let refusal = wait_for(
+        "stale Resume refusal",
+        || {
+            tmux(
+                &socket,
+                &scratch,
+                &["capture-pane", "-p", "-t", "settings-viewer"],
+            )
+            .1
+        },
+        |seen| seen.contains("disappeared before Resume"),
+    );
+    assert!(refusal.contains("Nothing was resumed"), "{refusal}");
+    assert!(
+        !tmux(&socket, &scratch, &["has-session", "-t", "=renamed"]).0,
+        "a missing target was recreated"
+    );
+    fs::rename(&parked, &renamed_dir).expect("restore the exact stopped identity");
+    assert_eq!(meta_bytes(&renamed_dir), before);
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one expiry and two forged-identity delivery cases on one real attachment"
+)]
+fn settings_reports_expiry_only_to_a_reproven_attachment_and_never_to_forged_identity() {
+    let scratch = scratch("settings-report-routing");
+    if !tmux_present(&scratch) {
+        let _ = fs::remove_dir_all(&scratch);
+        panic!("tmux is not runnable here, so exact-client reports cannot be proven");
+    }
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let root = scratch.join("state");
+    let project = scratch.join("project");
+    let config = scratch.join("config");
+    write_settings_config(&project, &config);
+    launch_ae_session(&socket, &scratch, &root, &project, &config, "viewed");
+    let clicked = nested_client(&socket, &scratch, "viewed", "report-viewer");
+    let untouched = nested_client(&socket, &scratch, "viewed", "report-other");
+    let server = ServerId::Selected(Selector::Socket(socket.clone()));
+    let identity = ae::transport::observe_server_identity(&server).expect("server identity");
+    let client = ae::transport::observe_menu_client(&server, &clicked).expect("client identity");
+    let caller_pane = tmux(
+        &socket,
+        &scratch,
+        &["display-message", "-p", "-t", "viewed", "#{pane_id}"],
+    )
+    .1
+    .trim()
+    .to_owned();
+    let lock_path = root.join("sessions/.lifecycle.orchestrator.lock");
+    let held = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(&lock_path)
+        .expect("the canonical lifecycle lock opens");
+    held.try_lock().expect("the test holds the Start lock");
+    let deadline = ae::time::Timestamp::now().epoch() + 1;
+    let action_output = std::thread::scope(|scope| {
+        let action = scope.spawn(|| {
+            settings_invocation(
+                &socket,
+                &scratch,
+                &root,
+                &config,
+                &caller_pane,
+                &clicked,
+                Some((
+                    "orchestrator",
+                    "",
+                    &client.pid,
+                    &identity.pid,
+                    &identity.start,
+                    "start",
+                    deadline,
+                )),
+            )
+        });
+        std::thread::sleep(Duration::from_secs(2));
+        drop(held);
+        action.join().expect("expired Start action")
+    });
+    assert_eq!(action_output.status.code(), Some(1), "{action_output:?}");
+    assert!(String::from_utf8_lossy(&action_output.stderr).contains("expired"));
+    wait_for(
+        "visible expiry",
+        || {
+            tmux(
+                &socket,
+                &scratch,
+                &["capture-pane", "-p", "-t", "report-viewer"],
+            )
+            .1
+        },
+        |seen| seen.contains("expired"),
+    );
+    let other = tmux(
+        &socket,
+        &scratch,
+        &["capture-pane", "-p", "-t", "report-other"],
+    )
+    .1;
+    assert!(!other.contains("expired"), "report leaked: {other}");
+    assert!(
+        tmux(&socket, &scratch, &["display-message", "-c", &clicked, ""]).0,
+        "clear the positive control before negative delivery checks"
+    );
+
+    for (tag, client_pid, server_pid, reason) in [
+        ("client", "1", identity.pid.as_str(), "different attachment"),
+        ("server", client.pid.as_str(), "1", "server was replaced"),
+    ] {
+        let refused = settings_invocation(
+            &socket,
+            &scratch,
+            &root,
+            &config,
+            &caller_pane,
+            &clicked,
+            Some((
+                "orchestrator",
+                "",
+                client_pid,
+                server_pid,
+                &identity.start,
+                "start",
+                ae::time::Timestamp::now().epoch() + 60,
+            )),
+        );
+        assert_eq!(refused.status.code(), Some(1), "{tag}: {refused:?}");
+        assert!(
+            String::from_utf8_lossy(&refused.stderr).contains(reason),
+            "{tag}: {refused:?}"
+        );
+        let visible = tmux(
+            &socket,
+            &scratch,
+            &["capture-pane", "-p", "-t", "report-viewer"],
+        )
+        .1;
+        assert!(!visible.contains(reason), "{tag} leaked: {visible}");
+    }
+    assert!(!state_kept(&root.join("sessions/orchestrator")));
+    assert!(!tmux(&socket, &scratch, &["has-session", "-t", "=orchestrator"]).0);
+    assert!(!untouched.is_empty());
+}
+
+#[test]
+#[allow(
+    clippy::disallowed_methods,
+    clippy::too_many_lines,
+    reason = "the private fixture inspects its marker and protected scratch paths"
+)]
+fn settings_rechecks_role_liveness_and_uuid_after_each_captured_action() {
+    const REPLACEMENT_UUID: &str = "44444444-4444-4444-8444-444444444444";
+    let scratch = scratch("settings-stale-actions");
+    if !tmux_present(&scratch) {
+        let _ = fs::remove_dir_all(&scratch);
+        panic!("tmux is not runnable here, so stale settings actions cannot be proven");
+    }
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let root = scratch.join("state");
+    let project = scratch.join("project");
+    let config = scratch.join("config");
+    write_settings_config(&project, &config);
+    launch_ae_session(&socket, &scratch, &root, &project, &config, "viewed");
+    launch_ae_session(&socket, &scratch, &root, &project, &config, "role-source");
+    let bystander_before = meta_bytes(&root.join("sessions/viewed"));
+    let clicked = nested_client(&socket, &scratch, "viewed", "stale-viewer");
+    let caller_pane = tmux(
+        &socket,
+        &scratch,
+        &["display-message", "-p", "-t", "viewed", "#{pane_id}"],
+    )
+    .1
+    .trim()
+    .to_owned();
+    let server = ServerId::Selected(Selector::Socket(socket.clone()));
+    let identity = ae::transport::observe_server_identity(&server).expect("server identity");
+    let client = ae::transport::observe_menu_client(&server, &clicked).expect("client identity");
+
+    // Hold the canonical lock while a separately authorized different-name
+    // role lands through the real rename path. The fixed debug marker proves
+    // the continuation finished preflight before the competing role appears.
+    let canonical_lock = root.join("sessions/.lifecycle.orchestrator.lock");
+    let held = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(&canonical_lock)
+        .expect("the canonical lifecycle lock opens");
+    held.try_lock().expect("the test holds the canonical lock");
+    let marker = root.join(ae::session_launch::TEST_PRE_LOCK_MARKER);
+    assert!(!marker.exists(), "the pre-lock marker starts absent");
+    let deadline = (ae::time::Timestamp::now().epoch() + 60).to_string();
+    let mut command = ae();
+    command
+        .env("HOME", &scratch)
+        .env("AE_HOME", &root)
+        .env("CONFIG_FILE", &config)
+        .env("AE_TMUX_SERVER_KIND", "socket")
+        .env("AE_TMUX_SERVER", &socket)
+        .env("TMUX_TMPDIR", &scratch)
+        .env("TMUX", format!("{},fixture,0", socket.display()))
+        .env("TMUX_PANE", &caller_pane)
+        .args([
+            "orchestrator",
+            "--settings-apply",
+            "start",
+            "--test-pre-lock-marker",
+            "--target",
+            "orchestrator",
+            "--uuid",
+            "",
+            "--client",
+            &clicked,
+            "--client-pid",
+            &client.pid,
+            "--server-pid",
+            &identity.pid,
+            "--server-start",
+            &identity.start,
+            "--deadline",
+            &deadline,
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = command.spawn().expect("the captured Start begins");
+    wait_for(
+        "settings Start pre-lock marker",
+        || marker.is_file().to_string(),
+        |seen| seen == "true",
+    );
+    assert!(
+        child.try_wait().expect("inspect marked Start").is_none(),
+        "marked Start exited while the test still held its lifecycle lock"
+    );
+    assert!(!state_kept(&root.join("sessions/orchestrator")));
+    assert!(!root.join("sessions/orchestrator/.launch-attempt").exists());
+    assert!(!tmux(&socket, &scratch, &["has-session", "-t", "=orchestrator"]).0);
+    let source_dir = root.join("sessions/role-source");
+    let mut source_meta = String::from_utf8(meta_bytes(&source_dir)).expect("text source meta");
+    source_meta.push_str("meta_agent=true\n");
+    assert!(fs::write(source_dir.join("meta"), source_meta).is_ok());
+    let renamed = ae()
+        .env("HOME", &scratch)
+        .env("AE_HOME", &root)
+        .env("CONFIG_FILE", &config)
+        .env("TMUX_TMPDIR", &scratch)
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
+        .args([ae::cli::RENAME, "role-source", "renamed-role"])
+        .output()
+        .expect("the competing role rename runs");
+    assert_eq!(renamed.status.code(), Some(0), "{renamed:?}");
+    let competing = root.join("sessions/renamed-role");
+    let competing_meta = meta_bytes(&competing);
+    assert_eq!(
+        ae::meta::meta_agent_role(&competing_meta),
+        ae::meta::MetaAgentRole::Role
+    );
+    drop(held);
+    let stale_start = child.wait_with_output().expect("captured Start completes");
+    let start_err = String::from_utf8_lossy(&stale_start.stderr);
+    assert_eq!(stale_start.status.code(), Some(1), "{start_err}");
+    assert!(
+        start_err.contains("now recorded by 'renamed-role'"),
+        "{start_err}"
+    );
+    assert!(!state_kept(&root.join("sessions/orchestrator")));
+    assert_eq!(meta_bytes(&competing), competing_meta);
+    assert_eq!(meta_bytes(&root.join("sessions/viewed")), bystander_before);
+    assert!(tmux(&socket, &scratch, &["has-session", "-t", "=renamed-role"]).0);
+    assert!(tmux(&socket, &scratch, &["kill-session", "-t", "=renamed-role"]).0);
+    assert!(fs::remove_dir_all(&competing).is_ok());
+
+    // Capture a stopped exact role, then make it live before invoking Resume.
+    launch_ae_session(&socket, &scratch, &root, &project, &config, "renamed");
+    let renamed_dir = root.join("sessions/renamed");
+    let mut role_meta = String::from_utf8(meta_bytes(&renamed_dir)).expect("text role meta");
+    role_meta.push_str("meta_agent=true\n");
+    assert!(fs::write(renamed_dir.join("meta"), role_meta).is_ok());
+    assert!(tmux(&socket, &scratch, &["kill-session", "-t", "=renamed"]).0);
+    let stopped = meta_bytes(&renamed_dir);
+    let uuid = ae::meta::sole_value(&stopped, "session_id")
+        .map(String::from_utf8_lossy)
+        .map(std::borrow::Cow::into_owned)
+        .expect("saved role UUID");
+    launch_ae_session(&socket, &scratch, &root, &project, &config, "renamed");
+    let mut live_role = String::from_utf8(meta_bytes(&renamed_dir)).expect("text live meta");
+    live_role.push_str("meta_agent=true\n");
+    assert!(fs::write(renamed_dir.join("meta"), live_role).is_ok());
+    let live_before = meta_bytes(&renamed_dir);
+    let now_live = settings_invocation(
+        &socket,
+        &scratch,
+        &root,
+        &config,
+        &caller_pane,
+        &clicked,
+        Some((
+            "renamed",
+            &uuid,
+            &client.pid,
+            &identity.pid,
+            &identity.start,
+            "resume",
+            ae::time::Timestamp::now().epoch() + 60,
+        )),
+    );
+    let live_err = String::from_utf8_lossy(&now_live.stderr);
+    assert_eq!(now_live.status.code(), Some(1), "{live_err}");
+    assert!(
+        live_err.contains("is live now; stale Resume refused"),
+        "{live_err}"
+    );
+    assert!(tmux(&socket, &scratch, &["has-session", "-t", "=renamed"]).0);
+    assert_eq!(meta_bytes(&renamed_dir), live_before);
+    assert!(tmux(&socket, &scratch, &["kill-session", "-t", "=renamed"]).0);
+
+    // Replace only the stopped identity; the captured UUID must not follow it.
+    let replacement = ae::meta::rewritten(
+        &String::from_utf8(meta_bytes(&renamed_dir)).expect("text stopped meta"),
+        "session_id",
+        Some(REPLACEMENT_UUID),
+    );
+    assert!(fs::write(renamed_dir.join("meta"), &replacement).is_ok());
+    let replaced = settings_invocation(
+        &socket,
+        &scratch,
+        &root,
+        &config,
+        &caller_pane,
+        &clicked,
+        Some((
+            "renamed",
+            &uuid,
+            &client.pid,
+            &identity.pid,
+            &identity.start,
+            "resume",
+            ae::time::Timestamp::now().epoch() + 60,
+        )),
+    );
+    let replaced_err = String::from_utf8_lossy(&replaced.stderr);
+    assert_eq!(replaced.status.code(), Some(1), "{replaced_err}");
+    assert!(replaced_err.contains("was replaced"), "{replaced_err}");
+    assert!(!tmux(&socket, &scratch, &["has-session", "-t", "=renamed"]).0);
+    assert_eq!(meta_bytes(&renamed_dir), replacement.as_bytes());
+    assert_eq!(meta_bytes(&root.join("sessions/viewed")), bystander_before);
+}
+
+fn rendered_status(socket: &Path, scratch: &Path, client: &str) -> String {
+    tmux(
+        socket,
+        scratch,
+        &[
+            "display-message",
+            "-p",
+            "-c",
+            client,
+            "#{E:status-format[1]}",
+        ],
+    )
+    .1
+}
+
+fn measured_cursor_width(
+    socket: &Path,
+    scratch: &Path,
+    session: &str,
+    print_command: &str,
+) -> String {
+    assert!(
+        tmux(
+            socket,
+            scratch,
+            &[
+                "new-session",
+                "-d",
+                "-s",
+                session,
+                "-x",
+                "80",
+                "-y",
+                "5",
+                print_command,
+            ],
+        )
+        .0,
+        "create the width-measurement pane for {session}"
+    );
+    let width = wait_for(
+        session,
+        || {
+            tmux(
+                socket,
+                scratch,
+                &["list-panes", "-t", session, "-F", "#{cursor_x}"],
+            )
+            .1
+        },
+        |seen| seen.trim() != "0" && !seen.trim().is_empty(),
+    );
+    assert!(
+        tmux(socket, scratch, &["kill-session", "-t", session]).0,
+        "remove the width-measurement pane for {session}"
+    );
+    width.trim().to_owned()
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one real settings-range geometry, render, click and Cancel story"
+)]
+fn settings_range_measures_renders_clicks_and_cancels_on_the_exact_client() {
+    let scratch = scratch("settings-real-range");
+    if !tmux_present(&scratch) {
+        let _ = fs::remove_dir_all(&scratch);
+        panic!("tmux is not runnable here, so the settings range cannot be proven");
+    }
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let root = scratch.join("state");
+    let project = scratch.join("project");
+    let config = scratch.join("config");
+    write_settings_config(&project, &config);
+    launch_ae_session(&socket, &scratch, &root, &project, &config, "viewed");
+    let clicked = nested_client(&socket, &scratch, "viewed", "settings-clicked");
+    let untouched = nested_client(&socket, &scratch, "viewed", "settings-untouched");
+
+    let bare = measured_cursor_width(&socket, &scratch, "width-bare-gear", "printf '⚙'; sleep 10");
+    let ascii = measured_cursor_width(&socket, &scratch, "width-ascii", "printf '*'; sleep 10");
+    let emoji = measured_cursor_width(
+        &socket,
+        &scratch,
+        "width-emoji-gear",
+        "printf '⚙️'; sleep 10",
+    );
+    eprintln!(
+        "tmux settings width receipt: bare U+2699={bare}|ASCII *={ascii}|U+2699+FE0F={emoji}"
+    );
+    assert_eq!(
+        (bare.as_str(), ascii.as_str(), emoji.as_str()),
+        ("1", "1", "2")
+    );
+    let icons_format = ae::theme::status_line_one(&ae::theme::Look::DEFAULT);
+    assert!(icons_format.contains("#[range=user|ae-settings]\u{2699}"));
+    assert!(
+        !icons_format.contains('\u{fe0f}'),
+        "settings uses bare U+2699"
+    );
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &[
+                "set-option",
+                "-t",
+                "viewed",
+                ae::theme::VERSION_OPTION,
+                "ae 2099.1.2",
+            ],
+        )
+        .0
+    );
+    let wide = rendered_status(&socket, &scratch, &clicked);
+    assert!(
+        wide.contains("#[range=user|ae-settings]⚙ ae 2099.1.2#[norange]"),
+        "{wide}"
+    );
+
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &[
+                "set-option",
+                "-qu",
+                "-t",
+                "viewed",
+                ae::theme::VERSION_OPTION
+            ],
+        )
+        .0
+    );
+    let missing = rendered_status(&socket, &scratch, &clicked);
+    assert!(
+        missing.contains("#[range=user|ae-settings]⚙#[norange]"),
+        "{missing}"
+    );
+    assert!(!missing.contains("2099.1.2"), "{missing}");
+
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &[
+                "resize-window",
+                "-t",
+                "settings-clicked",
+                "-x",
+                "80",
+                "-y",
+                "40"
+            ],
+        )
+        .0
+    );
+    wait_for(
+        "narrow settings client",
+        || {
+            tmux(
+                &socket,
+                &scratch,
+                &["display-message", "-p", "-c", &clicked, "#{client_width}"],
+            )
+            .1
+        },
+        |seen| seen.trim() == "80",
+    );
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &[
+                "set-option",
+                "-t",
+                "viewed",
+                ae::theme::VERSION_OPTION,
+                "ae 2099.1.2",
+            ],
+        )
+        .0
+    );
+    let narrow = rendered_status(&socket, &scratch, &clicked);
+    assert!(
+        narrow.contains("#[range=user|ae-settings]⚙#[norange]"),
+        "{narrow}"
+    );
+    assert!(!narrow.contains("2099.1.2"), "{narrow}");
+
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &[
+                "resize-window",
+                "-t",
+                "settings-clicked",
+                "-x",
+                "140",
+                "-y",
+                "40"
+            ],
+        )
+        .0
+    );
+    wait_for(
+        "wide ASCII settings client",
+        || {
+            tmux(
+                &socket,
+                &scratch,
+                &["display-message", "-p", "-c", &clicked, "#{client_width}"],
+            )
+            .1
+        },
+        |seen| seen.trim() == "140",
+    );
+    let ascii_format = ae::theme::status_line_one(&ae::theme::Look::read("off", "", "", ""));
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &[
+                "set-option",
+                "-t",
+                "viewed",
+                "status-format[1]",
+                &ascii_format
+            ],
+        )
+        .0
+    );
+    let ascii = rendered_status(&socket, &scratch, &clicked);
+    assert!(
+        ascii.contains("#[range=user|ae-settings]* ae 2099.1.2#[norange]"),
+        "{ascii}"
+    );
+
+    // Put only the real range at a deterministic coordinate while retaining
+    // the launch-installed bindings. Left click Starts; right click reaches
+    // Pause confirmation, whose Cancel must preserve the target exactly.
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &[
+                "set-option",
+                "-t",
+                "viewed",
+                "status-format[1]",
+                "#[range=user|ae-settings] ⚙ #[norange]",
+            ],
+        )
+        .0
+    );
+    click_status(&socket, &scratch, "settings-clicked", &clicked, 0, 2);
+    wait_for(
+        "settings from real left click",
+        || {
+            tmux(
+                &socket,
+                &scratch,
+                &["capture-pane", "-p", "-t", "settings-clicked"],
+            )
+            .1
+        },
+        |seen| seen.contains("ae settings") && seen.contains("Start orchestrator"),
+    );
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &["send-keys", "-t", "settings-clicked", "s"]
+        )
+        .0
+    );
+    let role_dir = root.join("sessions/orchestrator");
+    wait_for(
+        "orchestrator after left-click Start",
+        || {
+            format!(
+                "{}|{:?}",
+                tmux(&socket, &scratch, &["has-session", "-t", "=orchestrator"]).0,
+                ae::meta::meta_agent_role(&meta_bytes(&role_dir))
+            )
+        },
+        |seen| seen == "true|Role",
+    );
+    wait_for(
+        "left-click Start completion",
+        || {
+            tmux(
+                &socket,
+                &scratch,
+                &["capture-pane", "-p", "-t", "settings-clicked"],
+            )
+            .1
+        },
+        |seen| seen.contains("Started orchestrator without switching this client."),
+    );
+    let before_cancel = meta_bytes(&role_dir);
+
+    click_status(&socket, &scratch, "settings-clicked", &clicked, 2, 2);
+    wait_for(
+        "settings Pause from real right click",
+        || {
+            tmux(
+                &socket,
+                &scratch,
+                &["capture-pane", "-p", "-t", "settings-clicked"],
+            )
+            .1
+        },
+        |seen| seen.contains("ae settings") && seen.contains("Pause orchestrator"),
+    );
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &["send-keys", "-t", "settings-clicked", "p"]
+        )
+        .0
+    );
+    wait_for(
+        "Pause confirmation",
+        || {
+            tmux(
+                &socket,
+                &scratch,
+                &["capture-pane", "-p", "-t", "settings-clicked"],
+            )
+            .1
+        },
+        |seen| seen.contains("Pause orchestrator 'orchestrator'?") && seen.contains("PRESERVED"),
+    );
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &["send-keys", "-t", "settings-clicked", "c"]
+        )
+        .0
+    );
+    wait_for(
+        "Pause cancellation",
+        || {
+            tmux(
+                &socket,
+                &scratch,
+                &["capture-pane", "-p", "-t", "settings-clicked"],
+            )
+            .1
+        },
+        |seen| !seen.contains("Pause orchestrator 'orchestrator'?"),
+    );
+    assert!(tmux(&socket, &scratch, &["has-session", "-t", "=orchestrator"]).0);
+    assert_eq!(meta_bytes(&role_dir), before_cancel);
+    let other = tmux(
+        &socket,
+        &scratch,
+        &["capture-pane", "-p", "-t", "settings-untouched"],
+    )
+    .1;
+    assert!(
+        !other.contains("ae settings") && !other.contains("Pause orchestrator"),
+        "{other}"
+    );
+
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &[
+                "resize-window",
+                "-t",
+                "settings-clicked",
+                "-x",
+                "20",
+                "-y",
+                "5"
+            ],
+        )
+        .0
+    );
+    wait_for(
+        "tiny settings client",
+        || {
+            tmux(
+                &socket,
+                &scratch,
+                &[
+                    "display-message",
+                    "-p",
+                    "-c",
+                    &clicked,
+                    "#{client_width}x#{client_height}",
+                ],
+            )
+            .1
+        },
+        |seen| seen.trim() == "20x5",
+    );
+    click_status(&socket, &scratch, "settings-clicked", &clicked, 0, 2);
+    let tiny = wait_for(
+        "tiny settings refusal",
+        || {
+            tmux(
+                &socket,
+                &scratch,
+                &["capture-pane", "-p", "-t", "settings-clicked"],
+            )
+            .1
+        },
+        |seen| seen.contains("this terminal is 20x"),
+    );
+    assert!(tiny.contains("this terminal is 20x"), "{tiny}");
+    assert!(tmux(&socket, &scratch, &["has-session", "-t", "=orchestrator"]).0);
+    assert_eq!(meta_bytes(&role_dir), before_cancel);
+    assert!(!untouched.is_empty());
 }
 
 /// Launch two sessions with one real client pair, then prove a right-click on

@@ -105,7 +105,7 @@ pub fn run(
             return Ok(EXIT_FAILED);
         }
     };
-    if meta::sole_value(&caller_meta, "meta_agent") != Some(b"true".as_slice()) {
+    if meta::meta_agent_role(&caller_meta) != meta::MetaAgentRole::Role {
         return refuse(
             &caller,
             &parsed,

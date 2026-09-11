@@ -1548,10 +1548,57 @@ fn expectation(rig: &Rig, deadline: i64, client: (&str, &str)) -> Vec<String> {
         "socket",
         "--expect-server",
         &rig.sock.display().to_string(),
+        "--expect-meta-agent",
+        "false",
     ]
     .iter()
     .map(|word| (*word).to_owned())
     .collect()
+}
+
+/// Pause adds one role proof to the existing confirmation identity. A missing
+/// role earns no writes; the same captured identity succeeds once the exact
+/// role row is present and still preserves the state directory.
+#[test]
+fn orchestrator_pause_requires_role_under_lock_then_reaches_existing_stop() {
+    let rig = Rig::new("pause-role");
+    let client = attach_client(&rig, "vpause-role");
+    std::fs::write(rig.dir.join("events.jsonl"), "sentinel\n").expect("a sentinel log");
+    let before_meta = std::fs::read(rig.dir.join("meta")).expect("the meta bytes");
+    let before_events = std::fs::read(rig.dir.join("events.jsonl")).expect("the event bytes");
+    let mut argv = vec![
+        "_stop".to_owned(),
+        "--supervise".to_owned(),
+        rig.name.clone(),
+    ];
+    argv.extend(expectation(&rig, now() + 60, (&client.0, &client.1)));
+    let role_at = argv
+        .iter()
+        .position(|word| word == "--expect-meta-agent")
+        .expect("the role flag");
+    argv[role_at + 1] = "true".to_owned();
+    let borrowed: Vec<&str> = argv.iter().map(String::as_str).collect();
+
+    let (code, _, err) = rig.run(&borrowed);
+    assert_ne!(code, Some(0), "{err}");
+    assert!(
+        err.contains("no longer proves the orchestrator role"),
+        "{err}"
+    );
+    assert!(rig.session_is_live(), "missing role stopped the target");
+    assert_eq!(std::fs::read(rig.dir.join("meta")).unwrap(), before_meta);
+    assert_eq!(
+        std::fs::read(rig.dir.join("events.jsonl")).unwrap(),
+        before_events
+    );
+
+    let mut role_meta = String::from_utf8(before_meta).expect("text meta");
+    role_meta.push_str("meta_agent=true\n");
+    std::fs::write(rig.dir.join("meta"), role_meta).expect("the exact role row");
+    let (code, out, err) = rig.run(&borrowed);
+    assert_eq!(code, Some(0), "stdout={out} stderr={err}");
+    assert!(!rig.session_is_live(), "the proven role remains live");
+    assert!(exists(&rig.dir.join("meta")), "Pause preserves state");
 }
 
 fn now() -> i64 {
@@ -1686,8 +1733,8 @@ fn applying_one_confirmation_twice_has_no_second_effect() {
     assert!(!err.contains("panicked"), "{err}");
 }
 
-/// A partial identity is a caller that lost a field, and proving five of six
-/// identities before a kill is not the contract.
+/// A partial identity is a caller that lost a field, and proving only part of
+/// the captured identity before a kill is not the contract.
 #[test]
 fn an_incomplete_expectation_is_a_usage_error_not_a_weaker_proof() {
     let rig = Rig::new("expectpartial");
@@ -1919,6 +1966,8 @@ fn a_confirmed_stop_of_a_session_named_all_never_becomes_a_fleet_stop() {
         "socket",
         "--expect-server",
         &rig.sock.display().to_string(),
+        "--expect-meta-agent",
+        "false",
     ]);
     assert_eq!(code, Some(0), "stdout={out} stderr={err}");
     let (_, listed) = rig.tmux(&["list-sessions", "-F", "#{session_name}"]);

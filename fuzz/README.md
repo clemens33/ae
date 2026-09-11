@@ -54,7 +54,7 @@ A crash writes its input under `artifacts/<target>/`; reproduce it with
 | Target | Parser | Input |
 |---|---|---|
 | `config_parse` | `config::parse_identity` | one identity v2 config text |
-| `meta_parse` | `meta::Meta::parse` | one session meta document |
+| `meta_parse` | `meta::Meta::parse` + `meta::meta_agent_role` | one session meta document, including the byte-exact orchestrator-role claim |
 | `launch_cmd_lex` | `launch_cmd::lex_simple_command` | one profile command string |
 | `config_command` | `config::IdentityConfig::command` | first line the profile, the rest one config text |
 | `quota_claude_cache` | `quota::claude::parse` | one Claude settings file, at a fixed and a chosen clock |

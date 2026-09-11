@@ -50,6 +50,100 @@ const START_POLL: Duration = Duration::from_millis(100);
 /// How long to hold the lifecycle lock for before giving up.
 const LIFECYCLE_WAIT: Duration = Duration::from_secs(15);
 
+/// The role state captured by a settings-menu launch row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ExpectedState {
+    /// No saved or live canonical role seat existed.
+    AbsentCanonical,
+    /// This exact role identity existed and was stopped.
+    StoppedRole { uuid: String },
+}
+
+/// The fixed clicker and role expectation carried into the launch lock.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ExpectedLaunch {
+    state: ExpectedState,
+    server: ServerId,
+    server_pid: String,
+    server_start: String,
+    client: String,
+    client_pid: String,
+    deadline: i64,
+    #[cfg(debug_assertions)]
+    test_pre_lock_marker: bool,
+}
+
+impl ExpectedLaunch {
+    #[allow(clippy::too_many_arguments, reason = "one captured identity tuple")]
+    pub(crate) fn new(
+        state: ExpectedState,
+        server: ServerId,
+        server_pid: String,
+        server_start: String,
+        client: String,
+        client_pid: String,
+        deadline: i64,
+    ) -> Self {
+        Self {
+            state,
+            server,
+            server_pid,
+            server_start,
+            client,
+            client_pid,
+            deadline,
+            #[cfg(debug_assertions)]
+            test_pre_lock_marker: false,
+        }
+    }
+
+    #[cfg(debug_assertions)]
+    pub(crate) fn enable_test_pre_lock_marker(&mut self) {
+        self.test_pre_lock_marker = true;
+    }
+
+    /// Prove that the captured row is still inside its validity window, then
+    /// re-prove the server and attachment that selected it.
+    pub(crate) fn check_action(&self, now: i64) -> Result<(), String> {
+        if now > self.deadline {
+            return Err("the settings action expired".to_owned());
+        }
+        if now < self.deadline - crate::session_menu::CONFIRM_WINDOW_SECS {
+            return Err("the settings action is stamped in the future".to_owned());
+        }
+        self.check_attachment()
+    }
+
+    /// Re-prove only the server and attachment that selected the row.
+    ///
+    /// Failure reports use this narrower proof: an expired action may tell its
+    /// still-attached clicker why it refused, but a forged or replaced client
+    /// may never receive a message.
+    pub(crate) fn check_attachment(&self) -> Result<(), String> {
+        let Some(server) = transport::observe_server_identity(&self.server) else {
+            return Err("the invoking tmux server no longer answers".to_owned());
+        };
+        if server.pid != self.server_pid || server.start != self.server_start {
+            return Err("the invoking tmux server was replaced".to_owned());
+        }
+        let Some(client) = transport::observe_menu_client(&self.server, &self.client) else {
+            return Err("the invoking client is no longer attached".to_owned());
+        };
+        if client.pid != self.client_pid {
+            return Err("the invoking client is a different attachment now".to_owned());
+        }
+        Ok(())
+    }
+
+    const fn is_start(&self) -> bool {
+        matches!(self.state, ExpectedState::AbsentCanonical)
+    }
+
+    const fn is_resume(&self) -> bool {
+        matches!(self.state, ExpectedState::StoppedRole { .. })
+    }
+}
+
 /// Debug-build synchronization point for lifecycle-lock race tests.
 #[doc(hidden)]
 pub const TEST_PRE_LOCK_MARKER: &str = ".test-launch-before-lifecycle-lock";
@@ -462,6 +556,48 @@ fn read_env(tail: &[String]) -> Result<(Env, Vec<String>), EnvError> {
 ///
 /// Only a failure to write `out` or `err`. Every refusal is an exit code.
 pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate::Result<u8> {
+    run_with_expected(tail, None, out, err)
+}
+
+/// Settings-only entry into the same launch owner with a locked expectation.
+pub(crate) fn run_expected(
+    preamble: &crate::entry::Preamble,
+    user: &[String],
+    expected: &ExpectedLaunch,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> crate::Result<u8> {
+    let argv = expected_launch_argv(preamble, user, expected);
+    run_with_expected(&argv[1..], Some(expected), out, err)
+}
+
+fn expected_launch_argv(
+    preamble: &crate::entry::Preamble,
+    user: &[String],
+    expected: &ExpectedLaunch,
+) -> Vec<String> {
+    #[cfg(not(debug_assertions))]
+    let _ = expected;
+    let argv = preamble.launch_argv(user);
+    #[cfg(debug_assertions)]
+    let argv = {
+        let mut argv = argv;
+        if expected.test_pre_lock_marker
+            && let Some(separator) = argv.iter().position(|word| word == "--")
+        {
+            argv.insert(separator, "--test-pre-lock-marker".to_owned());
+        }
+        argv
+    };
+    argv
+}
+
+fn run_with_expected(
+    tail: &[String],
+    expected: Option<&ExpectedLaunch>,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> crate::Result<u8> {
     let (mut env, args) = match read_env(tail) {
         Ok(pair) => pair,
         Err(EnvError::OffendingWord(word)) => {
@@ -508,7 +644,7 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
     if let Some(attach) = plan.attach {
         env.attach = attach;
     }
-    launch(&env, &plan, None, out, err)
+    launch(&env, &plan, None, expected, out, err)
 }
 
 /// The facts a `compact` relaunch carries across the boundary.
@@ -576,7 +712,7 @@ pub fn relaunch(
         dir: None,
         attach: None,
     };
-    launch(&env, &launch_plan, Some(plan.proof), out, err)
+    launch(&env, &launch_plan, Some(plan.proof), None, out, err)
 }
 
 /// Split `main=<name> workers=<a,b|->` into its two overrides.
@@ -984,6 +1120,7 @@ fn launch(
     env: &Env,
     plan: &Plan,
     expected_proof: Option<&str>,
+    expected_launch: Option<&ExpectedLaunch>,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> crate::Result<u8> {
@@ -1030,14 +1167,33 @@ fn launch(
     }
 
     let proposed_server = env.server();
-    let meta_present = node_exists(&dir.join(crate::store::META));
+    let settings_start = expected_launch.is_some_and(ExpectedLaunch::is_start);
+    if settings_start && session != crate::orchestrator::ORCHESTRATOR_SESSION {
+        writeln!(
+            err,
+            "Error: settings Start may create only the canonical orchestrator."
+        )?;
+        return Ok(EXIT_FAILED);
+    }
+    // Start may not inspect canonical saved state until it owns the canonical
+    // lifecycle lock below. Resume may inspect only to select the recorded
+    // server for the tmux floor; absence makes the captured action stale and
+    // is refused before a lock-file or any other effect.
+    let preflight_meta_present = !settings_start && node_exists(&dir.join(crate::store::META));
+    if expected_launch.is_some_and(ExpectedLaunch::is_resume) && !preflight_meta_present {
+        writeln!(
+            err,
+            "Error: role target '{session}' disappeared before Resume acquired its lifecycle lock. Nothing was resumed."
+        )?;
+        return Ok(EXIT_FAILED);
+    }
 
     // ---- THE tmux FLOOR, before the first thing this launch would write ----
     // AHEAD of the lifecycle lock, migration chain and config seed. A resume
     // first takes a read-only look at its recorded server so the floor is asked
     // of the server this attempt will actually use; the decision is repeated
     // under the lifecycle lock below before anything acts on it.
-    let floor_server = if meta_present {
+    let floor_server = if preflight_meta_present {
         let Ok(bytes) = meta::read_bytes(&dir) else {
             writeln!(err, "Error: could not read metadata for '{session}'.")?;
             return Ok(EXIT_FAILED);
@@ -1046,6 +1202,11 @@ fn launch(
             ServerSelector::Positive(selector) => {
                 let recorded = ServerId::Selected(selector);
                 match resume_absence(&recorded, &session, &dir) {
+                    (tmux::StopProbe::Absent, _)
+                        if expected_launch.is_some_and(ExpectedLaunch::is_resume) =>
+                    {
+                        recorded
+                    }
                     (tmux::StopProbe::Absent, _) => proposed_server.clone(),
                     (tmux::StopProbe::Present, _) => recorded,
                     (tmux::StopProbe::Unknown, why) => {
@@ -1085,13 +1246,14 @@ fn launch(
     } else {
         proposed_server.clone()
     };
-    let running_preflight = meta_present && transport::session_exists(&floor_server, &session);
+    let running_preflight =
+        preflight_meta_present && transport::session_exists(&floor_server, &session);
     if let Some(refusal) = floor_refusal(&floor_server, &session) {
         write!(err, "{refusal}")?;
         return Ok(crate::tmux_floor::EXIT_REFUSED);
     }
     let seat_overrides =
-        match validate_seat_overrides(env, plan, &dir, meta_present, running_preflight) {
+        match validate_seat_overrides(env, plan, &dir, preflight_meta_present, running_preflight) {
             Ok(snapshot) => snapshot,
             Err(SeatOverrideRefusal::Usage(line)) => {
                 writeln!(err, "{line}")?;
@@ -1111,25 +1273,66 @@ fn launch(
             .open(env.home.join(marker));
     }
 
-    // A resume's liveness decision and any legacy backfill share the lock
-    // stop/end use. The preflight above exists only to place the floor before
-    // this lock-file write; every fact is re-read while the lock is held.
-    let mut lifecycle = if meta_present {
+    // Settings Start owns the canonical name lock before its raw-role census
+    // or canonical saved/live absence proof. Expected Resume owns the exact
+    // captured target lock even though preflight saw its state. The read-only
+    // preflight above exists only to place the tmux floor before this lock-file
+    // write; every expected fact is re-read while the lock is held.
+    let mut lifecycle = if settings_start
+        || expected_launch.is_some_and(ExpectedLaunch::is_resume)
+        || preflight_meta_present
+    {
         if let Ok(held) = crate::store::lock(
             &sessions.join(format!(".lifecycle.{session}.lock")),
             LIFECYCLE_WAIT,
         ) {
             Some(held)
         } else {
+            let detail = if settings_start {
+                " — stale Start refused"
+            } else {
+                " — retry shortly"
+            };
             writeln!(
                 err,
-                "Error: another lifecycle operation (end) is in progress for '{session}' — retry shortly."
+                "Error: another lifecycle operation is in progress for '{session}'{detail}."
             )?;
             return Ok(EXIT_FAILED);
         }
     } else {
         None
     };
+    let meta_present = if expected_launch.is_some() {
+        node_exists(&dir.join(crate::store::META))
+    } else {
+        preflight_meta_present
+    };
+
+    if let Some(expected) = expected_launch {
+        if let Err(why) = expected.check_action(crate::time::Timestamp::now().epoch()) {
+            writeln!(err, "Error: {why}; settings action refused.")?;
+            return Ok(EXIT_FAILED);
+        }
+        match &expected.state {
+            ExpectedState::AbsentCanonical => {
+                if let Err(why) =
+                    crate::settings_menu::prove_absent_start(&env.home, &proposed_server)
+                {
+                    writeln!(err, "Error: {why}. Nothing was started.")?;
+                    return Ok(EXIT_FAILED);
+                }
+            }
+            ExpectedState::StoppedRole { uuid } => {
+                match crate::settings_menu::prove_stopped_role(&env.home, &session, uuid) {
+                    Ok(_) => {}
+                    Err(why) => {
+                        writeln!(err, "Error: {why}. Nothing was resumed.")?;
+                        return Ok(EXIT_FAILED);
+                    }
+                }
+            }
+        }
+    }
 
     let mut env = env.clone();
     let mut running_server = None;
@@ -1176,8 +1379,17 @@ fn launch(
                         running_server = Some(recorded);
                     }
                     (tmux::StopProbe::Absent, _) => {
-                        if !destination_is_absent(&proposed_server, &session, err)? {
+                        let destination = if expected_launch.is_some_and(ExpectedLaunch::is_resume)
+                        {
+                            &recorded
+                        } else {
+                            &proposed_server
+                        };
+                        if !destination_is_absent(destination, &session, err)? {
                             return Ok(EXIT_FAILED);
+                        }
+                        if expected_launch.is_some_and(ExpectedLaunch::is_resume) {
+                            set_env_server(&mut env, &recorded);
                         }
                     }
                     (tmux::StopProbe::Unknown, why) => {
@@ -3827,9 +4039,10 @@ fn from_preflight(root: &Path, raw_uuid: &str) -> Result<FromProof, String> {
 )]
 mod tests {
     use super::{
-        AttachAction, EVENTS_KEEP, ToolKind, attach_action, launch_token, launch_turn_is_pasted,
-        layout_argvs, lead_pair_policy_argvs, parse_plan, replace_watchdog_registration,
-        server_attach_hint, trim_events,
+        AttachAction, EVENTS_KEEP, ExpectedLaunch, ExpectedState, ToolKind, attach_action,
+        expected_launch_argv, launch_token, launch_turn_is_pasted, layout_argvs,
+        lead_pair_policy_argvs, parse_plan, replace_watchdog_registration, server_attach_hint,
+        trim_events,
     };
     use crate::inventory::ServerId;
     use std::fmt::Write as _;
@@ -3847,6 +4060,41 @@ mod tests {
             .iter()
             .map(|command| command.as_args().to_vec())
             .collect()
+    }
+
+    #[test]
+    fn normal_expected_launch_argv_cannot_enable_the_debug_pre_lock_marker() {
+        let preamble = crate::entry::Preamble::default();
+        let user = ["orchestrator".to_owned()];
+        let expected = ExpectedLaunch::new(
+            ExpectedState::AbsentCanonical,
+            ServerId::Ambient,
+            "1".to_owned(),
+            "2".to_owned(),
+            "/dev/ttys004".to_owned(),
+            "3".to_owned(),
+            4,
+        );
+        let argv = expected_launch_argv(&preamble, &user, &expected);
+        assert!(!argv.iter().any(|word| word == "--test-pre-lock-marker"));
+
+        #[cfg(debug_assertions)]
+        {
+            let mut opted_in = expected;
+            opted_in.enable_test_pre_lock_marker();
+            let argv = expected_launch_argv(&preamble, &user, &opted_in);
+            assert_eq!(
+                argv.iter()
+                    .filter(|word| word.as_str() == "--test-pre-lock-marker")
+                    .count(),
+                1
+            );
+            let marker_at = argv
+                .iter()
+                .position(|word| word == "--test-pre-lock-marker");
+            let separator = argv.iter().position(|word| word == "--");
+            assert!(marker_at < separator, "{argv:?}");
+        }
     }
 
     #[test]
@@ -3942,6 +4190,45 @@ mod tests {
             .expect("fresh-launch scheduling edge");
         let attach = completed.find("if !env.attach").expect("attach decision");
         assert!(selected < scheduled && scheduled < attach, "{completed}");
+    }
+
+    #[test]
+    fn settings_launch_preserves_floor_then_locks_before_authoritative_proof_and_effects() {
+        let source = include_str!("session_launch.rs");
+        let launch = source
+            .split_once("let proposed_server = env.server();")
+            .map(|(_, tail)| tail)
+            .expect("launch policy");
+        let floor = launch.find("floor_refusal").expect("tmux floor");
+        let locked = launch.find("crate::store::lock").expect("lifecycle lock");
+        let meta_present = launch
+            .find("let meta_present = if expected_launch.is_some()")
+            .expect("locked state read");
+        let clicker = launch.find("expected.check_action").expect("action proof");
+        let census = launch
+            .find("prove_absent_start")
+            .expect("raw-role census and absence proof");
+        let seeded = launch
+            .find("seed_default_config")
+            .expect("first-run config seed");
+        let built = launch.find("build(").expect("existing launch build");
+        assert!(
+            floor < locked
+                && locked < meta_present
+                && meta_present < clicker
+                && clicker < census
+                && census < seeded
+                && seeded < built,
+            "{launch}"
+        );
+
+        let resume_guard = launch
+            .find("expected_launch.is_some_and(ExpectedLaunch::is_resume)")
+            .expect("expected Resume lock condition");
+        let stopped = launch
+            .find("prove_stopped_role")
+            .expect("locked stopped-role proof");
+        assert!(resume_guard < locked && locked < stopped, "{launch}");
     }
     fn scratch(tag: &str) -> PathBuf {
         let dir = PathBuf::from(format!("/tmp/ae-launch-{}-{tag}", std::process::id()));

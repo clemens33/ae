@@ -391,6 +391,8 @@ pub(crate) struct StopExpectation {
     /// lose its selector and can disappear, and the human waiting for an
     /// answer is on this server whatever the target's directory says.
     pub(crate) server: ServerId,
+    /// Settings Pause requires the raw target role to remain exact under lock.
+    pub(crate) require_meta_agent: bool,
 }
 
 impl StopExpectation {
@@ -415,6 +417,8 @@ impl StopExpectation {
             server_kind_word(&self.server).to_owned(),
             "--expect-server".to_owned(),
             server_value_word(&self.server),
+            "--expect-meta-agent".to_owned(),
+            self.require_meta_agent.to_string(),
         ]
     }
 
@@ -462,6 +466,11 @@ impl StopExpectation {
         let Ok(bytes) = meta::read_bytes(dir) else {
             return ExpectCheck::Refused(format!("ae cannot read the metadata of '{name}'"));
         };
+        if self.require_meta_agent && meta::meta_agent_role(&bytes) != meta::MetaAgentRole::Role {
+            return ExpectCheck::Refused(format!(
+                "'{name}' no longer proves the orchestrator role"
+            ));
+        }
         let uuid = crate::archive::canonical_uuid(&meta_value(&bytes, "session_id"));
         if uuid != self.uuid {
             return ExpectCheck::Refused(format!(
@@ -1021,11 +1030,11 @@ fn split_pane_flag(tail: &[String]) -> (String, Vec<String>) {
 
 /// Lift the `--expect-*` pairs out of a stop tail; the rest stays in order.
 ///
-/// All six or none: a partial expectation is a caller that lost a field, and
-/// proving five of six identities before a kill is not the contract.
+/// All ten or none: a partial expectation is a caller that lost a field, and
+/// proving only part of the captured identity before a kill is not the contract.
 #[allow(
     clippy::too_many_lines,
-    reason = "one grammar: nine fields lifted, then each proven, in the order a caller reads them"
+    reason = "one grammar: ten fields lifted, then each proven, in the order a caller reads them"
 )]
 fn split_expectation(
     tail: &[String],
@@ -1039,6 +1048,7 @@ fn split_expectation(
     let mut client_pid = None;
     let mut server_kind = None;
     let mut server_value = None;
+    let mut require_meta_agent = None;
     let mut words: Vec<String> = Vec::with_capacity(tail.len());
     let mut rest = tail.iter();
     while let Some(arg) = rest.next() {
@@ -1052,6 +1062,7 @@ fn split_expectation(
             "--expect-client-pid" => &mut client_pid,
             "--expect-server-kind" => &mut server_kind,
             "--expect-server" => &mut server_value,
+            "--expect-meta-agent" => &mut require_meta_agent,
             _ => {
                 words.push(arg.clone());
                 continue;
@@ -1075,6 +1086,7 @@ fn split_expectation(
         &client_pid,
         &server_kind,
         &server_value,
+        &require_meta_agent,
     ]
     .iter()
     .filter(|slot| slot.is_some())
@@ -1092,6 +1104,7 @@ fn split_expectation(
         Some(client_pid),
         Some(server_kind),
         Some(server_value),
+        Some(require_meta_agent),
     ) = (
         session_id,
         uuid,
@@ -1102,10 +1115,11 @@ fn split_expectation(
         client_pid,
         server_kind,
         server_value,
+        require_meta_agent,
     )
     else {
         return Err(
-            "an --expect-* identity is incomplete; all nine fields travel together.".to_owned(),
+            "an --expect-* identity is incomplete; all ten fields travel together.".to_owned(),
         );
     };
     let server = match (server_kind.as_str(), server_value.as_str()) {
@@ -1141,6 +1155,11 @@ fn split_expectation(
                 .to_owned(),
         );
     }
+    let require_meta_agent = match require_meta_agent.as_str() {
+        "true" => true,
+        "false" => false,
+        _ => return Err("--expect-meta-agent is not true or false.".to_owned()),
+    };
     Ok((
         Some(StopExpectation {
             session_id,
@@ -1151,6 +1170,7 @@ fn split_expectation(
             client,
             client_pid,
             server,
+            require_meta_agent,
         }),
         words,
     ))

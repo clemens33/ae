@@ -38,8 +38,9 @@ The context menu targets the clicked session's current window; its Flip action
 swaps an unzoomed two-pane window. The guard's format hashes are escaped
 through menu construction, so pane count and zoom are read when the row is
 chosen, not frozen when the menu opens. A status click also carries
-`#{client_name}` into `ae orchestrator --popup --client`, and the menu and its
-actions retain it: two clients may watch one pane, so `$TMUX_PANE`
+`#{client_name}` into either `ae orchestrator --popup --client` or
+`ae orchestrator --settings --client`, and each menu and its actions retain it:
+two clients may watch one pane, so `$TMUX_PANE`
 cannot identify the one that clicked. One `list-clients` snapshot resolves that
 exact client's current session, height and width; the mouse target's
 `#{session_id}` may name a different session and is never used for the open
@@ -176,8 +177,12 @@ counter is the user range `ae-more`. The button inherits the line's dim style
 while quiet; while `@ae_menu_open` is set it uses the palette's selected
 background and ink. Either mouse button on either range, or `<prefix> a`
 (default `C-b a`), opens the same fleet picker at the left edge above the
-status line with `display-menu -x 0 -y S`. Its title starts with the running
-core's `ae <version>`.
+status line with `display-menu -x 0 -y S`. Its title starts with `ae session`.
+The final cell on the right is the distinct user range `ae-settings`: `⚙` (`*`
+in ASCII mode). On wide clients the dynamic `@ae_version` fact follows
+it; narrow clients keep only the glyph. Either mouse button opens the settings
+menu centred on the exact invoking client. The settings button remains quiet;
+the transient selected styling belongs only to the fleet button.
 Every menu uses `display-menu -O`. On tmux 3.5 and newer, Down
 opens it with `-M`, the trailing release leaves it open, and rows are
 mouse-selectable. On the supported 3.4 floor, status clicks open on release,

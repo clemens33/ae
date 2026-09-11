@@ -31,6 +31,9 @@ ae orchestrator --popup
                        client. Opened above the bottom-left status-bar ≡/= button,
                        before the session list,
                        or +N overflow count. Needs tmux >= 3.4
+ae orchestrator --settings
+                       Internal status-button route for the centred, exact-client
+                       settings menu. Installed bindings supply --client
 ae doctor              Check local environment and ae config
 ae doctor --refresh [name|all]
                        Regenerate helper scripts and workspace.md in existing sessions
@@ -443,6 +446,30 @@ ae session on the same tmux server, click the `≡` menu glyph (`=` with icons
 off) at the bottom-left, before the session list, or its `+N` overflow count, or
 press `<prefix> a` (default `C-b a`), to open it.
 
+The final bottom-right status range is settings: `⚙ ae <version>` (`*` with
+icons off). The version comes from the running session's watchdog fact; before
+that fact exists, or on clients narrower than 100 columns, the one-cell button
+remains and the version text drops. Either mouse button opens one centred menu
+on the explicitly captured client. Drawing or dismissing it does not start,
+stop or rewrite anything.
+
+The menu offers exactly one orchestrator action from a complete raw metadata
+census. No recorded role plus no canonical saved/live namesake offers **Start**.
+One stopped `meta_agent=true` role offers **Resume** for that exact name and
+recorded tmux server, including a renamed seat. The same proven role running on
+the invoking server offers **Pause**. Multiple, damaged, incomplete, foreign or
+unproven state is shown unavailable. A captured action is re-proved under the
+existing target lifecycle lock: stale Start never becomes Resume, and stale
+Resume never attaches, re-homes, or starts a replacement. The canonical lock
+serializes Start with operations on the canonical name; it does not claim
+fleet-wide uniqueness against separately authorized creation under another
+name.
+
+Pause asks once, with Cancel first. It stops the role through the existing
+detached Stop owner while preserving state, worktree and conversations. Resume
+the canonical seat with `ae orchestrator --no-attach`; after a rename, use the
+exact recorded name, for example `ae renamed --no-attach`.
+
 ## `ae orchestrator --popup`
 
 The fleet picker is drawn by tmux itself at the left edge above its status button.
@@ -457,8 +484,8 @@ walks session directories, reads events or probes git.
 
 Left- or right-click the menu glyph or overflow count, or press `<prefix> a`
 (default `C-b a`), to open it. The picker shows at most 30 attention-ordered sessions. Its title starts
-with the running core's `ae <version>`, then counts sessions and those whose mark
-is needs-you or dead. An invocation
+with `ae session`, then counts sessions and those whose mark is needs-you or
+dead. An invocation
 names its tmux client explicitly through the menu and every action, so another
 client watching the same pane is untouched; if that client vanishes, the
 picker refuses instead of choosing another.
@@ -474,7 +501,7 @@ cycle.
 
 ```text
 # opened with prefix a; its binding supplies --client
-┌─ ae <version> — 3 running · 1 need you · ~$13.21 — prefix a ───────────┐
+┌─ ae session — 3 running · 1 need you · ~$13.21 — prefix a ────────────┐
 │ gamma ✖ dead    fix/menu   $12.34 restore its lead pane            (1) │
 │   ✖ lead  fable5    dead                                               │
 │ beta  ◌ stale   main       ~$0.87 port the watchdog                (2) │
@@ -562,6 +589,9 @@ capability-specific status mouse actions. Each picker action captures
 `#{client_name}` and uses `display-menu -c <name>` because two clients can
 watch the same pane. An ambient server keeps all of the user's bindings
 untouched.
+
+The distinct `ae-settings` range carries the same client identity. On both
+buttons it opens settings rather than the fleet picker or Flip menu.
 
 Every picker and context menu uses `display-menu -O`. On tmux 3.5 and newer,
 Down opens menus with `-M`, the trailing release leaves them open, and rows are

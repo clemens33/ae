@@ -994,6 +994,47 @@ pub fn sole_value<'a>(text: &'a [u8], key: &str) -> Option<&'a [u8]> {
     found
 }
 
+/// What raw session metadata says about the privileged orchestrator role.
+///
+/// This is deliberately byte-exact. `meta_agent=true\r` is not the authority
+/// token, and a bare, empty, false, malformed or repeated claim is damage
+/// rather than an ordinary session with no claim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MetaAgentRole {
+    /// No `meta_agent` claim exists.
+    Absent,
+    /// Exactly one byte-exact `meta_agent=true` record exists.
+    Role,
+    /// A claim exists but does not state that one value unambiguously.
+    Damaged,
+}
+
+/// Reduce hostile raw metadata to its orchestrator-role claim.
+#[must_use]
+pub fn meta_agent_role(text: &[u8]) -> MetaAgentRole {
+    let key = b"meta_agent";
+    let mut claims = 0_u8;
+    for line in text.split(|byte| *byte == b'\n') {
+        if line == key {
+            return MetaAgentRole::Damaged;
+        }
+        if line
+            .strip_prefix(key)
+            .is_some_and(|rest| rest.starts_with(b"="))
+        {
+            claims = claims.saturating_add(1);
+            if claims > 1 {
+                return MetaAgentRole::Damaged;
+            }
+        }
+    }
+    match (claims, sole_value(text, "meta_agent")) {
+        (0, None) => MetaAgentRole::Absent,
+        (1, Some(b"true")) => MetaAgentRole::Role,
+        _ => MetaAgentRole::Damaged,
+    }
+}
+
 /// `text` with `key` set to `value`, or removed when `value` is `None` — the
 /// frozen helpers' awk, byte for byte (measured against it):
 #[must_use]
@@ -2206,5 +2247,30 @@ agent_bin.main=claude
         // The key match is a whole prefix up to `=`, not a substring.
         assert_eq!(sole_value(b"not_meta_agent=true\n", "meta_agent"), None);
         assert_eq!(sole_value(b"meta_agent_x=true\n", "meta_agent"), None);
+    }
+
+    #[test]
+    fn meta_agent_role_is_byte_exact_and_three_valued() {
+        use super::{MetaAgentRole, meta_agent_role};
+
+        assert_eq!(meta_agent_role(b"meta_agent=true\n"), MetaAgentRole::Role);
+        assert_eq!(
+            meta_agent_role(b"session=ordinary\n"),
+            MetaAgentRole::Absent
+        );
+        for damaged in [
+            &b"meta_agent=true\r\n"[..],
+            &b"meta_agent\n"[..],
+            &b"meta_agent=\n"[..],
+            &b"meta_agent=truth\n"[..],
+            &b"meta_agent=true\nmeta_agent=false\n"[..],
+            &b"meta_agent=false\nmeta_agent=true\n"[..],
+        ] {
+            assert_eq!(
+                meta_agent_role(damaged),
+                MetaAgentRole::Damaged,
+                "{damaged:?}"
+            );
+        }
     }
 }

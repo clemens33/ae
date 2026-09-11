@@ -20,9 +20,10 @@ use std::path::Path;
 use crate::inventory::ServerId;
 use crate::meta::Selector;
 use crate::tmux::{
-    MOUSE_DOWN_STATUS_MENU_ACTION, MOUSE_STATUS_PICKER, MOUSE_STATUS_SESSION, MOUSE_STATUS_WINDOW,
-    hotkey_picker_shell, mouse_dispatch_literal, server_args, session_target,
-    status_picker_command, tmux_current_format_double_quote,
+    MOUSE_DOWN_STATUS_MENU_ACTION, MOUSE_STATUS_PICKER, MOUSE_STATUS_SESSION,
+    MOUSE_STATUS_SETTINGS, MOUSE_STATUS_WINDOW, hotkey_picker_shell, mouse_dispatch_literal,
+    server_args, session_target, status_picker_command, status_settings_command,
+    tmux_current_format_double_quote,
 };
 
 /// The `-P -F` format every pane-creating call here prints.
@@ -157,20 +158,22 @@ pub(crate) enum Op<'a> {
     SetLeadPairResizeHook { pane: &'a str },
     /// Replace tmux's root `MouseDown1Status` on an ae-owned server so a
     /// window-range click selects the window without firing the session hook.
-    BindMouseDownStatus { picker: &'a str },
+    BindMouseDownStatus { picker: &'a str, settings: &'a str },
     /// Bind ae's root `MouseDown3Status` context menu on an ae-owned server.
     BindMouseDownStatusMenu {
         picker: &'a str,
+        settings: &'a str,
         /// The words a menu row re-execs ae with.
         launcher: &'a [String],
         menu_mouse: bool,
         menu: bool,
     },
     /// Bind the keyboard-driven picker's root `MouseUp1Status` release.
-    BindMouseUpStatus { picker: &'a str },
+    BindMouseUpStatus { picker: &'a str, settings: &'a str },
     /// Bind the keyboard-driven picker's root `MouseUp3Status` release.
     BindMouseUpStatusMenu {
         picker: &'a str,
+        settings: &'a str,
         /// The words a menu row re-execs ae with.
         launcher: &'a [String],
         menu_mouse: bool,
@@ -347,33 +350,35 @@ pub(crate) fn argv(server: &ServerId, op: &Op<'_>) -> TmuxArgv {
                 .map(ToOwned::to_owned),
             );
         }
-        Op::BindMouseDownStatus { picker } => {
+        Op::BindMouseDownStatus { picker, settings } => {
             args.extend(["bind-key", "-T", "root", "MouseDown1Status"].map(ToOwned::to_owned));
-            args.extend(left_click_dispatch(picker));
+            args.extend(left_click_dispatch(picker, settings));
         }
         Op::BindMouseDownStatusMenu {
             picker,
+            settings,
             launcher,
             menu_mouse,
             menu,
         } => {
             args.extend(["bind-key", "-T", "root", "MouseDown3Status"].map(ToOwned::to_owned));
             args.extend(right_click_dispatch(
-                server, picker, launcher, menu_mouse, menu,
+                server, picker, settings, launcher, menu_mouse, menu,
             ));
         }
-        Op::BindMouseUpStatus { picker } => {
+        Op::BindMouseUpStatus { picker, settings } => {
             args.extend(["bind-key", "-T", "root", "MouseUp1Status"].map(ToOwned::to_owned));
-            args.extend(picker_click_dispatch(picker));
+            args.extend(picker_click_dispatch(picker, settings));
         }
         Op::BindMouseUpStatusMenu {
             picker,
+            settings,
             launcher,
             menu_mouse,
         } => {
             args.extend(["bind-key", "-T", "root", "MouseUp3Status"].map(ToOwned::to_owned));
             args.extend(right_click_dispatch(
-                server, picker, launcher, menu_mouse, true,
+                server, picker, settings, launcher, menu_mouse, true,
             ));
         }
         Op::UnbindRootKey { key } => {
@@ -417,7 +422,7 @@ fn mouse_dispatch(command: String) -> Vec<String> {
         .collect()
 }
 
-fn left_click_dispatch(picker: &str) -> Vec<String> {
+fn left_click_dispatch(picker: &str, settings: &str) -> Vec<String> {
     let session = format_if(
         MOUSE_STATUS_SESSION,
         "switch-client -c #{q:client_name} -t #{session_id}",
@@ -428,11 +433,13 @@ fn left_click_dispatch(picker: &str) -> Vec<String> {
         "select-window -t #{window_id}",
         &session,
     );
-    mouse_dispatch(format_if(MOUSE_STATUS_PICKER, picker, &window))
+    let picker = format_if(MOUSE_STATUS_PICKER, picker, &window);
+    mouse_dispatch(format_if(MOUSE_STATUS_SETTINGS, settings, &picker))
 }
 
-fn picker_click_dispatch(picker: &str) -> Vec<String> {
-    mouse_dispatch(format_if(MOUSE_STATUS_PICKER, picker, ""))
+fn picker_click_dispatch(picker: &str, settings: &str) -> Vec<String> {
+    let picker = format_if(MOUSE_STATUS_PICKER, picker, "");
+    mouse_dispatch(format_if(MOUSE_STATUS_SETTINGS, settings, &picker))
 }
 
 fn fixed_mouse_shell_word(word: &str) -> String {
@@ -544,6 +551,7 @@ fn session_menu_command(
 fn right_click_dispatch(
     server: &ServerId,
     picker: &str,
+    settings: &str,
     launcher: &[String],
     menu_mouse: bool,
     menu_enabled: bool,
@@ -554,7 +562,8 @@ fn right_click_dispatch(
         String::new()
     };
     let session = format_if(MOUSE_STATUS_SESSION, &menu, "");
-    mouse_dispatch(format_if(MOUSE_STATUS_PICKER, picker, &session))
+    let picker = format_if(MOUSE_STATUS_PICKER, picker, &session);
+    mouse_dispatch(format_if(MOUSE_STATUS_SETTINGS, settings, &picker))
 }
 
 /// Words run by a status binding before the picker subcommand and client.
@@ -603,14 +612,22 @@ pub(crate) fn status_bindings_argv(
         ServerId::Ambient => Vec::new(),
         ServerId::Selected(_) => {
             let picker = status_picker_command(launcher);
+            let settings = status_settings_command(launcher);
             let hotkey = hotkey_picker_shell(launcher);
             let mut bindings = if menu_mouse {
                 vec![
-                    argv(server, &Op::BindMouseDownStatus { picker: &picker }),
+                    argv(
+                        server,
+                        &Op::BindMouseDownStatus {
+                            picker: &picker,
+                            settings: &settings,
+                        },
+                    ),
                     argv(
                         server,
                         &Op::BindMouseDownStatusMenu {
                             picker: &picker,
+                            settings: &settings,
                             launcher,
                             menu_mouse,
                             menu: true,
@@ -632,21 +649,35 @@ pub(crate) fn status_bindings_argv(
                 ]
             } else {
                 vec![
-                    argv(server, &Op::BindMouseDownStatus { picker: "" }),
+                    argv(
+                        server,
+                        &Op::BindMouseDownStatus {
+                            picker: "",
+                            settings: "",
+                        },
+                    ),
                     argv(
                         server,
                         &Op::BindMouseDownStatusMenu {
                             picker: "",
+                            settings: "",
                             launcher,
                             menu_mouse,
                             menu: false,
                         },
                     ),
-                    argv(server, &Op::BindMouseUpStatus { picker: &picker }),
+                    argv(
+                        server,
+                        &Op::BindMouseUpStatus {
+                            picker: &picker,
+                            settings: &settings,
+                        },
+                    ),
                     argv(
                         server,
                         &Op::BindMouseUpStatusMenu {
                             picker: &picker,
+                            settings: &settings,
                             launcher,
                             menu_mouse,
                         },
@@ -843,7 +874,7 @@ mod tests {
                 "-C",
                 "-t",
                 "{mouse}",
-                "#{?#{||:#{==:#{mouse_status_range},ae},#{==:#{mouse_status_range},ae-more}},run-shell -b \"'/opt/ae' 'orchestrator' '--popup' '--client' #{q:client_name}\",#{?#{==:#{mouse_status_range},window},select-window -t #{window_id},#{?#{==:#{mouse_status_range},session},switch-client -c #{q:client_name} -t #{session_id},}}}"
+                "#{?#{==:#{mouse_status_range},ae-settings},run-shell -b \"'/opt/ae' 'orchestrator' '--settings' '--client' #{q:client_name}\",#{?#{||:#{==:#{mouse_status_range},ae},#{==:#{mouse_status_range},ae-more}},run-shell -b \"'/opt/ae' 'orchestrator' '--popup' '--client' #{q:client_name}\",#{?#{==:#{mouse_status_range},window},select-window -t #{window_id},#{?#{==:#{mouse_status_range},session},switch-client -c #{q:client_name} -t #{session_id},}}}}"
             ]
         );
         assert!(
@@ -853,7 +884,7 @@ mod tests {
                 .any(|word| word.contains("@ae_orchestrator_id"))
         );
         assert_eq!(
-            bindings[1].as_args(),
+            &bindings[1].as_args()[..10],
             [
                 "-L",
                 "ae",
@@ -865,9 +896,16 @@ mod tests {
                 "-C",
                 "-t",
                 "{mouse}",
-                "#{?#{||:#{==:#{mouse_status_range},ae},#{==:#{mouse_status_range},ae-more}},run-shell -b \"'/opt/ae' 'orchestrator' '--popup' '--client' #{q:client_name}\",#{?#{==:#{mouse_status_range},session},run-shell -b \"'tmux' '-L' 'ae' 'display-menu' '-M' '-O' '-c' #{q:client_name} '-t' '#{pane_id}' '-T' '#{session_name}' '-x' 'C' '-y' 'C' 'Flip lead/colead panes' 'f' 'if-shell -F '\\\\''########{&&:########{==:########{window_panes#}#,2#}#,########{==:########{window_zoomed_flag#}#,0#}#}'\\\\'' '\\\\''swap-pane -d -s \\\"{top-left#}\\\" -t \\\"{bottom-right#}\\\"'\\\\'' '\\\\''display-message \\\"flip needs an unzoomed two-pane window\\\"'\\\\''' 'Stop session...' 's' 'run-shell -b \\\"'\\\\''/opt/ae'\\\\'' '\\\\''_session-menu'\\\\'' '\\\\''confirm'\\\\'' '\\\\''--action'\\\\'' '\\\\''stop'\\\\'' '\\\\''--client'\\\\'' '\\\\''#{client_name}'\\\\'' '\\\\''--client-pid'\\\\'' '\\\\''#{client_pid}'\\\\'' '\\\\''--session'\\\\'' '\\\\''#{session_name}'\\\\'' '\\\\''--session-id'\\\\'' '\\\\''#{session_id}'\\\\'' '\\\\''--pane'\\\\'' '\\\\''#{pane_id}'\\\\'' '\\\\''--server-pid'\\\\'' '\\\\''#{pid}'\\\\'' '\\\\''--server-start'\\\\'' '\\\\''#{start_time}'\\\\''\\\"'\",}}"
             ]
         );
+        let down_right = bindings[1].as_args().last().expect("binding command");
+        assert!(down_right.starts_with("#{?#{==:#{mouse_status_range},ae-settings},"));
+        assert!(down_right.contains("'--settings' '--client' #{q:client_name}"));
+        assert!(down_right.contains("'--popup' '--client' #{q:client_name}"));
+        assert!(down_right.contains("#{==:#{mouse_status_range},session}"));
+        assert!(down_right.contains("'display-menu' '-M' '-O' '-c'"));
+        assert_eq!(down_right.matches("'--settings'").count(), 1);
+        assert_eq!(down_right.matches("'--popup'").count(), 1);
         assert_eq!(
             bindings[2].as_args(),
             [
@@ -922,7 +960,7 @@ mod tests {
                 "-C",
                 "-t",
                 "{mouse}",
-                "#{?#{||:#{==:#{mouse_status_range},ae},#{==:#{mouse_status_range},ae-more}},,#{?#{==:#{mouse_status_range},window},select-window -t #{window_id},#{?#{==:#{mouse_status_range},session},switch-client -c #{q:client_name} -t #{session_id},}}}"
+                "#{?#{==:#{mouse_status_range},ae-settings},,#{?#{||:#{==:#{mouse_status_range},ae},#{==:#{mouse_status_range},ae-more}},,#{?#{==:#{mouse_status_range},window},select-window -t #{window_id},#{?#{==:#{mouse_status_range},session},switch-client -c #{q:client_name} -t #{session_id},}}}}"
             ]
         );
         assert_eq!(
@@ -938,7 +976,7 @@ mod tests {
                 "-C",
                 "-t",
                 "{mouse}",
-                "#{?#{||:#{==:#{mouse_status_range},ae},#{==:#{mouse_status_range},ae-more}},,#{?#{==:#{mouse_status_range},session},,}}"
+                "#{?#{==:#{mouse_status_range},ae-settings},,#{?#{||:#{==:#{mouse_status_range},ae},#{==:#{mouse_status_range},ae-more}},,#{?#{==:#{mouse_status_range},session},,}}}"
             ]
         );
         assert_eq!(
@@ -954,11 +992,11 @@ mod tests {
                 "-C",
                 "-t",
                 "{mouse}",
-                "#{?#{||:#{==:#{mouse_status_range},ae},#{==:#{mouse_status_range},ae-more}},run-shell -b \"'/opt/ae' 'orchestrator' '--popup' '--client' #{q:client_name}\",}"
+                "#{?#{==:#{mouse_status_range},ae-settings},run-shell -b \"'/opt/ae' 'orchestrator' '--settings' '--client' #{q:client_name}\",#{?#{||:#{==:#{mouse_status_range},ae},#{==:#{mouse_status_range},ae-more}},run-shell -b \"'/opt/ae' 'orchestrator' '--popup' '--client' #{q:client_name}\",}}"
             ]
         );
         assert_eq!(
-            keyboard[3].as_args(),
+            &keyboard[3].as_args()[..10],
             [
                 "-L",
                 "ae",
@@ -970,9 +1008,16 @@ mod tests {
                 "-C",
                 "-t",
                 "{mouse}",
-                "#{?#{||:#{==:#{mouse_status_range},ae},#{==:#{mouse_status_range},ae-more}},run-shell -b \"'/opt/ae' 'orchestrator' '--popup' '--client' #{q:client_name}\",#{?#{==:#{mouse_status_range},session},run-shell -b \"'tmux' '-L' 'ae' 'display-menu' '-O' '-c' #{q:client_name} '-t' '#{pane_id}' '-T' '#{session_name}' '-x' 'C' '-y' 'C' 'Flip lead/colead panes' 'f' 'if-shell -F '\\\\''########{&&:########{==:########{window_panes#}#,2#}#,########{==:########{window_zoomed_flag#}#,0#}#}'\\\\'' '\\\\''swap-pane -d -s \\\"{top-left#}\\\" -t \\\"{bottom-right#}\\\"'\\\\'' '\\\\''display-message \\\"flip needs an unzoomed two-pane window\\\"'\\\\''' 'Stop session...' 's' 'run-shell -b \\\"'\\\\''/opt/ae'\\\\'' '\\\\''_session-menu'\\\\'' '\\\\''confirm'\\\\'' '\\\\''--action'\\\\'' '\\\\''stop'\\\\'' '\\\\''--client'\\\\'' '\\\\''#{client_name}'\\\\'' '\\\\''--client-pid'\\\\'' '\\\\''#{client_pid}'\\\\'' '\\\\''--session'\\\\'' '\\\\''#{session_name}'\\\\'' '\\\\''--session-id'\\\\'' '\\\\''#{session_id}'\\\\'' '\\\\''--pane'\\\\'' '\\\\''#{pane_id}'\\\\'' '\\\\''--server-pid'\\\\'' '\\\\''#{pid}'\\\\'' '\\\\''--server-start'\\\\'' '\\\\''#{start_time}'\\\\''\\\"'\",}}"
             ]
         );
+        let up_right = keyboard[3].as_args().last().expect("binding command");
+        assert!(up_right.starts_with("#{?#{==:#{mouse_status_range},ae-settings},"));
+        assert!(up_right.contains("'--settings' '--client' #{q:client_name}"));
+        assert!(up_right.contains("'--popup' '--client' #{q:client_name}"));
+        assert!(up_right.contains("'display-menu' '-O' '-c'"));
+        assert!(!up_right.contains("'display-menu' '-M'"));
+        assert_eq!(up_right.matches("'--settings'").count(), 1);
+        assert_eq!(up_right.matches("'--popup'").count(), 1);
         assert_eq!(
             keyboard[4].as_args(),
             [

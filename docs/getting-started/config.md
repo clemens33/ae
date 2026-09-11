@@ -214,11 +214,18 @@ two panes and is not zoomed; otherwise ae leaves it alone and explains why. The
 tmux keys `prefix {` and `prefix }` provide the same pane swap directly.
 Click the quiet `≡` menu glyph (`=` with `icons = off`) or the matching `+N`
 overflow count with either mouse button, or press `prefix a`, to open the fleet
-picker. Its title starts with the running core's `ae <version>`, then counts
+picker. Its title starts with `ae session`, then counts
 running sessions and those needing you; up to 30
 attention-ordered rows show name, mark, state, branch and goal. Choosing a row
 drops the invoking client into that session's lead pane. On tmux 3.4 use the
 row shortcut keys; tmux 3.5 and newer also supports mouse selection.
+
+The bottom-right `⚙` (`*` with `icons = off`) opens settings centred on the
+client that clicked it. Wide clients show the running `ae` version beside the
+glyph; narrow clients keep the control and omit only that version text. The
+settings menu reports the recorded orchestrator role and offers exactly one of
+Start, Resume or Pause when that action is safe; otherwise it shows why the
+control is unavailable.
 
 The marks are the **watchdog's verdict**, never a claim about what an agent is "doing"
 (it cannot see that):

@@ -1228,6 +1228,20 @@ pub(crate) fn status_picker_command(launcher: &[String]) -> String {
     format!("run-shell -b {}", tmux_current_format_double_quote(&shell))
 }
 
+/// A background settings launch whose last word is the exact invoking client.
+#[must_use]
+pub(crate) fn status_settings_command(launcher: &[String]) -> String {
+    let mut argv = launcher.to_vec();
+    argv.extend(["orchestrator", "--settings", "--client"].map(ToOwned::to_owned));
+    let shell = argv
+        .iter()
+        .map(|word| mouse_dispatch_literal(&crate::launch::shell_quote(word)))
+        .chain(std::iter::once("#{q:client_name}".to_owned()))
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!("run-shell -b {}", tmux_current_format_double_quote(&shell))
+}
+
 /// The shell command run by the server-global `prefix a` picker binding.
 ///
 /// Unlike [`status_picker_command`], this crosses no format conditional: the
@@ -1604,6 +1618,7 @@ pub fn switch_client_command(client: &str, session: &str) -> String {
 /// Predicate shared by the two root status bindings.
 pub(crate) const MOUSE_STATUS_PICKER: &str =
     "#{||:#{==:#{mouse_status_range},ae},#{==:#{mouse_status_range},ae-more}}";
+pub(crate) const MOUSE_STATUS_SETTINGS: &str = "#{==:#{mouse_status_range},ae-settings}";
 pub(crate) const MOUSE_STATUS_SESSION: &str = "#{==:#{mouse_status_range},session}";
 pub(crate) const MOUSE_STATUS_WINDOW: &str = "#{==:#{mouse_status_range},window}";
 
@@ -2907,7 +2922,7 @@ mod tests {
         capture_screen_args, confirm_before_args, display_client_message_args, hotkey_picker_shell,
         interpret_clients, interpret_pane_probe, list_clients_args, load_buffer_args,
         pane_probe_args, paste_buffer_args, run_shell_background_command, send_keys_args,
-        status_picker_command,
+        status_picker_command, status_settings_command,
     };
 
     #[test]
@@ -3154,6 +3169,18 @@ mod tests {
     }
 
     #[test]
+    fn the_status_settings_button_preserves_launcher_punctuation_and_one_client_expansion() {
+        assert_eq!(
+            status_settings_command(&[
+                "env".to_owned(),
+                "AE_HOME=/tmp/ae#,state".to_owned(),
+                "/tmp/ae}core".to_owned(),
+            ]),
+            r#"run-shell -b "'env' 'AE_HOME=/tmp/ae#####,state' '/tmp/ae#}core' 'orchestrator' '--settings' '--client' #{q:client_name}""#
+        );
+    }
+
+    #[test]
     fn the_hotkey_picker_crosses_one_format_layer_without_conditional_escapes() {
         assert_eq!(
             hotkey_picker_shell(&[
@@ -3345,9 +3372,9 @@ mod tests {
         use super::{
             AGENTS_FORMAT, CLIENT_FORMAT, FLEET_PANE_FORMAT, MOTION_PANE_FORMAT,
             MOUSE_DOWN_STATUS_MENU_ACTION, MOUSE_STATUS_PICKER, MOUSE_STATUS_SESSION,
-            MOUSE_STATUS_WINDOW, PANE_FORMAT, PANE_ID_FORMAT, PANE_PROBE_FORMAT, PANE_TTY_FORMAT,
-            SESSION_ID_FORMAT, SESSION_NAME_FORMAT, SLOTS_FORMAT, VERSION_FORMAT, VIEWER_FORMAT,
-            WATCH_PANE_FORMAT, WINDOW_PANE_FORMAT,
+            MOUSE_STATUS_SETTINGS, MOUSE_STATUS_WINDOW, PANE_FORMAT, PANE_ID_FORMAT,
+            PANE_PROBE_FORMAT, PANE_TTY_FORMAT, SESSION_ID_FORMAT, SESSION_NAME_FORMAT,
+            SLOTS_FORMAT, VERSION_FORMAT, VIEWER_FORMAT, WATCH_PANE_FORMAT, WINDOW_PANE_FORMAT,
         };
 
         for format in [
@@ -3379,6 +3406,7 @@ mod tests {
         }
         for format in [
             MOUSE_STATUS_PICKER,
+            MOUSE_STATUS_SETTINGS,
             MOUSE_STATUS_SESSION,
             MOUSE_STATUS_WINDOW,
             MOUSE_DOWN_STATUS_MENU_ACTION,
@@ -4804,6 +4832,10 @@ mod tests {
         assert_eq!(
             super::MOUSE_STATUS_PICKER,
             "#{||:#{==:#{mouse_status_range},ae},#{==:#{mouse_status_range},ae-more}}"
+        );
+        assert_eq!(
+            super::MOUSE_STATUS_SETTINGS,
+            "#{==:#{mouse_status_range},ae-settings}"
         );
         assert_eq!(
             super::MOUSE_STATUS_SESSION,

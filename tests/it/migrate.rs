@@ -1671,6 +1671,10 @@ fn a_running_sessions_daemons_are_restarted_on_the_new_core() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one real running-session migration from planted old layout through watchdog rewrite"
+)]
 fn upgrading_a_running_session_without_an_orchestrator_rewrites_the_menu_range() {
     let scratch = tmux_scratch("running-look");
     if !tmux_present(&scratch) {
@@ -1730,6 +1734,17 @@ fn upgrading_a_running_session_without_an_orchestrator_rewrites_the_menu_range()
     let deadline = Instant::now() + Duration::from_secs(10);
     let mut line = String::new();
     let mut stamp = String::new();
+    let fleet_prefix = "#[align=left fg=#808080 bg=#313335]#[range=user|ae]#{?@ae_menu_open,#[bg=#214283 fg=#A9B7C6],} ≡#[norange]";
+    let migrated = |line: &str, stamp: &str| {
+        line.split_once("#[align=right")
+            .is_some_and(|(fleet, right)| {
+                fleet.starts_with(fleet_prefix)
+                    && !fleet.contains(ae::theme::VERSION_OPTION)
+                    && right.contains("#[range=user|ae-settings]⚙")
+                    && right.contains(ae::theme::VERSION_OPTION)
+                    && stamp.trim() == "17:darcula:on:on"
+            })
+    };
     while Instant::now() < deadline {
         line = tmux(
             &socket,
@@ -1749,22 +1764,18 @@ fn upgrading_a_running_session_without_an_orchestrator_rewrites_the_menu_range()
             ],
         )
         .1;
-        if line.contains("#[range=user|ae]#{?@ae_menu_open,#[bg=#214283 fg=#A9B7C6],} ≡#[norange]")
-            && !line.contains(ae::theme::VERSION_OPTION)
-            && stamp.trim() == "16:darcula:on:on"
-        {
+        if migrated(&line, &stamp) {
             break;
         }
         std::thread::sleep(Duration::from_millis(100));
     }
     assert!(
-        line.contains("#[range=user|ae]#{?@ae_menu_open,#[bg=#214283 fg=#A9B7C6],} ≡#[norange]")
-            && !line.contains(ae::theme::VERSION_OPTION),
-        "running session kept its pre-upgrade menu layout: {line:?}; stamp={stamp:?}; notes={notes:?}"
+        migrated(&line, &stamp),
+        "running session kept its pre-upgrade menu layout or received a partial menu contract: {line:?}; stamp={stamp:?}; notes={notes:?}"
     );
     assert_eq!(
         stamp.trim(),
-        "16:darcula:on:on",
+        "17:darcula:on:on",
         "the new format stamp did not land"
     );
     assert_ae_status_bindings(&socket, &scratch);

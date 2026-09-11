@@ -22,8 +22,11 @@ use std::path::Path;
 
 use crate::inventory::ServerId;
 
-/// The destructive action this menu offers. `end` follows in its own phase.
+/// The context menu's destructive action. `end` follows in its own phase.
 pub const STOP: &str = "stop";
+
+/// The settings menu's recoverable orchestrator pause.
+pub const PAUSE_ORCHESTRATOR: &str = "pause-orchestrator";
 
 /// The chain's two steps, as the row that queues each one spells it.
 pub const CONFIRM: &str = "confirm";
@@ -42,7 +45,7 @@ pub const STOP_ROW_LABEL: &str = "Stop session...";
 pub const CONFIRM_WINDOW_SECS: i64 = 120;
 
 /// The usage line, for an argv this module cannot read.
-pub const USAGE: &str = "Usage: _session-menu <confirm|apply> --action stop --client <name> --client-pid <pid> --session <name> --session-id <$id> --pane <%id> --server-pid <pid> --server-start <epoch> [--uuid <uuid> --deadline <epoch>]";
+pub const USAGE: &str = "Usage: _session-menu <confirm|apply> --action <stop|pause-orchestrator> --client <name> --client-pid <pid> --session <name> --session-id <$id> --pane <%id> --server-pid <pid> --server-start <epoch> [--uuid <uuid> --deadline <epoch>]";
 
 /// The facts one click captured, proven against this crate's grammars.
 ///
@@ -52,7 +55,7 @@ pub const USAGE: &str = "Usage: _session-menu <confirm|apply> --action stop --cl
 /// later step that cannot match all three refuses rather than choosing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Captured {
-    /// The action word — `stop` today.
+    /// The action word: ordinary Stop or orchestrator Pause.
     pub action: String,
     /// The invoking client's tmux name, normally its tty path.
     pub client: String,
@@ -197,9 +200,9 @@ pub fn parse(tail: &[String]) -> Result<(Step, Captured), Refusal> {
     }
     let missing = |flag: &str| Refusal::Usage(format!("{flag} is required. {USAGE}"));
     let action = action.ok_or_else(|| missing("--action"))?;
-    if action != STOP {
+    if action != STOP && action != PAUSE_ORCHESTRATOR {
         return Err(Refusal::Field(format!(
-            "unsupported action {action:?} — this menu offers {STOP:?}"
+            "unsupported action {action:?} — this menu offers {STOP:?} or {PAUSE_ORCHESTRATOR:?}"
         )));
     }
     let client = client.ok_or_else(|| missing("--client"))?;
@@ -382,6 +385,57 @@ pub fn stop_confirmation(session: &str, apply: &str) -> crate::tmux::Menu {
     }
 }
 
+/// The state-preserving confirmation for the proven orchestrator role.
+#[must_use]
+pub fn pause_confirmation(session: &str, apply: &str) -> crate::tmux::Menu {
+    let resume = if session == crate::orchestrator::ORCHESTRATOR_SESSION {
+        "Resume it with 'ae orchestrator --no-attach'.".to_owned()
+    } else {
+        format!("Resume it with 'ae {session} --no-attach'.")
+    };
+    crate::tmux::Menu {
+        title: format!("Pause orchestrator '{session}'?"),
+        title_style: String::new(),
+        items: vec![
+            crate::tmux::MenuItem {
+                label: "Cancel".to_owned(),
+                key: "c".to_owned(),
+                action: crate::tmux::MenuAction::Run(String::new()),
+            },
+            crate::tmux::MenuItem {
+                label: String::new(),
+                key: String::new(),
+                action: crate::tmux::MenuAction::Disabled,
+            },
+            crate::tmux::MenuItem {
+                label: "Stops the orchestrator session and its agents.".to_owned(),
+                key: String::new(),
+                action: crate::tmux::MenuAction::Disabled,
+            },
+            crate::tmux::MenuItem {
+                label: "Its state, worktree and conversations are PRESERVED.".to_owned(),
+                key: String::new(),
+                action: crate::tmux::MenuAction::Disabled,
+            },
+            crate::tmux::MenuItem {
+                label: resume,
+                key: String::new(),
+                action: crate::tmux::MenuAction::Disabled,
+            },
+            crate::tmux::MenuItem {
+                label: String::new(),
+                key: String::new(),
+                action: crate::tmux::MenuAction::Disabled,
+            },
+            crate::tmux::MenuItem {
+                label: format!("Pause '{session}' now"),
+                key: "P".to_owned(),
+                action: crate::tmux::MenuAction::Run(apply.to_owned()),
+            },
+        ],
+    }
+}
+
 /// The invoking attachment, proven to be the one that clicked.
 struct Clicker {
     server: ServerId,
@@ -519,6 +573,20 @@ fn prove_target(
         );
         return None;
     };
+    if captured.action == PAUSE_ORCHESTRATOR
+        && crate::meta::meta_agent_role(&bytes) != crate::meta::MetaAgentRole::Role
+    {
+        report(
+            Some(server),
+            captured,
+            &format!(
+                "'{}' no longer proves the orchestrator role; nothing was done.",
+                captured.session
+            ),
+            err,
+        );
+        return None;
+    }
     let uuid = crate::archive::canonical_uuid(&crate::lifecycle::meta_value(&bytes, "session_id"));
     if uuid.is_empty() {
         report(
@@ -563,7 +631,11 @@ fn run_confirm(root: &Path, captured: &Captured, err: &mut impl Write) -> u8 {
     };
     let deadline = crate::time::Timestamp::now().epoch() + CONFIRM_WINDOW_SECS;
     let apply = crate::tmux::menu_run_shell_command(&captured.apply_argv(&core, &uuid, deadline));
-    let menu = stop_confirmation(&captured.session, &apply);
+    let menu = if captured.action == PAUSE_ORCHESTRATOR {
+        pause_confirmation(&captured.session, &apply)
+    } else {
+        stop_confirmation(&captured.session, &apply)
+    };
     // THE WHOLE QUESTION OR NONE OF IT. tmux would trim the consequence and
     // still draw a destructive row; a question a human cannot read in full is
     // not a question ae is willing to ask.
@@ -659,6 +731,7 @@ fn run_apply(
             client: captured.client.clone(),
             client_pid: captured.client_pid.clone(),
             server: clicker.server.clone(),
+            require_meta_agent: captured.action == PAUSE_ORCHESTRATOR,
         },
         &captured.session,
         out,
@@ -702,7 +775,10 @@ pub fn run(
 
 #[cfg(test)]
 mod tests {
-    use super::{Refusal, STOP, Step, menu_budget, parse, stop_confirmation};
+    use super::{
+        PAUSE_ORCHESTRATOR, Refusal, STOP, Step, menu_budget, parse, pause_confirmation,
+        stop_confirmation,
+    };
 
     fn argv(step: &str, extra: &[&str]) -> Vec<String> {
         let mut words = vec![
@@ -895,5 +971,61 @@ mod tests {
                 == 2,
             "exactly two rows are choosable: cancel and the destructive one"
         );
+    }
+
+    #[test]
+    fn pause_is_state_preserving_and_names_only_the_exact_resume_route() {
+        for (session, route) in [
+            ("orchestrator", "ae orchestrator --no-attach"),
+            ("renamed", "ae renamed --no-attach"),
+        ] {
+            let menu = pause_confirmation(session, "run-shell -b 'apply'");
+            assert!(
+                menu.title.starts_with("Pause orchestrator"),
+                "{}",
+                menu.title
+            );
+            let first = menu.items.first().expect("a first row");
+            assert_eq!(first.label, "Cancel");
+            assert!(
+                matches!(&first.action, crate::tmux::MenuAction::Run(command) if command.is_empty())
+            );
+            assert!(
+                menu.items.iter().any(|item| item
+                    .label
+                    .contains("state, worktree and conversations are PRESERVED")),
+                "pause consequence missing for {session}"
+            );
+            assert!(
+                menu.items.iter().any(|item| item.label.contains(route)),
+                "resume route missing for {session}"
+            );
+            let last = menu.items.last().expect("a last row");
+            assert_eq!(last.label, format!("Pause '{session}' now"));
+            assert_eq!(last.key, "P");
+            assert!(
+                matches!(&last.action, crate::tmux::MenuAction::Run(command) if command == "run-shell -b 'apply'")
+            );
+            assert_eq!(
+                menu.items
+                    .iter()
+                    .filter(|item| matches!(item.action, crate::tmux::MenuAction::Run(_)))
+                    .count(),
+                2,
+                "Cancel and Pause are the only choices"
+            );
+        }
+    }
+
+    #[test]
+    fn pause_is_an_explicit_action_not_an_ordinary_stop_alias() {
+        let mut words = argv("confirm", &[]);
+        let at = words
+            .iter()
+            .position(|word| word == "--action")
+            .expect("action flag");
+        words[at + 1] = PAUSE_ORCHESTRATOR.to_owned();
+        let (_, captured) = parse(&words).expect("pause grammar");
+        assert_eq!(captured.action, PAUSE_ORCHESTRATOR);
     }
 }
