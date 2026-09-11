@@ -294,53 +294,29 @@ struct QuotaKey {
     window_minutes: Option<u32>,
 }
 
-/// The local facts a classification was derived under.
-///
-/// They are not vendor observations and carry no vendor clock, so a change in
-/// them cannot be detected by the raw-observation guard. Holding them beside
-/// the level is what makes a policy change visible.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct QuotaPolicy {
-    manual_resets: Option<u8>,
-    account: crate::quota::Account,
-}
-
-impl QuotaPolicy {
-    fn of(group: &crate::quota::Group) -> Self {
-        Self {
-            manual_resets: group.manual_resets,
-            account: group.account.clone(),
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 struct QuotaSample<'a> {
     key: QuotaKey,
+    /// The scope this observation was read from. Its LABELS are all this
+    /// daemon takes from it; the numbers and the policy live on the reading.
     group: &'a crate::quota::Group,
-    row: &'a crate::quota::Row,
-    /// The percentage ae judges: the raw window spread over the scope's
-    /// declared resets and reported credits. The raw number stays on `row`,
-    /// which is what the advisory displays.
-    effective: f64,
-    /// The declaration and account this sample was judged under.
-    policy: QuotaPolicy,
-    observed_at: i64,
+    /// The observation and the policy it was judged under, as one value.
+    reading: crate::quota::Reading,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 struct QuotaTracked {
     key: QuotaKey,
-    observed_at: i64,
     level: QuotaLevel,
-    /// The policy the level was classified under. A change in it invalidates
-    /// the classification even when the vendor observation has not moved.
-    policy: QuotaPolicy,
-    /// The accepted vendor observation itself. A policy change re-derives THIS
-    /// row, so the raw percentage a classification rests on is always one the
-    /// freshness rule admitted — the policy path is not a way in for a sample
-    /// that rule refused.
-    row: crate::quota::Row,
+    /// The observation this level was classified from, with the policy it was
+    /// judged under and its own provenance.
+    ///
+    /// One value, because a level and the numbers behind it must not be able to
+    /// drift apart: every consumer — the next classification, the advisory it
+    /// books, the throttle line a seat reads — takes all of them from here.
+    /// `Reading::adopt` is what an incoming sample is offered to, so the raw
+    /// clock and the policy merge stay the reading's own rules.
+    reading: crate::quota::Reading,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -376,7 +352,7 @@ enum QuotaDelivery {
     Uncertain,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 struct QuotaCarry {
     sweeps_until_observe: u64,
     tracked: Vec<QuotaTracked>,
@@ -419,12 +395,10 @@ fn quota_samples_at(observation: &crate::quota::Observation, now: i64) -> Vec<Qu
             ) {
                 continue;
             }
-            let (Some(derived), Some(observed_at)) =
-                (crate::quota::derived(group, row), row.observed_at)
-            else {
+            let Some(reading) = crate::quota::Reading::of(group.policy.clone(), row.clone()) else {
                 continue;
             };
-            if now.saturating_sub(observed_at) > 60 * 60 {
+            if now.saturating_sub(reading.observed_at()) > 60 * 60 {
                 continue;
             }
             let key = QuotaKey {
@@ -436,14 +410,16 @@ fn quota_samples_at(observation: &crate::quota::Observation, now: i64) -> Vec<Qu
             let sample = QuotaSample {
                 key: key.clone(),
                 group,
-                row,
-                effective: derived.judged(),
-                policy: QuotaPolicy::of(group),
-                observed_at,
+                reading,
             };
             if let Some(existing) = samples.iter_mut().find(|sample| sample.key == key) {
-                if sample.observed_at > existing.observed_at {
-                    *existing = sample;
+                // One scope can be read through several rollouts in one scan,
+                // and they report ONE account. So the same rules apply here as
+                // across cycles: the newest row wins, every account fact wins
+                // on its own stamp, and an accountless rollout takes nothing
+                // away from a sibling that reported a cap.
+                if existing.reading.adopt(&sample.reading) == crate::quota::Adopted::Observation {
+                    existing.group = sample.group;
                 }
             } else {
                 samples.push(sample);
@@ -563,43 +539,29 @@ impl QuotaCarry {
             let Some(index) = previous else {
                 self.tracked.push(QuotaTracked {
                     key: sample.key,
-                    observed_at: sample.observed_at,
-                    level: classify_quota(sample.effective, None),
-                    policy: sample.policy,
-                    row: sample.row.clone(),
+                    level: classify_quota(sample.reading.judged(), None),
+                    reading: sample.reading,
                 });
                 continue;
             };
-            // Two clocks, one classification. The RAW observation is accepted
-            // or refused by timestamp alone, whatever the policy says: an older
-            // sample never enters a classification. A POLICY change carries no
-            // vendor clock, so it re-derives the observation already HELD.
-            let accepted = sample.observed_at > self.tracked[index].observed_at;
-            let repolicied = sample.policy != self.tracked[index].policy;
-            if !accepted && !repolicied {
+            // Two clocks, one classification, and the reading keeps them: the
+            // RAW observation is replaced only by a strictly newer stamp,
+            // whatever the policy says, while the declaration and the account
+            // facts merge on their own provenance. Either way what gets
+            // classified afterwards is the observation now HELD.
+            let adopted = self.tracked[index].reading.adopt(&sample.reading);
+            if adopted == crate::quota::Adopted::Nothing {
                 continue;
             }
-            if accepted {
-                self.tracked[index].observed_at = sample.observed_at;
-                self.tracked[index].row = sample.row.clone();
-            }
-            self.tracked[index].policy = sample.policy.clone();
-            let held = self.tracked[index].row.clone();
-            let held_at = self.tracked[index].observed_at;
-            let Some(judged) =
-                crate::quota::derived(sample.group, &held).map(crate::quota::Derived::judged)
-            else {
-                continue;
-            };
             let before = self.tracked[index].level;
-            let after = classify_quota(judged, Some(before));
+            let after = classify_quota(self.tracked[index].reading.judged(), Some(before));
             self.tracked[index].level = after;
             if before == after {
                 continue;
             }
             self.cancel_where(
                 |pending| pending.key == sample.key,
-                if accepted {
+                if adopted == crate::quota::Adopted::Observation {
                     "superseded by newer quota transition"
                 } else {
                     "superseded by a quota policy change"
@@ -613,13 +575,14 @@ impl QuotaCarry {
             } else {
                 after.label()
             };
+            // The notice describes the HELD reading, so the numbers it renders
+            // and the provenance it is booked under are that one observation's.
+            let held = self.tracked[index].reading.clone();
             let advisory = observation.advisory(sample.group, &held, state);
             for recipient in recipients {
                 self.pending.push(PendingAdvisory {
                     key: sample.key.clone(),
-                    // The notice describes the HELD observation, so that is
-                    // the provenance it is booked and matched under.
-                    observed_at: held_at,
+                    observed_at: held.observed_at(),
                     level: after,
                     recipient: recipient.clone(),
                     advisory: advisory.clone(),
@@ -711,6 +674,16 @@ impl QuotaCarry {
     }
 }
 
+/// One candidate for the throttle line: a level and the very reading it was
+/// decided from, so ranking and rendering cannot read different observations.
+#[derive(Debug, Clone)]
+struct QuotaReadout<'a> {
+    key: QuotaKey,
+    group: &'a crate::quota::Group,
+    reading: crate::quota::Reading,
+    level: QuotaLevel,
+}
+
 fn throttle_quota_line(
     observation: &crate::quota::Observation,
     tracked: &[QuotaTracked],
@@ -719,30 +692,44 @@ fn throttle_quota_line(
     now: i64,
 ) -> Option<String> {
     let identity = crate::quota::recorded_identity(entry)?;
-    let mut matches: Vec<QuotaSample<'_>> = quota_samples_at(observation, now)
+    // Whatever provenance decides the LEVEL supplies the numbers rendered with
+    // it. For a scope this daemon already tracks that is the HELD reading, so a
+    // sample the raw clock refused is never what a throttled seat is shown.
+    let mut matches: Vec<QuotaReadout<'_>> = quota_samples_at(observation, now)
         .into_iter()
         .filter(|sample| sample.group.tool == identity.tool && sample.key.source == identity.source)
+        .map(
+            |sample| match tracked.iter().find(|held| held.key == sample.key) {
+                Some(held) => QuotaReadout {
+                    key: sample.key,
+                    group: sample.group,
+                    reading: held.reading.clone(),
+                    level: held.level,
+                },
+                None => QuotaReadout {
+                    key: sample.key,
+                    group: sample.group,
+                    level: classify_quota(sample.reading.judged(), None),
+                    reading: sample.reading,
+                },
+            },
+        )
         .collect();
     matches.sort_by(|left, right| {
-        let level = |sample: &QuotaSample<'_>| {
-            tracked
-                .iter()
-                .find(|held| held.key == sample.key)
-                .map_or_else(|| classify_quota(sample.effective, None), |held| held.level)
-        };
-        let left_level = level(left);
-        let right_level = level(right);
-        right_level
-            .cmp(&left_level)
-            .then_with(|| right.effective.total_cmp(&left.effective))
+        right
+            .level
+            .cmp(&left.level)
+            .then_with(|| right.reading.judged().total_cmp(&left.reading.judged()))
             .then_with(|| left.key.cmp(&right.key))
     });
-    let sample = matches.first()?;
-    let level = tracked
-        .iter()
-        .find(|held| held.key == sample.key)
-        .map_or_else(|| classify_quota(sample.effective, None), |held| held.level);
-    Some(observation.advisory_line_at(sample.group, sample.row, level.label(), meta_dir, now))
+    let worst = matches.first()?;
+    Some(observation.advisory_line_at(
+        worst.group,
+        &worst.reading,
+        worst.level.label(),
+        meta_dir,
+        now,
+    ))
 }
 
 /// The result of accounting for one pane in one cycle.
@@ -3968,10 +3955,16 @@ mod tests {
             rows,
             hint: None,
             summary: None,
-            manual_resets,
-            account,
+            policy: crate::quota::Policy::new(manual_resets, account),
             notes: Vec::new(),
         }
+    }
+
+    /// The reading a test renders an advisory from: one group first row,
+    /// judged under that group own policy.
+    fn quota_reading(group: &crate::quota::Group) -> crate::quota::Reading {
+        crate::quota::Reading::of(group.policy.clone(), group.rows[0].clone())
+            .expect("a test row states a percentage and a stamp")
     }
 
     fn quota_observation(groups: Vec<crate::quota::Group>, now: i64) -> crate::quota::Observation {
@@ -4267,7 +4260,8 @@ mod tests {
             "a declaration rebuilds the classification from the current snapshot"
         );
         assert_eq!(
-            carry.tracked[0].observed_at, 9_901,
+            carry.tracked[0].reading.observed_at(),
+            9_901,
             "the raw clock does not move on a policy change"
         );
         let dropped: Vec<&String> = relieved
@@ -4301,7 +4295,8 @@ mod tests {
         // An older raw observation is still refused afterwards.
         let older = carry.reconcile(&observation("95", 9_800, Some(1), 10_002), &recipients, dir);
         assert_eq!(
-            carry.tracked[0].observed_at, 9_901,
+            carry.tracked[0].reading.observed_at(),
+            9_901,
             "older raw stays refused"
         );
         assert!(
@@ -4318,7 +4313,7 @@ mod tests {
             QuotaLevel::Critical,
             "withdrawing the declaration re-arms the same snapshot"
         );
-        assert_eq!(carry.tracked[0].observed_at, 9_901);
+        assert_eq!(carry.tracked[0].reading.observed_at(), 9_901);
         let delivered = transition_deliveries(&rearmed);
         assert!(
             delivered
@@ -4365,7 +4360,8 @@ mod tests {
         assert_eq!(carry.tracked[0].level, QuotaLevel::Headroom);
         let actions = carry.reconcile(&observation("20", 9_800, Some(0), 10_001), &recipients, dir);
         assert_eq!(
-            carry.tracked[0].observed_at, 9_901,
+            carry.tracked[0].reading.observed_at(),
+            9_901,
             "an older raw observation is refused by timestamp alone"
         );
         assert_eq!(
@@ -4395,7 +4391,8 @@ mod tests {
         let relieved =
             mirror.reconcile(&observation("20", 9_800, Some(1), 10_002), &recipients, dir);
         assert_eq!(
-            mirror.tracked[0].observed_at, 9_901,
+            mirror.tracked[0].reading.observed_at(),
+            9_901,
             "older raw still refused"
         );
         assert_eq!(mirror.tracked[0].level, QuotaLevel::Headroom);
@@ -4434,9 +4431,10 @@ mod tests {
             10_000,
         );
         let sample = &super::quota_samples(&observation)[0];
-        let derivation = crate::quota::derived(sample.group, sample.row).expect("derivable");
+        let derivation =
+            crate::quota::derived(&sample.group.policy, &sample.group.rows[0]).expect("derivable");
         assert_eq!(
-            sample.effective.to_bits(),
+            sample.reading.judged().to_bits(),
             derivation.judged().to_bits(),
             "the threshold reads the very same value, bit for bit"
         );
@@ -4511,7 +4509,7 @@ mod tests {
         );
         let text = observation("100", 9_901, Some(1)).advisory_line(
             &observation("100", 9_901, Some(1)).groups[0],
-            &observation("100", 9_901, Some(1)).groups[0].rows[0],
+            &quota_reading(&observation("100", 9_901, Some(1)).groups[0]),
             "low",
             Path::new("/m"),
         );
@@ -4549,11 +4547,12 @@ mod tests {
         );
         let sample = &super::quota_samples(&observation)[0];
         assert_eq!(
-            classify_quota(sample.effective, None),
+            classify_quota(sample.reading.judged(), None),
             QuotaLevel::Critical,
             "a spend cap is not headroom at 3% of a window"
         );
-        let line = observation.advisory_line(sample.group, sample.row, "critical", Path::new("/m"));
+        let line =
+            observation.advisory_line(sample.group, &sample.reading, "critical", Path::new("/m"));
         assert!(line.contains("spend cap reached"), "{line}");
         assert!(
             line.contains("not a window reset"),
@@ -5119,7 +5118,7 @@ mod tests {
         );
         let sample = &super::quota_samples(&observation)[0];
         assert_eq!(
-            observation.advisory_line(sample.group, sample.row, "low", Path::new("/m/demo")),
+            observation.advisory_line(sample.group, &sample.reading, "low", Path::new("/m/demo")),
             "quota: codex · cx · demo:lead weekly_scoped Fable 5h 80% (low, observed 2m ago), resets in 1h00m — prefer another client for new spawns; table: /m/demo/quota"
         );
 
@@ -5127,7 +5126,7 @@ mod tests {
         assert_eq!(
             reset.advisory_line(
                 &reset.groups[0],
-                &reset.groups[0].rows[0],
+                &quota_reading(&reset.groups[0]),
                 "back to headroom",
                 Path::new("/m/demo")
             ),
@@ -5138,7 +5137,7 @@ mod tests {
         precise.groups[0].rows[0].used_percent = Some(format!("80.{}", "1".repeat(300)));
         let line = precise.advisory_line(
             &precise.groups[0],
-            &precise.groups[0].rows[0],
+            &quota_reading(&precise.groups[0]),
             "low",
             Path::new("/m"),
         );
@@ -5149,7 +5148,7 @@ mod tests {
         hostile.groups[0].rows[0].bucket = format!("bad\u{1b}[2J\r\n{}", "x".repeat(300));
         hostile.groups[0].rows[0].qualifier = Some("q\u{7f}\n".repeat(100));
         let sample = &super::quota_samples(&hostile)[0];
-        let line = hostile.advisory_line(sample.group, sample.row, "low", Path::new("/m"));
+        let line = hostile.advisory_line(sample.group, &sample.reading, "low", Path::new("/m"));
         assert!(!line.contains('\u{1b}'));
         assert!(!line.contains('\r'));
         assert!(!line.contains('\n'));
@@ -8317,5 +8316,247 @@ mod tests {
             "and it says what happened: {:?}",
             event.summary
         );
+    }
+
+    /// The recorded identity both caller pins are rendered under: one codex
+    /// seat whose conversation and config home are both on record.
+    fn quota_recorded_entry(rollout: &str) -> RosterEntry {
+        RosterEntry {
+            slot: "main".to_owned(),
+            name: "lead".to_owned(),
+            profile: Some("sol".to_owned()),
+            harness_session: Some(rollout.to_owned()),
+            config_home: RecordedConfigHome::Path(PathBuf::from("/tmp/cx")),
+            config_home_base: RecordedConfigHomeBase::Missing,
+            binary: Some("codex".to_owned()),
+        }
+    }
+
+    #[test]
+    fn an_older_explicit_spend_report_never_lifts_a_newer_held_cap() {
+        let rollout = "018f1f70-7b2c-7000-8000-000000000001";
+        let entry = quota_recorded_entry(rollout);
+        let identity = crate::quota::recorded_identity(&entry).expect("recorded identity");
+        let account = |reached: Option<bool>, at: i64| crate::quota::Account {
+            credits: crate::quota::Credits::Unreported,
+            credits_observed_at: None,
+            spend_control_reached: reached,
+            spend_observed_at: Some(at),
+        };
+        let observation = |at: i64, account: crate::quota::Account, now: i64| {
+            quota_observation(
+                vec![quota_scope_group(
+                    &identity.source,
+                    Some(rollout),
+                    Some("demo:lead"),
+                    vec![quota_row(
+                        "codex",
+                        Some("pro"),
+                        "3",
+                        at,
+                        crate::quota::Status::Fresh,
+                    )],
+                    Some(1),
+                    account,
+                )],
+                now,
+            )
+        };
+        let recipients = [quota_recipient("main", "lead")];
+        let dir = Path::new("/m");
+
+        // A cap proven at 9901 makes a 3% window critical: no window reset
+        // frees it, and one declared reset cannot either.
+        let mut carry = QuotaCarry::default();
+        let _ = carry.reconcile(
+            &observation(9_901, account(Some(true), 9_901), 10_000),
+            &recipients,
+            dir,
+        );
+        assert_eq!(
+            carry.tracked[0].level,
+            QuotaLevel::Critical,
+            "a proven spend cap is critical at any raw percentage"
+        );
+
+        // The refused older observation carries an explicit `false` stamped
+        // EARLIER than the cap. The field's own provenance decides, not the
+        // order the records reached ae.
+        let older = observation(9_800, account(Some(false), 9_800), 10_001);
+        let actions = carry.reconcile(&older, &recipients, dir);
+        assert_eq!(
+            carry.tracked[0].level,
+            QuotaLevel::Critical,
+            "an older explicit false loses to the newer held cap"
+        );
+        assert!(
+            actions.is_empty(),
+            "so nothing transitions and nothing is booked: {actions:?}"
+        );
+        let line = throttle_quota_line(&older, &carry.tracked, &entry, dir, 10_001)
+            .expect("a line for the recorded scope");
+        assert!(
+            line.contains("spend cap reached"),
+            "and the cap is still what a seat is told: {line}"
+        );
+
+        // Control: a genuinely newer explicit false does lift it.
+        let lifted = carry.reconcile(
+            &observation(9_901, account(Some(false), 9_902), 10_002),
+            &recipients,
+            dir,
+        );
+        assert_eq!(
+            carry.tracked[0].level,
+            QuotaLevel::Headroom,
+            "a newer explicit false is the one report that lifts a cap"
+        );
+        let booked = transition_deliveries(&lifted);
+        assert_eq!(booked.len(), 1, "one relieved notice: {booked:?}");
+        let text = booked[0].advisory.render(dir, 10_002);
+        assert!(text.contains("back to headroom"), "{text}");
+    }
+
+    #[test]
+    fn the_throttle_line_quotes_the_observation_that_decided_the_level() {
+        let rollout = "018f1f70-7b2c-7000-8000-000000000001";
+        let entry = quota_recorded_entry(rollout);
+        let identity = crate::quota::recorded_identity(&entry).expect("recorded identity");
+        let observation = |used: &str, at: i64, resets: Option<u8>, now: i64| {
+            quota_observation(
+                vec![quota_scope_group(
+                    &identity.source,
+                    Some(rollout),
+                    Some("demo:lead"),
+                    vec![quota_row(
+                        "codex",
+                        Some("pro"),
+                        used,
+                        at,
+                        crate::quota::Status::Fresh,
+                    )],
+                    resets,
+                    crate::quota::Account::default(),
+                )],
+                now,
+            )
+        };
+        let recipients = [quota_recipient("main", "lead")];
+        let dir = Path::new("/m");
+
+        // Control: an ordinary current observation renders itself.
+        let mut control = QuotaCarry::default();
+        let current = observation("95", 9_901, Some(0), 10_000);
+        let _ = control.reconcile(&current, &recipients, dir);
+        let line = throttle_quota_line(&current, &control.tracked, &entry, dir, 10_000)
+            .expect("a line for the recorded scope");
+        assert!(line.contains(" 95% (critical,"), "control: {line}");
+
+        // Held 95% at 9901, then the older 20% at 9800 the raw clock refuses.
+        // The level comes from the held observation, so the number, the
+        // derivation and the age must come from it too.
+        let mut carry = QuotaCarry::default();
+        let _ = carry.reconcile(&observation("95", 9_901, Some(1), 10_000), &recipients, dir);
+        let older = observation("20", 9_800, Some(0), 10_001);
+        let _ = carry.reconcile(&older, &recipients, dir);
+        assert_eq!(carry.tracked[0].level, QuotaLevel::Critical);
+        let line = throttle_quota_line(&older, &carry.tracked, &entry, dir, 10_001)
+            .expect("a line for the recorded scope");
+        assert!(
+            line.contains(" 95% (critical,"),
+            "the level and the number come from one observation: {line}"
+        );
+        assert!(
+            line.contains("observed 1m ago"),
+            "and so does its age: {line}"
+        );
+        assert!(
+            !line.contains("20%"),
+            "the refused observation is never rendered: {line}"
+        );
+        assert!(!line.contains("observed 3m ago"), "{line}");
+    }
+
+    #[test]
+    fn one_scope_read_through_two_rollouts_merges_their_account_facts() {
+        let source = Path::new("/tmp/cx/sessions");
+        let scope_group = |rollout: &str, at: i64, account: crate::quota::Account| {
+            quota_scope_group(
+                source,
+                Some(rollout),
+                Some("demo:lead"),
+                vec![quota_row(
+                    "codex",
+                    Some("pro"),
+                    "3",
+                    at,
+                    crate::quota::Status::Fresh,
+                )],
+                None,
+                account,
+            )
+        };
+        let capped = crate::quota::Account {
+            credits: crate::quota::Credits::Unreported,
+            credits_observed_at: None,
+            spend_control_reached: Some(true),
+            spend_observed_at: Some(9_900),
+        };
+        let recipients = [quota_recipient("main", "lead")];
+        let dir = Path::new("/m");
+
+        // Two rollouts under ONE config home report one account. The newer
+        // record carries the window and no account facts at all, so it says
+        // nothing about the cap its sibling proved.
+        let mut carry = QuotaCarry::default();
+        let _ = carry.reconcile(
+            &quota_observation(
+                vec![
+                    scope_group("018f1f70-7b2c-7000-8000-000000000001", 9_900, capped),
+                    scope_group(
+                        "018f1f70-7b2c-7000-8000-000000000002",
+                        9_901,
+                        crate::quota::Account::default(),
+                    ),
+                ],
+                10_000,
+            ),
+            &recipients,
+            dir,
+        );
+        assert_eq!(carry.tracked.len(), 1, "one scope is one tracked window");
+        assert_eq!(
+            carry.tracked[0].level,
+            QuotaLevel::Critical,
+            "the cap survives a sibling rollout that reports no account"
+        );
+        assert_eq!(
+            carry.tracked[0].reading.observed_at(),
+            9_901,
+            "while the newest observation is still the one held"
+        );
+
+        // Control: with neither rollout reporting a cap, 3% is headroom.
+        let mut control = QuotaCarry::default();
+        let _ = control.reconcile(
+            &quota_observation(
+                vec![
+                    scope_group(
+                        "018f1f70-7b2c-7000-8000-000000000001",
+                        9_900,
+                        crate::quota::Account::default(),
+                    ),
+                    scope_group(
+                        "018f1f70-7b2c-7000-8000-000000000002",
+                        9_901,
+                        crate::quota::Account::default(),
+                    ),
+                ],
+                10_000,
+            ),
+            &recipients,
+            dir,
+        );
+        assert_eq!(control.tracked[0].level, QuotaLevel::Headroom);
     }
 }

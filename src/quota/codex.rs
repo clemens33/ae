@@ -95,11 +95,11 @@ fn rate_limits(record: &Value) -> Option<&Value> {
 
 /// Fold this record's account facts into the ones already proven.
 ///
-/// Provenance is FIELD-LEVEL. Each fact carries the stamp of the record that
-/// last USABLY reported it, and a record moves only the fields it actually
-/// asserts: an absent, null or malformed field asserts nothing, so it neither
-/// overwrites the held value nor refreshes its age. A proven spend cap is
-/// therefore lifted only by a record that explicitly reports it false.
+/// This decides only what a record USABLY REPORTS: it must name its bucket and
+/// stamp itself within the accepted skew, and each fact is read on its own, so
+/// an absent, null or malformed field asserts nothing. Which of those facts may
+/// then move what is held is not decided here — [`Account::absorb`] is the one
+/// place that rule lives, for this reader and for every later one alike.
 ///
 /// Every ambiguity here resolves toward LESS apparent headroom, because
 /// overstating headroom is what sends work to a client that is already capped.
@@ -114,22 +114,16 @@ fn merge_account(account: &mut Account, limits: &Value, record: &Value, now: i64
     if observed_at.saturating_sub(now) >= super::FUTURE_SKEW_SECS {
         return;
     }
-    if let Some(credits) = reported_credits(limits.get("credits"))
-        && account
-            .credits_observed_at
-            .is_none_or(|held| observed_at > held)
-    {
-        account.credits = credits;
-        account.credits_observed_at = Some(observed_at);
-    }
-    if let Some(reached) = reported_spend_control(limits.get("spend_control_reached"))
-        && account
-            .spend_observed_at
-            .is_none_or(|held| observed_at > held)
-    {
-        account.spend_control_reached = Some(reached);
-        account.spend_observed_at = Some(observed_at);
-    }
+    let credits = reported_credits(limits.get("credits"));
+    let reached = reported_spend_control(limits.get("spend_control_reached"));
+    account.absorb(&Account {
+        credits: credits.clone().unwrap_or_default(),
+        // A stamp is what says a fact was reported at all, so a field this
+        // record did not usably state carries none.
+        credits_observed_at: credits.map(|_| observed_at),
+        spend_control_reached: reached,
+        spend_observed_at: reached.map(|_| observed_at),
+    });
 }
 
 /// One usable credit report, or `None` for absent, null or malformed state.
@@ -538,12 +532,15 @@ mod tests {
             "a literal ae cannot state exactly is never shown clipped"
         );
         assert_eq!(
-            crate::quota::credits_label(&Account {
-                credits: Credits::AvailableUnknown,
-                credits_observed_at: Some(1),
-                spend_control_reached: None,
-                spend_observed_at: None,
-            }),
+            crate::quota::credits_label(&crate::quota::Policy::new(
+                None,
+                Account {
+                    credits: Credits::AvailableUnknown,
+                    credits_observed_at: Some(1),
+                    spend_control_reached: None,
+                    spend_observed_at: None,
+                }
+            )),
             "available"
         );
     }

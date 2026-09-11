@@ -700,12 +700,20 @@ ae uses only the ones it was told or was given:
 Account facts are read FIELD by FIELD, each with the stamp of the record that last usably reported
 it. A record moves only the fields it actually asserts, and only when it names its own bucket and
 stamps itself: an absent, null or malformed field neither overwrites the held value nor refreshes
-its age, so a proven spend cap is lifted only by a record that explicitly reports it false. Every
-ambiguity resolves toward LESS apparent headroom, because overstating headroom is what sends work to
-a client that is already capped. A spend cap therefore never ages out, while an unlimited-credit
-claim — the one fact that ADDS headroom — relieves a window only when it was reported no earlier
-than that window's own observation. A claim ae will not use is still shown in `CREDITS`, with a note
-under the table saying why `EFFECTIVE` kept the raw number.
+its age, so a proven spend cap is lifted only by a record that explicitly reports it false. One
+merge applies that rule everywhere — between two records of one read, between two rollouts of one
+scope, and between two cycles of the watchdog — so a later reading can never replace an account
+wholesale. Every ambiguity resolves toward LESS apparent headroom, because overstating headroom is
+what sends work to a client that is already capped. Age alone therefore never lifts a spend cap,
+while an unlimited-credit claim — the one fact that ADDS headroom — relieves a window only when it
+was reported no earlier than that window's own observation. A claim ae will not use is still shown
+in `CREDITS`, with a note under the table saying the claim was ignored; every other rule still
+decides the cells, so a declared reset or a cap may well be what `EFFECTIVE` shows.
+
+A held cap is not a durable ledger. It stands until a record explicitly reports it lifted, but it
+lives only as long as the evidence ae holds: a scope whose bounded tail no longer carries the record,
+and a watchdog that restarts with no carried state, both start again from what the client reports
+now. What ae holds is retained evidence, not a current assertion by the vendor.
 
 `EFFECTIVE` is the percentage ae judges by, and it is `-` whenever nothing was declared or reported.
 With `n` declared resets the same usage is spread over `1 + n` windows, so the cell reads

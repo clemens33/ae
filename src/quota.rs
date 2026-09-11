@@ -130,8 +130,12 @@ pub struct Account {
 impl Account {
     /// The account is spend-capped: no window has headroom until that changes.
     ///
-    /// This verdict never ages out. A cap ae keeps too long can only understate
-    /// headroom, and that is the error worth making.
+    /// Age alone never lifts this verdict — only a report that explicitly says
+    /// the cap is gone does, for as long as the fact is held. It is not durable
+    /// beyond that: a scope whose bounded tail no longer carries the record,
+    /// and a daemon that restarts with no held state, both begin again from
+    /// what the client reports now. While it IS held, keeping it can only
+    /// understate headroom, and that is the error worth making.
     #[must_use]
     pub const fn spend_capped(&self) -> bool {
         matches!(self.spend_control_reached, Some(true))
@@ -151,6 +155,72 @@ impl Account {
                 (Some(credits), Some(window)) => credits >= window,
                 _ => false,
             }
+    }
+
+    /// Adopt each fact `incoming` actually reports whose own stamp is newer
+    /// than the one held for that fact, and nothing else.
+    ///
+    /// This is the ONE place an account fact moves. A report says nothing about
+    /// the fields it does not carry, so absence never overwrites a held value
+    /// and never refreshes its age; a report older than what is held loses,
+    /// whichever order the two arrive in. The rule is the same within one read
+    /// of a source and across two cycles of the watchdog, because both ask
+    /// this function.
+    pub(crate) fn absorb(&mut self, incoming: &Self) {
+        if let Some(at) = incoming.credits_observed_at
+            && self.credits_observed_at.is_none_or(|held| at > held)
+        {
+            self.credits = incoming.credits.clone();
+            self.credits_observed_at = Some(at);
+        }
+        if let Some(at) = incoming.spend_observed_at
+            && self.spend_observed_at.is_none_or(|held| at > held)
+        {
+            self.spend_control_reached = incoming.spend_control_reached;
+            self.spend_observed_at = Some(at);
+        }
+    }
+}
+
+/// Everything ae judges a window BY: the operator's declaration for the scope,
+/// and the account facts the client reported with their own provenance.
+///
+/// The two halves are one value deliberately. Outside this module a policy can
+/// only be read from a group, cloned, or merged with [`Policy::absorb`] — no
+/// caller can pair one scope's declaration with another observation's account,
+/// and none can replace an account fact by assignment. That is what keeps the
+/// field-level provenance of a single read identical to the rule that governs
+/// what a later read may replace.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Policy {
+    manual_resets: Option<u8>,
+    account: Account,
+}
+
+impl Policy {
+    /// Bind a scope's declaration to the account facts read with it.
+    pub(crate) const fn new(manual_resets: Option<u8>, account: Account) -> Self {
+        Self {
+            manual_resets,
+            account,
+        }
+    }
+
+    /// Merge `incoming` into this policy, and report whether anything moved.
+    ///
+    /// The DECLARATION is local configuration, re-read every cycle and carrying
+    /// no vendor clock, so the incoming one replaces what was held. The ACCOUNT
+    /// is vendor evidence, so it merges fact by fact on each stamp.
+    pub(crate) fn absorb(&mut self, incoming: &Self) -> bool {
+        let before = self.clone();
+        self.manual_resets = incoming.manual_resets;
+        self.account.absorb(&incoming.account);
+        *self != before
+    }
+
+    /// The account is spend-capped, which no window reset can free.
+    pub(crate) const fn spend_capped(&self) -> bool {
+        self.account.spend_capped()
     }
 }
 
@@ -215,19 +285,14 @@ impl Effective {
 
 /// Derive the judged headroom for one window from what was declared and
 /// reported. A spend cap outranks credits, which outrank declared resets.
-pub(crate) fn effective(
-    declared: Option<u8>,
-    account: &Account,
-    used: f64,
-    window: Option<i64>,
-) -> Effective {
-    if account.spend_capped() {
+pub(crate) fn effective(policy: &Policy, used: f64, window: Option<i64>) -> Effective {
+    if policy.account.spend_capped() {
         return Effective::SpendCapped;
     }
-    if account.credits_relieve(window) {
+    if policy.account.credits_relieve(window) {
         return Effective::Unlimited;
     }
-    match declared {
+    match policy.manual_resets {
         Some(resets) => Effective::Resets {
             resets,
             percent: used / (f64::from(resets) + 1.0),
@@ -237,11 +302,11 @@ pub(crate) fn effective(
 }
 
 /// The CREDITS cell for one scope.
-pub(crate) fn credits_label(account: &Account) -> String {
-    if account.spend_capped() {
+pub(crate) fn credits_label(policy: &Policy) -> String {
+    if policy.spend_capped() {
         return "spend-cap".to_owned();
     }
-    match &account.credits {
+    match &policy.account.credits {
         Credits::Unreported => "-".to_owned(),
         Credits::Unlimited => "unlimited".to_owned(),
         Credits::Available(balance) => balance.clone(),
@@ -261,6 +326,15 @@ pub(crate) struct Derived {
 }
 
 impl Derived {
+    /// Apply the rule to a percentage that is already parsed: the ONE place a
+    /// raw number and a judged one are bound together.
+    fn judge(policy: &Policy, used: f64, window: Option<i64>) -> Self {
+        Self {
+            used,
+            effective: effective(policy, used, window),
+        }
+    }
+
     /// The percentage a threshold classifies.
     pub(crate) fn judged(self) -> f64 {
         self.effective.judged(self.used)
@@ -277,18 +351,98 @@ impl Derived {
     }
 }
 
-/// Derive one row under its scope's declaration and reported account, or
-/// `None` when the row states no usable percentage.
-pub(crate) fn derived(group: &Group, row: &Row) -> Option<Derived> {
-    let used = row
-        .used_percent
+/// Derive one row under the policy it is judged by, or `None` when the row
+/// states no usable percentage.
+pub(crate) fn derived(policy: &Policy, row: &Row) -> Option<Derived> {
+    Some(Derived::judge(policy, row_percent(row)?, row.observed_at))
+}
+
+/// The window percentage a row states, when it states a usable one.
+fn row_percent(row: &Row) -> Option<f64> {
+    row.used_percent
         .as_deref()
         .and_then(|value| value.parse::<f64>().ok())
-        .filter(|value| value.is_finite())?;
-    Some(Derived {
-        used,
-        effective: effective(group.manual_resets, &group.account, used, row.observed_at),
-    })
+        .filter(|value| value.is_finite())
+}
+
+/// One judged observation: the row ae accepted, the policy it was judged
+/// under, and that row's own provenance.
+///
+/// A level and the numbers it was decided from travel as ONE value. No caller
+/// can pair a level with another observation's percentage, derivation or age,
+/// which is exactly what an advisory quoting a REFUSED sample used to do.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Reading {
+    row: Row,
+    policy: Policy,
+    used: f64,
+    observed_at: i64,
+}
+
+/// What an incoming reading moved in the reading it was offered to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Adopted {
+    /// Neither clock moved: the raw observation is not newer and no local fact
+    /// changed, so there is nothing to judge again.
+    Nothing,
+    /// The declaration or an account fact moved, so the HELD observation is
+    /// judged again under it.
+    Policy,
+    /// A strictly newer raw observation replaced the held one.
+    Observation,
+}
+
+impl Reading {
+    /// Judge `row` under `policy`.
+    ///
+    /// `None` unless the row states both a usable percentage and its own
+    /// observation stamp: a reading is the provenance every caller reads a
+    /// level from, and it is not one with either half missing.
+    pub(crate) fn of(policy: Policy, row: Row) -> Option<Self> {
+        let used = row_percent(&row)?;
+        let observed_at = row.observed_at?;
+        Some(Self {
+            row,
+            policy,
+            used,
+            observed_at,
+        })
+    }
+
+    /// Adopt what `incoming` proves, under the two clocks ae keeps apart: a
+    /// raw observation is replaced only by a strictly newer stamp, whatever the
+    /// policy says, while the declaration and the account facts merge on their
+    /// own provenance.
+    pub(crate) fn adopt(&mut self, incoming: &Self) -> Adopted {
+        let newer = incoming.observed_at > self.observed_at;
+        let repolicied = self.policy.absorb(&incoming.policy);
+        if newer {
+            self.row = incoming.row.clone();
+            self.used = incoming.used;
+            self.observed_at = incoming.observed_at;
+            return Adopted::Observation;
+        }
+        if repolicied {
+            Adopted::Policy
+        } else {
+            Adopted::Nothing
+        }
+    }
+
+    /// The percentage a threshold classifies, derived exactly as the table
+    /// derives the cell it renders.
+    pub(crate) fn judged(&self) -> f64 {
+        self.derived().judged()
+    }
+
+    /// When the observation this reading holds was made.
+    pub(crate) const fn observed_at(&self) -> i64 {
+        self.observed_at
+    }
+
+    fn derived(&self) -> Derived {
+        Derived::judge(&self.policy, self.used, Some(self.observed_at))
+    }
 }
 
 /// Parsing failed before a trustworthy snapshot could be produced.
@@ -423,10 +577,9 @@ pub(crate) struct Group {
     pub(crate) rows: Vec<Row>,
     pub(crate) hint: Option<String>,
     pub(crate) summary: Option<RolloutSummary>,
-    /// Manual resets the operator declared for this client scope.
-    pub(crate) manual_resets: Option<u8>,
-    /// Account-wide credit and spend-control state, as the client reports it.
-    pub(crate) account: Account,
+    /// What these windows are judged BY: the scope's declared manual resets
+    /// and the account facts read with them, as one value.
+    pub(crate) policy: Policy,
     /// Operator-facing notes about this scope's own declaration.
     pub(crate) notes: Vec<String>,
 }
@@ -524,25 +677,29 @@ impl Observation {
     pub(crate) fn advisory_line(
         &self,
         group: &Group,
-        row: &Row,
+        reading: &Reading,
         state: &str,
         meta_dir: &Path,
     ) -> String {
-        self.advisory_line_at(group, row, state, meta_dir, self.now)
+        self.advisory_line_at(group, reading, state, meta_dir, self.now)
     }
 
     pub(crate) fn advisory_line_at(
         &self,
         group: &Group,
-        row: &Row,
+        reading: &Reading,
         state: &str,
         meta_dir: &Path,
         now: i64,
     ) -> String {
-        self.advisory(group, row, state).render(meta_dir, now)
+        self.advisory(group, reading, state).render(meta_dir, now)
     }
 
-    pub(crate) fn advisory(&self, group: &Group, row: &Row, state: &str) -> Advisory {
+    /// Render one advisory from a READING: the group supplies only the labels
+    /// of the scope, while every number, the derivation and the age come from
+    /// the observation that decided the level.
+    pub(crate) fn advisory(&self, group: &Group, reading: &Reading, state: &str) -> Advisory {
+        let row = &reading.row;
         let scope = bounded_cell(&scope_identity(group, self.home.as_deref()), 1);
         let owner = group.owner.as_deref().map(|owner| bounded_cell(owner, 0));
         let bucket = row.qualifier.as_deref().map_or_else(
@@ -555,7 +712,7 @@ impl Observation {
             .map_or_else(|| "-".to_owned(), window_label);
         let used = advisory_percent(row.used_percent.as_deref());
         let recovered = state == "back to headroom";
-        let derivation = derived(group, row).and_then(Derived::derivation);
+        let derivation = reading.derived().derivation();
         Advisory {
             tool: group.tool,
             scope,
@@ -568,7 +725,7 @@ impl Observation {
             state: if recovered { "headroom" } else { state }.to_owned(),
             recovered,
             derivation,
-            spend_capped: group.account.spend_capped(),
+            spend_capped: reading.policy.spend_capped(),
         }
     }
 }
@@ -783,8 +940,7 @@ pub(crate) fn observe(inputs: &Inputs<'_>) -> Result<Observation, crate::config:
                     rows: observed.rows,
                     hint: scope.hint.clone(),
                     summary: None,
-                    manual_resets: scope.manual_resets,
-                    account: observed.account,
+                    policy: Policy::new(scope.manual_resets, observed.account),
                     notes: scope.notes.clone(),
                 };
                 rendered.push(group.clone());
@@ -810,8 +966,7 @@ pub(crate) fn observe(inputs: &Inputs<'_>) -> Result<Observation, crate::config:
                         .clone()
                         .or_else(|| quota.unsupported_hint.map(str::to_owned)),
                     summary: None,
-                    manual_resets: scope.manual_resets,
-                    account: Account::default(),
+                    policy: Policy::new(scope.manual_resets, Account::default()),
                     notes: scope.notes.clone(),
                 };
                 rendered.push(group.clone());
@@ -1437,8 +1592,7 @@ fn codex_groups(
                 rows: read.rows,
                 hint: scope.hint.clone(),
                 summary: None,
-                manual_resets: scope.manual_resets,
-                account: read.account,
+                policy: Policy::new(scope.manual_resets, read.account),
                 notes: scope.notes.clone(),
             },
             observed,
@@ -1564,8 +1718,7 @@ fn summarize_codex_groups(
             rows: vec![placeholder(Status::Unknown)],
             hint: scope.hint.clone(),
             summary: None,
-            manual_resets: scope.manual_resets,
-            account: Account::default(),
+            policy: Policy::new(scope.manual_resets, Account::default()),
             notes: scope.notes.clone(),
         });
     }
@@ -1587,8 +1740,7 @@ fn summarize_codex_groups(
             owner: None,
             rows: Vec::new(),
             hint: None,
-            manual_resets: None,
-            account: Account::default(),
+            policy: Policy::default(),
             notes: Vec::new(),
             summary: Some(RolloutSummary {
                 hidden,
@@ -1764,7 +1916,7 @@ fn render_at(groups: &[Group], home: Option<&Path>, now: i64) -> String {
                     .flatten()
                     .unwrap_or_else(|| "-".to_owned()),
                 if index == 0 {
-                    credits_label(&group.account)
+                    credits_label(&group.policy)
                 } else {
                     String::new()
                 },
@@ -1790,15 +1942,21 @@ fn render_at(groups: &[Group], home: Option<&Path>, now: i64) -> String {
 }
 
 /// Say once why a reported unlimited-credit claim did not relieve this scope.
+///
+/// The claim is simply not used. Every other rule still applies to each window
+/// here, so the note says what was ignored rather than what `EFFECTIVE` shows:
+/// a declared reset or a spend cap may well be deciding these cells.
 fn untrusted_credit_note(group: &Group) -> Option<String> {
     let newest = group.rows.iter().filter_map(|row| row.observed_at).max();
-    (group.account.credits == Credits::Unlimited && !group.account.credits_relieve(newest))
-        .then(|| "credits unlimited was reported older than the window it would relieve; EFFECTIVE keeps the raw window".to_owned())
+    let account = &group.policy.account;
+    (account.credits == Credits::Unlimited && !account.credits_relieve(newest)).then(|| {
+        "credits unlimited was reported older than the newest window here, so the claim is ignored; EFFECTIVE follows the remaining rules".to_owned()
+    })
 }
 
 /// The EFFECTIVE cell for one window, or `None` when its percentage is absent.
 fn effective_cell(group: &Group, row: &Row) -> Option<String> {
-    derived(group, row).map(Derived::cell)
+    derived(&group.policy, row).map(Derived::cell)
 }
 
 fn rollout_summary_label(summary: &RolloutSummary, now: i64) -> String {
@@ -2345,8 +2503,8 @@ mod tests {
     use super::{
         Account, Bounded, Budget, CLAUDE_MAX_BYTES, CODEX_TAIL_BYTES, COLUMNS, Credits,
         Declaration, FRESH_SECS, FUTURE_SKEW_SECS, FleetRollout, FleetRollouts, FleetStatus, Group,
-        LocatedRollout, ReadRows, RenderLine, RolloutLocation, RolloutSource, Row, Scope, Status,
-        TABLE_MAX_LINE, TABLE_MAX_WIDTHS, bounded_tail, bounded_whole_file, codex_groups,
+        LocatedRollout, Policy, ReadRows, RenderLine, RolloutLocation, RolloutSource, Row, Scope,
+        Status, TABLE_MAX_LINE, TABLE_MAX_WIDTHS, bounded_tail, bounded_whole_file, codex_groups,
         codex_rollout_dirs, configured_scopes, credits_label, derived, effective,
         find_codex_rollout, freshness, merge_declaration, order_located_rollouts, percent_label,
         profiles_label, read_bounded_tail, read_claude, render_at, render_table,
@@ -2736,7 +2894,8 @@ mod tests {
         // Every account here is stamped with the window it is judged against,
         // so this table is about the arithmetic, not about provenance.
         let case = |declared, account: &Account, used: f64| {
-            let effective = effective(declared, account, used, Some(9_900));
+            let policy = Policy::new(declared, account.clone());
+            let effective = effective(&policy, used, Some(9_900));
             (effective.cell(), effective.judged(used))
         };
         assert_eq!(case(None, &plain, 95.0), ("-".to_owned(), 95.0));
@@ -2766,12 +2925,13 @@ mod tests {
             ("-".to_owned(), 95.0),
             "an unquantifiable balance never invents headroom"
         );
-        assert_eq!(credits_label(&plain), "-");
-        assert_eq!(credits_label(&unlimited), "unlimited");
-        assert_eq!(credits_label(&capped), "spend-cap");
-        assert_eq!(credits_label(&balance), "12.50");
+        let label = |account: &Account| credits_label(&Policy::new(None, account.clone()));
+        assert_eq!(label(&plain), "-");
+        assert_eq!(label(&unlimited), "unlimited");
+        assert_eq!(label(&capped), "spend-cap");
+        assert_eq!(label(&balance), "12.50");
         assert_eq!(
-            credits_label(&Account {
+            label(&Account {
                 credits: Credits::Exhausted,
                 credits_observed_at: Some(9_900),
                 spend_control_reached: None,
@@ -2801,8 +2961,7 @@ mod tests {
             }],
             hint: None,
             summary: None,
-            manual_resets,
-            account: Account::default(),
+            policy: Policy::new(manual_resets, Account::default()),
             notes: Vec::new(),
         }
     }
@@ -2865,7 +3024,8 @@ mod tests {
     #[test]
     fn the_table_cell_and_the_threshold_read_one_derivation() {
         let group = declared_group(Some(1), "95.0");
-        let derivation = derived(&group, &group.rows[0]).expect("a fresh percentage derives");
+        let derivation =
+            derived(&group.policy, &group.rows[0]).expect("a fresh percentage derives");
         // Bit equality: the pin is that one value is shared, not that two
         // near-enough values agree.
         assert_eq!(derivation.judged().to_bits(), 47.5_f64.to_bits());
@@ -2876,12 +3036,13 @@ mod tests {
             "the table renders the one derivation: {table}"
         );
         let zero = declared_group(Some(0), "95.0");
-        let zero_derivation = derived(&zero, &zero.rows[0]).expect("a fresh percentage derives");
+        let zero_derivation =
+            derived(&zero.policy, &zero.rows[0]).expect("a fresh percentage derives");
         assert_eq!(zero_derivation.judged().to_bits(), 95.0_f64.to_bits());
         assert_eq!(zero_derivation.cell(), "95%");
         assert!(
             derived(
-                &declared_group(Some(1), "not-a-number"),
+                &declared_group(Some(1), "not-a-number").policy,
                 &declared_group(Some(1), "not-a-number").rows[0]
             )
             .is_none()
@@ -2898,7 +3059,7 @@ mod tests {
         };
         let row_at = 9_900;
         let judge = |account: &Account| {
-            let effective = effective(None, account, 95.0, Some(row_at));
+            let effective = effective(&Policy::new(None, account.clone()), 95.0, Some(row_at));
             (effective.cell(), effective.judged(95.0))
         };
         assert_eq!(
@@ -2934,15 +3095,33 @@ mod tests {
 
         // The table says why a reported claim did not move the number.
         let mut group = declared_group(None, "95.0");
-        group.account = unlimited_at(Some(row_at - 1));
+        group.policy = Policy::new(None, unlimited_at(Some(row_at - 1)));
         let table = render_at(std::slice::from_ref(&group), None, 10_000);
         assert!(
             table.contains("unlimited"),
             "the fact is still reported: {table}"
         );
         assert!(
-            table.contains("older than the window"),
+            table.contains("older than the newest window here, so the claim is ignored"),
             "and the table says why it was not used: {table}"
+        );
+        assert!(
+            !table.contains("keeps the raw window"),
+            "the claim is ignored, not a rule of its own: {table}"
+        );
+
+        // Ignoring the claim leaves every other rule in force, so the note must
+        // not promise the raw window either.
+        let mut declared = declared_group(Some(1), "95.0");
+        declared.policy = Policy::new(Some(1), unlimited_at(Some(row_at - 1)));
+        let table = render_at(std::slice::from_ref(&declared), None, 10_000);
+        assert!(
+            table.contains("47.5% x1"),
+            "the declared reset still derives the cell: {table}"
+        );
+        assert!(
+            table.contains("EFFECTIVE follows the remaining rules"),
+            "{table}"
         );
     }
 
