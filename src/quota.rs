@@ -101,8 +101,12 @@ pub enum Credits {
     Unreported,
     /// Credits are declared unlimited, so a window percentage does not bind.
     Unlimited,
-    /// A spendable balance, kept as the vendor's own bounded literal.
+    /// A spendable balance, kept as the vendor's own literal.
     Available(String),
+    /// Credits are available in an amount the client did not state in a form
+    /// ae can show exactly. A clipped literal is a different number, so the
+    /// amount is withheld rather than misreported.
+    AvailableUnknown,
     /// The client reports credits and has none.
     Exhausted,
 }
@@ -117,6 +121,11 @@ pub struct Account {
     pub credits: Credits,
     /// Whether the account's own spend control is reached.
     pub spend_control_reached: Option<bool>,
+    /// When these facts were observed, from the record that carried them.
+    /// Account facts never borrow a window's timestamp: an update is adopted
+    /// only when it stamps itself, and only when that stamp is newer than the
+    /// facts already proven.
+    pub observed_at: Option<i64>,
 }
 
 impl Account {
@@ -127,7 +136,8 @@ impl Account {
     }
 }
 
-/// Largest characters of a vendor balance literal kept for display.
+/// Longest vendor balance literal ae can state exactly in its column. A longer
+/// one is reported as available-without-an-amount, never clipped.
 pub(crate) const CREDIT_BALANCE_MAX: usize = 9;
 
 /// The percentage ae judges a window by, and how it got there.
@@ -212,8 +222,50 @@ pub(crate) fn credits_label(account: &Account) -> String {
         Credits::Unreported => "-".to_owned(),
         Credits::Unlimited => "unlimited".to_owned(),
         Credits::Available(balance) => balance.clone(),
+        Credits::AvailableUnknown => "available".to_owned(),
         Credits::Exhausted => "none".to_owned(),
     }
+}
+
+/// One row's derivation: the raw window and the judged percentage, together.
+///
+/// The table and the watchdog threshold must never diverge, so neither derives
+/// anything itself — both read this, produced in exactly one place.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Derived {
+    used: f64,
+    effective: Effective,
+}
+
+impl Derived {
+    /// The percentage a threshold classifies.
+    pub(crate) fn judged(self) -> f64 {
+        self.effective.judged(self.used)
+    }
+
+    /// The EFFECTIVE cell the table renders.
+    pub(crate) fn cell(self) -> String {
+        self.effective.cell()
+    }
+
+    /// How the judged percentage was derived, for one advisory line.
+    pub(crate) fn derivation(self) -> Option<String> {
+        self.effective.derivation()
+    }
+}
+
+/// Derive one row under its scope's declaration and reported account, or
+/// `None` when the row states no usable percentage.
+pub(crate) fn derived(group: &Group, row: &Row) -> Option<Derived> {
+    let used = row
+        .used_percent
+        .as_deref()
+        .and_then(|value| value.parse::<f64>().ok())
+        .filter(|value| value.is_finite())?;
+    Some(Derived {
+        used,
+        effective: effective(group.manual_resets, &group.account, used),
+    })
 }
 
 /// Parsing failed before a trustworthy snapshot could be produced.
@@ -480,12 +532,7 @@ impl Observation {
             .map_or_else(|| "-".to_owned(), window_label);
         let used = advisory_percent(row.used_percent.as_deref());
         let recovered = state == "back to headroom";
-        let derivation = row
-            .used_percent
-            .as_deref()
-            .and_then(|value| value.parse::<f64>().ok())
-            .filter(|value| value.is_finite())
-            .and_then(|used| effective(group.manual_resets, &group.account, used).derivation());
+        let derivation = derived(group, row).and_then(Derived::derivation);
         Advisory {
             tool: group.tool,
             scope,
@@ -1079,9 +1126,11 @@ fn declaration_for(cfg: &crate::config::IdentityConfig, label: Option<&str>) -> 
 
 /// Fold another client label's declaration into the scope they share.
 ///
-/// Two labels resolving to one config home are one account, so the larger
-/// declared count wins and the disagreement is said out loud rather than
-/// resolved silently by config order.
+/// Two labels resolving to one config home are one account, so the counts must
+/// be reconciled rather than applied in config order. The SMALLEST explicit
+/// count wins: claiming headroom the operator never declared would suppress a
+/// real advisory, while under-claiming only leaves the raw window in charge.
+/// The disagreement is said out loud either way.
 fn merge_declaration(scope: &mut Scope, declaration: &Declaration) {
     if let Some(note) = declaration.note.clone()
         && !scope.notes.contains(&note)
@@ -1099,8 +1148,8 @@ fn merge_declaration(scope: &mut Scope, declaration: &Declaration) {
         return;
     }
     let (low, high) = (held.min(next), held.max(next));
-    scope.manual_resets = Some(high);
-    let note = format!("manual_resets declared as {low} and {high} for one scope; using {high}");
+    scope.manual_resets = Some(low);
+    let note = format!("manual_resets declared as {low} and {high} for one scope; using {low}");
     if !scope.notes.contains(&note) {
         scope.notes.push(note);
     }
@@ -1714,12 +1763,7 @@ fn render_at(groups: &[Group], home: Option<&Path>, now: i64) -> String {
 
 /// The EFFECTIVE cell for one window, or `None` when its percentage is absent.
 fn effective_cell(group: &Group, row: &Row) -> Option<String> {
-    let used = row
-        .used_percent
-        .as_deref()
-        .and_then(|value| value.parse::<f64>().ok())
-        .filter(|value| value.is_finite())?;
-    Some(effective(group.manual_resets, &group.account, used).cell())
+    derived(group, row).map(Derived::cell)
 }
 
 fn rollout_summary_label(summary: &RolloutSummary, now: i64) -> String {
@@ -2264,13 +2308,14 @@ fn dated_dir(root: &Path, seconds: i64) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Account, Bounded, Budget, CLAUDE_MAX_BYTES, CODEX_TAIL_BYTES, COLUMNS, Credits, FRESH_SECS,
-        FUTURE_SKEW_SECS, FleetRollout, FleetRollouts, FleetStatus, LocatedRollout, ReadRows,
-        RenderLine, RolloutLocation, RolloutSource, Scope, Status, TABLE_MAX_LINE,
-        TABLE_MAX_WIDTHS, bounded_tail, bounded_whole_file, codex_groups, codex_rollout_dirs,
-        configured_scopes, credits_label, effective, find_codex_rollout, freshness,
-        order_located_rollouts, percent_label, profiles_label, read_bounded_tail, read_claude,
-        render_at, render_table, rows_or_placeholder, sanitize_cell, vendor_timestamp,
+        Account, Bounded, Budget, CLAUDE_MAX_BYTES, CODEX_TAIL_BYTES, COLUMNS, Credits,
+        Declaration, FRESH_SECS, FUTURE_SKEW_SECS, FleetRollout, FleetRollouts, FleetStatus, Group,
+        LocatedRollout, ReadRows, RenderLine, RolloutLocation, RolloutSource, Row, Scope, Status,
+        TABLE_MAX_LINE, TABLE_MAX_WIDTHS, bounded_tail, bounded_whole_file, codex_groups,
+        codex_rollout_dirs, configured_scopes, credits_label, derived, effective,
+        find_codex_rollout, freshness, merge_declaration, order_located_rollouts, percent_label,
+        profiles_label, read_bounded_tail, read_claude, render_at, render_table,
+        rows_or_placeholder, sanitize_cell, vendor_timestamp,
     };
     use crate::tool::ToolKind;
 
@@ -2638,14 +2683,17 @@ mod tests {
         let unlimited = Account {
             credits: Credits::Unlimited,
             spend_control_reached: None,
+            observed_at: None,
         };
         let capped = Account {
             credits: Credits::Exhausted,
             spend_control_reached: Some(true),
+            observed_at: None,
         };
         let balance = Account {
             credits: Credits::Available("12.50".to_owned()),
             spend_control_reached: Some(false),
+            observed_at: None,
         };
         let case = |declared, account: &Account, used: f64| {
             let effective = effective(declared, account, used);
@@ -2686,8 +2734,116 @@ mod tests {
             credits_label(&Account {
                 credits: Credits::Exhausted,
                 spend_control_reached: None,
+                observed_at: None,
             }),
             "none"
+        );
+    }
+
+    fn declared_group(manual_resets: Option<u8>, used: &str) -> Group {
+        Group {
+            profiles: vec!["solx".to_owned()],
+            tool: ToolKind::Codex,
+            home: Some(std::path::PathBuf::from("/tmp/cx")),
+            source: Some(std::path::PathBuf::from("/tmp/cx/sessions")),
+            clients: vec!["cx".to_owned()],
+            rollout: None,
+            owner: None,
+            rows: vec![Row {
+                bucket: "codex".to_owned(),
+                qualifier: Some("pro".to_owned()),
+                window_minutes: Some(10_080),
+                used_percent: Some(used.to_owned()),
+                resets_at: Some(20_000),
+                observed_at: Some(9_900),
+                status: Status::Fresh,
+            }],
+            hint: None,
+            summary: None,
+            manual_resets,
+            account: Account::default(),
+            notes: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn conflicting_declarations_for_one_scope_take_the_minimum_in_either_order() {
+        let merged = |first: Option<u8>, second: Option<u8>| {
+            let mut scope = Scope {
+                tool: ToolKind::Codex,
+                home: Some(std::path::PathBuf::from("/tmp/cx")),
+                source: Some(std::path::PathBuf::from("/tmp/cx/sessions")),
+                source_key: Some(std::path::PathBuf::from("/tmp/cx/sessions")),
+                profiles: vec!["ax".to_owned()],
+                configured_profiles: vec!["ax".to_owned()],
+                clients: vec!["a".to_owned()],
+                hint: None,
+                manual_resets: first,
+                notes: Vec::new(),
+            };
+            merge_declaration(
+                &mut scope,
+                &Declaration {
+                    manual_resets: second,
+                    note: None,
+                },
+            );
+            (scope.manual_resets, scope.notes)
+        };
+        for (first, second) in [(Some(0), Some(1)), (Some(1), Some(0))] {
+            let (resets, notes) = merged(first, second);
+            assert_eq!(
+                resets,
+                Some(0),
+                "an explicit zero is never overruled by an optimistic sibling: {first:?} then {second:?}"
+            );
+            assert!(
+                notes
+                    .iter()
+                    .any(|note| note.contains("0 and 1") && note.contains("using 0")),
+                "the conflict stays visible and says which count won: {notes:?}"
+            );
+        }
+        assert_eq!(
+            merged(Some(2), Some(2)),
+            (Some(2), Vec::new()),
+            "agreement is silent"
+        );
+        assert_eq!(
+            merged(None, Some(3)).0,
+            Some(3),
+            "a lone declaration stands"
+        );
+        assert_eq!(
+            merged(Some(3), None).0,
+            Some(3),
+            "an undeclared sibling claims nothing"
+        );
+    }
+
+    #[test]
+    fn the_table_cell_and_the_threshold_read_one_derivation() {
+        let group = declared_group(Some(1), "95.0");
+        let derivation = derived(&group, &group.rows[0]).expect("a fresh percentage derives");
+        // Bit equality: the pin is that one value is shared, not that two
+        // near-enough values agree.
+        assert_eq!(derivation.judged().to_bits(), 47.5_f64.to_bits());
+        assert_eq!(derivation.cell(), "47.5% x1");
+        let table = render_at(std::slice::from_ref(&group), None, 10_000);
+        assert!(
+            table.contains(&derivation.cell()),
+            "the table renders the one derivation: {table}"
+        );
+        let zero = declared_group(Some(0), "95.0");
+        let zero_derivation = derived(&zero, &zero.rows[0]).expect("a fresh percentage derives");
+        assert_eq!(zero_derivation.judged().to_bits(), 95.0_f64.to_bits());
+        assert_eq!(zero_derivation.cell(), "95%");
+        assert!(
+            derived(
+                &declared_group(Some(1), "not-a-number"),
+                &declared_group(Some(1), "not-a-number").rows[0]
+            )
+            .is_none()
         );
     }
 

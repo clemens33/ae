@@ -58,7 +58,9 @@ pub fn parse(
         let Some(limits) = rate_limits(&record) else {
             continue;
         };
-        account = account_state(limits);
+        if let Some(update) = account_update(limits, &record, now, account.observed_at) {
+            account = update;
+        }
         let Some(next) = quota_rows(limits, &record, now) else {
             continue;
         };
@@ -74,6 +76,11 @@ pub fn parse(
     Ok(Snapshot { rows, account })
 }
 
+/// The `rate_limits` OBJECT of a `token_count` record.
+///
+/// A `rate_limits` that is null or any other shape is not a rate-limit
+/// container: it carries neither windows nor account facts, so it must not be
+/// read as an empty one.
 fn rate_limits(record: &Value) -> Option<&Value> {
     if record.get_str("type") != Some("event_msg") {
         return None;
@@ -82,39 +89,66 @@ fn rate_limits(record: &Value) -> Option<&Value> {
     if payload.get_str("type") != Some("token_count") {
         return None;
     }
-    payload.get("rate_limits")
+    match payload.get("rate_limits") {
+        Some(limits @ Value::Obj(_)) => Some(limits),
+        _ => None,
+    }
 }
 
-/// Read the account facts the client reports beside its windows.
+/// The account facts this record states, or `None` when it states none.
 ///
-/// The balance is a vendor literal: it is bounded here, at the hostile-input
-/// boundary, rather than at every place that displays it.
-fn account_state(limits: &Value) -> Account {
-    let credits = limits
-        .get("credits")
-        .map_or(Credits::Unreported, |credits| {
-            if credits.get("unlimited") == Some(&Value::Bool(true)) {
-                Credits::Unlimited
-            } else if credits.get("has_credits") == Some(&Value::Bool(true)) {
-                match credits.get_str("balance") {
-                    Some(balance) => {
-                        Credits::Available(balance.chars().take(CREDIT_BALANCE_MAX).collect())
-                    }
-                    None => Credits::Unreported,
-                }
-            } else if credits.get("has_credits") == Some(&Value::Bool(false)) {
-                Credits::Exhausted
-            } else {
-                Credits::Unreported
-            }
-        });
-    let spend_control_reached = match limits.get("spend_control_reached") {
-        Some(Value::Bool(reached)) => Some(*reached),
-        _ => None,
-    };
-    Account {
-        credits,
+/// A record replaces the proven account only when it USABLY reports at least
+/// one account field, stamps itself with its own timestamp, is newer than the
+/// facts already held, and is not skewed into the future. Absent, null and
+/// malformed fields therefore leave proven facts standing — an ordinary bucket
+/// update carries no account fields and must not erase a spend cap — and a
+/// qualifying record is applied whole rather than field by field.
+fn account_update(limits: &Value, record: &Value, now: i64, held: Option<i64>) -> Option<Account> {
+    let credits = reported_credits(limits.get("credits"));
+    let spend_control_reached = reported_spend_control(limits.get("spend_control_reached"));
+    if credits.is_none() && spend_control_reached.is_none() {
+        return None;
+    }
+    let observed_at = record.get_str("timestamp").and_then(vendor_timestamp)?;
+    if observed_at.saturating_sub(now) >= super::FUTURE_SKEW_SECS {
+        return None;
+    }
+    if held.is_some_and(|held| observed_at <= held) {
+        return None;
+    }
+    Some(Account {
+        credits: credits.unwrap_or_default(),
         spend_control_reached,
+        observed_at: Some(observed_at),
+    })
+}
+
+/// One usable credit report, or `None` for absent, null or malformed state.
+fn reported_credits(credits: Option<&Value>) -> Option<Credits> {
+    let credits = credits?;
+    if credits.get("unlimited") == Some(&Value::Bool(true)) {
+        return Some(Credits::Unlimited);
+    }
+    if credits.get("has_credits") == Some(&Value::Bool(false)) {
+        return Some(Credits::Exhausted);
+    }
+    if credits.get("has_credits") != Some(&Value::Bool(true)) {
+        return None;
+    }
+    // Credits exist. Their amount is shown only when it can be shown exactly.
+    Some(match credits.get_str("balance") {
+        Some(balance) if balance.chars().count() <= CREDIT_BALANCE_MAX => {
+            Credits::Available(balance.to_owned())
+        }
+        Some(_) | None => Credits::AvailableUnknown,
+    })
+}
+
+/// One usable spend-control report, or `None` for absent, null or malformed.
+fn reported_spend_control(reached: Option<&Value>) -> Option<bool> {
+    match reached? {
+        Value::Bool(reached) => Some(*reached),
+        _ => None,
     }
 }
 
@@ -273,19 +307,134 @@ mod tests {
             ),
             "true",
         ));
-        match &hostile.account.credits {
-            Credits::Available(shown) => assert!(
-                shown.chars().count() <= 9,
-                "a hostile balance is bounded at the parser: {shown}"
-            ),
-            other => panic!("a reported balance stays a balance: {other:?}"),
-        }
+        assert_eq!(
+            hostile.account.credits,
+            Credits::AvailableUnknown,
+            "a balance ae cannot state exactly is never shown clipped"
+        );
 
         let absent = parse(FIXTURE, true, epoch("2026-09-08T09:10:00Z")).expect("fixture parses");
         assert_eq!(
             absent.account,
             Account::default(),
             "a client that reports no credit state gets none invented"
+        );
+    }
+
+    #[test]
+    fn a_proven_account_fact_survives_every_update_that_does_not_replace_it() {
+        let capped = |timestamp: &str| {
+            format!(
+                r#"{{"timestamp":"{timestamp}","type":"event_msg","payload":{{"type":"token_count","rate_limits":{{"limit_id":"codex","plan_type":"pro","primary":{{"used_percent":95.0,"window_minutes":10080,"resets_at":1789445400}},"secondary":null,"credits":{{"has_credits":false,"unlimited":false,"balance":"0"}},"spend_control_reached":true}}}}}}
+"#
+            )
+        };
+        let now = epoch("2026-09-08T09:10:00Z");
+        let account = |rollout: String| {
+            parse(rollout.as_bytes(), true, now)
+                .expect("rollout parses")
+                .account
+        };
+        let proven = account(capped("2026-09-08T09:00:00Z"));
+        assert!(proven.spend_capped(), "control: the cap is proven first");
+
+        // Every shape that is not a newer valid account statement.
+        for (label, later) in [
+            (
+                "rate_limits is null",
+                r#"{"timestamp":"2026-09-08T09:05:00Z","type":"event_msg","payload":{"type":"token_count","rate_limits":null}}"#,
+            ),
+            (
+                "a valid bucket record carrying no account fields",
+                r#"{"timestamp":"2026-09-08T09:05:00Z","type":"event_msg","payload":{"type":"token_count","rate_limits":{"limit_id":"codex_bengalfox","plan_type":"pro","primary":{"used_percent":4.0,"window_minutes":300,"resets_at":1789445400},"secondary":null}}}"#,
+            ),
+            (
+                "malformed account fields",
+                r#"{"timestamp":"2026-09-08T09:05:00Z","type":"event_msg","payload":{"type":"token_count","rate_limits":{"limit_id":"codex","credits":7,"spend_control_reached":"yes"}}}"#,
+            ),
+            (
+                "an unlimited claim with no timestamp of its own",
+                r#"{"type":"event_msg","payload":{"type":"token_count","rate_limits":{"credits":{"has_credits":true,"unlimited":true,"balance":"0"}}}}"#,
+            ),
+            (
+                "an older timestamp than the proven fact",
+                r#"{"timestamp":"2026-09-08T08:00:00Z","type":"event_msg","payload":{"type":"token_count","rate_limits":{"limit_id":"codex","credits":{"has_credits":true,"unlimited":true,"balance":"0"}}}}"#,
+            ),
+            (
+                "a timestamp skewed into the future",
+                r#"{"timestamp":"2026-09-08T09:20:00Z","type":"event_msg","payload":{"type":"token_count","rate_limits":{"limit_id":"codex","credits":{"has_credits":true,"unlimited":true,"balance":"0"}}}}"#,
+            ),
+        ] {
+            let held = account(capped("2026-09-08T09:00:00Z") + later + "\n");
+            assert_eq!(held, proven, "{label} must not replace a proven account");
+        }
+
+        // A genuinely newer valid statement does replace it, whole.
+        let cleared = account(
+            capped("2026-09-08T09:00:00Z")
+                + r#"{"timestamp":"2026-09-08T09:05:00Z","type":"event_msg","payload":{"type":"token_count","rate_limits":{"limit_id":"codex","credits":{"has_credits":true,"unlimited":true,"balance":"0"},"spend_control_reached":false}}}"#
+                + "\n",
+        );
+        assert_eq!(cleared.credits, Credits::Unlimited);
+        assert_eq!(cleared.spend_control_reached, Some(false));
+        assert!(!cleared.spend_capped());
+        assert_eq!(
+            cleared.observed_at,
+            Some(epoch("2026-09-08T09:05:00Z")),
+            "the account carries its own provenance, not a window's"
+        );
+
+        // The windows are untouched by any of it.
+        let rows = parse(
+            (capped("2026-09-08T09:00:00Z")
+                + r#"{"timestamp":"2026-09-08T09:05:00Z","type":"event_msg","payload":{"type":"token_count","rate_limits":null}}"#
+                + "\n")
+                .as_bytes(),
+            true,
+            now,
+        )
+        .expect("rollout parses")
+        .rows;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].used_percent.as_deref(), Some("95.0"));
+        assert_eq!(rows[0].status, Status::Fresh);
+    }
+
+    #[test]
+    fn a_balance_too_long_to_state_is_available_rather_than_a_wrong_number() {
+        let record = |balance: &str| {
+            format!(
+                r#"{{"timestamp":"2026-09-08T09:00:00Z","type":"event_msg","payload":{{"type":"token_count","rate_limits":{{"limit_id":"codex","credits":{{"has_credits":true,"unlimited":false,"balance":"{balance}"}}}}}}}}
+"#
+            )
+        };
+        let credits = |balance: &str| {
+            parse(
+                record(balance).as_bytes(),
+                true,
+                epoch("2026-09-08T09:10:00Z"),
+            )
+            .expect("record parses")
+            .account
+            .credits
+        };
+        assert_eq!(credits("12.50"), Credits::Available("12.50".to_owned()));
+        assert_eq!(
+            credits("123456789"),
+            Credits::Available("123456789".to_owned())
+        );
+        assert_eq!(
+            credits("1234567890"),
+            Credits::AvailableUnknown,
+            "a literal ae cannot state exactly is never shown clipped"
+        );
+        assert_eq!(
+            crate::quota::credits_label(&Account {
+                credits: Credits::AvailableUnknown,
+                spend_control_reached: None,
+                observed_at: None,
+            }),
+            "available"
         );
     }
 

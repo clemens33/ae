@@ -224,6 +224,62 @@ fn declared_manual_resets_and_reported_credits_drive_the_effective_columns() {
 }
 
 #[test]
+fn conflicting_declarations_on_one_home_render_the_smallest_count_and_the_conflict() {
+    for (first, second) in [
+        (
+            "a = codex config_home=$HOME/.codex-shared manual_resets=1",
+            "b = codex config_home=$HOME/.codex-shared manual_resets=0",
+        ),
+        (
+            "a = codex config_home=$HOME/.codex-shared manual_resets=0",
+            "b = codex config_home=$HOME/.codex-shared manual_resets=1",
+        ),
+    ] {
+        let root = rig("declared-conflict");
+        let shared = root.join(".codex-shared/sessions/2026/09/08");
+        std::fs::create_dir_all(&shared).expect("shared rollout day");
+        let fixture =
+            String::from_utf8_lossy(include_bytes!("../fixtures/quota/codex-rollout.jsonl"))
+                .replace("\"used_percent\":7.0", "\"used_percent\":95.0");
+        std::fs::write(
+            shared.join(format!("rollout-2026-09-08T09-00-00-{FIRST_ID}.jsonl")),
+            &fixture,
+        )
+        .expect("shared rollout");
+        std::fs::write(
+            root.join("config"),
+            format!(
+                "[clients]\n{first}\n{second}\n[profiles]\nax = a --model x\nbx = b --model y\n"
+            ),
+        )
+        .expect("conflicting config");
+        std::fs::write(
+            root.join("sessions/session/meta"),
+            format!(
+                "schema=2\nseat.main=lead\nprofile.main=ax\nharness_session.main={FIRST_ID}\nagent_bin.main=codex\n"
+            ),
+        )
+        .expect("session meta");
+        let text = run_quota(&root);
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(
+            text.contains(" 95%   95%"),
+            "the pessimistic count decides what ae judges: {text}"
+        );
+        assert!(
+            !text.contains("47.5%"),
+            "an explicit zero is never overruled: {text}"
+        );
+        assert_eq!(
+            text.matches("manual_resets declared as 0 and 1 for one scope; using 0")
+                .count(),
+            1,
+            "the conflict is visible exactly once: {text}"
+        );
+    }
+}
+
+#[test]
 fn an_unusable_declared_reset_count_is_ignored_with_one_visible_note() {
     let root = rig("declared-note");
     std::fs::write(

@@ -98,6 +98,10 @@ watchdog advisory and delegation guidance judge that number instead of the raw w
 window with one reset declared no longer pushes work off a client that is not constrained. An
 unusable value is ignored with one visible note rather than refusing the config.
 
+The count is yours to maintain: ae does not decrement it when a reset is used, so update the row
+after each manual reset. A positive count is a claim about headroom that only holds while the
+declaration is current; `0` declares that there is none.
+
 Each distinct config home isolates local login state, settings, and conversation files, so one
 workspace can mix work and personal identities seat by seat. It does not create an independent
 provider quota: two homes may authenticate the same account, while two client labels may share one

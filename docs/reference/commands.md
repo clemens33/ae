@@ -684,9 +684,21 @@ ae uses only the ones it was told or was given:
   hand, so ae cannot discover them. Declare them on the client row:
   `codex = codex manual_resets=1`. The count is `0`–`9`; an unusable value is ignored, the rows stay
   usable, and one note under the table says which value was dropped and why. Two client labels that
-  resolve to one config home are one account: the larger count wins and the disagreement is noted.
+  resolve to one config home are one account: the SMALLEST explicit count wins and the disagreement
+  is noted, because claiming headroom nobody declared would suppress a real advisory.
+  **ae never consumes the count.** Nothing decrements it when a reset is actually used, so a stale
+  declaration keeps claiming headroom that is already spent: edit the row after each manual reset.
+  A used reset is visible in the table but not attributed — measured on Codex, a manual reset starts
+  a FRESH window rather than zeroing the current one, so `USED` collapses and `RESETS` jumps forward
+  by about a whole window in the same observation, which is also what an ordinary window roll looks
+  like. Only a POSITIVE count derives extra capacity; `0` is a supported declaration that derives
+  none and simply states that the raw window is the whole story.
 - **Reported credits.** Codex rollouts carry `credits` and `spend_control_reached`. `CREDITS` shows
-  the balance literal, `unlimited`, `none`, or `spend-cap`, and `-` when the client reports nothing.
+  the balance literal, `unlimited`, `none`, `available` when credits exist in an amount ae cannot
+  state exactly, or `spend-cap`, and `-` when the client reports nothing. Account facts are adopted
+  only from a record that usably reports them, stamps itself, and is newer than the facts already
+  held: an ordinary bucket update, a null container and a malformed field all leave a proven spend
+  cap standing rather than erasing it.
 
 `EFFECTIVE` is the percentage ae judges by, and it is `-` whenever nothing was declared or reported.
 With `n` declared resets the same usage is spread over `1 + n` windows, so the cell reads
