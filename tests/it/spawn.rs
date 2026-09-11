@@ -328,6 +328,22 @@ impl Rig {
         )
     }
 
+    /// The seat's own `_run` records `config_home.<slot>` and stamps the start
+    /// marker before it execs the tool, while a spawn returns as soon as the
+    /// launch command is pasted into the pane's shell. Codex's handshake reads
+    /// that row to find its store, so a test standing in for codex waits for
+    /// the launch it is answering for.
+    fn wait_for_launch(&self, slot: &str) {
+        let marker = self.dir.join(format!("launch.{slot}.started"));
+        for _ in 0..800 {
+            if marker.is_file() && self.meta().contains(&format!("config_home.{slot}=")) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        panic!("{slot} never started its launch: {}", self.meta());
+    }
+
     fn wait_for_sid(&self, slot: &str, id: &str, forbidden: Option<&str>) -> bool {
         for _ in 0..80 {
             let meta = self.meta();
@@ -621,6 +637,7 @@ fn a_reused_codex_slot_never_inherits_the_retired_seats_session_id() {
         &["first", "--using", "codexfake", "--", "first task"],
     );
     assert_eq!(code, Some(0), "{stderr}");
+    rig.wait_for_launch("spawned.0");
     let first_meta = rig.meta();
     let first_floor = first_meta
         .lines()
@@ -663,6 +680,7 @@ fn a_reused_codex_slot_never_inherits_the_retired_seats_session_id() {
         &["second", "--using", "codexfake", "--", "second task"],
     );
     assert_eq!(code, Some(0), "{stderr}");
+    rig.wait_for_launch("spawned.0");
     let second_meta = rig.meta();
     assert!(
         second_meta.contains("seat.spawned.0=second"),
