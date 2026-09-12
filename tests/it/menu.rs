@@ -109,9 +109,11 @@ struct MenuTitle {
     text: String,
 }
 
-/// Read the direct terminal's ANSI cursor positions, rather than an outer
-/// tmux pane capture which can clip a nested client's menu at a pane border.
-fn direct_settings_geometry(bytes: &[u8]) -> Option<MenuGeometry> {
+/// Read the direct terminal's ANSI cursor positions for the menu whose title
+/// carries `needle`, rather than an outer tmux pane capture which can clip a
+/// nested client's menu at a pane border. The settings menu and the quota
+/// dialog share the parser; only the title needle differs.
+fn direct_menu_geometry(bytes: &[u8], needle: &str) -> Option<MenuGeometry> {
     let mut index = 0;
     let mut row = 0;
     let mut column = 0;
@@ -144,7 +146,7 @@ fn direct_settings_geometry(bytes: &[u8]) -> Option<MenuGeometry> {
                 } else if let Some(current) = title.as_mut() {
                     if current.row == row {
                         current.text.push(character);
-                        if matches!(character, '╮' | '┐') && current.text.contains("settings") {
+                        if matches!(character, '╮' | '┐') && current.text.contains(needle) {
                             return Some(MenuGeometry {
                                 left: current.left,
                                 right: column,
@@ -160,6 +162,14 @@ fn direct_settings_geometry(bytes: &[u8]) -> Option<MenuGeometry> {
         }
     }
     None
+}
+
+fn direct_settings_geometry(bytes: &[u8]) -> Option<MenuGeometry> {
+    direct_menu_geometry(bytes, "settings")
+}
+
+fn direct_dialog_geometry(bytes: &[u8]) -> Option<MenuGeometry> {
+    direct_menu_geometry(bytes, "quota for our clients")
 }
 
 fn terminal_character(bytes: &[u8]) -> Option<(char, usize)> {
@@ -1783,6 +1793,182 @@ fn assert_direct_menu_geometry(geometry: MenuGeometry, width: usize, columns: us
     );
 }
 
+/// A centred dialog is symmetric on its client: its middle column is the
+/// client's middle column, whatever its width.
+fn assert_direct_dialog_centred(geometry: MenuGeometry, width: usize) {
+    let columns = geometry.right.saturating_sub(geometry.left) + 1;
+    let middle = geometry.left + columns / 2;
+    assert!(
+        middle.abs_diff(width / 2) <= 1,
+        "dialog centred on a {width}-column client: {geometry:?}"
+    );
+}
+
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the direct terminal record must be repeatedly read before its client detaches"
+)]
+fn wait_for_direct_dialog_geometry(record: &Path, expected: &str) -> (MenuGeometry, Vec<u8>) {
+    let deadline = Instant::now() + PATIENCE;
+    let mut last = Vec::new();
+    while Instant::now() < deadline {
+        last = fs::read(record).unwrap_or_default();
+        if let Some(geometry) = direct_dialog_geometry(&last)
+            && String::from_utf8_lossy(&last).contains(expected)
+        {
+            return (geometry, last);
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let tail_start = last.len().saturating_sub(600);
+    let tail = String::from_utf8_lossy(&last[tail_start..]);
+    panic!("direct quota dialog title never settled; terminal tail={tail:?}");
+}
+
+/// The quota-dialog tail with the pid pair a settings entry captured.
+fn quota_dialog_tail(
+    client: &str,
+    client_pid: &str,
+    server_pid: &str,
+    server_start: &str,
+    session_id: &str,
+) -> Vec<String> {
+    [
+        "--quota-dialog",
+        "--client",
+        client,
+        "--client-pid",
+        client_pid,
+        "--server-pid",
+        server_pid,
+        "--server-start",
+        server_start,
+        "--session-id",
+        session_id,
+    ]
+    .map(ToOwned::to_owned)
+    .to_vec()
+}
+
+/// The live identity behind one client on its server.
+///
+/// The session comes from `list-clients`, the same source the product reads:
+/// `display-message -c` does not scope `#{session_id}` to the client and would
+/// name whatever session that format happens to resolve to instead.
+fn dialog_identity(socket: &Path, scratch: &Path, session: &str, client: &str) -> Vec<String> {
+    let listed = tmux(
+        socket,
+        scratch,
+        &[
+            "list-clients",
+            "-F",
+            "#{client_name}|#{client_pid}|#{session_id}",
+        ],
+    )
+    .1;
+    let (client_pid, session_id) = listed
+        .lines()
+        .find_map(|line| line.strip_prefix(&format!("{client}|")))
+        .and_then(|rest| rest.split_once('|'))
+        .unwrap_or_else(|| panic!("the client answers pid and session: {listed:?}"));
+    assert!(!client_pid.is_empty(), "the client answers its pid");
+    assert!(
+        session_id.starts_with('$'),
+        "the client answers its session: {session_id:?}"
+    );
+    let server = tmux(
+        socket,
+        scratch,
+        &[
+            "display-message",
+            "-p",
+            "-t",
+            session,
+            "#{pid}|#{start_time}",
+        ],
+    )
+    .1
+    .trim()
+    .to_owned();
+    let (server_pid, server_start) = server
+        .split_once('|')
+        .unwrap_or_else(|| panic!("the server answers pid and start: {server:?}"));
+    quota_dialog_tail(client, client_pid, server_pid, server_start, session_id)
+}
+
+fn quota_dialog_invocation_command(
+    socket: &Path,
+    scratch: &Path,
+    root: &Path,
+    config: &Path,
+    caller_pane: &str,
+    tail: &[String],
+) -> super::cli::Runner {
+    let mut command = ae();
+    command
+        .env("HOME", scratch)
+        .env("AE_HOME", root)
+        .env("CONFIG_FILE", config)
+        .env("AE_TMUX_SERVER_KIND", "socket")
+        .env("AE_TMUX_SERVER", socket)
+        .env("TMUX_TMPDIR", scratch)
+        .env("TMUX", format!("{},fixture,0", socket.display()))
+        .env("TMUX_PANE", caller_pane)
+        .arg("orchestrator")
+        .args(tail);
+    command
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one direct dialog draw tuple proves centred client geometry"
+)]
+fn draw_direct_quota_dialog(
+    socket: &Path,
+    scratch: &Path,
+    root: &Path,
+    config: &Path,
+    width: usize,
+    right: bool,
+    label: &str,
+) -> DirectMenu {
+    let record = scratch.join(format!("quota-dialog-{label}-{width}-{right}.terminal"));
+    let (client, terminal) =
+        direct_terminal_client(socket, scratch, root, config, "viewed", width, 40, &record);
+    let caller_pane = select_direct_client_pane(socket, scratch, "viewed", &client, right);
+    let tail = dialog_identity(socket, scratch, "viewed", &client);
+    let mut dialog =
+        quota_dialog_invocation_command(socket, scratch, root, config, &caller_pane, &tail);
+    let dialog = dialog
+        .spawn()
+        .unwrap_or_else(|error| panic!("the direct quota dialog invocation starts: {error}"));
+    let (geometry, raw) = wait_for_direct_dialog_geometry(&record, "session 5h");
+    assert!(
+        tmux(socket, scratch, &["detach-client", "-t", &client]).0,
+        "the direct client detaches after its terminal capture"
+    );
+    let output = dialog
+        .wait_with_output()
+        .unwrap_or_else(|error| panic!("the direct quota dialog invocation reaps: {error}"));
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "direct quota dialog: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let terminal = terminal
+        .wait_with_output()
+        .unwrap_or_else(|error| panic!("the direct terminal reaps: {error}"));
+    assert_eq!(
+        terminal.status.code(),
+        Some(0),
+        "direct terminal: {terminal:?}"
+    );
+    assert!(!raw.is_empty(), "direct terminal record has bytes");
+    DirectMenu { geometry, raw }
+}
+
 fn picker_invocation(
     socket: &Path,
     scratch: &Path,
@@ -2541,21 +2727,17 @@ fn settings_quota_uses_the_invoking_overlay_and_degrades_without_losing_the_acti
         &clicked,
         "quota-viewer",
         "quota-other",
-        "quota  claude/menu-claude",
+        "Quota for our clients...",
         "Escape",
     );
-    assert!(full.contains("82%"), "{full}");
-    assert!(full.contains("fresh"), "{full}");
-    assert!(
-        full.contains("quota  grok/menu-grok | unsupported"),
-        "{full}"
-    );
-    assert!(!full.contains("q +"), "{full}");
+    assert!(!full.contains("quota  claude/menu-claude"), "{full}");
+    assert!(!full.contains("quota  grok/menu-grok"), "{full}");
+    assert!(!full.contains('+'), "{full}");
     assert!(!full.contains("leak-client"), "{full}");
     assert!(full.contains("Start orchestrator"), "{full}");
     assert!(
         !tmux(&socket, &scratch, &["has-session", "-t", "=orchestrator"]).0,
-        "a keyless quota row never acted"
+        "Escape on the quota entry never acted"
     );
     let selected_style = format!(
         "#[bg={} fg={}]",
@@ -2711,7 +2893,7 @@ fn settings_quota_uses_the_invoking_overlay_and_degrades_without_losing_the_acti
         &clicked,
         "quota-viewer",
         "quota-other",
-        "quota  claude/menu-claude",
+        "Quota for our clients...",
         "Escape",
     );
     assert!(picker_marker(&socket, &scratch, "viewed").is_empty());
@@ -2778,14 +2960,13 @@ fn settings_quota_uses_the_invoking_overlay_and_degrades_without_losing_the_acti
         &clicked,
         "quota-viewer",
         "quota-other",
-        "q +",
+        "+2r +0c",
         "s",
     );
     assert!(degraded.contains("Start orchestrator"), "{degraded}");
-    assert!(
-        !degraded.contains("quota  claude/menu-claude"),
-        "{degraded}"
-    );
+    assert!(degraded.contains("+2r"), "{degraded}");
+    assert!(degraded.contains("+0c"), "{degraded}");
+    assert!(!degraded.contains("Quota for our clients..."), "{degraded}");
     wait_for(
         "orchestrator from exact-height degraded settings",
         || {
@@ -2799,6 +2980,284 @@ fn settings_quota_uses_the_invoking_overlay_and_degrades_without_losing_the_acti
     assert!(settings_marker(&socket, &scratch, "viewed").is_empty());
     assert!(picker_marker(&socket, &scratch, "viewed").is_empty());
     assert!(!untouched.is_empty());
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one real settings-entry to quota-dialog to Close lifecycle story"
+)]
+fn settings_quota_entry_opens_the_per_window_dialog_and_close_dismisses_it() {
+    let scratch = scratch("settings-quota-dialog");
+    if !tmux_present(&scratch) {
+        let _ = fs::remove_dir_all(&scratch);
+        panic!("tmux is not runnable here, so the quota dialog flow cannot be proven");
+    }
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let root = scratch.join("state");
+    let project = scratch.join("project");
+    let other_project = scratch.join("other-project");
+    let config = scratch.join("config");
+    write_settings_config(&project, &config);
+    write_settings_quota_overlay(
+        &project,
+        concat!(
+            "[clients]\n",
+            "menu-claude = claude config_home=$HOME/.menu-claude\n",
+            "menu-grok = grok\n",
+            "[profiles]\n",
+            "menu-supported = menu-claude\n",
+            "menu-unsupported = menu-grok\n",
+        ),
+    );
+    // A SECOND ae session with a DISTINCT overlay: the dialog must read the
+    // invoking session's overlay, not an arbitrary or first one ("other" sorts
+    // before "viewed", so an alphabetical grab would surface other-claude).
+    assert!(fs::create_dir_all(&other_project).is_ok());
+    write_settings_quota_overlay(
+        &other_project,
+        "[clients]\nother-claude = claude config_home=$HOME/.other-claude\n[profiles]\nother-profile = other-claude\n",
+    );
+    let now = ae::time::Timestamp::now().epoch();
+    write_settings_claude_quota(&scratch.join(".menu-claude"), 82, now);
+    write_settings_claude_quota(&scratch.join(".other-claude"), 11, now);
+    launch_ae_session(&socket, &scratch, &root, &project, &config, "viewed");
+    launch_ae_session(&socket, &scratch, &root, &other_project, &config, "other");
+    let clicked = nested_client(&socket, &scratch, "viewed", "dialog-viewer");
+    let untouched = nested_client(&socket, &scratch, "viewed", "dialog-other");
+    let caller_pane = tmux(
+        &socket,
+        &scratch,
+        &["display-message", "-p", "-c", &clicked, "#{pane_id}"],
+    )
+    .1
+    .trim()
+    .to_owned();
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &[
+                "resize-window",
+                "-t",
+                "dialog-viewer",
+                "-x",
+                "90",
+                "-y",
+                "40"
+            ]
+        )
+        .0
+    );
+    wait_for(
+        "wide dialog client",
+        || {
+            tmux(
+                &socket,
+                &scratch,
+                &[
+                    "display-message",
+                    "-p",
+                    "-c",
+                    &clicked,
+                    "#{client_width}x#{client_height}",
+                ],
+            )
+            .1
+        },
+        |seen| seen.trim() == "90x40",
+    );
+
+    let (settings_seen, dialog_seen) = std::thread::scope(|scope| {
+        let driver = scope.spawn(|| {
+            let settings = wait_for(
+                "settings quota entry",
+                || {
+                    tmux(
+                        &socket,
+                        &scratch,
+                        &["capture-pane", "-p", "-t", "dialog-viewer"],
+                    )
+                    .1
+                },
+                |seen| seen.contains("settings") && seen.contains("Quota for our clients..."),
+            );
+            assert!(
+                !settings.contains("session 5h"),
+                "no inline quota rows behind the entry: {settings}"
+            );
+            // Mutate the invoking session's quota AFTER settings is on screen:
+            // the dialog must show this fresh value, proving the dialog-time
+            // reread — and the other session's overlay must stay invisible.
+            write_settings_claude_quota(
+                &scratch.join(".menu-claude"),
+                83,
+                ae::time::Timestamp::now().epoch(),
+            );
+            assert!(
+                tmux(
+                    &socket,
+                    &scratch,
+                    &["send-keys", "-t", "dialog-viewer", "q"]
+                )
+                .0
+            );
+            let dialog = wait_for(
+                "quota dialog",
+                || {
+                    tmux(
+                        &socket,
+                        &scratch,
+                        &["capture-pane", "-p", "-t", "dialog-viewer"],
+                    )
+                    .1
+                },
+                |seen| seen.contains("quota for our clients") && seen.contains("session 5h"),
+            );
+            assert!(
+                settings_marker(&socket, &scratch, "viewed").is_empty(),
+                "choosing the entry clears the settings marker"
+            );
+            assert!(
+                tmux(
+                    &socket,
+                    &scratch,
+                    &["send-keys", "-t", "dialog-viewer", "c"]
+                )
+                .0
+            );
+            let closed = wait_for(
+                "closed quota dialog",
+                || {
+                    tmux(
+                        &socket,
+                        &scratch,
+                        &["capture-pane", "-p", "-t", "dialog-viewer"],
+                    )
+                    .1
+                },
+                |seen| !seen.contains("quota for our clients"),
+            );
+            assert!(!closed.contains("Quota for our clients..."), "{closed}");
+            (settings, dialog)
+        });
+        let output = settings_invocation(
+            &socket,
+            &scratch,
+            &root,
+            &config,
+            &caller_pane,
+            &clicked,
+            None,
+        );
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "settings: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        driver.join().expect("quota dialog key driver")
+    });
+    assert!(
+        settings_seen.contains("Start orchestrator"),
+        "{settings_seen}"
+    );
+    assert!(dialog_seen.contains("claude/menu-claude"), "{dialog_seen}");
+    assert!(
+        dialog_seen.contains("  session 5h | 83%"),
+        "the dialog rereads at open time under the invoking overlay: {dialog_seen}"
+    );
+    assert!(
+        !dialog_seen.contains("82%"),
+        "no stale settings-time value: {dialog_seen}"
+    );
+    assert!(
+        !dialog_seen.contains("other-claude") && !dialog_seen.contains("11%"),
+        "the other session's overlay never leaks in: {dialog_seen}"
+    );
+    assert!(dialog_seen.contains("fresh"), "{dialog_seen}");
+    assert!(dialog_seen.contains("unsupported"), "{dialog_seen}");
+    assert!(dialog_seen.contains("Close"), "{dialog_seen}");
+    assert!(
+        !dialog_seen.contains("Start orchestrator"),
+        "the dialog carries no settings action: {dialog_seen}"
+    );
+    assert!(
+        !tmux(&socket, &scratch, &["has-session", "-t", "=orchestrator"]).0,
+        "opening quota never acted"
+    );
+    assert!(settings_marker(&socket, &scratch, "viewed").is_empty());
+    assert!(picker_marker(&socket, &scratch, "viewed").is_empty());
+    assert!(!untouched.is_empty());
+}
+
+#[test]
+fn quota_dialog_window_indent_survives_a_real_centred_menu_draw() {
+    let scratch = scratch("quota-indent");
+    if !tmux_present(&scratch) {
+        let _ = fs::remove_dir_all(&scratch);
+        panic!("tmux is not runnable here, so menu indentation cannot be proven");
+    }
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let main = scratch.join("main");
+    let watcher = scratch.join("watcher");
+    let staged = stage(&socket, &main);
+    let server = ServerId::Selected(Selector::Socket(socket.clone()));
+    let menu = ae::tmux::Menu {
+        title: "quota for our clients".to_owned(),
+        title_style: String::new(),
+        items: vec![
+            ae::tmux::MenuItem {
+                label: "claude / ~/.claude".to_owned(),
+                key: String::new(),
+                action: ae::tmux::MenuAction::Disabled,
+            },
+            ae::tmux::MenuItem {
+                label: "  session 5h | 39%".to_owned(),
+                key: String::new(),
+                action: ae::tmux::MenuAction::Disabled,
+            },
+            ae::tmux::MenuItem {
+                label: "Close".to_owned(),
+                key: "c".to_owned(),
+                action: ae::tmux::MenuAction::Run(String::new()),
+            },
+        ],
+    };
+    let argv = ae::tmux::display_menu_centred_args(
+        &server,
+        &staged.client,
+        &staged.home_pane,
+        &menu,
+        false,
+    );
+    let drawn = std::thread::scope(|scope| {
+        let driver = scope.spawn(|| {
+            let seen = wait_for(
+                "indented quota menu",
+                || tmux(&socket, &watcher, &["capture-pane", "-p", "-t", "viewer"]).1,
+                |seen| seen.contains("session 5h") && seen.contains("Close"),
+            );
+            assert!(tmux(&socket, &watcher, &["send-keys", "-t", "viewer", "Escape"]).0);
+            seen
+        });
+        let (succeeded, _) = run_tmux(&argv, &main);
+        assert!(succeeded, "tmux refused the centred indent probe");
+        driver.join().expect("indent key driver")
+    });
+    assert!(
+        drawn.contains("  session 5h"),
+        "two-space window indent survives display-menu: {drawn:?}"
+    );
 }
 
 #[test]
@@ -2853,7 +3312,7 @@ fn settings_menu_uses_client_right_geometry_from_either_split_pane() {
         100,
         true,
         "full-right",
-        "quota  claude/menu-claude",
+        "Quota for our clients...",
     );
     let full_left = draw_direct_settings_menu(
         &socket,
@@ -2863,43 +3322,408 @@ fn settings_menu_uses_client_right_geometry_from_either_split_pane() {
         100,
         false,
         "full-left",
-        "quota  claude/menu-claude",
+        "Quota for our clients...",
     );
+    // Width 30 fits the 26-column base menu but not the 32-column entry menu,
+    // so the separator carries the exact shortfall: +0r +2c.
     let notice_right = draw_direct_settings_menu(
         &socket,
         &scratch,
         &root,
         &config,
-        74,
+        30,
         true,
         "notice-right",
-        "q +",
+        "+0r +2c",
     );
     let notice_left = draw_direct_settings_menu(
         &socket,
         &scratch,
         &root,
         &config,
-        74,
+        30,
         false,
         "notice-left",
-        "q +",
+        "+0r +2c",
     );
 
     assert!(
-        String::from_utf8_lossy(&full_right.raw).contains("quota  claude/menu-claude"),
+        String::from_utf8_lossy(&full_right.raw).contains("Quota for our clients..."),
         "the 100-column branch is full: {:?}",
         full_right.raw
     );
+    let notice_text = String::from_utf8_lossy(&notice_right.raw);
     assert!(
-        String::from_utf8_lossy(&notice_right.raw).contains("q +"),
-        "the 74-column branch is the quota notice: {:?}",
-        notice_right.raw
+        notice_text.contains("+0r") && notice_text.contains("+2c"),
+        "the 30-column branch is the quota notice with its exact shortfall: {notice_text:?}"
     );
-    assert_direct_menu_geometry(full_right.geometry, 100, 75);
-    assert_direct_menu_geometry(notice_right.geometry, 74, 26);
-    assert_direct_menu_geometry(full_left.geometry, 100, 75);
-    assert_direct_menu_geometry(notice_left.geometry, 74, 26);
+    assert_direct_menu_geometry(full_right.geometry, 100, 32);
+    assert_direct_menu_geometry(notice_right.geometry, 30, 26);
+    assert_direct_menu_geometry(full_left.geometry, 100, 32);
+    assert_direct_menu_geometry(notice_left.geometry, 30, 26);
+}
+
+#[test]
+fn quota_dialog_draws_centred_with_indented_windows_from_either_split_pane() {
+    let scratch = scratch("quota-dialog-centred");
+    if !tmux_present(&scratch) {
+        let _ = fs::remove_dir_all(&scratch);
+        panic!("tmux is not runnable here, so dialog centring cannot be proven");
+    }
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let root = scratch.join("state");
+    let project = scratch.join("project");
+    let config = scratch.join("config");
+    write_settings_config(&project, &config);
+    write_settings_quota_overlay(
+        &project,
+        concat!(
+            "[clients]\n",
+            "menu-claude = claude config_home=$HOME/.menu-claude\n",
+            "menu-grok = grok\n",
+            "[profiles]\n",
+            "menu-supported = menu-claude\n",
+            "menu-unsupported = menu-grok\n",
+        ),
+    );
+    let now = ae::time::Timestamp::now().epoch();
+    write_settings_claude_quota(&scratch.join(".menu-claude"), 82, now);
+    launch_ae_session(&socket, &scratch, &root, &project, &config, "viewed");
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &["split-window", "-d", "-h", "-t", "viewed"],
+        )
+        .0,
+        "the dialog target has a left and right pane"
+    );
+
+    let dialog_right =
+        draw_direct_quota_dialog(&socket, &scratch, &root, &config, 100, true, "right");
+    let dialog_left =
+        draw_direct_quota_dialog(&socket, &scratch, &root, &config, 100, false, "left");
+    for (side, drawn) in [("right", &dialog_right), ("left", &dialog_left)] {
+        let text = String::from_utf8_lossy(&drawn.raw);
+        assert!(text.contains("claude/menu-claude"), "{side}: {text:?}");
+        assert!(
+            text.contains("  session 5h | 82%"),
+            "{side} keeps the two-space window indent in raw terminal bytes: {text:?}"
+        );
+        assert!(text.contains("unsupported"), "{side}: {text:?}");
+        assert!(text.contains("Close"), "{side}: {text:?}");
+        assert_direct_dialog_centred(drawn.geometry, 100);
+    }
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one real replaced-client, replaced-server and malformed-identity refusal story"
+)]
+// TEST DEBT, stated not hidden: every pid/start/session mutation here happens
+// BEFORE process invocation, so moving prove_quota_dialog_clicker back to the
+// build round leaves this test GREEN. It proves the reproof EXISTS; it does not
+// prove it sits at the final boundary. The missing test is a deterministic
+// after-build/before-proof interleaving — at minimum switching the same client
+// session between the two observations inside one invocation.
+fn quota_dialog_reproves_client_server_and_session_before_drawing() {
+    let scratch = scratch("quota-dialog-identity");
+    if !tmux_present(&scratch) {
+        let _ = fs::remove_dir_all(&scratch);
+        panic!("tmux is not runnable here, so dialog identity cannot be proven");
+    }
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    // A real quota source behind the dialog: without one the unavailable
+    // fallback menu is small enough to fit the shrunk client below, and a
+    // refusal test would draw instead.
+    let root = scratch.join("state");
+    let config = scratch.join("config");
+    assert!(
+        fs::write(
+            &config,
+            "[profiles]\nidle = \"sleep 600\"\nmenu-supported = menu-claude\n\n[roster]\nlead = idle\norchestrator = idle\n\n[workspace]\nmain = lead\nlayout = vertical\nwatchdog = false\n[clients]\nmenu-claude = claude config_home=$HOME/.menu-claude\n",
+        )
+        .is_ok()
+    );
+    assert!(fs::create_dir_all(root.join("sessions")).is_ok());
+    write_settings_claude_quota(
+        &scratch.join(".menu-claude"),
+        82,
+        ae::time::Timestamp::now().epoch(),
+    );
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &[
+                "new-session",
+                "-d",
+                "-s",
+                "forrest",
+                "-x",
+                "80",
+                "-y",
+                "24",
+                "sleep 600"
+            ]
+        )
+        .0
+    );
+    let client = nested_client(&socket, &scratch, "forrest", "identity-viewer");
+    let caller_pane = tmux(
+        &socket,
+        &scratch,
+        &["display-message", "-p", "-c", &client, "#{pane_id}"],
+    )
+    .1
+    .trim()
+    .to_owned();
+    let real = dialog_identity(&socket, &scratch, "forrest", &client);
+    let value = |flag: &str| {
+        real.iter()
+            .skip_while(|word| word.as_str() != flag)
+            .nth(1)
+            .unwrap_or_else(|| panic!("captured {flag}"))
+            .clone()
+    };
+    let forged = |flag: &str, replacement: String| {
+        let mut tail = real.clone();
+        let slot = tail
+            .iter()
+            .position(|word| word == flag)
+            .unwrap_or_else(|| panic!("captured {flag}"));
+        tail[slot + 1] = replacement;
+        tail
+    };
+    // A decimal-but-wrong pid is a REPLACEMENT, not a typo: refused after the
+    // client resolves, never drawn for.
+    let replaced_client = forged("--client-pid", format!("{}0", value("--client-pid")));
+    let output = quota_dialog_invocation_command(
+        &socket,
+        &scratch,
+        &root,
+        &config,
+        &caller_pane,
+        &replaced_client,
+    )
+    .output()
+    .expect("the replaced-client invocation runs");
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("client was replaced"),
+        "replaced client: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let replaced_server = forged("--server-pid", format!("{}0", value("--server-pid")));
+    let output = quota_dialog_invocation_command(
+        &socket,
+        &scratch,
+        &root,
+        &config,
+        &caller_pane,
+        &replaced_server,
+    )
+    .output()
+    .expect("the replaced-server invocation runs");
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("server was replaced"),
+        "replaced server: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // A non-decimal pid never reaches the server: the grammar refuses it.
+    let malformed = forged("--client-pid", "nope".to_owned());
+    let output = quota_dialog_invocation_command(
+        &socket,
+        &scratch,
+        &root,
+        &config,
+        &caller_pane,
+        &malformed,
+    )
+    .output()
+    .expect("the malformed invocation runs");
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("is not a decimal"),
+        "malformed pid: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // A replaced server that kept its pid but not its start time is still a
+    // replacement: the start comparison is load-bearing, not decorative.
+    let restarted = forged("--server-start", format!("{}0", value("--server-start")));
+    let output = quota_dialog_invocation_command(
+        &socket,
+        &scratch,
+        &root,
+        &config,
+        &caller_pane,
+        &restarted,
+    )
+    .output()
+    .expect("the restarted-server invocation runs");
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("server was replaced"),
+        "restarted server: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // The same client on another session reads another overlay: switching
+    // session between the menu and the continuation refuses, never draws for
+    // the captured session.
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &[
+                "new-session",
+                "-d",
+                "-s",
+                "second",
+                "-x",
+                "80",
+                "-y",
+                "24",
+                "sleep 600"
+            ]
+        )
+        .0
+    );
+    let captured = dialog_identity(&socket, &scratch, "forrest", &client);
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &["switch-client", "-c", &client, "-t", "second"]
+        )
+        .0,
+        "the client switches session after the capture"
+    );
+    let output =
+        quota_dialog_invocation_command(&socket, &scratch, &root, &config, &caller_pane, &captured)
+            .output()
+            .expect("the switched-session invocation runs");
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("switched session"),
+        "switched session: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // A well-formed but vanished client reports and draws nothing.
+    let mut vanished = real.clone();
+    let slot = vanished
+        .iter()
+        .position(|word| word == "--client")
+        .expect("captured --client");
+    vanished[slot + 1] = "/dev/ttys000-vanished".to_owned();
+    let output =
+        quota_dialog_invocation_command(&socket, &scratch, &root, &config, &caller_pane, &vanished)
+            .output()
+            .expect("the vanished-client invocation runs");
+    assert_eq!(output.status.code(), Some(1));
+    // The fit proof reads the LIVE dimensions from the proof round: shrink the
+    // client's own terminal after every capture so far, then re-capture. (The
+    // client follows the attach terminal's window, not the viewed session's.)
+    //
+    // TEST DEBT, stated not hidden: the shrink lands BEFORE invocation, so the
+    // build round and the proof round both see 40x8; reverting the fit check to
+    // the build-round dimensions stays GREEN. It proves the fit check runs; it
+    // does not prove it reads the PROOF-round dimensions. The missing test
+    // resizes after the build observation and before the proof, with the old
+    // build dimensions RED and the final live dimensions GREEN.
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &[
+                "resize-window",
+                "-t",
+                "identity-viewer",
+                "-x",
+                "40",
+                "-y",
+                "8"
+            ]
+        )
+        .0
+    );
+    wait_for(
+        "shrunk dialog client",
+        || {
+            tmux(
+                &socket,
+                &scratch,
+                &[
+                    "display-message",
+                    "-p",
+                    "-c",
+                    &client,
+                    "#{client_width}x#{client_height}",
+                ],
+            )
+            .1
+        },
+        |seen| seen.trim() == "40x8",
+    );
+    // Proof precedes fit: a replaced clicker on a too-small client reports the
+    // replacement, not the size. (Fit-first code answers "quota needs" here.)
+    let small = dialog_identity(&socket, &scratch, "second", &client);
+    let replaced_small = {
+        let mut tail = small.clone();
+        let slot = tail
+            .iter()
+            .position(|word| word == "--client-pid")
+            .expect("captured --client-pid");
+        tail[slot + 1] = format!("{}0", tail[slot + 1]);
+        tail
+    };
+    let output = quota_dialog_invocation_command(
+        &socket,
+        &scratch,
+        &root,
+        &config,
+        &caller_pane,
+        &replaced_small,
+    )
+    .output()
+    .expect("the replaced small-client invocation runs");
+    assert_eq!(output.status.code(), Some(1));
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(error.contains("was replaced"), "replacement first: {error}");
+    assert!(
+        !error.contains("quota needs"),
+        "no size report first: {error}"
+    );
+    // A too-small client reports its live size and draws nothing.
+    let output =
+        quota_dialog_invocation_command(&socket, &scratch, &root, &config, &caller_pane, &small)
+            .output()
+            .expect("the small-client invocation runs");
+    assert_eq!(output.status.code(), Some(1));
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        error.contains("this terminal is 40x8; quota needs"),
+        "live size reported: {error}"
+    );
+    let viewer = tmux(
+        &socket,
+        &scratch,
+        &["capture-pane", "-p", "-t", "identity-viewer"],
+    )
+    .1;
+    assert!(
+        !viewer.contains("quota for our clients"),
+        "no refusal drew a dialog: {viewer}"
+    );
 }
 
 #[test]

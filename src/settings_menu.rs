@@ -381,15 +381,9 @@ pub(crate) fn menu(
         ),
     };
     let (label, key, action) = match action {
-        MenuAction::Run(command) if crate::tmux::session_id_is_valid(snapshot.session_id) => (
-            label,
-            key,
-            MenuAction::Run(format!(
-                "set-option -u -t {} {} ; {command}",
-                snapshot.session_id,
-                crate::theme::SETTINGS_OPEN_OPTION,
-            )),
-        ),
+        MenuAction::Run(command) if crate::tmux::session_id_is_valid(snapshot.session_id) => {
+            (label, key, MenuAction::Run(command))
+        }
         MenuAction::Run(_) => (
             "settings action unavailable: invoking session identity is invalid".to_owned(),
             String::new(),
@@ -397,40 +391,133 @@ pub(crate) fn menu(
         ),
         MenuAction::Disabled => (label, key, MenuAction::Disabled),
     };
+    let mut items = vec![
+        MenuItem {
+            label: status,
+            key: String::new(),
+            action: MenuAction::Disabled,
+        },
+        MenuItem {
+            label: String::new(),
+            key: String::new(),
+            action: MenuAction::Disabled,
+        },
+        MenuItem { label, key, action },
+    ];
+    // THE property, not a site: every live row of the finished menu carries
+    // the marker unset, applied here after the label rewrite above — so the
+    // rewrite is already priced into any budget taken of this menu.
+    ensure_settings_unset(&mut items, snapshot.session_id);
     Menu {
         title: title(version),
         title_style: crate::theme::menu_title_style(palette),
-        items: vec![
-            MenuItem {
-                label: status,
-                key: String::new(),
-                action: MenuAction::Disabled,
-            },
-            MenuItem {
-                label: String::new(),
-                key: String::new(),
-                action: MenuAction::Disabled,
-            },
-            MenuItem { label, key, action },
-        ],
+        items,
     }
 }
 
-/// Place every display-ready quota row above the existing control section.
+/// Prefix every live row with the settings-marker unset, skipping rows that
+/// already carry it. The ONE place the invariant lives: each settings menu
+/// variant ends here, so whichever menu is finally drawn — base, full or
+/// degraded — has no live row that can bypass it. With an invalid invoking
+/// identity there are no live rows to arm, and none is invented.
+fn ensure_settings_unset(items: &mut [MenuItem], session_id: &str) {
+    if !crate::tmux::session_id_is_valid(session_id) {
+        return;
+    }
+    let prefix = format!(
+        "set-option -u -t {session_id} {} ; ",
+        crate::theme::SETTINGS_OPEN_OPTION
+    );
+    for item in items {
+        if let MenuAction::Run(command) = &mut item.action
+            && !command.starts_with(&prefix)
+        {
+            *command = format!("{prefix}{command}");
+        }
+    }
+}
+
+/// The quota dialog's one live row: dismissing the menu and choosing it are
+/// the same act, so closing the dialog writes nothing anywhere.
+fn close_item() -> MenuItem {
+    MenuItem {
+        label: "Close".to_owned(),
+        key: "c".to_owned(),
+        // Cancel QUEUES NOTHING. Dismissing the menu and choosing this
+        // row must be the same act.
+        action: MenuAction::Run(String::new()),
+    }
+}
+
+/// The quota dialog's title: what the menu is, not which core drew it.
+pub(crate) const QUOTA_DIALOG_TITLE: &str = "quota for our clients";
+
+/// The one live quota row in the settings menu. It opens the centred
+/// per-window dialog; it never acts on quota itself. With an invalid invoking
+/// identity it is a keyless disabled reason, never a row that looks live.
+pub(crate) fn quota_entry(launcher: &[String], snapshot: &Snapshot<'_>) -> MenuItem {
+    if !crate::tmux::session_id_is_valid(snapshot.session_id) {
+        return MenuItem {
+            label: "quota unavailable: invoking session identity is invalid".to_owned(),
+            key: String::new(),
+            action: MenuAction::Disabled,
+        };
+    }
+    let mut argv = launcher.to_vec();
+    argv.extend(
+        [
+            crate::orchestrator::ORCHESTRATOR_SESSION,
+            "--quota-dialog",
+            "--client",
+            snapshot.client,
+            "--client-pid",
+            snapshot.client_pid,
+            "--server-pid",
+            snapshot.server_pid,
+            "--server-start",
+            snapshot.server_start,
+            "--session-id",
+            snapshot.session_id,
+        ]
+        .map(ToOwned::to_owned),
+    );
+    MenuItem {
+        label: "Quota for our clients...".to_owned(),
+        key: "q".to_owned(),
+        action: MenuAction::Run(crate::tmux::menu_run_shell_command(&argv)),
+    }
+}
+
+/// Place the one live quota entry above the existing control section.
 pub(crate) fn menu_with_quota(
     control: &Control,
     launcher: &[String],
     snapshot: &Snapshot<'_>,
     version: Option<&str>,
     palette: &crate::theme::Palette,
-    quota: &[crate::quota::SettingsRow],
+    entry: MenuItem,
 ) -> Menu {
     let mut built = menu(control, launcher, snapshot, version, palette);
-    if quota.is_empty() {
-        return built;
-    }
-    let mut items = Vec::with_capacity(quota.len() + built.items.len() + 1);
-    items.extend(quota.iter().map(|row| MenuItem {
+    let mut items = Vec::with_capacity(built.items.len() + 2);
+    items.push(entry);
+    items.push(MenuItem {
+        label: String::new(),
+        key: String::new(),
+        action: MenuAction::Disabled,
+    });
+    items.append(&mut built.items);
+    built.items = items;
+    ensure_settings_unset(&mut built.items, snapshot.session_id);
+    built
+}
+
+/// Build the observational quota dialog: every row disabled except Close.
+pub(crate) fn quota_dialog_menu(
+    rows: &[crate::quota::DialogRow],
+    palette: &crate::theme::Palette,
+) -> Menu {
+    let mut items = Vec::with_capacity(rows.len() + 2);
+    items.extend(rows.iter().map(|row| MenuItem {
         label: row.label.clone(),
         key: String::new(),
         action: MenuAction::Disabled,
@@ -440,9 +527,12 @@ pub(crate) fn menu_with_quota(
         key: String::new(),
         action: MenuAction::Disabled,
     });
-    items.append(&mut built.items);
-    built.items = items;
-    built
+    items.push(close_item());
+    Menu {
+        title: QUOTA_DIALOG_TITLE.to_owned(),
+        title_style: crate::theme::menu_title_style(palette),
+        items,
+    }
 }
 
 /// Replace the existing blank separator with a bounded quota overflow notice.
@@ -465,13 +555,14 @@ pub(crate) fn menu_with_quota_notice(
             value.to_string()
         }
     };
-    let notice = format!("q +{}r +{}c", number(missing.0), number(missing.1));
+    let notice = format!("+{}r +{}c", number(missing.0), number(missing.1));
     let max_label = base_columns.saturating_sub(4);
     let Some(empty_separator) = built.items.get_mut(1) else {
         return built;
     };
     debug_assert!(empty_separator.label.is_empty());
     empty_separator.label = notice.chars().take(max_label).collect();
+    ensure_settings_unset(&mut built.items, snapshot.session_id);
     built
 }
 
@@ -516,6 +607,100 @@ struct CapturedLaunch {
 /// Whether the public orchestrator word carries the settings continuation.
 pub(crate) fn is_apply(tail: &[String]) -> bool {
     tail.first().is_some_and(|word| word == APPLY_FLAG)
+}
+
+/// Whether `text` names an addressable tmux client.
+///
+/// The ONE grammar every continuation carrying a client name requires — the
+/// settings apply and the quota dialog both read it, so a second spelling of
+/// "addressable" cannot drift in beside it.
+pub(crate) fn is_client_name(text: &str) -> bool {
+    !text.is_empty()
+        && text.len() <= 128
+        && text
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._/:+-".contains(&byte))
+}
+
+/// The quota-dialog continuation marker: a second hop off the settings menu.
+pub(crate) const QUOTA_DIALOG_FLAG: &str = "--quota-dialog";
+
+/// A captured quota-dialog invocation: the client name plus the pid pair and
+/// the viewed session that prove it is still the same clicker.
+///
+/// The dialog writes nothing, so there is no decision window to bound and no
+/// deadline travels with it. Identity is what travels: a reused client name or
+/// socket is a replacement, a switched session reads the wrong overlay, and
+/// either is refused, never drawn for.
+pub(crate) struct CapturedQuotaDialog {
+    pub(crate) client: String,
+    pub(crate) client_pid: String,
+    pub(crate) server_pid: String,
+    pub(crate) server_start: String,
+    pub(crate) session_id: String,
+}
+
+/// Read the fixed hostile quota-dialog grammar: each flag exactly once, the
+/// client through [`is_client_name`], the pids decimal, the session id through
+/// the session grammar. A read-only draw has no `--deadline` because there is
+/// no stale effect to bound.
+pub(crate) fn parse_quota_dialog(tail: &[String]) -> Result<CapturedQuotaDialog, String> {
+    let [flag, rest @ ..] = tail else {
+        return Err("incomplete quota dialog invocation".to_owned());
+    };
+    if flag != QUOTA_DIALOG_FLAG {
+        return Err("not a quota dialog invocation".to_owned());
+    }
+    let mut client = None;
+    let mut client_pid = None;
+    let mut server_pid = None;
+    let mut server_start = None;
+    let mut session_id = None;
+    let mut remaining = rest;
+    while let [flag, after @ ..] = remaining {
+        let Some((value, after)) = after.split_first() else {
+            return Err("a quota dialog flag is missing its value".to_owned());
+        };
+        let slot = match flag.as_str() {
+            "--client" => &mut client,
+            "--client-pid" => &mut client_pid,
+            "--server-pid" => &mut server_pid,
+            "--server-start" => &mut server_start,
+            "--session-id" => &mut session_id,
+            other => return Err(format!("unknown quota dialog flag {other:?}")),
+        };
+        if slot.replace(value.clone()).is_some() {
+            return Err(format!("{flag} may be given only once"));
+        }
+        remaining = after;
+    }
+    let required =
+        |value: Option<String>, flag: &str| value.ok_or_else(|| format!("{flag} is required"));
+    let client = required(client, "--client")?;
+    if !is_client_name(&client) {
+        return Err("--client is not an addressable tmux client".to_owned());
+    }
+    let decimal = |value: Option<String>, flag: &str| -> Result<String, String> {
+        let value = required(value, flag)?;
+        if !crate::tmux::is_decimal(&value) {
+            return Err(format!("{flag} is not a decimal"));
+        }
+        Ok(value)
+    };
+    let client_pid = decimal(client_pid, "--client-pid")?;
+    let server_pid = decimal(server_pid, "--server-pid")?;
+    let server_start = decimal(server_start, "--server-start")?;
+    let session_id = required(session_id, "--session-id")?;
+    if !crate::tmux::session_id_is_valid(&session_id) {
+        return Err("--session-id is not a tmux session identity".to_owned());
+    }
+    Ok(CapturedQuotaDialog {
+        client,
+        client_pid,
+        server_pid,
+        server_start,
+        session_id,
+    })
 }
 
 #[allow(
@@ -591,12 +776,7 @@ fn parse_apply(tail: &[String]) -> Result<CapturedLaunch, String> {
         return Err("--uuid is not a session identity".to_owned());
     }
     let client = required(client, "--client")?;
-    if client.is_empty()
-        || client.len() > 128
-        || !client
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || b"._/:+-".contains(&byte))
-    {
+    if !is_client_name(&client) {
         return Err("--client is not an addressable tmux client".to_owned());
     }
     let decimal = |value: Option<String>, flag: &str| -> Result<String, String> {
@@ -962,28 +1142,168 @@ mod tests {
     }
 
     #[test]
-    fn quota_rows_form_a_disabled_section_above_the_unchanged_control() {
-        let rows = [crate::quota::SettingsRow {
-            label: "quota  claude/~/.claude | 80% | resets 4d | seen 1m | fresh".to_owned(),
-        }];
+    fn quota_entry_is_one_live_row_above_the_unchanged_control() {
+        let entry = super::quota_entry(&["core".to_owned()], &snapshot());
+        assert_eq!(entry.label, "Quota for our clients...");
+        assert_eq!(entry.key, "q");
+        let crate::tmux::MenuAction::Run(command) = &entry.action else {
+            panic!("the quota entry is live");
+        };
+        // The entry itself carries no unset: `menu_with_quota` arms every live
+        // row from the one site, so the property holds for rows `menu` never saw.
+        assert!(!command.contains("set-option"), "{command}");
+        assert!(command.contains("'--quota-dialog'"), "{command}");
+        assert!(command.contains("'--client' '/dev/ttys004'"), "{command}");
+        assert!(command.contains("'--client-pid' '4242'"), "{command}");
+        assert!(command.contains("'--server-pid' '911'"), "{command}");
+        assert!(
+            command.contains("'--server-start' '1789109660'"),
+            "{command}"
+        );
+        assert!(
+            command.contains("'--session-id' '\\$7'"),
+            "the viewed session travels escaped like every other menu command: {command}"
+        );
+        assert!(!command.contains("--pane"), "{command}");
+        assert!(!command.contains("--deadline"), "{command}");
         let built = super::menu_with_quota(
             &Control::Start,
             &[],
             &snapshot(),
             None,
             &crate::theme::Palette::DARCULA,
-            &rows,
+            entry,
         );
-        assert_eq!(built.items[0].label, rows[0].label);
-        assert!(matches!(
-            built.items[0].action,
-            crate::tmux::MenuAction::Disabled
-        ));
-        assert!(built.items[0].key.is_empty());
+        assert_eq!(built.items[0].label, "Quota for our clients...");
+        assert_eq!(built.items[0].key, "q");
+        let crate::tmux::MenuAction::Run(armed) = &built.items[0].action else {
+            panic!("the assembled entry stays live");
+        };
+        assert!(
+            armed.starts_with("set-option -u -t $7 @ae_settings_open ; "),
+            "{armed}"
+        );
         assert!(built.items[1].label.is_empty());
         assert_eq!(built.items[2].label, "orchestrator: absent");
         assert_eq!(built.items[4].label, "Start orchestrator");
         assert_eq!(built.items[4].key, "s");
+    }
+
+    #[test]
+    fn invalid_invoking_session_identity_disables_the_quota_entry_too() {
+        let mut invalid = snapshot();
+        invalid.session_id = "not-a-session-id";
+        let entry = super::quota_entry(&[], &invalid);
+        assert_eq!(
+            entry.label,
+            "quota unavailable: invoking session identity is invalid"
+        );
+        assert!(entry.key.is_empty());
+        assert!(matches!(entry.action, crate::tmux::MenuAction::Disabled));
+        let built = super::menu_with_quota(
+            &Control::Start,
+            &[],
+            &invalid,
+            None,
+            &crate::theme::Palette::DARCULA,
+            entry,
+        );
+        assert!(built.items[0].key.is_empty());
+        assert!(matches!(
+            built.items[0].action,
+            crate::tmux::MenuAction::Disabled
+        ));
+    }
+
+    /// The property, pinned for all three menus: no live row without the
+    /// marker unset. `menu_with_quota` must arm the row it adds itself,
+    /// because `menu` cannot see it.
+    #[test]
+    fn every_live_row_of_every_settings_menu_carries_the_marker_unset() {
+        fn armed(menu: &crate::tmux::Menu) -> Vec<String> {
+            menu.items
+                .iter()
+                .filter_map(|item| match &item.action {
+                    crate::tmux::MenuAction::Run(command) => Some(command.clone()),
+                    crate::tmux::MenuAction::Disabled => None,
+                })
+                .collect()
+        }
+        let snapshot = snapshot();
+        let base = menu(
+            &Control::Start,
+            &[],
+            &snapshot,
+            None,
+            &crate::theme::Palette::DARCULA,
+        );
+        let full = super::menu_with_quota(
+            &Control::Start,
+            &[],
+            &snapshot,
+            None,
+            &crate::theme::Palette::DARCULA,
+            super::quota_entry(&[], &snapshot),
+        );
+        let degraded = super::menu_with_quota_notice(
+            &Control::Start,
+            &[],
+            &snapshot,
+            None,
+            &crate::theme::Palette::DARCULA,
+            (3, 7),
+            crate::session_menu::menu_budget(&base).0,
+        );
+        // The notice pins its shortfall SHAPE, not a bare plus: both halves.
+        assert!(
+            degraded.items[1].label.contains("+3r") && degraded.items[1].label.contains("+7c"),
+            "notice: {:?}",
+            degraded.items[1].label
+        );
+        for (name, menu) in [("base", base), ("full", full), ("degraded", degraded)] {
+            let live = armed(&menu);
+            assert!(!live.is_empty(), "{name} has a live row to arm");
+            for command in live {
+                assert!(
+                    command.starts_with("set-option -u -t $7 @ae_settings_open ; "),
+                    "{name}: {command}"
+                );
+                assert_eq!(
+                    command
+                        .matches("set-option -u -t $7 @ae_settings_open ; ")
+                        .count(),
+                    1,
+                    "{name}: unset exactly once: {command}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn quota_dialog_menu_is_observational_with_one_close_row() {
+        let rows = [
+            crate::quota::DialogRow {
+                label: "codex/cx".to_owned(),
+            },
+            crate::quota::DialogRow {
+                label: "  session 5h | 39% | window resets 3h | seen 0m | fresh".to_owned(),
+            },
+        ];
+        let built = super::quota_dialog_menu(&rows, &crate::theme::Palette::DARCULA);
+        assert_eq!(built.title, super::QUOTA_DIALOG_TITLE);
+        assert_eq!(built.items.len(), rows.len() + 2);
+        for item in &built.items[..rows.len()] {
+            assert!(item.key.is_empty());
+            assert!(matches!(item.action, crate::tmux::MenuAction::Disabled));
+        }
+        assert!(built.items[rows.len()].label.is_empty());
+        let close = &built.items[rows.len() + 1];
+        assert_eq!(close.label, "Close");
+        assert_eq!(close.key, "c");
+        assert!(matches!(
+            close.action,
+            crate::tmux::MenuAction::Run(ref command) if command.is_empty()
+        ));
     }
 
     #[test]
@@ -1006,7 +1326,7 @@ mod tests {
             base_budget.0,
         );
         assert_eq!(degraded.items.len(), base.items.len());
-        assert_eq!(degraded.items[1].label, "q +9+r +9+c");
+        assert_eq!(degraded.items[1].label, "+9+r +9+c");
         assert!(matches!(
             degraded.items[1].action,
             crate::tmux::MenuAction::Disabled
@@ -1018,36 +1338,30 @@ mod tests {
     }
 
     #[test]
-    fn quota_fit_uses_each_actual_bounded_label_not_its_component_maximum() {
-        let row = |label: &str| crate::quota::SettingsRow {
-            label: label.to_owned(),
-        };
-        let short = super::menu_with_quota(
+    fn entry_menu_budget_covers_the_short_live_row_not_a_component_maximum() {
+        let full = super::menu_with_quota(
             &Control::Start,
             &[],
             &snapshot(),
             None,
             &crate::theme::Palette::DARCULA,
-            &[row(
-                "quota  claude/c | 8% | window resets 2h | seen 1m | fresh",
-            )],
+            super::quota_entry(&[], &snapshot()),
         );
-        let long = super::menu_with_quota(
+        let base = menu(
             &Control::Start,
             &[],
             &snapshot(),
             None,
             &crate::theme::Palette::DARCULA,
-            &[row(
-                "quota  claude/a-distinct...claude-mic | weekly...weekly-pro | 100% spend-cap | window resets 106751991167300d 15h | seen 106751991167300d 15h | stale",
-            )],
         );
-        let short_budget = crate::session_menu::menu_budget(&short);
-        let long_budget = crate::session_menu::menu_budget(&long);
-        let medium_client = (short_budget.0, short_budget.1);
-        assert!(medium_client.0 >= short_budget.0 && medium_client.1 >= short_budget.1);
-        assert!(medium_client.0 < long_budget.0);
-        assert_eq!(short_budget.1, long_budget.1);
+        let (full_columns, full_rows) = crate::session_menu::menu_budget(&full);
+        let (base_columns, base_rows) = crate::session_menu::menu_budget(&base);
+        assert_eq!(full_rows, base_rows + 2, "one entry row plus its separator");
+        assert!(
+            full_columns < 80,
+            "the entry row fits ordinary clients: {full_columns}"
+        );
+        assert!(full_columns >= base_columns);
     }
 
     #[test]
@@ -1133,5 +1447,89 @@ mod tests {
         let mut duplicate = args("resume", "renamed", UUID).to_vec();
         duplicate.extend(["--target".to_owned(), "other".to_owned()]);
         assert!(parse_apply(&duplicate).is_err());
+    }
+
+    #[test]
+    fn quota_dialog_accepts_only_named_client_and_decimal_pid_pair_without_deadline() {
+        let args = || {
+            [
+                "--quota-dialog",
+                "--client",
+                "/dev/ttys004",
+                "--client-pid",
+                "4242",
+                "--server-pid",
+                "911",
+                "--server-start",
+                "1789109660",
+                "--session-id",
+                "$7",
+            ]
+            .map(ToOwned::to_owned)
+            .to_vec()
+        };
+        let captured = super::parse_quota_dialog(&args()).expect("canonical dialog");
+        assert_eq!(captured.client, "/dev/ttys004");
+        assert_eq!(captured.client_pid, "4242");
+        assert_eq!(captured.server_pid, "911");
+        assert_eq!(captured.server_start, "1789109660");
+        assert_eq!(captured.session_id, "$7");
+
+        let mut reordered = vec![
+            "--quota-dialog".to_owned(),
+            "--session-id".to_owned(),
+            "$7".to_owned(),
+            "--server-start".to_owned(),
+            "1789109660".to_owned(),
+            "--server-pid".to_owned(),
+            "911".to_owned(),
+            "--client-pid".to_owned(),
+            "4242".to_owned(),
+            "--client".to_owned(),
+            "/dev/ttys004".to_owned(),
+        ];
+        assert!(super::parse_quota_dialog(&reordered).is_ok());
+        reordered.push("--deadline".to_owned());
+        reordered.push("1789109780".to_owned());
+        assert!(super::parse_quota_dialog(&reordered).is_err());
+
+        for broken in [
+            args()[1..].to_vec(),
+            {
+                let mut tail = args();
+                tail[2] = "not a client!".to_owned();
+                tail
+            },
+            {
+                let mut tail = args();
+                tail[4] = "4.2.4.2".to_owned();
+                tail
+            },
+            {
+                let mut tail = args();
+                tail[10] = "not-a-session".to_owned();
+                tail
+            },
+            {
+                let mut tail = args();
+                tail.extend(["--client".to_owned(), "other".to_owned()]);
+                tail
+            },
+            {
+                let mut tail = args();
+                tail.pop();
+                tail
+            },
+        ] {
+            assert!(super::parse_quota_dialog(&broken).is_err(), "{broken:?}");
+        }
+    }
+
+    #[test]
+    fn client_name_grammar_is_one_predicate_for_both_continuations() {
+        assert!(super::is_client_name("/dev/ttys004"));
+        for bad in ["", "has space", "semi;colon", "hash#tag", &"x".repeat(129)] {
+            assert!(!super::is_client_name(bad), "{bad:?}");
+        }
     }
 }

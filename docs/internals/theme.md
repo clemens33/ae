@@ -195,20 +195,21 @@ until the other menu opens or a selectable row clears it.
 The settings menu's quota projection is also exact-client state. The same
 `list-clients` row carries validated session name, session id, pid and client dimensions; the
 session name selects that durable session directory's recorded local overlay. `quota.rs` then
-collapses each client scope to one printable-ASCII, fixed-bound row and chooses the most
-constraining existing derivation. Long scope and bucket cells keep visibly elided head and tail;
+renders each client scope as one header row plus one printable-ASCII, fixed-bound,
+two-space-indented row per quota window, every percentage read from the existing derivation.
+Long scope and bucket cells keep visibly elided head and tail;
 generated percentage, window reset, age and freshness fields remain whole. Literal `#` stays data
 while widths are measured and is doubled only by the final tmux argv renderer.
-Equal percentages prefer the later valid reset horizon, then newer observation and a stable
-bucket/qualifier/window order. A `read-error` or `truncated` sibling suppresses a usable sibling for
-that collapsed scope; `unknown` may coexist with a proven same-source reading.
+Windows list in a stable bucket/qualifier/window order no input order can change.
+A `read-error` or `truncated` sibling suppresses that scope's windows behind its status;
+`unknown` may coexist with a proven same-source reading.
 
 Menu fit is staged. The original three-item orchestrator menu must fit first. The quota projection
 is added only when every row fits by its actual rendered width and height; otherwise the original
 blank separator becomes one bounded overflow notice, preserving the base item count and selectable
 action. If even the base menu does not fit, settings keeps its original visible refusal. The full
-`ae quota` table remains separate: it preserves per-rollout detail that this one-row-per-scope menu
-intentionally collapses.
+`ae quota` table remains separate: it preserves per-rollout detail the dialog merges
+into one scope section.
 Every menu uses `display-menu -O`. On tmux 3.5 and newer, Down
 opens it with `-M`, the trailing release leaves it open, and rows are
 mouse-selectable. On the supported 3.4 floor, status clicks open on release,

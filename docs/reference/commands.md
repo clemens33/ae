@@ -459,29 +459,34 @@ so the watchdog expires a leftover highlight at half its interval; with the watc
 persists only until another menu opens or a settings action runs. Drawing or dismissing settings
 does not otherwise start, stop or rewrite anything.
 
-Above that control, settings shows one read-only quota row for every configured client scope,
-using the invoking session's recorded project overlay rather than the command's working directory.
-Rows keep `ae quota`'s stable scope order. Client labels that resolve to one source share a row,
-distinct config homes remain distinct, and several Codex rollout owners under one source collapse
-to one compact row. That is why settings can show fewer rows than `ae quota`, whose full table may
-repeat a scope to preserve each rollout owner's provenance.
+Above that control, settings shows one live quota entry. Choosing it clears the
+settings highlight and draws a centred dialog listing every quota window of every
+configured client scope, read fresh with the invoking session's recorded project
+overlay rather than the command's working directory. Rows keep `ae quota`'s stable
+scope order. Client labels that resolve to one source share one scope section,
+distinct config homes remain distinct, and several Codex rollout owners under one
+source share one section. That is why the dialog can show fewer sections than
+`ae quota`, whose full table may repeat a scope to preserve each rollout owner's
+provenance.
 
-An observed row selects the scope's most constraining EFFECTIVE window. Multi-window scopes name
-that window's bucket; every row keeps the derived percentage and its reason (`xN`, `unlimited`, or
-`spend-cap`), the window-reset countdown, observation age, and `fresh`/`stale` verdict. With no
-usable observation it says `unknown`, `unsupported`, `read-error`, or `truncated`; a config failure
-becomes `quota: unavailable`. These rows are keyless and cannot trigger an action. `ae quota`
+Each scope section is one header row with the client identity, then one indented row
+per window. Every window row keeps the derived percentage and its reason (`xN`,
+`unlimited`, or `spend-cap`), the window-reset countdown, observation age, and
+`fresh`/`stale` verdict. With no usable observation the section says `unknown`,
+`unsupported`, `read-error`, or `truncated`; a config failure becomes
+`quota: unavailable`. These rows are keyless and cannot trigger an action; only
+`Close` dismisses the dialog. `ae quota`
 remains the full view with rollout provenance, raw values, credits, paths, hints, and notes.
-When equal EFFECTIVE percentages compete, the window whose valid reset is later wins before
-observation age, followed by a stable bucket/qualifier/window tie-break. Any `read-error` or
-`truncated` sibling makes the whole collapsed scope report that incomplete status instead of an
-optimistic usable row; an `unknown` sibling does not erase an observed same-source window.
+Any `read-error` or
+`truncated` sibling makes the scope section report that incomplete status instead of its
+window rows; an `unknown` sibling does not erase an observed same-source window.
 
-Ae first proves the original orchestrator-only menu fits. It draws all quota rows only when their
-actual sanitized display widths and the complete row count fit the invoking client. Otherwise the
-existing blank separator becomes one bounded `q +Nr +Nc` overflow notice, leaving the original
-Start/Resume/Pause row and base height intact. A client too small for that original menu keeps the
-original refusal; very small clients therefore omit the quota section entirely. Display cells are
+Ae first proves the original orchestrator-only menu fits. It draws the quota entry row only when
+it fits by its actual rendered width. Otherwise the
+existing blank separator becomes one bounded `+Nr +Nc` overflow notice, leaving the original
+Start/Resume/Pause row and base height intact. Very small clients therefore see the overflow
+notice instead of the entry; a client too small for even that original menu keeps the
+original refusal. Display cells are
 printable ASCII and visibly elide long scope or bucket labels from the middle.
 
 The menu offers exactly one orchestrator action from a complete raw metadata

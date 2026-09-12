@@ -711,9 +711,10 @@ pub(crate) struct Observation {
     pub(crate) now: i64,
 }
 
-/// One display-ready, bounded settings-menu quota row.
+/// One display-ready, bounded quota-dialog row: a scope header with the client
+/// identity, or one indented window line beneath it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SettingsRow {
+pub(crate) struct DialogRow {
     pub(crate) label: String,
 }
 
@@ -744,7 +745,6 @@ struct SettingsScope {
     policy: Policy,
     readings: Vec<SettingsReading>,
     statuses: Vec<Status>,
-    windows: Vec<(String, Option<String>, Option<u32>)>,
 }
 
 /// A seat identity precise enough to join its persisted conversation to one
@@ -821,13 +821,11 @@ impl Advisory {
 }
 
 impl Observation {
-    /// Collapse every known client scope to one compact settings-menu row.
+    /// Group every known client scope once, merging repeated windows through
+    /// [`Reading::adopt`] — the same provenance rule the watchdog uses.
     ///
     /// Codex rollout owners are evidence about one scope, not more scopes.
-    /// Repeated windows therefore merge through [`Reading::adopt`], the same
-    /// provenance rule the watchdog uses, before the most constraining judged
-    /// window is selected.
-    pub(crate) fn settings_rows(&self) -> Vec<SettingsRow> {
+    fn dialog_scopes(&self) -> Vec<SettingsScope> {
         let mut scopes: Vec<SettingsScope> = Vec::new();
         for group in &self.groups {
             if let Some(scope) = scopes
@@ -841,7 +839,6 @@ impl Observation {
                     policy: Policy::default(),
                     readings: Vec::new(),
                     statuses: Vec::new(),
-                    windows: Vec::new(),
                 };
                 scope.absorb(group, self.now);
                 scopes.push(scope);
@@ -850,7 +847,7 @@ impl Observation {
         // `groups` is deliberately the uncapped window feed the watchdog
         // consumes. Codex budget completeness lives only in `rendered`'s
         // summary so it cannot create a fake watchdog window; overlay only its
-        // hard failure status onto this settings projection.
+        // hard failure status onto this dialog projection.
         for group in &self.rendered {
             let hard_status = group.summary.as_ref().and_then(|summary| {
                 summary
@@ -866,8 +863,16 @@ impl Observation {
             }
         }
         scopes
+    }
+
+    /// Render every scope as one header row plus one indented row per adopted
+    /// quota window — the quota dialog's per-window listing. Every percentage
+    /// comes from [`derived`], the same derivation the table and the watchdog
+    /// read; scopes with nothing usable render their status instead of a guess.
+    pub(crate) fn quota_dialog_rows(&self) -> Vec<DialogRow> {
+        self.dialog_scopes()
             .iter()
-            .map(|scope| scope.row(self.home.as_deref(), self.now))
+            .flat_map(|scope| scope.dialog_rows(self.home.as_deref(), self.now))
             .collect()
     }
 
@@ -948,16 +953,6 @@ impl SettingsScope {
     fn absorb(&mut self, group: &Group, now: i64) {
         self.policy.absorb(&group.policy);
         for row in &group.rows {
-            if row.bucket != "-" {
-                let key = (
-                    row.bucket.clone(),
-                    row.qualifier.clone(),
-                    row.window_minutes,
-                );
-                if !self.windows.contains(&key) {
-                    self.windows.push(key);
-                }
-            }
             let status = if matches!(row.status, Status::Fresh | Status::Stale) {
                 freshness(row.observed_at, row.resets_at, now)
             } else {
@@ -982,83 +977,68 @@ impl SettingsScope {
         }
     }
 
-    fn row(&self, home: Option<&Path>, now: i64) -> SettingsRow {
-        let identity = settings_cell(
-            &format!(
-                "{}/{}",
-                self.group.tool.as_str(),
-                scope_identity(&self.group, home)
+    /// One header row plus one two-space-indented row per adopted window, in a
+    /// stable bucket/qualifier/window order that no input order can change.
+    /// Proven on a real menu draw to survive `display-menu` verbatim; the
+    /// indent is part of the label, not a menu property.
+    fn dialog_rows(&self, home: Option<&Path>, now: i64) -> Vec<DialogRow> {
+        let mut rows = vec![DialogRow {
+            label: settings_cell(
+                &format!(
+                    "{}/{}",
+                    self.group.tool.as_str(),
+                    scope_identity(&self.group, home)
+                ),
+                SETTINGS_SCOPE_MAX,
             ),
-            SETTINGS_SCOPE_MAX,
-        );
+        }];
         let incomplete = self
             .statuses
             .iter()
             .any(|status| matches!(status, Status::ReadError | Status::Truncated));
-        let selected = (!incomplete)
-            .then(|| {
-                self.readings
-                    .iter()
-                    .filter_map(|reading| {
-                        derived(&self.policy, &reading.reading.row)
-                            .map(|derived| (reading, derived))
-                    })
-                    .max_by(|(left, left_derived), (right, right_derived)| {
-                        let left_row = &left.reading.row;
-                        let right_row = &right.reading.row;
-                        left_derived
-                            .judged()
-                            .total_cmp(&right_derived.judged())
-                            .then_with(|| settings_row_tie_break(left_row, right_row))
-                    })
-            })
-            .flatten();
-        let label = selected.map_or_else(
-            || {
-                format!(
-                    "quota  {identity} | {}",
-                    settings_status(&self.statuses).as_str()
-                )
-            },
-            |(selected, selected_derived)| {
-                let row = &selected.reading.row;
-                let bucket = (self.windows.len() > 1).then(|| {
-                    format!(
-                        "{} | ",
-                        settings_cell(&bucket_label(row), SETTINGS_BUCKET_MAX)
-                    )
-                });
-                let used = selected_derived.settings_cell();
-                let reset = row
-                    .resets_at
-                    .map_or_else(|| "?".to_owned(), |at| span_label(at.saturating_sub(now)));
-                let seen = row
-                    .observed_at
-                    .map_or_else(|| "?".to_owned(), |at| span_label(now.saturating_sub(at)));
-                let status = freshness(row.observed_at, row.resets_at, now).as_str();
-                debug_assert!(reset.len() <= SETTINGS_TIME_MAX);
-                debug_assert!(seen.len() <= SETTINGS_TIME_MAX);
-                format!(
-                    "quota  {identity} | {}{used} | window resets {reset} | seen {seen} | {status}",
-                    bucket.unwrap_or_default()
-                )
-            },
-        );
-        debug_assert!(label.len() <= SETTINGS_ROW_MAX);
-        SettingsRow { label }
+        if incomplete || self.readings.is_empty() {
+            rows.push(DialogRow {
+                label: format!("  {}", settings_status(&self.statuses).as_str()),
+            });
+            return rows;
+        }
+        let mut readings: Vec<&SettingsReading> = self.readings.iter().collect();
+        readings.sort_by(|left, right| {
+            let left = &left.reading.row;
+            let right = &right.reading.row;
+            left.bucket
+                .cmp(&right.bucket)
+                .then_with(|| left.qualifier.cmp(&right.qualifier))
+                .then_with(|| left.window_minutes.cmp(&right.window_minutes))
+        });
+        for reading in readings {
+            let row = &reading.reading.row;
+            let bucket = settings_cell(&bucket_label(row), SETTINGS_BUCKET_MAX);
+            let window = row.window_minutes.map(window_label);
+            let window = window.as_deref().unwrap_or("-");
+            let where_ = if window == "-" {
+                bucket
+            } else {
+                format!("{bucket} {window}")
+            };
+            let used =
+                derived(&self.policy, row).map_or_else(|| "-".to_owned(), Derived::settings_cell);
+            let reset = row
+                .resets_at
+                .map_or_else(|| "?".to_owned(), |at| span_label(at.saturating_sub(now)));
+            let seen = row
+                .observed_at
+                .map_or_else(|| "?".to_owned(), |at| span_label(now.saturating_sub(at)));
+            let status = freshness(row.observed_at, row.resets_at, now).as_str();
+            debug_assert!(reset.len() <= SETTINGS_TIME_MAX);
+            debug_assert!(seen.len() <= SETTINGS_TIME_MAX);
+            let label =
+                format!("  {where_} | {used} | window resets {reset} | seen {seen} | {status}");
+            debug_assert!(label.len() <= SETTINGS_ROW_MAX);
+            rows.push(DialogRow { label });
+        }
+        rows
     }
-}
-
-/// A deterministic final order once judged percentage ties. Settings admits a
-/// reading only with a valid future reset, so equal valid horizons reach the
-/// stable bucket/qualifier/window key; reset-less or expired rows stay Unknown.
-fn settings_row_tie_break(left: &Row, right: &Row) -> std::cmp::Ordering {
-    left.resets_at
-        .cmp(&right.resets_at)
-        .then_with(|| left.observed_at.cmp(&right.observed_at))
-        .then_with(|| left.bucket.cmp(&right.bucket))
-        .then_with(|| left.qualifier.cmp(&right.qualifier))
-        .then_with(|| left.window_minutes.cmp(&right.window_minutes))
 }
 
 fn settings_same_scope(left: &Group, right: &Group) -> bool {
@@ -1381,17 +1361,17 @@ pub(crate) fn observe(inputs: &Inputs<'_>) -> Result<Observation, crate::config:
     })
 }
 
-/// Read the bounded local sources and return display-ready settings rows.
+/// Read the bounded local sources and return display-ready quota-dialog rows.
 /// Configuration failure is informational in this surface: it becomes one
-/// honest row and cannot remove the settings menu's existing control.
-pub(crate) fn settings_rows(inputs: &Inputs<'_>) -> Vec<SettingsRow> {
+/// honest row and cannot remove the dialog.
+pub(crate) fn quota_dialog_rows(inputs: &Inputs<'_>) -> Vec<DialogRow> {
     observe(inputs).map_or_else(
         |_| {
-            vec![SettingsRow {
+            vec![DialogRow {
                 label: "quota: unavailable".to_owned(),
             }]
         },
-        |observation| observation.settings_rows(),
+        |observation| observation.quota_dialog_rows(),
     )
 }
 
@@ -3163,7 +3143,7 @@ mod tests {
     }
 
     #[test]
-    fn settings_projection_carries_real_partial_codex_failures_into_the_scope() {
+    fn dialog_projection_carries_real_partial_codex_failures_into_the_scope() {
         const NOW: i64 = 1_788_858_600;
         let root = std::path::PathBuf::from(format!(
             "/tmp/ae-quota-settings-partial-{}",
@@ -3220,9 +3200,7 @@ mod tests {
                 home: Some(root.clone()),
                 now: NOW,
             }
-            .settings_rows()
-            .remove(0)
-            .label
+            .quota_dialog_rows()
         };
         let mut short = Budget {
             files_left: 4_096,
@@ -3241,14 +3219,20 @@ mod tests {
         assert_eq!(summary.hint, scope.hint);
         assert!(super::settings_summary_scope(&truncated.all[0], summary));
         let truncated = project(truncated);
-        assert!(truncated.ends_with("truncated"), "{truncated}");
-        assert!(!truncated.contains("30%"), "{truncated}");
+        let truncated_status = truncated
+            .iter()
+            .find(|row| row.label.ends_with("truncated"))
+            .unwrap_or_else(|| panic!("a truncated status row: {truncated:?}"));
+        assert!(!truncated_status.label.contains("30%"), "{truncated:?}");
 
         std::fs::remove_file(&paths[1]).expect("replace one rollout with damage");
         std::fs::create_dir(&paths[1]).expect("an unreadable rollout-shaped entry");
         let failed = project(codex_groups(&scope, &fleet, NOW, &mut Budget::new()));
-        assert!(failed.ends_with("read-error"), "{failed}");
-        assert!(!failed.contains("30%"), "{failed}");
+        let failed_status = failed
+            .iter()
+            .find(|row| row.label.ends_with("read-error"))
+            .unwrap_or_else(|| panic!("a read-error status row: {failed:?}"));
+        assert!(!failed_status.label.contains("30%"), "{failed:?}");
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -3463,7 +3447,7 @@ mod tests {
     }
 
     #[test]
-    fn settings_projection_collapses_rollouts_and_selects_the_most_constraining_window() {
+    fn dialog_projection_lists_every_window_under_one_scope_header() {
         let mut older = declared_group(Some(1), "80");
         older.rollout = Some("older".to_owned());
         older.owner = Some("one:lead".to_owned());
@@ -3493,18 +3477,23 @@ mod tests {
             home: None,
             now: 10_000,
         };
+        // The newer rollout wins each shared window; both windows are listed.
         assert_eq!(
-            observation.settings_rows(),
-            vec![super::SettingsRow {
-                label:
-                    "quota  codex/cx | weekly (pro) | 45% x1 | window resets 2h46m | seen 1m | fresh"
-                        .to_owned(),
-            }]
+            observation
+                .quota_dialog_rows()
+                .iter()
+                .map(|row| row.label.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "codex/cx",
+                "  session 5h | 35% x1 | window resets 10m | seen 1m | fresh",
+                "  weekly (pro) 7d | 45% x1 | window resets 2h46m | seen 1m | fresh",
+            ]
         );
     }
 
     #[test]
-    fn settings_projection_uses_the_later_reset_to_break_equal_percentage_ties() {
+    fn dialog_projection_lists_windows_in_a_stable_order_whatever_the_input_order() {
         let mut forward = declared_group(None, "100");
         forward.rows[0].bucket = "weekly".to_owned();
         forward.rows[0].resets_at = Some(10_000 + 4 * 24 * 60 * 60);
@@ -3526,19 +3515,26 @@ mod tests {
                 home: None,
                 now: 10_000,
             }
-            .settings_rows()
-            .remove(0)
-            .label
+            .quota_dialog_rows()
+            .into_iter()
+            .map(|row| row.label)
+            .collect::<Vec<_>>()
         };
         let forward = render(forward);
         let reverse = render(reverse);
-        assert_eq!(forward, reverse, "row order cannot decide an equal tie");
-        assert!(forward.contains(" | weekly (pro) | 100% | "), "{forward}");
-        assert!(forward.contains("window resets 4d"), "{forward}");
+        assert_eq!(forward, reverse, "row order cannot decide the listing");
+        assert_eq!(
+            forward,
+            [
+                "codex/cx",
+                "  session 5h | 100% | window resets 18m | seen 1m | fresh",
+                "  weekly (pro) 7d | 100% | window resets 4d | seen 1m | fresh",
+            ]
+        );
     }
 
     #[test]
-    fn settings_projection_has_a_stable_final_order_after_equal_valid_horizons() {
+    fn dialog_projection_sorts_windows_by_bucket_qualifier_and_window() {
         let mut forward = declared_group(None, "100");
         forward.rows[0].bucket = "weekly".to_owned();
         forward.rows[0].qualifier = Some("pro".to_owned());
@@ -3574,39 +3570,38 @@ mod tests {
                 home: None,
                 now: 10_000,
             }
-            .settings_rows()
-            .remove(0)
-            .label
+            .quota_dialog_rows()
+            .into_iter()
+            .map(|row| row.label)
+            .collect::<Vec<_>>()
         };
         let forward = render(forward);
         let reverse = render(reverse);
         let rotated = render(rotated);
         assert_eq!(forward, reverse, "row order cannot decide a final tie");
         assert_eq!(forward, rotated, "a rotation cannot decide a final tie");
-        assert!(forward.contains(" | weekly (pro) | 100% | "), "{forward}");
-
-        let base = Row {
-            bucket: "bucket".to_owned(),
-            qualifier: Some("qualifier".to_owned()),
-            window_minutes: Some(300),
-            used_percent: Some("100".to_owned()),
-            resets_at: Some(20_000),
-            observed_at: Some(9_900),
-            status: Status::Fresh,
-        };
-        let mut later = base.clone();
-        later.window_minutes = Some(10_080);
-        assert!(super::settings_row_tie_break(&base, &later).is_lt());
-        later = base.clone();
-        later.qualifier = Some("z-qualifier".to_owned());
-        assert!(super::settings_row_tie_break(&base, &later).is_lt());
-        later = base.clone();
-        later.bucket = "z-bucket".to_owned();
-        assert!(super::settings_row_tie_break(&base, &later).is_lt());
+        assert_eq!(
+            forward
+                .iter()
+                .map(|label| label
+                    .split('|')
+                    .next()
+                    .unwrap_or_default()
+                    .trim()
+                    .to_owned())
+                .collect::<Vec<_>>(),
+            [
+                "codex/cx",
+                "monthly (enterprise) 30d",
+                "session (team) 5h",
+                "weekly (pro) 7d"
+            ],
+            "{forward:?}"
+        );
     }
 
     #[test]
-    fn settings_projection_reports_each_unusable_scope_without_guessing_zero() {
+    fn dialog_projection_reports_each_unusable_scope_without_guessing_zero() {
         let statuses = [
             Status::Unknown,
             Status::Unsupported,
@@ -3631,16 +3626,19 @@ mod tests {
             home: None,
             now: 10_000,
         }
-        .settings_rows();
-        assert_eq!(rows.len(), statuses.len());
-        for (row, status) in rows.iter().zip(statuses) {
-            assert!(row.label.ends_with(status.as_str()), "{row:?}");
-            assert!(!row.label.contains("0%"), "{row:?}");
+        .quota_dialog_rows();
+        // One header plus one indented status row per scope.
+        assert_eq!(rows.len(), 2 * statuses.len());
+        for (pair, status) in rows.chunks_exact(2).zip(statuses) {
+            assert!(!pair[0].label.starts_with(' '), "{pair:?}");
+            assert!(pair[1].label.ends_with(status.as_str()), "{pair:?}");
+            assert!(pair[1].label.starts_with("  "), "{pair:?}");
+            assert!(!pair[1].label.contains("0%"), "{pair:?}");
         }
     }
 
     #[test]
-    fn settings_projection_never_hides_incomplete_sibling_evidence_behind_a_fresh_row() {
+    fn dialog_projection_never_hides_incomplete_sibling_evidence_behind_a_fresh_row() {
         for status in [Status::ReadError, Status::Truncated] {
             let mut good = declared_group(None, "30");
             good.rollout = Some("good".to_owned());
@@ -3651,23 +3649,27 @@ mod tests {
                 vec![good.clone(), incomplete.clone()],
                 vec![incomplete.clone(), good.clone()],
             ] {
-                let row = super::Observation {
+                let rows = super::Observation {
                     groups,
                     rendered: Vec::new(),
                     home: None,
                     now: 10_000,
                 }
-                .settings_rows()
-                .remove(0);
-                assert!(row.label.ends_with(status.as_str()), "{row:?}");
-                assert!(!row.label.contains("30%"), "{row:?}");
-                assert!(!row.label.ends_with("fresh"), "{row:?}");
+                .quota_dialog_rows();
+                let labels = rows
+                    .iter()
+                    .map(|row| row.label.as_str())
+                    .collect::<Vec<_>>();
+                assert_eq!(labels[0], "codex/cx");
+                assert_eq!(labels[1], format!("  {}", status.as_str()));
+                assert!(!labels[1].contains("30%"), "{labels:?}");
+                assert!(!labels[1].ends_with("fresh"), "{labels:?}");
             }
         }
     }
 
     #[test]
-    fn settings_completeness_attaches_to_the_exact_unresolved_codex_scope() {
+    fn dialog_completeness_attaches_to_the_exact_unresolved_codex_scope() {
         let mut first = declared_group(None, "30");
         first.source = None;
         first.profiles = vec!["first-profile".to_owned()];
@@ -3702,17 +3704,21 @@ mod tests {
             home: None,
             now: 10_000,
         }
-        .settings_rows();
+        .quota_dialog_rows();
 
-        assert_eq!(rows.len(), 2);
-        assert!(rows[0].label.contains(" | 30% | "), "{rows:?}");
-        assert!(rows[0].label.ends_with(" | fresh"), "{rows:?}");
-        assert!(rows[1].label.ends_with(" | truncated"), "{rows:?}");
-        assert!(!rows[1].label.contains("30%"), "{rows:?}");
+        let labels = rows
+            .iter()
+            .map(|row| row.label.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(labels.len(), 4);
+        assert!(labels[1].contains(" | 30% | "), "{labels:?}");
+        assert!(labels[1].ends_with(" | fresh"), "{labels:?}");
+        assert!(labels[3].ends_with("truncated"), "{labels:?}");
+        assert!(!labels[3].contains("30%"), "{labels:?}");
     }
 
     #[test]
-    fn settings_projection_allowlists_ascii_then_bounds_hostile_display_cells() {
+    fn dialog_projection_allowlists_ascii_then_bounds_hostile_display_cells() {
         assert_eq!(super::settings_cell("#[fg=red]#", 20), "#[fg=red]#");
         assert_eq!(super::settings_cell("\u{1b}[31m", 20), "?");
         assert_eq!(super::settings_cell("\u{0007}", 20), "?");
@@ -3733,29 +3739,46 @@ mod tests {
             observed_at: Some(9_900),
             status: Status::Fresh,
         });
-        let row = super::Observation {
+        let rows = super::Observation {
             groups: vec![group],
             rendered: Vec::new(),
             home: None,
             now: 10_000,
         }
-        .settings_rows()
-        .remove(0);
-        assert!(row.label.is_ascii(), "{row:?}");
-        assert!(row.label.contains("#[fg=red]#"), "{row:?}");
-        assert!(row.label.ends_with(" | fresh"), "{row:?}");
+        .quota_dialog_rows();
+        assert!(rows.iter().all(|row| row.label.is_ascii()), "{rows:?}");
         assert!(
-            !row.label.contains('中') && !row.label.contains('⚙'),
-            "{row:?}"
+            rows.iter().any(|row| row.label.contains("#[fg=red]#")),
+            "{rows:?}"
         );
-        assert!(row.label.chars().count() <= super::SETTINGS_ROW_MAX);
-        assert!(row.label.contains(" | window resets "), "{row:?}");
-        assert!(row.label.contains(" | seen "), "{row:?}");
-        assert!(row.label.ends_with(" | fresh"), "{row:?}");
+        assert!(
+            rows.iter().any(|row| row.label.ends_with(" | fresh")),
+            "{rows:?}"
+        );
+        assert!(
+            !rows
+                .iter()
+                .any(|row| row.label.contains('中') || row.label.contains('⚙')),
+            "{rows:?}"
+        );
+        assert!(
+            rows.iter()
+                .all(|row| row.label.len() <= super::SETTINGS_ROW_MAX),
+            "{rows:?}"
+        );
+        assert!(
+            rows.iter()
+                .any(|row| row.label.contains(" | window resets ")),
+            "{rows:?}"
+        );
+        assert!(
+            rows.iter().any(|row| row.label.contains(" | seen ")),
+            "{rows:?}"
+        );
     }
 
     #[test]
-    fn settings_projection_applies_an_account_only_fact_to_every_window_in_the_scope() {
+    fn dialog_projection_applies_an_account_only_fact_to_every_window_in_the_scope() {
         let observed = declared_group(None, "10");
         let mut account_only = observed.clone();
         account_only.rollout = Some("account-only".to_owned());
@@ -3770,19 +3793,22 @@ mod tests {
                 spend_observed_at: Some(9_950),
             },
         );
-        let row = super::Observation {
+        let rows = super::Observation {
             groups: vec![observed, account_only],
             rendered: Vec::new(),
             home: None,
             now: 10_000,
         }
-        .settings_rows()
-        .remove(0);
-        assert!(row.label.contains(" | 100% spend-cap | "), "{row:?}");
+        .quota_dialog_rows();
+        assert!(
+            rows.iter()
+                .any(|row| row.label.contains(" | 100% spend-cap | ")),
+            "{rows:?}"
+        );
     }
 
     #[test]
-    fn settings_projection_names_why_the_effective_percentage_moved() {
+    fn dialog_projection_names_why_the_effective_percentage_moved() {
         let mut raw = declared_group(None, "90");
         raw.clients = vec!["raw".to_owned()];
 
@@ -3819,35 +3845,41 @@ mod tests {
             home: None,
             now: 10_000,
         }
-        .settings_rows();
-        let label = |scope: &str| {
+        .quota_dialog_rows();
+        let find = |scope: &str| {
             rows.iter()
-                .find(|row| row.label.starts_with(&format!("quota  codex/{scope} |")))
-                .map(|row| row.label.as_str())
+                .position(|row| row.label == format!("codex/{scope}"))
+                .and_then(|header| rows.get(header + 1).map(|row| row.label.as_str()))
         };
-        assert!(label("raw").is_some_and(|row| row.contains(" | 90% | ")));
-        assert!(label("reset").is_some_and(|row| row.contains(" | 45% x1 | ")));
-        assert!(label("unlimited").is_some_and(|row| row.contains(" | 0% unlimited | ")));
-        assert!(label("capped").is_some_and(|row| row.contains(" | 100% spend-cap | ")));
+        assert!(find("raw").is_some_and(|row| row.contains(" | 90% | ")));
+        assert!(find("reset").is_some_and(|row| row.contains(" | 45% x1 | ")));
+        assert!(find("unlimited").is_some_and(|row| row.contains(" | 0% unlimited | ")));
+        assert!(find("capped").is_some_and(|row| row.contains(" | 100% spend-cap | ")));
     }
 
     #[test]
-    fn settings_projection_saturates_a_huge_reset_derived_percentage_as_one_field() {
+    fn dialog_projection_saturates_a_huge_reset_derived_percentage_as_one_field() {
         let huge = declared_group(Some(1), "1e100");
-        let row = super::Observation {
+        let rows = super::Observation {
             groups: vec![huge],
             rendered: Vec::new(),
             home: None,
             now: 10_000,
         }
-        .settings_rows()
-        .remove(0);
-        assert!(row.label.contains(" | 100% x1 | "), "{row:?}");
-        assert!(row.label.len() <= super::SETTINGS_ROW_MAX, "{row:?}");
+        .quota_dialog_rows();
+        assert!(
+            rows.iter().any(|row| row.label.contains(" | 100% x1 | ")),
+            "{rows:?}"
+        );
+        assert!(
+            rows.iter()
+                .all(|row| row.label.len() <= super::SETTINGS_ROW_MAX),
+            "{rows:?}"
+        );
     }
 
     #[test]
-    fn settings_projection_elides_scope_and_bucket_with_distinguishing_tails() {
+    fn dialog_projection_elides_scope_and_bucket_with_distinguishing_tails() {
         let mut first = declared_group(None, "80");
         first.clients = vec![format!("{}claude", "scope-".repeat(8))];
         first.rows[0].bucket = format!("{}weekly", "bucket-".repeat(8));
@@ -3871,13 +3903,29 @@ mod tests {
             home: None,
             now: 10_000,
         }
-        .settings_rows();
-        assert_eq!(rows.len(), 2);
-        assert!(rows.iter().all(|row| row.label.contains("...")), "{rows:?}");
-        assert!(rows[0].label.contains("claude |"), "{rows:?}");
-        assert!(rows[1].label.contains("claude-mic |"), "{rows:?}");
+        .quota_dialog_rows();
+        let headers = rows
+            .iter()
+            .filter(|row| !row.label.starts_with(' '))
+            .collect::<Vec<_>>();
+        let windows = rows
+            .iter()
+            .filter(|row| row.label.starts_with(' '))
+            .collect::<Vec<_>>();
+        assert_eq!(headers.len(), 2);
+        assert_eq!(windows.len(), 4);
         assert!(
-            rows.iter().all(|row| row.label.contains("weekly")),
+            headers.iter().all(|row| row.label.contains("...")),
+            "{rows:?}"
+        );
+        assert!(headers[0].label.contains("claude"), "{rows:?}");
+        assert!(!headers[0].label.contains("claude-mic"), "{rows:?}");
+        assert!(headers[1].label.contains("claude-mic"), "{rows:?}");
+        assert!(
+            windows
+                .iter()
+                .filter(|row| row.label.contains("weekly"))
+                .all(|row| row.label.contains("...")),
             "{rows:?}"
         );
     }

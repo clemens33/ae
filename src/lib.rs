@@ -465,7 +465,8 @@ fn run_dispatch(args: &[String], out: &mut impl Write, err: &mut impl Write) -> 
     let popup = matches!(
         &request,
         cli::Request::Orchestrator { tail }
-            if orchestrator::parse(tail).is_ok_and(|args| args.popup || args.settings)
+            if orchestrator::parse(tail)
+                .is_ok_and(|args| args.popup || args.settings || args.quota_dialog)
     );
     if schedules_automatic_upgrade(&request) {
         autoupgrade::schedule();
@@ -503,9 +504,8 @@ fn schedules_automatic_upgrade(request: &cli::Request) -> bool {
     match request {
         cli::Request::List(_) => true,
         cli::Request::Brief { tail } => brief::parse(tail).is_ok(),
-        cli::Request::Orchestrator { tail } => {
-            orchestrator::parse(tail).is_ok_and(|args| args.popup || args.settings)
-        }
+        cli::Request::Orchestrator { tail } => orchestrator::parse(tail)
+            .is_ok_and(|args| args.popup || args.settings || args.quota_dialog),
         _ => false,
     }
 }
@@ -570,6 +570,9 @@ fn run_orchestrator(tail: &[String], err: &mut impl Write) -> Result<u8> {
             probe.menu_mouse(),
             err,
         ));
+    }
+    if args.quota_dialog {
+        return Ok(run_quota_dialog(&server, tail, probe.menu_mouse(), err));
     }
     let Some(client_snapshot) = transport::observe_picker_client_session(&server, client_name)
     else {
@@ -748,28 +751,14 @@ fn run_settings_menu(
         return EXIT_UNAVAILABLE;
     }
 
-    let session_dir = lifecycle::sessions_dir(&root).join(&client.session_name);
-    let local_meta = session::read_meta(&session_dir).ok();
-    let local = local_meta
-        .as_ref()
-        .and_then(meta::Meta::origin)
-        .and_then(|origin| config::local_overlay(&session_dir, origin));
-    let home = doors::home();
-    let roots = inventory::Roots::under(&root);
-    let quota = quota::settings_rows(&quota::Inputs {
-        home: home.as_deref(),
-        global: Some(&config),
-        local: local.as_deref(),
-        sessions: Some(roots.sessions()),
-        now,
-    });
+    let entry = settings_menu::quota_entry(&launcher, &snapshot);
     let full = settings_menu::menu_with_quota(
         &control,
         &launcher,
         &snapshot,
         version.as_deref(),
         &look.palette,
-        &quota,
+        entry,
     );
     let (full_columns, full_rows) = session_menu::menu_budget(&full);
     let menu = if client.width >= full_columns && client.height >= full_rows {
@@ -819,6 +808,153 @@ fn run_settings_menu(
     ) {
         report(
             "tmux refused to draw settings (the client may have vanished)",
+            err,
+        );
+        return EXIT_UNAVAILABLE;
+    }
+    0
+}
+
+/// Re-observe the captured quota-dialog clicker and reprove every captured
+/// fact against live state, immediately before the draw.
+///
+/// The scan between the menu and this call is tens of milliseconds in which
+/// the client may have detached, been replaced, or switched session, and the
+/// server may have been replaced. Anything but the captured clicker on the
+/// captured server refuses; a residual race after this final observation is
+/// irreducible, because tmux offers no atomic draw-on-this-client-if-still-pid-N.
+fn prove_quota_dialog_clicker(
+    server: &inventory::ServerId,
+    captured: &settings_menu::CapturedQuotaDialog,
+) -> std::result::Result<tmux::MenuClient, String> {
+    let Some(live) = transport::observe_menu_client(server, &captured.client) else {
+        return Err("the invoking client vanished before ae could draw the dialog".to_owned());
+    };
+    if live.pid != captured.client_pid {
+        return Err(
+            "the invoking client was replaced since the menu opened; nothing was drawn".to_owned(),
+        );
+    }
+    if live.session_id != captured.session_id {
+        return Err(
+            "the invoking client switched session since the menu opened; nothing was drawn"
+                .to_owned(),
+        );
+    }
+    let Some(live_server) = transport::observe_server_identity(server) else {
+        return Err("the invoking tmux server did not answer with its identity".to_owned());
+    };
+    if live_server.pid != captured.server_pid || live_server.start != captured.server_start {
+        return Err(
+            "the invoking tmux server was replaced since the menu opened; nothing was drawn"
+                .to_owned(),
+        );
+    }
+    Ok(live)
+}
+
+/// `ae orchestrator --quota-dialog --client … --client-pid … --server-pid … --server-start … --session-id …`
+/// — one centred observational dialog listing every quota window per client scope.
+///
+/// The continuation carries the identity the settings entry captured. The client
+/// and server are observed once to BUILD under (overlay, dimensions, budget) and
+/// reproven by [`prove_quota_dialog_clicker`] IMMEDIATELY BEFORE THE DRAW. The
+/// dialog refuses a client or server it can prove has been replaced, and a client
+/// that switched session reads no overlay. The dialog writes nothing, so no
+/// deadline travels with it. No marker is set.
+fn run_quota_dialog(
+    server: &inventory::ServerId,
+    tail: &[String],
+    menu_mouse: bool,
+    err: &mut impl Write,
+) -> u8 {
+    let captured = match settings_menu::parse_quota_dialog(tail) {
+        Ok(captured) => captured,
+        Err(why) => {
+            let _ = writeln!(err, "ae quota: {why}.");
+            return entry::EXIT_USAGE;
+        }
+    };
+    let client_name = captured.client.clone();
+    // BUILD round: resolve the client and server the scan reads under. This
+    // proves nothing about the draw; the proof runs after the scan.
+    let Some(client) = transport::observe_menu_client(server, &client_name) else {
+        let _ = writeln!(
+            err,
+            "ae quota: the invoking client vanished before ae could build the dialog"
+        );
+        return EXIT_UNAVAILABLE;
+    };
+    let Some(identity) = transport::observe_server_identity(server) else {
+        let _ = writeln!(
+            err,
+            "ae quota: the invoking tmux server did not answer with its identity"
+        );
+        return EXIT_UNAVAILABLE;
+    };
+    let report = |text: &str, err: &mut dyn Write| {
+        let server_survives = transport::observe_server_identity(server)
+            .is_some_and(|live| live.pid == identity.pid && live.start == identity.start);
+        let client_survives = transport::observe_menu_client(server, &client_name)
+            .is_some_and(|live| live.pid == client.pid);
+        if server_survives && client_survives {
+            let _ = transport::display_client_message(server, &client_name, text);
+        }
+        let _ = writeln!(err, "ae quota: {text}");
+    };
+    let Some(root) = doors::state_root(shape::current()) else {
+        report(NO_STATE_ROOT, err);
+        return EXIT_UNAVAILABLE;
+    };
+    let config = doors::config_file(shape::current(), &root);
+    let session_dir = lifecycle::sessions_dir(&root).join(&client.session_name);
+    let local_meta = session::read_meta(&session_dir).ok();
+    let local = local_meta
+        .as_ref()
+        .and_then(meta::Meta::origin)
+        .and_then(|origin| config::local_overlay(&session_dir, origin));
+    let home = doors::home();
+    let roots = inventory::Roots::under(&root);
+    let now = time::Timestamp::now().epoch();
+    let rows = quota::quota_dialog_rows(&quota::Inputs {
+        home: home.as_deref(),
+        global: Some(&config),
+        local: local.as_deref(),
+        sessions: Some(roots.sessions()),
+        now,
+    });
+    let look = picker_look(server, Some(&client.session_id));
+    let menu = settings_menu::quota_dialog_menu(&rows, &look.palette);
+    // PROOF round, immediately before the draw: the scan above cannot
+    // interleave a replacement past this point.
+    let live = match prove_quota_dialog_clicker(server, &captured) {
+        Ok(live) => live,
+        Err(why) => {
+            let _ = writeln!(err, "ae quota: {why}");
+            return EXIT_UNAVAILABLE;
+        }
+    };
+    // Prove the fit against the LIVE dimensions from the proof round, not the
+    // build round a resize may have invalidated — otherwise tmux trims the
+    // dialog into a partial quota list that admits it is partial nowhere. The
+    // report quotes the size the terminal actually has. A residual race
+    // remains: the dimensions can change between this final observation and
+    // the separate display-menu call, so a trim there is still possible and no
+    // sentence here promises otherwise.
+    let (columns, lines) = session_menu::menu_budget(&menu);
+    if live.width < columns || live.height < lines {
+        report(
+            &format!(
+                "this terminal is {}x{}; quota needs {columns}x{lines}",
+                live.width, live.height
+            ),
+            err,
+        );
+        return EXIT_UNAVAILABLE;
+    }
+    if !transport::display_menu_centred(server, &client_name, &live.session_id, &menu, menu_mouse) {
+        report(
+            "tmux refused to draw quota (the client may have vanished)",
             err,
         );
         return EXIT_UNAVAILABLE;
@@ -2398,7 +2534,9 @@ pub fn run_with(
             if let Err(usage) = orchestrator::parse(tail) {
                 write!(err, "{}", usage.render())?;
                 usage.code()
-            } else if !orchestrator::parse(tail).is_ok_and(|args| args.popup || args.settings) {
+            } else if !orchestrator::parse(tail)
+                .is_ok_and(|args| args.popup || args.settings || args.quota_dialog)
+            {
                 // The bare word reaches the core only WITHOUT a preamble: the
                 // seat is a launch, and a launch needs the ae command.
                 writeln!(
@@ -2568,6 +2706,7 @@ mod tests {
             argv(&["brief", "--all", "--since", "4h"]),
             argv(&["orchestrator", "--popup"]),
             argv(&["orchestrator", "--settings"]),
+            argv(&["orchestrator", "--quota-dialog", "--client", "x"]),
         ];
         for args in accepted {
             let request = crate::cli::Request::parse(&args);

@@ -19,12 +19,16 @@ use crate::tmux::{
 
 /// `--help`, verbatim.
 pub const USAGE: &str = "\
-Usage: ae orchestrator [--popup|--settings --client <name> | --attach | --no-attach | --inside-tmux | --no-autostart]
+Usage: ae orchestrator [--popup|--settings --client <name> | --quota-dialog --client <name> --client-pid <pid> --server-pid <pid> --server-start <epoch> --session-id <$id> | --attach | --no-attach | --inside-tmux | --no-autostart]
 
 Bare `ae orchestrator` starts or reattaches the orchestrator seat from its
 dedicated config under ae's state home. With `--popup --client`, pick a live
 session in a tmux menu and land in its lead pane. With `--settings --client`,
-open the bottom-right settings menu. Installed bindings supply the client name.
+open the bottom-right settings menu. With `--quota-dialog` and its captured
+client identity, draw the centred per-window quota dialog: the settings entry
+supplies all four identity flags from the snapshot it drew against, and the
+dialog reproves them immediately before drawing. Installed bindings supply the
+client name.
 
 The bare seat also accepts `_launch`'s `--attach`, `--no-attach`,
 `--inside-tmux` and `--no-autostart` flags. Working-directory and archive flags
@@ -73,8 +77,20 @@ pub struct Args {
     pub popup: bool,
     /// `--settings`: draw the bottom-right settings menu.
     pub settings: bool,
+    /// `--quota-dialog`: draw the centred per-window quota dialog.
+    pub quota_dialog: bool,
     /// `--client <name>`: draw on the client that opened a status menu.
     pub client: Option<String>,
+    /// `--client-pid <pid>`: the invoking client's pid, carried only by the
+    /// quota-dialog continuation so it can reprove the client at draw time.
+    pub client_pid: Option<String>,
+    /// `--server-pid <pid>`: the invoking server's pid, same reproof.
+    pub server_pid: Option<String>,
+    /// `--server-start <epoch>`: the invoking server's start time, same reproof.
+    pub server_start: Option<String>,
+    /// `--session-id <$id>`: the session the invoking client viewed when the
+    /// settings entry was drawn, so a later session switch reads no overlay.
+    pub session_id: Option<String>,
 }
 
 /// An argv `ae orchestrator` refuses, or the help it treats as one.
@@ -88,6 +104,10 @@ pub enum Usage {
     MissingClient,
     /// One invocation may target only one client.
     DuplicateClient,
+    /// A quota-dialog identity flag was not followed by a nonempty value.
+    MissingQuotaValue(&'static str),
+    /// A quota-dialog identity flag may be given only once.
+    DuplicateQuotaValue(&'static str),
 }
 
 impl Usage {
@@ -105,6 +125,12 @@ impl Usage {
             Self::DuplicateClient => {
                 "ae orchestrator: --client may be given only once\n".to_owned()
             }
+            Self::MissingQuotaValue(flag) => {
+                format!("ae orchestrator: {flag} requires a nonempty value\n")
+            }
+            Self::DuplicateQuotaValue(flag) => {
+                format!("ae orchestrator: {flag} may be given only once\n")
+            }
         }
     }
 
@@ -113,7 +139,11 @@ impl Usage {
     pub const fn code(&self) -> u8 {
         match self {
             Self::Help => 0,
-            Self::Unknown(_) | Self::MissingClient | Self::DuplicateClient => EXIT_USAGE,
+            Self::Unknown(_)
+            | Self::MissingClient
+            | Self::DuplicateClient
+            | Self::MissingQuotaValue(_)
+            | Self::DuplicateQuotaValue(_) => EXIT_USAGE,
         }
     }
 }
@@ -128,15 +158,20 @@ impl Usage {
 /// use ae::orchestrator::{parse, Args, Usage};
 /// assert_eq!(
 ///     parse(&["--popup".to_owned()]),
-///     Ok(Args { popup: true, settings: false, client: None })
+///     Ok(Args { popup: true, settings: false, quota_dialog: false, client: None, client_pid: None, server_pid: None, server_start: None, session_id: None })
 /// );
-/// assert_eq!(parse(&[]), Ok(Args { popup: false, settings: false, client: None }));
+/// assert_eq!(parse(&[]), Ok(Args { popup: false, settings: false, quota_dialog: false, client: None, client_pid: None, server_pid: None, server_start: None, session_id: None }));
 /// ```
 pub fn parse(tail: &[String]) -> Result<Args, Usage> {
     let mut args = Args {
         popup: false,
         settings: false,
+        quota_dialog: false,
         client: None,
+        client_pid: None,
+        server_pid: None,
+        server_start: None,
+        session_id: None,
     };
     let mut rest = tail;
     while let Some((word, after)) = rest.split_first() {
@@ -145,6 +180,27 @@ pub fn parse(tail: &[String]) -> Result<Args, Usage> {
             "-h" | "--help" => return Err(Usage::Help),
             "--popup" => args.popup = true,
             "--settings" => args.settings = true,
+            "--quota-dialog" => args.quota_dialog = true,
+            "--client-pid" | "--server-pid" | "--server-start" | "--session-id" => {
+                let flag = word.as_str();
+                let (name, slot): (&'static str, &mut Option<String>) = match flag {
+                    "--client-pid" => ("--client-pid", &mut args.client_pid),
+                    "--server-pid" => ("--server-pid", &mut args.server_pid),
+                    "--server-start" => ("--server-start", &mut args.server_start),
+                    _ => ("--session-id", &mut args.session_id),
+                };
+                if slot.is_some() {
+                    return Err(Usage::DuplicateQuotaValue(name));
+                }
+                let Some((value, after_value)) = rest.split_first() else {
+                    return Err(Usage::MissingQuotaValue(name));
+                };
+                if value.is_empty() {
+                    return Err(Usage::MissingQuotaValue(name));
+                }
+                *slot = Some(value.clone());
+                rest = after_value;
+            }
             "--client" => {
                 if args.client.is_some() {
                     return Err(Usage::DuplicateClient);
@@ -161,8 +217,36 @@ pub fn parse(tail: &[String]) -> Result<Args, Usage> {
             other => return Err(Usage::Unknown(other.to_owned())),
         }
     }
-    if args.popup && args.settings {
-        return Err(Usage::Unknown("--popup with --settings".to_owned()));
+    if [args.popup, args.settings, args.quota_dialog]
+        .into_iter()
+        .filter(|selected| *selected)
+        .count()
+        > 1
+    {
+        return Err(Usage::Unknown(
+            "only one of --popup, --settings, --quota-dialog per invocation".to_owned(),
+        ));
+    }
+    // The pid pair belongs to the quota-dialog continuation: on any other
+    // invocation it is malformed, not ignored — before this flag existed the
+    // same spelling hit the unknown-argument arm.
+    if !args.quota_dialog {
+        for flag in [
+            "--client-pid",
+            "--server-pid",
+            "--server-start",
+            "--session-id",
+        ] {
+            let present = match flag {
+                "--client-pid" => args.client_pid.is_some(),
+                "--server-pid" => args.server_pid.is_some(),
+                "--server-start" => args.server_start.is_some(),
+                _ => args.session_id.is_some(),
+            };
+            if present {
+                return Err(Usage::Unknown(format!("{flag} without --quota-dialog")));
+            }
+        }
     }
     Ok(args)
 }
@@ -968,6 +1052,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one acceptance table for every orchestrator menu flag and refusal"
+    )]
     fn the_flags_the_picker_accepts_and_the_ones_it_refuses() {
         assert!(parse(&["--popup".to_owned()]).unwrap().popup);
         assert_eq!(
@@ -979,7 +1067,12 @@ mod tests {
             Ok(Args {
                 popup: true,
                 settings: false,
+                quota_dialog: false,
                 client: Some("/dev/ttys007".to_owned()),
+                client_pid: None,
+                server_pid: None,
+                server_start: None,
+                session_id: None,
             })
         );
         assert_eq!(
@@ -987,7 +1080,12 @@ mod tests {
             Ok(Args {
                 popup: false,
                 settings: false,
-                client: None
+                quota_dialog: false,
+                client: None,
+                client_pid: None,
+                server_pid: None,
+                server_start: None,
+                session_id: None,
             })
         );
         for spelling in ["-h", "--help"] {
@@ -999,6 +1097,61 @@ mod tests {
             Err(Usage::Unknown("--nope".to_owned()))
         );
         assert_eq!(parse(&["--client".to_owned()]), Err(Usage::MissingClient));
+        assert!(parse(&["--quota-dialog".to_owned()]).unwrap().quota_dialog);
+        assert_eq!(
+            parse(&[
+                "--quota-dialog".to_owned(),
+                "--client".to_owned(),
+                "tty".to_owned(),
+                "--client-pid".to_owned(),
+                "4242".to_owned(),
+                "--server-pid".to_owned(),
+                "911".to_owned(),
+                "--server-start".to_owned(),
+                "1789109660".to_owned(),
+            ])
+            .unwrap()
+            .client_pid,
+            Some("4242".to_owned())
+        );
+        assert_eq!(
+            parse(&["--client-pid".to_owned()]),
+            Err(Usage::MissingQuotaValue("--client-pid"))
+        );
+        assert_eq!(
+            parse(&[
+                "--server-pid".to_owned(),
+                "1".to_owned(),
+                "--server-pid".to_owned(),
+                "2".to_owned(),
+            ]),
+            Err(Usage::DuplicateQuotaValue("--server-pid"))
+        );
+        for pair in [
+            vec!["--popup".to_owned(), "--settings".to_owned()],
+            vec!["--popup".to_owned(), "--quota-dialog".to_owned()],
+            vec!["--settings".to_owned(), "--quota-dialog".to_owned()],
+        ] {
+            assert!(parse(&pair).is_err(), "one menu per invocation: {pair:?}");
+        }
+        // Identity flags belong to the dialog continuation: on the other two
+        // menus they are malformed again, exactly as before they existed.
+        for (menu, flag) in [
+            ("--popup", "--client-pid"),
+            ("--popup", "--server-pid"),
+            ("--popup", "--server-start"),
+            ("--popup", "--session-id"),
+            ("--settings", "--client-pid"),
+            ("--settings", "--server-pid"),
+            ("--settings", "--server-start"),
+            ("--settings", "--session-id"),
+        ] {
+            assert_eq!(
+                parse(&[menu.to_owned(), flag.to_owned(), "1".to_owned()]),
+                Err(Usage::Unknown(format!("{flag} without --quota-dialog"))),
+                "{menu} with {flag}"
+            );
+        }
         assert_eq!(
             parse(&[
                 "--client".to_owned(),

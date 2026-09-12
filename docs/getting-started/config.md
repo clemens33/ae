@@ -225,11 +225,11 @@ settings against that corner of the client that clicked it. Both surrounding
 spaces are clickable and highlight with the glyph. The range is always
 version-free; the menu title alone shows the running `ae` version when the
 session reports a valid one. While the menu is open, selection colours
-highlight this button only. The settings menu reports compact read-only quota
-rows, then the recorded orchestrator role and exactly one of Start, Resume or
-Pause when that action is safe; otherwise it shows why the control is
-unavailable. Very small clients may omit the quota section entirely; `ae quota`
-remains the full view.
+highlight this button only. The settings menu shows one live quota entry
+opening a centred per-window dialog, then the recorded orchestrator role and
+exactly one of Start, Resume or Pause when that action is safe; otherwise it
+shows why the control is unavailable. Very small clients may show a quota
+overflow notice instead of the entry; `ae quota` remains the full view.
 
 The marks are the **watchdog's verdict**, never a claim about what an agent is "doing"
 (it cannot see that):
