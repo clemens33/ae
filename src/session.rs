@@ -974,10 +974,13 @@ fn pending_requests(events: &[Event], session: &str) -> Vec<PendingRequest> {
 ///
 /// * a `reply`, matched by REQUEST ID;
 /// * a `cancel` by the request's own asker, matched by REQUEST ID;
-/// * a [`retired`] seat, matched by SEAT — the slot the request was sent to,
-///   in this same session, which is what `session` supplies.
+/// * a [`retired`] seat, matched by SEAT — the slot at EITHER end of the
+///   request, in this same session, which is what `session` supplies.
 ///
-/// Anything else leaves the request open, however unanswerable it has become.
+/// Retiring the seat a request was sent TO clears what nobody will answer;
+/// retiring the seat that SENT it clears what nobody is left to read a reply
+/// to — a retired worker's questions leave its target's inbox. Anything else
+/// leaves the request open, however unanswerable it has become.
 fn open_requests<'a>(events: &'a [Event], session: &str) -> Vec<&'a Event> {
     // One forward pass over an append-only log, so a reply or a withdrawal that
     // appears BEFORE its request finds nothing open and closes nothing. A
@@ -1011,31 +1014,39 @@ fn open_requests<'a>(events: &'a [Event], session: &str) -> Vec<&'a Event> {
 
 /// Whether `retire` closes `request` — closure by SEAT, not by request id.
 ///
-/// It holds on exactly two conditions, both required:
+/// It holds when the retire names the slot at EITHER end of the request and
+/// the request is one this session gets to judge. Concretely, all three:
 ///
-/// 1. the retire names the SLOT the request was sent to, and
+/// 1. the retire names the SLOT it removed, and
 /// 2. the request's recorded `target_session` equals `session`, the session
 ///    being read — so the retire is recorded in the SAME session, and that
-///    session has not been renamed since the request was recorded.
+///    session has not been renamed since the request was recorded, and
+/// 3. the request's target key OR its actor key is that slot in that session.
 ///
-/// Whatever fails either condition stays open. That includes a CROSS-SESSION
+/// Whatever fails any condition stays open. That includes a CROSS-SESSION
 /// request read in the CALLER's log, because the record is written into both
 /// participants' logs carrying the TARGET's session in either copy, so the
-/// sessions agree only in the target's log — which is also the only log the
-/// seat's own retire is written to. It includes a request recorded BEFORE a
-/// rename, because a rename moves the session directory and rewrites the meta
-/// (`crate::rename`) while the record keeps the old name. It includes a target
-/// that vanished with no retire record at all, since there is then nothing to
-/// match. None of these is closed here and none is closed elsewhere.
+/// sessions agree only in the target's log — the caller's copy resolves
+/// elsewhere and is never judged here, whichever end the retire names. It
+/// includes a request recorded BEFORE a rename, because a rename moves the
+/// session directory and rewrites the meta (`crate::rename`) while the record
+/// keeps the old name. It includes a party that vanished with no retire
+/// record at all, since there is then nothing to match. None of these is
+/// closed here and none is closed elsewhere.
 ///
 /// The identity compared is the ROUTING KEY on both sides, never a display
-/// name: a tracked request records `target_slot` and `target_session` for every
-/// target it resolves (`crate::tracked`), and a retire records the slot it
-/// removed from the roster (`crate::spawn`). A retire spells no
+/// name: a tracked request records `target_slot` and `target_session` for
+/// every target it resolves (`crate::tracked`), and `actor_slot` and
+/// `actor_session` for every sender it resolves, and a retire records the
+/// slot it removed from the roster (`crate::spawn`). A retire spells no
 /// `target_session` because the session that owns a seat is the one that
 /// retires it, so `session` supplies that half. The session comparison is an
 /// EQUALITY, not a presence test, which is why an absent roster entry closes
-/// nothing by itself.
+/// nothing by itself. A record carrying no actor key names its sender by
+/// display only ([`Event::actor_identity`] returns [`Identity::Display`]),
+/// and a display never matches the retire's routed key — a mixed pair has
+/// nothing in common to compare — so sharing the retired seat's NAME closes
+/// nothing.
 ///
 /// A missing key on either side matches nothing: a retire that names no slot,
 /// and a request missing either half of its own key, which is
@@ -1044,9 +1055,21 @@ fn retired(request: &Event, retire: &Event, session: &str) -> bool {
     let Some(slot) = retire.target_slot.value() else {
         return false;
     };
-    request
+    let retired = Identity::Routed { slot, session };
+    // The seat it was sent to is gone: nobody will answer.
+    if request
         .target_identity()
-        .is_some_and(|target| target.matches(Identity::Routed { slot, session }))
+        .is_some_and(|target| target.matches(retired))
+    {
+        return true;
+    }
+    // The seat that sent it is gone: nobody is left to read a reply. Only
+    // for a request this session judges — one whose target lives here — so a
+    // cross-session request read in the caller's log stays open.
+    let judged_here = request.target_identity().is_some_and(
+        |target| matches!(target, Identity::Routed { session: home, .. } if home == session),
+    );
+    judged_here && request.actor_identity().matches(retired)
 }
 
 /// Whether `cancel` withdraws `request` — its own asker, taking it back.
@@ -1925,6 +1948,117 @@ mod tests {
             ),
         ];
         each(cases);
+    }
+
+    /// A request carrying full routing keys on both ends: `actor` at `akey`,
+    /// sent to `to` at `tkey` — each key a prebuilt `"slot":"…","session":"…"`
+    /// fragment, so the table stays readable.
+    fn keyed_ask(id: &str, action: &str, actor: &str, akey: &str, to: &str, tkey: &str) -> String {
+        event(
+            &at(900),
+            actor,
+            action,
+            &format!(r#","target":"{to}","ref":"{id}"{akey}{tkey}"#),
+        )
+    }
+
+    /// How many requests the ledger still holds open, read as `session`.
+    fn pending_open(lines: &[String], session: &str) -> usize {
+        let events: Vec<Event> = lines
+            .iter()
+            .map(|line| Event::parse_line(line).expect("a fixture line must be an event"))
+            .collect();
+        super::open_requests(&events, session).len()
+    }
+
+    /// Closure by the ASKER's seat: a `retire` naming the slot a request was
+    /// SENT FROM closes it, the mirror of the seat it was sent to. Same
+    /// forward pass, same session discipline, both ends by routing key.
+    ///
+    /// The first row is the live shape behind this slice:
+    /// `review-20260912T205939Z-67e0024f`, asker at a `spawned.N` slot asking
+    /// `main`, asker retired, request stuck open with no record able to close
+    /// it and no reply possible.
+    #[test]
+    fn a_request_is_closed_by_the_retire_of_the_seat_that_sent_it() {
+        /// The asker's seat, retired mid-ledger.
+        const ASKER_GONE: &str = r#","target":"hand","target_slot":"spawned.1""#;
+        /// `hand` at `spawned.1` in this session.
+        const ASKER_HOME: &str = r#","actor_slot":"spawned.1","actor_session":"live""#;
+        /// `lead` at `main` in this session.
+        const LEAD_HOME: &str = r#","target_slot":"main","target_session":"live""#;
+        /// A far seat elsewhere, reached cross-session.
+        const FAR_AWAY: &str =
+            r#","target_slot":"spawned.0","target_session":"elsewhere","cross_session":true"#;
+        let home_ask = keyed_ask(
+            "review-20260912T205939Z-67e0024f",
+            "review",
+            "hand",
+            ASKER_HOME,
+            "lead",
+            LEAD_HOME,
+        );
+        let cases: [(&str, Vec<String>, usize); 7] = [
+            (
+                "the retire names the slot that sent it, so it closes",
+                vec![home_ask.clone(), retire(ASKER_GONE)],
+                0,
+            ),
+            (
+                "a retire naming some other slot closes nothing",
+                vec![
+                    home_ask.clone(),
+                    retire(r#","target":"other","target_slot":"spawned.9""#),
+                ],
+                1,
+            ),
+            (
+                "sharing the retired seat's NAME closes nothing: no actor key is a display, and a display never matches a routed key",
+                vec![
+                    event(
+                        &at(900),
+                        "hand",
+                        "ask",
+                        r#","target":"other","ref":"r1","target_slot":"spawned.7","target_session":"live""#,
+                    ),
+                    retire(GAVE_UP),
+                ],
+                1,
+            ),
+            (
+                "a cross-session request read in the caller's log stays open: its target lives elsewhere, so this session never judges it",
+                vec![
+                    keyed_ask("r1", "ask", "hand", ASKER_HOME, "@far:hand", FAR_AWAY),
+                    retire(ASKER_GONE),
+                ],
+                1,
+            ),
+            (
+                "even against the target slot's own string, read where its session does not match",
+                vec![
+                    keyed_ask("r1", "ask", "hand", ASKER_HOME, "@far:hand", FAR_AWAY),
+                    retire(r#","target":"far","target_slot":"spawned.0""#),
+                ],
+                1,
+            ),
+            (
+                "a retire that arrives BEFORE the request closes nothing",
+                vec![retire(ASKER_GONE), home_ask.clone()],
+                1,
+            ),
+            (
+                "a slot handed to a replacement raises nothing: the pass only ever removes",
+                vec![
+                    home_ask.clone(),
+                    retire(ASKER_GONE),
+                    event(&at(300), "lead", "spawn", r#","target":"hand""#),
+                ],
+                0,
+            ),
+        ];
+        for (why, lines, pending) in cases {
+            assert_eq!(pending_open(&lines, "live"), pending, "{why}");
+        }
     }
 
     /// The deferral ceiling is fed by the SURVIVING set: a request the retire
