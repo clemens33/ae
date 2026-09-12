@@ -197,6 +197,8 @@ Available profiles: ${available_aliases} (from ~/.ae/config [profiles])
 **CHORES:** tests and simple slices use `gpt56luna` xhigh; it also runs the orchestrator seat.
 **REVIEWER:** use `grok46` when usage allows.
 
+**OpenCode Go seats (only if listed under Available profiles):** `spark13gom` (Meta-served Muse Spark 1.3 Contributor) ranks as a peer of `gpt56solx`/`opus5x` for strong build slices and judgment work; `deepseek41flashgom` (DeepSeek-served DeepSeek V4.1 Flash) is the fast alternative for bounded build slices and review lanes. A shared OpenCode scope proves nothing about provider — declare the served provider for rule 11. Chores still go to `gpt56luna`; simple work never takes `fablex`/`astrax`.
+
 Leads FAN OUT by default: keep only the judgment — architecture, rulings,
 ambiguous diagnosis, final gates, or human-facing decisions. A worker brings
 FRESH context, works one brief without loading the lead's session, and can use
@@ -1402,5 +1404,141 @@ mod tests {
         assert!(!unaware.contains(".."), "{unaware}");
         let manifest_off = manifest_document(&dir, "s", "/w", "/o", "local", "%0", &[off]);
         assert!(!manifest_off.contains("${"), "{manifest_off}");
+    }
+
+    #[test]
+    fn conditional_rank_states_its_own_reachability() {
+        let dir = scratch("cond-reach");
+        let manifest = manifest_document(&dir, "s", "/w", "/o", "local", "%0", &[]);
+        assert!(manifest.contains("Available profiles:"), "{manifest}");
+        let cond = "only if listed under Available profiles";
+        assert!(manifest.contains(cond), "{manifest}");
+        assert!(manifest.contains("`spark13gom`"), "{manifest}");
+        assert!(manifest.contains("`deepseek41flashgom`"), "{manifest}");
+        let cond_at = manifest.find(cond).unwrap();
+        for (alias, needle) in [
+            ("spark13gom", "`spark13gom`"),
+            ("deepseek41flashgom", "`deepseek41flashgom`"),
+        ] {
+            let at = manifest.find(needle).unwrap();
+            let (lo, hi) = if cond_at < at {
+                (cond_at, at)
+            } else {
+                (at, cond_at)
+            };
+            assert!(
+                !manifest[lo..hi].contains("\n\n"),
+                "condition drifted from {alias}: {manifest}"
+            );
+        }
+    }
+
+    #[test]
+    fn spark_declares_meta_provider() {
+        let dir = scratch("spark-meta");
+        let manifest = manifest_document(&dir, "s", "/w", "/o", "local", "%0", &[]);
+        let at = manifest
+            .find("`spark13gom`")
+            .expect("rank block missing spark13gom: {manifest}");
+        let window = &manifest[at.saturating_sub(200)..(at + 300).min(manifest.len())];
+        assert!(
+            window.contains("Meta"),
+            "spark block must declare Meta: {window}"
+        );
+    }
+
+    #[test]
+    fn deepseek_declares_deepseek_provider() {
+        let dir = scratch("deepseek-provider");
+        let manifest = manifest_document(&dir, "s", "/w", "/o", "local", "%0", &[]);
+        let at = manifest
+            .find("`deepseek41flashgom`")
+            .expect("rank block missing deepseek41flashgom: {manifest}");
+        let window = &manifest[at.saturating_sub(200)..(at + 300).min(manifest.len())];
+        assert!(
+            window.contains("DeepSeek-served"),
+            "deepseek block must declare the DeepSeek-served provider clause: {window}"
+        );
+    }
+
+    #[test]
+    fn spark_ranks_with_solx_and_opus5x() {
+        let dir = scratch("spark-peers");
+        let manifest = manifest_document(&dir, "s", "/w", "/o", "local", "%0", &[]);
+        let at = manifest
+            .find("`spark13gom`")
+            .expect("rank block missing spark13gom: {manifest}");
+        let window = &manifest[at.saturating_sub(300)..(at + 400).min(manifest.len())];
+        assert!(window.contains("`gpt56solx`"), "{window}");
+        assert!(window.contains("`opus5x`"), "{window}");
+        assert!(window.contains("peer of"), "{window}");
+    }
+
+    #[test]
+    fn deepseek_is_fast_build_review_alternative() {
+        let dir = scratch("deepseek-role");
+        let manifest = manifest_document(&dir, "s", "/w", "/o", "local", "%0", &[]);
+        // Split on ';' first, then on ". " (period+space, so "V4.1" survives),
+        // to isolate the role sentence naming the alias.
+        let seg = manifest
+            .split(';')
+            .find(|part| part.contains("`deepseek41flashgom`"))
+            .expect("rank block missing deepseek41flashgom: {manifest}");
+        let clause = seg
+            .split(". ")
+            .find(|part| part.contains("`deepseek41flashgom`"))
+            .expect("deepseek role sentence missing: {seg}");
+        assert!(clause.contains("bounded build"), "{clause}");
+        assert!(clause.contains("review"), "{clause}");
+        for banned in ["judgment", "lead", "colead", "chores"] {
+            assert!(
+                !clause.to_lowercase().contains(banned),
+                "deepseek clause must not claim {banned}: {clause}"
+            );
+        }
+    }
+
+    #[test]
+    fn chores_and_simple_work_unchanged() {
+        assert!(MANIFEST_TEMPLATE.contains(
+            "**CHORES:** tests and simple slices use `gpt56luna` xhigh; it also runs the orchestrator seat."
+        ));
+        let dir = scratch("chores-unchanged");
+        let manifest = manifest_document(&dir, "s", "/w", "/o", "local", "%0", &[]);
+        assert!(
+            manifest.contains("Chores still go to `gpt56luna`"),
+            "{manifest}"
+        );
+        assert!(manifest.contains("simple work never takes"), "{manifest}");
+        assert!(manifest.contains("`fablex`/`astrax`"), "{manifest}");
+        let clause = manifest
+            .split([';', '.'])
+            .find(|part| part.contains("Chores still go to"))
+            .expect("chores restatement missing: {manifest}");
+        assert!(
+            !clause.contains("gom"),
+            "chores must not route to a *gom alias: {clause}"
+        );
+    }
+
+    #[test]
+    fn opencode_go_rank_adds_no_quota_word() {
+        let dir = scratch("gom-qfree");
+        let manifest = manifest_document(&dir, "s", "/w", "/o", "local", "%0", &[]);
+        let start = manifest
+            .find("OpenCode Go seats")
+            .expect("rank block missing: {manifest}");
+        let end = manifest[start..]
+            .find("\n\n")
+            .map_or(manifest.len(), |i| start + i);
+        let block = &manifest[start..end];
+        assert!(block.contains("`spark13gom`"), "{block}");
+        assert!(block.contains("`deepseek41flashgom`"), "{block}");
+        assert!(!block.to_lowercase().contains("quota"), "{block}");
+        // Static bytes render under quota=off too.
+        let off = write(&dir, "off", "[workspace]\nquota = off\n");
+        let unaware = manifest_document(&dir, "s", "/w", "/o", "local", "%0", &[off]);
+        assert!(unaware.contains("OpenCode Go seats"), "{unaware}");
+        assert!(!unaware.to_lowercase().contains("quota"), "{unaware}");
     }
 }
