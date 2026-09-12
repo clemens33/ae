@@ -163,7 +163,14 @@ fn direct_settings_geometry(bytes: &[u8]) -> Option<MenuGeometry> {
 }
 
 fn terminal_character(bytes: &[u8]) -> Option<(char, usize)> {
-    let text = std::str::from_utf8(bytes).ok()?;
+    let width = match *bytes.first()? {
+        0x00..=0x7f => 1,
+        0xc2..=0xdf => 2,
+        0xe0..=0xef => 3,
+        0xf0..=0xf4 => 4,
+        _ => return None,
+    };
+    let text = std::str::from_utf8(bytes.get(..width)?).ok()?;
     let character = text.chars().next()?;
     Some((character, character.len_utf8()))
 }
@@ -247,6 +254,39 @@ fn csi_values(bytes: &[u8]) -> Vec<usize> {
 
 fn csi_value(values: &[usize], index: usize) -> usize {
     values.get(index).copied().unwrap_or(1)
+}
+
+#[test]
+fn direct_settings_geometry_survives_every_partial_terminal_tail() {
+    let mut record = b"\x1b[30;26H".to_vec();
+    record.extend_from_slice("╭─ae settings─╮".as_bytes());
+    let expected = MenuGeometry {
+        left: 25,
+        right: 39,
+    };
+    assert_eq!(direct_settings_geometry(&record), Some(expected));
+
+    let suffixes: [(&str, &[u8]); 5] = [
+        ("ASCII", b"A"),
+        ("two-byte scalar", "¢".as_bytes()),
+        ("three-byte scalar", "╯".as_bytes()),
+        ("four-byte scalar", "😀".as_bytes()),
+        ("incomplete CSI", b"\x1b[38;2;"),
+    ];
+    let mut failures = Vec::new();
+    for (kind, suffix) in suffixes {
+        for end in 1..=suffix.len() {
+            let mut partial = record.clone();
+            partial.extend_from_slice(&suffix[..end]);
+            if direct_settings_geometry(&partial) != Some(expected) {
+                failures.push(format!("{kind}: {suffix:?} through byte {end}"));
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "terminal tails lost geometry: {failures:?}"
+    );
 }
 
 /// The two sessions the arm needs, a real client watching one of them, and the
