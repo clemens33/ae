@@ -1,6 +1,11 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.61] - 2026-09-12
+
+### Other
+
+- Carry confirmed profile facts in the orchestrator creation charter
 ## [v2026.9.60] - 2026-09-12
 
 ### Other
