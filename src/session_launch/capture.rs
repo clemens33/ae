@@ -1070,8 +1070,10 @@ fn scan_opencode(facts: &Facts) -> Option<String> {
     pick_opencode_session(&listed, &facts.work_dir, since)
 }
 
-/// The newest session in `listed` whose `directory` is `work_dir` and whose
-/// `updated` is at or after `since` (milliseconds).
+/// The newest-born session in `listed` whose `directory` is `work_dir` and
+/// whose immutable `created` timestamp is at or after `since` (milliseconds).
+/// `created` is both the launch-safety proof and rank, so last-touched time
+/// cannot influence identity; an equal birth timestamp breaks by greatest id.
 #[must_use]
 pub(crate) fn pick_opencode_session(listed: &str, work_dir: &str, since: i64) -> Option<String> {
     let target = canonical(work_dir);
@@ -1083,14 +1085,16 @@ pub(crate) fn pick_opencode_session(listed: &str, work_dir: &str, since: i64) ->
         let Some(directory) = first_string_field(record, "directory") else {
             continue;
         };
-        let Some(updated) = first_num_field(record, "updated") else {
+        let Some(created) = first_num_field(record, "created") else {
             continue;
         };
-        if updated < since || canonical(&directory) != target {
+        if created < since || canonical(&directory) != target {
             continue;
         }
-        if best.as_ref().is_none_or(|(seen, _)| updated > *seen) {
-            best = Some((updated, id));
+        if best.as_ref().is_none_or(|(seen, best_id)| {
+            created > *seen || (created == *seen && id.as_str() > best_id.as_str())
+        }) {
+            best = Some((created, id));
         }
     }
     best.map(|(_, id)| id)
@@ -1560,20 +1564,36 @@ mod tests {
         let dir = scratch("oc");
         let work = dir.display().to_string();
         let listed = format!(
-            r#"[{{"id":"ses_old","directory":"{work}","time":{{"created":1,"updated":2000}}}},
-               {{"id":"ses_new","directory":"{work}","time":{{"created":1,"updated":9000}}}},
-               {{"id":"ses_elsewhere","directory":"/nowhere","time":{{"updated":9999}}}}]"#
+            r#"[{{"id":"ses_before_floor","directory":"{work}","created":999,"updated":9000}},
+               {{"id":"ses_new","directory":"{work}","created":1000,"updated":5000}},
+               {{"id":"ses_newest","directory":"{work}","created":2000,"updated":2000}},
+               {{"id":"ses_newest_tie","directory":"{work}","created":2000,"updated":3000}},
+               {{"id":"ses_elsewhere","directory":"/nowhere","created":3000,"updated":9999}}]"#
         );
         assert_eq!(
             pick_opencode_session(&listed, &work, 1000).as_deref(),
-            Some("ses_new")
+            Some("ses_newest_tie")
         );
-        // The launch-time floor excludes every session that predates it.
-        assert_eq!(pick_opencode_session(&listed, &work, 10_000), None);
-        // A directory that is not this session's is never captured.
+        // The launch-time floor excludes a session born before it even when
+        // that old session was touched after it.
+        assert_eq!(pick_opencode_session(&listed, &work, 3500), None);
+        // A record missing immutable birth evidence is never captured.
         assert_eq!(
-            pick_opencode_session(&listed, "/nowhere", 1000).as_deref(),
-            Some("ses_elsewhere")
+            pick_opencode_session(
+                &format!(r#"[{{"id":"ses_missing_created","directory":"{work}","updated":9999}}]"#),
+                &work,
+                1000,
+            ),
+            None
+        );
+        // A record for another directory is never captured.
+        assert_eq!(
+            pick_opencode_session(
+                r#"[{"id":"ses_elsewhere","directory":"/nowhere","created":3000,"updated":9999}]"#,
+                &work,
+                0,
+            ),
+            None
         );
         // Nothing parseable is nothing captured, never a panic.
         assert_eq!(pick_opencode_session("", &work, 0), None);

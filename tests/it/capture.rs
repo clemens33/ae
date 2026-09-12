@@ -278,12 +278,13 @@ fn an_agy_seat_with_no_token_falls_back_to_the_cli_log_for_its_own_workspace() {
 #[test]
 fn an_opencode_seat_captures_the_newest_session_in_its_own_directory() {
     let rig = Rig::new("opencode", "opencode", 1);
-    // `updated` is milliseconds, so everything here is at or after the seat's
-    // `capture_floor.main=1`.
+    // `created` is milliseconds, so both local sessions clear the seat's
+    // `capture_floor.main=1`. The older one was touched later, proving that
+    // newest birth, not last touch, selects the captured conversation.
     rig.fake_opencode(&format!(
-        r#"[{{"id":"ses_old","directory":"{project}","time":{{"updated":2000}}}},
-  {{"id":"ses_new","directory":"{project}","time":{{"updated":5000}}}},
-  {{"id":"ses_elsewhere","directory":"/nowhere","time":{{"updated":9000}}}}]"#,
+        r#"[{{"id":"ses_old","directory":"{project}","created":1000,"updated":9000}},
+  {{"id":"ses_new","directory":"{project}","created":5000,"updated":2000}},
+  {{"id":"ses_elsewhere","directory":"/nowhere","created":9000,"updated":9999}}]"#,
         project = rig.project.display()
     ));
 
