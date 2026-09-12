@@ -1,6 +1,29 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.58] - 2026-09-12
+
+### Other
+
+- Make quota awareness a session setting
+
+quota = on|off in [workspace]. Absent means on, so every existing session
+keeps today's behaviour.
+
+When off, the whole vendor-quota machinery is gone rather than quiet:
+agents are never told about quota in their context, manifest, rules or
+peer role; the watchdog books no advisory and renders no throttle line;
+the settings menu carries no quota entry. One resolver decides what an
+absent value means, so there is no half-on state.
+
+ae quota is unchanged in both states, and @ae_spend still publishes on
+the cadence: spend is ae pricing its own agents' transcripts offline,
+not vendor quota, so it sits outside this toggle. off wins over
+quota_every_secs.
+
+AE_TEST_QUOTA_TRACE is a CHECKOUT-only test seam: each due quota pass
+appends one attestation line, so a test can prove a pass was skipped
+rather than merely producing no output.
 ## [v2026.9.57] - 2026-09-12
 
 ### Other
