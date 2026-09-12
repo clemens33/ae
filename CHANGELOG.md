@@ -1,6 +1,11 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.59] - 2026-09-12
+
+### Other
+
+- Fix quota dialog readability
 ## [v2026.9.58] - 2026-09-12
 
 ### Other
