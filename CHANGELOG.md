@@ -1,6 +1,19 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.63] - 2026-09-12
+
+### Other
+
+- Close a request when either party retires
+
+A retire now closes a request naming the retired slot at either end:
+the seat it was sent to, or the seat that sent it. Both arms compare
+routing keys, never display names, and both are gated on the request
+resolving home, so a cross-session request read in the caller's log
+stays open. Retiring a worker clears the questions it asked from its
+target's inbox. AGENTS.md and the watchdog internals copy state both
+arms, and that cancel is compact-only.
 ## [v2026.9.62] - 2026-09-12
 
 ### Other
