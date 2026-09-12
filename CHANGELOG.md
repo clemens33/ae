@@ -1,6 +1,13 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.64] - 2026-09-12
+
+### Other
+
+- Capture an opencode session by birth, not last touch
+
+Gate capture floors on created timestamps, fail closed when created is absent, and use id to break equal births.
 ## [v2026.9.63] - 2026-09-12
 
 ### Other
