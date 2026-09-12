@@ -1466,10 +1466,15 @@ const END_OF_FLAGS: &str = "--";
 /// <https://github.com/tmux/tmux/blob/3.4/cmd-display-menu.c#L165-L244>.
 const CENTRE_POSITION: [&str; 4] = ["-x", "C", "-y", "C"];
 
-/// Settings rises from its bottom-right status button on the exact client.
-/// tmux 3.4 resolves `R` from the client's width and `S` from its status edge:
-/// <https://github.com/tmux/tmux/blob/3.4/cmd-display-menu.c#L165-L244>.
-const SETTINGS_MENU_POSITION: [&str; 4] = ["-x", "R", "-y", "S"];
+/// The exact invoking client's absolute left coordinate for settings.
+///
+/// The final menu budget and the client snapshot decide both fit and this
+/// position. tmux still clamps a concurrent resize, but a target pane never
+/// gets to move this client-relative coordinate.
+#[must_use]
+pub(crate) const fn settings_menu_x(client_width: usize, menu_columns: usize) -> usize {
+    client_width.saturating_sub(menu_columns)
+}
 
 /// The arguments that draw `menu` on `server`'s current client.
 #[must_use]
@@ -1491,26 +1496,29 @@ pub fn display_menu_centred_args(
     menu: &Menu,
     menu_mouse: bool,
 ) -> Vec<String> {
-    display_targeted_menu_args(server, client, target, menu, menu_mouse, CENTRE_POSITION)
+    display_targeted_menu_args(server, client, target, menu, menu_mouse, &CENTRE_POSITION)
 }
 
-/// The arguments that draw settings at one explicit client's bottom-right,
-/// with one explicit target pane supplying every row's command context.
+/// The arguments that draw settings at one explicit client's numeric
+/// bottom-right coordinate, with one explicit target pane supplying every
+/// row's command context.
 #[must_use]
 pub fn display_settings_menu_args(
     server: &ServerId,
     client: &str,
     target: &str,
+    x: usize,
     menu: &Menu,
     menu_mouse: bool,
 ) -> Vec<String> {
+    let x = x.to_string();
     display_targeted_menu_args(
         server,
         client,
         target,
         menu,
         menu_mouse,
-        SETTINGS_MENU_POSITION,
+        &["-x", &x, "-y", "S"],
     )
 }
 
@@ -1520,7 +1528,7 @@ fn display_targeted_menu_args(
     target: &str,
     menu: &Menu,
     menu_mouse: bool,
-    position: [&str; 4],
+    position: &[&str; 4],
 ) -> Vec<String> {
     let mut args = server_args(server);
     args.push("display-menu".to_owned());
@@ -1530,7 +1538,7 @@ fn display_targeted_menu_args(
     args.push("-O".to_owned());
     args.extend(["-c".to_owned(), client.to_owned()]);
     args.extend(["-t".to_owned(), target.to_owned()]);
-    args.extend(position.map(ToOwned::to_owned));
+    args.extend(position.iter().map(|word| (*word).to_owned()));
     args.push("-T".to_owned());
     args.push(titled(menu));
     args.push(END_OF_FLAGS.to_owned());
@@ -3326,20 +3334,34 @@ mod tests {
         };
         let budget = crate::session_menu::menu_budget(&menu);
         assert_eq!(budget.0, label.chars().count() + 4);
+        let x = super::settings_menu_x(90, budget.0);
         let args = super::display_settings_menu_args(
             &ServerId::Ambient,
             "/dev/ttys004",
             "$7",
+            x,
             &menu,
             false,
         );
-        assert!(
-            args.windows(4).any(|words| words == ["-x", "R", "-y", "S"]),
-            "{args:?}"
-        );
+        let position = [
+            "-x".to_owned(),
+            x.to_string(),
+            "-y".to_owned(),
+            "S".to_owned(),
+        ];
+        assert!(args.windows(4).any(|words| words == position), "{args:?}");
+        assert!(!args.iter().any(|word| word == "R"), "{args:?}");
         let escaped = "-quota ##[fg=red] ##";
         assert!(args.iter().any(|word| word == escaped), "{args:?}");
         assert_ne!(budget.0, escaped.chars().count() + 4);
+    }
+
+    #[test]
+    fn settings_menu_x_uses_client_width_and_saturates_when_the_budget_is_wider() {
+        assert_eq!(super::settings_menu_x(100, 75), 25);
+        assert_eq!(super::settings_menu_x(74, 26), 48);
+        assert_eq!(super::settings_menu_x(25, 26), 0);
+        assert_eq!(super::settings_menu_x(0, 1), 0);
     }
 
     #[test]

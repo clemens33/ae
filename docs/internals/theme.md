@@ -182,7 +182,8 @@ The final three cells on the right are the distinct user range `ae-settings`: ex
 ` ⚙ ` (` * ` in ASCII mode). The selected style starts before the leading blank and remains through
 the trailing blank, so all three clickable cells highlight. It never carries version text. Either mouse button
 opens the settings menu at the exact invoking client's bottom-right corner with
-`display-menu -x R -y S`. Its title reads
+numeric `display-menu -x <client_width - menu_columns> -y S`, computed from
+the same client snapshot and final menu budget used for fit. Its title reads
 that client's session-owned `@ae_version` fact when it is exactly `ae <CalVer>`:
 `ae <CalVer> settings`; an absent or malformed fact honestly leaves `ae settings`.
 While `@ae_settings_open` is set, the settings button uses the same palette selection colours as

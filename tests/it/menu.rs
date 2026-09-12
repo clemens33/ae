@@ -6,13 +6,14 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use ae::inventory::ServerId;
 use ae::meta::Selector;
 use ae::tmux::{PickerPane, PickerSession, display_menu_for_client_args};
 
-use super::cli::ae;
+use super::cli::{OwnedChild, ae, helper_by_name};
 use super::phase2::{run_tmux, tmux_present};
 
 /// How long a poll waits for tmux to catch up before the arm fails.
@@ -87,6 +88,165 @@ fn wait_for(
         std::thread::sleep(Duration::from_millis(100));
     }
     panic!("{what} never settled; tmux last said {last:?}");
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MenuGeometry {
+    left: usize,
+    right: usize,
+}
+
+#[derive(Debug)]
+struct DirectMenu {
+    geometry: MenuGeometry,
+    raw: Vec<u8>,
+}
+
+#[derive(Debug)]
+struct MenuTitle {
+    row: usize,
+    left: usize,
+    text: String,
+}
+
+/// Read the direct terminal's ANSI cursor positions, rather than an outer
+/// tmux pane capture which can clip a nested client's menu at a pane border.
+fn direct_settings_geometry(bytes: &[u8]) -> Option<MenuGeometry> {
+    let mut index = 0;
+    let mut row = 0;
+    let mut column = 0;
+    let mut title: Option<MenuTitle> = None;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\x1b' => {
+                index = consume_terminal_escape(bytes, index, &mut row, &mut column);
+            }
+            b'\r' => {
+                column = 0;
+                index += 1;
+            }
+            b'\n' => {
+                row = row.saturating_add(1);
+                index += 1;
+            }
+            byte if byte.is_ascii_control() => index += 1,
+            _ => {
+                let Some((character, length)) = terminal_character(&bytes[index..]) else {
+                    index += 1;
+                    continue;
+                };
+                if matches!(character, '╭' | '┌') {
+                    title = Some(MenuTitle {
+                        row,
+                        left: column,
+                        text: character.to_string(),
+                    });
+                } else if let Some(current) = title.as_mut() {
+                    if current.row == row {
+                        current.text.push(character);
+                        if matches!(character, '╮' | '┐') && current.text.contains("settings") {
+                            return Some(MenuGeometry {
+                                left: current.left,
+                                right: column,
+                            });
+                        }
+                    } else {
+                        title = None;
+                    }
+                }
+                column = column.saturating_add(1);
+                index += length;
+            }
+        }
+    }
+    None
+}
+
+fn terminal_character(bytes: &[u8]) -> Option<(char, usize)> {
+    let text = std::str::from_utf8(bytes).ok()?;
+    let character = text.chars().next()?;
+    Some((character, character.len_utf8()))
+}
+
+fn consume_terminal_escape(
+    bytes: &[u8],
+    start: usize,
+    row: &mut usize,
+    column: &mut usize,
+) -> usize {
+    let Some(kind) = bytes.get(start + 1) else {
+        return bytes.len();
+    };
+    match kind {
+        b'[' => consume_csi(bytes, start, row, column),
+        b']' => consume_osc(bytes, start),
+        _ => start.saturating_add(3).min(bytes.len()),
+    }
+}
+
+fn consume_csi(bytes: &[u8], start: usize, row: &mut usize, column: &mut usize) -> usize {
+    let mut end = start.saturating_add(2);
+    while let Some(byte) = bytes.get(end) {
+        if (0x40..=0x7e).contains(byte) {
+            break;
+        }
+        end += 1;
+    }
+    let Some(command) = bytes.get(end) else {
+        return bytes.len();
+    };
+    let values = csi_values(&bytes[start + 2..end]);
+    match *command {
+        b'H' | b'f' => {
+            *row = csi_value(&values, 0).saturating_sub(1);
+            *column = csi_value(&values, 1).saturating_sub(1);
+        }
+        b'G' | b'`' => *column = csi_value(&values, 0).saturating_sub(1),
+        b'd' => *row = csi_value(&values, 0).saturating_sub(1),
+        b'A' => *row = row.saturating_sub(csi_value(&values, 0)),
+        b'B' => *row = row.saturating_add(csi_value(&values, 0)),
+        b'C' => *column = column.saturating_add(csi_value(&values, 0)),
+        b'D' => *column = column.saturating_sub(csi_value(&values, 0)),
+        _ => {}
+    }
+    end.saturating_add(1)
+}
+
+fn consume_osc(bytes: &[u8], start: usize) -> usize {
+    let mut index = start.saturating_add(2);
+    while let Some(byte) = bytes.get(index) {
+        if *byte == b'\x07' {
+            return index.saturating_add(1);
+        }
+        if *byte == b'\x1b' && bytes.get(index + 1) == Some(&b'\\') {
+            return index.saturating_add(2);
+        }
+        index += 1;
+    }
+    bytes.len()
+}
+
+fn csi_values(bytes: &[u8]) -> Vec<usize> {
+    bytes
+        .split(|byte| *byte == b';')
+        .map(|field| {
+            let digits =
+                field
+                    .iter()
+                    .copied()
+                    .filter(u8::is_ascii_digit)
+                    .fold(0_usize, |value, digit| {
+                        value
+                            .saturating_mul(10)
+                            .saturating_add(usize::from(digit - b'0'))
+                    });
+            if digits == 0 { 1 } else { digits }
+        })
+        .collect()
+}
+
+fn csi_value(values: &[usize], index: usize) -> usize {
+    values.get(index).copied().unwrap_or(1)
 }
 
 /// The two sessions the arm needs, a real client watching one of them, and the
@@ -1315,6 +1475,24 @@ fn settings_invocation(
     client: &str,
     action: Option<(&str, &str, &str, &str, &str, &str, i64)>,
 ) -> std::process::Output {
+    settings_invocation_command(socket, scratch, root, config, caller_pane, client, action)
+        .output()
+        .unwrap_or_else(|error| panic!("the settings invocation runs: {error}"))
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one exact settings invocation tuple"
+)]
+fn settings_invocation_command(
+    socket: &Path,
+    scratch: &Path,
+    root: &Path,
+    config: &Path,
+    caller_pane: &str,
+    client: &str,
+    action: Option<(&str, &str, &str, &str, &str, &str, i64)>,
+) -> super::cli::Runner {
     let mut command = ae();
     command
         .env("HOME", scratch)
@@ -1349,8 +1527,220 @@ fn settings_invocation(
         command.args(["--settings", "--client", client]);
     }
     command
-        .output()
-        .unwrap_or_else(|error| panic!("the settings invocation runs: {error}"))
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one direct terminal tuple proves independent client geometry"
+)]
+fn direct_terminal_client(
+    socket: &Path,
+    scratch: &Path,
+    root: &Path,
+    config: &Path,
+    session: &str,
+    width: usize,
+    height: usize,
+    record: &Path,
+) -> (String, OwnedChild) {
+    let command = format!(
+        "stty cols {width} rows {height}; exec tmux -S {} attach-session -t ={session}",
+        socket.display()
+    );
+    let mut terminal = helper_by_name("script");
+    if cfg!(target_os = "macos") {
+        terminal.args([
+            "-q".to_owned(),
+            record.display().to_string(),
+            "sh".to_owned(),
+            "-c".to_owned(),
+            command,
+        ]);
+    } else {
+        terminal.args([
+            "-q".to_owned(),
+            "-c".to_owned(),
+            command,
+            record.display().to_string(),
+        ]);
+    }
+    terminal
+        .env("HOME", scratch)
+        .env("AE_HOME", root)
+        .env("CONFIG_FILE", config)
+        .env("TMUX_TMPDIR", scratch)
+        .env("TERM", "xterm-256color")
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let child = terminal
+        .spawn()
+        .unwrap_or_else(|error| panic!("private direct terminal starts: {error}"));
+    let client = wait_for(
+        "private direct menu client",
+        || {
+            tmux(
+                socket,
+                scratch,
+                &[
+                    "list-clients",
+                    "-F",
+                    "#{client_name}|#{client_session}|#{client_width}x#{client_height}",
+                ],
+            )
+            .1
+        },
+        |seen| {
+            seen.lines()
+                .any(|line| line.ends_with(&format!("|{session}|{width}x{height}")))
+        },
+    );
+    let client = client
+        .lines()
+        .find_map(|line| {
+            line.strip_suffix(&format!("|{session}|{width}x{height}"))
+                .map(ToOwned::to_owned)
+        })
+        .unwrap_or_else(|| panic!("private direct menu client: {client}"));
+    (client, child)
+}
+
+fn select_direct_client_pane(
+    socket: &Path,
+    scratch: &Path,
+    session: &str,
+    client: &str,
+    right: bool,
+) -> String {
+    let side = if right { "right" } else { "left" };
+    let listing = tmux(
+        socket,
+        scratch,
+        &[
+            "list-panes",
+            "-t",
+            session,
+            "-F",
+            "#{pane_id}|#{pane_at_left}|#{pane_at_right}",
+        ],
+    )
+    .1;
+    let pane = listing
+        .lines()
+        .find_map(|line| {
+            let fields: Vec<_> = line.split('|').collect();
+            let at_side = if right {
+                fields.get(2) == Some(&"1")
+            } else {
+                fields.get(1) == Some(&"1")
+            };
+            at_side.then(|| fields.first().copied())?
+        })
+        .unwrap_or_else(|| panic!("{session} {side} pane: {listing}"));
+    assert!(
+        tmux(socket, scratch, &["select-pane", "-t", pane]).0,
+        "the direct client selects its {side} pane"
+    );
+    for (target, context) in [
+        (
+            vec!["display-message", "-p", "-c", client, "#{pane_id}"],
+            "direct client",
+        ),
+        (
+            vec!["display-message", "-p", "-t", session, "#{pane_id}"],
+            "settings target",
+        ),
+    ] {
+        assert_eq!(
+            tmux(socket, scratch, &target).1.trim(),
+            pane,
+            "the {context} resolves {side} pane"
+        );
+    }
+    pane.to_owned()
+}
+
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the direct terminal record must be repeatedly read before its client detaches"
+)]
+fn wait_for_direct_settings_geometry(record: &Path, expected: &str) -> (MenuGeometry, Vec<u8>) {
+    let deadline = Instant::now() + PATIENCE;
+    let mut last = Vec::new();
+    while Instant::now() < deadline {
+        last = fs::read(record).unwrap_or_default();
+        if let Some(geometry) = direct_settings_geometry(&last)
+            && String::from_utf8_lossy(&last).contains(expected)
+        {
+            return (geometry, last);
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let tail_start = last.len().saturating_sub(600);
+    let tail = String::from_utf8_lossy(&last[tail_start..]);
+    panic!("direct settings terminal title never settled; terminal tail={tail:?}");
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one direct settings draw tuple proves independent client geometry"
+)]
+fn draw_direct_settings_menu(
+    socket: &Path,
+    scratch: &Path,
+    root: &Path,
+    config: &Path,
+    width: usize,
+    right: bool,
+    label: &str,
+    expected: &str,
+) -> DirectMenu {
+    let record = scratch.join(format!("settings-{label}-{width}-{right}.terminal"));
+    let (client, terminal) =
+        direct_terminal_client(socket, scratch, root, config, "viewed", width, 40, &record);
+    let caller_pane = select_direct_client_pane(socket, scratch, "viewed", &client, right);
+    let mut settings =
+        settings_invocation_command(socket, scratch, root, config, &caller_pane, &client, None);
+    let settings = settings
+        .spawn()
+        .unwrap_or_else(|error| panic!("the direct settings invocation starts: {error}"));
+    let (geometry, raw) = wait_for_direct_settings_geometry(&record, expected);
+    assert!(
+        tmux(socket, scratch, &["detach-client", "-t", &client]).0,
+        "the direct client detaches after its terminal capture"
+    );
+    let output = settings
+        .wait_with_output()
+        .unwrap_or_else(|error| panic!("the direct settings invocation reaps: {error}"));
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "direct settings: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let terminal = terminal
+        .wait_with_output()
+        .unwrap_or_else(|error| panic!("the direct terminal reaps: {error}"));
+    assert_eq!(
+        terminal.status.code(),
+        Some(0),
+        "direct terminal: {terminal:?}"
+    );
+    assert!(!raw.is_empty(), "direct terminal record has bytes");
+    DirectMenu { geometry, raw }
+}
+
+fn assert_direct_menu_geometry(geometry: MenuGeometry, width: usize, columns: usize) {
+    assert_eq!(
+        geometry,
+        MenuGeometry {
+            left: width - columns,
+            right: width - 1,
+        },
+        "direct menu occupies its final budget at the invoking client edge"
+    );
 }
 
 fn picker_invocation(
@@ -1473,22 +1863,6 @@ fn settings_starts_then_resumes_the_exact_renamed_role_without_switching_its_cli
         "s",
     );
     assert!(start_menu.contains("ae 2099.1.2 settings"), "{start_menu}");
-    let title_line = start_menu
-        .lines()
-        .find(|line| line.contains("ae 2099.1.2 settings"))
-        .unwrap_or_else(|| panic!("the settings title is visible: {start_menu}"));
-    assert!(
-        title_line
-            .chars()
-            .position(|character| matches!(character, '╭' | '┌'))
-            .is_some_and(|left| left > 0),
-        "the bottom-right settings menu is narrower than its client: {start_menu}"
-    );
-    assert_eq!(
-        title_line.chars().count(),
-        140,
-        "the settings menu reaches the client's right edge: {start_menu}"
-    );
     let role_dir = root.join("sessions/orchestrator");
     wait_for(
         "canonical role Start",
@@ -1510,7 +1884,6 @@ fn settings_starts_then_resumes_the_exact_renamed_role_without_switching_its_cli
         clients.contains(&format!("{untouched}|viewed")),
         "{clients}"
     );
-
     let renamed = ae()
         .env("HOME", &scratch)
         .env("AE_HOME", &root)
@@ -2140,27 +2513,6 @@ fn settings_quota_uses_the_invoking_overlay_and_degrades_without_losing_the_acti
     assert!(!full.contains("q +"), "{full}");
     assert!(!full.contains("leak-client"), "{full}");
     assert!(full.contains("Start orchestrator"), "{full}");
-    let title_line = full
-        .lines()
-        .find(|line| line.contains("ae settings"))
-        .unwrap_or_else(|| panic!("settings title is visible: {full}"));
-    assert!(
-        title_line
-            .chars()
-            .position(|character| matches!(character, '╭' | '┌'))
-            .is_some_and(|left| left > 0),
-        "the right-anchored menu is narrower than its client: {title_line:?}"
-    );
-    assert_eq!(
-        title_line.chars().count(),
-        90,
-        "the complete title border touches the client right edge: {title_line:?}"
-    );
-    let bottom_line = full
-        .lines()
-        .find(|line| matches!(line.chars().last(), Some('╯' | '┘')))
-        .unwrap_or_else(|| panic!("the complete menu bottom is visible: {full}"));
-    assert_eq!(bottom_line.chars().count(), 90, "{bottom_line:?}");
     assert!(
         !tmux(&socket, &scratch, &["has-session", "-t", "=orchestrator"]).0,
         "a keyless quota row never acted"
@@ -2407,6 +2759,107 @@ fn settings_quota_uses_the_invoking_overlay_and_degrades_without_losing_the_acti
     assert!(settings_marker(&socket, &scratch, "viewed").is_empty());
     assert!(picker_marker(&socket, &scratch, "viewed").is_empty());
     assert!(!untouched.is_empty());
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one direct-terminal settings geometry proof across full and notice quota branches"
+)]
+fn settings_menu_uses_client_right_geometry_from_either_split_pane() {
+    let scratch = scratch("settings-right-geometry");
+    if !tmux_present(&scratch) {
+        let _ = fs::remove_dir_all(&scratch);
+        panic!("tmux is not runnable here, so direct settings geometry cannot be proven");
+    }
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let root = scratch.join("state");
+    let project = scratch.join("project");
+    let config = scratch.join("config");
+    write_settings_config(&project, &config);
+    write_settings_quota_overlay(
+        &project,
+        concat!(
+            "[clients]\n",
+            "menu-claude = claude config_home=$HOME/.menu-claude\n",
+            "menu-grok = grok\n",
+            "[profiles]\n",
+            "menu-supported = menu-claude\n",
+            "menu-unsupported = menu-grok\n",
+        ),
+    );
+    let now = ae::time::Timestamp::now().epoch();
+    write_settings_claude_quota(&scratch.join(".menu-claude"), 82, now);
+    launch_ae_session(&socket, &scratch, &root, &project, &config, "viewed");
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &["split-window", "-d", "-h", "-t", "viewed"],
+        )
+        .0,
+        "the settings target has a left and right pane"
+    );
+
+    let full_right = draw_direct_settings_menu(
+        &socket,
+        &scratch,
+        &root,
+        &config,
+        100,
+        true,
+        "full-right",
+        "quota  claude/menu-claude",
+    );
+    let full_left = draw_direct_settings_menu(
+        &socket,
+        &scratch,
+        &root,
+        &config,
+        100,
+        false,
+        "full-left",
+        "quota  claude/menu-claude",
+    );
+    let notice_right = draw_direct_settings_menu(
+        &socket,
+        &scratch,
+        &root,
+        &config,
+        74,
+        true,
+        "notice-right",
+        "q +",
+    );
+    let notice_left = draw_direct_settings_menu(
+        &socket,
+        &scratch,
+        &root,
+        &config,
+        74,
+        false,
+        "notice-left",
+        "q +",
+    );
+
+    assert!(
+        String::from_utf8_lossy(&full_right.raw).contains("quota  claude/menu-claude"),
+        "the 100-column branch is full: {:?}",
+        full_right.raw
+    );
+    assert!(
+        String::from_utf8_lossy(&notice_right.raw).contains("q +"),
+        "the 74-column branch is the quota notice: {:?}",
+        notice_right.raw
+    );
+    assert_direct_menu_geometry(full_right.geometry, 100, 75);
+    assert_direct_menu_geometry(notice_right.geometry, 74, 26);
+    assert_direct_menu_geometry(full_left.geometry, 100, 75);
+    assert_direct_menu_geometry(notice_left.geometry, 74, 26);
 }
 
 #[test]

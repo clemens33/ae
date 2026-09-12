@@ -757,20 +757,21 @@ pub fn display_menu_centred(
         .0
 }
 
-/// Draw settings at one explicit client's bottom-right, with one explicit
-/// target pane supplying the command context.
+/// Draw settings at one explicit client's numeric bottom-right coordinate,
+/// with one explicit target pane supplying the command context.
 #[must_use]
 pub fn display_settings_menu(
     server: &ServerId,
     client: &str,
     target: &str,
+    x: usize,
     menu: &tmux::Menu,
     menu_mouse: bool,
 ) -> bool {
     addressable(server)
         && run(
             PROGRAM,
-            &tmux::display_settings_menu_args(server, client, target, menu, menu_mouse),
+            &tmux::display_settings_menu_args(server, client, target, x, menu, menu_mouse),
         )
         .0
 }

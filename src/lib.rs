@@ -795,6 +795,8 @@ fn run_settings_menu(
             base
         }
     };
+    let (menu_columns, _) = session_menu::menu_budget(&menu);
+    let menu_x = tmux::settings_menu_x(client.width, menu_columns);
     if !mark_settings_open(server, &client.session_id) {
         report(
             "tmux refused to update the settings marker for the invoking client",
@@ -808,6 +810,7 @@ fn run_settings_menu(
                 server,
                 client_name,
                 &client.session_id,
+                menu_x,
                 &menu,
                 menu_mouse,
             )

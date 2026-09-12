@@ -449,7 +449,8 @@ press `<prefix> a` (default `C-b a`), to open it.
 The final bottom-right status range is settings: exactly one blank, bare `⚙`, and one blank
 (` * ` with icons off). The whole three-cell range highlights and accepts clicks. It never renders
 a version. Either mouse button opens one menu at that
-client's bottom-right corner (`display-menu -x R -y S`). Its title uses that client's session-owned
+client's bottom-right corner (`display-menu -x <client_width - menu_columns> -y S`, with a
+saturating numeric coordinate from that client's fit snapshot and final menu budget). Its title uses that client's session-owned
 watchdog fact only when it is exactly `ae <CalVer>`, rendering
 `ae <CalVer> settings`; a missing or malformed fact renders `ae settings`.
 Opening settings clears the fleet button's transient selection and highlights only the settings
