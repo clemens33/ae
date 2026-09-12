@@ -57,6 +57,21 @@ ae neither tells agents about quota nor advises on it.) Give every
 **new** slice a fresh worker; return fix rounds to the worker and reviewer who
 already hold its context.
 
+When quota awareness is on, query `ae quota` once before choosing profiles for
+a delegation batch, session creation, init choice, or later independent spawn;
+query again after throttling. One result covers that whole batch or creation,
+not every fan-out worker. Apply it to every selected surface: launch
+`--lead`, `--colead`, and `--seat`; init's lead, colead, and orchestrator
+choices; and `spawn --using`. Never knowingly choose a profile whose applicable
+effective window is exhausted or blocked. If configured defaults are unsuitable,
+pass explicit profile overrides; ae never substitutes a profile for you. Missing,
+stale, ambiguous, or uncorrelated evidence is unknown: report it and prefer a
+known-usable alternative. Correlation remains agent inference, not product
+mapping: an account-wide window applies to all profiles on its client scope; a
+model-scoped qualifier applies only when it clearly matches the selected
+profile's model family. An unclear qualifier neither proves nor blocks
+headroom.
+
 Use workers for work describable in ~10 lines with a clear stop condition and
 a result verifiable by tests, grep, or focused review. That is the brief floor,
 not a threshold:

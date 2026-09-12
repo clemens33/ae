@@ -77,8 +77,9 @@ that session fact outranks `AE_WATCHDOG_SWEEP_SEC`, which outranks 120.
 Launch also persists `[workspace] quota_every_secs` (default 300, `0` disables) for every session,
 and the canonical `[workspace] quota` awareness (`on` by default) beside it.
 The daemon rounds that cadence up to whole verdict cycles. One counter paces both readings this
-cadence owns: the spend fact above, then — only when the session is quota-aware — the quota
-observation. Each due pass performs one bounded `ae quota` observation, keeps state by canonical
+cadence owns: first — only when the session is quota-aware — the quota observation, then the spend
+fact above. The two attempts are independent: either failure does not suppress the other. Each due
+pass performs one bounded `ae quota` observation, keeps state by canonical
 source, rollout, bucket, qualifier, and window,
 then advises only the session's main and optional colead on threshold transitions. A refused paste
 is retried once at the next quota observation; newer state, silence, expiry, or changed recipient
