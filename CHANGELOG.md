@@ -1,6 +1,21 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.57] - 2026-09-12
+
+### Other
+
+- Open the settings quota dialog from one live entry row
+
+The settings menu collapsed each client scope to its single most
+constraining window, so a per-window view needed a new projection, not a
+reformat: quota_dialog_rows lists every adopted window under one header
+per scope, every percentage still read from the one derivation.
+
+The entry row carries the captured client identity and reproves it
+immediately before the centred draw, refusing a replaced client or
+server, a switched session, or a resized terminal instead of drawing
+for a clicker that is no longer there.
 ## [v2026.9.56] - 2026-09-12
 
 ### Other
