@@ -51,7 +51,9 @@ headroom from `ae quota`'s `EFFECTIVE` column when it is filled in, not from
 the raw window: a declared manual reset or unlimited credits means the client
 is not at its limit, while a `spend-cap` scope is blocked until the cap or the
 credits change. Cut
-independent work into parallel slices with one writer per file. Give every
+independent work into parallel slices with one writer per file. (All of this
+quota guidance assumes the default `[workspace] quota = on`; with `quota = off`
+ae neither tells agents about quota nor advises on it.) Give every
 **new** slice a fresh worker; return fix rounds to the worker and reviewer who
 already hold its context.
 

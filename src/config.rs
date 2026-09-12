@@ -222,6 +222,43 @@ pub fn is_agent_name(name: &str) -> bool {
     name.len() <= 64 && bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
+/// Whether quota awareness is ON for a raw `[workspace] quota` value.
+///
+/// Absent (empty) means ON — exactly today's behaviour. Same on/off grammar
+/// as `theme`, `icons` and `motion` (`theme::wanted`), so `off`/`false`/`no`/
+/// `0`/`none`/`ascii` are OFF and everything else is ON.
+///
+/// ONE predicate owns "is quota awareness on": every surface — launch pinning,
+/// injected documents, watchdog advisories/throttle, settings menu — calls
+/// this, never a copied bool or a second spelling of the grammar. `quota = off`
+/// WINS over `quota_every_secs`: a cadence is meaningless when the feature is
+/// off, and the watchdog enforces that.
+#[must_use]
+pub fn quota_aware(raw: &str) -> bool {
+    crate::theme::wanted(raw)
+}
+
+/// Resolve quota awareness from its two sources: the pinned meta row wins; an
+/// absent or unreadable pin falls back to the LIVE CONFIG; an absent or
+/// unreadable config falls back to ON.
+///
+/// ONE resolver owns this precedence and every surface uses it — documents,
+/// settings, watchdog — so a pre-knob session (no pin) with `quota = off` in
+/// config is uniformly unaware everywhere instead of half-aware. The pin
+/// exists so a RUNNING session does not change under itself; a session with
+/// no pin has nothing to hold still, so the live config is the only way the
+/// setting can be honoured at all, and ON stays the fail-safe.
+#[must_use]
+pub fn resolve_quota_aware(pinned: Option<&str>, configured: Option<&str>) -> bool {
+    if let Some(raw) = pinned.filter(|value| !value.is_empty()) {
+        return quota_aware(raw);
+    }
+    if let Some(raw) = configured.filter(|value| !value.is_empty()) {
+        return quota_aware(raw);
+    }
+    true
+}
+
 /// One configured CLI instance that profiles may build on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Client {
@@ -2419,5 +2456,35 @@ mod tests {
             [Violation::EmptyWorker { position: 2 }],
             "a trailing comma is an empty seat, not silence"
         );
+    }
+
+    #[test]
+    fn quota_awareness_defaults_on_with_the_look_knob_grammar() {
+        // Absent (empty) is ON — today's behaviour. Same opt-out grammar as
+        // theme/icons/motion: only an explicit off-word disables.
+        assert!(super::quota_aware(""));
+        assert!(super::quota_aware("on"));
+        assert!(super::quota_aware("ON"));
+        assert!(super::quota_aware(" yes "));
+        assert!(super::quota_aware("bogus"));
+        for off in [
+            "off", "OFF", " Off ", "false", "FALSE", "no", "0", "none", "ascii",
+        ] {
+            assert!(!super::quota_aware(off), "{off:?} must mean unaware");
+        }
+    }
+
+    #[test]
+    fn quota_awareness_resolves_pin_over_config_over_on() {
+        use super::resolve_quota_aware;
+        // The off-diagonal: a pre-knob session (no pin) honours live config.
+        assert!(!resolve_quota_aware(None, Some("off")));
+        assert!(resolve_quota_aware(None, Some("on")));
+        assert!(resolve_quota_aware(None, None), "no source at all stays ON");
+        // The pin wins over config either way; an empty pin is no pin.
+        assert!(!resolve_quota_aware(Some("off"), Some("on")));
+        assert!(resolve_quota_aware(Some("on"), Some("off")));
+        assert!(!resolve_quota_aware(Some(""), Some("off")));
+        assert!(resolve_quota_aware(Some(""), None));
     }
 }

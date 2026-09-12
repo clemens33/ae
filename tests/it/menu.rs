@@ -3196,6 +3196,169 @@ fn settings_quota_entry_opens_the_per_window_dialog_and_close_dismisses_it() {
     assert!(!untouched.is_empty());
 }
 
+/// The meta record one launched session persisted, or nothing when it did not.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "a fixture reading its own scratch directory; the capability boundary is about what PRODUCT code may reach"
+)]
+fn session_meta(root: &Path, session: &str) -> String {
+    fs::read_to_string(root.join("sessions").join(session).join("meta")).unwrap_or_default()
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one private-tmux unaware-settings story: pinned launch, menu draw, dialog refusal"
+)]
+fn settings_quota_unaware_session_draws_no_quota_entry_and_refuses_the_dialog() {
+    let scratch = scratch("settings-unaware");
+    if !tmux_present(&scratch) {
+        let _ = fs::remove_dir_all(&scratch);
+        panic!("tmux is not runnable here, so the unaware settings surface cannot be proven");
+    }
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let root = scratch.join("state");
+    let project = scratch.join("project");
+    let config = scratch.join("config");
+    // `quota = off` pinned at launch: the session meta carries the pin.
+    assert!(fs::create_dir_all(&project).is_ok());
+    assert!(
+        fs::write(
+            &config,
+            "[profiles]\nidle = \"sleep 600\"\n\n[roster]\nlead = idle\norchestrator = idle\n\n[workspace]\nmain = lead\nlayout = vertical\nwatchdog = false\nquota = off\n",
+        )
+        .is_ok()
+    );
+    launch_ae_session(&socket, &scratch, &root, &project, &config, "viewed");
+    let meta = session_meta(&root, "viewed");
+    assert!(
+        meta.contains("quota=off\n"),
+        "the unaware settings case starts from a pinned quota=off: {meta}"
+    );
+    let clicked = nested_client(&socket, &scratch, "viewed", "unaware-viewer");
+    let untouched = nested_client(&socket, &scratch, "viewed", "unaware-other");
+    let caller_pane = tmux(
+        &socket,
+        &scratch,
+        &["display-message", "-p", "-c", &clicked, "#{pane_id}"],
+    )
+    .1
+    .trim()
+    .to_owned();
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &[
+                "resize-window",
+                "-t",
+                "unaware-viewer",
+                "-x",
+                "90",
+                "-y",
+                "40"
+            ]
+        )
+        .0
+    );
+    wait_for(
+        "medium unaware settings client",
+        || {
+            tmux(
+                &socket,
+                &scratch,
+                &[
+                    "display-message",
+                    "-p",
+                    "-c",
+                    &clicked,
+                    "#{client_width}x#{client_height}",
+                ],
+            )
+            .1
+        },
+        |seen| seen.trim() == "90x40",
+    );
+
+    // The settings menu is the base control menu: no quota entry row anywhere.
+    let seen = choose_settings_row(
+        &socket,
+        &scratch,
+        &root,
+        &config,
+        &caller_pane,
+        &clicked,
+        "unaware-viewer",
+        "unaware-other",
+        "Start orchestrator",
+        "Escape",
+    );
+    assert!(seen.contains("Start orchestrator"), "{seen}");
+    // The entry label is the observable: a whole-capture word sweep is
+    // impossible here because the worktree path itself (`ae-wt/quotaaware`)
+    // echoes in the pane behind the menu. The render unit tests own the
+    // case-insensitive word sweep over the documents themselves.
+    assert!(
+        !seen.contains("Quota for our clients..."),
+        "unaware settings carries no quota entry row: {seen}"
+    );
+
+    // The hand-built continuation refuses instead of drawing. The closer
+    // driver keeps this hang-free in both worlds: with the refusal the
+    // invocation exits at once; if a dialog ever draws (the gate deleted),
+    // Close dismisses it so the exit code — not a timeout — is the verdict.
+    let tail = dialog_identity(&socket, &scratch, "viewed", &clicked);
+    let done = std::sync::atomic::AtomicBool::new(false);
+    let output = std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let deadline = Instant::now() + Duration::from_secs(15);
+            while !done.load(std::sync::atomic::Ordering::Relaxed) && Instant::now() < deadline {
+                let seen = tmux(
+                    &socket,
+                    &scratch,
+                    &["capture-pane", "-p", "-t", "unaware-viewer"],
+                )
+                .1;
+                if seen.contains("quota for our clients") {
+                    assert!(
+                        tmux(
+                            &socket,
+                            &scratch,
+                            &["send-keys", "-t", "unaware-viewer", "c"]
+                        )
+                        .0
+                    );
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        });
+        let output =
+            quota_dialog_invocation_command(&socket, &scratch, &root, &config, &caller_pane, &tail)
+                .output()
+                .unwrap_or_else(|error| panic!("the quota dialog invocation runs: {error}"));
+        done.store(true, std::sync::atomic::Ordering::Relaxed);
+        output
+    });
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "unaware dialog refuses: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("quota awareness is off"),
+        "the refusal names the toggle: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!untouched.is_empty());
+}
+
 #[test]
 fn quota_dialog_window_indent_survives_a_real_centred_menu_draw() {
     let scratch = scratch("quota-indent");

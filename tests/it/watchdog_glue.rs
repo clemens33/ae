@@ -302,14 +302,22 @@ fn a_changing_cache_emits_each_expected_quota_advisory_once() {
     assert!(fs::create_dir_all(&root).is_ok(), "a state root");
     assert!(fs::create_dir_all(&tool_home).is_ok(), "a tool home");
     assert!(
-        fs::write(root.join("config"), "[profiles]\ncl = claude\n").is_ok(),
-        "a quota config"
+        fs::write(
+            root.join("config"),
+            "[profiles]\ncl = claude\n[workspace]\nquota = off\n"
+        )
+        .is_ok(),
+        "a quota config that disagrees with the pin"
     );
     let meta_dir = plant(&root, "quota", &socket, None);
     let meta = fs::read_to_string(meta_dir.join("meta")).unwrap_or_default();
     assert!(
-        fs::write(meta_dir.join("meta"), format!("{meta}quota_every_secs=1\n")).is_ok(),
-        "the persisted quota cadence"
+        fs::write(
+            meta_dir.join("meta"),
+            format!("{meta}quota_every_secs=1\nquota=on\n")
+        )
+        .is_ok(),
+        "the persisted quota cadence and a pin that wins over the config"
     );
     assert!(
         tmux(
@@ -387,6 +395,385 @@ fn a_changing_cache_emits_each_expected_quota_advisory_once() {
         "{}",
         advisories[1]
     );
+}
+
+/// Spawn a production `_watchdog-run` child over `meta_dir` with hermetic
+/// `HOME`/`AE_HOME`/`CONFIG_FILE`, paced for tests: one-second verdict cycles.
+/// The daemon also gets `AE_TEST_QUOTA_TRACE`: every due pass appends one
+/// attestation line to `trace` (see `await_quota_trace`).
+fn spawn_quota_daemon(
+    meta_dir: &Path,
+    tool_home: &Path,
+    root: &Path,
+    config: &Path,
+    scratch: &Path,
+    trace: &Path,
+) -> super::cli::OwnedChild {
+    let stdout =
+        fs::File::create(scratch.join("daemon-out")).unwrap_or_else(|why| panic!("stdout: {why}"));
+    let stderr =
+        fs::File::create(scratch.join("daemon-err")).unwrap_or_else(|why| panic!("stderr: {why}"));
+    super::cli::ae()
+        .arg("_watchdog-run")
+        .arg(meta_dir)
+        .args([
+            "--interval",
+            "1",
+            "--stale-secs",
+            "999999",
+            "--tg-supervise-secs",
+            "0",
+        ])
+        .env("HOME", tool_home)
+        .env("AE_HOME", root)
+        .env("CONFIG_FILE", config)
+        .env("AE_TEST_QUOTA_TRACE", trace)
+        .stdout(stdout)
+        .stderr(stderr)
+        .spawn()
+        .unwrap_or_else(|why| panic!("the ae binary should spawn: {why}"))
+}
+
+/// Plant `@ae_spend` SENTINEL and wait for a due pass to replace it. The
+/// spend pass runs on every due cycle whether aware or not, so its
+/// replacement proves the spend half still runs — nothing more. Phase
+/// ORDERING stands on `await_quota_trace`, never on this.
+fn spend_barrier(socket: &Path, scratch: &Path, session: &str) {
+    assert!(
+        tmux(
+            socket,
+            scratch,
+            &["set-option", "-t", session, "@ae_spend", "SENTINEL"]
+        )
+        .0,
+        "the planted spend fact"
+    );
+    let deadline = Instant::now() + BUDGET;
+    loop {
+        let shown = tmux(
+            socket,
+            scratch,
+            &["show-options", "-qv", "-t", session, "@ae_spend"],
+        )
+        .1;
+        if shown.trim() != "SENTINEL" {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no due pass replaced the spend sentinel for {session}"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// Wait for a NEW trace line that either attests the daemon observed `value`
+/// (`observed max=<value>`) or — when `accept_skip` — proves an unaware due
+/// pass flowed (`skipped`), ignoring stale attestations of older values.
+/// `offset` tracks consumed lines so each phase only sees lines written after
+/// it. Bounded by BUDGET: a daemon that stops cycling fails here instead of
+/// hanging the suite.
+///
+/// The two acceptances are the two worlds, and that is what makes phases
+/// deterministic: production-unaware passes only emit `skipped`, so awaiting
+/// an attestation would hang; a guard-deleted daemon only emits `observed`,
+/// and returning solely on the attested value forces the transition that
+/// must then have booked. Either return makes the assertion that follows it
+/// hold under any interleaving — and since the observed line is the LAST
+/// thing a refresh does, past delivery, an attested value also proves the
+/// receipt already reflects it.
+fn await_quota_trace(trace: &Path, offset: &mut usize, value: &str, accept_skip: bool) {
+    let wanted = format!("observed max={value}");
+    let deadline = Instant::now() + BUDGET;
+    loop {
+        let log = fs::read_to_string(trace).unwrap_or_default();
+        let lines: Vec<&str> = log.lines().collect();
+        for line in &lines[*offset..] {
+            if line.contains(&wanted) || (accept_skip && line.contains("skipped")) {
+                *offset = lines.len();
+                return;
+            }
+        }
+        *offset = lines.len();
+        assert!(
+            Instant::now() < deadline,
+            "no trace attesting {value} (AE_TEST_QUOTA_TRACE={})",
+            trace.display()
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// The production `_watchdog-run` wiring under a pinned `quota=off`: the
+/// daemon performs no quota read (no advisory is ever booked across an
+/// escalation that books when aware) while its spend pass still runs. Each
+/// escalation phase stands on a trace attestation, so the defeating edits
+/// red independent of scheduling: deleting the no-scan guard books
+/// advisories; gating the spend pass instead leaves a sentinel in place.
+#[test]
+fn an_unaware_daemon_reads_no_quota_but_still_publishes_spend() {
+    let scratch = scratch("quota-off");
+    require_tmux(&scratch);
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup::new(&socket, &scratch);
+    let root = scratch.join("state");
+    let tool_home = scratch.join("tool-home");
+    let config = root.join("config");
+    assert!(fs::create_dir_all(&root).is_ok(), "a state root");
+    assert!(fs::create_dir_all(&tool_home).is_ok(), "a tool home");
+    assert!(
+        fs::write(&config, "[profiles]\ncl = claude\n").is_ok(),
+        "a quota config"
+    );
+    let meta_dir = plant(&root, "quota-off", &socket, None);
+    let meta = fs::read_to_string(meta_dir.join("meta")).unwrap_or_default();
+    assert!(
+        fs::write(
+            meta_dir.join("meta"),
+            format!("{meta}quota_every_secs=1\nquota=off\n")
+        )
+        .is_ok(),
+        "the persisted cadence and the pinned unawareness"
+    );
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &["new-session", "-d", "-s", "quota-off", "cat"]
+        )
+        .0,
+        "the watched session"
+    );
+    stamp_agent(&socket, &scratch, "quota-off");
+
+    let now = ae::time::Timestamp::now().epoch();
+    let cache = tool_home.join(".claude.json");
+    write_claude_quota(&cache, 79, now);
+    let trace = scratch.join("quota-trace.log");
+    let mut offset = 0;
+    let mut child = spawn_quota_daemon(&meta_dir, &tool_home, &root, &config, &scratch, &trace);
+
+    let pid_deadline = Instant::now() + BUDGET;
+    while Instant::now() < pid_deadline && !meta_dir.join(".watchdog.pid").is_file() {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // Spend half: the sentinel replaced proves the spend pass runs unaware.
+    spend_barrier(&socket, &scratch, "quota-off");
+    // 79 is the only value ever written: attesting it settles the baseline
+    // for a daemon that observes, while production flows past on `skipped`.
+    await_quota_trace(&trace, &mut offset, "79", true);
+
+    // 79→95 is a critical transition: it books when aware, nothing while
+    // unaware, and the attestation proves the pass saw 95 before asserting.
+    write_claude_quota(&cache, 95, next_observed_at(now));
+    await_quota_trace(&trace, &mut offset, "95", true);
+    let receipt = fs::read_to_string(meta_dir.join("delivered")).unwrap_or_default();
+    assert!(
+        !receipt.contains("quota-advisory"),
+        "unaware booked an advisory: {receipt}"
+    );
+    // The guard itself, independent of booking: while unaware NO due pass
+    // may even observe, so no `observed` line may ever appear. Deleting the
+    // no-scan guard is invisible to the booking assertion above (the
+    // per-cycle clear keeps every observation first-sight-silent) but reds
+    // here under every interleaving — any refresh leaves a line.
+    assert!(
+        !fs::read_to_string(&trace)
+            .unwrap_or_default()
+            .lines()
+            .any(|line| line.contains("observed")),
+        "unaware performed a quota read"
+    );
+
+    // The pin ignores a config flip: live config on changes nothing.
+    assert!(
+        fs::write(
+            &config,
+            "[profiles]\ncl = claude\n[workspace]\nquota = on\n"
+        )
+        .is_ok(),
+        "the flipped config"
+    );
+    write_claude_quota(&cache, 96, next_observed_at(now + 1));
+    await_quota_trace(&trace, &mut offset, "96", true);
+    let receipt = fs::read_to_string(meta_dir.join("delivered")).unwrap_or_default();
+    assert!(
+        !receipt.contains("quota-advisory"),
+        "a pinned-off session followed a config flip: {receipt}"
+    );
+    assert!(
+        !fs::read_to_string(&trace)
+            .unwrap_or_default()
+            .lines()
+            .any(|line| line.contains("observed")),
+        "a pinned-off session read quota after a config flip"
+    );
+    stop_watchdog(&mut child, &socket, &scratch, "quota-off");
+}
+
+/// An UNPINNED session follows the live config in both directions within one
+/// cycle: off stays silent, on books, off stays silent again. Every phase
+/// stands on a spend barrier, so each assertion follows a due pass that ran
+/// after its write — no fixed sleep decides anything.
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one private-tmux flip story: three config phases plus the throttle leak phase"
+)]
+fn an_unpinned_daemon_follows_live_config_flips_both_directions() {
+    let scratch = scratch("quota-flips");
+    require_tmux(&scratch);
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup::new(&socket, &scratch);
+    let root = scratch.join("state");
+    let tool_home = scratch.join("tool-home");
+    assert!(fs::create_dir_all(&root).is_ok(), "a state root");
+    assert!(fs::create_dir_all(&tool_home).is_ok(), "a tool home");
+    let config = root.join("config");
+    let write_config = |quota: &str| {
+        assert!(
+            fs::write(
+                &config,
+                format!("[profiles]\ncl = claude\n[workspace]\nquota = {quota}\n")
+            )
+            .is_ok(),
+            "the flipped config"
+        );
+    };
+    write_config("off");
+    // No `quota` row in meta: a pre-knob session with nothing to hold stable.
+    // A RECORDED config home so the seat is a proven identity: without it the
+    // throttle line below could never render, with or without held state, and
+    // the phase would prove nothing.
+    let meta_dir = plant(&root, "quota-flips", &socket, None);
+    let meta = fs::read_to_string(meta_dir.join("meta")).unwrap_or_default();
+    assert!(
+        !meta.contains("quota="),
+        "the flips case starts unpinned: {meta}"
+    );
+    let canonical_home = std::fs::canonicalize(&tool_home).expect("canonical tool home");
+    assert!(
+        fs::write(
+            meta_dir.join("meta"),
+            format!(
+                "{meta}quota_every_secs=1\nconfig_home.main={}\n",
+                canonical_home.display()
+            )
+        )
+        .is_ok(),
+        "the persisted cadence plus a proven seat identity"
+    );
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &["new-session", "-d", "-s", "quota-flips", "cat"]
+        )
+        .0,
+        "the watched session"
+    );
+    stamp_agent(&socket, &scratch, "quota-flips");
+
+    let now = ae::time::Timestamp::now().epoch();
+    let cache = tool_home.join(".claude.json");
+    write_claude_quota(&cache, 79, now);
+    let trace = scratch.join("quota-trace.log");
+    let mut offset = 0;
+    let mut child = spawn_quota_daemon(&meta_dir, &tool_home, &root, &config, &scratch, &trace);
+    let pid_deadline = Instant::now() + BUDGET;
+    while Instant::now() < pid_deadline && !meta_dir.join(".watchdog.pid").is_file() {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // 79 is the only value ever written: the first attestation settles it.
+    await_quota_trace(&trace, &mut offset, "79", true);
+
+    // OFF: 79→95 books nothing.
+    let at_95 = next_observed_at(now);
+    write_claude_quota(&cache, 95, at_95);
+    await_quota_trace(&trace, &mut offset, "95", true);
+    let delivered = || fs::read_to_string(meta_dir.join("delivered")).unwrap_or_default();
+    assert!(
+        !delivered().contains("quota-advisory"),
+        "unpinned off booked: {}",
+        delivered()
+    );
+
+    // Flip ON, then prove the new mode before relying on it: only an
+    // attested observation (never a stale pre-flip `skipped`) advances us.
+    // 95 is then the first aware sight (silent baseline), so step down and
+    // back up to force transitions that must book.
+    write_config("on");
+    await_quota_trace(&trace, &mut offset, "95", false);
+    let at_70 = next_observed_at(at_95);
+    write_claude_quota(&cache, 70, at_70);
+    await_quota_trace(&trace, &mut offset, "70", false);
+    let at_96 = next_observed_at(at_70);
+    write_claude_quota(&cache, 96, at_96);
+    await_quota_trace(&trace, &mut offset, "96", false);
+    let booked = delivered().matches("quota-advisory").count();
+    assert!(
+        booked >= 1,
+        "unpinned on booked nothing after the flip: {}",
+        delivered()
+    );
+
+    // Flip OFF again and prove the mode the same way: only a fresh `skipped`
+    // advances us. New transitions then book nothing more.
+    write_config("off");
+    await_quota_trace(&trace, &mut offset, "96", true);
+    let at_71 = next_observed_at(at_96);
+    write_claude_quota(&cache, 71, at_71);
+    await_quota_trace(&trace, &mut offset, "71", true);
+    let at_97 = next_observed_at(at_71);
+    write_claude_quota(&cache, 97, at_97);
+    await_quota_trace(&trace, &mut offset, "97", true);
+    assert_eq!(
+        delivered().matches("quota-advisory").count(),
+        booked,
+        "unpinned off booked after flipping back: {}",
+        delivered()
+    );
+
+    // Still OFF, then THROTTLE: the aware phase held a critical observation,
+    // but the flip drops it every cycle, so the throttle message carries no
+    // quota row. Deleting the clear injects the held line here instead.
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &[
+                "send-keys",
+                "-t",
+                "quota-flips",
+                "429 Too Many Requests",
+                "Enter"
+            ]
+        )
+        .0,
+        "the pane shows throttling"
+    );
+    let throttle_deadline = Instant::now() + BUDGET;
+    let throttled = loop {
+        let log = fs::read_to_string(meta_dir.join("events.jsonl")).unwrap_or_default();
+        // A complete line only: event lines end in `}` before their newline,
+        // so a torn append cannot satisfy this while its summary is still
+        // arriving.
+        if let Some(line) = log.lines().find(|line| {
+            line.contains("\"action\":\"throttled\"") && line.trim_end().ends_with('}')
+        }) {
+            break line.to_owned();
+        }
+        assert!(
+            Instant::now() < throttle_deadline,
+            "no throttled event emitted"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert!(
+        !throttled.contains("quota:"),
+        "a held quota row leaked into the throttle message: {throttled}"
+    );
+    stop_watchdog(&mut child, &socket, &scratch, "quota-flips");
 }
 
 #[test]

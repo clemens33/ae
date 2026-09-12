@@ -617,6 +617,43 @@ fn idle_nudge_cadence_defaults_validates_and_survives_resume() {
 }
 
 #[test]
+fn quota_awareness_defaults_on_pins_off_and_survives_resume() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::new("quota-aware", &["claude"], None);
+    let base = std::fs::read_to_string(&rig.config).expect("the rig config");
+
+    let (code, stdout, stderr) = rig.launch(&["--local", "defaultaware"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        rig.meta("defaultaware").contains("quota=on\n"),
+        "absent means ON, pinned as a durable launch fact"
+    );
+
+    let off = base.replace("watchdog = false\n", "watchdog = false\nquota = off\n");
+    assert!(std::fs::write(&rig.config, off).is_ok(), "off config");
+    let (code, stdout, stderr) = rig.launch(&["--local", "offaware"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        rig.meta("offaware").contains("quota=off\n"),
+        "the daemon's persisted awareness is missing"
+    );
+    assert!(
+        rig.tmux(&["kill-session", "-t", "=offaware"]).0,
+        "stop the first runtime without removing its state"
+    );
+    assert!(std::fs::write(&rig.config, base).is_ok(), "changed config");
+    let (code, stdout, stderr) = rig.launch(&["--local", "offaware"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        rig.meta("offaware").contains("quota=off\n"),
+        "resume replaced the persisted awareness from changed config"
+    );
+    rig.kill_server_at(&["-S", &rig.sock.display().to_string()]);
+}
+
+#[test]
 #[allow(clippy::too_many_lines, reason = "one end-to-end retained-store story")]
 fn a_client_profile_launches_the_configured_executable_and_home() {
     if skip() {

@@ -266,6 +266,7 @@ inventoried by the clippy `disallowed-methods` boundary. Never read the world ad
 | `AE_TMUX_SERVER` + `AE_TMUX_SERVER_KIND` | which tmux server a launch lands on; absent → named server `ae` | CHECKOUT only |
 | `AE_NO_AUTOSTART` | start no companion: neither the watchdog nor the Telegram bridge | both |
 | `AE_TEST_BOOT_TIME` | the host boot time the absence proof compares against | CHECKOUT only |
+| `AE_TEST_QUOTA_TRACE` | when set to a path, each due quota pass appends one attestation line there (`skipped`, or `observed max=<pct> booked=<n>`); test seam, unset in production | CHECKOUT only |
 | `TMUX` / `TMUX_PANE` | which pane this shell is, for `stop` and `watchdog` | both |
 
 `doors::boot_time` is the one door with two spellings and no variable of its own: Linux's
@@ -362,6 +363,7 @@ palette = darcula          # darcula (default), a = neutral dark, b = warmer
 icons = on                 # off swaps the glyph set for its ASCII fallback
 theme = on                 # off keeps YOUR status line; ae still fills @ae_*
 motion = on                # off freezes the spinner
+quota = on                 # off stops ae acting on vendor quota; ae quota stays
 quota_every_secs = 300     # watchdog quota advisory cadence; 0 disables
 idle_nudge_secs = 300      # positive empty-input reminder cadence; 0 disables
 

@@ -660,6 +660,28 @@ fn run_orchestrator(tail: &[String], err: &mut impl Write) -> Result<u8> {
     Ok(0)
 }
 
+/// Whether the session in `session_dir` acts on vendor quota: its pinned
+/// `quota` meta row, else the LIVE CONFIG, else ON — resolved through the ONE
+/// `config::resolve_quota_aware` precedence (see it for why). Absent everywhere
+/// means ON — exactly today's behaviour — for sessions that pre-date the knob
+/// and when the state cannot be read (a menu that cannot prove unawareness
+/// keeps today's surface rather than hiding it).
+fn session_quota_aware(
+    session_dir: &std::path::Path,
+    global: Option<&std::path::Path>,
+    local: Option<&std::path::Path>,
+) -> bool {
+    let pinned = crate::meta::read_bytes(session_dir).ok().and_then(|bytes| {
+        crate::meta::first_value(&bytes, "quota")
+            .map(|value| String::from_utf8_lossy(value).into_owned())
+    });
+    let configured = crate::config::read_workspace_keys(global, local, &["quota"])
+        .into_iter()
+        .next()
+        .flatten();
+    crate::config::resolve_quota_aware(pinned.as_deref(), configured.as_deref())
+}
+
 /// `ae orchestrator --settings --client …` — one bottom-right observational menu.
 #[allow(
     clippy::too_many_lines,
@@ -752,7 +774,19 @@ fn run_settings_menu(
     }
 
     let entry = settings_menu::quota_entry(&launcher, &snapshot);
-    let full = settings_menu::menu_with_quota(
+    let session_dir = lifecycle::sessions_dir(&root).join(&client.session_name);
+    let local = session::read_meta(&session_dir)
+        .ok()
+        .as_ref()
+        .and_then(meta::Meta::origin)
+        .and_then(|origin| config::local_overlay(&session_dir, origin));
+    let aware = session_quota_aware(&session_dir, Some(&config), local.as_deref());
+    // Unaware sessions draw the base control menu only: `menu_for_awareness`
+    // returns it directly, so its budget equals the proven base budget below
+    // and the quota-degraded arm is unreachable — there is no quota summary
+    // to overflow-notice about.
+    let full = settings_menu::menu_for_awareness(
+        aware,
         &control,
         &launcher,
         &snapshot,
@@ -913,6 +947,16 @@ fn run_quota_dialog(
         .as_ref()
         .and_then(meta::Meta::origin)
         .and_then(|origin| config::local_overlay(&session_dir, origin));
+    // The continuation refuses when the invoking session is quota-unaware: the
+    // menu carried no entry, so reaching here means a stale or hand-built
+    // invocation. `ae quota` stays the full view in both states.
+    if !session_quota_aware(&session_dir, Some(&config), local.as_deref()) {
+        report(
+            "quota awareness is off for this session ([workspace] quota = off), so there is no quota dialog",
+            err,
+        );
+        return EXIT_UNAVAILABLE;
+    }
     let home = doors::home();
     let roots = inventory::Roots::under(&root);
     let now = time::Timestamp::now().epoch();
@@ -2605,6 +2649,45 @@ mod tests {
         assert_eq!(super::own_session(&dir), "renamed");
         std::fs::write(dir.join(crate::store::META), "session=\n").unwrap();
         assert_eq!(super::own_session(&dir), "named", "an empty key is no key");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn session_quota_awareness_defaults_on_reads_the_pin_and_honours_live_config() {
+        let root = std::path::PathBuf::from(format!("/tmp/ae-quota-aware-{}", std::process::id()));
+        let dir = root.join("session");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&dir).unwrap();
+        let off = root.join("off");
+        let on = root.join("on");
+        std::fs::write(&off, "[workspace]\nquota = off\n").unwrap();
+        std::fs::write(&on, "[workspace]\nquota = on\n").unwrap();
+        let ask = |meta: Option<&str>, config: Option<&std::path::Path>| {
+            if let Some(body) = meta {
+                std::fs::write(dir.join(crate::store::META), body).unwrap();
+            } else {
+                let _ = std::fs::remove_file(dir.join(crate::store::META));
+            }
+            super::session_quota_aware(&dir, config, None)
+        };
+        // No state at all: today's surface, not a refusal.
+        assert!(ask(None, None));
+        assert!(ask(Some("session=demo\n"), None), "absent row means ON");
+        assert!(ask(Some("session=demo\nquota=on\n"), Some(off.as_path())));
+        assert!(
+            !ask(Some("session=demo\nquota=off\n"), Some(on.as_path())),
+            "a pinned off row is what gates the menu and refuses the dialog"
+        );
+        // The off-diagonal: a pre-knob session (no pin) honours live config.
+        assert!(
+            !ask(Some("session=demo\n"), Some(off.as_path())),
+            "no pin plus config off is unaware everywhere"
+        );
+        assert!(ask(Some("session=demo\n"), Some(on.as_path())));
+        assert!(
+            !ask(None, Some(off.as_path())),
+            "unreadable meta falls back to config"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -1688,6 +1688,7 @@ fn launch(
             "theme",
             "motion",
             "sweep",
+            "quota",
         ],
     );
     let config_layout = extras[0].clone().unwrap_or_default();
@@ -1780,6 +1781,28 @@ fn launch(
         )?;
         return Ok(EXIT_USAGE);
     }
+    // `quota = off` is pinned like `quota_every_secs`: the recorded meta wins
+    // on resume so a config flip applies to NEW sessions only. Absent means ON
+    // — exactly today's behaviour — through the ONE `config::quota_aware`
+    // predicate. `quota = off` WINS over `quota_every_secs`: a cadence is
+    // meaningless when the feature is off, and the watchdog enforces that.
+    let recorded_quota = if meta_present {
+        meta_value(&dir, "quota")
+    } else {
+        None
+    };
+    let configured_quota = if recorded_quota.is_none() {
+        extras[12].clone().unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let quota_raw = recorded_quota.unwrap_or(configured_quota);
+    let quota = if crate::config::quota_aware(&quota_raw) {
+        "on"
+    } else {
+        "off"
+    }
+    .to_owned();
 
     if let Some(workers) = &plan.workers {
         cfg.workers = Some(workers.clone());
@@ -2021,6 +2044,7 @@ fn launch(
             sweep_sec: sweep_sec.as_deref(),
             quota_every_secs: &quota_every_secs,
             idle_nudge_secs: &idle_nudge_secs,
+            quota: &quota,
         },
         parent.as_ref(),
         lifecycle.take(),
@@ -2110,6 +2134,7 @@ struct WatchdogFacts<'a> {
     sweep_sec: Option<&'a str>,
     quota_every_secs: &'a str,
     idle_nudge_secs: &'a str,
+    quota: &'a str,
 }
 
 #[allow(
@@ -3003,6 +3028,7 @@ fn meta_document(
     }
     row("quota_every_secs", watchdog.quota_every_secs);
     row("idle_nudge_secs", watchdog.idle_nudge_secs);
+    row("quota", watchdog.quota);
     if let Some(id) = parent_id {
         row("parent_archive_id", &id);
         row(

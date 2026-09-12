@@ -74,15 +74,19 @@ Set them in the shell before `ae <name>`, or via your shell rc.
 For the orchestrator only, launch persists `[workspace] sweep` as `sweep_sec`;
 that session fact outranks `AE_WATCHDOG_SWEEP_SEC`, which outranks 120.
 
-Launch also persists `[workspace] quota_every_secs` (default 300, `0` disables) for every session.
+Launch also persists `[workspace] quota_every_secs` (default 300, `0` disables) for every session,
+and the canonical `[workspace] quota` awareness (`on` by default) beside it.
 The daemon rounds that cadence up to whole verdict cycles. One counter paces both readings this
-cadence owns: the spend fact above, then the quota observation. Each due pass performs one bounded
-`ae quota` observation, keeps state by canonical source, rollout, bucket, qualifier, and window,
+cadence owns: the spend fact above, then — only when the session is quota-aware — the quota
+observation. Each due pass performs one bounded `ae quota` observation, keeps state by canonical
+source, rollout, bucket, qualifier, and window,
 then advises only the session's main and optional colead on threshold transitions. A refused paste
 is retried once at the next quota observation; newer state, silence, expiry, or changed recipient
 identity cancels the old booking. A helper's `UNCONFIRMED` submit counts as delivered because the
 paste may have landed; only its explicit pre-submit-refusal marker permits a retry. No quota state
-survives a watchdog restart.
+survives a watchdog restart. When the session is quota-unaware (`[workspace] quota = off`), the
+due pass refreshes the spend fact and skips the quota observation entirely: no vendor-cache read,
+no advisory booking, no held observation for the throttle line below.
 
 Launch persists `[workspace] idle_nudge_secs` too (default 300, `0` disables).
 This clock starts when the current Claude Code or Codex frame is positively
@@ -142,7 +146,9 @@ replacement task. The seat never runs `ae brief --all` on a timer.
 
 ## Per-cycle state machine
 
-Before walking panes, a due quota pass refreshes the session-local advisory state. The first sample
+Before walking panes, a due quota pass refreshes the session-local advisory state — unless the
+session is quota-unaware, in which case the pass refreshes the spend fact only and there is no
+advisory state to refresh. The first sample
 is silent. `headroom` is below 80%, `low` begins at 80%, and `critical` at 95%; downward hysteresis
 leaves those states below 75% and 90% respectively. Unsupported, unreadable, truncated, unknown,
 or older-than-60-minute rows are silent and drop prior state.
@@ -256,7 +262,8 @@ When detected:
 4. When the pattern no longer matches → emit `throttle-cleared` event, reset streak.
 
 On the first throttle event only, the watchdog may append the worst row from its last scheduled
-quota observation. The source must exactly match the seat's recorded config-home mode/base; Codex
+quota observation — never when quota-unaware, where there is no scheduled observation to read
+from. The source must exactly match the seat's recorded config-home mode/base; Codex
 also requires the recorded rollout id. Missing or legacy identity, another rollout, and expired or
 silent rows leave the existing throttle event unchanged. This lookup uses the uncapped observation
 and never reads a vendor cache from the throttle path.

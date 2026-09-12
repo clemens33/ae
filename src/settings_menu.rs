@@ -511,6 +511,25 @@ pub(crate) fn menu_with_quota(
     built
 }
 
+/// The settings menu for one awareness: the base control menu with no quota
+/// entry anywhere when unaware, otherwise the quota entry above it. The ONE
+/// place the settings surface reads awareness — the caller resolves the bool
+/// through `config::quota_aware` and this branch enforces it.
+pub(crate) fn menu_for_awareness(
+    quota_aware: bool,
+    control: &Control,
+    launcher: &[String],
+    snapshot: &Snapshot<'_>,
+    version: Option<&str>,
+    palette: &crate::theme::Palette,
+    entry: MenuItem,
+) -> Menu {
+    if !quota_aware {
+        return menu(control, launcher, snapshot, version, palette);
+    }
+    menu_with_quota(control, launcher, snapshot, version, palette, entry)
+}
+
 /// Build the observational quota dialog: every row disabled except Close.
 pub(crate) fn quota_dialog_menu(
     rows: &[crate::quota::DialogRow],
@@ -1187,6 +1206,57 @@ mod tests {
         assert_eq!(built.items[2].label, "orchestrator: absent");
         assert_eq!(built.items[4].label, "Start orchestrator");
         assert_eq!(built.items[4].key, "s");
+    }
+
+    /// The awareness property: unaware carries no quota entry row anywhere in
+    /// the menu, aware keeps exactly the one live row above the control.
+    #[test]
+    fn awareness_decides_whether_the_quota_entry_row_exists() {
+        let snapshot = snapshot();
+        let entry_for = |aware: bool| {
+            super::menu_for_awareness(
+                aware,
+                &Control::Start,
+                &[],
+                &snapshot,
+                None,
+                &crate::theme::Palette::DARCULA,
+                super::quota_entry(&[], &snapshot),
+            )
+        };
+        let unaware = entry_for(false);
+        assert!(
+            unaware
+                .items
+                .iter()
+                .all(|item| !item.label.to_lowercase().contains("quota")),
+            "unaware menu must carry no quota row: {:?}",
+            unaware
+                .items
+                .iter()
+                .map(|item| &item.label)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            unaware.items.len(),
+            menu(
+                &Control::Start,
+                &[],
+                &snapshot,
+                None,
+                &crate::theme::Palette::DARCULA,
+            )
+            .items
+            .len(),
+            "unaware menu is exactly the base control menu"
+        );
+        let aware = entry_for(true);
+        assert_eq!(aware.items[0].label, "Quota for our clients...");
+        assert_eq!(aware.items[0].key, "q");
+        assert!(
+            matches!(aware.items[0].action, crate::tmux::MenuAction::Run(_)),
+            "the aware entry stays live"
+        );
     }
 
     #[test]

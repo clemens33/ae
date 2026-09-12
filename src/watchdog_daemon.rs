@@ -56,6 +56,13 @@ pub struct Knobs {
     pub interval_secs: u64,
     /// Seconds between bounded local quota observations; zero disables them.
     pub quota_every_secs: u64,
+    /// Whether ae acts on vendor quota at all: `[workspace] quota`, absent
+    /// means ON. Re-resolved EVERY cycle in `watch` through the ONE
+    /// `config::resolve_quota_aware` precedence — never the raw string, never
+    /// a second grammar, never a startup value. OFF wins over
+    /// `quota_every_secs`: a cadence is meaningless when the feature is off.
+    /// Usage machinery (`@ae_spend`, `ae usage`) is NOT gated by this.
+    pub quota_aware: bool,
     /// Seconds of continuously observed idle before the state reminder; zero disables it.
     pub idle_nudge_secs: u64,
     /// The window under which a pane change or an event counts as recent.
@@ -83,6 +90,7 @@ impl Default for Knobs {
         Self {
             interval_secs: 60,
             quota_every_secs: 300,
+            quota_aware: true,
             idle_nudge_secs: 300,
             stale_secs: 900,
             max_nudges: 2,
@@ -449,6 +457,19 @@ fn quota_observation_due(carry: &mut QuotaCarry, knobs: &Knobs) -> bool {
 }
 
 impl QuotaCarry {
+    /// Drop everything a quota observation ever taught: tracked windows,
+    /// pending notices and the last observation — but NOT the shared due
+    /// counter, which also paces the spend fact. Called every cycle while
+    /// unaware, so the property holds: while unaware, nothing holds a quota
+    /// observation for any consumer (throttle line included) to inject.
+    /// Losing hysteresis across an OFF/ON cycle is correct and
+    /// direction-symmetric with reset declarations clearing a critical.
+    fn clear_held(&mut self) {
+        self.tracked.clear();
+        self.pending.clear();
+        self.last_observation = None;
+    }
+
     fn cancel_where(
         &mut self,
         predicate: impl Fn(&PendingAdvisory) -> bool,
@@ -1382,6 +1403,21 @@ fn quota_seconds(meta_bytes: &[u8], fallback: u64) -> Result<u64, String> {
     pinned_seconds(meta_bytes, "quota_every_secs", fallback)
 }
 
+/// Resolve the session-pinned quota awareness through the ONE
+/// `config::resolve_quota_aware` precedence: pin, else live config, else ON.
+/// Absent everywhere means ON — exactly today's behaviour — for sessions that
+/// pre-date the knob. The live-config fallback is what lets a pre-knob session
+/// honour the setting at all; a running session keeps its pin.
+fn quota_awareness(meta_bytes: &[u8], global: Option<&Path>, local: Option<&Path>) -> bool {
+    let pinned = crate::meta::first_value(meta_bytes, "quota")
+        .map(|value| String::from_utf8_lossy(value).into_owned());
+    let configured = crate::config::read_workspace_keys(global, local, &["quota"])
+        .into_iter()
+        .next()
+        .flatten();
+    crate::config::resolve_quota_aware(pinned.as_deref(), configured.as_deref())
+}
+
 /// Resolve the session-pinned idle reminder cadence before the flag/default.
 fn idle_nudge_seconds(meta_bytes: &[u8], fallback: u64) -> Result<u64, String> {
     pinned_seconds(meta_bytes, "idle_nudge_secs", fallback)
@@ -1834,6 +1870,9 @@ pub fn run(
             return Ok(crate::state::EXIT_USAGE);
         }
     };
+    // Awareness is re-resolved EVERY cycle in `watch` (a pin wins and holds
+    // the session stable; with no pin the live config is honoured at use),
+    // so nothing is pinned here.
     knobs.idle_nudge_secs = match idle_nudge_seconds(&bytes, knobs.idle_nudge_secs) {
         Ok(seconds) => seconds,
         Err(value) => {
@@ -1963,6 +2002,17 @@ fn watch(
     err: &mut impl Write,
 ) -> crate::Result<u8> {
     let mut carry = Carry::new(&knobs);
+    // The global config PATH is stable for this daemon's life; its CONTENT is
+    // re-read every cycle below, so a config flip reaches an unpinned session
+    // within one cycle.
+    let quota_global = crate::state_root()
+        .or_else(|| {
+            meta_dir
+                .parent()
+                .and_then(Path::parent)
+                .map(Path::to_path_buf)
+        })
+        .map(|root| crate::doors::config_file(crate::shape::current(), &root));
     loop {
         let read = crate::meta::read_bytes(meta_dir);
         // ONE parse per cycle, and it happens BEFORE the probe because the
@@ -2015,16 +2065,24 @@ fn watch(
             // anyone expects to take.
             Continuation::Run => {
                 if let (Ok(bytes), Some(meta)) = (&read, &parsed) {
+                    let local_config = meta
+                        .origin()
+                        .and_then(|origin| crate::config::local_overlay(meta_dir, origin));
+                    // Awareness AT USE, every cycle: a pinned row wins and
+                    // holds the session stable across config flips; with no
+                    // pin the live config is honoured now, so all consumers
+                    // flip together within one cycle. Never a startup value.
+                    let mut cycle_knobs = knobs;
+                    cycle_knobs.quota_aware =
+                        quota_awareness(bytes, quota_global.as_deref(), local_config.as_deref());
                     let cycle = Cycle {
-                        knobs,
+                        knobs: cycle_knobs,
                         meta_dir,
                         helper,
                         server: &server,
                         session,
                         goal: meta.goal().map(ToOwned::to_owned),
-                        local_config: meta
-                            .origin()
-                            .and_then(|origin| crate::config::local_overlay(meta_dir, origin)),
+                        local_config,
                         lead_pair: crate::lifecycle::meta_value(bytes, "layout") == "lead-pair",
                         // Re-read EVERY cycle, like the goal and the roster: a
                         // session can be promoted to orchestrator, or its main
@@ -2620,7 +2678,15 @@ impl Cycle<'_> {
             Ok(observation) => {
                 let recipients = quota_recipients(&self.roster, self.lead_pair);
                 let actions = carry.reconcile(&observation, &recipients, self.meta_dir);
-                self.apply_quota_actions(carry, actions, now, err)
+                let summary = Self::observed_summary(&observation, actions.len());
+                // LAST: the trace attests a COMPLETED refresh — observation,
+                // booking, and delivery all done — so awaiting the line
+                // proves everything the test subsequently reads has already
+                // happened. Tracing before delivery would attest booking
+                // while the receipt was still absent.
+                self.apply_quota_actions(carry, actions, now, err)?;
+                Self::trace_quota(&summary);
+                Ok(())
             }
             Err(why) => {
                 writeln!(
@@ -2705,6 +2771,8 @@ impl Cycle<'_> {
 
     /// The worst exact-match quota row for this slot — `None` unless the pane
     /// is ACTUALLY throttled, because that is the only reading it explains.
+    /// Unaware sessions never hold an observation (the cycle skips the quota
+    /// read entirely), so no quota line can render there either.
     fn throttle_quota(
         &self,
         quota: &QuotaCarry,
@@ -2744,8 +2812,109 @@ impl Cycle<'_> {
         }
     }
 
+    /// One quota-cadence pass: the vendor-quota observation and advisory
+    /// booking only when aware, then the spend fact always. `quota = off`
+    /// WINS over `quota_every_secs`: the spend fact is usage machinery and
+    /// still publishes on the cadence, but no quota read is even attempted
+    /// unaware.
+    ///
+    /// The two attempts are INDEPENDENT: a quota failure must not stop spend
+    /// publishing, nor spend stop a refresh. Both run; the first error, if
+    /// any, is returned after both have run.
+    fn run_quota_cadence(
+        &self,
+        carry: &mut QuotaCarry,
+        now: i64,
+        err: &mut impl Write,
+    ) -> crate::Result<()> {
+        if quota_observation_due(carry, &self.knobs) {
+            let quota_result = if self.knobs.quota_aware {
+                Some(self.refresh_quota(carry, now, err))
+            } else {
+                Self::trace_quota("skipped");
+                None
+            };
+            let spend_result = self.publish_spend(now, err);
+            if let Some(result) = quota_result {
+                result?;
+            }
+            spend_result?;
+        }
+        Ok(())
+    }
+
+    /// Append one attestation line to the test-only quota trace named by
+    /// `AE_TEST_QUOTA_TRACE`. A `skipped` line marks a due pass that
+    /// correctly performed no quota read; an `observed ...` line marks a
+    /// COMPLETED refresh — observation, booking, AND delivery — and names
+    /// the maximum window percentage it saw, so the it-test can await proof
+    /// that everything it subsequently reads has already happened instead
+    /// of racing the daemon with fixed sleeps. One line carries exactly one
+    /// meaning: the observed line never stands for delivery, nor skipped
+    /// for observation.
+    ///
+    /// CHECKOUT ONLY, exactly like `AE_TEST_BOOT_TIME` (`src/doors.rs`):
+    /// the published shape returns before reading the variable, so the
+    /// shipped watchdog has no such door. The integration tests drive the
+    /// checkout binary, which is why their trace assertions keep working.
+    ///
+    /// Deliberately unexamined write, stated plainly: it opens the
+    /// environment-given path with create+append and no `O_EXCL`, mode, or
+    /// path validation. That is acceptable ONLY behind the checkout gate
+    /// above and because the daemon already runs as the invoking user — a
+    /// hostile path can at most append trace lines to a file that user could
+    /// write anyway. See `AGENTS.md`'s doors table.
+    fn trace_quota(line: &str) {
+        if !crate::shape::current().honours_environment() {
+            return;
+        }
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "a checkout-only test door like AE_TEST_BOOT_TIME: unset in production, read on due passes only — see clippy.toml"
+        )]
+        let path = std::env::var_os("AE_TEST_QUOTA_TRACE");
+        let Some(path) = path else { return };
+        let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        else {
+            return;
+        };
+        let _ = writeln!(file, "{line}");
+    }
+
+    /// The attestation one completed refresh reports to the test trace: the
+    /// maximum window percentage it observed (`none` when no row stated one)
+    /// and how many advisory actions that observation booked.
+    fn observed_summary(observation: &crate::quota::Observation, booked: usize) -> String {
+        let mut max: Option<f64> = None;
+        for group in &observation.groups {
+            for row in &group.rows {
+                if let Some(pct) = row
+                    .used_percent
+                    .as_deref()
+                    .and_then(|text| text.parse::<f64>().ok())
+                {
+                    max = Some(max.map_or(pct, |held: f64| held.max(pct)));
+                }
+            }
+        }
+        format!(
+            "observed max={} booked={booked}",
+            max.map_or_else(|| "none".to_owned(), |value| format!("{value}"))
+        )
+    }
+
     /// One pass over the session's panes.
     fn run(&self, carry: &mut Carry, err: &mut impl Write) -> crate::Result<()> {
+        if !self.knobs.quota_aware {
+            // Property: while unaware, nothing holds a quota observation. A
+            // flip OFF drops whatever the aware phase held, every cycle, so
+            // no later consumer — the throttle line included — can inject a
+            // row from before the flip. See `QuotaCarry::clear_held`.
+            carry.quota.clear_held();
+        }
         // An enumeration that FAILED is not evidence that anything is gone.
         let Some(observed) = transport::observe_watch_panes(self.server, self.session) else {
             writeln!(
@@ -2765,10 +2934,7 @@ impl Cycle<'_> {
         // ONE cadence, one counter: `quota_every_secs` paces the quota advisory
         // and the spend fact alike, and zero disables both. Spend costs a
         // transcript pass, so it must never ride the per-cycle interval.
-        if quota_observation_due(&mut carry.quota, &self.knobs) {
-            self.publish_spend(now, err)?;
-            self.refresh_quota(&mut carry.quota, now, err)?;
-        }
+        self.run_quota_cadence(&mut carry.quota, now, err)?;
 
         let seats = held_seats(&observed, table.as_deref(), &|slot| self.agent_bin(slot));
         let outstanding = crate::session::Outstanding::read(&events, self.session, &seats);
@@ -5000,6 +5166,159 @@ mod tests {
         assert!(
             super::menu_open_expired("not-an-epoch", 161, 60),
             "malformed transient state must not light the button forever"
+        );
+    }
+
+    #[test]
+    fn persisted_quota_awareness_defaults_on_reads_the_pin_and_honours_live_config() {
+        let scratch = Scratch::new("quota-awareness");
+        let off = scratch.0.join("off");
+        let on = scratch.0.join("on");
+        std::fs::write(&off, "[workspace]\nquota = off\n").unwrap();
+        std::fs::write(&on, "[workspace]\nquota = on\n").unwrap();
+        let ask = |meta: &[u8], config: Option<&std::path::Path>| {
+            super::quota_awareness(meta, config, None)
+        };
+        // Absent means ON — exactly today's behaviour for pre-knob sessions.
+        assert!(ask(b"session=demo\n", None));
+        assert!(ask(b"", None));
+        assert!(ask(b"session=demo\nquota=on\n", Some(off.as_path())));
+        // Unknown spellings stay ON, like the look knobs they share grammar with.
+        assert!(ask(b"session=demo\nquota=bogus\n", None));
+        for off_meta in [
+            b"quota=off\n".as_slice(),
+            b"quota=OFF\n",
+            b"quota=0\n",
+            b"quota=no\n",
+        ] {
+            assert!(!ask(off_meta, None), "{off_meta:?} must mean unaware");
+        }
+        // The off-diagonal: a pre-knob session (no pin) honours live config.
+        assert!(
+            !ask(b"session=demo\n", Some(off.as_path())),
+            "no pin plus config off is unaware everywhere"
+        );
+        assert!(ask(b"session=demo\n", Some(on.as_path())));
+        // Awareness is ON by default in fresh knobs.
+        assert!(Knobs::default().quota_aware);
+    }
+
+    /// An OFF flip drops everything the aware phase held, before any consumer
+    /// runs: tracked windows, pending notices and the last observation. No
+    /// tmux here, so the pane walk is skipped — the clear is what is pinned.
+    /// Deleting it leaves the held rows behind and fails every assertion.
+    #[test]
+    fn unaware_cycle_clears_held_quota_state_before_any_consumer() {
+        let recipients = [quota_recipient("main", "lead")];
+        let dir = Path::new("/m");
+        let mut carry = Carry::new(&Knobs::default());
+        assert!(
+            carry
+                .quota
+                .reconcile(&quota_for("79", 9_900), &recipients, dir)
+                .is_empty(),
+            "first sample is baseline only"
+        );
+        assert_eq!(
+            transition_deliveries(&carry.quota.reconcile(
+                &quota_for("95", 9_901),
+                &recipients,
+                dir
+            ))
+            .len(),
+            1,
+            "the aware phase holds a booked transition"
+        );
+        assert!(carry.quota.last_observation.is_some());
+        let scratch = Scratch::new("unaware-clear");
+        let helper = SendHelper::for_session(&scratch.0);
+        let server = ServerId::Ambient;
+        let cycle = Cycle {
+            knobs: Knobs {
+                quota_aware: false,
+                ..Knobs::default()
+            },
+            meta_dir: &scratch.0,
+            helper: &helper,
+            server: &server,
+            session: "demo",
+            goal: None,
+            roster: Vec::new(),
+            local_config: None,
+            lead_pair: false,
+            meta_agent: false,
+        };
+        let mut err = Vec::new();
+        cycle
+            .run(&mut carry, &mut err)
+            .expect("a skipped enumeration is not a failure");
+        assert!(carry.quota.tracked.is_empty(), "tracked rows dropped");
+        assert!(carry.quota.pending.is_empty(), "pending notices dropped");
+        assert!(
+            carry.quota.last_observation.is_none(),
+            "no held observation for the throttle line"
+        );
+    }
+
+    /// A carry holding no observation renders no throttle line even for a
+    /// throttled seat. That is the whole unaware throttle story now: the
+    /// cycle skips the quota read entirely when unaware, so there is never a
+    /// held observation to render — `run_quota_cadence`'s guard is the gate
+    /// and the unaware-daemon integration test pins it at production level.
+    #[test]
+    fn a_throttled_seat_without_a_held_observation_renders_no_quota_line() {
+        let rollout = "018f1f70-7b2c-7000-8000-000000000001";
+        let entry = RosterEntry {
+            slot: "main".to_owned(),
+            name: "lead".to_owned(),
+            profile: None,
+            harness_session: Some(rollout.to_owned()),
+            config_home: RecordedConfigHome::Path(PathBuf::from("/tmp/cx")),
+            config_home_base: RecordedConfigHomeBase::Missing,
+            binary: Some("codex".to_owned()),
+        };
+        let identity = crate::quota::recorded_identity(&entry).expect("recorded identity");
+        let observation = quota_observation(
+            vec![quota_group(
+                &identity.source,
+                Some(rollout),
+                Some("demo:lead"),
+                vec![quota_row(
+                    "weekly_scoped",
+                    Some("pro"),
+                    "96",
+                    9_900,
+                    crate::quota::Status::Fresh,
+                )],
+            )],
+            10_000,
+        );
+        let mut carry = QuotaCarry::default();
+        let _ = carry.reconcile(&observation, &[], Path::new("/m"));
+        let scratch = Scratch::new("unaware-throttle");
+        let helper = SendHelper::for_session(&scratch.0);
+        let server = ServerId::Ambient;
+        let cycle = Cycle {
+            knobs: Knobs::default(),
+            meta_dir: &scratch.0,
+            helper: &helper,
+            server: &server,
+            session: "demo",
+            goal: None,
+            roster: vec![entry.clone()],
+            local_config: None,
+            lead_pair: false,
+            meta_agent: false,
+        };
+        assert!(
+            cycle.throttle_quota(&carry, "main", 10_000, true).is_some(),
+            "a held observation renders the line for a throttled seat"
+        );
+        assert!(
+            cycle
+                .throttle_quota(&QuotaCarry::default(), "main", 10_000, true)
+                .is_none(),
+            "no held observation, no quota line — however throttled the pane"
         );
     }
 

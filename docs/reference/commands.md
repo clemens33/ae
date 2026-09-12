@@ -459,7 +459,10 @@ so the watchdog expires a leftover highlight at half its interval; with the watc
 persists only until another menu opens or a settings action runs. Drawing or dismissing settings
 does not otherwise start, stop or rewrite anything.
 
-Above that control, settings shows one live quota entry. Choosing it clears the
+Above that control, settings shows one live quota entry — unless the invoking
+session is quota-unaware (`[workspace] quota = off`), in which case the menu is
+the base control menu with no quota row at all, and invoking the quota-dialog
+continuation anyway is refused. Choosing the entry clears the
 settings highlight and draws a centred dialog listing every quota window of every
 configured client scope, read fresh with the invoking session's recorded project
 overlay rather than the command's working directory. Rows keep `ae quota`'s stable
@@ -924,7 +927,10 @@ whole command of the monitor pane. `ae loop` is the deprecated spelling, kept as
 The [watchdog](../internals/watchdog.md) is on by default — only an explicit `false` / `no` / `off` / `0` in config or session meta keeps it off. `watchdog start` is idempotent; running it again just confirms the meta flag.
 
 The watchdog also observes the same local quota caches as `ae quota` on its persisted
-`[workspace] quota_every_secs` cadence. It sends state changes only to its own leadership seats,
+`[workspace] quota_every_secs` cadence — unless the session is quota-unaware
+(`[workspace] quota = off`, pinned at launch), in which case it books no quota
+advisory and renders no quota throttle line, while the spend fact still publishes
+on the cadence. It sends state changes only to its own leadership seats,
 retries a refused paste once on the next quota sweep, and records cancelled retries as
 `quota-advisory-dropped`. A throttle event includes the worst current quota row only when the last
 scheduled observation exactly matches that seat's recorded client source and, for Codex, rollout.

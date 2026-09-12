@@ -340,6 +340,57 @@ fn row(meta_bytes: &[u8], key: &str) -> String {
         .unwrap_or_default()
 }
 
+/// Whether quota awareness is ON for this session's documents.
+///
+/// Resolved through the ONE `config::resolve_quota_aware` precedence (pinned
+/// meta, else live config, else ON) — see it for why each layer exists.
+fn quota_aware_in(dir: &Path, config_files: &[PathBuf]) -> bool {
+    let meta_bytes = meta::read_bytes(dir).unwrap_or_default();
+    let pinned = row(&meta_bytes, "quota");
+    let configured = config_value(&config_entries(config_files), "workspace.quota");
+    crate::config::resolve_quota_aware(Some(&pinned), Some(&configured))
+}
+
+/// `MANIFEST_TEMPLATE` with its one quota sentence rewritten quota-free.
+///
+/// `String::replace` surgery: if the source sentence ever changes by one
+/// character this replace SILENTLY does nothing, so the property tests are
+/// the entire thing standing between that and a leaked quota sentence. They
+/// sweep case-insensitively and fail if a quota sentence arrives without
+/// updating this table: `unaware_documents_mention_quota_nowhere_via_config`,
+/// `unaware_documents_mention_quota_nowhere_via_pinned_meta` (both also cover
+/// the context document), with `aware_documents_keep_quota_guidance` proving
+/// the ON half.
+fn manifest_without_quota() -> String {
+    MANIFEST_TEMPLATE.replace(
+        "a cheaper profile; that is a shared-quota tuning lever, not a separate\nallowance.",
+        "a cheaper profile.",
+    )
+}
+
+/// `RULES` with its two quota sentences rewritten quota-free. See
+/// [`manifest_without_quota`] for why this table exists.
+fn rules_without_quota() -> String {
+    RULES
+        .replace(
+            " — a lever on cost and on the shared quota, never a separate allowance: profiles on one client draw from one headroom, so check ${meta_dir}/quota before a batch.",
+            ".",
+        )
+        .replace(
+            "xAI counts when quota allows and should periodically break the Anthropic/OpenAI dyad.",
+            "xAI should periodically break the Anthropic/OpenAI dyad.",
+        )
+}
+
+/// `PEER_ROLE` with its one quota sentence rewritten quota-free. See
+/// [`manifest_without_quota`] for why this table exists.
+fn peer_without_quota() -> String {
+    PEER_ROLE.replace(
+        "a peer that does chores itself spends the pair's judgment quota on chore-class work",
+        "a peer that does chores itself spends judgment effort on chore-class work",
+    )
+}
+
 /// `$(_ar_root)` — `${AE_HOME:-${HOME}/.ae}/archive`.
 fn archive_root() -> PathBuf {
     // Both variables unset is the degenerate case — an empty `${HOME}` leaves
@@ -586,8 +637,15 @@ pub fn manifest_document(
     }
     let entries = config_entries(config_files);
     let dir_display = dir.display().to_string();
+    // When unaware, the delegation paragraph's quota sentence is rewritten
+    // quota-free; the template is otherwise identical.
+    let template = if quota_aware_in(dir, config_files) {
+        MANIFEST_TEMPLATE.to_owned()
+    } else {
+        manifest_without_quota()
+    };
     expand(
-        MANIFEST_TEMPLATE,
+        &template,
         &[
             ("sess", session),
             ("origin", origin),
@@ -628,9 +686,18 @@ pub fn context_document(
     if let Some(name) = &identity {
         ctx.push_str(&expand(IDENTITY, &[("_ident", name), ("slot", slot)]));
     }
-    ctx.push_str(&expand(RULES, &[("meta_dir", dir_display.as_str())]));
+    // When unaware, no injected document may mention quota at all: the rules'
+    // quota sentences are rewritten quota-free, the whole quota block is
+    // omitted, and the peer role's quota sentence is rewritten quota-free.
+    let aware = quota_aware_in(dir, config_files);
+    let rules = if aware {
+        RULES.to_owned()
+    } else {
+        rules_without_quota()
+    };
+    ctx.push_str(&expand(&rules, &[("meta_dir", dir_display.as_str())]));
     let peer = has_leadership_peer(&meta_bytes, &layout);
-    if slot == "main" || (peer && slot == "worker.0") {
+    if aware && (slot == "main" || (peer && slot == "worker.0")) {
         ctx.push_str(&expand(
             QUOTA_GUIDANCE,
             &[("meta_dir", dir_display.as_str())],
@@ -639,14 +706,29 @@ pub fn context_document(
     ctx.push_str(STATE_GUIDANCE);
 
     // The slot-aware ROLE block.
+    let peer_block;
     if slot == "main" {
-        ctx.push_str(if peer { PEER_ROLE } else { LEAD_ROLE });
-    } else if slot.starts_with("worker.") || slot.starts_with("spawned.") {
-        ctx.push_str(if peer && slot == "worker.0" {
-            PEER_ROLE
+        peer_block = if peer {
+            if aware {
+                PEER_ROLE.to_owned()
+            } else {
+                peer_without_quota()
+            }
         } else {
-            WORKER_ROLE
-        });
+            LEAD_ROLE.to_owned()
+        };
+        ctx.push_str(&peer_block);
+    } else if slot.starts_with("worker.") || slot.starts_with("spawned.") {
+        peer_block = if peer && slot == "worker.0" {
+            if aware {
+                PEER_ROLE.to_owned()
+            } else {
+                peer_without_quota()
+            }
+        } else {
+            WORKER_ROLE.to_owned()
+        };
+        ctx.push_str(&peer_block);
     }
 
     // The mode-aware WORKING-TREE block.
@@ -1164,5 +1246,79 @@ mod tests {
         let manifest = manifest_document(&dir, "s", "/w", "/o", "git", "%0", &[]);
         assert!(manifest.contains("pushes to a new ae/s branch."));
         assert!(manifest.contains("Available profiles:  (from ~/.ae/config [profiles])"));
+    }
+
+    /// The OFF property: no injected document mentions quota at all when the
+    /// knob is off — via the live config file. Sweeps case-insensitively
+    /// because `Quota`/`QUOTA` would teach the word just as well.
+    #[test]
+    fn unaware_documents_mention_quota_nowhere_via_config() {
+        let dir = scratch("unaware-config");
+        std::fs::write(
+            dir.join("meta"),
+            "mode=local\nlayout=lead-pair\nschema=2\nseat.main=lead\nseat.worker.0=partner\nseat.worker.1=builder\n",
+        )
+        .unwrap();
+        let config = write(&dir, "config", "[workspace]\nquota = off\n");
+        let files = [config];
+        for slot in ["main", "worker.0", "worker.1", "spawned.3"] {
+            let document = context_document(&dir, "s", "/w", slot, &files);
+            assert!(
+                !document.to_lowercase().contains("quota"),
+                "slot {slot} leaks quota: {document}"
+            );
+        }
+        let manifest = manifest_document(&dir, "s", "/w", "/o", "local", "%0", &files);
+        assert!(
+            !manifest.to_lowercase().contains("quota"),
+            "manifest leaks quota: {manifest}"
+        );
+    }
+
+    /// The OFF property through the pinned meta row: a recorded `quota=off`
+    /// wins even when the live config says on.
+    #[test]
+    fn unaware_documents_mention_quota_nowhere_via_pinned_meta() {
+        let dir = scratch("unaware-meta");
+        std::fs::write(dir.join("meta"), "mode=local\nquota=off\nseat.main=lead\n").unwrap();
+        let config = write(&dir, "config", "[workspace]\nquota = on\n");
+        let files = [config];
+        let document = context_document(&dir, "s", "/w", "main", &files);
+        assert!(!document.to_lowercase().contains("quota"), "{document}");
+        let manifest = manifest_document(&dir, "s", "/w", "/o", "local", "%0", &files);
+        assert!(!manifest.to_lowercase().contains("quota"), "{manifest}");
+    }
+
+    /// The ON half of both-states proof: absent means today's behaviour, and
+    /// an explicit `quota = on` agrees with it.
+    #[test]
+    fn aware_documents_keep_quota_guidance() {
+        let dir = scratch("aware");
+        std::fs::write(dir.join("meta"), "mode=local\nseat.main=lead\n").unwrap();
+        // Absent: exactly today.
+        let document = context_document(&dir, "s", "/w", "main", &[]);
+        assert!(
+            document.contains("Before each delegation batch"),
+            "{document}"
+        );
+        assert!(document.contains("/quota"), "{document}");
+        let manifest = manifest_document(&dir, "s", "/w", "/o", "local", "%0", &[]);
+        assert!(manifest.contains("shared-quota"), "{manifest}");
+        // Explicit on agrees.
+        let config = write(&dir, "config", "[workspace]\nquota = on\n");
+        let files = [config];
+        let document = context_document(&dir, "s", "/w", "main", &files);
+        assert!(
+            document.contains("Before each delegation batch"),
+            "{document}"
+        );
+        // The unaware rewrites stay grammatical: no dangling markers, no
+        // doubled stops where the quota clause came out.
+        let off = write(&dir, "off", "[workspace]\nquota = off\n");
+        let unaware = context_document(&dir, "s", "/w", "main", std::slice::from_ref(&off));
+        assert!(!unaware.contains("${"), "{unaware}");
+        assert!(!unaware.contains(".."), "{unaware}");
+        let manifest_off = manifest_document(&dir, "s", "/w", "/o", "local", "%0", &[off]);
+        assert!(!manifest_off.contains("${"), "{manifest_off}");
     }
 }
