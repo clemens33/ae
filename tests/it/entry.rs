@@ -1134,6 +1134,7 @@ fn write_competing_orchestrator_configs(rig: &Rig) {
 
 /// The bare `ae orchestrator` seeds and uses its state-local config, ignoring a
 /// project overlay that would otherwise add workers. The seed is one-shot.
+#[allow(clippy::too_many_lines)]
 #[test]
 fn the_bare_orchestrator_seeds_its_own_config_and_seats_exactly_one_agent() {
     if skip() {
@@ -1169,6 +1170,17 @@ fn the_bare_orchestrator_seeds_its_own_config_and_seats_exactly_one_agent() {
     assert!(
         seeded.contains("Two plausible matches: ask one line naming both, no relay"),
         "{seeded}"
+    );
+    assert!(
+        seeded.contains("profiles="),
+        "the seed carries the confirmed profile facts: {seeded}"
+    );
+    for flag in ["--lead", "--colead", "--seat"] {
+        assert!(seeded.contains(flag), "the seed names {flag}: {seeded}");
+    }
+    assert!(
+        seeded.contains("profiles=defaults"),
+        "the seed names the confirmed-defaults fast path: {seeded}"
     );
     assert!(!seeded.contains("\n[profiles]\n"), "{seeded}");
     assert!(!seeded.contains("\n[roster]\n"), "{seeded}");

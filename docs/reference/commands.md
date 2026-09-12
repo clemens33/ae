@@ -438,7 +438,17 @@ ae refuses before writing the seat when that row is missing. Ae seeds the seat
 file from the embedded template on first run; the template carries only
 workspace and prompt settings. Existing seat files that still carry
 `[profiles]`/`[roster]` are ignored for identity; `[workspace]` and `[prompt]`
-still overlay. Add `--no-attach` to build or reattach without attaching; ae prints the exact
+still overlay. Existing seats keep their seeded bytes: after a template change,
+copy the new creation stanza into the seat file and restart the seat; the file
+change alone never reloads the running prompt. On creation the seat proposes
+`name=<n> dir=<canonical path> mode=local|copy|worktree profiles=<profile-flags|defaults>`,
+runs `ae quota` once for the profiles the creation will use, carries the confirmed
+<profile-flags> (`--lead`/`--colead`/`--seat`) verbatim in the one creation command
+(omitted only with profiles=defaults), and takes an unconfirmed profile
+decision — a known-exhausted choice or unidentifiable applicability, including
+a target-local roster it cannot inspect — to `state waiting-user` with at most
+a recommended alternative. ae never substitutes a profile for you: only the human's
+confirmation changes the choice. Add `--no-attach` to build or reattach without attaching; ae prints the exact
 attach command and exits successfully. The seat keeps its fixed launch shape, so `--dir` remains
 an ordinary-session flag. The seat is pinned first in the status
 bar's fleet strip, marked `◆`. The `--popup` form is the picker, next. From any

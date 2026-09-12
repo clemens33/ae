@@ -656,9 +656,9 @@ fn the_charter_pins_the_watchdog_overview_turn_and_retires_the_model_sweep() {
     );
     for command in [
         "`ae <name> --no-attach`",
-        "`ae <name> --dir <path> --local --no-attach`",
-        "`ae <name> --dir <path> --copy --no-attach`",
-        "`ae <name> --dir <path> --worktree --no-attach`",
+        "`ae <name> --dir <path> --local <profile-flags> --no-attach`",
+        "`ae <name> --dir <path> --copy <profile-flags> --no-attach`",
+        "`ae <name> --dir <path> --worktree <profile-flags> --no-attach`",
         "`ae stop <name> -y`",
         "`ae end <name> -f --keep-history`",
         "`ae end <name> -f --purge-history`",
@@ -666,6 +666,16 @@ fn the_charter_pins_the_watchdog_overview_turn_and_retires_the_model_sweep() {
         assert!(
             text.contains(command),
             "charter pins explicit lifecycle command {command}"
+        );
+    }
+    for command in [
+        "`ae <name> --dir <path> --local <profile-flags> --no-attach`",
+        "`ae <name> --dir <path> --copy <profile-flags> --no-attach`",
+        "`ae <name> --dir <path> --worktree <profile-flags> --no-attach`",
+    ] {
+        assert!(
+            template.contains(command),
+            "shipped prompt carries the placeholder in every creation command {command}"
         );
     }
     assert!(
@@ -676,14 +686,33 @@ fn the_charter_pins_the_watchdog_overview_turn_and_retires_the_model_sweep() {
         text.contains("wait for the human's `yes` or edit"),
         "session creation requires confirmation"
     );
-    let creation_reason = "confirm session creation: name=<n> dir=<canonical path> mode=<mode> — yes runs ae <n> --dir <path> --<mode> --no-attach, or edit any field (recommend as proposed because <why>)";
+    let creation_reason = "confirm session creation: name=<n> dir=<canonical path> mode=<mode> profiles=<profile-flags|defaults>";
     assert!(
         normalized.contains(creation_reason),
-        "charter pins a complete waiting-user decision above the reason minimum"
+        "charter pins the profiles field in the waiting-user reason"
     );
     assert!(
         template.contains(creation_reason),
-        "shipped prompt pins a complete waiting-user decision above the reason minimum"
+        "shipped prompt pins the profiles field in the waiting-user reason"
+    );
+    let creation_command = "yes runs ae <n> --dir <path> --<mode> <profile-flags> --no-attach";
+    assert!(
+        normalized.contains(creation_command),
+        "charter pins the placeholder in the reason's command"
+    );
+    assert!(
+        template.contains(creation_command),
+        "shipped prompt pins the placeholder in the reason's command"
+    );
+    let proposal =
+        "name=<n> dir=<canonical path> mode=local|copy|worktree profiles=<profile-flags|defaults>";
+    assert!(
+        text.contains(proposal),
+        "charter pins the profiles field in the proposal"
+    );
+    assert!(
+        template.contains(proposal),
+        "shipped prompt pins the profiles field in the proposal"
     );
     assert!(
         text.contains("confirm only when"),
@@ -996,5 +1025,155 @@ fn a_sweep_run_from_no_pane_at_all_is_refused() {
     assert!(
         !dir.join(ae::monitor::STATE_NAME).exists(),
         "still nothing written"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// quota-roster increment 2: the seeded creation charter carries the confirmed
+// profile facts (`profiles=` plus the exact --lead/--colead/--seat flags) in
+// the proposal and in every creation-mode command shape, keeps the fast path
+// for confirmed defaults, and stops for the human otherwise. The template is
+// FORMAT ONLY: no quota/exhaustion/bucket/correlation semantic rule, so the
+// frozen unaware matrix stays green with the stock overlay.
+// ---------------------------------------------------------------------------
+
+/// The seed template carries the profile decision as data: `profiles=` plus
+/// the exact flag tokens in the proposal and in every creation-mode command
+/// shape. Minimal tokens, not prose equality.
+#[test]
+fn the_orchestrator_template_carries_confirmed_profile_facts() {
+    let template = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("contrib/aeorchestrator/orchestrator.config"),
+    )
+    .expect("the orchestrator config template ships with the repo");
+    assert!(
+        template.contains("profiles="),
+        "proposal and reason carry profiles=: {template}"
+    );
+    assert!(
+        template.contains("profiles=<profile-flags|defaults>"),
+        "one defined placeholder carries the profile decision: {template}"
+    );
+    for flag in ["--lead", "--colead", "--seat"] {
+        assert!(template.contains(flag), "template names {flag}: {template}");
+    }
+    assert!(
+        template.contains("profiles=defaults"),
+        "the confirmed-defaults fast path is named: {template}"
+    );
+    for command in [
+        "`ae <name> --dir <path> --local <profile-flags> --no-attach`",
+        "`ae <name> --dir <path> --copy <profile-flags> --no-attach`",
+        "`ae <name> --dir <path> --worktree <profile-flags> --no-attach`",
+    ] {
+        assert!(
+            template.contains(command),
+            "every exact creation command carries the placeholder: {command}"
+        );
+    }
+    assert!(
+        template.contains("waiting-user"),
+        "an unconfirmed profile decision stops for the human: {template}"
+    );
+    assert!(
+        template.contains("ae never substitutes a profile for you."),
+        "the absolute holds: recommendation only, human confirmation changes it"
+    );
+}
+
+/// FORMAT ONLY: the injected template carries no quota/exhaustion/bucket/
+/// correlation semantic rule, so the frozen unaware matrix (stock overlay with
+/// `quota = off`) stays green.
+#[test]
+fn the_orchestrator_template_stays_quota_semantic_free() {
+    let template = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("contrib/aeorchestrator/orchestrator.config"),
+    )
+    .expect("the orchestrator config template ships with the repo");
+    let lowered = template.to_lowercase();
+    assert!(!lowered.contains("quota"), "no quota token: {template}");
+    assert!(
+        !lowered.contains("exhaust"),
+        "no exhaustion rule: {template}"
+    );
+    assert!(!lowered.contains("bucket"), "no bucket rule: {template}");
+    assert!(
+        !lowered.contains("correlat"),
+        "no correlation rule: {template}"
+    );
+    assert!(
+        !template.contains("`--colead`"),
+        "no token-free-discriminator leak: {template}"
+    );
+    assert!(
+        !template.contains("Never knowingly choose a profile"),
+        "no selection-rule copy: {template}"
+    );
+}
+
+/// The readable contract mirrors the template: `profiles=` in proposal and
+/// reason, confirmed flags verbatim in every command, an unconfirmed decision
+/// waits for the human, and the quota check is a procedure pointer only.
+#[test]
+fn the_charter_pins_profile_aware_creation_without_quota_semantics() {
+    let charter = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("contrib/aeorchestrator/CHARTER.md"),
+    )
+    .expect("the charter ships with the repo");
+    assert!(
+        charter.contains("profiles="),
+        "proposal and reason carry profiles"
+    );
+    assert!(
+        charter.contains("profiles=<profile-flags|defaults>"),
+        "one defined placeholder carries the profile decision"
+    );
+    for flag in ["--lead", "--colead", "--seat"] {
+        assert!(charter.contains(flag), "charter names {flag}");
+    }
+    assert!(
+        charter.contains("profiles=defaults"),
+        "confirmed-defaults fast path named"
+    );
+    assert!(
+        charter.contains("waiting-user"),
+        "unconfirmed decision waits for the human"
+    );
+    assert!(
+        charter.contains("ae never substitutes a profile for you."),
+        "the absolute holds in the readable contract"
+    );
+    assert!(
+        charter.contains("ae quota"),
+        "the seat is told where to check, once per creation"
+    );
+    let lowered = charter.to_lowercase();
+    assert!(!lowered.contains("bucket"), "no bucket rule in the charter");
+    assert!(
+        !lowered.contains("correlat"),
+        "no correlation rule in the charter"
+    );
+}
+
+/// The charter's worked example stays inside the injected state rule's 80-600
+/// character bound and names concrete profile flags.
+#[test]
+fn the_charter_example_reason_fits_the_waiting_user_bound() {
+    let charter = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("contrib/aeorchestrator/CHARTER.md"),
+    )
+    .expect("the charter ships with the repo");
+    let line = charter
+        .lines()
+        .find(|line| line.contains("profiles=--lead "))
+        .expect("a worked example with concrete profile flags");
+    let len = line.trim().len();
+    assert!(
+        (80..=600).contains(&len),
+        "example reason is {len} chars, outside 80-600: {line}"
+    );
+    assert!(
+        line.contains("--colead"),
+        "example names both seats: {line}"
     );
 }

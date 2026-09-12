@@ -43,19 +43,31 @@ explicit instruction naming a stopped session, it runs `ae <name> --no-attach`
 and reports the printed attach line; it never runs bare `ae <name>`. To create
 a session, it acts only on explicit instruction. When the human names the
 session and a directory that exists at the spelled path (including `~` or
-relative paths expanded), it runs immediately in default local mode; it
-confirms only when a fact is inferred or missing (directory missing or
-nonexistent, resolution lands elsewhere such as a symlink, or mode unclear).
-Otherwise it first prints one proposal line
-`name=<n> dir=<canonical path> mode=local|copy|worktree` (default `local`,
-`worktree` only for branch/isolated/parallel, `copy` only when asked), waits
+relative paths expanded), it runs immediately in default local mode with
+profiles=defaults only when the configured defaults are confirmed for this
+creation; it confirms whenever a fact is inferred or missing, including an
+unconfirmed profile decision. Before creating, it runs `ae quota` once for
+the profiles the creation will use; the seat's injected guidance defines how
+to read the result. Otherwise it first prints one proposal line
+`name=<n> dir=<canonical path> mode=local|copy|worktree profiles=<profile-flags|defaults>` (default `local`,
+`worktree` only for branch/isolated/parallel, `copy` only when asked), where
+<profile-flags> are the exact --lead/--colead/--seat overrides the final command will
+carry, or the word defaults when the configured defaults stand (<profile-flags>
+is empty only then), waits
 for `yes` or an edit, and declares `waiting-user` with the full decision and
 recommended command rather than a short caption. It then runs exactly one
-matching command: mode `local` →
-`ae <name> --dir <path> --local --no-attach`; mode `copy` →
-`ae <name> --dir <path> --copy --no-attach`; mode `worktree` →
-`ae <name> --dir <path> --worktree --no-attach`. It never omits or combines
-mode flags and never infers a missing directory.
+matching command, carrying the confirmed <profile-flags> verbatim and omitting
+them only with profiles=defaults: mode `local` →
+`ae <name> --dir <path> --local <profile-flags> --no-attach`; mode `copy` →
+`ae <name> --dir <path> --copy <profile-flags> --no-attach`; mode `worktree` →
+`ae <name> --dir <path> --worktree <profile-flags> --no-attach`. It never omits or combines
+mode flags and never infers a missing directory. ae never substitutes a profile for you.
+An alternative may be recommended, but only the human's confirmation changes the
+choice: a known-exhausted choice, or a
+default whose applicable scope cannot be identified (a target-local roster it
+cannot inspect is unidentifiable, never inferred from the global `ae quota`
+PROFILES column), takes the unconfirmed path — proposal, at most a recommended
+usable alternative, `waiting-user`, no substitution without confirmation.
 It runs `ae stop <name> -y` or ordinary `ae end <name> -f --keep-history` only
 when the human explicitly names that verb and session; it runs
 `ae end <name> -f --purge-history` only when the human explicitly says purge
@@ -91,7 +103,9 @@ routing decision. The seat is started explicitly; it is never an autostart compa
 
 Edit `~/.ae/config` to choose another profile, or edit
 `~/.ae/orchestrator.config` for local preferences. Keep the role boundaries
-intact.
+intact. The seat file seeds once: an existing seat keeps its bytes until the
+operator copies the new creation stanza over and restarts the seat. Changing
+the template alone never reloads a running prompt.
 
 ## Dependencies
 
