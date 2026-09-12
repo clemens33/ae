@@ -169,7 +169,7 @@ fn direct_settings_geometry(bytes: &[u8]) -> Option<MenuGeometry> {
 }
 
 fn direct_dialog_geometry(bytes: &[u8]) -> Option<MenuGeometry> {
-    direct_menu_geometry(bytes, "quota for our clients")
+    direct_menu_geometry(bytes, "Client quotas")
 }
 
 fn terminal_character(bytes: &[u8]) -> Option<(char, usize)> {
@@ -2727,7 +2727,7 @@ fn settings_quota_uses_the_invoking_overlay_and_degrades_without_losing_the_acti
         &clicked,
         "quota-viewer",
         "quota-other",
-        "Quota for our clients...",
+        "Client quotas...",
         "Escape",
     );
     assert!(!full.contains("quota  claude/menu-claude"), "{full}");
@@ -2893,7 +2893,7 @@ fn settings_quota_uses_the_invoking_overlay_and_degrades_without_losing_the_acti
         &clicked,
         "quota-viewer",
         "quota-other",
-        "Quota for our clients...",
+        "Client quotas...",
         "Escape",
     );
     assert!(picker_marker(&socket, &scratch, "viewed").is_empty());
@@ -2966,7 +2966,7 @@ fn settings_quota_uses_the_invoking_overlay_and_degrades_without_losing_the_acti
     assert!(degraded.contains("Start orchestrator"), "{degraded}");
     assert!(degraded.contains("+2r"), "{degraded}");
     assert!(degraded.contains("+0c"), "{degraded}");
-    assert!(!degraded.contains("Quota for our clients..."), "{degraded}");
+    assert!(!degraded.contains("Client quotas..."), "{degraded}");
     wait_for(
         "orchestrator from exact-height degraded settings",
         || {
@@ -3084,7 +3084,7 @@ fn settings_quota_entry_opens_the_per_window_dialog_and_close_dismisses_it() {
                     )
                     .1
                 },
-                |seen| seen.contains("settings") && seen.contains("Quota for our clients..."),
+                |seen| seen.contains("settings") && seen.contains("Client quotas..."),
             );
             assert!(
                 !settings.contains("session 5h"),
@@ -3116,7 +3116,7 @@ fn settings_quota_entry_opens_the_per_window_dialog_and_close_dismisses_it() {
                     )
                     .1
                 },
-                |seen| seen.contains("quota for our clients") && seen.contains("session 5h"),
+                |seen| seen.contains("Client quotas") && seen.contains("session 5h"),
             );
             assert!(
                 settings_marker(&socket, &scratch, "viewed").is_empty(),
@@ -3140,9 +3140,9 @@ fn settings_quota_entry_opens_the_per_window_dialog_and_close_dismisses_it() {
                     )
                     .1
                 },
-                |seen| !seen.contains("quota for our clients"),
+                |seen| !seen.contains("Client quotas"),
             );
-            assert!(!closed.contains("Quota for our clients..."), "{closed}");
+            assert!(!closed.contains("Client quotas..."), "{closed}");
             (settings, dialog)
         });
         let output = settings_invocation(
@@ -3303,7 +3303,7 @@ fn settings_quota_unaware_session_draws_no_quota_entry_and_refuses_the_dialog() 
     // echoes in the pane behind the menu. The render unit tests own the
     // case-insensitive word sweep over the documents themselves.
     assert!(
-        !seen.contains("Quota for our clients..."),
+        !seen.contains("Client quotas..."),
         "unaware settings carries no quota entry row: {seen}"
     );
 
@@ -3323,7 +3323,7 @@ fn settings_quota_unaware_session_draws_no_quota_entry_and_refuses_the_dialog() 
                     &["capture-pane", "-p", "-t", "unaware-viewer"],
                 )
                 .1;
-                if seen.contains("quota for our clients") {
+                if seen.contains("Client quotas") {
                     assert!(
                         tmux(
                             &socket,
@@ -3376,7 +3376,7 @@ fn quota_dialog_window_indent_survives_a_real_centred_menu_draw() {
     let staged = stage(&socket, &main);
     let server = ServerId::Selected(Selector::Socket(socket.clone()));
     let menu = ae::tmux::Menu {
-        title: "quota for our clients".to_owned(),
+        title: "Client quotas".to_owned(),
         title_style: String::new(),
         items: vec![
             ae::tmux::MenuItem {
@@ -3426,7 +3426,7 @@ fn quota_dialog_window_indent_survives_a_real_centred_menu_draw() {
 #[test]
 #[allow(
     clippy::too_many_lines,
-    reason = "one direct-terminal settings geometry proof across full and notice quota branches"
+    reason = "one direct-terminal settings geometry proof across wide and base-width clients"
 )]
 fn settings_menu_uses_client_right_geometry_from_either_split_pane() {
     let scratch = scratch("settings-right-geometry");
@@ -3475,7 +3475,7 @@ fn settings_menu_uses_client_right_geometry_from_either_split_pane() {
         100,
         true,
         "full-right",
-        "Quota for our clients...",
+        "Client quotas...",
     );
     let full_left = draw_direct_settings_menu(
         &socket,
@@ -3485,45 +3485,45 @@ fn settings_menu_uses_client_right_geometry_from_either_split_pane() {
         100,
         false,
         "full-left",
-        "Quota for our clients...",
+        "Client quotas...",
     );
-    // Width 30 fits the 26-column base menu but not the 32-column entry menu,
-    // so the separator carries the exact shortfall: +0r +2c.
-    let notice_right = draw_direct_settings_menu(
+    // The concise quota entry shares the base menu's 26-column width, so it
+    // remains visible at the narrowest terminal that can draw settings.
+    let narrow_right = draw_direct_settings_menu(
         &socket,
         &scratch,
         &root,
         &config,
         30,
         true,
-        "notice-right",
-        "+0r +2c",
+        "narrow-right",
+        "Client quotas...",
     );
-    let notice_left = draw_direct_settings_menu(
+    let narrow_left = draw_direct_settings_menu(
         &socket,
         &scratch,
         &root,
         &config,
         30,
         false,
-        "notice-left",
-        "+0r +2c",
+        "narrow-left",
+        "Client quotas...",
     );
 
     assert!(
-        String::from_utf8_lossy(&full_right.raw).contains("Quota for our clients..."),
+        String::from_utf8_lossy(&full_right.raw).contains("Client quotas..."),
         "the 100-column branch is full: {:?}",
         full_right.raw
     );
-    let notice_text = String::from_utf8_lossy(&notice_right.raw);
     assert!(
-        notice_text.contains("+0r") && notice_text.contains("+2c"),
-        "the 30-column branch is the quota notice with its exact shortfall: {notice_text:?}"
+        String::from_utf8_lossy(&narrow_right.raw).contains("Client quotas..."),
+        "the 30-column branch keeps the concise entry: {:?}",
+        narrow_right.raw
     );
-    assert_direct_menu_geometry(full_right.geometry, 100, 32);
-    assert_direct_menu_geometry(notice_right.geometry, 30, 26);
-    assert_direct_menu_geometry(full_left.geometry, 100, 32);
-    assert_direct_menu_geometry(notice_left.geometry, 30, 26);
+    assert_direct_menu_geometry(full_right.geometry, 100, 26);
+    assert_direct_menu_geometry(narrow_right.geometry, 30, 26);
+    assert_direct_menu_geometry(full_left.geometry, 100, 26);
+    assert_direct_menu_geometry(narrow_left.geometry, 30, 26);
 }
 
 #[test]
@@ -3884,7 +3884,7 @@ fn quota_dialog_reproves_client_server_and_session_before_drawing() {
     )
     .1;
     assert!(
-        !viewer.contains("quota for our clients"),
+        !viewer.contains("Client quotas"),
         "no refusal drew a dialog: {viewer}"
     );
 }

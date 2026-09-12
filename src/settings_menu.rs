@@ -437,8 +437,8 @@ fn ensure_settings_unset(items: &mut [MenuItem], session_id: &str) {
     }
 }
 
-/// The quota dialog's one live row: dismissing the menu and choosing it are
-/// the same act, so closing the dialog writes nothing anywhere.
+/// The quota dialog's Close row: dismissing the menu and choosing it are the
+/// same act, so closing the dialog writes nothing anywhere.
 fn close_item() -> MenuItem {
     MenuItem {
         label: "Close".to_owned(),
@@ -450,7 +450,7 @@ fn close_item() -> MenuItem {
 }
 
 /// The quota dialog's title: what the menu is, not which core drew it.
-pub(crate) const QUOTA_DIALOG_TITLE: &str = "quota for our clients";
+pub(crate) const QUOTA_DIALOG_TITLE: &str = "Client quotas";
 
 /// The one live quota row in the settings menu. It opens the centred
 /// per-window dialog; it never acts on quota itself. With an invalid invoking
@@ -482,7 +482,7 @@ pub(crate) fn quota_entry(launcher: &[String], snapshot: &Snapshot<'_>) -> MenuI
         .map(ToOwned::to_owned),
     );
     MenuItem {
-        label: "Quota for our clients...".to_owned(),
+        label: "Client quotas...".to_owned(),
         key: "q".to_owned(),
         action: MenuAction::Run(crate::tmux::menu_run_shell_command(&argv)),
     }
@@ -530,16 +530,24 @@ pub(crate) fn menu_for_awareness(
     menu_with_quota(control, launcher, snapshot, version, palette, entry)
 }
 
-/// Build the observational quota dialog: every row disabled except Close.
+/// Build the observational quota dialog: informational rows are selectable
+/// no-ops, so tmux opens on the first data row and Enter dismisses it. The
+/// blank separator stays disabled.
 pub(crate) fn quota_dialog_menu(
     rows: &[crate::quota::DialogRow],
     palette: &crate::theme::Palette,
 ) -> Menu {
     let mut items = Vec::with_capacity(rows.len() + 2);
-    items.extend(rows.iter().map(|row| MenuItem {
-        label: row.label.clone(),
-        key: String::new(),
-        action: MenuAction::Disabled,
+    items.extend(rows.iter().map(|row| {
+        debug_assert!(
+            !row.label.starts_with('-'),
+            "quota dialog rows must not start with tmux's disabled marker"
+        );
+        MenuItem {
+            label: row.label.clone(),
+            key: String::new(),
+            action: MenuAction::Run(String::new()),
+        }
     }));
     items.push(MenuItem {
         label: String::new(),
@@ -1163,7 +1171,7 @@ mod tests {
     #[test]
     fn quota_entry_is_one_live_row_above_the_unchanged_control() {
         let entry = super::quota_entry(&["core".to_owned()], &snapshot());
-        assert_eq!(entry.label, "Quota for our clients...");
+        assert_eq!(entry.label, "Client quotas...");
         assert_eq!(entry.key, "q");
         let crate::tmux::MenuAction::Run(command) = &entry.action else {
             panic!("the quota entry is live");
@@ -1193,7 +1201,7 @@ mod tests {
             &crate::theme::Palette::DARCULA,
             entry,
         );
-        assert_eq!(built.items[0].label, "Quota for our clients...");
+        assert_eq!(built.items[0].label, "Client quotas...");
         assert_eq!(built.items[0].key, "q");
         let crate::tmux::MenuAction::Run(armed) = &built.items[0].action else {
             panic!("the assembled entry stays live");
@@ -1251,7 +1259,7 @@ mod tests {
             "unaware menu is exactly the base control menu"
         );
         let aware = entry_for(true);
-        assert_eq!(aware.items[0].label, "Quota for our clients...");
+        assert_eq!(aware.items[0].label, "Client quotas...");
         assert_eq!(aware.items[0].key, "q");
         assert!(
             matches!(aware.items[0].action, crate::tmux::MenuAction::Run(_)),
@@ -1350,7 +1358,7 @@ mod tests {
     }
 
     #[test]
-    fn quota_dialog_menu_is_observational_with_one_close_row() {
+    fn quota_dialog_menu_rows_are_inert_and_undimmed_with_one_close_row() {
         let rows = [
             crate::quota::DialogRow {
                 label: "codex/cx".to_owned(),
@@ -1364,9 +1372,17 @@ mod tests {
         assert_eq!(built.items.len(), rows.len() + 2);
         for item in &built.items[..rows.len()] {
             assert!(item.key.is_empty());
-            assert!(matches!(item.action, crate::tmux::MenuAction::Disabled));
+            assert!(matches!(
+                item.action,
+                crate::tmux::MenuAction::Run(ref command) if command.is_empty()
+            ));
         }
-        assert!(built.items[rows.len()].label.is_empty());
+        let separator = &built.items[rows.len()];
+        assert!(separator.label.is_empty());
+        assert!(matches!(
+            separator.action,
+            crate::tmux::MenuAction::Disabled
+        ));
         let close = &built.items[rows.len() + 1];
         assert_eq!(close.label, "Close");
         assert_eq!(close.key, "c");
@@ -1374,6 +1390,79 @@ mod tests {
             close.action,
             crate::tmux::MenuAction::Run(ref command) if command.is_empty()
         ));
+    }
+
+    #[test]
+    fn quota_dialog_information_rows_render_without_the_dim_marker() {
+        let rows = [
+            crate::quota::DialogRow {
+                label: "codex/cx".to_owned(),
+            },
+            crate::quota::DialogRow {
+                label: "  session 5h | 39%".to_owned(),
+            },
+        ];
+        let menu = super::quota_dialog_menu(&rows, &crate::theme::Palette::DARCULA);
+        let server = ServerId::Selected(Selector::Socket(PathBuf::from("/tmp/ae-quota.sock")));
+        let argv =
+            crate::tmux::display_menu_centred_args(&server, "/dev/ttys004", "%12", &menu, false);
+        let first_item = argv
+            .iter()
+            .position(|word| word == "--")
+            .expect("menu items follow the flag separator")
+            + 1;
+        for (index, row) in rows.iter().enumerate() {
+            let label = &argv[first_item + index * 3];
+            assert_eq!(label, &row.label, "quota row {index} is not dimmed");
+            assert!(!label.starts_with('-'), "quota row {index}: {label}");
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "quota dialog rows must not start with tmux's disabled marker")]
+    fn quota_dialog_rejects_a_row_that_would_reintroduce_tmux_dimming() {
+        let rows = [crate::quota::DialogRow {
+            label: "-would be dimmed".to_owned(),
+        }];
+        let _ = super::quota_dialog_menu(&rows, &crate::theme::Palette::DARCULA);
+    }
+
+    #[test]
+    fn quota_labels_use_concise_client_wording() {
+        let entry = super::quota_entry(&[], &snapshot());
+        assert_eq!(entry.label, "Client quotas...");
+        assert_eq!(super::QUOTA_DIALOG_TITLE, "Client quotas");
+    }
+
+    #[test]
+    fn disabled_settings_rows_keep_tmuxs_dim_marker() {
+        let menu = menu(
+            &Control::Unavailable("orchestrator cannot start".to_owned()),
+            &[],
+            &snapshot(),
+            None,
+            &crate::theme::Palette::DARCULA,
+        );
+        let server = ServerId::Selected(Selector::Socket(PathBuf::from("/tmp/ae-quota.sock")));
+        let argv =
+            crate::tmux::display_menu_centred_args(&server, "/dev/ttys004", "%12", &menu, false);
+        let first_item = argv
+            .iter()
+            .position(|word| word == "--")
+            .expect("menu items follow the flag separator")
+            + 1;
+        for (index, label) in ["orchestrator: unavailable", "", "orchestrator cannot start"]
+            .iter()
+            .enumerate()
+        {
+            assert_eq!(
+                argv[first_item + index * 3],
+                format!("-{label}"),
+                "disabled settings row {index} stays dimmed"
+            );
+            assert!(argv[first_item + index * 3 + 1].is_empty());
+            assert!(argv[first_item + index * 3 + 2].is_empty());
+        }
     }
 
     #[test]
@@ -1408,7 +1497,7 @@ mod tests {
     }
 
     #[test]
-    fn entry_menu_budget_covers_the_short_live_row_not_a_component_maximum() {
+    fn concise_entry_menu_budget_never_widens_the_base_menu() {
         let full = super::menu_with_quota(
             &Control::Start,
             &[],
@@ -1431,7 +1520,10 @@ mod tests {
             full_columns < 80,
             "the entry row fits ordinary clients: {full_columns}"
         );
-        assert!(full_columns >= base_columns);
+        assert_eq!(
+            full_columns, base_columns,
+            "the concise entry cannot create a column shortfall after the base-fit check"
+        );
     }
 
     #[test]
