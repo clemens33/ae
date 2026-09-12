@@ -1,6 +1,11 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.60] - 2026-09-12
+
+### Other
+
+- Guide quota-aware profile selection
 ## [v2026.9.59] - 2026-09-12
 
 ### Other
