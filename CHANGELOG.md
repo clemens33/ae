@@ -1,6 +1,12 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.56] - 2026-09-12
+
+### Other
+
+- Anchor settings menu to client right edge
+- Handle partial UTF-8 terminal records
 ## [v2026.9.55] - 2026-09-11
 
 ### Other
