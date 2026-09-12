@@ -1,6 +1,11 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.62] - 2026-09-12
+
+### Other
+
+- Rank OpenCode Go seats conditionally in delegation guidance
 ## [v2026.9.61] - 2026-09-12
 
 ### Other
