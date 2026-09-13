@@ -974,7 +974,51 @@ _tmux-isolated lane *args:
     set -euo pipefail
     lane="$1"
     shift
-    test_tmux_tmp="$(mktemp -d "${TMPDIR:-/tmp}/ae-rust-test.XXXXXX")"
+    owner_is_dead() {
+        local owner="$1" error
+        error="$(LC_ALL=C kill -0 "$owner" 2>&1)" && return 1
+        [[ "$error" == *"No such process"* ]]
+    }
+    reap_sockets() {
+        local root="$1" socket failed=0
+        find "$root" -type s -print >/dev/null 2>&1 || return 1
+        while IFS= read -r socket; do
+            tmux -S "$socket" kill-server >/dev/null 2>&1 || failed=1
+        done < <(find "$root" -type s -print 2>/dev/null)
+        return "$failed"
+    }
+    reap_stale_lanes() {
+        local root="${TMPDIR:-/tmp}" stale name owner registry owner_dir entry scratch
+        for stale in "$root"/ae-rust-test.*; do
+            [[ -d "$stale" ]] || continue
+            name="${stale##*/ae-rust-test.}"
+            owner="${name%%.*}"
+            [[ "$owner" =~ ^[0-9]+$ ]] || continue
+            owner_is_dead "$owner" || continue
+            registry="$stale/.ae-parity-fixtures"
+            [[ ! -e "$registry" || -d "$registry" ]] || continue
+            if [[ -d "$registry" ]]; then
+                [[ -r "$registry" && -x "$registry" ]] || continue
+                for owner_dir in "$registry"/*; do
+                    [[ -e "$owner_dir" ]] || continue
+                    [[ -d "$owner_dir" && -r "$owner_dir" && -x "$owner_dir" ]] || continue 2
+                    owner="${owner_dir##*/}"
+                    [[ "$owner" =~ ^[0-9]+$ ]] || continue 2
+                    owner_is_dead "$owner" || continue 2
+                    for entry in "$owner_dir"/*; do
+                        [[ -e "$entry" ]] || continue
+                        [[ -L "$entry" ]] || continue 3
+                        scratch="$(readlink "$entry")" || continue 3
+                        reap_sockets "$scratch" || continue 3
+                    done
+                done
+            fi
+            reap_sockets "$stale" || continue
+            rm -rf "$stale"
+        done
+    }
+    reap_stale_lanes
+    test_tmux_tmp="$(mktemp -d "${TMPDIR:-/tmp}/ae-rust-test.$$.XXXXXX")"
     cleanup() {
         TMUX_TMPDIR="$test_tmux_tmp" env -u TMUX -u TMUX_PANE tmux -L ae kill-server >/dev/null 2>&1 || true
         rm -rf "$test_tmux_tmp"

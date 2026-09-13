@@ -62,6 +62,10 @@ fn isolated_tmux_tmpdir() -> &'static std::path::Path {
             std::fs::create_dir_all(&dir).is_ok(),
             "the runner's tmux directory"
         );
+        assert!(
+            raw::register_fixture_root(&dir).is_ok(),
+            "the runner's tmux directory enters the reaper registry"
+        );
         dir
     })
     .as_path()

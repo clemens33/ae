@@ -25,6 +25,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use super::cli::{ae, bounded};
+use super::parity::{Invocation, capture::ExitOutcome, capture::raw};
 use super::phase2::run_tmux;
 
 const UUID: &str = "33333333-3333-3333-3333-333333333333";
@@ -211,7 +212,7 @@ impl Rig {
     }
 
     /// A non-ae session with the same name on another isolated server.
-    fn foreign_namesake(&self, tag: &str) -> (PathBuf, String) {
+    fn foreign_namesake(&self, tag: &str) -> ForeignServer {
         let socket = self.home.join(format!("foreign-{tag}.sock"));
         let (created, panes) = self.tmux_at(
             &socket,
@@ -232,7 +233,11 @@ impl Rig {
         assert!(created, "the foreign namesake starts: {panes}");
         let pane = panes.lines().next().unwrap_or_default().to_owned();
         assert!(!pane.is_empty(), "the foreign namesake has a pane: {panes}");
-        (socket, pane)
+        ForeignServer {
+            home: self.home.clone(),
+            socket,
+            pane,
+        }
     }
 
     fn archive(&self) -> PathBuf {
@@ -245,6 +250,284 @@ impl Drop for Rig {
         let _ = self.tmux(&["kill-server"]);
         let _ = std::fs::remove_dir_all(&self.home);
     }
+}
+
+/// A foreign server must die before [`Rig`] removes the socket directory on
+/// an assertion panic. Its declaration follows the rig, so Rust drops it first.
+struct ForeignServer {
+    home: PathBuf,
+    socket: PathBuf,
+    pane: String,
+}
+
+impl Drop for ForeignServer {
+    fn drop(&mut self) {
+        let mut args = ae::tmux::server_args(&ae::inventory::ServerId::Selected(
+            ae::meta::Selector::Socket(self.socket.clone()),
+        ));
+        args.push("kill-server".to_owned());
+        let _ = run_tmux(&args, &self.home);
+    }
+}
+
+/// A no-server scratch directory still belongs to the test if an assertion
+/// unwinds before its ordinary cleanup statement.
+struct Scratch {
+    home: PathBuf,
+}
+
+impl Scratch {
+    fn new(home: PathBuf) -> Self {
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(home.join("sessions")).expect("a scratch AE_HOME");
+        Self { home }
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.home);
+    }
+}
+
+#[test]
+fn sigkill_fixture_leaves_a_server_for_the_next_test_process_to_reap() {
+    if std::env::var_os("AE_LIFECYCLE_SIGKILL_CHILD").is_none() {
+        return;
+    }
+    let tag =
+        std::env::var("AE_LIFECYCLE_SIGKILL_TAG").unwrap_or_else(|_| "sigkillfixture".to_owned());
+    let rig = Rig::new(&tag);
+    if let Some(pid_file) = std::env::var_os("AE_LIFECYCLE_SIGKILL_PID_FILE") {
+        std::fs::write(pid_file, std::process::id().to_string()).expect("the fixture pid file");
+    }
+    let out = rig.home.join("sigkill-out");
+    let err = rig.home.join("sigkill-err");
+    let _ = raw::run(
+        &Invocation::new("kill")
+            .arg("-KILL")
+            .arg(std::process::id().to_string()),
+        &rig.home,
+        &out,
+        &err,
+    );
+    panic!("SIGKILL must end this fixture process");
+}
+
+fn killed_fixture_home(probe: &Path, tag: &str) -> PathBuf {
+    let pid = std::fs::read_to_string(probe.join("child-pid"))
+        .expect("the killed fixture pid")
+        .trim()
+        .parse::<u32>()
+        .expect("the killed fixture pid is numeric");
+    PathBuf::from(format!("/tmp/aelc.{pid}.{tag}"))
+}
+
+fn sigkill_fixture(probe: &Path, lane: &Path, tag: &str) -> PathBuf {
+    let child = std::env::current_exe().expect("the integration test binary");
+    let child_status = raw::run(
+        &Invocation::new(child)
+            .arg("--exact")
+            .arg("lifecycle::sigkill_fixture_leaves_a_server_for_the_next_test_process_to_reap")
+            .env("AE_LIFECYCLE_SIGKILL_CHILD", "1")
+            .env("AE_LIFECYCLE_SIGKILL_TAG", tag)
+            .env("AE_LIFECYCLE_SIGKILL_PID_FILE", probe.join("child-pid"))
+            .env("TMUX_TMPDIR", lane),
+        probe,
+        &probe.join("child-out"),
+        &probe.join("child-err"),
+    )
+    .expect("the SIGKILL fixture starts");
+    assert!(
+        matches!(child_status.outcome(), ExitOutcome::Signalled),
+        "the fixture must die to SIGKILL"
+    );
+    killed_fixture_home(probe, tag)
+}
+
+fn reap_from_fresh_test_process(probe: &Path, lane: &Path, path: Option<&str>) -> ExitOutcome {
+    let mut invocation =
+        Invocation::new(std::env::current_exe().expect("the integration test binary"))
+            .arg("--exact")
+            .arg("lifecycle::reaper_liveness_probe_child")
+            .env("AE_LIFECYCLE_REAPER_PROBE_CHILD", "1")
+            .env("TMUX_TMPDIR", lane);
+    if let Some(path) = path {
+        invocation = invocation.env("PATH", path);
+    }
+    raw::run(
+        &invocation,
+        probe,
+        &probe.join("reaper-child-out"),
+        &probe.join("reaper-child-err"),
+    )
+    .expect("the reaper child runs")
+    .outcome()
+}
+
+#[test]
+fn the_next_tmux_call_reaps_a_server_left_by_sigkill() {
+    let probe = PathBuf::from(format!("/tmp/aelc-reap-probe.{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&probe);
+    std::fs::create_dir_all(&probe).expect("a reaper probe directory");
+    let lane = probe.join("lane");
+    std::fs::create_dir_all(&lane).expect("a private reaper lane");
+    let home = sigkill_fixture(&probe, &lane, "sigkillfixture");
+    let socket = home.join("s");
+    assert!(socket.exists(), "the killed fixture leaves its tmux socket");
+
+    assert!(
+        matches!(
+            reap_from_fresh_test_process(&probe, &lane, None),
+            ExitOutcome::Code(0)
+        ),
+        "the next tmux call must first reap the dead owner's server"
+    );
+    assert!(!socket.exists(), "the stale socket is removed");
+    assert!(!home.exists(), "the stale scratch root is removed");
+    let _ = std::fs::remove_dir_all(&probe);
+}
+
+#[test]
+fn reaper_liveness_probe_child() {
+    if std::env::var_os("AE_LIFECYCLE_REAPER_PROBE_CHILD").is_none() {
+        return;
+    }
+    let scratch = PathBuf::from(format!("/tmp/ae-reaper-child.{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("a reaper-child scratch directory");
+    let _ = raw::run(
+        &Invocation::new("tmux").arg("-V"),
+        &scratch,
+        &scratch.join("out"),
+        &scratch.join("err"),
+    );
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+#[test]
+fn reaper_liveness_checks_never_write_to_a_live_fixture() {
+    let rig = Rig::new("liveprobe");
+    let probe = PathBuf::from(format!("/tmp/aelc-reap-live.{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&probe);
+    std::fs::create_dir_all(&probe).expect("a live-probe directory");
+    let status = raw::run(
+        &Invocation::new(std::env::current_exe().expect("the integration test binary"))
+            .arg("--exact")
+            .arg("lifecycle::reaper_liveness_probe_child")
+            .env("AE_LIFECYCLE_REAPER_PROBE_CHILD", "1"),
+        &probe,
+        &probe.join("child-out"),
+        &probe.join("child-err"),
+    )
+    .expect("the liveness probe child runs");
+    assert!(matches!(status.outcome(), ExitOutcome::Code(0)));
+    assert!(
+        !rig.home.join(".reap-owner-out").exists(),
+        "liveness probes must not write in another live fixture"
+    );
+    assert!(
+        !rig.home.join(".reap-owner-err").exists(),
+        "liveness probes must not write in another live fixture"
+    );
+    assert!(rig.home.exists(), "a live foreign fixture must survive");
+    let _ = std::fs::remove_dir_all(&probe);
+}
+
+#[test]
+fn an_ambiguous_owner_probe_leaves_the_fixture_untouched() {
+    let probe = PathBuf::from(format!("/tmp/aelc-reap-ambiguous.{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&probe);
+    std::fs::create_dir_all(probe.join("bin")).expect("an ambiguous-probe directory");
+    let lane = probe.join("lane");
+    std::fs::create_dir_all(&lane).expect("a private reaper lane");
+    let home = sigkill_fixture(&probe, &lane, "ambiguousowner");
+    let socket = home.join("s");
+    assert!(socket.exists(), "the killed fixture leaves its tmux socket");
+    std::os::unix::fs::symlink("/usr/bin/false", probe.join("bin/kill"))
+        .expect("a liveness probe that fails ambiguously");
+    let path = format!(
+        "{}:{}",
+        probe.join("bin").display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    assert!(matches!(
+        reap_from_fresh_test_process(&probe, &lane, Some(&path)),
+        ExitOutcome::Code(0)
+    ));
+    assert!(
+        socket.exists() && home.exists(),
+        "an inconclusive kill -0 must be treated as owner alive"
+    );
+    assert!(matches!(
+        reap_from_fresh_test_process(&probe, &lane, None),
+        ExitOutcome::Code(0)
+    ));
+    assert!(!home.exists(), "the known-dead fixture is finally reaped");
+    let _ = std::fs::remove_dir_all(&probe);
+}
+
+#[test]
+fn write_ahead_fixture_leaves_a_server_for_the_next_test_process_to_reap() {
+    if std::env::var_os("AE_LIFECYCLE_WRITE_AHEAD_CHILD").is_none() {
+        return;
+    }
+    let tag = "writeahead";
+    let home = PathBuf::from(format!("/tmp/aelc.{}.{tag}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).expect("a write-ahead fixture root");
+    if let Some(pid_file) = std::env::var_os("AE_LIFECYCLE_SIGKILL_PID_FILE") {
+        std::fs::write(pid_file, std::process::id().to_string()).expect("the fixture pid file");
+    }
+    let _ = raw::run(
+        &Invocation::new("tmux")
+            .arg("-S")
+            .arg(home.join("s"))
+            .arg("new-session")
+            .arg("-d")
+            .arg("-s")
+            .arg("writeahead")
+            .env("AE_PARITY_KILL_AFTER_TMUX_CREATE", "1"),
+        &home,
+        &home.join("out"),
+        &home.join("err"),
+    );
+    panic!("the write-ahead SIGKILL must end this fixture process");
+}
+
+#[test]
+fn a_write_ahead_registry_survives_sigkill_between_creation_and_return() {
+    let probe = PathBuf::from(format!("/tmp/aelc-reap-write-ahead.{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&probe);
+    std::fs::create_dir_all(&probe).expect("a write-ahead probe directory");
+    let lane = probe.join("lane");
+    std::fs::create_dir_all(&lane).expect("a private reaper lane");
+    let child = std::env::current_exe().expect("the integration test binary");
+    let status = raw::run(
+        &Invocation::new(child)
+            .arg("--exact")
+            .arg("lifecycle::write_ahead_fixture_leaves_a_server_for_the_next_test_process_to_reap")
+            .env("AE_LIFECYCLE_WRITE_AHEAD_CHILD", "1")
+            .env("AE_LIFECYCLE_SIGKILL_PID_FILE", probe.join("child-pid"))
+            .env("TMUX_TMPDIR", &lane),
+        &probe,
+        &probe.join("child-out"),
+        &probe.join("child-err"),
+    )
+    .expect("the write-ahead fixture starts");
+    assert!(matches!(status.outcome(), ExitOutcome::Signalled));
+    let home = killed_fixture_home(&probe, "writeahead");
+    let socket = home.join("s");
+    assert!(
+        socket.exists(),
+        "the child creates its tmux socket before SIGKILL"
+    );
+    assert!(matches!(
+        reap_from_fresh_test_process(&probe, &lane, None),
+        ExitOutcome::Code(0)
+    ));
+    assert!(!home.exists(), "the write-ahead fixture is reaped");
+    let _ = std::fs::remove_dir_all(&probe);
 }
 
 fn exists(path: &Path) -> bool {
@@ -560,10 +843,9 @@ fn a_stop_skip_names_the_seat_and_the_reason() {
 #[test]
 fn a_bare_stop_from_a_foreign_namesake_never_targets_the_recorded_session() {
     let rig = Rig::new("foreignbarestop");
-    let (foreign, pane) = rig.foreign_namesake("stop");
+    let foreign = rig.foreign_namesake("stop");
 
-    let (code, out, err) = rig.run_from(&["stop", "-y"], Some((&foreign, &pane)));
-    let _ = rig.tmux_at(&foreign, &["kill-server"]);
+    let (code, out, err) = rig.run_from(&["stop", "-y"], Some((&foreign.socket, &foreign.pane)));
 
     assert_eq!(code, Some(2), "stdout: {out}\nstderr: {err}");
     assert_eq!(err, "Usage: _stop <session-name|all> [-y] [--self]\n");
@@ -574,10 +856,12 @@ fn a_bare_stop_from_a_foreign_namesake_never_targets_the_recorded_session() {
 #[test]
 fn self_stop_from_a_foreign_namesake_refuses_instead_of_supervising_it() {
     let rig = Rig::new("foreignselfstop");
-    let (foreign, pane) = rig.foreign_namesake("self-stop");
+    let foreign = rig.foreign_namesake("self-stop");
 
-    let (code, out, err) = rig.run_from(&["stop", "--self", "-y"], Some((&foreign, &pane)));
-    let _ = rig.tmux_at(&foreign, &["kill-server"]);
+    let (code, out, err) = rig.run_from(
+        &["stop", "--self", "-y"],
+        Some((&foreign.socket, &foreign.pane)),
+    );
 
     assert_eq!(code, Some(1), "stdout: {out}\nstderr: {err}");
     assert_eq!(
@@ -591,10 +875,9 @@ fn self_stop_from_a_foreign_namesake_refuses_instead_of_supervising_it() {
 #[test]
 fn a_bare_end_from_a_foreign_namesake_never_targets_the_recorded_session() {
     let rig = Rig::new("foreignbareend");
-    let (foreign, pane) = rig.foreign_namesake("end");
+    let foreign = rig.foreign_namesake("end");
 
-    let (code, out, err) = rig.run_from(&["end", "-f"], Some((&foreign, &pane)));
-    let _ = rig.tmux_at(&foreign, &["kill-server"]);
+    let (code, out, err) = rig.run_from(&["end", "-f"], Some((&foreign.socket, &foreign.pane)));
 
     assert_eq!(code, Some(2), "stdout: {out}\nstderr: {err}");
     assert_eq!(
@@ -608,20 +891,24 @@ fn a_bare_end_from_a_foreign_namesake_never_targets_the_recorded_session() {
 #[test]
 fn bare_watchdog_status_from_a_foreign_namesake_has_no_inferred_target() {
     let rig = Rig::new("foreignwatchdog");
-    let (foreign, pane) = rig.foreign_namesake("watchdog");
+    let foreign = rig.foreign_namesake("watchdog");
     let meta = rig.dir.join("meta");
     let before = std::fs::read(&meta).expect("the recorded meta");
 
     // Naming the target remains valid from another server and addresses the
     // server the target records.
-    let (code, out, err) =
-        rig.run_from(&["watchdog", "status", &rig.name], Some((&foreign, &pane)));
+    let (code, out, err) = rig.run_from(
+        &["watchdog", "status", &rig.name],
+        Some((&foreign.socket, &foreign.pane)),
+    );
     assert_eq!(code, Some(0), "stdout: {out}\nstderr: {err}");
     assert_eq!(out, "Watchdog is not running.\n");
     assert!(err.is_empty(), "{err}");
 
-    let (code, out, err) = rig.run_from(&["watchdog", "status"], Some((&foreign, &pane)));
-    let _ = rig.tmux_at(&foreign, &["kill-server"]);
+    let (code, out, err) = rig.run_from(
+        &["watchdog", "status"],
+        Some((&foreign.socket, &foreign.pane)),
+    );
 
     assert_eq!(code, Some(1), "stdout: {out}\nstderr: {err}");
     assert!(out.is_empty(), "{out}");
@@ -1097,11 +1384,13 @@ fn compact_reads_the_roster_from_the_freeze_and_not_from_a_later_config() {
 
 #[test]
 fn end_refuses_a_target_it_does_not_know() {
-    let home = PathBuf::from(format!("/tmp/aelc.{}.missing", std::process::id()));
-    let _ = std::fs::remove_dir_all(&home);
-    std::fs::create_dir_all(home.join("sessions")).expect("a scratch AE_HOME");
+    let scratch = Scratch::new(PathBuf::from(format!(
+        "/tmp/aelc.{}.missing",
+        std::process::id()
+    )));
+    let home = &scratch.home;
     let mut cmd = ae();
-    cmd.env("AE_HOME", &home);
+    cmd.env("AE_HOME", home);
     let out = bounded(
         cmd.args(["_end", "-f", "nosuch"])
             .stdin(std::process::Stdio::null())
@@ -1118,7 +1407,6 @@ fn end_refuses_a_target_it_does_not_know() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let _ = std::fs::remove_dir_all(&home);
 }
 
 #[test]

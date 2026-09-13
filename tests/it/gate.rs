@@ -16,6 +16,8 @@
 
 use std::path::{Path, PathBuf};
 
+use super::parity::{Invocation, capture::ExitOutcome, capture::raw};
+
 /// The repository root — this file's crate manifest directory.
 fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -139,7 +141,11 @@ fn rust_test_tmux_isolation_ok(justfile: &str) -> bool {
     let required = [
         "lane=\"$1\"",
         "shift",
-        "mktemp -d \"${TMPDIR:-/tmp}/ae-rust-test.XXXXXX\"",
+        "owner_is_dead()",
+        "reap_sockets()",
+        "reap_stale_lanes()",
+        "reap_stale_lanes",
+        "mktemp -d \"${TMPDIR:-/tmp}/ae-rust-test.$$.XXXXXX\"",
         "TMUX_TMPDIR=\"$test_tmux_tmp\" env -u TMUX -u TMUX_PANE tmux -L ae kill-server",
         "rm -rf \"$test_tmux_tmp\"",
         "trap cleanup EXIT",
@@ -155,6 +161,15 @@ fn rust_test_tmux_isolation_ok(justfile: &str) -> bool {
         return false;
     }
     let Some(unset) = position("unset TMUX TMUX_PANE") else {
+        return false;
+    };
+    let Some(reap) = lines
+        .iter()
+        .position(|line| line.trim() == "reap_stale_lanes")
+    else {
+        return false;
+    };
+    let Some(mktemp) = position("mktemp -d") else {
         return false;
     };
     let Some(sentry) = position("tmux -f /dev/null -L ae new-session") else {
@@ -174,7 +189,8 @@ fn rust_test_tmux_isolation_ok(justfile: &str) -> bool {
             "just _tmux-isolated mutants {{ args }}",
         ),
     ];
-    unset < sentry
+    reap < mktemp
+        && unset < sentry
         && sentry < nextest
         && nextest < doctest
         && callers
@@ -256,8 +272,117 @@ fn the_rust_test_recipe_isolates_every_real_tmux_probe() {
     // RED — an isolated run that never kills its server or removes its socket
     // directory leaves state behind and can contaminate a later run.
     assert!(!rust_test_tmux_isolation_ok(
-        "rust-test:\n    test_tmux_tmp=\"$(mktemp -d \"${TMPDIR:-/tmp}/ae-rust-test.XXXXXX\")\"\n    export TMUX_TMPDIR=\"$test_tmux_tmp\"\n    unset TMUX TMUX_PANE\n    tmux -L ae new-session -d -s foreign-review-sentry -e AE_SESSION=foreign-review-sentry\n    cargo nextest run --locked --all-features\n    cargo test --doc --locked --all-features\n"
+        "rust-test:\n    test_tmux_tmp=\"$(mktemp -d \"${TMPDIR:-/tmp}/ae-rust-test.$$.XXXXXX\")\"\n    export TMUX_TMPDIR=\"$test_tmux_tmp\"\n    unset TMUX TMUX_PANE\n    tmux -L ae new-session -d -s foreign-review-sentry -e AE_SESSION=foreign-review-sentry\n    cargo nextest run --locked --all-features\n    cargo test --doc --locked --all-features\n"
     ));
+}
+
+struct StaleLane {
+    root: PathBuf,
+    socket: PathBuf,
+}
+
+impl Drop for StaleLane {
+    fn drop(&mut self) {
+        let _ = raw::run(
+            &Invocation::new("tmux")
+                .arg("-S")
+                .arg(&self.socket)
+                .arg("kill-server"),
+            &self.root,
+            &self.root.join("cleanup-out"),
+            &self.root.join("cleanup-err"),
+        );
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+#[test]
+fn stale_lane_owner_child() {
+    if std::env::var_os("AE_GATE_STALE_LANE_OWNER_CHILD").is_none() {
+        return;
+    }
+    let pid_file =
+        std::env::var_os("AE_GATE_STALE_LANE_PID_FILE").expect("the stale-lane child pid file");
+    std::fs::write(pid_file, std::process::id().to_string())
+        .expect("the stale-lane child pid file");
+    let scratch = std::env::temp_dir();
+    let _ = raw::run(
+        &Invocation::new("kill")
+            .arg("-KILL")
+            .arg(std::process::id().to_string()),
+        &scratch,
+        &scratch.join("stale-lane-kill-out"),
+        &scratch.join("stale-lane-kill-err"),
+    );
+    panic!("SIGKILL must end the stale-lane owner child");
+}
+
+#[test]
+fn stale_lane_sweep_reaps_a_nested_socket_owned_by_a_dead_lane() {
+    let scratch_root = PathBuf::from(format!("/tmp/ae-gate-stale-lane.{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch_root);
+    std::fs::create_dir_all(&scratch_root).expect("a stale-lane parent root");
+    let child = std::env::current_exe().expect("the integration test binary");
+    let status = raw::run(
+        &Invocation::new(child)
+            .arg("--exact")
+            .arg("gate::stale_lane_owner_child")
+            .env("AE_GATE_STALE_LANE_OWNER_CHILD", "1")
+            .env(
+                "AE_GATE_STALE_LANE_PID_FILE",
+                scratch_root.join("owner-pid"),
+            ),
+        &scratch_root,
+        &scratch_root.join("owner-out"),
+        &scratch_root.join("owner-err"),
+    )
+    .expect("the stale-lane owner child starts");
+    assert!(matches!(status.outcome(), ExitOutcome::Signalled));
+    let owner = std::fs::read_to_string(scratch_root.join("owner-pid"))
+        .expect("the stale-lane owner pid")
+        .trim()
+        .parse::<u32>()
+        .expect("the stale-lane owner pid is numeric");
+    let stale = scratch_root.join(format!("ae-rust-test.{owner}.stale"));
+    let socket = stale.join("nested/socket");
+    std::fs::create_dir_all(socket.parent().expect("a nested socket parent"))
+        .expect("a nested socket parent");
+    let fixture = StaleLane {
+        root: scratch_root.clone(),
+        socket: socket.clone(),
+    };
+    let created = raw::run(
+        &Invocation::new("tmux")
+            .arg("-S")
+            .arg(&socket)
+            .arg("new-session")
+            .arg("-d")
+            .arg("-s")
+            .arg("stale-lane"),
+        &stale,
+        &stale.join("create-out"),
+        &stale.join("create-err"),
+    )
+    .expect("the stale-lane server starts");
+    assert!(matches!(created.outcome(), ExitOutcome::Code(0)));
+    assert!(socket.exists(), "the stale lane owns a nested tmux socket");
+
+    let swept = raw::run(
+        &Invocation::new("just")
+            .arg("_tmux-isolated")
+            .arg("unknown")
+            .env("TMPDIR", &scratch_root),
+        &root(),
+        &scratch_root.join("sweep-out"),
+        &scratch_root.join("sweep-err"),
+    )
+    .expect("the stale-lane sweep runs");
+    assert!(matches!(swept.outcome(), ExitOutcome::Code(2)));
+    assert!(
+        !stale.exists(),
+        "the next lane must kill nested stale sockets before it creates its own lane"
+    );
+    drop(fixture);
 }
 
 /// Whether the `release` recipe refreshes the fuzz crate's lock inside the
