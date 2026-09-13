@@ -1,6 +1,11 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.70] - 2026-09-13
+
+### Other
+
+- Show truthful declared state in the session context menu
 ## [v2026.9.69] - 2026-09-13
 
 ### Testing
