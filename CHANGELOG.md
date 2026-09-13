@@ -1,6 +1,11 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.71] - 2026-09-13
+
+### Bug Fixes
+
+- Track partial spawn seats
 ## [v2026.9.70] - 2026-09-13
 
 ### Other
