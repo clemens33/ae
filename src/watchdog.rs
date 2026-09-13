@@ -8,7 +8,7 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::events::Event;
+use crate::events::{Event, Identity, RoutingMember};
 use crate::procs::Descendancy;
 
 /// The shells the dead-check treats as "no agent in the foreground".
@@ -297,30 +297,74 @@ pub fn quiet_hash(buf: &str) -> u64 {
 const NUDGE_ACTOR: &str = "watchdog";
 const NUDGE_ACTION: &str = "nudge";
 
-/// Whether an event is RELEVANT to `agent`.
-fn mentions(event: &Event, agent: &str, cross_session: &str) -> bool {
-    if event.actor == agent {
-        return true;
+/// Whether `event`'s actor IS the seat at `slot` / `agent` in `session` — the
+/// ROUTING KEY when the record carries one, the display name ONLY for a
+/// keyless legacy record. THE rule the daemon and the read side share: a
+/// declaration and the event that proves its currency must be judged by the
+/// same key, or a rename-back history lets one incarnation's event stand in
+/// for another's.
+#[must_use]
+pub fn event_is_actor(event: &Event, session: &str, slot: &str, agent: &str) -> bool {
+    match (&event.actor_slot, &event.actor_session) {
+        (RoutingMember::Value(event_slot), RoutingMember::Value(event_session)) => {
+            event_slot == slot && event_session == session
+        }
+        // No routing key at all: the display name is all there is.
+        (RoutingMember::Absent, RoutingMember::Absent) => event.actor == agent,
+        // Partial, or present-and-empty: routed, to nobody nameable.
+        _ => false,
     }
-    event
-        .target
-        .as_deref()
-        .is_some_and(|target| target == agent || target == cross_session)
 }
 
-/// The newest event relevant to `agent`, plus whether the walk stepped past any
-/// of the watchdog's own nudges to reach it — the SELECTION half of the quiet
-/// decision that [`quiet_reason`] then classifies.
+/// Whether `event` is ADDRESSED TO that seat — the mirror of
+/// [`event_is_actor`] on the target side, same routing-key rule.
+#[must_use]
+pub fn event_is_addressed_to(event: &Event, session: &str, slot: &str, agent: &str) -> bool {
+    match event.target_identity() {
+        Some(Identity::Routed {
+            slot: event_slot,
+            session: event_session,
+        }) => event_slot == slot && event_session == session,
+        Some(Identity::Display(name)) => {
+            name == agent || is_cross_session_form(name, session, agent)
+        }
+        // Half a routing key addresses nobody, and neither does no target.
+        Some(Identity::Unassociated) | None => false,
+    }
+}
+
+/// Whether `name` is the `@<session>:<agent>` spelling of THIS session's agent.
+fn is_cross_session_form(name: &str, session: &str, agent: &str) -> bool {
+    name.strip_prefix('@')
+        .and_then(|rest| rest.strip_prefix(session))
+        .and_then(|rest| rest.strip_prefix(':'))
+        .is_some_and(|rest| rest == agent)
+}
+
+/// Whether an event is RELEVANT to the seat at `slot`/`agent` in `session`:
+/// its own record, or one addressed to it.
+fn mentions(event: &Event, session: &str, slot: &str, agent: &str) -> bool {
+    event_is_actor(event, session, slot, agent)
+        || event_is_addressed_to(event, session, slot, agent)
+}
+
+/// The newest event relevant to the seat at `slot`/`agent` in `session`, plus
+/// whether the walk stepped past any of the watchdog's own nudges to reach it —
+/// the SELECTION half of the quiet decision that [`quiet_reason`] then
+/// classifies, and the read side's currency proof.
+///
+/// ONE owner: the daemon and `session::agent_entries` both call this, with the
+/// same routing key the declaration itself is matched by.
 #[must_use]
 pub fn latest_relevant_event<'a>(
     events: &'a [Event],
-    agent: &str,
     session: &str,
+    slot: &str,
+    agent: &str,
 ) -> Option<(&'a Event, bool)> {
-    let cross_session = format!("@{session}:{agent}");
     let mut looked_past_nudge = false;
     for event in events.iter().rev() {
-        if !mentions(event, agent, &cross_session) {
+        if !mentions(event, session, slot, agent) {
             continue;
         }
         if event.actor == NUDGE_ACTOR && event.action == NUDGE_ACTION {
@@ -383,13 +427,18 @@ pub const DEFAULT_IDLE_NUDGE_SECS: u64 = 300;
 pub const OWN_WORK_AGE_CAP: u64 = 4;
 
 /// The age ceiling for a `waiting-agent` declaration: `idle_nudge_secs *
-/// OWN_WORK_AGE_CAP`.
+/// OWN_WORK_AGE_CAP`, with ONE deliberate exception stated here so no doc can
+/// claim a shared EFFECTIVE cap.
 ///
-/// `idle_nudge_secs == 0` disables the NUDGE half (as it disables every nudge
-/// in the daemon) and leaves the ATTENTION half on the documented default
-/// cadence: the knob switches nudging off, and it must not delete the only
-/// attention path a quiet state has. `waiting-user` and `blocked` keep
-/// claiming the human at zero today; an over-age `waiting-agent` does the same.
+/// At `idle_nudge_secs == 0` the ceiling scales from the documented default
+/// ([`DEFAULT_IDLE_NUDGE_SECS`]), i.e. 1200s — NOT the own-work deferral's
+/// `0 * 4`. The two are governing different things and the divergence is
+/// correct: the deferral is VACUOUS when nudging is off (there is no nudge to
+/// defer), while the attention MARKER is not — zero suppresses the nudge and
+/// keeps the claim, exactly as `waiting-user`/`blocked` keep claiming the
+/// human at zero, and an over-age `waiting-agent` must not become a silent
+/// stall. Prose that says the escalation uses "the same cap" as the deferral
+/// is wrong at zero.
 #[must_use]
 pub fn waiting_agent_cap_secs(idle_nudge_secs: u64) -> u64 {
     let cadence = if idle_nudge_secs == 0 {
@@ -1325,8 +1374,9 @@ mod tests {
             r#"{"ts":"2026-08-29T04:00:02Z","actor":"gpt56sol:colead","action":"memo","ref":"arch"}"#,
             r#"{"ts":"2026-08-29T04:00:03Z","actor":"fable5:lead","action":"state","ref":"working"}"#,
         ]);
-        let (found, looked_past) = latest_relevant_event(&events, "opus5:builder", "aerewrite")
-            .expect("the declaration is relevant");
+        let (found, looked_past) =
+            latest_relevant_event(&events, "aerewrite", "main", "opus5:builder")
+                .expect("the declaration is relevant");
         assert_eq!(found.reference.as_deref(), Some("waiting-user"));
         assert!(!looked_past, "no nudge was walked past");
     }
@@ -1342,7 +1392,7 @@ mod tests {
             r#"{"ts":"2026-08-29T04:00:01Z","actor":"someone:else","action":"memo","ref":"t"}"#;
         lines.extend(std::iter::repeat_n(filler, 500));
         let events = log(&lines);
-        let (found, _) = latest_relevant_event(&events, "opus5:builder", "aerewrite")
+        let (found, _) = latest_relevant_event(&events, "aerewrite", "main", "opus5:builder")
             .expect("500 unrelated events do not end the walk");
         assert_eq!(found.reference.as_deref(), Some("blocked"));
     }
@@ -1364,20 +1414,43 @@ mod tests {
             (&cross_session, "@session:agent target"),
         ] {
             assert!(
-                latest_relevant_event(events, "opus5:builder", "aerewrite").is_some(),
+                latest_relevant_event(events, "aerewrite", "main", "opus5:builder").is_some(),
                 "the {form} form is relevant"
             );
         }
         // A different session's spelling of the same name is NOT this agent's.
         assert!(
-            latest_relevant_event(&cross_session, "opus5:builder", "other").is_none(),
+            latest_relevant_event(&cross_session, "other", "main", "opus5:builder").is_none(),
             "the cross-session form is keyed to the session"
         );
         // Nothing mentioning the agent at all.
         let unrelated = log(&[
             r#"{"ts":"2026-08-29T04:00:00Z","actor":"fable5:lead","action":"send","target":"gpt56sol:colead"}"#,
         ]);
-        assert!(latest_relevant_event(&unrelated, "opus5:builder", "aerewrite").is_none());
+        assert!(latest_relevant_event(&unrelated, "aerewrite", "main", "opus5:builder").is_none());
+    }
+
+    /// A rename-back history must not let one incarnation's event stand in for
+    /// another's: alpha declares `waiting-agent`, the session lives as beta
+    /// (the SAME display actor declares `working` there), and it comes back as
+    /// alpha. Relevance is judged by the ROUTING KEY, so beta's declaration is
+    /// neither alpha's news nor alpha's currency proof — the read side and the
+    /// daemon must select alpha's own declaration, together.
+    #[test]
+    fn relevance_is_routing_aware_so_a_rename_back_cannot_borrow_another_incarnations_event() {
+        let events = log(&[
+            r#"{"ts":"2026-09-13T08:00:00Z","actor":"lead","action":"state","ref":"waiting-agent","summary":"on colead","actor_slot":"main","actor_session":"alpha"}"#,
+            r#"{"ts":"2026-09-13T08:10:00Z","actor":"lead","action":"state","ref":"working","actor_slot":"main","actor_session":"beta"}"#,
+        ]);
+        let (found, looked_past) = latest_relevant_event(&events, "alpha", "main", "lead")
+            .expect("alpha's declaration is relevant to alpha");
+        assert!(!looked_past);
+        assert_eq!(
+            found.reference.as_deref(),
+            Some("waiting-agent"),
+            "beta's `working` belongs to another incarnation; alpha's own \
+             declaration is the newest relevant event"
+        );
     }
 
     #[test]
@@ -1388,8 +1461,9 @@ mod tests {
             r#"{"ts":"2026-08-29T04:00:00Z","actor":"opus5:builder","action":"state","ref":"waiting-user","summary":"review"}"#,
             r#"{"ts":"2026-08-29T04:00:00Z","actor":"watchdog","action":"nudge","target":"opus5:builder","summary":"idle 15m"}"#,
         ]);
-        let (found, looked_past) = latest_relevant_event(&events, "opus5:builder", "aerewrite")
-            .expect("the declaration is underneath the nudge");
+        let (found, looked_past) =
+            latest_relevant_event(&events, "aerewrite", "main", "opus5:builder")
+                .expect("the declaration is underneath the nudge");
         assert_eq!(found.reference.as_deref(), Some("waiting-user"));
         assert!(looked_past, "a nudge WAS walked past");
         // And the two halves compose the way the daemon will use them.
@@ -1408,8 +1482,9 @@ mod tests {
         let nudge = r#"{"ts":"2026-08-29T04:05:00Z","actor":"watchdog","action":"nudge","target":"opus5:builder"}"#;
         lines.extend(std::iter::repeat_n(nudge, 5));
         let events = log(&lines);
-        let (found, looked_past) = latest_relevant_event(&events, "opus5:builder", "aerewrite")
-            .expect("the done is under five nudges");
+        let (found, looked_past) =
+            latest_relevant_event(&events, "aerewrite", "main", "opus5:builder")
+                .expect("the done is under five nudges");
         assert_eq!(found.action, "done");
         assert!(looked_past);
         // Done is the ONE kind a walked-past nudge clears.
@@ -1423,8 +1498,9 @@ mod tests {
             r#"{"ts":"2026-08-29T04:00:00Z","actor":"opus5:builder","action":"state","ref":"waiting-user"}"#,
             r#"{"ts":"2026-08-29T04:05:00Z","actor":"watchdog","action":"alert","target":"opus5:builder","summary":"stale"}"#,
         ]);
-        let (found, looked_past) = latest_relevant_event(&alerted, "opus5:builder", "aerewrite")
-            .expect("the alert is relevant");
+        let (found, looked_past) =
+            latest_relevant_event(&alerted, "aerewrite", "main", "opus5:builder")
+                .expect("the alert is relevant");
         assert_eq!(found.action, "alert");
         assert!(!looked_past);
         // A `nudge` from a PEER is not the watchdog's, and is news.
@@ -1432,8 +1508,9 @@ mod tests {
             r#"{"ts":"2026-08-29T04:00:00Z","actor":"opus5:builder","action":"state","ref":"waiting-user"}"#,
             r#"{"ts":"2026-08-29T04:05:00Z","actor":"fable5:lead","action":"nudge","target":"opus5:builder"}"#,
         ]);
-        let (found, looked_past) = latest_relevant_event(&peer, "opus5:builder", "aerewrite")
-            .expect("the peer event is relevant");
+        let (found, looked_past) =
+            latest_relevant_event(&peer, "aerewrite", "main", "opus5:builder")
+                .expect("the peer event is relevant");
         assert_eq!(found.actor, "fable5:lead");
         assert!(!looked_past);
         assert_eq!(
@@ -1448,8 +1525,8 @@ mod tests {
         let events = log(&[
             r#"{"ts":"2026-08-29T04:05:00Z","actor":"watchdog","action":"nudge","target":"opus5:builder"}"#,
         ]);
-        assert!(latest_relevant_event(&events, "opus5:builder", "aerewrite").is_none());
-        assert!(latest_relevant_event(&[], "opus5:builder", "aerewrite").is_none());
+        assert!(latest_relevant_event(&events, "aerewrite", "main", "opus5:builder").is_none());
+        assert!(latest_relevant_event(&[], "aerewrite", "main", "opus5:builder").is_none());
     }
 
     #[test]
@@ -1462,7 +1539,7 @@ mod tests {
             r#"{"ts":"2026-08-29T04:09:00Z","actor":"opus5:builder","action":"state","ref":"waiting-user"}"#,
             r#"{"ts":"2026-08-29T04:00:00Z","actor":"fable5:lead","action":"send","target":"opus5:builder","summary":"answered"}"#,
         ]);
-        let (found, _) = latest_relevant_event(&events, "opus5:builder", "aerewrite")
+        let (found, _) = latest_relevant_event(&events, "aerewrite", "main", "opus5:builder")
             .expect("something is relevant");
         assert_eq!(
             found.actor, "fable5:lead",

@@ -958,18 +958,16 @@ impl Meta {
         self.schema.as_deref()
     }
 
-    /// The session's pinned idle reminder cadence, parsed.
-    ///
-    /// `None` when the row is absent, doubled (invalidated), or not an
-    /// unsigned integer — a read surface falls back to
-    /// [`crate::watchdog::DEFAULT_IDLE_NUDGE_SECS`] rather than refusing to
-    /// render a session whose meta it cannot fully use. The watchdog, which
-    /// ACTS on the value, keeps its own louder refusal.
+    /// The inputs the ONE [`resolve_idle_nudge_secs`] resolver classifies: the
+    /// RAW row (kept even when the value is unusable) and whether the meta
+    /// named it twice. Resolving is deliberately NOT done here — the watchdog
+    /// and the read surfaces must judge the same row by the same function.
     #[must_use]
-    pub fn idle_nudge_secs(&self) -> Option<u64> {
-        self.idle_nudge_secs
-            .as_deref()
-            .and_then(|value| value.parse().ok())
+    pub fn idle_nudge_pin(&self) -> (Option<&str>, bool) {
+        let doubled = self.anomalies.iter().any(|anomaly| {
+            matches!(anomaly, Anomaly::DuplicateKey { key, .. } if key == "idle_nudge_secs")
+        });
+        (self.idle_nudge_secs.as_deref(), doubled)
     }
 
     /// Everything this reader met and is not authorised to interpret.
@@ -1054,6 +1052,32 @@ pub fn sole_value<'a>(text: &'a [u8], key: &str) -> Option<&'a [u8]> {
         found = Some(value);
     }
     found
+}
+
+/// The ONE `idle_nudge_secs` resolver, judged by the watchdog's own refusal
+/// rule so both surfaces answer with one number:
+///
+/// - no row at all → `Some(fallback)` (the caller's documented default);
+/// - exactly one usable row → `Some(pinned)`;
+/// - a DOUBLED row, or a value that is not an unsigned integer → `None`.
+///
+/// `None` FAILS CLOSED. The watchdog refuses to start on it; the read side
+/// claims NO ceiling (no `waiting-agent` escalation) and names the gap rather
+/// than inventing the default, because a surface that invents a cadence can
+/// disagree with the pane about a human claim.
+#[must_use]
+pub fn resolve_idle_nudge_secs(
+    recorded: Option<&str>,
+    doubled: bool,
+    fallback: u64,
+) -> Option<u64> {
+    if doubled {
+        return None;
+    }
+    match recorded {
+        None => Some(fallback),
+        Some(raw) => raw.parse::<u64>().ok(),
+    }
 }
 
 /// One observed-model row, validated. Duplicates were dropped by the reader,
@@ -2307,22 +2331,32 @@ agent_bin.main=claude
 
     #[test]
     fn the_idle_nudge_pin_reads_once_and_invalidates_like_every_other_key() {
+        let resolve = |text: &str| {
+            let meta = Meta::parse(text);
+            let (recorded, doubled) = meta.idle_nudge_pin();
+            super::resolve_idle_nudge_secs(recorded, doubled, 300)
+        };
+        assert_eq!(resolve("idle_nudge_secs=420\n"), Some(420));
         assert_eq!(
-            Meta::parse("idle_nudge_secs=420\n").idle_nudge_secs(),
-            Some(420),
-            "the pinned cadence parses"
-        );
-        assert_eq!(
-            Meta::parse("idle_nudge_secs=soon\n").idle_nudge_secs(),
+            resolve("idle_nudge_secs=soon\n"),
             None,
-            "an unusable value falls back, it does not refuse the read"
+            "an unusable value FAILS CLOSED; it does not fall back to 300"
         );
         assert_eq!(
-            Meta::parse("idle_nudge_secs=60\nidle_nudge_secs=120\n").idle_nudge_secs(),
+            resolve("idle_nudge_secs=\n"),
             None,
-            "a doubled key is invalidated, not picked"
+            "an empty value is a row that cannot be used, not an absent row"
         );
-        assert_eq!(Meta::parse("mode=local\n").idle_nudge_secs(), None);
+        assert_eq!(
+            resolve("idle_nudge_secs=60\nidle_nudge_secs=120\n"),
+            None,
+            "a doubled key is unusable, not picked"
+        );
+        assert_eq!(
+            resolve("mode=local\n"),
+            Some(300),
+            "an ABSENT row takes the caller's fallback"
+        );
     }
 
     #[test]

@@ -16,7 +16,7 @@ use std::path::Path;
 use crate::attention::Reason;
 use crate::digest::{AgentEntry, FactState, RenderKnowledge, SessionEntry, Status};
 use crate::events::{
-    AlertMeaning, Cursor, Drain, Event, EventLog, Identity, RefMeaning, RoutingMember, SkippedLine,
+    AlertMeaning, Cursor, Drain, Event, EventLog, Identity, RefMeaning, SkippedLine,
 };
 use crate::meta::{Anomaly, Meta};
 use crate::time::Timestamp;
@@ -150,8 +150,8 @@ impl<'a> Seat<'a> {
 ///
 /// It holds the RECORDS, not a flattening of them: a display name churns with
 /// a rename, so the identity a seat is matched on has to be the routing key
-/// wherever the writer recorded one. [`is_actor`] owns that rule for the whole
-/// module and this reader does not get a second copy of it.
+/// wherever the writer recorded one. [`crate::watchdog::event_is_actor`] owns
+/// that rule for the whole module and this reader does not get a second copy.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Outstanding<'a> {
     /// Every request still waiting on its target, oldest first.
@@ -187,7 +187,9 @@ impl<'a> Outstanding<'a> {
     pub fn of(&self, seat: Seat<'_>) -> OwnWork {
         let mine = |rows: &[&'a Event]| -> Vec<i64> {
             rows.iter()
-                .filter(|event| is_actor(event, seat.session, seat.slot, seat.reference))
+                .filter(|event| {
+                    crate::watchdog::event_is_actor(event, seat.session, seat.slot, seat.reference)
+                })
                 .map(|event| event.ts.epoch())
                 .collect()
         };
@@ -420,18 +422,11 @@ impl SessionRuntime {
 }
 
 /// Whether `event`'s actor is the agent at `slot` / `reference` in `session`.
-fn is_actor(event: &Event, session: &str, slot: &str, reference: &str) -> bool {
-    match (&event.actor_slot, &event.actor_session) {
-        (RoutingMember::Value(event_slot), RoutingMember::Value(event_session)) => {
-            event_slot == slot && event_session == session
-        }
-        // No routing key at all: the display name is all there is.
-        (RoutingMember::Absent, RoutingMember::Absent) => event.actor == reference,
-        // Partial, or present-and-empty: routed, to nobody nameable.
-        _ => false,
-    }
-}
-
+///
+/// The rule itself lives at [`crate::watchdog::event_is_actor`] — ONE routing
+/// owner for the daemon and every reader, so a rename-back history cannot make
+/// one selection routing-aware and the other display-only.
+///
 /// The newest declaration made by this agent, independent of later activity.
 #[must_use]
 pub fn latest_declaration_in<'a>(
@@ -440,10 +435,10 @@ pub fn latest_declaration_in<'a>(
     slot: &str,
     reference: &str,
 ) -> Option<&'a Event> {
-    events
-        .iter()
-        .rev()
-        .find(|event| is_actor(event, session, slot, reference) && event.declared_state().is_some())
+    events.iter().rev().find(|event| {
+        crate::watchdog::event_is_actor(event, session, slot, reference)
+            && event.declared_state().is_some()
+    })
 }
 
 /// The alert the durable log still shows for one agent, or `None`.
@@ -496,8 +491,8 @@ enum Verdict {
 
 /// What `event` settles for the agent at `slot` / `reference` in `session`.
 fn decisive_verdict(event: &Event, session: &str, slot: &str, reference: &str) -> Option<Verdict> {
-    let own = is_actor(event, session, slot, reference);
-    if !own && !is_addressed_to(event, session, slot, reference) {
+    let own = crate::watchdog::event_is_actor(event, session, slot, reference);
+    if !own && !crate::watchdog::event_is_addressed_to(event, session, slot, reference) {
         return None;
     }
     match event.alert_meaning() {
@@ -507,30 +502,6 @@ fn decisive_verdict(event: &Event, session: &str, slot: &str, reference: &str) -
         AlertMeaning::Undefined if own => Some(Verdict::Clear),
         AlertMeaning::Undefined => None,
     }
-}
-
-/// Whether `event` is ADDRESSED TO the agent at `slot` / `reference` — the
-/// mirror of [`is_actor`] on the target side.
-fn is_addressed_to(event: &Event, session: &str, slot: &str, reference: &str) -> bool {
-    match event.target_identity() {
-        Some(Identity::Routed {
-            slot: event_slot,
-            session: event_session,
-        }) => event_slot == slot && event_session == session,
-        Some(Identity::Display(name)) => {
-            name == reference || is_cross_session_form(name, session, reference)
-        }
-        // Half a routing key addresses nobody, and neither does no target.
-        Some(Identity::Unassociated) | None => false,
-    }
-}
-
-/// Whether `name` is the `@<session>:<agent>` spelling of THIS session's agent.
-fn is_cross_session_form(name: &str, session: &str, reference: &str) -> bool {
-    name.strip_prefix('@')
-        .and_then(|rest| rest.strip_prefix(session))
-        .and_then(|rest| rest.strip_prefix(':'))
-        .is_some_and(|rest| rest == reference)
 }
 
 /// The digest entry for the session directory at `dir`.
@@ -729,6 +700,18 @@ pub fn entry_from(
     let mut entry = SessionEntry::new(name, runtime.status);
     entry.branch.clone_from(&runtime.branch);
 
+    // The ONE cadence resolver, over the pin's raw inputs: `Some` for an
+    // absent row (the documented default) or a usable pin, `None` for a row
+    // that exists and cannot be used. `None` FAILS CLOSED below — no
+    // `waiting-agent` ceiling is claimed, and the gap is named on the card.
+    let idle_nudge_secs = snapshot
+        .meta
+        .as_ref()
+        .map_or(Some(DEFAULT_IDLE_NUDGE_SECS), |meta| {
+            let (recorded, doubled) = meta.idle_nudge_pin();
+            crate::meta::resolve_idle_nudge_secs(recorded, doubled, DEFAULT_IDLE_NUDGE_SECS)
+        });
+
     // The one raw-record producer: it attaches the values and the provenance that
     // decides whether every serializer may publish them.
     let meta = snapshot.meta.as_ref();
@@ -759,7 +742,15 @@ pub fn entry_from(
             .iter()
             .find(|seat| seat.slot == "main")
             .map(|seat| seat.name.clone());
-        entry.agents = agent_entries(meta, read, runtime, name, entry.started_epoch, now);
+        entry.agents = agent_entries(
+            meta,
+            read,
+            runtime,
+            name,
+            entry.started_epoch,
+            now,
+            idle_nudge_secs,
+        );
         entry.set_established_runtime_dead_agents(established_runtime_dead_agents(meta, runtime));
     }
     // The MAX across agent reasons PLUS session-level unresolved-request facts.
@@ -772,6 +763,20 @@ pub fn entry_from(
     );
     entry.degraded =
         meta.is_none_or(|meta| anomalies_degrade(meta.anomalies())) || !events_complete(snapshot);
+    // FAIL CLOSED, and NAME the gap: an unusable `idle_nudge_secs` pin
+    // withholds every `waiting-agent` escalation (the resolver answered
+    // `None`, so no ceiling is claimed anywhere). A card that silently never
+    // escalates a declared wait would hide a fact it owes the human, so the
+    // entry is marked degraded — the same channel a damaged record uses —
+    // rather than substituting the default cadence nobody declared.
+    if idle_nudge_secs.is_none()
+        && entry
+            .agents
+            .iter()
+            .any(|agent| agent.state.as_deref() == Some("waiting-agent"))
+    {
+        entry.degraded = true;
+    }
     entry.set_render_knowledge(render_knowledge(snapshot));
     entry
 }
@@ -867,8 +872,8 @@ fn agent_entries(
     session: &str,
     started_epoch: Option<i64>,
     now: Timestamp,
+    idle_nudge_secs: Option<u64>,
 ) -> Vec<AgentEntry> {
-    let idle_nudge_secs = meta.idle_nudge_secs().unwrap_or(DEFAULT_IDLE_NUDGE_SECS);
     // The seats that still exist: a stopped or absent pane holds nobody's
     // work, and a retired agent is off the roster entirely.
     let seats: Vec<String> = meta
@@ -882,23 +887,12 @@ fn agent_entries(
         .iter()
         .map(|slot| {
             let reference = slot.reference();
-            // The DECLARATION EVENT, not only its value: `waiting-agent`'s
-            // ceiling is measured from the declaration's own timestamp, and a
-            // value alone cannot carry one.
-            let declared = read.and_then(|read| {
-                latest_declaration_in(&read.events, session, &slot.slot, &reference)
-            });
-            let declared_state = declared.and_then(Event::declared_state);
-            let declared_age_secs =
-                declared.map(|event| u64::try_from(event.ts.seconds_until(now)).unwrap_or(0));
-            // Is the declaration still CURRENT by the DAEMON's own rule? The
-            // quiet hold ends when any newer event mentions the agent as actor
-            // or target (`watchdog::latest_relevant_event`; watchdog nudges are
-            // footprints and are walked past), so the read side asks the SAME
-            // function. Without this, `ae list`/`ae brief` would age a
-            // superseded declaration into `blocked` and claim the human for a
-            // wait the daemon already yielded — the exact false positive this
-            // state exists to delete.
+            // The ONE relevance owner decides which declaration is CURRENT,
+            // with the SAME routing key the declaration itself is matched by:
+            // the newest relevant event must be this seat's own declaration.
+            // `latest_declaration_in` supplies the raw value for the state cell
+            // even when a later relevant event has superseded it — the cell
+            // shows what the agent declared; only the escalation is withheld.
             //
             // RESIDUAL, and deliberately not faked: the daemon ALSO yields a
             // quiet hold after the PANE keeps changing for two cycles (a human
@@ -908,12 +902,28 @@ fn agent_entries(
             // ceiling, escalate on the human-marker surfaces; the pane's own
             // border follows the daemon. This residual is named in
             // AGENTS.md and `.local/waitagent-sites.md`.
-            let declared_current = read.is_some_and(|read| {
-                crate::watchdog::latest_relevant_event(&read.events, &reference, session)
-                    .is_some_and(|(newest, _)| {
-                        newest.actor == reference && newest.declared_state().is_some()
-                    })
+            let current_declaration = read.and_then(|read| {
+                crate::watchdog::latest_relevant_event(
+                    &read.events,
+                    session,
+                    &slot.slot,
+                    &reference,
+                )
+                .filter(|(event, _)| {
+                    crate::watchdog::event_is_actor(event, session, &slot.slot, &reference)
+                        && event.declared_state().is_some()
+                })
+                .map(|(event, _)| event)
             });
+            let declared = current_declaration.or_else(|| {
+                read.and_then(|read| {
+                    latest_declaration_in(&read.events, session, &slot.slot, &reference)
+                })
+            });
+            let declared_state = declared.and_then(Event::declared_state);
+            let declared_age_secs =
+                declared.map(|event| u64::try_from(event.ts.seconds_until(now)).unwrap_or(0));
+            let declared_current = current_declaration.is_some();
             let runtime_agent = runtime.agent(&slot.slot);
             // Model drift: only the two harnesses whose live model ae can read
             // are ever marked with an observation; every other tool's model is
@@ -1003,24 +1013,29 @@ fn anomalies_degrade(anomalies: &[Anomaly]) -> bool {
 /// `waiting-agent` is the quiet fifth state: fresh it claims nobody, and past
 /// [`waiting_agent_escalated`]'s ceiling it becomes exactly `blocked` (R4) —
 /// the SAME reason a declared `blocked` yields, and the same ceiling the
-/// watchdog uses to resume its nudge. `is_current` is the OTHER half of the
-/// daemon's rule: a declaration any later relevant event has superseded is not
-/// escalated, because the seat is active again and a human marker for it would
-/// be false.
+/// watchdog uses to resume its nudge.
+///
+/// `cadence` is [`crate::meta::resolve_idle_nudge_secs`]'s answer: `None` when
+/// the session's pin exists and cannot be used. That FAILS CLOSED — no ceiling
+/// is claimed, so no escalation — and `entry_from` names the withheld fact as
+/// `degraded` rather than inventing a cadence. `is_current` is the other half
+/// of the daemon's rule: a declaration any later relevant event has superseded
+/// is not escalated either.
 ///
 /// PURE, and the ONE classifier: every human surface consumes its answer
 /// (through `AgentEntry.reason`), never the ceiling arithmetic.
 fn declared_reason(
     state: &str,
     age_secs: u64,
-    idle_nudge_secs: u64,
+    cadence: Option<u64>,
     is_current: bool,
 ) -> Option<Reason> {
     match state {
         "waiting-user" => Some(Reason::WaitingUser),
         "blocked" => Some(Reason::Blocked),
-        "waiting-agent" => (is_current && waiting_agent_escalated(age_secs, idle_nudge_secs))
-            .then_some(Reason::Blocked),
+        "waiting-agent" => (is_current
+            && cadence.is_some_and(|cadence| waiting_agent_escalated(age_secs, cadence)))
+        .then_some(Reason::Blocked),
         _ => None,
     }
 }
@@ -2255,8 +2270,9 @@ mod tests {
     /// one, because a display name churns with a rename and a same-name actor
     /// in another session is not us.
     ///
-    /// The matrix is [`is_actor`]'s, not this reader's — the rows exist so a
-    /// future flattening back to names fails here rather than in the fleet.
+    /// The matrix is [`crate::watchdog::event_is_actor`]'s, not this reader's —
+    /// the rows exist so a future flattening back to names fails here rather
+    /// than in the fleet.
     #[test]
     fn outstanding_work_is_matched_by_routing_key_and_only_then_by_name() {
         let routed = |extra: &str| {
@@ -2891,6 +2907,93 @@ mod tests {
             Some(Reason::Blocked),
             "a nudge must not end the hold it was asking about"
         );
+    }
+
+    /// BLOCKER 1, routing half: a rename-back history (live → oldname → live)
+    /// must not let the oldname incarnation's `working` stand in for the live
+    /// seat's news OR its currency proof. The read side and the daemon's own
+    /// classifier select the SAME declaration — live's `waiting-agent` — so
+    /// they cannot split into "read escalates / daemon yields".
+    #[test]
+    fn the_read_side_and_the_daemon_select_the_same_declaration_after_a_rename_back() {
+        let scratch = Scratch::new("rename-back-currency");
+        scratch.meta(META);
+        scratch.events(&[
+            event(
+                &at(2_000),
+                "lead",
+                "state",
+                r#","ref":"waiting-agent","summary":"on colead","actor_slot":"main","actor_session":"live""#,
+            ),
+            event(
+                &at(10),
+                "lead",
+                "state",
+                r#","ref":"working","actor_slot":"main","actor_session":"oldname""#,
+            ),
+        ]);
+        let events = SessionRead::open(&scratch.0)
+            .expect("the fixture events read")
+            .events;
+        // The ONE owner: oldname's declaration is not live's news.
+        let (newest, looked_past) =
+            crate::watchdog::latest_relevant_event(&events, "live", "main", "lead")
+                .expect("live's declaration is relevant");
+        assert_eq!(newest.reference.as_deref(), Some("waiting-agent"));
+        assert_eq!(
+            crate::watchdog::quiet_reason(newest, "lead", looked_past),
+            Some(crate::watchdog::QuietKind::WaitingAgent),
+            "the daemon's half judges the same declaration"
+        );
+        // And the read side consumes that owner: past the ceiling, blocked.
+        let entry = entry_for(&scratch.0, "live", &running(), NOW, DEFAULT_UNANSWERED_SECS);
+        assert_eq!(entry.agents[0].state.as_deref(), Some("waiting-agent"));
+        assert_eq!(entry.attention, Some(Reason::Blocked));
+    }
+
+    /// IMPORTANT 2: a pin that exists and cannot be used FAILS CLOSED. The
+    /// read side claims NO ceiling (no escalation) and names the withheld fact
+    /// as degraded — it does not invent the 300 s default the daemon refuses
+    /// to start with.
+    #[test]
+    fn an_unusable_idle_nudge_pin_withholds_escalation_and_names_the_gap() {
+        for (tag, pin) in [
+            ("malformed", "idle_nudge_secs=soon\n"),
+            ("doubled", "idle_nudge_secs=60\nidle_nudge_secs=60\n"),
+        ] {
+            let scratch = Scratch::new(&format!("waiting-agent-pin-{tag}"));
+            scratch.meta(&format!("{META}{pin}"));
+            // Past every ceiling, so an invented 300 would escalate.
+            scratch.events(&[event(
+                &at(2_000),
+                "lead",
+                "state",
+                r#","ref":"waiting-agent","summary":"on colead""#,
+            )]);
+            let entry = entry_for(&scratch.0, "live", &running(), NOW, DEFAULT_UNANSWERED_SECS);
+            assert_eq!(
+                entry.agents[0].state.as_deref(),
+                Some("waiting-agent"),
+                "{tag}: the declaration stays visible"
+            );
+            assert_eq!(entry.agents[0].reason, None, "{tag}: no ceiling is claimed");
+            assert_eq!(entry.attention, None, "{tag}: hence no marker");
+            assert!(entry.degraded, "{tag}: the gap is NAMED, not hidden");
+        }
+
+        // The positive control: an ABSENT row takes the documented default and
+        // escalates, so the fail-closed path is about unusable pins only.
+        let absent = Scratch::new("waiting-agent-pin-absent");
+        absent.meta(META);
+        absent.events(&[event(
+            &at(2_000),
+            "lead",
+            "state",
+            r#","ref":"waiting-agent","summary":"on colead""#,
+        )]);
+        let entry = entry_for(&absent.0, "live", &running(), NOW, DEFAULT_UNANSWERED_SECS);
+        assert_eq!(entry.attention, Some(Reason::Blocked));
+        assert!(!entry.degraded);
     }
 
     #[test]

@@ -246,8 +246,11 @@ to any long form in `.local/<file>` or a memo topic. Never use pointers such as 
 pane” or “as discussed.” `waiting-agent` declares a wait on ANOTHER ae agent: it is quiet
 (no marker) while fresh and ESCALATES to exactly `blocked` (attention marker, and
 nudging too only when the idle-nudge cadence is enabled) once it is older than
-`idle_nudge_secs * OWN_WORK_AGE_CAP`; its reason names the agent and what you need from
-them. `blocked` keeps a concrete EXTERNAL blocker only — a dependency, a service, a human
+`idle_nudge_secs * OWN_WORK_AGE_CAP` nudge periods — the same multiplier as the
+own-work deferral, except that at `idle_nudge_secs = 0` the deferral is vacuous
+while the attention ceiling scales from the documented default 300 s (1200 s),
+because zero keeps the marker and only suppresses the nudge; its reason names the
+agent and what you need from them. `blocked` keeps a concrete EXTERNAL blocker only — a dependency, a service, a human
 decision elsewhere, a broken host — and names what blocks, who or what unblocks it, what
 you tried, and a long-form path. `unanswered` flags an `ask`/`review`
 whose target never replied within 1800 seconds (30 minutes) — the lowest-severity reason.)

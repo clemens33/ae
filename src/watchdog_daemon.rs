@@ -1470,8 +1470,22 @@ fn quota_awareness(meta_bytes: &[u8], global: Option<&Path>, local: Option<&Path
 }
 
 /// Resolve the session-pinned idle reminder cadence before the flag/default.
+///
+/// THE rule is [`crate::meta::resolve_idle_nudge_secs`] — the read surfaces
+/// call the same function, so a hostile meta can never give the pane and the
+/// human surface two different cadences. This wrapper only extracts the
+/// resolver's inputs from the raw bytes and keeps the daemon's loud refusal.
 fn idle_nudge_seconds(meta_bytes: &[u8], fallback: u64) -> Result<u64, String> {
-    pinned_seconds(meta_bytes, "idle_nudge_secs", fallback)
+    let sole = crate::meta::sole_value(meta_bytes, "idle_nudge_secs");
+    let recorded = sole.map(|value| String::from_utf8_lossy(value).into_owned());
+    let doubled =
+        recorded.is_none() && crate::meta::first_value(meta_bytes, "idle_nudge_secs").is_some();
+    crate::meta::resolve_idle_nudge_secs(recorded.as_deref(), doubled, fallback).ok_or_else(|| {
+        let raw = sole
+            .or_else(|| crate::meta::first_value(meta_bytes, "idle_nudge_secs"))
+            .unwrap_or_default();
+        String::from_utf8_lossy(raw).into_owned()
+    })
 }
 
 fn pinned_seconds(meta_bytes: &[u8], key: &str, fallback: u64) -> Result<u64, String> {
@@ -2532,12 +2546,34 @@ struct QuietQuery<'a> {
     events: &'a [Event],
     /// The pane's `@ae_agent` display ref.
     agent: &'a str,
+    /// The pane's roster slot — half of the routing key the ONE relevance
+    /// owner judges actor and target by.
+    slot: &'a str,
     /// This cycle's filtered pane hash.
     hash: u64,
     /// The pane's 1-based position in this cycle's traversal, for the budget.
     index: usize,
     /// The pane to re-capture while settling a baseline.
     pane_id: &'a str,
+}
+
+/// One pane's quiet question, as the collection site assembles it.
+fn quiet_query<'a>(
+    events: &'a [Event],
+    agent: &'a str,
+    slot: &'a str,
+    hash: u64,
+    index: usize,
+    pane_id: &'a str,
+) -> QuietQuery<'a> {
+    QuietQuery {
+        events,
+        agent,
+        slot,
+        hash,
+        index,
+        pane_id,
+    }
 }
 
 /// Everything one cycle needs that does not change within it.
@@ -3097,13 +3133,7 @@ impl Cycle<'_> {
                 is_throttled,
                 throttle_quota,
                 quiet: self.resolve_quiet(
-                    &QuietQuery {
-                        events: &events,
-                        agent,
-                        hash,
-                        index,
-                        pane_id: &pane.pane_id,
-                    },
+                    &quiet_query(&events, agent, &slot, hash, index, &pane.pane_id),
                     carried,
                     &mut carry.quiet,
                 ),
@@ -3574,7 +3604,8 @@ impl Cycle<'_> {
         state: &mut PaneState,
         quiet_cycle: &mut QuietCycle,
     ) -> Option<QuietKind> {
-        let (event, looked_past) = latest_relevant_event(query.events, query.agent, self.session)?;
+        let (event, looked_past) =
+            latest_relevant_event(query.events, self.session, query.slot, query.agent)?;
         let kind = quiet_reason(event, query.agent, looked_past)?;
         if kind == QuietKind::Done {
             return Some(kind);
@@ -7275,6 +7306,7 @@ mod tests {
         let mut query = QuietQuery {
             events: &events,
             agent: "opus5:builder",
+            slot: "main",
             hash: 9,
             index: 1,
             pane_id: "%1",
@@ -7344,7 +7376,7 @@ mod tests {
             "the addressed prior alert is the positive control"
         );
         let (latest, looked_past) =
-            crate::watchdog::latest_relevant_event(&events, "codex:agent", "demo")
+            crate::watchdog::latest_relevant_event(&events, "demo", "main", "codex:agent")
                 .expect("the later memo is relevant");
         assert_eq!(latest.action, "memo");
         assert_eq!(
