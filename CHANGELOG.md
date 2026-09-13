@@ -1,6 +1,11 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.69] - 2026-09-13
+
+### Testing
+
+- Reap tmux fixtures after SIGKILL
 ## [v2026.9.68] - 2026-09-13
 
 ### Other
