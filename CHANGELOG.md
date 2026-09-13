@@ -1,6 +1,20 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.73] - 2026-09-13
+
+### Bug Fixes
+
+- Let --assume-stopped clear a rebooted server record
+
+### Documentation
+
+- Correct which operations cross the boot-time proof
+- Name end and rename as boot-proof callers
+
+### Testing
+
+- Pin the shared gate counts and the rename retry
 ## [v2026.9.72] - 2026-09-13
 
 ### Other
