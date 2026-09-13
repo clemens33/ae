@@ -958,6 +958,10 @@ impl SettingsScope {
         self.policy.absorb(&group.policy);
         for row in &group.rows {
             if let Some(observed) = row.observed_at {
+                // NEWEST, not oldest: this is the stamp the scope last heard,
+                // and the only one a status-only line can honestly quote as
+                // "seen". Numbers stay blank, so the optimistic direction
+                // implies no headroom.
                 self.observed = Some(self.observed.map_or(observed, |held| held.max(observed)));
             }
             let status = if matches!(row.status, Status::Fresh | Status::Stale) {
@@ -1011,7 +1015,7 @@ impl SettingsScope {
             // adopted a reading keeps the bare status — attaching a sibling's
             // fresh age to a failed row would be another sample's story.
             if self.readings.is_empty()
-                && let Some(observed) = self.observed
+                && let Some(observed) = stated_observed_at(self.observed, now)
             {
                 let _ = write!(
                     label,
@@ -2367,7 +2371,7 @@ fn render_at(groups: &[Group], home: Option<&Path>, now: i64) -> String {
                     .then(|| row.resets_at.map(|reset| reset_label(reset, now)))
                     .flatten()
                     .unwrap_or_else(|| "-".to_owned()),
-                row.observed_at
+                stated_observed_at(row.observed_at, now)
                     .map_or_else(|| "-".to_owned(), |observed| age_label(now - observed)),
                 status,
             ]));
@@ -2629,6 +2633,18 @@ fn advisory_percent(value: Option<&str>) -> String {
 
 fn reset_label(reset: i64, now: i64) -> String {
     format!("in {}", span_label(reset.saturating_sub(now)))
+}
+
+/// The observation stamp whose age ae may STATE, or `None` when it may state
+/// none.
+///
+/// A stamp after `now` states no age: the row is `unknown` because `freshness`
+/// refused the skew (`FUTURE_SKEW_SECS`), and a clamped `0m ago` would claim
+/// the freshest possible observation for the one input ae distrusts. Callers
+/// render `None` as their own absence — `-` in the table, no `seen` in the
+/// dialog — never as a clipped number.
+fn stated_observed_at(observed_at: Option<i64>, now: i64) -> Option<i64> {
+    observed_at.filter(|observed| *observed <= now)
 }
 
 fn age_label(seconds: i64) -> String {
@@ -3591,6 +3607,40 @@ mod tests {
         }
         .quota_dialog_rows();
         assert_eq!(rows[1].label, "  unknown | run /usage in a claude session");
+    }
+
+    #[test]
+    fn a_future_skewed_stamp_states_no_age() {
+        const NOW: i64 = 1_000_000;
+        let group = unusable_claude_group(NOW, Some(NOW + FUTURE_SKEW_SECS));
+        let table = render_at(std::slice::from_ref(&group), None, NOW);
+        assert!(
+            !table.contains("0m ago"),
+            "a refused future stamp states no age: {table}"
+        );
+        assert!(
+            table.contains("unknown (run"),
+            "the row is still reported unknown and named: {table}"
+        );
+        let rows = super::Observation {
+            groups: vec![group],
+            rendered: Vec::new(),
+            home: None,
+            now: NOW,
+        }
+        .quota_dialog_rows();
+        assert_eq!(
+            rows[1].label, "  unknown | run /usage in a claude session",
+            "a future stamp adds no seen field"
+        );
+        assert!(!rows[1].label.contains("seen"), "{:?}", rows[1].label);
+
+        // The rule's owner: a stamp at or before `now` is stated, a later one
+        // is not.
+        assert_eq!(super::stated_observed_at(Some(NOW + 1), NOW), None);
+        assert_eq!(super::stated_observed_at(Some(NOW), NOW), Some(NOW));
+        assert_eq!(super::stated_observed_at(Some(NOW - 1), NOW), Some(NOW - 1));
+        assert_eq!(super::stated_observed_at(None, NOW), None);
     }
 
     #[test]
