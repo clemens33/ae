@@ -85,7 +85,7 @@ Only one path touches tmux. Only one path mints request ids. Only one path valid
    `ae: send to <target> UNCONFIRMED — submit not verified. Re-send.`
 4. **No durable outbox.** ae is not a queue — a loud failure is the signal for the sender to re-send. `ask` / `review` / `reply` / `interrupt` / `relay` all deliver through this same path and inherit every guard.
 
-Other tools (gemini, opencode, plain shells) receive without the modelled busy / human-input protection — only claude and codex expose a reliable input-state read.
+Other tools (gemini, muse, opencode, plain shells) receive without the modelled busy / human-input protection — only claude and codex expose a reliable input-state read.
 
 ### Slot identity
 

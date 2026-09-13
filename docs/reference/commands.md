@@ -828,7 +828,7 @@ Cached Claude numbers become `unknown` when the file's current and cached accoun
 the UUIDs are neither retained nor displayed. Untrusted cache labels and terminal escape sequences
 are reduced to printable table cells before widths or wrapping are calculated.
 
-Grok Build, Antigravity, OpenCode, and Gemini CLI have no verified reusable local subscription
+Grok Build, Antigravity, Muse Code, OpenCode, and Gemini CLI have no verified reusable local subscription
 quota source. They render `unsupported` with an operator hint rather than treating token or cost
 history as quota. This command makes no network request, reads no credentials, invokes neither
 tmux nor a vendor process, and writes no state.

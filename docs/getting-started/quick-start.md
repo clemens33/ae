@@ -113,4 +113,4 @@ main = claude:lead
 workers = codex:reviewer, opencode:tester
 ```
 
-Or just tell your main agent to spawn them once you're attached. Either way, every agent gets the session's workspace context injected into its system prompt.
+Or just tell your main agent to spawn them once you're attached. Either way, every agent gets the session's workspace context through its harness's supported launch channel.

@@ -1,10 +1,10 @@
-//! The six agent-tool adapters: one capability row per supported harness.
+//! The seven agent-tool adapters: one capability row per supported harness.
 //!
 //! Callers classify a profile once, then query its row. Strategy enums keep the
 //! mechanics in their owning modules without making those modules classify
 //! tools again.
 
-/// Which harness a command launches — the six ae models, or none.
+/// Which harness a command launches — the seven ae models, or none.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolKind {
     /// Claude Code.
@@ -17,6 +17,8 @@ pub enum ToolKind {
     Agy,
     /// Grok Build.
     Grok,
+    /// Muse Code.
+    Muse,
     /// `OpenCode`.
     OpenCode,
     /// Anything else, or a command with no classifiable binary.
@@ -162,6 +164,8 @@ pub(crate) enum CaptureSpec {
     ConversationDatabaseOrLog,
     /// Ask the harness for its session list.
     SessionList,
+    /// Scan Muse's dated session directories for the launch token.
+    MuseDatedSessions,
     /// No post-launch capture is needed.
     None,
 }
@@ -495,6 +499,49 @@ const GROK: ToolAdapter = ToolAdapter {
     },
 };
 
+const MUSE: ToolAdapter = ToolAdapter {
+    kind: ToolKind::Muse,
+    name: "muse",
+    label: Some("muse code"),
+    launch_marker: Some("MUSE"),
+    config_home_env: None,
+    config_home_default: None,
+    config_home_default_refusal: "",
+    launch: LaunchSpec {
+        session_flags: SessionFlags::Common,
+        id: IdStyle::None,
+        // A positional turn preserves the harness's own system prompt.
+        context: ContextChannel::UserTurn { flag: None },
+        command: CommandForm::InlinePrompt,
+        initial_turn: InitialTurn::None,
+    },
+    resume: ResumeSpec {
+        form: ResumeForm::Subcommand {
+            grammar: SessionFlags::Common,
+            command: "resume",
+        },
+        // A token-proven directory basename is the session id. Muse logs do
+        // not put that id in their `session.jsonl` file name for a store probe.
+        probe: StoreProbe::RecordedId,
+    },
+    capture: CaptureSpec::MuseDatedSessions,
+    input: InputSpec {
+        model: InputModel::Unmodelled,
+        wait_for_process: false,
+        paste_initial_on_resume: false,
+    },
+    model_flags: &[],
+    quota: QuotaSpec {
+        source: QuotaSource::Unsupported,
+        config_home_env: None,
+        default_home: Some(".config/muse"),
+        unsupported_hint: Some("no verified local quota source"),
+    },
+    usage: UsageSpec {
+        source: UsageSource::Unsupported,
+    },
+};
+
 const OPENCODE: ToolAdapter = ToolAdapter {
     kind: ToolKind::OpenCode,
     name: "opencode",
@@ -572,7 +619,7 @@ const UNKNOWN: ToolAdapter = ToolAdapter {
     },
 };
 
-const KNOWN: [&ToolAdapter; 6] = [&CLAUDE, &CODEX, &GEMINI, &AGY, &GROK, &OPENCODE];
+const KNOWN: [&ToolAdapter; 7] = [&CLAUDE, &CODEX, &GEMINI, &AGY, &GROK, &MUSE, &OPENCODE];
 
 impl ToolKind {
     /// Classify one known bare binary name, preserving absence as `None`.
@@ -619,6 +666,7 @@ impl ToolKind {
             Self::Gemini => &GEMINI,
             Self::Agy => &AGY,
             Self::Grok => &GROK,
+            Self::Muse => &MUSE,
             Self::OpenCode => &OPENCODE,
             Self::Unknown => &UNKNOWN,
         }
@@ -680,6 +728,7 @@ mod tests {
             ToolKind::Gemini,
             ToolKind::Agy,
             ToolKind::Grok,
+            ToolKind::Muse,
             ToolKind::OpenCode,
             ToolKind::Unknown,
         ] {
@@ -691,6 +740,7 @@ mod tests {
             ToolKind::Gemini,
             ToolKind::Agy,
             ToolKind::Grok,
+            ToolKind::Muse,
             ToolKind::OpenCode,
         ] {
             assert!(tool.is_known(), "{tool:?}");
@@ -701,7 +751,7 @@ mod tests {
     #[test]
     #[allow(
         clippy::too_many_lines,
-        reason = "six complete adapter rows are one readable contract matrix"
+        reason = "seven complete adapter rows are one readable contract matrix"
     )]
     fn capability_rows_pin_the_public_tool_contract() {
         assert_eq!(
@@ -905,6 +955,45 @@ mod tests {
                         config_home_env: None,
                         default_home: Some(".grok"),
                         unsupported_hint: Some("run /usage in grok"),
+                    },
+                    usage: UsageSpec {
+                        source: UsageSource::Unsupported,
+                    },
+                },
+                ToolAdapter {
+                    kind: ToolKind::Muse,
+                    name: "muse",
+                    label: Some("muse code"),
+                    launch_marker: Some("MUSE"),
+                    config_home_env: None,
+                    config_home_default: None,
+                    config_home_default_refusal: "",
+                    launch: LaunchSpec {
+                        session_flags: SessionFlags::Common,
+                        id: IdStyle::None,
+                        context: ContextChannel::UserTurn { flag: None },
+                        command: CommandForm::InlinePrompt,
+                        initial_turn: InitialTurn::None,
+                    },
+                    resume: ResumeSpec {
+                        form: ResumeForm::Subcommand {
+                            grammar: SessionFlags::Common,
+                            command: "resume",
+                        },
+                        probe: StoreProbe::RecordedId,
+                    },
+                    capture: CaptureSpec::MuseDatedSessions,
+                    input: InputSpec {
+                        model: InputModel::Unmodelled,
+                        wait_for_process: false,
+                        paste_initial_on_resume: false,
+                    },
+                    model_flags: &[],
+                    quota: QuotaSpec {
+                        source: QuotaSource::Unsupported,
+                        config_home_env: None,
+                        default_home: Some(".config/muse"),
+                        unsupported_hint: Some("no verified local quota source"),
                     },
                     usage: UsageSpec {
                         source: UsageSource::Unsupported,

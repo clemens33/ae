@@ -298,6 +298,38 @@ fn an_opencode_seat_captures_the_newest_session_in_its_own_directory() {
     );
 }
 
+/// Muse stores the session id in its fourth-level directory, while the launch
+/// marker stays inside an encoded retained frame. Capture proves the marker as
+/// raw bytes and takes only that directory basename; it does not parse JSON.
+#[test]
+fn a_muse_seat_captures_its_directory_named_session_from_raw_launch_token() {
+    let rig = Rig::new("muse", "muse", 1);
+    let day = ae::time::Timestamp::now().to_string()[..10].replace('-', "/");
+    let mine = "01a09b51-c88a-7fc0-8f71-200ea396c8a7";
+    let other = "02b09b51-c88a-7fc0-8f71-200ea396c8a7";
+    let sessions = rig.home.join(".local/share/muse/sessions").join(day);
+    rig.write_bytes(
+        &sessions.join(mine).join("session.jsonl"),
+        b"{\"type\":\"retained_frame\",\"children\":[{\"record_json\":\"{\\\"text\\\":\\\"AE_MUSE_LAUNCH_ID=tok-1\\\"}\"}]}\n",
+    );
+    rig.write_bytes(
+        &sessions.join(other).join("session.jsonl"),
+        b"{\"type\":\"retained_frame\",\"children\":[{\"record_json\":\"{\\\"text\\\":\\\"AE_MUSE_LAUNCH_ID=tok-other\\\"}\"}]}\n",
+    );
+
+    let (code, stderr) = rig.capture();
+    assert_eq!((code, stderr.as_str()), (Some(0), ""));
+    let meta = rig.meta();
+    assert!(
+        meta.contains(&format!("harness_session.main={mine}")),
+        "{meta}"
+    );
+    assert!(
+        !meta.contains(other),
+        "another Muse launch's directory was captured: {meta}"
+    );
+}
+
 #[test]
 fn a_seat_holding_a_tool_that_needs_no_capture_is_left_alone() {
     // claude takes an ae-generated id at LAUNCH, so there is nothing to capture

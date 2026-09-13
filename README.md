@@ -14,7 +14,7 @@ Works with any CLI-based agentic harness.
 
 - **One command** -- `ae <name>` starts or reattaches a session; bare `ae` attaches to the
   fleet server's most recently used session.
-- **Agents talk to each other** -- each agent gets workspace context injected into its system prompt. They send messages by name, spawn new agents, and coordinate without manual wiring.
+- **Agents talk to each other** -- each agent gets workspace context through its harness's supported launch channel. They send messages by name, spawn new agents, and coordinate without manual wiring.
 - **Everything survives reboots** -- sessions, spawned agents, conversation history. Pick up exactly where you left off.
 - **Nothing touches your repo** -- session state lives in `~/.ae/sessions/`. Your working directory stays clean.
 - **Tiered delegation** -- leads run the strongest model; bounded chores go to cheap spawned workers in their own tmux windows, reviewed and retired. Convention, not machinery ([docs](docs/reference/delegation.md)).
@@ -204,6 +204,7 @@ codex = "codex --yolo -m gpt-5.6-sol -c model_reasoning_effort=high"
 gpt56luna = "codex -m gpt-5.6-luna -c model_reasoning_effort=xhigh -a never"
 grok = "grok --always-approve -m grok-4.6 --effort high"
 agy = "agy --dangerously-skip-permissions"   # any CLI works — agy has no special ae integration
+muse = "muse"
 
 [roster]
 lead = claude
@@ -231,9 +232,9 @@ Full lineup, role guidance, and every key: **[docs/getting-started/config.md](do
 
 ## How it works
 
-Each agent gets workspace context injected into its system prompt (Claude Code's `--append-system-prompt`, Codex's `developer_instructions`, Gemini's `-i`). That context tells it **which agent it is** (`You are agent <name> (slot <slot>)`), who the other agents are, how to reach them by name, and how to spawn or retire agents. The communication itself happens through helpers (`send`, `peek`, `spawn`, …) that ae publishes in `~/.ae/sessions/<name>/` -- each one a link to the ae binary, dispatched by the name it is called by -- and agents call them like any other CLI tool.
+Each agent gets workspace context through its harness's supported launch channel (Claude Code's `--append-system-prompt`, Codex's `developer_instructions`, Gemini's `-i`, and the positional prompt for Grok Build and Muse Code). That context tells it **which agent it is** (`You are agent <name> (slot <slot>)`), who the other agents are, how to reach them by name, and how to spawn or retire agents. The communication itself happens through helpers (`send`, `peek`, `spawn`, …) that ae publishes in `~/.ae/sessions/<name>/` -- each one a link to the ae binary, dispatched by the name it is called by -- and agents call them like any other CLI tool.
 
-No custom protocols, no frameworks. Just system prompts and commands agents already know how to run.
+No custom protocols, no frameworks. Just harness-native context and commands agents already know how to run.
 
 ## One public command, typed core
 

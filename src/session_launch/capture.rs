@@ -1,6 +1,6 @@
 //! Post-launch session-id capture for the tools with no launch-time id flag.
 //!
-//! Codex, opencode, gemini and agy all learn their conversation id only after
+//! Codex, opencode, gemini, agy and Muse all learn their conversation id only after
 //! they start, so ae asks each of them a different way:
 //!
 //! | Tool | How the id is found |
@@ -9,6 +9,7 @@
 //! | opencode | `opencode session list --format json`, matched on the session's `directory` |
 //! | gemini | `~/.gemini/tmp/<project>/chats/session-*.json`, matched on the launch token, then on the project root alone |
 //! | agy | the launch token, searched in the BYTES of `~/.gemini/antigravity-cli/conversations/<id>.db` — OR, for a seat that has no token at all, the CLI log that names both the workspace and the conversation it created. Alternatives, not a chain: a token miss stays pending, because falling through cross-wires two seats sharing one directory |
+//! | muse | the launch token, searched as raw bytes in `~/.local/share/muse/sessions/YYYY/MM/DD/<id>/session.jsonl`; the directory basename is the id, and a token miss stays pending |
 //!
 //! Every scan is filtered by the seat's `capture_floor.<slot>`, published
 //! before the tool starts. Codex checks the
@@ -130,6 +131,9 @@ pub fn run(dir: &Path, slot: &str, pane: &str, server: &ServerId) -> u8 {
         CaptureSpec::ConversationDatabaseOrLog => {
             home.as_deref().and_then(|home| capture_agy(home, &facts))
         }
+        CaptureSpec::MuseDatedSessions => {
+            home.as_deref().and_then(|home| capture_muse(home, &facts))
+        }
         CaptureSpec::None => None,
     };
     if let Some(id) = captured {
@@ -222,6 +226,7 @@ pub fn attempt(dir: &Path, pending: &Pending) -> Option<Captured> {
         CaptureSpec::ConversationDatabaseOrLog => {
             home.as_deref().and_then(|home| scan_agy(home, &facts))
         }
+        CaptureSpec::MuseDatedSessions => home.as_deref().and_then(|home| scan_muse(home, &facts)),
         CaptureSpec::SessionList => scan_opencode(&facts),
         CaptureSpec::None => None,
     }?;
@@ -661,6 +666,79 @@ fn codex_logs(config_home: &Path, days: &[String]) -> Vec<PathBuf> {
 }
 
 // ---------------------------------------------------------------------------
+// Muse Code
+// ---------------------------------------------------------------------------
+
+/// Muse's dated session store, relative to the caller's `HOME`.
+pub const MUSE_SESSIONS: &str = ".local/share/muse/sessions";
+
+/// Poll Muse's dated session directories for the token that belongs to this
+/// seat. The session id is the directory basename, so the log stays opaque.
+fn capture_muse(home: &Path, facts: &Facts) -> Option<String> {
+    for attempt in 0..POLLS {
+        if attempt > 0 {
+            std::thread::sleep(POLL);
+        }
+        if let Some(id) = scan_muse(home, facts) {
+            return Some(id);
+        }
+    }
+    None
+}
+
+/// One token-only Muse scan. A missing token or a token miss stays pending:
+/// the newest directory is not evidence that it belongs to this seat.
+fn scan_muse(home: &Path, facts: &Facts) -> Option<String> {
+    let marker = facts.launch_marker?;
+    if facts.launch_id.is_empty() {
+        return None;
+    }
+    find_muse_by_launch_id(home, marker, &facts.launch_id, facts.capture_floor)
+}
+
+/// The one dated Muse session directory whose log carries this launch token.
+///
+/// `session.jsonl` has nested encoded records, but the launch token is a byte
+/// sequence within that file. The directory name is the documented session id,
+/// so no JSON field is decoded or trusted here.
+#[must_use]
+pub(crate) fn find_muse_by_launch_id(
+    home: &Path,
+    marker_prefix: &str,
+    launch_id: &str,
+    capture_floor: i64,
+) -> Option<String> {
+    let marker = format!("AE_{marker_prefix}_LAUNCH_ID={launch_id}").into_bytes();
+    let days = codex_token_day_dirs(Timestamp::now(), capture_floor);
+    let root = home.join(MUSE_SESSIONS);
+    let mut found: Option<String> = None;
+    for day in days {
+        let mut candidates = entries(&root.join(day));
+        candidates.sort();
+        for candidate in candidates {
+            let Some(id) = candidate
+                .file_name()
+                .and_then(|name| name.to_str())
+                .filter(|id| is_lowercase_uuid(id))
+                .map(ToOwned::to_owned)
+            else {
+                continue;
+            };
+            if !file_contains(&candidate.join("session.jsonl"), &marker) {
+                continue;
+            }
+            // A duplicated token has no unique directory proof. Staying
+            // pending is safer than attaching this seat to either log.
+            if found.is_some() {
+                return None;
+            }
+            found = Some(id);
+        }
+    }
+    found
+}
+
+// ---------------------------------------------------------------------------
 // gemini
 // ---------------------------------------------------------------------------
 
@@ -925,13 +1003,13 @@ fn agy_logs(home: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-/// The most a single conversation database is worth scanning for a token.
-const AGY_SCAN_CAP: u64 = 16 * 1024 * 1024;
+/// The most any tool log is worth scanning for a launch token.
+const TOKEN_SCAN_CAP: u64 = 16 * 1024 * 1024;
 
-/// How much of a conversation database is held at once while scanning it.
-const AGY_SCAN_CHUNK: usize = 64 * 1024;
+/// How much one token scan holds at once.
+const TOKEN_SCAN_CHUNK: usize = 64 * 1024;
 
-/// Does `path` contain `needle`, reading at most [`AGY_SCAN_CAP`] bytes?
+/// Does `path` contain `needle`, reading at most [`TOKEN_SCAN_CAP`] bytes?
 fn file_contains(path: &Path, needle: &[u8]) -> bool {
     use std::io::Read as _;
 
@@ -942,7 +1020,7 @@ fn file_contains(path: &Path, needle: &[u8]) -> bool {
     if !regular {
         return false;
     }
-    if size > AGY_SCAN_CAP {
+    if size > TOKEN_SCAN_CAP {
         skipped(path, size);
         return false;
     }
@@ -957,11 +1035,11 @@ fn file_contains(path: &Path, needle: &[u8]) -> bool {
     // THE STAT IS NOT THE BOUND. A conversation is a LIVE database and can
     // grow between the stat above and the last read below, so `take` is the
     // bound that holds whatever the file does.
-    match scan_stream(file.take(AGY_SCAN_CAP.saturating_add(1)), needle) {
+    match scan_stream(file.take(TOKEN_SCAN_CAP.saturating_add(1)), needle) {
         Scan::Found => true,
         Scan::Absent => false,
         Scan::OverCap => {
-            skipped(path, AGY_SCAN_CAP.saturating_add(1));
+            skipped(path, TOKEN_SCAN_CAP.saturating_add(1));
             false
         }
     }
@@ -978,13 +1056,13 @@ enum Scan {
     OverCap,
 }
 
-/// Search `reader` for `needle` in chunks, spending at most [`AGY_SCAN_CAP`]
+/// Search `reader` for `needle` in chunks, spending at most [`TOKEN_SCAN_CAP`]
 /// bytes.
 fn scan_stream<R: std::io::Read>(mut reader: R, needle: &[u8]) -> Scan {
     let Some(overlap) = needle.len().checked_sub(1) else {
         return Scan::Absent;
     };
-    let mut buffer = vec![0_u8; overlap + AGY_SCAN_CHUNK];
+    let mut buffer = vec![0_u8; overlap + TOKEN_SCAN_CHUNK];
     // Starts EMPTY, not at `overlap`: seeding the carry with the buffer's own
     // zero fill would put bytes the stream does not contain in front of its
     // first chunk, and a needle is matched against real bytes or nothing.
@@ -998,7 +1076,7 @@ fn scan_stream<R: std::io::Read>(mut reader: R, needle: &[u8]) -> Scan {
             return Scan::Absent;
         }
         consumed = consumed.saturating_add(read as u64);
-        if consumed > AGY_SCAN_CAP {
+        if consumed > TOKEN_SCAN_CAP {
             return Scan::OverCap;
         }
         filled += read;
@@ -1020,7 +1098,7 @@ fn scan_stream<R: std::io::Read>(mut reader: R, needle: &[u8]) -> Scan {
 /// Say that a conversation was too big to search, and where.
 fn skipped(path: &Path, size: u64) {
     eprintln!(
-        "ae: agy capture skipped {} ({size} bytes over the {AGY_SCAN_CAP}-byte scan cap)",
+        "ae: capture skipped {} ({size} bytes over the {TOKEN_SCAN_CAP}-byte scan cap)",
         path.display()
     );
 }
@@ -1560,6 +1638,42 @@ mod tests {
     }
 
     #[test]
+    fn a_muse_token_miss_never_adopts_a_session_directory() {
+        // Two seats can share one Muse config home. A directory born after this
+        // seat is still not evidence that it belongs to this launch.
+        let root = scratch("muse-token-miss");
+        let home = root.join("home");
+        let day = day_dirs(Timestamp::now())
+            .into_iter()
+            .next()
+            .expect("today");
+        let sibling = "02b09b51-c88a-7fc0-8f71-200ea396c8a7";
+        write_bytes(
+            &home
+                .join(MUSE_SESSIONS)
+                .join(day)
+                .join(sibling)
+                .join("session.jsonl"),
+            b"AE_MUSE_LAUNCH_ID=sibling-token",
+        );
+        let facts = Facts {
+            agent: "lead".to_owned(),
+            tool: ToolKind::Muse,
+            work_dir: root.display().to_string(),
+            capture_floor: 0,
+            launch_id: "own-token".to_owned(),
+            launch_marker: Some("MUSE"),
+            config_home: crate::meta::RecordedConfigHome::Missing,
+        };
+
+        assert_eq!(
+            scan_muse(&home, &facts),
+            None,
+            "a token miss remains pending; never adopt a sibling's directory"
+        );
+    }
+
+    #[test]
     fn an_opencode_list_picks_the_newest_session_in_this_directory() {
         let dir = scratch("oc");
         let work = dir.display().to_string();
@@ -1783,7 +1897,7 @@ mod tests {
         // between two reads.
         let root = scratch("agy-chunks");
         let marker = b"AE_AGY_LAUNCH_ID=tok-1";
-        let seam = marker.len() - 1 + AGY_SCAN_CHUNK;
+        let seam = marker.len() - 1 + TOKEN_SCAN_CHUNK;
         for shift in 1..marker.len() {
             let at = seam - marker.len() + shift;
             let path = root.join(format!("straddle-{shift}.db"));
@@ -1803,7 +1917,7 @@ mod tests {
 
         // A file past the cap is SKIPPED, not read: the marker is there and the
         // answer is still no, which is the trade the constant records.
-        let cap = usize::try_from(AGY_SCAN_CAP).unwrap_or(usize::MAX);
+        let cap = usize::try_from(TOKEN_SCAN_CAP).unwrap_or(usize::MAX);
         let big = root.join("huge.db");
         let mut body = marker.to_vec();
         body.resize(cap + 1, 0);

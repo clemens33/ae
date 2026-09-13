@@ -333,14 +333,15 @@ failure naming the published body and records no delivered event. Unmodelled too
 on direct transport. The same matrix is used for send, ask/review, reply, interrupt, and
 spawn task delivery.
 
-## Agent system prompt injection
+## Agent workspace-context transport
 
-Every agent gets a workspace context injected into its system prompt at launch:
+Every agent gets workspace context at launch, through its harness's supported channel:
 
 - **Claude Code** — `--append-system-prompt 'text'`
 - **Codex** — `-c developer_instructions='text'`
 - **Gemini CLI** — `-i 'text'`
 - **Grok Build** — no append-style flag; ae passes the context as the positional `[PROMPT]` argv (`--system-prompt-override` would *replace* grok's own agent prompt, so ae never uses it)
+- **Muse Code** — no per-seat system-instruction channel; ae passes the context as the positional `[PROMPT]` argv, preserving Muse's own system prompt
 - **OpenCode** — no system-prompt flag, but no paste either: ae writes the context to `<meta>/opencode.<slot>.md`, points `<meta>/opencode.<slot>.json` at it via an `instructions` array, and launches `env OPENCODE_CONFIG=<meta>/opencode.<slot>.json opencode …`. That array is loaded as system-level content, so the context is present in *every* turn instead of decaying as a first user message — and launch-time readiness is off its critical path. The config **merges** with the operator's own (their provider/model/mcp survive, and their `instructions` entries are concatenated after ae's), so this is not the grok `--system-prompt-override` trap.
 
 The injected text says: session name, working directory, **the agent's own identity**, helper directory, and 9 numbered rules (helpers-only communication, exact reply discipline, no-peek-as-reply, state declaration, memo for handoff, concurrent collaboration awareness, Telegram `say`, message authority, delegation). Helper invocations in the text use absolute paths because the session directory is deliberately not on `PATH`.
@@ -388,6 +389,7 @@ The full helper catalog lives in `workspace.md`, which the prompt points at.
 | Codex | No launch-time flag exists. The detached child accepts `codex.<slot>.sid` only when the rollout carrying the current launch token proves the same id, then scans UTC day partitions from the capture floor through today by that token; a missing legacy floor is bounded to 30 days. A token miss stays pending; cwd scans stay on today/yesterday and cwd/TUI are legacy no-token fallbacks only. |
 | Gemini | Post-launch scan of `~/.gemini/tmp/<project>/chats/session-*.json` by launch token. |
 | Grok Build | ae generates the UUID up-front and passes it via `--session-id UUID`. Immediate — same as Claude Code, no post-launch scan. |
+| Muse Code | Post-launch raw-byte launch-token scan of `~/.local/share/muse/sessions/YYYY/MM/DD/<id>/session.jsonl` from its capture floor. The directory basename is the id; ae does not decode the nested JSON records. A token miss stays pending. |
 | OpenCode | Post-launch `opencode session list --format json` filtered by CWD. |
 
 Every scan is filtered by `capture_floor.<slot>`, published before the tool starts. A retained
@@ -402,7 +404,7 @@ attach — and if that child dies before its tool answers, the watchdog closes t
 cycle it takes one look at every seat still pending and registers whatever it finds. The next
 tick is the retry, so it neither sleeps nor polls.
 
-Resume uses the captured UUID for exact conversation restore; falls back to a CWD heuristic if capture failed.
+Resume uses a captured UUID for exact conversation restore. Muse starts fresh when its id is still pending or lost; it never falls back to a most-recent or CWD-derived conversation.
 
 ## Communication: events as source of truth
 

@@ -20,6 +20,7 @@ fable5 = "claude --permission-mode bypassPermissions --model fable --effort xhig
 gpt6astra = "codex --yolo -m gpt-6-astra -c model_reasoning_effort=xhigh"
 gpt56luna = "codex -m gpt-5.6-luna -c model_reasoning_effort=xhigh -a never"
 grok46 = "grok --always-approve -m grok-4.6 --effort high"
+muse = "muse"
 
 [prices]
 sol_discount = gpt-5.6-sol,1.25,2.5,0.125,10
@@ -60,7 +61,7 @@ environment. Only Claude Code and Codex have verified account-directory variable
 | Claude Code | `CLAUDE_CONFIG_DIR` | `$HOME/.claude` |
 | Codex | `CODEX_HOME` | `$HOME/.codex` |
 
-`config_home` is refused for Grok, agy, OpenCode, and Gemini until their account-directory
+`config_home` is refused for Grok, agy, Muse, OpenCode, and Gemini until their account-directory
 contracts are verified.
 
 ## `[profiles]`
@@ -277,7 +278,7 @@ How agents access your code:
 
 ## `[prompt]`
 
-Custom instructions injected into every agent's system prompt alongside the ae workspace context. Per-project `.ae/config` overrides the global one.
+Custom instructions transported beside the ae workspace context through each harness's supported launch channel. Per-project `.ae/config` overrides the global one.
 
 ```toml
 [prompt]

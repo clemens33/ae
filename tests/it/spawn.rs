@@ -254,6 +254,17 @@ impl Rig {
         std::fs::read_to_string(&self.received).unwrap_or_default()
     }
 
+    fn submitted_after(&self, before: usize) -> String {
+        for _ in 0..200 {
+            let seen = std::fs::read_to_string(&self.received).unwrap_or_default();
+            if seen.len() > before {
+                return seen;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        std::fs::read_to_string(&self.received).unwrap_or_default()
+    }
+
     fn launch_argv(&self) -> String {
         std::fs::read_to_string(&self.launched).unwrap_or_default()
     }
@@ -302,6 +313,27 @@ impl Rig {
             std::fs::write(self.scratch.join("claude"), body).is_ok(),
             "the busy fake agent"
         );
+    }
+
+    fn enable_muse_profile(&self) {
+        use std::fmt::Write as _;
+        use std::os::unix::fs::PermissionsExt;
+        let muse = self.scratch.join("muse");
+        assert!(
+            std::fs::copy(self.scratch.join("claude"), &muse).is_ok(),
+            "a muse-shaped fake"
+        );
+        assert!(
+            std::fs::set_permissions(&muse, std::fs::Permissions::from_mode(0o755)).is_ok(),
+            "an executable muse fake"
+        );
+        let config = self.scratch.join("config");
+        let mut body = std::fs::read_to_string(&config).unwrap_or_default();
+        assert!(
+            write!(body, "\n[profiles]\nmusefake = \"{}\"\n", muse.display()).is_ok(),
+            "the config string"
+        );
+        assert!(std::fs::write(config, body).is_ok(), "the muse profile");
     }
 
     fn write_codex_rollout(&self, id: &str, launch_id: &str) {
@@ -476,6 +508,111 @@ fn a_spawn_seats_stamps_launches_and_briefs_its_agent() {
     assert!(
         !events.contains("spawn-failed"),
         "a delivered brief records no failure: {events}"
+    );
+}
+
+/// Muse has no system-instruction channel. Its ae context must be the
+/// positional first user turn, while the spawn brief is delivered afterward.
+#[test]
+fn a_spawned_muse_agent_receives_positional_context_and_its_brief() {
+    let probe = PathBuf::from(format!("/tmp/aesp-probe-muse.{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&probe);
+    let present = tmux_present(&probe);
+    let _ = std::fs::remove_dir_all(&probe);
+    if !present {
+        return;
+    }
+    let rig = Rig::new("muse");
+    rig.enable_muse_profile();
+    let (code, stdout, stderr) = rig.run(
+        ae::cli::SPAWN,
+        &[
+            "museworker",
+            "--using",
+            "musefake",
+            "--",
+            "read the Muse brief",
+        ],
+    );
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+
+    let meta = rig.meta();
+    assert!(meta.contains("seat.spawned.0=museworker"), "{meta}");
+    assert!(meta.contains("agent_bin.spawned.0=muse"), "{meta}");
+    assert!(
+        !meta.contains("harness_session.spawned.0="),
+        "Muse has no launch-time id and must not guess one: {meta}"
+    );
+    assert!(
+        meta.contains("capture_floor.spawned.0="),
+        "Muse prepares its token capture before launch: {meta}"
+    );
+
+    let argv = rig.launch_argv();
+    assert!(
+        argv.contains("AE_MUSE_LAUNCH_ID="),
+        "the positional context carries the unique capture token: {argv}"
+    );
+    assert!(
+        argv.contains("museworker"),
+        "the ae workspace context names its seat: {argv}"
+    );
+    assert!(
+        !argv.contains("developer_instructions"),
+        "Muse has no per-seat system-instruction channel: {argv}"
+    );
+
+    let submitted = rig.submitted();
+    assert!(
+        submitted.starts_with("read the Muse brief — When done, reply back via:"),
+        "{submitted}"
+    );
+    assert!(submitted.contains("/send \"lead\""), "{submitted}");
+
+    let mut received = submitted.len();
+    for (helper, body) in [
+        (ae::cli::SEND, "Muse direct message"),
+        (ae::cli::ASK, "Muse ask message"),
+        (ae::cli::REVIEW, "Muse review message"),
+    ] {
+        let (code, stdout, stderr) = rig.run(helper, &["museworker", body]);
+        assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+        let delivered = rig.submitted_after(received);
+        assert!(
+            delivered.contains(body),
+            "{helper} reaches the Muse seat through ae delivery: {delivered}"
+        );
+        received = delivered.len();
+    }
+
+    // The launch marker makes this a RESUME-shaped `_run`, but no id was
+    // captured. Muse must start fresh rather than silently attach to its most
+    // recent conversation with `resume --last`.
+    let (code, plan, stderr) = rig.run(ae::cli::RUN, &["--print", "spawned.0"]);
+    assert_eq!(code, Some(0), "plan: {plan}\nstderr: {stderr}");
+    assert!(plan.contains(r#""mode":"resume""#), "{plan}");
+    assert!(
+        plan.contains(&format!(
+            r#""argv":["{}","You are in an ae multi-agent workspace."#,
+            rig.scratch.join("muse").display()
+        )),
+        "the missing-id fallback starts Muse fresh, with its context as the first argument: {plan}"
+    );
+
+    let id = "01a09b51-c88a-7fc0-8f71-200ea396c8a7";
+    assert!(
+        ae::meta::rewrite(&rig.dir, "harness_session.spawned.0", Some(id),).is_ok(),
+        "the capture records a Muse directory id"
+    );
+    let (code, plan, stderr) = rig.run(ae::cli::RUN, &["--print", "spawned.0"]);
+    assert_eq!(code, Some(0), "plan: {plan}\nstderr: {stderr}");
+    assert!(
+        plan.contains(&format!(
+            r#""argv":["{}","resume","{}""#,
+            rig.scratch.join("muse").display(),
+            id
+        )),
+        "a captured Muse id resumes through Muse's subcommand: {plan}"
     );
 }
 

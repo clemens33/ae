@@ -8,7 +8,7 @@ versioned Rust core binary. There is no wrapper in between.
 - [tmux](https://github.com/tmux/tmux)
 - [git](https://git-scm.com/)
 - bash ≥ 4.0
-- At least one AI coding agent CLI on `PATH` (Claude Code, Codex, Gemini, Grok Build, OpenCode, or any other)
+- At least one AI coding agent CLI on `PATH` (Claude Code, Codex, Gemini, Grok Build, Muse Code, OpenCode, or any other)
 
 ## One-line release install
 

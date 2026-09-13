@@ -911,6 +911,7 @@ mod tests {
                 "grok",
                 ToolKind::Grok,
             ),
+            ("muse --model muse-code", "muse", ToolKind::Muse),
             (
                 "opencode -m google/gemini-3-pro-preview",
                 "opencode",
@@ -1008,6 +1009,7 @@ mod tests {
             (ToolKind::Gemini, "gemini"),
             (ToolKind::Agy, "agy"),
             (ToolKind::Grok, "grok"),
+            (ToolKind::Muse, "muse"),
             (ToolKind::OpenCode, "opencode"),
             (ToolKind::Unknown, "unknown"),
         ] {
