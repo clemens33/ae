@@ -1522,9 +1522,15 @@ fn preflight(
             ));
         }
         crate::tmux::StopProbe::Unknown => {
-            return Err(format!(
-                "cannot prove session '{old}' stopped (its recorded tmux server is unreachable)"
-            ));
+            // The SAME boot-time proof `end` crosses behind --assume-stopped.
+            // A rename deletes no state, so it needs no acknowledgement — it
+            // must not stay stricter than the verb that erases the session.
+            // Every gap in the proof answers false and the refusal stands.
+            if !crate::lifecycle::end::boot_proved_stopped(&old_dir, server, old) {
+                return Err(format!(
+                    "cannot prove session '{old}' stopped (its recorded tmux server is unreachable)"
+                ));
+            }
         }
     }
     if crate::transport::session_exists(server, new) {
@@ -3082,7 +3088,9 @@ fn recover(
     }
     // Liveness and destination proofs are re-taken at point of use, never
     // carried from preflight across the durable cut: a revived session, an
-    // occupied new name, or an unreachable server refuses the retry.
+    // occupied new name, or an unreachable server refuses the retry UNLESS the
+    // boot-time proof positively places the session before the host boot —
+    // the same gate the fresh preflight crosses.
     match crate::transport::verify_session_absent(&server, &intent.old) {
         crate::tmux::StopProbe::Absent => {}
         crate::tmux::StopProbe::Present => {
@@ -3097,12 +3105,14 @@ fn recover(
             return Ok(EXIT_FAILED);
         }
         crate::tmux::StopProbe::Unknown => {
-            writeln!(
-                err,
-                "Error: cannot prove session '{}' stopped (its recorded tmux server is unreachable) — refusing a retry over unknown liveness. Nothing was renamed.",
-                intent.old
-            )?;
-            return Ok(EXIT_FAILED);
+            if !crate::lifecycle::end::boot_proved_stopped(current_dir, &server, &intent.old) {
+                writeln!(
+                    err,
+                    "Error: cannot prove session '{}' stopped (its recorded tmux server is unreachable) — refusing a retry over unknown liveness. Nothing was renamed.",
+                    intent.old
+                )?;
+                return Ok(EXIT_FAILED);
+            }
         }
     }
     if crate::transport::session_exists(&server, &intent.new) {

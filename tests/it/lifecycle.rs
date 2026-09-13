@@ -159,6 +159,35 @@ impl Rig {
         )
     }
 
+    /// Run one core subcommand under this rig's `AE_HOME`, bounded, with extra
+    /// environment — the boot-proof seam's `AE_TEST_BOOT_TIME`.
+    fn run_with_env(&self, extra: &[(&str, &str)], args: &[&str]) -> (Option<i32>, String, String) {
+        let mut cmd = ae();
+        cmd.env("AE_HOME", &self.home);
+        cmd.env_remove("TMUX");
+        cmd.env_remove("TMUX_PANE");
+        for (key, value) in extra {
+            cmd.env(key, value);
+        }
+        for arg in args {
+            cmd.arg(arg);
+        }
+        let out = bounded(
+            cmd.stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .expect("the ae binary should run"),
+            Duration::from_secs(30),
+        )
+        .expect("the core returned");
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    }
+
     /// Keep one real client attached to the target, hosted in another detached
     /// pane on the same isolated server. Keys sent to that host pane are raw
     /// client input, including the single-key confirmation answer.
@@ -706,6 +735,161 @@ fn purge_history_writes_no_archive_at_all() {
     );
     assert!(!exists(&rig.archive()), "no archive was written");
     assert!(!exists(&rig.dir), "the live session state is gone");
+}
+
+/// The reboot that makes a STOPPED session immortal: the recorded server is
+/// gone and its socket can never answer again, while the session's own last
+/// sign of life is planted before any boot a test will claim. Returns that
+/// epoch — the boot is placed around it with `AE_TEST_BOOT_TIME`.
+fn immortal_fixture(rig: &Rig) -> i64 {
+    assert!(
+        rig.tmux(&["kill-server"]).0,
+        "the recorded server stops, as a reboot stops it"
+    );
+    let meta = std::fs::read_to_string(rig.dir.join("meta")).expect("the meta");
+    let dead = meta.replace(
+        &rig.sock.display().to_string(),
+        &rig.home.join("never.sock").display().to_string(),
+    );
+    assert_ne!(dead, meta, "the record named the rig socket");
+    assert!(std::fs::write(rig.dir.join("meta"), dead).is_ok());
+    // The session's own last sign of life. This hand-built fixture has no
+    // `started` rows, no watchdog pidfile and no `launch.<slot>.started`
+    // markers, so the launch-attempt stamp is the whole of `last_live`.
+    let last_live = 1_700_000_000;
+    assert!(
+        std::fs::write(
+            rig.dir.join(ae::store::LAUNCH_ATTEMPT),
+            format!("{last_live}\n"),
+        )
+        .is_ok(),
+        "the planted last sign of life"
+    );
+    last_live
+}
+
+/// R1/M1, the dangerous direction: `--assume-stopped` must NOT reach the
+/// Positive arm without the boot-time proof. The recorded server is
+/// unreachable, so the human's word alone still refuses and the state
+/// survives. Smallest defeating mutation: drop the `boot_proved_stopped`
+/// requirement from the Positive arm's gate.
+#[test]
+fn an_end_with_assume_stopped_still_refuses_without_the_boot_proof() {
+    let rig = Rig::new("bootless");
+    let last_live = immortal_fixture(&rig);
+    let boot = (last_live - 3600).to_string();
+    let (code, out, err) = rig.run_with_env(
+        &[("AE_TEST_BOOT_TIME", &boot)],
+        &["end", "-f", "--assume-stopped", "--keep-history", &rig.name],
+    );
+    assert_eq!(code, Some(1), "stdout: {out}\nstderr: {err}");
+    assert!(
+        err.contains("cannot verify") && err.contains("state preserved"),
+        "{err}"
+    );
+    assert!(exists(&rig.dir), "the session dir survives");
+    assert!(exists(&rig.dir.join("meta")), "its meta survives");
+    assert!(!exists(&rig.archive()), "no archive was written");
+}
+
+/// R1/M2: the boot proof alone is NEVER enough for an end — without
+/// `--assume-stopped` the refusal is unchanged. Smallest defeating mutation:
+/// accept the boot proof without the flag.
+#[test]
+fn an_end_with_the_boot_proof_still_refuses_without_assume_stopped() {
+    let rig = Rig::new("noboflag");
+    let last_live = immortal_fixture(&rig);
+    let boot = (last_live + 3600).to_string();
+    let (code, out, err) = rig.run_with_env(
+        &[("AE_TEST_BOOT_TIME", &boot)],
+        &["end", "-f", "--keep-history", &rig.name],
+    );
+    assert_eq!(code, Some(1), "stdout: {out}\nstderr: {err}");
+    assert!(
+        err.contains("cannot verify") && err.contains("state preserved"),
+        "{err}"
+    );
+    assert!(exists(&rig.dir), "the session dir survives");
+    assert!(!exists(&rig.archive()), "no archive was written");
+}
+
+/// R1: the PAIN case, reproduced with a fixture — a stopped session whose
+/// recorded server is permanently gone, ended by the human's
+/// `--assume-stopped` PLUS the independent boot-time proof. The archive is
+/// published, then the state is removed.
+#[test]
+fn an_end_with_assume_stopped_and_the_boot_proof_ends_the_immortal_session() {
+    let rig = Rig::new("immort");
+    let last_live = immortal_fixture(&rig);
+    let boot = (last_live + 3600).to_string();
+    let (code, out, err) = rig.run_with_env(
+        &[("AE_TEST_BOOT_TIME", &boot)],
+        &["end", "-f", "--assume-stopped", "--keep-history", &rig.name],
+    );
+    assert_eq!(code, Some(0), "stdout: {out}\nstderr: {err}");
+    assert!(out.contains("boot-time proof"), "{out}");
+    assert!(out.contains(&format!("Archived {UUID}")), "{out}");
+    assert!(
+        out.contains(&format!("Ended local session {}", rig.name)),
+        "{out}"
+    );
+    assert!(exists(&rig.archive()), "the archive is published");
+    assert!(
+        exists(&rig.archive().join("meta")),
+        "the archive carries the session's meta"
+    );
+    assert!(!exists(&rig.dir), "the immortal session's state is gone");
+    assert!(!rig.session_is_live(), "its tmux session was already gone");
+}
+
+/// R3: a rename deletes no state, so the boot proof alone — no acknowledgement
+/// flag, `rename` has none — must let a vanished server's stopped session
+/// converge. The rename must not stay stricter than the verb that erases it.
+/// Smallest defeating mutation: keep the unconditional refusal in the
+/// preflight's Unknown arm.
+#[test]
+fn a_stopped_rename_crosses_the_boot_proof_of_a_vanished_server() {
+    let rig = Rig::new("immrename");
+    let last_live = immortal_fixture(&rig);
+    let boot = (last_live + 3600).to_string();
+    let (code, out, err) = rig.run_with_env(
+        &[("AE_TEST_BOOT_TIME", &boot)],
+        &["rename", &rig.name, "immfresh"],
+    );
+    assert_eq!(code, Some(0), "stdout: {out}\nstderr: {err}");
+    assert!(
+        out.contains(&format!("Renamed '{}' → 'immfresh' (stopped;", rig.name)),
+        "{out}"
+    );
+    assert!(!exists(&rig.dir), "the old address is gone");
+    assert!(
+        exists(&rig.home.join("sessions").join("immfresh")),
+        "the new address holds the state"
+    );
+}
+
+/// The proof is POSITIVE or it refuses: an unreachable server whose session
+/// was live after the claimed boot stays unliftable, so the rename never
+/// treats a merely unreachable server as stopped.
+#[test]
+fn a_stopped_rename_without_the_boot_proof_still_refuses() {
+    let rig = Rig::new("immnoproof");
+    let last_live = immortal_fixture(&rig);
+    let boot = (last_live - 3600).to_string();
+    let (code, out, err) = rig.run_with_env(
+        &[("AE_TEST_BOOT_TIME", &boot)],
+        &["rename", &rig.name, "nopfresh"],
+    );
+    assert_eq!(code, Some(1), "stdout: {out}\nstderr: {err}");
+    assert!(
+        err.contains("cannot prove") && err.contains("Nothing was renamed"),
+        "{err}"
+    );
+    assert!(exists(&rig.dir), "the state stays put");
+    assert!(
+        !exists(&rig.home.join("sessions").join("nopfresh")),
+        "nothing moved"
+    );
 }
 
 #[test]

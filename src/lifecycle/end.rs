@@ -928,6 +928,30 @@ fn has_message_payload(dir: &Path) -> bool {
 
 // ---- one session -----------------------------------------------------------
 
+/// The boot-time proof, composed once for the two verbs that cross it: `end`
+/// (only behind `--assume-stopped`) and `rename` (which deletes nothing and so
+/// needs no acknowledgement).
+///
+/// `dir` is the session's own state directory and `server` the POSITIVE
+/// recorded server that just failed the strict probe. [`crate::inventory::last_live`]
+/// supplies the session's own last sign of life and
+/// [`crate::tmux::classify_absence`] is the one rule that weighs it against
+/// [`crate::doors::boot_time`] — the same proof a resume and the fleet listing
+/// already cross.
+///
+/// A positive `true` means the session's own last activity predates the host
+/// boot, so no process can still hold it. Every gap — no boot time, a boot in
+/// the future, no recorded activity, activity at or after the boot, an
+/// unreadable source, or a failure that was not a missing socket — answers
+/// `false`, and the caller's refusal stands.
+pub(crate) fn boot_proved_stopped(dir: &Path, server: &ServerId, name: &str) -> bool {
+    let probe = transport::probe_absence(server, name);
+    let evidence = crate::inventory::last_live(dir);
+    let boot = crate::doors::boot_time(crate::shape::current());
+    let now = crate::time::Timestamp::now().epoch();
+    crate::tmux::classify_absence(probe, evidence, boot, now) == StopProbe::Absent
+}
+
 /// End one session, under its lifecycle lock.
 #[allow(
     clippy::too_many_lines,
@@ -960,9 +984,14 @@ fn end_one(
     // ══ THE INVARIANT: ae NEVER deletes session state unless
     //    (a) the target was positively identified on ITS OWN recorded server
     //        and its kill was verified, or
-    //    (b) the human passed --assume-stopped for THIS single target, and the
-    //        full enumerable sweep found nothing AND left no unverifiable
-    //        socket standing, or
+    //    (b) the human passed --assume-stopped for THIS single target, and
+    //        EITHER the full enumerable sweep found nothing AND left no
+    //        unverifiable socket standing, OR the target's POSITIVE record
+    //        names an unreachable server AND the boot-time proof positively
+    //        places the session's own last sign of life before the host boot
+    //        (no process survives a reboot) — the flag AND the independent
+    //        proof, both or refuse, because a missing socket alone proves
+    //        nothing, or
     //    (c) the target's POSITIVE record names a server that verifiably lacks
     //        the session.
     let selector = server_of(&bytes);
@@ -975,11 +1004,18 @@ fn end_one(
             if session_id.is_none()
                 && transport::verify_session_absent(&id, name) == StopProbe::Unknown
             {
-                writeln!(
-                    err,
-                    "Error: cannot verify session '{name}' state (its recorded tmux server is unreachable) — state preserved."
-                )?;
-                return Ok(false);
+                if args.assume_stopped && boot_proved_stopped(&dir, &id, name) {
+                    writeln!(
+                        out,
+                        "Proceeding on explicit --assume-stopped acknowledgement and the boot-time proof (this session's own last sign of life predates the host boot, so nothing can still hold it)."
+                    )?;
+                } else {
+                    writeln!(
+                        err,
+                        "Error: cannot verify session '{name}' state (its recorded tmux server is unreachable) — state preserved."
+                    )?;
+                    return Ok(false);
+                }
             }
             server = Some(id);
         }

@@ -256,16 +256,19 @@ fn run_sysctl_has_exactly_one_product_caller() {
     );
 }
 
-/// R3: the BOOT-TIME proof is reachable from a resume and from the fleet
-/// listing, and from nowhere else.
+/// R3/R4: the BOOT-TIME proof is reachable from exactly the named operations,
+/// through the one worker end and rename share — and from nowhere else.
 ///
-/// `stop`, `end` and `compact` are destructive and irreversible, and they keep
+/// `compact` and `stop` are destructive and irreversible, and they keep
 /// `verify_session_absent`'s strict proof — a session is gone because the
 /// server said so, never because a socket is missing and the arithmetic worked
-/// out. This is the guard that a later refactor cannot quietly wire the weaker
-/// evidence into them.
+/// out. `end` crosses the boot proof ONLY through
+/// `lifecycle::end::boot_proved_stopped`, and only behind `--assume-stopped`;
+/// `rename` crosses the same gate (it deletes no state, so it needs no
+/// acknowledgement). This is the guard that a later refactor cannot quietly
+/// wire the weaker evidence somewhere else.
 #[test]
-fn the_boot_time_proof_is_reachable_from_exactly_two_operations() {
+fn the_boot_time_proof_is_reachable_from_exactly_its_named_operations() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let holders = |needle: &str| {
         let mut found: Vec<String> = rust_sources()
@@ -285,7 +288,12 @@ fn the_boot_time_proof_is_reachable_from_exactly_two_operations() {
 
     // Control first, both ways: a needle that matches nothing passes forever,
     // and one that matches everything says nothing.
-    for needle in ["classify_absence(", "probe_absence(", "boot_time("] {
+    for needle in [
+        "classify_absence(",
+        "probe_absence(",
+        "boot_time(",
+        "boot_proved_stopped(",
+    ] {
         assert!(
             !holders(needle).is_empty(),
             "the scan found no `{needle}` anywhere in src/; it did not run"
@@ -297,6 +305,8 @@ fn the_boot_time_proof_is_reachable_from_exactly_two_operations() {
         vec![
             // The listing, through its fleet discovery's `all_predate`.
             "src/inventory.rs".to_owned(),
+            // The ONE boot-proof gate `end` and `rename` share.
+            "src/lifecycle/end.rs".to_owned(),
             // The resume, at `resume_absence`.
             "src/session_launch.rs".to_owned(),
             // Its own definition and unit table.
@@ -307,18 +317,41 @@ fn the_boot_time_proof_is_reachable_from_exactly_two_operations() {
     assert_eq!(
         holders("probe_absence("),
         vec![
+            // The shared gate.
+            "src/lifecycle/end.rs".to_owned(),
             "src/session_launch.rs".to_owned(),
             "src/transport.rs".to_owned(),
         ],
         "the raw absence probe gained (or lost) a caller"
     );
+    assert_eq!(
+        holders("boot_time("),
+        vec![
+            // The doctor's own absence reading.
+            "src/doctor.rs".to_owned(),
+            // Its definition and its platform table.
+            "src/doors.rs".to_owned(),
+            // The fleet listing's discovery.
+            "src/lib.rs".to_owned(),
+            // The shared gate.
+            "src/lifecycle/end.rs".to_owned(),
+            "src/session_launch.rs".to_owned(),
+        ],
+        "the boot time gained (or lost) a reader"
+    );
+    assert_eq!(
+        holders("boot_proved_stopped("),
+        vec![
+            // The one definition, called by `end`'s Positive arm.
+            "src/lifecycle/end.rs".to_owned(),
+            // The rename preflight and its retry.
+            "src/rename.rs".to_owned(),
+        ],
+        "the shared boot-proof gate gained (or lost) a caller"
+    );
 
-    // And the destructive gates still ask the STRICT question.
-    for (file, operation) in [
-        ("src/compact.rs", "compact"),
-        ("src/lifecycle.rs", "stop"),
-        ("src/lifecycle/end.rs", "end"),
-    ] {
+    // And the two verbs that still refuse on the strict proof alone.
+    for (file, operation) in [("src/compact.rs", "compact"), ("src/lifecycle.rs", "stop")] {
         let path = root.join(file);
         let Ok(code) = fs::read_to_string(&path) else {
             continue;
@@ -326,7 +359,8 @@ fn the_boot_time_proof_is_reachable_from_exactly_two_operations() {
         assert!(
             !code.contains("classify_absence(")
                 && !code.contains("probe_absence(")
-                && !code.contains("boot_time("),
+                && !code.contains("boot_time(")
+                && !code.contains("boot_proved_stopped("),
             "{operation} ({file}) reached the boot-time proof; it must keep the strict one"
         );
     }
