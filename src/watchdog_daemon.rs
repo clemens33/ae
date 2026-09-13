@@ -7565,12 +7565,17 @@ mod tests {
     /// pre-`waiting-agent` spelling only, so without this composition a
     /// deleted `strip_suffix(NUDGE_TAIL)` would leave every current-core nudge
     /// counting as pane activity — a quiet hold that never arms.
+    ///
+    /// `idle_nudge_text` is a DIFFERENT generator whose raw sentence the
+    /// footprint filter has never recognized (pre-existing; named in
+    /// `.local/waitagent-sites.md`), so this receipt pins the status generator
+    /// the review named, in both its goal and no-goal forms.
     #[test]
     fn a_current_nudge_is_stripped_by_the_live_footprint_filter() {
         let meta = Path::new("/home/x/.ae/sessions/demo");
         for (label, text) in [
-            ("status", nudge_text(Some("ship P4.1"), meta)),
-            ("idle", idle_nudge_text(None, meta)),
+            ("status", nudge_text(None, meta)),
+            ("status-goaled", nudge_text(Some("ship P4.1"), meta)),
         ] {
             assert_eq!(
                 quiet_filter(&text),

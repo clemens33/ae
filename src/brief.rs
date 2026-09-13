@@ -1096,21 +1096,21 @@ mod tests {
             )
         };
 
-for (tag, body, expected) in [
-        ("current", declaration(2_000), true),
-        (
-            "superseded",
-            format!(
-                "{}{}",
-                declaration(2_000),
-                format_args!(
-                    "{{\"ts\":\"{}\",\"actor\":\"colead\",\"action\":\"send\",\"target\":\"lead\",\"summary\":\"answer\"}}\n",
-                    stamp(10)
-                )
+        for (tag, body, expected) in [
+            ("current", declaration(2_000), true),
+            (
+                "superseded",
+                format!(
+                    "{}{}",
+                    declaration(2_000),
+                    format_args!(
+                        "{{\"ts\":\"{}\",\"actor\":\"colead\",\"action\":\"send\",\"target\":\"lead\",\"summary\":\"answer\"}}\n",
+                        stamp(10)
+                    )
+                ),
+                false,
             ),
-            false,
-        ),
-    ] {
+        ] {
             let dir = std::env::temp_dir().join(format!("ae-brief-{}-{tag}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).expect("a scratch dir");
