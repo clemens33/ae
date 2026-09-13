@@ -20,7 +20,7 @@ use crate::events::{
 };
 use crate::meta::{Anomaly, Meta};
 use crate::time::Timestamp;
-use crate::watchdog::{DEFAULT_IDLE_NUDGE_SECS, waiting_agent_cap_secs, waiting_agent_escalated};
+use crate::watchdog::{DEFAULT_IDLE_NUDGE_SECS, waiting_agent_escalated};
 
 /// The `unanswered` threshold when nothing tunes it.
 pub const DEFAULT_UNANSWERED_SECS: i64 = 1800;
@@ -759,11 +759,6 @@ pub fn entry_from(
             .iter()
             .find(|seat| seat.slot == "main")
             .map(|seat| seat.name.clone());
-        // The pinned cadence is resolved ONCE here, from the same meta the
-        // watchdog pins from, so the ceiling this entry is judged by is the
-        // ceiling the pane is judged by.
-        let idle_nudge_secs = meta.idle_nudge_secs().unwrap_or(DEFAULT_IDLE_NUDGE_SECS);
-        entry.waiting_agent_cap_secs = waiting_agent_cap_secs(idle_nudge_secs);
         entry.agents = agent_entries(meta, read, runtime, name, entry.started_epoch, now);
         entry.set_established_runtime_dead_agents(established_runtime_dead_agents(meta, runtime));
     }
@@ -896,6 +891,29 @@ fn agent_entries(
             let declared_state = declared.and_then(Event::declared_state);
             let declared_age_secs =
                 declared.map(|event| u64::try_from(event.ts.seconds_until(now)).unwrap_or(0));
+            // Is the declaration still CURRENT by the DAEMON's own rule? The
+            // quiet hold ends when any newer event mentions the agent as actor
+            // or target (`watchdog::latest_relevant_event`; watchdog nudges are
+            // footprints and are walked past), so the read side asks the SAME
+            // function. Without this, `ae list`/`ae brief` would age a
+            // superseded declaration into `blocked` and claim the human for a
+            // wait the daemon already yielded — the exact false positive this
+            // state exists to delete.
+            //
+            // RESIDUAL, and deliberately not faked: the daemon ALSO yields a
+            // quiet hold after the PANE keeps changing for two cycles (a human
+            // typing in the pane, leaving no event). A directory read cannot
+            // see panes, so a declaration the daemon has already yielded by
+            // pane activity can still read as current here and, past its
+            // ceiling, escalate on the human-marker surfaces; the pane's own
+            // border follows the daemon. This residual is named in
+            // AGENTS.md and `.local/waitagent-sites.md`.
+            let declared_current = read.is_some_and(|read| {
+                crate::watchdog::latest_relevant_event(&read.events, &reference, session)
+                    .is_some_and(|(newest, _)| {
+                        newest.actor == reference && newest.declared_state().is_some()
+                    })
+            });
             let runtime_agent = runtime.agent(&slot.slot);
             // Model drift: only the two harnesses whose live model ae can read
             // are ever marked with an observation; every other tool's model is
@@ -943,7 +961,9 @@ fn agent_entries(
                             )
                         }))
                         .chain(declared_state.zip(declared_age_secs).and_then(
-                            |(state, age_secs)| declared_reason(state, age_secs, idle_nudge_secs),
+                            |(state, age_secs)| {
+                                declared_reason(state, age_secs, idle_nudge_secs, declared_current)
+                            },
                         )),
                 ),
                 // A seat that is gone is waiting for nothing: its open requests
@@ -983,15 +1003,24 @@ fn anomalies_degrade(anomalies: &[Anomaly]) -> bool {
 /// `waiting-agent` is the quiet fifth state: fresh it claims nobody, and past
 /// [`waiting_agent_escalated`]'s ceiling it becomes exactly `blocked` (R4) —
 /// the SAME reason a declared `blocked` yields, and the same ceiling the
-/// watchdog uses to resume its nudge, so a human surface can never disagree
-/// with the pane about escalation.
-fn declared_reason(state: &str, age_secs: u64, idle_nudge_secs: u64) -> Option<Reason> {
+/// watchdog uses to resume its nudge. `is_current` is the OTHER half of the
+/// daemon's rule: a declaration any later relevant event has superseded is not
+/// escalated, because the seat is active again and a human marker for it would
+/// be false.
+///
+/// PURE, and the ONE classifier: every human surface consumes its answer
+/// (through `AgentEntry.reason`), never the ceiling arithmetic.
+fn declared_reason(
+    state: &str,
+    age_secs: u64,
+    idle_nudge_secs: u64,
+    is_current: bool,
+) -> Option<Reason> {
     match state {
         "waiting-user" => Some(Reason::WaitingUser),
         "blocked" => Some(Reason::Blocked),
-        "waiting-agent" => {
-            waiting_agent_escalated(age_secs, idle_nudge_secs).then_some(Reason::Blocked)
-        }
+        "waiting-agent" => (is_current && waiting_agent_escalated(age_secs, idle_nudge_secs))
+            .then_some(Reason::Blocked),
         _ => None,
     }
 }
@@ -2756,10 +2785,6 @@ mod tests {
         assert_eq!(fresh.agents[0].state.as_deref(), Some("waiting-agent"));
         assert_eq!(fresh.agents[0].reason, None, "fresh claims nobody");
         assert_eq!(fresh.attention, None, "and adds no session marker");
-        assert_eq!(
-            fresh.waiting_agent_cap_secs, 1_200,
-            "the default cadence 300 * OWN_WORK_AGE_CAP"
-        );
 
         let escalated = declaration(&Scratch::new("waiting-agent-escalated"), 1_200);
         assert_eq!(
@@ -2781,8 +2806,91 @@ mod tests {
             r#","ref":"waiting-agent","summary":"waiting on colead's re-review""#,
         )]);
         let entry = entry_for(&pinned.0, "live", &running(), NOW, DEFAULT_UNANSWERED_SECS);
-        assert_eq!(entry.waiting_agent_cap_secs, 240);
         assert_eq!(entry.attention, Some(Reason::Blocked));
+    }
+
+    /// BLOCKER 1: the daemon honours `waiting-agent` only while the
+    /// declaration is still the LATEST RELEVANT EVENT (a peer reply or the
+    /// agent's own later event ends the hold), so the read side must not age a
+    /// superseded declaration into a human claim. The raw state stays visible;
+    /// the attention contribution does not.
+    #[test]
+    fn a_superseded_waiting_agent_never_escalates() {
+        let scratch = Scratch::new("waiting-agent-superseded");
+        scratch.meta(META);
+        scratch.events(&[
+            event(
+                &at(2_000),
+                "lead",
+                "state",
+                r#","ref":"waiting-agent","summary":"waiting on colead's re-review""#,
+            ),
+            // A newer relevant event: colead answers. The daemon yields its
+            // quiet hold on exactly this, whatever the declaration's age.
+            event(
+                &at(10),
+                "colead",
+                "send",
+                r#","target":"lead","summary":"answered, go on""#,
+            ),
+        ]);
+        let entry = entry_for(&scratch.0, "live", &running(), NOW, DEFAULT_UNANSWERED_SECS);
+        assert_eq!(
+            entry.agents[0].state.as_deref(),
+            Some("waiting-agent"),
+            "the raw declaration remains visible"
+        );
+        assert_eq!(
+            entry.agents[0].reason, None,
+            "a superseded declaration claims nobody, however old"
+        );
+        assert_eq!(entry.attention, None, "and adds no session marker");
+
+        // The agent's OWN later event supersedes too, not only an inbound one.
+        let own = Scratch::new("waiting-agent-own-event");
+        own.meta(META);
+        own.events(&[
+            event(
+                &at(2_000),
+                "lead",
+                "state",
+                r#","ref":"waiting-agent","summary":"waiting on colead's re-review""#,
+            ),
+            event(
+                &at(10),
+                "lead",
+                "memo",
+                r#","ref":"arch","summary":"back on it""#,
+            ),
+        ]);
+        let entry = entry_for(&own.0, "live", &running(), NOW, DEFAULT_UNANSWERED_SECS);
+        assert_eq!(entry.agents[0].reason, None);
+        assert_eq!(entry.attention, None);
+
+        // A watchdog nudge is a FOOTPRINT, not news: it is walked past, so the
+        // declaration it was asking about still escalates.
+        let nudged = Scratch::new("waiting-agent-nudged");
+        nudged.meta(META);
+        nudged.events(&[
+            event(
+                &at(2_000),
+                "lead",
+                "state",
+                r#","ref":"waiting-agent","summary":"waiting on colead's re-review""#,
+            ),
+            event(
+                &at(10),
+                "watchdog",
+                "nudge",
+                r#","target":"lead","summary":"idle 20m""#,
+            ),
+        ]);
+        let entry = entry_for(&nudged.0, "live", &running(), NOW, DEFAULT_UNANSWERED_SECS);
+        assert_eq!(
+            entry.attention,
+            Some(Reason::Blocked),
+            "a nudge must not end the hold it was asking about"
+        );
     }
 
     #[test]

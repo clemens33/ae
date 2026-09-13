@@ -661,13 +661,7 @@ pub fn card_for(
         goal: entry.goal.clone(),
         topics: topic_lines(memo.as_deref().unwrap_or_default(), now, since_secs),
         memo_unreadable: memo.is_err(),
-        needs: needs(
-            &agents,
-            &container,
-            &entry.name,
-            now,
-            entry.waiting_agent_cap_secs,
-        ),
+        needs: needs(&agents, &container, &entry.name, now),
         agents,
         degraded: entry.degraded,
     }
@@ -785,24 +779,18 @@ fn agent_lines(entry: &SessionEntry, container: &[u8], now: Timestamp) -> Vec<Ag
 /// main/`colead` declarations claim the human; requests remain available as a
 /// count for the overview's working line.
 ///
-/// `waiting-agent` is quiet while fresh, so it is NOT a need here; once its
-/// age passes `cap_secs` it escalates to exactly `blocked` (R4) and this is
-/// the human card's half of that escalation. The cap arrives resolved from
-/// the session read, which used the same pinned cadence the watchdog uses.
-fn needs(
-    agents: &[AgentLine],
-    container: &[u8],
-    session: &str,
-    now: Timestamp,
-    cap_secs: u64,
-) -> Vec<Need> {
+/// `waiting-agent` is quiet while fresh, so it is NOT a need here; past its
+/// ceiling it escalates to exactly `blocked` (R4), and this consumes the
+/// SESSION's classification (`session::declared_reason` through
+/// `AgentEntry.reason`) rather than recomputing the ceiling: a declaration a
+/// later relevant event superseded carries no `Blocked` contribution, so the
+/// card cannot claim the human for a wait the daemon has already yielded.
+fn needs(agents: &[AgentLine], container: &[u8], session: &str, now: Timestamp) -> Vec<Need> {
     let mut needs: Vec<Need> = agents
         .iter()
         .filter(|agent| match agent.state.as_str() {
             "waiting-user" | "blocked" => true,
-            "waiting-agent" => agent
-                .age_secs
-                .is_some_and(|age| u64::try_from(age).unwrap_or(0) >= cap_secs),
+            "waiting-agent" => agent.attention == Some(Reason::Blocked),
             _ => false,
         })
         .map(|agent| Need::Declared {
@@ -865,8 +853,8 @@ pub fn wants_git(entry: &SessionEntry) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        AgentLine, Args, Card, Need, Target, TopicLine, age, clip, duration_secs, needs, ordered,
-        parse, render, short_path, topic_lines,
+        AgentLine, Args, Card, Need, Target, TopicLine, age, card_for, clip, duration_secs, needs,
+        ordered, parse, render, short_path, topic_lines,
     };
     use crate::attention::Reason;
     use crate::time::Timestamp;
@@ -1058,25 +1046,25 @@ mod tests {
         );
     }
 
-    /// R3/R4 on the card: a fresh `waiting-agent` is never a need; past the
-    /// session's ceiling it is exactly `blocked`, and `claims_human` admits
-    /// that one.
+    /// R3/R4 on the card: a fresh `waiting-agent` is never a need; the classified
+    /// `Blocked` contribution (the session's answer) is exactly `blocked`, and
+    /// `claims_human` admits that one.
     #[test]
     fn a_fresh_waiting_agent_is_no_need_and_an_escalated_one_is_blocked() {
-        let line = |age_secs: i64| AgentLine {
+        let line = |attention: Option<Reason>| AgentLine {
             name: "lead".to_owned(),
             profile: "fable5".to_owned(),
             state: "waiting-agent".to_owned(),
-            age_secs: Some(age_secs),
+            age_secs: Some(9_999),
             reason: "waiting on colead's gate".to_owned(),
-            attention: None,
+            attention,
         };
         let now = Timestamp::from_epoch(0);
-        let fresh = needs(&[line(1_199)], b"", "s", now, 1_200);
+        let fresh = needs(&[line(None)], b"", "s", now);
         assert!(fresh.is_empty(), "fresh waiting-agent claims nobody");
         assert!(!fresh.iter().any(|need| need.claims_human(Some("lead"))));
 
-        let escalated = needs(&[line(1_200)], b"", "s", now, 1_200);
+        let escalated = needs(&[line(Some(Reason::Blocked))], b"", "s", now);
         assert_eq!(escalated.len(), 1);
         let Need::Declared { state, reason, .. } = &escalated[0] else {
             panic!("a declared need: {escalated:?}");
@@ -1084,6 +1072,80 @@ mod tests {
         assert_eq!(state, "blocked", "escalated reads as exactly blocked");
         assert_eq!(reason, "waiting on colead's gate");
         assert!(escalated[0].claims_human(Some("lead")));
+    }
+
+    /// The card consumes the SESSION's classification instead of recomputing the
+    /// ceiling: current-and-over-cap is a `blocked` need even though its age is
+    /// the only arithmetic the card could see, and the SAME declaration superseded
+    /// by a later relevant event is no need at all (BLOCKER 1).
+    #[test]
+    fn the_card_takes_escalation_from_the_session_classification_not_its_own_math() {
+        use crate::digest::Status;
+        use crate::session::{DEFAULT_UNANSWERED_SECS, SessionRuntime, entry_for};
+
+        let now = Timestamp::from_epoch(1_780_000_000);
+        let stamp = |seconds_ago: i64| Timestamp::from_epoch(now.epoch() - seconds_ago).to_string();
+        let declaration = |seconds_ago: i64| {
+            format!(
+                concat!(
+                    r#"{{"ts":"{}","actor":"lead","action":"state","ref":"waiting-agent","#,
+                    r#""summary":"waiting on colead's re-review"}}"#,
+                    "\n"
+                ),
+                stamp(seconds_ago)
+            )
+        };
+
+for (tag, body, expected) in [
+        ("current", declaration(2_000), true),
+        (
+            "superseded",
+            format!(
+                "{}{}",
+                declaration(2_000),
+                format_args!(
+                    "{{\"ts\":\"{}\",\"actor\":\"colead\",\"action\":\"send\",\"target\":\"lead\",\"summary\":\"answer\"}}\n",
+                    stamp(10)
+                )
+            ),
+            false,
+        ),
+    ] {
+            let dir = std::env::temp_dir().join(format!("ae-brief-{}-{tag}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("a scratch dir");
+            std::fs::write(
+                dir.join("meta"),
+                "mode=local\norigin=/repo\nseat.main=lead\nprofile.main=claude\n",
+            )
+            .expect("a meta fixture");
+            std::fs::write(dir.join("events.jsonl"), body).expect("an events fixture");
+            let entry = entry_for(
+                &dir,
+                tag,
+                &SessionRuntime::new(Status::Running),
+                now,
+                DEFAULT_UNANSWERED_SECS,
+            );
+            let card = card_for(&entry, &dir, None, false, now, None);
+            let declared: Vec<&Need> = card
+                .needs
+                .iter()
+                .filter(|need| matches!(need, Need::Declared { .. }))
+                .collect();
+            assert_eq!(
+                !declared.is_empty(),
+                expected,
+                "{tag}: declared needs {declared:?}"
+            );
+            if expected {
+                let Need::Declared { state, .. } = declared[0] else {
+                    unreachable!("filtered above");
+                };
+                assert_eq!(state, "blocked", "{tag}");
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     #[test]

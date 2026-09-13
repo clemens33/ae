@@ -244,7 +244,8 @@ reason is a self-contained 2–5 sentence decision in 80–600 characters after 
 each option gets one clause, the recommendation gives its reason, and the text points
 to any long form in `.local/<file>` or a memo topic. Never use pointers such as “see
 pane” or “as discussed.” `waiting-agent` declares a wait on ANOTHER ae agent: it is quiet
-(no marker) while fresh and ESCALATES to exactly `blocked` once it is older than
+(no marker) while fresh and ESCALATES to exactly `blocked` (attention marker, and
+nudging too only when the idle-nudge cadence is enabled) once it is older than
 `idle_nudge_secs * OWN_WORK_AGE_CAP`; its reason names the agent and what you need from
 them. `blocked` keeps a concrete EXTERNAL blocker only — a dependency, a service, a human
 decision elsewhere, a broken host — and names what blocks, who or what unblocks it, what

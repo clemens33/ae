@@ -4107,7 +4107,7 @@ mod tests {
     use crate::tmux::StopProbe;
     use crate::watchdog::{
         QuietKind, SweepAlert, SweepEffect, SweepObservation, SweepVerdict, WedgeDetail,
-        declaration_key,
+        declaration_key, quiet_filter, quiet_hash,
     };
     use std::io::ErrorKind;
     use std::path::{Path, PathBuf};
@@ -7558,6 +7558,31 @@ mod tests {
         assert!(idle.ends_with(
             "/home/x/.ae/sessions/demo/state <waiting-user|waiting-agent|blocked|done> \"<reason>\""
         ));
+    }
+
+    /// IMPORTANT 4: the CURRENT generator's exact bytes must survive the LIVE
+    /// footprint filter. `watchdog.rs`'s `RAW_NUDGE` receipt exercises the
+    /// pre-`waiting-agent` spelling only, so without this composition a
+    /// deleted `strip_suffix(NUDGE_TAIL)` would leave every current-core nudge
+    /// counting as pane activity — a quiet hold that never arms.
+    #[test]
+    fn a_current_nudge_is_stripped_by_the_live_footprint_filter() {
+        let meta = Path::new("/home/x/.ae/sessions/demo");
+        for (label, text) in [
+            ("status", nudge_text(Some("ship P4.1"), meta)),
+            ("idle", idle_nudge_text(None, meta)),
+        ] {
+            assert_eq!(
+                quiet_filter(&text),
+                "",
+                "{label}: the current nudge body is a footprint, not output"
+            );
+            assert_eq!(
+                quiet_hash("live output\n"),
+                quiet_hash(&format!("live output\n{text}\n")),
+                "{label}: a delivered current nudge must not move the pane hash"
+            );
+        }
     }
 
     #[test]
