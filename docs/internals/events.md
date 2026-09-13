@@ -1,6 +1,6 @@
 # Events
 
-`~/.ae/sessions/<name>/events.jsonl` is ae's single durable record of what happened. Mutating helpers and ae internals write structured events; inspection helpers (`peek`, `agents`, `requests`, `events-tail`, `watchdog status`) read but don't write. The watchdog reads events to enforce its done-invalidation contract; `requests` derives pending/replied state from them. Append-only, one JSON object per line.
+`~/.ae/sessions/<name>/events.jsonl` is ae's single durable record of what happened. Mutating helpers and ae internals write structured events; inspection helpers (`peek`, `agents`, `requests`, `events-tail`, `watchdog status`) read but don't write. The watchdog reads events to enforce its done-invalidation contract; `requests` derives `pending`, `replied`, `cancelled` and `retired` state from them. Append-only, one JSON object per line.
 
 ## Producers and consumers
 
@@ -113,9 +113,10 @@ Each is optional and omitted when empty. Readers that don't understand them igno
 `requests [mine|inbox|all]` walks `events.jsonl` backward via `tac` and collects:
 
 - The latest `ask` / `review` event per `ref` → request row.
-- The latest `reply` event per `ref` → reply row.
+- The latest `reply` or authorized `cancel` event per `ref` → terminal row.
+- The ledger's forward `open_requests` reading → whether an otherwise-pending valid row is `retired` because either party's seat was retired.
 
-A request is `replied` only when the reply's `actor` equals the request's `target` AND the reply's `target` equals the request's `actor`. Stray reply events (wrong actor / wrong target) leave the request `pending`. Without that check a misrouted or manual reply could falsely close a request.
+A request is `replied` only when the reply's `actor` equals the request's `target` AND the reply's `target` equals the request's `actor`. Stray reply events (wrong actor / wrong target) leave the request `pending`. An authorized withdrawal is `cancelled`; a request closed by either party's seat retirement is `retired`, not `replied`. Without the reply check a misrouted or manual reply could falsely close a request.
 
 The core's request lookup returns the matched request as a tab-separated row. When the event carries routing-key fields the row is seven columns — `action  actor  target  actor_slot  actor_session  target_slot  target_session` — and `reply` verifies the responder's live slot against `target_slot` + `target_session` before delivering, so identity survives a name change. An event without those fields yields a three-column row (`action  actor  target`) and pairing falls back to the display name.
 

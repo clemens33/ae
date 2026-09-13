@@ -413,7 +413,7 @@ Resume uses the captured UUID for exact conversation restore; falls back to a CW
 {"ts":"2026-05-19T08:00:13Z","actor":"watchdog","action":"nudge","target":"claude:lead","summary":"idle 30m, no recent ae activity"}
 ```
 
-`requests` derives pending/replied state by walking events backward and matching `reply` events against their original `ask` / `review` by `ref`. The watchdog reads `events.jsonl` to enforce its "done is invalidated by newer ae event" contract.
+`requests` walks events backward to retain the newest `ask` / `review` per `ref` and match its `reply` or `cancel`; it asks `session::open_requests` whether an otherwise-pending valid ledger record remains open. Its statuses are `pending`, `replied`, `cancelled` and `retired`; the last means either party's seat was retired, so no reply was recorded. The watchdog reads `events.jsonl` to enforce its "done is invalidated by newer ae event" contract.
 
 ## Watchdog and monitor window
 

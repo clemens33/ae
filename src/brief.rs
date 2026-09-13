@@ -618,10 +618,10 @@ pub fn age(secs: Option<i64>) -> String {
 ///
 /// **Everything but the memo file comes off ONE read of the event container**,
 /// through the same two sensors the helpers use — [`crate::state::latest`] for a
-/// declaration and [`crate::requests::states`] for an open request. A brief does
-/// not open a session's meta or its event log a second time: the world it is
-/// handed was already built from that read, and a second reader is a second
-/// chance to disagree with it.
+/// declaration and the session-aware request sensor for an open request. A
+/// brief does not open a session's meta or its event log a second time: the
+/// world it is handed was already built from that read, and a second reader is
+/// a second chance to disagree with it.
 #[must_use]
 pub fn card_for(
     entry: &SessionEntry,
@@ -656,7 +656,7 @@ pub fn card_for(
         goal: entry.goal.clone(),
         topics: topic_lines(memo.as_deref().unwrap_or_default(), now, since_secs),
         memo_unreadable: memo.is_err(),
-        needs: needs(&agents, &container, now),
+        needs: needs(&agents, &container, &entry.name, now),
         agents,
         degraded: entry.degraded,
     }
@@ -773,7 +773,7 @@ fn agent_lines(entry: &SessionEntry, container: &[u8], now: Timestamp) -> Vec<Ag
 /// Collect declarations and open requests once. Presentation decides that only
 /// main/`colead` declarations claim the human; requests remain available as a
 /// count for the overview's working line.
-fn needs(agents: &[AgentLine], container: &[u8], now: Timestamp) -> Vec<Need> {
+fn needs(agents: &[AgentLine], container: &[u8], session: &str, now: Timestamp) -> Vec<Need> {
     let mut needs: Vec<Need> = agents
         .iter()
         .filter(|agent| matches!(agent.state.as_str(), "waiting-user" | "blocked"))
@@ -784,7 +784,7 @@ fn needs(agents: &[AgentLine], container: &[u8], now: Timestamp) -> Vec<Need> {
             reason: agent.reason.clone(),
         })
         .collect();
-    for request in requests::states(container) {
+    for request in requests::states_in(container, session) {
         if request.status != RequestStatus::Pending {
             continue;
         }

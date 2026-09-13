@@ -386,6 +386,47 @@ fn an_open_ask_stays_out_of_needs_you_and_counts_on_the_working_row() {
 }
 
 #[test]
+fn a_retired_request_is_absent_from_the_brief_needs() {
+    // A retire closes by routing-key seat, not by request id. The brief has the
+    // session name from its `SessionEntry`, so it must give that same identity
+    // to the owner rather than use the session-less compatibility sensor.
+    let root = scratch("retired-request");
+    let dir = plant(&root, "brf6", &root.join("work"));
+    event(
+        &dir,
+        r#"{"ts":"2026-08-20T16:12:55Z","actor":"lead","action":"ask","target":"scribe","ref":"ae-7","actor_slot":"main","actor_session":"brf6","target_slot":"spawned.0","target_session":"brf6","summary":"does the retire close this?"}"#,
+    );
+    event(
+        &dir,
+        r#"{"ts":"2026-08-20T16:13:00Z","actor":"lead","action":"retire","target":"scribe","ref":"0199c0de-1234-4890-abcd-ef0123456789","target_slot":"spawned.0"}"#,
+    );
+
+    let (_, world) = ae::current_world(&root);
+    let entry = world
+        .sessions
+        .iter()
+        .find(|entry| entry.name == "brf6")
+        .expect("the planted session is discovered");
+    let mut card = ae::brief::card_for(entry, &dir, Some(&root), false, world.now, None);
+    card.status = "running";
+
+    assert_eq!(
+        card.open_ask_count(),
+        0,
+        "retire closes the request: {card:?}"
+    );
+    assert!(
+        !card
+            .needs
+            .iter()
+            .any(|need| matches!(need, ae::brief::Need::Unanswered { .. })),
+        "a retire-closed request must not survive in needs: {card:?}"
+    );
+    let overview = ae::overview::render(&[card], "orchestrator");
+    assert!(!overview.contains("open ask"), "{overview}");
+}
+
+#[test]
 fn a_bare_brief_outside_tmux_falls_back_to_the_whole_fleet() {
     // The DEFAULT invocation, and its first failure branch: no $TMUX_PANE means
     // no caller to name, and the spec's fallback is the fleet — never nothing.

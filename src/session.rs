@@ -981,7 +981,7 @@ fn pending_requests(events: &[Event], session: &str) -> Vec<PendingRequest> {
 /// retiring the seat that SENT it clears what nobody is left to read a reply
 /// to — a retired worker's questions leave its target's inbox. Anything else
 /// leaves the request open, however unanswerable it has become.
-fn open_requests<'a>(events: &'a [Event], session: &str) -> Vec<&'a Event> {
+pub(crate) fn open_requests<'a>(events: &'a [Event], session: &str) -> Vec<&'a Event> {
     // One forward pass over an append-only log, so a reply or a withdrawal that
     // appears BEFORE its request finds nothing open and closes nothing. A
     // retire rides the same pass for the same reason, and for one more: the

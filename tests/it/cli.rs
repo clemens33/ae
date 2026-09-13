@@ -1189,6 +1189,29 @@ fn requests_all_prints_the_table_on_stdout_and_says_nothing_else() {
 }
 
 #[test]
+fn requests_all_reports_a_retired_target_as_retired_not_pending() {
+    let root = scratch("requests-retired");
+    let ask = PLANTED_ASK
+        .replace(r#""actor_session":"s""#, r#""actor_session":"tg1""#)
+        .replace(r#""target_session":"s""#, r#""target_session":"tg1""#);
+    let retire = r#"{"ts":"2026-08-20T16:13:00Z","actor":"lead","action":"retire","target":"worker","ref":"0199c0de-1234-4890-abcd-ef0123456789","target_slot":"worker.0"}"#;
+    let dir = plant_events(&root, "tg1", &[&ask, retire]);
+
+    let out = ae()
+        .arg(ae::cli::REQUESTS)
+        .arg(&dir)
+        .arg("all")
+        .output()
+        .expect("the ae binary should run");
+
+    assert_eq!(out.status.code(), Some(0), "{:?}", out.status);
+    assert!(out.stderr.is_empty(), "stderr: {:?}", out.stderr);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("retired  ask      ae-1"), "{stdout}");
+    assert!(!stdout.contains("pending  ask      ae-1"), "{stdout}");
+}
+
+#[test]
 fn requests_mine_and_inbox_answer_for_the_pane_tmux_pane_names() {
     // A REAL isolated server, created and stamped through the harness's pinned
     // process door (`-S` addressing).

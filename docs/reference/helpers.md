@@ -26,7 +26,7 @@ It refuses rather than guessing. A helper that picked a session for you would ev
 | `ask <agent> <question>` | Tracked request — embeds your identity and an exact reply command with a request id. |
 | `review <agent> <request>` | Like `ask`, but with the critical-review prompt template (findings-first, BLOCKER/IMPORTANT/NIT). |
 | `reply <request-id> <message>` | Reply to a logged `ask` / `review` by request id. Verified against the request's stored **slot** (the routing key), not the display name; `--as <agent>` sets the displayed sender only and cannot bypass that check. |
-| `requests [mine\|inbox\|all]` | Inspect pending / replied state from `events.jsonl` without peeking panes. |
+| `requests [mine\|inbox\|all]` | Inspect `pending`, `replied`, `cancelled` or `retired` request state from `events.jsonl` without peeking panes; `retired` means either party's seat closed it without a reply. |
 | `say <text>` | Push a free-text line to the human's Telegram chat (args or piped stdin). Emits a `chat` event the [Telegram bridge](telegram.md) forwards; a Telegram reply routes back to you. Pane output is not forwarded — this is how you answer the human on Telegram. |
 
 All messaging helpers emit a structured event into the caller's `events.jsonl`
@@ -185,4 +185,4 @@ REQUIRED: When you have finished, you MUST run this exact command to reply:
 Do not reply any other way. Do NOT use peek/peak as a reply mechanism.
 ```
 
-Agents are instructed to run that command verbatim. If they do, `requests` picks up the pending → replied transition automatically.
+Agents are instructed to run that command verbatim. If they do, `requests` changes the row from `pending` to `replied`; an authorized `cancel` shows `cancelled`, and either party's seat retirement shows `retired`.

@@ -5,13 +5,13 @@
 //! drift — one checking both ends of a reply, the other only the actor end — so
 //! the sensor is a public function here, not a private detail of the table.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use crate::event_text::{
     Member, event_line, extract, member, pad_left_aligned, read_lines, reversed,
 };
-use crate::events::Identity;
+use crate::events::{Event, Identity};
 use crate::tmux::ObservedViewer;
 
 /// `requests [mine|inbox|all]` — signature, defaulting to `mine`.
@@ -118,7 +118,7 @@ impl Viewer {
 /// One request, as the sensor emits it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Request {
-    /// `pending`, `replied` or `cancelled`.
+    /// `pending`, `replied`, `cancelled` or `retired`.
     pub status: Status,
     /// `ask` or `review`, verbatim from the opening event.
     pub kind: Vec<u8>,
@@ -145,7 +145,7 @@ pub struct Request {
     pub summary: Vec<u8>,
 }
 
-/// The three terminal states of a request.
+/// The four statuses a request can report.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
     /// No valid closing event.
@@ -154,6 +154,8 @@ pub enum Status {
     Replied,
     /// Withdrawn by its own sender.
     Cancelled,
+    /// Closed when either party's seat was retired, without a reply.
+    Retired,
 }
 
 impl Status {
@@ -164,6 +166,7 @@ impl Status {
             Self::Pending => "pending",
             Self::Replied => "replied",
             Self::Cancelled => "cancelled",
+            Self::Retired => "retired",
         }
     }
 }
@@ -277,18 +280,30 @@ pub fn render(dir: &Path, mode: Mode, viewer: &Viewer) -> Output {
         };
     }
     let container = crate::store::open(dir).container();
+    let session = dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
     Output {
-        stdout: table(&container, mode, viewer),
+        stdout: table_in(&container, session, mode, viewer),
         stderr: Vec::new(),
         code: 0,
     }
 }
 
-/// The table for one container's bytes — the pure half of [`render`].
+/// The session-less compatibility table for one container's bytes.
+///
+/// It deliberately preserves pre-retire statuses because its callers have no
+/// routing-key session; session-bound surfaces must use [`render`].
 #[must_use]
 pub fn table(container: &[u8], mode: Mode, viewer: &Viewer) -> Vec<u8> {
+    table_in(container, "", mode, viewer)
+}
+
+/// The table for one container whose session is known.
+fn table_in(container: &[u8], session: &str, mode: Mode, viewer: &Viewer) -> Vec<u8> {
     let mut out = header();
-    for request in states(container) {
+    for request in states_in(container, session) {
         if request.shown_to(mode, viewer) {
             request.write_line(&mut out);
         }
@@ -296,9 +311,25 @@ pub fn table(container: &[u8], mode: Mode, viewer: &Viewer) -> Vec<u8> {
     out
 }
 
-/// THE request sensor — one definition, chronological, one row per request.
+/// THE session-less compatibility sensor — one definition, chronological, one
+/// row per request.
+///
+/// It deliberately preserves pre-retire statuses because its callers have no
+/// routing-key session; session-bound consumers must use [`states_in`].
 #[must_use]
 pub fn states(container: &[u8]) -> Vec<Request> {
+    states_in(container, "")
+}
+
+/// THE request sensor for a known session.
+#[must_use]
+pub(crate) fn states_in(container: &[u8], session: &str) -> Vec<Request> {
+    let ledger = ledger_events(container);
+    let open = crate::session::open_requests(&ledger, session)
+        .into_iter()
+        .filter_map(|event| event.reference.as_ref())
+        .map(|reference| reference.as_bytes().to_vec())
+        .collect::<HashSet<_>>();
     let stream = reversed(container);
     // Every retained record carries its SCAN ORDINAL — its position in the
     // container, i.e. LEDGER ORDER, which is APPEND ORDER and NEVER `ts`
@@ -369,6 +400,9 @@ pub fn states(container: &[u8]) -> Vec<Request> {
             let (status, summary) = match (cancel, reply) {
                 (Some((_, closing)), _) => (Status::Cancelled, closing.summary.clone()),
                 (None, Some((_, closing))) => (Status::Replied, closing.summary.clone()),
+                (None, None) if opening.ledger_valid && !open.contains(&reference) => {
+                    (Status::Retired, opening.summary.clone())
+                }
                 (None, None) => (Status::Pending, opening.summary.clone()),
             };
             Some(Request {
@@ -453,6 +487,10 @@ struct Opening {
     from_session: Key,
     to_session: Key,
     summary: Vec<u8>,
+    /// The closure owner can judge this opening only if it parsed as a ledger
+    /// record. Opaque compatibility rows remain pending when no owner can see
+    /// them, rather than being fabricated as retire-closed.
+    ledger_valid: bool,
 }
 
 /// A candidate `reply` or `cancel`.
@@ -479,6 +517,9 @@ impl Opening {
             from_session: Key::read(line, "actor_session"),
             to_session: Key::read(line, "target_session"),
             summary: fold_newlines(extract(line, "summary")),
+            ledger_valid: std::str::from_utf8(line)
+                .ok()
+                .is_some_and(|line| Event::parse_line(line).is_ok()),
         }
     }
 
@@ -520,6 +561,16 @@ impl Opening {
     }
 }
 
+/// The parsed ledger records the session reader judges. Invalid or partial
+/// lines stay outside the ledger, exactly as they do in [`crate::session`].
+fn ledger_events(container: &[u8]) -> Vec<Event> {
+    read_lines(container)
+        .into_iter()
+        .filter_map(|line| std::str::from_utf8(line).ok())
+        .filter_map(|line| Event::parse_line(line).ok())
+        .collect()
+}
+
 impl Closing {
     fn actor_identity(&self) -> Identity<'_> {
         identity_of(&self.actor_slot, &self.actor_session, &self.actor)
@@ -556,7 +607,7 @@ fn fold_newlines(mut value: Vec<u8>) -> Vec<u8> {
 mod tests {
     use super::{
         EXIT_NO_IDENTITY, Key, Mode, NO_IDENTITY, Status, Viewer, header, is_slot, render, states,
-        table,
+        states_in, table,
     };
     use std::fs;
     use std::path::PathBuf;
@@ -652,6 +703,114 @@ mod tests {
         let out = render(&scratch.0, Mode::All, &Viewer::default());
         assert_eq!(out.code, 0);
         assert!(text(&out.stdout).contains("the question"));
+    }
+
+    #[test]
+    fn a_target_retired_in_its_session_is_reported_retired_not_pending() {
+        let scratch = Scratch::new("target-retired");
+        let dir = scratch.0.join("live");
+        fs::create_dir_all(&dir).expect("session directory");
+        fs::write(
+            dir.join("events.jsonl"),
+            container(&[
+                r#"{"ts":"2026-09-13T10:00:00Z","actor":"lead","action":"ask","target":"worker","ref":"r1","actor_slot":"main","actor_session":"live","target_slot":"worker.0","target_session":"live","summary":"question"}"#,
+                r#"{"ts":"2026-09-13T10:01:00Z","actor":"lead","action":"retire","target":"worker","ref":"0199c0de-1234-4890-abcd-ef0123456789","target_slot":"worker.0"}"#,
+            ]),
+        )
+        .expect("write ledger");
+
+        let view = text(&render(&dir, Mode::All, &Viewer::default()).stdout);
+        assert!(view.contains("retired"), "{view}");
+        assert!(!view.contains("pending"), "{view}");
+    }
+
+    #[test]
+    fn an_asker_retired_in_its_session_is_reported_retired_not_pending() {
+        let scratch = Scratch::new("asker-retired");
+        let dir = scratch.0.join("live");
+        fs::create_dir_all(&dir).expect("session directory");
+        fs::write(
+            dir.join("events.jsonl"),
+            container(&[
+                r#"{"ts":"2026-09-13T10:00:00Z","actor":"worker","action":"review","target":"lead","ref":"r1","actor_slot":"spawned.1","actor_session":"live","target_slot":"main","target_session":"live","summary":"question"}"#,
+                r#"{"ts":"2026-09-13T10:01:00Z","actor":"lead","action":"retire","target":"worker","ref":"0199c0de-1234-4890-abcd-ef0123456789","target_slot":"spawned.1"}"#,
+            ]),
+        )
+        .expect("write ledger");
+
+        let view = text(&render(&dir, Mode::All, &Viewer::default()).stdout);
+        assert!(view.contains("retired"), "{view}");
+        assert!(!view.contains("pending"), "{view}");
+    }
+
+    #[test]
+    fn a_request_with_no_retire_stays_pending() {
+        let scratch = Scratch::new("no-retire");
+        let dir = scratch.0.join("live");
+        fs::create_dir_all(&dir).expect("session directory");
+        fs::write(
+            dir.join("events.jsonl"),
+            container(&[
+                r#"{"ts":"2026-09-13T10:00:00Z","actor":"lead","action":"ask","target":"worker","ref":"r1","actor_slot":"main","actor_session":"live","target_slot":"worker.0","target_session":"live","summary":"question"}"#,
+            ]),
+        )
+        .expect("write ledger");
+
+        let view = text(&render(&dir, Mode::All, &Viewer::default()).stdout);
+        assert!(view.contains("pending"), "{view}");
+        assert!(!view.contains("retired"), "{view}");
+    }
+
+    #[test]
+    fn a_retired_request_is_distinguishable_from_a_replied_request() {
+        let scratch = Scratch::new("retired-and-replied");
+        let dir = scratch.0.join("live");
+        fs::create_dir_all(&dir).expect("session directory");
+        fs::write(
+            dir.join("events.jsonl"),
+            container(&[
+                r#"{"ts":"2026-09-13T10:00:00Z","actor":"lead","action":"ask","target":"worker","ref":"retired-request","actor_slot":"main","actor_session":"live","target_slot":"worker.0","target_session":"live","summary":"question"}"#,
+                r#"{"ts":"2026-09-13T10:01:00Z","actor":"lead","action":"retire","target":"worker","ref":"0199c0de-1234-4890-abcd-ef0123456789","target_slot":"worker.0"}"#,
+                r#"{"ts":"2026-09-13T10:02:00Z","actor":"lead","action":"ask","target":"worker","ref":"replied-request","actor_slot":"main","actor_session":"live","target_slot":"worker.0","target_session":"live","summary":"question"}"#,
+                r#"{"ts":"2026-09-13T10:03:00Z","actor":"worker","action":"reply","target":"lead","ref":"replied-request","actor_slot":"worker.0","actor_session":"live","target_slot":"main","target_session":"live","summary":"answer"}"#,
+            ]),
+        )
+        .expect("write ledger");
+
+        let view = text(&render(&dir, Mode::All, &Viewer::default()).stdout);
+        let retired = view
+            .lines()
+            .find(|line| line.contains("retired-request"))
+            .expect("retired row");
+        let replied = view
+            .lines()
+            .find(|line| line.contains("replied-request"))
+            .expect("replied row");
+        assert!(retired.starts_with("retired "), "{retired}");
+        assert!(replied.starts_with("replied "), "{replied}");
+    }
+
+    #[test]
+    fn ledger_consultation_preserves_both_request_traversal_contracts() {
+        let reply_before_opening = container(&[
+            r#"{"ts":"2026-09-13T10:00:00Z","actor":"worker","action":"reply","target":"lead","ref":"r1","actor_slot":"worker.0","actor_session":"live","target_slot":"main","target_session":"live","summary":"early answer"}"#,
+            r#"{"ts":"2026-09-13T10:01:00Z","actor":"lead","action":"ask","target":"worker","ref":"r1","actor_slot":"main","actor_session":"live","target_slot":"worker.0","target_session":"live","summary":"question"}"#,
+        ]);
+        assert_eq!(
+            states_in(&reply_before_opening, "live")[0].status,
+            Status::Pending,
+            "a reply before its opening closes nothing"
+        );
+
+        let re_opened = container(&[
+            r#"{"ts":"2026-09-13T10:00:00Z","actor":"lead","action":"ask","target":"worker","ref":"r1","actor_slot":"main","actor_session":"live","target_slot":"worker.0","target_session":"live","summary":"first"}"#,
+            r#"{"ts":"2026-09-13T10:01:00Z","actor":"worker","action":"reply","target":"lead","ref":"r1","actor_slot":"worker.0","actor_session":"live","target_slot":"main","target_session":"live","summary":"answer"}"#,
+            r#"{"ts":"2026-09-13T10:02:00Z","actor":"lead","action":"ask","target":"worker","ref":"r1","actor_slot":"main","actor_session":"live","target_slot":"worker.0","target_session":"live","summary":"reopened"}"#,
+        ]);
+        let rows = states_in(&re_opened, "live");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].status, Status::Pending);
+        assert_eq!(rows[0].summary, b"reopened");
     }
 
     #[test]
@@ -1364,6 +1523,7 @@ mod tests {
         assert_eq!(Status::Pending.token(), "pending");
         assert_eq!(Status::Replied.token(), "replied");
         assert_eq!(Status::Cancelled.token(), "cancelled");
+        assert_eq!(Status::Retired.token(), "retired");
     }
 
     #[test]
