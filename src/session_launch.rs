@@ -1145,6 +1145,14 @@ fn launch(
     let dir = sessions.join(&session);
     let work_root = worktrees.join(&session);
 
+    // A pending rename transaction owns this name until its proved retry
+    // converges: a launch must not read or mutate a mixed generation as
+    // ordinary state.
+    if let Some(blocked) = crate::rename::intent_blocks(&env.home, &session) {
+        writeln!(err, "Error: {blocked}. Nothing was launched.")?;
+        return Ok(EXIT_FAILED);
+    }
+
     for (root, note) in [
         (&sessions, "the session state is parked under it"),
         (&worktrees, "a working copy is parked under it"),

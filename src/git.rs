@@ -46,6 +46,16 @@ enum Query<'a> {
     ShortHead,
     /// `status --porcelain --untracked-files=no` — the dirty marker.
     PorcelainStatus,
+    /// `worktree list --porcelain` — the managed-worktree registration the
+    /// stopped rename proves ownership and destination absence against.
+    WorktreeList,
+    /// `worktree move <old> <new>` — the stopped rename's managed git move,
+    /// run with `-C <origin>`. Git itself refuses a main worktree, a locked
+    /// one and a populated-submodule one before moving anything.
+    WorktreeMove {
+        worktree: &'a OsStr,
+        new_path: &'a OsStr,
+    },
     /// `worktree remove --force <worktree>` — the git-mode teardown's workdir
     /// commit, judged by exit status.
     WorktreeRemove { worktree: &'a OsStr },
@@ -134,6 +144,17 @@ fn argv(wdir: &OsStr, query: &Query) -> GitArgv {
             args.push("status".into());
             args.push("--porcelain".into());
             args.push("--untracked-files=no".into());
+        }
+        Query::WorktreeList => {
+            args.push("worktree".into());
+            args.push("list".into());
+            args.push("--porcelain".into());
+        }
+        Query::WorktreeMove { worktree, new_path } => {
+            args.push("worktree".into());
+            args.push("move".into());
+            args.push(worktree.to_owned());
+            args.push(new_path.to_owned());
         }
         Query::WorktreeRemove { worktree } => {
             args.push("worktree".into());
@@ -270,6 +291,32 @@ pub(crate) fn worktree_remove(origin: &[u8], worktree: &[u8]) -> bool {
     let origin = OsStr::from_bytes(origin);
     let worktree = OsStr::from_bytes(worktree);
     crate::transport::run_git(&argv(origin, &Query::WorktreeRemove { worktree })).0
+}
+
+/// `git -C <origin> worktree list --porcelain` — the registration text the
+/// stopped rename proves worktree ownership and destination absence against,
+/// or `None` when git itself fails there.
+pub(crate) fn worktree_list(origin: &[u8]) -> Option<String> {
+    let origin = OsStr::from_bytes(origin);
+    let (succeeded, listed) = crate::transport::run_git(&argv(origin, &Query::WorktreeList));
+    succeeded.then_some(listed)
+}
+
+/// `git -C <origin> worktree move <old> <new>` — move one managed worktree's
+/// registration and directory together. Judged by exit status; git refuses a
+/// main, locked or submodule-populated worktree before moving anything.
+pub(crate) fn worktree_move(origin: &[u8], old: &[u8], new: &[u8]) -> bool {
+    let origin = OsStr::from_bytes(origin);
+    let old = OsStr::from_bytes(old);
+    let new = OsStr::from_bytes(new);
+    crate::transport::run_git(&argv(
+        origin,
+        &Query::WorktreeMove {
+            worktree: old,
+            new_path: new,
+        },
+    ))
+    .0
 }
 
 /// The watchdog's branch segment: the branch NAME at `wdir`, or its short HEAD
@@ -470,6 +517,27 @@ mod tests {
                 "--count",
                 &format!("{base}..{tip}")
             ]
+        );
+    }
+
+    #[test]
+    fn the_rename_worktree_shapes_are_c_first_then_fixed_words() {
+        let w = OsString::from("/origin");
+        assert_eq!(
+            strs(&argv(&w, &Query::WorktreeList)),
+            ["-C", "/origin", "worktree", "list", "--porcelain"]
+        );
+        let old = OsString::from("/wt/old");
+        let new = OsString::from("/wt/new");
+        assert_eq!(
+            strs(&argv(
+                &w,
+                &Query::WorktreeMove {
+                    worktree: &old,
+                    new_path: &new,
+                }
+            )),
+            ["-C", "/origin", "worktree", "move", "/wt/old", "/wt/new"]
         );
     }
 }

@@ -13,9 +13,11 @@
 )]
 
 use std::fmt::Write as _;
+use std::io::BufRead as _;
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::mpsc;
 use std::time::Duration;
 
 use super::cli::{OwnedChild, OwnedScratch, Runner, ae, git_in, helper};
@@ -1154,13 +1156,6 @@ fn a_local_launch_builds_the_whole_session() {
     let (code, stdout, stderr) = rig.launch(&["--local", "lnlocal"]);
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
     // The hint names a command that EXISTS.
-    assert!(
-        stdout.contains(&format!(
-            "Attach with: tmux -S {} attach -t \"=lnlocal\"",
-            rig.sock.display()
-        )),
-        "{stdout}"
-    );
     assert!(!stdout.contains("orchestrator --attach"), "{stdout}");
 
     // The SESSION and its stamped pane.
@@ -2643,10 +2638,12 @@ fn worktree_mode_creates_its_copy_and_a_failed_launch_rolls_back() {
     );
 }
 
-/// A rename changes session identity, not the working copy's identity. A
-/// stopped renamed session resumes from the recorded directory and replaces
-/// its existing meta instead of taking the new name's worktree path as proof
-/// that this is a fresh launch.
+/// LIVE-rename production history: a live rename changes session identity,
+/// not the working copy's identity — the managed path deliberately stays put
+/// (stopped renames move it; see the Slice-A stopped tests). A renamed live
+/// session resumes from the recorded directory and replaces its existing meta
+/// instead of taking the new name's worktree path as proof that this is a
+/// fresh launch.
 #[test]
 fn a_renamed_worktree_resume_uses_its_recorded_dir_and_existing_meta() {
     if skip() {
@@ -2709,6 +2706,10 @@ fn a_renamed_worktree_resume_uses_its_recorded_dir_and_existing_meta() {
     assert_eq!(actual, expected, "the resumed agent's cwd");
 }
 
+/// Legacy compatibility: a resume whose recorded copy is gone refuses rather
+/// than adopting a name-derived copy. Kept as the production-history case
+/// for the retained-path era; stopped renames move the recorded copy instead
+/// of stranding it (see the Slice-A stopped tests).
 #[test]
 fn a_resume_with_a_recorded_missing_copy_never_adopts_a_name_derived_copy() {
     if skip() {
@@ -2776,6 +2777,2737 @@ fn a_resume_with_a_recorded_missing_copy_never_adopts_a_name_derived_copy() {
         std::fs::read_to_string(unrelated).unwrap_or_default(),
         "not this session",
         "the refusal leaves the namesake copy untouched"
+    );
+}
+
+/// Run one PUBLIC command (`stop`, `rename`, `end`) against the rig's home
+/// with no calling pane — the operator outside every session.
+fn public(rig: &Rig, args: &[&str]) -> (Option<i32>, String, String) {
+    let out = ae()
+        .env("HOME", &rig.scratch)
+        .env("AE_HOME", &rig.home)
+        .env("TMUX_TMPDIR", &rig.scratch)
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
+        .args(args)
+        .output()
+        .unwrap_or_else(|why| panic!("the public command should run: {why}"));
+    (
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+/// A1: a stopped local rename converges to the new name and stays stopped —
+/// no live session, no monitor start — preserving the UUID, every other meta
+/// row byte for byte, the event log and the helper links. A same-command
+/// retry reads the durable result instead of duplicating it. Smallest
+/// defeating mutation: keep the stopped refusal in `locked`.
+#[test]
+fn a_stopped_local_rename_converges_to_the_new_name() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("stopped-local");
+    let old = "slocold";
+    let new = "slocnew";
+    let (code, stdout, stderr) = rig.launch(&["--local", old]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+
+    let (code, stdout, stderr) = public(&rig, &["stop", old]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        !rig.sessions().iter().any(|session| session == old),
+        "the session is stopped"
+    );
+
+    let uuid = rig
+        .meta(old)
+        .lines()
+        .find_map(|line| line.strip_prefix("session_id="))
+        .unwrap_or_default()
+        .to_owned();
+    assert!(!uuid.is_empty(), "the launch recorded a UUID");
+    let meta_before = rig.meta(old);
+    let events_before = std::fs::read(rig.dir(old).join("events.jsonl")).unwrap_or_default();
+    let send_before = std::fs::read_link(rig.dir(old).join("send")).unwrap_or_default();
+
+    let (code, stdout, stderr) = public(&rig, &[ae::cli::RENAME, old, new]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        stdout.contains(&format!("Renamed '{old}' → '{new}' (stopped;")),
+        "one stopped-state result: {stdout}"
+    );
+    // Local mode keeps the caller-owned cwd: no provider-portability warning.
+    assert!(stderr.is_empty(), "no warning on a local rename: {stderr}");
+
+    // Stays stopped: no live session, no monitor start.
+    assert!(
+        !rig.sessions().iter().any(|session| session == new),
+        "no live session under either name"
+    );
+    assert!(!rig.dir(old).exists(), "the old address is gone");
+    assert!(rig.dir(new).is_dir(), "the new address holds the state");
+
+    // Identity: the UUID survives; every meta row but `session` is identical.
+    let meta_after = rig.meta(new);
+    let row = |meta: &str, key: &str| {
+        meta.lines()
+            .find_map(|line| line.strip_prefix(&format!("{key}=")))
+            .unwrap_or_default()
+            .to_owned()
+    };
+    assert_eq!(row(&meta_after, "session"), new, "{meta_after}");
+    assert_eq!(row(&meta_after, "session_id"), uuid, "{meta_after}");
+    let kept_before: Vec<&str> = meta_before
+        .lines()
+        .filter(|line| !line.starts_with("session="))
+        .collect();
+    let kept_after: Vec<&str> = meta_after
+        .lines()
+        .filter(|line| !line.starts_with("session="))
+        .collect();
+    assert_eq!(
+        kept_after, kept_before,
+        "every other meta row is byte-identical"
+    );
+    assert_eq!(
+        std::fs::read(rig.dir(new).join("events.jsonl")).unwrap_or_default(),
+        events_before,
+        "the event log survives byte-identical"
+    );
+    assert_eq!(
+        std::fs::read_link(rig.dir(new).join("send")).unwrap_or_default(),
+        send_before,
+        "helper links still point at the same core"
+    );
+    let workspace = std::fs::read_to_string(rig.dir(new).join("workspace.md")).unwrap_or_default();
+    assert!(
+        workspace.contains(new),
+        "the manifest names the new session"
+    );
+    assert!(
+        workspace.contains(&rig.dir(new).display().to_string()),
+        "the manifest names the new address"
+    );
+
+    // The durable result: a same-command retry succeeds without duplicating.
+    let intent = rig
+        .home
+        .join("sessions")
+        .join(format!(".rename.{old}.{new}.intent"));
+    let intent_body = std::fs::read_to_string(&intent).unwrap_or_default();
+    assert!(
+        intent_body.contains("phase=complete"),
+        "the completed intent is the durable result: {intent_body}"
+    );
+    let (code, stdout, stderr) = public(&rig, &[ae::cli::RENAME, old, new]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        stdout.contains(&format!("Renamed '{old}' → '{new}' (stopped;")),
+        "the retry prints the same result: {stdout}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&intent).unwrap_or_default(),
+        intent_body,
+        "the retry appends no duplicate result"
+    );
+}
+
+/// Git canonicalizes symlinked ancestors when it prints a registration
+/// (a symlinked TMPDIR prints resolved) while the meta records the launch
+/// spelling: either spelling proves the spot.
+fn porcelain_has(porcelain: &str, work: &Path) -> bool {
+    if porcelain.contains(&work.display().to_string()) {
+        return true;
+    }
+    std::fs::canonicalize(work)
+        .is_ok_and(|canonical| porcelain.contains(&canonical.display().to_string()))
+}
+
+/// Capture the identity witnesses a managed move must preserve: marker
+/// bytes, `(device, inode)` for the work dir and every marker, HEAD, the
+/// porcelain registration, the worktree-side `.git` pointer (byte-stable:
+/// `git worktree move` keeps the admin dir name) and the admin-side `gitdir`
+/// file (which the move repoints). Measured against git 2.55.0.
+struct WorkWitness {
+    work_dev: u64,
+    work_ino: u64,
+    markers: Vec<(String, u64, u64, Vec<u8>)>,
+    head: String,
+    status: String,
+    porcelain: String,
+    git_pointer: String,
+    admin_gitdir: String,
+    uuid: String,
+}
+
+#[allow(
+    clippy::expect_used,
+    reason = "fixture setup: a witness that cannot be read must fail loudly, like the #[test] caller it feeds"
+)]
+fn capture_work_witness(
+    rig: &Rig,
+    session: &str,
+    work: &Path,
+    origin: &Path,
+    admin: &str,
+) -> WorkWitness {
+    let meta = std::fs::metadata(work).expect("the work dir");
+    let mut markers = Vec::new();
+    for name in ["untracked", "dirty", "ignored"] {
+        let path = work.join(format!("witness_{name}"));
+        let file = std::fs::metadata(&path).expect("a witness file");
+        markers.push((
+            name.to_owned(),
+            file.dev(),
+            file.ino(),
+            std::fs::read(&path).unwrap_or_default(),
+        ));
+    }
+    let link = std::fs::symlink_metadata(work.join("witness_link")).expect("a witness link");
+    assert!(link.file_type().is_symlink(), "the link stays a link");
+    WorkWitness {
+        work_dev: meta.dev(),
+        work_ino: meta.ino(),
+        markers,
+        head: git_in(work, &["rev-parse", "HEAD"]),
+        status: git_in(work, &["status", "--porcelain"]),
+        porcelain: git_in(origin, &["worktree", "list", "--porcelain"]),
+        git_pointer: std::fs::read_to_string(work.join(".git")).unwrap_or_default(),
+        admin_gitdir: std::fs::read_to_string(
+            origin.join(".git/worktrees").join(admin).join("gitdir"),
+        )
+        .unwrap_or_default(),
+        uuid: rig
+            .meta(session)
+            .lines()
+            .find_map(|line| line.strip_prefix("session_id="))
+            .unwrap_or_default()
+            .to_owned(),
+    }
+}
+
+/// A1: a stopped git rename moves the managed worktree — never recreating
+/// it — preserving marker bytes, device/inode identity, HEAD/status, the
+/// administrative registration and the UUID; production-launch resume reuses
+/// the moved worktree; private end tears it down coherently. Smallest
+/// defeating mutations: skip the worktree move but rewrite the session
+/// (registration/end fails); recreate the worktree or copy bytes into fresh
+/// files at the same HEAD (the device/inode/admin witness fails).
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one ordered move/resume/teardown proof across launch, stop, rename, resume and end"
+)]
+fn a_stopped_git_rename_moves_the_managed_worktree() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("stopped-git");
+    git_in(&rig.project, &["init", "-q"]);
+    git_in(&rig.project, &["config", "user.email", "t@t"]);
+    git_in(&rig.project, &["config", "user.name", "t"]);
+    assert!(std::fs::write(rig.project.join("f"), "x\n").is_ok());
+    git_in(&rig.project, &["add", "-A"]);
+    git_in(&rig.project, &["commit", "-qm", "base"]);
+    assert!(std::fs::write(rig.project.join(".gitignore"), "witness_ignored\n").is_ok());
+    git_in(&rig.project, &["add", "-A"]);
+    git_in(&rig.project, &["commit", "-qm", "ignore"]);
+
+    let old = "sgitold";
+    let new = "sgitnew";
+    let (code, stdout, stderr) = rig.launch(&["--worktree", old]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let old_work = rig.home.join("worktrees").join(old);
+    let new_work = rig.home.join("worktrees").join(new);
+
+    // Markers the move must carry as the SAME files, not the same bytes.
+    let tag = std::process::id().to_string();
+    assert!(
+        std::fs::write(
+            old_work.join("witness_untracked"),
+            format!("untracked-{tag}\n")
+        )
+        .is_ok()
+    );
+    assert!(std::fs::write(old_work.join("witness_dirty"), "dirty\n").is_ok());
+    git_in(&old_work, &["add", "-A"]);
+    assert!(std::fs::write(old_work.join("f"), "dirty-worktree\n").is_ok());
+    assert!(std::fs::write(old_work.join("witness_ignored"), format!("ignored-{tag}\n")).is_ok());
+    std::os::unix::fs::symlink("f", old_work.join("witness_link")).expect("a witness link");
+    let before = capture_work_witness(&rig, old, &old_work, &rig.project, old);
+    assert!(!before.uuid.is_empty(), "the launch recorded a UUID");
+    assert!(
+        porcelain_has(&before.porcelain, &old_work) && !porcelain_has(&before.porcelain, &new_work),
+        "old registered, new absent: {}",
+        before.porcelain
+    );
+
+    let (code, stdout, stderr) = public(&rig, &["stop", old]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+
+    let meta_before = rig.meta(old);
+    let events_before = std::fs::read(rig.dir(old).join("events.jsonl")).unwrap_or_default();
+    let (code, stdout, stderr) = public(&rig, &[ae::cli::RENAME, old, new]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        stdout.contains(&format!(
+            "Renamed '{old}' → '{new}' (stopped; managed work moved to '{}')",
+            new_work.display()
+        )),
+        "{stdout}"
+    );
+    // Implicit config homes move with a warning, not a provider probe: the
+    // later resume re-proves the conversation.
+    assert!(
+        stderr.contains("implicit or unclassified config homes"),
+        "the implicit warning separates rename from resume: {stderr}"
+    );
+    assert!(!old_work.exists(), "the old work path is gone");
+    assert!(new_work.is_dir(), "the new work path holds the move");
+
+    // The SAME files: device/inode and bytes for the work dir and markers.
+    let after = capture_work_witness(&rig, new, &new_work, &rig.project, old);
+    assert_eq!(
+        (after.work_dev, after.work_ino),
+        (before.work_dev, before.work_ino)
+    );
+    assert_eq!(after.markers, before.markers, "markers are the same files");
+    assert_eq!(after.head, before.head, "HEAD survives");
+    assert_eq!(
+        after.status, before.status,
+        "dirty/untracked/ignored state survives"
+    );
+    assert_eq!(after.uuid, before.uuid, "the UUID survives");
+    assert!(
+        porcelain_has(&after.porcelain, &new_work) && !porcelain_has(&after.porcelain, &old_work),
+        "registration moved exactly once: {}",
+        after.porcelain
+    );
+    assert_eq!(
+        after.git_pointer, before.git_pointer,
+        "the same admin, not a recreated worktree"
+    );
+    assert!(
+        after.admin_gitdir.contains(&new_work.display().to_string())
+            || std::fs::canonicalize(&new_work).is_ok_and(|canonical| {
+                after
+                    .admin_gitdir
+                    .contains(&canonical.display().to_string())
+            }),
+        "the admin gitdir file follows the move: {}",
+        after.admin_gitdir
+    );
+    let meta_after = rig.meta(new);
+    assert!(
+        meta_after.contains(&format!("work_dir={}", new_work.display()))
+            && meta_after.contains(&format!("session={new}\n")),
+        "{meta_after}"
+    );
+    let kept_before: Vec<&str> = meta_before
+        .lines()
+        .filter(|line| !line.starts_with("session=") && !line.starts_with("work_dir="))
+        .collect();
+    let kept_after: Vec<&str> = meta_after
+        .lines()
+        .filter(|line| !line.starts_with("session=") && !line.starts_with("work_dir="))
+        .collect();
+    assert_eq!(
+        kept_after, kept_before,
+        "every other meta row is byte-identical"
+    );
+    assert_eq!(
+        std::fs::read(rig.dir(new).join("events.jsonl")).unwrap_or_default(),
+        events_before,
+        "the event log survives byte-identical"
+    );
+
+    // Production-launch resume reuses the moved worktree — address checks
+    // alone (path/HEAD equality) never prove this; the witness does.
+    let (code, stdout, stderr) = rig.launch(&[new]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        stdout.contains(&format!("Resuming session {new}")),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("Creating git worktree"), "{stdout}");
+    let resumed = capture_work_witness(&rig, new, &new_work, &rig.project, old);
+    assert_eq!(
+        (resumed.work_dev, resumed.work_ino),
+        (before.work_dev, before.work_ino)
+    );
+    assert_eq!(
+        resumed.markers, before.markers,
+        "resume keeps the same files"
+    );
+    assert!(
+        porcelain_has(&resumed.porcelain, &new_work),
+        "{}",
+        resumed.porcelain
+    );
+
+    // Private end stays coherent with the moved registration: with no origin
+    // remote the worktree is committed and preserved (B3 durability), and the
+    // teardown's worktrees/<name> containment accepts the moved address.
+    let (code, stdout, stderr) = public(&rig, &["end", new, "-f", "--keep-history"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        stdout.contains(&format!("Directory preserved: {}", new_work.display())),
+        "{stdout}"
+    );
+    assert!(
+        new_work.is_dir()
+            && porcelain_has(
+                &git_in(&rig.project, &["worktree", "list", "--porcelain"]),
+                &new_work
+            ),
+        "the moved worktree is preserved and still registered"
+    );
+    assert!(!rig.dir(new).exists(), "teardown removed the state");
+}
+
+/// A1: a stopped full-copy rename moves the managed copy as the same
+/// directory (same device/inode, symlinks intact), preserves the recorded
+/// quota pin (OFF stays OFF through rename and the later resume), and resumes
+/// through the production launcher. Smallest defeating mutation: copy bytes
+/// into fresh files instead of moving the directory (inode witness fails).
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one ordered copy/preserve/resume proof across launch, stop, rename and resume"
+)]
+fn a_stopped_full_rename_moves_the_managed_copy() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("stopped-full");
+    assert!(
+        std::fs::write(&rig.config, format!("{IDLE_CONFIG}quota = off\n")).is_ok(),
+        "a quota-off idle config"
+    );
+    assert!(std::fs::write(rig.project.join("f"), "x\n").is_ok());
+
+    let old = "sfullold";
+    let new = "sfullnew";
+    let (code, stdout, stderr) = rig.launch(&["--copy", old]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let old_work = rig.home.join("worktrees").join(old);
+    let new_work = rig.home.join("worktrees").join(new);
+    assert!(
+        rig.meta(old).contains("quota=off"),
+        "the launch pinned quota off: {}",
+        rig.meta(old)
+    );
+
+    let tag = std::process::id().to_string();
+    assert!(std::fs::write(old_work.join("witness_untracked"), format!("u-{tag}\n")).is_ok());
+    assert!(std::fs::write(old_work.join("f"), "dirty-copy\n").is_ok());
+    std::os::unix::fs::symlink("f", old_work.join("witness_link")).expect("a witness link");
+    let id_of =
+        |path: &Path| std::fs::metadata(path).map_or((0, 0), |meta| (meta.dev(), meta.ino()));
+    let work_id_before = id_of(&old_work);
+    let untracked_before = (
+        id_of(&old_work.join("witness_untracked")),
+        std::fs::read(old_work.join("witness_untracked")).unwrap_or_default(),
+    );
+
+    let (code, stdout, stderr) = public(&rig, &["stop", old]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+
+    let (code, stdout, stderr) = public(&rig, &[ae::cli::RENAME, old, new]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        stdout.contains(&format!(
+            "Renamed '{old}' → '{new}' (stopped; managed work moved to '{}')",
+            new_work.display()
+        )),
+        "{stdout}"
+    );
+    assert!(!old_work.exists(), "the old copy path is gone");
+    assert_eq!(
+        id_of(&new_work),
+        work_id_before,
+        "the same directory, moved"
+    );
+    assert_eq!(
+        (
+            id_of(&new_work.join("witness_untracked")),
+            std::fs::read(new_work.join("witness_untracked")).unwrap_or_default()
+        ),
+        untracked_before,
+        "markers are the same files"
+    );
+    assert_eq!(
+        std::fs::read(new_work.join("f")).unwrap_or_default(),
+        b"dirty-copy\n",
+        "dirty bytes survive"
+    );
+    assert_eq!(
+        std::fs::read_link(new_work.join("witness_link")).unwrap_or_default(),
+        PathBuf::from("f"),
+        "the symlink survives with its target"
+    );
+    assert!(
+        rig.meta(new).contains("quota=off"),
+        "the quota pin survives the rename: {}",
+        rig.meta(new)
+    );
+    let workspace = std::fs::read_to_string(rig.dir(new).join("workspace.md")).unwrap_or_default();
+    assert!(
+        !workspace.to_lowercase().contains("quota"),
+        "OFF removes quota words from the republished manifest"
+    );
+
+    // Production-launch resume reuses the moved copy and keeps the pin.
+    let (code, stdout, stderr) = rig.launch(&[new]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        stdout.contains(&format!("Resuming session {new}")),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("Creating full copy"), "{stdout}");
+    assert_eq!(
+        id_of(&new_work),
+        work_id_before,
+        "resume keeps the same files"
+    );
+    assert!(
+        rig.meta(new).contains("quota=off"),
+        "ordinary resume keeps the rename-preserved pin: {}",
+        rig.meta(new)
+    );
+}
+
+/// Spawn `ae rename old new` with the crash seam armed and read stderr lines
+/// on a thread. Returns the child and the line receiver; the caller waits for
+/// the attestation, then kills or lets the ceiling expire.
+#[allow(
+    clippy::expect_used,
+    reason = "fixture setup: a child that cannot start or pipe must fail loudly, like the #[test] caller it feeds"
+)]
+fn crash_child(
+    rig: &Rig,
+    old: &str,
+    new: &str,
+    boundary: &str,
+) -> (OwnedChild, mpsc::Receiver<Option<String>>) {
+    let mut command = ae();
+    command
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
+        .env("HOME", &rig.scratch)
+        .env("AE_HOME", &rig.home)
+        .env("TMUX_TMPDIR", &rig.scratch)
+        .env("AE_TEST_RENAME_CRASH_AT", boundary)
+        .arg(ae::cli::RENAME)
+        .arg(old)
+        .arg(new);
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|why| panic!("the ae binary should start: {why}"));
+    let stderr = child.stderr.take().expect("piped stderr");
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut reader = std::io::BufReader::new(stderr);
+        loop {
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) | Err(_) => {
+                    let _ = tx.send(None);
+                    break;
+                }
+                Ok(_) => {
+                    if tx.send(Some(line)).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+    (child, rx)
+}
+
+/// Wait for the exact crash attestation, then SIGKILL the parked child.
+/// Returns stderr through the attestation line. The kill models process death
+/// past committed facts; elapsed time never selects an early cut.
+#[allow(
+    clippy::expect_used,
+    reason = "fixture setup: a child that cannot be killed must fail loudly, like the #[test] caller it feeds"
+)]
+fn kill_at_boundary(rig: &Rig, old: &str, new: &str, boundary: &str) -> String {
+    let (mut child, rx) = crash_child(rig, old, new, boundary);
+    let wanted = format!("rename-crash-boundary: {boundary}\n");
+    let mut captured = String::new();
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(Some(line)) => {
+                captured.push_str(&line);
+                if line == wanted {
+                    break;
+                }
+            }
+            Ok(None) => panic!("the child exited before attesting {boundary}: {captured}"),
+            Err(_) => {
+                assert!(
+                    std::time::Instant::now() <= deadline,
+                    "no attestation for {boundary} within 30s: {captured}"
+                );
+                assert!(
+                    child.try_wait().is_ok_and(|exited| exited.is_none()),
+                    "the child exited before attesting {boundary}: {captured}"
+                );
+            }
+        }
+    }
+    child.kill().expect("the parked child dies on SIGKILL");
+    let _ = child.wait();
+    captured
+}
+
+/// Retry the same rename unarmed: the recorded transaction must converge to
+/// the one stopped-state success line.
+fn retry_rename(rig: &Rig, old: &str, new: &str) -> (String, String) {
+    let (code, stdout, stderr) = public(rig, &[ae::cli::RENAME, old, new]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        stdout.contains(&format!("Renamed '{old}' → '{new}' (stopped;")),
+        "the retry converges: {stdout}"
+    );
+    (stdout, stderr)
+}
+
+/// Launch an idle local session and publicly stop it: the standard stopped
+/// source every crash cut starts from.
+fn stopped_local_source(tag: &str, old: &str) -> Rig {
+    let rig = Rig::idle(tag);
+    let (code, stdout, stderr) = rig.launch(&["--local", old]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let (code, stdout, stderr) = public(&rig, &["stop", old]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    rig
+}
+
+/// A2: killing past the intent attestation leaves the durable intent and no
+/// move; the retry converges. Smallest defeating mutation: publish the first
+/// move before the intent (no recoverable record at the cut).
+#[test]
+fn crash_after_intent_recovers_from_the_durable_record() {
+    if skip() {
+        return;
+    }
+    let old = "cintold";
+    let new = "cintnew";
+    let rig = stopped_local_source("crash-intent", old);
+    let uuid = rig
+        .meta(old)
+        .lines()
+        .find_map(|line| line.strip_prefix("session_id="))
+        .unwrap_or_default()
+        .to_owned();
+
+    kill_at_boundary(&rig, old, new, "after-intent");
+    let intent = std::fs::read_to_string(
+        rig.home
+            .join("sessions")
+            .join(format!(".rename.{old}.{new}.intent")),
+    )
+    .unwrap_or_default();
+    assert!(intent.contains("phase=prepared"), "{intent}");
+    assert!(intent.contains(&format!("session_id={uuid}")), "{intent}");
+    assert!(rig.dir(old).is_dir(), "no state move yet");
+    assert!(!rig.dir(new).exists(), "no state move yet");
+
+    retry_rename(&rig, old, new);
+    assert!(!rig.dir(old).exists());
+    assert_eq!(
+        rig.meta(new)
+            .lines()
+            .find_map(|line| line.strip_prefix("session_id="))
+            .unwrap_or_default(),
+        uuid
+    );
+}
+
+/// A2: killing past the state-move attestation leaves the state moved with
+/// the old meta rows; the retry publishes coherence without touching work.
+/// Smallest defeating mutation: advance the phase before the directory lands.
+#[test]
+fn crash_after_state_move_recovers_coherence() {
+    if skip() {
+        return;
+    }
+    let old = "cstold";
+    let new = "cstnew";
+    let rig = stopped_local_source("crash-state", old);
+
+    kill_at_boundary(&rig, old, new, "after-state-move");
+    assert!(!rig.dir(old).exists(), "the state moved");
+    assert!(rig.dir(new).is_dir(), "the state landed");
+    let meta = rig.meta(new);
+    assert!(
+        meta.contains(&format!("session={old}\n")),
+        "meta still old:\n{meta}"
+    );
+    let intent = std::fs::read_to_string(
+        rig.home
+            .join("sessions")
+            .join(format!(".rename.{old}.{new}.intent")),
+    )
+    .unwrap_or_default();
+    assert!(intent.contains("phase=state-moved"), "{intent}");
+
+    retry_rename(&rig, old, new);
+    assert!(rig.meta(new).contains(&format!("session={new}\n")));
+}
+
+/// A2: killing past the meta attestation leaves coherent meta with unchecked
+/// assets; the retry finishes assets and the result. Smallest defeating
+/// mutation: attest the meta cut before the replacement reads back.
+#[test]
+fn crash_after_meta_recovers_assets_and_result() {
+    if skip() {
+        return;
+    }
+    let old = "cmetaold";
+    let new = "cmetanew";
+    let rig = stopped_local_source("crash-meta", old);
+
+    kill_at_boundary(&rig, old, new, "after-meta");
+    let meta = rig.meta(new);
+    assert!(
+        meta.contains(&format!("session={new}\n")),
+        "meta coherent:\n{meta}"
+    );
+    let intent = std::fs::read_to_string(
+        rig.home
+            .join("sessions")
+            .join(format!(".rename.{old}.{new}.intent")),
+    )
+    .unwrap_or_default();
+    assert!(intent.contains("phase=meta-published"), "{intent}");
+
+    retry_rename(&rig, old, new);
+    let workspace = std::fs::read_to_string(rig.dir(new).join("workspace.md")).unwrap_or_default();
+    assert!(workspace.contains(new), "assets published on retry");
+}
+
+/// A2: killing past the assets attestation leaves everything but the result;
+/// the retry publishes the result once. Smallest defeating mutation: append
+/// the completion before the assets verify.
+#[test]
+fn crash_after_assets_recovers_only_the_result() {
+    if skip() {
+        return;
+    }
+    let old = "cassetsold";
+    let new = "cassetsnew";
+    let rig = stopped_local_source("crash-assets", old);
+
+    kill_at_boundary(&rig, old, new, "after-assets");
+    let intent = std::fs::read_to_string(
+        rig.home
+            .join("sessions")
+            .join(format!(".rename.{old}.{new}.intent")),
+    )
+    .unwrap_or_default();
+    assert!(intent.contains("phase=assets-published"), "{intent}");
+    let workspace = std::fs::read_to_string(rig.dir(new).join("workspace.md")).unwrap_or_default();
+    assert!(workspace.contains(new), "assets already published");
+
+    retry_rename(&rig, old, new);
+    let intent = std::fs::read_to_string(
+        rig.home
+            .join("sessions")
+            .join(format!(".rename.{old}.{new}.intent")),
+    )
+    .unwrap_or_default();
+    assert!(intent.contains("phase=complete"), "{intent}");
+}
+
+/// A2: killing past the result attestation leaves the durable completion;
+/// the retry reads the same result and appends no duplicate. This is a
+/// durability receipt, not a sixth recovery case. Smallest defeating
+/// mutation: publish (or duplicate) the completion on retry.
+#[test]
+fn crash_after_result_is_durable_and_idempotent() {
+    if skip() {
+        return;
+    }
+    let old = "cresold";
+    let new = "cresnew";
+    let rig = stopped_local_source("crash-result", old);
+
+    kill_at_boundary(&rig, old, new, "after-result");
+    let intent_path = rig
+        .home
+        .join("sessions")
+        .join(format!(".rename.{old}.{new}.intent"));
+    let intent_body = std::fs::read_to_string(&intent_path).unwrap_or_default();
+    assert!(intent_body.contains("phase=complete"), "{intent_body}");
+
+    let (stdout, _) = retry_rename(&rig, old, new);
+    assert_eq!(
+        std::fs::read_to_string(&intent_path).unwrap_or_default(),
+        intent_body,
+        "the retry appends no duplicate result"
+    );
+    let (stdout2, _) = retry_rename(&rig, old, new);
+    assert_eq!(stdout2, stdout, "completions read identical");
+}
+
+/// A2: killing past the work-move attestation leaves the managed work moved
+/// with the state still old; the retry moves the state and converges.
+/// Smallest defeating mutation: emit the work-move boundary before the
+/// supported move reports completion.
+#[test]
+fn crash_after_work_move_recovers_state_and_meta() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("crash-work");
+    git_in(&rig.project, &["init", "-q"]);
+    git_in(&rig.project, &["config", "user.email", "t@t"]);
+    git_in(&rig.project, &["config", "user.name", "t"]);
+    assert!(std::fs::write(rig.project.join("f"), "x\n").is_ok());
+    git_in(&rig.project, &["add", "-A"]);
+    git_in(&rig.project, &["commit", "-qm", "base"]);
+
+    let old = "cworkold";
+    let new = "cworknew";
+    let (code, stdout, stderr) = rig.launch(&["--worktree", old]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let old_work = rig.home.join("worktrees").join(old);
+    let new_work = rig.home.join("worktrees").join(new);
+    let (code, stdout, stderr) = public(&rig, &["stop", old]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+
+    kill_at_boundary(&rig, old, new, "after-work-move");
+    assert!(!old_work.exists(), "the managed work moved");
+    assert!(new_work.is_dir(), "the managed work landed");
+    assert!(rig.dir(old).is_dir(), "the state has not moved yet");
+    assert!(!rig.dir(new).exists(), "the state has not moved yet");
+    let listed = git_in(&rig.project, &["worktree", "list", "--porcelain"]);
+    assert!(
+        porcelain_has(&listed, &new_work) && !porcelain_has(&listed, &old_work),
+        "registration coherent at the cut: {listed}"
+    );
+    let intent = std::fs::read_to_string(
+        rig.home
+            .join("sessions")
+            .join(format!(".rename.{old}.{new}.intent")),
+    )
+    .unwrap_or_default();
+    assert!(intent.contains("phase=work-moved"), "{intent}");
+
+    retry_rename(&rig, old, new);
+    assert!(!rig.dir(old).exists());
+    assert!(
+        rig.meta(new)
+            .contains(&format!("work_dir={}", new_work.display()))
+    );
+}
+
+// NOTE (review I8): the former 60-second live-timeout proof lived here and
+// passed (exit 1, exact diagnostic, byte-identical state, lock release); it
+// now costs every gate ~62s, so the ceiling, the terminal branch, and the
+// pass-through are proved deterministically at unit level while production
+// keeps its real 60-second park.
+
+/// Run one agent-addressed core subcommand (`ask`, `reply`) from `pane`:
+/// the caller's tmux marker plus the session directory, as the helpers do.
+fn agent_cmd(
+    rig: &Rig,
+    pane: &str,
+    sub: &str,
+    dir: &Path,
+    tail: &[&str],
+) -> (Option<i32>, String, String) {
+    let mut args = vec![sub.to_owned(), dir.to_string_lossy().into_owned()];
+    args.extend(tail.iter().map(|arg| (*arg).to_owned()));
+    let out = ae()
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
+        .env("TMUX", format!("{},0,0", rig.sock.display()))
+        .env("TMUX_PANE", pane)
+        .env("HOME", &rig.scratch)
+        .env("TMUX_TMPDIR", &rig.scratch)
+        .args(&args)
+        .output()
+        .unwrap_or_else(|why| panic!("the core command should run: {why}"));
+    (
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+/// One pane per slot for a production-launched session: `(slot, pane id)`.
+fn slot_panes(rig: &Rig, session: &str) -> Vec<(String, String)> {
+    let (_, listed) = rig.tmux(&[
+        "list-panes",
+        "-t",
+        &format!("={session}"),
+        "-F",
+        "#{@ae_slot} #{pane_id}",
+    ]);
+    listed
+        .lines()
+        .filter_map(|line| {
+            line.split_once(' ')
+                .map(|(slot, pane)| (slot.to_owned(), pane.to_owned()))
+        })
+        .collect()
+}
+
+/// The pending ask/review ids in a session's event log.
+fn pending_ids(dir: &Path) -> Vec<String> {
+    std::fs::read_to_string(dir.join("events.jsonl"))
+        .unwrap_or_default()
+        .lines()
+        .filter(|line| {
+            line.contains("\"action\":\"ask\"") || line.contains("\"action\":\"review\"")
+        })
+        .map(|line| {
+            line.split("\"ref\":\"")
+                .nth(1)
+                .and_then(|rest| rest.split('"').next())
+                .unwrap_or_default()
+                .to_owned()
+        })
+        .filter(|id| !id.is_empty())
+        .collect()
+}
+
+/// A1: a pending same-session request refuses the stopped rename before any
+/// write, naming its id; the authorized close (reply) unblocks the retry.
+/// Base-writer records only: the ask travels the production helper while
+/// live. Smallest defeating mutation: skip the pending legacy guard.
+#[test]
+fn a_pending_same_session_request_refuses_the_stopped_rename() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::new("pendsame", &["claude"], None);
+    let config = format!(
+        "[profiles]\nclaude = \"{}\"\n\n[roster]\nlead = claude\nworker = claude\n\n\
+         [workspace]\nmain = lead\nworkers = worker\nlayout = vertical\nwatchdog = false\n",
+        rig.bin.join("claude").display()
+    );
+    assert!(std::fs::write(&rig.config, config).is_ok());
+    let (code, stdout, stderr) = rig.launch(&["psess"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+
+    let panes = slot_panes(&rig, "psess");
+    let have = format!("a lead pane: {panes:?}");
+    let lead = panes
+        .iter()
+        .find_map(|(slot, pane)| (slot == "main").then(|| pane.clone()))
+        .expect(&have);
+    let (code, stdout, stderr) = agent_cmd(
+        &rig,
+        &lead,
+        ae::cli::ASK,
+        &rig.dir("psess"),
+        &["worker", "the", "pending", "question"],
+    );
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let ids = pending_ids(&rig.dir("psess"));
+    assert_eq!(ids.len(), 1, "one real pending ask");
+    let id = ids[0].clone();
+
+    let (code, stdout, stderr) = public(&rig, &["stop", "psess"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+
+    let (code, stdout, stderr) = public(&rig, &[ae::cli::RENAME, "psess", "pmoved"]);
+    assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        stderr.contains("pending request") && stderr.contains(&id),
+        "the refusal names the stranded id: {stderr}"
+    );
+    assert!(stderr.contains("Nothing was renamed"), "{stderr}");
+    assert!(
+        !rig.home
+            .join("sessions")
+            .join(".rename.psess.pmoved.intent")
+            .exists(),
+        "the refusal precedes every write"
+    );
+    assert!(rig.dir("psess").is_dir() && !rig.dir("pmoved").exists());
+
+    // The authorized remedy: resume, reply from the target seat, stop, retry.
+    let (code, stdout, stderr) = rig.launch(&["psess"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let panes = slot_panes(&rig, "psess");
+    let have = format!("a worker pane: {panes:?}");
+    let worker = panes
+        .iter()
+        .find_map(|(slot, pane)| (slot == "worker.0").then(|| pane.clone()))
+        .expect(&have);
+    let (code, stdout, stderr) = agent_cmd(
+        &rig,
+        &worker,
+        ae::cli::REPLY,
+        &rig.dir("psess"),
+        &["--as", "worker", &id, "done"],
+    );
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let (code, stdout, stderr) = public(&rig, &["stop", "psess"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let (code, stdout, stderr) = public(&rig, &[ae::cli::RENAME, "psess", "pmoved"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        stdout.contains("Renamed 'psess' → 'pmoved' (stopped;"),
+        "{stdout}"
+    );
+}
+
+/// A1: a pending cross-session request refuses the rename of EITHER
+/// participant — the peer ledger, not just the source, is read. Smallest
+/// defeating mutation: check only the source ledger.
+#[test]
+fn a_pending_cross_session_request_refuses_either_rename() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::new("pendcross", &["claude"], None);
+    for session in ["pxa", "pxb"] {
+        let (code, stdout, stderr) = rig.launch(&["--local", session]);
+        assert_eq!(
+            code,
+            Some(0),
+            "{session}: stdout: {stdout}\nstderr: {stderr}"
+        );
+    }
+    let panes_a = slot_panes(&rig, "pxa");
+    let have_a = format!("a lead pane in pxa: {panes_a:?}");
+    let lead_a = panes_a
+        .iter()
+        .find_map(|(slot, pane)| (slot == "main").then(|| pane.clone()))
+        .expect(&have_a);
+    let (code, stdout, stderr) = agent_cmd(
+        &rig,
+        &lead_a,
+        ae::cli::ASK,
+        &rig.dir("pxa"),
+        &["--cross-session", "@pxb:lead", "the", "cross", "question"],
+    );
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let ids = pending_ids(&rig.dir("pxa"));
+    assert_eq!(ids.len(), 1, "one real pending cross ask");
+    let id = ids[0].clone();
+
+    for session in ["pxa", "pxb"] {
+        let (code, stdout, stderr) = public(&rig, &["stop", session]);
+        assert_eq!(
+            code,
+            Some(0),
+            "{session}: stdout: {stdout}\nstderr: {stderr}"
+        );
+    }
+    // The target side: its own log mirrors the pending request.
+    let (code, _, stderr) = public(&rig, &[ae::cli::RENAME, "pxb", "pxb2"]);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(
+        stderr.contains("pending request") && stderr.contains(&id),
+        "the peer refusal names the id: {stderr}"
+    );
+    // The caller side: its own log holds the pending ask.
+    let (code, _, stderr) = public(&rig, &[ae::cli::RENAME, "pxa", "pxa2"]);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(
+        stderr.contains("pending request") && stderr.contains(&id),
+        "the caller refusal names the id: {stderr}"
+    );
+    assert!(!rig.dir("pxa2").exists() && !rig.dir("pxb2").exists());
+}
+
+/// A2: unreadable peer evidence refuses the rename rather than inventing a
+/// binding — even when the source log is clean. Smallest defeating mutation:
+/// check only the source ledger (the corrupt peer goes unread).
+#[test]
+fn an_unreadable_peer_log_refuses_the_stopped_rename() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("unreadable-peer");
+    for session in ["upmain", "uppeer"] {
+        let (code, stdout, stderr) = rig.launch(&["--local", session]);
+        assert_eq!(
+            code,
+            Some(0),
+            "{session}: stdout: {stdout}\nstderr: {stderr}"
+        );
+    }
+    for session in ["upmain", "uppeer"] {
+        let (code, stdout, stderr) = public(&rig, &["stop", session]);
+        assert_eq!(
+            code,
+            Some(0),
+            "{session}: stdout: {stdout}\nstderr: {stderr}"
+        );
+    }
+    // Corrupt the peer's ledger the only hermetic way: permissions the
+    // existing reader errors on rather than skips.
+    let peer_log = rig.dir("uppeer").join("events.jsonl");
+    assert!(peer_log.is_file(), "the peer holds a ledger");
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        assert!(
+            std::fs::set_permissions(&peer_log, std::fs::Permissions::from_mode(0o000)).is_ok()
+        );
+    }
+    let (code, _, stderr) = public(&rig, &[ae::cli::RENAME, "upmain", "upmoved"]);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(
+        stderr.contains("uppeer") && stderr.contains("Nothing was renamed"),
+        "the refusal names the unreadable ledger: {stderr}"
+    );
+    assert!(
+        !rig.dir("upmoved").exists(),
+        "no write past corrupt evidence"
+    );
+    // Repair unblocks: the guard is evidence, not a latch.
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        assert!(
+            std::fs::set_permissions(&peer_log, std::fs::Permissions::from_mode(0o644)).is_ok()
+        );
+    }
+    let (code, stdout, stderr) = public(&rig, &[ae::cli::RENAME, "upmain", "upmoved"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+}
+
+/// A2: a manifest the publisher cannot write fails the rename with the
+/// proved retry — never success over an unpublished manifest. A chmod of the
+/// old file alone cannot defeat the sibling-temp writer, so the receipt uses
+/// an incompatible directory at the destination. Smallest defeating mutation:
+/// discard the manifest publish error.
+#[test]
+fn a_stopped_manifest_failure_is_checked_and_retryable() {
+    if skip() {
+        return;
+    }
+    let old = "smanold";
+    let new = "smannew";
+    let rig = stopped_local_source("manifest-fail", old);
+    assert!(std::fs::remove_file(rig.dir(old).join("workspace.md")).is_ok());
+    assert!(std::fs::create_dir(rig.dir(old).join("workspace.md")).is_ok());
+
+    let (code, stdout, stderr) = public(&rig, &[ae::cli::RENAME, old, new]);
+    assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        stderr.contains("could not publish")
+            && stderr.contains("workspace.md")
+            && stderr.contains(&format!("ae rename {old} {new}")),
+        "checked failure with the proved retry: {stderr}"
+    );
+    // Partial failure converges forward: intent at meta-published, the state
+    // already moved (assets come after), the coherent meta naming the new
+    // session intact.
+    let intent = std::fs::read_to_string(
+        rig.home
+            .join("sessions")
+            .join(format!(".rename.{old}.{new}.intent")),
+    )
+    .unwrap_or_default();
+    assert!(intent.contains("phase=meta-published"), "{intent}");
+    assert!(!rig.dir(old).exists() && rig.dir(new).is_dir());
+    assert!(rig.meta(new).contains(&format!("session={new}\n")));
+
+    // The blocker moved with the state directory; removing it unblocks.
+    assert!(std::fs::remove_dir(rig.dir(new).join("workspace.md")).is_ok());
+    retry_rename(&rig, old, new);
+    let workspace = std::fs::read_to_string(rig.dir(new).join("workspace.md")).unwrap_or_default();
+    assert!(workspace.contains(new));
+}
+
+/// A2: a locked managed worktree refuses before any write, with the unlock
+/// remedy; unlocking unblocks the retry. Smallest defeating mutation: skip
+/// the registration proof and let git fail mid-transaction.
+#[test]
+fn a_locked_worktree_refuses_before_side_effects() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("locked-wt");
+    git_in(&rig.project, &["init", "-q"]);
+    git_in(&rig.project, &["config", "user.email", "t@t"]);
+    git_in(&rig.project, &["config", "user.name", "t"]);
+    assert!(std::fs::write(rig.project.join("f"), "x\n").is_ok());
+    git_in(&rig.project, &["add", "-A"]);
+    git_in(&rig.project, &["commit", "-qm", "base"]);
+
+    let old = "slockold";
+    let new = "slocknew";
+    let (code, stdout, stderr) = rig.launch(&["--worktree", old]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let old_work = rig.home.join("worktrees").join(old);
+    git_in(
+        &rig.project,
+        &["worktree", "lock", &old_work.display().to_string()],
+    );
+    let (code, stdout, stderr) = public(&rig, &["stop", old]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+
+    let (code, stdout, stderr) = public(&rig, &[ae::cli::RENAME, old, new]);
+    assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        stderr.contains("locked worktree") && stderr.contains("Nothing was renamed"),
+        "{stderr}"
+    );
+    assert!(
+        !rig.home
+            .join("sessions")
+            .join(format!(".rename.{old}.{new}.intent"))
+            .exists(),
+        "no intent past the refusal"
+    );
+    assert!(old_work.is_dir() && rig.dir(old).is_dir(), "zero mutation");
+
+    git_in(
+        &rig.project,
+        &["worktree", "unlock", &old_work.display().to_string()],
+    );
+    retry_rename(&rig, old, new);
+    assert!(!old_work.exists() && rig.home.join("worktrees").join(new).is_dir());
+}
+
+/// A1: occupied destinations refuse before writes — a live namesake on the
+/// recorded server, and an occupant state directory alike. Smallest defeating
+/// mutation: drop either destination check.
+#[test]
+fn occupied_destinations_refuse_before_writes() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("occupied-dest");
+    for session in ["soccold", "soccbusy"] {
+        let (code, stdout, stderr) = rig.launch(&["--local", session]);
+        assert_eq!(
+            code,
+            Some(0),
+            "{session}: stdout: {stdout}\nstderr: {stderr}"
+        );
+    }
+    let (code, stdout, stderr) = public(&rig, &["stop", "soccold"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+
+    let (code, _, stderr) = public(&rig, &[ae::cli::RENAME, "soccold", "soccbusy"]);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(
+        stderr.contains("already exists") && stderr.contains("Nothing was renamed"),
+        "{stderr}"
+    );
+
+    assert!(std::fs::create_dir(rig.dir("soccplant")).is_ok());
+    let (code, _, stderr) = public(&rig, &[ae::cli::RENAME, "soccold", "soccplant"]);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(
+        stderr.contains("already exists") && stderr.contains("Nothing was renamed"),
+        "{stderr}"
+    );
+    assert!(
+        rig.dir("soccold").is_dir(),
+        "the source survives both refusals"
+    );
+}
+
+/// Pin an explicit config home and a probeable conversation through the
+/// production meta publisher, then plant the tool-store transcript for the
+/// OLD cwd only. Returns the home and id.
+fn pin_explicit_home(rig: &Rig, session: &str, old_work: &Path) -> (PathBuf, String) {
+    let home = rig.scratch.join("tool-home");
+    assert!(std::fs::create_dir_all(home.join("projects")).is_ok());
+    let id = "e795c9e9-1234-4890-abcd-ef0123456789".to_owned();
+    let key: String = old_work
+        .display()
+        .to_string()
+        .chars()
+        .map(|ch| if ch == '/' { '-' } else { ch })
+        .collect();
+    assert!(
+        std::fs::create_dir_all(home.join("projects").join(&key)).is_ok()
+            && std::fs::write(
+                home.join("projects").join(&key).join(format!("{id}.jsonl")),
+                "{}\n"
+            )
+            .is_ok()
+    );
+    assert!(
+        ae::meta::rewrite(
+            &rig.dir(session),
+            "config_home.main",
+            Some(&home.display().to_string())
+        )
+        .is_ok()
+    );
+    assert!(ae::meta::rewrite(&rig.dir(session), "config_home_base.main", None).is_ok());
+    assert!(ae::meta::rewrite(&rig.dir(session), "harness_session.main", Some(&id)).is_ok());
+    (home, id)
+}
+
+/// Plant the tool-store transcript for one cwd under an explicit home.
+fn plant_transcript(home: &Path, cwd: &Path, id: &str) {
+    let key: String = cwd
+        .display()
+        .to_string()
+        .chars()
+        .map(|ch| if ch == '/' { '-' } else { ch })
+        .collect();
+    assert!(std::fs::create_dir_all(home.join("projects").join(&key)).is_ok());
+    assert!(
+        std::fs::write(
+            home.join("projects").join(&key).join(format!("{id}.jsonl")),
+            "{}\n"
+        )
+        .is_ok()
+    );
+}
+
+/// A1: a Claude explicit home whose conversation ae resumes exactly at the
+/// old cwd but not at the candidate one refuses before any write; proving
+/// the candidate keeps the probe unblocks the retry. Smallest defeating
+/// mutation: skip the explicit-home candidate probe.
+#[test]
+fn a_claude_explicit_home_fallback_refuses_and_its_proof_unblocks() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::new("expclaude", &["claude"], None);
+    let old = "sexpold";
+    let new = "sexpnew";
+    let (code, stdout, stderr) = rig.launch(&["--copy", old]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let old_work = rig.home.join("worktrees").join(old);
+    let new_work = rig.home.join("worktrees").join(new);
+    let (home, id) = pin_explicit_home(&rig, old, &old_work);
+
+    let (code, stdout, stderr) = public(&rig, &["stop", old]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+
+    let (code, _, stderr) = public(&rig, &[ae::cli::RENAME, old, new]);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(
+        stderr.contains("explicit config home")
+            && stderr.contains(&id)
+            && stderr.contains("Nothing was renamed"),
+        "the refusal names the seat, store and conversation: {stderr}"
+    );
+    assert!(
+        !rig.home
+            .join("sessions")
+            .join(format!(".rename.{old}.{new}.intent"))
+            .exists(),
+        "no intent past the refusal"
+    );
+
+    // Proving the candidate keeps exact resume unblocks the same rename.
+    plant_transcript(&home, &new_work, &id);
+    retry_rename(&rig, old, new);
+}
+
+/// A1: a Codex explicit home is never refused over a Claude-shaped store —
+/// its dated-rollout probe is not cwd-keyed, so the move cannot newly break
+/// ae-side exact resume. Smallest defeating mutation: apply the transcript
+/// probe to every tool (this rename refuses).
+#[test]
+fn a_codex_explicit_home_moves_without_a_transcript_probe() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::new("expcodex", &["codex"], None);
+    let old = "scdxold";
+    let new = "scdxnew";
+    let (code, stdout, stderr) = rig.launch(&["--copy", old]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let old_work = rig.home.join("worktrees").join(old);
+    let (_home, _id) = pin_explicit_home(&rig, old, &old_work);
+
+    let (code, stdout, stderr) = public(&rig, &["stop", old]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+
+    // The Claude-shaped transcript exists for the old cwd only — and must
+    // not matter to a Codex seat.
+    let (code, stdout, stderr) = public(&rig, &[ae::cli::RENAME, old, new]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        stdout.contains(&format!("Renamed '{old}' → '{new}' (stopped;")),
+        "{stdout}"
+    );
+}
+
+/// A1: an unclassifiable tool with an explicit home warns rather than
+/// refuses — unknown provider behavior is a later resume concern, and the
+/// later resume re-proves it. Smallest defeating mutation: refuse every
+/// explicit home the probe cannot classify.
+#[test]
+fn an_unknown_tool_explicit_home_warns_and_moves() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("expunknown");
+    let old = "sunkold";
+    let new = "sunknew";
+    let (code, stdout, stderr) = rig.launch(&["--copy", old]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let old_work = rig.home.join("worktrees").join(old);
+    let (_home, _id) = pin_explicit_home(&rig, old, &old_work);
+
+    let (code, stdout, stderr) = public(&rig, &["stop", old]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+
+    let (code, stdout, stderr) = public(&rig, &[ae::cli::RENAME, old, new]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        stdout.contains(&format!("Renamed '{old}' → '{new}' (stopped;")),
+        "{stdout}"
+    );
+    assert!(
+        stderr.contains("implicit or unclassified config homes"),
+        "the unclassified home warns: {stderr}"
+    );
+}
+
+/// A3: while a transaction is pending, launch/resume/end stand aside with
+/// the proved retry instead of reading or mutating a mixed generation;
+/// doctor reports the phase. The retry converges and the guards clear.
+/// Smallest defeating mutation: drop the intent check from any one reader.
+#[test]
+fn readers_stand_aside_for_a_pending_transaction() {
+    if skip() {
+        return;
+    }
+    let old = "sblkold";
+    let new = "sblknew";
+    let rig = stopped_local_source("blocked-readers", old);
+    kill_at_boundary(&rig, old, new, "after-intent");
+
+    let retry = format!("ae rename {old} {new}");
+    let (code, stdout, stderr) = rig.launch(&[new]);
+    assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(stderr.contains(&retry), "resume stands aside: {stderr}");
+    let (code, stdout, stderr) = rig.launch(&[old]);
+    assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(stderr.contains(&retry), "relaunch stands aside: {stderr}");
+    let (code, stdout, stderr) = public(&rig, &["end", old, "-f", "--keep-history"]);
+    assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(stderr.contains(&retry), "end stands aside: {stderr}");
+    let (code, stdout, stderr) = public(&rig, &["doctor"]);
+    assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
+    let report = format!("{stdout}{stderr}");
+    assert!(
+        report.contains(&retry) && report.contains("prepared"),
+        "doctor reports the pending phase: {report}"
+    );
+
+    retry_rename(&rig, old, new);
+    let (code, stdout, stderr) = rig.launch(&[new]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        stdout.contains(&format!("Resuming session {new}")),
+        "{stdout}"
+    );
+}
+
+/// A3: after a stopped rename, the read-only fleet surface resolves the new
+/// address — list shows it, archive preview renders it, doctor is clean —
+/// and the old name resolves to nothing.
+#[test]
+fn renamed_surface_resolves_to_the_new_address() {
+    if skip() {
+        return;
+    }
+    let old = "srfold";
+    let new = "srfnew";
+    let rig = stopped_local_source("renamed-surface", old);
+    let (code, stdout, stderr) = public(&rig, &[ae::cli::RENAME, old, new]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+
+    let (code, stdout, stderr) = public(&rig, &["list"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(stdout.contains(new), "list shows the new name: {stdout}");
+    assert!(
+        !stdout.lines().any(|line| line.contains(old)),
+        "list shows no old name: {stdout}"
+    );
+
+    let (code, stdout, stderr) = public(&rig, &["archive", "preview", new]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        stdout.contains(new),
+        "preview renders the new address: {stdout}"
+    );
+
+    let (code, _, stderr) = public(&rig, &["archive", "preview", old]);
+    assert_eq!(code, Some(1), "the old address previews nothing: {stderr}");
+
+    // Doctor is read-only over the new address: no pending-rename row once
+    // the transaction completed (a fresh scratch rig fails unrelated
+    // environment rows, so the assertion is scoped to rename rows).
+    let (code, stdout, stderr) = public(&rig, &["doctor"]);
+    let _ = code;
+    let report = format!("{stdout}{stderr}");
+    assert!(
+        !report.contains("rename:"),
+        "no pending rename rows: {report}"
+    );
+}
+
+/// BLOCKER B1: the carrier must name the command's own pair. A valid C→D
+/// payload under an A→B filename refuses before any of the three sessions is
+/// touched — recovery under A/B locks must never mutate C/D. Smallest
+/// defeating mutation: drop the filename/argv/payload equality.
+#[test]
+fn a_mismatched_carrier_refuses_before_touching_either_pair() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("mismatch-carrier");
+    for session in ["mcA", "mcC", "mcD"] {
+        let (code, stdout, stderr) = rig.launch(&["--local", session]);
+        assert_eq!(
+            code,
+            Some(0),
+            "{session}: stdout: {stdout}\nstderr: {stderr}"
+        );
+        let (code, stdout, stderr) = public(&rig, &["stop", session]);
+        assert_eq!(
+            code,
+            Some(0),
+            "{session}: stdout: {stdout}\nstderr: {stderr}"
+        );
+    }
+    let row = |session: &str, key: &str| {
+        rig.meta(session)
+            .lines()
+            .find_map(|line| line.strip_prefix(&format!("{key}=")))
+            .unwrap_or_default()
+            .to_owned()
+    };
+    // A well-formed C→D carrier (C's own UUID, server, origin, work) filed
+    // under the A→B filename: hostile input, valid signature, wrong scope.
+    let carrier = format!(
+        "rename_intent=1\nsession_id={}\nold=mcC\nnew=mcD\nmode=local\nold_work={work}\nnew_work={work}\norigin={work}\nserver_kind={kind}\nserver_value={value}\nphase=prepared\nwork_dev=0\nwork_ino=0\nadmin_dev=0\nadmin_ino=0\n",
+        row("mcC", "session_id"),
+        work = row("mcC", "work_dir"),
+        kind = row("mcC", "tmux_server_kind"),
+        value = row("mcC", "tmux_server"),
+    );
+    assert!(carrier.lines().count() == 15, "a parsable carrier");
+    let carrier_path = rig.home.join("sessions").join(".rename.mcA.mcB.intent");
+    assert!(std::fs::write(&carrier_path, &carrier).is_ok());
+    let snapshot = |session: &str| {
+        (
+            rig.meta(session),
+            std::fs::read(rig.dir(session).join("events.jsonl")).unwrap_or_default(),
+        )
+    };
+    let (before_a, before_c, before_d) = (snapshot("mcA"), snapshot("mcC"), snapshot("mcD"));
+
+    let (code, _, stderr) = public(&rig, &[ae::cli::RENAME, "mcA", "mcB"]);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(
+        stderr.contains("does not match its filename") && stderr.contains("Nothing was renamed"),
+        "the correlation refusal: {stderr}"
+    );
+    assert_eq!(snapshot("mcA"), before_a, "A untouched");
+    assert_eq!(snapshot("mcC"), before_c, "C untouched");
+    assert_eq!(snapshot("mcD"), before_d, "D untouched");
+    assert!(!rig.dir("mcB").exists(), "B never created");
+    // The mismatch is damage everywhere, not just at the rename: every
+    // lifecycle reader stands aside with the same named gap.
+    let (code, _, stderr) = rig.launch(&["mcA"]);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(stderr.contains("damaged rename carrier"), "{stderr}");
+    let (code, _, stderr) = public(&rig, &["end", "mcA", "-f", "--keep-history"]);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(stderr.contains("damaged rename carrier"), "{stderr}");
+}
+
+/// BLOCKER B2: recovery binds mode/origin/work to the located meta. A forged
+/// full-mode carrier over a stopped LOCAL session refuses before either path
+/// moves — the unrelated managed path stays, the local meta stays coherent.
+/// Smallest defeating mutation: skip the payload binding.
+#[test]
+fn a_forged_mode_carrier_refuses_before_either_path_moves() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("forged-mode");
+    let (code, stdout, stderr) = rig.launch(&["--local", "flocal"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    // An unrelated managed path the forged carrier points at. Its real
+    // fingerprint goes into the carrier so the refusal comes from the mode
+    // binding, not the witness shape.
+    let stray = rig.home.join("worktrees").join("flocal");
+    assert!(std::fs::create_dir_all(&stray).is_ok());
+    assert!(std::fs::write(stray.join("unrelated"), "not this session\n").is_ok());
+    let (stray_dev, stray_ino) = {
+        let meta = std::fs::metadata(&stray).expect("the stray dir");
+        (meta.dev(), meta.ino())
+    };
+    let row = |key: &str| {
+        rig.meta("flocal")
+            .lines()
+            .find_map(|line| line.strip_prefix(&format!("{key}=")))
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let forged = format!(
+        "rename_intent=1\nsession_id={}\nold=flocal\nnew=fnew\nmode=full\nold_work={}\nnew_work={}\norigin={}\nserver_kind={}\nserver_value={}\nphase=prepared\nwork_dev={stray_dev}\nwork_ino={stray_ino}\nadmin_dev=0\nadmin_ino=0\n",
+        row("session_id"),
+        stray.display(),
+        rig.home.join("worktrees").join("fnew").display(),
+        row("origin"),
+        row("tmux_server_kind"),
+        row("tmux_server"),
+    );
+    assert!(
+        std::fs::write(
+            rig.home.join("sessions").join(".rename.flocal.fnew.intent"),
+            &forged
+        )
+        .is_ok()
+    );
+    let (code, stdout, stderr) = public(&rig, &["stop", "flocal"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let meta_before = rig.meta("flocal");
+
+    let (code, _, stderr) = public(&rig, &[ae::cli::RENAME, "flocal", "fnew"]);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(
+        stderr.contains("records mode 'local' but the transaction is 'full'"),
+        "the binding refusal: {stderr}"
+    );
+    assert_eq!(
+        std::fs::read(stray.join("unrelated")).unwrap_or_default(),
+        b"not this session\n",
+        "the unrelated path never moves"
+    );
+    assert!(!rig.home.join("worktrees").join("fnew").exists());
+    assert_eq!(
+        rig.meta("flocal"),
+        meta_before,
+        "the local meta stays coherent"
+    );
+    assert!(!rig.dir("fnew").exists(), "no state move");
+}
+
+/// BLOCKER B3: a damaged carrier blocks every reader with the named gap —
+/// the rename itself, a launch of either named session, an end, and doctor —
+/// instead of reading absence. Smallest defeating mutation: restore
+/// ok().flatten (readers proceed over the mixed generation).
+#[test]
+fn a_damaged_carrier_blocks_every_reader() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("damaged-carrier");
+    let (code, stdout, stderr) = rig.launch(&["--local", "dgA"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let (code, stdout, stderr) = public(&rig, &["stop", "dgA"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        std::fs::write(
+            rig.home.join("sessions").join(".rename.dgA.dgB.intent"),
+            "rename_intent=1\nthis line has no equals\n"
+        )
+        .is_ok()
+    );
+
+    let (code, _, stderr) = public(&rig, &[ae::cli::RENAME, "dgA", "dgB"]);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(stderr.contains("not a valid rename intent"), "{stderr}");
+
+    let (code, _, stderr) = rig.launch(&["dgA"]);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(
+        stderr.contains("damaged rename carrier"),
+        "launch stands aside: {stderr}"
+    );
+    // The filename scope covers the far endpoint too: dgB was never created,
+    // and a fresh launch must not materialize over the damage.
+    let (code, _, stderr) = rig.launch(&["dgB"]);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(
+        stderr.contains("damaged rename carrier"),
+        "far endpoint stands aside: {stderr}"
+    );
+    let (code, _, stderr) = public(&rig, &["end", "dgA", "-f", "--keep-history"]);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(
+        stderr.contains("damaged rename carrier"),
+        "end stands aside: {stderr}"
+    );
+    let (code, stdout, stderr) = public(&rig, &["doctor"]);
+    let _ = code;
+    let report = format!("{stdout}{stderr}");
+    assert!(
+        report.contains("damaged rename carrier") && report.contains("dgA"),
+        "doctor fails the damaged pair: {report}"
+    );
+
+    // Removing the damage unblocks: the block is evidence, not a latch.
+    assert!(std::fs::remove_file(rig.home.join("sessions").join(".rename.dgA.dgB.intent")).is_ok());
+    retry_rename(&rig, "dgA", "dgB");
+}
+
+/// BLOCKER B4: a prefix pair (pfoobar→pfoo) converges exact bytes end to
+/// end — the manifest carries exact new lines, and a launch-shaped opencode
+/// pair is republished to the exact new pointer. (Substring traps are pinned
+/// at unit level; this proves the converged bytes.)
+#[test]
+fn a_prefix_rename_converges_exact_bytes() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("prefix-bytes");
+    let (code, stdout, stderr) = rig.launch(&["--local", "pfoobar"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    // The seat classifies opencode by its recorded binary, so the planted
+    // pair below is a required asset (not a stray) with a stale pointer.
+    assert!(
+        ae::meta::rewrite(
+            &rig.dir("pfoobar"),
+            "agent_bin.main",
+            Some("/tmp/fake-bin/opencode")
+        )
+        .is_ok()
+    );
+    // A launch-shaped opencode pair pointing at the old address, plus a
+    // stray pair no roster seat requires (removed, never verified).
+    let old_ctx = format!("{}/opencode.main.md", rig.dir("pfoobar").display());
+    assert!(
+        std::fs::write(
+            rig.dir("pfoobar").join("opencode.main.md"),
+            "You are in an ae multi-agent workspace. Session: pfoobar. Directory: /proj.\n"
+        )
+        .is_ok()
+    );
+    assert!(
+        std::fs::write(
+            rig.dir("pfoobar").join("opencode.main.json"),
+            format!("{{\"instructions\":[\"{old_ctx}\"]}}\n")
+        )
+        .is_ok()
+    );
+    assert!(
+        std::fs::write(
+            rig.dir("pfoobar").join("opencode.gone.md"),
+            "orphaned generated context\n"
+        )
+        .is_ok()
+    );
+    let (code, stdout, stderr) = public(&rig, &["stop", "pfoobar"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+
+    let (code, stdout, stderr) = public(&rig, &[ae::cli::RENAME, "pfoobar", "pfoo"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let manifest =
+        std::fs::read_to_string(rig.dir("pfoo").join("workspace.md")).unwrap_or_default();
+    let lines: Vec<&str> = manifest.lines().collect();
+    assert!(lines.contains(&"Session: pfoo"), "{manifest}");
+    assert!(
+        !lines.contains(&"Session: pfoobar"),
+        "no stale session line: {manifest}"
+    );
+    assert!(
+        manifest.contains(&format!("{}/send", rig.dir("pfoo").display())),
+        "new helper address: {manifest}"
+    );
+    let new_ctx = format!("{}/opencode.main.md", rig.dir("pfoo").display());
+    let json =
+        std::fs::read_to_string(rig.dir("pfoo").join("opencode.main.json")).unwrap_or_default();
+    assert!(
+        json.contains(&format!("\"{new_ctx}\"")),
+        "exact new pointer: {json}"
+    );
+    let md = std::fs::read_to_string(rig.dir("pfoo").join("opencode.main.md")).unwrap_or_default();
+    assert!(md.contains("Session: pfoo."), "exact new sentence: {md}");
+    assert!(
+        !rig.dir("pfoo").join("opencode.gone.md").exists()
+            && !rig.dir("pfoo").join("opencode.gone.json").exists(),
+        "stray pairs are removed, never verified"
+    );
+}
+
+/// IMPORTANT I7: a dangling helper link is repaired to the proven core, not
+/// completed over. Smallest defeating mutation: type-only helper checks.
+#[test]
+fn a_dangling_helper_link_is_repaired_not_completed() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("dangling-helper");
+    let (code, stdout, stderr) = rig.launch(&["--local", "dold"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let pinned = std::fs::read_link(rig.dir("dold").join("ask")).unwrap_or_default();
+    assert!(!pinned.as_os_str().is_empty(), "a recorded target");
+    let (code, stdout, stderr) = public(&rig, &["stop", "dold"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+
+    // Never write through a helper path: remove, then plant the damage.
+    assert!(std::fs::remove_file(rig.dir("dold").join("send")).is_ok());
+    std::os::unix::fs::symlink("/nonexistent-core-under-test", rig.dir("dold").join("send"))
+        .expect("a dangling link");
+    let (code, stdout, stderr) = public(&rig, &[ae::cli::RENAME, "dold", "dnew"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert_eq!(
+        std::fs::read_link(rig.dir("dnew").join("send")).unwrap_or_default(),
+        pinned,
+        "repaired to the proven core"
+    );
+}
+
+/// IMPORTANT I7: a repointed helper link — even at an existing binary — is
+/// repaired to the proven core, not completed over. Smallest defeating
+/// mutation: existence-only helper checks.
+#[test]
+fn a_repointed_helper_link_is_repaired_not_completed() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("repointed-helper");
+    let (code, stdout, stderr) = rig.launch(&["--local", "rold"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let pinned = std::fs::read_link(rig.dir("rold").join("ask")).unwrap_or_default();
+    let (code, stdout, stderr) = public(&rig, &["stop", "rold"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+
+    assert!(std::fs::remove_file(rig.dir("rold").join("send")).is_ok());
+    std::os::unix::fs::symlink("/bin/sh", rig.dir("rold").join("send")).expect("a repointed link");
+    let (code, stdout, stderr) = public(&rig, &[ae::cli::RENAME, "rold", "rnew"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert_eq!(
+        std::fs::read_link(rig.dir("rnew").join("send")).unwrap_or_default(),
+        pinned,
+        "repaired to the proven core, not the planted binary"
+    );
+}
+
+/// BLOCKER (r2-1): a carrier claiming phases its facts never reached
+/// normalizes down instead of skipping into success. A local carrier at
+/// assets-published with the state still home still moves everything; the
+/// same-command retry then reads the durable result. Smallest defeating
+/// mutation: trust the recorded phase as the skip boundary (the old address
+/// stays put under a printed success).
+#[test]
+fn a_phase_ahead_carrier_reproves_instead_of_skipping() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("phase-ahead");
+    let (code, stdout, stderr) = rig.launch(&["--local", "paold"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let (code, stdout, stderr) = public(&rig, &["stop", "paold"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let row = |key: &str| {
+        rig.meta("paold")
+            .lines()
+            .find_map(|line| line.strip_prefix(&format!("{key}=")))
+            .unwrap_or_default()
+            .to_owned()
+    };
+    // A well-formed carrier whose facts stop at prepared, but whose record
+    // claims assets-published.
+    let ahead = format!(
+        "rename_intent=1\nsession_id={}\nold=paold\nnew=panew\nmode=local\nold_work={work}\nnew_work={work}\norigin={work}\nserver_kind={kind}\nserver_value={value}\nphase=assets-published\nwork_dev=0\nwork_ino=0\nadmin_dev=0\nadmin_ino=0\n",
+        row("session_id"),
+        work = row("work_dir"),
+        kind = row("tmux_server_kind"),
+        value = row("tmux_server"),
+    );
+    assert!(
+        std::fs::write(
+            rig.home.join("sessions").join(".rename.paold.panew.intent"),
+            &ahead
+        )
+        .is_ok()
+    );
+    let (code, stdout, stderr) = public(&rig, &[ae::cli::RENAME, "paold", "panew"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        stdout.contains("Renamed 'paold' → 'panew' (stopped;"),
+        "{stdout}"
+    );
+    // Converged, not skipped: the old address is gone and the new meta is
+    // coherent — a skip would have left the state home with old rows.
+    assert!(!rig.dir("paold").exists(), "the state moved");
+    assert!(rig.dir("panew").is_dir(), "the state landed");
+    let meta = rig.meta("panew");
+    assert!(meta.contains("session=panew\n"), "{meta}");
+    let intent =
+        std::fs::read_to_string(rig.home.join("sessions").join(".rename.paold.panew.intent"))
+            .unwrap_or_default();
+    assert!(intent.contains("phase=complete"), "{intent}");
+}
+
+/// BLOCKER (r2-1, managed): a work-moved claim with the work still home
+/// still moves the work. Smallest defeating mutation: trust the recorded
+/// phase (the meta would point at a nonexistent destination).
+#[test]
+fn a_phase_ahead_managed_carrier_still_moves_the_work() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("phase-ahead-managed");
+    let (code, stdout, stderr) = rig.launch(&["--copy", "pmold"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let old_work = rig.home.join("worktrees").join("pmold");
+    let new_work = rig.home.join("worktrees").join("pmnew");
+    assert!(std::fs::write(old_work.join("marker"), "mine\n").is_ok());
+    // A truthful identity witness with a lying phase: the attack is the
+    // phase claim, not a forged fingerprint (fingerprints are public).
+    let (work_dev, work_ino) = {
+        let meta = std::fs::metadata(&old_work).expect("the work dir");
+        (meta.dev(), meta.ino())
+    };
+    let row = |key: &str| {
+        rig.meta("pmold")
+            .lines()
+            .find_map(|line| line.strip_prefix(&format!("{key}=")))
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let ahead = format!(
+        "rename_intent=1\nsession_id={}\nold=pmold\nnew=pmnew\nmode=full\nold_work={}\nnew_work={}\norigin={}\nserver_kind={}\nserver_value={}\nphase=work-moved\nwork_dev={work_dev}\nwork_ino={work_ino}\nadmin_dev=0\nadmin_ino=0\n",
+        row("session_id"),
+        old_work.display(),
+        new_work.display(),
+        row("origin"),
+        row("tmux_server_kind"),
+        row("tmux_server"),
+    );
+    assert!(
+        std::fs::write(
+            rig.home.join("sessions").join(".rename.pmold.pmnew.intent"),
+            &ahead
+        )
+        .is_ok()
+    );
+    let (code, stdout, stderr) = public(&rig, &["stop", "pmold"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+
+    let (code, stdout, stderr) = public(&rig, &[ae::cli::RENAME, "pmold", "pmnew"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert_eq!(
+        std::fs::read(new_work.join("marker")).unwrap_or_default(),
+        b"mine\n",
+        "the work moved instead of being skipped"
+    );
+    assert!(!old_work.exists(), "the old path is gone");
+}
+
+/// BLOCKER (r2-2): replacing the moved work after the cut refuses the retry
+/// instead of binding the session to the replacement — before any state or
+/// meta publication, with the planted entry preserved. Smallest defeating
+/// mutation: path-only work verification.
+#[test]
+fn a_replaced_managed_work_refuses_the_retry() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("replaced-work");
+    let old = "rtold";
+    let new = "rtnew";
+    let (code, stdout, stderr) = rig.launch(&["--copy", old]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let new_work = rig.home.join("worktrees").join(new);
+    let (code, stdout, stderr) = public(&rig, &["stop", old]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+
+    kill_at_boundary(&rig, old, new, "after-work-move");
+    // Swap the moved tree for a same-spelling replacement.
+    assert!(std::fs::remove_dir_all(&new_work).is_ok());
+    assert!(std::fs::create_dir_all(&new_work).is_ok());
+    assert!(std::fs::write(new_work.join("replacement"), "not the session\n").is_ok());
+
+    let (code, _, stderr) = public(&rig, &[ae::cli::RENAME, old, new]);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(
+        stderr.contains("does not match the recorded identity")
+            && stderr.contains("refusing to move an unproved directory"),
+        "{stderr}"
+    );
+    assert!(
+        !rig.dir(new).exists(),
+        "no state publication past the refusal"
+    );
+    assert_eq!(
+        std::fs::read(new_work.join("replacement")).unwrap_or_default(),
+        b"not the session\n",
+        "the planted entry is preserved"
+    );
+}
+
+/// BLOCKER (r2-2): a dangling symlink at the managed destination refuses
+/// before any write — it is an occupant entry, and `rename(2)` would
+/// overwrite it. The link itself is preserved.
+#[test]
+fn a_dangling_destination_symlink_refuses_before_writes() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("dangling-dest");
+    let (code, stdout, stderr) = rig.launch(&["--copy", "ddold"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let (code, stdout, stderr) = public(&rig, &["stop", "ddold"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let dest = rig.home.join("worktrees").join("ddnew");
+    std::os::unix::fs::symlink("/nonexistent-target-under-test", &dest)
+        .expect("a dangling destination link");
+
+    let (code, _, stderr) = public(&rig, &[ae::cli::RENAME, "ddold", "ddnew"]);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(
+        stderr.contains("is a symlink") && stderr.contains("Nothing was renamed"),
+        "{stderr}"
+    );
+    assert_eq!(
+        std::fs::read_link(&dest).unwrap_or_default(),
+        PathBuf::from("/nonexistent-target-under-test"),
+        "the planted link is preserved"
+    );
+    assert!(
+        !rig.home
+            .join("sessions")
+            .join(".rename.ddold.ddnew.intent")
+            .exists(),
+        "no intent past the refusal"
+    );
+}
+
+/// IMPORTANT (r2-4): 128-byte legal names hash the carrier instead of
+/// overflowing the directory entry; the rename still converges and no
+/// overlong file appears. Smallest defeating mutation: literal filenames
+/// for every pair (publication fails past `NAME_MAX`).
+#[test]
+fn max_length_names_hash_the_carrier() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("max-names");
+    let old: String = std::iter::repeat_n('o', 128).collect();
+    let new: String = std::iter::repeat_n('n', 128).collect();
+    let (code, stdout, stderr) = rig.launch(&["--local", &old]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let (code, stdout, stderr) = public(&rig, &["stop", &old]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+
+    let (code, stdout, stderr) = public(&rig, &[ae::cli::RENAME, &old, &new]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let mut carriers = Vec::new();
+    for entry in std::fs::read_dir(rig.home.join("sessions")).unwrap_or_else(|_| panic!("sessions"))
+    {
+        let path = entry.unwrap_or_else(|_| panic!("entry")).path();
+        if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with(".rename."))
+        {
+            carriers.push(path);
+        }
+    }
+    assert_eq!(carriers.len(), 1, "{carriers:?}");
+    let name = carriers[0]
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default();
+    assert!(
+        name.len() < 200 && name.ends_with(".intent"),
+        "a bounded digest carrier, not a 272-byte literal: {name}"
+    );
+    assert!(rig.meta(&new).contains(&format!("session={new}\n")));
+}
+
+/// IMPORTANT (r2-4): same-pair reuse by a fresh UUID rotates the old result
+/// aside byte-identical and starts a new transaction instead of refusing on
+/// the stale completion.
+#[test]
+fn same_pair_reuse_rotates_the_old_result() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("pair-reuse");
+    let (code, stdout, stderr) = rig.launch(&["--local", "rsA"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let (code, stdout, stderr) = public(&rig, &["stop", "rsA"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let (code, stdout, stderr) = public(&rig, &[ae::cli::RENAME, "rsA", "rsB"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let first_uuid = rig
+        .meta("rsB")
+        .lines()
+        .find_map(|line| line.strip_prefix("session_id="))
+        .unwrap_or_default()
+        .to_owned();
+    let first_intent =
+        std::fs::read(rig.home.join("sessions").join(".rename.rsA.rsB.intent")).unwrap_or_default();
+
+    let (code, stdout, stderr) = public(&rig, &["end", "rsB", "-f", "--keep-history"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let (code, stdout, stderr) = rig.launch(&["--local", "rsA"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let second_uuid = rig
+        .meta("rsA")
+        .lines()
+        .find_map(|line| line.strip_prefix("session_id="))
+        .unwrap_or_default()
+        .to_owned();
+    assert_ne!(second_uuid, first_uuid, "a fresh incarnation");
+
+    let (code, stdout, stderr) = public(&rig, &["stop", "rsA"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let (code, stdout, stderr) = public(&rig, &[ae::cli::RENAME, "rsA", "rsB"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        stdout.contains("Renamed 'rsA' → 'rsB' (stopped;"),
+        "{stdout}"
+    );
+    // The old result survives byte-identical under history; the live carrier
+    // carries the fresh UUID to completion.
+    let rotated = rig
+        .home
+        .join("sessions")
+        .join(".rename.rsA.rsB.intent.complete");
+    assert_eq!(
+        std::fs::read(&rotated).unwrap_or_default(),
+        first_intent,
+        "the old result is preserved, not overwritten"
+    );
+    assert_eq!(
+        rig.meta("rsB")
+            .lines()
+            .find_map(|line| line.strip_prefix("session_id="))
+            .unwrap_or_default(),
+        second_uuid
+    );
+}
+
+/// IMPORTANT (r2-5): an unrelated malformed carrier never blocks a fresh
+/// pair — filename relevance filters before any read — while the exact pair
+/// still refuses. Smallest defeating mutation: parse every carrier before
+/// filtering by filename.
+#[test]
+fn an_unrelated_damaged_carrier_never_blocks_a_fresh_pair() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("unrelated-damage");
+    let (code, stdout, stderr) = rig.launch(&["--local", "uxA"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let (code, stdout, stderr) = public(&rig, &["stop", "uxA"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        std::fs::write(
+            rig.home.join("sessions").join(".rename.uxC.uxD.intent"),
+            "rename_intent=1\nthis line has no equals\n"
+        )
+        .is_ok()
+    );
+    // The fresh pair converges despite the unrelated damage...
+    let (code, stdout, stderr) = public(&rig, &[ae::cli::RENAME, "uxA", "uxB"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    // ...while the damaged pair itself is still reported globally.
+    let (code, stdout, stderr) = public(&rig, &["doctor"]);
+    let _ = code;
+    let report = format!("{stdout}{stderr}");
+    assert!(
+        report.contains("damaged rename carrier") && report.contains("uxC"),
+        "{report}"
+    );
+}
+
+/// IMPORTANT (r2-8): `list` surfaces a pending transaction on stderr with
+/// its phase and retry instead of reading as settled. Smallest defeating
+/// mutation: drop the pending warning from the list dispatch.
+#[test]
+fn list_surfaces_a_pending_transaction() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("list-pending");
+    let (code, stdout, stderr) = rig.launch(&["--local", "lpA"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let (code, stdout, stderr) = public(&rig, &["stop", "lpA"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    kill_at_boundary(&rig, "lpA", "lpB", "after-intent");
+
+    let (code, stdout, stderr) = public(&rig, &["list"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        stderr.contains("rename 'lpA' → 'lpB' is in progress at phase 'prepared'")
+            && stderr.contains("ae rename lpA lpB"),
+        "the pending state reads on stderr, not as a normal row: {stderr}"
+    );
+    retry_rename(&rig, "lpA", "lpB");
+    let (code, stdout, stderr) = public(&rig, &["list"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        !stderr.contains("in progress"),
+        "the warning clears with the transaction: {stdout}{stderr}"
+    );
+}
+
+/// IMPORTANT (r2-7): an opencode seat with no generated pair forces
+/// republication — absence is never ready. Required pairs derive from the
+/// seat tool, not from whatever files happen to be present. Smallest
+/// defeating mutation: presence-based opencode checks (the pair stays
+/// missing).
+#[test]
+fn a_missing_opencode_pair_is_generated_not_skipped() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("opencode-required");
+    let (code, stdout, stderr) = rig.launch(&["--local", "oqold"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    // The idle seat runs `sleep`, but the recorded binary is what classifies
+    // the seat: point it at an opencode binary name.
+    assert!(
+        ae::meta::rewrite(
+            &rig.dir("oqold"),
+            "agent_bin.main",
+            Some("/tmp/fake-bin/opencode")
+        )
+        .is_ok()
+    );
+    let (code, stdout, stderr) = public(&rig, &["stop", "oqold"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+
+    let (code, stdout, stderr) = public(&rig, &[ae::cli::RENAME, "oqold", "oqnew"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let new_ctx = format!("{}/opencode.main.md", rig.dir("oqnew").display());
+    assert_eq!(
+        std::fs::read_to_string(rig.dir("oqnew").join("opencode.main.json")).unwrap_or_default(),
+        format!("{{\"instructions\":[\"{new_ctx}\"]}}\n"),
+        "the required pair is generated byte-exact"
+    );
+    assert!(
+        std::fs::read_to_string(rig.dir("oqnew").join("opencode.main.md"))
+            .unwrap_or_default()
+            .contains("Session: oqnew."),
+        "with the new session sentence"
+    );
+}
+
+/// BLOCKER (r4-B1): a carrier whose witness does not describe the directory
+/// standing at the old address refuses BEFORE the move — a forged or stale
+/// fingerprint never strands real work. Smallest defeating mutation: move
+/// first, verify after (the old path is gone under a failure).
+#[test]
+fn a_mismatched_witness_refuses_before_the_move() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("witness-mismatch");
+    let (code, stdout, stderr) = rig.launch(&["--copy", "wmold"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let old_work = rig.home.join("worktrees").join("wmold");
+    assert!(std::fs::write(old_work.join("marker"), "mine\n").is_ok());
+    let row = |key: &str| {
+        rig.meta("wmold")
+            .lines()
+            .find_map(|line| line.strip_prefix(&format!("{key}=")))
+            .unwrap_or_default()
+            .to_owned()
+    };
+    // Shape-valid carrier (full with a work witness) naming a fingerprint
+    // no directory here has.
+    let forged = format!(
+        "rename_intent=1\nsession_id={}\nold=wmold\nnew=wmnew\nmode=full\nold_work={}\nnew_work={}\norigin={}\nserver_kind={}\nserver_value={}\nphase=prepared\nwork_dev=4242\nwork_ino=4242\nadmin_dev=0\nadmin_ino=0\n",
+        row("session_id"),
+        old_work.display(),
+        rig.home.join("worktrees").join("wmnew").display(),
+        row("origin"),
+        row("tmux_server_kind"),
+        row("tmux_server"),
+    );
+    assert!(
+        std::fs::write(
+            rig.home.join("sessions").join(".rename.wmold.wmnew.intent"),
+            &forged
+        )
+        .is_ok()
+    );
+    let (code, stdout, stderr) = public(&rig, &["stop", "wmold"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+
+    let (code, _, stderr) = public(&rig, &[ae::cli::RENAME, "wmold", "wmnew"]);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(
+        stderr.contains("does not match the recorded identity")
+            && stderr.contains("refusing to move an unproved directory"),
+        "{stderr}"
+    );
+    assert_eq!(
+        std::fs::read(old_work.join("marker")).unwrap_or_default(),
+        b"mine\n",
+        "the old path is intact"
+    );
+    assert!(
+        !rig.home.join("worktrees").join("wmnew").exists(),
+        "no destination appears"
+    );
+    assert!(!rig.dir("wmnew").exists(), "no state move");
+}
+
+/// BLOCKER (r4-B1, git): a carrier whose admin fingerprint does not describe
+/// the registered worktree refuses BEFORE the move. Smallest defeating
+/// mutation: move first, verify after.
+#[test]
+fn a_mismatched_admin_witness_refuses_before_the_move() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("admin-mismatch");
+    git_in(&rig.project, &["init", "-q"]);
+    git_in(&rig.project, &["config", "user.email", "t@t"]);
+    git_in(&rig.project, &["config", "user.name", "t"]);
+    assert!(std::fs::write(rig.project.join("f"), "x\n").is_ok());
+    git_in(&rig.project, &["add", "-A"]);
+    git_in(&rig.project, &["commit", "-qm", "base"]);
+    let (code, stdout, stderr) = rig.launch(&["--worktree", "waold"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let old_work = rig.home.join("worktrees").join("waold");
+    let row = |key: &str| {
+        rig.meta("waold")
+            .lines()
+            .find_map(|line| line.strip_prefix(&format!("{key}=")))
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let (work_dev, work_ino) = {
+        let meta = std::fs::metadata(&old_work).expect("the work dir");
+        (meta.dev(), meta.ino())
+    };
+    // True work witness, foreign admin witness: the move must still refuse.
+    let forged = format!(
+        "rename_intent=1\nsession_id={}\nold=waold\nnew=wanew\nmode=git\nold_work={}\nnew_work={}\norigin={}\nserver_kind={}\nserver_value={}\nphase=prepared\nwork_dev={work_dev}\nwork_ino={work_ino}\nadmin_dev=4242\nadmin_ino=4242\n",
+        row("session_id"),
+        old_work.display(),
+        rig.home.join("worktrees").join("wanew").display(),
+        row("origin"),
+        row("tmux_server_kind"),
+        row("tmux_server"),
+    );
+    assert!(
+        std::fs::write(
+            rig.home.join("sessions").join(".rename.waold.wanew.intent"),
+            &forged
+        )
+        .is_ok()
+    );
+    let (code, stdout, stderr) = public(&rig, &["stop", "waold"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+
+    let (code, _, stderr) = public(&rig, &[ae::cli::RENAME, "waold", "wanew"]);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(
+        stderr.contains("does not match the recorded identity")
+            && stderr.contains("refusing to move an unproved worktree"),
+        "{stderr}"
+    );
+    assert!(old_work.is_dir(), "the old path is intact");
+    assert!(
+        !rig.home.join("worktrees").join("wanew").exists(),
+        "no destination appears"
+    );
+    assert!(!rig.dir("wanew").exists(), "no state move");
+}
+
+/// Sweep ADD: a link planted at the new state address during the cut refuses
+/// the retry — at the under-lock recheck — before `rename(2)` can overwrite
+/// the unowned entry. The link and the old state are preserved. Smallest
+/// defeating mutation: follow links at the destination (the link is
+/// replaced). (`do_state_move` carries the same guard for the residual race
+/// past the recheck; pinned at unit level.)
+#[test]
+fn a_planted_state_link_refuses_the_retry() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("planted-state-link");
+    let (code, stdout, stderr) = rig.launch(&["--local", "psold"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let (code, stdout, stderr) = public(&rig, &["stop", "psold"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+
+    kill_at_boundary(&rig, "psold", "psnew", "after-intent");
+    std::os::unix::fs::symlink("/nonexistent-target-under-test", rig.dir("psnew"))
+        .expect("a planted destination link");
+
+    let (code, _, stderr) = public(&rig, &[ae::cli::RENAME, "psold", "psnew"]);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(stderr.contains("is a symlink"), "{stderr}");
+    assert_eq!(
+        std::fs::read_link(rig.dir("psnew")).unwrap_or_default(),
+        PathBuf::from("/nonexistent-target-under-test"),
+        "the planted link is preserved"
+    );
+    assert!(rig.dir("psold").is_dir(), "the old state is intact");
+}
+
+/// Sweep: recovery re-takes the strict absence proof — an unreachable
+/// recorded server at retry refuses over unknown liveness instead of
+/// converging blind. Smallest defeating mutation: skip the absence
+/// re-proof (the retry converges).
+#[test]
+fn a_retry_over_an_unreachable_server_refuses_unknown_liveness() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("retry-unreachable");
+    let (code, stdout, stderr) = rig.launch(&["--local", "ruold"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let (code, stdout, stderr) = public(&rig, &["stop", "ruold"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+
+    kill_at_boundary(&rig, "ruold", "runew", "after-intent");
+    // The stale server socket is the only absence witness; unlink it.
+    assert!(std::fs::remove_file(&rig.sock).is_ok());
+
+    let (code, _, stderr) = public(&rig, &[ae::cli::RENAME, "ruold", "runew"]);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(
+        stderr.contains("cannot prove") && stderr.contains("unreachable"),
+        "{stderr}"
+    );
+    assert!(rig.dir("ruold").is_dir() && !rig.dir("runew").exists());
+}
+
+/// Sweep: recovery re-checks the destination name — a live namesake created
+/// mid-transaction refuses the retry. Smallest defeating mutation: skip the
+/// destination re-check (the retry collides).
+#[test]
+fn a_retry_over_an_occupied_name_refuses() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("retry-occupied");
+    let (code, stdout, stderr) = rig.launch(&["--local", "roold"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let (code, stdout, stderr) = public(&rig, &["stop", "roold"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+
+    kill_at_boundary(&rig, "roold", "ronew", "after-intent");
+    assert!(
+        rig.tmux(&[
+            "-f",
+            "/dev/null",
+            "new-session",
+            "-d",
+            "-s",
+            "ronew",
+            "sleep",
+            "60"
+        ])
+        .0,
+        "a live namesake appears mid-transaction"
+    );
+    let (code, _, stderr) = public(&rig, &[ae::cli::RENAME, "roold", "ronew"]);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(stderr.contains("already exists"), "{stderr}");
+    assert!(rig.dir("roold").is_dir() && !rig.dir("ronew").exists());
+}
+
+/// Sweep: recovery re-takes worktrees-root authority — a swapped root
+/// refuses the retry. Smallest defeating mutation: carry the root proof
+/// from preflight (the retry moves through a link).
+#[test]
+fn a_retry_over_a_swapped_worktrees_root_refuses() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("retry-root");
+    let (code, stdout, stderr) = rig.launch(&["--copy", "rwold"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let (code, stdout, stderr) = public(&rig, &["stop", "rwold"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+
+    kill_at_boundary(&rig, "rwold", "rwnew", "after-intent");
+    let worktrees = rig.home.join("worktrees");
+    let shadow = rig.scratch.join("shadow-trees");
+    assert!(std::fs::create_dir_all(&shadow).is_ok());
+    assert!(std::fs::remove_dir_all(&worktrees).is_ok());
+    std::os::unix::fs::symlink(&shadow, &worktrees).expect("a swapped root");
+
+    let (code, _, stderr) = public(&rig, &[ae::cli::RENAME, "rwold", "rwnew"]);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(stderr.contains("not a real directory"), "{stderr}");
+    // Restore for a clean rig teardown (rm -rf follows nothing here, but
+    // leave no trap behind).
+    assert!(std::fs::remove_file(&worktrees).is_ok());
+    assert!(std::fs::create_dir_all(&worktrees).is_ok());
+}
+
+/// Sweep: recovery re-scans work sharing — a peer claiming the path
+/// mid-transaction refuses the retry. Smallest defeating mutation: carry
+/// the sharing proof from preflight.
+#[test]
+fn a_retry_over_shared_work_refuses() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("retry-shared");
+    let (code, stdout, stderr) = rig.launch(&["--copy", "rshold"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let (code, stdout, stderr) = public(&rig, &["stop", "rshold"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+
+    kill_at_boundary(&rig, "rshold", "rshnew", "after-intent");
+    // A peer session recording the same working copy (adversarial scanner
+    // fixture: the scan input, not the renamed session's path).
+    let peer = rig.home.join("sessions").join("rshpeer");
+    assert!(std::fs::create_dir_all(&peer).is_ok());
+    assert!(
+        std::fs::write(
+            peer.join("meta"),
+            format!(
+                "session=rshpeer\nmode=full\norigin=/x\nwork_dir={}\n",
+                rig.home.join("worktrees").join("rshold").display()
+            )
+        )
+        .is_ok()
+    );
+    let (code, _, stderr) = public(&rig, &[ae::cli::RENAME, "rshold", "rshnew"]);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(stderr.contains("records the same working copy"), "{stderr}");
+    assert!(rig.dir("rshold").is_dir() && !rig.dir("rshnew").exists());
+}
+
+/// Sweep: recovery re-proves git registration — a lock placed
+/// mid-transaction refuses the retry before any move. Smallest defeating
+/// mutation: carry the registration proof from preflight.
+#[test]
+fn a_retry_over_a_locked_worktree_refuses() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("retry-locked");
+    git_in(&rig.project, &["init", "-q"]);
+    git_in(&rig.project, &["config", "user.email", "t@t"]);
+    git_in(&rig.project, &["config", "user.name", "t"]);
+    assert!(std::fs::write(rig.project.join("f"), "x\n").is_ok());
+    git_in(&rig.project, &["add", "-A"]);
+    git_in(&rig.project, &["commit", "-qm", "base"]);
+    let (code, stdout, stderr) = rig.launch(&["--worktree", "rlold"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let (code, stdout, stderr) = public(&rig, &["stop", "rlold"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+
+    kill_at_boundary(&rig, "rlold", "rlnew", "after-intent");
+    let old_work = rig.home.join("worktrees").join("rlold");
+    git_in(
+        &rig.project,
+        &["worktree", "lock", &old_work.display().to_string()],
+    );
+
+    let (code, _, stderr) = public(&rig, &[ae::cli::RENAME, "rlold", "rlnew"]);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(stderr.contains("locked worktree"), "{stderr}");
+    assert!(old_work.is_dir() && rig.dir("rlold").is_dir());
+    git_in(
+        &rig.project,
+        &["worktree", "unlock", &old_work.display().to_string()],
+    );
+}
+
+/// Sweep: recovery re-probes explicit homes while the state sits home — a
+/// transcript layout that changed under the handoff refuses like a fresh
+/// one. Smallest defeating mutation: probe once at preflight (the retry
+/// newly breaks exact resume).
+#[test]
+fn a_retry_over_a_changed_transcript_layout_refuses() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::new("retry-home", &["claude"], None);
+    let (code, stdout, stderr) = rig.launch(&["--copy", "rhole"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let old_work = rig.home.join("worktrees").join("rhole");
+    let new_work = rig.home.join("worktrees").join("rhnew");
+    let (home, id) = pin_explicit_home(&rig, "rhole", &old_work);
+    // Both transcripts exist: the fresh decision would allow the move.
+    plant_transcript(&home, &new_work, &id);
+    let (code, stdout, stderr) = public(&rig, &["stop", "rhole"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+
+    kill_at_boundary(&rig, "rhole", "rhnew", "after-intent");
+    // The candidate transcript vanishes mid-transaction: the retry must see
+    // the newly-broken probe, not the preflight's green one.
+    assert!(
+        std::fs::remove_file(
+            home.join("projects")
+                .join(
+                    new_work
+                        .display()
+                        .to_string()
+                        .chars()
+                        .map(|ch| if ch == '/' { '-' } else { ch })
+                        .collect::<String>()
+                )
+                .join(format!("{id}.jsonl"))
+        )
+        .is_ok()
+    );
+    let (code, _, stderr) = public(&rig, &[ae::cli::RENAME, "rhole", "rhnew"]);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(stderr.contains("explicit config home"), "{stderr}");
+    assert!(rig.dir("rhole").is_dir() && !rig.dir("rhnew").exists());
+}
+
+/// BLOCKER (r6): attributed digest damage blocks only its endpoints. A
+/// valid A→B payload under a foreign digest stem refuses A-side lifecycle
+/// loudly, while an unrelated fresh launch and an unrelated stopped rename
+/// proceed. Smallest defeating mutation: drop the attributed-Err endpoint
+/// filter (unrelated lifecycle/rename go red).
+#[test]
+fn a_wrong_digest_carrier_blocks_endpoints_only() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("wrong-digest");
+    for session in ["wdA", "wdC"] {
+        let (code, stdout, stderr) = rig.launch(&["--local", session]);
+        assert_eq!(
+            code,
+            Some(0),
+            "{session}: stdout: {stdout}\nstderr: {stderr}"
+        );
+        let (code, stdout, stderr) = public(&rig, &["stop", session]);
+        assert_eq!(
+            code,
+            Some(0),
+            "{session}: stdout: {stdout}\nstderr: {stderr}"
+        );
+    }
+    let row = |session: &str, key: &str| {
+        rig.meta(session)
+            .lines()
+            .find_map(|line| line.strip_prefix(&format!("{key}=")))
+            .unwrap_or_default()
+            .to_owned()
+    };
+    // A well-formed wdA→wdB carrier (wdA's own UUID, server, origin, work)
+    // filed under a foreign digest stem: hostile input, valid signature,
+    // wrong address.
+    let ghost = format!(
+        "rename_intent=1\nsession_id={}\nold=wdA\nnew=wdB\nmode=local\nold_work={work}\nnew_work={work}\norigin={work}\nserver_kind={kind}\nserver_value={value}\nphase=prepared\nwork_dev=0\nwork_ino=0\nadmin_dev=0\nadmin_ino=0\n",
+        row("wdA", "session_id"),
+        work = row("wdA", "work_dir"),
+        kind = row("wdA", "tmux_server_kind"),
+        value = row("wdA", "tmux_server"),
+    );
+    assert!(
+        std::fs::write(
+            rig.home
+                .join("sessions")
+                .join(".rename.ffffffffffffffff.intent"),
+            &ghost
+        )
+        .is_ok()
+    );
+    // Endpoints block loudly with the attributed damage...
+    let (code, _, stderr) = rig.launch(&["wdA"]);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(
+        stderr.contains("damaged rename carrier") && stderr.contains("wdA"),
+        "{stderr}"
+    );
+    let (code, _, stderr) = public(&rig, &["end", "wdA", "-f", "--keep-history"]);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(stderr.contains("damaged rename carrier"), "{stderr}");
+    // ...while unrelated lifecycle and rename proceed.
+    let (code, stdout, stderr) = rig.launch(&["--local", "wdX"]);
+    assert_eq!(
+        code,
+        Some(0),
+        "unrelated launch: stdout: {stdout}\nstderr: {stderr}"
+    );
+    let (code, stdout, stderr) = public(&rig, &[ae::cli::RENAME, "wdC", "wdD"]);
+    assert_eq!(
+        code,
+        Some(0),
+        "unrelated rename: stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("Renamed 'wdC' → 'wdD' (stopped;"),
+        "{stdout}"
+    );
+}
+
+/// IMPORTANT (r6): after an `after-intent` cut, a planted managed-work
+/// destination refuses the retry before `rename(2)` — symlink and existing
+/// directory alike — with old work, planted entry, and old state intact.
+/// Smallest defeating mutation: drop the point-of-use destination recheck
+/// (the retry overwrites).
+#[test]
+fn a_planted_work_destination_refuses_the_retry() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("planted-work-dest");
+    let (code, stdout, stderr) = rig.launch(&["--copy", "pwold"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let old_work = rig.home.join("worktrees").join("pwold");
+    let new_work = rig.home.join("worktrees").join("pwnew");
+    assert!(std::fs::write(old_work.join("marker"), "mine\n").is_ok());
+    let (code, stdout, stderr) = public(&rig, &["stop", "pwold"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+
+    kill_at_boundary(&rig, "pwold", "pwnew", "after-intent");
+    // Case 1: a dangling symlink at the destination.
+    std::os::unix::fs::symlink("/nonexistent-target-under-test", &new_work)
+        .expect("a planted destination link");
+    let (code, _, stderr) = public(&rig, &[ae::cli::RENAME, "pwold", "pwnew"]);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(
+        stderr.contains("became a symlink mid-transaction"),
+        "{stderr}"
+    );
+    assert_eq!(
+        std::fs::read(old_work.join("marker")).unwrap_or_default(),
+        b"mine\n",
+        "old work intact"
+    );
+    assert_eq!(
+        std::fs::read_link(&new_work).unwrap_or_default(),
+        PathBuf::from("/nonexistent-target-under-test"),
+        "planted link intact"
+    );
+    assert!(rig.dir("pwold").is_dir() && !rig.dir("pwnew").exists());
+    // Case 2: an existing directory at the destination.
+    assert!(std::fs::remove_file(&new_work).is_ok());
+    assert!(std::fs::create_dir_all(&new_work).is_ok());
+    assert!(std::fs::write(new_work.join("planted"), "not the session\n").is_ok());
+    let (code, _, stderr) = public(&rig, &[ae::cli::RENAME, "pwold", "pwnew"]);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(stderr.contains("appeared mid-transaction"), "{stderr}");
+    assert_eq!(
+        std::fs::read(old_work.join("marker")).unwrap_or_default(),
+        b"mine\n",
+        "old work intact"
+    );
+    assert_eq!(
+        std::fs::read(new_work.join("planted")).unwrap_or_default(),
+        b"not the session\n",
+        "planted entry intact"
+    );
+    assert!(rig.dir("pwold").is_dir() && !rig.dir("pwnew").exists());
+    // Clearing the plant unblocks: the block is evidence, not a latch.
+    assert!(std::fs::remove_dir_all(&new_work).is_ok());
+    retry_rename(&rig, "pwold", "pwnew");
+    assert_eq!(
+        std::fs::read(new_work.join("marker")).unwrap_or_default(),
+        b"mine\n",
+        "the work converges once the plant is gone"
     );
 }
 

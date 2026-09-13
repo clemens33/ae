@@ -225,6 +225,16 @@ pub(crate) fn run(
         vec![args.target.clone()]
     };
 
+    // A pending rename transaction owns its names until its proved retry
+    // converges: an end must not tear down a mixed generation as ordinary
+    // state.
+    for target in &targets {
+        if let Some(blocked) = crate::rename::intent_blocks(root, target) {
+            writeln!(err, "Error: {blocked}. Nothing was ended.")?;
+            return Ok(crate::state::EXIT_FAILED);
+        }
+    }
+
     // ONE resolution: the prompt renders from these fields and the frozen
     // contract is built from the same ones.
     let frozen: Vec<(String, Plan)> = targets

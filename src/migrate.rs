@@ -424,6 +424,73 @@ fn skipped_unreadable(name: &str, why: &std::io::Error) -> String {
     format!("skipped {name}: meta unreadable ({why}), not running — end it (ae end {name})")
 }
 
+/// Session names a pending rename transaction owns: both endpoints of every
+/// pending carrier, plus attributable damaged carriers. Unattributable
+/// (digest-shape) damage names no session to skip, so the sweep refuses
+/// rather than migrating blind.
+fn pending_rename_names(root: &Path) -> Result<Vec<String>, String> {
+    let mut names: Vec<String> = Vec::new();
+    for intent in crate::rename::pending_intents(root) {
+        for name in [intent.old_name(), intent.new_name()] {
+            if !names.iter().any(|held| held == name) {
+                names.push(name.to_owned());
+            }
+        }
+    }
+    for damaged in crate::rename::pending_damaged(root) {
+        match (damaged.old, damaged.new) {
+            (Some(old), Some(new)) => {
+                for name in [old, new] {
+                    if !names.iter().any(|held| held == &name) {
+                        names.push(name);
+                    }
+                }
+            }
+            _ => {
+                return Err(format!(
+                    "an unattributable damaged rename carrier is pending ({}) — repair or remove it by hand before upgrading",
+                    damaged.why
+                ));
+            }
+        }
+    }
+    Ok(names)
+}
+
+/// The skip note for a session a pending rename owns, if any.
+fn pending_rename_note(root: &Path, name: &str) -> Option<String> {
+    crate::rename::pending_intents(root)
+        .into_iter()
+        .find(|intent| intent.old_name() == name || intent.new_name() == name)
+        .map(|intent| {
+            format!(
+                "skipped {name}: rename '{}' → '{}' is in progress at phase '{}' — retry 'ae rename {} {}' before upgrading",
+                intent.old_name(),
+                intent.new_name(),
+                intent.phase(),
+                intent.old_name(),
+                intent.new_name()
+            )
+        })
+        .or_else(|| {
+            crate::rename::pending_damaged(root)
+                .into_iter()
+                .find(|damaged| {
+                    damaged.old.as_deref() == Some(name) || damaged.new.as_deref() == Some(name)
+                })
+                .map(|damaged| {
+                    let scope = match (&damaged.old, &damaged.new) {
+                        (Some(old), Some(new)) => format!("for '{old}' → '{new}'"),
+                        _ => "that names no attributable pair".to_owned(),
+                    };
+                    format!(
+                        "skipped {name}: a damaged rename carrier {scope} is pending ({}) — repair or remove it by hand before upgrading",
+                        damaged.why
+                    )
+                })
+        })
+}
+
 /// The existing abort line for a meta read failure.
 fn unreadable_refusal(name: &str, why: &std::io::Error) -> String {
     Refusal::Io(format!("meta could not be read: {why}")).line(name)
@@ -451,12 +518,22 @@ fn unreadable_refusal(name: &str, why: &std::io::Error) -> String {
 ///
 /// The first non-skippable session that could not be migrated, named — nothing
 /// after it is attempted.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the two-pass publish sweep reads as one order: placement proof, then locked repoint with its skips"
+)]
 pub fn onto(root: &Path, core: &Path, version: &str) -> Result<Vec<String>, String> {
     // PASS ONE, READ-ONLY: every session is asked whether the chain can place
     // it, and NOTHING is written until they all can. Without this the sweep
     // could repoint the first sessions and then refuse on the fourth, leaving
     // them pointing into a version directory the publish is about to roll back
     // — which is the one outcome "aborts before the repoint" must not mean.
+    //
+    // A pending rename transaction owns its names until its proved retry
+    // converges: those sessions skip both passes untouched (reported below
+    // like any unplaceable session). An unattributable damaged carrier names
+    // no session to skip, so the sweep refuses rather than migrating blind.
+    let pending = pending_rename_names(root)?;
     let census = taken(root).map_err(|why| {
         format!(
             "the sessions under {} could not be enumerated ({why}); nothing was migrated and the ae command was not moved",
@@ -464,6 +541,9 @@ pub fn onto(root: &Path, core: &Path, version: &str) -> Result<Vec<String>, Stri
         )
     })?;
     for name in &census {
+        if pending.iter().any(|held| held == name) {
+            continue;
+        }
         let dir = crate::lifecycle::sessions_dir(root).join(name);
         let text = match crate::meta::read_bytes(&dir) {
             Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
@@ -496,6 +576,12 @@ pub fn onto(root: &Path, core: &Path, version: &str) -> Result<Vec<String>, Stri
     // one line with a number on it.
     let mut stamped = 0_usize;
     for name in census {
+        // Pending rename names skip untouched (reported, like any
+        // unplaceable session) before any lock, read, or write.
+        if let Some(note) = pending_rename_note(root, &name) {
+            notes.push(note);
+            continue;
+        }
         let dir = crate::lifecycle::sessions_dir(root).join(&name);
         // The lifecycle lock, so a resume or an end cannot land inside a
         // migration. A session whose lock is held is a session in the middle

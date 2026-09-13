@@ -248,6 +248,36 @@ fn an_installed_ae_ignores_the_home_and_server_doors_and_says_which() {
     );
 }
 
+/// A2: the installed core never reads the crash seam. An armed value emits
+/// no attestation and parks nothing; an invalid ambient value cannot enable
+/// a hook or change the normal rename — the outputs are identical with and
+/// without the variable. Smallest defeating mutation: gate the seam on the
+/// variable without the `honours_environment` check.
+#[test]
+fn an_installed_rename_ignores_the_crash_seam() {
+    let rig = Install::plant("rename-seam");
+    let plain = rig.run(&[], &["rename", "nosuch", "new"]);
+    for var in ["after-intent", "bogus-boundary"] {
+        let (code, out, err) = rig.run(
+            &[("AE_TEST_RENAME_CRASH_AT", var)],
+            &["rename", "nosuch", "new"],
+        );
+        assert_eq!(
+            (code, out.as_str(), err.as_str()),
+            (plain.0, plain.1.as_str(), plain.2.as_str()),
+            "var {var:?} changed an installed rename"
+        );
+        assert!(
+            !err.contains("rename-crash-boundary") && !err.contains("rename-crash-timeout"),
+            "no attestation from an installed core (var {var:?}): {err}"
+        );
+        assert!(
+            !err.contains("AE_TEST_RENAME_CRASH_AT"),
+            "no seam refusal from an installed core (var {var:?}): {err}"
+        );
+    }
+}
+
 #[test]
 fn installed_init_reports_ignored_config_doors_and_writes_the_pinned_path() {
     use std::os::unix::fs::PermissionsExt as _;

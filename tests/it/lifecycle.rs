@@ -1273,6 +1273,332 @@ fn a_session_that_records_no_server_still_renames_on_the_ambient_one() {
     assert!(exists(&rig.home.join("sessions").join("ambmoved")));
 }
 
+/// A0: renaming a session to its own name is a validated immediate no-op, not
+/// a second lock on the same lifecycle file (which waits out the lock bound
+/// and then blames another operation). Smallest defeating mutation: acquire
+/// the second old/new lock when the names are equal.
+#[test]
+fn rename_with_the_same_name_is_an_immediate_validated_no_op() {
+    let rig = Rig::new("samen");
+    let before = std::fs::read_to_string(rig.dir.join("meta")).expect("the meta");
+    let (code, out, err) = rig.run(&["rename", &rig.name, &rig.name]);
+    assert_eq!(code, Some(0), "stdout: {out}\nstderr: {err}");
+    assert!(
+        out.contains(&format!("already named '{}'", rig.name)),
+        "an explicit no-op, not a lifecycle error: {out}"
+    );
+    assert!(err.is_empty(), "no warning on a clean no-op: {err}");
+    assert!(rig.session_is_live(), "the session keeps running");
+    assert_eq!(
+        std::fs::read_to_string(rig.dir.join("meta")).expect("the meta"),
+        before,
+        "the no-op writes nothing"
+    );
+}
+
+/// A0: the same-name no-op needs no live session, and an armed crash seam
+/// stays silent on a no-op — a no-op performs no transaction and emits no
+/// fabricated boundary. Smallest defeating mutation: attest the armed value
+/// without performing its named publication.
+#[test]
+fn rename_with_the_same_name_is_a_no_op_stopped_and_armed() {
+    let rig = Rig::new("samenstop");
+    assert!(
+        rig.tmux(&["kill-session", "-t", &format!("={}", rig.name)])
+            .0,
+        "stop the session outside ae"
+    );
+    let mut cmd = ae();
+    cmd.env("AE_HOME", &rig.home);
+    cmd.env("AE_TEST_RENAME_CRASH_AT", "after-intent");
+    cmd.env_remove("TMUX");
+    cmd.env_remove("TMUX_PANE");
+    for arg in ["rename", &rig.name, &rig.name] {
+        cmd.arg(arg);
+    }
+    let out = bounded(
+        cmd.stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("the ae binary should run"),
+        Duration::from_secs(30),
+    )
+    .expect("the core returned");
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains(&format!("already named '{}'", rig.name)),
+        "{stdout}"
+    );
+    assert!(
+        !stderr.contains("rename-crash-boundary"),
+        "a no-op emits no boundary: {stderr}"
+    );
+}
+
+/// A0: the same-name no-op still validates its source — an unknown name is a
+/// refusal, not a success.
+#[test]
+fn rename_with_the_same_name_refuses_a_missing_source() {
+    let rig = Rig::new("samenmiss");
+    let (code, out, err) = rig.run(&["rename", "nosuch", "nosuch"]);
+    assert_eq!(code, Some(1), "stdout: {out}\nstderr: {err}");
+    assert!(out.is_empty(), "nothing was renamed: {out}");
+    assert!(err.contains("Nothing was renamed"), "{err}");
+}
+
+/// Run `rename` with extra environment (the crash seam lives in it).
+fn rename_with_env(
+    rig: &Rig,
+    extra: &[(&str, &str)],
+    old: &str,
+    new: &str,
+) -> (Option<i32>, String, String) {
+    let mut cmd = ae();
+    cmd.env("AE_HOME", &rig.home);
+    cmd.env_remove("TMUX");
+    cmd.env_remove("TMUX_PANE");
+    for (key, value) in extra {
+        cmd.env(key, value);
+    }
+    for arg in ["rename", old, new] {
+        cmd.arg(arg);
+    }
+    let out = bounded(
+        cmd.stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("the ae binary should run"),
+        Duration::from_secs(30),
+    )
+    .expect("the core returned");
+    (
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+/// A2: an unknown, empty or combined crash value refuses before rename side
+/// effects in CHECKOUT. Smallest defeating mutation: accept any nonempty
+/// value as armed.
+#[test]
+fn rename_with_a_malformed_crash_value_refuses_before_side_effects() {
+    let rig = Rig::new("badseam");
+    let meta_before = std::fs::read_to_string(rig.dir.join("meta")).expect("the meta");
+    for value in ["bogus", "", "after-intent,after-meta", "after-intent "] {
+        let (code, out, err) = rename_with_env(
+            &rig,
+            &[("AE_TEST_RENAME_CRASH_AT", value)],
+            &rig.name,
+            "fresh",
+        );
+        assert_eq!(
+            code,
+            Some(1),
+            "value {value:?}: stdout: {out}\nstderr: {err}"
+        );
+        assert!(
+            err.contains("is not a rename crash boundary") && err.contains("Nothing was renamed"),
+            "value {value:?}: {err}"
+        );
+        assert!(out.is_empty(), "value {value:?}: {out}");
+    }
+    assert!(rig.session_is_live(), "the live session survives");
+    assert_eq!(
+        std::fs::read_to_string(rig.dir.join("meta")).expect("the meta"),
+        meta_before,
+        "no write past a malformed seam"
+    );
+    assert!(
+        !rig.home
+            .join("sessions")
+            .join(format!(".rename.{}.fresh.intent", rig.name))
+            .exists(),
+        "no intent past a malformed seam"
+    );
+}
+
+/// A2: an armed seam over a LIVE source refuses before mutation — the cuts
+/// name stopped facts only, and a live rename no cut covers must not run
+/// armed. Smallest defeating mutation: ignore the armed value on the live
+/// path.
+#[test]
+fn rename_armed_over_a_live_source_refuses_before_mutation() {
+    let rig = Rig::new("liveseam");
+    let meta_before = std::fs::read_to_string(rig.dir.join("meta")).expect("the meta");
+    let (code, out, err) = rename_with_env(
+        &rig,
+        &[("AE_TEST_RENAME_CRASH_AT", "after-intent")],
+        &rig.name,
+        "fresh",
+    );
+    assert_eq!(code, Some(1), "stdout: {out}\nstderr: {err}");
+    assert!(
+        err.contains("is live") && err.contains("Nothing was renamed"),
+        "{err}"
+    );
+    assert!(
+        !err.contains("rename-crash-boundary"),
+        "no cut fires: {err}"
+    );
+    assert!(rig.session_is_live(), "the live session survives");
+    assert_eq!(
+        std::fs::read_to_string(rig.dir.join("meta")).expect("the meta"),
+        meta_before
+    );
+}
+
+/// A2: `after-work-move` arms nothing committable in local mode, so it
+/// refuses before side effects. Smallest defeating mutation: let a local
+/// rename arm the work-move cut and hang waiting for its attestation.
+#[test]
+fn rename_armed_for_a_work_move_refuses_a_local_mode_before_side_effects() {
+    let rig = Rig::new("localseam");
+    assert!(
+        rig.tmux(&["kill-session", "-t", &format!("={}", rig.name)])
+            .0,
+        "stop the session outside ae"
+    );
+    let (code, out, err) = rename_with_env(
+        &rig,
+        &[("AE_TEST_RENAME_CRASH_AT", "after-work-move")],
+        &rig.name,
+        "fresh",
+    );
+    assert_eq!(code, Some(1), "stdout: {out}\nstderr: {err}");
+    assert!(
+        err.contains("names a work move") && err.contains("mode=local"),
+        "{err}"
+    );
+    assert!(
+        !rig.home
+            .join("sessions")
+            .join(format!(".rename.{}.fresh.intent", rig.name))
+            .exists(),
+        "no intent past the refusal"
+    );
+}
+
+/// A1: an unreachable recorded server is unknown liveness, not stopped — the
+/// rename refuses before mutation. Smallest defeating mutation: treat a
+/// failed tmux query as absence.
+#[test]
+fn rename_with_an_unreachable_server_refuses_unknown_liveness() {
+    let rig = Rig::new("noserver");
+    assert!(
+        rig.tmux(&["kill-session", "-t", &format!("={}", rig.name)])
+            .0,
+        "stop the session outside ae"
+    );
+    // Re-point the record at a socket that can never answer.
+    let meta = std::fs::read_to_string(rig.dir.join("meta")).expect("the meta");
+    let dead = meta.replace(
+        &rig.sock.display().to_string(),
+        "/tmp/ae-rename-noserver/dead.sock",
+    );
+    assert_ne!(dead, meta, "the record named the rig socket");
+    assert!(std::fs::write(rig.dir.join("meta"), dead).is_ok());
+    let (code, out, err) = rig.run(&["rename", &rig.name, "fresh"]);
+    assert_eq!(code, Some(1), "stdout: {out}\nstderr: {err}");
+    assert!(
+        err.contains("cannot prove")
+            && err.contains("stopped")
+            && err.contains("Nothing was renamed"),
+        "{err}"
+    );
+    assert!(rig.dir.is_dir(), "the state stays put");
+    assert!(!rig.home.join("sessions").join("fresh").exists());
+}
+
+/// A1: a missing source directory refuses before mutation.
+#[test]
+fn rename_with_a_missing_source_directory_refuses() {
+    let rig = Rig::new("nosource");
+    let (code, out, err) = rig.run(&["rename", "nosuch", "fresh"]);
+    assert_eq!(code, Some(1), "stdout: {out}\nstderr: {err}");
+    assert!(err.contains("has no state directory"), "{err}");
+}
+
+/// IMPORTANT (r2-6): duplicated `origin` rows — equal or differing — refuse
+/// before intent or work publication: the row drives git operations and
+/// config discovery. Smallest defeating mutation: drop `origin` from the
+/// exact-one set.
+#[test]
+fn rename_with_duplicated_origin_rows_refuses() {
+    for (tag, extra) in [
+        ("dupeqorg", "origin=/tmp/ae-rename-dupeqorg\n"),
+        ("dupdifforg", "origin=/elsewhere\n"),
+    ] {
+        let rig = Rig::new(tag);
+        assert!(
+            rig.tmux(&["kill-session", "-t", &format!("={}", rig.name)])
+                .0,
+            "stop the session outside ae"
+        );
+        let meta_before = std::fs::read_to_string(rig.dir.join("meta")).expect("the meta");
+        assert!(std::fs::write(rig.dir.join("meta"), format!("{meta_before}{extra}")).is_ok());
+        let (code, out, err) = rig.run(&["rename", &rig.name, "fresh"]);
+        assert_eq!(code, Some(1), "{tag}: stdout: {out}\nstderr: {err}");
+        assert!(
+            err.contains("duplicated 'origin'") && err.contains("Nothing was renamed"),
+            "{tag}: {err}"
+        );
+        assert!(
+            !rig.home.join("sessions").join("fresh").exists(),
+            "{tag}: no move"
+        );
+    }
+}
+
+/// IMPORTANT I5: duplicated `session_id` rows — equal or differing — refuse
+/// without mutation. Stable identity with two UUID claims is unknown, not
+/// the first claim. Smallest defeating mutation: first-row-wins identity.
+#[test]
+fn rename_with_duplicated_session_id_rows_refuses() {
+    for (tag, extra) in [
+        (
+            "dupeq",
+            "session_id=e795c9e9-1234-4890-abcd-ef0123456789\nsession_id=e795c9e9-1234-4890-abcd-ef0123456789\n",
+        ),
+        (
+            "dupdiff",
+            "session_id=e795c9e9-1234-4890-abcd-ef0123456789\nsession_id=0199c0de-1234-4890-abcd-ef0123456789\n",
+        ),
+    ] {
+        let rig = Rig::new(tag);
+        assert!(
+            rig.tmux(&["kill-session", "-t", &format!("={}", rig.name)])
+                .0,
+            "stop the session outside ae"
+        );
+        let meta_before = std::fs::read_to_string(rig.dir.join("meta")).expect("the meta");
+        assert!(std::fs::write(rig.dir.join("meta"), format!("{meta_before}{extra}")).is_ok());
+        let (code, out, err) = rig.run(&["rename", &rig.name, "fresh"]);
+        assert_eq!(code, Some(1), "{tag}: stdout: {out}\nstderr: {err}");
+        assert!(
+            err.contains("duplicated 'session_id'") && err.contains("Nothing was renamed"),
+            "{tag}: {err}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(rig.dir.join("meta")).expect("the meta"),
+            format!("{meta_before}{extra}"),
+            "{tag}: the damaged meta is reported, not rewritten"
+        );
+        assert!(
+            !rig.home.join("sessions").join("fresh").exists(),
+            "{tag}: no move"
+        );
+    }
+}
+
 /// B2, the watchdog half: start, stop and status all address the session by
 /// name on the server the record names, so an unresolvable record has to stop
 /// them too.

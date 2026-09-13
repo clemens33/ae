@@ -296,6 +296,58 @@ fn snapshot(root: &Path) -> Vec<SnapshotEntry> {
 
 // ─── the chain itself ────────────────────────────────────────────────────
 
+/// IMPORTANT (r2-8): the publish sweep reports a pending rename's sessions
+/// and skips them untouched — no migration, repoint, or helper write — while
+/// placeable sessions still move. Smallest defeating mutation: drop the
+/// pending skip from either sweep pass.
+#[test]
+fn a_pending_rename_is_reported_and_skipped_by_a_publish() {
+    let rig = Rig::new("skip-pending-rename");
+    let stale = rig.plant_version("2026.1.1");
+    let healthy = rig.session(
+        "healthy",
+        &stale.join("ae-core").to_string_lossy(),
+        Some(ae::migrate::CURRENT),
+    );
+    let pending = rig.session(
+        "pendold",
+        &stale.join("ae-core").to_string_lossy(),
+        Some(ae::migrate::CURRENT),
+    );
+    // A well-formed prepared carrier over the pending session: hostile-shaped
+    // but valid input for the admission owner under test.
+    let carrier = "rename_intent=1\nsession_id=e795c9e9-1234-4890-abcd-ef0123456789\nold=pendold\nnew=pendnew\nmode=local\nold_work=/w\nnew_work=/w\norigin=/w\nserver_kind=ambient\nserver_value=\nphase=prepared\nwork_dev=0\nwork_ino=0\nadmin_dev=0\nadmin_ino=0\n";
+    assert!(
+        fs::write(
+            rig.root()
+                .join("sessions")
+                .join(".rename.pendold.pendnew.intent"),
+            carrier
+        )
+        .is_ok(),
+        "a carrier"
+    );
+    let before = snapshot(&pending);
+
+    let (code, stdout, stderr) = rig.install(&rig.bundle("2026.9.9"));
+    assert_eq!(code, Some(0), "the publish failed: {stdout}{stderr}");
+    assert!(
+        stdout.contains("skipped pendold: rename 'pendold' → 'pendnew' is in progress"),
+        "the skip was reported: {stdout}"
+    );
+    assert_eq!(
+        snapshot(&pending),
+        before,
+        "the pending session changed under the sweep"
+    );
+    let published = rig.versions().join("2026.9.9").join("ae-core");
+    assert_eq!(
+        value_of(&meta_of(&healthy), "ae_core").as_deref(),
+        Some(published.to_string_lossy().as_ref()),
+        "the placeable session was still repointed"
+    );
+}
+
 #[test]
 fn a_session_at_the_current_version_is_left_byte_for_byte_alone() {
     let rig = Rig::new("noop");

@@ -413,13 +413,16 @@ fn rename_refuses_a_target_that_is_already_live_and_moves_nothing() {
     );
 }
 
+/// Slice A: a stopped source without a stable UUID refuses explicitly rather
+/// than minting one implicitly — the legacy-shape fixture below carries no
+/// `session_id`, and the rename must not invent it.
 #[test]
-fn rename_refuses_a_source_that_is_not_running() {
+fn rename_refuses_a_source_without_a_stable_uuid() {
     let rig = Rig::new("renamedead");
     rig.session("parked", "");
     let (code, _, stderr) = rig.run(&[ae::cli::RENAME, "parked", "elsewhere"]);
     assert_eq!(code, Some(1));
-    assert!(stderr.contains("is not running"), "{stderr}");
+    assert!(stderr.contains("no stable session UUID"), "{stderr}");
     assert!(
         !rig.home.join("sessions").join("elsewhere").exists(),
         "nothing was created"

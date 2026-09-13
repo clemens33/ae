@@ -1236,8 +1236,11 @@ fn criterion_14_the_named_read_functions_appear_only_where_they_should() {
     );
     assert_eq!(
         sites(concat!("SessionRead", "::open(")),
-        vec![("session.rs".to_owned(), 1)],
-        "and so is the event stream"
+        vec![("rename.rs".to_owned(), 2), ("session.rs".to_owned(), 1)],
+        "and so is the event stream — plus the stopped rename's two ledger \
+         reads (its own source log and one peer-log probe), which go through \
+         the same reader rather than around it: refusing a rename over a \
+         pending legacy request must see both, and the count pins both"
     );
     assert_eq!(
         sites(concat!("RecordSnapshot", "::read(")),

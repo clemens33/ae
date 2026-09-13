@@ -1,0 +1,15 @@
+rename_intent=1
+session_id=0199c0de-1234-4890-abcd-ef0123456789
+old=sgitold
+new=sgitnew
+mode=git
+old_work=/tmp/ae/worktrees/sgitold
+new_work=/tmp/ae/worktrees/sgitnew
+origin=/tmp/ae/project
+server_kind=name
+server_value=ae-test
+phase=work-moved
+work_dev=16777230
+work_ino=100666701
+admin_dev=16777230
+admin_ino=100666699

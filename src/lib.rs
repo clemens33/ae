@@ -2555,6 +2555,29 @@ pub fn run_with(
                 {
                     writeln!(err, "{warning}")?;
                 }
+                // A pending rename transaction is not ordinary state: surface
+                // it on STDERR with its proved retry rather than letting the
+                // table read as settled.
+                if let Some(root) = state_root() {
+                    for intent in crate::rename::pending_intents(&root) {
+                        writeln!(
+                            err,
+                            "ae: warning: rename '{}' → '{}' is in progress at phase '{}' — retry 'ae rename {} {}'",
+                            intent.old_name(),
+                            intent.new_name(),
+                            intent.phase(),
+                            intent.old_name(),
+                            intent.new_name()
+                        )?;
+                    }
+                    for damaged in crate::rename::pending_damaged(&root) {
+                        writeln!(
+                            err,
+                            "ae: warning: a damaged rename carrier is pending ({}) — repair or remove it by hand",
+                            damaged.why
+                        )?;
+                    }
+                }
                 write!(out, "{}", listing::render(list_args, world))?;
                 0
             } else {

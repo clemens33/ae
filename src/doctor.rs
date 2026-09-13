@@ -715,11 +715,46 @@ pub fn run(
     let facts = gather(root, args.global.as_deref(), args.local.as_deref());
     let mut document = report(&facts);
     append_autoupgrade_status(crate::shape::current(), &mut document);
+    report_pending_renames(root, &mut document);
     if let Some(target) = &args.refresh {
         refresh(root, target, args.global.as_deref(), &mut document);
     }
     write!(out, "{}", document.render())?;
     Ok(document.exit_code())
+}
+
+/// Pending rename transactions, if any: each names its phase and the proved
+/// retry. Read-only — doctor never converges one itself (`doctor --refresh`
+/// acquires no rename powers).
+fn report_pending_renames(root: &Path, document: &mut Report) {
+    for intent in crate::rename::pending_intents(root) {
+        document.push(
+            Level::Fail,
+            &format!("rename:{}:{}", intent.old_name(), intent.new_name()),
+            &format!(
+                "rename '{}' → '{}' is in progress at phase '{}' — retry 'ae rename {} {}' to converge it forward",
+                intent.old_name(),
+                intent.new_name(),
+                intent.phase(),
+                intent.old_name(),
+                intent.new_name()
+            ),
+        );
+    }
+    for damaged in crate::rename::pending_damaged(root) {
+        let scope = match (&damaged.old, &damaged.new) {
+            (Some(old), Some(new)) => format!("for '{old}' → '{new}'"),
+            _ => "that names no attributable pair".to_owned(),
+        };
+        document.push(
+            Level::Fail,
+            "rename:damaged",
+            &format!(
+                "a damaged rename carrier {scope} is pending ({}) — repair or remove it by hand; no lifecycle operation may proceed over it",
+                damaged.why
+            ),
+        );
+    }
 }
 
 fn append_autoupgrade_status(shape: &crate::shape::Shape, document: &mut Report) {

@@ -1103,11 +1103,34 @@ Rename a session: the tmux session, the session directory, `session=` in meta, t
 regenerated `workspace.md`, and the status bar, all under the session's lifecycle lock as one
 core operation. The running tmux server stays up. `[old]` is optional — run it inside the
 session you mean and the core resolves it. The new name must satisfy the session-name
-grammar, and the error echoes it verbatim when it does not.
+grammar, and the error echoes it verbatim when it does not. Renaming a session to its
+own name is a validated no-op: it reports success without locking twice, moving
+anything, or restarting anything.
 
-A git worktree or full-copy directory keeps its original path when the session is renamed.
-That path is recorded session state, so a later `stop` and resume returns every agent to the
-same working directory instead of creating a second copy under the new session name.
+A positively stopped session renames too — it stays stopped, starts no agent, monitor,
+or provider, and keeps its UUID, conversation files, history, and repository contents.
+The managed working copy converges to the fresh-name address: a `git` worktree moves by
+`git worktree move` and a full copy moves on its filesystem, both to
+`~/.ae/worktrees/<new>`, preserving HEAD, dirty/untracked/ignored contents, and symlinks.
+Local mode keeps the caller-owned repository path. A later resume, `end`, `list`,
+`doctor`, and archive preview all resolve the new address; teardown containment accepts
+the moved path.
+
+A stopped rename is a recoverable transaction, not an atomic one: durable intent, then
+the work move, the state-directory move, the coherent meta, the checked assets, and the
+durable result. An interrupted rename reports the committed facts and the proved retry —
+re-run the same `ae rename <old> <new>` to converge forward; `doctor` reports a pending
+transaction with the same retry. The rename refuses before any write when the source is
+unknown, the destination is occupied, the work identity is unprovable, a request is
+pending, or an explicit config home would lose exact resume at the new path. An
+implicit-home session renames with a warning: the later resume re-proves the
+conversation with existing provider behavior.
+
+A LIVE session keeps the previous behavior: the tmux session, state directory, meta,
+monitors, and manifest are renamed in place, and a git worktree or full-copy directory
+keeps its original path. That path is recorded session state, so a later `stop` and
+resume returns every agent to the same working directory instead of creating a second
+copy under the new session name. Live renames never move managed work.
 
 ## `ae stop`
 

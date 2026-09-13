@@ -1,0 +1,12 @@
+rename_intent=1
+session_id=e795c9e9-1234-4890-abcd-ef0123456789
+old=slocold
+new=slocnew
+mode=local
+old_work=/tmp/ae/project
+new_work=/tmp/ae/project
+origin=/tmp/ae/project
+server_kind=socket
+server_value=/tmp/ae/sock
+phase=prepared
+locker=main

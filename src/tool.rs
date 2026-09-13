@@ -609,6 +609,32 @@ impl ToolKind {
             Self::Unknown => &UNKNOWN,
         }
     }
+
+    /// Whether an explicit config home for this tool can be newly broken by a
+    /// working-directory change: only the cwd-keyed transcript probe reads
+    /// the candidate cwd, so only it can newly fall back after a move. Every
+    /// other probe (dated rollouts, record-only ids, HOME-anchored stores)
+    /// is provably unaffected by where the work directory spells.
+    #[must_use]
+    pub(crate) const fn explicit_home_is_cwd_keyed(self) -> bool {
+        matches!(self.adapter().resume.probe, StoreProbe::ProjectTranscript)
+    }
+
+    /// Whether this tool classified to a known harness (vs the unknown
+    /// fallback a bare name falls toward).
+    #[must_use]
+    pub(crate) const fn is_known(self) -> bool {
+        !matches!(self, Self::Unknown)
+    }
+
+    /// Whether this tool's seats need generated `opencode.<slot>.md/.json`
+    /// context files: only the config-file channel does. The rename's asset
+    /// check derives required pairs from the seat tool, never from whatever
+    /// files happen to be present.
+    #[must_use]
+    pub(crate) const fn needs_generated_context(self) -> bool {
+        matches!(self.adapter().launch.context, ContextChannel::ConfigFile)
+    }
 }
 
 #[cfg(test)]
@@ -628,6 +654,34 @@ mod tests {
         );
         assert_eq!(ToolKind::from_binary_name("other"), ToolKind::Unknown);
         assert_eq!(ToolKind::Unknown.adapter(), &UNKNOWN);
+    }
+
+    #[test]
+    fn only_the_cwd_keyed_probe_can_break_on_a_directory_move() {
+        // The rename's explicit-home preflight shares this owner: adding a
+        // cwd-keyed probe to another tool must flip its row here.
+        assert!(ToolKind::Claude.explicit_home_is_cwd_keyed());
+        for tool in [
+            ToolKind::Codex,
+            ToolKind::Gemini,
+            ToolKind::Agy,
+            ToolKind::Grok,
+            ToolKind::OpenCode,
+            ToolKind::Unknown,
+        ] {
+            assert!(!tool.explicit_home_is_cwd_keyed(), "{tool:?}");
+        }
+        for tool in [
+            ToolKind::Claude,
+            ToolKind::Codex,
+            ToolKind::Gemini,
+            ToolKind::Agy,
+            ToolKind::Grok,
+            ToolKind::OpenCode,
+        ] {
+            assert!(tool.is_known(), "{tool:?}");
+        }
+        assert!(!ToolKind::Unknown.is_known());
     }
 
     #[test]
