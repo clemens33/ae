@@ -1,6 +1,13 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.65] - 2026-09-13
+
+### Other
+
+- Report retired requests as retired, not pending
+
+Consult the session closure owner for request and brief views. Document the session-less compatibility sensor and its retired status.
 ## [v2026.9.64] - 2026-09-12
 
 ### Other
