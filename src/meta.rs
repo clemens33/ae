@@ -45,6 +45,13 @@ const PROFILE_PREFIX: &str = "profile.";
 const HARNESS_SESSION_PREFIX: &str = "harness_session.";
 const CONFIG_HOME_PREFIX: &str = "config_home.";
 const CONFIG_HOME_BASE_PREFIX: &str = "config_home_base.";
+/// The observed-model pair, as `key<slot>` — the model a live seat actually
+/// ran (`observed_model.`) and the profile's own model flag value at the time
+/// it was observed (`observed_model_pin.`). The two rows are ONE identity:
+/// written together, cleared together. A tool whose model ae cannot observe
+/// writes neither.
+pub const OBSERVED_MODEL_PREFIX: &str = "observed_model.";
+pub const OBSERVED_MODEL_PIN_PREFIX: &str = "observed_model_pin.";
 /// `schema=<n>` — the identity schema the writer used.
 const SCHEMA_KEY: &str = "schema";
 /// The VERSION of the core a session is pinned to, and the shape its meta is
@@ -323,6 +330,10 @@ pub struct Meta {
     started: Option<String>,
     /// Per-seat legacy launch times, retained for the started fallback.
     launch_times: Vec<(String, String)>,
+    /// `observed_model.<slot>` rows, kept RAW until the accessor validates.
+    observed_models: Vec<(String, String)>,
+    /// `observed_model_pin.<slot>` rows, same rule.
+    observed_model_pins: Vec<(String, String)>,
     /// The raw `meta_version=` value — the shape this document is written in.
     declared_version: Option<String>,
     roster: Vec<RosterEntry>,
@@ -454,6 +465,11 @@ impl Meta {
             _ => {
                 if key.strip_prefix(LAUNCH_TIME_PREFIX).is_some() {
                     self.launch_times.retain(|(recorded, _)| recorded != key);
+                } else if key.strip_prefix(OBSERVED_MODEL_PREFIX).is_some() {
+                    self.observed_models.retain(|(recorded, _)| recorded != key);
+                } else if key.strip_prefix(OBSERVED_MODEL_PIN_PREFIX).is_some() {
+                    self.observed_model_pins
+                        .retain(|(recorded, _)| recorded != key);
                 } else if let Some(slot) = key.strip_prefix(ROSTER_BIN_PREFIX) {
                     if let Some(entry) = self.roster.iter_mut().find(|e| e.slot == slot) {
                         entry.binary = None;
@@ -511,6 +527,18 @@ impl Meta {
                     .is_some_and(|slot| !slot.is_empty())
                 {
                     self.launch_times.push((key.to_owned(), value.to_owned()));
+                } else if key
+                    .strip_prefix(OBSERVED_MODEL_PREFIX)
+                    .is_some_and(|slot| !slot.is_empty())
+                {
+                    self.observed_models
+                        .push((key.to_owned(), value.to_owned()));
+                } else if key
+                    .strip_prefix(OBSERVED_MODEL_PIN_PREFIX)
+                    .is_some_and(|slot| !slot.is_empty())
+                {
+                    self.observed_model_pins
+                        .push((key.to_owned(), value.to_owned()));
                 } else if let Some(slot) = key.strip_prefix(ROSTER_BIN_PREFIX) {
                     self.set_binary(slot, value);
                 } else if let Some(slot) = key.strip_prefix(PROFILE_PREFIX) {
@@ -857,6 +885,22 @@ impl Meta {
         self.ae_version.as_deref()
     }
 
+    /// The model a seat was positively observed running, when one unique,
+    /// well-formed `observed_model.<slot>` row says so.
+    ///
+    /// An empty, duplicated or malformed row is ABSENT, never a model: a
+    /// guessed model here would be written into a launch command.
+    #[must_use]
+    pub fn observed_model(&self, slot: &str) -> Option<&str> {
+        observed_row(&self.observed_models, OBSERVED_MODEL_PREFIX, slot)
+    }
+
+    /// The profile's own model flag value, recorded beside the observation.
+    #[must_use]
+    pub fn observed_model_pin(&self, slot: &str) -> Option<&str> {
+        observed_row(&self.observed_model_pins, OBSERVED_MODEL_PIN_PREFIX, slot)
+    }
+
     /// The version of the core binary this session's helpers are pinned to.
     #[must_use]
     pub fn ae_core_version(&self) -> Option<&str> {
@@ -992,6 +1036,23 @@ pub fn sole_value<'a>(text: &'a [u8], key: &str) -> Option<&'a [u8]> {
         found = Some(value);
     }
     found
+}
+
+/// One observed-model row, validated. Duplicates were dropped by the reader,
+/// so a remaining row is unique; a value that fails the row grammar reads as
+/// absent.
+fn observed_row<'a>(rows: &'a [(String, String)], prefix: &str, slot: &str) -> Option<&'a str> {
+    let key = format!("{prefix}{slot}");
+    let (_, value) = rows.iter().find(|(recorded, _)| *recorded == key)?;
+    is_observed_row_value(value).then_some(value.as_str())
+}
+
+/// The bounded value grammar both observed-model rows share, on the writer and
+/// the reader: nonempty, at most 256 bytes, no control bytes. A model reaches
+/// a launch command, so a value that fails this is never a model.
+#[must_use]
+fn is_observed_row_value(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 256 && !value.chars().any(char::is_control)
 }
 
 /// What raw session metadata says about the privileged orchestrator role.
@@ -1150,6 +1211,87 @@ fn rewrite_rows(dir: &Path, rows: &[(&str, Option<&str>)]) -> Result<(), Rewrite
     let mut next = current;
     for (key, value) in rows {
         next = rewritten(&next, key, *value);
+    }
+    publish_bytes(dir, &path, next.as_bytes())
+}
+
+/// Publish or clear one seat's observed-model pair as ONE atomic, guarded
+/// rewrite.
+///
+/// The two rows are one identity: `observed: Some((model, pin))` writes the
+/// model and sets (`pin = Some`) or removes (`pin = None`) the pin row in the
+/// same replacement; `observed: None` removes both. No reader can meet half
+/// the pair.
+///
+/// The compare-and-swap guard is the shape `capture::commit_inner` uses: under
+/// the meta lock, the slot must still name `agent`, still hold `tool`, and its
+/// `launch_id.<slot>` must still be `launch_id`. A slot re-created by a later
+/// spawn or resume therefore cannot inherit the old seat's observation.
+///
+/// A write that would not change the meta is a no-op, so an observer may call
+/// this every cycle.
+///
+/// # Errors
+///
+/// [`RewriteError::NotWritten`] when the rows are not well-formed, the guard
+/// does not hold, or the lock, read, write, sync or rename failed.
+pub(crate) fn record_observed_model(
+    dir: &Path,
+    slot: &str,
+    agent: &str,
+    tool: crate::tool::ToolKind,
+    launch_id: &str,
+    observed: Option<(&str, Option<&str>)>,
+) -> Result<(), RewriteError> {
+    let refused = |why: &str| {
+        RewriteError::NotWritten(io::Error::new(io::ErrorKind::InvalidInput, why.to_owned()))
+    };
+    if let Some((model, pin)) = observed
+        && (!is_observed_row_value(model) || pin.is_some_and(|pin| !is_observed_row_value(pin)))
+    {
+        return Err(refused("the observed model rows are not well-formed"));
+    }
+    if launch_id.is_empty() {
+        return Err(refused("the seat records no launch id to guard the write"));
+    }
+    let path = crate::store::open(dir).meta_path();
+    let _held = crate::store::lock(
+        &crate::store::open(dir).meta_lock(),
+        crate::store::LOCK_WAIT,
+    )
+    .map_err(RewriteError::NotWritten)?;
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: the meta read, for its guarded rewrite — see clippy.toml"
+    )]
+    let current = fs::read_to_string(&path).map_err(RewriteError::NotWritten)?;
+    let parsed = Meta::parse(&current);
+    let Some(entry) = parsed.roster().iter().find(|entry| entry.slot == slot) else {
+        return Err(refused("the slot is no longer seated"));
+    };
+    if entry.name != agent
+        || crate::tool::ToolKind::from_binary_name(entry.binary.as_deref().unwrap_or_default())
+            != tool
+    {
+        return Err(refused("the slot moved to another seat"));
+    }
+    let launch_key = format!("launch_id.{slot}");
+    let recorded_launch = sole_value(current.as_bytes(), &launch_key).map(String::from_utf8_lossy);
+    if recorded_launch.as_deref() != Some(launch_id) {
+        return Err(refused("the seat was re-created after the observation"));
+    }
+    let model_key = format!("{OBSERVED_MODEL_PREFIX}{slot}");
+    let pin_key = format!("{OBSERVED_MODEL_PIN_PREFIX}{slot}");
+    let mut next = current.clone();
+    if let Some((model, pin)) = observed {
+        next = rewritten(&next, &model_key, Some(model));
+        next = rewritten(&next, &pin_key, pin);
+    } else {
+        next = rewritten(&next, &model_key, None);
+        next = rewritten(&next, &pin_key, None);
+    }
+    if next == current {
+        return Ok(());
     }
     publish_bytes(dir, &path, next.as_bytes())
 }
@@ -1334,6 +1476,110 @@ mod tests {
         reason = "fixtures build and inspect real directories; the boundary is about \
                   what PRODUCT code may reach"
     )]
+
+    #[test]
+    fn observed_model_rows_read_as_one_validated_pair() {
+        let meta = super::Meta::parse(
+            "seat.main=lead\nprofile.main=fable5\nagent_bin.main=claude\nlaunch_id.main=L1\n\
+             observed_model.main=Opus 5 (1M context)\nobserved_model_pin.main=fable\n",
+        );
+        assert_eq!(meta.observed_model("main"), Some("Opus 5 (1M context)"));
+        assert_eq!(meta.observed_model_pin("main"), Some("fable"));
+        assert_eq!(meta.observed_model("other"), None);
+        assert_eq!(meta.observed_model_pin("main"), Some("fable"));
+
+        // A row named twice says nothing: neither occurrence is a model.
+        let duplicated = super::Meta::parse(
+            "observed_model.main=fable\nobserved_model.main=opus\nobserved_model_pin.main=fable\n",
+        );
+        assert_eq!(duplicated.observed_model("main"), None);
+
+        // Empty is absent; a control byte is never a model.
+        assert_eq!(
+            super::Meta::parse("observed_model.main=\n").observed_model("main"),
+            None
+        );
+        assert_eq!(
+            super::Meta::parse("observed_model.main=a\u{1}b\n").observed_model("main"),
+            None
+        );
+        // A pin alone (no observed row) is a readable report-only pair half.
+        let pin_only = super::Meta::parse("observed_model_pin.main=fable\n");
+        assert_eq!(pin_only.observed_model_pin("main"), Some("fable"));
+        assert_eq!(pin_only.observed_model("main"), None);
+    }
+
+    #[test]
+    fn the_observed_pair_is_published_and_cleared_as_one_guarded_identity() {
+        let dir = std::env::temp_dir().join(format!("ae-meta-observed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch");
+        std::fs::write(
+            dir.join("meta"),
+            "schema=2\nseat.main=lead\nprofile.main=fable5\nagent_bin.main=claude\nlaunch_id.main=L1\n",
+        )
+        .expect("meta");
+
+        super::record_observed_model(
+            &dir,
+            "main",
+            "lead",
+            crate::tool::ToolKind::Claude,
+            "L1",
+            Some(("Opus 5", Some("fable"))),
+        )
+        .expect("publish");
+        let text = std::fs::read_to_string(dir.join("meta")).unwrap();
+        assert!(text.contains("observed_model.main=Opus 5\n"), "{text}");
+        assert!(text.contains("observed_model_pin.main=fable\n"), "{text}");
+
+        // The same observation again is a no-op, byte for byte.
+        let before = std::fs::read_to_string(dir.join("meta")).unwrap();
+        super::record_observed_model(
+            &dir,
+            "main",
+            "lead",
+            crate::tool::ToolKind::Claude,
+            "L1",
+            Some(("Opus 5", Some("fable"))),
+        )
+        .expect("no-op");
+        assert_eq!(std::fs::read_to_string(dir.join("meta")).unwrap(), before);
+
+        // A stale launch id, a renamed seat and another tool cannot write.
+        for (agent, tool, launch) in [
+            ("lead", crate::tool::ToolKind::Claude, "L2"),
+            ("other", crate::tool::ToolKind::Claude, "L1"),
+            ("lead", crate::tool::ToolKind::Codex, "L1"),
+        ] {
+            assert!(
+                super::record_observed_model(
+                    &dir,
+                    "main",
+                    agent,
+                    tool,
+                    launch,
+                    Some(("Opus 5", Some("fable")))
+                )
+                .is_err(),
+                "{agent}/{tool:?}/{launch}"
+            );
+        }
+
+        // Clearing removes both rows in one replacement.
+        super::record_observed_model(
+            &dir,
+            "main",
+            "lead",
+            crate::tool::ToolKind::Claude,
+            "L1",
+            None,
+        )
+        .expect("clear");
+        let text = std::fs::read_to_string(dir.join("meta")).unwrap();
+        assert!(!text.contains("observed_model"), "{text}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn a_rewrite_replaces_appends_or_drops_byte_for_byte_as_the_awk_does() {

@@ -297,6 +297,16 @@ impl ResolvedCommand {
         self.client_label.as_deref()
     }
 
+    /// The same resolution with its command text replaced, keeping the
+    /// client label `_run` already proved.
+    #[must_use]
+    pub(crate) fn with_text(&self, text: String) -> Self {
+        Self {
+            text,
+            client_label: self.client_label.clone(),
+        }
+    }
+
     /// Consume the typed command into its transport representation.
     #[must_use]
     pub fn into_string(self) -> String {

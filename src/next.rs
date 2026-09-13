@@ -216,6 +216,7 @@ mod tests {
             state: None,
             reason,
             own_work: None,
+            model_drift: crate::model_drift::ModelDrift::Quiet,
         }
     }
 

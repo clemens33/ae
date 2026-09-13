@@ -273,6 +273,13 @@ pub(crate) struct ToolAdapter {
     pub(crate) capture: CaptureSpec,
     /// Input observation and first-turn delivery behaviour.
     pub(crate) input: InputSpec,
+    /// Model flag spellings ae may READ and REWRITE in a profile command.
+    ///
+    /// Empty means ae neither observes nor preserves this tool's live model:
+    /// its seats are reported drift-unknown and no model is ever injected.
+    /// Only spellings whose resume flag order was measured are listed —
+    /// claude `--model` and codex `-m`/`--model` (2026-09-13).
+    pub(crate) model_flags: &'static [&'static str],
     /// Local quota discovery behaviour.
     pub(crate) quota: QuotaSpec,
     /// Local usage discovery behaviour.
@@ -310,6 +317,7 @@ const CLAUDE: ToolAdapter = ToolAdapter {
         wait_for_process: true,
         paste_initial_on_resume: false,
     },
+    model_flags: &["--model"],
     quota: QuotaSpec {
         source: QuotaSource::ClaudeCache,
         config_home_env: Some("CLAUDE_CONFIG_DIR"),
@@ -349,6 +357,7 @@ const CODEX: ToolAdapter = ToolAdapter {
         wait_for_process: true,
         paste_initial_on_resume: true,
     },
+    model_flags: &["-m", "--model"],
     quota: QuotaSpec {
         source: QuotaSource::CodexRollouts,
         config_home_env: Some("CODEX_HOME"),
@@ -388,6 +397,7 @@ const GEMINI: ToolAdapter = ToolAdapter {
         wait_for_process: false,
         paste_initial_on_resume: false,
     },
+    model_flags: &[],
     quota: QuotaSpec {
         source: QuotaSource::Unsupported,
         config_home_env: None,
@@ -428,6 +438,7 @@ const AGY: ToolAdapter = ToolAdapter {
         wait_for_process: false,
         paste_initial_on_resume: false,
     },
+    model_flags: &[],
     quota: QuotaSpec {
         source: QuotaSource::Unsupported,
         config_home_env: None,
@@ -472,6 +483,7 @@ const GROK: ToolAdapter = ToolAdapter {
         wait_for_process: false,
         paste_initial_on_resume: false,
     },
+    model_flags: &[],
     quota: QuotaSpec {
         source: QuotaSource::Unsupported,
         config_home_env: None,
@@ -511,6 +523,7 @@ const OPENCODE: ToolAdapter = ToolAdapter {
         wait_for_process: true,
         paste_initial_on_resume: false,
     },
+    model_flags: &[],
     quota: QuotaSpec {
         source: QuotaSource::Unsupported,
         config_home_env: None,
@@ -547,6 +560,7 @@ const UNKNOWN: ToolAdapter = ToolAdapter {
         wait_for_process: false,
         paste_initial_on_resume: false,
     },
+    model_flags: &[],
     quota: QuotaSpec {
         source: QuotaSource::Unsupported,
         config_home_env: None,
@@ -724,6 +738,7 @@ mod tests {
                         wait_for_process: true,
                         paste_initial_on_resume: false,
                     },
+                    model_flags: &["--model"],
                     quota: QuotaSpec {
                         source: QuotaSource::ClaudeCache,
                         config_home_env: Some("CLAUDE_CONFIG_DIR"),
@@ -762,6 +777,7 @@ mod tests {
                         wait_for_process: true,
                         paste_initial_on_resume: true,
                     },
+                    model_flags: &["-m", "--model"],
                     quota: QuotaSpec {
                         source: QuotaSource::CodexRollouts,
                         config_home_env: Some("CODEX_HOME"),
@@ -800,6 +816,7 @@ mod tests {
                         wait_for_process: false,
                         paste_initial_on_resume: false,
                     },
+                    model_flags: &[],
                     quota: QuotaSpec {
                         source: QuotaSource::Unsupported,
                         config_home_env: None,
@@ -839,6 +856,7 @@ mod tests {
                         wait_for_process: false,
                         paste_initial_on_resume: false,
                     },
+                    model_flags: &[],
                     quota: QuotaSpec {
                         source: QuotaSource::Unsupported,
                         config_home_env: None,
@@ -881,6 +899,7 @@ mod tests {
                         wait_for_process: false,
                         paste_initial_on_resume: false,
                     },
+                    model_flags: &[],
                     quota: QuotaSpec {
                         source: QuotaSource::Unsupported,
                         config_home_env: None,
@@ -919,6 +938,7 @@ mod tests {
                         wait_for_process: true,
                         paste_initial_on_resume: false,
                     },
+                    model_flags: &[],
                     quota: QuotaSpec {
                         source: QuotaSource::Unsupported,
                         config_home_env: None,
@@ -962,6 +982,7 @@ mod tests {
                     wait_for_process: false,
                     paste_initial_on_resume: false,
                 },
+                model_flags: &[],
                 quota: QuotaSpec {
                     source: QuotaSource::Unsupported,
                     config_home_env: None,

@@ -44,6 +44,7 @@ pub mod liveness;
 pub mod memo;
 pub mod meta;
 pub mod migrate;
+pub mod model_drift;
 pub mod monitor;
 pub mod netprobe;
 pub mod next;

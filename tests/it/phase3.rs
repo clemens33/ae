@@ -2004,6 +2004,7 @@ fn sc_017q_an_unknown_agent_keeps_its_declared_state_and_reason() {
         reason: Some(ae::attention::Reason::Blocked),
         session_id: Some("e795c9e9".to_owned()),
         own_work: None,
+        model_drift: ae::model_drift::ModelDrift::Quiet,
     }];
     let world = World::new(NOW, vec![entry]);
     let (text, _, _) = invoke_over("list", &["--all", "--json"], Some(&world));

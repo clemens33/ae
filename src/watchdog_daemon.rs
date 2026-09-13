@@ -2089,6 +2089,17 @@ fn watch(
                         // replaced, while this daemon runs.
                         meta_agent: is_meta_agent(bytes),
                         roster: meta.roster().to_vec(),
+                        launch_ids: meta
+                            .roster()
+                            .iter()
+                            .filter_map(|entry| {
+                                let key = format!("launch_id.{}", entry.slot);
+                                let value = crate::meta::sole_value(bytes, &key)
+                                    .map(String::from_utf8_lossy)?;
+                                (!value.is_empty())
+                                    .then(|| (entry.slot.clone(), value.into_owned()))
+                            })
+                            .collect(),
                     };
                     cycle.run(&mut carry, err)?;
                     // The pane's own per-cycle duties, in order: the branch
@@ -2491,6 +2502,10 @@ struct Cycle<'a> {
     lead_pair: bool,
     /// `meta_agent=true` — this session is the fleet orchestrator.
     meta_agent: bool,
+    /// Each seat's recorded `launch_id.<slot>` — the compare-and-swap guard an
+    /// observed-model write publishes under, so a re-created slot cannot
+    /// inherit the old seat's observation.
+    launch_ids: Vec<(String, String)>,
 }
 
 /// The fleet text and durable gate observed once for the orchestrator cycle.
@@ -2812,6 +2827,53 @@ impl Cycle<'_> {
         }
     }
 
+    /// Record this pane's observed model, when the tool's live model is
+    /// readable. Best-effort: a refused write (a stale guard, a failed read) is
+    /// the next cycle's problem, never this cycle's.
+    ///
+    /// The pin is read fresh here: an operator edit while the session runs is
+    /// then visible on the next cycle, and a pin that moved after the
+    /// observation is what makes the resume RETIRE the row, not apply it.
+    fn note_model(&self, capture: &str, tool: crate::tool::ToolKind, slot: &str) {
+        if tool.adapter().model_flags.is_empty() {
+            return;
+        }
+        let Some(entry) = self.roster.iter().find(|entry| entry.slot == slot) else {
+            return;
+        };
+        let Some(profile) = entry.profile.as_deref() else {
+            return;
+        };
+        let Some((_, launch_id)) = self.launch_ids.iter().find(|(seat, _)| seat == slot) else {
+            return;
+        };
+        let pin = self.profile_model_pin(profile, tool);
+        let _ = crate::model_drift::observe(
+            self.meta_dir,
+            slot,
+            &entry.name,
+            tool,
+            capture,
+            launch_id,
+            pin.as_deref(),
+        );
+    }
+
+    /// The profile's model flag value, from the same config files `_run`
+    /// reads. An unreadable config is `None`, never a guess.
+    fn profile_model_pin(&self, profile: &str, tool: crate::tool::ToolKind) -> Option<String> {
+        let root = crate::state_root();
+        let global = root
+            .as_deref()
+            .map(|root| crate::doors::config_file(crate::shape::current(), root));
+        crate::launch_cmd::profile_model_pin(
+            global.as_deref(),
+            self.local_config.as_deref(),
+            profile,
+            tool,
+        )
+    }
+
     /// One quota-cadence pass: the vendor-quota observation and advisory
     /// booking only when aware, then the spend fact always. `quota = off`
     /// WINS over `quota_every_secs`: the spend fact is usage machinery and
@@ -2965,6 +3027,8 @@ impl Cycle<'_> {
             // hashes as empty here.
             let capture = transport::capture_pane(self.server, &pane.pane_id).unwrap_or_default();
             let hash = quiet_hash(&capture);
+            // Model drift rides the SAME capture, under the seat's launch guard.
+            self.note_model(&capture, tool, &slot);
             let is_throttled = shows_throttle(&capture, agent_bin.as_deref().unwrap_or_default());
             let throttle_quota = self.throttle_quota(&carry.quota, &slot, now, is_throttled);
             // ONE process-tree reading: the dead verdict and the unknown-snapshot
@@ -5247,6 +5311,7 @@ mod tests {
             local_config: None,
             lead_pair: false,
             meta_agent: false,
+            launch_ids: Vec::new(),
         };
         let mut err = Vec::new();
         cycle
@@ -5309,6 +5374,7 @@ mod tests {
             local_config: None,
             lead_pair: false,
             meta_agent: false,
+            launch_ids: Vec::new(),
         };
         assert!(
             cycle.throttle_quota(&carry, "main", 10_000, true).is_some(),
@@ -7096,6 +7162,7 @@ mod tests {
             local_config: None,
             lead_pair: false,
             meta_agent: false,
+            launch_ids: Vec::new(),
         };
         let event = Event::parse_line(
             r#"{"ts":"2026-08-29T04:00:00Z","actor":"opus5:builder","action":"state","ref":"waiting-user","summary":"review"}"#,
@@ -7158,6 +7225,7 @@ mod tests {
             local_config: None,
             lead_pair: false,
             meta_agent: false,
+            launch_ids: Vec::new(),
         };
         let events = vec![
             Event::parse_line(

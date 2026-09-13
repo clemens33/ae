@@ -326,6 +326,16 @@ pub fn table_at(sessions: &[&SessionEntry], now: Timestamp) -> String {
             );
             out.push_str(" · observed:");
             out.push_str(agent.observed.as_str());
+            // Observed model drift, or the loud absence of an observer for this
+            // tool: silence must never read as preservation.
+            match &agent.model_drift {
+                crate::model_drift::ModelDrift::Quiet => {}
+                crate::model_drift::ModelDrift::Observed(model) => {
+                    out.push_str(" · drift:");
+                    out.push_str(model);
+                }
+                crate::model_drift::ModelDrift::Unknown => out.push_str(" · drift:unknown"),
+            }
             // WHY a seat is quiet without being idle, so the human reads it off
             // the line instead of opening the pane.
             if let Some(reason) = agent.own_work.and_then(crate::session::OwnWork::reason) {
@@ -500,6 +510,7 @@ mod tests {
             state: state.map(ToOwned::to_owned),
             reason: None,
             own_work: None,
+            model_drift: crate::model_drift::ModelDrift::Quiet,
         }
     }
 
@@ -1483,7 +1494,16 @@ mod tests {
         // standing authority reaches.
         assert!(
             row_fields(&human, "lead")
-                == ["lead", "claude", "-", "unknown", "·", "observed:unknown"],
+                == [
+                    "lead",
+                    "claude",
+                    "-",
+                    "unknown",
+                    "·",
+                    "observed:unknown",
+                    "·",
+                    "drift:unknown"
+                ],
             "the malformed event hides stale blocked state behind the human unknown: {human}"
         );
         assert!(
@@ -1529,6 +1549,7 @@ mod tests {
                 state: Some("working".to_owned()),
                 reason: None,
                 own_work: None,
+                model_drift: crate::model_drift::ModelDrift::Quiet,
             }];
             let rendered = table(&[&session]);
             assert!(
@@ -1562,6 +1583,7 @@ mod tests {
                 state: Some("working".to_owned()),
                 reason: None,
                 own_work: None,
+                model_drift: crate::model_drift::ModelDrift::Quiet,
             }];
             row_fields(&table(&[&session]), "fake:lead")
         };
@@ -1611,6 +1633,7 @@ mod tests {
                 state: Some("working".to_owned()),
                 reason: None,
                 own_work,
+                model_drift: crate::model_drift::ModelDrift::Quiet,
             }];
             let rendered = table(&[&session]);
             rendered
@@ -1658,6 +1681,7 @@ mod tests {
             state: Some("blocked".to_owned()),
             reason: None,
             own_work: None,
+            model_drift: crate::model_drift::ModelDrift::Quiet,
         }];
         let rendered = table(&[&session]);
         let row = rendered
@@ -1685,6 +1709,7 @@ mod tests {
             state: Some("blocked".to_owned()),
             reason: None,
             own_work: None,
+            model_drift: crate::model_drift::ModelDrift::Quiet,
         }];
         // The short session id now sits between the reference and the semantic
         // fields, on every status, because frozen rendered it on both grammars
@@ -1719,6 +1744,7 @@ mod tests {
                 state: Some("working".to_owned()),
                 reason: None,
                 own_work: None,
+                model_drift: crate::model_drift::ModelDrift::Quiet,
             },
             AgentEntry {
                 reference: "colead".to_owned(),
@@ -1730,6 +1756,7 @@ mod tests {
                 state: Some("working".to_owned()),
                 reason: None,
                 own_work: None,
+                model_drift: crate::model_drift::ModelDrift::Quiet,
             },
         ];
 

@@ -1372,6 +1372,64 @@ fn supervise_one(
 }
 
 /// One session's stop, under its own lifecycle lock.
+/// Capture each measurable seat's live model and publish it, so a manual
+/// choice survives this stop.
+///
+/// Runs under the caller's lifecycle lock and BEFORE any kill: the panes are
+/// still alive, which is exactly what the watchdog's cadence cannot promise.
+/// Deliberately best-effort — a session whose meta or panes cannot be read
+/// still stops, with one warning from the caller.
+fn observe_models_before_stop(dir: &Path, server: &ServerId, name: &str) -> Result<(), String> {
+    let bytes = meta::read_bytes(dir).map_err(|why| why.to_string())?;
+    let parsed = meta::Meta::parse(&String::from_utf8_lossy(&bytes));
+    let panes = transport::observe_watch_panes(server, name)
+        .ok_or_else(|| "pane enumeration failed".to_owned())?;
+    let global = meta_value(&bytes, "config");
+    let local = crate::config::local_overlay(dir, &meta_value(&bytes, "origin"));
+    let mut failure: Option<String> = None;
+    for entry in parsed.roster() {
+        let tool =
+            crate::tool::ToolKind::from_binary_name(entry.binary.as_deref().unwrap_or_default());
+        if tool.adapter().model_flags.is_empty() {
+            continue;
+        }
+        let Some(pane) = panes
+            .iter()
+            .find(|pane| pane.slot.as_deref() == Some(entry.slot.as_str()))
+        else {
+            continue;
+        };
+        let launch_key = format!("launch_id.{}", entry.slot);
+        let launch_id = meta::sole_value(&bytes, &launch_key)
+            .map(|value| String::from_utf8_lossy(value).into_owned())
+            .unwrap_or_default();
+        if launch_id.is_empty() {
+            continue;
+        }
+        let pin = entry.profile.as_deref().and_then(|profile| {
+            crate::launch_cmd::profile_model_pin(
+                (!global.is_empty()).then(|| Path::new(&global)),
+                local.as_deref(),
+                profile,
+                tool,
+            )
+        });
+        let capture = transport::capture_pane(server, &pane.pane_id).unwrap_or_default();
+        if let Err(why) = crate::model_drift::observe(
+            dir,
+            &entry.slot,
+            &entry.name,
+            tool,
+            &capture,
+            &launch_id,
+            pin.as_deref(),
+        ) {
+            failure.get_or_insert(why);
+        }
+    }
+    failure.map_or(Ok(()), Err)
+}
+
 fn stop_one(
     root: &Path,
     name: &str,
@@ -1467,6 +1525,16 @@ fn stop_one(
             (server, session_id)
         }
     };
+    // THE DURABLE CUT. The watchdog observes on its cadence; a stop can arrive
+    // between the human's model change and the next cycle, so the final
+    // observation happens HERE, with the panes still alive and the lifecycle
+    // lock held. Best-effort: a failure warns and the stop proceeds.
+    if let Err(why) = observe_models_before_stop(&dir, &server, name) {
+        writeln!(
+            err,
+            "Warning: could not observe the seat models before stopping '{name}': {why}"
+        )?;
+    }
     if expect.is_none() {
         return kill_under_lock(&server, name, &session_id, out, err);
     }

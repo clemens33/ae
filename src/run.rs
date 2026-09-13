@@ -52,6 +52,8 @@ pub struct Plan {
     config_home_base_row: Option<String>,
     /// A retained conversation whose current config points elsewhere.
     config_home_notice: Option<String>,
+    /// What a resumed seat says about a recorded manual model.
+    model_notice: Option<String>,
 }
 
 impl Plan {
@@ -256,6 +258,10 @@ pub fn run(
         writeln!(err, "{notice}")?;
         err.flush()?;
     }
+    if let Some(notice) = &plan.model_notice {
+        writeln!(err, "{notice}")?;
+        err.flush()?;
+    }
     // BEFORE the exec, because after it there is no "after" — and REFUSING when
     // it cannot be written.
     let marker = started_marker(dir, slot);
@@ -348,12 +354,17 @@ fn build_with_snapshot(
     slot: &str,
     command_snapshot: Option<&str>,
 ) -> Result<Plan, String> {
-    let seat = read_seat(dir, slot, command_snapshot)?;
+    let mut seat = read_seat(dir, slot, command_snapshot)?;
     let mode = if crate::lifecycle::path_exists(&started_marker(dir, slot)) {
         Mode::Resume
     } else {
         Mode::Create
     };
+    // A resumed seat honors a recorded manual model; a fresh one never does —
+    // a new conversation starts from the profile, exactly as before.
+    let model_notice = (mode == Mode::Resume)
+        .then(|| apply_observed_model(dir, slot, &mut seat))
+        .flatten();
     let ctx = crate::render::context_document(
         dir,
         &seat.session,
@@ -404,7 +415,65 @@ fn build_with_snapshot(
         config_home_row: identity.new_row,
         config_home_base_row: identity.new_base_row,
         config_home_notice,
+        model_notice,
     })
+}
+
+/// Honor a recorded manual model on a resumed seat, or say why it cannot be.
+///
+/// The two rows are an observed model and the profile's own model flag value
+/// at the time it was observed. The pin decides recency without timestamps:
+///
+/// - recorded pin == the profile's model now: the human's manual choice is
+///   newer than any profile edit, so the model flag is REWRITTEN to the
+///   observed value.
+/// - recorded pin differs (including "the profile pins no model now"): the
+///   profile edit is newer. Both rows are retired and the profile wins.
+/// - no recorded pin: the profile pins no model. Nothing is rewritten (ae never
+///   APPENDS a model flag) and the row is retained for the report; the notice
+///   says so.
+///
+/// The returned line is printed before the exec, where the existing
+/// config-home notice goes. `None` means nothing to say.
+fn apply_observed_model(dir: &Path, slot: &str, seat: &mut Seat) -> Option<String> {
+    let observed = seat.observed_model.clone()?;
+    let Some(recorded_pin) = seat.observed_model_pin.clone() else {
+        return Some(format!(
+            "ae: seat {slot}: observed model {observed} is REPORT ONLY — the profile pins no model, so ae will not add one; the manual choice is not applied."
+        ));
+    };
+    let current = crate::launch_cmd::model_flag_value(seat.command.as_str(), seat.tool);
+    if current.as_deref() != Some(recorded_pin.as_str()) {
+        // The operator edited the profile after the observation. Retire the
+        // pair under the seat's own launch guard; a refusal leaves it for the
+        // watchdog to reconcile on the next cycle.
+        let _ = crate::meta::record_observed_model(
+            dir,
+            slot,
+            &seat.agent,
+            seat.tool,
+            &seat.launch_id,
+            None,
+        );
+        let now = current.as_deref().unwrap_or("no model");
+        return Some(format!(
+            "ae: seat {slot}: observed model {observed} was retired — the profile now pins {now}, and the newer profile edit wins. Resuming on the profile."
+        ));
+    }
+    if current.as_deref() == Some(observed.as_str()) {
+        return None;
+    }
+    match crate::launch_cmd::replace_model_flag(seat.command.as_str(), seat.tool, &observed) {
+        Ok(rewritten) => {
+            seat.command = seat.command.with_text(rewritten);
+            Some(format!(
+                "ae: seat {slot}: resuming on the observed model {observed} (profile pins {recorded_pin}) — the manual choice is preserved."
+            ))
+        }
+        Err(why) => Some(format!(
+            "ae: seat {slot}: manual model {observed} could NOT be preserved ({why}) — resuming on the profile pin {recorded_pin}. The observation is retained."
+        )),
+    }
 }
 
 struct ConfigHomeIdentity {
@@ -982,6 +1051,13 @@ struct Seat {
     launch_id: String,
     config_home: crate::meta::RecordedConfigHome,
     config_home_base: crate::meta::RecordedConfigHomeBase,
+    /// The agent's NAME — the identity the meta guard compares.
+    agent: String,
+    /// The model this seat was positively observed running, where a retained
+    /// row records one.
+    observed_model: Option<String>,
+    /// The profile's model flag value recorded beside that observation.
+    observed_model_pin: Option<String>,
 }
 
 /// Read the seat `slot` names, refusing anything that is not launchable.
@@ -1076,6 +1152,9 @@ fn read_seat(dir: &Path, slot: &str, command_snapshot: Option<&str>) -> Result<S
         launch_id: value(&format!("launch_id.{slot}")),
         config_home,
         config_home_base,
+        agent: name,
+        observed_model: parsed_meta.observed_model(slot).map(str::to_owned),
+        observed_model_pin: parsed_meta.observed_model_pin(slot).map(str::to_owned),
     })
 }
 
@@ -1190,6 +1269,7 @@ mod tests {
             config_home_row: None,
             config_home_base_row: None,
             config_home_notice: None,
+            model_notice: None,
         };
         let line = plan.render();
         assert!(!line.contains('\n'), "{line}");
@@ -1335,6 +1415,7 @@ mod tests {
             config_home_row: None,
             config_home_base_row: None,
             config_home_notice: None,
+            model_notice: None,
         };
         assert!(
             plan.render().contains(r#""env_clear":true"#),
@@ -1444,5 +1525,87 @@ mod tests {
             "",
             &crate::launch_cmd::Resolved::Absent
         ));
+    }
+
+    fn model_seat(
+        command: &str,
+        tool: ToolKind,
+        observed: Option<&str>,
+        pin: Option<&str>,
+    ) -> Seat {
+        Seat {
+            session: "s".to_owned(),
+            work_dir: "/w".to_owned(),
+            config_files: Vec::new(),
+            command: crate::config::IdentityConfig::resolved_snapshot(command),
+            tool,
+            harness_session: "sid".to_owned(),
+            launch_id: "L1".to_owned(),
+            config_home: crate::meta::RecordedConfigHome::Missing,
+            config_home_base: crate::meta::RecordedConfigHomeBase::Missing,
+            agent: "lead".to_owned(),
+            observed_model: observed.map(str::to_owned),
+            observed_model_pin: pin.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn a_recorded_manual_model_is_rewritten_into_the_resume_command() {
+        let dir = std::env::temp_dir().join(format!("ae-run-model-{}", std::process::id()));
+        let mut seat = model_seat(
+            "codex --yolo -m gpt-5.6-sol -c model_reasoning_effort=xhigh",
+            ToolKind::Codex,
+            Some("gpt-6-astra"),
+            Some("gpt-5.6-sol"),
+        );
+        let notice = apply_observed_model(&dir, "main", &mut seat).expect("a notice");
+        assert!(notice.contains("preserved"), "{notice}");
+        assert_eq!(
+            seat.command.as_str(),
+            "codex --yolo -m gpt-6-astra -c model_reasoning_effort=xhigh"
+        );
+    }
+
+    #[test]
+    fn a_changed_profile_pin_retires_the_observation_and_wins() {
+        let dir = std::env::temp_dir().join(format!("ae-run-model-pin-{}", std::process::id()));
+        let mut seat = model_seat(
+            "codex --yolo -m gpt-5.6-terra -c model_reasoning_effort=xhigh",
+            ToolKind::Codex,
+            Some("gpt-6-astra"),
+            Some("gpt-5.6-sol"),
+        );
+        let notice = apply_observed_model(&dir, "main", &mut seat).expect("a notice");
+        assert!(notice.contains("retired"), "{notice}");
+        assert_eq!(
+            seat.command.as_str(),
+            "codex --yolo -m gpt-5.6-terra -c model_reasoning_effort=xhigh",
+            "the newer profile edit is what runs"
+        );
+    }
+
+    #[test]
+    fn a_pinless_profile_reports_the_observation_without_appending_a_flag() {
+        let dir = std::env::temp_dir().join(format!("ae-run-model-pinless-{}", std::process::id()));
+        let mut seat = model_seat("codex --yolo", ToolKind::Codex, Some("gpt-6-astra"), None);
+        let notice = apply_observed_model(&dir, "main", &mut seat).expect("a notice");
+        assert!(notice.contains("REPORT ONLY"), "{notice}");
+        assert_eq!(seat.command.as_str(), "codex --yolo");
+    }
+
+    #[test]
+    fn an_observation_equal_to_the_pin_says_nothing_and_touches_nothing() {
+        let dir = std::env::temp_dir().join(format!("ae-run-model-equal-{}", std::process::id()));
+        let mut seat = model_seat(
+            "codex --yolo -m gpt-5.6-sol -c model_reasoning_effort=xhigh",
+            ToolKind::Codex,
+            Some("gpt-5.6-sol"),
+            Some("gpt-5.6-sol"),
+        );
+        assert!(apply_observed_model(&dir, "main", &mut seat).is_none());
+        assert_eq!(
+            seat.command.as_str(),
+            "codex --yolo -m gpt-5.6-sol -c model_reasoning_effort=xhigh"
+        );
     }
 }

@@ -2942,6 +2942,12 @@ fn meta_document(
         .unwrap_or_default();
     // Launch facts that must survive every rewrite.
     let preserved = |key: &str| meta_value(&dir, key).filter(|v| !v.is_empty());
+    // A row named twice says nothing; never copy one forward.
+    let sole_preserved = |key: &str| {
+        meta::sole_value(&meta::read_bytes(&dir).ok()?, key)
+            .map(|value| String::from_utf8_lossy(value).into_owned())
+            .filter(|value| !value.is_empty())
+    };
     let started = crate::time::Timestamp::now().epoch().to_string();
     let created = if shape.resuming {
         preserved("created")
@@ -3072,6 +3078,17 @@ fn meta_document(
                 started.clone()
             };
             row(&key, &floor);
+        }
+        // The observed-model pair is EVIDENCE a later resume applies. This
+        // document is the WHOLE meta, so a pair not enumerated here is deleted
+        // by the first resume — before it could ever be honored.
+        for key in [
+            format!("{}{}", crate::meta::OBSERVED_MODEL_PREFIX, agent.slot),
+            format!("{}{}", crate::meta::OBSERVED_MODEL_PIN_PREFIX, agent.slot),
+        ] {
+            if let Some(value) = sole_preserved(&key) {
+                row(&key, &value);
+            }
         }
     }
 
@@ -4489,5 +4506,81 @@ mod tests {
             "{\"seq\":1}\n"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// DEFEATING MUTATION: delete the observed-model enumeration from
+    /// `meta_document` and this test goes RED. The document is the WHOLE meta,
+    /// so a pair not enumerated here is deleted by the first resume — before
+    /// any resume could honor it.
+    #[test]
+    fn a_resume_document_carries_the_observed_model_pair_forward() {
+        let root = scratch("observed-model-document");
+        let home = root.join("home");
+        let dir = home.join("sessions").join("s");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("meta"),
+            "schema=2\nmeta_version=2\nmode=local\nsession=s\nsession_id=SID\ncreated=1\n\
+             started=1\nwork_dir=/w\norigin=/o\nseat.main=lead\nprofile.main=fable5\n\
+             agent_bin.main=claude\nharness_session.main=sid\nlaunch_id.main=L1\n\
+             observed_model.main=Opus 5 (1M context)\nobserved_model_pin.main=fable\n",
+        )
+        .unwrap();
+        let env = super::Env {
+            home: home.clone(),
+            cwd: PathBuf::from("/w"),
+            global: None,
+            local: None,
+            server_kind: String::new(),
+            server_value: String::new(),
+            caller_server: None,
+            inside_tmux: false,
+            attach: true,
+            core: None,
+            core_version: None,
+            no_autostart: true,
+            test_pre_lock_marker: None,
+        };
+        let shape = super::Session {
+            name: "s".to_owned(),
+            mode: super::Mode::Local,
+            work_dir: PathBuf::from("/w"),
+            origin: PathBuf::from("/o"),
+            layout: "vertical".to_owned(),
+            look: crate::theme::Look::DEFAULT,
+            resuming: true,
+            dir_created: false,
+        };
+        let launching = [super::Launching {
+            slot: "main".to_owned(),
+            name: "lead".to_owned(),
+            profile: "fable5".to_owned(),
+            binary: "claude".to_owned(),
+            tool: ToolKind::Claude,
+            session_id: "sid".to_owned(),
+            config_home: None,
+            config_home_base: None,
+            launch_id: "L1".to_owned(),
+            pane: "%0".to_owned(),
+            command_snapshot: None,
+        }];
+        let watchdog = super::WatchdogFacts {
+            meta_agent: false,
+            sweep_sec: None,
+            quota_every_secs: "300",
+            idle_nudge_secs: "300",
+            quota: "on",
+        };
+        let document = super::meta_document(&env, &shape, &launching, watchdog, None)
+            .expect("a resume document");
+        assert!(
+            document.contains("observed_model.main=Opus 5 (1M context)\n"),
+            "{document}"
+        );
+        assert!(
+            document.contains("observed_model_pin.main=fable\n"),
+            "{document}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

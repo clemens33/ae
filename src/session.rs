@@ -882,6 +882,21 @@ fn agent_entries(
             let declared =
                 read.and_then(|read| read.declared_state_of(session, &slot.slot, &reference));
             let runtime_agent = runtime.agent(&slot.slot);
+            // Model drift: only the two harnesses whose live model ae can read
+            // are ever marked with an observation; every other tool's model is
+            // UNKNOWN, never silently implied preserved.
+            let tool =
+                crate::tool::ToolKind::from_binary_name(slot.binary.as_deref().unwrap_or_default());
+            let model_drift = if tool.adapter().model_flags.is_empty() {
+                crate::model_drift::ModelDrift::Unknown
+            } else {
+                match meta.observed_model(&slot.slot) {
+                    Some(observed) if meta.observed_model_pin(&slot.slot) != Some(observed) => {
+                        crate::model_drift::ModelDrift::Observed(observed.to_owned())
+                    }
+                    _ => crate::model_drift::ModelDrift::Quiet,
+                }
+            };
             AgentEntry {
                 reference: reference.clone(),
                 // Schema 2 keeps publishing `alias`; for a v2 row that is the profile.
@@ -924,6 +939,7 @@ fn agent_entries(
                             reference: &reference,
                         })
                     }),
+                model_drift,
             }
         })
         .collect()

@@ -216,6 +216,168 @@ impl SimpleCommand {
     }
 }
 
+/// The model flag spellings ae may REWRITE for a tool. Empty means ae never
+/// touches this tool's model.
+///
+/// Only the harnesses whose model flag and resume flag order were MEASURED are
+/// listed (2026-09-13, `.local/proposal-modeldrift.md` B2): codex honors `-m`
+/// before its `resume` subcommand, claude honors `--model` before `--resume`.
+/// An unlisted tool is never told a model by ae; drift on it is reported, not
+/// preserved. The grammar itself lives in the adapter rows (`src/tool.rs`).
+fn model_flag_names(tool: ToolKind) -> &'static [&'static str] {
+    tool.adapter().model_flags
+}
+
+/// Why a command does not carry exactly one model flag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ModelFlagError {
+    /// This tool has no model flag ae rewrites.
+    Unsupported,
+    /// No model flag word at all.
+    Absent,
+    /// More than one: ae will not guess which one the harness honors.
+    Ambiguous,
+    /// The flag word is present but its value is missing or unusable.
+    MissingValue,
+}
+
+impl ModelFlagError {
+    const fn line(self) -> &'static str {
+        match self {
+            Self::Unsupported => "this tool has no model flag ae preserves",
+            Self::Absent => "the profile command carries no model flag",
+            Self::Ambiguous => "the profile command carries more than one model flag",
+            Self::MissingValue => "the profile command's model flag has no usable value",
+        }
+    }
+}
+
+/// One model flag occurrence in a lexed command.
+struct ModelFlag {
+    /// The flag word's index in [`SimpleCommand::words`].
+    index: usize,
+    /// The flag's own spelling, as written.
+    name: &'static str,
+    /// The value's index for the split form (`--model value`), absent for the
+    /// joined form or a missing value.
+    value_index: Option<usize>,
+    /// The quote-resolved value.
+    value: String,
+}
+
+/// Find the ONE model flag of `tool` in a lexed command.
+fn sole_model_flag(command: &SimpleCommand, tool: ToolKind) -> Result<ModelFlag, ModelFlagError> {
+    let names = model_flag_names(tool);
+    if names.is_empty() {
+        return Err(ModelFlagError::Unsupported);
+    }
+    let mut found: Option<ModelFlag> = None;
+    for (index, word) in command.word_values.iter().enumerate() {
+        for name in names {
+            let joined = word
+                .strip_prefix(name)
+                .and_then(|rest| rest.strip_prefix('='));
+            if *word != **name && joined.is_none() {
+                continue;
+            }
+            if found.is_some() {
+                return Err(ModelFlagError::Ambiguous);
+            }
+            let (value, value_index) = if let Some(value) = joined {
+                (value.to_owned(), None)
+            } else {
+                // A split flag's value may not itself be a flag word.
+                let Some(next) = command.word_values.get(index + 1) else {
+                    return Err(ModelFlagError::MissingValue);
+                };
+                if next.is_empty() || next.starts_with('-') {
+                    return Err(ModelFlagError::MissingValue);
+                }
+                (next.clone(), Some(index + 1))
+            };
+            found = Some(ModelFlag {
+                index,
+                name,
+                value_index,
+                value,
+            });
+        }
+    }
+    found.ok_or(ModelFlagError::Absent)
+}
+
+/// The model a profile command pins, when it pins exactly one.
+#[must_use]
+pub(crate) fn model_flag_value(cmd: &str, tool: ToolKind) -> Option<String> {
+    let command = lex_simple_command(cmd).ok()?;
+    sole_model_flag(&command, tool).ok().map(|flag| flag.value)
+}
+
+/// The model flag value a resolved profile pins on this machine, if any.
+///
+/// Reads the selected config files exactly as `_run` reads them, then the
+/// profile's command. A missing profile, an unreadable config or an unlexable
+/// command is `None`, never a guess.
+#[must_use]
+pub(crate) fn profile_model_pin(
+    global: Option<&Path>,
+    local: Option<&Path>,
+    profile: &str,
+    tool: ToolKind,
+) -> Option<String> {
+    if model_flag_names(tool).is_empty() {
+        return None;
+    }
+    let cfg = crate::config::read_identity(global, local).ok()?;
+    let home = crate::doors::home();
+    let command = cfg.command(profile, home.as_deref()).ok()??;
+    model_flag_value(command.as_str(), tool)
+}
+
+/// Rewrite the SINGLE model flag's value in a profile command.
+///
+/// The flag must already exist: ae never appends one, because the launch argv
+/// is the compatibility contract and an appended flag is a shape no measured
+/// resume exercised. Every other word is kept as written.
+///
+/// # Errors
+///
+/// The refusal line when the command is not one simple command, carries no
+/// model flag, carries more than one, or the value is unusable.
+pub(crate) fn replace_model_flag(cmd: &str, tool: ToolKind, model: &str) -> Result<String, String> {
+    if model.is_empty() || model.chars().any(char::is_control) {
+        return Err("the observed model is not a usable value".to_owned());
+    }
+    let command = lex_simple_command(cmd)
+        .map_err(|why| format!("the profile command is not one simple command — {why}"))?;
+    let flag = sole_model_flag(&command, tool).map_err(|why| why.line().to_owned())?;
+    let value = quote_model(model);
+    let mut parts: Vec<String> = Vec::with_capacity(command.words.len());
+    for (index, raw) in command.words.iter().enumerate() {
+        if index == flag.value_index.unwrap_or(usize::MAX) {
+            continue;
+        }
+        if index == flag.index {
+            parts.push(format!("{} {value}", flag.name));
+            continue;
+        }
+        parts.push(raw.clone());
+    }
+    Ok(parts.join(" "))
+}
+
+/// Quote a model value for one argv word: bare when it cannot need quoting.
+fn quote_model(value: &str) -> String {
+    let bare = value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || "-_.+/[]:@".contains(ch));
+    if bare {
+        value.to_owned()
+    } else {
+        format!("'{}'", value.replace('\'', "'\\''"))
+    }
+}
+
 /// The executable word selected by the same prefix grammar the executor uses.
 pub(crate) struct LaunchBinary<'a> {
     /// Index inside [`SimpleCommand::words`].
@@ -717,7 +879,7 @@ mod tests {
 
     use super::{
         Refusal, Resolved, Split, ToolKind, config_home, config_home_resolution,
-        lex_simple_command, split_binary,
+        lex_simple_command, model_flag_value, replace_model_flag, split_binary,
     };
 
     fn bin(cmd: &str) -> Option<String> {
@@ -1211,5 +1373,88 @@ mod tests {
         assert_eq!(explicit.home, Resolved::Path(PathBuf::from("/account")));
         assert_eq!(explicit.base, Resolved::Path(PathBuf::from("/other")));
         assert!(explicit.explicit);
+    }
+
+    #[test]
+    fn the_model_flag_is_read_for_the_measured_tools_only() {
+        assert_eq!(
+            model_flag_value("claude --model fable --effort xhigh", ToolKind::Claude).as_deref(),
+            Some("fable")
+        );
+        assert_eq!(
+            model_flag_value(
+                "codex --yolo -m gpt-5.6-sol -c model_reasoning_effort=xhigh",
+                ToolKind::Codex
+            )
+            .as_deref(),
+            Some("gpt-5.6-sol")
+        );
+        assert_eq!(
+            model_flag_value("codex --model=gpt-6-astra", ToolKind::Codex).as_deref(),
+            Some("gpt-6-astra")
+        );
+        assert_eq!(model_flag_value("claude -m fable", ToolKind::Claude), None);
+        assert_eq!(model_flag_value("grok -m grok-4.6", ToolKind::Grok), None);
+        assert_eq!(
+            model_flag_value("claude --effort xhigh", ToolKind::Claude),
+            None
+        );
+        assert_eq!(
+            model_flag_value("claude --model fable --model opus", ToolKind::Claude),
+            None
+        );
+        assert_eq!(
+            model_flag_value("claude --model --effort xhigh", ToolKind::Claude),
+            None
+        );
+    }
+
+    #[test]
+    fn a_model_rewrite_replaces_only_the_value_and_keeps_every_other_word() {
+        assert_eq!(
+            replace_model_flag(
+                "claude --permission-mode bypassPermissions --model fable --effort xhigh",
+                ToolKind::Claude,
+                "claude-opus-5"
+            )
+            .expect("a pinned claude command"),
+            "claude --permission-mode bypassPermissions --model claude-opus-5 --effort xhigh"
+        );
+        assert_eq!(
+            replace_model_flag(
+                "codex --yolo -m gpt-5.6-sol -c model_reasoning_effort=xhigh",
+                ToolKind::Codex,
+                "gpt-6-astra"
+            )
+            .expect("a pinned codex command"),
+            "codex --yolo -m gpt-6-astra -c model_reasoning_effort=xhigh"
+        );
+        assert_eq!(
+            replace_model_flag("codex --model=gpt-5.6-sol", ToolKind::Codex, "gpt-6-astra")
+                .expect("a joined model flag"),
+            "codex --model gpt-6-astra"
+        );
+        assert_eq!(
+            replace_model_flag("claude --model fable", ToolKind::Claude, "a b")
+                .expect("an unusual but bounded value"),
+            "claude --model 'a b'"
+        );
+    }
+
+    #[test]
+    fn a_model_rewrite_refuses_what_it_cannot_do_safely() {
+        for (cmd, tool) in [
+            ("claude --effort xhigh", ToolKind::Claude),
+            ("claude", ToolKind::Claude),
+            ("claude --model a --model b", ToolKind::Claude),
+            ("claude -m a", ToolKind::Claude),
+            ("grok -m grok-4.6", ToolKind::Grok),
+            ("claude --model a; rm -rf /", ToolKind::Claude),
+        ] {
+            assert!(replace_model_flag(cmd, tool, "x").is_err(), "{cmd:?}");
+        }
+        assert!(
+            replace_model_flag("claude --model fable", ToolKind::Claude, "bad\nvalue").is_err()
+        );
     }
 }

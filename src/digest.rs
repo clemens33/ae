@@ -69,6 +69,8 @@ pub struct AgentEntry {
     /// published contract, and this is a rendering of facts `events[]` already
     /// carries rather than a new one.
     pub own_work: Option<crate::session::OwnWork>,
+    /// The seat's observed model drift. TABLE only, same rule as `own_work`.
+    pub model_drift: crate::model_drift::ModelDrift,
 }
 
 /// Frozen's placeholder for an agent whose session id is absent or unresolved.
@@ -564,6 +566,7 @@ mod tests {
                 state: None,
                 reason: None,
                 own_work: None,
+                model_drift: crate::model_drift::ModelDrift::Quiet,
             };
             assert_eq!(agent.display_session_id(), want, "{why}");
             // The RAW field is untouched: resume and capture logic still need it.
@@ -595,6 +598,7 @@ mod tests {
             state: None,
             reason: None,
             own_work: None,
+            model_drift: crate::model_drift::ModelDrift::Quiet,
         };
         let short = agent.display_session_id();
         assert_eq!(
@@ -641,6 +645,7 @@ mod tests {
             state: Some("blocked".to_owned()),
             reason: Some(Reason::Blocked),
             own_work: None,
+            model_drift: crate::model_drift::ModelDrift::Quiet,
         }];
         Digest::new(
             Timestamp::parse("2026-05-29T14:00:00Z").expect("the documented stamp"),
@@ -965,6 +970,7 @@ mod tests {
             state: None,
             reason: None,
             own_work: None,
+            model_drift: crate::model_drift::ModelDrift::Quiet,
         }
         .to_json();
         let json::Value::Obj(fields) = &value else {
