@@ -68,6 +68,12 @@ The loop, in order:
 5. `just release` — local, one machine: gates, CalVer bump, both bundles, tag, push,
    assets. Nothing waits on a runner.
 
+Prefer small vertical slices and fast iterations. Commit, release, push and roll out
+standalone intermediate state or sub-features rather than waiting for a feature to finish.
+A slice ships when it is green, reviewed and leaves the product coherent — not when its feature
+is finished. This changes when we ship, not what we skip: `just test`, cross-model review, the
+freeze protocol and every hard rule remain mandatory.
+
 An upgrade is not a binary swap: it migrates, repoints and relinks every placeable session
 before it moves the command link, reports and skips stopped unplaceable sessions, then prunes
 unreferenced versions. A publish is `$HOME`-pinned, so a checkout run whose state root differs
