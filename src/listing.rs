@@ -2041,4 +2041,15 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn an_observed_model_drift_renders_its_model_on_the_agent_line() {
+        let mut session = SessionEntry::new("drifted", Status::Running);
+        let mut entry = agent("lead", Some(true), Some("working"));
+        entry.model_drift =
+            crate::model_drift::ModelDrift::Observed("Opus 5 (1M context)".to_owned());
+        session.agents = vec![entry];
+        let rendered = table(&[&session]);
+        assert!(rendered.contains("drift:Opus 5 (1M context)"), "{rendered}");
+    }
 }
