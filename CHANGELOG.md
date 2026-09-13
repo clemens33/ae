@@ -1,6 +1,28 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.68] - 2026-09-13
+
+### Other
+
+- Preserve a manually changed model across stop and start
+
+The watchdog and the stop path observe each Claude/codex seat's live
+model off the pane frame ae already captures, and record it in the meta
+as one guarded pair: observed_model.<slot> and observed_model_pin.<slot>.
+A resume rewrites the profile's existing model flag to the observed
+value when the recorded pin still matches the profile; a changed pin
+retires the pair and the profile wins. ae list reports the drift, and a
+tool whose model ae cannot read renders drift:unknown rather than
+implying preservation.
+- Test the observed drift render on the agent line
+- Test the stop-path model capture and name every uncovered seat
+
+The durable cut now returns one line per seat it could not cover — a
+missing live pane, a missing launch id, or a refused write — and the
+stop warns with the seat and the reason while still proceeding. A
+lifecycle integration test draws a Claude frame on a live pane and
+proves the observed-model pair lands in the meta before the kill.
 ## [v2026.9.67] - 2026-09-13
 
 ### Other
