@@ -215,15 +215,21 @@ the whole design.
 said so: it listed its sessions without the name, or it reported the clean-exit
 `no server running on …` diagnostic. Every failure is `Unknown`, including
 `error connecting to … (No such file or directory)` — because a server that is still
-running answers exactly that once something unlinks its socket. `stop`, `end` and `compact`
-cross this one and nothing else. They are irreversible; being wrong costs work.
+running answers exactly that once something unlinks its socket. `stop` and `compact`
+cross this one and nothing else.
 
-**The widened reading** is `classify_absence`, and only a RESUME and the fleet LISTING may
-ask for it. It adds one fact the strict reading does not have: the host's boot time
+**The widened reading** is `classify_absence`. A RESUME, the fleet LISTING, an END and a
+RENAME may ask for it. It adds one fact the strict reading does not have: the host's boot time
 (`doors::boot_time` — `/proc/stat` `btime` on Linux, `sysctl -n kern.boottime` on macOS,
 through `transport::run_sysctl`). On ENOENT, and on ENOENT alone, a session is `Absent` when
 its own last sign of life predates the boot. No process survives a reboot, so nothing started
 since can be holding it.
+
+For an END the widened reading is reachable ONLY when the human passed `--assume-stopped` for
+that single target AND the target's POSITIVE record names the unreachable server: the flag and
+the independent proof, both or refuse, because a missing socket alone proves nothing. A RENAME
+deletes no state, so it crosses the proof with no acknowledgement. One composition,
+`lifecycle::end::boot_proved_stopped`, serves both verbs; nothing else may compose the proof.
 
 **What counts as a sign of life** is `inventory::last_live`, and the rule is narrow on
 purpose:
@@ -289,5 +295,7 @@ boot, on the same socket path, holding a same-named session ae never launched, w
 was then unlinked. The proof is about THIS SESSION being unreachable, never about that
 server being empty — and a resume lands on the configured server regardless.
 
-`tests/it/doors.rs::the_boot_time_proof_is_reachable_from_exactly_two_operations` is what
-keeps the destructive gates out of the widened reading.
+`tests/it/doors.rs::the_boot_time_proof_is_reachable_from_exactly_its_named_operations` is
+what keeps the destructive gates out of the widened reading: it names every file allowed to
+reach the proof, pins the one shared gate end and rename compose, and pins `stop` and
+`compact` as the two verbs that still refuse on the strict reading alone.
