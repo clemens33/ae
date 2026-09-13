@@ -1,6 +1,13 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.67] - 2026-09-13
+
+### Other
+
+- Show the observation age and name the manual refresh for unusable Claude scopes
+- Never state an age for a future-skewed stamp
+- Document fast iteration policy
 ## [v2026.9.66] - 2026-09-13
 
 ### Other
