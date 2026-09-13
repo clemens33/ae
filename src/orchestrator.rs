@@ -317,7 +317,16 @@ const KEYS: &str = "123456789abcdefghijklmnoprstuvwxyz";
 const NAME_CAP: usize = 18;
 
 /// The widest a state-word column is ever drawn, session row or agent row.
-const STATE_CAP: usize = 9;
+///
+/// `waiting-agent` is 13 terminal cells, the longest word in the declared
+/// vocabulary; at the old cap of 9 BOTH `waiting-user` (12) and `waiting-agent`
+/// (13) clipped to the identical `waiting-…`, so the human could not tell "you
+/// are needed" from "an agent is needed" in the one surface they glance at.
+/// 13 covers the whole vocabulary. The cost is bounded and paid only by draws
+/// that actually contain a 10–13-cell state: the state column is shared, so
+/// such a draw widens it by at most 4 cells and the row's existing
+/// `clip_cells(label, inner_width)` bounds what the tail loses.
+const STATE_CAP: usize = 13;
 
 /// The widest the branch column is ever drawn.
 const BRANCH_CAP: usize = 14;
@@ -1244,6 +1253,43 @@ mod tests {
                 " ",
                 "ship it"
             )
+        );
+    }
+
+    /// The invariant the fifth state exists under at the picker: `waiting-user`
+    /// (12 cells) and `waiting-agent` (13) must NEVER render identically. The
+    /// old `STATE_CAP` of 9 clipped both to `waiting-…` — byte-identical in the
+    /// one surface the human glances at.
+    #[test]
+    fn waiting_user_and_waiting_agent_never_render_identically_in_the_picker() {
+        let mut hub = session("hub", "$1", 0, "");
+        hub.agents = format!("v1;{NOW};60;u:p:waiting-user:%10;a:p:waiting-agent:%11");
+        let drawn = labels(&bounded_menu(&[hub], 8));
+        let row = |name: &str| {
+            drawn
+                .iter()
+                .find(|label| label.split_whitespace().any(|cell| cell == name))
+                .unwrap_or_else(|| panic!("agent row {name:?} renders: {drawn:?}"))
+                .clone()
+        };
+        let user = row("u");
+        let agent = row("a");
+        let state = |label: &str| {
+            label
+                .split_whitespace()
+                .last()
+                .unwrap_or_default()
+                .to_owned()
+        };
+        assert!(user.contains("waiting-user"), "{user}");
+        assert!(agent.contains("waiting-agent"), "{agent}");
+        assert_eq!(state(&user), "waiting-user");
+        assert_eq!(state(&agent), "waiting-agent");
+        assert_ne!(state(&user), state(&agent), "the words must differ");
+        assert_eq!(
+            super::terminal_cells("waiting-agent"),
+            13,
+            "the widest word the cap must hold, measured"
         );
     }
 

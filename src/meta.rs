@@ -353,6 +353,8 @@ pub struct Meta {
     doubtful_names: Vec<String>,
     /// The raw `schema=` value, where the writer recorded one.
     schema: Option<String>,
+    /// The raw pinned idle reminder cadence, kept until the accessor parses it.
+    idle_nudge_secs: Option<String>,
     /// Two selector keys, kept RAW.
     server_value: Option<String>,
     server_kind: Option<String>,
@@ -453,6 +455,7 @@ impl Meta {
             "work_dir" => self.work_dir = None,
             "goal" => self.goal = None,
             "ae_version" => self.ae_version = None,
+            "idle_nudge_secs" => self.idle_nudge_secs = None,
             CORE_KEY => self.ae_core = None,
             CREATED_KEY => self.created = None,
             STARTED_KEY => self.started = None,
@@ -512,6 +515,7 @@ impl Meta {
             "work_dir" => self.work_dir = Some(value.to_owned()),
             "goal" => self.goal = Some(value.to_owned()),
             "ae_version" => self.ae_version = Some(value.to_owned()),
+            "idle_nudge_secs" => self.idle_nudge_secs = Some(value.to_owned()),
             CORE_KEY => self.ae_core = Some(value.to_owned()),
             CREATED_KEY => self.created = Some(value.to_owned()),
             STARTED_KEY => self.started = Some(value.to_owned()),
@@ -952,6 +956,20 @@ impl Meta {
     #[must_use]
     pub fn schema(&self) -> Option<&str> {
         self.schema.as_deref()
+    }
+
+    /// The session's pinned idle reminder cadence, parsed.
+    ///
+    /// `None` when the row is absent, doubled (invalidated), or not an
+    /// unsigned integer — a read surface falls back to
+    /// [`crate::watchdog::DEFAULT_IDLE_NUDGE_SECS`] rather than refusing to
+    /// render a session whose meta it cannot fully use. The watchdog, which
+    /// ACTS on the value, keeps its own louder refusal.
+    #[must_use]
+    pub fn idle_nudge_secs(&self) -> Option<u64> {
+        self.idle_nudge_secs
+            .as_deref()
+            .and_then(|value| value.parse().ok())
     }
 
     /// Everything this reader met and is not authorised to interpret.
@@ -2285,6 +2303,26 @@ agent_bin.main=claude
         assert_eq!(meta.goal(), None);
         assert_eq!(meta.mode(), Some("local"), "an untouched key is untouched");
         assert_eq!(meta.origin(), Some("/src"));
+    }
+
+    #[test]
+    fn the_idle_nudge_pin_reads_once_and_invalidates_like_every_other_key() {
+        assert_eq!(
+            Meta::parse("idle_nudge_secs=420\n").idle_nudge_secs(),
+            Some(420),
+            "the pinned cadence parses"
+        );
+        assert_eq!(
+            Meta::parse("idle_nudge_secs=soon\n").idle_nudge_secs(),
+            None,
+            "an unusable value falls back, it does not refuse the read"
+        );
+        assert_eq!(
+            Meta::parse("idle_nudge_secs=60\nidle_nudge_secs=120\n").idle_nudge_secs(),
+            None,
+            "a doubled key is invalidated, not picked"
+        );
+        assert_eq!(Meta::parse("mode=local\n").idle_nudge_secs(), None);
     }
 
     #[test]

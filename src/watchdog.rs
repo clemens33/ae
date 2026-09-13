@@ -94,15 +94,21 @@ const NUDGE_ENVELOPE: &str = "⟦ae:msg from watchdog⟧";
 const NUDGE_SENTENCE: &str = "Status check: if you have more work, continue. \
      Otherwise declare your state so I stop nudging: ";
 
-/// The invitation the nudge ends with.
-const NUDGE_TAIL: &str = "/state <waiting-user|blocked|done> \"<reason>\"";
+/// The invitation the nudge ends with, in the current vocabulary.
+const NUDGE_TAIL: &str = "/state <waiting-user|waiting-agent|blocked|done> \"<reason>\"";
+
+/// The pre-`waiting-agent` invitation. A pane can still carry the nudge the
+/// previous core delivered, so the footprint filter strips BOTH spellings.
+const NUDGE_TAIL_LEGACY: &str = "/state <waiting-user|blocked|done> \"<reason>\"";
 
 /// The optional prefix a nudge carries when the session has a goal.
 const NUDGE_GOAL_PREFIX: &str = "Session goal: ";
 
 /// The state words a `state` echo can name — the alternation in the awk's
-/// `is_echo`, and NOT the quiet set: `working` echoes are footprints too.
-const ECHO_STATES: [&str; 4] = ["working", "waiting-user", "blocked", "done"];
+/// `is_echo`, and NOT the quiet set: `working` echoes are footprints too. It
+/// is the ONE vocabulary ([`crate::state::VALUES`]), so a state the helper
+/// accepts can never be a state the echo filter fails to recognize.
+const ECHO_STATES: [&str; 5] = crate::state::VALUES;
 
 /// POSIX `[[:space:]]` in the C locale — the class the awk is written against.
 const fn is_space(c: char) -> bool {
@@ -137,7 +143,11 @@ fn indented(line: &str) -> bool {
 
 /// The nudge as DELIVERED text, with no origin envelope above it.
 fn raw_nudge(line: &str) -> bool {
-    let Some(body) = trim_end_space(line).strip_suffix(NUDGE_TAIL) else {
+    let body = trim_end_space(line);
+    let Some(body) = body
+        .strip_suffix(NUDGE_TAIL)
+        .or_else(|| body.strip_suffix(NUDGE_TAIL_LEGACY))
+    else {
         return false;
     };
     if body.starts_with(NUDGE_SENTENCE) {
@@ -322,7 +332,7 @@ pub fn latest_relevant_event<'a>(
     None
 }
 
-/// A self-declared state that tells the watchdog to stop nudging, in its three
+/// A self-declared state that tells the watchdog to stop nudging, in its four
 /// answers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QuietKind {
@@ -330,7 +340,10 @@ pub enum QuietKind {
     Done,
     /// `waiting-user` — needs human input.
     WaitingUser,
-    /// `blocked` — stuck on an external dependency.
+    /// `waiting-agent` — waiting on another ae agent, while fresh.
+    WaitingAgent,
+    /// `blocked` — stuck on an external dependency, or a `waiting-agent`
+    /// past its ceiling.
     Blocked,
 }
 
@@ -344,6 +357,7 @@ pub fn quiet_reason(latest: &Event, agent: &str, looked_past_nudge: bool) -> Opt
     let kind = match latest.declared_state()? {
         "done" => QuietKind::Done,
         "waiting-user" => QuietKind::WaitingUser,
+        "waiting-agent" => QuietKind::WaitingAgent,
         "blocked" => QuietKind::Blocked,
         _ => return None, // `working`, or a ref that declares no state
     };
@@ -351,6 +365,49 @@ pub fn quiet_reason(latest: &Event, agent: &str, looked_past_nudge: bool) -> Opt
         return None;
     }
     Some(kind)
+}
+
+/// Seconds of continuously observed idle before the state reminder; zero
+/// disables it. THE default: the watchdog's own `Knobs` and every reader of a
+/// session with no `idle_nudge_secs` pin resolve it here, so a `waiting-agent`
+/// ceiling can never be computed from two different cadences.
+pub const DEFAULT_IDLE_NUDGE_SECS: u64 = 300;
+
+/// How many multiples of `idle_nudge_secs` one outstanding item may age before
+/// the deferral gives way. Generous on purpose: the waiting seat is not the
+/// problem, and the ceiling exists for the seat that is.
+///
+/// Two consumers, one value: the own-work deferral in `watchdog_daemon`, and
+/// the `waiting-agent` escalation below — both describe the case where the
+/// seat's own work has itself gone wrong.
+pub const OWN_WORK_AGE_CAP: u64 = 4;
+
+/// The age ceiling for a `waiting-agent` declaration: `idle_nudge_secs *
+/// OWN_WORK_AGE_CAP`.
+///
+/// `idle_nudge_secs == 0` disables the NUDGE half (as it disables every nudge
+/// in the daemon) and leaves the ATTENTION half on the documented default
+/// cadence: the knob switches nudging off, and it must not delete the only
+/// attention path a quiet state has. `waiting-user` and `blocked` keep
+/// claiming the human at zero today; an over-age `waiting-agent` does the same.
+#[must_use]
+pub fn waiting_agent_cap_secs(idle_nudge_secs: u64) -> u64 {
+    let cadence = if idle_nudge_secs == 0 {
+        DEFAULT_IDLE_NUDGE_SECS
+    } else {
+        idle_nudge_secs
+    };
+    cadence.saturating_mul(OWN_WORK_AGE_CAP)
+}
+
+/// Whether a `waiting-agent` declaration of `age_secs` reads as `blocked`.
+///
+/// PURE, and the ONE ceiling every consumer shares: the read side
+/// (`session::declared_reason`) and the watchdog's own nudge decision both ask
+/// this, so a surface can never disagree with the pane about escalation.
+#[must_use]
+pub fn waiting_agent_escalated(age_secs: u64, idle_nudge_secs: u64) -> bool {
+    age_secs >= waiting_agent_cap_secs(idle_nudge_secs)
 }
 
 /// The declaration's identity, as [`quiet_pane_decision`] compares it —
@@ -914,12 +971,13 @@ mod tests {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use super::{
-        OVERVIEW_HOLD_WHILE_WORKING_SECS, QuietCycle, QuietKind, QuietPane, SweepAlert,
-        SweepEffect, SweepKnobs, SweepObservation, SweepState, SweepVerdict, WedgeDetail,
-        classify_dead, command_is_shell, declaration_key, indented, is_echo, is_sweep_target,
-        latest_relevant_event, quiet_cursor_advance, quiet_filter, quiet_hash, quiet_pane_decision,
-        quiet_reason, quiet_stabilize, quiet_stabilize_allowed, raw_nudge, record_sweep,
-        shows_throttle, stale_composite, submit_hdr, sweep_step,
+        DEFAULT_IDLE_NUDGE_SECS, OVERVIEW_HOLD_WHILE_WORKING_SECS, OWN_WORK_AGE_CAP, QuietCycle,
+        QuietKind, QuietPane, SweepAlert, SweepEffect, SweepKnobs, SweepObservation, SweepState,
+        SweepVerdict, WedgeDetail, classify_dead, command_is_shell, declaration_key, indented,
+        is_echo, is_sweep_target, latest_relevant_event, quiet_cursor_advance, quiet_filter,
+        quiet_hash, quiet_pane_decision, quiet_reason, quiet_stabilize, quiet_stabilize_allowed,
+        raw_nudge, record_sweep, shows_throttle, stale_composite, submit_hdr, sweep_step,
+        waiting_agent_cap_secs, waiting_agent_escalated,
     };
     use crate::events::Event;
     use crate::procs::Descendancy;
@@ -1040,6 +1098,14 @@ mod tests {
             quiet_reason(&waiting, agent, false),
             Some(QuietKind::WaitingUser)
         );
+        let waiting_agent = event(
+            r#"{"ts":"2026-08-29T04:00:00Z","actor":"opus5:builder","action":"state","ref":"waiting-agent","summary":"waiting on colead's re-review"}"#,
+        );
+        assert_eq!(
+            quiet_reason(&waiting_agent, agent, false),
+            Some(QuietKind::WaitingAgent),
+            "the fifth state is quiet while fresh (R2)"
+        );
         let blocked = event(
             r#"{"ts":"2026-08-29T04:00:00Z","actor":"opus5:builder","action":"state","ref":"blocked","summary":"waiting on CI"}"#,
         );
@@ -1101,12 +1167,16 @@ mod tests {
             None,
             "done is honoured until a newer MESSAGE arrives, and a nudge is one"
         );
-        // The look-past is scoped to the two states it exists for: they are pane
+        // The look-past is scoped to the states it exists for: they are pane
         // holds, and a nudge must not break them.
         for (line, kind) in [
             (
                 r#"{"ts":"2026-08-29T04:00:00Z","actor":"opus5:builder","action":"state","ref":"waiting-user"}"#,
                 QuietKind::WaitingUser,
+            ),
+            (
+                r#"{"ts":"2026-08-29T04:00:00Z","actor":"opus5:builder","action":"state","ref":"waiting-agent"}"#,
+                QuietKind::WaitingAgent,
             ),
             (
                 r#"{"ts":"2026-08-29T04:00:00Z","actor":"opus5:builder","action":"state","ref":"blocked","summary":"dep"}"#,
@@ -1115,6 +1185,34 @@ mod tests {
         ] {
             assert_eq!(quiet_reason(&event(line), agent, true), Some(kind));
         }
+    }
+
+    #[test]
+    fn the_waiting_agent_ceiling_is_the_own_work_cap_times_the_nudge_cadence() {
+        assert_eq!(OWN_WORK_AGE_CAP, 4, "the reused cap, unchanged");
+        assert_eq!(waiting_agent_cap_secs(300), 1_200);
+        assert_eq!(waiting_agent_cap_secs(60), 240);
+        assert_eq!(
+            waiting_agent_cap_secs(0),
+            DEFAULT_IDLE_NUDGE_SECS * OWN_WORK_AGE_CAP,
+            "0 switches nudging off and leaves the attention half on the default cadence"
+        );
+        assert!(
+            !waiting_agent_escalated(1_199, 300),
+            "one second short of the ceiling is still fresh"
+        );
+        assert!(
+            waiting_agent_escalated(1_200, 300),
+            "the boundary escalates"
+        );
+        assert!(
+            waiting_agent_escalated(u64::MAX, 300),
+            "saturates, never panics"
+        );
+        assert!(
+            waiting_agent_escalated(1_200, 0),
+            "a zero nudge knob must not delete the attention path"
+        );
     }
 
     #[test]
@@ -1564,6 +1662,7 @@ tail line
             "└ Marked gpt56sol:reviewer working",               // codex, no detail
             "⏺ [21:28] Done — output: Marked opus5:builder waiting-user: needs review", // claude
             "Marked opus5:builder waiting-user: needs review",  // unmodeled pane
+            "Marked opus5:builder waiting-agent: on colead",    // the fifth state
             "Marked opus5:builder blocked.",                    // `.` remainder
             "Marked opus5:builder done",                        // bare
         ] {

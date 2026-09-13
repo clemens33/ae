@@ -243,7 +243,11 @@ session's agents, by severity:
 reason is a self-contained 2–5 sentence decision in 80–600 characters after trimming:
 each option gets one clause, the recommendation gives its reason, and the text points
 to any long form in `.local/<file>` or a memo topic. Never use pointers such as “see
-pane” or “as discussed.” `blocked` names what blocks, who or what unblocks it, what
+pane” or “as discussed.” `waiting-agent` declares a wait on ANOTHER ae agent: it is quiet
+(no marker) while fresh and ESCALATES to exactly `blocked` once it is older than
+`idle_nudge_secs * OWN_WORK_AGE_CAP`; its reason names the agent and what you need from
+them. `blocked` keeps a concrete EXTERNAL blocker only — a dependency, a service, a human
+decision elsewhere, a broken host — and names what blocks, who or what unblocks it, what
 you tried, and a long-form path. `unanswered` flags an `ask`/`review`
 whose target never replied within 1800 seconds (30 minutes) — the lowest-severity reason.)
 
@@ -344,7 +348,7 @@ aedev · running · attn:waiting-user · ae 2026.9.5 · created 2d ago · starte
 | `goal:` | the session's [`goal`](helpers.md), in full, or `none` |
 | `topics:` | the **latest** record per `memo` topic, newest topic first — see the topic convention below |
 | `agents:` | one line per roster agent: its declared state, how long ago it declared, and the reason it gave |
-| `needs you:` | explicit `waiting-user`/`blocked` declarations from the session's main agent or named `colead`, with each full reason wrapped across as many bounded lines as needed. Worker declarations and unanswered asks/reviews are intra-session traffic and stay out. Nothing here is inferred, so an empty section reads `none recorded` |
+| `needs you:` | explicit `waiting-user`/`blocked` declarations from the session's main agent or named `colead` (a `waiting-agent` past its ceiling is materialized as `blocked`), with each full reason wrapped across as many bounded lines as needed. Worker declarations and unanswered asks/reviews are intra-session traffic and stay out. Nothing here is inferred, so an empty section reads `none recorded` |
 
 ### The topic convention
 

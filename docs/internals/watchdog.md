@@ -109,7 +109,8 @@ builds the same detail cards as `ae brief --all`. The pure overview renderer
 omits the orchestrator's own session and bounds data lines to 100 characters.
 `NEEDS YOU` has one heading per session and includes only explicit
 `waiting-user`/`blocked` declarations from that session's main or named
-`colead`; worker declarations stay with their session leadership. Sessions and
+`colead` (a `waiting-agent` past its ceiling is materialized as `blocked`);
+worker declarations stay with their session leadership. Sessions and
 their needs sort oldest first. Each need occupies at most twelve lines: after
 the first identity-bearing line, continuation lines have a four-space indent
 and a 96-character body. Word wrapping consumes at least half of each
@@ -173,7 +174,7 @@ flowchart TD
     Dead -- no --> Meta{Orchestrator main?}
     Meta -- yes --> Sweep[overview sweep verdict]
     Meta -- no --> Done{Quiet state<br/>latest?}
-    Done -- yes --> SkipDone[skip — honor quiet<br/>done: event-only<br/>waiting/blocked: until pane touched]
+    Done -- yes --> SkipDone[skip — honor quiet<br/>done: event-only<br/>waiting-user/-agent/blocked: until pane touched<br/>waiting-agent past ceiling: as blocked + nudged]
     Done -- no --> Throttled{Throttle phrase<br/>in pane?}
     Throttled -- yes --> SkipThrottle[skip + emit throttled<br/>escalate after N cycles]
     Throttled -- no --> Frame{Current harness frame}
@@ -198,7 +199,7 @@ In source order:
 
 1. **Dead** — pane's foreground command is a shell AND no agent binary is in the descendant process tree. Alert once, mark dead, ignore in future cycles.
 2. **Orchestrator main** — use overview-sweep accounting; no harness-idle reminder competes with it.
-3. **Declared quiet state** — agent's latest relevant event is its own `state` declaration of `done`, `waiting-user`, or `blocked` (`mark-done`/`done` events count as `done`), AND no newer ae event mentions them as actor or target. `done` is skipped silently and is event-only (pane churn never revives it). `waiting-user`/`blocked` are also skipped, but yield to pane activity: if the pane changed since the declaration (e.g. the human replied directly in it, leaving no event), the quiet state no longer holds and the normal branches resume — so a post-reply hang is still caught.
+3. **Declared quiet state** — agent's latest relevant event is its own `state` declaration of `done`, `waiting-user`, `waiting-agent`, or `blocked` (`mark-done`/`done` events count as `done`), AND no newer ae event mentions them as actor or target. `done` is skipped silently and is event-only (pane churn never revives it). `waiting-user`/`waiting-agent`/`blocked` are also skipped, but yield to pane activity: if the pane changed since the declaration (e.g. the human replied directly in it, leaving no event), the quiet state no longer holds and the normal branches resume — so a post-reply hang is still caught. `waiting-agent` is the quiet fifth state: it means the seat waits on ANOTHER ae agent, claims no human while fresh, and — once its declaration has aged past `idle_nudge_secs * OWN_WORK_AGE_CAP` (the same cap the own-work deferral uses) — it stops holding and is judged exactly as `blocked`: the nudge budget resumes (the nudge half, off when `idle_nudge_secs = 0` like every nudge) and the verdict published is `blocked` (the attention half). The ceiling is measured from the declaration's own timestamp and has ONE owner (`watchdog::waiting_agent_escalated`), shared by the daemon and every read surface (`ae list`, `ae brief`) so they cannot disagree about escalation.
 4. **Throttled** — the current capture contains a known upstream rate-limit / overload phrase for the agent's binary. Skip nudge, emit `throttled` event first time per streak, escalate to `alert` after `THROTTLE_ALERT_CYCLES` continuous cycles.
 5. **Busy frame** — positively recognized execution. Mark working, reset idle and reminder state, and clear a durable stale alert.
 6. **Idle frame** — positively recognized empty input. Mark idle immediately; after `idle_nudge_secs`, send `you look idle: declare state or continue` through the existing `send` path. At the normal maximum, emit the same durable stale alert and keep it across daemon restarts until real Busy recovery.
@@ -226,11 +227,11 @@ keep the prior behavior.
 
 ## Quiet states and how they're invalidated
 
-`_agent_quiet_reason` returns an agent's current quiet state (`done` / `waiting-user` / `blocked`) plus its declaration timestamp, or empty. It reads the *latest relevant event* for the agent: a `state` declaration (or a `mark-done`/`done` event, mapped to `done`) wins only if no newer event mentions the agent as actor or target. An inbound `send`/`ask`/`review`/`nudge` is newer → quiet state invalidated.
+`_agent_quiet_reason` returns an agent's current quiet state (`done` / `waiting-user` / `waiting-agent` / `blocked`) plus its declaration timestamp, or empty. It reads the *latest relevant event* for the agent: a `state` declaration (or a `mark-done`/`done` event, mapped to `done`) wins only if no newer event mentions the agent as actor or target. An inbound `send`/`ask`/`review`/`nudge` is newer → quiet state invalidated.
 
 **`done` is event-only.** Pane hash changes, terminal resizes, scrollback churn — none of these revive a done agent. The historical "pane churn after done = agent kept working" heuristic was too noisy and was removed. Trade-off: silent work after `done` (output without ae helpers) is invisible to the watchdog. Acceptable — ae already requires helper discipline; a resuming agent should emit an ae event.
 
-**`waiting-user` / `blocked` yield to pane activity.** These states mean the agent is parked, but the unblocking input often arrives as the human typing *directly in the pane* — which produces no `events.jsonl` entry, only a pane-hash change. The watchdog keeps a per-pane **quiet baseline** (`_quiet_pane_decision`): the first cycle that observes a declaration *arms* the baseline with the current pane hash — already including the declaration's own echo, since the `state` helper prints to the pane — and honors the quiet state. Subsequent cycles *hold* (suppress nudges) while the hash equals that baseline. One differing capture re-arms the baseline and still holds, so a focus repaint or resize settles without waking the agent; the state *yields* only when the pane keeps changing for two cycles (human reply / agent output), at which point the normal active/recent/stale branches resume. Baselining on the echoed hash is essential: a naive "no pane change since the declaration timestamp" check would be tripped by the echo itself and never suppress a single nudge.
+**`waiting-user` / `waiting-agent` / `blocked` yield to pane activity.** These states mean the agent is parked, but the unblocking input often arrives as the human typing *directly in the pane* — which produces no `events.jsonl` entry, only a pane-hash change. The watchdog keeps a per-pane **quiet baseline** (`_quiet_pane_decision`): the first cycle that observes a declaration *arms* the baseline with the current pane hash — already including the declaration's own echo, since the `state` helper prints to the pane — and honors the quiet state. Subsequent cycles *hold* (suppress nudges) while the hash equals that baseline. One differing capture re-arms the baseline and still holds, so a focus repaint or resize settles without waking the agent; the state *yields* only when the pane keeps changing for two cycles (human reply / agent output), at which point the normal active/recent/stale branches resume. Baselining on the echoed hash is essential: a naive "no pane change since the declaration timestamp" check would be tripped by the echo itself and never suppress a single nudge. `waiting-agent` is the one quiet state with a CEILING: past `idle_nudge_secs * OWN_WORK_AGE_CAP` the hold ends (the pane baseline no longer matters) and the seat is `blocked` with its nudge budget resumed — a quiet state that never claims the human would otherwise be a silent stall.
 
 Concretely:
 

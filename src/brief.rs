@@ -242,6 +242,11 @@ pub enum Need {
 impl Need {
     /// Whether this fact is a direct claim on the human's attention.
     /// `colead` is the one name-based leadership convention.
+    ///
+    /// A fresh `waiting-agent` is never a [`Need`] at all (R3: quiet); an
+    /// escalated one arrives here materialized as `blocked` (`needs` owns
+    /// that), so this predicate stays the single gate on what claims the
+    /// human.
     #[must_use]
     pub fn claims_human(&self, main_agent: Option<&str>) -> bool {
         matches!(
@@ -656,7 +661,13 @@ pub fn card_for(
         goal: entry.goal.clone(),
         topics: topic_lines(memo.as_deref().unwrap_or_default(), now, since_secs),
         memo_unreadable: memo.is_err(),
-        needs: needs(&agents, &container, &entry.name, now),
+        needs: needs(
+            &agents,
+            &container,
+            &entry.name,
+            now,
+            entry.waiting_agent_cap_secs,
+        ),
         agents,
         degraded: entry.degraded,
     }
@@ -773,13 +784,37 @@ fn agent_lines(entry: &SessionEntry, container: &[u8], now: Timestamp) -> Vec<Ag
 /// Collect declarations and open requests once. Presentation decides that only
 /// main/`colead` declarations claim the human; requests remain available as a
 /// count for the overview's working line.
-fn needs(agents: &[AgentLine], container: &[u8], session: &str, now: Timestamp) -> Vec<Need> {
+///
+/// `waiting-agent` is quiet while fresh, so it is NOT a need here; once its
+/// age passes `cap_secs` it escalates to exactly `blocked` (R4) and this is
+/// the human card's half of that escalation. The cap arrives resolved from
+/// the session read, which used the same pinned cadence the watchdog uses.
+fn needs(
+    agents: &[AgentLine],
+    container: &[u8],
+    session: &str,
+    now: Timestamp,
+    cap_secs: u64,
+) -> Vec<Need> {
     let mut needs: Vec<Need> = agents
         .iter()
-        .filter(|agent| matches!(agent.state.as_str(), "waiting-user" | "blocked"))
+        .filter(|agent| match agent.state.as_str() {
+            "waiting-user" | "blocked" => true,
+            "waiting-agent" => agent
+                .age_secs
+                .is_some_and(|age| u64::try_from(age).unwrap_or(0) >= cap_secs),
+            _ => false,
+        })
         .map(|agent| Need::Declared {
             owner: agent.name.clone(),
-            state: agent.state.clone(),
+            // An escalated `waiting-agent` claims the human as exactly the
+            // state it became; the declaration itself is still on the card's
+            // agent line, unchanged.
+            state: if agent.state == "waiting-agent" {
+                "blocked".to_owned()
+            } else {
+                agent.state.clone()
+            },
             age_secs: agent.age_secs,
             reason: agent.reason.clone(),
         })
@@ -830,8 +865,8 @@ pub fn wants_git(entry: &SessionEntry) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        AgentLine, Args, Card, Need, Target, TopicLine, age, clip, duration_secs, ordered, parse,
-        render, short_path, topic_lines,
+        AgentLine, Args, Card, Need, Target, TopicLine, age, clip, duration_secs, needs, ordered,
+        parse, render, short_path, topic_lines,
     };
     use crate::attention::Reason;
     use crate::time::Timestamp;
@@ -1021,6 +1056,34 @@ mod tests {
             !needs.contains("does the strip pin orchestrator first?"),
             "{rendered}"
         );
+    }
+
+    /// R3/R4 on the card: a fresh `waiting-agent` is never a need; past the
+    /// session's ceiling it is exactly `blocked`, and `claims_human` admits
+    /// that one.
+    #[test]
+    fn a_fresh_waiting_agent_is_no_need_and_an_escalated_one_is_blocked() {
+        let line = |age_secs: i64| AgentLine {
+            name: "lead".to_owned(),
+            profile: "fable5".to_owned(),
+            state: "waiting-agent".to_owned(),
+            age_secs: Some(age_secs),
+            reason: "waiting on colead's gate".to_owned(),
+            attention: None,
+        };
+        let now = Timestamp::from_epoch(0);
+        let fresh = needs(&[line(1_199)], b"", "s", now, 1_200);
+        assert!(fresh.is_empty(), "fresh waiting-agent claims nobody");
+        assert!(!fresh.iter().any(|need| need.claims_human(Some("lead"))));
+
+        let escalated = needs(&[line(1_200)], b"", "s", now, 1_200);
+        assert_eq!(escalated.len(), 1);
+        let Need::Declared { state, reason, .. } = &escalated[0] else {
+            panic!("a declared need: {escalated:?}");
+        };
+        assert_eq!(state, "blocked", "escalated reads as exactly blocked");
+        assert_eq!(reason, "waiting on colead's gate");
+        assert!(escalated[0].claims_human(Some("lead")));
     }
 
     #[test]

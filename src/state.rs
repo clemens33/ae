@@ -32,13 +32,20 @@ pub const REASON_MIN: usize = 80;
 /// tabs and is capped at this many characters, not [`REASON_MAX`].
 pub const CHAT_SUMMARY_CAP: usize = 3500;
 
-/// The four states, exactly as the helper spells them.
-pub const VALUES: [&str; 4] = ["working", "waiting-user", "blocked", "done"];
+/// The five states, exactly as the helper spells them — the ONE vocabulary
+/// every classifier (watchdog, session digest, brief, menu) derives from.
+pub const VALUES: [&str; 5] = [
+    "working",
+    "waiting-user",
+    "waiting-agent",
+    "blocked",
+    "done",
+];
 
 /// The usage text.
-pub const USAGE: &str = "Usage: state <working|waiting-user|blocked|done> [reason]\n       state                              # print current state\n\n  working       actively making progress\n  waiting-user  needs human input\n  blocked       stuck on external dep — REASON REQUIRED\n  done          complete or paused\n";
+pub const USAGE: &str = "Usage: state <working|waiting-user|waiting-agent|blocked|done> [reason]\n       state                              # print current state\n\n  working        actively making progress\n  waiting-user   needs human input\n  waiting-agent  waiting on another ae agent — REASON REQUIRED\n  blocked        stuck on external dep — REASON REQUIRED\n  done           complete or paused\n";
 
-const REASON_SHAPE: &str = "Reason required: waiting-user gives a self-contained decision in 80–600 characters: '<what you need decided>: <option A and impact> | <option B and impact> (recommend A because <reason>; details: .local/<file> or memo <topic>)'; blocked names what blocks, who/what unblocks it, what you tried, and a long-form path in 80–600 characters";
+const REASON_SHAPE: &str = "Reason required: waiting-user gives a self-contained decision in 80–600 characters: '<what you need decided>: <option A and impact> | <option B and impact> (recommend A because <reason>; details: .local/<file> or memo <topic>)'; waiting-agent names who you wait on, what you need from them, and a long-form path in 80–600 characters; blocked names what blocks, who/what unblocks it, what you tried, and a long-form path in 80–600 characters";
 
 /// The refusal when the caller has no pane identity.
 pub const NO_IDENTITY: &str =
@@ -66,6 +73,8 @@ pub enum Usage {
     BlockedNeedsReason,
     /// `waiting-user` with no reason.
     WaitingUserNeedsReason,
+    /// `waiting-agent` with no reason.
+    WaitingAgentNeedsReason,
     /// Not one of [`VALUES`].
     UnknownValue(String),
 }
@@ -81,6 +90,9 @@ impl Usage {
             }
             Self::WaitingUserNeedsReason => {
                 format!("Error: 'waiting-user' requires a reason\n{REASON_SHAPE}\n{USAGE}")
+            }
+            Self::WaitingAgentNeedsReason => {
+                format!("Error: 'waiting-agent' requires a reason\n{REASON_SHAPE}\n{USAGE}")
             }
             Self::UnknownValue(_) => USAGE.to_owned(),
         }
@@ -117,6 +129,8 @@ pub fn parse(tail: &[String]) -> Result<Command, Usage> {
             Usage::BlockedNeedsReason
         } else if value == "waiting-user" {
             Usage::WaitingUserNeedsReason
+        } else if value == "waiting-agent" {
+            Usage::WaitingAgentNeedsReason
         } else {
             return Ok(Command::Declare(Declaration {
                 value: value.clone(),
@@ -458,6 +472,16 @@ mod tests {
             Err(Usage::WaitingUserNeedsReason)
         );
         assert_eq!(
+            parse(&words(&["waiting-agent"])),
+            Err(Usage::WaitingAgentNeedsReason),
+            "the fifth state requires a reason exactly as blocked does"
+        );
+        assert_eq!(
+            parse(&words(&["waiting-agent", "   "])),
+            Err(Usage::WaitingAgentNeedsReason)
+        );
+        assert!(parse(&words(&["waiting-agent", &"x".repeat(REASON_MIN)])).is_ok());
+        assert_eq!(
             parse(&words(&["blocked", "   "])),
             Err(Usage::BlockedNeedsReason)
         );
@@ -504,6 +528,12 @@ mod tests {
                 .render()
                 .contains("<what you need decided>")
         );
+        assert!(
+            Usage::WaitingAgentNeedsReason
+                .render()
+                .starts_with("Error: 'waiting-agent' requires a reason\n")
+        );
+        assert!(Usage::WaitingAgentNeedsReason.render().ends_with(USAGE));
         assert!(Usage::BlockedNeedsReason.render().ends_with(USAGE));
         assert_eq!(Usage::UnknownValue("x".to_owned()).render(), USAGE);
     }

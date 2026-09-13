@@ -2558,7 +2558,10 @@ fn picker_agent_mark(state: &str) -> Option<Mark> {
     match state {
         "dead" => Some(Mark::Dead),
         "waiting-user" | "blocked" | "throttled" | "wedged" => Some(Mark::NeedsYou),
-        "working" | "sweeping" | "busy" => Some(Mark::Working),
+        // A FRESH `waiting-agent` is quiet and reuses Working's mark; the
+        // picker WORD stays distinct in its state column (R6, no seventh
+        // mark). An ESCALATED one reaches this map as `blocked` above.
+        "waiting-agent" | "working" | "sweeping" | "busy" => Some(Mark::Working),
         "done" => Some(Mark::Done),
         "stale" | "starting" => Some(Mark::Stale),
         "idle" => Some(Mark::Idle),
@@ -4106,6 +4109,10 @@ mod tests {
         assert!(
             parse_picker_agents("v1;2000;1;lead:fable5:busy:%1", now).is_some(),
             "harness-observed busy is a valid live state"
+        );
+        assert!(
+            parse_picker_agents("v1;2000;60;lead:fable5:waiting-agent:%1", now).is_some(),
+            "the fifth declared state is a valid live state"
         );
         assert_eq!(
             parse_picker_agents("v1;1997;1;lead:fable5:busy:%1", now),

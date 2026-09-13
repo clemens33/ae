@@ -1837,6 +1837,30 @@ mod tests {
         );
     }
 
+    /// Slice 1's menu renders declaration values generically; the fifth state
+    /// must therefore arrive as its OWN word — never dropped, never a fallback.
+    #[test]
+    fn a_waiting_agent_declaration_renders_its_own_word_in_the_menu() {
+        use crate::tmux::OptionReading;
+        let now = crate::time::Timestamp::now();
+        let container = concat!(
+            r#"{"ts":"2026-09-13T08:00:00Z","actor":"builder","action":"state","ref":"waiting-agent","summary":"waiting on colead's gate"}"#,
+            "\n",
+        );
+        let rows = super::root_rows(
+            &OptionReading::Set(UUID_A.to_owned()),
+            &parsed_meta(UUID_A, &["builder"]),
+            &events(container),
+            now,
+        );
+        let declared = declaration_rows(&rows);
+        assert_eq!(declared.len(), 1, "{rows:?}");
+        assert!(
+            declared[0].starts_with("builder state: waiting-agent — waiting on colead's gate ("),
+            "{declared:?}"
+        );
+    }
+
     /// No option at all: no record-derived state, and the action floor is
     /// untouched.
     #[test]

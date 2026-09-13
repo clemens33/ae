@@ -1376,6 +1376,60 @@ mod tests {
         assert_eq!(agents[0].get("reason"), None);
     }
 
+    /// R3's visibility contract: a `waiting-agent` declaration is on the
+    /// `ae list` agent line — state cell and the JSON state/reason pair — fresh
+    /// (quiet, no attention) and escalated (exactly blocked) alike.
+    #[test]
+    fn a_waiting_agent_declaration_is_visible_on_the_list_agent_line() {
+        let stamp = |seconds_ago: i64| Timestamp::from_epoch(NOW.epoch() - seconds_ago).to_string();
+        let events = |age: i64| {
+            format!(
+                concat!(
+                    r#"{{"ts":"{}","actor":"lead","action":"state","ref":"waiting-agent","#,
+                    r#""summary":"waiting on colead's re-review"}}"#,
+                    "\n"
+                ),
+                stamp(age)
+            )
+        };
+        let meta = Some("mode=local\norigin=/repo\nseat.main=lead\nprofile.main=claude\n");
+
+        for (tag, age, reason, needs) in [
+            ("fresh", 100, None, false),
+            ("escalated", 2_000, Some("blocked"), true),
+        ] {
+            let fixture = DigestFixture::new(tag, meta, Some(&events(age)));
+            let entry = entry_for(
+                &fixture.0,
+                tag,
+                &SessionRuntime::new(Status::Running),
+                NOW,
+                DEFAULT_UNANSWERED_SECS,
+            );
+            let line = table(&[&entry]);
+            assert!(
+                line.contains("waiting-agent"),
+                "{tag}: the declared state is on the agent line: {line}"
+            );
+
+            let document = fixture.entry(tag);
+            let Some(json::Value::Arr(agents)) = document.get("agents") else {
+                panic!("{tag}: the roster renders");
+            };
+            assert_eq!(agents[0].get_str("state"), Some("waiting-agent"), "{tag}");
+            assert_eq!(
+                agents[0].get_str("reason"),
+                reason,
+                "{tag}: the classified contribution"
+            );
+            assert_eq!(
+                document.get("needs_attention"),
+                Some(&json::Value::Bool(needs)),
+                "{tag}"
+            );
+        }
+    }
+
     #[test]
     fn sc_509b_entry_for_and_presentation_render_one_snapshot_identically() {
         let fixture = DigestFixture::new(

@@ -20,6 +20,7 @@ use crate::events::{
 };
 use crate::meta::{Anomaly, Meta};
 use crate::time::Timestamp;
+use crate::watchdog::{DEFAULT_IDLE_NUDGE_SECS, waiting_agent_cap_secs, waiting_agent_escalated};
 
 /// The `unanswered` threshold when nothing tunes it.
 pub const DEFAULT_UNANSWERED_SECS: i64 = 1800;
@@ -758,7 +759,12 @@ pub fn entry_from(
             .iter()
             .find(|seat| seat.slot == "main")
             .map(|seat| seat.name.clone());
-        entry.agents = agent_entries(meta, read, runtime, name, entry.started_epoch);
+        // The pinned cadence is resolved ONCE here, from the same meta the
+        // watchdog pins from, so the ceiling this entry is judged by is the
+        // ceiling the pane is judged by.
+        let idle_nudge_secs = meta.idle_nudge_secs().unwrap_or(DEFAULT_IDLE_NUDGE_SECS);
+        entry.waiting_agent_cap_secs = waiting_agent_cap_secs(idle_nudge_secs);
+        entry.agents = agent_entries(meta, read, runtime, name, entry.started_epoch, now);
         entry.set_established_runtime_dead_agents(established_runtime_dead_agents(meta, runtime));
     }
     // The MAX across agent reasons PLUS session-level unresolved-request facts.
@@ -865,7 +871,9 @@ fn agent_entries(
     runtime: &SessionRuntime,
     session: &str,
     started_epoch: Option<i64>,
+    now: Timestamp,
 ) -> Vec<AgentEntry> {
+    let idle_nudge_secs = meta.idle_nudge_secs().unwrap_or(DEFAULT_IDLE_NUDGE_SECS);
     // The seats that still exist: a stopped or absent pane holds nobody's
     // work, and a retired agent is off the roster entirely.
     let seats: Vec<String> = meta
@@ -879,8 +887,15 @@ fn agent_entries(
         .iter()
         .map(|slot| {
             let reference = slot.reference();
-            let declared =
-                read.and_then(|read| read.declared_state_of(session, &slot.slot, &reference));
+            // The DECLARATION EVENT, not only its value: `waiting-agent`'s
+            // ceiling is measured from the declaration's own timestamp, and a
+            // value alone cannot carry one.
+            let declared = read.and_then(|read| {
+                latest_declaration_in(&read.events, session, &slot.slot, &reference)
+            });
+            let declared_state = declared.and_then(Event::declared_state);
+            let declared_age_secs =
+                declared.map(|event| u64::try_from(event.ts.seconds_until(now)).unwrap_or(0));
             let runtime_agent = runtime.agent(&slot.slot);
             // Model drift: only the two harnesses whose live model ae can read
             // are ever marked with an observation; every other tool's model is
@@ -908,10 +923,13 @@ fn agent_entries(
                     .map_or(crate::harness_state::HarnessState::Unknown, |agent| {
                         agent.observed
                     }),
-                state: declared.map(ToOwned::to_owned),
+                // The RAW declaration, so every surface can render the state
+                // the agent actually declared; the escalation lives in `reason`
+                // (and in `brief`'s needs), never by rewriting the value.
+                state: declared_state.map(ToOwned::to_owned),
                 // This agent's OWN contribution, from the two evidence classes:
                 // ALERT-DERIVED dead/stale/throttled, and SELF-DECLARED
-                // waiting-user/blocked.
+                // waiting-user/waiting-agent/blocked.
                 reason: Reason::rollup(
                     runtime_agent
                         .and_then(|agent| agent.alert)
@@ -924,7 +942,9 @@ fn agent_entries(
                                 started_epoch,
                             )
                         }))
-                        .chain(declared.and_then(declared_reason)),
+                        .chain(declared_state.zip(declared_age_secs).and_then(
+                            |(state, age_secs)| declared_reason(state, age_secs, idle_nudge_secs),
+                        )),
                 ),
                 // A seat that is gone is waiting for nothing: its open requests
                 // are somebody else's problem now, and the line would only be
@@ -959,10 +979,19 @@ fn anomalies_degrade(anomalies: &[Anomaly]) -> bool {
 }
 
 /// The attention reason a DECLARED work state contributes, if any.
-fn declared_reason(state: &str) -> Option<Reason> {
+///
+/// `waiting-agent` is the quiet fifth state: fresh it claims nobody, and past
+/// [`waiting_agent_escalated`]'s ceiling it becomes exactly `blocked` (R4) —
+/// the SAME reason a declared `blocked` yields, and the same ceiling the
+/// watchdog uses to resume its nudge, so a human surface can never disagree
+/// with the pane about escalation.
+fn declared_reason(state: &str, age_secs: u64, idle_nudge_secs: u64) -> Option<Reason> {
     match state {
         "waiting-user" => Some(Reason::WaitingUser),
         "blocked" => Some(Reason::Blocked),
+        "waiting-agent" => {
+            waiting_agent_escalated(age_secs, idle_nudge_secs).then_some(Reason::Blocked)
+        }
         _ => None,
     }
 }
@@ -2705,6 +2734,55 @@ mod tests {
             value.get("needs_attention"),
             Some(&crate::json::Value::Bool(true))
         );
+    }
+
+    /// R3/R4 on the read side: a fresh `waiting-agent` claims nobody; one past
+    /// `idle_nudge_secs * OWN_WORK_AGE_CAP` is exactly `blocked`; the RAW
+    /// declaration stays visible either way.
+    #[test]
+    fn a_waiting_agent_declaration_escalates_only_past_the_ceiling() {
+        let declaration = |scratch: &Scratch, age: i64| {
+            scratch.meta(META);
+            scratch.events(&[event(
+                &at(age),
+                "lead",
+                "state",
+                r#","ref":"waiting-agent","summary":"waiting on colead's re-review""#,
+            )]);
+            entry_for(&scratch.0, "live", &running(), NOW, DEFAULT_UNANSWERED_SECS)
+        };
+
+        let fresh = declaration(&Scratch::new("waiting-agent-fresh"), 1_199);
+        assert_eq!(fresh.agents[0].state.as_deref(), Some("waiting-agent"));
+        assert_eq!(fresh.agents[0].reason, None, "fresh claims nobody");
+        assert_eq!(fresh.attention, None, "and adds no session marker");
+        assert_eq!(
+            fresh.waiting_agent_cap_secs, 1_200,
+            "the default cadence 300 * OWN_WORK_AGE_CAP"
+        );
+
+        let escalated = declaration(&Scratch::new("waiting-agent-escalated"), 1_200);
+        assert_eq!(
+            escalated.agents[0].state.as_deref(),
+            Some("waiting-agent"),
+            "the declaration itself stays visible"
+        );
+        assert_eq!(escalated.agents[0].reason, Some(Reason::Blocked));
+        assert_eq!(escalated.attention, Some(Reason::Blocked));
+
+        // The ceiling follows the session's PINNED cadence, the same row the
+        // watchdog reads: 60 * 4 = 240s.
+        let pinned = Scratch::new("waiting-agent-pinned");
+        pinned.meta(&format!("{META}idle_nudge_secs=60\n"));
+        pinned.events(&[event(
+            &at(300),
+            "lead",
+            "state",
+            r#","ref":"waiting-agent","summary":"waiting on colead's re-review""#,
+        )]);
+        let entry = entry_for(&pinned.0, "live", &running(), NOW, DEFAULT_UNANSWERED_SECS);
+        assert_eq!(entry.waiting_agent_cap_secs, 240);
+        assert_eq!(entry.attention, Some(Reason::Blocked));
     }
 
     #[test]

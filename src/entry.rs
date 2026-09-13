@@ -275,7 +275,8 @@ pub const LIST_HELP: &str = r"Usage: ae list [--running | --all | --stopped | --
   --all        running sessions, then stopped ones
   --stopped    stopped sessions only
   --needs-attn only running sessions with an attn reason — declared
-               waiting-user/blocked, watchdog-derived dead/stale/throttled, or an
+               waiting-user/blocked (a waiting-agent past its ceiling reads as
+               blocked), watchdog-derived dead/stale/throttled, or an
                unanswered inter-agent ask/review (older than 30m); implies
                running-only
                (aliases: --needs-me, --needs, --attn)

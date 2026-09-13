@@ -19,7 +19,8 @@ pub enum Reason {
     Unanswered,
     /// Rank 2 — an agent is being rate-limited upstream.
     Throttled,
-    /// Rank 3 — an agent declared it is blocked on an external dependency.
+    /// Rank 3 — an agent is blocked: it declared a concrete external
+    /// dependency, or a `waiting-agent` declaration outlived its ceiling.
     Blocked,
     /// Rank 4 — an agent declared it is waiting on the human.
     WaitingUser,

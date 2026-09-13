@@ -91,7 +91,7 @@ impl Default for Knobs {
             interval_secs: 60,
             quota_every_secs: 300,
             quota_aware: true,
-            idle_nudge_secs: 300,
+            idle_nudge_secs: crate::watchdog::DEFAULT_IDLE_NUDGE_SECS,
             stale_secs: 900,
             max_nudges: 2,
             throttle_alert_cycles: 5,
@@ -219,10 +219,15 @@ impl Verdict {
             Self::Quiet(QuietKind::WaitingUser | QuietKind::Blocked)
             | Self::Throttled
             | Self::Meta(SweepVerdict::MetaWedged) => Mark::NeedsYou,
+            // A FRESH `waiting-agent` is quiet like `working` to the marks
+            // (R6): no seventh glyph. An escalated one arrives here as
+            // `Quiet(Blocked)` and draws NeedsYou above.
+            Self::Quiet(QuietKind::WaitingAgent)
+            | Self::Active
+            | Self::Meta(SweepVerdict::MetaSweeping) => Mark::Working,
             Self::Quiet(QuietKind::Done) => Mark::Done,
             Self::Idle => Mark::Idle,
             Self::Stale | Self::Meta(SweepVerdict::MetaStarting) => Mark::Stale,
-            Self::Active | Self::Meta(SweepVerdict::MetaSweeping) => Mark::Working,
         }
     }
 
@@ -233,6 +238,7 @@ impl Verdict {
             Self::Dead => "dead",
             Self::Quiet(QuietKind::Done) => "done",
             Self::Quiet(QuietKind::WaitingUser) => "waiting-user",
+            Self::Quiet(QuietKind::WaitingAgent) => "waiting-agent",
             Self::Quiet(QuietKind::Blocked) => "blocked",
             Self::Throttled => "throttled",
             Self::Idle => "idle",
@@ -734,12 +740,15 @@ pub fn stale_display(event_age_secs: u64) -> String {
 
 /// The nudge: the session goal when the meta carries one, then the status
 /// sentence, then the path to this session's own `state` helper.
+///
+/// The invitation spells the SAME tail `watchdog::raw_nudge` strips from a
+/// pane baseline, so the two can never disagree about what a nudge looks like.
 #[must_use]
 pub fn nudge_text(goal: Option<&str>, meta_dir: &Path) -> String {
     let prefix = goal.map_or_else(String::new, |goal| format!("Session goal: {goal}. "));
     format!(
         "{prefix}Status check: if you have more work, continue. Otherwise declare your state so \
-         I stop nudging: {}/state <waiting-user|blocked|done> \"<reason>\"",
+         I stop nudging: {}/state <waiting-user|waiting-agent|blocked|done> \"<reason>\"",
         meta_dir.display()
     )
 }
@@ -751,7 +760,7 @@ pub fn idle_nudge_text(goal: Option<&str>, meta_dir: &Path) -> String {
     let prefix = goal.map_or_else(String::new, |goal| format!("Session goal: {goal}. "));
     format!(
         "{prefix}you look idle: declare state or continue. State helper: {}/state \
-         <waiting-user|blocked|done> \"<reason>\"",
+         <waiting-user|waiting-agent|blocked|done> \"<reason>\"",
         meta_dir.display()
     )
 }
@@ -844,6 +853,37 @@ fn book_stale(
         )));
         next.nudge_count = prior.nudge_count.saturating_add(1);
     }
+}
+
+/// The R4 escalation of a quiet `waiting-agent`, or `None` while its hold
+/// stands. The declaration's age is `seen.last_actor_event_age_secs` because
+/// the newest event the seat is the actor of IS the declaration the hold was
+/// armed from — any newer one ends the hold before this branch is reached.
+///
+/// Past the ceiling the seat becomes exactly `blocked`: the ordinary nudge
+/// budget resumes (`book_stale`; the nudge half, off when `idle_nudge_secs` is
+/// zero like every nudge), and the verdict published is `Quiet(Blocked)` — the
+/// attention half, on the same ceiling the read surfaces derive from the same
+/// pin, so a human surface can never disagree with the pane.
+fn book_waiting_agent_escalation(
+    prior: &PaneState,
+    next: &mut PaneState,
+    effects: &mut Vec<Effect>,
+    seen: &Observation,
+    knobs: &Knobs,
+) -> Option<Verdict> {
+    if seen.quiet != Some(QuietKind::WaitingAgent)
+        || !crate::watchdog::waiting_agent_escalated(
+            seen.last_actor_event_age_secs,
+            knobs.idle_nudge_secs,
+        )
+    {
+        return None;
+    }
+    if knobs.idle_nudge_secs > 0 {
+        book_stale(prior, next, effects, knobs, seen.last_actor_event_age_secs);
+    }
+    Some(Verdict::Quiet(QuietKind::Blocked))
 }
 
 /// The orchestrator main's sweep branch, or `None` when this pane is not it.
@@ -940,8 +980,22 @@ pub fn account(prior: &PaneState, seen: &Observation, knobs: &Knobs) -> Accounti
         next.throttle_streak = 0;
     }
 
-    // 6.
+    // 6. A quiet declaration. A FRESH `waiting-agent` holds like the other
+    // quiet states; past its ceiling it escalates (see the helper). While the
+    // hold stands, the newest event this agent is the actor of IS its
+    // declaration: any newer one would have ended the quiet state in
+    // `resolve_quiet`.
     if let Some(kind) = seen.quiet {
+        if let Some(verdict) =
+            book_waiting_agent_escalation(prior, &mut next, &mut effects, seen, knobs)
+        {
+            return Accounting {
+                next,
+                effects,
+                verdict,
+                moved: false,
+            };
+        }
         next.nudge_count = 0;
         next.undelivered_streak = 0;
         next.idle_since_epoch = None;
@@ -1217,11 +1271,6 @@ fn held_seats(
         .collect()
 }
 
-/// How many multiples of `idle_nudge_secs` one outstanding item may age before
-/// the deferral gives way. Generous on purpose: the waiting seat is not the
-/// problem, and the ceiling exists for the seat that is.
-const OWN_WORK_AGE_CAP: u64 = 4;
-
 /// Whether a seat that reached its nudge age keeps its quiet a while longer.
 ///
 /// Suppression is a DEFERRAL, never silence. A seat with outstanding own work
@@ -1233,9 +1282,9 @@ const OWN_WORK_AGE_CAP: u64 = 4;
 ///   taken — one deferred nudge opportunity per `idle_nudge_secs`, `max_nudges`
 ///   of them — measured on the clock rather than in a counter, so a daemon
 ///   restart cannot forget it;
-/// - the oldest outstanding item is older than [`OWN_WORK_AGE_CAP`] nudge
-///   periods, which is the case where the seat's own work has itself gone
-///   wrong.
+/// - the oldest outstanding item is older than [`crate::watchdog::OWN_WORK_AGE_CAP`]
+///   nudge periods, which is the case where the seat's own work has itself gone
+///   wrong. `waiting-agent` escalation reuses the same cap.
 ///
 /// PURE: it reads the observation and the knobs and nothing else.
 #[must_use]
@@ -1246,7 +1295,9 @@ fn deferred(own: crate::session::OwnWork, now_epoch: i64, idle_age: u64, knobs: 
     let budget = knobs
         .idle_nudge_secs
         .saturating_mul(u64::from(knobs.max_nudges).saturating_add(1));
-    let cap = knobs.idle_nudge_secs.saturating_mul(OWN_WORK_AGE_CAP);
+    let cap = knobs
+        .idle_nudge_secs
+        .saturating_mul(crate::watchdog::OWN_WORK_AGE_CAP);
     idle_age < budget && own.oldest_secs(now_epoch) < cap
 }
 
@@ -7146,6 +7197,52 @@ mod tests {
         );
     }
 
+    /// A fresh `waiting-agent` holds exactly like the other quiet states; past
+    /// its ceiling it becomes exactly `blocked` AND the nudge budget resumes.
+    #[test]
+    fn a_waiting_agent_holds_while_fresh_and_escalates_past_the_ceiling() {
+        let knobs = Knobs::default(); // idle_nudge_secs 300 -> cap 1200s
+        let mut observed = seen();
+        observed.quiet = Some(QuietKind::WaitingAgent);
+
+        observed.last_actor_event_age_secs = 1_199;
+        let fresh = account(&PaneState::default(), &observed, &knobs);
+        assert_eq!(
+            fresh.verdict,
+            Verdict::Quiet(QuietKind::WaitingAgent),
+            "one second short of the ceiling is still a quiet hold"
+        );
+        assert!(
+            !fresh.effects.contains(&Effect::Nudge),
+            "the fresh half must not nudge"
+        );
+
+        observed.last_actor_event_age_secs = 1_200;
+        let escalated = account(&PaneState::default(), &observed, &knobs);
+        assert_eq!(
+            escalated.verdict,
+            Verdict::Quiet(QuietKind::Blocked),
+            "past the ceiling it is exactly blocked"
+        );
+        assert!(
+            escalated.effects.contains(&Effect::Nudge),
+            "and the nudge budget resumes"
+        );
+
+        // The nudge half is off at a zero cadence; the attention half is not.
+        let zero = Knobs {
+            idle_nudge_secs: 0,
+            ..knobs
+        };
+        let attention_only = account(&PaneState::default(), &observed, &zero);
+        assert_eq!(
+            attention_only.verdict,
+            Verdict::Quiet(QuietKind::Blocked),
+            "a zero knob switches off nudging, never the human marker"
+        );
+        assert!(!attention_only.effects.contains(&Effect::Nudge));
+    }
+
     #[test]
     fn quiet_repaint_rearms_once_then_two_changes_activate() {
         let scratch = Scratch::new("quiet-streak");
@@ -7451,20 +7548,16 @@ mod tests {
         let meta = Path::new("/home/x/.ae/sessions/demo");
         let plain = nudge_text(None, meta);
         assert!(plain.starts_with("Status check: if you have more work, continue."));
-        assert!(
-            plain.ends_with(
-                "/home/x/.ae/sessions/demo/state <waiting-user|blocked|done> \"<reason>\""
-            )
-        );
+        assert!(plain.ends_with(
+            "/home/x/.ae/sessions/demo/state <waiting-user|waiting-agent|blocked|done> \"<reason>\""
+        ));
         let goaled = nudge_text(Some("ship P4.1"), meta);
         assert!(goaled.starts_with("Session goal: ship P4.1. Status check:"));
         let idle = idle_nudge_text(Some("ship P4.1"), meta);
         assert!(idle.contains("you look idle: declare state or continue"));
-        assert!(
-            idle.ends_with(
-                "/home/x/.ae/sessions/demo/state <waiting-user|blocked|done> \"<reason>\""
-            )
-        );
+        assert!(idle.ends_with(
+            "/home/x/.ae/sessions/demo/state <waiting-user|waiting-agent|blocked|done> \"<reason>\""
+        ));
     }
 
     #[test]
@@ -7525,6 +7618,13 @@ mod tests {
                 Verdict::Quiet(QuietKind::WaitingUser),
                 Mark::NeedsYou,
                 "waiting-user",
+            ),
+            (
+                // A fresh waiting-agent is quiet like working (R6): the mark is
+                // shared, the published WORD stays distinct.
+                Verdict::Quiet(QuietKind::WaitingAgent),
+                Mark::Working,
+                "waiting-agent",
             ),
             (
                 Verdict::Quiet(QuietKind::Blocked),

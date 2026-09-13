@@ -1708,7 +1708,7 @@ fn state_refuses_without_a_pane_identity_and_writes_nothing() {
         "a refused declaration opens nothing"
     );
     // Usage errors are 2, decided before any identity question.
-    for tail in [vec!["Working"], vec!["blocked"]] {
+    for tail in [vec!["Working"], vec!["blocked"], vec!["waiting-agent"]] {
         let mut command = ae();
         command
             .env_remove("TMUX_PANE")
@@ -1718,8 +1718,9 @@ fn state_refuses_without_a_pane_identity_and_writes_nothing() {
         let out = command.output().expect("the ae binary should run");
         assert_eq!(out.status.code(), Some(2), "{tail:?}: {:?}", out.status);
         assert!(
-            String::from_utf8_lossy(&out.stderr)
-                .contains("Usage: state <working|waiting-user|blocked|done> [reason]"),
+            String::from_utf8_lossy(&out.stderr).contains(
+                "Usage: state <working|waiting-user|waiting-agent|blocked|done> [reason]"
+            ),
             "{tail:?}"
         );
     }

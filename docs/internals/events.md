@@ -94,7 +94,7 @@ Each is optional and omitted when empty. Readers that don't understand them igno
 | `ask` | `ask` helper | Tracked request expecting a reply. Carries `ref`. |
 | `review` | `review` helper | Like `ask`, with the critical-review prompt template. Carries `ref`. |
 | `reply` | `reply` helper | Reply to an `ask` / `review`. Same `ref`. |
-| `state` | `state` helper | Agent declares its work state — `working` / `waiting-user` / `blocked` / `done` (in `ref`). The watchdog honors quiet states. |
+| `state` | `state` helper | Agent declares its work state — `working` / `waiting-user` / `waiting-agent` / `blocked` / `done` (in `ref`). The watchdog honors quiet states; a `waiting-agent` past its ceiling reads as `blocked`. |
 | `done` | `mark-done` helper | Completion / pause signal. `mark-done` is an alias for `state done`; both are read as `done`. |
 | `chat` | `say` helper | Agent's free-text line to the human, forwarded by the Telegram bridge. Text in `summary`. |
 | `memo` | `memo add` helper | Append to shared session memory. |

@@ -255,6 +255,12 @@ pub struct SessionEntry {
     /// The agent occupying the typed `main` roster slot, when established.
     /// Kept separately because roster file order is not seat identity.
     pub main_agent: Option<String>,
+    /// The age at which a `waiting-agent` declaration escalates to `blocked`
+    /// — `crate::watchdog::waiting_agent_cap_secs` over this session's pinned
+    /// `idle_nudge_secs`. A rendering fact for the human card, never a
+    /// serialized member; the read that parsed the meta sets it, and every
+    /// other constructor carries the default cadence.
+    pub waiting_agent_cap_secs: u64,
     /// Whether this entry suffered ACTUAL read/parse loss.
     pub degraded: bool,
     /// Per-member source completeness.
@@ -285,6 +291,9 @@ impl SessionEntry {
             attention: None,
             agents: Vec::new(),
             main_agent: None,
+            waiting_agent_cap_secs: crate::watchdog::waiting_agent_cap_secs(
+                crate::watchdog::DEFAULT_IDLE_NUDGE_SECS,
+            ),
             degraded: false,
             knowledge: RenderKnowledge::complete(),
             established_runtime_dead_agents: Vec::new(),

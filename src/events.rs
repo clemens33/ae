@@ -116,7 +116,9 @@ pub enum RefMeaning<'a> {
     /// `recover` — the captured tool session id.
     CapturedSessionId(&'a str),
     /// `state` — the declared work state (`working` / `waiting-user` /
-    /// `blocked` / `done`).
+    /// `waiting-agent` / `blocked` / `done`). The reader does not gate the
+    /// value: a state the vocabulary does not know still renders truthfully
+    /// where it is shown, and only the classifiers act on the known words.
     DeclaredState(&'a str),
     /// Any other action, where `ref` is *usually* absent — never categorically
     /// absent — so a value that turns up carries no meaning the
