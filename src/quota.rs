@@ -745,6 +745,9 @@ struct SettingsScope {
     policy: Policy,
     readings: Vec<SettingsReading>,
     statuses: Vec<Status>,
+    /// The newest observation stamp any absorbed row carried, for the
+    /// provenance a status-only line shows.
+    observed: Option<i64>,
 }
 
 /// A seat identity precise enough to join its persisted conversation to one
@@ -839,6 +842,7 @@ impl Observation {
                     policy: Policy::default(),
                     readings: Vec::new(),
                     statuses: Vec::new(),
+                    observed: None,
                 };
                 scope.absorb(group, self.now);
                 scopes.push(scope);
@@ -953,6 +957,9 @@ impl SettingsScope {
     fn absorb(&mut self, group: &Group, now: i64) {
         self.policy.absorb(&group.policy);
         for row in &group.rows {
+            if let Some(observed) = row.observed_at {
+                self.observed = Some(self.observed.map_or(observed, |held| held.max(observed)));
+            }
             let status = if matches!(row.status, Status::Fresh | Status::Stale) {
                 freshness(row.observed_at, row.resets_at, now)
             } else {
@@ -997,9 +1004,27 @@ impl SettingsScope {
             .iter()
             .any(|status| matches!(status, Status::ReadError | Status::Truncated));
         if incomplete || self.readings.is_empty() {
-            rows.push(DialogRow {
-                label: format!("  {}", settings_status(&self.statuses).as_str()),
-            });
+            let status = settings_status(&self.statuses);
+            let mut label = format!("  {}", status.as_str());
+            // The age belongs to a scope with NOTHING usable: it is the only
+            // provenance such a line has. An `incomplete` scope that still
+            // adopted a reading keeps the bare status — attaching a sibling's
+            // fresh age to a failed row would be another sample's story.
+            if self.readings.is_empty()
+                && let Some(observed) = self.observed
+            {
+                let _ = write!(
+                    label,
+                    " | seen {}",
+                    span_label(now.saturating_sub(observed))
+                );
+            }
+            if let Some(hint) = manual_refresh_hint(self.group.tool, self.statuses.iter().copied())
+            {
+                let _ = write!(label, " | {hint}");
+            }
+            debug_assert!(label.len() <= SETTINGS_ROW_MAX);
+            rows.push(DialogRow { label });
             return rows;
         }
         let mut readings: Vec<&SettingsReading> = self.readings.iter().collect();
@@ -2236,6 +2261,37 @@ fn short_path(path: &Path, home: Option<&Path>) -> String {
     path.display().to_string()
 }
 
+/// The manual refresh a Claude scope can be told to run when it holds nothing
+/// usable: Claude Code's cache moves only when a `/usage` fetch succeeds, so
+/// ae cannot refresh it, and the honest answer is to name the action that can.
+const CLAUDE_REFRESH_HINT: &str = "run /usage in a claude session";
+
+/// The manual refresh a scope's own renderer may show, or `None`.
+///
+/// Derived at RENDER time from the observation, deliberately never written
+/// back into [`Group::hint`]. That field is part of `settings_same_scope`'s
+/// identity tuple, so a per-observation fact stored there would split one
+/// account into two dialog scopes the moment two groups of the same scope
+/// disagreed about staleness. The hints that ARE stored describe unresolved
+/// sources, which is identity; this one describes an observation, which is
+/// not, so the two must not share a field.
+fn manual_refresh_hint(
+    tool: ToolKind,
+    statuses: impl Iterator<Item = Status>,
+) -> Option<&'static str> {
+    if tool != ToolKind::Claude {
+        return None;
+    }
+    let mut any = false;
+    for status in statuses {
+        any = true;
+        if status != Status::Unknown {
+            return None;
+        }
+    }
+    any.then_some(CLAUDE_REFRESH_HINT)
+}
+
 fn render_at(groups: &[Group], home: Option<&Path>, now: i64) -> String {
     const HEADER: [&str; COLUMNS] = [
         "PROFILES",
@@ -2271,9 +2327,10 @@ fn render_at(groups: &[Group], home: Option<&Path>, now: i64) -> String {
             });
             continue;
         }
+        let refresh_hint = manual_refresh_hint(group.tool, group.rows.iter().map(|row| row.status));
         for (index, row) in group.rows.iter().enumerate() {
             let trustworthy = matches!(row.status, Status::Fresh | Status::Stale);
-            let status = group.hint.as_deref().map_or_else(
+            let status = group.hint.as_deref().or(refresh_hint).map_or_else(
                 || row.status.as_str().to_owned(),
                 |hint| format!("{} ({hint})", row.status.as_str()),
             );
@@ -2310,10 +2367,8 @@ fn render_at(groups: &[Group], home: Option<&Path>, now: i64) -> String {
                     .then(|| row.resets_at.map(|reset| reset_label(reset, now)))
                     .flatten()
                     .unwrap_or_else(|| "-".to_owned()),
-                trustworthy
-                    .then(|| row.observed_at.map(|observed| age_label(now - observed)))
-                    .flatten()
-                    .unwrap_or_else(|| "-".to_owned()),
+                row.observed_at
+                    .map_or_else(|| "-".to_owned(), |observed| age_label(now - observed)),
                 status,
             ]));
         }
@@ -3444,6 +3499,213 @@ mod tests {
             policy: Policy::new(manual_resets, Account::default()),
             notes: Vec::new(),
         }
+    }
+
+    fn unusable_claude_group(now: i64, observed_at: Option<i64>) -> Group {
+        Group {
+            profiles: vec!["claude-mic".to_owned()],
+            tool: ToolKind::Claude,
+            home: Some(std::path::PathBuf::from("/tmp/mic/.claude-mic")),
+            source: Some(std::path::PathBuf::from(
+                "/tmp/mic/.claude-mic/.claude.json",
+            )),
+            clients: Vec::new(),
+            rollout: None,
+            owner: None,
+            rows: vec![
+                Row {
+                    bucket: "session".to_owned(),
+                    qualifier: None,
+                    window_minutes: Some(300),
+                    used_percent: Some("8".to_owned()),
+                    resets_at: Some(now - 60),
+                    observed_at,
+                    status: Status::Unknown,
+                },
+                Row {
+                    bucket: "weekly_all".to_owned(),
+                    qualifier: None,
+                    window_minutes: Some(10_080),
+                    used_percent: Some("59".to_owned()),
+                    resets_at: Some(now - 120),
+                    observed_at,
+                    status: Status::Unknown,
+                },
+            ],
+            hint: None,
+            summary: None,
+            policy: Policy::default(),
+            notes: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn an_unknown_row_shows_its_observation_age_and_keeps_its_numbers_blank() {
+        const NOW: i64 = 1_000_000;
+        let group = unusable_claude_group(NOW, Some(NOW - 15 * 3_600));
+        let table = render_at(std::slice::from_ref(&group), None, NOW);
+        assert!(table.contains("15h00m"), "the age survives: {table}");
+        assert!(table.contains("unknown (run"), "the hint is shown: {table}");
+        assert!(
+            table.contains("claude session)"),
+            "the hint is complete: {table}"
+        );
+        assert!(
+            !table.contains("8%"),
+            "a refused percentage stays blank: {table}"
+        );
+        assert!(
+            !table.contains("59%"),
+            "a refused percentage stays blank: {table}"
+        );
+
+        let rows = super::Observation {
+            groups: vec![group],
+            rendered: Vec::new(),
+            home: None,
+            now: NOW,
+        }
+        .quota_dialog_rows();
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.label.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "claude//tmp/mic/.claude-mic",
+                "  unknown | seen 15h00m | run /usage in a claude session",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_missing_cache_keeps_the_hint_and_claims_no_age() {
+        const NOW: i64 = 1_000_000;
+        let group = unusable_claude_group(NOW, None);
+        let table = render_at(std::slice::from_ref(&group), None, NOW);
+        assert!(table.contains("unknown (run"), "{table}");
+        let rows = super::Observation {
+            groups: vec![group],
+            rendered: Vec::new(),
+            home: None,
+            now: NOW,
+        }
+        .quota_dialog_rows();
+        assert_eq!(rows[1].label, "  unknown | run /usage in a claude session");
+    }
+
+    #[test]
+    fn the_manual_refresh_hint_is_derived_at_render_time_not_from_scope_identity() {
+        const NOW: i64 = 1_000_000;
+        // The hint matrix: only a Claude scope holding NOTHING usable gets it.
+        let hint =
+            |tool, statuses: Vec<Status>| super::manual_refresh_hint(tool, statuses.into_iter());
+        assert_eq!(
+            hint(ToolKind::Claude, vec![Status::Unknown, Status::Unknown]),
+            Some("run /usage in a claude session")
+        );
+        assert_eq!(hint(ToolKind::Claude, vec![Status::Fresh]), None);
+        assert_eq!(
+            hint(ToolKind::Claude, vec![Status::Unknown, Status::ReadError]),
+            None
+        );
+        assert_eq!(hint(ToolKind::Claude, Vec::new()), None);
+        assert_eq!(hint(ToolKind::Codex, vec![Status::Unknown]), None);
+
+        // A stored hint (an unresolved source) is identity; the refresh hint is
+        // an observation. They must not share the field, or two groups of one
+        // scope whose staleness differs would split in `settings_same_scope`.
+        let stale = unusable_claude_group(NOW, Some(NOW - 15 * 3_600));
+        let mut fresh = stale.clone();
+        fresh.rows[0].status = Status::Fresh;
+        fresh.rows[0].resets_at = Some(NOW + 60_000);
+        assert!(stale.hint.is_none() && fresh.hint.is_none());
+        assert!(
+            super::settings_same_scope(&stale, &fresh),
+            "staleness never enters the scope identity tuple"
+        );
+        let merged = super::Observation {
+            groups: vec![stale, fresh],
+            rendered: Vec::new(),
+            home: None,
+            now: NOW,
+        }
+        .quota_dialog_rows();
+        assert_eq!(merged[0].label, "claude//tmp/mic/.claude-mic");
+        assert_eq!(
+            merged
+                .iter()
+                .filter(|row| !row.label.starts_with(' '))
+                .count(),
+            1,
+            "one scope header, never two: {merged:?}"
+        );
+        assert_eq!(
+            merged.len(),
+            2,
+            "one header and the one window the observation still adopts: {merged:?}"
+        );
+        assert!(merged[1].label.ends_with("| stale"), "{merged:?}");
+    }
+
+    #[test]
+    fn an_expired_claude_cache_observes_end_to_end_without_storing_its_hint() {
+        let root = std::path::PathBuf::from(format!(
+            "/tmp/ae-quota-claude-refresh-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".claude-mic")).expect("claude-mic home");
+        let config = root.join("config");
+        std::fs::write(
+            &config,
+            "[profiles]\nclaude-mic = CLAUDE_CONFIG_DIR=$HOME/.claude-mic claude --model fable\n",
+        )
+        .expect("identity config");
+        let now = crate::time::Timestamp::parse("2026-09-13T09:00:00Z")
+            .expect("fixed instant")
+            .epoch();
+        let fetched = now - 15 * 3_600;
+        let cache = format!(
+            "{{\"cachedUsageUtilization\":{{\"fetchedAtMs\":{},\"utilization\":{{\"limits\":[\
+             {{\"kind\":\"session\",\"percent\":8,\"resets_at\":\"2026-09-12T22:00:00Z\"}},\
+             {{\"kind\":\"weekly_all\",\"percent\":59,\"resets_at\":\"2026-09-13T00:00:00Z\"}}]}}}}}}",
+            fetched * 1_000
+        );
+        std::fs::write(root.join(".claude-mic/.claude.json"), cache).expect("claude cache");
+
+        let observation = super::observe(&super::Inputs {
+            home: Some(&root),
+            global: Some(&config),
+            local: None,
+            sessions: None,
+            now,
+        })
+        .expect("observation");
+        let group = observation
+            .rendered
+            .iter()
+            .find(|group| group.tool == ToolKind::Claude)
+            .expect("the claude scope");
+        assert!(group.rows.iter().all(|row| row.status == Status::Unknown));
+        assert!(
+            group.hint.is_none(),
+            "the refresh hint is render-time; storing it would poison settings_same_scope"
+        );
+        let table = render_at(&observation.rendered, Some(&root), now);
+        assert!(table.contains("15h00m"), "{table}");
+        assert!(table.contains("/usage"), "{table}");
+        assert!(!table.contains("8%"), "{table}");
+        let rows = observation.quota_dialog_rows();
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.label.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "claude/~/.claude-mic",
+                "  unknown | seen 15h00m | run /usage in a claude session",
+            ]
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

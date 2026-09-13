@@ -816,7 +816,14 @@ each pair of columns. The two derived columns were paid for in that ceiling rath
 every scope and status cell.
 The displayed age is when that vendor last wrote its own cache or rollout observation, not when ae
 opened the menu or ran the command. Claude can therefore honestly remain stale while another
-client scope observed more recently is fresh.
+client scope observed more recently is fresh. The cache is refreshed by the CLIENT, and only
+when a `/usage` fetch succeeds there — at most once every five minutes, and the client itself
+serves it for at most an hour — so an unused config home can stay `unknown` while ae re-reads
+its file on every invocation. Codex rollouts move on the seat's own API turns, so an idle seat
+ages out the same way. When a Claude scope holds no usable window, the table names the manual
+action in its STATUS cell and the dialog's status line names it too
+(`run /usage in a claude session`); the hint and the observation age are derived per render and
+are never part of the scope identity, and no percentage is shown while the status is `unknown`.
 Cached Claude numbers become `unknown` when the file's current and cached account UUIDs disagree;
 the UUIDs are neither retained nor displayed. Untrusted cache labels and terminal escape sequences
 are reduced to printable table cells before widths or wrapping are calculated.
