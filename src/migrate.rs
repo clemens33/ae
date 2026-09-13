@@ -756,9 +756,47 @@ fn restart_daemons(
         .and_then(|bytes| crate::meta::first_value(bytes, "main_pane"))
         .map(|value| String::from_utf8_lossy(value).into_owned())
         .unwrap_or_default();
+    // The IMMUTABLE session identity is observed BEFORE the membership proof
+    // and carried through the backfill: the name can be replaced between the
+    // proof and the write, so the writer reproves this id and addresses the
+    // option by it, never by the mutable name.
+    // The identity is captured through the RECORDED main pane. A pane id is
+    // REUSABLE after a server restart, so this capture alone cannot tell a
+    // replacement from the proven session: the ownership pair below and the
+    // guarded write's own reproof are what make the backfill safe.
+    let live_identity = crate::session_launch::pane_proven_identity(&server, &main_pane);
     let pane_belongs = crate::transport::observe_agents(&server, name)
         .is_some_and(|panes| panes.into_iter().any(|pane| pane.pane == main_pane));
+    // OWNERSHIP beside membership. A server restart can hand a same-name
+    // replacement the recorded main pane (and even the recorded ids), so pane
+    // containment alone cannot tell it from the proven session; the marker pair
+    // names the state root whose launch created the live session, and only THIS
+    // root's UUID may be stamped.
+    let owned_by_root =
+        crate::transport::observe_session_ownership(&server, name).is_some_and(|ownership| {
+            !ownership.marker.is_empty() && std::path::Path::new(&ownership.home) == root
+        });
     crate::session_launch::stamp_main_pane(&server, name, &main_pane, pane_belongs);
+    // The UUID fact's upgrade backfill, beside the membership-proven main-pane
+    // stamp and ONLY under the same proof: stamping a state directory's UUID
+    // onto a same-name tmux session that does not contain its recorded pane
+    // would pin a stale identity to a live, unrelated incarnation — and the
+    // root would then render that stale directory's declarations. An ambiguous
+    // (duplicated) identity is refused outright. VACANT-ONLY through the one
+    // owner, so a pre-set differing value survives the sweep.
+    if pane_belongs
+        && owned_by_root
+        && let Some(bytes) = meta_bytes.as_deref()
+        && let Some(live_identity) = live_identity.as_ref()
+    {
+        let uuid = match crate::meta::sole_value(bytes, "session_id") {
+            Some(value) => crate::archive::canonical_uuid(&String::from_utf8_lossy(value)),
+            None => String::new(),
+        };
+        if !uuid.is_empty() {
+            let _ = crate::session_launch::seed_session_uuid(&server, live_identity, &uuid);
+        }
+    }
     if let Some(bytes) = meta_bytes {
         let layout = crate::meta::first_value(&bytes, "layout")
             .map(|value| String::from_utf8_lossy(value).into_owned())

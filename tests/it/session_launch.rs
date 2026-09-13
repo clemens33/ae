@@ -2240,7 +2240,7 @@ fn assert_ae_status_bindings(rig: &Rig) {
         down_menu
     } else {
         assert!(
-            !down_menu.contains("orchestrator") && !down_menu.contains("display-menu"),
+            !down_menu.contains("orchestrator") && !down_menu.contains("_session-menu"),
             "tmux 3.4 MouseDown3Status must be a no-op: {down_menu}"
         );
         binding("MouseUp3Status")
@@ -2250,12 +2250,10 @@ fn assert_ae_status_bindings(rig: &Rig) {
         "mouse_status_range},ae-more",
         "orchestrator",
         "--client",
-        "display-menu",
+        "'_session-menu' 'show'",
+        "--session-id",
+        "--server-start",
         "{mouse}",
-        "Flip lead/colead panes",
-        "window_panes",
-        "window_zoomed_flag",
-        "swap-pane -d",
     ] {
         assert!(menu.contains(needle), "missing {needle:?}: {menu}");
     }

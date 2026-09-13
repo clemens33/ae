@@ -37,7 +37,29 @@ opens the picker or session context menu, exactly once after release.
 The context menu targets the clicked session's current window; its Flip action
 swaps an unzoomed two-pane window. The guard's format hashes are escaped
 through menu construction, so pane count and zoom are read when the row is
-chosen, not frozen when the menu opens. A status click also carries
+chosen, not frozen when the menu opens. With a launcher the binding draws
+nothing itself: it hands the same seven captured facts to the read-only
+`_session-menu show`, which proves the click (server identity and client pid)
+and draws the root centred on the invoking client. Every source is read
+BEFORE that one final clicker proof, so the fit and the draw use the live
+dimensions the proof returned and nothing reads the world after it; the root
+refuses neither enrichment nor fit — it reselects full → status-only → today's
+exact floor (title, Flip, Stop), and below the floor tmux trims the way it
+always has. A draw tmux itself refuses is still reported and exits nonzero. The root it draws is declared state
+only — the newest declaration per roster actor, at most three, with a truthful
+age and a reason clipped by the one `event_text::display_cell` projection — and
+a correlation gap is named rather than filled: `state: unavailable (…)` for a
+missing, invalid or mismatched identity and `state: unreadable (events: …)` for
+a container that exists and cannot be read. Correlation is the session-scoped
+`@ae_session_uuid` read through argv-only `show-options` and the `session_id`
+of the clicked session's `meta`, from one read: a same-name recreation gets a
+new tmux id and floors, and a replaced state directory renders the mismatch
+instead of another incarnation's declarations. The binding never splices that
+mutable option into its command — it carries no user option at all — and the
+watchdog never writes it. A session's launch seeds it, write-once-if-vacant,
+from the meta document it just published; the upgrade sweep backfills an absent
+legacy fact at the same membership-proven site that stamps `@ae_main_pane`. The
+no-launcher path keeps today's direct native draw byte for byte. A status click also carries
 `#{client_name}` into either `ae orchestrator --popup --client` or
 `ae orchestrator --settings --client`, and each menu and its actions retain it:
 two clients may watch one pane, so `$TMUX_PANE`

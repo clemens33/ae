@@ -1113,7 +1113,7 @@ fn assert_ae_status_bindings(socket: &Path, scratch: &Path) {
         down_menu
     } else {
         assert!(
-            !down_menu.contains("orchestrator") && !down_menu.contains("display-menu"),
+            !down_menu.contains("orchestrator") && !down_menu.contains("_session-menu"),
             "tmux 3.4 press context path must be a no-op: {down_menu}"
         );
         root_status_binding(socket, scratch, "MouseUp3Status")
@@ -1123,12 +1123,10 @@ fn assert_ae_status_bindings(socket: &Path, scratch: &Path) {
         "mouse_status_range},ae-more",
         "orchestrator",
         "--client",
-        "display-menu",
+        "'_session-menu' 'show'",
+        "--session-id",
+        "--server-start",
         "{mouse}",
-        "Flip lead/colead panes",
-        "window_panes",
-        "window_zoomed_flag",
-        "swap-pane -d",
     ] {
         assert!(menu.contains(needle), "missing {needle:?}: {menu}");
     }

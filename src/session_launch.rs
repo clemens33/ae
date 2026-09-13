@@ -2230,7 +2230,9 @@ fn build(
     }
 
     // ---- the session and its first pane ----
-    let Some(main_pane) = new_session(&server, &shape.name, &work_dir) else {
+    // The identity and the pane come out of the ONE command that created the
+    // session; nothing is captured later through a reusable id.
+    let Some((main_pane, live_session_id)) = new_session(&server, &shape.name, &work_dir) else {
         writeln!(err, "Error: could not create tmux session '{}'", shape.name)?;
         rollback_dir(shape, &dir, err)?;
         return Ok(EXIT_FAILED);
@@ -2421,11 +2423,13 @@ fn build(
         Ok(document) => document,
         Err(why) => return rollback_launch(shape, &dir, &server, &format!("Error: {why}"), err),
     };
-    let published = if shape.resuming {
-        meta::replace(&dir, &document)
-    } else {
-        meta::init(&dir, &document)
-    };
+    let published = publish_meta_and_seed_uuid(
+        &server,
+        Some(&live_session_id),
+        &dir,
+        shape.resuming,
+        &document,
+    );
     if published.is_err() {
         return rollback_launch(
             shape,
@@ -2529,11 +2533,22 @@ fn build(
 // the pieces
 // ---------------------------------------------------------------------------
 
-/// Create the session and its first pane, and report that pane's id.
-fn new_session(server: &ServerId, name: &str, work_dir: &str) -> Option<String> {
+/// Create the session and its first pane; report the created pane AND the full
+/// identity the SAME command printed.
+///
+/// There is no later capture to race: the server reads the identity while it
+/// creates the session, so a replacement can never become the "proven" one.
+fn new_session(server: &ServerId, name: &str, work_dir: &str) -> Option<(String, ProvenIdentity)> {
     let (succeeded, stdout) =
         transport::run_tmux_op(&argv(server, &Op::NewSession { name, work_dir }));
-    interpret_pane_id(succeeded, &stdout)
+    let created = tmux::interpret_new_session(succeeded, &stdout)?;
+    Some((
+        created.pane,
+        ProvenIdentity {
+            server: created.server,
+            session: created.session,
+        },
+    ))
 }
 
 /// Split `target` and report the new pane's id.
@@ -3120,6 +3135,130 @@ fn meta_document(
 /// A seat's label for a refusal.
 fn seat_label(seat: &roster::SeatLines) -> String {
     format!("{}={}", seat.slot, seat.name)
+}
+
+/// What a vacant-only seed of the session UUID fact did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeedOutcome {
+    /// The option now holds this session's UUID — whether this call wrote it
+    /// or it was already there. A post-read cannot tell those apart, and this
+    /// type never pretends to: it reports the FINAL STATE, not a cause.
+    Recorded,
+    /// A DIFFERENT nonempty value is recorded; nothing was overwritten.
+    Held,
+    /// The option is vacant: the guarded branch refused (a replaced
+    /// incarnation, a failed guard) or nothing was written. Again a state.
+    Vacant,
+    /// The option or the server could not be observed.
+    Unobserved,
+}
+
+/// The full immutable identity a UUID write must reprove: the SERVER
+/// incarnation (pid and start epoch) and the session's id and creation inside
+/// it.
+///
+/// `#{session_id}` is REUSED once a server empties, and `#{session_created}` is
+/// whole seconds, so neither alone survives a same-second replacement. The
+/// server pair is the house model's discriminator: a replacement behind a
+/// restarted or different server process is caught even when the reclaimed id
+/// and the creation second coincide.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProvenIdentity {
+    /// The tmux server the session was proven on.
+    pub server: crate::tmux::ServerIdentity,
+    /// The session's id and creation instant on that server.
+    pub session: crate::tmux::SessionIdentity,
+}
+
+/// The MIGRATION-side capture: the identity of the session ONE pane belongs
+/// to, for a recorded main pane. It is NOT the launch capture — a launch takes
+/// its identity from the creating command's own output — and a pane id is
+/// reusable after a server restart, so this value alone cannot tell a
+/// replacement from the proven session. The caller pairs it with the session's
+/// ownership pair, and the guarded write reproves the full identity.
+#[must_use]
+pub fn pane_proven_identity(server: &ServerId, pane: &str) -> Option<ProvenIdentity> {
+    transport::observe_server_identity(server)
+        .zip(transport::observe_pane_session_identity(server, pane))
+        .map(|(server, session)| ProvenIdentity { server, session })
+}
+
+/// Seed `SESSION_ID_OPTION` for one live tmux session through ONE guarded
+/// server-side operation.
+///
+/// The guard (`server pid/start`, session `id/created`, option empty) and the
+/// set live inside the same tmux invocation's queued command, so nothing can
+/// interleave between them: neither a full-server replacement after a first
+/// proof call nor a same-name recreation gets the proven incarnation's UUID by
+/// a read-then-write window. The outcome is deliberately a FINAL-STATE reading:
+/// an option that already held this UUID is `Recorded` exactly like one this
+/// call wrote, a replacement carrying a nonempty value is `Held`, and a vacant
+/// option is `Vacant` — the type never labels a cause the post-read cannot
+/// know. The
+/// write itself is the guarded set. The ONE writer of the fact; the watchdog
+/// never calls it.
+#[must_use]
+pub fn seed_session_uuid(
+    server: &ServerId,
+    expected_identity: &ProvenIdentity,
+    uuid: &str,
+) -> SeedOutcome {
+    if !transport::publish_guarded_session_option(
+        server,
+        &expected_identity.server,
+        &expected_identity.session,
+        crate::theme::SESSION_ID_OPTION,
+        uuid,
+    ) {
+        return SeedOutcome::Unobserved;
+    }
+    match transport::observe_option_reading(
+        server,
+        &expected_identity.session.id,
+        crate::theme::SESSION_ID_OPTION,
+    ) {
+        crate::tmux::OptionReading::Set(value)
+            if crate::archive::canonical_uuid(&value) == uuid =>
+        {
+            SeedOutcome::Recorded
+        }
+        crate::tmux::OptionReading::Set(_) => SeedOutcome::Held,
+        crate::tmux::OptionReading::Vacant => SeedOutcome::Vacant,
+        crate::tmux::OptionReading::Unknown => SeedOutcome::Unobserved,
+    }
+}
+
+/// Publish `document` as the session meta, then — ONLY on success — seed the
+/// session UUID fact from the SAME in-memory document, onto the SAME tmux
+/// incarnation the caller proved.
+///
+/// One helper so neither ordering nor identity can drift: a failed publication
+/// returns before any option write, the identity stamped is the one in the
+/// document just published (never a second read), and the WRITE itself reproves
+/// `expected_session_id` before it touches anything.
+///
+/// # Errors
+///
+/// The meta publication's own error; no option is written on it.
+pub fn publish_meta_and_seed_uuid(
+    server: &ServerId,
+    expected_identity: Option<&ProvenIdentity>,
+    dir: &Path,
+    resuming: bool,
+    document: &str,
+) -> Result<SeedOutcome, crate::meta::RewriteError> {
+    if resuming {
+        crate::meta::replace(dir, document)?;
+    } else {
+        crate::meta::init(dir, document)?;
+    }
+    let uuid = crate::meta::first_value(document.as_bytes(), "session_id")
+        .map(|value| crate::archive::canonical_uuid(&String::from_utf8_lossy(value)))
+        .unwrap_or_default();
+    let Some(expected_identity) = expected_identity.filter(|_| !uuid.is_empty()) else {
+        return Ok(SeedOutcome::Unobserved);
+    };
+    Ok(seed_session_uuid(server, expected_identity, &uuid))
 }
 
 /// Hand one agent's pane the command that BECOMES its agent, and wait for the

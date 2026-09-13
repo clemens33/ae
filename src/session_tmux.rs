@@ -204,20 +204,7 @@ pub(crate) fn argv(server: &ServerId, op: &Op<'_>) -> TmuxArgv {
     let mut args = server_args(server);
     match *op {
         Op::NewSession { name, work_dir } => {
-            args.extend(
-                [
-                    "new-session",
-                    "-d",
-                    "-s",
-                    name,
-                    "-c",
-                    work_dir,
-                    "-P",
-                    "-F",
-                    PANE_ID_FORMAT,
-                ]
-                .map(ToOwned::to_owned),
-            );
+            args.extend(crate::tmux::new_session_identity_args(name, work_dir));
         }
         Op::NewDaemonSession {
             name,
@@ -468,15 +455,17 @@ fn splice_captured(text: &str) -> String {
     out
 }
 
-/// One context-menu ROW that re-execs ae with the click's captured facts.
+/// The session-range action that delegates the root draw to the read-only
+/// `_session-menu show`.
 ///
-/// The row is written with placeholders, escaped for every layer between the
-/// binding and the shell the chosen row starts, and only then given its
-/// formats: the placeholders are plain letters, so no escaper touches them and
-/// no format is escaped.
-fn session_menu_row_command(launcher: &[String], step: &str, action: &str) -> String {
+/// The seven captured facts are the SAME placeholders the native Stop row
+/// used, each already one shell word; the show step reads the UUID option
+/// itself through typed argv, so no mutable option value is ever spliced into
+/// this binding. With a launcher present the binding draws NOTHING — the draw
+/// happens inside `show`, against the live client and the state directory.
+fn session_menu_show_command(launcher: &[String]) -> String {
     let mut argv: Vec<String> = launcher.to_vec();
-    argv.extend([crate::cli::SESSION_MENU, step, "--action", action].map(ToOwned::to_owned));
+    argv.extend([crate::cli::SESSION_MENU, crate::session_menu::SHOW].map(ToOwned::to_owned));
     for (flag, (placeholder, _)) in [
         "--client",
         "--client-pid",
@@ -492,30 +481,39 @@ fn session_menu_row_command(launcher: &[String], step: &str, action: &str) -> St
         argv.push(flag.to_owned());
         argv.push(placeholder.to_owned());
     }
-    // The shell the ROW starts, then the three expanders above it.
     let shell = argv
         .iter()
         .map(|word| crate::launch::shell_quote(word))
         .collect::<Vec<_>>()
         .join(" ");
-    let item = crate::tmux::menu_literal(&format!(
-        "run-shell -b {}",
-        crate::tmux::tmux_double_quote(&shell)
-    ));
-    splice_captured(&mouse_dispatch_literal(&crate::launch::shell_quote(&item)))
+    let command = format!("run-shell -b {}", crate::tmux::tmux_double_quote(&shell));
+    splice_captured(&mouse_dispatch_literal(&command))
 }
 
-/// The centred context menu a right-click on a session's status range opens.
+/// The session-range action a right-click on a session's status range opens.
 ///
-/// `-x C -y C` is the invoking CLIENT's terminal centre, never the active pane
-/// or the mouse. Drawing it writes nothing: the Flip row keeps its own
-/// deferred guard, and the Stop row only asks ae to prepare a confirmation.
+/// With a launcher, the whole draw is delegated to the read-only
+/// `_session-menu show`, which proves the click and can render declared state.
+/// Without one, the binding keeps today's direct draw byte for byte: the native
+/// Flip row and nothing else.
 fn session_menu_command(
     server: &ServerId,
     launcher: &[String],
     action: &str,
     menu_mouse: bool,
 ) -> String {
+    if !launcher.is_empty() {
+        return session_menu_show_command(launcher);
+    }
+    session_menu_native_command(server, action, menu_mouse)
+}
+
+/// The no-launcher direct draw: `-x C -y C` on the invoking client, `-t` the
+/// clicked pane, the native Flip row as the only row.
+///
+/// Drawing it writes nothing: the Flip row keeps its own deferred guard, and
+/// there is no ae row at all because there is no ae to re-exec.
+fn session_menu_native_command(server: &ServerId, action: &str, menu_mouse: bool) -> String {
     let mut shell_words = vec![fixed_mouse_shell_word("tmux")];
     shell_words.extend(
         server_args(server)
@@ -534,14 +532,6 @@ fn session_menu_command(
     shell_words.push(crate::launch::shell_quote("#{session_name}"));
     shell_words.extend(["-x", "C", "-y", "C"].map(fixed_mouse_shell_word));
     shell_words.extend(["Flip lead/colead panes", "f", action].map(fixed_mouse_shell_word));
-    if !launcher.is_empty() {
-        shell_words.extend([crate::session_menu::STOP_ROW_LABEL, "s"].map(fixed_mouse_shell_word));
-        shell_words.push(session_menu_row_command(
-            launcher,
-            crate::session_menu::CONFIRM,
-            crate::session_menu::STOP,
-        ));
-    }
     format!(
         "run-shell -b {}",
         tmux_current_format_double_quote(&shell_words.join(" "))
@@ -712,7 +702,7 @@ mod tests {
     }
 
     #[test]
-    fn a_new_session_asks_for_its_pane_id() {
+    fn a_new_session_prints_its_full_identity_and_pane() {
         assert_eq!(
             words(&Op::NewSession {
                 name: "s",
@@ -727,7 +717,7 @@ mod tests {
                 "/w",
                 "-P",
                 "-F",
-                "#{pane_id}"
+                "#{session_id} | #{session_created} | #{pid} | #{start_time} | #{pane_id}",
             ]
         );
     }
@@ -903,7 +893,14 @@ mod tests {
         assert!(down_right.contains("'--settings' '--client' #{q:client_name}"));
         assert!(down_right.contains("'--popup' '--client' #{q:client_name}"));
         assert!(down_right.contains("#{==:#{mouse_status_range},session}"));
-        assert!(down_right.contains("'display-menu' '-M' '-O' '-c'"));
+        assert!(
+            down_right.contains("'_session-menu' 'show'"),
+            "the mouse-aware right-click delegates the draw to the read-only show: {down_right}"
+        );
+        assert!(
+            !down_right.contains("'display-menu'"),
+            "the binding no longer draws the root itself: {down_right}"
+        );
         assert_eq!(down_right.matches("'--settings'").count(), 1);
         assert_eq!(down_right.matches("'--popup'").count(), 1);
         assert_eq!(
@@ -1014,8 +1011,14 @@ mod tests {
         assert!(up_right.starts_with("#{?#{==:#{mouse_status_range},ae-settings},"));
         assert!(up_right.contains("'--settings' '--client' #{q:client_name}"));
         assert!(up_right.contains("'--popup' '--client' #{q:client_name}"));
-        assert!(up_right.contains("'display-menu' '-O' '-c'"));
-        assert!(!up_right.contains("'display-menu' '-M'"));
+        assert!(
+            up_right.contains("'_session-menu' 'show'"),
+            "a 3.4 release delegates the draw to the same read-only show: {up_right}"
+        );
+        assert!(
+            !up_right.contains("'display-menu'"),
+            "with a launcher the binding never draws the root itself: {up_right}"
+        );
         assert_eq!(up_right.matches("'--settings'").count(), 1);
         assert_eq!(up_right.matches("'--popup'").count(), 1);
         assert_eq!(
@@ -1051,9 +1054,10 @@ mod tests {
         );
     }
 
-    /// The context menu is drawn in the middle of the terminal that asked for
-    /// it. `M`/`S` put it at the mouse, which is the bottom status line the
-    /// click happened on, and `0`/`S` is the fleet picker's own corner.
+    /// The context menu is centred on the CLIENT that asked for it, and the
+    /// delegated `show` step draws it there. `M`/`S` put it at the mouse, which
+    /// is the bottom status line the click happened on, and `0`/`S` is the
+    /// fleet picker's own corner.
     #[test]
     fn the_session_context_menu_is_centred_on_its_client_and_the_picker_is_not() {
         let server = ServerId::Selected(crate::meta::Selector::Name("ae".to_owned()));
@@ -1064,12 +1068,39 @@ mod tests {
             true,
         );
         assert!(
-            menu.contains("'-x' 'C' '-y' 'C'"),
-            "the session menu centres on the whole client: {menu}"
+            !menu.contains("'display-menu'"),
+            "with a launcher the binding delegates the draw instead of drawing: {menu}"
         );
         assert!(
             !menu.contains("'-x' 'M'") && !menu.contains("'-y' 'S'"),
-            "neither the mouse nor the status line positions it: {menu}"
+            "neither the mouse nor the status line positions the delegated root: {menu}"
+        );
+        // The show step draws centred through this exact argv builder.
+        let drawn = crate::tmux::display_menu_centred_args(
+            &ServerId::Ambient,
+            "/dev/ttys004",
+            "%12",
+            &crate::session_menu::floor_menu(
+                "aedev",
+                Some(&crate::tmux::menu_run_shell_command(&["apply".to_owned()])),
+            ),
+            true,
+        );
+        assert!(
+            drawn
+                .windows(2)
+                .any(|words| words == ["-c", "/dev/ttys004"]),
+            "the draw names the invoking client: {drawn:?}"
+        );
+        assert!(
+            drawn.windows(2).any(|words| words == ["-t", "%12"]),
+            "the draw acts on the clicked pane: {drawn:?}"
+        );
+        assert!(
+            drawn
+                .windows(4)
+                .any(|words| words == ["-x", "C", "-y", "C"]),
+            "the draw centres on the client: {drawn:?}"
         );
         assert!(
             crate::tmux::display_menu_args(
@@ -1087,10 +1118,11 @@ mod tests {
         );
     }
 
-    /// The Flip row is UNCHANGED by the new neighbour: same target pane, same
-    /// deferred predicate, same hash count.
+    /// The Flip row is built by `session_menu::root_menu` now; this binding
+    /// test only says the delegated command does not carry it — the exact
+    /// action word is pinned where the row is built.
     #[test]
-    fn the_flip_row_keeps_its_target_and_its_deferred_guard() {
+    fn the_delegated_binding_carries_no_menu_row_of_its_own() {
         let server = ServerId::Selected(crate::meta::Selector::Name("ae".to_owned()));
         let menu = session_menu_command(
             &server,
@@ -1099,31 +1131,32 @@ mod tests {
             true,
         );
         assert!(
-            menu.contains("'-t' '#{pane_id}'"),
-            "the menu acts on the CLICKED pane, not the client's own: {menu}"
+            !menu.contains("Flip lead/colead panes"),
+            "the binding hands the whole draw over: {menu}"
         );
         assert!(
-            menu.contains("'Flip lead/colead panes' 'f' ")
-                && menu.contains(
-                    crate::tmux::tmux_current_format_double_quote(&fixed_mouse_shell_word(
-                        MOUSE_DOWN_STATUS_MENU_ACTION
-                    ))
-                    .trim_start_matches('"')
-                    .trim_end_matches('"')
-                ),
-            "the guard is still the deferred one: {menu}"
+            crate::session_menu::root_menu(
+                "aedev",
+                &[],
+                Some(&crate::tmux::menu_run_shell_command(&["apply".to_owned()])),
+            )
+            .items
+            .iter()
+            .any(|item| item.label == crate::session_menu::FLIP_ROW_LABEL
+                && matches!(
+                    &item.action,
+                    crate::tmux::MenuAction::Run(command)
+                        if command == MOUSE_DOWN_STATUS_MENU_ACTION
+                )),
+            "the row builder holds the byte-identical action word"
         );
     }
 
-    /// The Stop row carries the click's own facts, each as ONE shell word, and
-    /// the formats that produce them are never escaped.
-    /// A single quote inside the row crosses the outer double quote too, so
-    /// the backslash the inner shell needs is written twice by the time the
-    /// binding holds it.
-    const ESC: &str = "\\\\";
-
+    /// The Stop row now lives in the delegated root; what the BINDING must
+    /// still guarantee is that it captures today's seven facts, never a user
+    /// option and never an action word of its own.
     #[test]
-    fn the_stop_row_carries_every_captured_fact_as_one_quoted_word() {
+    fn the_binding_keeps_todays_seven_facts_and_never_captures_a_user_option() {
         let server = ServerId::Selected(crate::meta::Selector::Name("ae".to_owned()));
         let menu = session_menu_command(
             &server,
@@ -1132,8 +1165,8 @@ mod tests {
             true,
         );
         assert!(
-            menu.contains("'Stop session...' 's' "),
-            "the row and its own key: {menu}"
+            menu.contains("'_session-menu' 'show'"),
+            "the binding names the read-only show step: {menu}"
         );
         for (flag, format) in [
             ("--client", "#{client_name}"),
@@ -1145,7 +1178,7 @@ mod tests {
             ("--server-start", "#{start_time}"),
         ] {
             assert!(
-                menu.contains(&format!("{flag}'{ESC}'' '{ESC}''{format}")),
+                menu.contains(&format!("{flag}' '{format}'")),
                 "{flag} is followed by {format} as its own word: {menu}"
             );
         }
@@ -1154,14 +1187,17 @@ mod tests {
             "no placeholder survives into the binding: {menu}"
         );
         assert!(
-            menu.contains(&format!(
-                "'_session-menu'{ESC}'' '{ESC}''confirm'{ESC}'' '{ESC}''--action'{ESC}'' '{ESC}''stop'"
-            )),
-            "the row names the internal step and its action: {menu}"
+            !menu.contains("@ae_session_uuid"),
+            "the binding must never splice the mutable option: {menu}"
+        );
+        assert!(
+            !menu.contains("--uuid") && !menu.contains("--action"),
+            "show mints no identity and takes no action: {menu}"
         );
     }
 
-    /// A server ae may not bind gets no row that would re-exec ae at all.
+    /// A server ae may not bind gets no row that would re-exec ae at all, and
+    /// the empty-launcher draw stays today's native menu byte for byte.
     #[test]
     fn a_menu_without_a_launcher_offers_only_the_native_flip() {
         let server = ServerId::Selected(crate::meta::Selector::Name("ae".to_owned()));
@@ -1171,6 +1207,14 @@ mod tests {
             "no launcher, no ae row: {menu}"
         );
         assert!(menu.contains("'Flip lead/colead panes'"));
+        assert!(
+            menu.contains("'display-menu'"),
+            "the no-launcher path keeps today's direct draw: {menu}"
+        );
+        assert!(
+            menu.contains("'-x' 'C' '-y' 'C'"),
+            "the direct draw keeps its centring: {menu}"
+        );
     }
 
     #[test]

@@ -167,33 +167,66 @@ pub struct Latest {
 /// ```
 #[must_use]
 pub fn latest(container: &[u8], actor: &str) -> Option<Latest> {
+    let actors = [actor.to_owned()];
+    latest_for_all(container, &actors)
+        .into_iter()
+        .next()
+        .map(|(_, latest)| latest)
+}
+
+/// Every actor's newest declaration, out of ONE reverse scan that stops as
+/// soon as the last wanted actor is found — what `ae list`-shaped readers need
+/// when they ask the same container about a whole roster.
+///
+/// The rules are [`latest`]'s exactly: a torn last record is glued, only
+/// `{`-prefixed lines count, another action by the same actor is skipped, and
+/// a bare `done` is the value `done`. An actor who never declared is absent
+/// from the answer rather than invented. The result is in the CALLER's actor
+/// order, so a menu can render a roster stably whatever order the events are
+/// in.
+#[must_use]
+pub fn latest_for_all(container: &[u8], actors: &[String]) -> Vec<(String, Latest)> {
     let stream = event_text::reversed(container);
+    let mut remaining: Vec<&str> = actors.iter().map(String::as_str).collect();
+    let mut found: Vec<(&str, Latest)> = Vec::new();
     for line in event_text::read_lines(&stream) {
+        if remaining.is_empty() {
+            break;
+        }
         let Some(line) = event_text::event_line(line) else {
             continue;
         };
-        if event_text::extract(line, "actor") != actor.as_bytes() {
+        let actor = event_text::extract(line, "actor");
+        let Some(at) = remaining
+            .iter()
+            .position(|candidate| candidate.as_bytes() == actor.as_slice())
+        else {
             continue;
-        }
-        match event_text::extract(line, "action").as_slice() {
-            b"state" => {
-                return Some(Latest {
-                    value: event_text::extract(line, "ref"),
-                    reason: event_text::extract(line, "summary"),
-                    ts: event_text::extract(line, "ts"),
-                });
-            }
-            b"done" => {
-                return Some(Latest {
-                    value: b"done".to_vec(),
-                    reason: event_text::extract(line, "summary"),
-                    ts: event_text::extract(line, "ts"),
-                });
-            }
-            _ => {}
-        }
+        };
+        let latest = match event_text::extract(line, "action").as_slice() {
+            b"state" => Latest {
+                value: event_text::extract(line, "ref"),
+                reason: event_text::extract(line, "summary"),
+                ts: event_text::extract(line, "ts"),
+            },
+            b"done" => Latest {
+                value: b"done".to_vec(),
+                reason: event_text::extract(line, "summary"),
+                ts: event_text::extract(line, "ts"),
+            },
+            _ => continue,
+        };
+        found.push((remaining.swap_remove(at), latest));
     }
-    None
+    actors
+        .iter()
+        .filter_map(|actor| {
+            found
+                .iter()
+                .find(|(name, _)| *name == actor)
+                .map(|(_, latest)| (actor.clone(), latest.clone()))
+        })
+        .collect()
 }
 
 /// The stdout of `state` with nothing to declare: `<actor> state: (none
@@ -377,8 +410,8 @@ pub fn declare(
 mod tests {
     use super::{
         CHAT_SUMMARY_CAP, Command, Declaration, Failure, Latest, REASON_MAX, REASON_MIN, USAGE,
-        Usage, declare, event_body, event_line, latest, parse, read, read_line, summary_for,
-        summary_of,
+        Usage, declare, event_body, event_line, latest, latest_for_all, parse, read, read_line,
+        summary_for, summary_of,
     };
     use crate::requests::Viewer;
     use crate::time::Timestamp;
@@ -605,6 +638,38 @@ mod tests {
             out.push(b'\n');
         }
         out
+    }
+
+    #[test]
+    fn one_reverse_scan_yields_the_newest_declaration_of_every_actor_in_roster_order() {
+        let body = container(&[
+            r#"{"ts":"t1","actor":"cl:lead","action":"state","ref":"blocked","summary":"old lead"}"#,
+            r#"{"ts":"t2","actor":"cl:other","action":"state","ref":"working","summary":"other"}"#,
+            r#"{"ts":"t3","actor":"cl:lead","action":"state","ref":"done","summary":"newest lead"}"#,
+            r#"{"ts":"t4","actor":"cl:outside","action":"state","ref":"working","summary":"not on the roster"}"#,
+        ]);
+        let actors = vec![
+            "cl:lead".to_owned(),
+            "cl:nobody".to_owned(),
+            "cl:other".to_owned(),
+        ];
+        let found = latest_for_all(&body, &actors);
+        let names: Vec<&str> = found.iter().map(|(actor, _)| actor.as_str()).collect();
+        assert_eq!(
+            names,
+            ["cl:lead", "cl:other"],
+            "roster order, and an actor who never declared is simply absent"
+        );
+        assert_eq!(found[0].1.value, b"done");
+        assert_eq!(found[0].1.reason, b"newest lead");
+        assert_eq!(found[0].1.ts, b"t3");
+        assert_eq!(found[1].1.value, b"working");
+        assert_eq!(
+            latest(&body, "cl:lead"),
+            Some(found[0].1.clone()),
+            "latest is the one-actor view of the same scan"
+        );
+        assert_eq!(latest_for_all(&body, &[]), []);
     }
 
     #[test]

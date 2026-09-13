@@ -131,6 +131,73 @@ impl From<Error> for io::Error {
     }
 }
 
+/// One session file's classification — four states, never a bool.
+///
+/// Mirrors `tmux::Evidence` and `session::MetaRead`: a node that is not there,
+/// a node that is there and readable, a node OBSERVED in a shape this reader
+/// refuses before opening, and a regular node that exists and could not be
+/// read. The difference between the last two is the whole reason this is not a
+/// bool: an unreadable container is damage, and rendering it as an empty one is
+/// the failure this type exists to prevent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SourceRead {
+    /// Positive `NotFound`: nothing is at this path.
+    Absent,
+    /// A regular file, read whole.
+    Ready(Vec<u8>),
+    /// A node OBSERVED non-regular — directory, FIFO, socket, symlink, device.
+    /// Rejected before any open: never followed, never blocking. Honest
+    /// residual: a concurrent replacement between this observation and a read
+    /// is not atomic, so the claim is "observed non-regular rejected before
+    /// open", never atomicity.
+    Invalid(String),
+    /// A regular file that exists and could not be read.
+    Unreadable(String),
+}
+
+/// Classify the node at `path` without ever opening a non-regular one.
+#[must_use]
+pub fn read_source(path: &Path) -> SourceRead {
+    use std::os::unix::fs::FileTypeExt as _;
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: classifies the node itself WITHOUT following a link, before any open — see clippy.toml"
+    )]
+    let observed = std::fs::symlink_metadata(path);
+    let shape = match observed {
+        Ok(meta) => meta,
+        Err(why) if why.kind() == io::ErrorKind::NotFound => return SourceRead::Absent,
+        Err(why) => return SourceRead::Unreadable(why.to_string()),
+    };
+    let kind = shape.file_type();
+    let nonregular = if kind.is_symlink() {
+        Some("a symlink")
+    } else if kind.is_dir() {
+        Some("a directory")
+    } else if kind.is_fifo() {
+        Some("a fifo")
+    } else if kind.is_socket() {
+        Some("a socket")
+    } else if kind.is_block_device() || kind.is_char_device() {
+        Some("a device")
+    } else {
+        None
+    };
+    if let Some(what) = nonregular {
+        return SourceRead::Invalid(what.to_owned());
+    }
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: the classified read of a session source a human asked about — see clippy.toml"
+    )]
+    let read = std::fs::read(path);
+    match read {
+        Ok(bytes) => SourceRead::Ready(bytes),
+        Err(why) if why.kind() == io::ErrorKind::NotFound => SourceRead::Absent,
+        Err(why) => SourceRead::Unreadable(why.to_string()),
+    }
+}
+
 /// One session's files, addressed by its meta directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionStore {
@@ -338,6 +405,19 @@ impl SessionStore {
         )]
         let body = std::fs::read(self.events_path());
         body.unwrap_or_default()
+    }
+
+    /// The event container classified for a human read — the noisy variant
+    /// [`Self::container`] deliberately is not.
+    #[must_use]
+    pub fn events_source(&self) -> SourceRead {
+        read_source(&self.events_path())
+    }
+
+    /// The memo container classified for a human read.
+    #[must_use]
+    pub fn memo_source(&self) -> SourceRead {
+        read_source(&self.memo_path())
     }
 
     /// The memo container's bytes.
@@ -663,6 +743,60 @@ mod tests {
         for path in [store.events_path(), store.memo_path()] {
             assert!(lock_path(&path).exists(), "each file took its own lock");
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A bool could not carry this: a node that is NOT THERE and a node that
+    /// exists but is a directory, a socket or a link must read differently, and
+    /// none of the non-regular shapes may ever be opened — a FIFO open without
+    /// a gate blocks the reader for good.
+    #[test]
+    fn a_nonregular_events_node_is_invalid_not_absent_and_is_never_opened() {
+        use super::SourceRead;
+        let dir = scratch("source");
+        let store = open(&dir);
+        let events = store.events_path();
+        assert_eq!(store.events_source(), SourceRead::Absent, "no node yet");
+        std::fs::write(&events, b"{\"a\":1}\n").unwrap();
+        assert_eq!(
+            store.events_source(),
+            SourceRead::Ready(b"{\"a\":1}\n".to_vec()),
+            "a regular file is read whole"
+        );
+        std::fs::remove_file(&events).unwrap();
+        std::fs::create_dir_all(&events).unwrap();
+        assert!(
+            matches!(store.events_source(), SourceRead::Invalid(reason) if reason.contains("directory")),
+            "a directory is rejected before any open"
+        );
+        std::fs::remove_dir_all(&events).unwrap();
+        let socket = std::os::unix::net::UnixListener::bind(&events).unwrap();
+        assert!(
+            matches!(store.events_source(), SourceRead::Invalid(reason) if reason.contains("socket")),
+            "a socket is rejected before any open"
+        );
+        drop(socket);
+        std::fs::remove_file(&events).unwrap();
+        // A SYMLINK, even when it points at a readable regular file, is
+        // classified by its own node: nothing is followed.
+        let target = dir.join("outside");
+        std::fs::write(&target, b"secret\n").unwrap();
+        std::os::unix::fs::symlink(&target, &events).unwrap();
+        assert!(
+            matches!(store.events_source(), SourceRead::Invalid(reason) if reason.contains("symlink")),
+            "a symlink is never followed"
+        );
+        std::fs::remove_file(&events).unwrap();
+        // A REGULAR file that exists and cannot be read is the one reported case.
+        std::fs::write(&events, b"x").unwrap();
+        std::fs::set_permissions(&events, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read(&events).is_err() {
+            assert!(
+                matches!(store.events_source(), SourceRead::Unreadable(_)),
+                "a regular file that cannot be read is UNREADABLE, not absent"
+            );
+        }
+        std::fs::set_permissions(&events, std::fs::Permissions::from_mode(0o644)).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 

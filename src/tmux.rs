@@ -1040,6 +1040,162 @@ pub fn set_option_args(
     args
 }
 
+/// ONE server-side operation that sets a session option to `value` only while
+/// the session is still the PROVEN incarnation and the option is vacant.
+///
+/// `if-shell -F` is evaluated by the tmux server, in its own command queue, and
+/// its `set-option` branch runs in the SAME queued command: no replacement can
+/// interleave between the checks and the write. The guard reads only facts the
+/// server itself owns:
+///
+/// * `#{pid}` and `#{start_time}` — the server incarnation;
+/// * `#{session_id}` and `#{session_created}` — the session incarnation (the id
+///   alone is reused once a server empties, and the creation instant is whole
+///   seconds);
+/// * `#{<name>}` — the option is still unset or empty.
+///
+/// Every component is ae-validated (`$<n>`, decimal epochs, a canonical value),
+/// so the guard and the branch need no quoting.
+#[must_use]
+pub fn guarded_session_option_args(
+    server: &ServerId,
+    expected_server: &ServerIdentity,
+    expected_session: &SessionIdentity,
+    name: &str,
+    value: &str,
+) -> Vec<String> {
+    let target = format!("{}:", expected_session.id);
+    let guard = format!(
+        "#{{&&:#{{&&:#{{==:#{{pid}},{pid}}},#{{==:#{{start_time}},{start}}}}},#{{&&:#{{==:#{{session_id}},{id}}},#{{==:#{{session_created}},{created}}}}},#{{==:#{{{name}}},}}}}",
+        pid = expected_server.pid,
+        start = expected_server.start,
+        id = expected_session.id,
+        created = expected_session.created,
+    );
+    let mut args = server_args(server);
+    args.extend(["if-shell", "-F", "-t"].map(ToOwned::to_owned));
+    args.push(expected_session.id.clone());
+    args.push(guard);
+    args.push(format!("set-option -t {target} {name} {value}"));
+    args
+}
+
+/// The `-P -F` format `new-session` itself prints: the identity of the session
+/// it JUST created, in the SAME command that created it.
+///
+/// This is what makes the launch's proof atomic: there is no later capture to
+/// interleave a replacement into. The server pair (`#{pid}`, `#{start_time}`)
+/// and the session pair (`#{session_id}`, `#{session_created}`) are read by the
+/// server at creation, and the pane id is the handle ae keeps.
+pub const NEW_SESSION_IDENTITY_FORMAT: &str =
+    "#{session_id} | #{session_created} | #{pid} | #{start_time} | #{pane_id}";
+
+/// What one successful `new-session -P -F` printed: the full proven identity
+/// and the created pane.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewSession {
+    /// The server incarnation at creation.
+    pub server: ServerIdentity,
+    /// The session incarnation at creation.
+    pub session: SessionIdentity,
+    /// The first pane's `%<n>`.
+    pub pane: String,
+}
+
+/// The arguments creating a session and printing its full identity at once.
+#[must_use]
+pub fn new_session_identity_args(name: &str, work_dir: &str) -> Vec<String> {
+    [
+        "new-session",
+        "-d",
+        "-s",
+        name,
+        "-c",
+        work_dir,
+        "-P",
+        "-F",
+        NEW_SESSION_IDENTITY_FORMAT,
+    ]
+    .map(ToOwned::to_owned)
+    .to_vec()
+}
+
+/// Parse one `new-session -P -F` line into the created identity, or `None` for
+/// a failed run, a wrong field count, a non-decimal epoch or a malformed pane.
+#[must_use]
+pub fn interpret_new_session(succeeded: bool, stdout: &str) -> Option<NewSession> {
+    if !succeeded {
+        return None;
+    }
+    let line = stdout.lines().next()?;
+    let fields: Vec<&str> = line.split(FIELD_SEPARATOR).collect();
+    let [id, created, pid, start, pane] = fields.as_slice() else {
+        return None;
+    };
+    if id.is_empty()
+        || !is_decimal(created)
+        || !is_decimal(pid)
+        || !is_decimal(start)
+        || !pane_id_is_valid(pane)
+    {
+        return None;
+    }
+    Some(NewSession {
+        server: ServerIdentity {
+            pid: (*pid).to_owned(),
+            start: (*start).to_owned(),
+        },
+        session: SessionIdentity {
+            id: (*id).to_owned(),
+            created: (*created).to_owned(),
+        },
+        pane: (*pane).to_owned(),
+    })
+}
+
+/// `#{session_id} | #{session_created}` for ONE pane's session — the read that
+/// binds a launch's identity to the pane ae CREATED, never to the mutable name.
+pub const PANE_SESSION_IDENTITY_FORMAT: &str = "#{session_id} | #{session_created}";
+
+/// The arguments asking which session one exact pane belongs to, and when that
+/// session was created.
+#[must_use]
+pub fn pane_session_identity_args(server: &ServerId, pane: &str) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(
+        [
+            "display-message",
+            "-p",
+            "-t",
+            pane,
+            PANE_SESSION_IDENTITY_FORMAT,
+        ]
+        .map(ToOwned::to_owned),
+    );
+    args
+}
+
+/// The identity one pane's session reports, or `None` when the read failed,
+/// the line is malformed or the creation instant is not a decimal epoch.
+#[must_use]
+pub fn interpret_pane_session_identity(succeeded: bool, stdout: &str) -> Option<SessionIdentity> {
+    if !succeeded {
+        return None;
+    }
+    let line = stdout.lines().next()?;
+    let fields: Vec<&str> = line.split(FIELD_SEPARATOR).collect();
+    let [id, created] = fields.as_slice() else {
+        return None;
+    };
+    if id.is_empty() || !is_decimal(created) {
+        return None;
+    }
+    Some(SessionIdentity {
+        id: (*id).to_owned(),
+        created: (*created).to_owned(),
+    })
+}
+
 /// One `set-option` in a batched tmux command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct OptionWrite {
@@ -1160,6 +1316,49 @@ pub fn interpret_session_option(succeeded: bool, stdout: &str) -> Option<String>
     }
     let value = stdout.lines().next().unwrap_or_default().trim_end();
     (!value.is_empty()).then(|| value.to_owned())
+}
+
+/// What one completed `show-options -qv` run says about an option — the
+/// three-state reading a WRITE must never collapse.
+///
+/// [`interpret_session_option`] cannot carry this decision: it maps a failed
+/// run and an unset option onto the same `None`, so a writer built on it would
+/// read "unset" from a server that never answered and overwrite a value it
+/// failed to observe. `Vacant` does not claim the option was never set either —
+/// `show-options -qv` cannot distinguish never-set from explicitly-empty — but
+/// it is the only state that may be written through, and a nonempty `Set`
+/// (equal or differing) and an `Unknown` both block.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OptionReading {
+    /// The server answered with a usable nonempty value, trimmed.
+    Set(String),
+    /// The server answered, and the option carries no usable nonempty value.
+    Vacant,
+    /// The server did not answer, so nothing was observed.
+    Unknown,
+}
+
+/// The reading a completed [`session_option_args`] run produced.
+///
+/// ```
+/// use ae::tmux::OptionReading;
+/// use ae::tmux::interpret_option_reading;
+/// assert_eq!(interpret_option_reading(false, "main\n"), OptionReading::Unknown);
+/// assert_eq!(interpret_option_reading(true, "\n"), OptionReading::Vacant);
+/// assert_eq!(interpret_option_reading(true, " \n"), OptionReading::Vacant);
+/// assert_eq!(interpret_option_reading(true, "abc\n"), OptionReading::Set("abc".to_owned()));
+/// ```
+#[must_use]
+pub fn interpret_option_reading(succeeded: bool, stdout: &str) -> OptionReading {
+    if !succeeded {
+        return OptionReading::Unknown;
+    }
+    let value = stdout.trim();
+    if value.is_empty() {
+        OptionReading::Vacant
+    } else {
+        OptionReading::Set(value.to_owned())
+    }
 }
 
 /// Show a transient message on `target`'s clients.
@@ -2690,6 +2889,74 @@ pub fn interpret_session_id(succeeded: bool, stdout: &str, name: &str) -> Option
     })
 }
 
+/// The id, the creation instant and the name of every session.
+///
+/// The creation instant is the second half of a session's IMMUTABLE identity:
+/// `#{session_id}` alone can be REUSED — tmux starts again at `$0` once every
+/// session on a server is gone — so a name whose session was killed and
+/// recreated can answer the same `$<n>` while being a different incarnation.
+pub const SESSION_IDENTITY_FORMAT: &str = "#{session_id} | #{session_created} | #{session_name}";
+
+/// One session's immutable identity, as the server reports it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionIdentity {
+    /// The `$<n>` id.
+    pub id: String,
+    /// The epoch second tmux created this session.
+    pub created: String,
+}
+
+/// The arguments listing every session's immutable identity.
+#[must_use]
+pub fn session_identities_args(server: &ServerId) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(["list-sessions", "-F", SESSION_IDENTITY_FORMAT].map(ToOwned::to_owned));
+    args
+}
+
+/// The immutable identity of the session named EXACTLY `name`, or `None`.
+///
+/// Exact for the same reason [`interpret_session_id`] is: this value keys a
+/// WRITE. A line with the wrong field count, a non-decimal creation instant or
+/// a duplicated name resolves to nothing rather than to a guess.
+///
+/// ```
+/// use ae::tmux::interpret_session_identity;
+/// let listing = "$0 | 1789100000 | other\n$3 | 1789100001 | demo\n";
+/// let found = interpret_session_identity(true, listing, "demo").unwrap();
+/// assert_eq!(found.id, "$3");
+/// assert_eq!(found.created, "1789100001");
+/// assert_eq!(interpret_session_identity(true, listing, "dem"), None);
+/// assert_eq!(interpret_session_identity(true, "$3 | x | demo\n", "demo"), None);
+/// assert_eq!(interpret_session_identity(false, listing, "demo"), None);
+/// ```
+#[must_use]
+pub fn interpret_session_identity(
+    succeeded: bool,
+    stdout: &str,
+    name: &str,
+) -> Option<SessionIdentity> {
+    if !succeeded {
+        return None;
+    }
+    let mut matches = stdout.lines().filter_map(|line| {
+        let fields: Vec<&str> = line.split(FIELD_SEPARATOR).collect();
+        let [id, created, held] = fields.as_slice() else {
+            return None;
+        };
+        if *held != name || id.is_empty() || !is_decimal(created) {
+            return None;
+        }
+        Some(SessionIdentity {
+            id: (*id).to_owned(),
+            created: (*created).to_owned(),
+        })
+    });
+    let identity = matches.next()?;
+    // A duplicated name is an ambiguity, not a choice.
+    matches.next().is_none().then_some(identity)
+}
+
 /// `#{pane_id} | #{window_id} | #{@ae_theme} | #{@ae_agent}` — the
 /// window-grouping read.
 ///
@@ -3452,6 +3719,105 @@ mod tests {
         );
     }
 
+    /// Failure and unset are different readings. The conflating `Option`
+    /// reader stays for read-only show surfaces; a WRITER that treated a
+    /// failed observation as vacant would overwrite what it could not read.
+    #[test]
+    fn interpret_option_reading_distinguishes_failure_from_unset() {
+        use super::{OptionReading, interpret_option_reading};
+        assert_eq!(
+            interpret_option_reading(false, "abc\n"),
+            OptionReading::Unknown,
+            "a failed run is no reading at all"
+        );
+        assert_eq!(interpret_option_reading(true, ""), OptionReading::Vacant);
+        assert_eq!(interpret_option_reading(true, "\n"), OptionReading::Vacant);
+        assert_eq!(
+            interpret_option_reading(true, "  \n"),
+            OptionReading::Vacant
+        );
+        assert_eq!(
+            interpret_option_reading(true, "abc\n"),
+            OptionReading::Set("abc".to_owned())
+        );
+        // The edge the trim must not collapse: the first line being empty does
+        // not make a multiline value absent.
+        assert_eq!(
+            interpret_option_reading(true, "\nabc\n"),
+            OptionReading::Set("abc".to_owned())
+        );
+        assert_eq!(
+            interpret_option_reading(true, "a\nb\n"),
+            OptionReading::Set("a\nb".to_owned())
+        );
+    }
+
+    /// The UUID write is ONE server-side command: the full incarnation guard
+    /// and the set travel in the same invocation, so no replacement can
+    /// interleave between a check and the write.
+    #[test]
+    fn the_uuid_guard_and_set_are_one_server_side_command() {
+        let args = super::guarded_session_option_args(
+            &crate::inventory::ServerId::Ambient,
+            &super::ServerIdentity {
+                pid: "911".to_owned(),
+                start: "1789109000".to_owned(),
+            },
+            &super::SessionIdentity {
+                id: "$7".to_owned(),
+                created: "1789109600".to_owned(),
+            },
+            "@ae_session_uuid",
+            "1b4e28ba-2fa1-11d2-883f-0016d3cc4321",
+        );
+        assert_eq!(&args[..4], ["if-shell", "-F", "-t", "$7"]);
+        let guard = &args[4];
+        for needle in [
+            "#{==:#{pid},911}",
+            "#{==:#{start_time},1789109000}",
+            "#{==:#{session_id},$7}",
+            "#{==:#{session_created},1789109600}",
+            "#{==:#{@ae_session_uuid},}",
+        ] {
+            assert!(guard.contains(needle), "{needle} is missing: {guard}");
+        }
+        assert_eq!(
+            args[5],
+            "set-option -t $7: @ae_session_uuid 1b4e28ba-2fa1-11d2-883f-0016d3cc4321"
+        );
+        assert_eq!(args.len(), 6, "one invocation carries guard and set");
+    }
+
+    /// The pane-bound capture: one line, id and creation, nothing guessed.
+    #[test]
+    fn a_pane_reports_its_sessions_identity_or_nothing() {
+        use super::interpret_pane_session_identity;
+        let found = interpret_pane_session_identity(
+            true,
+            "$7 | 1789109600
+",
+        )
+        .expect("the identity");
+        assert_eq!(found.id, "$7");
+        assert_eq!(found.created, "1789109600");
+        assert!(interpret_pane_session_identity(true, "").is_none());
+        assert!(
+            interpret_pane_session_identity(
+                true, "$7 | x
+"
+            )
+            .is_none()
+        );
+        assert!(
+            interpret_pane_session_identity(
+                false,
+                "$7 | 1789109600
+"
+            )
+            .is_none()
+        );
+    }
+
     #[test]
     fn replacing_a_menu_marker_is_one_exact_session_command_queue() {
         assert_eq!(
@@ -3551,8 +3917,9 @@ mod tests {
             AGENTS_FORMAT, CLIENT_FORMAT, FLEET_PANE_FORMAT, MOTION_PANE_FORMAT,
             MOUSE_DOWN_STATUS_MENU_ACTION, MOUSE_STATUS_PICKER, MOUSE_STATUS_SESSION,
             MOUSE_STATUS_SETTINGS, MOUSE_STATUS_WINDOW, PANE_FORMAT, PANE_ID_FORMAT,
-            PANE_PROBE_FORMAT, PANE_TTY_FORMAT, SESSION_ID_FORMAT, SESSION_NAME_FORMAT,
-            SLOTS_FORMAT, VERSION_FORMAT, VIEWER_FORMAT, WATCH_PANE_FORMAT, WINDOW_PANE_FORMAT,
+            PANE_PROBE_FORMAT, PANE_TTY_FORMAT, SESSION_ID_FORMAT, SESSION_IDENTITY_FORMAT,
+            SESSION_NAME_FORMAT, SLOTS_FORMAT, VERSION_FORMAT, VIEWER_FORMAT, WATCH_PANE_FORMAT,
+            WINDOW_PANE_FORMAT,
         };
 
         for format in [
@@ -3564,6 +3931,7 @@ mod tests {
             PANE_ID_FORMAT,
             PANE_PROBE_FORMAT,
             PANE_TTY_FORMAT,
+            SESSION_IDENTITY_FORMAT,
             SESSION_ID_FORMAT,
             SESSION_NAME_FORMAT,
             SLOTS_FORMAT,

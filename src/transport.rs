@@ -134,6 +134,17 @@ pub fn observe_session_option(server: &ServerId, session: &str, name: &str) -> O
     tmux::interpret_session_option(succeeded, &stdout)
 }
 
+/// One session option's three-state reading — the observation a WRITER may
+/// act on, because it never collapses a failed read into "unset".
+#[must_use]
+pub fn observe_option_reading(server: &ServerId, session: &str, name: &str) -> tmux::OptionReading {
+    if !addressable(server) {
+        return tmux::OptionReading::Unknown;
+    }
+    let (succeeded, stdout) = run(PROGRAM, &tmux::session_option_args(server, session, name));
+    tmux::interpret_option_reading(succeeded, &stdout)
+}
+
 /// The two exact tmux-environment values that prove an old session belongs to
 /// one ae state root. Either failed or malformed read makes the proof absent.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -529,6 +540,22 @@ pub fn observe_session_id(server: &ServerId, name: &str) -> Option<String> {
     tmux::interpret_session_id(succeeded, &stdout, name)
 }
 
+/// The IMMUTABLE identity — the `$<n>` id AND the creation instant — of the
+/// session named EXACTLY `name`, or `None`.
+///
+/// `#{session_id}` alone is not immutable: tmux starts again at `$0` once
+/// every session on a server is gone, so a name whose session was killed and
+/// recreated can answer the same id while being another incarnation. This is
+/// the identity a WRITE carries.
+#[must_use]
+pub fn observe_session_identity(server: &ServerId, name: &str) -> Option<tmux::SessionIdentity> {
+    if !addressable(server) {
+        return None;
+    }
+    let (succeeded, stdout) = run(PROGRAM, &tmux::session_identities_args(server));
+    tmux::interpret_session_identity(succeeded, &stdout, name)
+}
+
 /// `session`'s panes with the window each belongs to, for the per-window glyphs.
 #[must_use]
 pub fn observe_window_panes(server: &ServerId, session: &str) -> Option<Vec<tmux::WindowPane>> {
@@ -556,6 +583,44 @@ pub fn publish_option(
         &tmux::set_option_args(server, scope, target, name, value),
     );
     succeeded
+}
+
+/// Set one session option through the SERVER-SIDE guard: one tmux invocation
+/// whose `if-shell` checks the proven server and session incarnations and the
+/// option's vacancy, then sets in the same queued command. There is no window
+/// between a check and the write for a replacement to use.
+#[must_use]
+pub fn publish_guarded_session_option(
+    server: &ServerId,
+    expected_server: &tmux::ServerIdentity,
+    expected_session: &tmux::SessionIdentity,
+    name: &str,
+    value: &str,
+) -> bool {
+    if !addressable(server) {
+        return false;
+    }
+    let (succeeded, _) = run(
+        PROGRAM,
+        &tmux::guarded_session_option_args(server, expected_server, expected_session, name, value),
+    );
+    succeeded
+}
+
+/// The session identity one exact PANE belongs to. Used by the MIGRATION
+/// capture for a recorded main pane; a pane id is reusable after a server
+/// restart, so the caller must pair this with the session's ownership pair and
+/// the guarded write still reproves the full identity.
+#[must_use]
+pub fn observe_pane_session_identity(
+    server: &ServerId,
+    pane: &str,
+) -> Option<tmux::SessionIdentity> {
+    if !addressable(server) {
+        return None;
+    }
+    let (succeeded, stdout) = run(PROGRAM, &tmux::pane_session_identity_args(server, pane));
+    tmux::interpret_pane_session_identity(succeeded, &stdout)
 }
 
 /// Publish several option values in one tmux process.

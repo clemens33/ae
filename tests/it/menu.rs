@@ -5869,3 +5869,1908 @@ fn confirming_the_session_you_are_viewing_still_completes_out_of_pane() {
         "the provenance survives the pane that asked: {events}"
     );
 }
+
+// ─── Slice 1: the delegated root, declared state, and the UUID correlation ───
+
+/// The config every Slice 1 fixture launches with: one idle lead, no watchdog,
+/// so the only state rows a menu can show are the ones the test declares.
+fn write_state_fixture_config(project: &Path, config: &Path) {
+    assert!(fs::create_dir_all(project).is_ok(), "the fixture project");
+    assert!(
+        fs::write(
+            config,
+            "[profiles]\nidle = \"sleep 600\"\n\n[roster]\nlead = idle\n\n[workspace]\nmain = lead\nlayout = vertical\nwatchdog = false\n",
+        )
+        .is_ok(),
+        "the fixture config"
+    );
+}
+
+/// Read a fixture file the test itself planted.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the fixture reads back a state file it planted to prove what a click did"
+)]
+fn fixture_text(path: &Path) -> String {
+    fs::read_to_string(path).unwrap_or_else(|error| panic!("{}: {error}", path.display()))
+}
+
+/// One declaration appended to a launched session's event container, in the
+/// exact shape the `state` helper writes.
+fn declare_state(dir: &Path, actor: &str, value: &str, reason: &str) {
+    let ts = ae::time::Timestamp::now();
+    let line = format!(
+        "{{\"ts\":\"{ts}\",\"actor\":\"{actor}\",\"action\":\"state\",\"ref\":\"{value}\",\"summary\":\"{reason}\"}}\n"
+    );
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("events.jsonl"))
+        .unwrap_or_else(|error| panic!("the declaration container opens: {error}"));
+    std::io::Write::write_all(&mut file, line.as_bytes())
+        .unwrap_or_else(|error| panic!("the declaration writes: {error}"));
+}
+
+/// A deterministic `session` status range on the VIEWED session's status line,
+/// naming the CLICKED session's tmux id — the same shape the real status bar
+/// gives a session-range click.
+fn point_session_range_at(socket: &Path, scratch: &Path, viewed: &str, clicked_id: &str) {
+    assert!(
+        tmux(
+            socket,
+            scratch,
+            &[
+                "set-option",
+                "-t",
+                viewed,
+                "status-format[1]",
+                &format!("#[range=session|{clicked_id}] C #[norange]"),
+            ],
+        )
+        .0,
+        "a deterministic session range on {viewed}"
+    );
+}
+
+fn listing_id(socket: &Path, scratch: &Path, session: &str) -> String {
+    let listing = tmux(
+        socket,
+        scratch,
+        &["list-sessions", "-F", "#{session_name}|#{session_id}"],
+    )
+    .1;
+    listing
+        .lines()
+        .find_map(|line| line.strip_prefix(&format!("{session}|")))
+        .unwrap_or_else(|| panic!("{session} is on the server: {listing}"))
+        .to_owned()
+}
+
+/// The `_session-menu show` argv for one staged click, with an optional
+/// wrong client pid so the clicker proof can be defeated on purpose.
+fn show_argv(
+    client: &str,
+    client_pid: &str,
+    session: &str,
+    session_id: &str,
+    pane: &str,
+    server_pid: &str,
+    server_start: &str,
+) -> Vec<String> {
+    [
+        "_session-menu",
+        "show",
+        "--client",
+        client,
+        "--client-pid",
+        client_pid,
+        "--session",
+        session,
+        "--session-id",
+        session_id,
+        "--pane",
+        pane,
+        "--server-pid",
+        server_pid,
+        "--server-start",
+        server_start,
+    ]
+    .into_iter()
+    .map(ToOwned::to_owned)
+    .collect()
+}
+
+/// A hostile option value with a quote, a command separator and a sentinel.
+fn hostile_option_value(sentinel: &Path) -> String {
+    format!("bad'; touch {} ; '\"#", sentinel.display())
+}
+
+/// A right-click on a session whose events container is a directory: the root
+/// must say the gap and keep both actions.
+#[test]
+fn a_right_click_with_an_unreadable_state_file_still_offers_both_actions() {
+    let scratch = scratch("state-unreadable");
+    if !tmux_present(&scratch) {
+        let _ = fs::remove_dir_all(&scratch);
+        panic!("tmux is not runnable here, so the state-gap menu cannot be proven");
+    }
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let root = scratch.join("state");
+    let project = scratch.join("project");
+    let config = scratch.join("config");
+    write_state_fixture_config(&project, &config);
+    for session in ["state-unread", "state-view"] {
+        launch_ae_session(&socket, &scratch, &root, &project, &config, session);
+    }
+    let clicked_id = listing_id(&socket, &scratch, "state-unread");
+    let container = root
+        .join("sessions")
+        .join("state-unread")
+        .join("events.jsonl");
+    let _ = fs::remove_file(&container);
+    assert!(
+        fs::create_dir_all(&container).is_ok(),
+        "a directory in its place"
+    );
+    point_session_range_at(&socket, &scratch, "state-view", &clicked_id);
+    let viewer = "state-viewer";
+    let client = nested_client(&socket, &scratch, "state-view", viewer);
+    std::thread::sleep(Duration::from_millis(600));
+
+    let menu = open_context_menu(&socket, &scratch, viewer, &client);
+    assert!(
+        menu.contains("state: unreadable (events: a directory)"),
+        "an unreadable container is a named gap: {menu}"
+    );
+    assert!(
+        !menu.contains("none declared"),
+        "an unreadable container is never rendered as an empty one: {menu}"
+    );
+    assert!(menu.contains("Flip lead/colead panes"), "{menu}");
+    assert!(menu.contains("Stop session"), "{menu}");
+}
+
+/// The same tmux session, a DIFFERENT state directory: no foreign declaration
+/// may render, and the root says which correlation failed.
+#[test]
+fn a_right_click_on_a_same_name_replacement_shows_no_foreign_declarations() {
+    let scratch = scratch("state-replaced");
+    if !tmux_present(&scratch) {
+        let _ = fs::remove_dir_all(&scratch);
+        panic!("tmux is not runnable here, so the replacement menu cannot be proven");
+    }
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let root = scratch.join("state");
+    let project = scratch.join("project");
+    let config = scratch.join("config");
+    write_state_fixture_config(&project, &config);
+    for session in ["state-replaced", "state-view"] {
+        launch_ae_session(&socket, &scratch, &root, &project, &config, session);
+    }
+    let clicked_id = listing_id(&socket, &scratch, "state-replaced");
+    let clicked_dir = root.join("sessions").join("state-replaced");
+    // The option still names incarnation A; the directory is swapped to B.
+    let seeded = tmux(
+        &socket,
+        &scratch,
+        &[
+            "show-options",
+            "-qv",
+            "-t",
+            "state-replaced",
+            ae::theme::SESSION_ID_OPTION,
+        ],
+    )
+    .1
+    .trim()
+    .to_owned();
+    assert!(
+        !seeded.is_empty(),
+        "the launch seeded the UUID fact: {seeded:?}"
+    );
+    let meta = fixture_text(&clicked_dir.join("meta"));
+    let replaced = meta.replace(
+        &format!("session_id={seeded}"),
+        "session_id=fa4a9b3e-0000-4000-8000-000000000000",
+    );
+    assert!(
+        replaced.contains("fa4a9b3e"),
+        "the fixture swapped the identity"
+    );
+    fs::write(clicked_dir.join("meta"), replaced)
+        .unwrap_or_else(|error| panic!("the replacement meta writes: {error}"));
+    declare_state(
+        &clicked_dir,
+        "lead",
+        "blocked",
+        "FOREIGN-DECLARATION-THAT-MUST-NOT-RENDER",
+    );
+    point_session_range_at(&socket, &scratch, "state-view", &clicked_id);
+    let viewer = "state-viewer";
+    let client = nested_client(&socket, &scratch, "state-view", viewer);
+    std::thread::sleep(Duration::from_millis(600));
+
+    let menu = open_context_menu(&socket, &scratch, viewer, &client);
+    assert!(
+        !menu.contains("FOREIGN-DECLARATION"),
+        "another incarnation's declaration rendered: {menu}"
+    );
+    assert!(
+        menu.contains("state: unavailable (meta: identity mismatch)"),
+        "the correlation gap is named: {menu}"
+    );
+    assert!(menu.contains("Flip lead/colead panes"), "{menu}");
+    assert!(menu.contains("Stop session"), "{menu}");
+}
+
+/// A hostile `@ae_session_uuid` carries a quote, a separator and a sentinel:
+/// it must reach no shell, and the root must refuse it safely.
+#[test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the sentinel's absence on the filesystem is the boundary proof"
+)]
+fn a_hostile_session_uuid_option_never_reaches_a_shell_and_the_root_refuses_safely() {
+    let scratch = scratch("state-hostile");
+    if !tmux_present(&scratch) {
+        let _ = fs::remove_dir_all(&scratch);
+        panic!("tmux is not runnable here, so the hostile-option boundary cannot be proven");
+    }
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let root = scratch.join("state");
+    let project = scratch.join("project");
+    let config = scratch.join("config");
+    write_state_fixture_config(&project, &config);
+    for session in ["state-hostile", "state-view"] {
+        launch_ae_session(&socket, &scratch, &root, &project, &config, session);
+    }
+    let clicked_id = listing_id(&socket, &scratch, "state-hostile");
+    let sentinel = scratch.join("sentinel");
+    let hostile = hostile_option_value(&sentinel);
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &[
+                "set-option",
+                "-t",
+                "state-hostile",
+                ae::theme::SESSION_ID_OPTION,
+                &hostile,
+            ],
+        )
+        .0,
+        "the hostile option is planted"
+    );
+    declare_state(
+        &root.join("sessions").join("state-hostile"),
+        "lead",
+        "blocked",
+        "HOSTILE-DECLARATION-THAT-MUST-NOT-RENDER",
+    );
+    point_session_range_at(&socket, &scratch, "state-view", &clicked_id);
+    let viewer = "state-viewer";
+    let client = nested_client(&socket, &scratch, "state-view", viewer);
+    std::thread::sleep(Duration::from_millis(600));
+
+    let menu = open_context_menu(&socket, &scratch, viewer, &client);
+    assert!(
+        !sentinel.exists(),
+        "the hostile option reached a shell and ran {:?}",
+        sentinel.display()
+    );
+    assert!(
+        !menu.contains("HOSTILE-DECLARATION"),
+        "a hostile identity rendered declarations: {menu}"
+    );
+    assert!(
+        menu.contains("state: unavailable (session identity invalid)"),
+        "the hostile value is refused by name: {menu}"
+    );
+    assert!(menu.contains("Flip lead/colead panes"), "{menu}");
+    assert!(menu.contains("Stop session"), "{menu}");
+}
+
+/// A clicker that was replaced between click and draw gets no draw and no
+/// client message at all — only stderr — and the refusal must EXIT promptly:
+/// the invocation is bounded, so a regression that lets the proof pass through
+/// to a modal `display-menu` fails here instead of hanging the suite.
+#[test]
+fn an_unproven_replaced_clicker_gets_no_draw_and_no_client_message() {
+    let scratch = scratch("state-clicker");
+    if !tmux_present(&scratch) {
+        let _ = fs::remove_dir_all(&scratch);
+        panic!("tmux is not runnable here, so the clicker proof cannot be proven");
+    }
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let root = scratch.join("state");
+    let project = scratch.join("project");
+    let config = scratch.join("config");
+    write_state_fixture_config(&project, &config);
+    launch_ae_session(&socket, &scratch, &root, &project, &config, "clicker");
+    let viewer = "clicker-viewer";
+    let client = nested_client(&socket, &scratch, "clicker", viewer);
+    std::thread::sleep(Duration::from_millis(600));
+    let before = tmux(&socket, &scratch, &["capture-pane", "-p", "-t", viewer]).1;
+
+    let mut facts = gather_show_facts(&socket, &scratch, "clicker", &client);
+    facts.client_pid = "1".to_owned();
+    let child = show_child(&socket, &scratch, &root, &config, &facts);
+    let output = reap_bounded(child, "the replaced-clicker show");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "a replaced clicker is a failure: stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !output.stderr.is_empty(),
+        "the refusal is reported on stderr"
+    );
+    std::thread::sleep(Duration::from_millis(400));
+    let after = tmux(&socket, &scratch, &["capture-pane", "-p", "-t", viewer]).1;
+    assert_eq!(before, after, "an unproven clicker must draw nothing");
+    assert!(
+        !after.contains("Flip lead/colead panes"),
+        "no menu reached the client: {after}"
+    );
+}
+
+/// The whole detailed-state story from a real right-click: the invoking client
+/// sees the clicked session's declared state with a clipped reason inside both
+/// menu edges, no bystander sees anything, `s` reaches the existing
+/// confirmation, and `f` still flips.
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one end-to-end centred state menu story: draw, edges, bystander, both actions"
+)]
+fn a_right_click_shows_declared_state_and_keeps_flip_and_stop() {
+    let scratch = scratch("state-detail");
+    if !tmux_present(&scratch) {
+        let _ = fs::remove_dir_all(&scratch);
+        panic!("tmux is not runnable here, so the state menu cannot be proven");
+    }
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let root = scratch.join("state");
+    let project = scratch.join("project");
+    let config = scratch.join("config");
+    write_state_fixture_config(&project, &config);
+    for session in ["state-clicked", "state-view"] {
+        launch_ae_session(&socket, &scratch, &root, &project, &config, session);
+    }
+    let clicked_id = listing_id(&socket, &scratch, "state-clicked");
+    let reason = format!("CLIPPEDREASON-{}-TAIL", "x".repeat(200));
+    declare_state(
+        &root.join("sessions").join("state-clicked"),
+        "lead",
+        "blocked",
+        &reason,
+    );
+    point_session_range_at(&socket, &scratch, "state-view", &clicked_id);
+    // Both sessions get a second pane: the centred menu must use the client's
+    // whole terminal, and the Flip row acts on the CAPTURED pane — the clicked
+    // session's own.
+    assert!(tmux(&socket, &scratch, &["split-window", "-t", "state-clicked"]).0);
+    assert!(tmux(&socket, &scratch, &["split-window", "-t", "state-view"]).0);
+    let clicked_before = pane_order(&socket, &scratch, "state-clicked");
+    let viewed_before = pane_order(&socket, &scratch, "state-view");
+    let viewer = "state-viewer";
+    let client = nested_client(&socket, &scratch, "state-view", viewer);
+    let bystander = "state-bystander";
+    let _ = nested_client(&socket, &scratch, "state-view", bystander);
+    std::thread::sleep(Duration::from_millis(600));
+
+    let menu = open_context_menu(&socket, &scratch, viewer, &client);
+    assert!(
+        menu.contains("state-clicked"),
+        "the title names the click: {menu}"
+    );
+    assert!(
+        menu.contains("lead state: blocked — CLIPPEDREASON-") && menu.contains("..."),
+        "the declared state renders with a clipped reason: {menu}"
+    );
+    assert!(
+        !menu.contains(&reason),
+        "the full reason is not on the menu: {menu}"
+    );
+    // Both edges, on the invoking client's own screen: the border line the
+    // title sits in starts after column zero and ends inside the 140 columns.
+    let title_row = row_of(&menu, "state-clicked");
+    let title_line = menu.lines().nth(title_row).expect("the title line");
+    let left: usize = title_line.chars().take_while(|c| *c == ' ').count();
+    let right: usize = title_line.chars().count();
+    assert!(left > 0, "the left menu edge is on screen: {title_line:?}");
+    assert!(
+        right < 140,
+        "the right menu edge is on screen: {title_line:?}"
+    );
+    assert!(
+        left.abs_diff(140 - right) <= 3,
+        "the menu is centred on the client: left={left} right={right} {title_line:?}"
+    );
+    // The OTHER client on the same session sees nothing of it.
+    let bystander_seen = tmux(&socket, &scratch, &["capture-pane", "-p", "-t", bystander]).1;
+    assert!(
+        !bystander_seen.contains("Flip lead/colead panes")
+            && !bystander_seen.contains("state: blocked"),
+        "the menu reached a client that did not ask for it: {bystander_seen}"
+    );
+
+    // `s` still reaches the existing confirmation for the CLICKED session.
+    assert!(tmux(&socket, &scratch, &["send-keys", "-t", viewer, "s"]).0);
+    wait_for(
+        "the confirmation menu",
+        || tmux(&socket, &scratch, &["capture-pane", "-p", "-t", viewer]).1,
+        |seen| seen.contains("Stop 'state-clicked' now"),
+    );
+    assert!(tmux(&socket, &scratch, &["send-keys", "-t", viewer, "c"]).0);
+    std::thread::sleep(Duration::from_secs(2));
+
+    // `f` still flips the captured pane's window — the CLICKED session's.
+    let _ = open_context_menu(&socket, &scratch, viewer, &client);
+    assert!(tmux(&socket, &scratch, &["send-keys", "-t", viewer, "f"]).0);
+    let clicked_after = wait_for(
+        "the flipped pane order",
+        || pane_order(&socket, &scratch, "state-clicked"),
+        |order| *order != clicked_before,
+    );
+    assert_ne!(clicked_after, clicked_before);
+    assert_eq!(
+        pane_order(&socket, &scratch, "state-view"),
+        viewed_before,
+        "the client's own session was never touched by the flip"
+    );
+}
+
+/// One legacy RUNNING session for the upgrade backfill: a real tmux session and
+/// a placeable meta that records its identity, its server and no UUID option.
+fn stage_legacy_running_session(
+    socket: &Path,
+    scratch: &Path,
+    root: &Path,
+    project: &Path,
+    session: &str,
+    uuid: &str,
+) -> std::path::PathBuf {
+    stage_legacy_running_session_with_pane(socket, scratch, root, project, session, uuid, None)
+}
+
+/// The same legacy record with an explicit `main_pane`: the wrong-membership
+/// fixture records a pane that belongs to no live session.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one legacy-session fixture tuple"
+)]
+fn stage_legacy_running_session_with_pane(
+    socket: &Path,
+    scratch: &Path,
+    root: &Path,
+    project: &Path,
+    session: &str,
+    uuid: &str,
+    main_pane: Option<&str>,
+) -> std::path::PathBuf {
+    assert!(
+        tmux(
+            socket,
+            scratch,
+            &[
+                "new-session",
+                "-d",
+                "-s",
+                session,
+                "-c",
+                &project.display().to_string()
+            ]
+        )
+        .0,
+        "the legacy tmux session"
+    );
+    // A real legacy ae session carries the ownership pair; the sweep requires
+    // it beside pane membership.
+    assert!(
+        tmux(
+            socket,
+            scratch,
+            &[
+                "set-environment",
+                "-t",
+                session,
+                ae::tmux::OWNERSHIP_VARIABLE,
+                "1",
+            ],
+        )
+        .0,
+        "the legacy ownership marker"
+    );
+    assert!(
+        tmux(
+            socket,
+            scratch,
+            &[
+                "set-environment",
+                "-t",
+                session,
+                ae::tmux::HOME_VARIABLE,
+                &root.display().to_string(),
+            ],
+        )
+        .0,
+        "the legacy state-root marker"
+    );
+    let pane = main_pane
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            tmux(
+                socket,
+                scratch,
+                &["list-panes", "-t", session, "-F", "#{pane_id}"],
+            )
+            .1
+            .lines()
+            .next()
+            .map(ToOwned::to_owned)
+        })
+        .unwrap_or_else(|| panic!("the legacy session has a pane"));
+    let dir = root.join("sessions").join(session);
+    assert!(fs::create_dir_all(&dir).is_ok());
+    let meta = format!(
+        "{}={}\nmode=local\norigin={}\nsession={session}\nsession_id={uuid}\nwork_dir={}\nmain_pane={pane}\nwatchdog=false\ntmux_server={}\ntmux_server_kind=socket\n",
+        ae::migrate::KEY,
+        ae::migrate::CURRENT,
+        project.display(),
+        project.display(),
+        socket.display(),
+    );
+    fs::write(dir.join("meta"), meta)
+        .unwrap_or_else(|error| panic!("the legacy meta writes: {error}"));
+    dir
+}
+
+/// Every session already running at release gains the UUID fact at upgrade, or
+/// the installed fleet shows no detailed state until each session resumes.
+#[test]
+fn a_legacy_running_session_gains_the_uuid_option_at_upgrade() {
+    let scratch = scratch("uuid-backfill");
+    if !tmux_present(&scratch) {
+        let _ = fs::remove_dir_all(&scratch);
+        panic!("tmux is not runnable here, so the upgrade backfill cannot be proven");
+    }
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let root = scratch.join("state");
+    let project = scratch.join("project");
+    assert!(fs::create_dir_all(&project).is_ok());
+    let uuid = "1b4e28ba-2fa1-11d2-883f-0016d3cc4321";
+    stage_legacy_running_session(&socket, &scratch, &root, &project, "legacy", uuid);
+    let server = ServerId::Selected(Selector::Socket(socket.clone()));
+    assert_eq!(
+        ae::transport::observe_option_reading(&server, "legacy", ae::theme::SESSION_ID_OPTION),
+        ae::tmux::OptionReading::Vacant,
+        "a legacy session carries no UUID fact yet"
+    );
+    let core = scratch.join("new-core");
+    assert!(fs::write(&core, b"").is_ok(), "a core path for the repoint");
+    ae::migrate::onto(&root, &core, "2026.9.77").expect("the sweep migrates the session");
+    assert_eq!(
+        ae::transport::observe_option_reading(&server, "legacy", ae::theme::SESSION_ID_OPTION),
+        ae::tmux::OptionReading::Set(uuid.to_owned()),
+        "the upgrade backfilled the fact from the meta"
+    );
+}
+
+/// A pre-set nonempty value survives the sweep: the backfill is vacant-only.
+#[test]
+fn a_differing_nonempty_uuid_option_survives_the_upgrade_sweep() {
+    let scratch = scratch("uuid-preserve");
+    if !tmux_present(&scratch) {
+        let _ = fs::remove_dir_all(&scratch);
+        panic!("tmux is not runnable here, so the vacant-only sweep cannot be proven");
+    }
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let root = scratch.join("state");
+    let project = scratch.join("project");
+    assert!(fs::create_dir_all(&project).is_ok());
+    let meta_uuid = "1b4e28ba-2fa1-11d2-883f-0016d3cc4321";
+    let planted = "fa4a9b3e-0000-4000-8000-000000000000";
+    stage_legacy_running_session(&socket, &scratch, &root, &project, "legacy", meta_uuid);
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &[
+                "set-option",
+                "-t",
+                "legacy",
+                ae::theme::SESSION_ID_OPTION,
+                planted,
+            ],
+        )
+        .0,
+        "the planted differing value"
+    );
+    let core = scratch.join("new-core");
+    assert!(fs::write(&core, b"").is_ok());
+    ae::migrate::onto(&root, &core, "2026.9.77").expect("the sweep migrates the session");
+    let server = ServerId::Selected(Selector::Socket(socket.clone()));
+    assert_eq!(
+        ae::transport::observe_option_reading(&server, "legacy", ae::theme::SESSION_ID_OPTION),
+        ae::tmux::OptionReading::Set(planted.to_owned()),
+        "an unconditional set would have overwritten the planted value"
+    );
+}
+
+/// A failed meta publication returns BEFORE any UUID write.
+#[test]
+fn a_failed_meta_publication_publishes_no_session_uuid() {
+    let scratch = scratch("uuid-publish");
+    if !tmux_present(&scratch) {
+        let _ = fs::remove_dir_all(&scratch);
+        panic!("tmux is not runnable here, so the publication ordering cannot be proven");
+    }
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let server = ServerId::Selected(Selector::Socket(socket.clone()));
+    let name = "publication";
+    assert!(tmux(&socket, &scratch, &["new-session", "-d", "-s", name]).0);
+    let dir = scratch.join("state").join("sessions").join(name);
+    assert!(
+        fs::create_dir_all(dir.join("meta")).is_ok(),
+        "a poisoned meta path"
+    );
+    let document = format!(
+        "{}={}\nsession={name}\nsession_id=1b4e28ba-2fa1-11d2-883f-0016d3cc4321\n",
+        ae::migrate::KEY,
+        ae::migrate::CURRENT,
+    );
+    let live = live_proven_identity(&server, name);
+    let result = ae::session_launch::publish_meta_and_seed_uuid(
+        &server,
+        Some(&live),
+        &dir,
+        false,
+        &document,
+    );
+    assert!(
+        result.is_err(),
+        "a meta path that is a directory fails the publish"
+    );
+    assert_eq!(
+        ae::transport::observe_option_reading(&server, name, ae::theme::SESSION_ID_OPTION),
+        ae::tmux::OptionReading::Vacant,
+        "no option may exist after a failed publication"
+    );
+}
+
+/// The identity stamped is the one in the document just published — never a
+/// reread that a concurrent writer could have replaced.
+#[test]
+fn the_launch_uuid_comes_from_the_published_document_not_a_reread() {
+    let scratch = scratch("uuid-document");
+    if !tmux_present(&scratch) {
+        let _ = fs::remove_dir_all(&scratch);
+        panic!("tmux is not runnable here, so the document ordering cannot be proven");
+    }
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let server = ServerId::Selected(Selector::Socket(socket.clone()));
+    let name = "document";
+    assert!(tmux(&socket, &scratch, &["new-session", "-d", "-s", name]).0);
+    let dir = scratch.join("state").join("sessions").join(name);
+    assert!(fs::create_dir_all(&dir).is_ok());
+    let stale = format!(
+        "{}={}\nsession={name}\nsession_id=00000000-0000-4000-8000-000000000000\n",
+        ae::migrate::KEY,
+        ae::migrate::CURRENT,
+    );
+    fs::write(dir.join("meta"), &stale)
+        .unwrap_or_else(|error| panic!("the stale meta writes: {error}"));
+    let fresh = "1b4e28ba-2fa1-11d2-883f-0016d3cc4321";
+    let document = format!(
+        "{}={}\nsession={name}\nsession_id={fresh}\n",
+        ae::migrate::KEY,
+        ae::migrate::CURRENT,
+    );
+    let live = live_proven_identity(&server, name);
+    let outcome =
+        ae::session_launch::publish_meta_and_seed_uuid(&server, Some(&live), &dir, true, &document)
+            .expect("a regular meta publishes over");
+    assert_eq!(outcome, ae::session_launch::SeedOutcome::Recorded);
+    assert_eq!(
+        ae::transport::observe_option_reading(&server, name, ae::theme::SESSION_ID_OPTION),
+        ae::tmux::OptionReading::Set(fresh.to_owned()),
+        "a stale reread would have stamped the on-disk identity instead"
+    );
+    assert!(
+        fixture_text(&dir.join("meta")).contains(fresh),
+        "the publication itself happened"
+    );
+}
+
+/// The one parser a FIFO would block: a state source observed non-regular is
+/// refused before any open, and the read returns promptly.
+#[test]
+fn a_fifo_state_source_is_invalid_and_is_never_opened() {
+    let scratch = scratch("state-fifo");
+    let dir = scratch.join("session");
+    assert!(fs::create_dir_all(&dir).is_ok());
+    let store = ae::store::open(&dir);
+    crate::cli::mkfifo(&store.events_path());
+    let started = Instant::now();
+    let read = store.events_source();
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "a FIFO must be classified without being opened"
+    );
+    assert!(
+        matches!(read, ae::store::SourceRead::Invalid(ref reason) if reason.contains("fifo")),
+        "a FIFO is an explicit invalid source: {read:?}"
+    );
+    let _ = fs::remove_dir_all(&scratch);
+}
+
+/// A watchdog cycle over a session whose state directory was REPLACED must not
+/// re-stamp the UUID fact, and the root it feeds must render the mismatch
+/// instead of the foreign declaration.
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one real watchdog cycle plus one real click proves no re-stamp and no foreign state"
+)]
+fn a_replaced_state_directory_cannot_re_stamp_the_uuid_fact() {
+    let scratch = scratch("uuid-restamp");
+    if !tmux_present(&scratch) {
+        let _ = fs::remove_dir_all(&scratch);
+        panic!("tmux is not runnable here, so the daemon re-stamp proof cannot run");
+    }
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let root = scratch.join("state");
+    let project = scratch.join("project");
+    let config = scratch.join("config");
+    write_watchdog_picker_config(&project, &config, &scratch);
+    let session = "restamp";
+    launch_ae_session(&socket, &scratch, &root, &project, &config, session);
+    let dir = root.join("sessions").join(session);
+    let seeded = tmux(
+        &socket,
+        &scratch,
+        &[
+            "show-options",
+            "-qv",
+            "-t",
+            session,
+            ae::theme::SESSION_ID_OPTION,
+        ],
+    )
+    .1
+    .trim()
+    .to_owned();
+    assert!(!seeded.is_empty(), "the launch seeded the UUID fact");
+    // The state directory is replaced by another incarnation's.
+    let meta = fixture_text(&dir.join("meta"));
+    fs::write(
+        dir.join("meta"),
+        meta.replace(
+            &format!("session_id={seeded}"),
+            "session_id=fa4a9b3e-0000-4000-8000-000000000000",
+        ),
+    )
+    .unwrap_or_else(|error| panic!("the replacement meta writes: {error}"));
+    declare_state(
+        &dir,
+        "lead",
+        "blocked",
+        "FOREIGN-FROM-THE-REPLACED-DIRECTORY",
+    );
+
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    let code = ae::watchdog_lifecycle::run(
+        &root,
+        &[
+            "start".to_owned(),
+            session.to_owned(),
+            "--".to_owned(),
+            "--interval".to_owned(),
+            "1".to_owned(),
+            "--quiet-beat-ms".to_owned(),
+            "10".to_owned(),
+            "--tg-supervise-secs".to_owned(),
+            "0".to_owned(),
+        ],
+        &mut out,
+        &mut err,
+    )
+    .expect("watchdog start writes to buffers");
+    assert_eq!(code, 0, "watchdog start: {}", String::from_utf8_lossy(&err));
+    let fact = wait_for(
+        "a completed watchdog cycle",
+        || {
+            tmux(
+                &socket,
+                &scratch,
+                &[
+                    "show-options",
+                    "-qv",
+                    "-t",
+                    session,
+                    ae::theme::AGENTS_OPTION,
+                ],
+            )
+            .1
+        },
+        |seen| !seen.trim().is_empty(),
+    );
+    assert!(
+        !fact.trim().is_empty(),
+        "the daemon published its roster fact"
+    );
+    out.clear();
+    err.clear();
+    let code = ae::watchdog_lifecycle::run(
+        &root,
+        &["stop".to_owned(), session.to_owned()],
+        &mut out,
+        &mut err,
+    )
+    .expect("watchdog stop writes to buffers");
+    assert_eq!(code, 0, "watchdog stop: {}", String::from_utf8_lossy(&err));
+    assert_eq!(
+        tmux(
+            &socket,
+            &scratch,
+            &[
+                "show-options",
+                "-qv",
+                "-t",
+                session,
+                ae::theme::SESSION_ID_OPTION,
+            ],
+        )
+        .1
+        .trim(),
+        seeded,
+        "the watchdog must never re-stamp the UUID fact"
+    );
+
+    // The root the same click feeds renders the mismatch, not B's declaration.
+    let own_id = listing_id(&socket, &scratch, session);
+    point_session_range_at(&socket, &scratch, session, &own_id);
+    let viewer = "restamp-viewer";
+    let client = nested_client(&socket, &scratch, session, viewer);
+    std::thread::sleep(Duration::from_millis(600));
+    let menu = open_context_menu(&socket, &scratch, viewer, &client);
+    assert!(
+        !menu.contains("FOREIGN-FROM-THE-REPLACED-DIRECTORY"),
+        "the replacement's declaration rendered: {menu}"
+    );
+    assert!(
+        menu.contains("state: unavailable (meta: identity mismatch)"),
+        "the root floors on the mismatch: {menu}"
+    );
+    assert!(menu.contains("Flip lead/colead panes"), "{menu}");
+    assert!(menu.contains("Stop session"), "{menu}");
+}
+
+/// The `needs-spike` measurement: one reverse scan over a 1.6 MB container
+/// stays far inside the click-to-draw budget. The fixture is the size of the
+/// largest live `events.jsonl` the recon measured (1,582,326 bytes).
+#[test]
+fn the_state_scan_on_a_1_6_mb_container_stays_within_the_click_to_draw_budget() {
+    let scratch = scratch("state-latency");
+    let dir = scratch.join("session");
+    assert!(fs::create_dir_all(&dir).is_ok());
+    let mut container = String::with_capacity(1_700_000);
+    while container.len() < 1_582_326 {
+        container.push_str(
+            "{\"ts\":\"2026-09-13T08:00:00Z\",\"actor\":\"other\",\"action\":\"chat\",\"summary\":\"filler\"}\n",
+        );
+    }
+    container.push_str(
+        "{\"ts\":\"2026-09-13T09:00:00Z\",\"actor\":\"lead\",\"action\":\"state\",\"ref\":\"blocked\",\"summary\":\"the newest declaration\"}\n",
+    );
+    fs::write(dir.join("events.jsonl"), &container)
+        .unwrap_or_else(|error| panic!("the latency container writes: {error}"));
+    let bytes = container.clone().into_bytes();
+    let actors = vec!["lead".to_owned()];
+    let mut samples = Vec::new();
+    for _ in 0..5 {
+        let started = Instant::now();
+        let found = ae::state::latest_for_all(&bytes, &actors);
+        samples.push(started.elapsed());
+        assert_eq!(found.len(), 1, "the scan finds the newest declaration");
+    }
+    samples.sort();
+    let median = samples[samples.len() / 2];
+    eprintln!(
+        "state scan over {} bytes: median {median:?}, worst {:?}",
+        bytes.len(),
+        samples.last()
+    );
+    assert!(
+        median < Duration::from_millis(150),
+        "the scan exceeds the 150 ms click-to-draw budget: {median:?}"
+    );
+    let _ = fs::remove_dir_all(&scratch);
+}
+
+/// The full identity a proof captures live: the server incarnation and the
+/// session's id and creation.
+fn live_proven_identity(server: &ServerId, name: &str) -> ae::session_launch::ProvenIdentity {
+    let server_identity = ae::transport::observe_server_identity(server)
+        .unwrap_or_else(|| panic!("the live server identity"));
+    let session = ae::transport::observe_session_identity(server, name)
+        .unwrap_or_else(|| panic!("the live session identity"));
+    ae::session_launch::ProvenIdentity {
+        server: server_identity,
+        session,
+    }
+}
+
+/// The facts one click captures, as the delegated `show` invocation reads them.
+struct ShowFacts {
+    client: String,
+    client_pid: String,
+    session: String,
+    session_id: String,
+    pane: String,
+    server_pid: String,
+    server_start: String,
+}
+
+/// Gather the facts from the live server for one staged session and client.
+fn gather_show_facts(socket: &Path, scratch: &Path, session: &str, client: &str) -> ShowFacts {
+    let read = |format: &str, target: Option<&str>| {
+        let mut words = vec!["display-message".to_owned(), "-p".to_owned()];
+        if let Some(target) = target {
+            words.push("-t".to_owned());
+            words.push(target.to_owned());
+        }
+        words.push(format.to_owned());
+        tmux(
+            socket,
+            scratch,
+            &words.iter().map(String::as_str).collect::<Vec<_>>(),
+        )
+        .1
+        .trim()
+        .to_owned()
+    };
+    ShowFacts {
+        client: client.to_owned(),
+        client_pid: read("#{client_pid}", Some(client)),
+        session: session.to_owned(),
+        session_id: read("#{session_id}", Some(session)),
+        pane: read("#{pane_id}", Some(session)),
+        server_pid: read("#{pid}", None),
+        server_start: read("#{start_time}", None),
+    }
+}
+
+/// Start one `_session-menu show` invocation as a bounded child.
+fn show_child(
+    socket: &Path,
+    scratch: &Path,
+    root: &Path,
+    config: &Path,
+    facts: &ShowFacts,
+) -> OwnedChild {
+    let mut command = ae();
+    command
+        .env("HOME", scratch)
+        .env("AE_HOME", root)
+        .env("CONFIG_FILE", config)
+        .env("TMUX_TMPDIR", scratch)
+        .env("TMUX", format!("{},0,0", socket.display()))
+        .env_remove("TMUX_PANE")
+        .stderr(Stdio::piped())
+        .stdout(Stdio::null())
+        .args(show_argv(
+            &facts.client,
+            &facts.client_pid,
+            &facts.session,
+            &facts.session_id,
+            &facts.pane,
+            &facts.server_pid,
+            &facts.server_start,
+        ));
+    command
+        .spawn()
+        .unwrap_or_else(|error| panic!("the show invocation starts: {error}"))
+}
+
+/// Wait for the child to exit, and refuse to wait forever: a refused click
+/// must exit promptly, and a drawn menu is dismissed by the caller first.
+fn reap_bounded(mut child: OwnedChild, what: &str) -> std::process::Output {
+    let deadline = Instant::now() + PATIENCE;
+    while Instant::now() < deadline {
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                return child
+                    .wait_with_output()
+                    .unwrap_or_else(|error| panic!("{what} reaps: {error}"));
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+            Err(error) => panic!("{what} try_wait: {error}"),
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    panic!("{what} did not exit within {PATIENCE:?}");
+}
+
+/// The upgrade backfill is MEMBERSHIP-PROVEN: a state directory whose recorded
+/// main pane is not part of the same-name live session must stay vacant —
+/// otherwise a stale identity would be pinned to an unrelated incarnation, and
+/// its declarations would render on that session's root.
+#[test]
+fn the_upgrade_backfill_refuses_a_session_that_does_not_own_the_state_directory() {
+    let scratch = scratch("uuid-membership");
+    if !tmux_present(&scratch) {
+        let _ = fs::remove_dir_all(&scratch);
+        panic!("tmux is not runnable here, so the membership gate cannot be proven");
+    }
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let root = scratch.join("state");
+    let project = scratch.join("project");
+    assert!(fs::create_dir_all(&project).is_ok());
+    let uuid = "1b4e28ba-2fa1-11d2-883f-0016d3cc4321";
+    stage_legacy_running_session_with_pane(
+        &socket,
+        &scratch,
+        &root,
+        &project,
+        "legacy",
+        uuid,
+        Some("%999"),
+    );
+    let core = scratch.join("new-core");
+    assert!(fs::write(&core, b"").is_ok());
+    ae::migrate::onto(&root, &core, "2026.9.77").expect("the sweep migrates the session");
+    let server = ServerId::Selected(Selector::Socket(socket.clone()));
+    assert_eq!(
+        ae::transport::observe_option_reading(&server, "legacy", ae::theme::SESSION_ID_OPTION),
+        ae::tmux::OptionReading::Vacant,
+        "a state directory this live session does not own must not be stamped onto it"
+    );
+}
+
+/// A non-regular `meta` is classified BEFORE any open: a FIFO must not block
+/// the draw, a symlink must not be followed, a directory is a named gap — and
+/// the action floor is drawn in every case.
+#[test]
+fn a_nonregular_meta_still_draws_the_floor_and_never_blocks() {
+    let scratch = scratch("meta-nonregular");
+    if !tmux_present(&scratch) {
+        let _ = fs::remove_dir_all(&scratch);
+        panic!("tmux is not runnable here, so the meta classification cannot be proven");
+    }
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let root = scratch.join("state");
+    let project = scratch.join("project");
+    let config = scratch.join("config");
+    write_state_fixture_config(&project, &config);
+    launch_ae_session(&socket, &scratch, &root, &project, &config, "meta-bad");
+    let meta = root.join("sessions").join("meta-bad").join("meta");
+    let elsewhere = scratch.join("elsewhere-meta");
+    assert!(fs::write(&elsewhere, "session_id=x\n").is_ok());
+
+    for (label, shape, expected) in [
+        ("fifo", "fifo", "state: unavailable (meta: a fifo)"),
+        ("symlink", "symlink", "state: unavailable (meta: a symlink)"),
+        (
+            "directory",
+            "directory",
+            "state: unavailable (meta: a directory)",
+        ),
+    ] {
+        let _ = fs::remove_file(&meta);
+        let _ = fs::remove_dir_all(&meta);
+        match shape {
+            "fifo" => crate::cli::mkfifo(&meta),
+            "symlink" => std::os::unix::fs::symlink(&elsewhere, &meta).unwrap(),
+            _ => {
+                assert!(fs::create_dir_all(&meta).is_ok());
+            }
+        }
+        let viewer = format!("meta-{label}-viewer");
+        let client = nested_client(&socket, &scratch, "meta-bad", &viewer);
+        std::thread::sleep(Duration::from_millis(400));
+        let facts = gather_show_facts(&socket, &scratch, "meta-bad", &client);
+        let child = show_child(&socket, &scratch, &root, &config, &facts);
+        let drawn = wait_for(
+            &format!("the {label} meta gap root"),
+            || tmux(&socket, &scratch, &["capture-pane", "-p", "-t", &viewer]).1,
+            |seen| seen.contains("Flip lead/colead panes") && seen.contains("Stop session"),
+        );
+        assert!(
+            drawn.contains(expected),
+            "{label}: the gap names the observed shape: {drawn}"
+        );
+        assert!(
+            !drawn.contains("none declared"),
+            "{label}: a refused node is never rendered as an empty one: {drawn}"
+        );
+        assert!(tmux(&socket, &scratch, &["send-keys", "-t", &viewer, "Escape"]).0);
+        let output = reap_bounded(child, &format!("the {label} show"));
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{label}: stderr={}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(tmux(&socket, &scratch, &["detach-client", "-t", &client]).0);
+    }
+}
+
+/// The ladder is chosen from the FINAL live dimensions, not a build-time
+/// snapshot: the same click on a client resized SMALL draws the degraded root
+/// with both actions and only one declaration row.
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one resize-then-click story proves the live-dimension ladder end to end"
+)]
+fn a_resized_client_gets_the_live_degraded_root_not_a_build_dimension_one() {
+    let scratch = scratch("state-resize");
+    if !tmux_present(&scratch) {
+        let _ = fs::remove_dir_all(&scratch);
+        panic!("tmux is not runnable here, so the live-dimension ladder cannot be proven");
+    }
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let root = scratch.join("state");
+    let project = scratch.join("project");
+    let config = scratch.join("config");
+    write_state_fixture_config(&project, &config);
+    for session in ["state-resize", "state-resize-view"] {
+        launch_ae_session(&socket, &scratch, &root, &project, &config, session);
+    }
+    let clicked_dir = root.join("sessions").join("state-resize");
+    // Three roster actors with three declarations: the full root is taller
+    // than the resized client, so a build-dimension fit would draw all three.
+    let meta = fixture_text(&clicked_dir.join("meta"));
+    fs::write(
+        clicked_dir.join("meta"),
+        format!("{meta}seat.builder=builder\nseat.colead=colead\n"),
+    )
+    .unwrap_or_else(|error| panic!("the extra roster writes: {error}"));
+    declare_state(&clicked_dir, "lead", "working", "FIRST-ACTOR-REASON");
+    declare_state(&clicked_dir, "builder", "blocked", "SECOND-ACTOR-REASON");
+    declare_state(&clicked_dir, "colead", "waiting-user", "THIRD-ACTOR-REASON");
+    let clicked_id = listing_id(&socket, &scratch, "state-resize");
+    point_session_range_at(&socket, &scratch, "state-resize-view", &clicked_id);
+    let viewer = "state-resize-viewer";
+    let client = nested_client(&socket, &scratch, "state-resize-view", viewer);
+    std::thread::sleep(Duration::from_millis(600));
+    // Resize BEFORE the click; the inner attach propagates the new terminal.
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &["resize-window", "-t", viewer, "-x", "60", "-y", "8"]
+        )
+        .0
+    );
+    wait_for(
+        "the resized client",
+        || {
+            tmux(
+                &socket,
+                &scratch,
+                &[
+                    "display-message",
+                    "-p",
+                    "-c",
+                    &client,
+                    "#{client_width}x#{client_height}",
+                ],
+            )
+            .1
+        },
+        |seen| seen.trim() == "60x8",
+    );
+
+    let menu = open_context_menu(&socket, &scratch, viewer, &client);
+    assert!(
+        menu.contains("lead state: working — FIRST-ACTOR-REASON"),
+        "the newest first-actor state is the one status row: {menu}"
+    );
+    assert!(
+        !menu.contains("SECOND-ACTOR-REASON") && !menu.contains("THIRD-ACTOR-REASON"),
+        "a build-dimension fit would have drawn the full menu: {menu}"
+    );
+    let state_rows = menu
+        .lines()
+        .filter(|line| line.contains(" state: "))
+        .count();
+    assert_eq!(state_rows, 1, "status-only keeps exactly one row: {menu}");
+    assert!(menu.contains("Flip lead/colead panes"), "{menu}");
+    assert!(menu.contains("Stop session"), "{menu}");
+}
+
+/// The UUID write carries the FULL immutable identity and reproves it: a
+/// same-name replacement behind a REPLACED SERVER inside the same second —
+/// where the reclaimed `$0` and the whole-second `#{session_created}` both
+/// collide — can never receive the proven incarnation's UUID, by the writer or
+/// through the publish helper.
+#[test]
+fn a_same_name_replacement_after_the_proof_stays_vacant() {
+    let scratch = scratch("uuid-replacement");
+    if !tmux_present(&scratch) {
+        let _ = fs::remove_dir_all(&scratch);
+        panic!("tmux is not runnable here, so the replacement reproof cannot be proven");
+    }
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let server = ServerId::Selected(Selector::Socket(socket.clone()));
+    let name = "swap";
+    let uuid = "1b4e28ba-2fa1-11d2-883f-0016d3cc4321";
+    // The collision fixture: create the session, replace the whole SERVER on
+    // the same socket, and recreate the name — retrying the pair until the id
+    // AND the creation second collide, with NO sleep in the production window.
+    // Bounded: a slow host fails loud instead of restarting servers forever.
+    let (proven, replacement) = {
+        const ATTEMPTS: usize = 60;
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut found = None;
+        for _ in 0..ATTEMPTS {
+            if Instant::now() >= deadline {
+                break;
+            }
+            let _ = tmux(&socket, &scratch, &["kill-server"]);
+            assert!(tmux(&socket, &scratch, &["new-session", "-d", "-s", name]).0);
+            let first = live_proven_identity(&server, name);
+            let _ = tmux(&socket, &scratch, &["kill-server"]);
+            assert!(tmux(&socket, &scratch, &["new-session", "-d", "-s", name]).0);
+            let second = live_proven_identity(&server, name);
+            if first.session.id == second.session.id
+                && first.session.created == second.session.created
+            {
+                found = Some((first, second));
+                break;
+            }
+        }
+        found.unwrap_or_else(|| {
+            panic!("the collision fixture never collided within {ATTEMPTS} attempts / 30s")
+        })
+    };
+    assert_eq!(
+        proven.session.id, replacement.session.id,
+        "the fixture really reclaimed the id"
+    );
+    assert_eq!(
+        proven.session.created, replacement.session.created,
+        "the fixture really collided inside one creation second"
+    );
+    assert_ne!(
+        proven.server, replacement.server,
+        "the fixture really replaced the server"
+    );
+
+    assert_eq!(
+        ae::session_launch::seed_session_uuid(&server, &proven, uuid),
+        ae::session_launch::SeedOutcome::Vacant,
+        "the writer must refuse a replacement the server pair disproves"
+    );
+    assert_eq!(
+        ae::transport::observe_option_reading(&server, name, ae::theme::SESSION_ID_OPTION),
+        ae::tmux::OptionReading::Vacant,
+        "the replacement stays vacant after the direct writer"
+    );
+
+    // The same through the publish helper: the meta publishes, the seed refuses.
+    let dir = scratch.join("state").join("sessions").join(name);
+    assert!(fs::create_dir_all(&dir).is_ok());
+    let document = format!(
+        "{}={}\nsession={name}\nsession_id={uuid}\n",
+        ae::migrate::KEY,
+        ae::migrate::CURRENT,
+    );
+    assert_eq!(
+        ae::session_launch::publish_meta_and_seed_uuid(
+            &server,
+            Some(&proven),
+            &dir,
+            false,
+            &document
+        )
+        .expect("the meta publishes"),
+        ae::session_launch::SeedOutcome::Vacant
+    );
+    assert_eq!(
+        ae::transport::observe_option_reading(&server, name, ae::theme::SESSION_ID_OPTION),
+        ae::tmux::OptionReading::Vacant,
+        "the replacement stays vacant through the helper too"
+    );
+}
+
+/// A `tmux` shim that logs every call and blocks ONE call it recognizes — the
+/// `#{version}` probe at the end of the source reads — until the test releases
+/// it. It then execs the real tmux from the PATH handed in.
+fn write_tmux_shim(dir: &Path) {
+    use std::os::unix::fs::PermissionsExt as _;
+    assert!(fs::create_dir_all(dir).is_ok());
+    let shim = dir.join("tmux");
+    let script = "#!/bin/sh\n\
+        printf '%s\\n' \"$*\" >> \"$AE_SHIM_LOG\"\n\
+        case \"$*\" in\n\
+        \x20 *'#{version}'*)\n\
+        \x20   : > \"$AE_SHIM_BLOCKED\"\n\
+        \x20   while [ ! -e \"$AE_SHIM_RELEASE\" ]; do sleep 0.05; done\n\
+        \x20   ;;\n\
+        esac\n\
+        PATH=\"$AE_SHIM_REAL_PATH\" exec tmux \"$@\"\n";
+    assert!(fs::write(&shim, script).is_ok(), "the tmux shim writes");
+    assert!(
+        fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).is_ok(),
+        "the tmux shim is executable"
+    );
+}
+
+/// The ordering contract the reviewer asked to pin: the source reads finish
+/// FIRST, and the ONE final proof runs immediately before the fit/draw. The
+/// shim blocks the version probe — the last read — so the test can resize the
+/// client in that window; on these bytes the proof then reads the NEW
+/// dimensions and the root degrades. If the proof ran before the reads, the
+/// old dimensions would be frozen and the full menu would be drawn.
+#[test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the shim PATH is read from the test's own environment to hand the real tmux to the shim"
+)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one gated ordering story: stage, block the last read, resize, release, prove the draw"
+)]
+fn a_resize_between_the_reads_and_the_final_proof_degrades_the_root() {
+    let scratch = scratch("state-order");
+    if !tmux_present(&scratch) {
+        let _ = fs::remove_dir_all(&scratch);
+        panic!("tmux is not runnable here, so the proof ordering cannot be proven");
+    }
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let root = scratch.join("state");
+    let project = scratch.join("project");
+    let config = scratch.join("config");
+    write_state_fixture_config(&project, &config);
+    for session in ["state-order", "state-order-view"] {
+        launch_ae_session(&socket, &scratch, &root, &project, &config, session);
+    }
+    let clicked_dir = root.join("sessions").join("state-order");
+    let meta = fixture_text(&clicked_dir.join("meta"));
+    fs::write(
+        clicked_dir.join("meta"),
+        format!("{meta}seat.builder=builder\nseat.colead=colead\n"),
+    )
+    .unwrap_or_else(|error| panic!("the extra roster writes: {error}"));
+    declare_state(&clicked_dir, "lead", "working", "FIRST-ORDER-REASON");
+    declare_state(&clicked_dir, "builder", "blocked", "SECOND-ORDER-REASON");
+    declare_state(&clicked_dir, "colead", "waiting-user", "THIRD-ORDER-REASON");
+    let clicked_id = listing_id(&socket, &scratch, "state-order");
+    point_session_range_at(&socket, &scratch, "state-order-view", &clicked_id);
+    let viewer = "state-order-viewer";
+    let client = nested_client(&socket, &scratch, "state-order-view", viewer);
+    std::thread::sleep(Duration::from_millis(600));
+
+    let shim = scratch.join("shim");
+    write_tmux_shim(&shim);
+    let log = scratch.join("shim.log");
+    let blocked = scratch.join("shim.blocked");
+    let release = scratch.join("shim.release");
+    let real_path = std::env::var("PATH").expect("the test PATH");
+    let mut facts = gather_show_facts(&socket, &scratch, "state-order", &client);
+    facts.client_pid = facts.client_pid.clone();
+    let mut command = ae();
+    command
+        .env("HOME", &scratch)
+        .env("AE_HOME", &root)
+        .env("CONFIG_FILE", &config)
+        .env("TMUX_TMPDIR", &scratch)
+        .env("TMUX", format!("{},0,0", socket.display()))
+        .env_remove("TMUX_PANE")
+        .env("PATH", format!("{}:{real_path}", shim.display()))
+        .env("AE_SHIM_LOG", &log)
+        .env("AE_SHIM_BLOCKED", &blocked)
+        .env("AE_SHIM_RELEASE", &release)
+        .env("AE_SHIM_REAL_PATH", &real_path)
+        .stderr(Stdio::null())
+        .stdout(Stdio::null())
+        .args(show_argv(
+            &facts.client,
+            &facts.client_pid,
+            &facts.session,
+            &facts.session_id,
+            &facts.pane,
+            &facts.server_pid,
+            &facts.server_start,
+        ));
+    let mut child = command
+        .spawn()
+        .unwrap_or_else(|error| panic!("the shimmed show starts: {error}"));
+    wait_for(
+        "the version probe to block after the reads",
+        || {
+            fs::read_to_string(&log).unwrap_or_default()
+                + if blocked.exists() { "blocked" } else { "" }
+        },
+        |seen| seen.contains("blocked"),
+    );
+    // RESIZE AFTER THE READS, BEFORE THE FINAL PROOF.
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &["resize-window", "-t", viewer, "-x", "60", "-y", "8"]
+        )
+        .0
+    );
+    wait_for(
+        "the resized client",
+        || {
+            tmux(
+                &socket,
+                &scratch,
+                &[
+                    "display-message",
+                    "-p",
+                    "-c",
+                    &client,
+                    "#{client_width}x#{client_height}",
+                ],
+            )
+            .1
+        },
+        |seen| seen.trim() == "60x8",
+    );
+    assert!(fs::write(&release, b"go").is_ok(), "release the shim");
+    let menu = wait_for(
+        "the ordered root",
+        || tmux(&socket, &scratch, &["capture-pane", "-p", "-t", viewer]).1,
+        |seen| seen.contains("Flip lead/colead panes") && seen.contains("Stop session"),
+    );
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(
+        menu.contains("lead state: working — FIRST-ORDER-REASON"),
+        "the final proof's live dimensions give the status-only root: {menu}"
+    );
+    assert!(
+        !menu.contains("SECOND-ORDER-REASON") && !menu.contains("THIRD-ORDER-REASON"),
+        "a proof taken BEFORE the reads would freeze the old 140x40 fit and draw the full menu: {menu}"
+    );
+    let state_rows = menu
+        .lines()
+        .filter(|line| line.contains(" state: "))
+        .count();
+    assert_eq!(state_rows, 1, "status-only keeps exactly one row: {menu}");
+}
+
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the direct terminal record must be repeatedly read before its client detaches"
+)]
+fn wait_for_direct_menu_geometry(record: &Path, needle: &str) -> (MenuGeometry, Vec<u8>) {
+    let deadline = Instant::now() + PATIENCE;
+    let mut last = Vec::new();
+    while Instant::now() < deadline {
+        last = fs::read(record).unwrap_or_default();
+        if let Some(geometry) = direct_menu_geometry(&last, needle) {
+            return (geometry, last);
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let tail_start = last.len().saturating_sub(600);
+    let tail = String::from_utf8_lossy(&last[tail_start..]);
+    panic!("direct session-menu title never settled; terminal tail={tail:?}");
+}
+
+/// The direct terminal-byte oracle for the delegated draw: `show` is invoked
+/// as the binding invokes it (not through a mouse event), and the invoking
+/// client's own ANSI record shows the declared state inside BOTH menu edges
+/// while a second direct client on the same session receives nothing. The
+/// REAL right-click chain — mouse event, `s`, confirm, `S` — is covered by
+/// `a_right_click_offers_stop_and_only_a_confirmed_row_stops_the_clicked_session`;
+/// together they compose click-to-draw coverage.
+#[test]
+#[allow(clippy::disallowed_methods)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one direct-byte story on two real clients: draw, edges, content, bystander silence"
+)]
+fn the_delegated_root_draws_declared_state_on_direct_terminal_bytes() {
+    let scratch = scratch("state-direct");
+    if !tmux_present(&scratch) {
+        let _ = fs::remove_dir_all(&scratch);
+        panic!("tmux is not runnable here, so the direct-byte proof cannot run");
+    }
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let root = scratch.join("state");
+    let project = scratch.join("project");
+    let config = scratch.join("config");
+    write_state_fixture_config(&project, &config);
+    let session = "state-direct";
+    launch_ae_session(&socket, &scratch, &root, &project, &config, session);
+    let own_id = listing_id(&socket, &scratch, session);
+    point_session_range_at(&socket, &scratch, session, &own_id);
+    let reason = format!("DIRECTBYTES-{}-TAIL", "y".repeat(200));
+    declare_state(
+        &root.join("sessions").join(session),
+        "lead",
+        "blocked",
+        &reason,
+    );
+
+    let viewed = scratch.join("direct-viewed.terminal");
+    let ignored = scratch.join("direct-bystander.terminal");
+    let (client, mut viewed_terminal) =
+        direct_terminal_client(&socket, &scratch, &root, &config, session, 120, 30, &viewed);
+    let (bystander, mut ignored_terminal) = direct_terminal_client(
+        &socket, &scratch, &root, &config, session, 120, 30, &ignored,
+    );
+
+    let facts = gather_show_facts(&socket, &scratch, session, &client);
+    let child = show_child(&socket, &scratch, &root, &config, &facts);
+    let (geometry, raw) = wait_for_direct_menu_geometry(&viewed, session);
+    let text = String::from_utf8_lossy(&raw);
+    assert!(
+        text.contains("lead state: blocked — DIRECTBYTES-") && text.contains("..."),
+        "the invoking client's own bytes carry the clipped declaration"
+    );
+    assert!(
+        !text.contains(&reason),
+        "the full reason is not on the terminal"
+    );
+    assert!(text.contains("Flip lead/colead panes") && text.contains("Stop session"));
+    // Both edges: the title row starts after column zero and ends inside the
+    // 120-column client, and its middle is the client's middle.
+    let columns = geometry.right.saturating_sub(geometry.left) + 1;
+    let middle = geometry.left + columns / 2;
+    assert!(geometry.left > 0, "left edge on screen: {geometry:?}");
+    assert!(
+        geometry.right < 119,
+        "right edge inside the client: {geometry:?}"
+    );
+    assert!(
+        middle.abs_diff(120 / 2) <= 1,
+        "menu centred on the direct client: {geometry:?}"
+    );
+    // The bystander's own terminal bytes stay silent.
+    std::thread::sleep(Duration::from_millis(400));
+    let other_raw = fs::read(&ignored).unwrap_or_default();
+    let other_text = String::from_utf8_lossy(&other_raw);
+    assert!(
+        !other_text.contains("Flip lead/colead panes")
+            && !other_text.contains("DIRECTBYTES-")
+            && direct_menu_geometry(&other_raw, session).is_none(),
+        "a client that did not ask received the menu"
+    );
+    let _ = tmux(&socket, &scratch, &["detach-client", "-t", &client]);
+    let _ = tmux(&socket, &scratch, &["detach-client", "-t", &bystander]);
+    // BOUNDED teardown: the draw may still hold the clients, so nothing here
+    // waits on a process that could outlive the test's patience.
+    let mut child = child;
+    let _ = child.kill();
+    let _ = child.wait();
+    for terminal in [&mut viewed_terminal, &mut ignored_terminal] {
+        let _ = terminal.kill();
+        let _ = terminal.wait();
+    }
+}
+
+/// The MIGRATE-side pane capture describes the pane's own session while it
+/// lives; after a same-name replacement (even with reused pane and session ids)
+/// its server pair differs, and the guarded write refuses the stale proof. The
+/// LAUNCH no longer captures this way at all — its identity comes from the
+/// creating command (see `the_launch_identity_comes_from_the_creating_new_session_command`).
+#[test]
+fn a_pane_capture_describes_the_panes_own_session() {
+    let scratch = scratch("uuid-pane-capture");
+    if !tmux_present(&scratch) {
+        let _ = fs::remove_dir_all(&scratch);
+        panic!("tmux is not runnable here, so the pane-bound capture cannot be proven");
+    }
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let server = ServerId::Selected(Selector::Socket(socket.clone()));
+    let name = "captured";
+    let pane = tmux(
+        &socket,
+        &scratch,
+        &["new-session", "-d", "-s", name, "-P", "-F", "#{pane_id}"],
+    )
+    .1
+    .trim()
+    .to_owned();
+    let proven =
+        ae::session_launch::pane_proven_identity(&server, &pane).expect("the pane identity");
+    // The capture through the LIVE pane is exactly the live session's identity.
+    assert_eq!(
+        &proven.session,
+        &ae::transport::observe_session_identity(&server, name).expect("the named identity"),
+        "a live pane captures its own session, not a name lookup"
+    );
+    // Replace the whole server: ids and pane numbers may collide again, but the
+    // server pair cannot.
+    let _ = tmux(&socket, &scratch, &["kill-server"]);
+    assert!(tmux(&socket, &scratch, &["new-session", "-d", "-s", name]).0);
+    if let Some(reused) = ae::session_launch::pane_proven_identity(&server, &pane) {
+        assert_ne!(
+            reused.server, proven.server,
+            "a replacement cannot share the proven server incarnation"
+        );
+    }
+    let uuid = "1b4e28ba-2fa1-11d2-883f-0016d3cc4321";
+    assert_eq!(
+        ae::session_launch::seed_session_uuid(&server, &proven, uuid),
+        ae::session_launch::SeedOutcome::Vacant,
+        "a stale pane identity cannot seed a replacement"
+    );
+    assert_eq!(
+        ae::transport::observe_option_reading(&server, name, ae::theme::SESSION_ID_OPTION),
+        ae::tmux::OptionReading::Vacant,
+        "the replacement stays vacant"
+    );
+}
+
+/// A legacy record whose session was replaced across a SERVER RESTART — same
+/// name, reused recorded main pane, no ownership pair — must stay VACANT:
+/// pane membership alone cannot tell the replacement from the proven session.
+#[test]
+fn a_legacy_session_replaced_across_a_server_restart_stays_vacant() {
+    let scratch = scratch("uuid-legacy-restart");
+    if !tmux_present(&scratch) {
+        let _ = fs::remove_dir_all(&scratch);
+        panic!("tmux is not runnable here, so the legacy restart proof cannot run");
+    }
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let root = scratch.join("state");
+    let project = scratch.join("project");
+    assert!(fs::create_dir_all(&project).is_ok());
+    let uuid = "1b4e28ba-2fa1-11d2-883f-0016d3cc4321";
+    let dir = stage_legacy_running_session_with_pane(
+        &socket, &scratch, &root, &project, "legacy", uuid, None,
+    );
+    // Replace the whole server and recreate the name with raw tmux: no
+    // ownership pair, and the recorded main pane is made to match the new
+    // session's pane, exactly the collision membership alone cannot see.
+    let _ = tmux(&socket, &scratch, &["kill-server"]);
+    assert!(tmux(&socket, &scratch, &["new-session", "-d", "-s", "legacy"]).0);
+    let reused_pane = tmux(
+        &socket,
+        &scratch,
+        &["list-panes", "-t", "legacy", "-F", "#{pane_id}"],
+    )
+    .1
+    .lines()
+    .next()
+    .unwrap_or_else(|| panic!("the replacement has a pane"))
+    .to_owned();
+    let meta = fixture_text(&dir.join("meta"));
+    fs::write(
+        dir.join("meta"),
+        meta.replace("main_pane=%999", "main_pane=%0"),
+    )
+    .unwrap_or_else(|error| panic!("the recorded pane rewrites: {error}"));
+    assert_eq!(reused_pane, "%0", "the fixture really reuses the pane id");
+    let core = scratch.join("new-core");
+    assert!(fs::write(&core, b"").is_ok());
+    ae::migrate::onto(&root, &core, "2026.9.77").expect("the sweep runs");
+    let server = ServerId::Selected(Selector::Socket(socket.clone()));
+    assert_eq!(
+        ae::transport::observe_option_reading(&server, "legacy", ae::theme::SESSION_ID_OPTION),
+        ae::tmux::OptionReading::Vacant,
+        "a replacement without the ownership pair must not receive the legacy UUID"
+    );
+}
+
+/// The launch's identity comes out of the creating `new-session -P` command
+/// itself. A capture taken LATER through the reusable pane can describe a
+/// replacement after a server restart; the creating command's identity cannot,
+/// and the guarded write refuses the stale one.
+#[test]
+fn the_launch_identity_comes_from_the_creating_new_session_command() {
+    let scratch = scratch("uuid-create-identity");
+    if !tmux_present(&scratch) {
+        let _ = fs::remove_dir_all(&scratch);
+        panic!("tmux is not runnable here, so the create-command identity cannot be proven");
+    }
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let server = ServerId::Selected(Selector::Socket(socket.clone()));
+    let work = scratch.join("project");
+    assert!(fs::create_dir_all(&work).is_ok());
+    let name = "created";
+    let (ok, stdout) = tmux(
+        &socket,
+        &scratch,
+        &[
+            "new-session",
+            "-d",
+            "-s",
+            name,
+            "-c",
+            &work.display().to_string(),
+            "-P",
+            "-F",
+            ae::tmux::NEW_SESSION_IDENTITY_FORMAT,
+        ],
+    );
+    assert!(ok, "the create prints its identity");
+    let created = ae::tmux::interpret_new_session(true, &stdout).expect("the created identity");
+    let live_server =
+        ae::transport::observe_server_identity(&server).expect("the live server pair at creation");
+    let live_session =
+        ae::transport::observe_session_identity(&server, name).expect("the live session pair");
+    assert_eq!(
+        created.server, live_server,
+        "the create's server pair is the server that ran it"
+    );
+    assert_eq!(
+        created.session, live_session,
+        "the create's session pair is the session it made"
+    );
+    // Replace the whole server and recreate the name: ids and pane may collide.
+    let _ = tmux(&socket, &scratch, &["kill-server"]);
+    assert!(tmux(&socket, &scratch, &["new-session", "-d", "-s", name]).0);
+    if let Some(later) = ae::session_launch::pane_proven_identity(&server, &created.pane) {
+        assert_ne!(
+            later.server, created.server,
+            "a later capture cannot claim the creating server"
+        );
+    }
+    let uuid = "1b4e28ba-2fa1-11d2-883f-0016d3cc4321";
+    let creation_proof = ae::session_launch::ProvenIdentity {
+        server: created.server.clone(),
+        session: created.session.clone(),
+    };
+    assert_eq!(
+        ae::session_launch::seed_session_uuid(&server, &creation_proof, uuid),
+        ae::session_launch::SeedOutcome::Vacant,
+        "the creation-time proof cannot seed the replacement"
+    );
+    assert_eq!(
+        ae::transport::observe_option_reading(&server, name, ae::theme::SESSION_ID_OPTION),
+        ae::tmux::OptionReading::Vacant,
+        "the replacement stays vacant"
+    );
+}
+
+/// The outcome is a FINAL STATE, never a causal claim: an option that already
+/// held this UUID reads `Recorded` exactly like one this call wrote, and a
+/// different nonempty value reads `Held` — the guarded branch refused and
+/// nothing was overwritten.
+#[test]
+fn the_uuid_outcome_reports_the_final_state_not_a_cause() {
+    let scratch = scratch("uuid-outcome");
+    if !tmux_present(&scratch) {
+        let _ = fs::remove_dir_all(&scratch);
+        panic!("tmux is not runnable here, so the outcome states cannot be proven");
+    }
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let server = ServerId::Selected(Selector::Socket(socket.clone()));
+    let name = "outcome";
+    let uuid = "1b4e28ba-2fa1-11d2-883f-0016d3cc4321";
+    let other = "fa4a9b3e-0000-4000-8000-000000000000";
+    assert!(tmux(&socket, &scratch, &["new-session", "-d", "-s", name]).0);
+    let identity = live_proven_identity(&server, name);
+
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &["set-option", "-t", name, ae::theme::SESSION_ID_OPTION, uuid],
+        )
+        .0
+    );
+    assert_eq!(
+        ae::session_launch::seed_session_uuid(&server, &identity, uuid),
+        ae::session_launch::SeedOutcome::Recorded,
+        "an already-equal value is the state Recorded, not a claim of a write"
+    );
+    assert_eq!(
+        ae::transport::observe_session_option(&server, name, ae::theme::SESSION_ID_OPTION)
+            .as_deref(),
+        Some(uuid),
+        "and the value is untouched"
+    );
+
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &[
+                "set-option",
+                "-t",
+                name,
+                ae::theme::SESSION_ID_OPTION,
+                other
+            ],
+        )
+        .0
+    );
+    assert_eq!(
+        ae::session_launch::seed_session_uuid(&server, &identity, uuid),
+        ae::session_launch::SeedOutcome::Held,
+        "a different nonempty value is Held; nothing is overwritten"
+    );
+    assert_eq!(
+        ae::transport::observe_session_option(&server, name, ae::theme::SESSION_ID_OPTION)
+            .as_deref(),
+        Some(other)
+    );
+}

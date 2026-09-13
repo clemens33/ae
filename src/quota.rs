@@ -1104,28 +1104,7 @@ fn settings_status(statuses: &[Status]) -> Status {
 }
 
 fn settings_cell(text: &str, max: usize) -> String {
-    let mut chars = text.chars().peekable();
-    let mut clean = String::with_capacity(text.len());
-    while let Some(ch) = chars.next() {
-        if ch == '\u{1b}' {
-            clean.push('?');
-            consume_escape(&mut chars);
-        } else if ch == ' ' || ch.is_ascii_graphic() {
-            clean.push(ch);
-        } else {
-            clean.push('?');
-        }
-    }
-    if clean.len() <= max {
-        return clean;
-    }
-    if max <= 3 {
-        return ".".repeat(max);
-    }
-    let content = max - 3;
-    let head = content.div_ceil(2);
-    let tail = content - head;
-    format!("{}...{}", &clean[..head], &clean[clean.len() - tail..])
+    crate::event_text::display_cell(text, max)
 }
 
 /// Resolve only a complete, recorded seat identity. Legacy/default homes and

@@ -298,11 +298,73 @@ pub fn pad_left_aligned(out: &mut Vec<u8>, field: &[u8], width: usize) {
     }
 }
 
+/// One line of session text projected for a menu cell: printable ASCII only,
+/// ANSI sequences collapsed to a single `?`, and bounded to `max` cells with a
+/// `...` middle cut.
+///
+/// Every DYNAMIC menu row this crate draws — a declaration, a gap, a quota
+/// cell — goes through here before it becomes a tmux label, so no escape byte,
+/// control byte or wide character reaches a terminal formatting step; the
+/// crate's own literal action rows (Flip, Stop) carry no such text and do not.
+/// Because the kept alphabet is ASCII, one byte IS one display cell and `max`
+/// means what it says.
+#[must_use]
+pub fn display_cell(text: &str, max: usize) -> String {
+    let mut chars = text.chars().peekable();
+    let mut clean = String::with_capacity(text.len());
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' {
+            clean.push('?');
+            consume_escape(&mut chars);
+        } else if ch == ' ' || ch.is_ascii_graphic() {
+            clean.push(ch);
+        } else {
+            clean.push('?');
+        }
+    }
+    if clean.len() <= max {
+        return clean;
+    }
+    if max <= 3 {
+        return ".".repeat(max);
+    }
+    let content = max - 3;
+    let head = content.div_ceil(2);
+    let tail = content - head;
+    format!("{}...{}", &clean[..head], &clean[clean.len() - tail..])
+}
+
+/// Skip one escape sequence after its `\u{1b}` was folded to a `?`: a CSI runs
+/// to its final byte, an OSC to BEL or ST, and anything else loses its single
+/// introducer.
+fn consume_escape(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
+    match chars.next() {
+        Some('[') => {
+            for ch in chars.by_ref() {
+                if ('@'..='~').contains(&ch) {
+                    break;
+                }
+            }
+        }
+        Some(']') => {
+            while let Some(ch) = chars.next() {
+                if ch == '\u{7}' {
+                    break;
+                }
+                if ch == '\u{1b}' && chars.next_if_eq(&'\\').is_some() {
+                    break;
+                }
+            }
+        }
+        Some(_) | None => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        char_count, char_prefix, char_slice, event_line, extract, last_records, pad_left_aligned,
-        read_lines, records, reversed,
+        char_count, char_prefix, char_slice, display_cell, event_line, extract, last_records,
+        pad_left_aligned, read_lines, records, reversed,
     };
 
     fn padded(field: &[u8], width: usize) -> Vec<u8> {
@@ -452,6 +514,32 @@ mod tests {
         // A truncated multibyte lead does not read past the end.
         assert_eq!(char_count(&[0xE2, 0x86]), 1);
         assert_eq!(char_prefix(&[0xE2, 0x86], 1), &[0xE2, 0x86]);
+    }
+
+    /// One projection for every surface that renders session text into a menu:
+    /// printable ASCII only, ANSI-aware, and bounded with a `...` middle cut.
+    #[test]
+    fn display_cell_is_printable_ascii_bounded_and_ansi_aware() {
+        assert_eq!(display_cell("#[fg=red]#", 20), "#[fg=red]#");
+        assert_eq!(
+            display_cell("\u{1b}[31m", 20),
+            "?",
+            "an SGR sequence is one ?"
+        );
+        assert_eq!(display_cell("\u{0007}", 20), "?", "a bell is not printable");
+        assert_eq!(display_cell("中", 20), "?", "non-ASCII is not a cell here");
+        assert_eq!(display_cell("⚙\u{fe0f}", 20), "??");
+        assert_eq!(display_cell("abcdefghij", 10), "abcdefghij", "exact fit");
+        assert_eq!(display_cell("abcdefghij", 7), "ab...ij", "a middle cut");
+        assert_eq!(display_cell("abcdefghij", 4), "a...", "tiny budgets");
+        assert_eq!(display_cell("abcdefghij", 3), "...");
+        assert_eq!(display_cell("abcdefghij", 0), "");
+        assert_eq!(display_cell("tab\there", 20), "tab?here");
+        assert_eq!(
+            display_cell("\u{1b}]0;title\u{7}after", 20),
+            "?after",
+            "an OSC sequence ends at BEL"
+        );
     }
 
     #[test]

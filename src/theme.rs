@@ -516,6 +516,18 @@ pub const PATHS_OPTION: &str = "@ae_paths";
 /// part of the look stamp.
 pub const MAIN_PANE_OPTION: &str = "@ae_main_pane";
 
+/// SESSION — the immutable ae session UUID this tmux session incarnation was
+/// launched as.
+///
+/// Written ONCE per tmux session incarnation by [`crate::session_launch`]'s
+/// vacant-only owner, immediately after a successful meta publication, and
+/// backfilled at upgrade beside the membership-proven `@ae_main_pane` stamp for
+/// sessions that pre-date the fact. The WATCHDOG NEVER WRITES IT: a replaced
+/// state directory would otherwise let a daemon re-stamp B over A's evidence.
+/// A same-name recreation gets a new tmux `$<n>`, so the fact is addressed by
+/// the captured id and a coincidence of names cannot resurrect a declaration.
+pub const SESSION_ID_OPTION: &str = "@ae_session_uuid";
+
 /// SESSION — the ae core this session's watchdog runs on, as `ae <version>`.
 ///
 /// Published by the WATCHDOG rather than the launch: an upgrade restarts the
