@@ -1,6 +1,11 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.66] - 2026-09-13
+
+### Other
+
+- Add stopped session rename with recoverable transaction
 ## [v2026.9.65] - 2026-09-13
 
 ### Other
