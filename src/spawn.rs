@@ -14,11 +14,10 @@
 //!    the pane's shell, where the core composes the agent and becomes it;
 //! 5. the BRIEF is delivered only after the TUI proves it will accept input.
 //!
-//! Any failure after step 1 ROLLS BACK: the seat goes, the launch artifacts go,
-//! and the pane is killed through the ownership guard. A spawn that returned
-//! without rolling back would leave a phantom — a roster entry with an empty
-//! pane, visible to `ae list`, addressable by every helper, retirable only by
-//! hand.
+//! A failure before the pane can launch ROLLS BACK: the seat goes, the launch
+//! artifacts go, and the pane is killed through the ownership guard. A brief
+//! delivery failure is different: its pane is live, so it keeps the seat's
+//! `spawn` record and appends a distinct `spawn-failed` diagnosis.
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -511,6 +510,7 @@ pub fn run_spawn(
     };
     if let Some(reason) = failure {
         report_undelivered(dir, &parsed.name, &pane, &brief, &reason, err)?;
+        record_spawn(dir, now, caller, &parsed.name, &parsed.prompt);
         let _ = store::open(dir).append_event(&tracked::event_line(&EventFields {
             ts: now,
             actor: actor_of(caller),
@@ -527,20 +527,25 @@ pub fn run_spawn(
         return Ok(EXIT_FAILED);
     }
     writeln!(out, "Spawned {} in pane {pane}", parsed.name)?;
+    record_spawn(dir, now, caller, &parsed.name, &parsed.prompt);
+    Ok(0)
+}
+
+/// Record the seat a live pane opened, whether its first brief landed or not.
+fn record_spawn(dir: &Path, now: Timestamp, caller: &str, name: &str, prompt: &str) {
     let _ = store::open(dir).append_event(&tracked::event_line(&EventFields {
         ts: now,
         actor: actor_of(caller),
         action: SPAWN_ACTION,
-        target: &parsed.name,
+        target: name,
         reference: "",
         actor_slot: "",
         actor_session: "",
         target_slot: "",
         target_session: "",
-        summary: &parsed.prompt,
+        summary: prompt,
         body_file: "",
     }));
-    Ok(0)
 }
 
 /// The event's actor: the caller's stamp, or the human.

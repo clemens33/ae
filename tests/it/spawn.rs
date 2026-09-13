@@ -293,6 +293,17 @@ impl Rig {
         assert!(std::fs::write(config, body).is_ok(), "the codex profile");
     }
 
+    /// Keep the claude-shaped process alive while its input box stays occupied.
+    /// That makes spawn reach its real, bounded brief-readiness failure after
+    /// the pane and seat exist.
+    fn make_claude_input_busy(&self) {
+        let body = FAKE_CLAUDE.replacen("draw(\"\");", "draw(\"busy\");", 1);
+        assert!(
+            std::fs::write(self.scratch.join("claude"), body).is_ok(),
+            "the busy fake agent"
+        );
+    }
+
     fn write_codex_rollout(&self, id: &str, launch_id: &str) {
         let day = ae::time::Timestamp::now().to_string()[..10].replace('-', "/");
         let started = ae::time::Timestamp::now();
@@ -520,6 +531,94 @@ fn a_spawn_that_cannot_store_its_task_rolls_the_whole_thing_back() {
     assert!(
         !events.contains("\"action\":\"spawn\""),
         "a rolled-back spawn never claims the task was assigned: {events}"
+    );
+}
+
+/// A pane that survives its first-brief delivery failure is still a live seat:
+/// its `spawn` opens the spawner's outstanding work, `spawn-failed` preserves
+/// the delivery diagnosis, and the real retire record closes the same seat.
+#[test]
+fn a_live_partial_spawn_opens_a_seat_keeps_its_failure_and_retires_cleanly() {
+    let probe = PathBuf::from(format!("/tmp/aesp-probe-partial.{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&probe);
+    let present = tmux_present(&probe);
+    let _ = std::fs::remove_dir_all(&probe);
+    if !present {
+        return;
+    }
+    let rig = Rig::new("partial");
+    rig.make_claude_input_busy();
+
+    let (code, stdout, stderr) = rig.run(
+        ae::cli::SPAWN,
+        &["stalled", "--using", "fake", "--", "finish the task"],
+    );
+    assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        stdout.is_empty(),
+        "a partial spawn does not report success: {stdout}"
+    );
+    assert!(stderr.contains("SPAWN INCOMPLETE"), "{stderr}");
+    assert!(
+        stderr.contains("input never reached a confirmed-idle state"),
+        "{stderr}"
+    );
+
+    // The fake agent is a real long-lived process in the pane that just caused
+    // delivery to fail; this is not a fixture-shaped event stream.
+    let panes = rig.panes();
+    assert!(
+        panes
+            .iter()
+            .any(|(_, slot, agent)| slot == "spawned.0" && agent == "stalled"),
+        "the partial pane survives: {panes:?}"
+    );
+    let live: Vec<String> = panes.into_iter().map(|(_, _, agent)| agent).collect();
+
+    // M1: removing the real spawn record returns the ledger to the original
+    // orphaned-seat bug. M2: `spawn-failed` remains a distinct diagnosis.
+    let events = rig.events();
+    assert!(events.contains("\"action\":\"spawn\""), "{events}");
+    assert!(
+        events.contains("\"summary\":\"finish the task\""),
+        "{events}"
+    );
+    assert!(events.contains("\"action\":\"spawn-failed\""), "{events}");
+    assert!(
+        events.contains("brief not delivered: input never reached a confirmed-idle state"),
+        "{events}"
+    );
+    let opened = ae::session::SessionRead::open(&rig.dir).expect("the partial ledger reads");
+    let lead = ae::session::Seat::new(&rig.session, "main", "lead");
+    assert_eq!(
+        ae::session::Outstanding::read(&opened.events, &rig.session, &live)
+            .of(lead)
+            .spawns,
+        1,
+        "the partial pane is attributed to its spawner"
+    );
+
+    let (code, retire_stdout, retire_stderr) = rig.run(ae::cli::RETIRE, &["stalled"]);
+    assert_eq!(
+        code,
+        Some(0),
+        "stdout: {retire_stdout}\nstderr: {retire_stderr}"
+    );
+    assert!(
+        !rig.panes().iter().any(|(_, _, agent)| agent == "stalled"),
+        "the real retire kills the partial pane"
+    );
+
+    // M3: retain the former live name to make the frozen retire record, not
+    // current pane absence, prove the ledger closed this partial seat.
+    let retired = ae::session::SessionRead::open(&rig.dir).expect("the retired ledger reads");
+    let former_live = vec!["lead".to_owned(), "stalled".to_owned()];
+    assert_eq!(
+        ae::session::Outstanding::read(&retired.events, &rig.session, &former_live)
+            .of(lead)
+            .spawns,
+        0,
+        "the real retire record closes the partial spawn"
     );
 }
 
