@@ -350,6 +350,32 @@ fn the_boot_time_proof_is_reachable_from_exactly_its_named_operations() {
         "the shared boot-proof gate gained (or lost) a caller"
     );
 
+    // The holder SET above says WHICH files may reach the proof; it cannot see
+    // a second, ungated call inside one of them. `end.rs` and `rename.rs` are
+    // EXPECTED to hold these primitives, so the COUNT is the guard: a later
+    // refactor that adds another `classify_absence(` / `probe_absence(` /
+    // `boot_time(` anywhere but the one shared composition goes RED here.
+    let count_in = |file: &str, needle: &str| {
+        fs::read_to_string(root.join(file)).map_or(0, |text| text.matches(needle).count())
+    };
+    for needle in ["classify_absence(", "probe_absence(", "boot_time("] {
+        assert_eq!(
+            count_in("src/lifecycle/end.rs", needle),
+            1,
+            "end.rs must compose `{needle}` exactly once, inside boot_proved_stopped"
+        );
+    }
+    assert_eq!(
+        count_in("src/lifecycle/end.rs", "boot_proved_stopped("),
+        2,
+        "end.rs must hold the shared gate as one definition and exactly one call (the Positive arm)"
+    );
+    assert_eq!(
+        count_in("src/rename.rs", "boot_proved_stopped("),
+        2,
+        "rename.rs must call the shared gate from the preflight and the retry, and nowhere else"
+    );
+
     // And the two verbs that still refuse on the strict proof alone.
     for (file, operation) in [("src/compact.rs", "compact"), ("src/lifecycle.rs", "stop")] {
         let path = root.join(file);

@@ -944,6 +944,12 @@ fn has_message_payload(dir: &Path) -> bool {
 /// the future, no recorded activity, activity at or after the boot, an
 /// unreadable source, or a failure that was not a missing socket — answers
 /// `false`, and the caller's refusal stands.
+///
+/// The caller has ALREADY asked [`transport::verify_session_absent`] and read
+/// `Unknown`; this function re-probes, so a server that revives between the two
+/// calls is seen as `Present` rather than assumed missing. That window is
+/// fail-CLOSED: a revived or foreign session makes the verdict anything but
+/// `Absent`, and the strict refusal stands.
 pub(crate) fn boot_proved_stopped(dir: &Path, server: &ServerId, name: &str) -> bool {
     let probe = transport::probe_absence(server, name);
     let evidence = crate::inventory::last_live(dir);

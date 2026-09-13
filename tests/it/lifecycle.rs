@@ -1946,6 +1946,19 @@ fn rename_with_env(
     old: &str,
     new: &str,
 ) -> (Option<i32>, String, String) {
+    rename_with_env_bounded(rig, extra, old, new, Duration::from_secs(30))
+}
+
+/// [`rename_with_env`] under an explicit bound: an armed crash cut parks up to
+/// 60 seconds past its committed facts, so a crash fixture kills the parked
+/// process instead of waiting it out. `None` is the kill.
+fn rename_with_env_bounded(
+    rig: &Rig,
+    extra: &[(&str, &str)],
+    old: &str,
+    new: &str,
+    limit: Duration,
+) -> (Option<i32>, String, String) {
     let mut cmd = ae();
     cmd.env("AE_HOME", &rig.home);
     cmd.env_remove("TMUX");
@@ -1956,20 +1969,125 @@ fn rename_with_env(
     for arg in ["rename", old, new] {
         cmd.arg(arg);
     }
-    let out = bounded(
+    let Some(out) = bounded(
         cmd.stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
             .expect("the ae binary should run"),
-        Duration::from_secs(30),
-    )
-    .expect("the core returned");
+        limit,
+    ) else {
+        return (None, String::new(), String::new());
+    };
     (
         out.status.code(),
         String::from_utf8_lossy(&out.stdout).into_owned(),
         String::from_utf8_lossy(&out.stderr).into_owned(),
     )
+}
+
+/// IMPORTANT 3 / the RETRY half of the fix: a rename that crashed at
+/// `after-intent` over a vanished server must CONVERGE when the boot proof
+/// holds — `recover`'s Unknown arm crosses the same gate as the fresh
+/// preflight. Smallest defeating mutation: restore the unconditional refusal
+/// in `recover` alone (the fresh preflight test stays green, this one goes
+/// RED).
+#[test]
+fn a_crashed_rename_retry_crosses_the_boot_proof() {
+    let rig = Rig::new("immrecov");
+    let last_live = immortal_fixture(&rig);
+    let boot = (last_live + 3600).to_string();
+    let (code, out, err) = rename_with_env_bounded(
+        &rig,
+        &[
+            ("AE_TEST_RENAME_CRASH_AT", "after-intent"),
+            ("AE_TEST_BOOT_TIME", &boot),
+        ],
+        &rig.name,
+        "recfresh",
+        Duration::from_secs(5),
+    );
+    assert_eq!(
+        code, None,
+        "the armed rename is killed while parked: {out}{err}"
+    );
+    let intent = rig
+        .home
+        .join("sessions")
+        .join(format!(".rename.{}.recfresh.intent", rig.name));
+    let body = std::fs::read_to_string(&intent).unwrap_or_default();
+    assert!(
+        body.contains("phase=prepared"),
+        "the crash left the durable intent: {body}"
+    );
+
+    // The retry reads the pending carrier; its liveness proof is `recover`'s.
+    let (code, out, err) = rig.run_with_env(
+        &[("AE_TEST_BOOT_TIME", &boot)],
+        &["rename", &rig.name, "recfresh"],
+    );
+    assert_eq!(code, Some(0), "stdout: {out}\nstderr: {err}");
+    assert!(
+        out.contains(&format!("Renamed '{}' → 'recfresh'", rig.name)),
+        "{out}"
+    );
+    assert!(!exists(&rig.dir), "the old address is gone");
+    assert!(
+        exists(&rig.home.join("sessions").join("recfresh")),
+        "the retry converged at the new address"
+    );
+}
+
+/// The retry refuses when the boot proof does NOT hold: `recover` must not
+/// treat a merely unreachable server as stopped either. The crash fixture is
+/// identical; only the claimed boot moves before the session's last activity.
+#[test]
+fn a_crashed_rename_retry_without_the_boot_proof_refuses() {
+    let rig = Rig::new("immnoresc");
+    let last_live = immortal_fixture(&rig);
+    let passing = (last_live + 3600).to_string();
+    let (code, out, err) = rename_with_env_bounded(
+        &rig,
+        &[
+            ("AE_TEST_RENAME_CRASH_AT", "after-intent"),
+            ("AE_TEST_BOOT_TIME", &passing),
+        ],
+        &rig.name,
+        "noresfresh",
+        Duration::from_secs(5),
+    );
+    assert_eq!(
+        code, None,
+        "the armed rename is killed while parked: {out}{err}"
+    );
+    let intent = rig
+        .home
+        .join("sessions")
+        .join(format!(".rename.{}.noresfresh.intent", rig.name));
+    assert!(
+        std::fs::read_to_string(&intent)
+            .unwrap_or_default()
+            .contains("phase=prepared"),
+        "the crash left the durable intent"
+    );
+
+    let failing = (last_live - 3600).to_string();
+    let (code, out, err) = rig.run_with_env(
+        &[("AE_TEST_BOOT_TIME", &failing)],
+        &["rename", &rig.name, "noresfresh"],
+    );
+    assert_eq!(code, Some(1), "stdout: {out}\nstderr: {err}");
+    assert!(
+        err.contains("cannot prove")
+            && err.contains("refusing a retry")
+            && err.contains("Nothing was renamed"),
+        "{err}"
+    );
+    assert!(exists(&rig.dir), "the state stays put");
+    assert!(
+        !exists(&rig.home.join("sessions").join("noresfresh")),
+        "nothing converged"
+    );
 }
 
 /// A2: an unknown, empty or combined crash value refuses before rename side
