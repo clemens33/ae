@@ -1339,13 +1339,23 @@ pub fn age_secs(now_epoch: i64, at_epoch: i64) -> u64 {
     u64::try_from(now_epoch.saturating_sub(at_epoch)).unwrap_or(0)
 }
 
-/// The age of the newest event this agent is the ACTOR of.
+/// The age of the newest event this SEAT is the actor of — judged by the ONE
+/// routing-aware actor rule ([`crate::watchdog::event_is_actor`]), so a
+/// same-display event from another incarnation is not this seat's activity.
+/// The `waiting-agent` escalation measures its ceiling on this age: the
+/// declaration the quiet hold was armed from IS the newest own event.
 #[must_use]
-pub fn last_actor_event_age(events: &[Event], agent: &str, now_epoch: i64) -> u64 {
+pub fn last_actor_event_age(
+    events: &[Event],
+    session: &str,
+    slot: &str,
+    agent: &str,
+    now_epoch: i64,
+) -> u64 {
     events
         .iter()
         .rev()
-        .find(|event| event.actor == agent)
+        .find(|event| crate::watchdog::event_is_actor(event, session, slot, agent))
         .map_or(NO_EVENT_AGE, |event| age_secs(now_epoch, event.ts.epoch()))
 }
 
@@ -3138,7 +3148,13 @@ impl Cycle<'_> {
                     &mut carry.quiet,
                 ),
                 descendancy,
-                last_actor_event_age_secs: last_actor_event_age(&events, agent, now),
+                last_actor_event_age_secs: last_actor_event_age(
+                    &events,
+                    self.session,
+                    &slot,
+                    agent,
+                    now,
+                ),
                 // Decided HERE, once, and the type carries the answer: a pane
                 // that is not the orchestrator main gets `None` and no sweep
                 // branch can reach it.
@@ -7648,11 +7664,33 @@ mod tests {
             .epoch();
         // The LAST appended event whose ACTOR is the agent — an inbound event
         // aimed at it is not its own activity, whatever its timestamp says.
-        assert_eq!(last_actor_event_age(&events, "opus5:builder", now), 60);
         assert_eq!(
-            last_actor_event_age(&events, "nobody:here", now),
+            last_actor_event_age(&events, "demo", "main", "opus5:builder", now),
+            60
+        );
+        assert_eq!(
+            last_actor_event_age(&events, "demo", "main", "nobody:here", now),
             super::NO_EVENT_AGE,
             "no event at all is the sentinel, not an age"
+        );
+        // A same-display event under another incarnation's routing key is not
+        // this seat's activity.
+        let routed: Vec<Event> = [
+            r#"{"ts":"2026-08-29T04:00:00Z","actor":"lead","action":"state","ref":"waiting-agent","actor_slot":"main","actor_session":"alpha"}"#,
+            r#"{"ts":"2026-08-29T04:01:00Z","actor":"lead","action":"state","ref":"working","actor_slot":"main","actor_session":"beta"}"#,
+        ]
+        .iter()
+        .map(|line| Event::parse_line(line).expect("specimen"))
+        .collect();
+        assert_eq!(
+            last_actor_event_age(&routed, "alpha", "main", "lead", now),
+            120,
+            "alpha's own 04:00 declaration, not beta's newer 04:01 working"
+        );
+        assert_eq!(
+            last_actor_event_age(&routed, "beta", "main", "lead", now),
+            60,
+            "and beta's incarnation still owns its own event"
         );
     }
 
