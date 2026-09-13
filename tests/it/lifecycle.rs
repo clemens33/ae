@@ -443,6 +443,120 @@ fn stop_destroys_nothing() {
     assert!(err.contains("is not running"), "{err}");
 }
 
+/// The Claude frame a stop must read off a live pane: the same bounded
+/// grammar `harness_state::current_identity` proves.
+const CLAUDE_FRAME: &str = "\
+────────────────────────────────────────────────────────────────\n\
+❯\n\
+────────────────────────────────────────────────────────────────\n\
+  🧠 Opus 5 (xhigh)  📁 ae\n\
+  ⏵⏵ bypass permissions on\n";
+
+/// A `Rig` reseated to a claude profile that pins `fable`, with the frame
+/// drawn by its live main pane. `launch_id` records the CAS guard row, or
+/// omits it to model a seat the guard cannot protect.
+fn model_rig(tag: &str, launch_id: Option<&str>) -> Rig {
+    let rig = Rig::new(tag);
+    let frame = rig.home.join("frame");
+    assert!(
+        std::fs::write(&frame, CLAUDE_FRAME).is_ok(),
+        "the claude frame"
+    );
+    let config = rig.home.join("model-config");
+    assert!(
+        std::fs::write(
+            &config,
+            "[profiles]\n\
+             claudefix = \"claude --permission-mode bypassPermissions --model fable\"\n\
+             \n[roster]\nlead = claudefix\n\n[workspace]\nmain = lead\nlayout = vertical\n",
+        )
+        .is_ok(),
+        "a config whose profile pins a model"
+    );
+    let launch_row = launch_id.map_or(String::new(), |id| format!("launch_id.main={id}\n"));
+    assert!(
+        std::fs::write(
+            rig.dir.join("meta"),
+            format!(
+                "session={}\nsession_id={UUID}\nsession_id_origin=session\nwork_dir={}\n\
+                 origin={}\nmode=local\nlayout=vertical\nconfig={}\nmain_pane={}\n\
+                 tmux_server_kind=socket\ntmux_server={}\nschema=2\nseat.main=lead\n\
+                 profile.main=claudefix\nagent_bin.main=claude\nharness_session.main=sid\n\
+                 {launch_row}",
+                rig.name,
+                rig.home.display(),
+                rig.home.display(),
+                config.display(),
+                rig.pane,
+                rig.sock.display(),
+            ),
+        )
+        .is_ok(),
+        "the model meta"
+    );
+    assert!(
+        rig.tmux(&["set-option", "-p", "-t", &rig.pane, "@ae_slot", "main"])
+            .0,
+        "the seat slot is stamped"
+    );
+    assert!(
+        rig.tmux(&[
+            "respawn-pane",
+            "-k",
+            "-t",
+            &rig.pane,
+            &format!("cat {}; sleep 120", frame.display()),
+        ])
+        .0,
+        "the pane draws the frame"
+    );
+    for _ in 0..100 {
+        let (_, seen) = rig.tmux(&["capture-pane", "-p", "-t", &rig.pane]);
+        if seen.contains("🧠 Opus 5") {
+            return rig;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    panic!("the claude frame never appeared on the pane");
+}
+
+/// B1, THE DURABLE CUT: a manual model change is recorded at stop, while the
+/// pane is still alive and the lifecycle lock is held — not merely on the
+/// watchdog cadence. Delete the `observe_models_before_stop` call at
+/// `src/lifecycle.rs` and this goes RED.
+#[test]
+fn stop_records_the_observed_model_before_the_kill() {
+    let rig = model_rig("modeldrift", Some("L1"));
+    let (code, out, err) = rig.run(&["_stop", &rig.name]);
+    assert_eq!(code, Some(0), "stdout: {out}\nstderr: {err}");
+    assert!(out.contains(&format!("Stopped {}", rig.name)), "{out}");
+    let meta = std::fs::read_to_string(rig.dir.join("meta")).expect("the meta survives the stop");
+    assert!(meta.contains("observed_model.main=Opus 5\n"), "{meta}");
+    assert!(meta.contains("observed_model_pin.main=fable\n"), "{meta}");
+    assert!(!rig.session_is_live(), "the session is gone");
+    assert!(!exists(&rig.archive()), "stop archives nothing");
+}
+
+/// A seat the durable cut cannot cover says so BY NAME; the stop still
+/// succeeds.
+#[test]
+fn a_stop_skip_names_the_seat_and_the_reason() {
+    let rig = model_rig("modelskip", None);
+    let (code, out, err) = rig.run(&["_stop", &rig.name]);
+    assert_eq!(code, Some(0), "stdout: {out}\nstderr: {err}");
+    assert!(out.contains(&format!("Stopped {}", rig.name)), "{out}");
+    assert!(
+        err.contains(&format!(
+            "Warning: could not observe the seat models before stopping '{}': \
+             seat main records no launch id",
+            rig.name
+        )),
+        "{err}"
+    );
+    let meta = std::fs::read_to_string(rig.dir.join("meta")).expect("the meta survives the stop");
+    assert!(!meta.contains("observed_model"), "{meta}");
+}
+
 #[test]
 fn a_bare_stop_from_a_foreign_namesake_never_targets_the_recorded_session() {
     let rig = Rig::new("foreignbarestop");

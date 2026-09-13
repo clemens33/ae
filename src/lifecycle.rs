@@ -1378,15 +1378,23 @@ fn supervise_one(
 /// Runs under the caller's lifecycle lock and BEFORE any kill: the panes are
 /// still alive, which is exactly what the watchdog's cadence cannot promise.
 /// Deliberately best-effort — a session whose meta or panes cannot be read
-/// still stops, with one warning from the caller.
-fn observe_models_before_stop(dir: &Path, server: &ServerId, name: &str) -> Result<(), String> {
+/// still stops, with warnings from the caller.
+///
+/// Returns one line per seat the durable cut could NOT cover: a missing pane,
+/// a missing launch guard, or a refused write. An empty `model_flags` list is
+/// the expected case for a tool ae cannot observe, so it is silent.
+fn observe_models_before_stop(
+    dir: &Path,
+    server: &ServerId,
+    name: &str,
+) -> Result<Vec<String>, String> {
     let bytes = meta::read_bytes(dir).map_err(|why| why.to_string())?;
     let parsed = meta::Meta::parse(&String::from_utf8_lossy(&bytes));
     let panes = transport::observe_watch_panes(server, name)
         .ok_or_else(|| "pane enumeration failed".to_owned())?;
     let global = meta_value(&bytes, "config");
     let local = crate::config::local_overlay(dir, &meta_value(&bytes, "origin"));
-    let mut failure: Option<String> = None;
+    let mut uncovered: Vec<String> = Vec::new();
     for entry in parsed.roster() {
         let tool =
             crate::tool::ToolKind::from_binary_name(entry.binary.as_deref().unwrap_or_default());
@@ -1397,6 +1405,7 @@ fn observe_models_before_stop(dir: &Path, server: &ServerId, name: &str) -> Resu
             .iter()
             .find(|pane| pane.slot.as_deref() == Some(entry.slot.as_str()))
         else {
+            uncovered.push(format!("seat {} has no live pane", entry.slot));
             continue;
         };
         let launch_key = format!("launch_id.{}", entry.slot);
@@ -1404,6 +1413,10 @@ fn observe_models_before_stop(dir: &Path, server: &ServerId, name: &str) -> Resu
             .map(|value| String::from_utf8_lossy(value).into_owned())
             .unwrap_or_default();
         if launch_id.is_empty() {
+            uncovered.push(format!(
+                "seat {} records no launch id to guard the write",
+                entry.slot
+            ));
             continue;
         }
         let pin = entry.profile.as_deref().and_then(|profile| {
@@ -1424,10 +1437,36 @@ fn observe_models_before_stop(dir: &Path, server: &ServerId, name: &str) -> Resu
             &launch_id,
             pin.as_deref(),
         ) {
-            failure.get_or_insert(why);
+            uncovered.push(format!("seat {}: {why}", entry.slot));
         }
     }
-    failure.map_or(Ok(()), Err)
+    Ok(uncovered)
+}
+
+/// Print one warning for every seat the durable cut could not cover, and for
+/// the pre-loop failure when there is one. The stop always proceeds.
+fn warn_uncovered_models(
+    name: &str,
+    outcome: Result<Vec<String>, String>,
+    err: &mut impl Write,
+) -> io::Result<()> {
+    match outcome {
+        Ok(uncovered) => {
+            for line in uncovered {
+                writeln!(
+                    err,
+                    "Warning: could not observe the seat models before stopping '{name}': {line}"
+                )?;
+            }
+        }
+        Err(why) => {
+            writeln!(
+                err,
+                "Warning: could not observe the seat models before stopping '{name}': {why}"
+            )?;
+        }
+    }
+    Ok(())
 }
 
 fn stop_one(
@@ -1528,13 +1567,9 @@ fn stop_one(
     // THE DURABLE CUT. The watchdog observes on its cadence; a stop can arrive
     // between the human's model change and the next cycle, so the final
     // observation happens HERE, with the panes still alive and the lifecycle
-    // lock held. Best-effort: a failure warns and the stop proceeds.
-    if let Err(why) = observe_models_before_stop(&dir, &server, name) {
-        writeln!(
-            err,
-            "Warning: could not observe the seat models before stopping '{name}': {why}"
-        )?;
-    }
+    // lock held. Best-effort: every uncovered seat and every failure warns and
+    // the stop proceeds.
+    warn_uncovered_models(name, observe_models_before_stop(&dir, &server, name), err)?;
     if expect.is_none() {
         return kill_under_lock(&server, name, &session_id, out, err);
     }
