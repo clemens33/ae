@@ -124,6 +124,12 @@ pub fn parse(tail: &[String]) -> Result<Parsed, String> {
                 .to_owned(),
         );
     }
+    if profile.contains('@') {
+        return Err(format!(
+            "Error: --using '{profile}' names a client override with '@' — profile@client is launch-only \
+             (ae <name> --lead/--colead/--seat). Spawn takes a bare profile."
+        ));
+    }
     Ok(Parsed {
         name: name.clone(),
         profile,

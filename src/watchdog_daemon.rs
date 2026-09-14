@@ -4159,7 +4159,9 @@ mod tests {
     use super::{Look, Mark, PaneMark, session_mark};
     use crate::events::Event;
     use crate::inventory::ServerId;
-    use crate::meta::{Meta, RecordedConfigHome, RecordedConfigHomeBase, RosterEntry, Selector};
+    use crate::meta::{
+        Meta, RecordedClient, RecordedConfigHome, RecordedConfigHomeBase, RosterEntry, Selector,
+    };
     use crate::procs::Descendancy;
     use crate::session::OwnWork;
     use crate::tmux::StopProbe;
@@ -4352,6 +4354,7 @@ mod tests {
             slot: "main".to_owned(),
             name: "lead".to_owned(),
             profile: None,
+            client: RecordedClient::Missing,
             harness_session: Some(rollout.to_owned()),
             config_home: RecordedConfigHome::Path(PathBuf::from("/tmp/cx")),
             config_home_base: RecordedConfigHomeBase::Missing,
@@ -5052,6 +5055,7 @@ mod tests {
             slot: "main".to_owned(),
             name: "lead".to_owned(),
             profile: None,
+            client: RecordedClient::Missing,
             harness_session: Some("018f1f70-7b2c-7000-8000-000000000001".to_owned()),
             config_home: RecordedConfigHome::Path(PathBuf::from("/tmp/cx")),
             config_home_base: RecordedConfigHomeBase::Missing,
@@ -5201,6 +5205,7 @@ mod tests {
             slot: slot.to_owned(),
             name: name.to_owned(),
             profile: None,
+            client: RecordedClient::Missing,
             harness_session: None,
             config_home: RecordedConfigHome::Missing,
             config_home_base: RecordedConfigHomeBase::Missing,
@@ -5446,6 +5451,7 @@ mod tests {
             slot: "main".to_owned(),
             name: "lead".to_owned(),
             profile: None,
+            client: RecordedClient::Missing,
             harness_session: Some(rollout.to_owned()),
             config_home: RecordedConfigHome::Path(PathBuf::from("/tmp/cx")),
             config_home_base: RecordedConfigHomeBase::Missing,
@@ -5601,6 +5607,7 @@ mod tests {
             slot: "main".to_owned(),
             name: "lead".to_owned(),
             profile: Some("changed-profile".to_owned()),
+            client: RecordedClient::Missing,
             harness_session: Some(rollout.to_owned()),
             config_home: RecordedConfigHome::Path(PathBuf::from("/tmp/cx")),
             config_home_base: RecordedConfigHomeBase::Missing,
@@ -5721,6 +5728,7 @@ mod tests {
             slot: "main".to_owned(),
             name: "lead".to_owned(),
             profile: Some("changed-profile".to_owned()),
+            client: RecordedClient::Missing,
             harness_session: Some(rollout.to_owned()),
             config_home: RecordedConfigHome::Path(PathBuf::from("/tmp/cx-recorded")),
             config_home_base: RecordedConfigHomeBase::Missing,
@@ -5826,6 +5834,7 @@ mod tests {
             slot: "main".to_owned(),
             name: "lead".to_owned(),
             profile: Some("changed".to_owned()),
+            client: RecordedClient::Missing,
             harness_session: session.map(str::to_owned),
             config_home: home,
             config_home_base: base,
@@ -7791,6 +7800,7 @@ mod tests {
             slot: slot.to_owned(),
             name: name.to_owned(),
             profile: Some(alias.to_owned()),
+            client: RecordedClient::Missing,
             harness_session: None,
             config_home: crate::meta::RecordedConfigHome::Missing,
             config_home_base: crate::meta::RecordedConfigHomeBase::Missing,
@@ -8163,6 +8173,16 @@ mod tests {
             "@ae_agents",
             "one session-scoped fact, never per-agent options"
         );
+    }
+
+    /// A roster profile carrying a `profile@client` spelling publishes no
+    /// fact at all: the grammar admits no `@`, and a fact the picker would
+    /// misread is worse than none.
+    #[test]
+    fn agents_fact_refuses_a_profile_at_spelling() {
+        let roster = [entry("main", "fablex@cc-mic", "lead")];
+        let observed = vec![("main".to_owned(), "%3".to_owned(), Verdict::Active)];
+        assert_eq!(agents_fact(&roster, &observed, 2_000, 60), None);
     }
 
     #[test]
@@ -8891,6 +8911,7 @@ mod tests {
             slot: "main".to_owned(),
             name: "lead".to_owned(),
             profile: Some("sol".to_owned()),
+            client: RecordedClient::Missing,
             harness_session: Some(rollout.to_owned()),
             config_home: RecordedConfigHome::Path(PathBuf::from("/tmp/cx")),
             config_home_base: RecordedConfigHomeBase::Missing,

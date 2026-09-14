@@ -42,6 +42,10 @@ const ROSTER_BIN_PREFIX: &str = "agent_bin.";
 /// instead of one `alias:name:sid` value.
 const SEAT_PREFIX: &str = "seat.";
 const PROFILE_PREFIX: &str = "profile.";
+/// The recorded client-override label (`client.<slot>`), written only when a
+/// launch honored a `profile@client` selection. Absent means no override was
+/// recorded — never a derived value.
+const CLIENT_PREFIX: &str = "client.";
 const HARNESS_SESSION_PREFIX: &str = "harness_session.";
 const CONFIG_HOME_PREFIX: &str = "config_home.";
 const CONFIG_HOME_BASE_PREFIX: &str = "config_home_base.";
@@ -77,6 +81,9 @@ pub struct RosterEntry {
     pub name: String,
     /// The execution profile (`profile.<slot>`).
     pub profile: Option<String>,
+    /// The recorded client override (`client.<slot>`): which `[clients]` label
+    /// a launch selection pinned this seat to, if any.
+    pub client: RecordedClient,
     /// The harness's own conversation id (`harness_session.<slot>`), where the
     /// roster carries one.
     pub harness_session: Option<String>,
@@ -163,6 +170,42 @@ impl RecordedConfigHomeBase {
     pub(crate) fn parse(value: &str) -> Self {
         if Path::new(value).is_absolute() && !value.chars().any(char::is_control) {
             Self::Path(PathBuf::from(value))
+        } else {
+            Self::Invalid
+        }
+    }
+}
+
+/// What a seat's optional `client.<slot>` row says.
+///
+/// This row selects an ACCOUNT, so it follows [`RecordedConfigHome`], never
+/// `profile`: an empty, duplicated or malformed row is [`Self::Invalid`] and
+/// fails closed, never collapsing to [`Self::Missing`]. A silent fallback
+/// would launch against the wrong store.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum RecordedClient {
+    /// No row was recorded — no override was honored for this seat.
+    #[default]
+    Missing,
+    /// Exactly one well-formed row naming a client label.
+    Label(String),
+    /// An empty, duplicated or malformed row: no value may be trusted.
+    Invalid,
+}
+
+impl RecordedClient {
+    /// The value emitted when this state belongs in a meta row.
+    #[must_use]
+    pub fn record_value(&self) -> Option<String> {
+        match self {
+            Self::Label(label) => Some(label.clone()),
+            Self::Missing | Self::Invalid => None,
+        }
+    }
+
+    pub(crate) fn parse(value: &str) -> Self {
+        if crate::config::is_agent_name(value) {
+            Self::Label(value.to_owned())
         } else {
             Self::Invalid
         }
@@ -346,6 +389,7 @@ pub struct Meta {
     pending_harness: Vec<PendingRow>,
     pending_config_homes: Vec<PendingRow>,
     pending_config_home_bases: Vec<PendingRow>,
+    pending_clients: Vec<PendingRow>,
     /// Every `seat.<slot>` KEY met so far — `=` or not, valid or not, first or
     /// repeated.
     claims: Vec<SlotClaim>,
@@ -412,6 +456,10 @@ impl Meta {
                     .or_else(|| {
                         raw.strip_prefix(CONFIG_HOME_BASE_PREFIX)
                             .map(|slot| (Metadata::ConfigHomeBase, slot))
+                    })
+                    .or_else(|| {
+                        raw.strip_prefix(CLIENT_PREFIX)
+                            .map(|slot| (Metadata::Client, slot))
                     });
                 if let Some((which, slot)) = metadata {
                     let already_seen = seen.iter().any(|previous| previous == raw);
@@ -498,6 +546,11 @@ impl Meta {
                         entry.config_home_base = RecordedConfigHomeBase::Invalid;
                     }
                     self.mark_metadata_duplicated(key);
+                } else if let Some(slot) = key.strip_prefix(CLIENT_PREFIX) {
+                    if let Some(entry) = self.roster.iter_mut().find(|e| e.slot == slot) {
+                        entry.client = RecordedClient::Invalid;
+                    }
+                    self.mark_metadata_duplicated(key);
                 } else if let Some(slot) = key.strip_prefix(SEAT_PREFIX) {
                     // A doubly-named slot is a slot whose identity is in doubt,
                     // and agents[] membership is roster-defined —
@@ -553,6 +606,8 @@ impl Meta {
                     self.set_metadata(Metadata::ConfigHome, slot, key, value, line);
                 } else if let Some(slot) = key.strip_prefix(CONFIG_HOME_BASE_PREFIX) {
                     self.set_metadata(Metadata::ConfigHomeBase, slot, key, value, line);
+                } else if let Some(slot) = key.strip_prefix(CLIENT_PREFIX) {
+                    self.set_metadata(Metadata::Client, slot, key, value, line);
                 } else if let Some(slot) = key.strip_prefix(ROSTER_PREFIX) {
                     self.note_legacy(slot, line);
                 } else if let Some(slot) = key.strip_prefix(SEAT_PREFIX) {
@@ -630,10 +685,19 @@ impl Meta {
                 }
             },
         );
+        let client =
+            take_pending(&mut self.pending_clients, slot).map_or(RecordedClient::Missing, |row| {
+                if row.duplicated {
+                    RecordedClient::Invalid
+                } else {
+                    RecordedClient::parse(&row.value)
+                }
+            });
         self.roster.push(RosterEntry {
             slot: slot.to_owned(),
             name: value.to_owned(),
             profile,
+            client,
             harness_session,
             config_home,
             config_home_base,
@@ -677,6 +741,7 @@ impl Meta {
             &mut self.pending_harness,
             &mut self.pending_config_homes,
             &mut self.pending_config_home_bases,
+            &mut self.pending_clients,
         ] {
             for row in list.iter_mut() {
                 if row.key == key {
@@ -711,6 +776,7 @@ impl Meta {
         let config_home = (which == Metadata::ConfigHome).then(|| RecordedConfigHome::parse(value));
         let config_home_base =
             (which == Metadata::ConfigHomeBase).then(|| RecordedConfigHomeBase::parse(value));
+        let client = (which == Metadata::Client).then(|| RecordedClient::parse(value));
         if slot.is_empty()
             || config_home
                 .as_ref()
@@ -718,6 +784,9 @@ impl Meta {
             || config_home_base
                 .as_ref()
                 .is_some_and(|value| *value == RecordedConfigHomeBase::Invalid)
+            || client
+                .as_ref()
+                .is_some_and(|value| *value == RecordedClient::Invalid)
         {
             self.anomalies.push(Anomaly::MalformedRosterEntry {
                 key: key.to_owned(),
@@ -738,6 +807,9 @@ impl Meta {
                     existing.config_home_base =
                         config_home_base.unwrap_or(RecordedConfigHomeBase::Invalid);
                 }
+                Metadata::Client => {
+                    existing.client = client.unwrap_or(RecordedClient::Invalid);
+                }
             }
             return;
         }
@@ -753,6 +825,7 @@ impl Meta {
             Metadata::HarnessSession => self.pending_harness.push(row),
             Metadata::ConfigHome => self.pending_config_homes.push(row),
             Metadata::ConfigHomeBase => self.pending_config_home_bases.push(row),
+            Metadata::Client => self.pending_clients.push(row),
         }
     }
 
@@ -984,6 +1057,7 @@ enum Metadata {
     HarnessSession,
     ConfigHome,
     ConfigHomeBase,
+    Client,
 }
 
 /// A persisted epoch that can produce a meaningful age.
@@ -1782,7 +1856,8 @@ agent_bin.main=claude
     }
 
     use super::{
-        Anomaly, Meta, RecordedConfigHome, RecordedConfigHomeBase, Selector, ServerSelector,
+        Anomaly, Meta, RecordedClient, RecordedConfigHome, RecordedConfigHomeBase, Selector,
+        ServerSelector,
     };
     use std::path::PathBuf;
 
@@ -2112,6 +2187,69 @@ agent_bin.main=claude
             RecordedConfigHome::Invalid,
             "an implicit store without its HOME base is unusable"
         );
+    }
+
+    #[test]
+    fn client_rows_are_typed_and_hostile_shapes_are_invalid_never_missing() {
+        // Label: exactly one well-formed row, both orders, no anomaly.
+        for text in [
+            "seat.main=lead\nclient.main=cc-mic\n",
+            "client.main=cc-mic\nseat.main=lead\n",
+        ] {
+            let meta = Meta::parse(text);
+            assert_eq!(
+                meta.roster()[0].client,
+                RecordedClient::Label("cc-mic".to_owned()),
+                "{text:?}"
+            );
+            assert!(meta.anomalies().is_empty(), "{text:?}");
+        }
+        // Missing: the row is absent — no override was recorded.
+        assert_eq!(
+            Meta::parse("seat.main=lead\n").roster()[0].client,
+            RecordedClient::Missing,
+            "absence of evidence, never a derived label"
+        );
+        // Invalid: empty, duplicated or malformed — every one fails closed,
+        // exactly like `config_home` and never like `profile`'s collapse.
+        let long = "a".repeat(65);
+        let hostile: Vec<String> = [
+            "seat.main=lead\nclient.main=\n",
+            "client.main=\nseat.main=lead\n",
+            "seat.main=lead\nclient.main\n",
+            "client.main\nseat.main=lead\n",
+            "seat.main=lead\nclient.main=cc-mic\nclient.main=cc\n",
+            "client.main=cc-mic\nclient.main=cc\nseat.main=lead\n",
+            "seat.main=lead\nclient.main=cc mic\n",
+            "seat.main=lead\nclient.main=fablex@cc-mic\n",
+            "seat.main=lead\nclient.main=-lead\n",
+            "seat.main=lead\nclient.main=_lead\n",
+            "seat.main=lead\nclient.main=cc\tmic\n",
+        ]
+        .iter()
+        .map(ToString::to_string)
+        .chain([format!("seat.main=lead\nclient.main={long}\n")])
+        .collect();
+        for text in &hostile {
+            let meta = Meta::parse(text);
+            assert_eq!(meta.roster()[0].client, RecordedClient::Invalid, "{text:?}");
+            assert!(
+                meta.anomalies().iter().any(|anomaly| matches!(
+                    anomaly,
+                    Anomaly::MalformedRosterEntry { .. }
+                        | Anomaly::DuplicateKey { .. }
+                        | Anomaly::MalformedLine { .. }
+                )),
+                "{text:?}"
+            );
+        }
+        // Only a label round-trips; Missing and Invalid emit no row.
+        assert_eq!(
+            RecordedClient::Label("cc-mic".to_owned()).record_value(),
+            Some("cc-mic".to_owned())
+        );
+        assert_eq!(RecordedClient::Missing.record_value(), None);
+        assert_eq!(RecordedClient::Invalid.record_value(), None);
     }
 
     #[test]

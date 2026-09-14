@@ -1451,6 +1451,7 @@ mod tests {
             slot: slot.to_owned(),
             name: name.to_owned(),
             profile: Some("p".to_owned()),
+            client: crate::meta::RecordedClient::Missing,
             harness_session: id.map(ToOwned::to_owned),
             config_home: crate::meta::RecordedConfigHome::Missing,
             config_home_base: crate::meta::RecordedConfigHomeBase::Missing,

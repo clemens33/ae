@@ -1,9 +1,11 @@
 //! Assembling the identity v2 roster block.
 //!
 //! The core side of `_meta-init`: given the seats a launch resolved, render the
-//! `schema=2` + `seat.<slot>` + `profile.<slot>` + `harness_session.<slot>` +
-//! `agent_bin.<slot>` + `config_home.<slot>` + `config_home_base.<slot>` lines that
-//! [`crate::meta::init`] publishes in one rename.
+//! `schema=2` + `seat.<slot>` + `profile.<slot>` + `client.<slot>` +
+//! `harness_session.<slot>` + `agent_bin.<slot>` + `config_home.<slot>` +
+//! `config_home_base.<slot>` lines that [`crate::meta::init`] publishes in one
+//! rename. `client.<slot>` is written only when the launch honored a
+//! `profile@client` selection; its absence means no override was recorded.
 //! `agent.<slot>` is never written, and never read into a seat: a v1 meta is a
 //! session to start over from, not one to migrate.
 
@@ -18,6 +20,8 @@ pub struct SeatLines {
     pub name: String,
     /// The execution profile.
     pub profile: String,
+    /// The recorded client override, where the launch honored one.
+    pub client: Option<String>,
     /// The recorded binary, where the meta carries one.
     pub binary: Option<String>,
     /// The captured harness session id, where the meta carries one.
@@ -38,6 +42,9 @@ pub fn render(seats: &[SeatLines]) -> String {
         // satisfy `-D warnings` without an `unwrap` on the capability boundary.
         let _ = writeln!(out, "seat.{}={}", seat.slot, seat.name);
         let _ = writeln!(out, "profile.{}={}", seat.slot, seat.profile);
+        if let Some(client) = &seat.client {
+            let _ = writeln!(out, "client.{}={}", seat.slot, client);
+        }
         if let Some(binary) = &seat.binary {
             let _ = writeln!(out, "agent_bin.{}={}", seat.slot, binary);
         }
@@ -57,11 +64,12 @@ pub fn render(seats: &[SeatLines]) -> String {
 /// Whether an anomaly makes the ROSTER itself untrustworthy, at the provenance
 /// grain:
 pub(crate) fn roster_doubting(a: &Anomaly) -> bool {
-    const IDENTITY_PREFIXES: [&str; 7] = [
+    const IDENTITY_PREFIXES: [&str; 8] = [
         "agent.",
         "agent_bin.",
         "seat.",
         "profile.",
+        "client.",
         "harness_session.",
         "config_home.",
         "config_home_base.",
@@ -94,6 +102,7 @@ mod tests {
             slot: slot.to_owned(),
             name: name.to_owned(),
             profile: profile.to_owned(),
+            client: None,
             binary: bin.map(ToOwned::to_owned),
             harness_session: sid.map(ToOwned::to_owned),
             config_home: None,
@@ -137,5 +146,48 @@ mod tests {
             crate::meta::RecordedConfigHomeBase::Path("/people/colead".into())
         );
         assert!(meta.anomalies().is_empty());
+    }
+
+    #[test]
+    fn render_writes_the_client_row_only_when_a_seat_honored_an_override() {
+        let mut seats = [seat("main", "lead", "fable5", Some("claude"), None)];
+        // No override: the row stays absent, and the block is byte-identical
+        // to the pre-client shape.
+        assert_eq!(
+            render(&seats),
+            "schema=2\nseat.main=lead\nprofile.main=fable5\nagent_bin.main=claude\n"
+        );
+        assert_eq!(
+            Meta::parse(&render(&seats)).roster()[0].client,
+            crate::meta::RecordedClient::Missing
+        );
+        // Honored override: the bare profile keeps its row and the client
+        // carries its own, directly after it.
+        seats[0].client = Some("cc-mic".to_owned());
+        let block = render(&seats);
+        assert_eq!(
+            block,
+            "schema=2\nseat.main=lead\nprofile.main=fable5\nclient.main=cc-mic\nagent_bin.main=claude\n"
+        );
+        let roster = Meta::parse(&block).roster().to_vec();
+        assert_eq!(roster[0].profile.as_deref(), Some("fable5"));
+        assert_eq!(
+            roster[0].client,
+            crate::meta::RecordedClient::Label("cc-mic".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_duplicate_client_key_doubts_the_roster() {
+        assert!(super::roster_doubting(
+            &crate::meta::Anomaly::DuplicateKey {
+                key: "client.main".to_owned(),
+                line: 9,
+            }
+        ));
+        assert!(!super::roster_doubting(&crate::meta::Anomaly::UnknownKey {
+            key: "telemetry.main".to_owned(),
+            line: 9,
+        }));
     }
 }

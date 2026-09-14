@@ -158,6 +158,25 @@ the choices in session metadata, so a later stop/resume keeps them. A stopped se
 re-paired to another profile of the same tool kind while keeping its conversation; changing tool
 kind is refused. A running session must be stopped before any seat profile changes.
 
+Suffix a selection with `@<client>` to run that profile on another account of the SAME harness:
+`ae myproject --lead fablex@cc-mic`. Both clients must resolve to the same known tool — an
+unrecognized binary on either side refuses, and crossing harnesses needs a duplicate profile.
+The override is launch-only: `spawn --using` takes a bare profile and rejects `@`. ae records
+the bare profile in `profile.<slot>` and the label in a new `client.<slot>` row; a launch
+without an override leaves that row absent. A recorded client is write-once, and the two
+resume shapes treat it differently. A flagless resume is "resume as recorded": it honors the
+recorded label by itself — no `@` needed — and re-takes the store check, so a label whose
+definition moved refuses exactly as if it had been spelled. An EXPLICIT bare profile on a
+recorded seat refuses instead: it cannot say whether the label stays or goes, so re-pairing
+means `<new-profile>@<same-label>`. Any different label refuses whatever its facts. A first
+start whose override resolves to a store ae cannot verify refuses instead of launching blind;
+a resume under the same blindness proceeds on its retained store and records nothing new.
+Removing
+the recorded label from `[clients]` strands the session until the label is restored — that
+restore, or `ae end`, is the recovery. A store selected through an exported account variable
+the launcher cannot see refuses the same way; pin it in the `[clients]` row as
+`config_home=<path>` instead.
+
 On a seat's first start, ae records the canonical config home and whether the tool-specific
 variable selected it explicitly or remained unset for the default, before the tool execs. A
 default-derived store also records the canonical effective `HOME`, because a symlinked default

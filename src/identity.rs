@@ -343,6 +343,9 @@ fn parse_seat_records(stdin: &str, restored: bool) -> Result<Vec<SeatLines>, Str
             slot: (*slot).to_owned(),
             name: (*name).to_owned(),
             profile: (*profile).to_owned(),
+            // The 6-field stdin record predates the client row and names no
+            // override; absence of evidence, never a derived label.
+            client: None,
             binary: optional(binary),
             harness_session: optional(sid),
             config_home: None,
@@ -378,10 +381,53 @@ pub fn meta_init(
         writeln!(err, "ae: {} needs --base <file>", crate::cli::META_INIT)?;
         return Ok(EXIT_USAGE);
     };
-    let seats = match parse_seat_records(stdin, flags.replace) {
+    let mut seats = match parse_seat_records(stdin, flags.replace) {
         Ok(seats) => seats,
         Err(why) => return refuse(&why, err),
     };
+    if flags.replace {
+        // The 6-field stdin record predates the client row and cannot carry
+        // it — so a replace PRESERVES the current per-slot rows instead of
+        // laundering every `Label` into `Missing`. A fresh publish keeps its
+        // absent rows: nothing recorded an override there.
+        let current = match meta::read_bytes(dir) {
+            Ok(bytes) => Meta::parse(&String::from_utf8_lossy(&bytes)),
+            Err(why) => {
+                return refuse(
+                    &format!("cannot read the current meta to preserve its client rows: {why}"),
+                    err,
+                );
+            }
+        };
+        for seat in &mut seats {
+            let Some(entry) = current
+                .roster()
+                .iter()
+                .find(|entry| entry.slot == seat.slot)
+            else {
+                continue;
+            };
+            match &entry.client {
+                meta::RecordedClient::Label(label) => {
+                    seat.client = Some(label.clone());
+                }
+                meta::RecordedClient::Missing => {}
+                // Unrepresentable in a republish — and dropping it toward
+                // `Missing` would be a silent fallback, so the replace
+                // refuses instead.
+                meta::RecordedClient::Invalid => {
+                    return refuse(
+                        &format!(
+                            "seat '{}' ({}) records an unusable client (client.{} is empty, duplicated or malformed) — \
+                             fix the meta row before replacing",
+                            seat.name, seat.slot, seat.slot
+                        ),
+                        err,
+                    );
+                }
+            }
+        }
+    }
     let facts = match meta::read_base(&base) {
         Ok(text) => text,
         Err(why) => {
@@ -620,6 +666,9 @@ pub fn add_seat_slot(
         slot: slot.clone(),
         name: name.to_owned(),
         profile: profile.to_owned(),
+        // `spawn --using` takes a bare profile; a client override is
+        // launch-only, so a spawned seat never records one.
+        client: None,
         binary: Some(binary.to_owned()),
         harness_session: sid.map(ToOwned::to_owned),
         config_home: None,
@@ -810,6 +859,77 @@ fn set_harness_session(
     emit(&trailer(0), out)
 }
 
+/// What resolving one listed seat's command answers: the command (`None`
+/// is an unconfigured profile, which lists as `unresolved`), or a refusal
+/// already explained on `err`.
+enum SeatResolution {
+    Resolved(Option<config::ResolvedCommand>),
+    Refused(u8),
+}
+
+/// Resolve one listed seat's command: the recorded label through the
+/// override substitution when one is recorded, else the legacy default.
+///
+/// # Errors
+///
+/// [`crate::Error::Io`] when `err` cannot be written.
+fn list_seat_command(
+    cfg: &IdentityConfig,
+    entry: &meta::RosterEntry,
+    home: Option<&Path>,
+    err: &mut impl Write,
+) -> Result<SeatResolution, crate::Error> {
+    let Some(profile) = entry.profile.as_deref() else {
+        return Ok(SeatResolution::Resolved(None));
+    };
+    match &entry.client {
+        meta::RecordedClient::Label(label) => {
+            match cfg.command_with_client(profile, label, home) {
+                Ok(resolved) => Ok(SeatResolution::Resolved(Some(resolved.command))),
+                // An unconfigured profile reads `unresolved`, exactly as the
+                // legacy arm below.
+                Err(config::OverrideError::UnknownProfile) => Ok(SeatResolution::Resolved(None)),
+                Err(config::OverrideError::UnknownClient) => {
+                    writeln!(
+                        err,
+                        "seat '{}' ({}) recorded client override '{label}' but no [clients] row names it now — \
+                         restore the '{label}' client, or end the session",
+                        entry.name, entry.slot
+                    )?;
+                    Ok(SeatResolution::Refused(EXIT_REFUSED))
+                }
+                Err(config::OverrideError::ProfileNotSimple(why)) => {
+                    writeln!(err, "profile '{profile}' is not one simple command — {why}")?;
+                    Ok(SeatResolution::Refused(EXIT_REFUSED))
+                }
+                Err(config::OverrideError::Refused(why)) => {
+                    writeln!(err, "{why}")?;
+                    Ok(SeatResolution::Refused(EXIT_REFUSED))
+                }
+            }
+        }
+        meta::RecordedClient::Missing => match cfg.command(profile, home) {
+            Ok(command) => Ok(SeatResolution::Resolved(command)),
+            Err(why) => {
+                writeln!(err, "{why}")?;
+                Ok(SeatResolution::Refused(EXIT_REFUSED))
+            }
+        },
+        // Unreachable past the doubt gate above — and still refused, because
+        // emitting a record for a hostile seat is what that gate exists to
+        // prevent.
+        meta::RecordedClient::Invalid => {
+            writeln!(
+                err,
+                "seat '{}' ({}) records an unusable client (client.{} is empty, duplicated or malformed) — \
+                 repair the meta by hand, or start over from its archive",
+                entry.name, entry.slot, entry.slot
+            )?;
+            Ok(SeatResolution::Refused(EXIT_REFUSED))
+        }
+    }
+}
+
 /// `_roster <dir> list [--global <f>] [--local <f>]` — what the roster is now,
 /// resolved against the config.
 ///
@@ -869,16 +989,13 @@ fn list(
     for entry in current.roster() {
         // The seat's own profile row, resolved as an OPTION — never through the
         // rendered `-`, or a config that happened to define a profile literally
-        // named `-` would resolve a seat that has no profile at all.
-        let command = match entry.profile.as_deref() {
-            Some(profile) => match cfg.command(profile, home.as_deref()) {
-                Ok(command) => command,
-                Err(why) => {
-                    writeln!(err, "{why}")?;
-                    return Ok(EXIT_REFUSED);
-                }
-            },
-            None => None,
+        // named `-` would resolve a seat that has no profile at all. A recorded
+        // client label resolves through the override substitution, so the
+        // emitted command is the one the seat runs — the default client's
+        // would be a lie about an override seat.
+        let command = match list_seat_command(&cfg, entry, home.as_deref(), err)? {
+            SeatResolution::Resolved(command) => command,
+            SeatResolution::Refused(exit) => return Ok(exit),
         };
         let resolved = command.and_then(|command| {
             launch_cmd::lex_simple_command(command.as_str())
@@ -1575,6 +1692,97 @@ mod tests {
         );
         assert_eq!(rows(&out)[0][0], "unresolved");
         assert_eq!(rows(&out)[1][0], "seat", "the lexable one still resolves");
+    }
+
+    /// A recorded client label resolves through the override substitution:
+    /// the emitted command is the one the seat runs, not the default client's.
+    #[test]
+    fn list_resolves_a_recorded_client_label_through_the_override() {
+        let scratch = seeded("list-client");
+        let meta = scratch.meta().replacen(
+            "profile.main=fable5\n",
+            "profile.main=fable5\nclient.main=cc-mic\n",
+            1,
+        );
+        scratch.file("meta", &meta);
+        let cfg = scratch.file(
+            "config",
+            "[clients]\n\
+             claude = claude\n\
+             cc-mic = claude config_home=/tmp/x/.claude-mic\n\
+             \n\
+             [profiles]\n\
+             fable5 = claude --model opus\n\
+             gpt56 = codex --yolo\n\
+             \n\
+             [roster]\n\
+             lead = fable5\n\
+             colead = gpt56\n\
+             \n\
+             [workspace]\n\
+             main = lead\n\
+             workers = colead\n",
+        );
+        let (code, out, err) = roster(scratch.dir(), &["list", "--global", &cfg.to_string_lossy()]);
+        assert_eq!((code, err.as_str()), (0, ""));
+        let main = &rows(&out)[0];
+        assert_eq!(main[0], "seat");
+        assert!(
+            main[7].contains(".claude-mic") && main[7].contains("claude --model opus"),
+            "the override expansion, not the default: {main:?}"
+        );
+        assert_eq!(
+            rows(&out)[1][7],
+            "codex --yolo",
+            "the legacy seat is untouched"
+        );
+    }
+
+    /// `--replace` preserves the current per-slot client rows: the 6-field
+    /// stdin record cannot carry them, and dropping them would launder every
+    /// `Label` into `Missing`.
+    #[test]
+    fn replace_preserves_recorded_client_rows_and_refuses_an_invalid_one() {
+        let scratch = seeded("replace-client");
+        let meta = scratch.meta().replacen(
+            "profile.main=fable5\n",
+            "profile.main=fable5\nclient.main=cc-mic\n",
+            1,
+        );
+        scratch.file("meta", &meta);
+        let base = scratch.file("base", "mode=local\nwork_dir=/tmp/x\n");
+        let stdin = format!(
+            "seat{US}main{US}lead{US}fable5{US}claude{US}-\n\
+             seat{US}worker.0{US}colead{US}gpt56{US}codex{US}e795\n\
+             end{US}2\n"
+        );
+        let (code, _, err) = init(
+            scratch.dir(),
+            &["--base", &base.to_string_lossy(), "--replace"],
+            &stdin,
+        );
+        assert_eq!((code, err.as_str()), (0, ""));
+        assert!(
+            scratch.meta().contains("client.main=cc-mic\n"),
+            "the label survives the republish: {}",
+            scratch.meta()
+        );
+        // An unusable row cannot be preserved and must not be laundered.
+        let damaged = scratch
+            .meta()
+            .replace("client.main=cc-mic\n", "client.main=\n");
+        scratch.file("meta", &damaged);
+        let (code, _, err) = init(
+            scratch.dir(),
+            &["--base", &base.to_string_lossy(), "--replace"],
+            &stdin,
+        );
+        assert_eq!(code, EXIT_REFUSED);
+        assert!(
+            err.contains("client.main") && err.contains("fix the meta row before replacing"),
+            "{err}"
+        );
+        assert_eq!(scratch.meta(), damaged, "the refusal published nothing");
     }
 
     #[test]
