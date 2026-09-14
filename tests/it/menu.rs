@@ -1607,8 +1607,14 @@ fn direct_terminal_client(
         .map(ToOwned::to_owned)
         .collect();
     let mut terminal = helper_by_name("script");
+    // `script` writes its typescript through stdio, fully buffered: BSD flushes
+    // a full 4096-byte block or its 30-second timer (`-t time`), util-linux the
+    // same until `--flush`. Every geometry wait reads the record well inside
+    // PATIENCE, so the recorder flushes each write — otherwise a client that
+    // received under 4096 bytes reads as a client that received nothing.
     if cfg!(target_os = "macos") {
         terminal.args([
+            "-F".to_owned(),
             "-q".to_owned(),
             record.display().to_string(),
             "sh".to_owned(),
@@ -1617,6 +1623,7 @@ fn direct_terminal_client(
         ]);
     } else {
         terminal.args([
+            "--flush".to_owned(),
             "-q".to_owned(),
             "-c".to_owned(),
             command,
@@ -7555,9 +7562,16 @@ fn the_delegated_root_draws_declared_state_on_direct_terminal_bytes() {
         middle.abs_diff(120 / 2) <= 1,
         "menu centred on the direct client: {geometry:?}"
     );
-    // The bystander's own terminal bytes stay silent.
+    // The bystander's own terminal bytes stay silent — proven on bytes that
+    // exist: its attach redraw is on its record (an empty record would make
+    // "received no menu" true of a client that received nothing at all), and
+    // the menu is not.
     std::thread::sleep(Duration::from_millis(400));
     let other_raw = fs::read(&ignored).unwrap_or_default();
+    assert!(
+        !other_raw.is_empty(),
+        "the bystander's attach redraw reaches its own record"
+    );
     let other_text = String::from_utf8_lossy(&other_raw);
     assert!(
         !other_text.contains("Flip lead/colead panes")
