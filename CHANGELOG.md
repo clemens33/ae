@@ -10,6 +10,8 @@ All notable changes to this project will be documented in this file.
 - Render one subject line per change in the generated changelog
 - List git-cliff in the pin table and the rust-setup tool count
 - Make the changelog unit the first-parent commit
+- Regenerate the changelog on top of the merge base
+- Prove the skip list crosses to git-cliff as separate arguments
 
 ## [v2026.9.75] - 2026-09-14
 - Merge lockpath: refuse non-regular and symlinked lock paths
