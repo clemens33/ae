@@ -1284,7 +1284,11 @@ fn held_seats(
 ///   restart cannot forget it;
 /// - the oldest outstanding item is older than [`crate::watchdog::OWN_WORK_AGE_CAP`]
 ///   nudge periods, which is the case where the seat's own work has itself gone
-///   wrong. `waiting-agent` escalation reuses the same cap.
+///   wrong. `waiting-agent` escalation reuses the same MULTIPLIER, with ONE
+///   stated exception: at `idle_nudge_secs == 0` this deferral is vacuous
+///   (there is no nudge to defer) while the attention ceiling scales from the
+///   documented default ([`crate::watchdog::waiting_agent_cap_secs`]), because
+///   zero keeps the marker and only suppresses the nudge.
 ///
 /// PURE: it reads the observation and the knobs and nothing else.
 #[must_use]
