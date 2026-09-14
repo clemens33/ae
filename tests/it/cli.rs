@@ -1684,6 +1684,40 @@ fn a_fifo_in_a_containers_place_is_the_frozen_empty_answer_and_not_a_hang() {
     assert!(requests.2.is_empty(), "requests all: {requests:?}");
 }
 
+/// A FIFO at the LOCK path refuses promptly. A write-open on a FIFO blocks
+/// until a reader appears, so without the pre-open gate a `Duration::ZERO`
+/// acquire would hang inside `open(2)` before `try_lock` was ever reached —
+/// `wait` would bound nothing. The attempt runs on its own thread so a
+/// defeated gate makes this test RED, not hung.
+#[test]
+fn a_fifo_lock_path_refuses_before_the_open_and_never_blocks() {
+    let root = scratch("lockfifo");
+    let path = root.join("events.jsonl.lock");
+    mkfifo(&path);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let attempt = path.clone();
+    std::thread::spawn(move || {
+        let _ = tx.send(ae::store::lock(&attempt, std::time::Duration::ZERO));
+    });
+    let outcome = rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("a FIFO lock path must refuse, not block");
+    let refused = outcome.expect_err("a FIFO lock path must refuse");
+    assert_eq!(
+        refused.to_string(),
+        format!(
+            "{}: the lock path is a fifo — refused before any open",
+            path.display()
+        ),
+        "the refusal names the leg and the path, and comes from the gate"
+    );
+    assert!(
+        std::fs::symlink_metadata(&path).is_ok(),
+        "the FIFO itself is left in place"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 #[test]
 fn state_refuses_without_a_pane_identity_and_writes_nothing() {
     let root = scratch("state-noid");
