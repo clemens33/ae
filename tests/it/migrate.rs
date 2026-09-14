@@ -1784,16 +1784,22 @@ fn upgrading_a_running_session_without_an_orchestrator_rewrites_the_menu_range()
     let deadline = Instant::now() + Duration::from_secs(10);
     let mut line = String::new();
     let mut stamp = String::new();
-    let fleet_prefix = "#[align=left fg=#808080 bg=#313335]#[range=user|ae]#{?@ae_menu_open,#[bg=#214283 fg=#A9B7C6],} ≡#[norange]";
+    let fleet_prefix = format!(
+        "#[align=left fg=#808080 bg=#313335]#[range=user|ae]#{{?@ae_menu_open,#[bg=#214283 fg=#A9B7C6],}} ≡#[norange] #{{?#{{{}}},#{{{}}},}}#{{{}}}",
+        ae::theme::ORCHESTRATOR_STRIP_OPTION,
+        ae::theme::ORCHESTRATOR_STRIP_OPTION,
+        ae::theme::FLEET_STRIP_OPTION,
+    );
     let migrated = |line: &str, stamp: &str| {
         line.split_once("#[align=right")
             .is_some_and(|(fleet, right)| {
-                fleet.starts_with(fleet_prefix)
+                fleet.starts_with(fleet_prefix.as_str())
                     && !fleet.contains(ae::theme::VERSION_OPTION)
                     && right.ends_with(
                         "#[range=user|ae-settings]#{?@ae_settings_open,#[bg=#214283 fg=#A9B7C6],} ⚙ #[norange]\n",
                     )
                     && !right.contains(ae::theme::VERSION_OPTION)
+                    && !right.contains(ae::theme::ORCHESTRATOR_STRIP_OPTION)
                     && stamp.trim() == "19:darcula:on:on"
             })
     };

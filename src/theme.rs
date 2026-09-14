@@ -486,8 +486,8 @@ pub const AGENTS_OPTION: &str = "@ae_agents";
 
 /// SESSION — the orchestrator's fleet segment, ranges included.
 ///
-/// Published separately because the orchestrator sits immediately before the
-/// version on line two instead of in the fleet list.
+/// Published separately because the orchestrator sits immediately after the
+/// menu glyph on line two instead of in the fleet list.
 pub const ORCHESTRATOR_STRIP_OPTION: &str = "@ae_orchestrator_strip";
 
 /// SESSION — `on`/`off`, whether ae draws this session at all.
@@ -763,17 +763,21 @@ pub fn status_line_zero(palette: &Palette) -> String {
 // status-format[1] — the fleet strip
 // ---------------------------------------------------------------------------
 
-/// `status-format[1]`: a quiet menu glyph, then every ae session on this
-/// server; the optional orchestrator and final settings range stay on the right.
+/// `status-format[1]`: a quiet menu glyph, an optional one-cell orchestrator
+/// button, then every ae session on this server; the final settings range
+/// stays on the right.
+///
+/// When no orchestrator is published the conditional renders empty and the
+/// line is byte-identical to the menu-plus-fleet line: `{version} `, then the
+/// fleet strip, then the right side.
 #[must_use]
 pub fn status_line_one(look: &Look) -> String {
     let palette = &look.palette;
     // The conditional splits on format-text commas, so a comma-free option
     // value is safe; this follows the same contract as @ae_fleet_strip.
     format!(
-        "#[align=left fg={dim} bg={base}]{version} #{{{FLEET_STRIP_OPTION}}}\
-         #[align=right fg={dim} bg={base}]\
-         #{{?#{{{ORCHESTRATOR_STRIP_OPTION}}},  #{{{ORCHESTRATOR_STRIP_OPTION}}} ,}}{settings}",
+        "#[align=left fg={dim} bg={base}]{version} #{{?#{{{ORCHESTRATOR_STRIP_OPTION}}},#{{{ORCHESTRATOR_STRIP_OPTION}}},}}#{{{FLEET_STRIP_OPTION}}}\
+         #[align=right fg={dim} bg={base}]{settings}",
         dim = palette.dim,
         base = palette.base,
         version = version_segment(look),
@@ -956,10 +960,16 @@ pub fn fleet_strip(look: &Look, rows: &[FleetRow], working_frame: Option<&Workin
     strip
 }
 
-/// The orchestrator segment shown immediately before the menu glyph on line two.
+/// The orchestrator button shown immediately after the menu glyph on line two:
+/// one blank, one stable one-cell glyph, one blank — all inside the session
+/// range, so both blanks are clickable padding.
 ///
-/// It keeps the same verdict glyph and motion rules as a fleet row, but is
-/// rendered separately so the fleet list can stay focused on other sessions.
+/// The GLYPH never changes with the mark: a button that changes shape stops
+/// reading as a button, and a shape-changing icon would collide with the fleet
+/// strip's vocabulary sitting right beside it. The verdict rides the
+/// foreground colour instead, with the same accent selection a fleet row uses,
+/// including the working frame's motion colour; the current row keeps its
+/// selected ground.
 #[must_use]
 pub fn orchestrator_strip(
     look: &Look,
@@ -967,38 +977,26 @@ pub fn orchestrator_strip(
     working_frame: Option<&WorkingFrame>,
 ) -> String {
     let palette = &look.palette;
-    let calm_pin = matches!(row.mark, Mark::Done | Mark::Idle);
-    let (glyph, working_accent) = if row.mark == Mark::Working {
-        working_frame.map_or(
-            (row.mark.glyph(look.icons), palette.accent(row.mark)),
-            |frame| (frame.glyph, frame.fg.as_str()),
-        )
-    } else if calm_pin {
-        (if look.icons { "◆" } else { "o" }, palette.dim)
-    } else {
-        (row.mark.glyph(look.icons), palette.accent(row.mark))
-    };
+    let glyph = if look.icons { "◆" } else { "o" };
+    debug_assert_eq!(crate::orchestrator::terminal_cells(glyph), 1);
     let accent = if row.mark == Mark::Working {
-        working_accent
-    } else if calm_pin {
+        working_frame.map_or(palette.accent(row.mark), |frame| frame.fg.as_str())
+    } else if matches!(row.mark, Mark::Done | Mark::Idle) {
         palette.dim
     } else {
         palette.accent(row.mark)
     };
-    let (ground, text) = if row.current {
-        (
-            palette.selected,
-            format!("fg={} bold", palette.selected_ink),
-        )
+    let ground = if row.current {
+        palette.selected
     } else {
-        (palette.base, format!("fg={} nobold", palette.dim))
+        palette.base
     };
     format!(
-        "#[range=session|{id} fg={accent} bg={ground}]{glyph}#[{text} bg={ground}] orchestrator#[norange nobold fg={dim} bg={base}]",
+        "#[range=session|{id} fg={accent} bg={ground}] {glyph} #[norange nobold fg={dim} bg={base}]",
         id = row.id,
         accent = accent,
         ground = ground,
-        text = text,
+        glyph = glyph,
         base = palette.base,
         dim = palette.dim,
     )
@@ -1375,15 +1373,15 @@ mod tests {
             assert_eq!(
                 line,
                 format!(
-                    "#[align=left fg={} bg={}]{} #{{{}}}#[align=right fg={} bg={}]#{{?#{{{}}},  #{{{}}} ,}}{}",
+                    "#[align=left fg={} bg={}]{} #{{?#{{{}}},#{{{}}},}}#{{{}}}#[align=right fg={} bg={}]{}",
                     palette.dim,
                     palette.base,
                     super::version_segment(&look),
+                    super::ORCHESTRATOR_STRIP_OPTION,
+                    super::ORCHESTRATOR_STRIP_OPTION,
                     super::FLEET_STRIP_OPTION,
                     palette.dim,
                     palette.base,
-                    super::ORCHESTRATOR_STRIP_OPTION,
-                    super::ORCHESTRATOR_STRIP_OPTION,
                     super::settings_segment(&look),
                 ),
                 "{line}"
@@ -1403,23 +1401,43 @@ mod tests {
         }
     }
 
+    /// The optional orchestrator button sits between the menu glyph and the
+    /// fleet strip, and nowhere else: the right side keeps only settings. An
+    /// unset orchestrator renders nothing — no padding, no shifted fleet.
     #[test]
-    fn line_one_places_optional_orchestrator_on_its_right_side() {
+    fn line_one_places_optional_orchestrator_between_menu_and_fleet_strip() {
         let line = status_line_one(&Look::DEFAULT);
         let marker = format!(
-            "#{{?#{{{}}},  #{{{}}} ,}}",
+            "#{{?#{{{}}},#{{{}}},}}",
             super::ORCHESTRATOR_STRIP_OPTION,
             super::ORCHESTRATOR_STRIP_OPTION,
         );
         assert!(line.contains(&marker), "{line}");
         assert!(
+            marker.ends_with(",}"),
+            "an unset orchestrator renders nothing, not padding: {marker}"
+        );
+        assert!(
             line.find("#[range=user|ae]").unwrap_or(usize::MAX)
-                < line.find(super::FLEET_STRIP_OPTION).unwrap_or(usize::MAX)
+                < line.find(&marker).unwrap_or(usize::MAX)
+                && line.find(&marker).unwrap_or(usize::MAX)
+                    < line.find(super::FLEET_STRIP_OPTION).unwrap_or(usize::MAX)
                 && line.find(super::FLEET_STRIP_OPTION).unwrap_or(usize::MAX)
-                    < line.find("#[align=right").unwrap_or(usize::MAX)
-                && line.find("#[align=right").unwrap_or(usize::MAX)
-                    < line.find(&marker).unwrap_or(usize::MAX),
-            "menu, fleet and orchestrator must keep their left-to-right order: {line}"
+                    < line.find("#[align=right").unwrap_or(usize::MAX),
+            "menu, orchestrator and fleet must keep their left-to-right order: {line}"
+        );
+        let right = line
+            .split_once("#[align=right")
+            .map_or("", |(_, right)| right);
+        assert!(
+            !right.contains(super::ORCHESTRATOR_STRIP_OPTION),
+            "the right side keeps only settings: {line}"
+        );
+        // The single literal space between the menu button and the
+        // conditional is the third cell; no other padding may sit there.
+        assert!(
+            line.contains("#[norange] #{?"),
+            "menu, one blank, then the conditional: {line}"
         );
     }
 
@@ -1931,6 +1949,9 @@ mod tests {
         assert_eq!(strip.matches("range=user|ae-more").count(), 1, "{strip}");
     }
 
+    /// The orchestrator is a one-cell button after the menu glyph: a STABLE
+    /// `◆`/`o` whose verdict rides the foreground colour — never the fleet
+    /// strip's shape vocabulary, never the word `orchestrator`.
     #[test]
     fn the_orchestrator_is_rendered_separately_from_the_fleet_strip() {
         let row = |name: &str, mark| FleetRow {
@@ -1965,33 +1986,37 @@ mod tests {
         let segment = orchestrator_strip(&Look::DEFAULT, &current_row, Some(&frame));
         assert!(
             segment.contains("#[range=session|$12")
-                && segment.contains("⠼")
-                && segment.contains("orchestrator")
+                && !segment.contains("⠼")
+                && segment.contains("◆")
+                && segment.contains("#ABCDEF")
                 && segment.contains("bg=#214283")
-                && segment.contains(&format!("fg={} bold", Look::DEFAULT.palette.selected_ink)),
-            "working orchestrator keeps range and shared frame: {segment}"
+                && !segment.contains("orchestrator"),
+            "working orchestrator keeps range, motion colour and selected ground, not the frame glyph or the word: {segment}"
         );
-        assert!(
-            segment.contains("] orchestrator"),
-            "mark/name have blank: {segment}"
-        );
+        assert_eq!(strip_tmux_styles(&segment), " ◆ ");
 
         for mark in [Mark::Dead, Mark::NeedsYou, Mark::Stale] {
             let attention =
                 orchestrator_strip(&Look::DEFAULT, &row("orchestrator", mark), Some(&frame));
+            assert_eq!(
+                strip_tmux_styles(&attention),
+                " ◆ ",
+                "the button never takes the mark's shape: {attention}"
+            );
             assert!(
-                attention.contains(mark.glyph(true)) && attention.contains("orchestrator"),
-                "attention beats motion and the pin: {attention}"
+                attention.contains(Look::DEFAULT.palette.accent(mark)),
+                "the verdict rides the foreground colour: {attention}"
+            );
+            assert!(
+                !attention.contains("orchestrator"),
+                "no text label: {attention}"
             );
         }
 
         for mark in [Mark::Idle, Mark::Done] {
             let calm = orchestrator_strip(&Look::DEFAULT, &row("orchestrator", mark), Some(&frame));
-            assert!(
-                calm.contains("◆"),
-                "calm orchestrator keeps its neutral anchor mark: {calm}"
-            );
-            assert!(calm.contains("fg=#808080"), "dim calm segment: {calm}");
+            assert_eq!(strip_tmux_styles(&calm), " ◆ ", "{calm}");
+            assert!(calm.contains("fg=#808080"), "dim calm button: {calm}");
         }
 
         let ascii = orchestrator_strip(
@@ -2002,8 +2027,17 @@ mod tests {
             &row("orchestrator", Mark::Idle),
             None,
         );
-        assert!(ascii.contains('o'), "ASCII anchor mark: {ascii}");
-        assert!(ascii.contains("orchestrator"), "ASCII segment: {ascii}");
+        assert_eq!(strip_tmux_styles(&ascii), " o ", "{ascii}");
+        assert!(!ascii.contains("orchestrator"), "ASCII button: {ascii}");
+
+        assert_eq!(crate::orchestrator::terminal_cells("◆"), 1);
+        assert_eq!(crate::orchestrator::terminal_cells(" ◆ "), 3);
+        assert_eq!(crate::orchestrator::terminal_cells("o"), 1);
+        assert_eq!(crate::orchestrator::terminal_cells(" o "), 3);
+        assert!(
+            !segment.contains('\u{fe0f}'),
+            "no variation selector: {segment}"
+        );
     }
 
     #[test]
