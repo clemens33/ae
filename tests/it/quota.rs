@@ -666,12 +666,13 @@ fn a_client_only_row_that_cannot_resolve_is_unknown_and_names_its_own_section() 
     assert!(text.contains("goodx") && text.contains("77%"), "{text}");
 }
 
-/// C1 — BOTH passes refuse for the same account. Two refusals are two facts
-/// and the operator needs both, but they are ONE account: two rows would read
-/// as two subscriptions AND would carry the declaration twice, deriving
-/// EFFECTIVE from it on each.
+/// C1 — BOTH passes refuse for the same label. Two refusals are two facts and
+/// the operator needs both. They are NOT shown as one account: nothing proved
+/// these two scopes are the same one, and collapsing them would assert what we
+/// cannot observe. What must not happen is the declaration being counted on
+/// each row, which is why it is counted at the declaration instead.
 #[test]
-fn a_profile_refusal_and_its_client_refusal_are_one_account_row_carrying_both() {
+fn two_refusals_for_one_label_stay_two_rows_and_the_declaration_is_counted_once() {
     let root = rig("both-passes-refuse");
     std::fs::write(
         root.join("config"),
@@ -689,35 +690,35 @@ fn a_profile_refusal_and_its_client_refusal_are_one_account_row_carrying_both() 
     let _ = std::fs::remove_dir_all(&root);
     assert_eq!(
         text.matches("claude · cc").count(),
-        1,
-        "one account, one row: {text}"
+        2,
+        "an unproven sameness is rendered as what it is — two rows: {text}"
     );
-    // The status cell wraps, so the profile refusal is asserted by its parts.
+    // The status cell wraps, so each refusal is asserted by its parts.
     assert!(
         text.contains("[profiles] p via") && text.contains("client 'cc': HOME"),
         "the profile refusal is stated: {text}"
     );
+    // "[profiles] p via client 'cc': ..." never contains this fragment, so it
+    // is the client refusal and only the client refusal.
     assert!(
-        text.contains("Error: [clients] cc: HOME unavailable"),
+        text.contains("[clients] cc: HOME"),
         "the client refusal is not lost: {text}"
     );
     assert_eq!(
-        text.matches("manual_resets").count(),
-        0,
-        "one unresolved row states no declaration twice: {text}"
+        text.matches("manual_resets is counted on this scope only")
+            .count(),
+        1,
+        "one declaration, counted once and said out loud: {text}"
     );
-    let rows: Vec<&str> = text
-        .lines()
-        .filter(|line| line.starts_with("p ") || line.starts_with("- "))
-        .collect();
-    assert_eq!(rows.len(), 1, "no second account row: {rows:?}");
 }
 
 /// C2 — the PROFILE refuses (a pane variable it cannot expand) while the bare
-/// client resolves. A resolvable account IS the account: one known row, the
-/// profile listed on it, and its refusal noted rather than split off.
+/// client resolves. Still two rows: a refusal proves nothing about identity,
+/// and `HOME=/other cc --model $MODEL` shows why assuming otherwise is wrong.
+/// The declaration lands on the row that PROVED a source, because a row that
+/// resolved nothing has no `EFFECTIVE` to spend it on.
 #[test]
-fn a_profile_that_cannot_expand_is_noted_on_the_account_that_does_resolve() {
+fn an_unexpandable_profile_is_its_own_row_and_the_proven_scope_takes_the_count() {
     let root = rig("profile-unknown-client-known");
     std::fs::write(
         root.join("config"),
@@ -733,32 +734,124 @@ fn a_profile_that_cannot_expand_is_noted_on_the_account_that_does_resolve() {
     let _ = std::fs::remove_dir_all(&root);
     assert_eq!(
         text.matches("claude · cc").count(),
+        2,
+        "the refusal is not folded into the account that did resolve: {text}"
+    );
+    // The status cell wraps between "depends on" and the variable it names.
+    assert!(
+        text.contains("pane variable MODEL"),
+        "the profile states why it is unknown: {text}"
+    );
+    assert_eq!(
+        text.matches("38.5% x1").count(),
         1,
-        "one account, one row: {text}"
+        "the declaration is counted once, on the row that proved a source: {text}"
     );
-    assert!(
-        text.contains("77%"),
-        "the account that resolves is the account: {text}"
-    );
-    assert!(
-        text.contains("38.5% x1"),
-        "its declaration is counted once, on the row that resolved: {text}"
-    );
-    let row = text
+    let proven = text
         .lines()
-        .find(|line| line.contains("claude · cc"))
-        .expect("the account row");
+        .find(|line| line.contains("claude · cc") && line.contains("77%"))
+        .expect("the resolved row");
     assert!(
-        row.starts_with("p "),
-        "the refusing profile is listed on it: {row:?}"
+        proven.starts_with("- "),
+        "the resolved row is the bare client row: {proven:?}"
+    );
+}
+
+/// Colead case A — a profile that pins its own HOME and separately depends on
+/// an UNRELATED pane variable. The variable short-circuits before the config
+/// home is resolved, so the row carries no source. Correlating it with the
+/// bare client by label would adopt the operator-HOME source and misattribute
+/// a profile that actually runs under `HOME=/other`: absence of a source is
+/// not proof of sameness, in either direction.
+#[test]
+fn a_fixed_home_profile_is_never_correlated_with_the_bare_client_by_label() {
+    let root = rig("fixed-home-unrelated-variable");
+    let other = root.join("other");
+    std::fs::create_dir_all(other.join(".claude-mic")).expect("other client home");
+    let cache = String::from_utf8_lossy(include_bytes!("../fixtures/quota/claude-cache.json"))
+        .replace("\"percent\": 66", "\"percent\": 11");
+    std::fs::write(other.join(".claude-mic/.claude.json"), cache.as_bytes()).expect("other cache");
+    std::fs::write(
+        root.join("config"),
+        format!(
+            "[clients]\ncc = claude config_home=$HOME/.claude-mic manual_resets=1\n[profiles]\np = HOME={} cc --model $MODEL\n",
+            other.display()
+        ),
+    )
+    .expect("fixed-home config");
+    let text = run_quota(&root);
+    let _ = std::fs::remove_dir_all(&root);
+    assert_eq!(
+        text.matches("claude · cc").count(),
+        2,
+        "the pinned-HOME profile is not merged into the bare client: {text}"
+    );
+    let pinned = text
+        .lines()
+        .find(|line| line.starts_with("p "))
+        .expect("the profile row");
+    assert!(
+        text.contains("pane variable MODEL"),
+        "the profile row states what it could not resolve: {pinned:?} / {text}"
     );
     assert!(
-        text.contains("depends on pane variable MODEL"),
-        "its refusal survives as a note: {text}"
+        !pinned.contains("77%") && !pinned.contains("11%"),
+        "it never adopts a source it did not prove: {pinned:?}"
     );
-    assert!(
-        !text.contains("unknown"),
-        "the refusal never becomes a second, unresolved account: {text}"
+    assert_eq!(
+        text.matches("38.5% x1").count(),
+        1,
+        "one declaration reaches exactly one scope: {text}"
+    );
+}
+
+/// Colead case B — the transitive bridge. Two DIFFERENT labels whose profiles
+/// refuse in identical words must never end up on one row and then hand each
+/// other a correlation neither ever proved, which is how one declaration comes
+/// back counted twice by a longer path.
+#[test]
+fn two_labels_refusing_in_the_same_words_never_bridge_into_one_account() {
+    let root = rig("transitive-bridge");
+    std::fs::write(
+        root.join("config"),
+        concat!(
+            "[clients]\n",
+            "a = claude config_home=$HOME/.claude-a manual_resets=1\n",
+            "b = claude config_home=$HOME/.claude-b manual_resets=1\n",
+            "[profiles]\n",
+            "pa = a --model $SHARED\n",
+            "pb = b --model $SHARED\n",
+        ),
+    )
+    .expect("bridge config");
+    for name in [".claude-a", ".claude-b"] {
+        std::fs::create_dir_all(root.join(name)).expect("client home");
+        let cache = String::from_utf8_lossy(include_bytes!("../fixtures/quota/claude-cache.json"))
+            .replace("\"percent\": 66", "\"percent\": 50");
+        std::fs::write(root.join(name).join(".claude.json"), cache.as_bytes()).expect("cache");
+    }
+    let text = run_quota(&root);
+    let _ = std::fs::remove_dir_all(&root);
+    assert_eq!(
+        text.matches("claude · a, b").count(),
+        0,
+        "two labels refusing alike are never one scope: {text}"
+    );
+    assert_eq!(
+        text.matches("claude · a").count() - text.matches("claude · a, ").count(),
+        2,
+        "label a keeps its refusing row and its resolved row, and no more: {text}"
+    );
+    assert_eq!(
+        text.matches("25% x1").count(),
+        2,
+        "each label's own declaration reaches exactly one of its own scopes: {text}"
+    );
+    assert_eq!(
+        text.matches("manual_resets is counted on this scope only")
+            .count(),
+        2,
+        "each label says once that it spans more than one scope: {text}"
     );
 }
 
