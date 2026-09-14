@@ -470,12 +470,6 @@ impl IdentityConfig {
         let client = self
             .client(client_label)
             .ok_or(OverrideError::UnknownClient)?;
-        let normal = self
-            .command(profile, home)
-            .map_err(OverrideError::Refused)?
-            .ok_or(OverrideError::UnknownProfile)?;
-        let normal_parsed = crate::launch_cmd::lex_simple_command(normal.as_str())
-            .map_err(|why| OverrideError::ProfileNotSimple(why.to_string()))?;
         let raw_parsed = crate::launch_cmd::lex_simple_command(raw)
             .map_err(|why| OverrideError::ProfileNotSimple(why.to_string()))?;
         // The same fight the whole-config validation refuses: a profile whose
@@ -499,13 +493,30 @@ impl IdentityConfig {
         text.push_str(&raw[..binary.span.0]);
         text.push_str(&replacement);
         text.push_str(&raw[binary.span.1..]);
+        // The profile's OWN default client is never expanded here: the
+        // adapter gate needs only its label and its executable word, and a
+        // full expansion would let a broken default refuse an override to a
+        // healthy client while naming the wrong one. The lookup mirrors
+        // `command`'s — a path-pinned or clientless word keeps the raw parse.
+        let (original_binary, original_client) = if binary.word.contains('/') {
+            (raw_parsed.binary.clone(), None)
+        } else {
+            match self.client(binary.word) {
+                Some(default) => {
+                    let parsed = crate::launch_cmd::lex_simple_command(&default.executable)
+                        .map_err(|why| OverrideError::ProfileNotSimple(why.to_string()))?;
+                    (parsed.binary, Some(binary.word.to_owned()))
+                }
+                None => (raw_parsed.binary.clone(), None),
+            }
+        };
         Ok(OverrideCommand {
             command: ResolvedCommand {
                 text,
                 client_label: Some(client_label.to_owned()),
             },
-            original_binary: normal_parsed.binary,
-            original_client: normal.client_label().map(str::to_owned),
+            original_binary,
+            original_client,
         })
     }
 
@@ -1237,6 +1248,10 @@ pub struct Seat {
     /// launch selection replaced the profile's own client with this label.
     /// `None` is the whole legacy shape — no override was honored.
     pub client_override: Option<String>,
+    /// Whether the CURRENT resolution proved the honored pairing: a label
+    /// the launcher could not resolve (`Unknown`) is honored for the pane
+    /// but never recorded — minting that fact would manufacture evidence.
+    pub store_proven: bool,
     /// The profile's launch command after one-shot client expansion.
     pub command: ResolvedCommand,
     /// The RAW leading-assignment span (`cmd.assign`), byte-exact from the
@@ -1419,6 +1434,7 @@ fn resolve_seat(
         name: name.to_owned(),
         profile: profile.to_owned(),
         client_override: None,
+        store_proven: false,
         command,
         assign_span: parsed.assign_span,
         argv_span: parsed.argv_span,
@@ -2084,6 +2100,29 @@ mod tests {
                 variable: "CLAUDE_CONFIG_DIR".to_owned(),
             }))
         );
+    }
+
+    /// The override resolver never expands the profile's OWN default client:
+    /// a default whose `$HOME` path cannot expand (no home in hand) still
+    /// reports its label and executable word, so an override to a healthy
+    /// client resolves instead of refusing in the wrong client's name.
+    #[test]
+    fn override_to_a_healthy_client_survives_a_broken_default() {
+        let (_f, cfg) = v2(
+            "[clients]\nbroken = claude config_home=$HOME/.broken\nhealthy = claude\n\
+             [profiles]\np = broken --model fable\n\
+             [roster]\nlead = p\n[workspace]\nmain = lead\n",
+        );
+        assert!(
+            cfg.command("p", None).is_err(),
+            "the default really is broken without a home"
+        );
+        let resolved = cfg
+            .command_with_client("p", "healthy", None)
+            .expect("the override resolves past the broken default");
+        assert_eq!(resolved.command.as_str(), "claude --model fable");
+        assert_eq!(resolved.original_binary, "claude");
+        assert_eq!(resolved.original_client.as_deref(), Some("broken"));
     }
 
     #[test]

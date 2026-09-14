@@ -454,6 +454,43 @@ fn legacy_summary_and_identified_retire_keep_distinct_coverage() {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// A retire summary carrying a `profile@client` spelling is not attributed:
+/// the roster grammar admits no `@`, so the seat stays unlocated rather than
+/// attributing spend to a profile that was never recorded.
+#[test]
+fn an_at_spelling_in_a_retire_summary_stays_unlocated() {
+    let root = rig("at-retire");
+    std::fs::write(
+        root.join("sessions/live/meta"),
+        "schema=2\nseat.main=lead\nagent_bin.main=claude\n",
+    )
+    .expect("meta");
+    std::fs::write(
+        root.join("sessions/live/events.jsonl"),
+        format!(
+            "{{\"ts\":\"2026-09-10T09:00:00Z\",\"actor\":\"lead\",\"action\":\"retire\",\"target\":\"past\",\"ref\":\"{RETIRED_ID}\",\"target_slot\":\"spawned.1\",\"summary\":\"tool=claude profile=fablex@cc-mic config_home={} config_home_base=\"}}\n",
+            root.display()
+        ),
+    )
+    .expect("retire event");
+    let sessions = [SessionInput {
+        name: "live".to_owned(),
+        path: root.join("sessions/live"),
+    }];
+    let observed = ae::usage::observe(&Inputs {
+        home: Some(&root),
+        sessions: &sessions,
+        prices: &prices::Book::default(),
+        now: 1_788_858_600,
+    });
+    assert_eq!(observed.sessions[0].seats.len(), 2);
+    let seat = &observed.sessions[0].seats[1];
+    assert_eq!(seat.seat, "past (retired)");
+    assert_eq!(seat.tool, "?", "no attribution without a grammar profile");
+    assert!(matches!(seat.coverage, Coverage::Unlocated));
+    let _ = std::fs::remove_dir_all(root);
+}
+
 #[test]
 fn price_math_stays_integer_and_override_rows_refuse_malformed_text() {
     let price = prices::parse_override("1.25,2.5,0.125,10").expect("valid override");

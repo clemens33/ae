@@ -4176,6 +4176,7 @@ mod tests {
             "v1;old;60;lead:fable5:working:%1",
             "v1;2000;60;bad name:fable5:working:%1",
             "v1;2000;60;lead:bad profile:working:%1",
+            "v1;2000;60;lead:fablex@cc-mic:working:%1",
             "v1;2000;60;lead:fable5:unknown:%1",
             "v1;2000;60;lead:fable5:working:pane",
             "v1;2000;60;lead:fable5:working:%1:extra",

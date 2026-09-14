@@ -624,12 +624,26 @@ pub fn manifest_document(
                 row(&meta_bytes, &format!("agent_bin.{}", pane.slot)),
             )
         };
+        // An override seat reads `profile@client`, so the quota guidance's
+        // "every profile on its client scope" stays applicable; a legacy seat
+        // reads exactly as before.
+        let client = if pane.slot.is_empty() {
+            String::new()
+        } else {
+            row(&meta_bytes, &format!("client.{}", pane.slot))
+        };
         let source = if agent_bin.is_empty() {
             pane.agent.as_str()
         } else {
             agent_bin.as_str()
         };
-        let shown_profile = if profile.is_empty() { "-" } else { &profile };
+        let shown_profile = if profile.is_empty() {
+            "-".to_owned()
+        } else if client.is_empty() {
+            profile.clone()
+        } else {
+            format!("{profile}@{client}")
+        };
         let _ = writeln!(
             agent_rows,
             "| {} | {shown_profile} | {} | {role} | {} |",

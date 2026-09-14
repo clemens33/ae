@@ -8175,6 +8175,16 @@ mod tests {
         );
     }
 
+    /// A roster profile carrying a `profile@client` spelling publishes no
+    /// fact at all: the grammar admits no `@`, and a fact the picker would
+    /// misread is worse than none.
+    #[test]
+    fn agents_fact_refuses_a_profile_at_spelling() {
+        let roster = [entry("main", "fablex@cc-mic", "lead")];
+        let observed = vec![("main".to_owned(), "%3".to_owned(), Verdict::Active)];
+        assert_eq!(agents_fact(&roster, &observed, 2_000, 60), None);
+    }
+
     #[test]
     fn a_slot_with_no_pane_is_neutral_on_its_first_absent_cycle_and_dead_on_its_second() {
         let roster = [entry("main", "cl", "lead"), entry("worker.0", "cl", "w")];

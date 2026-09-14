@@ -1061,6 +1061,52 @@ struct Seat {
 }
 
 /// Read the seat `slot` names, refusing anything that is not launchable.
+/// Resolve a snapshot-less `_run` command: the recorded label through the
+/// override substitution when one is recorded, else the legacy default. The
+/// launch preflight owns the adapter gate and the store re-take — this read
+/// trusts the meta it refuses to launch from, exactly as it already trusts
+/// the profile row.
+fn read_seat_command(
+    cfg: &crate::config::IdentityConfig,
+    profile: &str,
+    name: &str,
+    slot: &str,
+    recorded_client: &crate::meta::RecordedClient,
+    home: Option<&Path>,
+) -> Result<crate::config::ResolvedCommand, String> {
+    match recorded_client {
+        crate::meta::RecordedClient::Missing => {
+            let command = cfg.command(profile, home).map_err(|why| why.to_string())?;
+            let Some(command) = command.filter(|cmd| !cmd.as_str().trim().is_empty()) else {
+                return Err(format!(
+                    "profile '{profile}' is not configured on this machine — '{name}' cannot be launched"
+                ));
+            };
+            Ok(command)
+        }
+        crate::meta::RecordedClient::Label(label) => {
+            match cfg.command_with_client(profile, label, home) {
+                Ok(resolved) => Ok(resolved.command),
+                Err(crate::config::OverrideError::UnknownClient) => Err(format!(
+                    "seat '{slot}' recorded client override '{label}' but no [clients] row names it now — \
+                     restore the '{label}' client, or end the session"
+                )),
+                Err(crate::config::OverrideError::UnknownProfile) => Err(format!(
+                    "profile '{profile}' is not configured on this machine — '{name}' cannot be launched"
+                )),
+                Err(crate::config::OverrideError::ProfileNotSimple(why)) => Err(format!(
+                    "profile '{profile}' is not one simple command — {why} — '{name}' cannot be launched"
+                )),
+                Err(crate::config::OverrideError::Refused(why)) => Err(why.to_string()),
+            }
+        }
+        crate::meta::RecordedClient::Invalid => Err(format!(
+            "seat '{slot}' records an unusable client (client.{slot} is empty, duplicated or malformed) — \
+             fix the meta row, or end the session"
+        )),
+    }
+}
+
 fn read_seat(dir: &Path, slot: &str, command_snapshot: Option<&str>) -> Result<Seat, String> {
     if !crate::lifecycle::dir_exists(dir) {
         return Err(format!("no session state at {}", dir.display()));
@@ -1073,17 +1119,18 @@ fn read_seat(dir: &Path, slot: &str, command_snapshot: Option<&str>) -> Result<S
     if name.is_empty() {
         return Err(format!("no seat '{slot}' in {}", dir.display()));
     }
-    let config_home = parsed_meta
-        .roster()
-        .iter()
-        .find(|entry| entry.slot == slot)
+    let roster_entry = parsed_meta.roster().iter().find(|entry| entry.slot == slot);
+    let config_home = roster_entry
+        .as_ref()
         .map(|entry| entry.config_home.clone())
         .unwrap_or_default();
-    let config_home_base = parsed_meta
-        .roster()
-        .iter()
-        .find(|entry| entry.slot == slot)
+    let config_home_base = roster_entry
+        .as_ref()
         .map(|entry| entry.config_home_base.clone())
+        .unwrap_or_default();
+    let recorded_client = roster_entry
+        .as_ref()
+        .map(|entry| entry.client.clone())
         .unwrap_or_default();
     let profile = value(&format!("profile.{slot}"));
     if profile.is_empty() {
@@ -1113,15 +1160,14 @@ fn read_seat(dir: &Path, slot: &str, command_snapshot: Option<&str>) -> Result<S
         )
         .map_err(|why| why.to_string())?;
         let home = crate::doors::home();
-        let command = cfg
-            .command(&profile, home.as_deref())
-            .map_err(|why| why.to_string())?;
-        let Some(command) = command.filter(|cmd| !cmd.as_str().trim().is_empty()) else {
-            return Err(format!(
-                "profile '{profile}' is not configured on this machine — '{name}' cannot be launched"
-            ));
-        };
-        command
+        read_seat_command(
+            &cfg,
+            &profile,
+            &name,
+            slot,
+            &recorded_client,
+            home.as_deref(),
+        )?
     };
     // An ordinary/manual `_run` reads the profile fresh, so it re-asks the same
     // validator. A launch-provided snapshot already passed that validator, but
@@ -1607,5 +1653,93 @@ mod tests {
             seat.command.as_str(),
             "codex --yolo -m gpt-5.6-sol -c model_reasoning_effort=xhigh"
         );
+    }
+
+    /// A snapshot-less `_run` honors the recorded label: the composed argv
+    /// runs the override binary, and a healthy override seat says nothing —
+    /// the retention notice fires only when the current config genuinely
+    /// points elsewhere.
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the test fixture stages a session dir, a config and a store"
+    )]
+    fn a_snapshot_less_run_honors_the_recorded_client_silently() {
+        let root = std::env::temp_dir().join(format!("ae-run-client-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("sessions").join("noted");
+        let store = root.join("store");
+        std::fs::create_dir_all(&dir).expect("a session dir");
+        std::fs::create_dir_all(&store).expect("an override store");
+        // `_run` canonicalizes before it compares (`/tmp` is a symlink on
+        // macOS), so the fixture records the canonical spelling too.
+        let store = std::fs::canonicalize(&store).expect("a canonical store");
+        // Two paths, one known basename: the argv tells which side composed.
+        for side in ["a", "b"] {
+            let side_dir = root.join(side);
+            std::fs::create_dir_all(&side_dir).expect("a side dir");
+            std::fs::write(side_dir.join("claude"), "").expect("a side binary");
+        }
+        let cfg = root.join("config");
+        std::fs::write(
+            &cfg,
+            format!(
+                "[clients]\n\
+                 claude = {}/a/claude\n\
+                 cc-mic = {}/b/claude config_home={}\n\
+                 \n\
+                 [profiles]\n\
+                 fablex = \"claude --model fable\"\n\
+                 \n\
+                 [roster]\n\
+                 lead = fablex\n\
+                 \n\
+                 [workspace]\n\
+                 main = lead\n",
+                root.display(),
+                root.display(),
+                store.display()
+            ),
+        )
+        .expect("a config");
+        std::fs::write(
+            dir.join("meta"),
+            format!(
+                "schema=2\n\
+                 session=noted\n\
+                 work_dir={}/work\n\
+                 origin={}/origin\n\
+                 config={}\n\
+                 seat.main=lead\n\
+                 profile.main=fablex\n\
+                 client.main=cc-mic\n\
+                 agent_bin.main=claude\n\
+                 config_home.main={}\n",
+                root.display(),
+                root.display(),
+                cfg.display(),
+                store.display()
+            ),
+        )
+        .expect("a meta");
+        std::fs::write(dir.join("launch.main.started"), "1").expect("a start marker");
+        let plan = super::build(&dir, "main").expect("the seat builds");
+        let b = root.join("b").join("claude").display().to_string();
+        let a = root.join("a").join("claude").display().to_string();
+        assert!(
+            plan.argv.iter().any(|word| word == &b),
+            "the override binary is execed: {:?}",
+            plan.argv
+        );
+        assert!(
+            !plan.argv.iter().any(|word| word == &a),
+            "the default binary is gone: {:?}",
+            plan.argv
+        );
+        assert_eq!(
+            plan.config_home_notice, None,
+            "a healthy override seat says nothing"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

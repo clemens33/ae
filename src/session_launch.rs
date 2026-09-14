@@ -769,6 +769,10 @@ struct ResolvedSeatOverride {
     client: Option<String>,
     command: config::ResolvedCommand,
     parsed: crate::launch_cmd::SimpleCommand,
+    /// Whether the CURRENT resolution proved the label pairing: false when it
+    /// resolved `Unknown`, in which case the build honors the seat but records
+    /// no new pairing.
+    store_proven: bool,
 }
 
 /// Split a `--lead`/`--colead`/`--seat` value into its profile and optional
@@ -1128,7 +1132,9 @@ fn recorded_selection(
 /// different label refuses whatever its facts (config is mutable, so an
 /// equality proof cannot cross a config edit), and a bare profile cannot drop
 /// it. Whatever the labels say, the recorded STORE triple is re-taken against
-/// the current resolution, which catches a label whose definition moved.
+/// the current resolution, which catches a label whose definition moved. The
+/// `bool` answers whether that re-take PROVED the pairing — `false` under an
+/// `Unknown` current resolution, which honors the seat but records nothing.
 #[allow(
     clippy::too_many_arguments,
     reason = "one refusal site for one override against one recorded seat"
@@ -1143,11 +1149,11 @@ fn refuse_recorded_client_conflict(
     command: &config::ResolvedCommand,
     tool: ToolKind,
     home: Option<&Path>,
-) -> Result<(), SeatOverrideRefusal> {
+) -> Result<bool, SeatOverrideRefusal> {
     let recorded = recorded_selection(session, cfg, entry).map_err(SeatOverrideRefusal::Failed)?;
     match (recorded, client) {
         // No recorded override and none selected: the legacy path, untouched.
-        (RecordedSelection::Missing, None) => Ok(()),
+        (RecordedSelection::Missing, None) => Ok(true),
         // First override for this seat: the recorded store still rules.
         (RecordedSelection::Missing, Some(label)) => refuse_store_conflict(
             session,
@@ -1203,6 +1209,25 @@ fn recorded_store_shown(
     }
 }
 
+/// Whether the CURRENT resolution proved a label pairing: anything but
+/// `Unknown`. Decided on the RAW resolution, so a first start learns it
+/// without canonicalizing anything it will not compare.
+fn current_pairing_proven(
+    command: &config::ResolvedCommand,
+    tool: ToolKind,
+    home: Option<&Path>,
+) -> bool {
+    let home_value = home.map(|path| path.display().to_string());
+    let resolution = crate::launch_cmd::config_home_resolution(command, tool, &|name| {
+        if name == "HOME" {
+            home_value.clone()
+        } else {
+            None
+        }
+    });
+    !matches!(resolution.home, crate::launch_cmd::Resolved::Unknown(_))
+}
+
 /// Re-take the R4 identity check for one override: the recorded store triple
 /// (MODE + PATH + BASE — never path alone, an implicit and an explicit row
 /// over one path are different accounts) against the CURRENT resolution of
@@ -1213,7 +1238,9 @@ fn recorded_store_shown(
 /// resolution never consults the environment at all; an implicit one needs
 /// exactly `HOME`. A CURRENT resolution of `Unknown` (a pane-only `$VAR` the
 /// launcher cannot see) proves no conflict — `_run` retains the recorded
-/// store with a notice, so the seat stays safe without this gate refusing.
+/// store with a notice, so the seat stays safe without this gate refusing —
+/// but it proves no pairing either, and the `false` carries exactly that: the
+/// caller honors the seat and records no new label fact.
 fn refuse_store_conflict(
     session: &str,
     agent: &str,
@@ -1222,12 +1249,7 @@ fn refuse_store_conflict(
     command: &config::ResolvedCommand,
     tool: ToolKind,
     home: Option<&Path>,
-) -> Result<(), SeatOverrideRefusal> {
-    if entry.config_home == crate::meta::RecordedConfigHome::Missing {
-        // First start for this seat: the override participates in the one
-        // resolution and is recorded normally.
-        return Ok(());
-    }
+) -> Result<bool, SeatOverrideRefusal> {
     if entry.config_home == crate::meta::RecordedConfigHome::Invalid {
         return Err(SeatOverrideRefusal::Failed(format!(
             "Error: cannot resume seat '{agent}' as '{spelling}': seat '{}' has malformed or duplicate config_home metadata — \
@@ -1250,12 +1272,21 @@ fn refuse_store_conflict(
             None
         }
     });
+    if entry.config_home == crate::meta::RecordedConfigHome::Missing {
+        // First start for this seat: the override participates in the one
+        // resolution and is recorded normally — but only a proved pairing
+        // may mint the label row.
+        return Ok(!matches!(
+            resolution.home,
+            crate::launch_cmd::Resolved::Unknown(_)
+        ));
+    }
     let current =
         crate::run::canonical_config_home(&resolution.home).map_err(SeatOverrideRefusal::Failed)?;
     let current_base =
         crate::run::canonical_config_home(&resolution.base).map_err(SeatOverrideRefusal::Failed)?;
     if matches!(current, crate::launch_cmd::Resolved::Unknown(_)) {
-        return Ok(());
+        return Ok(false);
     }
     let matches = match (&entry.config_home, &current) {
         (crate::meta::RecordedConfigHome::Absent, crate::launch_cmd::Resolved::Absent) => true,
@@ -1280,7 +1311,7 @@ fn refuse_store_conflict(
         _ => false,
     };
     if matches {
-        return Ok(());
+        return Ok(true);
     }
     let now = match (&current, resolution.explicit) {
         (crate::launch_cmd::Resolved::Path(path), true) => {
@@ -1295,10 +1326,22 @@ fn refuse_store_conflict(
         (crate::launch_cmd::Resolved::Absent, _) => "absent".to_owned(),
         (crate::launch_cmd::Resolved::Unknown(_), _) => "unresolvable".to_owned(),
     };
+    // A store the pane selects through an exported account variable reads
+    // exactly like a mode flip here: the launcher cannot see pane-only
+    // environment, so the refusal names the escape — pinning the store in the
+    // row makes the resolution observable and the refusal exact again.
+    let exported_hint = if !resolution.explicit
+        && matches!(entry.config_home, crate::meta::RecordedConfigHome::Path(_))
+    {
+        " If this seat's store is selected by an exported account variable the launcher cannot see, \
+         pin it in the [clients] row as config_home=<path> instead."
+    } else {
+        ""
+    };
     Err(SeatOverrideRefusal::Usage(format!(
         "Error: cannot resume seat '{agent}' as '{spelling}': the recorded conversation lives in {}, \
          but this launch resolves to {now} — a client override cannot move a retained conversation. \
-         End the session to adopt the new account (ae end {session}).",
+         End the session to adopt the new account (ae end {session}).{exported_hint}",
         recorded_store_shown(&entry.config_home, &entry.config_home_base)
     )))
 }
@@ -1358,13 +1401,13 @@ fn resolve_one_override(
         })?;
         (command, parsed)
     };
-    if let Some(parsed_meta) = ctx.recorded
+    let store_proven = if let Some(parsed_meta) = ctx.recorded
         && let Some(entry) = parsed_meta
             .roster()
             .iter()
             .find(|entry| entry.name == agent)
     {
-        refuse_recorded_client_conflict(
+        let proven = refuse_recorded_client_conflict(
             ctx.session,
             agent,
             &profile,
@@ -1384,13 +1427,19 @@ fn resolve_one_override(
                 new.as_str()
             )));
         }
-    }
+        proven
+    } else {
+        // No recorded seat: nothing to compare, but the pairing still needs
+        // its proof before the build may mint the label row.
+        current_pairing_proven(&command, parsed.tool(), ctx.home)
+    };
     Ok(ResolvedSeatOverride {
         agent: agent.to_owned(),
         profile,
         client,
         command,
         parsed,
+        store_proven,
     })
 }
 
@@ -1402,6 +1451,94 @@ fn known_list(names: &[&str]) -> String {
     } else {
         names.join(", ")
     }
+}
+
+/// Honor every recorded `client.<slot>` label a flagless resume resumes.
+///
+/// `ae s` with no seat flags is "resume as recorded": each carried label is
+/// resolved through the SAME path an explicit `@` selection takes — the R1
+/// adapter gate, then the R4 re-take against the recorded store — so a
+/// hostile or moved label refuses here, before any write, exactly as if it
+/// had been spelled. Seats an explicit flag names are skipped: the explicit
+/// selection already judged them (a bare profile refuses, an exact label
+/// re-takes), and judging twice would double-report.
+fn synthesize_recorded_honors(
+    ctx: &OverrideCtx,
+    seat_profiles: &[(String, String)],
+) -> Result<Vec<ResolvedSeatOverride>, SeatOverrideRefusal> {
+    let Some(recorded) = ctx.recorded else {
+        return Ok(Vec::new());
+    };
+    let mut honored = Vec::new();
+    for entry in recorded.roster() {
+        if entry.slot != "main" && !entry.slot.starts_with("worker.") {
+            continue;
+        }
+        if !ctx.agents.iter().any(|known| known == &entry.name) {
+            continue;
+        }
+        if seat_profiles.iter().any(|(agent, _)| agent == &entry.name) {
+            continue;
+        }
+        // The usability gate above already refused every unusable row, so a
+        // `Missing` here is a legacy seat to skip — anything else that is not
+        // a provable label refuses with its own remedy, never silently.
+        let RecordedSelection::Label(label) =
+            recorded_selection(ctx.session, ctx.cfg, entry).map_err(SeatOverrideRefusal::Failed)?
+        else {
+            continue;
+        };
+        let Some(profile) = entry.profile.as_deref().filter(|name| !name.is_empty()) else {
+            return Err(SeatOverrideRefusal::Failed(format!(
+                "Error: session '{}' seat '{}' recorded client override '{label}' but no profile — \
+                 fix the meta row, or end the session (ae end {}).",
+                ctx.session, entry.name, ctx.session
+            )));
+        };
+        let (command, parsed) = resolve_client_override(
+            ctx.cfg,
+            &entry.name,
+            profile,
+            &label,
+            ctx.home,
+            ctx.known_profiles,
+            ctx.known_clients,
+        )?;
+        let proven = refuse_recorded_client_conflict(
+            ctx.session,
+            &entry.name,
+            profile,
+            Some(&label),
+            entry,
+            ctx.cfg,
+            &command,
+            parsed.tool(),
+            ctx.home,
+        )?;
+        honored.push(ResolvedSeatOverride {
+            agent: entry.name.clone(),
+            profile: profile.to_owned(),
+            client: Some(label),
+            command,
+            parsed,
+            store_proven: proven,
+        });
+    }
+    Ok(honored)
+}
+
+/// Whether a flagless resume carries labels it must honor: a `Label` row on a
+/// launch seat. Shape alone decides, so a legacy resume still returns before
+/// any config is read.
+fn flagless_honor_needed(recorded: Option<&Meta>, resuming: bool, running: bool) -> bool {
+    resuming
+        && !running
+        && recorded.is_some_and(|parsed| {
+            parsed.roster().iter().any(|entry| {
+                (entry.slot == "main" || entry.slot.starts_with("worker."))
+                    && matches!(entry.client, crate::meta::RecordedClient::Label(_))
+            })
+        })
 }
 
 fn validate_seat_overrides(
@@ -1442,7 +1579,17 @@ fn validate_seat_overrides(
         }
     }
     let frozen_solo_identity = frozen_solo_identity(plan, dir, resuming, running)?;
-    if plan.seat_profiles.is_empty() && frozen_solo_identity.is_none() {
+    let recorded = if resuming {
+        meta::read_bytes(dir)
+            .ok()
+            .map(|bytes| Meta::parse(&String::from_utf8_lossy(&bytes)))
+    } else {
+        None
+    };
+    if plan.seat_profiles.is_empty()
+        && frozen_solo_identity.is_none()
+        && !flagless_honor_needed(recorded.as_ref(), resuming, running)
+    {
         return Ok(None);
     }
     if running && !plan.seat_profiles.is_empty() {
@@ -1474,13 +1621,6 @@ fn validate_seat_overrides(
         .map(|(client, _)| client.as_str())
         .collect();
     let known_clients = known_list(&client_names);
-    let recorded = if resuming {
-        meta::read_bytes(dir)
-            .ok()
-            .map(|bytes| Meta::parse(&String::from_utf8_lossy(&bytes)))
-    } else {
-        None
-    };
     let session = plan.name.as_deref().unwrap_or_default();
     // Every recorded seat's client row must be usable before any rewrite,
     // whether or not this launch names that seat: the meta rewrite below
@@ -1508,6 +1648,10 @@ fn validate_seat_overrides(
     for (agent, value) in &plan.seat_profiles {
         overrides.push(resolve_one_override(&ctx, agent, value)?);
     }
+    // Flagless seats last: the explicit loop above already judged every seat
+    // a flag names, so these are exactly the carried labels the flags left
+    // alone — honored through the same resolve + re-take.
+    overrides.extend(synthesize_recorded_honors(&ctx, &plan.seat_profiles)?);
     for replacement in &overrides {
         if let Some((_, bound)) = cfg
             .roster
@@ -1524,6 +1668,7 @@ fn validate_seat_overrides(
 fn reprofile_seat(seat: &mut Seat, replacement: &ResolvedSeatOverride) {
     replacement.profile.clone_into(&mut seat.profile);
     seat.client_override.clone_from(&replacement.client);
+    seat.store_proven = replacement.store_proven;
     replacement.command.clone_into(&mut seat.command);
     seat.assign_span.clone_from(&replacement.parsed.assign_span);
     seat.argv_span.clone_from(&replacement.parsed.argv_span);
@@ -2821,7 +2966,33 @@ fn build(
                 err,
             );
         }
-        let client = seat.client_override.clone().or(carried);
+        if seat.client_override.is_none()
+            && let Some(added) = carried.as_deref()
+        {
+            // A label preflight never saw: hand-added (or a concurrent
+            // launch's) between preflight and this lock. It carries no R1/R4
+            // proof, and this seat was composed without it — retrying
+            // re-runs preflight, which honors it properly.
+            return rollback_launch(
+                shape,
+                &dir,
+                &server,
+                &format!(
+                    "Error: session '{}' seat '{}' recorded client override '{added}' while this launch was starting — \
+                     nothing was resumed; retry the launch.",
+                    shape.name, seat.name
+                ),
+                err,
+            );
+        }
+        // An unproven pairing honors the pane but mints no label fact: only a
+        // carried row — an earlier PROVEN start's fact, republished unchanged —
+        // may survive it.
+        let client = if seat.store_proven {
+            seat.client_override.clone().or(carried)
+        } else {
+            carried
+        };
         let stored = shape
             .resuming
             .then(|| meta_value(&dir, &format!("harness_session.{}", seat.slot)))

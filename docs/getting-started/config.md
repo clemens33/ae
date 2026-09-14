@@ -90,7 +90,8 @@ For a one-off seat on another account, skip the duplicate profile and say so at 
 `ae myproject --lead fable5@cc-mic` runs the `fable5` flags against the `cc-mic` account. The
 `@` spelling works on `--lead`, `--colead` and `--seat`, and only there — `spawn --using`
 takes a bare profile. Both sides must be the same known tool, and the recorded client is
-write-once for the session: later resumes repeat its exact label. See
+write-once for the session: a flagless resume honors it by itself, while an explicit
+re-pairing repeats its exact label. See
 [Commands](../reference/commands.md) for the refusal rules.
 
 A client row also takes `manual_resets=<0-9>`, in any order beside `config_home=`:

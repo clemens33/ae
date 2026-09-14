@@ -1739,6 +1739,46 @@ fn stop(rig: &Rig, session: &str) {
     );
 }
 
+/// A rig whose default and override clients run DIFFERENT binaries of one
+/// harness: honoring the override then shows in `_run --print`'s argv, where a
+/// default composition with retention would show the other path. Each fake
+/// also signs its launch record, so the record tells which binary ran.
+fn split_binary_rig(tag: &str) -> Rig {
+    let rig = Rig::new(tag, &["claude", "codex"], None);
+    assert!(
+        std::fs::create_dir_all(rig.scratch.join(".claude-mic")).is_ok(),
+        "an override store"
+    );
+    let fake = std::fs::read_to_string(rig.bin.join("claude")).unwrap_or_default();
+    assert!(fake.contains("close($log);"), "the served claude");
+    for side in ["a", "b"] {
+        let dir = rig.bin.join(side);
+        assert!(std::fs::create_dir_all(&dir).is_ok(), "a {side} dir");
+        let signed = fake.replacen(
+            "close($log);",
+            &format!("print $log \"side={side}\\n\";\nclose($log);"),
+            1,
+        );
+        let bin = dir.join("claude");
+        assert!(std::fs::write(&bin, signed).is_ok(), "a {side} claude");
+        assert!(
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).is_ok(),
+            "an executable {side} claude"
+        );
+    }
+    let bin = rig.bin.display().to_string();
+    let config = format!(
+        "[clients]\nclaude = {bin}/a/claude\ncc-mic = {bin}/b/claude config_home=$HOME/.claude-mic\ncodex = {bin}/codex\n\n\
+         [profiles]\nfablex = \"claude --model fable\"\nsolx = \"codex -m sol\"\n\n\
+         [roster]\nlead = fablex\n\n[workspace]\nmain = lead\nlayout = vertical\nwatchdog = false\n"
+    );
+    assert!(
+        std::fs::write(&rig.config, config).is_ok(),
+        "a split config"
+    );
+    rig
+}
+
 /// S1: `--lead fablex@cc-mic` launches the seat against the override store.
 /// `profile.<slot>` keeps the bare label, `client.<slot>` carries the
 /// client, and the pane's environment proves the account moved.
@@ -2006,6 +2046,10 @@ fn resume_after_label_removal_refuses_and_restore_recovers() {
         rig.meta("lnrestore").contains("client.main=cc-mic\n"),
         "the row reads Label again with its identity unchanged"
     );
+    assert!(
+        rig.plan("lnrestore", "main").contains(".claude-mic"),
+        "the resumed plan runs on the restored override store"
+    );
 }
 
 /// R4 re-taken: the same label whose DEFINITION moved under it refuses,
@@ -2029,14 +2073,21 @@ fn resume_after_definition_move_refuses_naming_both_stores() {
         std::fs::write(&rig.config, moved).is_ok(),
         "definition moved"
     );
-    let (code, _, stderr) = rig.launch(&["--local", "lnmoved", "--lead", "fablex@cc-mic"]);
-    assert_eq!(code, Some(2), "{stderr}");
-    assert!(
-        stderr.contains(".claude-mic")
-            && stderr.contains(".claude-moved")
-            && stderr.contains("cannot move a retained conversation"),
-        "{stderr}"
-    );
+    // Both resume shapes re-take the check: the flagless resume honors the
+    // recorded label through the same resolve + re-take as the spelled one.
+    for tail in [
+        &["--local", "lnmoved"][..],
+        &["--local", "lnmoved", "--lead", "fablex@cc-mic"][..],
+    ] {
+        let (code, _, stderr) = rig.launch(tail);
+        assert_eq!(code, Some(2), "{tail:?}: {stderr}");
+        assert!(
+            stderr.contains(".claude-mic")
+                && stderr.contains(".claude-moved")
+                && stderr.contains("cannot move a retained conversation"),
+            "{tail:?}: {stderr}"
+        );
+    }
 }
 
 /// R2b end to end: an empty, duplicated or malformed row refuses with the
@@ -2056,7 +2107,9 @@ fn resume_with_invalid_client_shape_refuses_before_any_rewrite() {
     assert!(good.contains("client.main=cc-mic\n"), "{good}");
     for bad in [
         good.replace("client.main=cc-mic\n", "client.main=\n"),
+        good.replace("client.main=cc-mic\n", "client.main=   \n"),
         good.replace("client.main=cc-mic\n", "client.main=cc mic\n"),
+        good.replace("client.main=cc-mic\n", "client.main=cc-mic \n"),
         good.replace(
             "client.main=cc-mic\n",
             "client.main=cc-mic\nclient.main=cc-other\n",
@@ -2105,6 +2158,195 @@ fn matching_override_on_missing_row_is_recorded() {
         rig.meta("lnfirst").contains("client.main=cc-alias\n"),
         "the honored override is recorded: {}",
         rig.meta("lnfirst")
+    );
+}
+
+/// F1: a flagless resume honors the recorded label — the pane is composed
+/// from the override, not the default. The rig's two clients run different
+/// binaries of one harness, so `_run --print`'s argv tells honor (`/b/claude`)
+/// from default-plus-retention (`/a/claude`); the signed launch record tells
+/// which binary the resumed pane actually ran.
+#[test]
+fn flagless_resume_honors_the_recorded_client() {
+    if skip() {
+        return;
+    }
+    let rig = split_binary_rig("seat-client-honor");
+    let (code, stdout, stderr) = rig.launch(&["--local", "lnhonor", "--lead", "fablex@cc-mic"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        rig.launch_argv().contains("side=b"),
+        "the first pane ran the override binary"
+    );
+    stop(&rig, "lnhonor");
+    assert!(
+        std::fs::write(&rig.launched, "").is_ok(),
+        "a clean launch record for the resume"
+    );
+    let (code, stdout, stderr) = rig.launch(&["--local", "lnhonor"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let meta = rig.meta("lnhonor");
+    assert!(meta.contains("client.main=cc-mic\n"), "{meta}");
+    assert!(!meta.contains('@'), "no @ spelling reaches meta: {meta}");
+    let plan = rig.plan("lnhonor", "main");
+    assert!(
+        plan.contains("/b/claude"),
+        "the resumed plan honors the override: {plan}"
+    );
+    assert!(
+        !plan.contains("/a/claude"),
+        "no default binary leaks into the plan: {plan}"
+    );
+    let resumed = rig.launch_argv();
+    assert!(
+        resumed.contains("side=b") && !resumed.contains("side=a"),
+        "the resumed pane ran the override binary: {resumed}"
+    );
+}
+
+/// F5: `workspace.md`'s agent table names the effective seat — `profile@client`
+/// for an override seat, so the quota guidance's "every profile on its client
+/// scope" stays applicable to it.
+#[test]
+fn workspace_manifest_names_the_effective_seat() {
+    if skip() {
+        return;
+    }
+    let rig = client_rig("seat-client-manifest");
+    let (code, stdout, stderr) = rig.launch(&["--local", "lnmanifest", "--lead", "fablex@cc-mic"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let doc =
+        std::fs::read_to_string(rig.dir("lnmanifest").join("workspace.md")).unwrap_or_default();
+    assert!(
+        doc.contains("| lead | fablex@cc-mic |"),
+        "the agent row names the effective seat: {doc}"
+    );
+}
+
+/// F2: a recorded label naming ANOTHER harness refuses on the read path — the
+/// recorded label gets the same adapter gate as a spelled one.
+#[test]
+fn recorded_cross_harness_label_refuses_on_a_flagless_resume() {
+    if skip() {
+        return;
+    }
+    let rig = client_rig("seat-client-xharness");
+    let (code, stdout, stderr) = rig.launch(&["--local", "lnxharness", "--lead", "fablex@cc-mic"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    stop(&rig, "lnxharness");
+    let path = rig.dir("lnxharness").join("meta");
+    let good = std::fs::read_to_string(&path).unwrap_or_default();
+    assert!(good.contains("client.main=cc-mic\n"), "{good}");
+    let bad = good.replace("client.main=cc-mic\n", "client.main=codex\n");
+    assert!(std::fs::write(&path, &bad).is_ok(), "damage planted");
+    let (code, _, stderr) = rig.launch(&["--local", "lnxharness"]);
+    assert_eq!(code, Some(2), "{stderr}");
+    assert!(
+        stderr.contains("never the harness adapter") && stderr.contains("fablex@codex"),
+        "the read path gates the recorded label: {stderr}"
+    );
+}
+
+/// F3: an override the current resolution cannot prove proceeds but records
+/// nothing — minting the label row would manufacture evidence. A row an
+/// earlier PROVEN start recorded is republished unchanged under the same
+/// blindness: that is not a new fact. The blindness is a RELATIVE account
+/// path in the profile prefix: unresolvable anywhere, with no environment
+/// dependence.
+#[test]
+fn unproven_pairing_proceeds_without_recording_a_label() {
+    if skip() {
+        return;
+    }
+    let rig = split_binary_rig("seat-client-unproven");
+    let bin = rig.bin.display().to_string();
+    // `cvar` is implicit and `varp` hides the account variable behind a
+    // relative path: the controlled preflight lookup resolves `Unknown`.
+    let config = format!(
+        "[clients]\nclaude = {bin}/a/claude\ncc-mic = {bin}/b/claude config_home=$HOME/.claude-mic\ncvar = {bin}/b/claude\n\n\
+         [profiles]\nfablex = \"claude --model fable\"\nvarp = \"CLAUDE_CONFIG_DIR=rel/store claude --model fable\"\n\n\
+         [roster]\nlead = fablex\n\n[workspace]\nmain = lead\nlayout = vertical\nwatchdog = false\n"
+    );
+    assert!(std::fs::write(&rig.config, config).is_ok(), "a var config");
+    let (code, stdout, stderr) = rig.launch(&["--local", "lnfresh", "--lead", "varp@cvar"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        !rig.meta("lnfresh").contains("client."),
+        "no label row is minted for an unproven pairing: {}",
+        rig.meta("lnfresh")
+    );
+    assert!(
+        rig.launch_argv().contains("side=b"),
+        "the unproven seat still runs the override binary"
+    );
+    stop(&rig, "lnfresh");
+
+    let (code, stdout, stderr) = rig.launch(&["--local", "lncarried", "--lead", "fablex@cc-mic"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    stop(&rig, "lncarried");
+    // The label goes implicit and the profile hides behind the relative
+    // path: the carried row's re-take now resolves `Unknown`.
+    let flipped = format!(
+        "[clients]\nclaude = {bin}/a/claude\ncc-mic = {bin}/b/claude\ncvar = {bin}/b/claude\n\n\
+         [profiles]\nfablex = \"CLAUDE_CONFIG_DIR=rel/store claude --model fable\"\nvarp = \"CLAUDE_CONFIG_DIR=rel/store claude --model fable\"\n\n\
+         [roster]\nlead = fablex\n\n[workspace]\nmain = lead\nlayout = vertical\nwatchdog = false\n"
+    );
+    assert!(std::fs::write(&rig.config, flipped).is_ok(), "the flip");
+    assert!(
+        std::fs::write(&rig.launched, "").is_ok(),
+        "a clean launch record for the resume"
+    );
+    let (code, stdout, stderr) = rig.launch(&["--local", "lncarried"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        rig.meta("lncarried").contains("client.main=cc-mic\n"),
+        "the proven row survives an unproven re-take: {}",
+        rig.meta("lncarried")
+    );
+    let plan = rig.plan("lncarried", "main");
+    assert!(
+        plan.contains("/b/claude"),
+        "the resumed plan still honors the carried label: {plan}"
+    );
+    let resumed = rig.launch_argv();
+    assert!(
+        resumed.contains("side=b") && !resumed.contains("side=a"),
+        "the resumed pane ran the carried override: {resumed}"
+    );
+}
+
+/// The store refusal keys on the recorded store, not on the start marker: a
+/// seat that never started (the pending/fallback shape) with a conflicting
+/// recorded store still refuses.
+#[test]
+fn conflict_refuses_for_a_seat_that_never_started() {
+    if skip() {
+        return;
+    }
+    let rig = client_rig("seat-client-pending");
+    let (code, stdout, stderr) = rig.launch(&["--local", "lnpending", "--lead", "fablex@cc-mic"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    stop(&rig, "lnpending");
+    let marker = rig.dir("lnpending").join("launch.main.started");
+    assert!(marker.exists(), "the seat started once");
+    assert!(std::fs::remove_file(&marker).is_ok(), "unstarted again");
+    assert!(
+        std::fs::create_dir_all(rig.scratch.join(".claude-moved")).is_ok(),
+        "a moved store"
+    );
+    let config = std::fs::read_to_string(&rig.config).unwrap_or_default();
+    let moved = config.replace("$HOME/.claude-mic", "$HOME/.claude-moved");
+    assert!(
+        std::fs::write(&rig.config, moved).is_ok(),
+        "definition moved"
+    );
+    let (code, _, stderr) = rig.launch(&["--local", "lnpending"]);
+    assert_eq!(code, Some(2), "{stderr}");
+    assert!(
+        stderr.contains(".claude-mic")
+            && stderr.contains(".claude-moved")
+            && stderr.contains("cannot move a retained conversation"),
+        "the pending seat refuses on its recorded store: {stderr}"
     );
 }
 
