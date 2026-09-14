@@ -341,37 +341,58 @@ fn is_cross_session_form(name: &str, session: &str, agent: &str) -> bool {
         .is_some_and(|rest| rest == agent)
 }
 
-/// Whether an event is RELEVANT to the seat at `slot`/`agent` in `session`:
-/// its own record, or one addressed to it.
-fn mentions(event: &Event, session: &str, slot: &str, agent: &str) -> bool {
-    event_is_actor(event, session, slot, agent)
-        || event_is_addressed_to(event, session, slot, agent)
+/// One relevant record TOGETHER WITH the verdict the routing owner already
+/// made about it.
+///
+/// The verdict travels with the record so no consumer re-derives ownership
+/// with a weaker rule: `is_own` is [`event_is_actor`]'s answer, computed ONCE
+/// here. A rename-style STALE DISPLAY with correct routing is the case that
+/// kills a re-derivation — the owner says own, a display check says inbound,
+/// and two consumers would split.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Relevant<'a> {
+    /// The selected record.
+    pub event: &'a Event,
+    /// [`event_is_actor`]'s answer: this record's ACTOR is the seat, by its
+    /// routing key when one is present, by display only for a keyless legacy
+    /// record.
+    pub is_own: bool,
+    /// Whether the walk stepped past the watchdog's own nudges to reach it.
+    pub looked_past_nudge: bool,
 }
 
-/// The newest event relevant to the seat at `slot`/`agent` in `session`, plus
-/// whether the walk stepped past any of the watchdog's own nudges to reach it —
-/// the SELECTION half of the quiet decision that [`quiet_reason`] then
-/// classifies, and the read side's currency proof.
+/// The newest event relevant to the seat at `slot`/`agent` in `session`, with
+/// the ownership verdict and whether the walk stepped past any of the
+/// watchdog's own nudges to reach it — the SELECTION half of the quiet
+/// decision that [`quiet_reason`] then classifies, and the read side's
+/// currency proof.
 ///
 /// ONE owner: the daemon and `session::agent_entries` both call this, with the
-/// same routing key the declaration itself is matched by.
+/// same routing key the declaration itself is matched by. The verdict is part
+/// of the return value, so it is the ONLY ownership derivation a consumer can
+/// use.
 #[must_use]
 pub fn latest_relevant_event<'a>(
     events: &'a [Event],
     session: &str,
     slot: &str,
     agent: &str,
-) -> Option<(&'a Event, bool)> {
+) -> Option<Relevant<'a>> {
     let mut looked_past_nudge = false;
     for event in events.iter().rev() {
-        if !mentions(event, session, slot, agent) {
+        let is_own = event_is_actor(event, session, slot, agent);
+        if !is_own && !event_is_addressed_to(event, session, slot, agent) {
             continue;
         }
         if event.actor == NUDGE_ACTOR && event.action == NUDGE_ACTION {
             looked_past_nudge = true;
             continue;
         }
-        return Some((event, looked_past_nudge));
+        return Some(Relevant {
+            event,
+            is_own,
+            looked_past_nudge,
+        });
     }
     None
 }
@@ -391,21 +412,28 @@ pub enum QuietKind {
     Blocked,
 }
 
-/// The quiet state an agent's LATEST RELEVANT event declares, or `None`.
+/// The quiet state a seat's LATEST RELEVANT event declares, or `None`.
+///
+/// Ownership is the VERDICT's ([`Relevant::is_own`]) — this function never
+/// compares the event's actor to a name again, because that display check is
+/// exactly the weaker rule a routing-aware owner exists to replace: a
+/// rename-style stale display with correct routing would be condemned as
+/// "inbound news" here while the read side calls it the seat's own
+/// declaration.
 #[must_use]
-pub fn quiet_reason(latest: &Event, agent: &str, looked_past_nudge: bool) -> Option<QuietKind> {
-    if latest.actor != agent {
+pub fn quiet_reason(relevant: &Relevant<'_>) -> Option<QuietKind> {
+    if !relevant.is_own {
         return None; // inbound: news, and news ends a quiet state
     }
     // `declared_state` already folds a bare `action = done` record into `done`.
-    let kind = match latest.declared_state()? {
+    let kind = match relevant.event.declared_state()? {
         "done" => QuietKind::Done,
         "waiting-user" => QuietKind::WaitingUser,
         "waiting-agent" => QuietKind::WaitingAgent,
         "blocked" => QuietKind::Blocked,
         _ => return None, // `working`, or a ref that declares no state
     };
-    if looked_past_nudge && kind == QuietKind::Done {
+    if relevant.looked_past_nudge && kind == QuietKind::Done {
         return None;
     }
     Some(kind)
@@ -1136,83 +1164,114 @@ mod tests {
     #[test]
     fn only_the_agents_own_declaration_is_a_quiet_state() {
         let agent = "opus5:builder";
-        let own_done = event(
-            r#"{"ts":"2026-08-29T04:00:00Z","actor":"opus5:builder","action":"done","summary":"shipped"}"#,
-        );
-        assert_eq!(quiet_reason(&own_done, agent, false), Some(QuietKind::Done));
-        let waiting = event(
-            r#"{"ts":"2026-08-29T04:00:00Z","actor":"opus5:builder","action":"state","ref":"waiting-user","summary":"needs review"}"#,
+        // The owner selects and carries the verdict; the classifier consumes it.
+        let classify = |line: &str| {
+            let events = log(&[line]);
+            let found = latest_relevant_event(&events, "aerewrite", "main", agent)?;
+            assert!(found.is_own, "{line:?} is the seat's own record");
+            quiet_reason(&found)
+        };
+        assert_eq!(
+            classify(
+                r#"{"ts":"2026-08-29T04:00:00Z","actor":"opus5:builder","action":"done","summary":"shipped"}"#
+            ),
+            Some(QuietKind::Done)
         );
         assert_eq!(
-            quiet_reason(&waiting, agent, false),
+            classify(
+                r#"{"ts":"2026-08-29T04:00:00Z","actor":"opus5:builder","action":"state","ref":"waiting-user","summary":"needs review"}"#
+            ),
             Some(QuietKind::WaitingUser)
         );
-        let waiting_agent = event(
-            r#"{"ts":"2026-08-29T04:00:00Z","actor":"opus5:builder","action":"state","ref":"waiting-agent","summary":"waiting on colead's re-review"}"#,
-        );
         assert_eq!(
-            quiet_reason(&waiting_agent, agent, false),
+            classify(
+                r#"{"ts":"2026-08-29T04:00:00Z","actor":"opus5:builder","action":"state","ref":"waiting-agent","summary":"waiting on colead's re-review"}"#
+            ),
             Some(QuietKind::WaitingAgent),
             "the fifth state is quiet while fresh (R2)"
         );
-        let blocked = event(
-            r#"{"ts":"2026-08-29T04:00:00Z","actor":"opus5:builder","action":"state","ref":"blocked","summary":"waiting on CI"}"#,
-        );
         assert_eq!(
-            quiet_reason(&blocked, agent, false),
+            classify(
+                r#"{"ts":"2026-08-29T04:00:00Z","actor":"opus5:builder","action":"state","ref":"blocked","summary":"waiting on CI"}"#
+            ),
             Some(QuietKind::Blocked)
         );
         // A bare `action = done` record with no ref maps to Done.
-        let legacy =
-            event(r#"{"ts":"2026-08-29T04:00:00Z","actor":"opus5:builder","action":"done"}"#);
-        assert_eq!(quiet_reason(&legacy, agent, false), Some(QuietKind::Done));
+        assert_eq!(
+            classify(r#"{"ts":"2026-08-29T04:00:00Z","actor":"opus5:builder","action":"done"}"#),
+            Some(QuietKind::Done)
+        );
     }
 
     #[test]
     fn news_from_anyone_else_ends_a_quiet_state() {
         let agent = "opus5:builder";
-        // An inbound message TARGETING the agent is the newest relevant event, and
-        // it invalidates whatever the agent last declared.
-        let inbound = event(
-            r#"{"ts":"2026-08-29T04:01:00Z","actor":"fable5:lead","action":"send","target":"opus5:builder","summary":"review please"}"#,
-        );
-        assert_eq!(quiet_reason(&inbound, agent, false), None);
+        // An inbound message TARGETING the agent is the newest relevant event,
+        // the owner selects it with `is_own: false`, and the classifier yields.
+        let inbound = r#"{"ts":"2026-08-29T04:01:00Z","actor":"fable5:lead","action":"send","target":"opus5:builder","summary":"review please"}"#;
+        let events = log(&[inbound]);
+        let found = latest_relevant_event(&events, "aerewrite", "main", agent)
+            .expect("an addressed record is relevant");
+        assert!(!found.is_own, "its actor is somebody else");
+        assert_eq!(quiet_reason(&found), None);
         // Even an inbound event that would otherwise LOOK like a declaration.
-        let inbound_state = event(
-            r#"{"ts":"2026-08-29T04:01:00Z","actor":"fable5:lead","action":"state","ref":"done","target":"opus5:builder"}"#,
-        );
-        assert_eq!(quiet_reason(&inbound_state, agent, false), None);
+        let inbound_state = r#"{"ts":"2026-08-29T04:01:00Z","actor":"fable5:lead","action":"state","ref":"done","target":"opus5:builder"}"#;
+        let events = log(&[inbound_state]);
+        let found = latest_relevant_event(&events, "aerewrite", "main", agent)
+            .expect("addressed state record");
+        assert!(!found.is_own);
+        assert_eq!(quiet_reason(&found), None);
     }
 
     #[test]
     fn working_and_a_refless_state_declare_no_quiet_state() {
         let agent = "opus5:builder";
-        let working = event(
-            r#"{"ts":"2026-08-29T04:00:00Z","actor":"opus5:builder","action":"state","ref":"working","summary":"on it"}"#,
-        );
-        assert_eq!(quiet_reason(&working, agent, false), None);
-        let refless =
-            event(r#"{"ts":"2026-08-29T04:00:00Z","actor":"opus5:builder","action":"state"}"#);
+        let classify = |line: &str| {
+            let events = log(&[line]);
+            let found = latest_relevant_event(&events, "aerewrite", "main", agent)?;
+            quiet_reason(&found)
+        };
         assert_eq!(
-            quiet_reason(&refless, agent, false),
+            classify(
+                r#"{"ts":"2026-08-29T04:00:00Z","actor":"opus5:builder","action":"state","ref":"working","summary":"on it"}"#
+            ),
+            None
+        );
+        assert_eq!(
+            classify(r#"{"ts":"2026-08-29T04:00:00Z","actor":"opus5:builder","action":"state"}"#),
             None,
             "declared nothing"
         );
-        let unrelated = event(
-            r#"{"ts":"2026-08-29T04:00:00Z","actor":"opus5:builder","action":"memo","ref":"arch"}"#,
+        assert_eq!(
+            classify(
+                r#"{"ts":"2026-08-29T04:00:00Z","actor":"opus5:builder","action":"memo","ref":"arch"}"#
+            ),
+            None
         );
-        assert_eq!(quiet_reason(&unrelated, agent, false), None);
     }
 
     #[test]
     fn a_nudge_walked_past_clears_done_and_nothing_else() {
         let agent = "opus5:builder";
-        let done = event(
-            r#"{"ts":"2026-08-29T04:00:00Z","actor":"opus5:builder","action":"done","summary":"shipped"}"#,
-        );
-        assert_eq!(quiet_reason(&done, agent, false), Some(QuietKind::Done));
+        let done = r#"{"ts":"2026-08-29T04:00:00Z","actor":"opus5:builder","action":"done","summary":"shipped"}"#;
+        let nudge = r#"{"ts":"2026-08-29T04:00:01Z","actor":"watchdog","action":"nudge","target":"opus5:builder"}"#;
+
+        // Without a nudge, done is a quiet hold.
+        let events = log(&[done]);
+        let found = latest_relevant_event(&events, "aerewrite", "main", agent)
+            .expect("the declaration is relevant");
+        assert_eq!(quiet_reason(&found), Some(QuietKind::Done));
+
+        // With one, the walk steps past it and the verdict carries that fact.
+        let classify = |line: &str| {
+            let events = log(&[line, nudge]);
+            let found = latest_relevant_event(&events, "aerewrite", "main", agent)
+                .expect("the declaration is under the nudge");
+            assert!(found.is_own && found.looked_past_nudge);
+            quiet_reason(&found)
+        };
         assert_eq!(
-            quiet_reason(&done, agent, true),
+            classify(done),
             None,
             "done is honoured until a newer MESSAGE arrives, and a nudge is one"
         );
@@ -1232,7 +1291,7 @@ mod tests {
                 QuietKind::Blocked,
             ),
         ] {
-            assert_eq!(quiet_reason(&event(line), agent, true), Some(kind));
+            assert_eq!(classify(line), Some(kind));
         }
     }
 
@@ -1374,11 +1433,11 @@ mod tests {
             r#"{"ts":"2026-08-29T04:00:02Z","actor":"gpt56sol:colead","action":"memo","ref":"arch"}"#,
             r#"{"ts":"2026-08-29T04:00:03Z","actor":"fable5:lead","action":"state","ref":"working"}"#,
         ]);
-        let (found, looked_past) =
-            latest_relevant_event(&events, "aerewrite", "main", "opus5:builder")
-                .expect("the declaration is relevant");
-        assert_eq!(found.reference.as_deref(), Some("waiting-user"));
-        assert!(!looked_past, "no nudge was walked past");
+        let found = latest_relevant_event(&events, "aerewrite", "main", "opus5:builder")
+            .expect("the declaration is relevant");
+        assert!(found.is_own, "it is the seat's own record");
+        assert_eq!(found.event.reference.as_deref(), Some("waiting-user"));
+        assert!(!found.looked_past_nudge, "no nudge was walked past");
     }
 
     #[test]
@@ -1392,9 +1451,9 @@ mod tests {
             r#"{"ts":"2026-08-29T04:00:01Z","actor":"someone:else","action":"memo","ref":"t"}"#;
         lines.extend(std::iter::repeat_n(filler, 500));
         let events = log(&lines);
-        let (found, _) = latest_relevant_event(&events, "aerewrite", "main", "opus5:builder")
+        let found = latest_relevant_event(&events, "aerewrite", "main", "opus5:builder")
             .expect("500 unrelated events do not end the walk");
-        assert_eq!(found.reference.as_deref(), Some("blocked"));
+        assert_eq!(found.event.reference.as_deref(), Some("blocked"));
     }
 
     #[test]
@@ -1442,14 +1501,38 @@ mod tests {
             r#"{"ts":"2026-09-13T08:00:00Z","actor":"lead","action":"state","ref":"waiting-agent","summary":"on colead","actor_slot":"main","actor_session":"alpha"}"#,
             r#"{"ts":"2026-09-13T08:10:00Z","actor":"lead","action":"state","ref":"working","actor_slot":"main","actor_session":"beta"}"#,
         ]);
-        let (found, looked_past) = latest_relevant_event(&events, "alpha", "main", "lead")
+        let found = latest_relevant_event(&events, "alpha", "main", "lead")
             .expect("alpha's declaration is relevant to alpha");
-        assert!(!looked_past);
+        assert!(found.is_own);
+        assert!(!found.looked_past_nudge);
         assert_eq!(
-            found.reference.as_deref(),
+            found.event.reference.as_deref(),
             Some("waiting-agent"),
             "beta's `working` belongs to another incarnation; alpha's own \
              declaration is the newest relevant event"
+        );
+    }
+
+    /// The case the rename-back test structurally cannot see: routing is
+    /// CORRECT and the actor DISPLAY is stale (a rename-style display that no
+    /// longer matches the roster reference). The owner says "own"; a display
+    /// re-derivation would say "inbound"; the verdict travels with the record
+    /// so the classifier cannot make the weaker call.
+    #[test]
+    fn a_stale_display_actor_never_becomes_inbound_news() {
+        let events = log(&[
+            r#"{"ts":"2026-09-13T08:00:00Z","actor":"old-lead","action":"state","ref":"waiting-agent","summary":"on colead","actor_slot":"main","actor_session":"live"}"#,
+        ]);
+        let found = latest_relevant_event(&events, "live", "main", "lead")
+            .expect("the routing key says this seat");
+        assert!(
+            found.is_own,
+            "routing wins over a stale display, as `event_is_actor` says"
+        );
+        assert_eq!(
+            quiet_reason(&found),
+            Some(QuietKind::WaitingAgent),
+            "and the classifier consumes that verdict instead of re-deriving"
         );
     }
 
@@ -1461,14 +1544,13 @@ mod tests {
             r#"{"ts":"2026-08-29T04:00:00Z","actor":"opus5:builder","action":"state","ref":"waiting-user","summary":"review"}"#,
             r#"{"ts":"2026-08-29T04:00:00Z","actor":"watchdog","action":"nudge","target":"opus5:builder","summary":"idle 15m"}"#,
         ]);
-        let (found, looked_past) =
-            latest_relevant_event(&events, "aerewrite", "main", "opus5:builder")
-                .expect("the declaration is underneath the nudge");
-        assert_eq!(found.reference.as_deref(), Some("waiting-user"));
-        assert!(looked_past, "a nudge WAS walked past");
+        let found = latest_relevant_event(&events, "aerewrite", "main", "opus5:builder")
+            .expect("the declaration is underneath the nudge");
+        assert_eq!(found.event.reference.as_deref(), Some("waiting-user"));
+        assert!(found.looked_past_nudge, "a nudge WAS walked past");
         // And the two halves compose the way the daemon will use them.
         assert_eq!(
-            quiet_reason(found, "opus5:builder", looked_past),
+            quiet_reason(&found),
             Some(QuietKind::WaitingUser),
             "the nudge must not break the hold it was asking about"
         );
@@ -1482,13 +1564,12 @@ mod tests {
         let nudge = r#"{"ts":"2026-08-29T04:05:00Z","actor":"watchdog","action":"nudge","target":"opus5:builder"}"#;
         lines.extend(std::iter::repeat_n(nudge, 5));
         let events = log(&lines);
-        let (found, looked_past) =
-            latest_relevant_event(&events, "aerewrite", "main", "opus5:builder")
-                .expect("the done is under five nudges");
-        assert_eq!(found.action, "done");
-        assert!(looked_past);
+        let found = latest_relevant_event(&events, "aerewrite", "main", "opus5:builder")
+            .expect("the done is under five nudges");
+        assert_eq!(found.event.action, "done");
+        assert!(found.is_own && found.looked_past_nudge);
         // Done is the ONE kind a walked-past nudge clears.
-        assert_eq!(quiet_reason(found, "opus5:builder", looked_past), None);
+        assert_eq!(quiet_reason(&found), None);
     }
 
     #[test]
@@ -1498,23 +1579,23 @@ mod tests {
             r#"{"ts":"2026-08-29T04:00:00Z","actor":"opus5:builder","action":"state","ref":"waiting-user"}"#,
             r#"{"ts":"2026-08-29T04:05:00Z","actor":"watchdog","action":"alert","target":"opus5:builder","summary":"stale"}"#,
         ]);
-        let (found, looked_past) =
-            latest_relevant_event(&alerted, "aerewrite", "main", "opus5:builder")
-                .expect("the alert is relevant");
-        assert_eq!(found.action, "alert");
-        assert!(!looked_past);
+        let found = latest_relevant_event(&alerted, "aerewrite", "main", "opus5:builder")
+            .expect("the alert is relevant");
+        assert_eq!(found.event.action, "alert");
+        assert!(!found.is_own, "the watchdog is not the seat");
+        assert!(!found.looked_past_nudge);
         // A `nudge` from a PEER is not the watchdog's, and is news.
         let peer = log(&[
             r#"{"ts":"2026-08-29T04:00:00Z","actor":"opus5:builder","action":"state","ref":"waiting-user"}"#,
             r#"{"ts":"2026-08-29T04:05:00Z","actor":"fable5:lead","action":"nudge","target":"opus5:builder"}"#,
         ]);
-        let (found, looked_past) =
-            latest_relevant_event(&peer, "aerewrite", "main", "opus5:builder")
-                .expect("the peer event is relevant");
-        assert_eq!(found.actor, "fable5:lead");
-        assert!(!looked_past);
+        let found = latest_relevant_event(&peer, "aerewrite", "main", "opus5:builder")
+            .expect("the peer event is relevant");
+        assert_eq!(found.event.actor, "fable5:lead");
+        assert!(!found.is_own, "a peer writing to the seat is inbound");
+        assert!(!found.looked_past_nudge);
         assert_eq!(
-            quiet_reason(found, "opus5:builder", looked_past),
+            quiet_reason(&found),
             None,
             "a peer writing to the agent is news, and news ends a quiet state"
         );
@@ -1539,10 +1620,10 @@ mod tests {
             r#"{"ts":"2026-08-29T04:09:00Z","actor":"opus5:builder","action":"state","ref":"waiting-user"}"#,
             r#"{"ts":"2026-08-29T04:00:00Z","actor":"fable5:lead","action":"send","target":"opus5:builder","summary":"answered"}"#,
         ]);
-        let (found, _) = latest_relevant_event(&events, "aerewrite", "main", "opus5:builder")
+        let found = latest_relevant_event(&events, "aerewrite", "main", "opus5:builder")
             .expect("something is relevant");
         assert_eq!(
-            found.actor, "fable5:lead",
+            found.event.actor, "fable5:lead",
             "the LAST APPENDED relevant event wins, whatever its ts says"
         );
     }

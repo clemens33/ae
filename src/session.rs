@@ -909,11 +909,10 @@ fn agent_entries(
                     &slot.slot,
                     &reference,
                 )
-                .filter(|(event, _)| {
-                    crate::watchdog::event_is_actor(event, session, &slot.slot, &reference)
-                        && event.declared_state().is_some()
-                })
-                .map(|(event, _)| event)
+                // The ownership VERDICT travels with the record; this filter
+                // consumes it and never re-derives identity by display.
+                .filter(|relevant| relevant.is_own && relevant.event.declared_state().is_some())
+                .map(|relevant| relevant.event)
             });
             let declared = current_declaration.or_else(|| {
                 read.and_then(|read| {
@@ -2936,12 +2935,12 @@ mod tests {
             .expect("the fixture events read")
             .events;
         // The ONE owner: oldname's declaration is not live's news.
-        let (newest, looked_past) =
-            crate::watchdog::latest_relevant_event(&events, "live", "main", "lead")
-                .expect("live's declaration is relevant");
-        assert_eq!(newest.reference.as_deref(), Some("waiting-agent"));
+        let found = crate::watchdog::latest_relevant_event(&events, "live", "main", "lead")
+            .expect("live's declaration is relevant");
+        assert!(found.is_own);
+        assert_eq!(found.event.reference.as_deref(), Some("waiting-agent"));
         assert_eq!(
-            crate::watchdog::quiet_reason(newest, "lead", looked_past),
+            crate::watchdog::quiet_reason(&found),
             Some(crate::watchdog::QuietKind::WaitingAgent),
             "the daemon's half judges the same declaration"
         );
@@ -2949,6 +2948,40 @@ mod tests {
         let entry = entry_for(&scratch.0, "live", &running(), NOW, DEFAULT_UNANSWERED_SECS);
         assert_eq!(entry.agents[0].state.as_deref(), Some("waiting-agent"));
         assert_eq!(entry.attention, Some(Reason::Blocked));
+    }
+
+    /// The case routing-only selection cannot see: routing CORRECT, actor
+    /// DISPLAY STALE. The owner says own, the classifier consumes the verdict,
+    /// and the read side agrees — a display re-derivation would call it
+    /// inbound news and split read from daemon.
+    #[test]
+    fn read_and_daemon_agree_when_the_actor_display_is_stale() {
+        let scratch = Scratch::new("stale-display-currency");
+        scratch.meta(META);
+        scratch.events(&[event(
+            &at(2_000),
+            "old-lead",
+            "state",
+            r#","ref":"waiting-agent","summary":"on colead","actor_slot":"main","actor_session":"live""#,
+        )]);
+        let events = SessionRead::open(&scratch.0)
+            .expect("the fixture events read")
+            .events;
+        let found = crate::watchdog::latest_relevant_event(&events, "live", "main", "lead")
+            .expect("the routing key selects it");
+        assert!(found.is_own, "routing wins over the stale display");
+        assert_eq!(
+            crate::watchdog::quiet_reason(&found),
+            Some(crate::watchdog::QuietKind::WaitingAgent),
+            "the daemon's half reads the verdict, not the display"
+        );
+        let entry = entry_for(&scratch.0, "live", &running(), NOW, DEFAULT_UNANSWERED_SECS);
+        assert_eq!(entry.agents[0].state.as_deref(), Some("waiting-agent"));
+        assert_eq!(
+            entry.attention,
+            Some(Reason::Blocked),
+            "the read side escalates the same record"
+        );
     }
 
     /// IMPORTANT 2: a pin that exists and cannot be used FAILS CLOSED. The

@@ -3620,12 +3620,12 @@ impl Cycle<'_> {
         state: &mut PaneState,
         quiet_cycle: &mut QuietCycle,
     ) -> Option<QuietKind> {
-        let (event, looked_past) =
-            latest_relevant_event(query.events, self.session, query.slot, query.agent)?;
-        let kind = quiet_reason(event, query.agent, looked_past)?;
+        let relevant = latest_relevant_event(query.events, self.session, query.slot, query.agent)?;
+        let kind = quiet_reason(&relevant)?;
         if kind == QuietKind::Done {
             return Some(kind);
         }
+        let event = relevant.event;
         let key = declaration_key(event);
         let armed = state
             .quiet_base
@@ -7391,12 +7391,12 @@ mod tests {
             Some(crate::attention::Reason::Stale),
             "the addressed prior alert is the positive control"
         );
-        let (latest, looked_past) =
-            crate::watchdog::latest_relevant_event(&events, "demo", "main", "codex:agent")
-                .expect("the later memo is relevant");
-        assert_eq!(latest.action, "memo");
+        let found = crate::watchdog::latest_relevant_event(&events, "demo", "main", "codex:agent")
+            .expect("the later memo is relevant");
+        assert_eq!(found.event.action, "memo");
+        assert!(found.is_own, "the memo is the seat's own activity");
         assert_eq!(
-            crate::watchdog::quiet_reason(latest, "codex:agent", looked_past),
+            crate::watchdog::quiet_reason(&found),
             None,
             "the later memo is activity, not a quiet declaration"
         );
