@@ -131,3 +131,10 @@ path = "fuzz_targets/request_id_select.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "events_parse"
+path = "fuzz_targets/events_parse.rs"
+test = false
+doc = false
+bench = false
