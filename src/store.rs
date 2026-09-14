@@ -83,7 +83,7 @@ pub fn parse_launch_attempt(body: &[u8]) -> crate::tmux::Evidence {
 /// is how two writers end up on two different locks.
 pub const LOCK_SUFFIX: &str = ".lock";
 
-/// How long a locked append waits for the lock — `flock -w 5`.
+/// How long a locked append waits for the lock.
 pub const LOCK_WAIT: Duration = Duration::from_secs(5);
 
 /// How often the lock is retried while waiting.
@@ -155,22 +155,19 @@ pub enum SourceRead {
     Unreadable(String),
 }
 
-/// Classify the node at `path` without ever opening a non-regular one.
-#[must_use]
-pub fn read_source(path: &Path) -> SourceRead {
+/// Which non-regular leg a node's OWN file type is, in the one spelling every
+/// gate in this module refuses by. `None` is returned EXACTLY for a regular
+/// file — the only shape these gates open, because a FIFO write-open BLOCKS
+/// until a reader appears and an open with `create(true)` FOLLOWS a symlink.
+/// The proceed arm is the positive `is_file` test, never the FALLTHROUGH: a
+/// node whose kind nobody enumerated is refused as "an unrecognized node"
+/// rather than opened, because a fallback that proceeds is how a node no gate
+/// classified still gets opened.
+fn nonregular_leg(kind: std::fs::FileType) -> Option<&'static str> {
     use std::os::unix::fs::FileTypeExt as _;
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "a door: classifies the node itself WITHOUT following a link, before any open — see clippy.toml"
-    )]
-    let observed = std::fs::symlink_metadata(path);
-    let shape = match observed {
-        Ok(meta) => meta,
-        Err(why) if why.kind() == io::ErrorKind::NotFound => return SourceRead::Absent,
-        Err(why) => return SourceRead::Unreadable(why.to_string()),
-    };
-    let kind = shape.file_type();
-    let nonregular = if kind.is_symlink() {
+    if kind.is_file() {
+        None
+    } else if kind.is_symlink() {
         Some("a symlink")
     } else if kind.is_dir() {
         Some("a directory")
@@ -181,9 +178,24 @@ pub fn read_source(path: &Path) -> SourceRead {
     } else if kind.is_block_device() || kind.is_char_device() {
         Some("a device")
     } else {
-        None
+        Some("an unrecognized node")
+    }
+}
+
+/// Classify the node at `path` without ever opening a non-regular one.
+#[must_use]
+pub fn read_source(path: &Path) -> SourceRead {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: classifies the node itself WITHOUT following a link, before any open — see clippy.toml"
+    )]
+    let observed = std::fs::symlink_metadata(path);
+    let shape = match observed {
+        Ok(meta) => meta,
+        Err(why) if why.kind() == io::ErrorKind::NotFound => return SourceRead::Absent,
+        Err(why) => return SourceRead::Unreadable(why.to_string()),
     };
-    if let Some(what) = nonregular {
+    if let Some(what) = nonregular_leg(shape.file_type()) {
         return SourceRead::Invalid(what.to_owned());
     }
     #[allow(
@@ -527,7 +539,8 @@ impl SessionStore {
 }
 
 /// Append `bytes` to `path` under `<path>.lock`: the lock is the file's own
-/// `.lock` sibling, taken with `flock -w 5` and held through the append.
+/// `.lock` sibling, taken as the exclusive advisory lock bounded by
+/// [`LOCK_WAIT`] and held through the append.
 ///
 /// PRIVATE on purpose. Every session-ledger append goes through one of the two
 /// methods above; the explicit retention replacement is the only other
@@ -539,12 +552,64 @@ fn append_locked(path: &Path, bytes: &[u8]) -> Result<(), Error> {
     append(path, bytes).map_err(|why| Error::Append(path.display().to_string(), why))
 }
 
+/// Refuse a lock path whose OWN node is not absent or a regular file, BEFORE
+/// the open — the one gate every [`lock`] caller inherits.
+///
+/// `open(2)` is where both defects live: a write-open on a FIFO BLOCKS until a
+/// reader appears, so no caller's `wait` would ever be reached, and
+/// `create(true).append(true)` FOLLOWS a symlink, taking the lock wherever the
+/// link points — and creating the target when the link dangles. [`lock`] never
+/// writes a byte to that File, so "appended through" would overstate the
+/// damage; "opened and locked through" is what the gate prevents. The classification is `symlink_metadata`, so the
+/// node's own shape is read without following it; absent is the create case the
+/// caller asked for and proceeds, a regular file proceeds, every other leg is
+/// refused by name.
+///
+/// The TOCTOU residual is REAL and named, never papered over: a node can be
+/// swapped between this observation and the open below, so the check is not
+/// atomic. ae's threat model is cooperative agents on one host, and a lock path
+/// lives under ae's own state directory — whoever can win that race can already
+/// write that state directly. The atomic form is `OpenOptionsExt::custom_flags`
+/// with `O_NOFOLLOW` and `O_NONBLOCK`; it needs the raw platform flag
+/// integers, which differ between macOS and Linux and which ae, carrying no
+/// `libc`, cannot assert at compile time. That is the upgrade path if the
+/// threat model changes.
+fn refuse_nonregular_lock_path(path: &Path) -> io::Result<()> {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: classifies the lock node itself WITHOUT following a link, before any open — see clippy.toml"
+    )]
+    let observed = std::fs::symlink_metadata(path);
+    let kind = match observed {
+        Ok(meta) => meta.file_type(),
+        Err(why) if why.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(why) => return Err(why),
+    };
+    let Some(what) = nonregular_leg(kind) else {
+        return Ok(());
+    };
+    Err(io::Error::new(
+        io::ErrorKind::InvalidInput,
+        format!(
+            "{}: the lock path is {what} — refused before any open",
+            path.display()
+        ),
+    ))
+}
+
 /// Take the exclusive advisory lock on `path`, retrying for up to `wait`.
+///
+/// The path's own node is classified before it is opened; anything but an
+/// absent or regular node is refused by name. `wait` bounds only the poll for a
+/// lock another writer holds — a refused path never reaches the open, let alone
+/// the poll.
 ///
 /// # Errors
 ///
-/// The lock file not being openable, or the lock still held at `wait`.
+/// The lock path being anything but absent or a regular file, the lock file not
+/// being openable, or the lock still held at `wait`.
 pub fn lock(path: &Path, wait: Duration) -> io::Result<File> {
+    refuse_nonregular_lock_path(path)?;
     let file = OpenOptions::new().append(true).create(true).open(path)?;
     let started = Instant::now();
     loop {
@@ -854,8 +919,79 @@ mod tests {
         );
         drop(holder);
         assert!(lock(&held, Duration::from_millis(10)).is_ok(), "released");
-        // The real path uses the real bound: 5s, per flock -w 5.
+        // The real path uses the real bound: 5s.
         assert_eq!(LOCK_WAIT, Duration::from_secs(5));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The lock path's OWN node decides, before any open: a link is refused and
+    /// its target is never created or locked through, a directory, a socket
+    /// and a DEVICE are refused by name, and absent and regular are the two
+    /// shapes that proceed.
+    ///
+    /// The refusals are asserted by the WHOLE message — the leg, the path and
+    /// "refused before any open" — because a bare substring like "directory"
+    /// also matches the kernel's own `EISDIR`, which is the very answer this
+    /// gate exists to pre-empt. A `contains` there would stay green with the
+    /// gate deleted.
+    #[test]
+    fn a_nonregular_lock_path_is_refused_by_name_before_any_open() {
+        let dir = scratch("lockpath");
+        let refuse = |path: &Path, leg: &str| {
+            let refused = lock(path, Duration::ZERO)
+                .expect_err(&format!("a {leg} lock path must refuse before any open"));
+            assert_eq!(
+                refused.to_string(),
+                format!(
+                    "{}: the lock path is {leg} — refused before any open",
+                    path.display()
+                ),
+                "the refusal names the leg and the path, and comes from the gate"
+            );
+        };
+
+        let link_target = dir.join("outside");
+        std::fs::write(&link_target, b"THIS MUST SURVIVE\n").unwrap();
+        let link = dir.join("existing.lock");
+        std::os::unix::fs::symlink(&link_target, &link).unwrap();
+        refuse(&link, "a symlink");
+        assert_eq!(
+            std::fs::read(&link_target).unwrap(),
+            b"THIS MUST SURVIVE\n",
+            "the gate was defeated: the lock was taken through the symlink"
+        );
+
+        let absent_target = dir.join("never-created");
+        let dangling = dir.join("dangling.lock");
+        std::os::unix::fs::symlink(&absent_target, &dangling).unwrap();
+        refuse(&dangling, "a symlink");
+        assert!(
+            !absent_target.exists(),
+            "the gate was defeated: the link target was created through the link"
+        );
+
+        let as_dir = dir.join("dir.lock");
+        std::fs::create_dir_all(&as_dir).unwrap();
+        refuse(&as_dir, "a directory");
+
+        let as_socket = dir.join("socket.lock");
+        let listener = std::os::unix::net::UnixListener::bind(&as_socket).unwrap();
+        refuse(&as_socket, "a socket");
+        drop(listener);
+
+        // A CHARACTER DEVICE every host this suite runs on carries. Its open
+        // with `create(true).append(true)` SUCCEEDS, so the gate is the only
+        // thing standing between a lock path and writing into a device node.
+        refuse(Path::new("/dev/null"), "a device");
+
+        let fresh = dir.join("fresh.lock");
+        assert!(!fresh.exists(), "the fixture starts absent");
+        let held = lock(&fresh, Duration::ZERO).expect("an absent lock path is created and locked");
+        assert!(fresh.is_file(), "the lock file was created");
+        drop(held);
+        let held = lock(&fresh, Duration::ZERO).expect("a regular lock file locks again");
+        drop(held);
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 
