@@ -662,11 +662,19 @@ pub fn correlate_uuid(
     let option_uuid = match option {
         crate::tmux::OptionReading::Unknown => return Err(CorrelationGap::Unreadable),
         crate::tmux::OptionReading::Vacant => {
-            // The pane records no identity. With no identity in `meta` either,
-            // there is nothing to correlate and no failed correlation to name.
-            // A meta that records one is a real failed proof — keep naming it.
-            return match meta::first_value(meta, "session_id") {
-                Some(raw) if !raw.is_empty() => Err(CorrelationGap::Vacant),
+            // No identity on the pane side. NoSession is a POSITIVE claim:
+            // the meta must PROVE it records none — `session_id` named once
+            // with an empty value, or never named. Anything else is a real
+            // failed proof: an identity recorded exactly once is `Vacant`
+            // (the pane does not match it), and a meta naming `session_id`
+            // twice does not say one thing, so it is `MetaDuplicate` — the
+            // same damage the Set arm already names.
+            return match (
+                meta::sole_value(meta, "session_id"),
+                meta::first_value(meta, "session_id"),
+            ) {
+                (Some(raw), _) if !raw.is_empty() => Err(CorrelationGap::Vacant),
+                (None, Some(_)) => Err(CorrelationGap::MetaDuplicate),
                 _ => Err(CorrelationGap::NoSession),
             };
         }
@@ -763,6 +771,17 @@ pub fn retain_correlation(
         (Err(CorrelationGap::NoSession), Err(CorrelationGap::NoSession)) => {
             CorrelationOutcome::NoSession
         }
+        // A named gap on EITHER side outranks a NoSession on the other: the
+        // real failed leg must never be masked by the "no question" variant.
+        // Or-alternatives are tried in order, so with two named gaps the
+        // after side still names the leg; a failing guard falls through to
+        // the next alternative before the next arm.
+        (_, Err(gap)) | (Err(gap), _) if *gap != CorrelationGap::NoSession => {
+            CorrelationOutcome::Failed(*gap)
+        }
+        // One side proved an identity and the other found none: a one-sided
+        // absence is still a failed correlation, named for the absent side.
+        // Both sides NoSession above is the ONLY route to `NoSession`.
         (_, Err(gap)) | (Err(gap), _) => CorrelationOutcome::Failed(*gap),
     }
 }
@@ -2324,6 +2343,43 @@ mod tests {
     }
 
     #[test]
+    fn a_vacant_pane_never_calls_a_recorded_or_unreadable_meta_no_session() {
+        use crate::tmux::OptionReading;
+        // Named once, nonempty: the meta records an identity the pane lacks,
+        // so the proof FAILED — Vacant, never NoSession.
+        assert_eq!(
+            correlate_uuid(
+                &OptionReading::Vacant,
+                format!("session_id={UUID}\n").as_bytes()
+            ),
+            Err(CorrelationGap::Vacant)
+        );
+        // Named once with an empty value: positively no identity in the meta.
+        assert_eq!(
+            correlate_uuid(&OptionReading::Vacant, b"session_id=\n"),
+            Err(CorrelationGap::NoSession)
+        );
+        // Never named: positively no identity either.
+        assert_eq!(
+            correlate_uuid(&OptionReading::Vacant, b"session=s\n"),
+            Err(CorrelationGap::NoSession)
+        );
+        // Named twice, BOTH row orders: the document does not say one thing,
+        // so it is the MetaDuplicate the Set arm already names — never
+        // NoSession, which is a positive claim this meta cannot prove.
+        for meta in [
+            format!("session_id=\nsession_id={UUID}\n"),
+            format!("session_id={UUID}\nsession_id=\n"),
+        ] {
+            assert_eq!(
+                correlate_uuid(&OptionReading::Vacant, meta.as_bytes()),
+                Err(CorrelationGap::MetaDuplicate),
+                "{meta:?}"
+            );
+        }
+    }
+
+    #[test]
     fn a_duplicate_or_missing_meta_identity_is_a_named_gap() {
         use crate::tmux::OptionReading;
         let option = OptionReading::Set(UUID.to_owned());
@@ -2457,6 +2513,38 @@ mod tests {
                 CallerServer::Resolved(ServerId::Ambient)
             ),
             Ok(("%1".to_owned(), ServerId::Ambient))
+        );
+    }
+
+    #[test]
+    fn a_named_gap_outranks_no_session_on_either_side() {
+        let absent = Err::<IdentityTriple, CorrelationGap>(CorrelationGap::NoSession);
+        let unreadable = Err::<IdentityTriple, CorrelationGap>(CorrelationGap::Unreadable);
+        assert_eq!(
+            retain_correlation(&unreadable, &absent),
+            CorrelationOutcome::Failed(CorrelationGap::Unreadable),
+            "a real gap before the cut outranks NoSession after it"
+        );
+        assert_eq!(
+            retain_correlation(&absent, &unreadable),
+            CorrelationOutcome::Failed(CorrelationGap::Unreadable),
+            "and the same in the other direction"
+        );
+        assert_eq!(
+            retain_correlation(&absent, &absent),
+            CorrelationOutcome::NoSession,
+            "both sides absent is the ONLY route to NoSession"
+        );
+        // Ordering otherwise unchanged: with two named gaps the after side
+        // still names the leg.
+        let vacant = Err::<IdentityTriple, CorrelationGap>(CorrelationGap::Vacant);
+        assert_eq!(
+            retain_correlation(&vacant, &unreadable),
+            CorrelationOutcome::Failed(CorrelationGap::Unreadable)
+        );
+        assert_eq!(
+            retain_correlation(&unreadable, &vacant),
+            CorrelationOutcome::Failed(CorrelationGap::Vacant)
         );
     }
 
