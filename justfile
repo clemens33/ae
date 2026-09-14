@@ -862,6 +862,10 @@ FUZZ_TARGETS := "config_parse meta_parse launch_cmd_lex config_command quota_cla
 # advisories/licenses/bans/sources, cargo-vet gates its PROVENANCE (who reviewed
 # the code). See `rust-vet`.
 VET_VERSION := "0.10.2"
+# The changelog generator. An UNPINNED generator means CHANGELOG.md and the GitHub
+# release body differ by machine and drift under us, so it is installed and probed
+# like every other dev tool.
+GIT_CLIFF_VERSION := "2.13.1"
 
 # The foreign target. musl, not gnu — ae ships a STATIC binary with no host
 # runtime dependency, and gnu is not that (see rust-toolchain.toml for the NSS caveat).
@@ -923,6 +927,7 @@ rust-setup:
     ensure cargo-mutants  "{{ MUTANTS_VERSION }}"  'cargo mutants --version'
     ensure cargo-llvm-cov "{{ LLVM_COV_VERSION }}" 'cargo llvm-cov --version'
     ensure cargo-vet      "{{ VET_VERSION }}"      'cargo vet --version'
+    ensure git-cliff      "{{ GIT_CLIFF_VERSION }}" 'git-cliff --version'
 
     # REPORTED, NOT PROVISIONED, and never fatal. The musl cross toolchain is
     # needed by `just bundles` (and so by `just release`) and by nothing else:

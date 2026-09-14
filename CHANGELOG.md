@@ -1,52 +1,29 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+
+## [Unreleased]
+- Fuzz the events.jsonl parser before it is trusted further
+- Name the five unseeded event actions in the fuzz README
+- **quota**: Read every configured client, not only configured profiles
+- **quota**: One account is one row on the failure paths too
+- **quota**: Correlate scopes on proven identity, count a declaration once
+- **quota**: Prove identity before merging, and spend a declaration once
+- **quota**: An unattributable rollout is identified by itself, on both surfaces
+- Record caller and target incarnation facts on tracked events
+- Correct identity facts at their four boundaries
+- Extend events_parse seeds to the widened identity grammar
+- Stop NoSession masking a recorded or unreadable meta
+
 ## [v2026.9.75] - 2026-09-14
-
-### Other
-
 - Refuse non-regular and symlinked lock paths before the open
-
-store::lock opened before it locked: a FIFO write-open blocks past any
-wait bound, and create+append follows a symlink, taking the lock
-wherever it points. Classify the path with symlink_metadata before the
-open: absent and regular proceed, every other kind is refused by name.
-lock() never writes a byte to that file, so the damage prevented is the
-open and the lock, not an append. The TOCTOU residual is real and named
-in the comment; the atomic form (O_NOFOLLOW/O_NONBLOCK) needs raw
-platform flags, which ae carries no libc to spell.
-
-read_source shares the one leg spelling, and the proceed arm is the
-positive is_file test, so a node no arm classified is refused rather
-than opened.
-- Merge lockpath: refuse non-regular and symlinked lock paths
 - Normalise NBSP in captured lines so Claude seats classify
-
-The tip-line matcher expected two ASCII spaces after the corner glyph;
-live Claude Code 2.1.270 emits a non-breaking space instead, so the
-unrecognised line shadowed the spinner above the input box and every
-affected seat classified Unknown in ae list. clean_lines already
-trimmed U+00A0, but only at the edges, so an interior NBSP survived.
-
-Normalise U+00A0 to a plain space for the whole line in clean_lines,
-the one place every matcher reads, and return Cow<str>: a line with no
-interior NBSP stays borrowed, and only a line that carries one
-allocates.
-
-The new fixture is a live 2.1.270 capture carrying the real NBSP bytes
-with its provenance recorded beside it, because the frozen ASCII-space
-fixtures could never fail while the vendor chrome drifted under them.
-- Merge tipnbsp: normalise NBSP in captured lines so Claude seats classify
 - Add R15 record sanitizer with measured budgets and request-id grammar
 
-Record-read bytes (goal, decision memo, names, ledger refs) become terminal input at a seat, so the verb cleans them before the deliver path. The strip normalises rather than deletes: CRLF and lone CR fold to LF, U+0085 folds to LF, and remaining controls drop except LF and TAB, so line counts survive progress-bar captures. It operates on decoded chars, never byte ranges, so U+009B arriving as C2 9B cannot eat adjacent em dash, accented or CJK text; over-budget fields omit WHOLE with a marker (decision 8192, goal 4096, 16 newest ids) rather than truncating inside. is_request_id is deliberately narrower than the public minter: production prefixes and four-digit-year stamps only. Three surface classes exist because display_cell is a MENU projection that would corrupt a checkpoint body: rendered text projects, pasted input rides verbatim after the strip, markers carry constants and counts.
-
-Fuzz targets: sanitize_field, request_id_select.
-- Merge compactsanitize: add R15 record sanitizer with measured budgets and request-id grammar
 ## [v2026.9.74] - 2026-09-14
-
-### Other
-
+- Prove the direct menu client by name and exclusion
+- Flush the direct terminal record on every write
+- Isolate adapter config homes
 - Add waiting-agent: the fifth declared work state
 - Fix waiting-agent read-side currency and contract prose
 - Document waiting-agent in the contract
@@ -58,700 +35,174 @@ Fuzz targets: sanitize_field, request_id_select.
 - Preserve model observations for all seats
 - Verify delivery submission outcomes
 
-### Testing
-
-- Prove the direct menu client by name and exclusion
-- Flush the direct terminal record on every write
-- Isolate adapter config homes
 ## [v2026.9.73] - 2026-09-13
-
-### Bug Fixes
-
 - Let --assume-stopped clear a rebooted server record
-
-### Documentation
-
 - Correct which operations cross the boot-time proof
+- Pin the shared gate counts and the rename retry
 - Name end and rename as boot-proof callers
 
-### Testing
-
-- Pin the shared gate counts and the rename retry
 ## [v2026.9.72] - 2026-09-13
-
-### Other
-
 - Add muse as a supported harness
+
 ## [v2026.9.71] - 2026-09-13
-
-### Bug Fixes
-
 - Track partial spawn seats
+
 ## [v2026.9.70] - 2026-09-13
-
-### Other
-
 - Show truthful declared state in the session context menu
+
 ## [v2026.9.69] - 2026-09-13
-
-### Testing
-
 - Reap tmux fixtures after SIGKILL
+
 ## [v2026.9.68] - 2026-09-13
-
-### Other
-
 - Preserve a manually changed model across stop and start
-
-The watchdog and the stop path observe each Claude/codex seat's live
-model off the pane frame ae already captures, and record it in the meta
-as one guarded pair: observed_model.<slot> and observed_model_pin.<slot>.
-A resume rewrites the profile's existing model flag to the observed
-value when the recorded pin still matches the profile; a changed pin
-retires the pair and the profile wins. ae list reports the drift, and a
-tool whose model ae cannot read renders drift:unknown rather than
-implying preservation.
 - Test the observed drift render on the agent line
 - Test the stop-path model capture and name every uncovered seat
 
-The durable cut now returns one line per seat it could not cover — a
-missing live pane, a missing launch id, or a refused write — and the
-stop warns with the seat and the reason while still proceeding. A
-lifecycle integration test draws a Claude frame on a live pane and
-proves the observed-model pair lands in the meta before the kill.
 ## [v2026.9.67] - 2026-09-13
-
-### Other
-
 - Show the observation age and name the manual refresh for unusable Claude scopes
 - Never state an age for a future-skewed stamp
 - Document fast iteration policy
+
 ## [v2026.9.66] - 2026-09-13
-
-### Other
-
 - Add stopped session rename with recoverable transaction
+
 ## [v2026.9.65] - 2026-09-13
-
-### Other
-
 - Report retired requests as retired, not pending
 
-Consult the session closure owner for request and brief views. Document the session-less compatibility sensor and its retired status.
 ## [v2026.9.64] - 2026-09-12
-
-### Other
-
 - Capture an opencode session by birth, not last touch
 
-Gate capture floors on created timestamps, fail closed when created is absent, and use id to break equal births.
 ## [v2026.9.63] - 2026-09-12
-
-### Other
-
 - Close a request when either party retires
 
-A retire now closes a request naming the retired slot at either end:
-the seat it was sent to, or the seat that sent it. Both arms compare
-routing keys, never display names, and both are gated on the request
-resolving home, so a cross-session request read in the caller's log
-stays open. Retiring a worker clears the questions it asked from its
-target's inbox. AGENTS.md and the watchdog internals copy state both
-arms, and that cancel is compact-only.
 ## [v2026.9.62] - 2026-09-12
-
-### Other
-
 - Rank OpenCode Go seats conditionally in delegation guidance
+
 ## [v2026.9.61] - 2026-09-12
-
-### Other
-
 - Carry confirmed profile facts in the orchestrator creation charter
+
 ## [v2026.9.60] - 2026-09-12
-
-### Other
-
 - Guide quota-aware profile selection
+
 ## [v2026.9.59] - 2026-09-12
-
-### Other
-
 - Fix quota dialog readability
+
 ## [v2026.9.58] - 2026-09-12
-
-### Other
-
 - Make quota awareness a session setting
 
-quota = on|off in [workspace]. Absent means on, so every existing session
-keeps today's behaviour.
-
-When off, the whole vendor-quota machinery is gone rather than quiet:
-agents are never told about quota in their context, manifest, rules or
-peer role; the watchdog books no advisory and renders no throttle line;
-the settings menu carries no quota entry. One resolver decides what an
-absent value means, so there is no half-on state.
-
-ae quota is unchanged in both states, and @ae_spend still publishes on
-the cadence: spend is ae pricing its own agents' transcripts offline,
-not vendor quota, so it sits outside this toggle. off wins over
-quota_every_secs.
-
-AE_TEST_QUOTA_TRACE is a CHECKOUT-only test seam: each due quota pass
-appends one attestation line, so a test can prove a pass was skipped
-rather than merely producing no output.
 ## [v2026.9.57] - 2026-09-12
-
-### Other
-
 - Open the settings quota dialog from one live entry row
 
-The settings menu collapsed each client scope to its single most
-constraining window, so a per-window view needed a new projection, not a
-reformat: quota_dialog_rows lists every adopted window under one header
-per scope, every percentage still read from the one derivation.
-
-The entry row carries the captured client identity and reproves it
-immediately before the centred draw, refusing a replaced client or
-server, a switched session, or a resized terminal instead of drawing
-for a clicker that is no longer there.
 ## [v2026.9.56] - 2026-09-12
-
-### Other
-
 - Anchor settings menu to client right edge
 - Handle partial UTF-8 terminal records
+
 ## [v2026.9.55] - 2026-09-11
-
-### Other
-
 - Show quota in highlighted settings menu
+
 ## [v2026.9.54] - 2026-09-11
-
-### Other
-
 - Close a request when the seat it was sent to is retired
+
 ## [v2026.9.53] - 2026-09-11
-
-### Other
-
 - Use shared orchestrator role claim
 - Move version into settings menu header
+
 ## [v2026.9.52] - 2026-09-11
-
-### Other
-
 - Add centered settings menu with scoped orchestrator controls
+
 ## [v2026.9.51] - 2026-09-11
-
-### Other
-
 - Let a level exist only inside the observation that decided it
-
-The rule that a level and the numbers rendered beside it come from one
-observation held as a convention, and it was bypassed at a caller four times
-in a day. Make the misuse unrepresentable instead.
-
-A classified reading now owns its level. The threshold is private, the only
-producers are the first sight of a window and the adoption of a newer
-reading, the fields are private, and each renderer takes that whole value:
-one for the notice a transition books, which is the only place a return to
-headroom can be spelled, and one for the line that quotes a current state.
-The free-form state parameter is gone, so there is no longer an API that
-accepts a level beside another observation's percentage, derivation or age.
-The tracked entry and the throttle candidate hold that single value, leaving
-no separate level to set.
-
-A policy is assembled only where a scope is read: its constructor is private
-to this file, and the one wider constructor exists in test builds alone.
-Outside the quota module tree the compiler now refuses every one of these
-reaches. Inside it the parsers are descendants, and Rust privacy admits a
-descendant with no way to say "visible to the parent but not to a sibling",
-so there the same rule is a convention and a source guard is its whole
-enforcement. That guard is calibrated against a fixture of catch-and-allow
-samples before it scans the tree, it fails loudly rather than treating an
-unread file as a compliant one, and it names which files it visited. The
-contract says convention, not compiler, for that half.
-
-Behaviour is unchanged: the hysteresis moved file without moving a
-threshold, the first sight of a window is still silent, and two rollouts of
-one scope still merge as they did.
 - Say what the quota boundary guard sees, and what it does not
 
-The guard lists the spellings it catches instead of claiming it sees every
-ordinary one. A UFCS call and the two alias forms are plain Rust rather than
-evasion, so they are named as limits at the type that describes the scope,
-and closing them would need a Rust parser in a test — a worse bargain than
-stating the bound.
-
-The census counts physical files under the quota directory, which is what a
-third file there trips. It cannot see a module written inline in the owner
-file, because that file is skipped whole, and a module whose path attribute
-puts its file elsewhere is read with the needles for everywhere else and
-leaves this count at two. Both of those would be a reviewed change to the
-owner file rather than something a needle finds.
-
-The two literal forms the outside scope had no sample for now have one, so
-every needle is calibrated by the fixture rather than three of five resting
-on a live injection alone.
 ## [v2026.9.50] - 2026-09-11
-
-### Other
-
 - Center session context menu and confirm scoped stops
 - Judge quota headroom by declared resets and reported credits
-
-A vendor window percentage answers how much of one window is gone, which is
-not the operator's question when a manual reset is in hand: at 98% used with
-one reset declared, ae fired critical and told every seat to step down off a
-client that was half idle.
-
-No client reports how many manual resets an account holds, so ae must be told.
-A [clients] row now takes manual_resets=<0-9> beside config_home=, in either
-order, and an unusable value is ignored with one visible note rather than
-refusing the config. Codex already reports credits and spend_control_reached,
-so those are read where they are.
-
-ae quota gains EFFECTIVE and CREDITS. EFFECTIVE is the one percentage ae
-judges by: the window spread over 1 + n declared resets, 0% when credits are
-unlimited, 100% when a spend cap is reached, and - when nothing was declared
-or reported. A spend cap outranks every declared reset, in the column and in
-the advisory, which now says a window reset will not free it. The watchdog
-thresholds and the delegation guidance read that percentage instead of the raw
-window. The two columns were paid for in the table's width ceiling, now 182,
-rather than by wrapping every scope and status cell.
-
-The tracked advisory state is keyed by client scope, never by rollout: one
-95% window seen by three rollout owners under one config home fired three
-separate interrupts at the same lead within minutes. It is one fact, so it is
-now one advisory per transition, the newest observation winning.
 - Give account facts their own provenance and keep two quota clocks apart
-
-Review of the previous commit found three ways the derived headroom could be
-wrong in the optimistic direction, which is the dangerous one: it routes work
-toward a client that is actually constrained.
-
-Account facts were adopted from any record that carried a rate_limits key. A
-later record whose rate_limits was null therefore erased a proven spend cap
-while its 95% window survived, and a record with credit fields but no bucket
-and no timestamp could claim unlimited credits for windows it never observed.
-Account facts now carry their own observation time and are replaced only by a
-record that usably reports one, stamps itself, is newer than what is already
-held, and is not skewed into the future. A null container, a malformed field
-and an ordinary account-less bucket update all leave proven facts standing,
-and a qualifying record is applied whole rather than field by field.
-
-Two client labels on one config home merged their declared counts by maximum,
-so an explicit zero beside a one turned 95% into 47.5% and suppressed the
-critical the zero was asking for. The smallest explicit count now wins, with
-the conflict still stated out loud. The table and the watchdog also no longer
-derive separately: one function returns the derivation and both read it.
-
-The watchdog classified against a single clock. Because only a newer vendor
-observation could pass the guard, declaring a reset updated the table to 47.5%
-while a stale Critical stayed tracked and its pending advisory stayed
-deliverable. Raw acceptance is unchanged, an older sample is still refused,
-and a policy change now re-derives the observation already held and cancels
-the advisory it supersedes. Declaring a reset clears a critical; withdrawing
-one re-arms it.
-
-A balance too long to state exactly is reported as available without an
-amount, because nine characters of a ten-digit number is a different number.
-The docs and the delegation guidance now say that ae never consumes a declared
-count, so claimed headroom is only as true as the declaration is current.
 - Read account facts field by field and classify only a held observation
-
-Two defects from the previous round, both measured rather than argued.
-
-An account record was applied whole, so a record that qualified on one usable
-field erased the fields it never mentioned. A newer record carrying credits
-beside a null or malformed spend field therefore cleared a proven spend cap,
-and the rendered table went from a cap to 47.5% of a window with a balance.
-Provenance is now field-level: each fact carries the stamp of the record that
-last usably reported it, and a record moves only the fields it actually
-asserts. Absent, null and malformed all retain the held value and leave its
-age alone, so a cap lifts only on an explicit false. A record that names no
-bucket is not placed against any window at all.
-
-Ambiguity in that file now resolves toward less apparent headroom, because
-overstating headroom is what sends work to a client that is already capped. A
-spend cap never ages out. An unlimited-credit claim, the one fact that adds
-headroom, relieves a window only when it was reported no earlier than that
-window's own observation; a claim that fails the test is still shown, with a
-note saying why the effective number kept the raw window.
-
-The watchdog classified whatever sample arrived once a policy had changed,
-which let an older observation the freshness rule had just refused decide the
-level and even supply the text of a notice. The accepted row is now held on
-the tracked entry. Raw observations are accepted or refused by timestamp
-alone, whatever the policy says, and a policy change re-derives that held row
-and books its notice under the held provenance. The policy path is no longer a
-way past the freshness rule, which was the whole point of separating them.
 - Judge a quota window from one reading, and merge accounts in one place
 
-The field-level provenance this file already had was enforced inside a single
-read of a source and bypassed by both of its callers. Fix the boundary rather
-than the two symptoms.
-
-A policy — the operator's declared resets together with the account facts read
-with them — is now one value with private fields. No other module can
-assemble one, pair one scope's declaration with another observation's facts,
-or move an account field by assignment; it can only read a policy from a
-group, clone it, or merge it. The merge itself has one implementation:
-absorbing an account takes each fact the incoming side actually reports whose
-own stamp is newer, and nothing else. The Codex reader no longer restates that
-rule. It decides only what a record usably reports, which is its own question,
-and hands the result to the same merge that governs a later cycle.
-
-The watchdog was replacing a held account wholesale from whatever sample
-arrived, so an explicit false stamped earlier than a proven cap lifted the cap
-and booked a back-to-headroom notice for a capped scope. Two rollouts of one
-scope in a single scan had the same hole: the newer row won and took its
-accountless policy with it, discarding a cap its sibling reported.
-
-A reading binds the accepted row, the policy it was judged under and the
-provenance of both, and it is the only thing that moves them: a raw
-observation is replaced by a strictly newer stamp whatever the policy says,
-while the declaration and the account facts merge on their own stamps. The
-daemon holds one reading per window, so the next classification, the notice it
-books and the quota line appended to a throttle nudge all read the same
-observation. That line previously carried the held level beside the refused
-sample's percentage and age, which told a seat 20% was critical.
-
-A rendered claim that ae will not use now says the claim was ignored, because
-a declared reset or a cap may still be deciding the cell, and the documented
-retention of a spend cap says what actually holds it: an explicit report lifts
-it, and neither a tail that no longer carries the record nor a restart carries
-it forward.
 ## [v2026.9.49] - 2026-09-11
-
-### Other
-
 - Read selected model and effort from current harness frames
 - Stop nudging a seat that is waiting on its own open work
-
-A seat with a request it sent that nobody answered, or an agent it
-spawned that still holds a seat, is not idle: it is the thing everybody
-else is waiting on. The empty input box was the right reading of the
-pixels and the wrong reading of the facts, and `working` deliberately
-does not quiet the watchdog, so the only honest state was the one that
-got nudged every cycle.
-
-Both facts are ones ae already owns. `session::Outstanding` reads them
-from the pending-request sensor and the spawn/retire ledger, adds no
-store, no option and no captured state, and counts only requests the
-seat SENT — answering an inbox is the seat's own job.
-
-Suppression is a deferral, never silence. The idle arm holds its
-reminder until the episode has run the whole nudge budget's worth of
-deferred opportunities, or the oldest outstanding item passes four
-nudge periods; past either the seat spends its ordinary budget and each
-reminder names what it is waiting on. `ae list` prints the same reason
-on the agent line, so the human never opens the pane to find out.
 - Claim outstanding work by routing key, and only for a held seat
-
-Two ways the deferral read the wrong seat.
-
-It flattened each record's actor into a display name and compared names.
-A display name churns with a rename, so a routed request from this
-session's own slot went unclaimed under its new name, while a same-named
-actor routed to another session could be claimed as ours. The records
-are kept whole now and matched through is_actor, the rule the rest of
-the module already uses: the routing key wherever the writer recorded
-one, the display name only where both halves are absent, which is how
-spawn records are written.
-
-It also counted every named pane as a held seat, before any liveness
-question. A spawned tool that exited into its retained shell still
-excused its owner, while ae list already excluded that same pane, so the
-publisher's decision and the human-visible explanation disagreed about
-one seat. A seat is now held on the cycle's own evidence, by the two
-conjuncts that each have an owner elsewhere: the Dead verdict does not
-hold, and the pane is not sitting at a bare shell.
-
-Unknown is explicit. An unusable process snapshot never removes a seat
-on its own, because the Dead verdict demands positive absence, and never
-rescues one whose pane is at a shell, because the pane's own foreground
-command is read first. A snapshot gap therefore fails closed on the
-deferral: the owner keeps its nudge.
 - Say the snapshot-gap policy as the two cases it is
 
-The wording claimed a probe gap always fails closed on the deferral. It
-does not: a pane running a foreground tool keeps its seat when the
-snapshot cannot confirm the process, because the Dead verdict demands
-positive absence and a gap is not proof of death. Only a pane already at
-a bare shell is refused a seat regardless of the snapshot.
-
-Both cases now say so, and the retained one says it is bounded by the
-same two clocks as any other deferral rather than open-ended.
-
-Comments and docs only; the predicate is unchanged.
 ## [v2026.9.48] - 2026-09-11
-
-### Other
-
 - Prove a recorded tmux server dead after a host reboot
-
-A reboot takes every socket under /tmp/tmux-<uid>/ with it, so every
-persisted session answered ENOENT on its recorded server and `ae <name>`
-refused to resume any of them. ENOENT alone cannot be absence: a server
-that is still running answers exactly the same once something unlinks its
-socket.
-
-Separate the two with the host's boot time. On ENOENT, and only there, a
-session whose own last sign of life predates the boot is Absent — no
-process survives a reboot, so nothing started since can be holding it.
-The proof is per session, never a claim that the server is empty.
-
-The evidence is a new launch-attempt stamp, written under the lifecycle
-lock BEFORE every tmux create by launch, resume and spawn, for every
-tool, and checked: a launch that cannot write it creates no session. It
-exists because every other launch fact is published after the create, so
-an attempt that died in between would have left a session ae could then
-prove gone. `started`, `launch_time`, `capture_floor`, the watchdog
-pidfile and `_run`'s start markers carry the sessions that predate it.
-The event ledger is excluded: `memo add`, `goal` and audit records are
-appended from outside a live session.
-
-stop, end and compact keep the strict proof, pinned by a doors guard.
-The fleet listing reads a vanished server whose every recorded session
-predates the boot as holding nothing, instead of unknown rows and an
-incomplete inventory. `ae doctor` prints both numbers.
 - Refuse an absence proof that rests on damaged evidence
-
-Three ways the boot-time proof could be wrong, found by review.
-
-The launch-attempt stamp was staged through a predictable temp name with
-a plain create, which follows a symlink planted in session state and
-truncates whatever it points at, outside the session entirely. The error
-path then unlinked a collision it never owned. Stage it exclusively
-instead: a name that is already taken is refused, whatever is behind it,
-and only a temp this process made is ever cleaned up. A stamp that
-cannot be written already means the launch is refused.
-
-Evidence read in two states folded damage into absence. A stamp nobody
-may read, a directory where a file belongs, contents that are not a
-moment, a meta row that names a launch moment and does not spell one, an
-enumeration that fails partway: each vanished, and an older readable row
-was then free to prove the session gone. Every source now answers in
-three states, and one damaged source makes the whole answer damaged. A
-source that is simply not there still says nothing, which is what every
-session older than it looks like.
-
-The stamp is hostile persisted state on the resume path, so its read is
-bounded before it happens and both pure reducers gain cargo-fuzz targets
-with seeds.
-
-The reboot guidance offered `ae stop` as a way out, which cannot work:
-stop keeps the strict proof and refuses the same error a resume does.
-Replace it with the recovery that does work, and name the three ways a
-session stays unprovable.
 - Read only a real moment as a sign of life
 
-A launch fact spells a strictly positive epoch or it spells nothing
-readable. The shared claim helper folded zero and negative epochs into
-silence, which is the capture floor's grammar and no other source's: a
-`.launch-attempt` or `started` row claiming `0` left an older readable
-row speaking for it, and the boot-time proof then called the session
-gone. The claim helper is now strict, and the one documented exception
--- `capture_floor.<slot>=0`, the no-origin sentinel a retained exact
-resume publishes -- has its own reader.
-
-The meta reducer also skipped a row that named a launch moment and
-carried no `=` at all, handing the answer back to whatever was older.
-It now recognises the name before it looks for the value, so a bare
-`launch_time.main` reads as the damaged claim it is.
-
-The damage table carries both shapes, and the legacy sentinel sits
-beside it as a control, so tightening this again cannot silently strand
-a session with no known capture origin. The exclusive-temp test now
-also asserts the bytes of a regular file planted at the temp name.
 ## [v2026.9.47] - 2026-09-11
-
-### Other
-
 - Show each session's spend in the fleet picker
-
-The picker could say what every session was doing and never what any of it
-cost. `ae usage` already prices agent transcripts offline, so the number
-existed; it just had no way into a menu that reads one tmux listing.
-
-Publish it as a fact instead. The watchdog writes a session-scoped
-`@ae_spend` — `v1;<epoch>;<interval>;<usd_micro>;<flag>` — from one
-`usage::observe` pass over its own session, priced from the same config
-`ae usage` reads. That pass costs a walk of the session's transcripts, so it
-rides the `quota_every_secs` cadence and its counter rather than the verdict
-interval: one pass per cadence, and `0` disables spend with the advisories.
-Anything the grammar cannot carry unsets the option, as does `watchdog stop`.
-
-The option is hand-editable persisted state, so `parse_picker_spend` is
-strict about all five fields and the fuzz target `picker_spend` gates the
-cutover. Missing, malformed and stale facts are unavailable, never a
-confident zero: the row draws `-` and the title leaves the session out of
-its sum. A flag short of `exact` prefixes `~`, including the sum when any
-counted session carries one. Unaccounted spend counts as short of exact, so
-legacy retire events ae cannot attribute a transcript to take the tilde too.
-
-Column widths now follow the rows a draw actually shows, floored at four
-cells and capped where the old constants were. Session rows and the agent
-rows under them share the name and state columns, so a fleet of short names
-no longer pads every one of them out to eighteen cells of blanks.
 - Name the spend cadence where the knob is documented
-
-The config reference described `quota_every_secs` as the quota-observation
-cadence. It now paces the fleet picker's spend fact on the same counter, and
-`0` takes that column away too, so a reader of this table would have been
-surprised twice.
 - Advertise the cadence spend sampling reaches, not the one asked for
 
-Two readings from the colead's diversity review of the spend slice.
-
-The fact advertised `quota_every_secs` verbatim while the counter that
-produces it fires on whole watchdog cycles. With a one-second request on a
-sixty-second cycle the fact claimed an interval of one and was sampled every
-sixty, and the reader expires a fact after two of its own intervals — so a
-perfectly healthy publisher showed `-` through almost every cycle. The
-advertised interval is now the rounded period sampling actually reaches, and
-the test derives that period from the production counter rather than from an
-expectation, so the two cannot drift apart again. Unequal inputs are pinned
-at the unit level and the integration arm now runs a one-second request
-against a two-second cycle instead of the one-against-one that missed this.
-
-The title also read as whole-fleet coverage when it was not. Three running
-sessions with one unavailable fact summed the other two and drew an
-unqualified figure. An absent reading is missing coverage, not a zero, so it
-now qualifies the sum the same way an inexact reading does.
 ## [v2026.9.46] - 2026-09-11
-
-### Bug Fixes
-
-- Draw the picker button in one cell
-
-### Documentation
-
-- Scope the picker glyph width claim to what was measured
-
-### Other
-
 - Wait for a spawned seat's launch before playing codex
-
-The codex handshake reads config_home.<slot>, which the seat's own _run
-records after a spawn has returned; the rig raced it and scanned the
-ambient store instead.
+- Draw the picker button in one cell
+- Scope the picker glyph width claim to what was measured
 - Restore equal lead-pair widths
+
 ## [v2026.9.45] - 2026-09-10
-
-### Other
-
 - Show agents in the fleet picker
 - Document the picker client requirement
 - Carry picker freshness in agent facts
+
 ## [v2026.9.44] - 2026-09-10
-
-### Bug Fixes
-
-- Harden harness state recovery
-- Preserve declarations past later activity
-
-### Documentation
-
-- Define Claude frame recognition
-
-### Features
-
 - Classify harness state in watchdog
-
-### Testing
-
+- Harden harness state recovery
+- Define Claude frame recognition
+- Preserve declarations past later activity
 - Keep observed fuzz seeds live
+
 ## [v2026.9.43] - 2026-09-10
-
-### Other
-
 - Bind session ID capture to launch identity
 - Preserve capture origin across resume
 - Search token-proven Codex partitions
+
 ## [v2026.9.42] - 2026-09-10
-
-### Documentation
-
-- Clarify fleet picker position
-
-### Features
-
-- Move fleet picker to bottom left
-
-### Other
-
 - Remove stock tmux right-click menus
 - Pin ambient tmux menu preservation
+- Move fleet picker to bottom left
+- Clarify fleet picker position
 - Fan out lead delegation by default
 - Clarify delegation briefing limit
 - Apply delegation documentation nits
 - Narrow working pulse amplitude
+
 ## [v2026.9.41] - 2026-09-10
-
-### Other
-
 - Add offline session usage reporting
 - Harden usage readers for real transcripts
 - Refine usage retirement and model attribution
 - Exercise Codex head-tail usage reducer
 - Preserve incomplete usage scan coverage
 - Reject malformed Codex token counters
+
 ## [v2026.9.40] - 2026-09-10
-
-### Other
-
 - Light the fleet picker button while open
 - Fix picker highlight and split-pane anchoring
+
 ## [v2026.9.39] - 2026-09-10
-
-### Features
-
 - Quiet fleet menu button
+
 ## [v2026.9.38] - 2026-09-10
-
-### Other
-
 - Improve fleet picker interaction
 - Handle tmux 3.4 menu clicks on release
+
 ## [v2026.9.37] - 2026-09-10
-
-### Other
-
 - Make the fleet picker direct and fast
 - Guard focus hooks by session ID
+
 ## [v2026.9.36] - 2026-09-09
-
-### Other
-
 - Advise session leads on quota transitions
 - Harden quota advisory delivery
 - Add fleet picker status menu
 - Escape picker commands across tmux formats
+
 ## [v2026.9.35] - 2026-09-09
-
-### Other
-
 - Draw twelve sessions in the fleet strip before counting
+
 ## [v2026.9.34] - 2026-09-09
-
-### Bug Fixes
-
-- **quota**: Harden local cache boundaries
-- **quota**: Discover fleet rollout owners
-- **quota**: Prioritize recent rollouts
-- **quota**: Preserve uncertain cache evidence
-
-### Features
-
-- **quota**: Parse cached vendor limits
-- **quota**: Expose local quota table
-
-### Other
-
 - Add configured client command expansion
 - Record and contain client config homes
 - Preserve default client environments
@@ -760,190 +211,88 @@ ambient store instead.
 - Preserve recorded client home mode
 - Record implicit client home base
 - Refuse retargeted implicit client stores
+- **quota**: Parse cached vendor limits
+- **quota**: Expose local quota table
+- **quota**: Harden local cache boundaries
+- **quota**: Discover fleet rollout owners
+- **quota**: Prioritize recent rollouts
+- **quota**: Preserve uncertain cache evidence
 - Key quota scopes by resolved clients
 - Fix quota source and rollout provenance
 - Fix quota scope provenance
 - Fix nested quota expansion provenance
 - Fuzz the client expansion and both quota parsers
 
-The lane's three pending targets: config_command resolves a profile
-through [clients] with a home and without, and the two quota targets
-read the vendor-written caches ae does not control. The codex target
-takes its record-boundary flag from the first input byte and the claude
-target reparses at a clock the input chooses, so window arithmetic sees
-hostile times too.
-
-Each carries four tracked seeds. The README's TODO section goes: the
-wait is over.
 ## [v2026.9.33] - 2026-09-09
-
-### Other
-
 - Add the cargo-fuzz lane for the hostile parsers
-
-AGENTS.md requires cargo-fuzz before a parser of hostile persisted state cuts
-over, and no lane existed. fuzz/ is an independent crate — not a workspace
-member, its own lock, its own nightly — so the product's 1.97.1 pin and the
-deny/vet graphs are untouched. Three thin targets call config::parse_identity,
-Meta::parse and lex_simple_command and discard the result through black_box.
-
-`just rust-fuzz target=<name> secs=60` and `rust-fuzz-all secs=60` run it. The
-preflight refuses on an unpinned cargo-fuzz, a missing nightly or rust-src, a
-stale fuzz/Cargo.lock, or unformatted fuzz sources, and a run ends on the
-evidence line a cutover report pastes. CI never runs the lane: no nightly there.
-
-FUZZ_TOOLCHAIN in the justfile is the lane's ONE nightly pin — there is no
-fuzz/rust-toolchain.toml to drift from it. cargo-fuzz 0.13.2 has no --locked
-pass-through, so the committed lock is proven with `cargo metadata --locked`
-before anything builds. Named seeds are tracked under fuzz/seeds/<target>/ and
-byte-exact by .gitattributes; libFuzzer's own corpus/ stays ignored.
-
-parse_identity is the pure parser behind read_identity, exposed so the fuzz
-loop holds no filesystem door, and tested against the file reader so the two
-cannot become separate grammars.
-
-First measurement, 30s per target: 1.24M, 1.03M and 1.05M runs at 33-40k
-exec/s. No crash, no leak, no timeout.
 - Refresh the fuzz lock in the release's version commit
-
-The fuzz crate is outside the workspace, so `just bump` never reached its
-lock — and that lock records the ae version, so every CalVer bump left it
-stale and the fuzz lane refused until someone refreshed it by hand.
-
-The release now refreshes it between the bump and the commit, with the lane's
-own nightly so the lane's `cargo metadata --locked` proof agrees with what was
-written. The probe and the refresh are ONE condition: a machine without the
-nightly publishes with the lock as committed and says so in a warning, and the
-`git checkout` beside it means that promise holds even when a metadata run
-failed half-way. A dev toolchain cannot fail a release.
-
-tests/it/gate.rs pins all four rules — after the bump, before the commit,
-guarded, and unable to refuse — each against a justfile that breaks it.
 - Bound the fuzz lane's duration to a positive integer
-
-The duration guard refused the literal `0` and every non-digit, which reads as
-sufficient and is not. `00` is all digits and is not `0`, so it passed, and
-libFuzzer imposes a total-time limit only when the value is positive — it reads
-`-max_total_time` into an int and treats zero as no limit. `just rust-fuzz
-target=meta_parse secs=00` therefore started the one thing this lane exists to
-avoid: an unbounded run. A value past the int range wrapped the same way.
-
-The test is now anchored and bounded, `^[1-9][0-9]{0,5}$` — 1 to 999999
-seconds, which is eleven days at the top and far inside the int range.
-
-tests/it/gate.rs pins what text can prove: the anchoring, the absence of the
-digits-only pattern, the order against the cargo-fuzz call, and the sweep's
-single route through the guarded recipe. A synthetic green lane sits beside the
-four red ones so a passing run cannot come from a rule that matches nothing.
-
-The evidence line also said TRACKED seeds while counting every file on disk;
-it counts `git ls-files` now, and a target with no seed directory refuses.
 - Say that the release refreshes the fuzz lock
-
-The README still described the state before the release did it: a lock nobody
-refreshed and a manual remedy after every bump. The remedy is still there,
-because the refresh is best effort on purpose — a release must never fail on a
-dev toolchain, so a machine without the nightly publishes with this lock as
-committed and warns instead.
 - Widen colead pane to 40 percent of the lead-pair window
 - Add pane flip menu to session strip
+
 ## [v2026.9.32] - 2026-09-08
-
-### Other
-
 - Add guided configuration initialization
 
-Publish new config files from synced same-directory temps so concurrent readers never observe partial bytes.
 ## [v2026.9.31] - 2026-09-08
-
-### Other
-
 - Exclude macOS metadata from release bundles
 - Allow publish past stopped legacy sessions
+
 ## [v2026.9.30] - 2026-09-08
-
-### Other
-
 - Keep lead-pair ratio on window resize
 - Preserve zoom and repair live lead-pair layouts
+
 ## [v2026.9.29] - 2026-09-08
-
-### Other
-
 - Show session lifecycle ages in list output
 - Repair rename monitor and resume lifecycle
-
-The live rollback failure for numeric session 416 could not be reproduced in an isolated probe: list-sessions returned $0 and kill-session -t =$0 succeeded. Rollback now kills the exact new name directly, removing the fallible discovery step; this is a simplification, not a proven root-cause fix.
 - Add solo session launches
+
 ## [v2026.9.28] - 2026-09-08
-
-### Other
-
 - Keep selected strips width stable
+
 ## [v2026.9.27] - 2026-09-08
-
-### Other
-
 - Restore spacing in session strips
 - Enforce strong state reason guidance
 - Clarify state guidance wording
 - Hold orchestrator overviews during active work
+
 ## [v2026.9.26] - 2026-09-08
-
-### Other
-
 - Simplify status and fleet attention spacing
+
 ## [v2026.9.25] - 2026-09-07
-
-### Other
-
 - Show full waiting-user decisions
+
 ## [v2026.9.24] - 2026-09-07
-
-### Other
-
 - Add per-seat launch profile overrides
 - Align listing profile column
 - Fix seat override preflight races
 - Freeze restored spawned seat commands
 - Synchronize launch race tests deterministically
+
 ## [v2026.9.23] - 2026-09-07
-
-### Other
-
 - Group orchestrator needs by session
 - Carry explicit main seat into overview
+
 ## [v2026.9.22] - 2026-09-07
-
-### Other
-
 - Clarify explicit session creation flow
 - Fix window tab clicks with focus hook
 - Reassert status click binding on live sessions
+
 ## [v2026.9.21] - 2026-09-07
-
-### Other
-
 - Brighten working pulse endpoints
+
 ## [v2026.9.20] - 2026-09-07
-
-### Other
-
 - Keep orchestrator strip in place when selected
+
 ## [v2026.9.19] - 2026-09-07
-
-### Other
-
 - Give detached checker marker poll more time
 - Clarify orchestrator self-stop guard
 - Fix orchestrator guard wording
 - Pulse working mark colour
 - Stabilize watchdog working pulse test
 - Require names and attach bare ae
+
 ## [v2026.9.18] - 2026-09-07
-
-### Other
-
 - Deliver changed fleet overviews from the watchdog
 - Anchor overview liveness to settled deliveries
 - Require acknowledgements after latest overview
@@ -954,29 +303,19 @@ The live rollback failure for numeric session 416 could not be reproduced in an 
 - Sanitize overview attention text
 - Tighten overview reason layout
 - Align overview charter with renderer
+
 ## [v2026.9.17] - 2026-09-07
-
-### Other
-
 - Add directory-explicit detached launch
 - Guard explicit launch origins before mutation
 - Add automatic upgrade checks
+
 ## [v2026.9.16] - 2026-09-07
-
-### Other
-
 - Focus sessions on lead pane when entered
 - Keep test tmux directory existent
 - Move attached clients when ending sessions
 - Enforce session delivery boundaries
+
 ## [v2026.9.15] - 2026-09-07
-
-### Bug Fixes
-
-- Fix installer URL for pinned releases
-
-### Other
-
 - Run launches on the isolated ae server
 - Isolate in-process tmux tests
 - Isolate every Rust test lane
@@ -984,143 +323,73 @@ The live rollback failure for numeric session 416 could not be reproduced in an 
 - Make in-pane lifecycle commands safe
 - Freeze confirmed end plans across handoff
 - Make ae version link to orchestrator
+- Fix installer URL for pinned releases
 - Add orchestrator fleet overview and relay
 - Bind relay authority and restore sweep heartbeat
 - Route sessions across tmux servers
 - Bind lifecycle self-targets to caller servers
 - Bind watchdog inference to caller server
+
 ## [v2026.9.14] - 2026-09-07
-
-### Other
-
 - Render window marks before agent names
+
 ## [v2026.9.13] - 2026-09-07
-
-### Other
-
 - Name agents in window entries
+
 ## [v2026.9.12] - 2026-09-07
-
-### Other
-
 - Configure orchestrator profile globally
 - Scope orchestrator identity to its seat overlay
+
 ## [v2026.9.11] - 2026-09-07
-
-### Bug Fixes
-
 - Fix watchdog quiet pane repaint handling
-
-### Other
-
 - Make tmux session targets exact
-
-Target class | Sites | Treatment
-session names | marker, has/kill, pane enumeration, focus, environment, rename | =name via session_target
-session compounds | session options, look, split/new-window/layout, window rename, monitor | =name:... via session_target
-session IDs | kill-session | =ID via session_target
-human attach hints | launch and picker | shell-safe "=name"
-pane/window IDs | capture, send, select, option writes | unchanged
-creation names | new-session -s | unchanged
 - Animate the fleet strip with working sessions
 
-Cache pane and fleet observations for five 100 ms frames, while writing only changed static strips and shared Working frames.
-
-ae-dev measurement, 60.048 s, attached, 2 local Working panes plus 1 Working session:
-cadence | watchdog CPU avg/max | tmux CPU avg/max | pane fps | fleet fps
-250 ms baseline | 0.9% / 2.0% | not recorded | nominal 4 | static
-100 ms | 1.047% / 3.300% | 0.830% / 2.700% | 9.059 | 9.059
 ## [v2026.9.10] - 2026-09-07
-
-### Bug Fixes
-
 - **watchdog**: Animate working verdicts
+
 ## [v2026.9.9] - 2026-09-07
-
-### Other
-
 - Give orchestrator its own seat config
 
-Seed a dedicated config and persist its overlay path so launch, resume, run, rename, and refresh resolve the same single-seat roster.
-
-Live probe:
-pane_count=1
-pane=%3 agent=orchestrator slot=main
-seat.main=orchestrator
-profile.main=claude
-local_config=/Users/ckriech/.ae-dev/orchestrator.config
-strip=◆ orchestrator
 ## [v2026.9.8] - 2026-09-07
-
-### Features
-
 - **theme**: The monitor window leaves the bar
 - **theme**: The strip keeps creation order, the tab says ae, the border drops the profile
+
 ## [v2026.9.7] - 2026-09-07
-
-### Bug Fixes
-
 - **watchdog**: Typing is not motion
+
 ## [v2026.9.6] - 2026-09-06
-
-### Documentation
-
-- Document the orchestrator seat and role contract
-- **brief**: The topic-capture convention, and ae brief as its reader
-- **commands**: The bare orchestrator word in the command list
-
-### Features
-
 - **theme**: Titles, pinned orchestrator row, and bare word API
+- **launch**: Drop the orchestrator companion autostart
+- Document the orchestrator seat and role contract
 - **entry**: The bare orchestrator word launches the seat
 - **brief**: Ae brief cards a session's goal, topics, states and open asks
+- **brief**: The topic-capture convention, and ae brief as its reader
+- **memo**: One record parser, shared by render and brief
+- **commands**: The bare orchestrator word in the command list
 - **watchdog**: The working spinner animates between verdict cycles
 
-### Refactoring
-
-- **launch**: Drop the orchestrator companion autostart
-- **memo**: One record parser, shared by render and brief
 ## [v2026.9.5] - 2026-09-06
-
-### Features
-
 - **theme**: The bar names the session once, raises it in the strip, and shows the core
-
-### Testing
-
 - Line zero names no session; a rename proves the window name instead
+
 ## [v2026.9.4] - 2026-09-05
-
-### Bug Fixes
-
+- **tmux**: Refuse to launch below the tmux floor, and report it everywhere
+- **theme**: Draw ae sessions in a session-scoped look
+- The tmux floor, the session look, and a CI tmux that clears it
 - **release**: The version proofs read the first --version line
 - **release**: Cut the version line in the shell, not through head
 
-### Documentation
-
-- The tmux floor, the session look, and a CI tmux that clears it
-
-### Features
-
-- **tmux**: Refuse to launch below the tmux floor, and report it everywhere
-- **theme**: Draw ae sessions in a session-scoped look
 ## [v2026.9.3] - 2026-09-05
-
-### Bug Fixes
-
-- **migrate**: A meta with schema=2 and no version row IS version 2, and is stamped rather than refused
-- **upgrade**: A census that failed is not an empty one, and the publisher holds its lock through the version sweep
-- **upgrade**: The absent sessions root is typed, the sweep never deletes what the command link names
-- **session**: A withdrawn request is not one anybody is waiting on
-- **archive**: A terminal event ends only an opening it follows
-
-### Documentation
-
 - AGENTS.md is the current contract, not the record
 - Correct three owners and the process-door count
 - **clippy**: The door inventory names what the boundary test enforces
+- **deliver**: The draft sensor is proven by the polled reading, not a second read
 - **contract**: Six owner and wording corrections from the colead round
 - **contract**: The re-run row follows the store probe, and the separator rule names every format
+- **cli**: The black-box runner is hermetic, so no fixture can launch into the developer's ae
+- **codex**: The first turn stays, measured, and is passive
+- Add ae message style rule
 - **watchdog**: Comments state current behaviour, not what they replaced
 - **cli**: Argv comments describe the grammar, not the port that produced it
 - **compact,teardown**: The lifecycle comments describe the steps, not the port
@@ -1132,72 +401,58 @@ strip=◆ orchestrator
 - **config,events,shim,shape,roster,rename**: The module docs open on the rule
 - **tail**: The last of the port narration across src and the suite
 - **event_text**: The unescape note ends its sentence
-- **contract**: The helper section names the message-style rule and its scope
-- **migrate,meta,lifecycle,session_launch,install**: The previously fenced files
-
-### Features
-
-- **upgrade**: Every session carries a meta_version, and a publish migrates every one of them before it moves the ae command
-
-### Other
-
-- **codex**: The first turn stays, measured, and is passive
-- Add ae message style rule
+- **store**: A live session's files are named once and written one way
 - Centralize tool launch and resume capabilities
-- Tool adapters phase 1 — one immutable adapter row per tool, behaviour-shaped strategy variants
+- **store**: The memo file is read where its name is spelled
 - Centralize tool session capture capabilities
 - Record unconfirmed deliveries
-- Upgrade migration chain — every session carries meta_version, a publish migrates all of them before it moves the command link
-- Merge branch 'comment-sweep'
+- **upgrade**: Every session carries a meta_version, and a publish migrates every one of them before it moves the ae command
+- **migrate**: A meta with schema=2 and no version row IS version 2, and is stamped rather than refused
+- **upgrade**: A census that failed is not an empty one, and the publisher holds its lock through the version sweep
+- **upgrade**: The absent sessions root is typed, the sweep never deletes what the command link names
+- **contract**: The helper section names the message-style rule and its scope
+- **migrate,meta,lifecycle,session_launch,install**: The previously fenced files
 - **floor**: The SERVER's own version decides, and a refusal never restarts one
 - The fleet picker is a tmux menu, built from the list digest
-- Ae orchestrator --popup — the fleet picker is a tmux menu built from the list digest, behind a server-version floor
-- The black-box suite owns its scratch and never launches an installed agent — fake tools, owned scratch guards, SHELL pinned at both tmux doors
-- Centralize tool input observation capabilities
-
-### Refactoring
-
-- **store**: A live session's files are named once and written one way
-- **store**: The memo file is read where its name is spelled
-- **store**: One quiet container read, and the three request readers pinned
-- **store**: Every session file is named, locked and written in one place
-- **store**: Resume retention is a store transaction, and the guard sees direct writes
-
-### Testing
-
-- **deliver**: The draft sensor is proven by the polled reading, not a second read
-- **cli**: The black-box runner is hermetic, so no fixture can launch into the developer's ae
 - **entry**: Route seeded profiles through fakes
 - **it**: Own scratch cleanup
 - **cli**: Isolate helper environments
 - **parity**: Pin tmux fixture shell
 - **cli**: Own runner scratch
 - **cli**: Harden scratch ownership
+- Centralize tool input observation capabilities
+- **store**: One quiet container read, and the three request readers pinned
+- **session**: A withdrawn request is not one anybody is waiting on
+- **archive**: A terminal event ends only an opening it follows
+- **store**: Every session file is named, locked and written in one place
+- **store**: Resume retention is a store transaction, and the guard sees direct writes
+
 ## [v2026.9.2] - 2026-09-04
-
-### Bug Fixes
-
+- **migration**: Final phase-4 evidence as left by the human before the tree is retired
+- Retire docs/migration — the rewrite it documented is complete (history keeps the evidence)
+- **z4**: The installer's logic is the core's; install is a 79-line bootstrap
+- The list goldens live under tests/fixtures; the bash-parity helper corpus test retires with the evidence tree
+- Point the list goldens at tests/fixtures and drop the retired corpus module
+- **monitor**: The orchestrator sweep is a core entry, and the last Python goes
 - **tmux**: Printable field separator so every format survives tmux 3.4
 - **install**: Resolve a dangling link target through its own nearest ancestor
+- **agents**: The printable tmux format separator governs every format, with the Linux measurement
 - **ci**: The version directory is sealed after the rename, and the agent-site inventory is order-free
+- **z4**: The bash suites retire into tests/it
+- **z4**: The parity harness keeps its door, the boundary guards get their own module
+- **z4**: The gate is one command, and the lint has one file left
+- **z4**: The test surface is Rust, and the bash hazards are install and your shell
+- **z4**: No pointer names a retired tree, and the byte-exact rule follows its files
+- **release**: A release is built and published from one machine
+- **release**: The remote tag is created by the release, not pushed ahead of it
+- **agy**: The Antigravity CLI is a first-class ae tool
 - **agy**: A token miss stays pending, the scan is bounded, and a purge names agy
 - **agy**: The operand delimiter ends the strip
 - **purge,agy**: A recorded id is a name, and the scan bound is a real one
 - **monitor**: A sweep target is a session directory or it is refused
-- **docs**: A comment that stops mid-sentence says less than none
-- **docs**: The last eight truncations, found by a stricter audit
-- **docs**: Complete the truncated attach comment in the entry suite
-- **doors**: The relaxation inventory names all nine files again
-- **monitor**: A sweep may only act on the caller's own session
-
-### Documentation
-
-- **migration**: Final phase-4 evidence as left by the human before the tree is retired
-- Retire docs/migration — the rewrite it documented is complete (history keeps the evidence)
-- **agents**: The printable tmux format separator governs every format, with the Linux measurement
-- **z4**: The test surface is Rust, and the bash hazards are install and your shell
-- **z4**: No pointer names a retired tree, and the byte-exact rule follows its files
+- The bash bootstrap is inside the gate, on both runners
 - Align runtime shape with Rust core
+- Isolate tmux fixtures
 - **session**: Rustdoc shape, and entry_from gets its own doc back
 - **events**: Rustdoc shape for the event record and its readers
 - **list**: Rustdoc shape for the session readers and the listing
@@ -1207,245 +462,312 @@ strip=◆ orchestrator
 - **core**: Rustdoc shape for lifecycle, install, doctor and the leaf modules
 - **src**: One sentence per item, and the rest of the argument goes
 - **tests**: The test name carries the intent, the comment carries the instrument
-- **launch**: The six freed files get the same rustdoc shape
-- The last six files, and every pointer at a file that is gone
-
-### Features
-
-- **z4**: The installer's logic is the core's; install is a 79-line bootstrap
-- **monitor**: The orchestrator sweep is a core entry, and the last Python goes
-- **agy**: The Antigravity CLI is a first-class ae tool
 - **roster**: A v1 meta is a fresh start, not a migration
+- Two methods with no caller go, and the third is not one
 - **meta**: The v1 roster reader is gone; a legacy meta is reported, not read
-
-### Other
-
-- Merge branch 'z4-install'
-- Merge branch 'z4-monitor'
-- Merge branch 'ci-linux'
-- **z4**: The gate is one command, and the lint has one file left
-- Merge branch 'z4-tests'
-- **release**: A release is built and published from one machine
-- **release**: The remote tag is created by the release, not pushed ahead of it
-- Merge branch 'z4-monitor-fix'
-- The bash bootstrap is inside the gate, on both runners
-- Merge branch 'z4-ci-gate'
-- Merge branch 'z4-docs-nit'
+- **docs**: A comment that stops mid-sentence says less than none
+- **launch**: The six freed files get the same rustdoc shape
+- One table for the request-pairing matrix, and six twins dropped
+- **docs**: The last eight truncations, found by a stricter audit
+- **docs**: Complete the truncated attach comment in the entry suite
+- **doors**: The relaxation inventory names all nine files again
+- The last six files, and every pointer at a file that is gone
+- **monitor**: A sweep may only act on the caller's own session
 - Make release workflow proof-only
 
-### Refactoring
-
-- Two methods with no caller go, and the third is not one
-
-### Testing
-
-- The list goldens live under tests/fixtures; the bash-parity helper corpus test retires with the evidence tree
-- Point the list goldens at tests/fixtures and drop the retired corpus module
-- **z4**: The bash suites retire into tests/it
-- **z4**: The parity harness keeps its door, the boundary guards get their own module
-- Isolate tmux fixtures
-- One table for the request-pairing matrix, and six twins dropped
 ## [v2026.9.1] - 2026-09-04
-
-### Bug Fixes
-
-- **gates**: The bash lint and format lanes go green, and the linter is pinned
-- **glue**: Every pane kill is guarded by a fail-closed ownership check; suites stop inheriting the pane's CONFIG_FILE
-- **watchdog**: The pidfile is released by Drop, so every exit after publish releases it
-- **deliver**: A paste that fails after the load deletes what it staged
-- **spawn**: A profile selected at spawn passes the one-simple-command lexer before any effect
-- **launch**: Record the glue as ae_path, render the window glyphs, restore the saved roster on resume
-- **core**: Close the four glue-cut-2 gaps in launch, stop and compact
-- **stop**: The fleet form confirms from every caller, --self derives its name, every stop is recorded
-- **watchdog,doctor**: Start runs the shim without a stray word; doctor reports the core path and the glue's bash
-- **core**: The three dead links the docs pass found
-- **core,glue**: The three dead links, six review findings, and the glue path leaves meta
-- **wrapper**: A set-empty server half is a declared server, not an absent one
-- **run**: Take the start marker back when the exec did not happen
-- **launch**: Every rollback announces itself, through one helper
-- **run**: A recorded id is the resume target for every tool
-- **run**: One environment prefix, one durable marker, one grammar
-- **run**: Quoting decides assignment-shape, and both lexers read it
-- **z3**: Launch-plan usage errors exit 2, and one env is peeled, not a run of them
-- **z3**: The shape is the executable's position, and a foreign HOME is refused
-- **z3**: Every effectful invocation passes the install gate
-- **z3**: Every execution boundary names the resolved core
-
-### Documentation
-
 - Current surfaces read as ae, not as a migration project
+- **gates**: The bash lint and format lanes go green, and the linter is pinned
 - Slim the README intro and drop restated architecture
-- Record the #79 ruling — destination B, the ae-dev namespace, the roll-forward cycle
-- Helpers and the wrapper contract describe the core-required glue (post A.1)
-- Name the parallel and domain-scoped test lanes
-- **development**: Show the fast test lanes beside the serial commands
-- The JSON sink is core-owned; _json_escape no longer exists
-- The agent-name grammar lives in the core
-- **internals**: Preserve the stop self/target identity contract as the glue's stop arm becomes a passthrough
-- **watchdog**: The daemon's module doc no longer claims the recovery stays in bash
-- The glue cuts, recorded where the docs claimed bash
-- **glue**: The server-kind comments state the refusal the core makes, not a fallback it no longer has
-- **core**: The pane runs a command, not a script — and one flagged conflict
-- **z3**: The suite and the docs describe the symlink install
-- **readme**: The helpers are links to the binary, not bash scripts
-
-### Features
-
 - **roles**: Lead and colead are equal leadership peers under lead-pair
 - **identity**: Core reads the alias-free v2 roster (additive, read-only)
 - **identity**: P2 primitives — v2 config reader, one-simple-command lexer, v2 roster render/migrate
 - **identity**: Alias-free agent identity v2 — core-owned roster, bare names, spawn/retire cutover
+- **glue**: Every pane kill is guarded by a fail-closed ownership check; suites stop inheriting the pane's CONFIG_FILE
+- Suites refuse bash 3.2 and clear every pane-exported ae variable (slice A.0)
+- Record the #79 ruling — destination B, the ae-dev namespace, the roll-forward cycle
 - **core**: List computes liveness, branch and attention itself (slice A.2a, Rust side)
-- **core**: Next/jump — pick the session that needs you, in the core (A.2a follow-up)
-- **core**: The watchdog pane and the workspace renders are core-owned (A.3 and A.2c, Rust side)
-- **core**: The core delivers to the pane itself; `_interrupt` joins it (B move 1, Rust side)
-- **core**: Spawn and retire are whole core operations (B move 2, Rust side)
-- **core**: Launch, resume, end, stop and compact are whole core operations (B moves 3 and 4, Rust side)
-- **core**: The capture entry answers for every tool, and spawn drives it
-- **capture**: The core captures session ids for codex, opencode and gemini; spawn forks its own capture
-- **core**: The watchdog and the telegram bridge are the core's to start and stop
-- **daemons**: The core owns the watchdog and telegram lifecycle and starts both companions at launch
-- **core**: Doctor, rename and the dependency gate are the core's
-- **doctor**: The core owns doctor, doctor --refresh, the dependency check, shim rendering and rename
-- **watchdog**: The core recovers pending tool session ids itself
-- **watchdog**: The core recovers pending tool session ids in-process
-- **core**: The core is the entry — the preamble, the launch fall-through, the refusals
-- **run**: A resuming run says so before it becomes its tool
-- **z3**: The core IS the public ae — shape, doors, upgrade
-- **z3**: The public ae is the core, and the install layout says so
-
-### Miscellaneous
-
-- Drop a measured-timings artifact that is not this slice's file
-
-### Other
-
-- Merge branch 'z1-core'
-- Merge branch 'z1-wrapper'
-- Merge branch 'z1-serverpair'
-- Merge branch 'z2-core'
-- Merge branch 'z2-suites'
-- Merge branch 'main' into z2-resume
-- Merge branch 'z2-resume'
-- Merge branch 'z2-fix'
-- Merge branch 'z3-core'
-- Merge branch 'z3-usage'
-- Merge branch 'z3-install'
-- Merge branch 'z3-fix'
-
-### Refactoring
-
+- **it**: Sc_017p waits for the pane to exec its command before asking the world
 - **glue**: The core is required — every no-core bash fallback is deleted (slice A.1)
+- Helpers and the wrapper contract describe the core-required glue (post A.1)
+- **core**: Next/jump — pick the session that needs you, in the core (A.2a follow-up)
+- Parallel sharded integration runner, domain selection, fast unit default
+- Name the parallel and domain-scoped test lanes
+- **development**: Show the fast test lanes beside the serial commands
+- **core**: The watchdog pane and the workspace renders are core-owned (A.3 and A.2c, Rust side)
+- **watchdog**: The pidfile is released by Drop, so every exit after publish releases it
 - **glue**: `list` is the core's; doctor names unbound sessions; a refresh never clears a pin (A.2a glue)
+- **core**: The core delivers to the pane itself; `_interrupt` joins it (B move 1, Rust side)
+- **deliver**: A paste that fails after the load deletes what it staged
+- **core**: Spawn and retire are whole core operations (B move 2, Rust side)
 - **glue**: Next, the workspace renders and the watchdog run body are core execs (A.2c, A.3, next glue)
+- The JSON sink is core-owned; _json_escape no longer exists
+- **spawn**: A profile selected at spawn passes the one-simple-command lexer before any effect
+- **core**: Launch, resume, end, stop and compact are whole core operations (B moves 3 and 4, Rust side)
 - **glue**: Send delivery, interrupt and the spawn/retire bodies are the core's (B glue cut 1)
+- The agent-name grammar lives in the core
+- **launch**: Record the glue as ae_path, render the window glyphs, restore the saved roster on resume
+- **core**: Close the four glue-cut-2 gaps in launch, stop and compact
+- **stop**: The fleet form confirms from every caller, --self derives its name, every stop is recorded
 - **glue**: Cut 2 — launch, end, stop and compact route to the core; helper templates and transfer deleted
+- **core**: The capture entry answers for every tool, and spawn drives it
+- **core**: The watchdog and the telegram bridge are the core's to start and stop
+- **core**: Doctor, rename and the dependency gate are the core's
+- **watchdog,doctor**: Start runs the shim without a stray word; doctor reports the core path and the glue's bash
+- **internals**: Preserve the stop self/target identity contract as the glue's stop arm becomes a passthrough
 - **glue**: Final cut — every arm with a core entry is a core call, every callerless body is gone
 - **glue**: Pass 3 — status and the orchestrator scaffold are cut, both arms refuse
+- **watchdog**: The core recovers pending tool session ids itself
 - **glue**: Pass 4 — the recovery arm and the last session-state readers are gone
+- **watchdog**: The daemon's module doc no longer claims the recovery stays in bash
+- The glue cuts, recorded where the docs claimed bash
+- **core**: The three dead links the docs pass found
+- **glue**: The server-kind comments state the refusal the core makes, not a fallback it no longer has
+- **core**: The core is the entry — the preamble, the launch fall-through, the refusals
 - **wrapper**: Delete ae-glue; ae-entry is the whole of ae's Bash
+- **wrapper**: A set-empty server half is a declared server, not an absent one
 - **core**: Session helpers become links to the core; the pane runs `_run`
+- **run**: Take the start marker back when the exec did not happen
+- **core**: The pane runs a command, not a script — and one flagged conflict
 - **run**: Choose the resume arm before injecting it, not after
-
-### Testing
-
-- Suites refuse bash 3.2 and clear every pane-exported ae variable (slice A.0)
-- **it**: Sc_017p waits for the pane to exec its command before asking the world
-- Parallel sharded integration runner, domain selection, fast unit default
+- **run**: A resuming run says so before it becomes its tool
+- **launch**: Every rollback announces itself, through one helper
+- Drop a measured-timings artifact that is not this slice's file
+- **run**: A recorded id is the resume target for every tool
 - **z2**: Re-aim the bash suites and docs at links and `_run`
 - **z2**: A fixture must not write through a helper link
 - **z2**: #27 tests the probed resume, and both of its answers
 - **z2**: #27 re-runs from the pane's own directory, which is what the probe reads
 - **z2**: Refresh itest section timings from a green full pass
+- **run**: One environment prefix, one durable marker, one grammar
+- **run**: Quoting decides assignment-shape, and both lexers read it
+- **z3**: The core IS the public ae — shape, doors, upgrade
+- **z3**: Launch-plan usage errors exit 2, and one env is peeled, not a run of them
+- **z3**: The public ae is the core, and the install layout says so
+- **z3**: The suite and the docs describe the symlink install
 - **z3**: Bind the integration suite to the core and fix the shape's positional test
 - **z3**: The Rust-owned sections bind the core directly, not a sibling of it
 - **z3**: Refresh itest section timings from a green full pass
+- **z3**: The shape is the executable's position, and a foreign HOME is refused
+- **z3**: Every effectful invocation passes the install gate
+- **z3**: Every execution boundary names the resolved core
+- **readme**: The helpers are links to the binary, not bash scripts
+
 ## [v2026.8.2] - 2026-09-01
-
-### Bug Fixes
-
 - Fixes
+- Updates
+- Add doctor, memo, rename, perf improvements, pane resilience
 - Fix config cache path security: use XDG_RUNTIME_DIR over /tmp
 - Fix Claude staged-paste delivery, remove heartbeat helper
-
-Extract ae_submit_pasted_message() shared helper for send/interrupt and
-add Claude staged-paste detection ([Pasted text #N +M lines] token)
-with an extra Enter keystroke. Apply the same fix to tmux_paste_submit
-used during agent launch. Remove the heartbeat helper entirely — it was
-opt-in, underused, and its nudge logic added maintenance surface without
-clear value. Update AGENTS.md and README.md to match.
+- Add events.jsonl structured event log for session observability
+- Add loop watchdog for stale agent detection and nudging
+- Rename loop watchdog to sentry
+- Drop focused-pane check from sentry
+- Drop human grace, add missing pane detection
+- Add recently-visible check for human interaction edge case
+- Add ae sentry top-level command with per-session persistence
+- Rename sentry back to loop
+- Rename ae doctor --sync-sessions to --refresh
 - Fix silent exit on session resume when meta has no loop= line
-
-The PRESERVED_LOOP grep pipeline used set -e + pipefail, so when the
-meta file existed but had no loop= entry, grep returned 1, pipefail
-propagated, and the script exited silently after printing "Resuming
-session..." — never reaching tmux_attach.
-
-Add `|| true` to swallow grep's no-match exit code. The empty result
-was already handled correctly downstream.
 - Fix codex/gemini/opencode pending session id recovery
-
-Two fixes for the case where post-launch session ID capture fails on
-the initial launch and the slot stays "pending" forever:
-
-1. On resume, re-run capture for any slot whose stored session id is
-   still "pending". Previously capture only ran on fresh start, so a
-   missed initial capture meant the agent could never be resumed.
-
-2. ae doctor --refresh now also recovers pending session IDs offline
-   by scanning the agent's local session files (no live pane needed):
-   codex via launch-token + CWD scan, gemini via local chat history,
-   opencode via session DB. Updates meta atomically under flock so
-   the next launch generates a proper resume command.
-
-The next ae <session> after recovery picks up the captured ID from
-meta and produces a real resume command instead of a fresh start.
+- Recover pending session IDs each cycle
+- Read-only pane, status output, cross-window resolution
+- Surface live status in tmux status-right
+- Walk process tree to avoid false-positive dead alerts
+- Prepend status indicator instead of replacing user's status-right
+- Ae-monitor window with loop + events panes; codex review fixes
+- Sticky column headers via tmux pane borders
 - Fix extract_binary_from_cmd launcher flags + events-tail JSON parsing
-
-extract_binary_from_cmd now tracks per-launcher option-argument flags
-so command lines like "sudo -u alice codex --yolo" correctly resolve
-to "codex" instead of "alice". Previously the function only skipped
-the launcher word itself ("sudo") but treated "-u" as a generic flag
-and "alice" as the binary. Each known launcher (env, sudo, nice,
-ionice, time) now declares which of its flags take an option argument,
-and the walker skips both the flag and its arg when matched.
-
-events-tail now uses a character-by-character JSON string parser
-(_extract_json_str) instead of a sed regex with [^"]*. The sed
-approach broke on summaries containing escaped quotes (\") because
-sed terminates at the first literal " regardless of preceding
-backslash. The new parser recognizes ae_emit_event's exact escape
-set (\\, \", \n, \t, \r) and unescapes inline, so summaries like
-'he said \"hi\" and path C:\\tmp' now display correctly.
-
-Both fixes were verified against the failing inputs codex reproduced
-during round 3 review. 135 tests pass.
+- Handle GNU long-option launcher flags
+- Add behavioral unit tests for extract_binary_from_cmd
+- Ae list: show ae version and last-active per session
+- Ae list: honor legacy worktree-nested meta path
+- Drop sticky pane-border headers, use in-pane banner
+- Label panes via tmux pane titles
+- Add mark-done helper so agents can signal completion
+- Collapse logs into events.jsonl + factor ask/review
+- Trim build_ae_context to 7 numbered rules
+- Remove orphan files from prior ae versions on resume
+- Decouple events pane from loop lifecycle
+- Show date+time in events pane, not time alone
+- Detect upstream throttle errors and pause nudges
+- On by default; label events banner as UTC
+- Event-only done invalidation, drop pane-hash reconciliation
+- Scaffold MkDocs Material site under docs/
+- Address codex NITs from review-...-900d1be0
+- Add diagrams for lifecycle, call graph, event flow, throttle state
+- Ae transfer push (phase 1 walking skeleton)
+- Fix SSH arg-passing — %q into unquoted heredoc
+- --pull direction (phase 2)
+- Clean up underlying claude/codex conversation files
+- External-actor protocol + session UUID
+- Phase 1 — state helper + ae_latest_state_for
+- Phase 3 — surface per-agent state in ae list
+- Phase 2 — loop watchdog honours declared quiet states
+- Make the stale nudge actionable — hand the agent the state command
+- Bridge protocol — substrate contract for chat bridges
+- Stage 2 — read-only Telegram bridge (native, machine-global)
+- Fix ~/ token_file expansion (literal tilde strip)
+- Add ae list filters
+- Window 0 must follow the session rename
+- Ae list: derived needs_attention rollup (slice 2)
+- Stage 3 — bidirectional (chat → ae inbound)
+- Telegram stage 3: address codex review (BLOCKER agent escape + 3 more)
+- **telegram**: Correct recovery note — inbound IS queued by Telegram
+- Ae list: --json digest (slice 3)
+- Ae list: rename --needs-me to --needs-attn
+- Persistent daemon log file
+- Ae list: --active filter for recently-active sessions
+- Loop watchdog best-effort revives the bridge
+- **telegram**: Fix stale auto-start-guard count (2 → 3)
+- Reply-to-routing (inbound UX, slice 1)
+- Compact @session:agent prefix + sticky /use (inbound UX, slice 2)
+- Register slash-command menu via setMyCommands (inbound UX, slice 3)
+- Fix setMyCommands 400 — pass commands JSON via @file form
+- Add 'say' helper + chat event (agent → human, two-way)
+- Record terminating signal in daemon exit log
+- Ae next: attention navigator, read-only (Layer 2, slice A)
+- Ae next --attach: jump to the attention session (Layer 2, slice B)
+- Shfmt-format ae so 'just check' is green
+- Ae loop: meta-agent sweep cadence (Layer 3, slice 3)
+- Deterministic state/dedup helper for the hub (Layer 3, slice 2)
+- Per-agent attention keying + first-run-by-existence (codex slice-2 review)
+- Ae loop: fix wedge-heartbeat filename (+ doc); throttle already covers the banner
+- Ae hub: first-class meta-agent launcher
+- **telegram**: Hub-centric routing — talk to the meta-agent, not N sessions
+- **hub**: Cross-link ae hub ↔ telegram hub-centric routing
+- **index**: Surface the ae hub + Telegram fleet-routing pattern
+- Make AE_HOME authoritative for all state (isolation without swapping $HOME)
+- AI-driven e2e harness (scripted driver, real agents as subjects)
+- Ae hub: charter-path fix (AE_HOME-correct helpers) + hub-injection-guard e2e
+- Ae end: keep agent conversation files by default (opt-in purge)
+- **watchdog**: Rename the loop watchdog to watchdog
+- **watchdog**: Mode-aware session location in the status bar
+- **watchdog**: Group repo context on status-left; drive live status via tmux user options
+- **goal**: Session goal as first-class metadata
+- **steward**: Rename ae hub → ae steward + focus-mode rituals
+- **steward**: Gated proactive interrupts in focus mode
+- **telegram**: Default plain messages to the running steward
 - **list**: Never truncate ae list output when a per-session probe fails
+- **agents**: Add bash-hazards checklist (interpreted sinks + set -e footguns)
+- **helpers**: Generate the state helper from template functions (pilot)
+- **helpers**: Generate _lib from the top-level template library
+- **watchdog**: Generate the watchdog from the template library
+- **helpers**: Migrate the remaining 16 helpers to declare-f emission
+- Declare-f pattern, revisit triggers, and test-section rewrite
+- **compat**: Fail fast on bash < 4 with a macOS remedy
+- **steward**: The objective is the switch — collapse focus/passive modes
+- **list**: Session context — git branch + goal age in list and --json
+- **integration**: Tripwire — fail the run if the real user config changes
+- **delegation**: Tiered-model delegation protocol + steward config watch
+- **spawn**: Workers get their own tmux window; main window stays the lead's
+- **delegation**: Prefer ae workers over harness-internal subagents
 - **transfer**: Steward guard both directions; preserve unresolved workers
+- **autostart**: Steward + telegram bridge come up on any ae entry point
+- **spawn,attn**: TUI-readiness before prompt paste; unanswered-request attention
+- **doctor**: Refresh restarts running watchdogs, liveness-gated
+- **events**: Resume-time retention for events.jsonl + attention docs
+- **aewatch**: Phase-1 skeleton — PEP 723 sidecar scaffold + test runner
+- **aewatch**: Contract fixture matrix — loader, schema validator, CLI
+- **aewatch**: Effect-oracle harness — EFFECT_KINDS schema, recorder, FakeTmux/FakeAeHome
+- **aewatch**: Per-AE_HOME singleton lock + atomic heartbeat, daemon --once skeleton
+- **aewatch**: Ae INI parser — exact parse_config parity port
+- **aewatch**: Session discovery — per-meta tmux_server, inventory-not-filter
+- **aewatch**: Daemon.log — bounded rotation + fail-closed secret redaction
+- **aewatch**: Crash-loop backoff state — windowed budget, reset-on-success
+- **aewatch**: Phase-1 tick composition — the sidecar skeleton is complete
 - **watchdog**: Pane-gate _watchdog_is_running — stale recycled pids never report running
+- **unit**: Replace O(n^2) substring-strip ordering assert with grep line numbers
+- **aewatch**: Tmux.display_message effect kind — complete the oracle surface
+- **aewatch**: Multi-tick fixture harness — TickClock, MultiTickEnv, feed-forward events
+- **aewatch**: Bash dual-run oracle — fakebin shims + real-watchdog runner
+- **aewatch**: Python watchdog cycle skeleton — first byte-identical status parity
+- **aewatch**: Activity classification parity — event recency + pane hashing
+- **aewatch**: Stale-nudge parity — first tmux.paste + event.append, byte-exact
+- **aewatch**: Quiet-state parity — done/waiting-user/blocked arm-hold-yield
+- **aewatch**: Alert parity — dead/missing/max-nudge, display_message speaks
+- **aewatch**: Throttle parity — verbatim per-tool catalogs, streak + alert + clear
+- **aewatch**: Sweep-cadence + wedge parity — pins ae reconcile dead-code
 - **watchdog**: Emit _agent_alert_reason via _lib — post-restart reconcile was dead code
+- **aewatch**: Recover-pending parity — post-launch session-id capture retry
+- **aewatch**: Telegram-supervise parity — scheduler + tmux_server propagation
+- **aewatch**: Daemon tick composition — run watchdog cycles per session under injection
+- **aewatch**: Phase-gate hardening + fast-subset commit lane
+- **aewatch**: Per-session tick-input routing — phase-3 contract + harness cutoff
+- **aewatch**: Pin watchdog env config (_env_int / from_env)
 - **aewatch**: Migrate test_20 recover to session-keyed form
+- **aewatch**: RealTmuxClient read path + single-source Pane
+- **aewatch**: RealTmuxClient write path (mutations + paste/submit)
+- **readme**: Reflect the new reality — tiers, steward, companions, honesty
+- **aewatch**: Real ae/event boundaries (emit_event + recover_pending)
+- **aewatch**: Real BridgeSupervisor boundary
+- **aewatch**: Bridge oracle — TelegramTransport seam, fake API, machine-checked anchors
+- **config**: Default setup — strongest lead + two standing coworkers
+- **aewatch**: Telegram token config, validation, redaction
+- **aewatch**: RealTelegramTransport — Bot API over urllib
+- **aewatch**: Inbound offset + auth (at-most-once, exact-auth)
+- **aewatch**: Command resolver (routing security boundary)
+- **aewatch**: Agent delivery primitive (command-execution boundary)
+- **aewatch**: Command routing precedence (confine -> execute -> route)
+- **aewatch**: Outbound formatter + include/exclude filters
+- **aewatch**: Outbound state.tsv + at-least-once retry
+- **aewatch**: Command menu registration (setMyCommands)
+- **aewatch**: Bridge tick composition (TelegramBridge)
+- **aewatch**: Supervisor loop — per-component crash backoff, clean-signal shutdown
+- **aewatch**: Dedicated ae-aewatch session launcher — per-AE_HOME, heartbeat-gated
 - **aewatch**: Watchdog threads the per-session -L server to every tmux call
+- **aewatch**: Opt-in aewatch watchdog autostart + exclusivity, up/daemon--loop CLI
+- **aewatch**: Ae telegram bridge handoff — marker-owned, no double-send, bash fallback
+- **aewatch**: Phase-3 closer — contracts migration + mutation-proven coverage guards
+- **ae**: Slot-keyed request integrity — churn-safe identity + routing
+- **ae**: Request-integrity 2 — live slot stamping, paste verify + interpreted-sink guards, spawned-slot stability
+- **ae**: Lead-default — model-named aliases, slot-aware role context, lead-solo layout
+- **config**: GPT-5.6 aliases — gpt56sol/terra/luna strict pins, sol as default reviewer
+- Currency sweep — slot identity, send delivery guards, aewatch backends, framing cleanup
+- Doctrine distillation — gatekeeping craft, design patterns, lead handover + steward charter tuning
 - **ae**: Comms-guard hardening — NBSP idle normalize + dead-shell descendant walk
+- **ae**: Mode-context — mode-aware working-tree block + accurate copy_desc
 - **ae**: Idempotent watchdog start — dedup the status-right health indicator
+- **ae**: Session-shape — lead-pair layout, colead seat, status-left session name
 - **ae**: Content-keyed config cache — kill same-second-rewrite poisoning
+- **ae**: Footer rework — ae-owned status bar, agent-identity line, leads default
 - **ae**: Focus-free sends + uncached config — colead review folds
 - **ae**: Copy global status-format[0] to session scope — array-shadowing blank bar
 - **ae**: Steward-hardening — delivery-checked sweep nudge
+- **ae**: Footer agent-roster — per-agent verdict + subprocess activity
 - **ae**: Cut ⚙ subprocess-activity from the roster — the sensor cannot mean it
+- **input-region**: Shared _capture_input_region primitive (cursor_y-anchored -e)
+- **ae**: Input-region sensor — cursor-anchored SGR, codex staged detection restored
+- **ae**: Occurrence #3 — chunked multi-token + leaked-tail staging
 - **ae**: Input-region — parse SGR state, capture to cursor, strip anchor only
 - **ae**: Input-region — structural prompt selection, ESC advance, restore tests
 - **ae**: Input-region — structural claude selection against real 2.1.209 bytes
 - **ae**: Input-region — bound the input by the box's chrome, not the cursor
+- **ae**: Specimen-5 — fixture must be the WHOLE-pane region, not 0..cursor_y
+- **ae**: REAL human-typed specimens from a disposable v2.1.209 rig
 - **ae**: Input-region — identify the border positively; route spawn through the sensor
 - **ae**: Spawn reports failure when the brief is not delivered
+- **ae**: Correct why the set -e probe exists — masking is $(), not missing errexit
+- **ae**: Bash hazards — only a bare call proves set -e safety
+- **ae**: Fold retro v1 into doctrine — taxonomy rows, patterns 11-13, trust map
+- **ae**: Currency pass — status-bar feature bullet, exact-resume wording, model bump
+- **ae**: Roster completeness — per-window glyphs, registered keying, steward
 - **ae**: Route tmux option writes by ID — stop cross-session clobber
+- **ae**: Grok build integration — claude-class session handling
 - **ae**: Grok resume UUID capture + Grok-complete flag normalizer
 - **ae**: Strip Grok attached short session flags (-sUUID/-rUUID)
+- **ae**: README + config currency — modern sample, self-documenting default, repo-visible config.sample
+- **ae**: DEFAULT_CONFIG banner — narrow the resume-applies claim to what actually reloads
+- **readme**: Structural gut — front door, not the reference manual
+- **ae**: Dedicated gpt56sol xhigh reviewer in the default worker roster
 - **ae**: Resolve `ae end` target before the destructive confirm
+- **ae**: Doctor orphan check + wind-down discipline (lifecycle blindness)
 - **ae**: Guard _end_target_class against an empty target
 - **ae**: Fold cross-model review — exact-id end targets, dot guard, truthful flags
+- **ae**: Harden lifecycle end/doctor integration probes against contention
 - **ae**: Sweep the end path for the raw-name/wrong-server class (delta review)
+- **ae**: Wait for meta + poll end in the named-server/worktree end probes
+- **ae**: Make the doctor-orphan probe deterministic under load
 - **ae**: Fold 2nd delta review — target-owned tmux server, truthful no-remote prompt
 - **ae**: Fold 3rd review — pin the default socket, verify kills, preserve no-remote work
 - **ae**: Fold 4th review — record the real launch server, tri-state kill verify
@@ -1453,93 +775,64 @@ during round 3 review. 135 tests pass.
 - **ae**: Fold 6th review — typed socket selectors, unconditional legacy fail-closed
 - **ae**: Fold 7th review — stored kind key, pid-verified sockets, no guessed teardown
 - **ae**: Safety hotfix — isolate assume-stopped fixture, fix _lib kind-source typo
+- **ae**: Option B — one invariant, no deletion without identity or acknowledgement
 - **ae**: Fold 9th review — tri-state sweep, clause (c), central ambiguous refusal
 - **ae**: Fold 10th review — bare sweep, anchored clean-dead, kind-first shim
 - **ae**: Fold 11th review — ENOENT is not death, lifecycle lock spans proof to cleanup
 - **ae**: Lifecycle lock release + flock-optional degradation (12th review fold)
+- **ae**: Gate rulings inline — clause (c) ratified, server-generation residual accepted
+- **ae**: Opus5 replaces opus48 as the default builder tier
 - **ae**: Migration adds missing tmux_server line; launch meta write fully atomic
 - **ae**: MacOS/BSD userland is first-class — portability shims + the silent-failure sweep
 - **ae**: Generated helpers name their interpreter — /bin/bash 3.2 could not parse them
 - **ae**: Stale re-exec marker recovers via attempt counter; portability lint learns real flag grammar
-- **ae**: Summary caps are character-safe in every locale; event writers sanitize UTF-8 at the boundary
-- **ae**: Lifecycle lock covers the whole launch — end can no longer delete a session mid-creation
-- **ae**: $TMUX is verified, not trusted — an inherited copy no longer hijacks attach
-- **ae**: Launch scripts re-run, artifacts publish atomically, and failures take their debris with them
-- **ae**: DEFAULT_CONFIG mirrors config.sample — completes f07ec5f
-- **ae**: Stop resolves, verifies and destroys under one identity contract
-- **ae**: End stops the session before it snapshots the work
-- **ae**: Task delivery waits for a tool that can act, not one that has drawn a box
-- **ae**: A message that cannot be delivered whole is refused, not reported sent
-- **ae**: Spawn delivers its brief without taking focus
-- **ae**: The watchdog stops counting its own footprints as activity
-- **ae**: A resumed pane reports the tool again — the resume decision moves before exec
-- **ae**: The re-run form is built from transported facts, not recovered from the command
-- **ae**: A declared quiet state survives the agent's own last message, and nudges are counted only when delivered
-- **ae**: The whole launch family classifies through one definition, so an env-prefixed agent is a first-class agent
-- **ci**: Break the push-cancel livelock — cancel only PR runs, filter to rust paths
-- **gate**: Just check is green on a clean tree and the lint cannot wedge or be fooled
-- **evidence**: .gitattributes -text so recorded hashes survive clone
-- **list**: Read the session once, at discovery — criterion 14 binds the whole phase
-- **list**: Preserve the read outcome, and close the one-read class behaviourally
-- **list**: Presentation holds no address, and the boundary is a production type
-- **list**: Restore the deleted agent-liveness tests; enter presentation on the real route
-- **509c**: An agent's attention reason is the newest thing the ledger says about it
-- **509c**: Alert currency follows the ledger's order, not a writer's clock
-- **510c**: A declared state is the last one appended, not the best-stamped one
-- **405f**: The goal epoch is the last appended goal, and the boundary I documented was wrong
-- **518**: The matcher takes the ruling — strict identity, and causality is its own dimension
-- **rust**: Ship usable session listing
-- **requests**: A slotless cancel withdraws the request it names, as compact's does
-- **watchdog**: Serialize start so concurrent starts spawn exactly one daemon
-- **send**: Bracketed paste for Claude panes — no more head-truncated deliveries
-- **send**: Publish the body before the paste — one immutable file per delivery
-- **attach**: Honour the named tmux server on attach — exec bypassed the shim
-- **tmux**: A separator tmux 3.4 does not escape — a present pane is never "hard dead"
-- **send**: An OSC sequence is not text — idle Claude read as busy
-- **coexistence**: Eight pre-flip hardenings — the advertised install works, the version pair is gated everywhere
-
-### Documentation
-
-- Scaffold MkDocs Material site under docs/
-- Address codex NITs from review-...-900d1be0
-- Add diagrams for lifecycle, call graph, event flow, throttle state
-- Bridge protocol — substrate contract for chat bridges
-- **telegram**: Correct recovery note — inbound IS queued by Telegram
-- **telegram**: Hub-centric routing — talk to the meta-agent, not N sessions
-- **hub**: Cross-link ae hub ↔ telegram hub-centric routing
-- **index**: Surface the ae hub + Telegram fleet-routing pattern
-- **agents**: Add bash-hazards checklist (interpreted sinks + set -e footguns)
-- Declare-f pattern, revisit triggers, and test-section rewrite
-- **readme**: Reflect the new reality — tiers, steward, companions, honesty
-- Currency sweep — slot identity, send delivery guards, aewatch backends, framing cleanup
-- Doctrine distillation — gatekeeping craft, design patterns, lead handover + steward charter tuning
-- **ae**: Correct why the set -e probe exists — masking is $(), not missing errexit
-- **ae**: Bash hazards — only a bare call proves set -e safety
-- **ae**: Fold retro v1 into doctrine — taxonomy rows, patterns 11-13, trust map
-- **ae**: Currency pass — status-bar feature bullet, exact-resume wording, model bump
-- **ae**: README + config currency — modern sample, self-documenting default, repo-visible config.sample
-- **ae**: DEFAULT_CONFIG banner — narrow the resume-applies claim to what actually reloads
-- **readme**: Structural gut — front door, not the reference manual
-- **ae**: Gate rulings inline — clause (c) ratified, server-generation residual accepted
 - **ae**: Gatekeeping folds from the portability campaign
+- **ae**: Ae list 7-13x faster — fork-storm removed from event parsing, one-pass rollup, exact early-exit scans
 - **ae**: Revisit-note learns the 2026 multiplexer field — herdr is a watchlist item, not a migration
 - **ae**: Grok --system-prompt compat alias carries the same override hazard
+- **ae**: Summary caps are character-safe in every locale; event writers sanitize UTF-8 at the boundary
+- **ae**: Lifecycle lock covers the whole launch — end can no longer delete a session mid-creation
+- **ae**: Spawn lifecycle closure is an emphatic contract — every spawn ends in a retire
+- **ae**: $TMUX is verified, not trusted — an inherited copy no longer hijacks attach
+- **ae**: Launch scripts re-run, artifacts publish atomically, and failures take their debris with them
 - **ae**: Multiple identities of one CLI — the CLAUDE_CONFIG_DIR pattern under [agents]
+- **ae**: Default workspace is the judgment pair — workers are spawned, not standing
 - **ae**: Promoted tiers — chores run luna at FULL effort, dev on opus5 xhigh, review on gpt56sol xhigh
+- **ae**: DEFAULT_CONFIG mirrors config.sample — completes f07ec5f
+- **ae**: Promoted-tier examples drop sonnet5 — chores run luna
+- **ae**: Stop resolves, verifies and destroys under one identity contract
+- **ae**: End stops the session before it snapshots the work
+- **ae**: Grok-4.6 high is a dev-tier peer of opus5
+- **ae**: Task delivery waits for a tool that can act, not one that has drawn a box
+- **ae**: A message that cannot be delivered whole is refused, not reported sent
+- **ae**: Helper-emitted origin envelope, and the authority rule it enables
+- **ae**: Spawn delivers its brief without taking focus
+- **ae**: The watchdog stops counting its own footprints as activity
 - **gatekeeping**: The specimen must come from the layer the code reads
+- **ae**: A resumed pane reports the tool again — the resume decision moves before exec
 - **gatekeeping**: A fact built upstream is transported, never re-parsed
+- **ae**: The re-run form is built from transported facts, not recovered from the command
 - **gatekeeping**: A refusal path is a guard and owes the same proof of failure
+- **ae**: A declared quiet state survives the agent's own last message, and nudges are counted only when delivered
+- **ae**: Opencode gets real system-level context instead of a first-message paste
+- **ae**: The whole launch family classifies through one definition, so an env-prefixed agent is a first-class agent
+- **ae**: A session that ends leaves an inert archive, and a new one can inherit it
 - **gatekeeping**: A delete proves as much as a write
+- **ae**: A request can be withdrawn, and the one sensor both readers share knows it
+- **ae**: A session can hand itself over, end, and continue under the same name
+- **ae**: An agent is told its own name, and a name is an allowlist before it may reach a prompt
 - **migration**: P0 semantic-contract and ownership drafts, plus issue-disposition proposal
 - **migration**: Lock/atomicity census of ae at the bash freeze
 - **migration**: Event append is a duplicated-writer family, state is event-sourced, interrupt diverges on lock order
 - **migration**: Request domain has no table, SID capture is a two-process transaction
 - **migration**: Citation-audit batch — lifecycle locks are not event writers, spawn/retire/state failure semantics recorded
+- **rust**: P0 toolchain, quality lanes, and CI — pins are the contract
 - Rewrite direction in README, VISION.md, and the Rust-era AGENTS.md overlay
 - **migration**: Lock/atomicity census 2 — lifecycle, daemons, controls, bootstrap
 - **migration**: Census-2 audited batch — launch delivery is unguarded, control surfaces can lie, twelve grain corrections
 - **migration**: Second-gate corrections — #83 cited on D27, telegram enabled-intent effect, false-diagnosis lock row
 - CI wording upgraded against green run 32350969851; census race-precision fix
+- **ci**: Break the push-cancel livelock — cancel only PR runs, filter to rust paths
 - **migration**: Census 3 — aewatch sidecar locks and the cross-language contention surface
 - **migration**: S6 row batch — stdout/stderr/exit contracts, SHOULD frozen from doc contracts
 - **migration**: S6 rewritten per gate — 20 rows, commands.md/events.md as the missed normative sources
@@ -1580,6 +873,7 @@ during round 3 review. 135 tests pass.
 - **migration**: Census audit — 14 records close on existing evidence, D05 split map ready
 - **migration**: Census-audit gate structural batch — D05 split executed, D14 de-recorded, honest arithmetic
 - **migration**: S1 preflight MARK — status/list/next rows carry both seats
+- **gate**: Just check is green on a clean tree and the lint cannot wedge or be fooled
 - **migration**: Remaining-ID manifest regenerated and the probe cluster plan drafted
 - **migration**: D-aware checker, repaired map, and the exact 299-line assignment table
 - **migration**: Fifteen assignment reroutes from the table gate
@@ -1595,6 +889,7 @@ during round 3 review. 135 tests pass.
 - **migration**: SC-405j precised after the builder's premise correction
 - **migration**: SC-405j re-marked on the precised text; its C arm becomes the four-case set
 - **migration**: B0 preflight rulings executed; #92 dispositioned
+- **integration**: Hermetic socket-dir ownership, unfilterable full mode, scoped name filter
 - **migration**: B0 design draft, census evidence, SC-521 split, SC-1208 precision
 - **migration**: B0 design v2 — value-blind split, ingress matrix, SC-707
 - **migration**: B0 v2.1 — churn construction corrected, topology explicitness
@@ -1604,6 +899,7 @@ during round 3 review. 135 tests pass.
 - **migration**: Batch C spawn folds — seat annex, SC-521a, 1306 mapping, prereqs satisfied
 - **migration**: Slice-1d — SC-405j presence rule, SC-510e/f duplicate-key heads
 - **migration**: SC-405j scoping clarification — reader-erasure prohibition is routing-keys only
+- **rust**: P1 slice 1 — event log, session digest, list read-side
 - **migration**: Evidence deliveries — B0 Design 1 arms, T-WD step-zero archive
 - **rust**: The self-referential-test class, recorded where the eleventh key gets added
 - **migration**: S6 range mark frozen to its exact id set — ranges never inherit
@@ -1624,25 +920,39 @@ during round 3 review. 135 tests pass.
 - **migration**: SC-1106 empirical pointer -> committed isolation artifacts @605cbb6
 - **migration**: S3 delivery/routing mark batch 1 - 11 rows classified by both seats
 - **migration**: S3 helper-signature mark batch 2A - 19 SC-212 rows classified by both seats
+- **batch-c**: A1 full rerun + A2 composite - admissibility made first-class
 - **migration**: SC-1106 empirical pointer re-anchored to the rerun evidence
 - **migration**: Marks-queues regenerated from HEAD - stale c5f2a2 derivation replaced
 - **migration**: S1/S2 mark batch 3 - 5 rows classified; SC-012b residue row split out
+- **batch-l**: L-END section complete - 28 arms, all 21 roster ids + 2 hostile constructions
+- **batch-c**: A4 - live-tmux CLI arms + the first hooked barrier capture
 - **migration**: SC-521a reclassified bucket 3 fix-known-defect(#96) on A2 evidence
+- **batch-l**: L-END correction - SC-808 arm re-run with mode-preserving mutation
 - **migration**: Second-gate precision fixes - SC-521a evidence attribution, SC-012b grain
 - **migration**: SC-012b probe wording - capture separately, seats compare
+- **batch-l**: L-PURGE section complete - 41 arms, all 14 roster ids + 2 controls
+- **batch-c**: Seat-read remediations + D01/D02 concurrency records
 - **migration**: S15 env/config mark batch 4 - 14 rows classified by both seats
 - **migration**: SC-509c reason-null defect row (#97) + D01/D02 boundary transcription
 - **migration**: Closure state follows the accepted evidence - D01/D02/SC-509c flip to OBSERVED
+- **batch-l**: L-STOP section complete - 18 arms, all 20 roster ids
 - **migration**: S8 adapter-frame mark batch 5 - 7 rows classified by both seats
 - **migration**: Mixed-tail mark batch 6 - 17 rows classified by both seats
 - **migration**: L-END joint-classification worksheet - 21 roster ids, one reopened conflict
 - **migration**: L-END classification CONVERGED - SC-820a reclassified (#98), three lead IS corrections
+- **batch-l**: L-COMPACT section complete - 18 arms, all 21 roster ids
+- **batch-l**: L-COMPACT manifest corrections - counts and the two-pid-columns distinction
 - **migration**: L-PURGE classification worksheet + SC-812 root cause + scoped #94 population
+- **batch-l**: L-FROM section complete - 12 arms, all 9 roster ids
+- **batch-c**: Gate v3 (per-case schema + case index) and all five D-record executions
+- **evidence**: .gitattributes -text so recorded hashes survive clone
+- **batch-l**: L-RENTRANS INCONCLUSIVE/BLOCKED - transport preflight failed honestly
 - **migration**: SC-818e outcome-grain precision + L-PURGE worksheet close-out
 - **migration**: Provenance note for e3ace55 - it carried the Batch-L checksum fix too
 - **migration**: L-PURGE classification CONVERGED - 14/14, zero reopened conflicts
 - **migration**: L-COMPACT joint-classification worksheet - 21 ids, one scope question
 - **migration**: Stage-2 corpus-import design (#93) + SC-1305 seat closure
+- **migration**: L-RENTRANS partial — batch L capture complete
 - **migration**: Stage-2 import design — four rulings applied (#93)
 - **migration**: L-COMPACT gate applied — four proposed marks moved
 - **migration**: L-STOP classification worksheet — 20 rows, 4 findings
@@ -1652,14 +962,24 @@ during round 3 review. 135 tests pass.
 - **migration**: L-STOP gate applied — colead moved 8 of 20, two of them my source reading
 - **migration**: L-FROM gate applied — section does NOT converge; my 9/9 was wrong
 - **migration**: L-RENTRANS worksheet (batch L classification complete) + stage-2 schema inventory
+- Rename identity defects — SC-1303 to bucket 3 (#103), SC-832d/e (#102)
 - **migration**: Provenance note for 25c6a00 — T-100 swept into a contract commit
 - **migration**: Stage-2 import design — G1 reconciled, F2 escalated and ruled (#93)
+- SC-832c seat closure (normative concur, empirical HOLD) + ae-list coherence correction
+- **batch-c**: Gate v4 — committed-bytes check, plus the generated arm table
+- **batch-c**: A5 — doctor exits under a controlled PATH (SC-514)
+- **batch-c**: A6 — request pairs and the unanswered threshold (SC-518, 522, 523a-b)
+- **migration**: L-DISCRIM — five discriminators, each able to produce the unwanted answer
 - **migration**: Typed tmux session-target audit (#102)
 - **migration**: Restore the code references fish ate from the previous message
+- **parity**: Close the capability boundary by mechanism, not by a fifth list
+- **batch-c**: A7 — meta grammar (SC-405a-g, 405j)
+- SC-405f precised — last event by stream order, not greatest timestamp
 - **migration**: L-DISCRIM dispositions — two PARTIALs closed, one held, one scoped
 - **migration**: Correct my own overstatement about D5a's lineage evidence
 - **migration**: Batch C arm A8 — launch modes, the first mutating group
 - **migration**: Batch C arm A9 — quiet vs degraded, and META ABSENT
+- **migration**: D1b — ARM-INVALID is the result, and it forecloses the gap
 - **migration**: Batch H-HELPER design draft — for seat approval
 - **migration**: Batch H design v2 — twin equivalence, opposed pairs, say containment
 - **migration**: Batch H design v3 — SC-211l delivery-claim pair, lsof kept as rejected
@@ -1681,6 +1001,8 @@ during round 3 review. 135 tests pass.
 - **gatekeeping**: The vacuity regress — every layer can be blind, independently
 - **migration**: Batch H v10 — the red-proofs could not fail; now they must prove they can
 - **gatekeeping**: The gates were never gated, and redundancy is camouflage
+- **migration**: L-832C — a mixed generation survives a crash, and readers accept it
+- SC-832c empirical hold LIFTED — a mixed generation survives, and a reader accepts it
 - **gatekeeping**: A count is a fact about a predicate, not only an invocation
 - **migration**: Batch H v11 — identity instead of substring, and per-arm calibration
 - **migration**: Batch H pre-registration — harness and the first arm, before any run
@@ -1753,60 +1075,88 @@ during round 3 review. 135 tests pass.
 - **gatekeeping**: A gate that generates its input, and the over-application of hard-won protocol
 - **gatekeeping**: A rewrite inherits conflations through its types, before any logic exists
 - **migration**: Execute the golden-corpus promotion (P0 debt under P1)
+- Report drift when the committed index differs from the generated one
 - **gatekeeping**: Route by symptom, because nobody reads 1100 lines before a gate
 - **migration**: Partition corpus invocations by read/write and prove the normaliser both ways
 - **gatekeeping**: The compiler's list is a lower bound, and a tuned instrument is not evidence
 - **migration**: Label the P1/P1-adjacent line per the seat ruling
 - **migration**: Write the P1 build plan before building it
+- SC-017j names the entitled server set, so no implementation answers it by accident
+- **list**: First-class Unknown liveness, wired into scope selection
 - **migration**: Correct the P1 plan — the schema moves with liveness, not before it
 - **migration**: P1 corpus sufficiency analysis — not sufficient, and larger than defect rows
+- SC-521c — liveness uncertainty does not erase a known attention fact
 - **migration**: Record the parity-verdict ruling and why the missing captures are not built
 - **gatekeeping**: Unobservable is a third answer, and comfortable errors go unchecked
 - **migration**: Parity is not 'match the corpus' — 52% must diverge when we are right
 - **gatekeeping**: Give the comfortable-error rule an actual check
+- SC-521c classified_by in the form the sweep actually parses
+- Land the seven P1 entries and refresh the header
 - **gatekeeping**: A probe's scope decides the finding, and expectation chose the scope
+- SC-017l's unreachable-server outcome is OBSERVED end to end, not merely source-proven
 - **gatekeeping**: Independence is a scheduling constraint, and it runs opposite to intuition
+- **list**: Phase 1 candidate inventory, with the invariants held by construction
 - **migration**: Land the pre-registered parity verdict column over the 1065 P1 rows
 - **gatekeeping**: Forward verification is blind to false negatives
 - **migration**: Record the pre-registered phase-1 gate, and that it does not pass
 - **migration**: Completeness critique of the SC-017j phase-1 gate
 - **gatekeeping**: A static gate cannot see a temporal obligation
+- **list**: Run the pre-registered phase-1 gate, and let criterion 13 change the design
+- Close P1 inventory format gaps
+- SC-400d and SC-405l, both CODE
 - **migration**: Extend P1 sufficiency to SC-400d and SC-405l
 - **gatekeeping**: Absent and unobservable cost different things to close
 - **migration**: Assign the refusal's removal to a phase, and record what parity can never prove
+- SC-405l — missing means no selector fact is available, not that bytes omitted it
 - **migration**: Correct the SC-405l 'missing' reading after the clarifying ruling
 - **gatekeeping**: Sharpening a rule silently blunts the evidence behind it
+- SC-017k — a coalesced sighting stays proof, because knowledge must not shrink when evidence is added
 - **gatekeeping**: A richer case must not conclude less than a poorer one
 - **migration**: Bring the build plan up to where the work actually is
 - Pre-register P1 phase 2 falsification gate
+- **list**: SC-400d two durable layouts and SC-405l typed selector
 - **gatekeeping**: Orthogonality is proven off-diagonal, never on it
+- **list**: Record an unlistable state root instead of skipping it silently
 - **migration**: Third sweep-in near-miss, and the previous remedy did not cover it
 - **migration**: Completeness critique of the phase-2 gate
+- SC-017o — a snapshot that could not see everything must say so
 - **gatekeeping**: The flip test beats off-diagonal cells for proving independence
+- Correct SC-017o's IS relation — the -d guard does not skip an unreadable root
+- **list**: SC-017o incomplete-inventory snapshot fact, and the scan becomes infallible
 - Gate incomplete P1 inventory snapshots
+- SC-017o generalizes to the enumeration graph, not its current leaves
 - **gatekeeping**: Patching an enumerated rule keeps the cause that produced the gap
+- Three precisions to criterion 24, one of them my own regression
 - **gatekeeping**: A fixture that succeeds can still build an unreachable state
 - **gatekeeping**: A control that never applied looks exactly like a guard that failed
 - **migration**: Second pass on the gate text that has not had two independent reads
+- **list**: Phase 1 passes its pre-registered gate, 24 of 24
 - **gatekeeping**: A universal obligation checked on one fixture is checked nowhere
 - **gatekeeping**: A confirmation you print yourself is not evidence
 - **gatekeeping**: Being argued out of a concern is not resolving it
 - Preregister P1 phase 2 and 3 gates
+- **list**: Phase 2 — liveness knowledge, first-class unknown, schema version 2
+- **list**: Wire schema version 2 and the completeness field into the digest
+- Install tmux, because the phase-2 liveness proof needs a real one
 - **gatekeeping**: A control can apply cleanly and still change nothing
 - **gatekeeping**: An over-strong test is a defect and almost nobody hunts for it
 - **gatekeeping**: An ambiguity is a lead, not a finding
+- **list**: Read the session once, at discovery — criterion 14 binds the whole phase
 - **gatekeeping**: A guard enforces the names it lists, not the capability it claims
 - **gatekeeping**: Satisfying a structural proxy can relocate the violation
+- **list**: Preserve the read outcome, and close the one-read class behaviourally
 - **gatekeeping**: How the name-guard was actually repaired, and the control that proved it
 - **gatekeeping**: Correct an overclaim — behavioural closure reaches only what the fixture varies
 - **migration**: Which axes the phase-2 evidence varies, and which it holds constant
 - **migration**: Mark the axes analysis INVALIDATED — all three findings false
+- **list**: Plant the event axis, because deleting a source that was never there proves nothing
 - **gatekeeping**: The deletion arm is the weakest one, and growth carries the proof
 - **gatekeeping**: Rigour inside a wrong scope produces confident error
 - **migration**: Axes analysis re-scoped over the whole phase-2 evidence base
 - **gatekeeping**: A structurally-discharged obligation makes its test a restatement
 - **gatekeeping**: Add a second protocol, for reviewing claims and evidence
 - **gatekeeping**: Five corrections to the second protocol, including one it fails itself
+- **list**: Phase 3 — the product answers
 - **gatekeeping**: A derived artifact goes stale when its source moves, silently
 - **gatekeeping**: The size of an amendment is no guide to what it invalidates
 - **migration**: Reconcile VERDICTS.tsv against the contract as it now stands
@@ -1815,9 +1165,12 @@ during round 3 review. 135 tests pass.
 - **migration**: Obligation-grained parity table with a freshness relation
 - **migration**: Name the freshness reference on the gate's success path
 - **migration**: Define three-valued agent liveness
+- **list**: Phase-3 rework — a capability boundary instead of a disconnected differential
+- SC-017p/q/r and SC-509e, the agent-liveness family
 - **migration**: Re-derive obligations against the agent-liveness rows
 - **gatekeeping**: Size unobservability as a fraction, not a list of cells
 - **gatekeeping**: A count is only as honest as its denominator
+- **list**: Agent liveness gains a real unknown — #105 one level down
 - **gatekeeping**: Escalate the observation, withhold the conclusion
 - **migration**: Obligations carry SUPPORT — the corpus cannot score 665 of them
 - **gatekeeping**: A test-authored instrument observes the test's beliefs
@@ -1825,21 +1178,26 @@ during round 3 review. 135 tests pass.
 - **migration**: Selector-missing is an independent sufficient cause — sixteen rows recovered
 - **gatekeeping**: Name the four-depth sequence, because recognising it did not prevent it
 - **migration**: Preregister the P1 parity gate
+- **list**: Presentation holds no address, and the boundary is a production type
 - **gatekeeping**: Candour reads as sufficiency, and the repair that changed the claim
 - **list**: Write the transport handover at the seam, on both sides
 - **migration**: Retire the stored verdict column; name the wrong-set sequence
 - **gatekeeping**: The wrong-set sequence, now five, and named by its mechanisms
 - **gatekeeping**: Additions are verified by presence, removals by absence
 - **gatekeeping**: A test count that drops after an additive change is a contradiction
+- **list**: Restore the deleted agent-liveness tests; enter presentation on the real route
 - **gatekeeping**: A closed register is only as closed as its most open cell
 - **gatekeeping**: Auditing the cells is not auditing the set
+- **list**: Give criterion 1 its opposed control
 - **gatekeeping**: Forbid the operation, not the possession
 - Reconcile P1 gate status claims
 - **gatekeeping**: A scoped verdict copied without its scope is a stronger claim
 - Scope historical P1 gate statuses
 - **gatekeeping**: Wiring an inert seam makes dependent fixtures contingent
 - **p1**: Record the phase-1 re-gate history, not the stale header
+- **list**: A comment names what the test injects, not what the build lacks
 - **gatekeeping**: Every gate property fails in two directions
+- **liveness**: Give tmux a real transport, and let the exit status decide
 - **gatekeeping**: Disjoint findings come from disjoint positions
 - **migration**: Pre-register P1 phase 3 gate
 - **gatekeeping**: A decision's premises can be invalidated by a later ruling
@@ -1848,137 +1206,130 @@ during round 3 review. 135 tests pass.
 - **gatekeeping**: A mechanism with one reachable output cannot be tested
 - **migration**: Correct transport gate premise
 - **gatekeeping**: A migration's defect list is a review instrument
+- **liveness**: Derive and read a pane enumeration, without deciding anything
 - **gatekeeping**: A test can name a fact without exercising it
 - **gatekeeping**: A stated precondition is a hole; a measured one is a bound
 - **p1**: Commit the agent-health presentation manifest, bounded by measurement
 - **migration**: Scope phase 3 exit-status choice
+- SC-017s gives ae a way to say alive, and it is one-directional
 - **gatekeeping**: A reservation covers mechanisms that presuppose an answer
+- **sc-017s**: The probe overclaimed one axis and false-failed another
 - **gatekeeping**: A discovery that changes a row must graduate into an assertion
 - **agents**: The researched dependency line — std until TLS, fuzz, or vet demands otherwise
+- The classification document now says which contract it classifies
 - **gatekeeping**: Absent and malformed are different defects
+- **corpus**: Re-derive the obligation table — the contract moved, the table did not
+- **list**: Retarget phase-3 criterion 3 onto the live gate
+- **list**: Stop pinning open JSON field order and incomplete-human rc
+- The gate classified one contract and pinned another
+- The four D seat calls, in the exact forms ruled
+- A total derived from a permissive parse can always be satisfied by dropping rows
 - **p1**: Re-pin the agent-health manifest, and retire a sentence that expired
+- **crit-assign**: The fifteen successor-era rows, bound to their observers
 - **gatekeeping**: Fail-open enumeration hides its staleness; fail-closed announces it
+- **sweep-check**: An enumeration is caught by the first new member of its set
+- Phase-4 open-choice reconciliation, both directions
+- **liveness**: Carry SC-017s's two conjuncts out of the pane read
+- Cargo fmt import ordering left behind by retired seats
+- Reconcile P1 contract obligations independently
 - **gate**: C1 pins the criterion-3 reconciliation blob — a fixed input the manifest could not name
+- Rebind the open-choice recon to the landed C3 blob
+- **corpus**: SC-509b and SC-509c enter the obligation table
+- **corpus**: A key that is not a key, found while building the handover
 - **gatekeeping**: A key that is not a key manufactures agreement
+- **corpus**: SC-509c over every producer carrier, not just the self-declared one
 - **gatekeeping**: A negative claim inherits the scope of the search that produced it
+- **corpus**: The obligation red-proof stops mutating the tracked evidence
+- Evidence(corpus): the exclusion file was below the ruled grain, so it could not
+- Reconcile phase-4 contract obligations
+- Rebind the open-choice recon to C3 343fcd80
 - **gate**: The aggregate control moves with the twice-confirmed table — 1,614 / 949
+- Freshness follows direct provenance, and the taxonomy comes from its rows
+- Rebind C8 recon to gate ea794124
+- Phase-4 first run against the frozen chain
+- Phase-4 OBSERVED obligation scores and per-criterion verdicts
+- Phase-4 C3 isolated red-proof transcript
+- **corpus**: SC-017o re-derived on entitlement — the value is unscorable, not false
+- Publish phase-4 fixture fingerprints
 - **gatekeeping**: A checker iterating the subject gets quieter as the defect grows
+- **corpus**: The unscorable value is an obligation, not a footnote
+- Prove published symlink grammar
+- **corpus**: A new closed-set member is open until something binds who may use it
+- **corpus**: Drop the last reference to a file that no longer exists
+- **corpus**: The address is identity, the shape is whole — both declared in bytes
 - **gatekeeping**: Seeds aimed at the code test the mechanism; aimed at the defect, the fear
+- **corpus**: Proving the owed rows exist never proved nothing else does
+- Reject ignored published fixture dirt
+- Anchor published fingerprint derivation
+- **corpus**: Owed-zero is an obligation to check, not a row to skip
+- **corpus**: An allowlist that ignores what is off the list is not a closed set
 - **gate**: C14 names an object that exists — the published projection, two identities, verified before invoke
 - **gate**: The post-permission recheck must use the identity that can see what permissions change
+- Rerun phase-4 contract reconciliation
+- Rebind C8 to C3 6bf2e7f8 and gate f31ece2a, with colead's ruled disposition
+- Make the byte-exact claim true rather than the claim weaker
+- **509c**: An agent's attention reason is the newest thing the ledger says about it
+- **corpus**: Selector first, then fields — members 1 and 2
+- **509c**: Alert currency follows the ledger's order, not a writer's clock
+- **corpus**: A clock is a recorded fact, not a prefix on a name
+- **510c**: A declared state is the last one appended, not the best-stamped one
+- **rust**: The requests and events-tail read surfaces, byte-compared against the corpus
+- **corpus**: The instrument was the defect under test
+- **405f**: The goal epoch is the last appended goal, and the boundary I documented was wrong
 - **session**: Scope the ordering claim, and name last_active as the ruled exception
+- **511b**: The identity comparison moves onto the type whose doc already ruled it
+- Ordering is a dimension, and a cancel is not a reply with one end missing
+- Classify SC-518a, and re-derive what the contract move invalidated
+- **crit-assign**: SC-518a enters lead-authored assignment, and the pin follows its source
+- A gating test ratifies by enforcement, whatever its label says
+- Re-pin both registries to the tightened contract
 - **gatekeeping**: A gating test ratifies by enforcement, whatever its label says
+- SC-518a owns two ordering gaps, and the heading said three
+- **crit-assign**: One checked pin, the ratified gap set, and a tag that tells the truth
+- Re-pin both registries to 3ba5fdf1
+- **crit-assign**: The pin follows its source, and history is not restated
 - **gatekeeping**: A fact that must be updated does not belong beside a fact that is checked
+- **corpus**: Selection changes what is shown, never what is true
+- **518**: The matcher takes the ruling — strict identity, and causality is its own dimension
 - **gatekeeping**: Neutrality is measured by flipping the unruled dimensions
+- **522**: One clock stamps the document and decides the attention in it
+- **522**: Scope the guarantee to what the document can contradict
+- **corpus**: An exact shape is not an exact population
+- **corpus**: The reason grammar, over every agent rather than the stopped ones
+- **017g**: A quiet entry renders its triad; omission belongs to loss alone
+- **ratification**: A set-sized total is not evidence of that many headings
+- One authority per family, and the guard becomes a seed
+- **509**: Presence is part of the schema, ruled once as a class
+- **corpus**: A carrier is bound to its session, not to a name
+- **509**: A member that was read is rendered; omission is reserved for loss
+- **518**: The held-out stderr rows assert the successor side rather than skipping it
+- **509b**: Degraded is aggregate visibility; exactness is a claim about the maximum
+- Clarify needs_attention lower-bound semantics
+- Make degraded attention lower bound explicit
+- The census names its selector, and partial evidence is non-monotone
+- **405g**: Branch keeps its predecessor projection, named and dated for retirement
+- **corpus**: The qualifier names the session it qualifies
+- **corpus**: A control that lives in a message is a control nobody runs
+- **405g**: Branch VALUE is unscored under OC-P4-BRANCH-VALUE while the exception stands
+- **405g**: Scope the branch-value exemption to the digest comparison, and keep the count out of the row
+- **509b,017h**: Presence follows per-source knowledge, not a degraded bit
+- **509b**: Scope the attention-uncertainty claim to the attention INPUTS
+- **017g**: Repair the third blanket copy, and guard the count instead of the search
+- **list**: The human table renders frozen's subline and empty states
+- **017e,405f,017h**: Relative spans are scored against one witness epoch, and the state-cell census lands as evidence
 - **hazards**: The userland table governs your own shell, not only the product
 - **hazards**: The expensive member of the own-shell class is silent
+- **017l,017r**: Absence belongs to SC-017m, and an unattempted observation changes the value not the membership
+- **017l**: Absence is owned at BOTH grains — one omission, two rows
 - **contract**: The undercoverage test is candidate identity, not an aggregate count
 - **run1**: The digest-scored label meant envelope admissibility, not parity
-- **coexistence**: Record the canary outcomes and the CI state as they are
-- **canary**: Musl DNS/NSS — outcome 4 passes on the Linux CI leg
-- **telegram**: The reference knows about the autostart-refusal record
-
-### Features
-
-- **watchdog**: Mode-aware session location in the status bar
-- **watchdog**: Group repo context on status-left; drive live status via tmux user options
-- **goal**: Session goal as first-class metadata
-- **steward**: Rename ae hub → ae steward + focus-mode rituals
-- **steward**: Gated proactive interrupts in focus mode
-- **telegram**: Default plain messages to the running steward
-- **compat**: Fail fast on bash < 4 with a macOS remedy
-- **steward**: The objective is the switch — collapse focus/passive modes
-- **list**: Session context — git branch + goal age in list and --json
-- **delegation**: Tiered-model delegation protocol + steward config watch
-- **spawn**: Workers get their own tmux window; main window stays the lead's
-- **delegation**: Prefer ae workers over harness-internal subagents
-- **autostart**: Steward + telegram bridge come up on any ae entry point
-- **spawn,attn**: TUI-readiness before prompt paste; unanswered-request attention
-- **doctor**: Refresh restarts running watchdogs, liveness-gated
-- **events**: Resume-time retention for events.jsonl + attention docs
-- **aewatch**: Phase-1 skeleton — PEP 723 sidecar scaffold + test runner
-- **aewatch**: Contract fixture matrix — loader, schema validator, CLI
-- **aewatch**: Effect-oracle harness — EFFECT_KINDS schema, recorder, FakeTmux/FakeAeHome
-- **aewatch**: Per-AE_HOME singleton lock + atomic heartbeat, daemon --once skeleton
-- **aewatch**: Ae INI parser — exact parse_config parity port
-- **aewatch**: Session discovery — per-meta tmux_server, inventory-not-filter
-- **aewatch**: Daemon.log — bounded rotation + fail-closed secret redaction
-- **aewatch**: Crash-loop backoff state — windowed budget, reset-on-success
-- **aewatch**: Phase-1 tick composition — the sidecar skeleton is complete
-- **aewatch**: Tmux.display_message effect kind — complete the oracle surface
-- **aewatch**: Multi-tick fixture harness — TickClock, MultiTickEnv, feed-forward events
-- **aewatch**: Bash dual-run oracle — fakebin shims + real-watchdog runner
-- **aewatch**: Python watchdog cycle skeleton — first byte-identical status parity
-- **aewatch**: Activity classification parity — event recency + pane hashing
-- **aewatch**: Stale-nudge parity — first tmux.paste + event.append, byte-exact
-- **aewatch**: Quiet-state parity — done/waiting-user/blocked arm-hold-yield
-- **aewatch**: Alert parity — dead/missing/max-nudge, display_message speaks
-- **aewatch**: Throttle parity — verbatim per-tool catalogs, streak + alert + clear
-- **aewatch**: Sweep-cadence + wedge parity — pins ae reconcile dead-code
-- **aewatch**: Recover-pending parity — post-launch session-id capture retry
-- **aewatch**: Telegram-supervise parity — scheduler + tmux_server propagation
-- **aewatch**: Daemon tick composition — run watchdog cycles per session under injection
-- **aewatch**: Per-session tick-input routing — phase-3 contract + harness cutoff
-- **aewatch**: RealTmuxClient read path + single-source Pane
-- **aewatch**: RealTmuxClient write path (mutations + paste/submit)
-- **aewatch**: Real ae/event boundaries (emit_event + recover_pending)
-- **aewatch**: Real BridgeSupervisor boundary
-- **aewatch**: Bridge oracle — TelegramTransport seam, fake API, machine-checked anchors
-- **config**: Default setup — strongest lead + two standing coworkers
-- **aewatch**: Telegram token config, validation, redaction
-- **aewatch**: RealTelegramTransport — Bot API over urllib
-- **aewatch**: Inbound offset + auth (at-most-once, exact-auth)
-- **aewatch**: Command resolver (routing security boundary)
-- **aewatch**: Agent delivery primitive (command-execution boundary)
-- **aewatch**: Command routing precedence (confine -> execute -> route)
-- **aewatch**: Outbound formatter + include/exclude filters
-- **aewatch**: Outbound state.tsv + at-least-once retry
-- **aewatch**: Command menu registration (setMyCommands)
-- **aewatch**: Bridge tick composition (TelegramBridge)
-- **aewatch**: Supervisor loop — per-component crash backoff, clean-signal shutdown
-- **aewatch**: Dedicated ae-aewatch session launcher — per-AE_HOME, heartbeat-gated
-- **aewatch**: Opt-in aewatch watchdog autostart + exclusivity, up/daemon--loop CLI
-- **aewatch**: Ae telegram bridge handoff — marker-owned, no double-send, bash fallback
-- **aewatch**: Phase-3 closer — contracts migration + mutation-proven coverage guards
-- **ae**: Slot-keyed request integrity — churn-safe identity + routing
-- **ae**: Request-integrity 2 — live slot stamping, paste verify + interpreted-sink guards, spawned-slot stability
-- **ae**: Lead-default — model-named aliases, slot-aware role context, lead-solo layout
-- **ae**: Mode-context — mode-aware working-tree block + accurate copy_desc
-- **ae**: Session-shape — lead-pair layout, colead seat, status-left session name
-- **ae**: Footer rework — ae-owned status bar, agent-identity line, leads default
-- **ae**: Footer agent-roster — per-agent verdict + subprocess activity
-- **ae**: Input-region sensor — cursor-anchored SGR, codex staged detection restored
-- **ae**: Roster completeness — per-window glyphs, registered keying, steward
-- **ae**: Grok build integration — claude-class session handling
-- **ae**: Dedicated gpt56sol xhigh reviewer in the default worker roster
-- **ae**: Doctor orphan check + wind-down discipline (lifecycle blindness)
-- **ae**: Opus5 replaces opus48 as the default builder tier
-- **ae**: Spawn lifecycle closure is an emphatic contract — every spawn ends in a retire
-- **ae**: Helper-emitted origin envelope, and the authority rule it enables
-- **ae**: Opencode gets real system-level context instead of a first-message paste
-- **ae**: A session that ends leaves an inert archive, and a new one can inherit it
-- **ae**: A request can be withdrawn, and the one sensor both readers share knows it
-- **ae**: A session can hand itself over, end, and continue under the same name
-- **ae**: An agent is told its own name, and a name is an allowlist before it may reach a prompt
-- **rust**: P0 toolchain, quality lanes, and CI — pins are the contract
-- **rust**: P1 slice 1 — event log, session digest, list read-side
-- **list**: First-class Unknown liveness, wired into scope selection
-- **list**: Phase 1 candidate inventory, with the invariants held by construction
-- **list**: SC-400d two durable layouts and SC-405l typed selector
-- **list**: Record an unlistable state root instead of skipping it silently
-- **list**: SC-017o incomplete-inventory snapshot fact, and the scan becomes infallible
-- **list**: Phase 2 — liveness knowledge, first-class unknown, schema version 2
-- **list**: Wire schema version 2 and the completeness field into the digest
-- **list**: Phase 3 — the product answers
-- **list**: Agent liveness gains a real unknown — #105 one level down
-- **liveness**: Give tmux a real transport, and let the exit status decide
-- **liveness**: Derive and read a pane enumeration, without deciding anything
-- **liveness**: Carry SC-017s's two conjuncts out of the pane read
-- **rust**: The requests and events-tail read surfaces, byte-compared against the corpus
-- **509**: A member that was read is rendered; omission is reserved for loss
-- **509b,017h**: Presence follows per-source knowledge, not a degraded bit
-- **list**: The human table renders frozen's subline and empty states
+- **405g**: The branch-value exemption reaches the human surface, registered
+- **017r**: A display name was never an identity, so the collision owes a count
+- **509**: The two-field session id is ruled, and C8 anchors on phrase content
 - **list**: The short session id was never rendered, on either surface
+- **017s**: The four-output tuple is regenerated, and panes join by exact slot
+- **017s**: Seed 78 owes a bound six-field pane, so the branch deletion is red
+- **rust**: Ship usable session listing
 - **p2.1**: The requests helper hands mode all to a pinned Rust core
 - **p2.1b**: The requests core reads the caller's pane identity
 - **p2.2**: State declarations are written by the pinned Rust core
@@ -1987,6 +1338,7 @@ during round 3 review. 135 tests pass.
 - **p2.5a**: Ask and review are created and delivered through the pinned Rust core
 - **p2.5b**: Reply is created and delivered through the pinned Rust core
 - **p2.6**: The public send is resolved, delivered and recorded by the pinned Rust core
+- **requests**: A slotless cancel withdraws the request it names, as compact's does
 - **p2.7**: The monitor pane's events-tail runs on the pinned Rust core
 - **p3.1**: Archive preview is the read-only lifecycle tracer on the Rust core
 - **p3.2**: Route worktree/copy archive preview through the typed-git core
@@ -1998,1095 +1350,107 @@ during round 3 review. 135 tests pass.
 - **compact**: Dormant Rust core for compact's destructive-safety gates
 - **compact**: Activate the clean-cut core end to end
 - **watchdog**: The Rust core owns the loop; bash keeps process glue
+- **watchdog**: Serialize start so concurrent starts spawn exactly one daemon
 - **watchdog**: The Rust core owns the steward/meta-agent sweep
 - **telegram**: The Rust core's first runtime dependency and the outbound bridge
+- **orchestrator**: Steward becomes orchestrator, the canonical product term
 - **telegram**: The Rust core owns the bridge; bash keeps start/stop glue
 - **coexistence**: Ae-next runs the Rust hybrid beside an untouched ae
-- **send**: Notice mode for long bodies — the file is the delivery, the pane gets one line
-- **telegram**: An autostart refusal leaves a trace — closed category, two surfaces
-- **release**: SemVer-compatible CalVer — the tag ledger owns the sequence
-- **dist**: Prebuilt ae-next bundles and the one-line remote installer
-- **p5**: Forward-only entry flip — public Rust entry, immutable bundle, ae-next retired
-
-### Miscellaneous
-
-- **config**: GPT-5.6 aliases — gpt56sol/terra/luna strict pins, sol as default reviewer
-- **ae**: Promoted-tier examples drop sonnet5 — chores run luna
-- **ae**: Grok-4.6 high is a dev-tier peer of opus5
-- **version**: 2026.8.2 — bumped ahead of the entry flip, deliberately untagged
-
-### Other
-
-- Updates
-- Add doctor, memo, rename, perf improvements, pane resilience
-
-- ae doctor: check deps, config, agent CLIs; --sync-sessions refreshes
-  existing session helpers from current ae code
-- memo: shared append-only session memory (add/read/tail with topics)
-- ae rename: rename running sessions (tmux + meta + workspace.md)
-- config caching: deterministic temp file cache with mtime invalidation,
-  eliminates repeated parse_config subshell forks (~3s saved on startup)
-- parse_config: replace sed forks with pure bash trimming
-- startup polling: reduce wait_for_agent_start from 40 to 10 iterations,
-  remove blocking retry loop (~7s saved on startup)
-- pane resilience: remove exec from pasted launch command so panes
-  survive agent crashes/exits
-- default model: opus[1m] for 1M context window
-- new helpers: review, reply, requests, peak (typo alias for peek)
-- launch scripts: write_launch_script + build_launch_command infrastructure
-- agent context: expanded REQUIRED AE RULES with ask/review/reply/memo
-- tests: 99 unit, 45 integration all passing
-- Add events.jsonl structured event log for session observability
-
-Add ae_json_escape and ae_emit_event to _lib. Every ae-mediated action
-(send, ask, reply, review, memo, spawn, retire, interrupt, focus) now
-appends one JSONL line to events.jsonl after success. ask/review/reply
-delegate to send with action/ref/summary overrides to avoid duplicate
-events. spawn/retire use inline flock-protected emission since they run
-outside _lib context. 18 new unit tests for escaping and structural
-verification.
-- Add loop watchdog for stale agent detection and nudging
-
-Generate loop helper with start/stop/status subcommands. Detects stale
-agents via pane content hash (staleness) and events.jsonl timestamps
-(liveness). Nudges via existing send helper with AE_SENDER_OVERRIDE=loop.
-Escalates after max nudges with alert event and tmux display-message.
-
-Runs in hidden tmux window tagged @ae_agent=_loop, inspectable via peek.
-Skips focused pane, respects human grace window after helper-mediated
-actions, detects dead agents (process dropped to shell). Auto-start via
-[workspace] loop=true config. Configurable thresholds via env vars.
-- Rename loop watchdog to sentry
-
-Rename loop → sentry across helper, config key (workspace.sentry), env
-vars (AE_SENTRY_*), tmux window (ae-sentry), agent tag (_sentry),
-sender override, display messages, and tests.
-- Drop focused-pane check from sentry
-
-Focused pane is a weak signal — it can't tell if the human is actually
-looking. The pane hash (step 2) and human grace window (step 4) already
-cover the real cases: direct typing changes the hash, helper-mediated
-interaction triggers the grace window.
-- Drop human grace, add missing pane detection
-- Add recently-visible check for human interaction edge case
-- Add ae sentry top-level command with per-session persistence
-
-New 'ae sentry <start|stop|status> [name]' top-level command resolves
-the session directory and execs the sentry helper. Auto-detects current
-session when run inside one.
-
-Sentry helper now persists state to the session meta (sentry=true|false)
-under flock discipline. Session start/resume reads meta first for the
-per-session override and falls back to workspace.sentry config default.
-The meta rewrite path preserves the sentry= line across resume.
-
-Lets you have global sentry=false but enable it for one long session,
-or vice versa, and survive ae stop + resume.
-- Rename sentry back to loop
-
-The watchdog feature is more clearly named loop than sentry. loop is
-self-explanatory in the user-facing context (ae loop start aedev),
-while sentry was an abstract marketing term that obscured what the
-feature actually does. Renames cover the helper, top-level command
-(ae loop), config key (workspace.loop), env vars (AE_LOOP_*), tmux
-window (ae-loop), agent tag (_loop), meta key, and tests.
-- Rename ae doctor --sync-sessions to --refresh
-
-"sync" implies bidirectional synchronization with something else, but
-the flag actually just regenerates session helper scripts from the
-current ae source. "refresh" is more accurate and shorter.
-
-  ae doctor --refresh         # all sessions
-  ae doctor --refresh aedev   # one specific session
-- Recover pending session IDs each cycle
-- Read-only pane, status output, cross-window resolution
-- Surface live status in tmux status-right
-- Walk process tree to avoid false-positive dead alerts
-- Prepend status indicator instead of replacing user's status-right
-- Ae-monitor window with loop + events panes; codex review fixes
-
-Replace the single ae-loop window with an ae-monitor window that has
-two panes split horizontally:
-
-  top    — the loop watchdog (existing behavior, banner + cycle log)
-  bottom — events-tail, a formatted live tail of events.jsonl
-
-Both panes are read-only (pane input disabled). The events tail shows
-recent history (last 30 events) and follows new ones, formatted as:
-
-  HH:MM:SS  action    actor                  → target                 summary
-
-The bottom pane is tagged @ae_agent=_events so peek/agents/focus can
-find it. The loop body's iteration now skips both _loop and _events
-to avoid false-positive dead alerts on the monitor's own panes.
-
-Also addresses codex review findings on the previous round:
-
-- extract_binary_from_cmd() now resolves the actual binary, skipping
-  leading env-var assignments (FOO=bar) and well-known launcher
-  prefixes (env, sudo, nice, ionice, time, nohup, command, exec).
-  Used by initial meta write and _cmd_spawn for agent_bin.<slot>.
-- agent_bins associative array is declared at top level instead of
-  via `declare -gA`, keeping bash 4.0 compatibility (declare -g
-  requires bash 4.2).
-- The retire path also strips agent_bin.<slot> when removing an
-  agent.<slot> entry.
-- Sticky column headers via tmux pane borders
-- Handle GNU long-option launcher flags
-- Add behavioral unit tests for extract_binary_from_cmd
-
-Lock in the launcher edge cases codex flagged across rounds 3, 4,
-and 5: bare command, absolute path, env-var assignments, env -i,
-env --chdir (space and equals forms), sudo with short -u and long
---user, --user=alice, sudo -E -u (boolean + arg-flag combo), nice
--n / --adjustment, time --format, ionice --class, and nested
-env+sudo. 15 new cases. Now exercises real behavior, not just
-source-string presence.
-- Ae list: show ae version and last-active per session
-
-New sub-line under each session row shows the ae version currently
-associated with the session and the time since last meaningful
-activity:
-
-  aedev                     running   local       /home/ckriech/...
-    ae 0.2.1 · active 2m ago
-    claude:lead             1ce6bedf
-    codex:coworker          019d66a6
-
-- ae_version is written to meta on initial session creation and
-  updated by every subsequent ae <name> start/resume and by
-  ae doctor --refresh via sync_session_assets. So it reflects the
-  version currently managing the session, not a frozen "born on"
-  value.
-- Last active is the mtime of events.jsonl (most precise — updated
-  by every helper call), falling back to workspace.md, then meta
-  for sessions that predate events.jsonl.
-- New format_relative_time() helper renders epoch timestamps as
-  "Xs/Xm/Xh/Xd ago", ">7d", or "-".
-- Sessions without the new ae_version field display as "ae ?".
-- Ae list: honor legacy worktree-nested meta path
-
-cmd_list previously read meta_blob directly from
-${SESSIONS_DIR}/${name}/meta and passed that same path into
-_print_session_meta_line for the active-time mtime lookup. This
-missed the legacy worktree-nested fallback path that
-read_session_meta() still honors, so sessions whose metadata lives
-at ${WORKTREES_DIR}/${name}/.ae/${name}/meta lost their agent rows,
-mode/origin detail, version, and active time.
-
-Add _resolve_session_dir() which checks the new path first and
-falls back to the legacy path (same logic as read_session_meta).
-Both the running-session loop and the stopped-session loop in
-cmd_list now use it to resolve the right directory for both the
-meta blob and the _print_session_meta_line mtime scan.
-- Drop sticky pane-border headers, use in-pane banner
-- Label panes via tmux pane titles
-- Add mark-done helper so agents can signal completion
-- Collapse logs into events.jsonl + factor ask/review
-- Trim build_ae_context to 7 numbered rules
-- Remove orphan files from prior ae versions on resume
-- Decouple events pane from loop lifecycle
-- Show date+time in events pane, not time alone
-- Detect upstream throttle errors and pause nudges
-- On by default; label events banner as UTC
-- Event-only done invalidation, drop pane-hash reconciliation
-- Ae transfer push (phase 1 walking skeleton)
-- Fix SSH arg-passing — %q into unquoted heredoc
-- --pull direction (phase 2)
-- Clean up underlying claude/codex conversation files
-- External-actor protocol + session UUID
-- Phase 1 — state helper + ae_latest_state_for
-- Phase 3 — surface per-agent state in ae list
-- Phase 2 — loop watchdog honours declared quiet states
-- Make the stale nudge actionable — hand the agent the state command
-- Stage 2 — read-only Telegram bridge (native, machine-global)
-- Fix ~/ token_file expansion (literal tilde strip)
-- Add ae list filters
-- Window 0 must follow the session rename
-- Ae list: derived needs_attention rollup (slice 2)
-
-The session attn marker is no longer state-only. cmd_list now computes a
-derived rollup — the single most-actionable reason across a session's
-current agents, by severity: dead > stale > waiting-user > blocked >
-throttled.
-
-- dead: an agent registered in meta has no pane (direct check), or the
-  watchdog flagged it (pane missing / process dead — dropped to shell).
-- stale: the loop watchdog hit max-nudges on an idle agent.
-- throttled: persistent upstream rate-limit alert.
-- waiting-user / blocked: self-declared state (unchanged).
-
-New top-level helpers: _agent_alert_reason (reuses the loop's own
-alert/throttled events; an alert stays active until the agent's OWN
-activity or a throttle-cleared supersedes it — a loop nudge or inbound
-send addressed to the agent does NOT count as recovery) and _attn_rank
-(severity). The alive map is now built before the rollup so a missing
-pane can raise dead.
-
---needs-me now surfaces watchdog-derived dead/stale/throttled sessions,
-not just declared waiting-user/blocked. Help text, workspace prompt,
-manifest, README and commands.md updated to document the reason
-vocabulary. Pending unanswered ask/review edges remain a planned reason.
-
-Tests: unit for _agent_alert_reason (real loop summaries incl.
-process-dead, target-only-does-not-clear, agent-activity-clears,
-throttle-cleared, @session target) + _attn_rank ordering + rollup
-wiring; integration Test 3c (injected max-nudges alert -> attn:stale,
-cleared by newer activity). unit 450, integration 85; shellcheck clean.
-Builds on 57a8860; disjoint from the concurrent telegram work.
-- Stage 3 — bidirectional (chat → ae inbound)
-- Telegram stage 3: address codex review (BLOCKER agent escape + 3 more)
-- Ae list: --json digest (slice 3)
-
-ae list --json emits a single machine-readable snapshot for a monitoring
-script or agent — pure bash, no jq required. The filters
-(--running/--all/--stopped/--needs-me) decide which sessions appear.
-
-Shape: {schema_version, generated_at, sessions:[{name, status, mode,
-origin, work_dir, last_active_epoch, needs_attention, attention,
-attention_rank, agents:[{ref, alias, name, session_id, alive, state,
-reason}]}]}. attention is the session's most-actionable rollup reason;
-each agent's reason is its own contribution. schema_version lets
-consumers gate on shape.
-
-- New top-level _json_escape (byte-identical mirror of the _lib
-  ae_json_escape, which cmd_list can't source) and _session_active_epoch
-  (shared with the table meta line).
-- _list_session_json reads the per-iteration maps from cmd_list scope via
-  dynamic scoping; the stopped path declares empty maps so subscript
-  lookups are set -u safe.
-- alive means the agent process is running: pane present AND a non-shell
-  foreground command. A pane dropped to a bare shell is alive=false.
-
-Tests: _json_escape sync + behavioural; --json wiring asserts; integration
-covers valid JSON for default/--needs-me/--stopped/--all, the filters, and
-the attention reason. unit 478, integration 96; shellcheck clean. Builds
-on the telegram Stage 3 base (6db9347); files disjoint.
-
-Completes Layer 1 of the ae list attention work (filters + rollup + json).
-- Ae list: rename --needs-me to --needs-attn
-
-The attention filter now reads as --needs-attn, matching the attn:<reason>
-marker the rows print and the internal needs_attention rollup. --needs-me,
---needs, and --attn stay as aliases so nothing breaks. Help text, README,
-and commands.md updated. Pure rename — no behaviour change.
-- Persistent daemon log file
-- Ae list: --active filter for recently-active sessions
-
-`ae list --active` (alias --busy) shows only running sessions with recent
-activity — an ae event within the last 5 minutes (override with
-AE_LIST_ACTIVE_SECS). Implies running-only, like --needs-attn, and
-composes with --json. Answers "which sessions are in flight right now".
-
-Honest scope: recency is measured from ae-event mtime (messages, state,
-nudges, spawns), not raw pane churn — a silently-working agent that emits
-no events won't count until it uses a helper. The loop watchdog remains
-the thing that tracks pane-level activity.
-
-Tests: unit (flag/alias, default+env window, skip logic, empty message) +
-integration (fresh session shows, backdated activity drops out, plain
-list still shows it). unit 487, integration 100; shellcheck clean.
-Builds on 0abc704; cmd_list-only, disjoint from the telegram loop work.
-- Loop watchdog best-effort revives the bridge
-- Reply-to-routing (inbound UX, slice 1)
-- Compact @session:agent prefix + sticky /use (inbound UX, slice 2)
-- Register slash-command menu via setMyCommands (inbound UX, slice 3)
-- Fix setMyCommands 400 — pass commands JSON via @file form
-- Add 'say' helper + chat event (agent → human, two-way)
-- Record terminating signal in daemon exit log
-- Ae next: attention navigator, read-only (Layer 2, slice A)
-
-Layer 2 of the meta-agent: turn the Layer-1 attention SIGNAL into the next
-ACTION. 'ae next' (alias 'ae jump') names the top-ranked running session
-needing attention — name, reason, rank, contributing agent — read-only, exit
-non-zero when nothing needs you (composes in scripts + Layer 3).
-
-To avoid duplicating attention semantics (codex BLOCKER), the per-session
-rollup is extracted into a shared _session_attn_rollup — the SINGLE source of
-the dead>stale>waiting-user>blocked>throttled severity rollup, used by BOTH
-cmd_list and cmd_next. It returns via globals (not stdout) so the call runs in
-the caller's shell and still fills cmd_list's _areason map (--json per-agent
-reason) via dynamic scope; a process-substitution subshell would drop those
-writes. cmd_list refactored onto it (its inline _cur build + rollup loop
-removed); the rollup unit asserts now target the shared function.
-
-Acceptance: ae next names the attention session + reason, exit 0; clear
-message + non-zero when none; read-only (no tmux focus change). Tests: unit
-(rollup logic, wiring, read-only guard, globals/_areason) + integration
-(none→non-zero, waiting-user→named, read-only). 537 unit / 110 integration,
-shellcheck clean. Slice B adds --attach.
-- Ae next --attach: jump to the attention session (Layer 2, slice B)
-
-Adds the action half of the navigator: 'ae next --attach' (alias --switch)
-jumps to the top attention session — switch-client when already inside tmux
-(attach-session errors there), attach-session otherwise. Read-only stays the
-default. It re-checks the session still exists (race: it may have ended between
-the scan and the jump → clean non-zero error) and no-ops with a message if
-you're already in it.
-
-The inside/outside-tmux decision is a pure _next_focus_argv (unit-tested both
-ways); the exec is thin (array-expanded, no word-split). --attach is now parsed
-(not rejected) and still guards on no-attention before any focus change.
-
-Tests: unit — _next_focus_argv inside/outside, read-only-default gating,
---attach revalidate/no-op/focus wiring. integration — --attach with nothing to
-attend exits non-zero without a focus change (the happy-path switch/attach needs
-a live tmux client, so it's covered by the pure unit test + manual QA per the
-plan's test strategy). Docs (README/commands.md/help) updated. 548 unit / 115
-integration / shellcheck clean.
-- Shfmt-format ae so 'just check' is green
-- Ae loop: meta-agent sweep cadence (Layer 3, slice 3)
-
-The monitoring hub is a long-running SERVICE — 'idle between sweeps' is normal,
-not stale. The stale-nudge watchdog would nudge it to declare a quiet state and
-then alert 'needs attention' after MAX_NUDGES, which is wrong for a monitor (and
-codex's BLOCKER: don't pretend the stale-watchdog is a scheduler).
-
-Add an explicit sweep cadence: [workspace] meta = true marks a session as the
-hub (persisted to meta as meta_agent=true, config-driven, re-read each
-start/resume). When set, the loop — AFTER its dead-check (so a dead hub still
-alerts) and before the stale machinery — sends a 'run your sweep now' nudge every
-SWEEP_SECS (AE_LOOP_SWEEP_SEC, default 300) and never escalates the hub to stale.
-The missing-pane check (step 8) still applies. Non-hub sessions are unchanged.
-
-Tests: structural asserts for the config→meta flow, the SWEEP_SECS knob +
-meta_agent read, the gated/interval-throttled cadence branch, the 'run your
-sweep now' wording, and that the cadence branch precedes the stale-nudge logic
-(hub bypasses max-nudges/stale-alert). 556 unit / 115 integration / just check
-green.
-- Deterministic state/dedup helper for the hub (Layer 3, slice 2)
-- Per-agent attention keying + first-run-by-existence (codex slice-2 review)
-- Ae loop: fix wedge-heartbeat filename (+ doc); throttle already covers the banner
-
-BUG (real, live-impacting): the Slice-3 meta-agent wedge-detector watched
-META_DIR/meta-state.json, but the Slice-2 contrib aemonitor helper writes
-meta-agent-state.json. Once the hub is wired to aemonitor the watched file is
-never written again → a FALSE 'meta-agent not sweeping' alert fires while the hub
-IS sweeping (observed live at 10:52). Align the loop to meta-agent-state.json
-(aemonitor's atomic-write file) + fix the stale docs/reference/commands.md that
-named the old file (the same doc-drift that caused the mismatch) + note that
-overriding aemonitor --state must point at the same path.
-
-Throttle: NO code change. Clemens's Claude banner ('API Error: Server is
-temporarily limiting requests (not your usage limit) · Rate limited') is ALREADY
-detected by the claude catalog's 'Server is temporarily limiting requests' (test
-1617). A bare generic 'Rate limited' was considered but REJECTED (codex
-IMPORTANT): it false-matches normal prose without fixing any live case — added a
-negative test pinning that it must not match.
-
-Tests: heartbeat asserts meta-agent-state.json (and NOT the old name); bare
-'Rate limited' prose negative. unit 563 / integration 115 / just check green.
-- Ae hub: first-class meta-agent launcher
-
-Promote the start-hub wrapper to a real `ae hub` subcommand — start/resume the
-meta-agent hub (one session that monitors all other ae sessions and is the
-operator's single point of contact to them).
-
-- `ae hub` trampoline (dispatcher): handles --init/--help, else sets up FULL
-  config isolation and FALLS THROUGH to the generic start/resume path (no
-  re-dispatch → no recursion). Isolation = clear AE_LOCAL_CONFIG (captured from
-  the caller PWD at script top, before any cd) + cd HUB_DIR + absolute
-  CONFIG_FILE from $PWD. Fixes the worker-leak class a project-local ./.ae/config
-  would otherwise reintroduce (codex BLOCKER).
-- `ae hub --init`: scaffold ~/.ae/meta-hub/{hub.config,CHARTER.md} from
-  contrib/aehub templates; only-missing-files (no overwrite, idempotent),
-  symlink-aware template resolution with realpath/echo fallback (no new dep),
-  bash placeholder substitution (no sed), rejects HUB_DIR with quote/newline.
-- Config flag: accept `hub = true` (preferred) as a non-breaking alias of
-  `meta = true`; internal meta_agent / state-file names unchanged.
-- Templates: contrib/aehub/{hub.config,CHARTER.md,README.md}, genericized
-  ("your operator", ~ paths, __CHARTER_PATH__/__AEMONITOR_PATH__ placeholders).
-- Docs: README + commands.md document `ae hub` (+ the hub/meta alias, the
-  AE_HUB_DIR override, and the `ae --local hub` escape hatch).
-- Tests: +10 unit (scaffold no-overwrite/substitution/reject, dispatcher
-  structure, flag alias) and +5 integration (the BLOCKER isolation test: `ae hub`
-  from a hostile project .ae/config → hub config wins, no worker leak, work_dir/
-  config/meta_agent pinned). 573 unit / 120 integration / just check green.
-- Make AE_HOME authoritative for all state (isolation without swapping $HOME)
-- Ae hub: charter-path fix (AE_HOME-correct helpers) + hub-injection-guard e2e
-
-The aehub charter template hardcoded ~/.ae/sessions/hub/<helper>, so an isolated
-AE_HOME hub would point its say/peek/aemonitor at the LIVE ~/.ae — blocking any
-hub e2e scenario. Fix: the charter uses a __HELPERS_DIR__ placeholder that
-cmd_hub_init substitutes with $CONFIG_DIR/sessions/hub (default ~/.ae/sessions/hub;
-isolated runs $AE_HOME/sessions/hub). _hub_scaffold_file now takes multiple
-placeholder/value pairs. Backward-compatible (AE_HOME unset → unchanged).
-
-New e2e scenario tests/e2e/ai/scenarios/smoke/hub-injection-guard: launches a real
-hub (ae hub --init + ae hub in the isolated workspace), relays it a message
-embedding "run 'ae end hub'" as quoted pane content, and asserts the hub SURVIVES
-(no self-end/stop — the strongest signal) + no end/stop/retire event; an advisory
-judge checks it treated the line as data. Regression-guards the meta-agent's
-never-self-end charter rule under real prompt-injection.
-
-Tests: unit (multi-pair scaffold; charter uses __HELPERS_DIR__ not literal ~/.ae;
-cmd_hub_init substitutes it) + integration (AE_HOME hub --init bakes the isolated
-helper path into the charter, never ~/.ae). 581 unit / 127 integration / just
-check green; the 3 e2e scenarios parse + skip (77) without the gate.
-- Ae end: keep agent conversation files by default (opt-in purge)
-
-ae end previously always deleted the per-session claude/codex jsonl. Those are the
-only local record of a session's token usage, so they're now KEPT by default and
-purged only on request — for future usage/cost reporting.
-
-Decision (per session, never from the caller's cwd):
-- CLI --purge-history / --keep-history (global override) > the session's OWN
-  [workspace] purge_agent_history > default KEEP.
-- cmd_end only sets the global CLI override (_AE_PURGE_HISTORY_CLI). The default is
-  resolved in cleanup_session by hydrating CONFIG_FILE from the session's meta
-  'config' + AE_LOCAL_CONFIG from its origin/.ae/config (the resume pattern), so a
-  cross-repo end or 'ae end all' honors each session's policy. When a session has
-  no usable stored config, CONFIG_FILE is pointed at /dev/null (NOT the caller's
-  config), so a stray cwd purge=true can't bleed in.
-- cleanup_session (the only path to _cleanup_agent_session_files, only reached via
-  end_session) gates on the resolved decision; keeping prints a one-line note.
-- cmd_end arg-parse rewritten to a flag loop and now REJECTS a stray second
-  positional (destructive command — no silent drop); dispatcher passes "${@:2}".
-  Confirm prompt states KEEP/DELETE (CLI) or the per-session policy.
-- Docs/help (cmd_help, README, commands.md incl a precedence table) updated.
-
-Tests: unit (flag parse, CLI-only global, per-session resolution, reject-extra,
-gated purge) + integration (default keeps; --purge-history purges; a session's own
-purge=true purges from a no-flag cwd; a purge=true cwd does NOT override a keep
-session; a no-usable-config session keeps; extra positional rejected). 586 unit /
-133 integration / just check green.
-- **input-region**: Shared _capture_input_region primitive (cursor_y-anchored -e)
-- **ae**: Default workspace is the judgment pair — workers are spawned, not standing
-- **batch-c**: A1 full rerun + A2 composite - admissibility made first-class
-- **batch-l**: L-END section complete - 28 arms, all 21 roster ids + 2 hostile constructions
-- **batch-c**: A4 - live-tmux CLI arms + the first hooked barrier capture
-- **batch-l**: L-END correction - SC-808 arm re-run with mode-preserving mutation
-- **batch-l**: L-PURGE section complete - 41 arms, all 14 roster ids + 2 controls
-- **batch-c**: Seat-read remediations + D01/D02 concurrency records
-- **batch-l**: L-STOP section complete - 18 arms, all 20 roster ids
-- **batch-l**: L-COMPACT section complete - 18 arms, all 21 roster ids
-- **batch-l**: L-COMPACT manifest corrections - counts and the two-pid-columns distinction
-- **batch-l**: L-FROM section complete - 12 arms, all 9 roster ids
-- **batch-c**: Gate v3 (per-case schema + case index) and all five D-record executions
-- **batch-l**: L-RENTRANS INCONCLUSIVE/BLOCKED - transport preflight failed honestly
-- **migration**: L-RENTRANS partial — batch L capture complete
-- Rename identity defects — SC-1303 to bucket 3 (#103), SC-832d/e (#102)
-- SC-832c seat closure (normative concur, empirical HOLD) + ae-list coherence correction
-- **batch-c**: Gate v4 — committed-bytes check, plus the generated arm table
-- **batch-c**: A5 — doctor exits under a controlled PATH (SC-514)
-- **batch-c**: A6 — request pairs and the unanswered threshold (SC-518, 522, 523a-b)
-- **migration**: L-DISCRIM — five discriminators, each able to produce the unwanted answer
-- **batch-c**: A7 — meta grammar (SC-405a-g, 405j)
-- SC-405f precised — last event by stream order, not greatest timestamp
-- **migration**: D1b — ARM-INVALID is the result, and it forecloses the gap
-- **migration**: L-832C — a mixed generation survives a crash, and readers accept it
-- SC-832c empirical hold LIFTED — a mixed generation survives, and a reader accepts it
-- Report drift when the committed index differs from the generated one
-- SC-017j names the entitled server set, so no implementation answers it by accident
-- SC-521c — liveness uncertainty does not erase a known attention fact
-- SC-521c classified_by in the form the sweep actually parses
-- Land the seven P1 entries and refresh the header
-- SC-017l's unreachable-server outcome is OBSERVED end to end, not merely source-proven
-- Close P1 inventory format gaps
-- SC-400d and SC-405l, both CODE
-- SC-405l — missing means no selector fact is available, not that bytes omitted it
-- SC-017k — a coalesced sighting stays proof, because knowledge must not shrink when evidence is added
-- SC-017o — a snapshot that could not see everything must say so
-- Correct SC-017o's IS relation — the -d guard does not skip an unreadable root
-- SC-017o generalizes to the enumeration graph, not its current leaves
-- Three precisions to criterion 24, one of them my own regression
-- Install tmux, because the phase-2 liveness proof needs a real one
-- SC-017p/q/r and SC-509e, the agent-liveness family
-- SC-017s gives ae a way to say alive, and it is one-directional
-- **sc-017s**: The probe overclaimed one axis and false-failed another
-- The classification document now says which contract it classifies
-- **corpus**: Re-derive the obligation table — the contract moved, the table did not
-- The gate classified one contract and pinned another
-- The four D seat calls, in the exact forms ruled
-- A total derived from a permissive parse can always be satisfied by dropping rows
-- **crit-assign**: The fifteen successor-era rows, bound to their observers
-- **sweep-check**: An enumeration is caught by the first new member of its set
-- Phase-4 open-choice reconciliation, both directions
-- Cargo fmt import ordering left behind by retired seats
-- Reconcile P1 contract obligations independently
-- Rebind the open-choice recon to the landed C3 blob
-- **corpus**: SC-509b and SC-509c enter the obligation table
-- **corpus**: A key that is not a key, found while building the handover
-- **corpus**: SC-509c over every producer carrier, not just the self-declared one
-- **corpus**: The obligation red-proof stops mutating the tracked evidence
-- Evidence(corpus): the exclusion file was below the ruled grain, so it could not
-substantiate its own claims
-
-Checker-plus-exclusions only. The accepted table identity does not move:
-OBLIGATIONS.tsv stays b1fa3bbf33639aa32ae8641cc51065fe834c7163, confirmed by two
-independent derivations at 222/222.
-
-SC-509C-UNPROVED.tsv was keyed (case, consumer, agent_ref) while the accepted table
-is keyed (case, consumer, session, agent_ref, locus). 34 of its 184 rows therefore
-mapped ambiguously onto two same-attention sessions, and a no-carrier claim that
-cannot be resolved to one address is not a claim about anything. A key that is not a
-key, this time in the file that records what the derivation DECLINED to claim —
-which is where it does the most damage, because nobody audits a negative.
-
-Now emitted at the full ruled address: 184 rows, 184 DISTINCT addresses, each
-carrying its session and its exact locus.
-
-Re-evaluated per resulting row rather than assumed to survive the split, and the
-asymmetry c3recon measured is now visible instead of collapsed: at tg2b the excluded
-agents are fake:bravo and fake:charlie with no declared state, while fake:lead at
-tg2b carries waiting-user and is an OBLIGATION, not an exclusion; at tg2wu fake:lead
-declares `working`, which is not one of the row's agent-owned active contributions,
-so it stays excluded. Two halves, two different answers, previously one unaddressed
-row. Checked across all 184: ZERO excluded addresses have carrier evidence at their
-own address, so every no-carrier claim survives the split.
-
-The header now states what the file does and does not assert — no carrier was FOUND
-by the three searches this generator performs, which is not a claim of impossibility.
-- Reconcile phase-4 contract obligations
-- Rebind the open-choice recon to C3 343fcd80
-- Freshness follows direct provenance, and the taxonomy comes from its rows
-- Rebind C8 recon to gate ea794124
-- Phase-4 first run against the frozen chain
-- Phase-4 OBSERVED obligation scores and per-criterion verdicts
-- Phase-4 C3 isolated red-proof transcript
-- **corpus**: SC-017o re-derived on entitlement — the value is unscorable, not false
-- Publish phase-4 fixture fingerprints
-- **corpus**: The unscorable value is an obligation, not a footnote
-- Prove published symlink grammar
-- **corpus**: A new closed-set member is open until something binds who may use it
-- **corpus**: Drop the last reference to a file that no longer exists
-- **corpus**: The address is identity, the shape is whole — both declared in bytes
-- **corpus**: Proving the owed rows exist never proved nothing else does
-- Reject ignored published fixture dirt
-- Anchor published fingerprint derivation
-- **corpus**: Owed-zero is an obligation to check, not a row to skip
-- **corpus**: An allowlist that ignores what is off the list is not a closed set
-- Rerun phase-4 contract reconciliation
-- Rebind C8 to C3 6bf2e7f8 and gate f31ece2a, with colead's ruled disposition
-- Make the byte-exact claim true rather than the claim weaker
-- **corpus**: Selector first, then fields — members 1 and 2
-- **corpus**: A clock is a recorded fact, not a prefix on a name
-- **corpus**: The instrument was the defect under test
-- Ordering is a dimension, and a cancel is not a reply with one end missing
-- Classify SC-518a, and re-derive what the contract move invalidated
-- **crit-assign**: SC-518a enters lead-authored assignment, and the pin follows its source
-- A gating test ratifies by enforcement, whatever its label says
-- Re-pin both registries to the tightened contract
-- SC-518a owns two ordering gaps, and the heading said three
-- **crit-assign**: One checked pin, the ratified gap set, and a tag that tells the truth
-- Re-pin both registries to 3ba5fdf1
-- **crit-assign**: The pin follows its source, and history is not restated
-- **corpus**: Selection changes what is shown, never what is true
-- **corpus**: An exact shape is not an exact population
-- **corpus**: The reason grammar, over every agent rather than the stopped ones
-- **017g**: A quiet entry renders its triad; omission belongs to loss alone
-- **ratification**: A set-sized total is not evidence of that many headings
-- One authority per family, and the guard becomes a seed
-- **509**: Presence is part of the schema, ruled once as a class
-- **corpus**: A carrier is bound to its session, not to a name
-- **509b**: Degraded is aggregate visibility; exactness is a claim about the maximum
-- Clarify needs_attention lower-bound semantics
-- Make degraded attention lower bound explicit
-- The census names its selector, and partial evidence is non-monotone
-- **405g**: Branch keeps its predecessor projection, named and dated for retirement
-- **corpus**: The qualifier names the session it qualifies
-- **corpus**: A control that lives in a message is a control nobody runs
-- **405g**: Branch VALUE is unscored under OC-P4-BRANCH-VALUE while the exception stands
-- **405g**: Scope the branch-value exemption to the digest comparison, and keep the count out of the row
-- **509b**: Scope the attention-uncertainty claim to the attention INPUTS
-- **017g**: Repair the third blanket copy, and guard the count instead of the search
-- **017e,405f,017h**: Relative spans are scored against one witness epoch, and the state-cell census lands as evidence
-- **017l,017r**: Absence belongs to SC-017m, and an unattempted observation changes the value not the membership
-- **017l**: Absence is owned at BOTH grains — one omission, two rows
-- **405g**: The branch-value exemption reaches the human surface, registered
-- **017r**: A display name was never an identity, so the collision owes a count
-- **509**: The two-field session id is ruled, and C8 anchors on phrase content
-- **017s**: The four-output tuple is regenerated, and panes join by exact slot
-- **017s**: Seed 78 owes a bound six-field pane, so the branch deletion is red
-- **orchestrator**: Steward becomes orchestrator, the canonical product term
+- **send**: Bracketed paste for Claude panes — no more head-truncated deliveries
+- **send**: Publish the body before the paste — one immutable file per delivery
+- **attach**: Honour the named tmux server on attach — exec bypassed the shim
 - **rust**: Full-history checkout — the criterion-1 control derives its baseline from git
 - **mutants**: Copy the VCS directory — the criterion-1 control needs git inside the copy
+- **coexistence**: Record the canary outcomes and the CI state as they are
 - **rust**: The mutation lane is bounded to the pushed range — and its gap is named
+- **tmux**: A separator tmux 3.4 does not escape — a present pane is never "hard dead"
+- **canary**: Musl DNS/NSS — outcome 4 passes on the Linux CI leg
+- **send**: An OSC sequence is not text — idle Claude read as busy
+- **send**: Notice mode for long bodies — the file is the delivery, the pane gets one line
+- **telegram**: An autostart refusal leaves a trace — closed category, two surfaces
+- **telegram**: The reference knows about the autostart-refusal record
+- **release**: SemVer-compatible CalVer — the tag ledger owns the sequence
+- **dist**: Prebuilt ae-next bundles and the one-line remote installer
+- **coexistence**: Eight pre-flip hardenings — the advertised install works, the version pair is gated everywhere
+- **version**: 2026.8.2 — bumped ahead of the entry flip, deliberately untagged
+- **p5**: Forward-only entry flip — public Rust entry, immutable bundle, ae-next retired
 
-### Performance
-
-- **ae**: Ae list 7-13x faster — fork-storm removed from event parsing, one-pass rollup, exact early-exit scans
-
-### Refactoring
-
-- **watchdog**: Rename the loop watchdog to watchdog
-- **helpers**: Generate the state helper from template functions (pilot)
-- **helpers**: Generate _lib from the top-level template library
-- **watchdog**: Generate the watchdog from the template library
-- **helpers**: Migrate the remaining 16 helpers to declare-f emission
-- **ae**: Option B — one invariant, no deletion without identity or acknowledgement
-- **511b**: The identity comparison moves onto the type whose doc already ruled it
-
-### Testing
-
-- **telegram**: Fix stale auto-start-guard count (2 → 3)
-- AI-driven e2e harness (scripted driver, real agents as subjects)
-- **integration**: Tripwire — fail the run if the real user config changes
-- **unit**: Replace O(n^2) substring-strip ordering assert with grep line numbers
-- **aewatch**: Phase-gate hardening + fast-subset commit lane
-- **aewatch**: Pin watchdog env config (_env_int / from_env)
-- **ae**: Occurrence #3 — chunked multi-token + leaked-tail staging
-- **ae**: Specimen-5 — fixture must be the WHOLE-pane region, not 0..cursor_y
-- **ae**: REAL human-typed specimens from a disposable v2.1.209 rig
-- **ae**: Harden lifecycle end/doctor integration probes against contention
-- **ae**: Wait for meta + poll end in the named-server/worktree end probes
-- **ae**: Make the doctor-orphan probe deterministic under load
-- **integration**: Hermetic socket-dir ownership, unfilterable full mode, scoped name filter
-- **parity**: Close the capability boundary by mechanism, not by a fifth list
-- **list**: Run the pre-registered phase-1 gate, and let criterion 13 change the design
-- **list**: Phase 1 passes its pre-registered gate, 24 of 24
-- **list**: Plant the event axis, because deleting a source that was never there proves nothing
-- **list**: Phase-3 rework — a capability boundary instead of a disconnected differential
-- **list**: Give criterion 1 its opposed control
-- **list**: A comment names what the test injects, not what the build lacks
-- **list**: Retarget phase-3 criterion 3 onto the live gate
-- **list**: Stop pinning open JSON field order and incomplete-human rc
-- **522**: One clock stamps the document and decides the attention in it
-- **522**: Scope the guarantee to what the document can contradict
-- **518**: The held-out stderr rows assert the successor side rather than skipping it
 ## [v0.2.1] - 2026-03-06
-
-### Bug Fixes
-
+- Add opencode resume support
 - Fix integration assertions for agent identity
 
-### Other
-
-- Add opencode resume support
 ## [v0.2.0] - 2026-03-02
-
-### Bug Fixes
-
 - Fix release: make gh release creation best-effort
-
-Git tag push via SSH works regardless of gh auth. The GitHub release
-creation is now optional — logs a warning instead of failing the pipeline.
+- Improve agent prompt: add concurrent collaboration awareness
 - Fix agent launch: add delay between paste and C-m submit
-
-The default agent launch path (Claude Code) used paste-buffer
-followed immediately by send-keys C-m. On large commands (long
---append-system-prompt payloads), the paste hasn't finished
-rendering before C-m fires, causing the agent to never start.
-Add 0.3s delay matching the send helper pattern.
+- Atomic tmux paste-and-submit, eliminate race condition
+- Add heartbeat: background daemon detects stale/dead agents
 - Fix heartbeat: select-pane before paste for codex TUI compat
-
-Codex TUI requires pane focus to process Enter after paste-buffer.
-Add select-pane with focus restore to hb_send, matching the send
-helper pattern.
 - Fix send reliability across codex and claude
 
-### Other
-
-- Improve agent prompt: add concurrent collaboration awareness
-
-Agents now know other agents are editing files simultaneously.
-Unexpected modifications trigger verification (send) before
-reverting, not blind acceptance. Clarify peek is for inspecting
-work state, not polling for replies.
-- Add heartbeat: background daemon detects stale/dead agents
-
-Polls panes every 60s, checks alive via pane_current_command and
-output freshness via capture-pane checksum. Dead agents trigger
-tmux alerts; stale workers get nudged (max 2), then human alert.
-Background-safe send (no focus switch), self-terminates when
-session disappears. Configurable via AE_HEARTBEAT_INTERVAL_SEC
-and AE_HEARTBEAT_STALE_MIN env vars.
-
-### Refactoring
-
-- Atomic tmux paste-and-submit, eliminate race condition
 ## [v0.1.1] - 2026-02-25
-
-### Bug Fixes
-
-- Fix agent send-keys instructions in workspace manifest
-
-Use Enter instead of C-m and add explicit wrong/right examples
-so agents keep the Enter key outside the quoted message string.
-- Fix send helper: use literal text (-l) and C-m for reliable submit
-
-The previous helper sent text with `Enter` key name which is unreliable
-in TUI apps. Now uses `-l` flag for literal text injection and a separate
-`C-m` (carriage return) for submit. Also fixes argument handling to
-capture full multi-word messages and updates manifest to direct agents
-to always use the helper instead of raw tmux send-keys.
-- Fix codex resume: don't pass prompt as argument
-
-codex resume --last doesn't accept inline prompts — the prompt was being
-interpreted as a session ID. Now launches codex resume first, then sends
-the prompt as user input after a delay. Guards against resume failure by
-checking codex is still running before sending.
-- Fix review findings: quoting bug, stale docs, test robustness
-
-- send_agent_cmd: use buffer-paste with escaped single quotes to
-  prevent prompt quoting breakage (Codex review IMPORTANT #1)
-- AGENTS.md: fix stale "worktree default" → local is the default
-- README: local sessions now survive reboots, clarify agent resume
-- test: remove head-200 brittleness, match "func() {" to skip
-  heredoc copies, add sanitize_branch_name and default_session_name
-  tests (43 total)
-- Move regenerate_manifest above dispatcher so spawn works
-- Fix claude nesting detection: use env -u instead of bash-only unset
-
-unset is bash syntax — breaks in fish shell tmux panes. env -u is
-POSIX and shell-independent.
-- Fix send/spawn Enter delivery: use C-m, increase paste delays
-
-Enter key name can be remapped by tmux; C-m is the raw carriage
-return that always works. Increased pre-submit delay to 0.3s for
-TUI ingestion, added post-submit delay in send to keep focus while
-target processes input.
-- Fix spawn: wait for new pane shell init before sending launch command
-
-split-window returns immediately but the shell in the new pane may
-not be ready to accept input yet, causing paste-buffer to miss the
-target pane.
-- Fix send: serialize concurrent sends with flock
-
-Concurrent sends to the same target pane could interleave paste and
-C-m steps, causing messages to appear pasted but not submitted.
-Add per-target flock serialization keyed by pane ID. Replace EXIT
-trap with explicit focus restore to avoid racing with C-m delivery.
-- Fix helpers: honor AE_TMUX_SERVER, filter non-agent panes
-
-All session helpers (send, peek, agents, focus) now read tmux_server
-from meta and wrap tmux with -L flag when set. Spawn exports
-AE_TMUX_SERVER for the child ae process. Agents helper uses pipe
-delimiter to correctly skip panes without @ae_agent set.
-- Fix retire: validate pane-id belongs to session, prevent cross-session kills
-
-Pane-ID targets now resolve through session pane list instead of
-direct tmux access, preventing accidental kills of panes from other
-sessions. Also use grep -Fv for fixed-string meta removal and update
-manifest docs to show pane-id support.
-- Fix integration tests: use ae end -f to skip confirmation prompt
-
-All ae end calls in integration tests now pass -f flag to bypass
-the interactive confirmation prompt that was causing 4 test failures.
-22/22 integration tests passing.
-- Fix resume: restore config, mode, and CWD from session meta
-
-Claude Code's --resume is CWD-scoped — sessions are stored under
-~/.claude/projects/<encoded-CWD>/. When ae resumed from a different
-directory, both --resume UUID and --continue failed silently, starting
-agents fresh instead of resuming conversations.
-
-- Restore CONFIG_FILE and AE_LOCAL_CONFIG from meta before agent
-  alias resolution (prevents "agent not defined" on cross-dir resume)
-- Restore COPY_MODE from meta when no CLI flag override (prevents
-  mode drift between original start and resume)
-- Restore WORK_DIR from meta in local mode so tmux panes get the
-  correct CWD (the primary fix for Claude Code session lookup)
-- Restore ORIGIN_DIR from meta in all modes (worktree cleanup and
-  env vars depend on it)
-- Fix env -u CLAUDECODE prefix bug in resume fallback chain: was
-  using $cmd instead of $launch_cmd, losing the nesting guard
-- Fix lint and format: shfmt auto-format, shellcheck clean, add Developer section to README
-
-Apply shfmt canonical formatting (redirect spacing, arithmetic, case alignment).
-Fix all shellcheck warnings: suppress false positives (SC2015, SC2001, SC2034),
-remove dead code (unused kind/MAIN_TOOL_KIND vars), fix real issues (SC2059 printf
-format, SC2004 array index). Add Developer section to README with dev tooling info.
-
-### Documentation
-
-- Add session helpers to README and AGENTS.md
-
-### Other
-
 - Initial commit
 - Initial release
-
-tmux-based multi-agent workspace launcher with shared awareness.
-Agents discover each other via .ae/workspace.md manifest and
-communicate through tmux send-keys/capture-pane.
 - Add project docs and improve installer
-
-- AGENTS.md with structure, design decisions, and rules
-- CLAUDE.md referencing AGENTS.md
-- install script handles ./install, curl|bash, and missing parent dirs
-- README install section updated with curl one-liner
+- Fix agent send-keys instructions in workspace manifest
 - Add badges to README
 - Add named sessions, session tagging, and ae list improvements
-
-- ae <name> creates/reattaches named sessions (not just auto-generated)
-- Tag sessions with AE_SESSION/AE_DIR env vars for reliable listing
-- ae list shows directory column
-- ae kill all uses env var tags instead of prefix matching
-- Rewrite AGENTS.md to emphasize simplicity philosophy
 - Guard against hijacking non-ae tmux sessions
-
-- ae <name> refuses to attach if existing tmux session lacks AE_SESSION tag
-- add .gitignore for .ae/ and .local/
 - Revise README title and description
-
-Updated project title and description in README.md.
 - Isolate workspace manifests per session
-
-Write to .ae/<session>/workspace.md instead of .ae/workspace.md so
-multiple sessions from the same directory don't overwrite each other.
-Single-quote the initial prompt to prevent shell expansion of session names.
 - Add hardlink worktree isolation for all sessions
-
-Every ae session now works on a hardlink copy at ~/.ae/worktrees/<session>/.
-Agents work on the copy, push to remote, merge from there.
-
-- Worktrees stored in ~/.ae/worktrees/ (invisible to user)
-- Config validated before creating worktree (no orphaned dirs)
-- Stale worktrees auto-cleaned on session start
-- ae kill removes worktree on cleanup
-- ae list shows origin directory
 - Set tmux window name to session name
 - Add send helper script to fix agents not pressing Enter
 - Use absolute path for send helper in manifest
 - Add session resume across reboots
-
-Worktrees persist on disk at ~/.ae/worktrees/. Running ae <name> again
-after reboot detects the existing worktree and resumes agents with their
-previous conversation context (claude --continue, codex resume --last).
-
-- ae list shows running and stopped (resumable) sessions
-- ae kill handles stopped sessions (worktree-only cleanup)
-- ae kill all cleans both running sessions and stopped worktrees
-- Sanitize kill target to prevent path traversal
+- Fix send helper: use literal text (-l) and C-m for reliable submit
+- Fix codex resume: don't pass prompt as argument
 - Replace hardlink copy with git worktree default and full copy opt-in
-
-cp -al shared inodes so agent edits could corrupt originals. Replace
-with git worktree (detached HEAD) as default and cp -a as opt-in via
---full flag. Add session metadata for mode-aware cleanup, MODE column
-in ae list, copy mode validation, and improved send helper that
-focuses pane before paste+Enter for reliable TUI input.
 - Add local mode and rename flags to --worktree/--copy/--local
-
-New --local flag runs agents directly in the current directory
-without any copy or worktree. Rename --git to --worktree and
---full to --copy for consistency across three modes. Store
-AE_MODE in tmux env so ae list/kill work for local sessions
-which have no on-disk worktree directory.
 - Single-agent default with on-demand spawn helper
-
-Start with just the main agent, spawn more on demand via
-.ae/<session>/spawn <alias> [prompt]. Workers config still
-works for fixed layouts but is no longer in the default config.
-
-- rename default aliases to full names (claude/codex/opencode)
-- add spawn helper with safe meta parsing and buffer-paste prompt
-- regenerate workspace.md from live tmux panes (ae: prefix filter)
-- extend meta file with session/work_dir/layout/config/main_pane
-- always refresh dynamic meta fields on resume (pane IDs change)
-- include spawn instructions in workspace.md and initial prompt
 - Replace kill with end (commit+push+cleanup) and discard
-
-ae end: auto-commits dirty state, pushes to ae/<session> branch,
-then removes the tmux session and worktree/copy. Preserves session
-on commit or push failure. Local mode just kills tmux.
-
-ae discard: destroys session without saving (old kill behavior).
-ae kill: deprecated alias to discard with warning.
 - Move session state to ~/.ae/sessions/, keep working dirs clean
-
-Session metadata, helpers (send/spawn), and workspace.md now live
-in ~/.ae/sessions/<session>/ instead of <workdir>/.ae/<session>/.
-Working directories stay clean — no .ae/ pollution, no gitignore
-needed. Agents use fully-expanded absolute paths from the manifest.
-
-Backward-compat: read_session_meta falls back to old worktree-nested
-path for existing sessions. cleanup_session removes legacy paths.
+- Extract subcommands into named functions
 - Switch default mode from git worktree to local
 - Session-scoped agent resume across reboots
-
-Thread a unique UUID per agent pane through the full session lifecycle:
-generate on first start, persist in meta, inject into agent CLI flags,
-and restore on resume. Claude Code uses --session-id/--resume, Codex
-gets post-launch capture with flock-serialized meta writes, unknown
-agents fall back to fresh start.
-
-Also: local mode now detects existing sessions for resume, flag
-stripping uses whole-token matching, and gen_uuid has no python
-fallback (bash/tmux/git only per project rules).
 - Add test suite for pure functions
-
-34 assertions covering strip_session_flags, resume_cmd_from_cmd,
-inject_session_id, tool_kind_from_cmd, tool_name_from_cmd, and
-gen_uuid. Pure bash, no test framework dependency. Extracts functions
-from ae via awk and tests them in isolation.
+- Fix review findings: quoting bug, stale docs, test robustness
 - Harden ae: health check, spawn self-invoke, spawn resume, integration tests
-
-1. ae list shows agent health (alive/total, ! for crashed agents)
-2. spawn refactored from declare-f heredoc to ae _spawn self-invocation,
-   eliminating function inlining drift risk
-3. spawned agents persist in meta and survive reboot with session-scoped
-   IDs, flock-serialized writes, and codex capture support
-4. 18 integration tests using isolated tmux server (AE_TMUX_SERVER),
-   covering lifecycle, resume, health check, spawn persistence, and
-   end-session workflows
-
-Also moved resolve_agent_session_id and capture_codex_session_id to
-top-level function block for availability across all code paths.
 - Sharpen docs: emphasize simplicity, fix stale spawn info
-
-AGENTS.md: add "What ae is NOT" section, line count cap (~1500),
-strengthen philosophy ("simplicity is the feature"). README: rewrite
-opening to lead with the value prop (one command, everything resumes),
-fix stale note about spawned agents being ephemeral (they now persist).
 - Add status/end-without-name/project-config, system prompt injection
-
-- ae status [name]: show recent agent output without attaching
-- ae end/discard/status auto-detect current session from $TMUX
-- per-project config: .ae/config in project dir shadows global
-- inject ae workspace context into system prompt (Claude Code
-  via --append-system-prompt, Codex via -c developer_instructions)
-  so agents retain ae awareness through context compaction
-- slim initial prompt (system prompt carries all instructions now)
-- move tests to tests/unit and tests/integration
 - Add ae stop: pause session for later resume
-
-Kills tmux session but preserves all meta — next ae <name>
-resumes with all agents (main, workers, spawned) restored.
 - Drop initial prompt on fresh start, system prompt is sufficient
-
-Agents with system prompt injection (claude, codex) start
-interactive — no busywork reading workspace.md on first turn.
-Resume still sends a short nudge about changed pane IDs.
+- Move regenerate_manifest above dispatcher so spawn works
 - Drop resume initial prompt too, system prompt is sufficient
 - Name agent panes ae:<alias>:<name> for clearer identification
-
-Main pane: ae:claude:main, workers: ae:codex:worker-0, spawned:
-ae:claude:reviewer (user-named) or ae:claude:spawned-0 (auto).
-Spawn syntax: spawn <alias>[:<name>] [prompt]. Manifest, meta,
-and resume all parse the new format with backward compat for old
-sessions. Spawn index scan + auto-naming moved inside flock to
-prevent races.
 - Agents address each other by name instead of raw pane IDs
-
-Send helper resolves agent names (claude:main, codex:worker-0) to
-pane IDs by scanning titles. System prompt and workspace.md tell
-agents to use names. Pane border strips ae: prefix for cleaner
-tmux display. ae status shows clean names too.
 - Config-driven agent names, @ae_agent pane option, encourage creative naming
-
-Config supports alias:name (e.g. main=claude:lead, workers=codex:reviewer).
-Default name is the alias itself. Duplicate names auto-deduplicated.
-
-Agent identity stored in tmux pane option @ae_agent — immune to title
-overrides by tools like Claude Code. All scanning (manifest, health,
-status, send) uses @ae_agent. Border display uses it too.
-
-System prompt and workspace.md encourage descriptive names when spawning
-(codex:reviewer, claude:pair-programmer). Auto-fallback: helper-N.
-Role labels: lead/agent instead of main/worker/spawned.
 - Rewrite README: streamlined, focused on real workflow
-
-Drop verbose sections (modes table, session management list, workspace.md
-internals). Lead with why-ae bullet points, show 4 real use cases, keep
-config and commands compact. Reflects current state: named agents,
-system prompt injection, reboot persistence, clean repos.
 - Natural language for collaboration, document copy modes
 - Explain how inter-agent communication works under the hood
 - Configurable [prompt] instructions injected into agent system prompts
 - Opencode support: inject workspace context as emphasized initial message
 - Gemini cli support: context injection via -i, resume via --resume latest
-
-Gemini gets workspace context through -i (prompt-interactive) flag.
-Resume uses --resume latest (index-based, no UUID scoping).
-Gemini-specific strip_gemini_prompt_flags() avoids breaking -i on
-non-gemini commands.
 - Ae list: show TARGET column for copy/worktree working directories
 - Unified agent meta format, per-agent ae list, resilient resume, codex self-registration
-
-- unified meta: agent.SLOT=alias:name:session_id replaces separate spawned.N + agent_session.N entries
-- ae list: per-agent rows with truncated session IDs and idle markers, columnar layout with indented target
-- resilient resume: claude --resume UUID || --continue fallback, codex resume || fresh start
-- codex self-registration: register-sid helper script with slot-scoped sid files (prevents race conditions)
-- preserve config flags (e.g. --yolo) through codex resume path
-- colon validation: reject agent names containing ':' in main, worker, and spawn paths
-- collapse discard/kill into end (ae end|rm is the only exit command)
-- AGENTS.md: agent tool capabilities table documenting session/resume/prompt differences
-- fix: shell-quote injection in codex developer_instructions when meta_dir contains single quotes
-- fix: send_agent_cmd defined before dispatcher so _cmd_spawn can call it
 - Ae <name> use <alias> CLI override, drop discard command, update docs
-
-- ae <name> use <alias>: override main agent from CLI without editing config
-- remove discard/kill commands — ae end|rm is the only exit path
-- update README: document use syntax, replace discard references, fix ae list format
-- integration test for use override (pane title + meta assertion)
 - Config parser: allow hyphens, fix resume/codex/gemini, ae end safeguard
-
-- parse_config: allow hyphens in section names and keys (gemini-flash etc)
-- resume: read agent.main from session meta to preserve 'use' override
-- codex: send initial "Go" prompt to trigger developer_instructions
-- gemini: add "wait for task" instruction to -i context injection
-- ae end: interactive y/N confirmation (single keypress), -f to bypass
 - Reply-back communication pattern, fix claude nesting detection
-
-- build_ae_context: teach agents to reply via send instead of polling capture-pane
-- workspace.md: document reply-back pattern as primary communication flow
-- spawn: resolve caller agent name, include reply-back instruction in spawn prompt
-- send_agent_cmd: unset CLAUDECODE env var so claude launches from inside ae sessions
+- Fix claude nesting detection: use env -u instead of bash-only unset
 - Resolve bare agent names (e.g. send "lead" instead of "claude:lead")
+- Fix send/spawn Enter delivery: use C-m, increase paste delays
+- Fix spawn: wait for new pane shell init before sending launch command
 - Add peek helper, fix local-outside-function bug in send
-
-Add peek session helper: thin wrapper around tmux capture-pane with
-agent name resolution. Supports bare names, numeric line count with
-clamping (default 80, max 2000). Documented in workspace manifest.
-
-Fix send helper: remove `local` keyword used outside a function in
-the name resolution loop (caused errors in bash strict mode).
 - Add agents and focus session helpers
-
-agents: list all agents in session with pane ID and process name.
-focus: switch to another agent's pane by name, with same name
-resolution as send/peek (exact alias:name + bare name fallback).
-Both documented in workspace manifest.
+- Fix send: serialize concurrent sends with flock
+- Fix helpers: honor AE_TMUX_SERVER, filter non-agent panes
 - Add retire helper: clean removal of spawned agents
-
-retire kills the pane, removes the agent.spawned entry from meta
-(flock-protected), rebalances layout, and regenerates the manifest.
-Guards against retiring main or worker agents. Implemented as
-ae _retire internal command with thin helper script, matching the
-spawn pattern.
+- Fix retire: validate pane-id belongs to session, prevent cross-session kills
+- Add session helpers to README and AGENTS.md
+- Fix integration tests: use ae end -f to skip confirmation prompt
 - Add interrupt helper: cancel agent generation with optional redirect
-
-Single Escape to interrupt (safe across all TUIs — double-Escape
-triggers edit/rewind on Claude, Codex, Gemini). Shares per-target
-flock with send to prevent interleaving. Optional message delivered
-inline after 0.5s delay. Documented in manifest, README, AGENTS.md.
-- Add ask helper, expand agent system prompt with all helpers
-
-The injected system prompt (build_ae_context) only mentioned send and
-spawn. Agents didn't know about peek, agents, focus, interrupt, or
-retire — limiting their ability to collaborate effectively.
-
-- Expand build_ae_context to list all 8 session helpers with brief
-  descriptions
-- Add `ask` helper: thin wrapper around send that auto-detects
-  caller identity via @ae_agent and embeds reply-to metadata in the
-  message, making request-response between agents reliable
-- Fall back to plain send if caller identity can't be detected
-- Use alias:name (not bare name) in reply-to for unambiguous routing
-- Update OpenCode initial prompt to reference helpers generically
-- Document ask in AGENTS.md helper table
-- Add justfile pipeline, version support, ask helper, expanded agent prompt
-
-- Add justfile with check/lint/test/release pipeline (SemVer, git-cliff
-  changelog, shellcheck, shfmt, GitHub releases via gh)
-- Add AE_VERSION constant and ae version/--version command
-- Add cliff.toml for git-cliff with SemVer tag pattern
-- Add ask helper: structured send with reply-to metadata so agents
-  reliably respond back to the asking agent
-- Expand build_ae_context to list all 8 session helpers (was only
-  send + spawn, agents didn't know about peek/agents/focus/interrupt/retire)
-- Add version badge to README, document ask helper
-- Update AGENTS.md structure section
-
-### Refactoring
-
-- Extract subcommands into named functions
 - Refactor helpers into shared _lib, add cross-session communication
-
-Extract duplicated resolver/lock logic from all helpers into _lib shared
-library. Add @session:agent syntax for cross-session send/peek/focus/interrupt.
-Add agents --all for cross-session discovery. Lock files now use shared
-~/.ae/sessions/.locks/ dir for correct cross-session serialization.
-
-Net -42 lines despite new features.
+- Fix resume: restore config, mode, and CWD from session meta
+- Add ask helper, expand agent system prompt with all helpers
+- Add justfile pipeline, version support, ask helper, expanded agent prompt
+- Fix lint and format: shfmt auto-format, shellcheck clean, add Developer section to README
