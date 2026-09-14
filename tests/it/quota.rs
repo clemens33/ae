@@ -704,11 +704,17 @@ fn two_refusals_for_one_label_stay_two_rows_and_the_declaration_is_counted_once(
         text.contains("[clients] cc: HOME"),
         "the client refusal is not lost: {text}"
     );
+    // Neither scope proved a source, so the row that OWNS the declaration
+    // proved nothing either: the count is spent nowhere and says so.
     assert_eq!(
-        text.matches("manual_resets is counted on this scope only")
-            .count(),
+        text.matches("no scope claims the count").count(),
         1,
-        "one declaration, counted once and said out loud: {text}"
+        "an unattributable declaration grants headroom to nobody: {text}"
+    );
+    assert_eq!(
+        text.matches(" x1").count(),
+        0,
+        "and no row derives EFFECTIVE from it: {text}"
     );
 }
 
@@ -1735,4 +1741,125 @@ fn the_quota_surface_cannot_pair_a_level_with_an_observation_it_did_not_judge() 
             "{header} still carries its own level: {block}"
         );
     }
+}
+
+/// The BLOCKER the shipped branch carried: two labels of the SAME tool that
+/// each resolved NO source must not be joined. `source_key: None` records a
+/// failure to resolve, not an absence of identity, so matching two of them
+/// joins accounts on the absence of evidence — and then reconciles two
+/// declarations as though one account had made them.
+#[test]
+fn two_same_tool_labels_that_proved_no_source_are_not_one_account() {
+    let root = rig("sourceless-same-tool");
+    std::fs::write(
+        root.join("config"),
+        concat!(
+            "[clients]\n",
+            "one = claude manual_resets=1\n",
+            "two = claude manual_resets=0\n",
+            "[profiles]\n",
+            "p1 = one\n",
+            "p2 = two\n",
+        ),
+    )
+    .expect("sourceless config");
+    // `home: None` leaves both labels without a resolvable Claude cache, so
+    // both scopes carry `source_key: None` and identical hints.
+    let text = run_quota_with_home(&root, None);
+    let _ = std::fs::remove_dir_all(&root);
+    assert_eq!(
+        text.matches("claude · one, two").count(),
+        0,
+        "no source proved means no correlation: {text}"
+    );
+    assert!(
+        text.contains("claude · one") && text.contains("claude · two"),
+        "each label keeps its own row: {text}"
+    );
+    assert_eq!(
+        text.matches("manual_resets declared as 0 and 1 for one scope")
+            .count(),
+        0,
+        "two declarations are never reconciled as one account: {text}"
+    );
+}
+
+/// The display consequence of the rule above, pinned rather than left to
+/// surprise someone: an unsupported tool has NO quota source by construction,
+/// so its labels can never prove one and each profile is its own row. One
+/// row per profile is what ae can honestly say; grouping them again would be
+/// a DISPLAY concept distinct from account identity, and that is not this.
+#[test]
+fn unsupported_tool_profiles_render_one_row_each() {
+    let root = rig("unsupported-rows");
+    std::fs::write(
+        root.join("config"),
+        concat!(
+            "[profiles]\n",
+            "grok46 = grok --model grok-4.6\n",
+            "grokbuild = grok --build\n",
+            "grok46-review = grok --review\n",
+        ),
+    )
+    .expect("unsupported config");
+    let text = run_quota(&root);
+    let _ = std::fs::remove_dir_all(&root);
+    assert_eq!(
+        text.matches("grok · ~/.grok").count(),
+        3,
+        "three profiles, three rows: {text}"
+    );
+    assert_eq!(
+        text.matches("grok46 grokbuild grok46-review").count(),
+        0,
+        "they are no longer presented as one account: {text}"
+    );
+    for profile in ["grok46", "grokbuild", "grok46-review"] {
+        assert!(
+            text.lines()
+                .any(|line| line.starts_with(profile) && line.contains("grok · ~/.grok")),
+            "{profile} has its own row: {text}"
+        );
+    }
+}
+
+/// The declaration belongs to the `[clients]` ROW, so only that row's own
+/// discovery may spend it. A profile pinning a different HOME reaches a
+/// DIFFERENT account; letting it take the count because it was visited first
+/// would grant headroom to an account the operator never declared against.
+#[test]
+fn a_declaration_is_spent_by_the_client_rows_own_scope_not_the_first_one_seen() {
+    let root = rig("declaration-arbiter");
+    let other = root.join("other");
+    std::fs::create_dir_all(&other).expect("other operator home");
+    let cache = String::from_utf8_lossy(include_bytes!("../fixtures/quota/claude-cache.json"))
+        .replace("\"percent\": 66", "\"percent\": 40");
+    std::fs::write(other.join(".claude.json"), cache.as_bytes()).expect("other cache");
+    // No `config_home`, so HOME decides: one label, two real accounts.
+    std::fs::write(
+        root.join("config"),
+        format!(
+            "[clients]\ncc = claude manual_resets=1\n[profiles]\np = HOME={} cc\n",
+            other.display()
+        ),
+    )
+    .expect("arbiter config");
+    let text = run_quota(&root);
+    let _ = std::fs::remove_dir_all(&root);
+    // The two accounts read 66% (operator home) and 40% (the pinned HOME), so
+    // a misattributed count is visible in the number itself.
+    assert!(
+        text.contains("66%") && text.contains("40%"),
+        "both accounts are present and distinct: {text}"
+    );
+    assert_eq!(
+        text.matches("33% x1").count(),
+        1,
+        "the client row's own scope halves its own 66%: {text}"
+    );
+    assert_eq!(
+        text.matches("20% x1").count(),
+        0,
+        "the pinned-HOME account never receives a count declared elsewhere: {text}"
+    );
 }

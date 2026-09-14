@@ -1443,58 +1443,99 @@ fn configured_scopes(cfg: &crate::config::IdentityConfig, home: Option<&Path>) -
             Err(error) => scopes.push(unresolved_scope(cfg, profile, raw, Some(&error))),
         }
     }
+    // Where each `[clients]` row's OWN discovery landed. The declaration belongs
+    // to that row, so this is the only scope entitled to spend it.
+    let mut owned: Vec<(&str, usize)> = Vec::new();
     for (label, _) in &cfg.clients {
-        match cfg.client_command(label, home) {
+        let index = match cfg.client_command(label, home) {
             Ok(Some(resolved)) => absorb_resolved(&mut scopes, cfg, home, None, &resolved),
             // The label came from `cfg.clients`, so it always resolves to a row.
-            Ok(None) => {}
-            Err(error) => scopes.push(unresolved_client_scope(cfg, label, &error)),
-        }
+            Ok(None) => continue,
+            Err(error) => {
+                scopes.push(unresolved_client_scope(cfg, label, &error));
+                scopes.len() - 1
+            }
+        };
+        owned.push((label.as_str(), index));
     }
-    count_declarations(&mut scopes, cfg);
+    count_declarations(&mut scopes, cfg, &owned);
     scopes
 }
 
-/// Count each `[clients]` row's declaration on exactly ONE scope.
+/// Count each `[clients]` row's declaration on exactly ONE scope, or on none.
 ///
 /// A declaration belongs to a LABEL, and a label has exactly one by
-/// construction, so it may be applied once however many scopes that label
-/// reached. Applying it to each would claim the operator's one reset on every
-/// row and derive `EFFECTIVE` from it there — one declaration, counted twice.
-/// Doing it here rather than while scopes are built keeps the count a property
-/// of the declaration instead of a consequence of how the rows fell out.
+/// construction, so it may be spent once however many scopes that label
+/// reached. The scope entitled to it is the one the `[clients]` row's OWN
+/// discovery produced, and only when that discovery PROVED a source.
 ///
-/// Which row: the first that PROVED a vendor source, else the first at all. A
-/// scope that resolved nothing derives no `EFFECTIVE` to spend the count on,
-/// so putting it there would honour the rule and waste the declaration. When a
-/// label did reach more than one scope, the row says so, because an operator
-/// reading two rows for one label must not read the raw one as a contradiction.
-fn count_declarations(scopes: &mut [Scope], cfg: &crate::config::IdentityConfig) {
+/// Not merely a stable choice — an ACCOUNT choice. A declared reset INCREASES
+/// apparent headroom, so handing it to a scope the label reached by some other
+/// route grants headroom to an arbitrary account under ambiguous attribution.
+/// `[profiles] p = HOME=/other cc` is exactly that: visited first, it would
+/// take the count for an account the operator never declared it against. When
+/// the owning discovery proved nothing there is no entitled scope, so the
+/// count is spent NOWHERE and the ambiguity is reported. Every ambiguity
+/// resolves toward LESS apparent headroom.
+fn count_declarations(
+    scopes: &mut [Scope],
+    cfg: &crate::config::IdentityConfig,
+    owned: &[(&str, usize)],
+) {
     for (label, _) in &cfg.clients {
         let declaration = declaration_for(cfg, Some(label));
-        if declaration.manual_resets.is_none() && declaration.note.is_none() {
-            continue;
-        }
         let carrying: Vec<usize> = scopes
             .iter()
             .enumerate()
             .filter(|(_, scope)| scope.accounts.iter().any(|account| account == label))
             .map(|(index, _)| index)
             .collect();
-        let proven = carrying.iter().copied().find(|index| {
-            scopes
-                .get(*index)
-                .is_some_and(|scope| scope.source_key.is_some())
-        });
-        let Some(index) = proven.or_else(|| carrying.first().copied()) else {
+        let Some(first) = carrying.first().copied() else {
+            continue;
+        };
+        // Why a declared value was unusable describes the row the operator
+        // wrote, not an account, so it is said whatever the attribution is.
+        if let Some(note) = declaration.note.clone()
+            && let Some(scope) = scopes.get_mut(first)
+        {
+            push_note(scope, Some(note));
+        }
+        let Some(count) = declaration.manual_resets else {
+            continue;
+        };
+        let entitled = owned
+            .iter()
+            .find(|(name, _)| *name == label)
+            .map(|(_, index)| *index)
+            .filter(|index| {
+                scopes
+                    .get(*index)
+                    .is_some_and(|scope| scope.source_key.is_some())
+            });
+        let Some(index) = entitled else {
+            let Some(scope) = scopes.get_mut(first) else {
+                continue;
+            };
+            push_note(
+                scope,
+                Some(format!(
+                    "client '{label}' declares manual_resets={count}, but its own scope proved no source, so no scope claims the count and every one uses its raw windows"
+                )),
+            );
             continue;
         };
         let spread = carrying.len() > 1;
         let Some(scope) = scopes.get_mut(index) else {
             continue;
         };
-        merge_declaration(scope, &declaration);
-        if spread && declaration.manual_resets.is_some() {
+        merge_declaration(
+            scope,
+            &Declaration {
+                manual_resets: Some(count),
+                note: None,
+            },
+        );
+        if spread {
             push_note(
                 scope,
                 Some(format!(
@@ -1524,7 +1565,7 @@ fn absorb_resolved(
     home: Option<&Path>,
     owner: Option<&str>,
     resolved: &crate::config::ResolvedCommand,
-) {
+) -> usize {
     let tool = resolved_tool(resolved.as_str());
     let account = resolved.client_label();
     let client = account.and_then(|label| displayed_client(cfg, label, tool));
@@ -1536,7 +1577,7 @@ fn absorb_resolved(
             client,
             Some(format!("depends on pane variable {variable}")),
         ));
-        return;
+        return scopes.len() - 1;
     }
     let unknown_variable = std::cell::RefCell::new(None);
     let account_variable = tool.adapter().config_home_env;
@@ -1561,13 +1602,13 @@ fn absorb_resolved(
             client,
             Some(format!("depends on pane variable {variable}")),
         ));
-        return;
+        return scopes.len() - 1;
     }
     let paths = match resolved_scope_paths(tool, &resolution, home) {
         Ok(paths) => paths,
         Err(error) => {
             scopes.push(unknown_scope(owner, account, tool, client, Some(error)));
-            return;
+            return scopes.len() - 1;
         }
     };
     let ScopePaths {
@@ -1576,25 +1617,20 @@ fn absorb_resolved(
         source_key,
         hint,
     } = paths;
-    if let Some(scope) = scopes
-        .iter_mut()
-        .find(|scope| scope.tool == tool && scope.source_key == source_key && scope.hint == hint)
-    {
-        if let Some(profile) = owner {
-            scope.profiles.push(profile.to_owned());
-            scope.configured_profiles.push(profile.to_owned());
-        }
-        if let Some(client) = client
-            && !scope.clients.contains(&client)
-        {
-            scope.clients.push(client);
-        }
-        if let Some(account) = account
-            && !scope.accounts.contains(&account.to_owned())
-        {
-            scope.accounts.push(account.to_owned());
-        }
-    } else {
+    // A PROVEN source is the whole of the correlation. `source_key: None` means
+    // this discovery resolved none, not that it has no distinguishing identity,
+    // and matching two of those would join accounts on the absence of evidence
+    // — the same defect, through the branch that shipped it. An unsupported
+    // tool has no source by construction, so its labels are separate scopes
+    // too: that is what ae can honestly say about them.
+    let held = scopes.iter().position(|scope| {
+        scope.source_key.is_some()
+            && scope.tool == tool
+            && scope.source_key == source_key
+            && scope.hint == hint
+    });
+    let Some(index) = held.and_then(|index| scopes.get_mut(index).map(|scope| (index, scope)))
+    else {
         scopes.push(Scope {
             tool,
             home: config_home,
@@ -1608,7 +1644,24 @@ fn absorb_resolved(
             manual_resets: None,
             notes: Vec::new(),
         });
+        return scopes.len() - 1;
+    };
+    let (index, scope) = index;
+    if let Some(profile) = owner {
+        scope.profiles.push(profile.to_owned());
+        scope.configured_profiles.push(profile.to_owned());
     }
+    if let Some(client) = client
+        && !scope.clients.contains(&client)
+    {
+        scope.clients.push(client);
+    }
+    if let Some(account) = account
+        && !scope.accounts.iter().any(|held| held == account)
+    {
+        scope.accounts.push(account.to_owned());
+    }
+    index
 }
 
 /// The scope a profile gets when its own command never resolved to a client.

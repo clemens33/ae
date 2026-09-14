@@ -739,13 +739,19 @@ is read, and so is every `[clients]` row on its own: an account no profile names
 whose headroom decides whether to launch a seat against it, and its `manual_resets` declaration is
 still a declaration. A client one or more profiles already name is one scope, not two — its PROFILES
 cell lists them, while a scope no profile names spells that cell `-`. Scopes are joined on PROVEN
-identity only: a discovery that resolved no vendor source is never joined to another, because
-failing to resolve is not evidence of being the same account, and two refusals shown as one would
-assert what ae cannot observe. They render as two rows, each stating its own refusal. A
-`manual_resets` declaration belongs to its `[clients]` label and is counted on exactly one scope
-however many that label reached — the first that proved a source — so the rendering can never
-multiply one declared reset; when a label does reach more than one scope, that row says so. Both the
-public command and session helper use Codex conversation ids recorded across the local ae fleet:
+identity only — one canonical vendor source is one account, whatever labels reach it. A discovery
+that resolved NO source is never joined to another, because failing to resolve is not evidence of
+being the same account, and two refusals shown as one would assert what ae cannot observe; they
+render as separate rows, each stating its own refusal. A tool with no local quota source, such as
+`grok` or `agy`, can never prove one, so each of its profiles is its own row.
+
+A `manual_resets` declaration belongs to its `[clients]` label, so only that label's OWN scope may
+spend it, and only when that scope proved a source. A profile that reaches the same label under a
+different HOME is a different account and never receives a count declared elsewhere. When the
+label's own scope proved nothing, no scope claims the count and every one shows its raw windows,
+because a declared reset increases apparent headroom and every ambiguity resolves toward less of it.
+Either way the row says what happened. Both the public command and session helper use Codex
+conversation ids recorded across the local ae fleet:
 
 ```bash
 ae quota
