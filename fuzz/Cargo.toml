@@ -117,3 +117,17 @@ path = "fuzz_targets/picker_spend.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "sanitize_field"
+path = "fuzz_targets/sanitize_field.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "request_id_select"
+path = "fuzz_targets/request_id_select.rs"
+test = false
+doc = false
+bench = false
