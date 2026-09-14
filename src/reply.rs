@@ -391,7 +391,7 @@ pub fn run(
         // An event-only sink: record, paste nothing. No durable cut, so one
         // observation at write time is the proof consumed.
         let outcome = tracked::CorrelationOutcome::from_observation(tracked::observe_caller(dir));
-        fields = tracked::stamp_caller(&fields, &outcome, err);
+        fields = tracked::stamp_caller(&fields, &outcome);
         if let Err(why) = store::open(dir).append_event(&tracked::event_line(&fields)) {
             writeln!(err, "ae: reply {} not recorded: {why}", parsed.id)?;
             return Ok(EXIT_FAILED);
@@ -434,7 +434,7 @@ pub fn run(
     let (delivery, outcome) =
         tracked::caller_across_cut(dir, || tracked::deliver_request(&request, err));
     let delivery = delivery?;
-    fields = tracked::stamp_caller(&fields, &outcome, err);
+    fields = tracked::stamp_caller(&fields, &outcome);
     let cross_session = cross_session.then_some(tracked::CrossSession {
         caller: &me.session,
         target: &resolved.session,
@@ -480,9 +480,7 @@ mod tests {
             to_slot,
             from_session,
             to_session,
-            target_server: Vec::new(),
-            target_pane: Vec::new(),
-            target_session_uuid: Vec::new(),
+            recorded: None,
             summary: Vec::new(),
         }
     }

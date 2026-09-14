@@ -1970,7 +1970,7 @@ fn run_memo(
         }
         Ok(memo::Command::Add(add)) => add,
     };
-    match memo::run(dir, &calling_viewer(dir), &add, time::Timestamp::now(), err) {
+    match memo::run(dir, &calling_viewer(dir), &add, time::Timestamp::now()) {
         Ok(()) => Ok(0),
         Err(failure) => {
             writeln!(err, "{}", failure.message())?;

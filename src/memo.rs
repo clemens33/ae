@@ -167,14 +167,8 @@ impl Failure {
 /// # Errors
 ///
 /// [`Failure`] — see its variants.
-pub fn run(
-    dir: &Path,
-    viewer: &Viewer,
-    add: &Add,
-    now: Timestamp,
-    err: &mut impl io::Write,
-) -> Result<(), Failure> {
-    run_observed(dir, viewer, add, now, err, || tracked::observe_caller(dir))
+pub fn run(dir: &Path, viewer: &Viewer, add: &Add, now: Timestamp) -> Result<(), Failure> {
+    run_observed(dir, viewer, add, now, || tracked::observe_caller(dir))
 }
 
 /// The writer body. Tests inject the observation so a durable-cut pin does not
@@ -184,7 +178,6 @@ pub(crate) fn run_observed(
     viewer: &Viewer,
     add: &Add,
     now: Timestamp,
-    err: &mut impl io::Write,
     observe: impl FnMut() -> Result<tracked::IdentityTriple, tracked::CorrelationGap>,
 ) -> Result<(), Failure> {
     let author = if viewer.is_known() {
@@ -203,7 +196,6 @@ pub(crate) fn run_observed(
             now, author, "memo", "", &add.topic, "", "", "", "", &summary, "",
         ),
         &outcome,
-        err,
     );
     let event = tracked::event_line(&fields);
     store
@@ -596,16 +588,14 @@ short\tline\tonly\n\
             pane: "%3".to_owned(),
             session_uuid: "1b4e28ba-2fa1-11d2-883f-0016d3cc4321".to_owned(),
         };
-        let mut err = Vec::new();
         crate::tracked::clear_observe();
         crate::tracked::queue_observe(Ok(held.clone()));
         crate::tracked::queue_observe(Ok(held.clone()));
-        super::run(&dir, &viewer, &add, ts, &mut err).expect("memo writes");
+        super::run(&dir, &viewer, &add, ts).expect("memo writes");
         let events = std::fs::read_to_string(dir.join("events.jsonl")).expect("events");
         assert!(events.contains(r#""action":"memo""#));
         assert!(events.contains(r#""caller_server":"/tmp/ae""#));
         assert!(events.contains(r#""caller_pane":"%3""#));
-        assert!(err.is_empty(), "{}", String::from_utf8_lossy(&err));
         std::fs::write(dir.join("events.jsonl"), b"").unwrap();
         crate::tracked::clear_observe();
         crate::tracked::queue_observe(Ok(held.clone()));
@@ -613,17 +603,15 @@ short\tline\tonly\n\
             pane: "%4".to_owned(),
             ..held.clone()
         }));
-        let mut err = Vec::new();
-        super::run(&dir, &viewer, &add, ts, &mut err).expect("memo writes");
+        super::run(&dir, &viewer, &add, ts).expect("memo writes");
         let events = std::fs::read_to_string(dir.join("events.jsonl")).expect("events");
         assert!(
             !events.contains("caller_server"),
             "changed identity writes no correlated memo event"
         );
         assert!(
-            String::from_utf8_lossy(&err).contains("session identity changed"),
-            "{}",
-            String::from_utf8_lossy(&err)
+            events.contains(r#""identity_gap":"session identity changed""#),
+            "a changed identity is named on the durable record: {events}"
         );
         crate::tracked::clear_observe();
         let _ = std::fs::remove_dir_all(&dir);

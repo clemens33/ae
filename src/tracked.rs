@@ -857,11 +857,30 @@ pub fn observe_caller(dir: &Path) -> Result<IdentityTriple, CorrelationGap> {
     if let Some(hit) = take_observe() {
         return hit;
     }
-    // No pane and no server is no session context at all: there is nothing to
-    // correlate against, and an absent context is not a failed correlation.
-    let pane = crate::doors::calling_pane_id().ok_or(CorrelationGap::NoSession)?;
-    let server = crate::doors::caller_server().ok_or(CorrelationGap::NoSession)?;
+    let (pane, server) = classify_caller(
+        crate::doors::calling_pane_id(),
+        crate::doors::caller_server_reading(),
+    )?;
     observe_triple(&server, &pane, dir)
+}
+
+/// The caller's two markers decide whether a session context exists at all.
+///
+/// [`CorrelationGap::NoSession`] requires BOTH markers POSITIVELY absent: no
+/// `TMUX_PANE` and no `TMUX`. A partial pair (`TMUX` without `TMUX_PANE`, or
+/// the reverse) and a malformed `TMUX` that names no absolute socket are
+/// FAILED observations and keep their named leg — a failed observation is
+/// never treated as absence.
+fn classify_caller(
+    pane: Option<String>,
+    server: crate::doors::CallerServer,
+) -> Result<(String, ServerId), CorrelationGap> {
+    use crate::doors::CallerServer as Reading;
+    match (pane, server) {
+        (None, Reading::Absent) => Err(CorrelationGap::NoSession),
+        (Some(pane), Reading::Resolved(server)) => Ok((pane, server)),
+        _ => Err(CorrelationGap::Unreadable),
+    }
 }
 
 #[cfg(test)]
@@ -1093,42 +1112,33 @@ impl<'a> EventFields<'a> {
     }
 }
 
-/// Report a failed or changed proof on the writer boundary, then stamp target.
+/// Stamp target incarnation facts from the outcome.
+///
+/// RECORD, DO NOT BROADCAST: this boundary has no error stream at all — a
+/// failed or changed proof is named on the durable record (`identity_gap`),
+/// and nothing about identity is ever written to stderr.
 pub(crate) fn stamp_target<'a>(
     fields: &EventFields<'a>,
     outcome: &'a CorrelationOutcome,
-    err: &mut impl Write,
 ) -> EventFields<'a> {
-    report_identity(err, fields.action, outcome);
     EventFields {
         identity_gap: outcome.name().unwrap_or(""),
         ..fields.with_target(outcome.triple())
     }
 }
 
-/// Report a failed or changed proof on the writer boundary, then stamp caller.
+/// Stamp caller incarnation facts from the outcome.
+///
+/// RECORD, DO NOT BROADCAST: this boundary has no error stream at all — a
+/// failed or changed proof is named on the durable record (`identity_gap`),
+/// and nothing about identity is ever written to stderr.
 pub(crate) fn stamp_caller<'a>(
     fields: &EventFields<'a>,
     outcome: &'a CorrelationOutcome,
-    err: &mut impl Write,
 ) -> EventFields<'a> {
-    report_identity(err, fields.action, outcome);
     EventFields {
         identity_gap: outcome.name().unwrap_or(""),
         ..fields.with_caller(outcome.triple())
-    }
-}
-
-fn report_identity(err: &mut impl Write, action: &str, outcome: &CorrelationOutcome) {
-    // Failed (unreadable/vacant/mismatch) omits the fields and stays silent:
-    // an unseeded helper is the common path, and frozen CLI tests pin empty
-    // stderr on success. Changed across the cut is the anomaly the operator
-    // must see.
-    if matches!(outcome, CorrelationOutcome::Changed) {
-        let _ = writeln!(
-            err,
-            "ae: {action} identity not correlated (session identity changed)"
-        );
     }
 }
 
@@ -1550,7 +1560,6 @@ pub fn run(
             "",
         ),
         &outcome,
-        err,
     );
     let cross = cross_session.then_some(CrossSession {
         caller: caller_session,
@@ -2421,6 +2430,37 @@ mod tests {
     }
 
     #[test]
+    fn no_session_requires_both_caller_markers_positively_absent() {
+        use crate::doors::CallerServer;
+        assert_eq!(
+            super::classify_caller(None, CallerServer::Absent),
+            Err(CorrelationGap::NoSession),
+            "both markers absent is the one honest NoSession"
+        );
+        // A partial pair and a malformed server marker are FAILED
+        // observations, never absence — the leg stays named.
+        assert_eq!(
+            super::classify_caller(Some("%1".to_owned()), CallerServer::Absent),
+            Err(CorrelationGap::Unreadable)
+        );
+        assert_eq!(
+            super::classify_caller(None, CallerServer::Resolved(ServerId::Ambient)),
+            Err(CorrelationGap::Unreadable)
+        );
+        assert_eq!(
+            super::classify_caller(Some("%1".to_owned()), CallerServer::Malformed),
+            Err(CorrelationGap::Unreadable)
+        );
+        assert_eq!(
+            super::classify_caller(
+                Some("%1".to_owned()),
+                CallerServer::Resolved(ServerId::Ambient)
+            ),
+            Ok(("%1".to_owned(), ServerId::Ambient))
+        );
+    }
+
+    #[test]
     fn event_line_writes_identity_facts_only_when_they_are_nonempty() {
         let ts = Timestamp::parse("2026-08-27T07:11:12Z").expect("ts");
         let without = event_line(&EventFields::new(
@@ -2450,15 +2490,13 @@ mod tests {
     }
 
     #[test]
-    fn a_no_session_outcome_writes_no_gap_key_and_no_stderr() {
+    fn a_no_session_outcome_writes_no_gap_key() {
         let ts = Timestamp::parse("2026-08-27T07:11:12Z").expect("ts");
-        let mut err = Vec::new();
         let memo = super::stamp_caller(
             &EventFields::new(
                 ts, "human", "memo", "", "p2", "", "", "", "", "one line", "",
             ),
             &CorrelationOutcome::NoSession,
-            &mut err,
         );
         let line = event_line(&memo);
         assert!(
@@ -2470,14 +2508,10 @@ mod tests {
                 ts, "lead", "ask", "w", "ae-1", "main", "s", "worker.0", "s", "q", "",
             ),
             &CorrelationOutcome::NoSession,
-            &mut err,
         );
         assert!(!event_line(&ask).contains("identity_gap"));
-        assert!(
-            err.is_empty(),
-            "NoSession is not broadcast either: {}",
-            String::from_utf8_lossy(&err)
-        );
+        // The writer boundary takes no error stream at all, so an identity
+        // caveat has nowhere to broadcast to; the run-level pins own stderr.
     }
 
     fn viewer_at(socket: &str, uuid: &str) -> crate::tmux::ObservedViewer {
@@ -2574,7 +2608,6 @@ mod tests {
                 ts, "lead", "ask", "w", "ae-1", "main", "s", "worker.0", "s", "q", "",
             ),
             &outcome,
-            &mut err,
         );
         super::record_tracked_delivery(
             &dir,
@@ -2603,22 +2636,19 @@ mod tests {
             }
         };
         let (_, changed) = across_cut_with(observe, || "delivered");
-        let mut err = Vec::new();
         let omitted = event_line(&super::stamp_target(
             &EventFields::new(
                 ts, "lead", "ask", "w", "ae-1", "main", "s", "worker.0", "s", "q", "",
             ),
             &changed,
-            &mut err,
         ));
         assert!(
             !omitted.contains("target_server"),
             "a changed identity writes no correlated opening"
         );
         assert!(
-            String::from_utf8_lossy(&err).contains("session identity changed"),
-            "the writer names the failed leg: {}",
-            String::from_utf8_lossy(&err)
+            omitted.contains(r#""identity_gap":"session identity changed""#),
+            "a changed identity is named on the durable record, never on stderr: {omitted}"
         );
         let mut err = Vec::new();
         let reply_fields = super::stamp_caller(
@@ -2626,7 +2656,6 @@ mod tests {
                 ts, "w", "reply", "lead", "ae-1", "worker.0", "s", "main", "s", "a", "",
             ),
             &outcome,
-            &mut err,
         );
         std::fs::write(dir.join("events.jsonl"), b"").unwrap();
         super::record_tracked_delivery(
@@ -2770,6 +2799,131 @@ mod tests {
             !events.contains("target_server"),
             "Failed omits the triple: {events}"
         );
+        super::clear_test_hooks();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the test reads back the event ledger the production run wrote"
+    )]
+    fn ask_run_records_a_changed_identity_and_keeps_it_off_stderr() {
+        super::clear_test_hooks();
+        let dir = meta_dir("askchg", &format!("session_id={UUID}\n"));
+        let ts = Timestamp::parse("2026-08-27T07:11:12Z").expect("ts");
+        super::queue_observe(Ok(triple("/tmp/ae", "%9", UUID)));
+        super::queue_observe(Ok(triple("/tmp/ae", "%8", UUID)));
+        super::set_test_resolve(
+            Resolved {
+                pane: "%9".to_owned(),
+                agent: "w".to_owned(),
+                slot: "worker.0".to_owned(),
+                session: "s".to_owned(),
+            },
+            ServerId::Ambient,
+        );
+        super::set_test_delivery(Ok(crate::deliver::Delivered {
+            body_file: String::new(),
+            framed: "q".to_owned(),
+            verification: crate::deliver::DeliveryVerification::Verified,
+        }));
+        let sender = Sender {
+            display: "lead".to_owned(),
+            slot: "main".to_owned(),
+            session: "s".to_owned(),
+        };
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let code = run(
+            Kind::Ask,
+            &dir,
+            &["w".to_owned(), "q".to_owned()],
+            Some(&sender),
+            "s",
+            ts,
+            3,
+            crate::deliver::DEFAULT_DEFER,
+            &mut out,
+            &mut err,
+        )
+        .expect("ask run changed");
+        assert_eq!(code, 0, "{}", String::from_utf8_lossy(&err));
+        assert!(
+            err.is_empty(),
+            "Changed is recorded, not broadcast: {}",
+            String::from_utf8_lossy(&err)
+        );
+        let events = std::fs::read_to_string(dir.join("events.jsonl")).expect("events");
+        assert!(
+            events.contains(r#""identity_gap":"session identity changed""#),
+            "Changed names the leg in the record: {events}"
+        );
+        assert!(
+            !events.contains("target_server"),
+            "Changed omits the triple: {events}"
+        );
+        super::clear_test_hooks();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the test reads back the event ledger the production run wrote"
+    )]
+    fn ask_run_treats_a_no_session_outcome_as_no_gap_and_no_stderr() {
+        super::clear_test_hooks();
+        let dir = meta_dir("asknone", &format!("session_id={UUID}\n"));
+        let ts = Timestamp::parse("2026-08-27T07:11:12Z").expect("ts");
+        super::queue_observe(Err(CorrelationGap::NoSession));
+        super::queue_observe(Err(CorrelationGap::NoSession));
+        super::set_test_resolve(
+            Resolved {
+                pane: "%9".to_owned(),
+                agent: "w".to_owned(),
+                slot: "worker.0".to_owned(),
+                session: "s".to_owned(),
+            },
+            ServerId::Ambient,
+        );
+        super::set_test_delivery(Ok(crate::deliver::Delivered {
+            body_file: String::new(),
+            framed: "q".to_owned(),
+            verification: crate::deliver::DeliveryVerification::Verified,
+        }));
+        let sender = Sender {
+            display: "lead".to_owned(),
+            slot: "main".to_owned(),
+            session: "s".to_owned(),
+        };
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let code = run(
+            Kind::Ask,
+            &dir,
+            &["w".to_owned(), "q".to_owned()],
+            Some(&sender),
+            "s",
+            ts,
+            4,
+            crate::deliver::DEFAULT_DEFER,
+            &mut out,
+            &mut err,
+        )
+        .expect("ask run no-session");
+        assert_eq!(code, 0, "{}", String::from_utf8_lossy(&err));
+        assert!(
+            err.is_empty(),
+            "NoSession is not broadcast: {}",
+            String::from_utf8_lossy(&err)
+        );
+        let events = std::fs::read_to_string(dir.join("events.jsonl")).expect("events");
+        assert!(
+            !events.contains("identity_gap"),
+            "an absent session context earns no gap: {events}"
+        );
+        assert!(!events.contains("target_server"), "{events}");
         super::clear_test_hooks();
         let _ = std::fs::remove_dir_all(&dir);
     }

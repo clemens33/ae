@@ -679,7 +679,11 @@ pub fn interpret_viewer(succeeded: bool, stdout: &str) -> Option<ObservedViewer>
     if line.contains('\n') {
         return None;
     }
-    let fields: Vec<&str> = line.split(FIELD_SEPARATOR).collect();
+    // The LAST field is the socket path, and a VALID absolute socket path may
+    // itself contain the separator: split at the first four separators only,
+    // so the path is never cut. Fewer than four separators cannot be five
+    // fields and is refused.
+    let fields: Vec<&str> = line.splitn(VIEWER_FIELDS, FIELD_SEPARATOR).collect();
     if fields.len() != VIEWER_FIELDS {
         return None;
     }
@@ -4606,10 +4610,6 @@ mod tests {
             interpret_viewer(true, "main | s | a:b | u | /s\n")
         );
         assert_eq!(interpret_viewer(true, "main | s | a:b | u\n"), None);
-        assert_eq!(
-            interpret_viewer(true, "main | s | a:b | u | /s | extra\n"),
-            None
-        );
         assert_eq!(interpret_viewer(true, ""), None);
         let vacant = interpret_viewer(true, "main | s | a:b |  | /s\n");
         assert_eq!(
@@ -4632,6 +4632,24 @@ mod tests {
             alias.as_ref().and_then(|v| v.socket_path.as_deref()),
             real.as_ref().and_then(|v| v.socket_path.as_deref()),
             "two spellings stay two facts; tmux's returned path is what we record"
+        );
+    }
+
+    #[test]
+    fn a_socket_path_containing_the_separator_does_not_cut_the_viewer() {
+        use super::{ObservedViewer, OptionReading, interpret_viewer};
+        // The LAST field keeps every separator it contains: a valid absolute
+        // socket path may hold one, and cutting at it would reject the whole
+        // viewer for a legitimate server spelling.
+        assert_eq!(
+            interpret_viewer(true, "main | s | a:b | u | /tmp/ae | sock\n"),
+            Some(ObservedViewer {
+                slot: Some("main".to_owned()),
+                session: Some("s".to_owned()),
+                agent: Some("a:b".to_owned()),
+                session_uuid: OptionReading::Set("u".to_owned()),
+                socket_path: Some("/tmp/ae | sock".to_owned()),
+            })
         );
     }
 

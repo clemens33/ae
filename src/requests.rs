@@ -115,6 +115,41 @@ impl Viewer {
     }
 }
 
+/// The target incarnation recorded at OPEN — and the ONLY form in which those
+/// three legs leave the sensor.
+///
+/// It can be built only from an [`Event`] that [`Event::parse_line`] already
+/// accepted, so a fact scraped from a hostile invalid or duplicate-known-key
+/// line can never become authoritative: there is no path from raw line bytes
+/// to a recorded target that does not cross the parser. A valid line carrying
+/// an incomplete triple is `None` too.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RecordedTarget {
+    server: String,
+    pane: String,
+    session_uuid: String,
+}
+
+impl RecordedTarget {
+    /// The ONE constructor. It takes a PARSED event, never raw bytes.
+    fn from_event(event: &Event) -> Option<Self> {
+        Some(Self {
+            server: event.target_server.clone()?,
+            pane: event.target_pane.clone()?,
+            session_uuid: event.target_session_uuid.clone()?,
+        })
+    }
+
+    /// The triple, complete by construction.
+    fn triple(&self) -> crate::tracked::IdentityTriple {
+        crate::tracked::IdentityTriple {
+            server: self.server.clone(),
+            pane: self.pane.clone(),
+            session_uuid: self.session_uuid.clone(),
+        }
+    }
+}
+
 /// One request, as the sensor emits it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Request {
@@ -140,12 +175,10 @@ pub struct Request {
     pub from_session: Key,
     /// Session of the target's routing key.
     pub to_session: Key,
-    /// Canonical socket path of the admitted target server.
-    pub target_server: Vec<u8>,
-    /// Pane id of the admitted target.
-    pub target_pane: Vec<u8>,
-    /// Canonical UUID of the admitted target session.
-    pub target_session_uuid: Vec<u8>,
+    /// The target incarnation recorded at open, authoritative only because the
+    /// opening line parsed as a ledger event; `None` otherwise. The populated
+    /// form is constructible only inside this module, from a parsed [`Event`].
+    pub(crate) recorded: Option<RecordedTarget>,
     /// The DISPLAY summary: the request's own text while pending, the closing
     /// event's text once closed.
     pub summary: Vec<u8>,
@@ -200,14 +233,11 @@ impl Request {
         identity_of(&self.to_slot, &self.to_session, &self.to)
     }
 
-    /// The target incarnation recorded at open, or `None` when any leg is missing.
+    /// The target incarnation recorded at open, or `None` when the opening
+    /// line did not parse as an Event or any leg is missing.
     #[must_use]
     pub fn recorded_target(&self) -> Option<crate::tracked::IdentityTriple> {
-        recorded_triple(
-            &self.target_server,
-            &self.target_pane,
-            &self.target_session_uuid,
-        )
+        self.recorded.as_ref().map(RecordedTarget::triple)
     }
 
     /// The table line for this row, `\n` included.
@@ -433,9 +463,7 @@ pub(crate) fn states_in(container: &[u8], session: &str) -> Vec<Request> {
                 to_slot: opening.to_slot,
                 from_session: opening.from_session,
                 to_session: opening.to_session,
-                target_server: opening.target_server,
-                target_pane: opening.target_pane,
-                target_session_uuid: opening.target_session_uuid,
+                recorded: opening.recorded,
                 summary,
             })
         })
@@ -505,9 +533,9 @@ struct Opening {
     to_slot: Key,
     from_session: Key,
     to_session: Key,
-    target_server: Vec<u8>,
-    target_pane: Vec<u8>,
-    target_session_uuid: Vec<u8>,
+    /// The recorded target, built ONLY from a parsed Event — see
+    /// [`RecordedTarget`]. The scraped bytes never reach a caller.
+    recorded: Option<RecordedTarget>,
     summary: Vec<u8>,
     /// The closure owner can judge this opening only if it parsed as a ledger
     /// record. Opaque compatibility rows remain pending when no owner can see
@@ -528,6 +556,12 @@ struct Closing {
 
 impl Opening {
     fn read(line: &[u8], action: &[u8]) -> Self {
+        // ONE parse decides both facts: whether the record is a valid ledger
+        // event at all, and whether it may carry an authoritative target.
+        // There is no second, weaker reading of the same line.
+        let event = std::str::from_utf8(line)
+            .ok()
+            .and_then(|text| Event::parse_line(text).ok());
         Self {
             kind: action.to_vec(),
             from: extract(line, "actor"),
@@ -538,13 +572,9 @@ impl Opening {
             to_slot: Key::read(line, "target_slot"),
             from_session: Key::read(line, "actor_session"),
             to_session: Key::read(line, "target_session"),
-            target_server: extract(line, "target_server"),
-            target_pane: extract(line, "target_pane"),
-            target_session_uuid: extract(line, "target_session_uuid"),
+            recorded: event.as_ref().and_then(RecordedTarget::from_event),
             summary: fold_newlines(extract(line, "summary")),
-            ledger_valid: std::str::from_utf8(line)
-                .ok()
-                .is_some_and(|line| Event::parse_line(line).is_ok()),
+            ledger_valid: event.is_some(),
         }
     }
 
@@ -616,23 +646,6 @@ impl Closing {
             summary: fold_newlines(extract(line, "summary")),
         }
     }
-}
-
-/// Reconstruct a triple from the three stored legs. Any empty leg is a gap.
-fn recorded_triple(
-    server: &[u8],
-    pane: &[u8],
-    session_uuid: &[u8],
-) -> Option<crate::tracked::IdentityTriple> {
-    let text = |bytes: &[u8]| {
-        let value = std::str::from_utf8(bytes).ok()?;
-        (!value.is_empty()).then(|| value.to_owned())
-    };
-    Some(crate::tracked::IdentityTriple {
-        server: text(server)?,
-        pane: text(pane)?,
-        session_uuid: text(session_uuid)?,
-    })
 }
 
 /// Newlines folded to spaces on every summary the sensor stores.
@@ -1624,5 +1637,48 @@ mod tests {
         assert_eq!(row.from_session, Key::Absent, "not in the record at all");
         assert_eq!(row.from_slot.value(), Some(b"".as_slice()));
         assert_eq!(row.from_session.value(), None);
+    }
+
+    #[test]
+    fn a_fact_scraped_from_an_unparsed_opening_is_never_authoritative() {
+        let uuid = "1b4e28ba-2fa1-11d2-883f-0016d3cc4321";
+        // Invalid JSON that still carries every member the old byte-scrape
+        // would have read, so only the parse can refuse it.
+        let invalid = format!(
+            r#"{{"ts":"2026-08-20T16:12:55Z","actor":"a:lead","action":"ask","target":"a:w","ref":"bad","target_server":"/tmp/aut","target_pane":"%9","target_session_uuid":"{uuid}","summary":"q""#
+        );
+        // A KNOWN key named twice: the record does not say one thing.
+        let duplicate = format!(
+            r#"{{"ts":"2026-08-20T16:12:55Z","actor":"a:lead","action":"ask","target":"a:w","ref":"dup","target_server":"/tmp/aut","target_server":"/tmp/other","target_pane":"%9","target_session_uuid":"{uuid}","summary":"q"}}"#
+        );
+        let hostile = container(&[invalid.as_str(), duplicate.as_str()]);
+        let rows = states(&hostile);
+        let bad = rows
+            .iter()
+            .find(|row| row.id.as_slice() == b"bad")
+            .expect("an invalid opening is still scanned");
+        assert!(
+            bad.recorded_target().is_none(),
+            "a fact scraped from an unparsed line is not authoritative"
+        );
+        let dup = rows
+            .iter()
+            .find(|row| row.id.as_slice() == b"dup")
+            .expect("a duplicate-known-key opening is still scanned");
+        assert!(
+            dup.recorded_target().is_none(),
+            "a duplicate-known-key record is not authoritative either"
+        );
+        // The SAME members on a valid line DO expose the triple, so the pin is
+        // parse validity and not the members being absent.
+        let valid = format!(
+            r#"{{"ts":"2026-08-20T16:12:55Z","actor":"a:lead","action":"ask","target":"a:w","ref":"ok","target_server":"/tmp/aut","target_pane":"%9","target_session_uuid":"{uuid}","summary":"q"}}"#
+        );
+        let recorded = states(&container(&[valid.as_str()]))[0]
+            .recorded_target()
+            .expect("a parsed opening exposes its triple");
+        assert_eq!(recorded.server, "/tmp/aut");
+        assert_eq!(recorded.pane, "%9");
+        assert_eq!(recorded.session_uuid, uuid);
     }
 }
