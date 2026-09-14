@@ -2247,14 +2247,15 @@ fn recorded_cross_harness_label_refuses_on_a_flagless_resume() {
     );
 }
 
-/// F3: an override the current resolution cannot prove proceeds but records
-/// nothing — minting the label row would manufacture evidence. A row an
-/// earlier PROVEN start recorded is republished unchanged under the same
-/// blindness: that is not a new fact. The blindness is a RELATIVE account
-/// path in the profile prefix: unresolvable anywhere, with no environment
-/// dependence.
+/// F6 over F3: an override the current resolution cannot prove REFUSES on a
+/// first start — proceeding would ignore an explicit flag while recording
+/// nothing recoverable, and nothing is stranded. The same blindness on a
+/// RESUME proceeds on the retained store and republishes an already-proven
+/// identical row unchanged: that is not a new fact. The blindness is a
+/// RELATIVE account path in the profile prefix: unresolvable anywhere, with
+/// no environment dependence.
 #[test]
-fn unproven_pairing_proceeds_without_recording_a_label() {
+fn unknown_resolution_refuses_a_first_start_but_spares_a_resume() {
     if skip() {
         return;
     }
@@ -2268,18 +2269,18 @@ fn unproven_pairing_proceeds_without_recording_a_label() {
          [roster]\nlead = fablex\n\n[workspace]\nmain = lead\nlayout = vertical\nwatchdog = false\n"
     );
     assert!(std::fs::write(&rig.config, config).is_ok(), "a var config");
-    let (code, stdout, stderr) = rig.launch(&["--local", "lnfresh", "--lead", "varp@cvar"]);
-    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let (code, _, stderr) = rig.launch(&["--local", "lnfresh", "--lead", "varp@cvar"]);
+    assert_eq!(code, Some(2), "{stderr}");
     assert!(
-        !rig.meta("lnfresh").contains("client."),
-        "no label row is minted for an unproven pairing: {}",
-        rig.meta("lnfresh")
+        stderr.contains("varp@cvar")
+            && stderr.contains("unknown conversation store")
+            && stderr.contains("not an absolute path"),
+        "the refusal names the override and why: {stderr}"
     );
     assert!(
-        rig.launch_argv().contains("side=b"),
-        "the unproven seat still runs the override binary"
+        rig.meta("lnfresh").is_empty(),
+        "the refused first start publishes nothing"
     );
-    stop(&rig, "lnfresh");
 
     let (code, stdout, stderr) = rig.launch(&["--local", "lncarried", "--lead", "fablex@cc-mic"]);
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");

@@ -1209,14 +1209,14 @@ fn recorded_store_shown(
     }
 }
 
-/// Whether the CURRENT resolution proved a label pairing: anything but
-/// `Unknown`. Decided on the RAW resolution, so a first start learns it
-/// without canonicalizing anything it will not compare.
-fn current_pairing_proven(
+/// The CURRENT resolution's proof of a label pairing: `None` when proved,
+/// else the `Unknown` reason. Decided on the RAW resolution, so a first start
+/// learns it without canonicalizing anything it will not compare.
+fn current_pairing_proof(
     command: &config::ResolvedCommand,
     tool: ToolKind,
     home: Option<&Path>,
-) -> bool {
+) -> Option<String> {
     let home_value = home.map(|path| path.display().to_string());
     let resolution = crate::launch_cmd::config_home_resolution(command, tool, &|name| {
         if name == "HOME" {
@@ -1225,7 +1225,20 @@ fn current_pairing_proven(
             None
         }
     });
-    !matches!(resolution.home, crate::launch_cmd::Resolved::Unknown(_))
+    match resolution.home {
+        crate::launch_cmd::Resolved::Unknown(reason) => Some(reason),
+        _ => None,
+    }
+}
+
+/// F6: an override whose current resolution is `Unknown` on a seat with no
+/// retained store refuses — proceeding would ignore an explicit flag while
+/// recording nothing recoverable, and a first start strands nothing.
+fn unknown_store_refusal(agent: &str, spelling: &str, reason: &str) -> SeatOverrideRefusal {
+    SeatOverrideRefusal::Usage(format!(
+        "Error: cannot launch seat '{agent}' as '{spelling}': the override resolves to an unknown conversation store ({reason}) — \
+         the launcher cannot verify where this conversation would live. Make the account path absolute, then retry."
+    ))
 }
 
 /// Re-take the R4 identity check for one override: the recorded store triple
@@ -1240,7 +1253,10 @@ fn current_pairing_proven(
 /// launcher cannot see) proves no conflict — `_run` retains the recorded
 /// store with a notice, so the seat stays safe without this gate refusing —
 /// but it proves no pairing either, and the `false` carries exactly that: the
-/// caller honors the seat and records no new label fact.
+/// caller honors the seat and records no new label fact. That mercy belongs
+/// to a RESUME — a seat with a retained store to proceed on. A first start
+/// (no recorded store) that resolves `Unknown` refuses outright instead: F6,
+/// because proceeding would ignore an explicit flag and strand nothing.
 fn refuse_store_conflict(
     session: &str,
     agent: &str,
@@ -1274,12 +1290,13 @@ fn refuse_store_conflict(
     });
     if entry.config_home == crate::meta::RecordedConfigHome::Missing {
         // First start for this seat: the override participates in the one
-        // resolution and is recorded normally — but only a proved pairing
-        // may mint the label row.
-        return Ok(!matches!(
-            resolution.home,
-            crate::launch_cmd::Resolved::Unknown(_)
-        ));
+        // resolution and is recorded normally. But an `Unknown` resolution
+        // refuses — F6: nothing retained means nothing stranded, and
+        // proceeding would silently ignore the explicit flag.
+        if let crate::launch_cmd::Resolved::Unknown(reason) = &resolution.home {
+            return Err(unknown_store_refusal(agent, spelling, reason));
+        }
+        return Ok(true);
     }
     let current =
         crate::run::canonical_config_home(&resolution.home).map_err(SeatOverrideRefusal::Failed)?;
@@ -1429,9 +1446,23 @@ fn resolve_one_override(
         }
         proven
     } else {
-        // No recorded seat: nothing to compare, but the pairing still needs
-        // its proof before the build may mint the label row.
-        current_pairing_proven(&command, parsed.tool(), ctx.home)
+        // No recorded seat: nothing to compare. But a first start that
+        // cannot resolve its override refuses — F6: nothing is stranded, and
+        // proceeding would ignore an explicit flag. A bare profile keeps the
+        // legacy path (nothing to record either way).
+        match current_pairing_proof(&command, parsed.tool(), ctx.home) {
+            None => true,
+            Some(reason) => {
+                if let Some(label) = client.as_deref() {
+                    return Err(unknown_store_refusal(
+                        agent,
+                        &format!("{profile}@{label}"),
+                        &reason,
+                    ));
+                }
+                false
+            }
+        }
     };
     Ok(ResolvedSeatOverride {
         agent: agent.to_owned(),
@@ -5973,6 +6004,37 @@ mod tests {
             Some(&home),
         )
         .expect("first start proceeds");
+        // F6: the same first start with an UNRESOLVABLE override refuses —
+        // nothing retained means nothing stranded, and proceeding would
+        // ignore the explicit flag.
+        let blind = crate::config::parse_identity(
+            "[clients]\nplain = claude\n\
+             [profiles]\nvarp = \"CLAUDE_CONFIG_DIR=rel/store claude --model fable\"\n\
+             [roster]\nlead = varp\n[workspace]\nmain = lead\n",
+        )
+        .expect("readable blind config");
+        let blind_command = blind
+            .command_with_client("varp", "plain", Some(&home))
+            .expect("blind override resolves")
+            .command;
+        let line = match super::refuse_store_conflict(
+            "s",
+            "lead",
+            "varp@plain",
+            &entry,
+            &blind_command,
+            ToolKind::Claude,
+            Some(&home),
+        ) {
+            Err(super::SeatOverrideRefusal::Usage(line)) => line,
+            other => panic!("unresolvable first start must refuse, got {other:?}"),
+        };
+        assert!(
+            line.contains("varp@plain")
+                && line.contains("unknown conversation store")
+                && line.contains("not an absolute path"),
+            "{line:?}"
+        );
         // Recorded damage fails closed.
         for meta in [
             "seat.main=lead\nprofile.main=fablex\nconfig_home.main=unknown\n",
