@@ -6021,7 +6021,7 @@ mod tests {
     }
 
     #[test]
-    fn orchestrator_strip_composes_before_version_only_when_present() {
+    fn orchestrator_strip_publishes_only_when_present() {
         let session = |name: &str, id: &str, rank: &str| crate::tmux::FleetSession {
             name: name.to_owned(),
             id: id.to_owned(),
@@ -6053,7 +6053,15 @@ mod tests {
             args.iter()
                 .any(|word| word == crate::theme::ORCHESTRATOR_STRIP_OPTION)
         );
-        assert!(args.iter().any(|word| word.contains("orchestrator")));
+        assert_eq!(
+            with.published_orchestrator_strip,
+            super::PublishedOrchestratorStrip::Value(crate::theme::orchestrator_strip(
+                &Look::DEFAULT,
+                row.as_ref().expect("orchestrator row is in the fleet"),
+                None,
+            )),
+            "the published value is the theme's segment for the found row",
+        );
 
         let mut without = MotionState::default();
         without.replace_fleet(&[session("worker", "$4", "2")], "worker");

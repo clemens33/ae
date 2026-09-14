@@ -981,7 +981,9 @@ pub fn orchestrator_strip(
     debug_assert_eq!(crate::orchestrator::terminal_cells(glyph), 1);
     let accent = if row.mark == Mark::Working {
         working_frame.map_or(palette.accent(row.mark), |frame| frame.fg.as_str())
-    } else if matches!(row.mark, Mark::Done | Mark::Idle) {
+    } else if row.mark == Mark::Idle {
+        // Dim is Idle's alone: Done keeps its done accent, because with a
+        // stable glyph the foreground colour is the only verdict signal.
         palette.dim
     } else {
         palette.accent(row.mark)
@@ -2013,11 +2015,25 @@ mod tests {
             );
         }
 
-        for mark in [Mark::Idle, Mark::Done] {
-            let calm = orchestrator_strip(&Look::DEFAULT, &row("orchestrator", mark), Some(&frame));
-            assert_eq!(strip_tmux_styles(&calm), " ◆ ", "{calm}");
-            assert!(calm.contains("fg=#808080"), "dim calm button: {calm}");
-        }
+        let idle = orchestrator_strip(
+            &Look::DEFAULT,
+            &row("orchestrator", Mark::Idle),
+            Some(&frame),
+        );
+        assert_eq!(strip_tmux_styles(&idle), " ◆ ", "{idle}");
+        assert!(idle.contains("fg=#808080"), "dim idle button: {idle}");
+        let done = orchestrator_strip(
+            &Look::DEFAULT,
+            &row("orchestrator", Mark::Done),
+            Some(&frame),
+        );
+        assert_eq!(strip_tmux_styles(&done), " ◆ ", "{done}");
+        let done_accent = Look::DEFAULT.palette.accent(Mark::Done);
+        assert_ne!(done_accent, Look::DEFAULT.palette.dim);
+        assert!(
+            done.contains(&format!("fg={done_accent}")),
+            "done keeps its done accent, never idle's dim: {done}"
+        );
 
         let ascii = orchestrator_strip(
             &Look {
@@ -2038,6 +2054,65 @@ mod tests {
             !segment.contains('\u{fe0f}'),
             "no variation selector: {segment}"
         );
+    }
+
+    /// With a stable glyph the foreground colour is the ONLY verdict signal,
+    /// so all six verdicts must differ by colour on every palette — including
+    /// Done versus Idle, which the old calm pin rendered identically dim.
+    #[test]
+    fn orchestrator_verdicts_differ_by_colour_on_every_palette() {
+        let button_fg = |strip: &str| {
+            strip
+                .split_once(" fg=")
+                .map_or("", |(_, rest)| rest.split(' ').next().unwrap_or(""))
+                .to_owned()
+        };
+        let marks = [
+            Mark::Dead,
+            Mark::NeedsYou,
+            Mark::Working,
+            Mark::Done,
+            Mark::Stale,
+            Mark::Idle,
+        ];
+        for palette in PALETTES {
+            let look = Look {
+                palette,
+                ..Look::DEFAULT
+            };
+            let row = |mark| FleetRow {
+                name: "orchestrator".to_owned(),
+                id: "$7".to_owned(),
+                mark,
+                current: false,
+            };
+            let fgs: Vec<String> = marks
+                .iter()
+                .map(|mark| button_fg(&orchestrator_strip(&look, &row(*mark), None)))
+                .collect();
+            for (left, right) in fgs.iter().enumerate() {
+                for other in fgs.iter().skip(left + 1) {
+                    assert_ne!(
+                        right, other,
+                        "two verdicts share one colour on {}: {fgs:?}",
+                        palette.name,
+                    );
+                }
+            }
+            let statics: Vec<String> = marks
+                .iter()
+                .filter(|mark| **mark != Mark::Working)
+                .map(|mark| palette.accent(*mark).to_owned())
+                .collect();
+            for tick in 0..20 {
+                let pulsed = super::working_frame(tick, &palette, true).fg;
+                assert!(
+                    !statics.contains(&pulsed),
+                    "working pulse tick {tick} grazes a static verdict on {}: {pulsed}",
+                    palette.name,
+                );
+            }
+        }
     }
 
     #[test]

@@ -25,7 +25,7 @@ ae usage [name…] [--json]
                        Show offline API-equivalent usage for all live sessions, or
                        only the named live sessions
 ae orchestrator        Start or reattach the orchestrator seat: a local session named
-                       orchestrator, pinned first in the fleet strip
+                       orchestrator, drawn as a `◆` button after the menu glyph
 ae orchestrator --popup
                        Pick a live session in a tmux menu; its lead pane gets the
                        client. Opened above the bottom-left status-bar ≡/= button,
@@ -477,8 +477,10 @@ a target-local roster it cannot inspect — to `state waiting-user` with at most
 a recommended alternative. ae never substitutes a profile for you: only the human's
 confirmation changes the choice. Add `--no-attach` to build or reattach without attaching; ae prints the exact
 attach command and exits successfully. The seat keeps its fixed launch shape, so `--dir` remains
-an ordinary-session flag. The seat is pinned first in the status
-bar's fleet strip, marked `◆`. The `--popup` form is the picker, next. From any
+an ordinary-session flag. The seat is drawn as a three-cell `◆` button
+(`o` with icons off) immediately after the status bar's `≡` menu glyph, before
+the fleet strip; the glyph is stable and the verdict rides the foreground
+colour. The `--popup` form is the picker, next. From any
 ae session on the same tmux server, click the `≡` menu glyph (`=` with icons
 off) at the bottom-left, before the session list, or its `+N` overflow count, or
 press `<prefix> a` (default `C-b a`), to open it.

@@ -174,15 +174,19 @@ The selected window uses the palette's selection ground and ink. The right
 side carries the branch, goal, shortened path and watch segment. The session
 name is shown once in the fleet strip below.
 
-`status-format[1]` — the bottom-left menu glyph comes first, followed by the
-**fleet strip**: every non-orchestrator ae session in the order it was created,
+`status-format[1]` — the bottom-left menu glyph comes first, then the optional
+orchestrator button, then the **fleet strip**: every non-orchestrator ae
+session in the order it was created,
 each drawn as its live glyph, one blank, then its name. A session keeps its
 place while its attention changes, so a click never moves the thing that was
 clicked; the current session uses the palette's selection ground, ink and
 weight, never extra leading or trailing blanks, so selection never changes row
-width. The optional orchestrator remains on the right — the ONE place the seat
-is drawn — with its own verdict mark and a tmux `range=session` target for the
-canonical `orchestrator` session. When current, selection colours mark it in
+width. The orchestrator button is the ONE place the seat
+is drawn — exactly three cells (one blank, the stable `◆` glyph, one blank;
+`o` with icons off) inside a tmux `range=session` target for the
+canonical `orchestrator` session, with the verdict in the foreground colour.
+When no orchestrator is published the line is byte-identical to the
+menu-plus-fleet line. When current, selection colours mark it in
 place; it never jumps into the fleet strip. Each strip entry is a tmux
 `range=session` region, so
 ae's root left-click binding sends it through tmux's default
