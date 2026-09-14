@@ -3,22 +3,16 @@
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
-- Fuzz the events.jsonl parser before it is trusted further
-- Name the five unseeded event actions in the fuzz README
-- **quota**: Read every configured client, not only configured profiles
-- **quota**: One account is one row on the failure paths too
-- **quota**: Correlate scopes on proven identity, count a declaration once
-- **quota**: Prove identity before merging, and spend a declaration once
-- **quota**: An unattributable rollout is identified by itself, on both surfaces
-- Record caller and target incarnation facts on tracked events
-- Correct identity facts at their four boundaries
-- Extend events_parse seeds to the widened identity grammar
-- Stop NoSession masking a recorded or unreadable meta
+- Merge eventsfuzz: fuzz the events.jsonl parser
+- Merge quotaclients: discover configured clients and correlate scopes on proven identity
+- Merge identitygap: prove session identity across a durable cut, and never let NoSession mask a real gap
+- Render one subject line per change in the generated changelog
+- List git-cliff in the pin table and the rust-setup tool count
 
 ## [v2026.9.75] - 2026-09-14
-- Refuse non-regular and symlinked lock paths before the open
-- Normalise NBSP in captured lines so Claude seats classify
-- Add R15 record sanitizer with measured budgets and request-id grammar
+- Merge lockpath: refuse non-regular and symlinked lock paths
+- Merge tipnbsp: normalise NBSP in captured lines so Claude seats classify
+- Merge compactsanitize: add R15 record sanitizer with measured budgets and request-id grammar
 
 ## [v2026.9.74] - 2026-09-14
 - Prove the direct menu client by name and exclusion
@@ -402,24 +396,15 @@ All notable changes to this project will be documented in this file.
 - **tail**: The last of the port narration across src and the suite
 - **event_text**: The unescape note ends its sentence
 - **store**: A live session's files are named once and written one way
-- Centralize tool launch and resume capabilities
+- Tool adapters phase 1 — one immutable adapter row per tool, behaviour-shaped strategy variants
 - **store**: The memo file is read where its name is spelled
 - Centralize tool session capture capabilities
 - Record unconfirmed deliveries
-- **upgrade**: Every session carries a meta_version, and a publish migrates every one of them before it moves the ae command
-- **migrate**: A meta with schema=2 and no version row IS version 2, and is stamped rather than refused
-- **upgrade**: A census that failed is not an empty one, and the publisher holds its lock through the version sweep
-- **upgrade**: The absent sessions root is typed, the sweep never deletes what the command link names
+- Upgrade migration chain — every session carries meta_version, a publish migrates all of them before it moves the command link
 - **contract**: The helper section names the message-style rule and its scope
-- **migrate,meta,lifecycle,session_launch,install**: The previously fenced files
-- **floor**: The SERVER's own version decides, and a refusal never restarts one
-- The fleet picker is a tmux menu, built from the list digest
-- **entry**: Route seeded profiles through fakes
-- **it**: Own scratch cleanup
-- **cli**: Isolate helper environments
-- **parity**: Pin tmux fixture shell
-- **cli**: Own runner scratch
-- **cli**: Harden scratch ownership
+- Merge branch 'comment-sweep'
+- Ae orchestrator --popup — the fleet picker is a tmux menu built from the list digest, behind a server-version floor
+- The black-box suite owns its scratch and never launches an installed agent — fake tools, owned scratch guards, SHELL pinned at both tmux doors
 - Centralize tool input observation capabilities
 - **store**: One quiet container read, and the three request readers pinned
 - **session**: A withdrawn request is not one anybody is waiting on
@@ -430,28 +415,23 @@ All notable changes to this project will be documented in this file.
 ## [v2026.9.2] - 2026-09-04
 - **migration**: Final phase-4 evidence as left by the human before the tree is retired
 - Retire docs/migration — the rewrite it documented is complete (history keeps the evidence)
-- **z4**: The installer's logic is the core's; install is a 79-line bootstrap
+- Merge branch 'z4-install'
 - The list goldens live under tests/fixtures; the bash-parity helper corpus test retires with the evidence tree
 - Point the list goldens at tests/fixtures and drop the retired corpus module
-- **monitor**: The orchestrator sweep is a core entry, and the last Python goes
-- **tmux**: Printable field separator so every format survives tmux 3.4
-- **install**: Resolve a dangling link target through its own nearest ancestor
+- Merge branch 'z4-monitor'
+- Merge branch 'ci-linux'
 - **agents**: The printable tmux format separator governs every format, with the Linux measurement
 - **ci**: The version directory is sealed after the rename, and the agent-site inventory is order-free
-- **z4**: The bash suites retire into tests/it
-- **z4**: The parity harness keeps its door, the boundary guards get their own module
-- **z4**: The gate is one command, and the lint has one file left
-- **z4**: The test surface is Rust, and the bash hazards are install and your shell
-- **z4**: No pointer names a retired tree, and the byte-exact rule follows its files
+- Merge branch 'z4-tests'
 - **release**: A release is built and published from one machine
 - **release**: The remote tag is created by the release, not pushed ahead of it
 - **agy**: The Antigravity CLI is a first-class ae tool
 - **agy**: A token miss stays pending, the scan is bounded, and a purge names agy
 - **agy**: The operand delimiter ends the strip
 - **purge,agy**: A recorded id is a name, and the scan bound is a real one
-- **monitor**: A sweep target is a session directory or it is refused
-- The bash bootstrap is inside the gate, on both runners
-- Align runtime shape with Rust core
+- Merge branch 'z4-monitor-fix'
+- Merge branch 'z4-ci-gate'
+- Merge branch 'z4-docs-nit'
 - Isolate tmux fixtures
 - **session**: Rustdoc shape, and entry_from gets its own doc back
 - **events**: Rustdoc shape for the event record and its readers
@@ -510,47 +490,30 @@ All notable changes to this project will be documented in this file.
 - **core**: Close the four glue-cut-2 gaps in launch, stop and compact
 - **stop**: The fleet form confirms from every caller, --self derives its name, every stop is recorded
 - **glue**: Cut 2 — launch, end, stop and compact route to the core; helper templates and transfer deleted
-- **core**: The capture entry answers for every tool, and spawn drives it
-- **core**: The watchdog and the telegram bridge are the core's to start and stop
-- **core**: Doctor, rename and the dependency gate are the core's
+- **capture**: The core captures session ids for codex, opencode and gemini; spawn forks its own capture
+- **daemons**: The core owns the watchdog and telegram lifecycle and starts both companions at launch
+- **doctor**: The core owns doctor, doctor --refresh, the dependency check, shim rendering and rename
 - **watchdog,doctor**: Start runs the shim without a stray word; doctor reports the core path and the glue's bash
 - **internals**: Preserve the stop self/target identity contract as the glue's stop arm becomes a passthrough
 - **glue**: Final cut — every arm with a core entry is a core call, every callerless body is gone
 - **glue**: Pass 3 — status and the orchestrator scaffold are cut, both arms refuse
-- **watchdog**: The core recovers pending tool session ids itself
+- **watchdog**: The core recovers pending tool session ids in-process
 - **glue**: Pass 4 — the recovery arm and the last session-state readers are gone
 - **watchdog**: The daemon's module doc no longer claims the recovery stays in bash
 - The glue cuts, recorded where the docs claimed bash
-- **core**: The three dead links the docs pass found
+- **core,glue**: The three dead links, six review findings, and the glue path leaves meta
 - **glue**: The server-kind comments state the refusal the core makes, not a fallback it no longer has
-- **core**: The core is the entry — the preamble, the launch fall-through, the refusals
-- **wrapper**: Delete ae-glue; ae-entry is the whole of ae's Bash
-- **wrapper**: A set-empty server half is a declared server, not an absent one
-- **core**: Session helpers become links to the core; the pane runs `_run`
-- **run**: Take the start marker back when the exec did not happen
-- **core**: The pane runs a command, not a script — and one flagged conflict
-- **run**: Choose the resume arm before injecting it, not after
-- **run**: A resuming run says so before it becomes its tool
-- **launch**: Every rollback announces itself, through one helper
-- Drop a measured-timings artifact that is not this slice's file
-- **run**: A recorded id is the resume target for every tool
-- **z2**: Re-aim the bash suites and docs at links and `_run`
-- **z2**: A fixture must not write through a helper link
-- **z2**: #27 tests the probed resume, and both of its answers
-- **z2**: #27 re-runs from the pane's own directory, which is what the probe reads
-- **z2**: Refresh itest section timings from a green full pass
-- **run**: One environment prefix, one durable marker, one grammar
-- **run**: Quoting decides assignment-shape, and both lexers read it
-- **z3**: The core IS the public ae — shape, doors, upgrade
-- **z3**: Launch-plan usage errors exit 2, and one env is peeled, not a run of them
-- **z3**: The public ae is the core, and the install layout says so
-- **z3**: The suite and the docs describe the symlink install
-- **z3**: Bind the integration suite to the core and fix the shape's positional test
-- **z3**: The Rust-owned sections bind the core directly, not a sibling of it
-- **z3**: Refresh itest section timings from a green full pass
-- **z3**: The shape is the executable's position, and a foreign HOME is refused
-- **z3**: Every effectful invocation passes the install gate
-- **z3**: Every execution boundary names the resolved core
+- Merge branch 'z1-core'
+- Merge branch 'z1-wrapper'
+- Merge branch 'z1-serverpair'
+- Merge branch 'z2-core'
+- Merge branch 'z2-suites'
+- Merge branch 'z2-resume'
+- Merge branch 'z2-fix'
+- Merge branch 'z3-core'
+- Merge branch 'z3-usage'
+- Merge branch 'z3-install'
+- Merge branch 'z3-fix'
 - **readme**: The helpers are links to the binary, not bash scripts
 
 ## [v2026.8.2] - 2026-09-01
