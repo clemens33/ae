@@ -20,7 +20,7 @@ ae next [--attach]     Name the top running session needing attention (read-only
 ae brief [name] [--all] [--since <dur>]
                        Card a session: goal, the latest note per memo topic, each agent's
                        declared state, and who is waiting on you. Read-only
-ae quota               Show bounded local quota snapshots for configured profiles
+ae quota               Show bounded local quota snapshots for every configured account
 ae usage [name…] [--json]
                        Show offline API-equivalent usage for all live sessions, or
                        only the named live sessions
@@ -734,8 +734,28 @@ ae doctor --refresh my-fix  # one session
 
 ## `ae quota`
 
-Shows each configured agent profile's locally cached subscription-quota windows. Both the public
-command and session helper use Codex conversation ids recorded across the local ae fleet:
+Shows each configured account's locally cached subscription-quota windows. Every `[profiles]` entry
+is read, and so is every `[clients]` row on its own: an account no profile names is still an account
+whose headroom decides whether to launch a seat against it, and its `manual_resets` declaration is
+still a declaration. A client one or more profiles already name is one scope, not two — its PROFILES
+cell lists them, while a scope no profile names spells that cell `-`. Scopes are joined on PROVEN
+identity only — one canonical vendor source is one account, whatever labels reach it. A discovery
+that resolved NO source is never joined to another, because failing to resolve is not evidence of
+being the same account, and two refusals shown as one would assert what ae cannot observe; they
+render as separate rows, each stating its own refusal. A tool with no local quota source, such as
+`grok` or `agy`, can never prove one, so each of its profiles is its own row. The same holds for a
+retained Codex rollout whose recorded config home did not resolve: two seats that failed for the
+same reason are two failures that read alike, not one account, so each keeps its own row and its own
+rollout. The settings quota dialog groups by the same rule, so the two surfaces never disagree about
+whether something is one account.
+
+A `manual_resets` declaration belongs to its `[clients]` label, so only that label's OWN scope may
+spend it, and only when that scope proved a source. A profile that reaches the same label under a
+different HOME is a different account and never receives a count declared elsewhere. When the
+label's own scope proved nothing, no scope claims the count and every one shows its raw windows,
+because a declared reset increases apparent headroom and every ambiguity resolves toward less of it.
+Either way the row says what happened. Both the public command and session helper use Codex
+conversation ids recorded across the local ae fleet:
 
 ```bash
 ae quota

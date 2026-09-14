@@ -661,6 +661,16 @@ struct Scope {
     profiles: Vec<String>,
     configured_profiles: Vec<String>,
     clients: Vec<String>,
+    /// Every RAW `[clients]` label this scope is an instance of — the
+    /// correlation a scope that never resolved a source has left. Unlike
+    /// `clients` this is not a display list: a default alias is recorded here
+    /// even though it is deliberately not shown.
+    accounts: Vec<String>,
+    /// The recorded rollouts this scope stands for when it proved NO source.
+    /// An unattributable rollout has exactly one honest identity — itself —
+    /// so it is named by id rather than gathered with others that merely
+    /// failed for the same reason. Empty for every scope that proved one.
+    rollouts: Vec<String>,
     hint: Option<String>,
     manual_resets: Option<u8>,
     notes: Vec<String>,
@@ -1077,6 +1087,14 @@ fn settings_same_scope(left: &Group, right: &Group) -> bool {
         && left.profiles == right.profiles
         && left.clients == right.clients
         && left.hint == right.hint
+        // A scope that proved NO source is not an account, so it has no
+        // identity to be grouped by except the rollout it stands for: two of
+        // them collapse only if they ARE the same rollout. A scope that proved
+        // one keeps the shipped rule above — its rollout owners are evidence
+        // about that one account, not about more accounts. Without this the
+        // dialog would still gather what the table now holds apart, and the
+        // two surfaces would disagree about the same question.
+        && (left.source.is_some() || left.rollout == right.rollout)
 }
 
 /// Correlate a capped-render completeness summary back to its uncapped scope.
@@ -1411,106 +1429,253 @@ pub fn run(inputs: &Inputs<'_>, out: &mut impl Write, err: &mut impl Write) -> c
     Ok(0)
 }
 
+/// Every quota scope the config declares.
+///
+/// TWO discoveries, one scope table. Profiles come first, because a named
+/// profile is what the operator usually reads a row by. Then every `[clients]`
+/// row on its own: a client no profile names is still an ACCOUNT, its
+/// `manual_resets` is still a declaration, and the operator decides whether to
+/// launch a seat against it from exactly this table.
+///
+/// Correlation is by PROVEN identity only — one canonical vendor source is one
+/// account, whatever labels reach it. A discovery that RESOLVED NO SOURCE is
+/// never correlated with anything, because "could not resolve" and "no
+/// distinguishing identity" are different facts and only the second licenses a
+/// merge. Two refusals we cannot show belong to one account are two rows: that
+/// is the honest rendering, and collapsing them would assert what we do not
+/// know. The declaration that made a false merge tempting is counted at the
+/// DECLARATION instead, by [`count_declarations`].
 fn configured_scopes(cfg: &crate::config::IdentityConfig, home: Option<&Path>) -> Vec<Scope> {
     let mut scopes: Vec<Scope> = Vec::new();
     for (profile, raw) in &cfg.profiles {
-        let resolved = match cfg.command(profile, home) {
-            Ok(Some(resolved)) => resolved,
-            Ok(None) => {
-                scopes.push(unresolved_scope(cfg, profile, raw, None));
-                continue;
+        match cfg.command(profile, home) {
+            Ok(Some(resolved)) => {
+                absorb_resolved(&mut scopes, cfg, home, Some(profile.as_str()), &resolved);
             }
+            Ok(None) => scopes.push(unresolved_scope(cfg, profile, raw, None)),
+            Err(error) => scopes.push(unresolved_scope(cfg, profile, raw, Some(&error))),
+        }
+    }
+    // Where each `[clients]` row's OWN discovery landed. The declaration belongs
+    // to that row, so this is the only scope entitled to spend it.
+    let mut owned: Vec<(&str, usize)> = Vec::new();
+    for (label, _) in &cfg.clients {
+        let index = match cfg.client_command(label, home) {
+            Ok(Some(resolved)) => absorb_resolved(&mut scopes, cfg, home, None, &resolved),
+            // The label came from `cfg.clients`, so it always resolves to a row.
+            Ok(None) => continue,
             Err(error) => {
-                scopes.push(unresolved_scope(cfg, profile, raw, Some(&error)));
-                continue;
+                scopes.push(unresolved_client_scope(cfg, label, &error));
+                scopes.len() - 1
             }
         };
-        let tool = resolved_tool(resolved.as_str());
-        let declaration = declaration_for(cfg, resolved.client_label());
-        let client = resolved
-            .client_label()
-            .and_then(|label| displayed_client(cfg, label, tool));
-        if let Some(variable) = word_expansion_dependency(&resolved, home) {
-            scopes.push(unknown_scope(
-                profile,
-                tool,
-                client,
-                Some(format!("depends on pane variable {variable}")),
-                &declaration,
-            ));
+        owned.push((label.as_str(), index));
+    }
+    count_declarations(&mut scopes, cfg, &owned);
+    scopes
+}
+
+/// Count each `[clients]` row's declaration on exactly ONE scope, or on none.
+///
+/// A declaration belongs to a LABEL, and a label has exactly one by
+/// construction, so it may be spent once however many scopes that label
+/// reached. The scope entitled to it is the one the `[clients]` row's OWN
+/// discovery produced, and only when that discovery PROVED a source.
+///
+/// Not merely a stable choice — an ACCOUNT choice. A declared reset INCREASES
+/// apparent headroom, so handing it to a scope the label reached by some other
+/// route grants headroom to an arbitrary account under ambiguous attribution.
+/// `[profiles] p = HOME=/other cc` is exactly that: visited first, it would
+/// take the count for an account the operator never declared it against. When
+/// the owning discovery proved nothing there is no entitled scope, so the
+/// count is spent NOWHERE and the ambiguity is reported. Every ambiguity
+/// resolves toward LESS apparent headroom.
+fn count_declarations(
+    scopes: &mut [Scope],
+    cfg: &crate::config::IdentityConfig,
+    owned: &[(&str, usize)],
+) {
+    for (label, _) in &cfg.clients {
+        let declaration = declaration_for(cfg, Some(label));
+        let carrying: Vec<usize> = scopes
+            .iter()
+            .enumerate()
+            .filter(|(_, scope)| scope.accounts.iter().any(|account| account == label))
+            .map(|(index, _)| index)
+            .collect();
+        let Some(first) = carrying.first().copied() else {
             continue;
-        }
-        let unknown_variable = std::cell::RefCell::new(None);
-        let account_variable = tool.adapter().config_home_env;
-        let resolution = crate::launch_cmd::config_home_resolution(&resolved, tool, &|name| {
-            if name == "HOME" {
-                return home.map(|path| path.display().to_string());
-            }
-            if account_variable == Some(name) {
-                return None;
-            }
-            let mut unknown = unknown_variable.borrow_mut();
-            if unknown.is_none() {
-                *unknown = Some(name.to_owned());
-            }
-            None
-        });
-        if let Some(variable) = unknown_variable.into_inner() {
-            scopes.push(unknown_scope(
-                profile,
-                tool,
-                client,
-                Some(format!("depends on pane variable {variable}")),
-                &declaration,
-            ));
-            continue;
-        }
-        let paths = match resolved_scope_paths(tool, &resolution, home) {
-            Ok(paths) => paths,
-            Err(error) => {
-                scopes.push(unknown_scope(
-                    profile,
-                    tool,
-                    client,
-                    Some(error),
-                    &declaration,
-                ));
-                continue;
-            }
         };
-        let ScopePaths {
+        // Why a declared value was unusable describes the row the operator
+        // wrote, not an account, so it is said whatever the attribution is.
+        if let Some(note) = declaration.note.clone()
+            && let Some(scope) = scopes.get_mut(first)
+        {
+            push_note(scope, Some(note));
+        }
+        let Some(count) = declaration.manual_resets else {
+            continue;
+        };
+        let entitled = owned
+            .iter()
+            .find(|(name, _)| *name == label)
+            .map(|(_, index)| *index)
+            .filter(|index| {
+                scopes
+                    .get(*index)
+                    .is_some_and(|scope| scope.source_key.is_some())
+            });
+        let Some(index) = entitled else {
+            let Some(scope) = scopes.get_mut(first) else {
+                continue;
+            };
+            push_note(
+                scope,
+                Some(format!(
+                    "client '{label}' declares manual_resets={count}, but its own scope proved no source, so no scope claims the count and every one uses its raw windows"
+                )),
+            );
+            continue;
+        };
+        let spread = carrying.len() > 1;
+        let Some(scope) = scopes.get_mut(index) else {
+            continue;
+        };
+        merge_declaration(
+            scope,
+            &Declaration {
+                manual_resets: Some(count),
+                note: None,
+            },
+        );
+        if spread {
+            push_note(
+                scope,
+                Some(format!(
+                    "client '{label}' could not be shown as one account, so its manual_resets is counted on this scope only; the others use their raw windows"
+                )),
+            );
+        }
+    }
+}
+
+fn push_note(scope: &mut Scope, note: Option<String>) {
+    if let Some(note) = note
+        && !scope.notes.contains(&note)
+    {
+        scope.notes.push(note);
+    }
+}
+
+/// Fold one resolved command into the scope table.
+///
+/// `owner` is the profile that resolved it, or `None` for a bare `[clients]`
+/// row. A `None` owner contributes no profile name to the scope: it carries
+/// the account, not a way to launch it.
+fn absorb_resolved(
+    scopes: &mut Vec<Scope>,
+    cfg: &crate::config::IdentityConfig,
+    home: Option<&Path>,
+    owner: Option<&str>,
+    resolved: &crate::config::ResolvedCommand,
+) -> usize {
+    let tool = resolved_tool(resolved.as_str());
+    let account = resolved.client_label();
+    let client = account.and_then(|label| displayed_client(cfg, label, tool));
+    if let Some(variable) = word_expansion_dependency(resolved, home) {
+        scopes.push(unknown_scope(
+            owner,
+            account,
+            tool,
+            client,
+            Some(format!("depends on pane variable {variable}")),
+        ));
+        return scopes.len() - 1;
+    }
+    let unknown_variable = std::cell::RefCell::new(None);
+    let account_variable = tool.adapter().config_home_env;
+    let resolution = crate::launch_cmd::config_home_resolution(resolved, tool, &|name| {
+        if name == "HOME" {
+            return home.map(|path| path.display().to_string());
+        }
+        if account_variable == Some(name) {
+            return None;
+        }
+        let mut unknown = unknown_variable.borrow_mut();
+        if unknown.is_none() {
+            *unknown = Some(name.to_owned());
+        }
+        None
+    });
+    if let Some(variable) = unknown_variable.into_inner() {
+        scopes.push(unknown_scope(
+            owner,
+            account,
+            tool,
+            client,
+            Some(format!("depends on pane variable {variable}")),
+        ));
+        return scopes.len() - 1;
+    }
+    let paths = match resolved_scope_paths(tool, &resolution, home) {
+        Ok(paths) => paths,
+        Err(error) => {
+            scopes.push(unknown_scope(owner, account, tool, client, Some(error)));
+            return scopes.len() - 1;
+        }
+    };
+    let ScopePaths {
+        home: config_home,
+        source,
+        source_key,
+        hint,
+    } = paths;
+    // A PROVEN source is the whole of the correlation. `source_key: None` means
+    // this discovery resolved none, not that it has no distinguishing identity,
+    // and matching two of those would join accounts on the absence of evidence
+    // — the same defect, through the branch that shipped it. An unsupported
+    // tool has no source by construction, so its labels are separate scopes
+    // too: that is what ae can honestly say about them.
+    let held = scopes.iter().position(|scope| {
+        scope.source_key.is_some()
+            && scope.tool == tool
+            && scope.source_key == source_key
+            && scope.hint == hint
+    });
+    let Some(index) = held.and_then(|index| scopes.get_mut(index).map(|scope| (index, scope)))
+    else {
+        scopes.push(Scope {
+            tool,
             home: config_home,
             source,
             source_key,
+            profiles: owner.map(str::to_owned).into_iter().collect(),
+            configured_profiles: owner.map(str::to_owned).into_iter().collect(),
+            clients: client.into_iter().collect(),
+            accounts: account.map(str::to_owned).into_iter().collect(),
+            rollouts: Vec::new(),
             hint,
-        } = paths;
-        if let Some(scope) = scopes.iter_mut().find(|scope| {
-            scope.tool == tool && scope.source_key == source_key && scope.hint == hint
-        }) {
-            scope.profiles.push(profile.clone());
-            scope.configured_profiles.push(profile.clone());
-            if let Some(client) = client
-                && !scope.clients.contains(&client)
-            {
-                scope.clients.push(client);
-            }
-            merge_declaration(scope, &declaration);
-        } else {
-            scopes.push(Scope {
-                tool,
-                home: config_home,
-                source,
-                source_key,
-                profiles: vec![profile.clone()],
-                configured_profiles: vec![profile.clone()],
-                clients: client.into_iter().collect(),
-                hint,
-                manual_resets: declaration.manual_resets,
-                notes: declaration.note.clone().into_iter().collect(),
-            });
-        }
+            manual_resets: None,
+            notes: Vec::new(),
+        });
+        return scopes.len() - 1;
+    };
+    let (index, scope) = index;
+    if let Some(profile) = owner {
+        scope.profiles.push(profile.to_owned());
+        scope.configured_profiles.push(profile.to_owned());
     }
-    scopes
+    if let Some(client) = client
+        && !scope.clients.contains(&client)
+    {
+        scope.clients.push(client);
+    }
+    if let Some(account) = account
+        && !scope.accounts.iter().any(|held| held == account)
+    {
+        scope.accounts.push(account.to_owned());
+    }
+    index
 }
 
 /// The scope a profile gets when its own command never resolved to a client.
@@ -1520,25 +1685,43 @@ fn unresolved_scope(
     raw: &str,
     error: Option<&crate::config::ConfigError>,
 ) -> Scope {
+    // No error means the profile never named a client at all, so there is no
+    // account to attribute this row to and none is guessed: it stays its own.
     let Some(error) = error else {
-        return unknown_scope(
-            profile,
-            resolved_tool(""),
-            None,
-            None,
-            &Declaration::default(),
-        );
+        return unknown_scope(Some(profile), None, resolved_tool(""), None, None);
     };
     let label = config_error_client(error);
     let tool = label
         .and_then(|label| cfg.client(label))
         .map_or_else(|| resolved_tool(raw), |client| client.tool);
     unknown_scope(
-        profile,
+        Some(profile),
+        label,
         tool,
         label.and_then(|label| displayed_client(cfg, label, tool)),
         Some(error.to_string()),
-        &declaration_for(cfg, label),
+    )
+}
+
+/// The scope a bare `[clients]` row gets when its own expansion refused.
+///
+/// A declared account that will not resolve is a fact the operator needs, so
+/// it is reported as `unknown` with the refusal, exactly as an unresolvable
+/// profile is — never dropped.
+fn unresolved_client_scope(
+    cfg: &crate::config::IdentityConfig,
+    label: &str,
+    error: &crate::config::ConfigError,
+) -> Scope {
+    let tool = cfg
+        .client(label)
+        .map_or_else(|| resolved_tool(""), |client| client.tool);
+    unknown_scope(
+        None,
+        Some(label),
+        tool,
+        displayed_client(cfg, label, tool),
+        Some(error.to_string()),
     )
 }
 
@@ -1662,27 +1845,29 @@ fn canonical_source(path: PathBuf) -> Result<PathBuf, String> {
 }
 
 fn unknown_scope(
-    profile: &str,
+    owner: Option<&str>,
+    account: Option<&str>,
     tool: ToolKind,
     client: Option<String>,
     hint: Option<String>,
-    declaration: &Declaration,
 ) -> Scope {
     Scope {
         tool,
         home: None,
         source: None,
         source_key: None,
-        profiles: vec![profile.to_owned()],
-        configured_profiles: vec![profile.to_owned()],
+        profiles: owner.map(str::to_owned).into_iter().collect(),
+        configured_profiles: owner.map(str::to_owned).into_iter().collect(),
         clients: client.into_iter().collect(),
+        accounts: account.map(str::to_owned).into_iter().collect(),
+        rollouts: Vec::new(),
         hint,
-        manual_resets: declaration.manual_resets,
-        notes: declaration.note.clone().into_iter().collect(),
+        manual_resets: None,
+        notes: Vec::new(),
     }
 }
 
-/// Read one `[clients]` row's declared extra headroom, if the profile names one.
+/// Read one `[clients]` row's declared extra headroom.
 fn declaration_for(cfg: &crate::config::IdentityConfig, label: Option<&str>) -> Declaration {
     let Some(client) = label.and_then(|label| cfg.client(label)) else {
         return Declaration::default();
@@ -1866,35 +2051,34 @@ fn add_recorded_codex_scopes(scopes: &mut Vec<Scope>, fleet: &FleetRollouts) {
                         profiles: vec![rollout.profile.clone()],
                         configured_profiles: Vec::new(),
                         clients: Vec::new(),
+                        accounts: Vec::new(),
+                        rollouts: Vec::new(),
                         hint: None,
                         manual_resets: None,
                         notes: Vec::new(),
                     });
                 }
             }
+            // A rollout whose recorded home did not resolve proved NO account.
+            // Two of them failing for the SAME REASON is two failures that read
+            // alike, not one identity, so they are never gathered: a matching
+            // reason string would otherwise attribute each seat's profile to
+            // the other's rollout. Each stands for itself, by id.
             RolloutLocation::Unknown(reason) => {
-                if let Some(scope) = scopes.iter_mut().find(|scope| {
-                    scope.tool == rollout.tool
-                        && scope.source.is_none()
-                        && scope.hint.as_ref() == Some(reason)
-                }) {
-                    if !scope.profiles.contains(&rollout.profile) {
-                        scope.profiles.push(rollout.profile.clone());
-                    }
-                } else {
-                    scopes.push(Scope {
-                        tool: rollout.tool,
-                        home: None,
-                        source: None,
-                        source_key: None,
-                        profiles: vec![rollout.profile.clone()],
-                        configured_profiles: Vec::new(),
-                        clients: Vec::new(),
-                        hint: Some(reason.clone()),
-                        manual_resets: None,
-                        notes: Vec::new(),
-                    });
-                }
+                scopes.push(Scope {
+                    tool: rollout.tool,
+                    home: None,
+                    source: None,
+                    source_key: None,
+                    profiles: vec![rollout.profile.clone()],
+                    configured_profiles: Vec::new(),
+                    clients: Vec::new(),
+                    accounts: Vec::new(),
+                    rollouts: vec![rollout.id.clone()],
+                    hint: Some(reason.clone()),
+                    manual_resets: None,
+                    notes: Vec::new(),
+                });
             }
         }
     }
@@ -2010,11 +2194,8 @@ fn scope_rollouts<'a>(scope: &Scope, fleet: &'a FleetRollouts) -> Vec<&'a FleetR
             RolloutLocation::Recorded { source_key, .. } => {
                 scope.source_key.as_ref() == Some(source_key)
             }
-            RolloutLocation::Unknown(reason) => {
-                scope.source.is_none()
-                    && scope.hint.as_ref() == Some(reason)
-                    && scope.profiles.contains(&rollout.profile)
-            }
+            // Named by id: the scope stands for this rollout and no other.
+            RolloutLocation::Unknown(_) => scope.rollouts.contains(&rollout.id),
         })
         .fold(Vec::new(), |mut unique, rollout| {
             if !unique
@@ -2533,8 +2714,17 @@ fn consume_escape(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
     }
 }
 
+/// The PROFILES cell for one scope.
+///
+/// A scope discovered from its `[clients]` row alone names no profile, and an
+/// empty first cell reads like a rendering bug. It gets the table's own
+/// absent spelling, `-`, which every other column already uses for "nothing
+/// to state here" — no new vocabulary for the operator to learn.
 fn profiles_label(profiles: &[String]) -> String {
     let joined = profiles.join(" ");
+    if joined.is_empty() {
+        return "-".to_owned();
+    }
     if joined.chars().count() <= TABLE_MAX_WIDTHS[0] {
         return joined;
     }
@@ -2943,8 +3133,8 @@ mod tests {
         Row, Scope, Status, TABLE_MAX_LINE, TABLE_MAX_WIDTHS, bounded_tail, bounded_whole_file,
         classify, codex_groups, codex_rollout_dirs, configured_scopes, credits_label, derived,
         effective, find_codex_rollout, freshness, merge_declaration, order_located_rollouts,
-        percent_label, profiles_label, read_bounded_tail, read_claude, render_at, render_table,
-        rows_or_placeholder, sanitize_cell, vendor_timestamp,
+        percent_label, placeholder, profiles_label, read_bounded_tail, read_claude, render_at,
+        render_table, rows_or_placeholder, sanitize_cell, settings_same_scope, vendor_timestamp,
     };
     use crate::tool::ToolKind;
 
@@ -3020,6 +3210,67 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    /// The plain configured Codex scope the rollout suites read through.
+    /// The settings dialog must not gather what the table holds apart.
+    ///
+    /// Both halves are pinned together on purpose. A scope that proved NO
+    /// source has no identity but its rollout, so two of them are one dialog
+    /// row only when they ARE one rollout. A scope that PROVED a source keeps
+    /// the shipped rule that its rollout owners are evidence about one
+    /// account — collapsing those is correct and must not regress.
+    #[test]
+    fn the_quota_dialog_groups_unproven_scopes_by_rollout_and_proven_ones_by_source() {
+        let group = |source: Option<&str>, rollout: &str, owner: &str| Group {
+            profiles: vec!["p".to_owned()],
+            tool: ToolKind::Codex,
+            home: source.map(|_| std::path::PathBuf::from("/tmp/cx")),
+            source: source.map(std::path::PathBuf::from),
+            clients: Vec::new(),
+            rollout: Some(rollout.to_owned()),
+            owner: Some(owner.to_owned()),
+            rows: vec![placeholder(Status::Unknown)],
+            hint: source
+                .is_none()
+                .then(|| "recorded config home is absent".to_owned()),
+            summary: None,
+            policy: Policy::default(),
+            notes: Vec::new(),
+        };
+        let unproven_a = group(None, "rollout-a", "session:lead");
+        let unproven_b = group(None, "rollout-b", "session:rev");
+        assert!(
+            !settings_same_scope(&unproven_a, &unproven_b),
+            "two unattributable rollouts are two dialog scopes"
+        );
+        assert!(
+            settings_same_scope(&unproven_a, &unproven_a.clone()),
+            "one rollout is still itself"
+        );
+        let proven_a = group(Some("/tmp/cx/sessions"), "rollout-a", "session:lead");
+        let proven_b = group(Some("/tmp/cx/sessions"), "rollout-b", "session:rev");
+        assert!(
+            settings_same_scope(&proven_a, &proven_b),
+            "one proven source is one account, whatever rollouts observed it"
+        );
+    }
+
+    fn configured_codex_scope(root: &std::path::Path) -> Scope {
+        Scope {
+            tool: ToolKind::Codex,
+            home: Some(root.join(".codex")),
+            source: Some(root.join(".codex/sessions")),
+            source_key: Some(root.join(".codex/sessions")),
+            profiles: vec!["codex-profile".to_owned()],
+            configured_profiles: vec!["codex-profile".to_owned()],
+            clients: Vec::new(),
+            accounts: Vec::new(),
+            rollouts: Vec::new(),
+            hint: None,
+            manual_resets: None,
+            notes: Vec::new(),
+        }
+    }
+
     #[test]
     fn codex_rollouts_read_newest_files_first_then_display_three_by_record_clock() {
         const NOW: i64 = 1_788_858_600;
@@ -3062,18 +3313,7 @@ mod tests {
                 location: RolloutLocation::Configured,
             });
         }
-        let scope = Scope {
-            tool: ToolKind::Codex,
-            home: Some(root.join(".codex")),
-            source: Some(root.join(".codex/sessions")),
-            source_key: Some(root.join(".codex/sessions")),
-            profiles: vec!["codex-profile".to_owned()],
-            configured_profiles: vec!["codex-profile".to_owned()],
-            clients: Vec::new(),
-            hint: None,
-            manual_resets: None,
-            notes: Vec::new(),
-        };
+        let scope = configured_codex_scope(&root);
         let groups = codex_groups(&scope, &fleet, NOW, &mut Budget::new());
         let shown: Vec<_> = groups
             .rendered
@@ -3151,18 +3391,7 @@ mod tests {
                 location: RolloutLocation::Configured,
             });
         }
-        let scope = Scope {
-            tool: ToolKind::Codex,
-            home: Some(root.join(".codex")),
-            source: Some(root.join(".codex/sessions")),
-            source_key: Some(root.join(".codex/sessions")),
-            profiles: vec!["codex-profile".to_owned()],
-            configured_profiles: vec!["codex-profile".to_owned()],
-            clients: Vec::new(),
-            hint: None,
-            manual_resets: None,
-            notes: Vec::new(),
-        };
+        let scope = configured_codex_scope(&root);
         let mut budget = Budget {
             files_left: 4_096,
             bytes_left: 0,
@@ -3238,6 +3467,8 @@ mod tests {
             profiles: vec!["codex-profile".to_owned()],
             configured_profiles: vec!["codex-profile".to_owned()],
             clients: vec!["codex-client".to_owned()],
+            accounts: Vec::new(),
+            rollouts: Vec::new(),
             hint: Some("configured scope hint".to_owned()),
             manual_resets: None,
             notes: Vec::new(),
@@ -3377,6 +3608,8 @@ mod tests {
                 profiles: vec!["p".to_owned()],
                 configured_profiles: vec!["p".to_owned()],
                 clients: Vec::new(),
+                accounts: Vec::new(),
+                rollouts: Vec::new(),
                 hint: None,
                 manual_resets: None,
                 notes: Vec::new(),
@@ -4232,6 +4465,8 @@ mod tests {
                 profiles: vec!["ax".to_owned()],
                 configured_profiles: vec!["ax".to_owned()],
                 clients: vec!["a".to_owned()],
+                accounts: Vec::new(),
+                rollouts: Vec::new(),
                 hint: None,
                 manual_resets: first,
                 notes: Vec::new(),

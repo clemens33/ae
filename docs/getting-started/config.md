@@ -108,7 +108,8 @@ Each distinct config home isolates local login state, settings, and conversation
 workspace can mix work and personal identities seat by seat. It does not create an independent
 provider quota: two homes may authenticate the same account, while two client labels may share one
 home. `ae quota` groups profiles by the resolved client home and lists the client labels sharing
-each scope. Bind the profiles to different `[roster]` names and run the tool's login flow once per
+each scope. A client no profile names is read as its own scope, so its declaration is never dead
+config — the row is there before you launch anything against it. Bind the profiles to different `[roster]` names and run the tool's login flow once per
 new home.
 
 **Claude default-state trap:** never set `CLAUDE_CONFIG_DIR` (directly or through `config_home`) to
