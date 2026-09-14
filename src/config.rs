@@ -382,25 +382,7 @@ impl IdentityConfig {
             }));
         };
         let client_label = binary.word.to_owned();
-        let mut replacement = client.executable.clone();
-        if let Some(config_home) = &client.config_home {
-            let Some(variable) = client.tool.adapter().config_home_env else {
-                return Err(ConfigError::ClientHome {
-                    profile: profile.to_owned(),
-                    client: binary.word.to_owned(),
-                    reason: format!(
-                        "config_home is not supported for {}: its account variable is unverified",
-                        client.tool.as_str()
-                    ),
-                });
-            };
-            let expanded =
-                expand_client_home(profile, binary.word, config_home, client.tool, home)?;
-            replacement = format!(
-                "{variable}={} {replacement}",
-                crate::launch::shell_quote(&expanded)
-            );
-        }
+        let replacement = client_replacement(Some(profile), binary.word, client, home)?;
         let mut command = String::with_capacity(raw.len() + replacement.len());
         command.push_str(&raw[..binary.span.0]);
         command.push_str(&replacement);
@@ -408,6 +390,31 @@ impl IdentityConfig {
         Ok(Some(ResolvedCommand {
             text: command,
             client_label: Some(client_label),
+        }))
+    }
+
+    /// Resolve a `[clients]` row on its own, for the case where NO profile
+    /// names it.
+    ///
+    /// The resolved text is the client's expansion ALONE — its optional
+    /// config-home assignment and its executable, nothing more. This is not a
+    /// profile command and carries no profile arguments, because no profile
+    /// supplied any. `client_label` is the row's own label.
+    ///
+    /// # Errors
+    ///
+    /// A `$HOME`-rooted client path when `home` is unavailable or not absolute.
+    pub(crate) fn client_command(
+        &self,
+        label: &str,
+        home: Option<&Path>,
+    ) -> Result<Option<ResolvedCommand>, ConfigError> {
+        let Some(client) = self.client(label) else {
+            return Ok(None);
+        };
+        Ok(Some(ResolvedCommand {
+            text: client_replacement(None, label, client, home)?,
+            client_label: Some(label.to_owned()),
         }))
     }
 
@@ -494,10 +501,11 @@ pub enum ConfigError {
         /// The conflicting variable.
         variable: String,
     },
-    /// A `$HOME`-rooted client path could not be resolved for one profile.
+    /// A `$HOME`-rooted client path could not be resolved.
     ClientHome {
-        /// The profile key.
-        profile: String,
+        /// The profile key being resolved, or `None` when the `[clients]` row
+        /// was read on its own and no profile names it.
+        profile: Option<String>,
         /// The client label.
         client: String,
         /// The specific refusal.
@@ -555,13 +563,18 @@ impl fmt::Display for ConfigError {
                 "Error: [profiles] {profile}: both profile and client '{client}' set {variable}."
             ),
             Self::ClientHome {
-                profile,
+                profile: Some(profile),
                 client,
                 reason,
             } => write!(
                 f,
                 "Error: [profiles] {profile} via client '{client}': {reason}"
             ),
+            Self::ClientHome {
+                profile: None,
+                client,
+                reason,
+            } => write!(f, "Error: [clients] {client}: {reason}"),
         }
     }
 }
@@ -1009,8 +1022,43 @@ fn validate_client_conflicts(cfg: &IdentityConfig) -> Result<(), ConfigError> {
     Ok(())
 }
 
+/// The text a `[clients]` row expands to: its optional config-home assignment
+/// and its executable word.
+///
+/// The ONE expansion. A profile substitutes this for its own first word; a
+/// bare client row IS this. `profile` names the profile being resolved, or
+/// `None` when the row was read on its own — it only decides which config
+/// section a refusal points at.
+fn client_replacement(
+    profile: Option<&str>,
+    label: &str,
+    client: &Client,
+    home: Option<&Path>,
+) -> Result<String, ConfigError> {
+    let mut replacement = client.executable.clone();
+    let Some(config_home) = &client.config_home else {
+        return Ok(replacement);
+    };
+    let Some(variable) = client.tool.adapter().config_home_env else {
+        return Err(ConfigError::ClientHome {
+            profile: profile.map(str::to_owned),
+            client: label.to_owned(),
+            reason: format!(
+                "config_home is not supported for {}: its account variable is unverified",
+                client.tool.as_str()
+            ),
+        });
+    };
+    let expanded = expand_client_home(profile, label, config_home, client.tool, home)?;
+    replacement = format!(
+        "{variable}={} {replacement}",
+        crate::launch::shell_quote(&expanded)
+    );
+    Ok(replacement)
+}
+
 fn expand_client_home(
-    profile: &str,
+    profile: Option<&str>,
     client: &str,
     raw: &str,
     tool: crate::tool::ToolKind,
@@ -1032,27 +1080,27 @@ fn expand_client_home(
         }
     })
     .map_err(|reason| ConfigError::ClientHome {
-        profile: profile.to_owned(),
+        profile: profile.map(str::to_owned),
         client: client.to_owned(),
         reason,
     })?;
     if home_unavailable.get() {
         return Err(ConfigError::ClientHome {
-            profile: profile.to_owned(),
+            profile: profile.map(str::to_owned),
             client: client.to_owned(),
             reason: "HOME unavailable".to_owned(),
         });
     }
     let Some(path) = expanded.first().filter(|_| expanded.len() == 1) else {
         return Err(ConfigError::ClientHome {
-            profile: profile.to_owned(),
+            profile: profile.map(str::to_owned),
             client: client.to_owned(),
             reason: "config_home did not resolve to one path".to_owned(),
         });
     };
     if !Path::new(path).is_absolute() {
         return Err(ConfigError::ClientHome {
-            profile: profile.to_owned(),
+            profile: profile.map(str::to_owned),
             client: client.to_owned(),
             reason: "config_home did not resolve to an absolute path".to_owned(),
         });
@@ -1061,7 +1109,7 @@ fn expand_client_home(
         && Path::new(path) == home.join(default)
     {
         return Err(ConfigError::ClientHome {
-            profile: profile.to_owned(),
+            profile: profile.map(str::to_owned),
             client: client.to_owned(),
             reason: default_client_home_refusal(tool),
         });
@@ -1816,6 +1864,89 @@ mod tests {
              [roster]\nlead = p\n[workspace]\nmain = lead\n",
         );
         assert_eq!(command(&cfg, "p", None), "/custom/claude --x");
+    }
+
+    /// `command()` now shares its client expansion with `client_command()`.
+    /// This pins the PROFILE side of that share byte for byte: resolved text
+    /// AND client label, over a client with `config_home`, a client without,
+    /// a bare-path binary that never reaches a client at all, and an unknown
+    /// label. Nothing an operator's profile resolves to may move.
+    #[test]
+    fn the_shared_client_expansion_leaves_every_profile_resolution_byte_identical() {
+        let (_f, cfg) = v2(
+            "[clients]\ncc = claude config_home=$HOME/.claude-mic\nplain = codex\n\
+             [profiles]\nhomed = cc --model fable\nbare = plain -m sol\n\
+             abs = /usr/bin/cc --flag\nstranger = nosuchclient --x\n\
+             [roster]\nlead = homed\n[workspace]\nmain = lead\n",
+        );
+        let home = Path::new("/Users/a");
+        for (profile, text, label) in [
+            (
+                "homed",
+                "CLAUDE_CONFIG_DIR='/Users/a/.claude-mic' claude --model fable",
+                Some("cc"),
+            ),
+            ("bare", "codex -m sol", Some("plain")),
+            ("abs", "/usr/bin/cc --flag", None),
+            ("stranger", "nosuchclient --x", None),
+        ] {
+            let resolved = cfg
+                .command(profile, Some(home))
+                .expect("client path resolves")
+                .expect("profile exists");
+            assert_eq!(resolved.as_str(), text, "{profile}");
+            assert_eq!(resolved.client_label(), label, "{profile}");
+        }
+    }
+
+    /// A `[clients]` row resolves on its own to its expansion ALONE — no
+    /// profile arguments, because no profile supplied any — and an unknown
+    /// label is `None`, never an invented row.
+    #[test]
+    fn a_client_row_resolves_on_its_own_to_its_expansion_alone() {
+        let (_f, cfg) = v2(
+            "[clients]\ncc = claude config_home=$HOME/.claude-mic\nplain = codex\n\
+             [profiles]\nhomed = cc --model fable\n\
+             [roster]\nlead = homed\n[workspace]\nmain = lead\n",
+        );
+        let home = Path::new("/Users/a");
+        let resolved = cfg
+            .client_command("cc", Some(home))
+            .expect("client path resolves")
+            .expect("client exists");
+        assert_eq!(
+            resolved.as_str(),
+            "CLAUDE_CONFIG_DIR='/Users/a/.claude-mic' claude"
+        );
+        assert_eq!(resolved.client_label(), Some("cc"));
+        let plain = cfg
+            .client_command("plain", Some(home))
+            .expect("client path resolves")
+            .expect("client exists");
+        assert_eq!(plain.as_str(), "codex");
+        assert_eq!(plain.client_label(), Some("plain"));
+        assert!(
+            cfg.client_command("nosuchclient", Some(home))
+                .expect("no error")
+                .is_none()
+        );
+    }
+
+    /// A refusal names the section the operator must edit. A `[clients]` row
+    /// no profile names has no profile to blame, and pointing at `[profiles]`
+    /// with an empty key would read as a bug.
+    #[test]
+    fn a_client_row_refusal_names_the_clients_section_not_an_absent_profile() {
+        let (_f, cfg) = v2("[clients]\ncc = claude config_home=$HOME/.claude-mic\n\
+             [profiles]\nhomed = cc --model fable\n\
+             [roster]\nlead = homed\n[workspace]\nmain = lead\n");
+        let error = cfg.client_command("cc", None).unwrap_err();
+        assert_eq!(error.to_string(), "Error: [clients] cc: HOME unavailable");
+        let via_profile = cfg.command("homed", None).unwrap_err();
+        assert_eq!(
+            via_profile.to_string(),
+            "Error: [profiles] homed via client 'cc': HOME unavailable"
+        );
     }
 
     #[test]

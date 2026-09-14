@@ -1411,106 +1411,138 @@ pub fn run(inputs: &Inputs<'_>, out: &mut impl Write, err: &mut impl Write) -> c
     Ok(0)
 }
 
+/// Every quota scope the config declares.
+///
+/// TWO discoveries, one scope table. Profiles come first, because a named
+/// profile is what the operator usually reads a row by. Then every `[clients]`
+/// row on its own: a client no profile names is still an ACCOUNT, its
+/// `manual_resets` is still a declaration, and the operator decides whether to
+/// launch a seat against it from exactly this table. A client one or more
+/// profiles already named merges into the scope they built — same tool, same
+/// canonical source — so an account is never counted twice, and its
+/// declaration is reconciled by the one [`merge_declaration`] rule rather than
+/// applied beside it.
 fn configured_scopes(cfg: &crate::config::IdentityConfig, home: Option<&Path>) -> Vec<Scope> {
     let mut scopes: Vec<Scope> = Vec::new();
     for (profile, raw) in &cfg.profiles {
-        let resolved = match cfg.command(profile, home) {
-            Ok(Some(resolved)) => resolved,
-            Ok(None) => {
-                scopes.push(unresolved_scope(cfg, profile, raw, None));
-                continue;
+        match cfg.command(profile, home) {
+            Ok(Some(resolved)) => {
+                absorb_resolved(&mut scopes, cfg, home, Some(profile.as_str()), &resolved);
             }
-            Err(error) => {
-                scopes.push(unresolved_scope(cfg, profile, raw, Some(&error)));
-                continue;
-            }
-        };
-        let tool = resolved_tool(resolved.as_str());
-        let declaration = declaration_for(cfg, resolved.client_label());
-        let client = resolved
-            .client_label()
-            .and_then(|label| displayed_client(cfg, label, tool));
-        if let Some(variable) = word_expansion_dependency(&resolved, home) {
-            scopes.push(unknown_scope(
-                profile,
-                tool,
-                client,
-                Some(format!("depends on pane variable {variable}")),
-                &declaration,
-            ));
-            continue;
+            Ok(None) => scopes.push(unresolved_scope(cfg, profile, raw, None)),
+            Err(error) => scopes.push(unresolved_scope(cfg, profile, raw, Some(&error))),
         }
-        let unknown_variable = std::cell::RefCell::new(None);
-        let account_variable = tool.adapter().config_home_env;
-        let resolution = crate::launch_cmd::config_home_resolution(&resolved, tool, &|name| {
-            if name == "HOME" {
-                return home.map(|path| path.display().to_string());
-            }
-            if account_variable == Some(name) {
-                return None;
-            }
-            let mut unknown = unknown_variable.borrow_mut();
-            if unknown.is_none() {
-                *unknown = Some(name.to_owned());
-            }
-            None
-        });
-        if let Some(variable) = unknown_variable.into_inner() {
-            scopes.push(unknown_scope(
-                profile,
-                tool,
-                client,
-                Some(format!("depends on pane variable {variable}")),
-                &declaration,
-            ));
-            continue;
-        }
-        let paths = match resolved_scope_paths(tool, &resolution, home) {
-            Ok(paths) => paths,
-            Err(error) => {
-                scopes.push(unknown_scope(
-                    profile,
-                    tool,
-                    client,
-                    Some(error),
-                    &declaration,
-                ));
-                continue;
-            }
-        };
-        let ScopePaths {
-            home: config_home,
-            source,
-            source_key,
-            hint,
-        } = paths;
-        if let Some(scope) = scopes.iter_mut().find(|scope| {
-            scope.tool == tool && scope.source_key == source_key && scope.hint == hint
-        }) {
-            scope.profiles.push(profile.clone());
-            scope.configured_profiles.push(profile.clone());
-            if let Some(client) = client
-                && !scope.clients.contains(&client)
-            {
-                scope.clients.push(client);
-            }
-            merge_declaration(scope, &declaration);
-        } else {
-            scopes.push(Scope {
-                tool,
-                home: config_home,
-                source,
-                source_key,
-                profiles: vec![profile.clone()],
-                configured_profiles: vec![profile.clone()],
-                clients: client.into_iter().collect(),
-                hint,
-                manual_resets: declaration.manual_resets,
-                notes: declaration.note.clone().into_iter().collect(),
-            });
+    }
+    for (label, _) in &cfg.clients {
+        match cfg.client_command(label, home) {
+            Ok(Some(resolved)) => absorb_resolved(&mut scopes, cfg, home, None, &resolved),
+            // The label came from `cfg.clients`, so it always resolves to a row.
+            Ok(None) => {}
+            Err(error) => scopes.push(unresolved_client_scope(cfg, label, &error)),
         }
     }
     scopes
+}
+
+/// Fold one resolved command into the scope table.
+///
+/// `owner` is the profile that resolved it, or `None` for a bare `[clients]`
+/// row. A `None` owner contributes no profile name to the scope: it carries
+/// the account, not a way to launch it.
+fn absorb_resolved(
+    scopes: &mut Vec<Scope>,
+    cfg: &crate::config::IdentityConfig,
+    home: Option<&Path>,
+    owner: Option<&str>,
+    resolved: &crate::config::ResolvedCommand,
+) {
+    let tool = resolved_tool(resolved.as_str());
+    let declaration = declaration_for(cfg, resolved.client_label());
+    let client = resolved
+        .client_label()
+        .and_then(|label| displayed_client(cfg, label, tool));
+    if let Some(variable) = word_expansion_dependency(resolved, home) {
+        scopes.push(unknown_scope(
+            owner,
+            tool,
+            client,
+            Some(format!("depends on pane variable {variable}")),
+            &declaration,
+        ));
+        return;
+    }
+    let unknown_variable = std::cell::RefCell::new(None);
+    let account_variable = tool.adapter().config_home_env;
+    let resolution = crate::launch_cmd::config_home_resolution(resolved, tool, &|name| {
+        if name == "HOME" {
+            return home.map(|path| path.display().to_string());
+        }
+        if account_variable == Some(name) {
+            return None;
+        }
+        let mut unknown = unknown_variable.borrow_mut();
+        if unknown.is_none() {
+            *unknown = Some(name.to_owned());
+        }
+        None
+    });
+    if let Some(variable) = unknown_variable.into_inner() {
+        scopes.push(unknown_scope(
+            owner,
+            tool,
+            client,
+            Some(format!("depends on pane variable {variable}")),
+            &declaration,
+        ));
+        return;
+    }
+    let paths = match resolved_scope_paths(tool, &resolution, home) {
+        Ok(paths) => paths,
+        Err(error) => {
+            scopes.push(unknown_scope(
+                owner,
+                tool,
+                client,
+                Some(error),
+                &declaration,
+            ));
+            return;
+        }
+    };
+    let ScopePaths {
+        home: config_home,
+        source,
+        source_key,
+        hint,
+    } = paths;
+    if let Some(scope) = scopes
+        .iter_mut()
+        .find(|scope| scope.tool == tool && scope.source_key == source_key && scope.hint == hint)
+    {
+        if let Some(profile) = owner {
+            scope.profiles.push(profile.to_owned());
+            scope.configured_profiles.push(profile.to_owned());
+        }
+        if let Some(client) = client
+            && !scope.clients.contains(&client)
+        {
+            scope.clients.push(client);
+        }
+        merge_declaration(scope, &declaration);
+    } else {
+        scopes.push(Scope {
+            tool,
+            home: config_home,
+            source,
+            source_key,
+            profiles: owner.map(str::to_owned).into_iter().collect(),
+            configured_profiles: owner.map(str::to_owned).into_iter().collect(),
+            clients: client.into_iter().collect(),
+            hint,
+            manual_resets: declaration.manual_resets,
+            notes: declaration.note.clone().into_iter().collect(),
+        });
+    }
 }
 
 /// The scope a profile gets when its own command never resolved to a client.
@@ -1522,7 +1554,7 @@ fn unresolved_scope(
 ) -> Scope {
     let Some(error) = error else {
         return unknown_scope(
-            profile,
+            Some(profile),
             resolved_tool(""),
             None,
             None,
@@ -1534,11 +1566,33 @@ fn unresolved_scope(
         .and_then(|label| cfg.client(label))
         .map_or_else(|| resolved_tool(raw), |client| client.tool);
     unknown_scope(
-        profile,
+        Some(profile),
         tool,
         label.and_then(|label| displayed_client(cfg, label, tool)),
         Some(error.to_string()),
         &declaration_for(cfg, label),
+    )
+}
+
+/// The scope a bare `[clients]` row gets when its own expansion refused.
+///
+/// A declared account that will not resolve is a fact the operator needs, so
+/// it is reported as `unknown` with the refusal, exactly as an unresolvable
+/// profile is — never dropped.
+fn unresolved_client_scope(
+    cfg: &crate::config::IdentityConfig,
+    label: &str,
+    error: &crate::config::ConfigError,
+) -> Scope {
+    let tool = cfg
+        .client(label)
+        .map_or_else(|| resolved_tool(""), |client| client.tool);
+    unknown_scope(
+        None,
+        tool,
+        displayed_client(cfg, label, tool),
+        Some(error.to_string()),
+        &declaration_for(cfg, Some(label)),
     )
 }
 
@@ -1662,7 +1716,7 @@ fn canonical_source(path: PathBuf) -> Result<PathBuf, String> {
 }
 
 fn unknown_scope(
-    profile: &str,
+    owner: Option<&str>,
     tool: ToolKind,
     client: Option<String>,
     hint: Option<String>,
@@ -1673,8 +1727,8 @@ fn unknown_scope(
         home: None,
         source: None,
         source_key: None,
-        profiles: vec![profile.to_owned()],
-        configured_profiles: vec![profile.to_owned()],
+        profiles: owner.map(str::to_owned).into_iter().collect(),
+        configured_profiles: owner.map(str::to_owned).into_iter().collect(),
         clients: client.into_iter().collect(),
         hint,
         manual_resets: declaration.manual_resets,
@@ -1682,7 +1736,7 @@ fn unknown_scope(
     }
 }
 
-/// Read one `[clients]` row's declared extra headroom, if the profile names one.
+/// Read one `[clients]` row's declared extra headroom.
 fn declaration_for(cfg: &crate::config::IdentityConfig, label: Option<&str>) -> Declaration {
     let Some(client) = label.and_then(|label| cfg.client(label)) else {
         return Declaration::default();
@@ -2533,8 +2587,17 @@ fn consume_escape(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
     }
 }
 
+/// The PROFILES cell for one scope.
+///
+/// A scope discovered from its `[clients]` row alone names no profile, and an
+/// empty first cell reads like a rendering bug. It gets the table's own
+/// absent spelling, `-`, which every other column already uses for "nothing
+/// to state here" — no new vocabulary for the operator to learn.
 fn profiles_label(profiles: &[String]) -> String {
     let joined = profiles.join(" ");
+    if joined.is_empty() {
+        return "-".to_owned();
+    }
     if joined.chars().count() <= TABLE_MAX_WIDTHS[0] {
         return joined;
     }

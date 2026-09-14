@@ -20,7 +20,7 @@ ae next [--attach]     Name the top running session needing attention (read-only
 ae brief [name] [--all] [--since <dur>]
                        Card a session: goal, the latest note per memo topic, each agent's
                        declared state, and who is waiting on you. Read-only
-ae quota               Show bounded local quota snapshots for configured profiles
+ae quota               Show bounded local quota snapshots for every configured account
 ae usage [name…] [--json]
                        Show offline API-equivalent usage for all live sessions, or
                        only the named live sessions
@@ -734,8 +734,12 @@ ae doctor --refresh my-fix  # one session
 
 ## `ae quota`
 
-Shows each configured agent profile's locally cached subscription-quota windows. Both the public
-command and session helper use Codex conversation ids recorded across the local ae fleet:
+Shows each configured account's locally cached subscription-quota windows. Every `[profiles]` entry
+is read, and so is every `[clients]` row on its own: an account no profile names is still an account
+whose headroom decides whether to launch a seat against it, and its `manual_resets` declaration is
+still a declaration. A client one or more profiles already name is one scope, not two — its PROFILES
+cell lists them, while a scope no profile names spells that cell `-`. Both the public command and
+session helper use Codex conversation ids recorded across the local ae fleet:
 
 ```bash
 ae quota

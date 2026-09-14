@@ -507,6 +507,165 @@ fn client_resolution_error_is_unknown_without_hiding_other_scopes() {
     assert!(text.contains("goodx") && text.contains("77%"), "{text}");
 }
 
+/// The account decision `ae quota` exists to inform is made BEFORE a seat is
+/// launched, so a declared client with no profile must be readable now.
+#[test]
+fn a_client_no_profile_names_is_a_scope_of_its_own() {
+    let root = rig("client-without-profile");
+    std::fs::write(
+        root.join("config"),
+        concat!(
+            "[clients]\n",
+            "mic = claude config_home=$HOME/.claude-mic manual_resets=1\n",
+            "[profiles]\n",
+            "fablex = claude --model fable\n",
+        ),
+    )
+    .expect("client-only config");
+    let text = run_quota(&root);
+    let _ = std::fs::remove_dir_all(&root);
+    assert!(
+        text.contains("claude · mic") && text.contains("77%"),
+        "the unnamed client is read: {text}"
+    );
+    assert!(
+        text.contains("fablex") && text.contains("66%"),
+        "the profile scope is untouched: {text}"
+    );
+    assert!(
+        text.contains("38.5% x1"),
+        "its declared reset reaches the one EFFECTIVE derivation: {text}"
+    );
+    let row = text
+        .lines()
+        .find(|line| line.contains("claude · mic"))
+        .expect("the client row");
+    assert!(
+        row.starts_with("- "),
+        "an account with no profile spells its PROFILES cell the table's own absent way: {row:?}"
+    );
+}
+
+/// One account, one scope. A client one or more profiles ALREADY name must
+/// not come back a second time through the client pass.
+#[test]
+fn a_client_a_profile_already_names_is_not_counted_twice() {
+    let root = rig("client-already-named");
+    std::fs::write(
+        root.join("config"),
+        concat!(
+            "[clients]\n",
+            "mic = claude config_home=$HOME/.claude-mic manual_resets=1\n",
+            "[profiles]\n",
+            "micx = mic --model fable\n",
+        ),
+    )
+    .expect("named client config");
+    let text = run_quota(&root);
+    let _ = std::fs::remove_dir_all(&root);
+    assert_eq!(
+        text.matches("claude · mic").count(),
+        1,
+        "exactly one scope per account: {text}"
+    );
+    assert_eq!(
+        text.matches("38.5% x1").count(),
+        1,
+        "the declaration is applied once, not twice: {text}"
+    );
+    assert!(
+        !text.contains("\n- "),
+        "a named client never also renders as a profileless row: {text}"
+    );
+}
+
+/// The new rows go through the SAME reconciliation the shipped invariant
+/// names: two labels on one config home are one account, smallest count wins.
+#[test]
+fn a_client_only_declaration_is_reconciled_not_applied_beside_the_others() {
+    let root = rig("client-only-reconciled");
+    let shared = root.join(".codex-shared/sessions/2026/09/08");
+    std::fs::create_dir_all(&shared).expect("shared rollout day");
+    let fixture = String::from_utf8_lossy(include_bytes!("../fixtures/quota/codex-rollout.jsonl"))
+        .replace("\"used_percent\":7.0", "\"used_percent\":95.0");
+    std::fs::write(
+        shared.join(format!("rollout-2026-09-08T09-00-00-{FIRST_ID}.jsonl")),
+        &fixture,
+    )
+    .expect("shared rollout");
+    std::fs::write(
+        root.join("config"),
+        concat!(
+            "[clients]\n",
+            "named = codex config_home=$HOME/.codex-shared manual_resets=1\n",
+            "lonely = codex config_home=$HOME/.codex-shared manual_resets=0\n",
+            "[profiles]\n",
+            "ax = named --model x\n",
+        ),
+    )
+    .expect("reconciled config");
+    std::fs::write(
+        root.join("sessions/session/meta"),
+        format!(
+            "schema=2\nseat.main=lead\nprofile.main=ax\nharness_session.main={FIRST_ID}\nagent_bin.main=codex\n"
+        ),
+    )
+    .expect("session meta");
+    let text = run_quota(&root);
+    let _ = std::fs::remove_dir_all(&root);
+    assert!(
+        text.contains(" 95%   95%") && !text.contains("47.5%"),
+        "a client-only explicit zero still overrules the named label's one: {text}"
+    );
+    assert_eq!(
+        text.matches("manual_resets declared as 0 and 1 for one scope; using 0")
+            .count(),
+        1,
+        "the disagreement is said out loud exactly once: {text}"
+    );
+    assert_eq!(
+        text.matches("codex · named, lonely").count(),
+        1,
+        "both labels name one account: {text}"
+    );
+}
+
+/// A declared account that will not resolve is reported, never dropped, and
+/// its refusal names the section the operator must edit.
+#[test]
+fn a_client_only_row_that_cannot_resolve_is_unknown_and_names_its_own_section() {
+    let root = rig("client-only-unresolved");
+    let good = root.join("good-claude");
+    std::fs::create_dir_all(&good).expect("good client home");
+    let cache = String::from_utf8_lossy(include_bytes!("../fixtures/quota/claude-cache.json"))
+        .replace("\"percent\": 66", "\"percent\": 77");
+    std::fs::write(good.join(".claude.json"), cache.as_bytes()).expect("good cache");
+    std::fs::write(
+        root.join("config"),
+        format!(
+            "[clients]\nlonely = claude config_home=$HOME/.claude-lonely\n[profiles]\ngoodx = CLAUDE_CONFIG_DIR={} claude\n",
+            good.display()
+        ),
+    )
+    .expect("unresolvable client config");
+    let text = run_quota_with_home(&root, None);
+    let _ = std::fs::remove_dir_all(&root);
+    assert!(
+        text.contains("claude · lonely") && text.contains("unknown"),
+        "the unresolvable account is still reported: {text}"
+    );
+    // The status cell wraps, so the refusal is asserted by its parts.
+    assert!(
+        text.contains("[clients] lonely:") && text.contains("HOME unavailable"),
+        "the refusal points at the row the operator wrote: {text}"
+    );
+    assert!(
+        !text.contains("[profiles] lonely"),
+        "no profile is invented to blame: {text}"
+    );
+    assert!(text.contains("goodx") && text.contains("77%"), "{text}");
+}
+
 #[cfg(unix)]
 #[test]
 fn implicit_claude_profiles_do_not_merge_distinct_sources_after_home_canonicalization() {
