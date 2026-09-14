@@ -349,16 +349,16 @@ pub fn run_spawn(
                 return Ok(EXIT_FAILED);
             }
         };
-    // The launch token is a CAPTURE fact of the tools with no launch-time id
-    // flag, not a roster row — but it is RECORDED before the pane exists, so
-    // that `_run` can name it in the context it injects.
-    if tool.adapter().capture.is_needed()
-        && meta::rewrite(
-            dir,
-            &format!("launch_id.{slot}"),
-            Some(&launch::generate_uuid()),
-        )
-        .is_err()
+    // The launch id guards observed-model writes for every seat. Capture tools
+    // also use it to distinguish their own stores, but marker injection stays
+    // gated by the adapter capability. Record it before the pane exists so
+    // `_run` can compose either use from the same durable identity.
+    if meta::rewrite(
+        dir,
+        &format!("launch_id.{slot}"),
+        Some(&crate::session_launch::launch_token(tool, None)),
+    )
+    .is_err()
     {
         writeln!(
             err,

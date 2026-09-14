@@ -3311,19 +3311,15 @@ fn start_agent(
     Ok(Ok(()))
 }
 
-/// The launch TOKEN this seat launches with: the one it already has, else a
-/// fresh one, and none at all for a tool with no post-launch capture.
+/// The launch ID this seat launches with: the one it already has, else a fresh
+/// one. It has two jobs: disambiguating post-launch capture in a tool's own
+/// store, and guarding observed-model writes against a re-created seat.
 ///
-/// The token is what tells two seats apart INSIDE the tool's own store, so it
-/// has to outlive a resume the way `harness_session` does. A resumed seat with
-/// an empty token carries no `AE_..._LAUNCH_ID` in its instructions, and its
-/// capture is reduced to matching the newest log in the working directory.
-/// Measured 2026-09-04: two codex seats resumed while both were still `pending`
-/// then raced onto ONE rollout and recorded the SAME id twice.
-fn launch_token(tool: ToolKind, stored: Option<String>) -> String {
-    if !tool.adapter().capture.is_needed() {
-        return String::new();
-    }
+/// Every tool needs the second job. The first and marker injection remain
+/// gated by the adapter's capture and marker capabilities. Measured 2026-09-04:
+/// two codex seats resumed while both were still `pending` then raced onto ONE
+/// rollout and recorded the SAME id twice.
+pub(crate) fn launch_token(_tool: ToolKind, stored: Option<String>) -> String {
     stored
         .filter(|id| !id.is_empty())
         .unwrap_or_else(launch::generate_uuid)
@@ -4585,10 +4581,10 @@ mod tests {
         }
     }
 
-    /// A seat KEEPS its launch token across a resume; only a seat without one
-    /// is given a fresh one, and a tool with no capture is given none.
+    /// A seat KEEPS its launch id across a resume; only a seat without one is
+    /// given a fresh one. Capture capability never changes that seat identity.
     #[test]
-    fn a_resumed_seat_keeps_the_launch_token_that_names_it_in_the_tools_store() {
+    fn a_resumed_seat_keeps_the_launch_id_that_guards_its_identity() {
         assert_eq!(
             launch_token(ToolKind::Codex, Some("tok-1".to_owned())),
             "tok-1",
@@ -4601,7 +4597,15 @@ mod tests {
             "an empty row is no token at all: mint one"
         );
         for tool in [ToolKind::Claude, ToolKind::Grok, ToolKind::Unknown] {
-            assert_eq!(launch_token(tool, Some("tok-1".to_owned())), "", "{tool:?}");
+            assert_eq!(
+                launch_token(tool, Some("tok-1".to_owned())),
+                "tok-1",
+                "{tool:?}"
+            );
+            assert!(
+                !launch_token(tool, None).is_empty(),
+                "every seat gets a meta guard: {tool:?}"
+            );
         }
     }
 

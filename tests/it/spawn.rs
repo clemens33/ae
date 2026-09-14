@@ -445,6 +445,21 @@ fn a_spawn_seats_stamps_launches_and_briefs_its_agent() {
         meta.contains("harness_session.spawned.0="),
         "claude takes an ae-generated id at launch: {meta}"
     );
+    let launch_id = rig.launch_id("spawned.0");
+    assert_eq!(
+        launch_id.len(),
+        36,
+        "a spawned Claude seat records a UUID-shaped launch id: {meta}"
+    );
+    assert_eq!(
+        launch_id.bytes().filter(|byte| *byte == b'-').count(),
+        4,
+        "a spawned Claude seat records a UUID-shaped launch id: {meta}"
+    );
+    assert!(
+        !meta.contains("capture_floor.spawned.0="),
+        "Claude does not start post-launch capture: {meta}"
+    );
 
     // The PANE, stamped, in its own window named for the role.
     let spawned: Vec<_> = rig

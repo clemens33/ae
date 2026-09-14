@@ -102,6 +102,12 @@ impl Rig {
     /// Publish a meta whose `main` seat runs `profile`, with `id` recorded as
     /// its harness session (empty for the capture tools, which have none yet).
     fn seat(&self, profile: &str, id: &str) {
+        self.seat_with_launch_id(profile, id, Some("tok-1"));
+    }
+
+    /// The same fixture with an optional launch-id row. An explicitly empty
+    /// row is distinct from no row: the observed-model CAS must refuse both.
+    fn seat_with_launch_id(&self, profile: &str, id: &str, launch_id: Option<&str>) {
         let mut body = String::new();
         for (key, value) in [
             ("mode", "local"),
@@ -113,9 +119,11 @@ impl Rig {
             ("config", &self.config.display().to_string()),
             ("seat.main", "lead"),
             ("profile.main", profile),
-            ("launch_id.main", "tok-1"),
         ] {
             let _ = writeln!(body, "{key}={value}");
+        }
+        if let Some(launch_id) = launch_id {
+            let _ = writeln!(body, "launch_id.main={launch_id}");
         }
         if !id.is_empty() {
             let _ = writeln!(body, "harness_session.main={id}");
@@ -1675,4 +1683,69 @@ fn a_parameter_form_the_validator_accepts_is_one_the_run_can_expand() {
         String::from_utf8_lossy(&out.stdout).trim(),
         "fallback chosen"
     );
+}
+
+/// An observed-model retirement must keep its rows when the identity guard is
+/// empty or absent. The explicit empty row separately defeats a guard that
+/// only relies on the later compare-and-swap.
+#[test]
+fn a_resumed_model_retirement_refuses_empty_and_missing_launch_guards() {
+    for (tag, launch_id) in [
+        ("empty-model-guard", Some("")),
+        ("missing-model-guard", None),
+    ] {
+        let rig = Rig::new(tag);
+        rig.profile(
+            "claudefix",
+            &format!("{} --model sonnet", rig.tool("claude")),
+        );
+        rig.seat_with_launch_id("claudefix", "sid", launch_id);
+        rig.append_meta(
+            "agent_bin.main=claude\nobserved_model.main=Opus 5\nobserved_model_pin.main=fable\n",
+        );
+        rig.started();
+
+        let argv = rig.planned_argv();
+        assert!(
+            carries(&argv, &["--model", "sonnet"]),
+            "the newer profile pin keeps running: {argv:?}"
+        );
+        let meta = std::fs::read_to_string(rig.dir.join("meta"))
+            .unwrap_or_else(|why| panic!("the fixture meta should read: {why}"));
+        assert!(
+            meta.contains("observed_model.main=Opus 5\n")
+                && meta.contains("observed_model_pin.main=fable\n"),
+            "the unguarded retirement must not erase either row: {meta}"
+        );
+    }
+}
+
+/// A launch id is meta-only for tools without a marker capability. Compare the
+/// whole plan because any injected-context byte is part of the command passed
+/// to the tool.
+#[test]
+fn claude_and_grok_contexts_are_byte_identical_with_a_meta_only_launch_id() {
+    for tool in ["claude", "grok"] {
+        let rig = Rig::new(&format!("meta-only-context-{tool}"));
+        let id = "11111111-1111-4111-8111-111111111111";
+
+        rig.seat_with_launch_id(tool, id, None);
+        let created_without = rig.plan();
+        rig.seat_with_launch_id(tool, id, Some("meta-only-token"));
+        let created_with = rig.plan();
+        assert_eq!(
+            created_with, created_without,
+            "a create {tool} context must ignore its meta-only launch id"
+        );
+
+        rig.started();
+        rig.seat_with_launch_id(tool, id, None);
+        let resumed_without = rig.plan();
+        rig.seat_with_launch_id(tool, id, Some("meta-only-token"));
+        let resumed_with = rig.plan();
+        assert_eq!(
+            resumed_with, resumed_without,
+            "a resumed {tool} context must ignore its meta-only launch id"
+        );
+    }
 }

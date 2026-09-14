@@ -1262,6 +1262,82 @@ fn a_local_launch_builds_the_whole_session() {
     );
 }
 
+/// A Claude seat needs a launch id for the observed-model CAS even though it
+/// receives its harness session id at launch and needs no post-launch capture.
+#[test]
+fn a_claude_launch_records_its_identity_and_preserves_its_observed_model() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::new("claude-launch-id", &["claude"], None);
+    let fake = rig.bin.join("claude");
+    let body = std::fs::read_to_string(&fake)
+        .unwrap_or_else(|why| panic!("the claude fake should read: {why}"))
+        .replace(
+            r#"print "fake agent transcript\r\n";
+print "\e[1m$ornament\e[0m$nbsp\r\n";
+if ($codex) { print "\r\n"; } else { print "$border\r\n"; }
+print "  fake-model  ~/x\r\n";"#,
+            r#"print "$border\r\n";
+print "\e[1m$ornament\e[0m$nbsp\r\n";
+print "$border\r\n";
+print "  🧠 Opus 5 (xhigh)  📁 ae\r\n";
+print "  ⏵⏵ bypass permissions on\r\n";"#,
+        );
+    assert!(
+        std::fs::write(&fake, body).is_ok(),
+        "the real Claude footer"
+    );
+    add_profile(
+        &rig,
+        "claudefix",
+        &format!("{} --model fable", fake.display()),
+    );
+
+    let session = "lnclaudeidentity";
+    let (code, stdout, stderr) = rig.launch(&["--local", session, "--lead", "claudefix"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let meta = rig.meta(session);
+    let launch_id = meta
+        .lines()
+        .find_map(|line| line.strip_prefix("launch_id.main="))
+        .unwrap_or_else(|| panic!("the Claude seat needs a launch id:\n{meta}"));
+    assert!(!launch_id.is_empty(), "the launch id is non-empty: {meta}");
+    assert!(
+        !meta.contains("capture_floor.main="),
+        "Claude does not start post-launch capture: {meta}"
+    );
+    let argv = rig.launch_argv();
+    assert!(
+        !argv.contains("LAUNCH_ID"),
+        "the meta-only id must not enter Claude's context: {argv}"
+    );
+
+    for _ in 0..100 {
+        let (_, pane) = rig.tmux(&["capture-pane", "-p", "-t", &format!("={session}")]);
+        if pane.contains("🧠 Opus 5 (xhigh)") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let (code, stdout, stderr) = public(&rig, &["stop", session]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let stopped = rig.meta(session);
+    assert!(
+        stopped.contains("observed_model.main=Opus 5\n"),
+        "{stopped}"
+    );
+    assert!(
+        stopped.contains("observed_model_pin.main=fable\n"),
+        "{stopped}"
+    );
+    let plan = rig.plan(session, "main");
+    assert!(
+        plan.contains("\"--model\",\"Opus 5\""),
+        "the resume honors the observed Claude model: {plan}"
+    );
+}
+
 /// A helper LINK really is the core: `state` writes the caller's declaration,
 /// and `peek` reads a pane back — both through a file that is nothing but a
 /// symlink to the binary answering.
