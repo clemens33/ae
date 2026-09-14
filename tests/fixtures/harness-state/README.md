@@ -12,6 +12,7 @@ redactions while TUI suffixes, line breaks, and recorded pane geometry were kept
 | `claude-busy-167x40.txt` | Claude Code 2.1.267 | busy/Enchanting | 167x40 | `%419` |
 | `claude-idle-167x40.txt` | Claude Code 2.1.263 | done/idle, themed | 167x40 | `%78` |
 | `claude-resumed-idle-149x37.txt` | Claude Code 2.1.266 | resumed idle | 149x37 | `%298` |
+| `claude-busy-nbsp-tip-101x41.txt` | Claude Code 2.1.270 | busy + live NBSP tip | 101x41 | `%0`, 2026-09-14: live suffix, transcript redacted; tip line is `⎿` SP NBSP (`e2 8e bf 20 c2 a0`) |
 | `codex-idle-old-busy-280x40.txt` | Codex 0.153.4 | old quoted busy, current idle | 280x40 | `%485`, later capture |
 | `codex-idle-112x20.txt` | Codex 0.153.4 | idle, plain short crop | 112x20 | final 20 visible rows of `%338` |
 | `codex-idle-wrapped-112x40.txt` | Codex 0.153.4 | narrow joined wrap | 112x40 | `%338` |

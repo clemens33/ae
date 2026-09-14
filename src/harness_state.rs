@@ -1,5 +1,7 @@
 //! Pure classification of the current harness frame already captured by the watchdog.
 
+use std::borrow::Cow;
+
 use crate::tool::{InputModel, ToolKind};
 
 /// What the current, positively recognized harness frame says.
@@ -164,10 +166,20 @@ pub fn current_identity(capture: &str, tool: ToolKind) -> HarnessIdentity {
     }
 }
 
-fn clean_lines(capture: &str) -> Vec<&str> {
+/// Normalize matching input: a U+00A0 anywhere in the line becomes a plain
+/// space, then ASCII/NBSP whitespace is trimmed from the edges. Only a line
+/// carrying an interior NBSP allocates; every other line stays borrowed.
+fn clean_lines(capture: &str) -> Vec<Cow<'_, str>> {
     capture
         .lines()
-        .map(|line| line.trim_matches([' ', '\t', '\r', '\u{a0}']))
+        .map(|line| {
+            let trimmed = line.trim_matches([' ', '\t', '\r', '\u{a0}']);
+            if trimmed.contains('\u{a0}') {
+                Cow::Owned(trimmed.replace('\u{a0}', " "))
+            } else {
+                Cow::Borrowed(trimmed)
+            }
+        })
         .filter(|line| !line.is_empty())
         .collect()
 }
@@ -220,7 +232,7 @@ fn classify_claude(capture: &str) -> HarnessState {
     }
 }
 
-fn claude_input_frame(lines: &[&str], prompt_index: usize) -> bool {
+fn claude_input_frame(lines: &[Cow<'_, str>], prompt_index: usize) -> bool {
     let Some(before) = prompt_index
         .checked_sub(1)
         .and_then(|index| lines.get(index))
@@ -356,8 +368,8 @@ fn valid_effort(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        HarnessIdentity, HarnessState, IdleCarry, classify, current_identity, decode_idle,
-        encode_idle, has_human_draft, observed_from_option,
+        HarnessIdentity, HarnessState, IdleCarry, classify, clean_lines, current_identity,
+        decode_idle, encode_idle, has_human_draft, observed_from_option,
     };
     use crate::tool::ToolKind;
 
@@ -389,6 +401,25 @@ mod tests {
     fn a_second_live_claude_spinner_grammar_is_busy() {
         let capture = include_str!("../tests/fixtures/harness-state/claude-busy-167x40.txt");
         assert_eq!(classify(capture, ToolKind::Claude), HarnessState::Busy);
+    }
+
+    /// Live capture 2026-09-14 from pane `%0` (session `aedev`, Claude Code
+    /// 2.1.270) with `capture-pane -p -J -S -40 -E -`; only the transcript
+    /// above the frame is redacted. The tip line carries the live bytes
+    /// `e2 8e bf 20 c2 a0` (`⎿`, space, NBSP) that the frozen ASCII-space
+    /// fixtures cannot, and shadows the spinner line above it.
+    #[test]
+    fn a_live_claude_busy_frame_with_an_nbsp_tip_is_busy() {
+        let capture =
+            include_str!("../tests/fixtures/harness-state/claude-busy-nbsp-tip-101x41.txt");
+        assert_eq!(classify(capture, ToolKind::Claude), HarnessState::Busy);
+    }
+
+    #[test]
+    fn clean_lines_normalizes_an_interior_nbsp_for_the_whole_line() {
+        let lines = clean_lines("  ⎿\u{a0}Tip: use\u{a0}/btw  \nplain line\n");
+        assert_eq!(lines[0], "⎿ Tip: use /btw");
+        assert_eq!(lines[1], "plain line");
     }
 
     #[test]

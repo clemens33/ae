@@ -1,0 +1,8 @@
+[redacted live transcript]
+· Germinating… (47s · ↓ 3.0k tokens · thinking with xhigh effort)
+  ⎿  Tip: Use /btw to ask a quick side question without interrupting Claude's current work
+─────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+─────────────────────────────────────────────────────────────────────────────────────────────────────
+  🧠 Opus 5 (1M context) (xhigh)  📁 ae  🌿 main  ctx 21%  $819.51  cache warm  5h 4%  7d 92%
+  ⏵⏵ bypass permissions on · 1 shell · ← for agents
