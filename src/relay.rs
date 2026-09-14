@@ -139,19 +139,19 @@ pub fn run(
             Ok(answer) => answer,
             Err(why) => return refuse(&caller, &parsed, &why.message(), now, err),
         };
-    let fields = EventFields {
-        ts: now,
-        actor: &caller.actor,
-        action: ACTION,
-        target: &target.display,
-        reference: "",
-        actor_slot: &caller.slot,
-        actor_session: &caller.session,
-        target_slot: &resolved.slot,
-        target_session: &target.session,
-        summary: &parsed.text,
-        body_file: "",
-    };
+    let fields = EventFields::new(
+        now,
+        &caller.actor,
+        ACTION,
+        &target.display,
+        "",
+        &caller.slot,
+        &caller.session,
+        &resolved.slot,
+        &target.session,
+        &parsed.text,
+        "",
+    );
     let request = deliver::Request {
         dir: &caller.dir,
         server: &server,
@@ -295,19 +295,19 @@ fn refuse(
     err: &mut impl Write,
 ) -> io::Result<u8> {
     let summary = format!("refused: {reason}; {}", parsed.text);
-    let line = tracked::event_line(&EventFields {
-        ts: now,
-        actor: &caller.actor,
-        action: ACTION,
-        target: &parsed.target,
-        reference: "",
-        actor_slot: &caller.slot,
-        actor_session: &caller.session,
-        target_slot: "",
-        target_session: "",
-        summary: &summary,
-        body_file: "",
-    });
+    let line = tracked::event_line(&EventFields::new(
+        now,
+        &caller.actor,
+        ACTION,
+        &parsed.target,
+        "",
+        &caller.slot,
+        &caller.session,
+        "",
+        "",
+        &summary,
+        "",
+    ));
     let audit = store::open(&caller.dir).append_event(&line);
     match audit {
         Ok(()) => writeln!(err, "ae: relay REFUSED — {reason}. Nothing was sent.")?,
@@ -336,17 +336,9 @@ fn audit_delivery_failure(
     };
     let summary = format!("refused: {reason}; {}", fields.summary);
     let line = tracked::event_line(&EventFields {
-        ts: fields.ts,
-        actor: fields.actor,
-        action: fields.action,
-        target: fields.target,
-        reference: fields.reference,
-        actor_slot: fields.actor_slot,
-        actor_session: fields.actor_session,
-        target_slot: fields.target_slot,
-        target_session: fields.target_session,
         summary: &summary,
         body_file: failure.body_file(),
+        ..*fields
     });
     if let Err(why) = store::open(&caller.dir).append_event(&line) {
         writeln!(err, "ae: relay attempt audit failed: {why}")?;
@@ -363,17 +355,8 @@ fn audit_landed(
     err: &mut impl Write,
 ) -> io::Result<u8> {
     let fields = EventFields {
-        ts: fields.ts,
-        actor: fields.actor,
-        action: fields.action,
-        target: fields.target,
-        reference: fields.reference,
-        actor_slot: fields.actor_slot,
-        actor_session: fields.actor_session,
-        target_slot: fields.target_slot,
-        target_session: fields.target_session,
-        summary: fields.summary,
         body_file,
+        ..*fields
     };
     let line = if unconfirmed {
         tracked::unconfirmed_event_line(&fields)

@@ -620,13 +620,15 @@ pub fn is_addressable_socket(path: &Path) -> bool {
     path.is_absolute()
 }
 
-/// The format the viewer query asks for: the calling pane's routing slot, its
-/// tmux session and its display ref — three readings in ONE round trip rather
-/// than three, so the pane cannot change identity between them.
-pub const VIEWER_FORMAT: &str = "#{@ae_slot} | #{session_name} | #{@ae_agent}";
+/// The format the viewer query asks for: routing slot, tmux session, display
+/// ref, `@ae_session_uuid`, and `#{socket_path}` — five readings in ONE round
+/// trip. The socket path is the server's own spelling, so a symlink alias and
+/// a replacement between two queries cannot splice two identities.
+pub const VIEWER_FORMAT: &str =
+    "#{@ae_slot} | #{session_name} | #{@ae_agent} | #{@ae_session_uuid} | #{socket_path}";
 
 /// The number of fields [`VIEWER_FORMAT`] yields.
-const VIEWER_FIELDS: usize = 3;
+const VIEWER_FIELDS: usize = 5;
 
 /// The arguments that read [`VIEWER_FORMAT`] off `pane` on `server`.
 #[must_use]
@@ -636,8 +638,8 @@ pub fn viewer_args(server: &ServerId, pane: &str) -> Vec<String> {
     args
 }
 
-/// The calling pane's three identity readings.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// The calling pane's identity readings from one display-message.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObservedViewer {
     /// `@ae_slot` — the routing key, unvalidated here.
     pub slot: Option<String>,
@@ -645,6 +647,26 @@ pub struct ObservedViewer {
     pub session: Option<String>,
     /// `@ae_agent` — the display `alias:name`.
     pub agent: Option<String>,
+    /// `@ae_session_uuid` from the SAME pane-keyed query. A successful query
+    /// yields [`OptionReading::Set`] or [`OptionReading::Vacant`] — never
+    /// [`OptionReading::Unknown`], which is only the failed-query case
+    /// ([`interpret_viewer`] returning `None`).
+    pub session_uuid: OptionReading,
+    /// `#{socket_path}` from the SAME pane-keyed query. The server's own
+    /// spelling, independent of the selector used to address it.
+    pub socket_path: Option<String>,
+}
+
+impl Default for ObservedViewer {
+    fn default() -> Self {
+        Self {
+            slot: None,
+            session: None,
+            agent: None,
+            session_uuid: OptionReading::Unknown,
+            socket_path: None,
+        }
+    }
 }
 
 /// What a completed viewer query means.
@@ -666,6 +688,12 @@ pub fn interpret_viewer(succeeded: bool, stdout: &str) -> Option<ObservedViewer>
         slot: reading(fields[0]),
         session: reading(fields[1]),
         agent: reading(fields[2]),
+        session_uuid: if fields[3].is_empty() {
+            OptionReading::Vacant
+        } else {
+            OptionReading::Set(fields[3].to_owned())
+        },
+        socket_path: reading(fields[4]),
     })
 }
 
@@ -4521,50 +4549,90 @@ mod tests {
     }
 
     #[test]
-    fn the_viewer_query_addresses_the_pane_and_asks_for_the_three_readings() {
-        use super::{ObservedViewer, VIEWER_FORMAT, interpret_viewer, viewer_args};
+    fn the_viewer_query_addresses_the_pane_and_asks_for_the_five_readings() {
+        use super::{ObservedViewer, OptionReading, VIEWER_FORMAT, interpret_viewer, viewer_args};
         use crate::inventory::ServerId;
+        use crate::theme::SESSION_ID_OPTION;
         assert_eq!(
             viewer_args(&ServerId::Ambient, "%7"),
             ["display-message", "-p", "-t", "%7", VIEWER_FORMAT]
         );
-        // A stamped agent pane.
+        assert!(
+            VIEWER_FORMAT.contains(SESSION_ID_OPTION),
+            "the incarnation fact rides the same pane-keyed query as the names"
+        );
+        assert!(
+            VIEWER_FORMAT.contains("#{socket_path}"),
+            "the server fact rides the same pane-keyed query, not a second observe"
+        );
+        let uuid = "1b4e28ba-2fa1-11d2-883f-0016d3cc4321";
         assert_eq!(
-            interpret_viewer(true, "main | aerewrite | cl:lead\n"),
+            interpret_viewer(
+                true,
+                &format!("main | aerewrite | cl:lead | {uuid} | /tmp/tmux-501/default\n")
+            ),
             Some(ObservedViewer {
                 slot: Some("main".to_owned()),
                 session: Some("aerewrite".to_owned()),
                 agent: Some("cl:lead".to_owned()),
+                session_uuid: OptionReading::Set(uuid.to_owned()),
+                socket_path: Some("/tmp/tmux-501/default".to_owned()),
             })
         );
-        // An unstamped pane: unset options expand to empty, and empty is None.
+        // An unstamped pane: unset options expand to empty. Names become None;
+        // an empty uuid field is Vacant, never Unknown — the query answered.
         assert_eq!(
-            interpret_viewer(true, " | aerewrite | \n"),
+            interpret_viewer(true, " | aerewrite |  |  | /tmp/s\n"),
             Some(ObservedViewer {
                 slot: None,
                 session: Some("aerewrite".to_owned()),
                 agent: None,
+                session_uuid: OptionReading::Vacant,
+                socket_path: Some("/tmp/s".to_owned()),
             })
         );
-        // A failed run, a short line and a long line are all no identity.
-        assert_eq!(interpret_viewer(false, "main | s | a:b\n"), None);
-        // MORE THAN ONE RECORD is no identity either: a second line, however
-        // well-formed the first, is content the query never asked for, and
-        // reading the first would let it pick the record.
+        assert_eq!(interpret_viewer(false, "main | s | a:b | u | /s\n"), None);
         assert_eq!(
-            interpret_viewer(true, "main | s | a:b\nworker.0 | s | a:c\n"),
+            interpret_viewer(
+                true,
+                "main | s | a:b | u | /s\nworker.0 | s | a:c | u | /s\n"
+            ),
             None
         );
-        assert_eq!(interpret_viewer(true, "main | s | a:b\n\n"), None);
-        assert_eq!(interpret_viewer(true, "main | s | a:b\nx"), None);
-        // One record with or without its terminating newline is the same record.
+        assert_eq!(interpret_viewer(true, "main | s | a:b | u | /s\n\n"), None);
+        assert_eq!(interpret_viewer(true, "main | s | a:b | u | /s\nx"), None);
         assert_eq!(
-            interpret_viewer(true, "main | s | a:b"),
-            interpret_viewer(true, "main | s | a:b\n")
+            interpret_viewer(true, "main | s | a:b | u | /s"),
+            interpret_viewer(true, "main | s | a:b | u | /s\n")
         );
-        assert_eq!(interpret_viewer(true, "main | s\n"), None);
-        assert_eq!(interpret_viewer(true, "main | s | a:b | extra\n"), None);
+        assert_eq!(interpret_viewer(true, "main | s | a:b | u\n"), None);
+        assert_eq!(
+            interpret_viewer(true, "main | s | a:b | u | /s | extra\n"),
+            None
+        );
         assert_eq!(interpret_viewer(true, ""), None);
+        let vacant = interpret_viewer(true, "main | s | a:b |  | /s\n");
+        assert_eq!(
+            vacant.as_ref().map(|v| &v.session_uuid),
+            Some(&OptionReading::Vacant)
+        );
+        // Alias spelling: the recorded server is the format's socket_path, not
+        // the selector used to address the query.
+        let alias = interpret_viewer(true, &format!("main | s | a | {uuid} | /tmp/alias\n"));
+        let real = interpret_viewer(true, &format!("main | s | a | {uuid} | /tmp/real\n"));
+        assert_eq!(
+            alias.as_ref().and_then(|v| v.socket_path.as_deref()),
+            Some("/tmp/alias")
+        );
+        assert_eq!(
+            real.as_ref().and_then(|v| v.socket_path.as_deref()),
+            Some("/tmp/real")
+        );
+        assert_ne!(
+            alias.as_ref().and_then(|v| v.socket_path.as_deref()),
+            real.as_ref().and_then(|v| v.socket_path.as_deref()),
+            "two spellings stay two facts; tmux's returned path is what we record"
+        );
     }
 
     use super::{

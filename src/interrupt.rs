@@ -200,6 +200,13 @@ fn record_delivery_failure(
         actor_session: "",
         target_slot: "",
         target_session: "",
+        target_server: "",
+        target_pane: "",
+        target_session_uuid: "",
+        caller_server: "",
+        caller_pane: "",
+        caller_session_uuid: "",
+        identity_gap: "",
         summary: &format!(
             "UNCONFIRMED notice; published body: {body_file}; interrupt submit proof failed"
         ),
@@ -268,6 +275,13 @@ fn record_with_body(
         actor_session,
         target_slot,
         target_session,
+        target_server: "",
+        target_pane: "",
+        target_session_uuid: "",
+        caller_server: "",
+        caller_pane: "",
+        caller_session_uuid: "",
+        identity_gap: "",
         summary,
         body_file,
     };

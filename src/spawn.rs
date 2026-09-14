@@ -521,6 +521,13 @@ pub fn run_spawn(
             actor_session: "",
             target_slot: "",
             target_session: "",
+            target_server: "",
+            target_pane: "",
+            target_session_uuid: "",
+            caller_server: "",
+            caller_pane: "",
+            caller_session_uuid: "",
+            identity_gap: "",
             summary: &format!("brief not delivered: {reason}"),
             body_file: "",
         }));
@@ -543,6 +550,13 @@ fn record_spawn(dir: &Path, now: Timestamp, caller: &str, name: &str, prompt: &s
         actor_session: "",
         target_slot: "",
         target_session: "",
+        target_server: "",
+        target_pane: "",
+        target_session_uuid: "",
+        caller_server: "",
+        caller_pane: "",
+        caller_session_uuid: "",
+        identity_gap: "",
         summary: prompt,
         body_file: "",
     }));
@@ -853,18 +867,18 @@ pub fn run_retire(
             config_home_base,
         )
     });
-    let _ = store::open(dir).append_event(&tracked::event_line(&EventFields {
-        ts: now,
-        actor: actor_of(caller),
-        action: RETIRE_ACTION,
-        target: &agent,
+    let _ = store::open(dir).append_event(&tracked::event_line(&EventFields::new(
+        now,
+        actor_of(caller),
+        RETIRE_ACTION,
+        &agent,
         reference,
-        actor_slot: "",
-        actor_session: "",
-        target_slot: &slot,
-        target_session: "",
-        summary: &summary,
-        body_file: "",
-    }));
+        "",
+        "",
+        &slot,
+        "",
+        &summary,
+        "",
+    )));
     Ok(0)
 }

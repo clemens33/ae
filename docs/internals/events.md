@@ -85,6 +85,28 @@ Messaging events (`send` / `relay` / `ask` / `review` / `reply`) also carry the 
 
 Each is optional and omitted when empty. Readers that don't understand them ignore them; readers that do (`reply`, `requests`) prefer slot + session over the display name for pairing and delivery.
 
+### Incarnation fields
+
+Additive facts that prove a pane's session across servers and tmux incarnations. Older events omit them; older readers ignore them. Empty values are unwritten.
+
+```json
+{
+  "target_server":        "/tmp/tmux-501/default",  // #{socket_path} of the admitted target
+  "target_pane":          "%9",                     // pane id of the admitted target
+  "target_session_uuid":  "1b4e28ba-2fa1-11d2-883f-0016d3cc4321",
+  "caller_server":        "/tmp/tmux-501/default",  // #{socket_path} of the calling pane
+  "caller_pane":          "%3",
+  "caller_session_uuid":  "1b4e28ba-2fa1-11d2-883f-0016d3cc4321"
+}
+```
+
+`ask` / `review` write the **target** triple after proving pane UUID == target meta, re-observed after delivery. `reply` and `memo` write the **caller** triple, re-observed after the durable cut (`memo.tsv` append or reply delivery). If identity cannot be proved, or changes across the cut, the triple fields are omitted. When a session identity existed and correlation failed, the durable record names the failed leg in `identity_gap` (`CorrelationOutcome::name`: unreadable, vacant, mismatch, meta gaps). When there was **no session identity to correlate against** — the caller has no pane context, or neither the pane nor the `meta` records one — **no `identity_gap` key is written at all**: the question never arose, and an absent context is not a failed correlation. Stderr names **only** a change across the cut — RECORD, DO NOT BROADCAST. This is plumbing for later consumers (`compactseats`, request waiters); it does not change `ae reboot`.
+
+`requests` exposes the opening target triple as `recorded_target`. Two questions, never collapsed:
+
+- `caller_matches_live` — is this record from the incarnation that is here NOW?
+- `caller_matches_recorded_target` — is the responder the incarnation this request opened against?
+
 ## Actions
 
 | Action | Emitted by | Meaning |
@@ -118,7 +140,7 @@ Each is optional and omitted when empty. Readers that don't understand them igno
 
 A request is `replied` only when the reply's `actor` equals the request's `target` AND the reply's `target` equals the request's `actor`. Stray reply events (wrong actor / wrong target) leave the request `pending`. An authorized withdrawal is `cancelled`; a request closed by either party's seat retirement is `retired`, not `replied`. Without the reply check a misrouted or manual reply could falsely close a request.
 
-The core's request lookup returns the matched request as a tab-separated row. When the event carries routing-key fields the row is seven columns — `action  actor  target  actor_slot  actor_session  target_slot  target_session` — and `reply` verifies the responder's live slot against `target_slot` + `target_session` before delivering, so identity survives a name change. An event without those fields yields a three-column row (`action  actor  target`) and pairing falls back to the display name.
+The core's request lookup returns the matched request as a tab-separated row. When the event carries routing-key fields the row is seven columns — `action  actor  target  actor_slot  actor_session  target_slot  target_session` — and `reply` verifies the responder's live slot against `target_slot` + `target_session` before delivering, so identity survives a name change. An event without those fields yields a three-column row (`action  actor  target`) and pairing falls back to the display name. The sensor also carries the opening `target_server` / `target_pane` / `target_session_uuid` when present (`Request::recorded_target`); those members are not printed on the seven-column table.
 
 ## How `_agent_done_epoch` reads events
 

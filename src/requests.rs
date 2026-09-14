@@ -140,6 +140,12 @@ pub struct Request {
     pub from_session: Key,
     /// Session of the target's routing key.
     pub to_session: Key,
+    /// Canonical socket path of the admitted target server.
+    pub target_server: Vec<u8>,
+    /// Pane id of the admitted target.
+    pub target_pane: Vec<u8>,
+    /// Canonical UUID of the admitted target session.
+    pub target_session_uuid: Vec<u8>,
     /// The DISPLAY summary: the request's own text while pending, the closing
     /// event's text once closed.
     pub summary: Vec<u8>,
@@ -192,6 +198,16 @@ impl Request {
     #[must_use]
     fn askee_identity(&self) -> Identity<'_> {
         identity_of(&self.to_slot, &self.to_session, &self.to)
+    }
+
+    /// The target incarnation recorded at open, or `None` when any leg is missing.
+    #[must_use]
+    pub fn recorded_target(&self) -> Option<crate::tracked::IdentityTriple> {
+        recorded_triple(
+            &self.target_server,
+            &self.target_pane,
+            &self.target_session_uuid,
+        )
     }
 
     /// The table line for this row, `\n` included.
@@ -417,6 +433,9 @@ pub(crate) fn states_in(container: &[u8], session: &str) -> Vec<Request> {
                 to_slot: opening.to_slot,
                 from_session: opening.from_session,
                 to_session: opening.to_session,
+                target_server: opening.target_server,
+                target_pane: opening.target_pane,
+                target_session_uuid: opening.target_session_uuid,
                 summary,
             })
         })
@@ -486,6 +505,9 @@ struct Opening {
     to_slot: Key,
     from_session: Key,
     to_session: Key,
+    target_server: Vec<u8>,
+    target_pane: Vec<u8>,
+    target_session_uuid: Vec<u8>,
     summary: Vec<u8>,
     /// The closure owner can judge this opening only if it parsed as a ledger
     /// record. Opaque compatibility rows remain pending when no owner can see
@@ -516,6 +538,9 @@ impl Opening {
             to_slot: Key::read(line, "target_slot"),
             from_session: Key::read(line, "actor_session"),
             to_session: Key::read(line, "target_session"),
+            target_server: extract(line, "target_server"),
+            target_pane: extract(line, "target_pane"),
+            target_session_uuid: extract(line, "target_session_uuid"),
             summary: fold_newlines(extract(line, "summary")),
             ledger_valid: std::str::from_utf8(line)
                 .ok()
@@ -591,6 +616,23 @@ impl Closing {
             summary: fold_newlines(extract(line, "summary")),
         }
     }
+}
+
+/// Reconstruct a triple from the three stored legs. Any empty leg is a gap.
+fn recorded_triple(
+    server: &[u8],
+    pane: &[u8],
+    session_uuid: &[u8],
+) -> Option<crate::tracked::IdentityTriple> {
+    let text = |bytes: &[u8]| {
+        let value = std::str::from_utf8(bytes).ok()?;
+        (!value.is_empty()).then(|| value.to_owned())
+    };
+    Some(crate::tracked::IdentityTriple {
+        server: text(server)?,
+        pane: text(pane)?,
+        session_uuid: text(session_uuid)?,
+    })
 }
 
 /// Newlines folded to spaces on every summary the sensor stores.
@@ -1411,6 +1453,7 @@ mod tests {
             slot: Some("worker.2".to_owned()),
             session: Some("s".to_owned()),
             agent: Some("cl:w".to_owned()),
+            ..ObservedViewer::default()
         };
         assert_eq!(
             Viewer::from_pane(&stamped, "s"),
@@ -1433,6 +1476,7 @@ mod tests {
                 slot,
                 session: Some("s".to_owned()),
                 agent: Some("cl:w".to_owned()),
+                ..ObservedViewer::default()
             };
             let viewer = Viewer::from_pane(&unstamped, "s");
             assert!(viewer.is_known());
@@ -1444,6 +1488,7 @@ mod tests {
             slot: Some("main".to_owned()),
             session: Some("s".to_owned()),
             agent: None,
+            ..ObservedViewer::default()
         };
         assert!(!Viewer::from_pane(&anonymous, "s").is_known());
         assert_eq!(Viewer::from_pane(&anonymous, "s"), Viewer::default());
@@ -1453,6 +1498,7 @@ mod tests {
             slot: Some("main".to_owned()),
             session: None,
             agent: Some("cl:lead".to_owned()),
+            ..ObservedViewer::default()
         };
         assert_eq!(Viewer::from_pane(&sessionless, "s"), Viewer::default());
         assert!(!Viewer::from_pane(&sessionless, "s").is_known());
@@ -1539,6 +1585,35 @@ mod tests {
         assert_eq!(row.to_slot, Key::Value(b"worker.0".to_vec()));
         assert_eq!(row.from_session, Key::Value(b"s".to_vec()));
         assert_eq!(row.to_session, Key::Value(b"s".to_vec()));
+        assert!(
+            row.recorded_target().is_none(),
+            "old openings carry no triple"
+        );
+        let with_triple = container(&[concat!(
+            r#"{"ts":"2026-08-20T16:12:55Z","actor":"a:lead","action":"ask","target":"a:w","ref":"r3","#,
+            r#""actor_slot":"main","target_slot":"worker.0","actor_session":"s","target_session":"s","#,
+            r#""target_server":"/tmp/ae","target_pane":"%9","target_session_uuid":"1b4e28ba-2fa1-11d2-883f-0016d3cc4321","summary":"q"}"#,
+        )]);
+        let recorded = states(&with_triple)[0]
+            .recorded_target()
+            .expect("the opening triple is exact");
+        assert_eq!(recorded.server, "/tmp/ae");
+        assert_eq!(recorded.pane, "%9");
+        assert_eq!(
+            recorded.session_uuid,
+            "1b4e28ba-2fa1-11d2-883f-0016d3cc4321"
+        );
+        assert!(
+            !crate::tracked::caller_matches_recorded_target(
+                &crate::tracked::IdentityTriple {
+                    server: "/tmp/other".to_owned(),
+                    pane: "%9".to_owned(),
+                    session_uuid: recorded.session_uuid.clone(),
+                },
+                &recorded
+            ),
+            "an uncorrelated caller cannot match the recorded target"
+        );
         // And the three states are told apart on a published row, which is the
         // whole reason these are Keys and not bytes.
         let mixed = container(&[

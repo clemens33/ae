@@ -57,6 +57,20 @@ pub struct Event {
     pub target_session: RoutingMember,
     /// Whether this event was mirrored across two ae sessions.
     pub cross_session: bool,
+    /// Canonical socket path of the admitted target server.
+    pub target_server: Option<String>,
+    /// Pane id of the admitted target.
+    pub target_pane: Option<String>,
+    /// Canonical UUID of the admitted target session.
+    pub target_session_uuid: Option<String>,
+    /// Canonical socket path of the calling pane's server.
+    pub caller_server: Option<String>,
+    /// Calling pane id.
+    pub caller_pane: Option<String>,
+    /// Canonical UUID of the calling pane's session.
+    pub caller_session_uuid: Option<String>,
+    /// Named failed identity leg, when the triple was not correlated.
+    pub identity_gap: Option<String>,
 }
 
 /// One half of a routing key, exactly as the record carries it.
@@ -333,6 +347,13 @@ impl Event {
             target_slot: RoutingMember::read(value, "target_slot")?,
             target_session: RoutingMember::read(value, "target_session")?,
             cross_session: optional_bool(value, "cross_session")?,
+            target_server: optional(value, "target_server")?,
+            target_pane: optional(value, "target_pane")?,
+            target_session_uuid: optional(value, "target_session_uuid")?,
+            caller_server: optional(value, "caller_server")?,
+            caller_pane: optional(value, "caller_pane")?,
+            caller_session_uuid: optional(value, "caller_session_uuid")?,
+            identity_gap: optional(value, "identity_gap")?,
         })
     }
 
@@ -437,7 +458,7 @@ fn identity<'a>(
 }
 
 /// Every key this schema defines.
-const KNOWN_KEYS: [&str; 11] = [
+const KNOWN_KEYS: [&str; 18] = [
     "ts",
     "actor",
     "action",
@@ -449,6 +470,13 @@ const KNOWN_KEYS: [&str; 11] = [
     "target_slot",
     "target_session",
     "cross_session",
+    "target_server",
+    "target_pane",
+    "target_session_uuid",
+    "caller_server",
+    "caller_pane",
+    "caller_session_uuid",
+    "identity_gap",
 ];
 
 /// Refuse a record that names any KNOWN key twice.
@@ -1217,9 +1245,9 @@ mod tests {
         );
     }
 
-    /// The eleven documented key names, written out here
+    /// The documented key names, written out here
     /// INDEPENDENTLY of the production list.
-    const DOCUMENTED_EVENT_KEYS: [&str; 11] = [
+    const DOCUMENTED_EVENT_KEYS: [&str; 18] = [
         "ts",
         "actor",
         "action",
@@ -1231,6 +1259,13 @@ mod tests {
         "target_slot",
         "target_session",
         "cross_session",
+        "target_server",
+        "target_pane",
+        "target_session_uuid",
+        "caller_server",
+        "caller_pane",
+        "caller_session_uuid",
+        "identity_gap",
     ];
 
     #[test]
@@ -1283,6 +1318,25 @@ mod tests {
             r#"{"ts":"2026-05-19T07:29:45Z","actor":"a","action":"done","x":"two","x":1}"#;
         assert_eq!(Event::parse_line(forward), Event::parse_line(reverse));
         assert!(Event::parse_line(forward).is_ok());
+    }
+
+    #[test]
+    fn additive_identity_keys_are_optional_and_older_events_still_parse() {
+        let old = Event::parse_line(
+            r#"{"ts":"2026-05-19T07:29:45Z","actor":"a","action":"ask","target":"b","ref":"r1"}"#,
+        )
+        .expect("an older event without identity facts remains an event");
+        assert_eq!(old.target_server, None);
+        assert_eq!(old.caller_pane, None);
+        let new = Event::parse_line(concat!(
+            r#"{"ts":"2026-05-19T07:29:45Z","actor":"a","action":"ask","target":"b","ref":"r1","#,
+            r#""target_server":"/tmp/ae","target_pane":"%1","target_session_uuid":"1b4e28ba-2fa1-11d2-883f-0016d3cc4321","#,
+            r#""caller_server":"/tmp/ae","caller_pane":"%2","caller_session_uuid":"1b4e28ba-2fa1-11d2-883f-0016d3cc4321"}"#,
+        ))
+        .expect("additive identity keys parse");
+        assert_eq!(new.target_server.as_deref(), Some("/tmp/ae"));
+        assert_eq!(new.target_pane.as_deref(), Some("%1"));
+        assert_eq!(new.caller_pane.as_deref(), Some("%2"));
     }
 
     #[test]

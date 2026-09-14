@@ -374,21 +374,24 @@ pub fn run(
     });
     let target_slot = key_text(&request.from_slot);
     let target_session = key_text(&request.from_session);
-    let mut fields = EventFields {
-        ts: now,
-        actor: &actor,
-        action: ACTION,
-        target: &reply_target,
-        reference: &parsed.id,
-        actor_slot: &me.slot,
-        actor_session: &me.session,
-        target_slot: &target_slot,
-        target_session: &target_session,
-        summary: &parsed.body,
-        body_file: "",
-    };
+    let mut fields = EventFields::new(
+        now,
+        &actor,
+        ACTION,
+        &reply_target,
+        &parsed.id,
+        &me.slot,
+        &me.session,
+        &target_slot,
+        &target_session,
+        &parsed.body,
+        "",
+    );
     if tracked::is_external(&reply_target) {
-        // An event-only sink: record, paste nothing.
+        // An event-only sink: record, paste nothing. No durable cut, so one
+        // observation at write time is the proof consumed.
+        let outcome = tracked::CorrelationOutcome::from_observation(tracked::observe_caller(dir));
+        fields = tracked::stamp_caller(&fields, &outcome, err);
         if let Err(why) = store::open(dir).append_event(&tracked::event_line(&fields)) {
             writeln!(err, "ae: reply {} not recorded: {why}", parsed.id)?;
             return Ok(EXIT_FAILED);
@@ -428,7 +431,10 @@ pub fn run(
         defer,
     };
     fields.target = &target_name;
-    let delivery = crate::deliver::deliver(&request, err)?;
+    let (delivery, outcome) =
+        tracked::caller_across_cut(dir, || tracked::deliver_request(&request, err));
+    let delivery = delivery?;
+    fields = tracked::stamp_caller(&fields, &outcome, err);
     let cross_session = cross_session.then_some(tracked::CrossSession {
         caller: &me.session,
         target: &resolved.session,
@@ -474,6 +480,9 @@ mod tests {
             to_slot,
             from_session,
             to_session,
+            target_server: Vec::new(),
+            target_pane: Vec::new(),
+            target_session_uuid: Vec::new(),
             summary: Vec::new(),
         }
     }
@@ -523,6 +532,7 @@ mod tests {
             slot: Some("worker.0".into()),
             session: Some("s".into()),
             agent: Some("cl:w".into()),
+            ..ObservedViewer::default()
         };
         assert_eq!(
             Replier::from_observed(Some(&observed), "s"),
@@ -537,6 +547,7 @@ mod tests {
             slot: Some("not-a-slot".into()),
             session: Some("s".into()),
             agent: Some("cl:w".into()),
+            ..ObservedViewer::default()
         };
         assert_eq!(
             Replier::from_observed(Some(&unstamped), "s"),
@@ -568,6 +579,13 @@ mod tests {
             actor_session: "session",
             target_slot: "main",
             target_session: "session",
+            target_server: "",
+            target_pane: "",
+            target_session_uuid: "",
+            caller_server: "",
+            caller_pane: "",
+            caller_session_uuid: "",
+            identity_gap: "",
             summary: "the answer",
             body_file: "",
         };
@@ -767,5 +785,104 @@ mod tests {
             [Key::Absent, Key::Absent, Key::Absent, Key::Absent],
         );
         assert_eq!(route(&old, "s", |_| panic!("no slot, no lookup")), "a:b");
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the test reads back the event ledger the production reply wrote"
+    )]
+    fn reply_run_stamps_caller_on_the_production_writer() {
+        use crate::inventory::ServerId;
+        use crate::time::Timestamp;
+        use crate::tmux::ObservedViewer;
+        use crate::tracked::{self, IdentityTriple, Kind, Resolved, Sender};
+        tracked::clear_test_hooks();
+        let dir = std::env::temp_dir().join(format!("ae-reply-run.{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("meta"),
+            "session_id=1b4e28ba-2fa1-11d2-883f-0016d3cc4321\n",
+        )
+        .unwrap();
+        let ts = Timestamp::parse("2026-08-27T07:11:12Z").unwrap();
+        let uuid = "1b4e28ba-2fa1-11d2-883f-0016d3cc4321";
+        let held = IdentityTriple {
+            server: "/tmp/ae".to_owned(),
+            pane: "%9".to_owned(),
+            session_uuid: uuid.to_owned(),
+        };
+        let resolved = Resolved {
+            pane: "%9".to_owned(),
+            agent: "w".to_owned(),
+            slot: "worker.0".to_owned(),
+            session: "s".to_owned(),
+        };
+        let delivered = || crate::deliver::Delivered {
+            body_file: String::new(),
+            framed: "q".to_owned(),
+            verification: crate::deliver::DeliveryVerification::Verified,
+        };
+        tracked::queue_observe(Ok(held.clone()));
+        tracked::queue_observe(Ok(held.clone()));
+        tracked::set_test_resolve(resolved.clone(), ServerId::Ambient);
+        tracked::set_test_delivery(Ok(delivered()));
+        let sender = Sender {
+            display: "lead".to_owned(),
+            slot: "main".to_owned(),
+            session: "s".to_owned(),
+        };
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let code = tracked::run(
+            Kind::Ask,
+            &dir,
+            &["w".to_owned(), "q".to_owned()],
+            Some(&sender),
+            "s",
+            ts,
+            1,
+            crate::deliver::DEFAULT_DEFER,
+            &mut out,
+            &mut err,
+        )
+        .expect("ask");
+        assert_eq!(code, 0, "ask {}", String::from_utf8_lossy(&err));
+        let id = tracked::request_id("ae", ts, 1);
+        tracked::queue_observe(Ok(held.clone()));
+        tracked::queue_observe(Ok(held));
+        tracked::set_test_resolve(resolved, ServerId::Ambient);
+        tracked::set_test_delivery(Ok(crate::deliver::Delivered {
+            body_file: String::new(),
+            framed: "ans".to_owned(),
+            verification: crate::deliver::DeliveryVerification::Verified,
+        }));
+        let observed = ObservedViewer {
+            slot: Some("worker.0".into()),
+            session: Some("s".into()),
+            agent: Some("w".into()),
+            ..ObservedViewer::default()
+        };
+        let mut err = Vec::new();
+        let code = super::run(
+            &dir,
+            &[id, "ans".to_owned()],
+            Some(&observed),
+            "s",
+            ts,
+            crate::deliver::DEFAULT_DEFER,
+            &mut err,
+        )
+        .expect("reply run");
+        assert_eq!(code, 0, "reply {}", String::from_utf8_lossy(&err));
+        let events = std::fs::read_to_string(dir.join("events.jsonl")).expect("events");
+        assert!(events.contains(r#""action":"reply""#), "{events}");
+        assert!(
+            events.contains(r#""caller_server":"/tmp/ae""#),
+            "deleting stamp_caller from reply::run must drop this: {events}"
+        );
+        tracked::clear_test_hooks();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

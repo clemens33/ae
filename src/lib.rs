@@ -1564,6 +1564,13 @@ fn run_say(
         actor_session: "",
         target_slot: "",
         target_session: "",
+        target_server: "",
+        target_pane: "",
+        target_session_uuid: "",
+        caller_server: "",
+        caller_pane: "",
+        caller_session_uuid: "",
+        identity_gap: "",
         summary: &text,
         body_file: "",
     }));
@@ -1963,7 +1970,7 @@ fn run_memo(
         }
         Ok(memo::Command::Add(add)) => add,
     };
-    match memo::run(dir, &calling_viewer(dir), &add, time::Timestamp::now()) {
+    match memo::run(dir, &calling_viewer(dir), &add, time::Timestamp::now(), err) {
         Ok(()) => Ok(0),
         Err(failure) => {
             writeln!(err, "{}", failure.message())?;

@@ -11,7 +11,7 @@
 //! REQUIRED reply footer whose command names the resolved target, the id and
 //! the reply label.
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::inventory::ServerId;
 use crate::json::Value;
@@ -469,6 +469,10 @@ pub fn resolve_on(
     own_session: &str,
     dir: &Path,
 ) -> Result<(Resolved, ServerId), ResolveError> {
+    #[cfg(test)]
+    if let Some(hit) = take_test_resolve() {
+        return Ok(hit);
+    }
     let (server, pane, agent) = match lookup(target, own_session)? {
         Lookup::Pane(pane) => {
             // A raw pane id is an unambiguous address on its own server, so there
@@ -564,10 +568,417 @@ pub(crate) fn named_server(
     }
 }
 
+// ---- caller / target incarnation ------------------------------------------
+
+/// The three facts that prove a pane's session incarnation across servers.
+///
+/// Empty members never match: a gap is not an identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IdentityTriple {
+    /// Canonical tmux socket path for the pane's server.
+    pub server: String,
+    /// Pane id (`%N`).
+    pub pane: String,
+    /// Canonical `@ae_session_uuid` / meta `session_id`.
+    pub session_uuid: String,
+}
+
+impl IdentityTriple {
+    /// The one equality: nonempty server, pane and uuid, all three equal.
+    /// Public callers use the two named questions, not this predicate.
+    fn same_incarnation(&self, other: &Self) -> bool {
+        !self.server.is_empty()
+            && !self.pane.is_empty()
+            && !self.session_uuid.is_empty()
+            && self.server == other.server
+            && self.pane == other.pane
+            && self.session_uuid == other.session_uuid
+    }
+}
+
+/// Why a pane UUID did not correlate with a session meta. Each variant is a
+/// named gap — unreadable, vacant and mismatch never collapse into each other.
+/// [`Self::NoSession`] is not a gap: it says the question never arose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CorrelationGap {
+    /// No session identity existed to correlate: the caller had no pane
+    /// context, or neither the pane nor the `meta` recorded an identity.
+    /// Nothing failed, so nothing is named.
+    NoSession,
+    /// The pane-keyed query did not answer.
+    Unreadable,
+    /// The query answered and `@ae_session_uuid` was empty.
+    Vacant,
+    /// The option was set but is not a canonical UUID.
+    Invalid,
+    /// Option and meta both name a UUID, and they differ.
+    Mismatch,
+    /// No `meta` file.
+    MetaMissing,
+    /// `meta` exists but is not a regular file — symlink, directory, FIFO.
+    MetaNonregular,
+    /// A regular `meta` that could not be read.
+    MetaUnreadable,
+    /// A regular `meta` with no usable `session_id` row.
+    MetaEmpty,
+    /// `session_id` is present but is not a canonical UUID.
+    MetaMalformed,
+    /// Two `session_id` rows; the document does not say one thing.
+    MetaDuplicate,
+}
+
+impl CorrelationGap {
+    /// The gap name a refusal quotes.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::NoSession => "no session identity to correlate",
+            Self::Unreadable => "session identity unreadable",
+            Self::Vacant => "session identity not recorded",
+            Self::Invalid => "session identity invalid",
+            Self::Mismatch => "session identity mismatch",
+            Self::MetaMissing => "meta: missing",
+            Self::MetaNonregular => "meta: not a regular file",
+            Self::MetaUnreadable => "meta: unreadable",
+            Self::MetaEmpty => "meta: no identity",
+            Self::MetaMalformed => "meta: identity malformed",
+            Self::MetaDuplicate => "meta: duplicate identity",
+        }
+    }
+}
+
+/// Correlate a pane-keyed `@ae_session_uuid` reading with `meta` bytes.
+///
+/// The option is judged first: a failed observation is never treated as
+/// vacant. A UUID used here is proved with [`crate::archive::canonical_uuid`].
+///
+/// # Errors
+///
+/// [`CorrelationGap`] naming which leg failed.
+pub fn correlate_uuid(
+    option: &crate::tmux::OptionReading,
+    meta: &[u8],
+) -> Result<String, CorrelationGap> {
+    let option_uuid = match option {
+        crate::tmux::OptionReading::Unknown => return Err(CorrelationGap::Unreadable),
+        crate::tmux::OptionReading::Vacant => {
+            // The pane records no identity. With no identity in `meta` either,
+            // there is nothing to correlate and no failed correlation to name.
+            // A meta that records one is a real failed proof — keep naming it.
+            return match meta::first_value(meta, "session_id") {
+                Some(raw) if !raw.is_empty() => Err(CorrelationGap::Vacant),
+                _ => Err(CorrelationGap::NoSession),
+            };
+        }
+        crate::tmux::OptionReading::Set(value) => {
+            let canonical = crate::archive::canonical_uuid(value);
+            if canonical.is_empty() {
+                return Err(CorrelationGap::Invalid);
+            }
+            canonical
+        }
+    };
+    match (
+        meta::sole_value(meta, "session_id"),
+        meta::first_value(meta, "session_id"),
+    ) {
+        (None, Some(_)) => Err(CorrelationGap::MetaDuplicate),
+        (None, None) | (Some(b""), _) => Err(CorrelationGap::MetaEmpty),
+        (Some(raw), _) => {
+            let meta_uuid = crate::archive::canonical_uuid(&String::from_utf8_lossy(raw));
+            if meta_uuid.is_empty() {
+                Err(CorrelationGap::MetaMalformed)
+            } else if meta_uuid == option_uuid {
+                Ok(option_uuid)
+            } else {
+                Err(CorrelationGap::Mismatch)
+            }
+        }
+    }
+}
+
+/// What a proof-before-cut plus proof-after-cut decided.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CorrelationOutcome {
+    /// The same nonempty triple was proved on both sides.
+    Correlated(IdentityTriple),
+    /// Both sides proved a triple, and they differ.
+    Changed,
+    /// At least one side could not prove a triple it had to prove.
+    Failed(CorrelationGap),
+    /// No session identity existed to correlate: the call carried no session
+    /// context, or neither side recorded an identity. The question never
+    /// arose; there is no failed correlation to name.
+    NoSession,
+}
+
+impl CorrelationOutcome {
+    /// Classify ONE observation, as [`retain_correlation`] classifies a cut: a
+    /// missing session identity is not a failed correlation.
+    #[must_use]
+    pub fn from_observation(result: Result<IdentityTriple, CorrelationGap>) -> Self {
+        match result {
+            Ok(triple) => Self::Correlated(triple),
+            Err(CorrelationGap::NoSession) => Self::NoSession,
+            Err(gap) => Self::Failed(gap),
+        }
+    }
+
+    /// The triple to write, if correlation held.
+    #[must_use]
+    pub fn triple(&self) -> Option<&IdentityTriple> {
+        match self {
+            Self::Correlated(triple) => Some(triple),
+            Self::Changed | Self::Failed(_) | Self::NoSession => None,
+        }
+    }
+
+    /// Named failed leg, or `None` when correlated OR when no session identity
+    /// existed to correlate. Writers must report this.
+    #[must_use]
+    pub fn name(&self) -> Option<&'static str> {
+        match self {
+            Self::Correlated(_) | Self::NoSession => None,
+            Self::Changed => Some("session identity changed"),
+            Self::Failed(gap) => Some(gap.name()),
+        }
+    }
+}
+
+/// Keep correlated facts only when the same triple is proved on both sides of
+/// a durable cut. A change, or a gap on either side, writes no correlated event.
+/// When NEITHER side had a session identity there was no question to answer:
+/// the outcome is [`CorrelationOutcome::NoSession`], and no gap is named. One
+/// side absent while the other proved an identity is still a failed correlation.
+#[must_use]
+pub fn retain_correlation(
+    before: &Result<IdentityTriple, CorrelationGap>,
+    after: &Result<IdentityTriple, CorrelationGap>,
+) -> CorrelationOutcome {
+    match (before, after) {
+        (Ok(left), Ok(right)) if left.same_incarnation(right) => {
+            CorrelationOutcome::Correlated(left.clone())
+        }
+        (Ok(_), Ok(_)) => CorrelationOutcome::Changed,
+        (Err(CorrelationGap::NoSession), Err(CorrelationGap::NoSession)) => {
+            CorrelationOutcome::NoSession
+        }
+        (_, Err(gap)) | (Err(gap), _) => CorrelationOutcome::Failed(*gap),
+    }
+}
+
+/// (a) Checkpoint integrity: is this record from the incarnation that is here
+/// NOW? Compactseats' question. Do not pass the opening target triple here.
+#[must_use]
+pub fn caller_matches_live(caller: &IdentityTriple, live: &IdentityTriple) -> bool {
+    caller.same_incarnation(live)
+}
+
+/// (b) Request-routing integrity: is the responder the incarnation this
+/// request was opened against? The waiter's question. Do not pass live
+/// session identity here.
+#[must_use]
+pub fn caller_matches_recorded_target(caller: &IdentityTriple, recorded: &IdentityTriple) -> bool {
+    caller.same_incarnation(recorded)
+}
+
+/// Build the triple from ONE viewer observation. The server fact is the
+/// format's `#{socket_path}` field — never the selector used to address tmux.
+///
+/// # Errors
+///
+/// [`CorrelationGap`] naming which leg failed.
+pub fn triple_from_viewer(
+    observed: &crate::tmux::ObservedViewer,
+    pane: &str,
+    meta_dir: &Path,
+) -> Result<IdentityTriple, CorrelationGap> {
+    let Some(server) = observed
+        .socket_path
+        .as_deref()
+        .filter(|path| !path.is_empty())
+    else {
+        return Err(CorrelationGap::Unreadable);
+    };
+    if pane.is_empty() {
+        return Err(CorrelationGap::Unreadable);
+    }
+    let session_uuid = correlate_uuid_in(&observed.session_uuid, meta_dir)?;
+    Ok(IdentityTriple {
+        server: server.to_owned(),
+        pane: pane.to_owned(),
+        session_uuid,
+    })
+}
+
+/// Correlate a pane-keyed uuid reading with the classified `meta` node.
+pub(crate) fn correlate_uuid_in(
+    option: &crate::tmux::OptionReading,
+    meta_dir: &Path,
+) -> Result<String, CorrelationGap> {
+    match crate::store::read_source(&crate::store::open(meta_dir).meta_path()) {
+        crate::store::SourceRead::Absent => Err(CorrelationGap::MetaMissing),
+        crate::store::SourceRead::Invalid(_) => Err(CorrelationGap::MetaNonregular),
+        crate::store::SourceRead::Unreadable(_) => Err(CorrelationGap::MetaUnreadable),
+        crate::store::SourceRead::Ready(bytes) => correlate_uuid(option, &bytes),
+    }
+}
+
+/// Observe one pane on one server and correlate its uuid with `meta_dir`.
+///
+/// ONE pane-keyed tmux query (viewer fields + uuid + `socket_path`). A failed
+/// query is unreadable, never vacant.
+///
+/// # Errors
+///
+/// [`CorrelationGap`] naming which leg failed.
+pub fn observe_triple(
+    server: &ServerId,
+    pane: &str,
+    meta_dir: &Path,
+) -> Result<IdentityTriple, CorrelationGap> {
+    #[cfg(test)]
+    if let Some(hit) = take_observe() {
+        return hit;
+    }
+    let Some(observed) = transport::observe_viewer(server, pane) else {
+        return Err(CorrelationGap::Unreadable);
+    };
+    triple_from_viewer(&observed, pane, meta_dir)
+}
+
+/// Observe the calling pane on the caller's server against the helper directory.
+///
+/// # Errors
+///
+/// [`CorrelationGap`] naming which leg failed.
+pub fn observe_caller(dir: &Path) -> Result<IdentityTriple, CorrelationGap> {
+    #[cfg(test)]
+    if let Some(hit) = take_observe() {
+        return hit;
+    }
+    // No pane and no server is no session context at all: there is nothing to
+    // correlate against, and an absent context is not a failed correlation.
+    let pane = crate::doors::calling_pane_id().ok_or(CorrelationGap::NoSession)?;
+    let server = crate::doors::caller_server().ok_or(CorrelationGap::NoSession)?;
+    observe_triple(&server, &pane, dir)
+}
+
+#[cfg(test)]
+thread_local! {
+    static NEXT_OBSERVE: std::cell::RefCell<Vec<Result<IdentityTriple, CorrelationGap>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+pub(crate) fn queue_observe(result: Result<IdentityTriple, CorrelationGap>) {
+    NEXT_OBSERVE.with(|queue| queue.borrow_mut().push(result));
+}
+
+#[cfg(test)]
+fn take_observe() -> Option<Result<IdentityTriple, CorrelationGap>> {
+    NEXT_OBSERVE.with(|queue| {
+        let mut queue = queue.borrow_mut();
+        (!queue.is_empty()).then(|| queue.remove(0))
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn clear_observe() {
+    NEXT_OBSERVE.with(|queue| queue.borrow_mut().clear());
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_RESOLVE: std::cell::RefCell<Option<(Resolved, ServerId)>> =
+        const { std::cell::RefCell::new(None) };
+    static TEST_DELIVER: std::cell::RefCell<
+        Option<Result<crate::deliver::Delivered, crate::deliver::Failure>>,
+    > = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn set_test_resolve(resolved: Resolved, server: ServerId) {
+    TEST_RESOLVE.with(|slot| *slot.borrow_mut() = Some((resolved, server)));
+}
+
+#[cfg(test)]
+pub(crate) fn set_test_delivery(
+    result: Result<crate::deliver::Delivered, crate::deliver::Failure>,
+) {
+    TEST_DELIVER.with(|slot| *slot.borrow_mut() = Some(result));
+}
+
+#[cfg(test)]
+fn take_test_resolve() -> Option<(Resolved, ServerId)> {
+    TEST_RESOLVE.with(|slot| slot.borrow_mut().take())
+}
+
+#[cfg(test)]
+fn take_test_delivery() -> Option<Result<crate::deliver::Delivered, crate::deliver::Failure>> {
+    TEST_DELIVER.with(|slot| slot.borrow_mut().take())
+}
+
+#[cfg(test)]
+pub(crate) fn clear_test_hooks() {
+    clear_observe();
+    TEST_RESOLVE.with(|slot| *slot.borrow_mut() = None);
+    TEST_DELIVER.with(|slot| *slot.borrow_mut() = None);
+}
+
+/// Delivery used by ask/review/reply so tests can inject a completed paste.
+pub(crate) fn deliver_request(
+    request: &crate::deliver::Request<'_>,
+    err: &mut impl Write,
+) -> io::Result<Result<crate::deliver::Delivered, crate::deliver::Failure>> {
+    #[cfg(test)]
+    if let Some(hit) = take_test_delivery() {
+        return Ok(hit);
+    }
+    crate::deliver::deliver(request, err)
+}
+
+/// Observe, run `cut`, re-observe. Correlation is kept only when the triple is
+/// unchanged across the cut.
+fn across_cut<T>(
+    server: &ServerId,
+    pane: &str,
+    meta_dir: &Path,
+    cut: impl FnOnce() -> T,
+) -> (T, CorrelationOutcome) {
+    across_cut_with(|| observe_triple(server, pane, meta_dir), cut)
+}
+
+/// The testable cut: inject the observation.
+pub(crate) fn across_cut_with<T>(
+    mut observe: impl FnMut() -> Result<IdentityTriple, CorrelationGap>,
+    cut: impl FnOnce() -> T,
+) -> (T, CorrelationOutcome) {
+    let before = observe();
+    let value = cut();
+    let after = observe();
+    (value, retain_correlation(&before, &after))
+}
+
+/// Observe the caller, run `cut`, re-observe.
+pub(crate) fn caller_across_cut<T>(dir: &Path, cut: impl FnOnce() -> T) -> (T, CorrelationOutcome) {
+    across_cut_with(|| observe_caller(dir), cut)
+}
+
+/// Meta directory for an admitted target session.
+fn target_meta_dir(dir: &Path, resolved_session: &str, own_session: &str) -> PathBuf {
+    if resolved_session.is_empty() || resolved_session == own_session {
+        dir.to_path_buf()
+    } else {
+        dir.parent()
+            .map_or_else(|| dir.to_path_buf(), |root| root.join(resolved_session))
+    }
+}
+
 // ---- the event ------------------------------------------------------------
 
 /// Every member `ae_emit_event` writes for a tracked request, in its order.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EventFields<'a> {
     /// `ts`.
     pub ts: Timestamp,
@@ -588,10 +999,137 @@ pub struct EventFields<'a> {
     pub target_slot: &'a str,
     /// `target_session`.
     pub target_session: &'a str,
+    /// Canonical socket path of the admitted target server, or empty.
+    pub target_server: &'a str,
+    /// Pane id of the admitted target, or empty.
+    pub target_pane: &'a str,
+    /// Canonical UUID of the admitted target session, or empty.
+    pub target_session_uuid: &'a str,
+    /// Canonical socket path of the calling pane's server, or empty.
+    pub caller_server: &'a str,
+    /// Calling pane id, or empty.
+    pub caller_pane: &'a str,
+    /// Canonical UUID of the calling pane's session, or empty.
+    pub caller_session_uuid: &'a str,
+    /// Named failed correlation (`CorrelationOutcome::name`): an identity
+    /// existed, correlation was attempted and failed. Empty when correlated,
+    /// and empty when no session identity existed to correlate — the key is
+    /// then absent from the record, never `""` or `"unknown"`.
+    pub identity_gap: &'a str,
     /// The raw body; flattened and capped here as the emitter does.
     pub summary: &'a str,
     /// `body_file` — the stored delivered text, or empty.
     pub body_file: &'a str,
+}
+
+impl<'a> EventFields<'a> {
+    /// An event with no incarnation facts. Empty identity keys stay unwritten.
+    #[must_use]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors the event members; identity facts default empty"
+    )]
+    pub fn new(
+        ts: Timestamp,
+        actor: &'a str,
+        action: &'a str,
+        target: &'a str,
+        reference: &'a str,
+        actor_slot: &'a str,
+        actor_session: &'a str,
+        target_slot: &'a str,
+        target_session: &'a str,
+        summary: &'a str,
+        body_file: &'a str,
+    ) -> Self {
+        Self {
+            ts,
+            actor,
+            action,
+            target,
+            reference,
+            actor_slot,
+            actor_session,
+            target_slot,
+            target_session,
+            target_server: "",
+            target_pane: "",
+            target_session_uuid: "",
+            caller_server: "",
+            caller_pane: "",
+            caller_session_uuid: "",
+            identity_gap: "",
+            summary,
+            body_file,
+        }
+    }
+
+    /// Fill caller incarnation facts proved on both sides of a durable cut.
+    #[must_use]
+    pub fn with_caller(self, triple: Option<&'a IdentityTriple>) -> Self {
+        let Some(triple) = triple else {
+            return self;
+        };
+        Self {
+            caller_server: &triple.server,
+            caller_pane: &triple.pane,
+            caller_session_uuid: &triple.session_uuid,
+            ..self
+        }
+    }
+
+    /// Fill target incarnation facts proved on both sides of a durable cut.
+    #[must_use]
+    pub fn with_target(self, triple: Option<&'a IdentityTriple>) -> Self {
+        let Some(triple) = triple else {
+            return self;
+        };
+        Self {
+            target_server: &triple.server,
+            target_pane: &triple.pane,
+            target_session_uuid: &triple.session_uuid,
+            ..self
+        }
+    }
+}
+
+/// Report a failed or changed proof on the writer boundary, then stamp target.
+pub(crate) fn stamp_target<'a>(
+    fields: &EventFields<'a>,
+    outcome: &'a CorrelationOutcome,
+    err: &mut impl Write,
+) -> EventFields<'a> {
+    report_identity(err, fields.action, outcome);
+    EventFields {
+        identity_gap: outcome.name().unwrap_or(""),
+        ..fields.with_target(outcome.triple())
+    }
+}
+
+/// Report a failed or changed proof on the writer boundary, then stamp caller.
+pub(crate) fn stamp_caller<'a>(
+    fields: &EventFields<'a>,
+    outcome: &'a CorrelationOutcome,
+    err: &mut impl Write,
+) -> EventFields<'a> {
+    report_identity(err, fields.action, outcome);
+    EventFields {
+        identity_gap: outcome.name().unwrap_or(""),
+        ..fields.with_caller(outcome.triple())
+    }
+}
+
+fn report_identity(err: &mut impl Write, action: &str, outcome: &CorrelationOutcome) {
+    // Failed (unreadable/vacant/mismatch) omits the fields and stays silent:
+    // an unseeded helper is the common path, and frozen CLI tests pin empty
+    // stderr on success. Changed across the cut is the anomaly the operator
+    // must see.
+    if matches!(outcome, CorrelationOutcome::Changed) {
+        let _ = writeln!(
+            err,
+            "ae: {action} identity not correlated (session identity changed)"
+        );
+    }
 }
 
 /// One event line, `\n` included.
@@ -610,6 +1148,8 @@ pub struct EventFields<'a> {
 ///     ts: Timestamp::parse("2026-08-27T07:11:12Z").unwrap(),
 ///     actor: "cl:lead", action: "ask", target: "cl:w", reference: "ae-1",
 ///     actor_slot: "main", actor_session: "s", target_slot: "", target_session: "s",
+///     target_server: "", target_pane: "", target_session_uuid: "",
+///     caller_server: "", caller_pane: "", caller_session_uuid: "", identity_gap: "",
 ///     summary: "a\tq", body_file: "/s/messages/ae-1.ask.x.txt",
 /// });
 /// assert_eq!(
@@ -655,6 +1195,13 @@ fn render_event_line(
         ("actor_session", fields.actor_session),
         ("target_slot", fields.target_slot),
         ("target_session", fields.target_session),
+        ("target_server", fields.target_server),
+        ("target_pane", fields.target_pane),
+        ("target_session_uuid", fields.target_session_uuid),
+        ("caller_server", fields.caller_server),
+        ("caller_pane", fields.caller_pane),
+        ("caller_session_uuid", fields.caller_session_uuid),
+        ("identity_gap", fields.identity_gap),
         ("summary", summary.as_str()),
         ("body_file", fields.body_file),
     ] {
@@ -695,17 +1242,8 @@ pub(crate) fn cross_session_unconfirmed_event_line(fields: &EventFields<'_>) -> 
 fn render_unconfirmed_event_line(fields: &EventFields<'_>, cross_session: bool) -> String {
     let summary = unconfirmed_summary(fields.summary);
     let fields = EventFields {
-        ts: fields.ts,
-        actor: fields.actor,
-        action: fields.action,
-        target: fields.target,
-        reference: fields.reference,
-        actor_slot: fields.actor_slot,
-        actor_session: fields.actor_session,
-        target_slot: fields.target_slot,
-        target_session: fields.target_session,
         summary: &summary,
-        body_file: fields.body_file,
+        ..*fields
     };
     render_event_line(&fields, cross_session, None)
 }
@@ -760,6 +1298,13 @@ pub fn refuse_cross_session(
         actor_session: caller_session,
         target_slot: &resolved.slot,
         target_session: &resolved.session,
+        target_server: "",
+        target_pane: "",
+        target_session_uuid: "",
+        caller_server: "",
+        caller_pane: "",
+        caller_session_uuid: "",
+        identity_gap: "",
         summary: &refusal,
         body_file: "",
     });
@@ -936,19 +1481,19 @@ pub fn run(
     if is_external(&parsed.target) {
         // An event-only sink: emit and exit, pasting nothing and storing
         // nothing.
-        let line = event_line(&EventFields {
-            ts: now,
-            actor: &sender.display,
+        let line = event_line(&EventFields::new(
+            now,
+            &sender.display,
             action,
-            target: &parsed.target,
-            reference: &req_id,
-            actor_slot: &sender.slot,
-            actor_session: caller_session,
-            target_slot: "",
-            target_session: "",
-            summary: &parsed.body,
-            body_file: "",
-        });
+            &parsed.target,
+            &req_id,
+            &sender.slot,
+            caller_session,
+            "",
+            "",
+            &parsed.body,
+            "",
+        ));
         if let Err(why) = store::open(dir).append_event(&line) {
             writeln!(err, "ae: {action} {req_id} not recorded: {why}")?;
             return Ok(EXIT_FAILED);
@@ -985,20 +1530,28 @@ pub fn run(
         shape: crate::deliver::Shape::Send,
         defer,
     };
-    let fields = EventFields {
-        ts: now,
-        actor: &sender.display,
-        action,
-        target: &target_name,
-        reference: &req_id,
-        actor_slot: &sender.slot,
-        actor_session: caller_session,
-        target_slot: &resolved.slot,
-        target_session: &resolved.session,
-        summary: &parsed.body,
-        body_file: "",
-    };
-    let delivery = crate::deliver::deliver(&request, err)?;
+    let meta_dir = target_meta_dir(dir, &resolved.session, own_session);
+    let (delivery, outcome) = across_cut(&server, &resolved.pane, &meta_dir, || {
+        deliver_request(&request, err)
+    });
+    let delivery = delivery?;
+    let fields = stamp_target(
+        &EventFields::new(
+            now,
+            &sender.display,
+            action,
+            &target_name,
+            &req_id,
+            &sender.slot,
+            caller_session,
+            &resolved.slot,
+            &resolved.session,
+            &parsed.body,
+            "",
+        ),
+        &outcome,
+        err,
+    );
     let cross = cross_session.then_some(CrossSession {
         caller: caller_session,
         target: &resolved.session,
@@ -1038,17 +1591,8 @@ pub(crate) fn record_tracked_delivery(
         }
     };
     let fields = EventFields {
-        ts: fields.ts,
-        actor: fields.actor,
-        action: fields.action,
-        target: fields.target,
-        reference: fields.reference,
-        actor_slot: fields.actor_slot,
-        actor_session: fields.actor_session,
-        target_slot: fields.target_slot,
-        target_session: fields.target_session,
-        summary: fields.summary,
         body_file: &body_file,
+        ..*fields
     };
     let line = if unconfirmed && cross_session.is_some() {
         cross_session_unconfirmed_event_line(&fields)
@@ -1102,9 +1646,12 @@ pub(crate) fn delivery_code(
 #[cfg(test)]
 mod tests {
     use super::{
-        CrossSession, EventFields, Kind, Lookup, Parsed, ResolveError, Usage, compose, is_blank,
-        is_external, is_request_id, lookup, named_server, pane_server, parse, pick,
-        record_tracked_delivery, refusal, reply_command, request_id,
+        CorrelationGap, CorrelationOutcome, CrossSession, EventFields, IdentityTriple, Kind,
+        Lookup, Parsed, ResolveError, Resolved, Sender, Usage, across_cut_with,
+        caller_matches_live, caller_matches_recorded_target, compose, correlate_uuid, event_line,
+        is_blank, is_external, is_request_id, lookup, named_server, pane_server, parse, pick,
+        record_tracked_delivery, refusal, reply_command, request_id, retain_correlation, run,
+        triple_from_viewer,
     };
     use crate::inventory::ServerId;
     use crate::meta::Selector;
@@ -1274,6 +1821,13 @@ mod tests {
             actor_session: "session",
             target_slot: "worker.0",
             target_session: "session",
+            target_server: "",
+            target_pane: "",
+            target_session_uuid: "",
+            caller_server: "",
+            caller_pane: "",
+            caller_session_uuid: "",
+            identity_gap: "",
             summary: "the question",
             body_file: "",
         };
@@ -1333,6 +1887,13 @@ mod tests {
             actor_session: "caller",
             target_slot: "worker.0",
             target_session: "target",
+            target_server: "",
+            target_pane: "",
+            target_session_uuid: "",
+            caller_server: "",
+            caller_pane: "",
+            caller_session_uuid: "",
+            identity_gap: "",
             summary: "question",
             body_file: "",
         };
@@ -1389,6 +1950,13 @@ mod tests {
             actor_session: "session",
             target_slot: "worker.0",
             target_session: "session",
+            target_server: "",
+            target_pane: "",
+            target_session_uuid: "",
+            caller_server: "",
+            caller_pane: "",
+            caller_session_uuid: "",
+            identity_gap: "",
             summary: "the question",
             body_file: "",
         };
@@ -1434,6 +2002,13 @@ mod tests {
             actor_session: "session",
             target_slot: "worker.0",
             target_session: "session",
+            target_server: "",
+            target_pane: "",
+            target_session_uuid: "",
+            caller_server: "",
+            caller_pane: "",
+            caller_session_uuid: "",
+            identity_gap: "",
             summary: "the question",
             body_file: "",
         };
@@ -1682,5 +2257,520 @@ mod tests {
         for bad in &cases {
             assert!(!is_request_id(bad), "rejected {bad:?} must not validate");
         }
+    }
+
+    const UUID: &str = "1b4e28ba-2fa1-11d2-883f-0016d3cc4321";
+    const UUID_B: &str = "550e8400-e29b-41d4-a716-446655440000";
+
+    fn triple(server: &str, pane: &str, uuid: &str) -> IdentityTriple {
+        IdentityTriple {
+            server: server.to_owned(),
+            pane: pane.to_owned(),
+            session_uuid: uuid.to_owned(),
+        }
+    }
+
+    #[test]
+    fn unreadable_vacant_and_mismatch_each_refuse_and_never_collapse() {
+        use crate::tmux::OptionReading;
+        let meta = format!("session_id={UUID}\n");
+        assert_eq!(
+            correlate_uuid(&OptionReading::Unknown, meta.as_bytes()),
+            Err(CorrelationGap::Unreadable)
+        );
+        assert_eq!(
+            correlate_uuid(&OptionReading::Vacant, meta.as_bytes()),
+            Err(CorrelationGap::Vacant)
+        );
+        assert_eq!(
+            correlate_uuid(&OptionReading::Vacant, b"session=s\n"),
+            Err(CorrelationGap::NoSession),
+            "no identity in the pane and none in the meta: nothing to correlate"
+        );
+        assert_eq!(
+            correlate_uuid(&OptionReading::Vacant, b"session_id=\n"),
+            Err(CorrelationGap::NoSession),
+            "an empty identity row records nothing"
+        );
+        assert_eq!(
+            correlate_uuid(
+                &OptionReading::Set("not-a-uuid".to_owned()),
+                meta.as_bytes()
+            ),
+            Err(CorrelationGap::Invalid)
+        );
+        assert_eq!(
+            correlate_uuid(&OptionReading::Set(UUID_B.to_owned()), meta.as_bytes()),
+            Err(CorrelationGap::Mismatch)
+        );
+        assert_eq!(
+            correlate_uuid(&OptionReading::Set(UUID.to_owned()), meta.as_bytes()),
+            Ok(UUID.to_owned())
+        );
+        assert_ne!(CorrelationGap::NoSession, CorrelationGap::Vacant);
+        assert_ne!(CorrelationGap::NoSession, CorrelationGap::Unreadable);
+        assert_ne!(CorrelationGap::Unreadable, CorrelationGap::Vacant);
+        assert_ne!(CorrelationGap::Vacant, CorrelationGap::Mismatch);
+        assert_ne!(CorrelationGap::Unreadable, CorrelationGap::Mismatch);
+    }
+
+    #[test]
+    fn a_duplicate_or_missing_meta_identity_is_a_named_gap() {
+        use crate::tmux::OptionReading;
+        let option = OptionReading::Set(UUID.to_owned());
+        assert_eq!(
+            correlate_uuid(&option, b"session=s\n"),
+            Err(CorrelationGap::MetaEmpty)
+        );
+        assert_eq!(
+            correlate_uuid(
+                &option,
+                format!("session_id={UUID}\nsession_id={UUID}\n").as_bytes()
+            ),
+            Err(CorrelationGap::MetaDuplicate)
+        );
+        assert_eq!(
+            correlate_uuid(&option, b"session_id=\n"),
+            Err(CorrelationGap::MetaEmpty)
+        );
+        assert_eq!(
+            correlate_uuid(&option, b"session_id=not-a-uuid\n"),
+            Err(CorrelationGap::MetaMalformed)
+        );
+    }
+
+    #[test]
+    fn an_empty_triple_never_matches_and_a_cut_change_drops_correlation() {
+        let a = triple("/tmp/ae", "%1", UUID);
+        let b = triple("/tmp/ae", "%1", UUID);
+        let other_pane = triple("/tmp/ae", "%2", UUID);
+        let empty = triple("", "%1", UUID);
+        assert!(a.same_incarnation(&b));
+        assert!(!a.same_incarnation(&other_pane));
+        assert!(
+            !empty.same_incarnation(&a),
+            "empty server is not an identity"
+        );
+        assert!(
+            !empty.same_incarnation(&empty),
+            "empty vs empty is not an identity"
+        );
+        assert!(caller_matches_live(&a, &b));
+        assert!(!caller_matches_live(&a, &other_pane));
+        assert!(caller_matches_recorded_target(&a, &b));
+        assert!(!caller_matches_recorded_target(&a, &other_pane));
+        // The two questions take different counterparts. Same caller can match
+        // LIVE and fail the RECORDED target: a pane that moved since open.
+        let live = triple("/tmp/ae", "%1", UUID);
+        let recorded_at_open = triple("/tmp/ae", "%2", UUID);
+        assert!(
+            caller_matches_live(&live, &live),
+            "(a) the record is from the incarnation that is here NOW"
+        );
+        assert!(
+            !caller_matches_recorded_target(&live, &recorded_at_open),
+            "(b) the responder is not the incarnation the request opened against"
+        );
+        assert_eq!(
+            retain_correlation(&Ok(a.clone()), &Ok(b.clone())),
+            CorrelationOutcome::Correlated(a.clone())
+        );
+        assert_eq!(
+            retain_correlation(&Ok(a.clone()), &Ok(other_pane)),
+            CorrelationOutcome::Changed
+        );
+        assert_eq!(
+            retain_correlation(&Ok(a.clone()), &Err(CorrelationGap::Unreadable)),
+            CorrelationOutcome::Failed(CorrelationGap::Unreadable)
+        );
+        assert_eq!(
+            retain_correlation(&Err(CorrelationGap::Vacant), &Ok(a)),
+            CorrelationOutcome::Failed(CorrelationGap::Vacant)
+        );
+        assert_eq!(
+            retain_correlation(
+                &Err(CorrelationGap::NoSession),
+                &Err(CorrelationGap::NoSession)
+            ),
+            CorrelationOutcome::NoSession,
+            "no identity on either side of the cut: no question, no gap"
+        );
+        assert_eq!(
+            retain_correlation(&Ok(b.clone()), &Err(CorrelationGap::NoSession)),
+            CorrelationOutcome::Failed(CorrelationGap::NoSession),
+            "an identity existed before the cut; a one-sided absence still fails"
+        );
+        assert_eq!(
+            CorrelationOutcome::from_observation(Err(CorrelationGap::NoSession)),
+            CorrelationOutcome::NoSession
+        );
+        assert_eq!(
+            CorrelationOutcome::NoSession.name(),
+            None,
+            "the writer names nothing when there was nothing to correlate"
+        );
+        assert_eq!(CorrelationOutcome::NoSession.triple(), None);
+        assert_eq!(
+            CorrelationOutcome::Failed(CorrelationGap::Vacant).name(),
+            Some("session identity not recorded")
+        );
+        assert_eq!(
+            CorrelationOutcome::Changed.name(),
+            Some("session identity changed")
+        );
+    }
+
+    #[test]
+    fn event_line_writes_identity_facts_only_when_they_are_nonempty() {
+        let ts = Timestamp::parse("2026-08-27T07:11:12Z").expect("ts");
+        let without = event_line(&EventFields::new(
+            ts, "lead", "ask", "w", "ae-1", "main", "s", "worker.0", "s", "q", "",
+        ));
+        assert!(
+            !without.contains("target_server"),
+            "empty identity facts stay unwritten so older readers see the old shape"
+        );
+        let with = event_line(
+            &EventFields::new(
+                ts, "lead", "ask", "w", "ae-1", "main", "s", "worker.0", "s", "q", "",
+            )
+            .with_target(Some(&triple("/tmp/ae", "%1", UUID))),
+        );
+        assert!(with.contains(r#""target_server":"/tmp/ae""#));
+        assert!(with.contains(r#""target_pane":"%1""#));
+        assert!(with.contains(&format!(r#""target_session_uuid":"{UUID}""#)));
+        let reply = event_line(
+            &EventFields::new(
+                ts, "w", "reply", "lead", "ae-1", "worker.0", "s", "main", "s", "a", "",
+            )
+            .with_caller(Some(&triple("/tmp/ae", "%1", UUID))),
+        );
+        assert!(reply.contains(r#""caller_server":"/tmp/ae""#));
+        assert!(reply.contains(r#""caller_pane":"%1""#));
+    }
+
+    #[test]
+    fn a_no_session_outcome_writes_no_gap_key_and_no_stderr() {
+        let ts = Timestamp::parse("2026-08-27T07:11:12Z").expect("ts");
+        let mut err = Vec::new();
+        let memo = super::stamp_caller(
+            &EventFields::new(
+                ts, "human", "memo", "", "p2", "", "", "", "", "one line", "",
+            ),
+            &CorrelationOutcome::NoSession,
+            &mut err,
+        );
+        let line = event_line(&memo);
+        assert!(
+            !line.contains("identity_gap"),
+            "an absent session context earns no gap: {line}"
+        );
+        let ask = super::stamp_target(
+            &EventFields::new(
+                ts, "lead", "ask", "w", "ae-1", "main", "s", "worker.0", "s", "q", "",
+            ),
+            &CorrelationOutcome::NoSession,
+            &mut err,
+        );
+        assert!(!event_line(&ask).contains("identity_gap"));
+        assert!(
+            err.is_empty(),
+            "NoSession is not broadcast either: {}",
+            String::from_utf8_lossy(&err)
+        );
+    }
+
+    fn viewer_at(socket: &str, uuid: &str) -> crate::tmux::ObservedViewer {
+        crate::tmux::ObservedViewer {
+            slot: Some("main".to_owned()),
+            session: Some("s".to_owned()),
+            agent: Some("lead".to_owned()),
+            session_uuid: crate::tmux::OptionReading::Set(uuid.to_owned()),
+            socket_path: Some(socket.to_owned()),
+        }
+    }
+
+    fn meta_dir(tag: &str, body: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("ae-idmeta.{}.{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("meta dir");
+        if !body.is_empty() {
+            std::fs::write(dir.join("meta"), body).expect("meta");
+        }
+        dir
+    }
+
+    #[test]
+    fn the_server_fact_is_the_viewer_socket_path_not_a_selector_spelling() {
+        let dir = meta_dir("sock", &format!("session_id={UUID}\n"));
+        let via_alias = triple_from_viewer(&viewer_at("/tmp/alias", UUID), "%1", &dir)
+            .expect("alias observation correlates");
+        let via_real = triple_from_viewer(&viewer_at("/tmp/real", UUID), "%1", &dir)
+            .expect("real observation correlates");
+        assert_eq!(via_alias.server, "/tmp/alias");
+        assert_eq!(via_real.server, "/tmp/real");
+        assert_ne!(
+            via_alias.server, via_real.server,
+            "replacement or alias spelling cannot be collapsed by a second query"
+        );
+        let mut empty = viewer_at("/tmp/real", UUID);
+        empty.socket_path = None;
+        assert_eq!(
+            triple_from_viewer(&empty, "%1", &dir),
+            Err(CorrelationGap::Unreadable)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn classified_meta_refuses_nonregular_missing_empty_and_malformed() {
+        use crate::tmux::OptionReading;
+        let option = OptionReading::Set(UUID.to_owned());
+        let missing = meta_dir("miss", "");
+        std::fs::remove_file(missing.join("meta")).ok();
+        assert_eq!(
+            super::correlate_uuid_in(&option, &missing),
+            Err(CorrelationGap::MetaMissing)
+        );
+        let dir = meta_dir("dir", "x");
+        std::fs::remove_file(dir.join("meta")).unwrap();
+        std::fs::create_dir(dir.join("meta")).unwrap();
+        assert_eq!(
+            super::correlate_uuid_in(&option, &dir),
+            Err(CorrelationGap::MetaNonregular)
+        );
+        std::fs::remove_dir(dir.join("meta")).unwrap();
+        let target = dir.join("elsewhere");
+        std::fs::write(&target, format!("session_id={UUID}\n")).unwrap();
+        std::os::unix::fs::symlink(&target, dir.join("meta")).unwrap();
+        assert_eq!(
+            super::correlate_uuid_in(&option, &dir),
+            Err(CorrelationGap::MetaNonregular),
+            "a symlink is never followed"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&missing);
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the test reads back the event ledger it just wrote"
+    )]
+    fn ask_event_bytes_across_a_durable_cut_are_stamped_from_the_outcome() {
+        let ts = Timestamp::parse("2026-08-27T07:11:12Z").expect("ts");
+        let held = triple("/tmp/ae", "%9", UUID);
+        let mut n = 0;
+        let observe = || {
+            n += 1;
+            Ok(held.clone())
+        };
+        let (cut, outcome) = across_cut_with(observe, || "delivered");
+        assert_eq!(cut, "delivered");
+        let dir = meta_dir("askcut", &format!("session_id={UUID}\n"));
+        let mut err = Vec::new();
+        let fields = super::stamp_target(
+            &EventFields::new(
+                ts, "lead", "ask", "w", "ae-1", "main", "s", "worker.0", "s", "q", "",
+            ),
+            &outcome,
+            &mut err,
+        );
+        super::record_tracked_delivery(
+            &dir,
+            &fields,
+            Ok(crate::deliver::Delivered {
+                body_file: String::new(),
+                framed: "q".to_owned(),
+                verification: crate::deliver::DeliveryVerification::Verified,
+            }),
+            None,
+            &mut err,
+        )
+        .expect("ask event writes");
+        let events = std::fs::read_to_string(dir.join("events.jsonl")).expect("events");
+        assert!(events.contains(r#""action":"ask""#));
+        assert!(events.contains(r#""target_server":"/tmp/ae""#));
+        assert!(events.contains(r#""target_pane":"%9""#));
+        assert!(err.is_empty(), "{}", String::from_utf8_lossy(&err));
+        let mut n = 0;
+        let observe = || {
+            n += 1;
+            if n == 1 {
+                Ok(held.clone())
+            } else {
+                Ok(triple("/tmp/ae", "%8", UUID))
+            }
+        };
+        let (_, changed) = across_cut_with(observe, || "delivered");
+        let mut err = Vec::new();
+        let omitted = event_line(&super::stamp_target(
+            &EventFields::new(
+                ts, "lead", "ask", "w", "ae-1", "main", "s", "worker.0", "s", "q", "",
+            ),
+            &changed,
+            &mut err,
+        ));
+        assert!(
+            !omitted.contains("target_server"),
+            "a changed identity writes no correlated opening"
+        );
+        assert!(
+            String::from_utf8_lossy(&err).contains("session identity changed"),
+            "the writer names the failed leg: {}",
+            String::from_utf8_lossy(&err)
+        );
+        let mut err = Vec::new();
+        let reply_fields = super::stamp_caller(
+            &EventFields::new(
+                ts, "w", "reply", "lead", "ae-1", "worker.0", "s", "main", "s", "a", "",
+            ),
+            &outcome,
+            &mut err,
+        );
+        std::fs::write(dir.join("events.jsonl"), b"").unwrap();
+        super::record_tracked_delivery(
+            &dir,
+            &reply_fields,
+            Ok(crate::deliver::Delivered {
+                body_file: String::new(),
+                framed: "a".to_owned(),
+                verification: crate::deliver::DeliveryVerification::Verified,
+            }),
+            None,
+            &mut err,
+        )
+        .expect("reply event writes");
+        let events = std::fs::read_to_string(dir.join("events.jsonl")).expect("events");
+        assert!(events.contains(r#""action":"reply""#));
+        assert!(events.contains(r#""caller_server":"/tmp/ae""#));
+        assert!(events.contains(r#""caller_pane":"%9""#));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the test reads back the event ledger the production run wrote"
+    )]
+    fn ask_run_stamps_target_on_the_production_writer() {
+        super::clear_test_hooks();
+        let dir = meta_dir("askrun", &format!("session_id={UUID}\n"));
+        let ts = Timestamp::parse("2026-08-27T07:11:12Z").expect("ts");
+        let held = triple("/tmp/ae", "%9", UUID);
+        super::queue_observe(Ok(held.clone()));
+        super::queue_observe(Ok(held.clone()));
+        super::set_test_resolve(
+            Resolved {
+                pane: "%9".to_owned(),
+                agent: "w".to_owned(),
+                slot: "worker.0".to_owned(),
+                session: "s".to_owned(),
+            },
+            ServerId::Ambient,
+        );
+        super::set_test_delivery(Ok(crate::deliver::Delivered {
+            body_file: String::new(),
+            framed: "q".to_owned(),
+            verification: crate::deliver::DeliveryVerification::Verified,
+        }));
+        let sender = Sender {
+            display: "lead".to_owned(),
+            slot: "main".to_owned(),
+            session: "s".to_owned(),
+        };
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let code = run(
+            Kind::Ask,
+            &dir,
+            &["w".to_owned(), "q".to_owned()],
+            Some(&sender),
+            "s",
+            ts,
+            1,
+            crate::deliver::DEFAULT_DEFER,
+            &mut out,
+            &mut err,
+        )
+        .expect("ask run");
+        assert_eq!(code, 0, "{}", String::from_utf8_lossy(&err));
+        let events = std::fs::read_to_string(dir.join("events.jsonl")).expect("events");
+        assert!(events.contains(r#""action":"ask""#), "{events}");
+        assert!(
+            events.contains(r#""target_server":"/tmp/ae""#),
+            "deleting stamp_target from run() must drop this: {events}"
+        );
+        assert!(events.contains(r#""target_pane":"%9""#), "{events}");
+        assert!(
+            !events.contains("identity_gap"),
+            "a correlated opening must not name a gap: {events}"
+        );
+        super::clear_test_hooks();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the test reads back the event ledger the production run wrote"
+    )]
+    fn ask_run_records_a_failed_leg_and_does_not_broadcast_it() {
+        super::clear_test_hooks();
+        let dir = meta_dir("askgap", &format!("session_id={UUID}\n"));
+        let ts = Timestamp::parse("2026-08-27T07:11:12Z").expect("ts");
+        super::queue_observe(Err(CorrelationGap::Unreadable));
+        super::queue_observe(Err(CorrelationGap::Unreadable));
+        super::set_test_resolve(
+            Resolved {
+                pane: "%9".to_owned(),
+                agent: "w".to_owned(),
+                slot: "worker.0".to_owned(),
+                session: "s".to_owned(),
+            },
+            ServerId::Ambient,
+        );
+        super::set_test_delivery(Ok(crate::deliver::Delivered {
+            body_file: String::new(),
+            framed: "q".to_owned(),
+            verification: crate::deliver::DeliveryVerification::Verified,
+        }));
+        let sender = Sender {
+            display: "lead".to_owned(),
+            slot: "main".to_owned(),
+            session: "s".to_owned(),
+        };
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let code = run(
+            Kind::Ask,
+            &dir,
+            &["w".to_owned(), "q".to_owned()],
+            Some(&sender),
+            "s",
+            ts,
+            2,
+            crate::deliver::DEFAULT_DEFER,
+            &mut out,
+            &mut err,
+        )
+        .expect("ask run failed-gap");
+        assert_eq!(code, 0, "{}", String::from_utf8_lossy(&err));
+        assert!(
+            err.is_empty(),
+            "Failed is recorded, not broadcast: {}",
+            String::from_utf8_lossy(&err)
+        );
+        let events = std::fs::read_to_string(dir.join("events.jsonl")).expect("events");
+        assert!(
+            events.contains(r#""identity_gap":"session identity unreadable""#),
+            "Failed must name the leg in the record: {events}"
+        );
+        assert!(
+            !events.contains("target_server"),
+            "Failed omits the triple: {events}"
+        );
+        super::clear_test_hooks();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
