@@ -6004,37 +6004,6 @@ mod tests {
             Some(&home),
         )
         .expect("first start proceeds");
-        // F6: the same first start with an UNRESOLVABLE override refuses —
-        // nothing retained means nothing stranded, and proceeding would
-        // ignore the explicit flag.
-        let blind = crate::config::parse_identity(
-            "[clients]\nplain = claude\n\
-             [profiles]\nvarp = \"CLAUDE_CONFIG_DIR=rel/store claude --model fable\"\n\
-             [roster]\nlead = varp\n[workspace]\nmain = lead\n",
-        )
-        .expect("readable blind config");
-        let blind_command = blind
-            .command_with_client("varp", "plain", Some(&home))
-            .expect("blind override resolves")
-            .command;
-        let line = match super::refuse_store_conflict(
-            "s",
-            "lead",
-            "varp@plain",
-            &entry,
-            &blind_command,
-            ToolKind::Claude,
-            Some(&home),
-        ) {
-            Err(super::SeatOverrideRefusal::Usage(line)) => line,
-            other => panic!("unresolvable first start must refuse, got {other:?}"),
-        };
-        assert!(
-            line.contains("varp@plain")
-                && line.contains("unknown conversation store")
-                && line.contains("not an absolute path"),
-            "{line:?}"
-        );
         // Recorded damage fails closed.
         for meta in [
             "seat.main=lead\nprofile.main=fablex\nconfig_home.main=unknown\n",
@@ -6097,5 +6066,42 @@ mod tests {
             Some(&home),
         )
         .expect("unknown current proceeds; _run retains");
+    }
+
+    /// F6: a first start whose override resolves `Unknown` refuses — nothing
+    /// retained means nothing stranded, and proceeding would ignore the
+    /// explicit flag.
+    #[test]
+    fn unresolvable_first_start_refuses_naming_the_override_and_why() {
+        let home = PathBuf::from("/Users/a");
+        let entry = recorded_entry("seat.main=lead\nprofile.main=varp\n");
+        let blind = crate::config::parse_identity(
+            "[clients]\nplain = claude\n\
+             [profiles]\nvarp = \"CLAUDE_CONFIG_DIR=rel/store claude --model fable\"\n\
+             [roster]\nlead = varp\n[workspace]\nmain = lead\n",
+        )
+        .expect("readable blind config");
+        let blind_command = blind
+            .command_with_client("varp", "plain", Some(&home))
+            .expect("blind override resolves")
+            .command;
+        let line = match super::refuse_store_conflict(
+            "s",
+            "lead",
+            "varp@plain",
+            &entry,
+            &blind_command,
+            ToolKind::Claude,
+            Some(&home),
+        ) {
+            Err(super::SeatOverrideRefusal::Usage(line)) => line,
+            other => panic!("unresolvable first start must refuse, got {other:?}"),
+        };
+        assert!(
+            line.contains("varp@plain")
+                && line.contains("unknown conversation store")
+                && line.contains("not an absolute path"),
+            "{line:?}"
+        );
     }
 }
