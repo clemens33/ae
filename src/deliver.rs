@@ -29,11 +29,19 @@ const DEFER_POLL: Duration = Duration::from_millis(400);
 /// the pane.
 const VIEW_GRACE: i64 = 4;
 
-/// The pause between the paste and the Enter for a border-delimited composer.
-const SETTLE_BORDER_DELIMITED: Duration = Duration::from_millis(300);
+/// The pause between the paste and the Enter for a STYLE-delimited composer —
+/// codex: no Enter-drop evidence there, and every send would pay the latency.
+const SETTLE_STYLE_DELIMITED: Duration = Duration::from_millis(100);
 
-/// The same pause for every other tool.
-const SETTLE_DEFAULT: Duration = Duration::from_millis(100);
+/// The conservative pause: claude's border-delimited box (a 24-sample sweep
+/// caught sends to IDLE panes losing the Enter) and EVERY unmodelled tool —
+/// which takes the whole framed body at any size, the largest paste in the
+/// product, and gets no input-box submit verification, so it takes the same
+/// conservative pause.
+const SETTLE_CONSERVATIVE: Duration = Duration::from_millis(300);
+
+/// The pause between a shell line's paste and its Enter.
+const SETTLE_SHELL_TEXT: Duration = Duration::from_millis(100);
 
 /// The pause before each staged re-read after Enter.
 const VERIFY_POLL: Duration = Duration::from_millis(300);
@@ -583,16 +591,20 @@ pub fn tool_initializing(server: &ServerId, pane: &str, model: InputModel) -> bo
 
 /// Whether `pane` is ready to be pasted into at launch or spawn time —
 /// `_spawn_input_ready`.
+///
+/// This is a ONE-OBSERVATION predicate, so it answers only for a MODELLED
+/// composer. An unmodelled tool has no grammar to recognise readiness from;
+/// for it readiness is a SETTLE — capture, wait, capture again — observed by
+/// [`wait_input_ready`]. Called with an unmodelled model this fails closed.
 #[must_use]
 pub fn input_ready(server: &ServerId, pane: &str, model: InputModel) -> bool {
+    if !model.is_modelled() {
+        return false;
+    }
     if tool_initializing(server, pane, model) {
         return false;
     }
-    if model.is_modelled() {
-        return !input_busy(server, pane, model);
-    }
-    transport::capture_screen(server, pane, Styling::Plain)
-        .is_some_and(|screen| region::composed_ui(&screen))
+    !input_busy(server, pane, model)
 }
 
 /// How often the launch readiness wait re-reads the pane.
@@ -600,13 +612,44 @@ const READY_POLL: Duration = Duration::from_millis(500);
 
 /// Wait, bounded, until `pane` will accept a paste; `polls` counts
 /// [`READY_POLL`] periods.
+///
+/// A modelled pane is asked [`input_ready`] on each poll. An UNMODELLED one is
+/// asked whether it has settled ([`wait_until_settled`]).
 #[must_use]
 pub fn wait_input_ready(server: &ServerId, pane: &str, model: InputModel, polls: u32) -> bool {
+    if !model.is_modelled() {
+        return wait_until_settled(server, pane, polls);
+    }
     for _ in 0..polls {
         if input_ready(server, pane, model) {
             return true;
         }
         std::thread::sleep(READY_POLL);
+    }
+    false
+}
+
+/// Wait, bounded, until an UNMODELLED pane has DRAWN something and STOPPED
+/// CHANGING — the whole of its readiness question, with no per-tool markers.
+///
+/// One capture seeds the comparison; every following [`READY_POLL`] takes
+/// another, and two successful, non-empty, byte-identical captures are settled
+/// ([`pane_settled`]). The wait is the existing poll, so the worst case is the
+/// budget the modelled arm has always had.
+///
+/// The marker list this replaces was measured wrong on 2026-09-14: over 60 rows
+/// of three live panes, `OpenCode` matched none of its strings, so every
+/// `OpenCode` spawn failed by construction.
+#[must_use]
+fn wait_until_settled(server: &ServerId, pane: &str, polls: u32) -> bool {
+    let mut previous = transport::capture_screen(server, pane, Styling::Plain);
+    for _ in 1..polls {
+        std::thread::sleep(READY_POLL);
+        let current = transport::capture_screen(server, pane, Styling::Plain);
+        if pane_settled(previous.as_deref(), current.as_deref()) {
+            return true;
+        }
+        previous = current;
     }
     false
 }
@@ -620,7 +663,7 @@ pub fn submit_shell_text(server: &ServerId, pane: &str, text: &str) -> bool {
     if stage_and_paste(server, &buffer_name(pane), text.as_bytes(), pane).is_err() {
         return false;
     }
-    std::thread::sleep(SETTLE_DEFAULT);
+    std::thread::sleep(SETTLE_SHELL_TEXT);
     transport::send_key(server, pane, Key::Enter)
 }
 
@@ -730,6 +773,15 @@ fn submit(
     }))
 }
 
+/// The settle an input model takes between the paste and the Enter.
+fn settle_for(model: InputModel) -> Duration {
+    if model == InputModel::StyleDelimited {
+        SETTLE_STYLE_DELIMITED
+    } else {
+        SETTLE_CONSERVATIVE
+    }
+}
+
 /// Press Enter, then observe whether the paste left the input box.
 ///
 /// A booting TUI swallows the Enter often enough that a single bare press is
@@ -739,12 +791,7 @@ fn submit(
 /// verdict have ONE owner.
 #[must_use]
 pub fn submit_staged(server: &ServerId, pane: &str, model: InputModel) -> SubmitState {
-    let settle = if model == InputModel::BorderDelimited {
-        SETTLE_BORDER_DELIMITED
-    } else {
-        SETTLE_DEFAULT
-    };
-    std::thread::sleep(settle);
+    std::thread::sleep(settle_for(model));
     let _ = transport::send_key(server, pane, Key::Enter);
     for retry in 0..=VERIFY_RETRIES {
         std::thread::sleep(VERIFY_POLL);
@@ -758,6 +805,18 @@ pub fn submit_staged(server: &ServerId, pane: &str, model: InputModel) -> Submit
         }
     }
     SubmitState::StillStaged
+}
+
+/// Positive proof an unmodelled pane has DRAWN something and STOPPED CHANGING.
+///
+/// True only when both captures succeeded, are non-empty and byte-identical; a
+/// missing, empty or changing screen is never ready. Pure, so the settle
+/// decision is pinnable without tmux.
+fn pane_settled(before: Option<&str>, after: Option<&str>) -> bool {
+    matches!(
+        (before, after),
+        (Some(before), Some(after)) if !before.is_empty() && before == after
+    )
 }
 
 /// Prove the staged notice on screen before any Enter.
@@ -920,10 +979,11 @@ fn lock_target(dir: &Path, pane: &str) -> Option<std::fs::File> {
 mod tests {
     use super::{
         Failure, Request, Shape, TargetInput, UNVERIFIED, buffer_name, choose_input, frame,
-        is_name_safe, store_body,
+        is_name_safe, pane_settled, settle_for, store_body,
     };
     use crate::inventory::ServerId;
     use crate::tool::InputModel;
+    use std::time::Duration;
 
     fn request<'a>(actor: &'a str, body: &'a str, shape: Shape) -> Request<'a> {
         Request {
@@ -1149,5 +1209,49 @@ mod tests {
             "{name}"
         );
         assert_ne!(buffer_name("%12"), buffer_name("%13"));
+    }
+
+    #[test]
+    fn the_settle_gives_the_unverified_composers_the_conservative_pause() {
+        assert_eq!(
+            settle_for(InputModel::StyleDelimited),
+            Duration::from_millis(100),
+            "codex is the measured, retried composer"
+        );
+        assert_eq!(
+            settle_for(InputModel::BorderDelimited),
+            Duration::from_millis(300)
+        );
+        assert_eq!(
+            settle_for(InputModel::Unmodelled),
+            Duration::from_millis(300),
+            "the largest paste in the product takes the conservative pause"
+        );
+    }
+
+    #[test]
+    fn a_stable_nonempty_pane_is_settled_even_with_none_of_the_old_markers() {
+        // The measured OpenCode shape: `composed_ui` matched none of its three
+        // strings, so readiness could never be recognised for this pane.
+        let opencode = "opencode\n  ~/projects/clemens33/ae\n  build\n";
+        assert!(!opencode.contains('❯'));
+        assert!(!opencode.contains("bypass permissions"));
+        assert!(!opencode.contains("for shortcuts"));
+        assert!(pane_settled(Some(opencode), Some(opencode)));
+    }
+
+    #[test]
+    fn a_missing_or_empty_capture_is_never_settled() {
+        assert!(!pane_settled(None, None));
+        assert!(!pane_settled(None, Some("box")));
+        assert!(!pane_settled(Some("box"), None));
+        assert!(!pane_settled(Some(""), Some("")));
+    }
+
+    #[test]
+    fn a_pane_that_keeps_changing_is_never_settled() {
+        assert!(!pane_settled(Some("booting 1"), Some("booting 2")));
+        assert!(!pane_settled(Some(""), Some("drawn")));
+        assert!(!pane_settled(Some("drawn"), Some("")));
     }
 }

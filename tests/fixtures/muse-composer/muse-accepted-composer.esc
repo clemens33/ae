@@ -1,0 +1,23 @@
+[38;2;90;160;255m[48;2;38;56;84m  [38;2;204;211;219m<waiting-user|waiting-agent|blocked|done> "<reason>"[39m
+[49m
+[1m[38;2;243;139;168m◆ [0m[38;2;243;139;168mUsage limit reached · /upgrade[39m
+[1m[38;2;243;139;168m  [0m[38;2;243;139;168m(https://accountscenter.meta.com/muse_code/?ep=xgrade) for increased limits,[39m
+[1m[38;2;243;139;168m  [0m[38;2;243;139;168mor wait for usage to reset at Sep 15 at 12:56 AM[39m
+
+[38;2;90;160;255m[48;2;38;56;84m❯ [38;2;204;211;219m⟦ae:msg from watchdog⟧[39m
+[38;2;90;160;255m  [38;2;204;211;219mStatus check: if you have more work, continue. Otherwise declare your state so
+[38;2;90;160;255m  [38;2;204;211;219mI stop nudging: /Users/ckriech/.ae-dev/sessions/musecapture/state[39m
+[38;2;90;160;255m  [38;2;204;211;219m<waiting-user|waiting-agent|blocked|done> "<reason>"[39m
+[49m
+[1m[38;2;243;139;168m◆ [0m[38;2;243;139;168mUsage limit reached · /upgrade[39m
+[1m[38;2;243;139;168m  [0m[38;2;243;139;168m(https://accountscenter.meta.com/muse_code/?ep=xgrade) for increased limits,[39m
+[1m[38;2;243;139;168m  [0m[38;2;243;139;168mor wait for usage to reset at Sep 15 at 12:56 AM[39m
+
+[38;2;90;160;255m[48;2;38;56;84m❯ [38;2;204;211;219m[Pasted Content 1766 chars][39m
+
+[38;2;189;196;204m[49m◆[38;2;204;211;219m [38;2;189;196;204mW[38;2;154;160;168mo[38;2;118;123;131mr[38;2;103;108;116mking (0s · esc to interrupt)[39m
+
+[2m[38;2;103;108;116m── [0m[38;2;138;144;152mVoice input (⌥ + v to start)[2m[38;2;103;108;116m ────────────────────────────────────────────────
+[0m[38;2;251;191;36m❯ [39m
+[2m[38;2;103;108;116m────────────────────────────────────────────────────────────────────────────────
+[0m[38;2;103;108;116m  [38;2;90;160;255mmuse-spark-1.3[38;2;138;144;152m · [38;2;90;160;255mmax[38;2;138;144;152m · …/ae · [38;2;243;139;168mYOLO[38;2;103;108;116m           [38;2;138;144;152mPaste again to expand for editing

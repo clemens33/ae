@@ -526,7 +526,12 @@ const MUSE: ToolAdapter = ToolAdapter {
     },
     capture: CaptureSpec::MuseDatedSessions,
     input: InputSpec {
-        model: InputModel::Unmodelled,
+        // Modelled as a border-delimited composer: the live prompt is the
+        // amber `❯` row, the staged content is the bold
+        // `[Pasted Content N chars]` token, and the box is bounded below by a
+        // full-width rule. Proven against real captures — stuck, occupied,
+        // accepted, idle — in `tests/fixtures/muse-composer/`.
+        model: InputModel::BorderDelimited,
         wait_for_process: false,
         paste_initial_on_resume: false,
     },
@@ -1007,7 +1012,7 @@ mod tests {
                     },
                     capture: CaptureSpec::MuseDatedSessions,
                     input: InputSpec {
-                        model: InputModel::Unmodelled,
+                        model: InputModel::BorderDelimited,
                         wait_for_process: false,
                         paste_initial_on_resume: false,
                     },

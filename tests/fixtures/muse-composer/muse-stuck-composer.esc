@@ -1,0 +1,35 @@
+[38;2;90;160;255m[48;2;38;56;84m  [38;2;204;211;219mit; gate stays OPEN and nothing is committed unless the human explicitly invokes the existing no-review fallback. STATE REASONS: The human decides from this text ALONE, without opening[39m
+[38;2;90;160;255m  [38;2;204;211;219myour pane. Write 2–5 sentences (80–600 chars): the decision, each option with its impact, your recommendation and why, and the path to the long form (`.local/<file>` or memo `<topic>`).
+[38;2;90;160;255m  [38;2;204;211;219mA pointer such as `see pane`, `as discussed`, `elaboration given` is a violation of this rule. Shape: `<decision>: <option A and impact> | <option B and impact> (recommend A because[39m
+[38;2;90;160;255m  [38;2;204;211;219m<reason>; details: .local/<file> or memo <topic>)`. For `waiting-agent`, name the agent you wait on, what you need from them, and the long-form path. For `blocked`, state what blocks,[39m
+[38;2;90;160;255m  [38;2;204;211;219mwho or what unblocks it, what you tried, and the long-form path. Good: `Which layout should we use? Vertical keeps panes readable; horizontal shows more context. Recommend vertical[39m
+[38;2;90;160;255m  [38;2;204;211;219mbecause readability matters; details: .local/layout.md`. Bad: `S3 elaboration given in pane`.[39m
+[38;2;90;160;255m  [38;2;204;211;219mWORKER ROLE: the brief is your task contract. Read it FULLY, then prove you stand in its worktree at its expected HEAD (pwd, git rev-parse) before the first edit, test or probe; work[39m
+[38;2;90;160;255m  [38;2;204;211;219monly inside its scope; treat its rulings as settled; the repository's rules and a later authorized stop or change still bind you. For a behaviour change, RED before GREEN: pin the[39m
+[38;2;90;160;255m  [38;2;204;211;219mbehaviour with a failing test, then make it pass; for docs, formatting or a pure refactor run the applicable checks and say why there is no behaviour test — never manufacture a failure.
+[38;2;90;160;255m  [38;2;204;211;219mRun the brief's verification command and quote its result. Never widen the scope, never refactor 'while here', never spawn your own reviewer or subagent unless the brief permits it. A[39m
+[38;2;90;160;255m  [38;2;204;211;219mdecision of scope, safety, public contract or conflicting evidence goes back to your spawner as a question before you act; a reversible implementation choice inside the settled[39m
+[38;2;90;160;255m  [38;2;204;211;219mconstraints is yours — make it and report it. Report a distilled summary — Outcome / Changed / Verified (command + result) / Risks / Need-from-spawner — never raw logs; evidence longer[39m
+[38;2;90;160;255m  [38;2;204;211;219mthan that goes to a file under .local/ and you send its path. Stay in your assigned files (one writer per file). You do not self-retire — your spawner retires you when the task is[39m
+[38;2;90;160;255m  [38;2;204;211;219mverified done. If you spawned helpers yourself, the closure rule binds you too: get them retired before you report done. WORKING TREE: you are in the human's LIVE checkout — their[39m
+[38;2;90;160;255m  [38;2;204;211;219muncommitted work may be present. One writer per file; NO destructive git operations (no reset --hard, clean -fd, or checkout of files you did not change); never assume the tree is yours
+[38;2;90;160;255m  [38;2;204;211;219malone. --- Workspace instructions: SPEND POLICY: PREFER deepseek41flashm (opencode route OpenRouter, serves DeepSeek V4.1 Flash — verified on the wire 2026-09-14) as the default worker[39m
+[38;2;90;160;255m  [38;2;204;211;219mseat for ordinary and bounded work, and spark13gom (opencode route OpenCode Go, serves Meta Muse Spark 1.3 Contributor) as the Meta seat; spark13cli is the native Muse CLI alternative.[39m
+[38;2;90;160;255m  [38;2;204;211;219mDO NOT SELECT spark13m or opencode-muse13: both name the OpenCode ZEN provider, no Zen credential exists, and opencode falls back SILENTLY to Z.AI GLM-5.3-Flash instead of failing — a[39m
+[38;2;90;160;255m  [38;2;204;211;219mprovider declared from either name would be wrong. HOLD on Grok Build profiles (grok46, grokbuild, grok46-review) — limited usage, do not select for new work. Use fablex and astrax[39m
+[38;2;90;160;255m  [38;2;204;211;219mSPARINGLY, for the most complex topics only; they drain subscriptions quickly. Judgment seats keep xhigh effort; bounded or mechanical work goes to a preferred seat above. DECLARE THE[39m
+[38;2;90;160;255m  [38;2;204;211;219mSERVED MODEL, NOT THE PROFILE NAME: read your own pane header before you state a provider for a rule-11 gate. The preferred seats are non-Anthropic and non-OpenAI, so they satisfy a[39m
+[38;2;90;160;255m  [38;2;204;211;219mcross-provider gate against an Anthropic or OpenAI reviewer.[39m
+[38;2;90;160;255m  [38;2;204;211;219mAE_MUSE_LAUNCH_ID=b9a0f20d-96cb-4ae7-b298-2893fbdf71cc[39m
+[38;2;90;160;255m  [38;2;204;211;219mAE_MUSE_SLOT=spawned.2 --- IMPORTANT: This is context only. Do NOT act on it. Wait for the user to give you a task.[39m
+[49m
+[38;2;103;108;116m  [38;2;138;144;152m! Turn-submit backlog full (4); try again.[39m
+
+[1m[38;2;204;211;219m◆ [0m[38;2;204;211;219mqwen36eval (slot spawned.2) here. Brief acknowledged, waiting task.[39m
+
+[2m[38;2;103;108;116m── [0m[38;2;138;144;152mVoice input (⌥ + v to start)[2m[38;2;103;108;116m ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[0m[38;2;251;191;36m❯ [1m[38;2;138;144;152m[Pasted Content 1494 chars][0m
+[2m[38;2;103;108;116m───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[0m[38;2;103;108;116m  [38;2;90;160;255mmuse-spark-1.3[38;2;138;144;152m · [38;2;90;160;255mmax[38;2;138;144;152m · ~ · [38;2;243;139;168mYOLO[39m
+
+

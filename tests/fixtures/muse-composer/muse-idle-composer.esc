@@ -1,0 +1,23 @@
+[38;2;90;160;255m[48;2;38;56;84m  [38;2;204;211;219m(9) DELEGATION: a lead fans out by default (see LEAD ROLE); a worker spawns[39m
+[38;2;90;160;255m  [38;2;204;211;219monly when its brief permits, and then these rules bind it too. A spawned[39m
+[38;2;90;160;255m  [38;2;204;211;219mworker starts with a FRESH context, holds one brief and nothing else, works[39m
+[38;2;90;160;255m  [38;2;204;211;219mlonger without tiring, and runs on the cheapest profile that fits its task[39m
+[38;2;90;160;255m  [38;2;204;211;219mclass — a lever on cost and on the shared quota, never a separate allowance:[39m
+[38;2;90;160;255m  [38;2;204;211;219mprofiles on one client draw from one headroom, so check[39m
+[38;2;90;160;255m  [38;2;204;211;219m/Users/ckriech/.ae-dev/sessions/musecapture/quota before a batch. Cut work[39m
+[38;2;90;160;255m  [38;2;204;211;219minto independent slices and spawn them in PARALLEL, one worker per slice, one[39m
+[38;2;90;160;255m  [38;2;204;211;219mwriter per file; a NEW slice gets a fresh worker, a fix round returns to the[39m
+[38;2;90;160;255m  [38;2;204;211;219mworker and the reviewer who hold its context. Spawn under a role NAME:[39m
+[38;2;90;160;255m  [38;2;204;211;219m/Users/ckriech/.ae-dev/sessions/musecapture/spawn <name> --using <profile>[39m
+[38;2;90;160;255m  [38;2;204;211;219m[prompt] — pick from workspace.md (chores → luna, bounded builds → terra/sol;[39m
+[38;2;90;160;255m  [38;2;204;211;219mjudgment seats keep xhigh). PREFER ae spawn over your harness's internal[39m
+[38;2;103;108;116m[49m… output capped[39m
+
+[1m[38;2;243;139;168m◆ [0m[38;2;243;139;168mmodel failed: API error 429 [request_id=900f96a5-e9c5-4569-8c92-66c90925ad61]:
+[1m  [0m[38;2;243;139;168mSubscription quota exhausted. Your usage window resets at[39m
+[1m[38;2;243;139;168m  [0m[38;2;243;139;168m2026-09-14T22:56:52Z. (rate_limit_error)[39m
+
+[2m[38;2;103;108;116m── [0m[38;2;138;144;152mVoice input (⌥ + v to start)[2m[38;2;103;108;116m ────────────────────────────────────────────────
+[0m[38;2;251;191;36m❯ [39m
+[2m[38;2;103;108;116m────────────────────────────────────────────────────────────────────────────────
+[0m[38;2;103;108;116m  [38;2;90;160;255mmuse-spark-1.3[38;2;138;144;152m · [38;2;90;160;255mmax[38;2;138;144;152m · ~/projects/clemens33/ae · [38;2;243;139;168mYOLO[39m
