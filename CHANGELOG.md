@@ -1,6 +1,48 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.75] - 2026-09-14
+
+### Other
+
+- Refuse non-regular and symlinked lock paths before the open
+
+store::lock opened before it locked: a FIFO write-open blocks past any
+wait bound, and create+append follows a symlink, taking the lock
+wherever it points. Classify the path with symlink_metadata before the
+open: absent and regular proceed, every other kind is refused by name.
+lock() never writes a byte to that file, so the damage prevented is the
+open and the lock, not an append. The TOCTOU residual is real and named
+in the comment; the atomic form (O_NOFOLLOW/O_NONBLOCK) needs raw
+platform flags, which ae carries no libc to spell.
+
+read_source shares the one leg spelling, and the proceed arm is the
+positive is_file test, so a node no arm classified is refused rather
+than opened.
+- Merge lockpath: refuse non-regular and symlinked lock paths
+- Normalise NBSP in captured lines so Claude seats classify
+
+The tip-line matcher expected two ASCII spaces after the corner glyph;
+live Claude Code 2.1.270 emits a non-breaking space instead, so the
+unrecognised line shadowed the spinner above the input box and every
+affected seat classified Unknown in ae list. clean_lines already
+trimmed U+00A0, but only at the edges, so an interior NBSP survived.
+
+Normalise U+00A0 to a plain space for the whole line in clean_lines,
+the one place every matcher reads, and return Cow<str>: a line with no
+interior NBSP stays borrowed, and only a line that carries one
+allocates.
+
+The new fixture is a live 2.1.270 capture carrying the real NBSP bytes
+with its provenance recorded beside it, because the frozen ASCII-space
+fixtures could never fail while the vendor chrome drifted under them.
+- Merge tipnbsp: normalise NBSP in captured lines so Claude seats classify
+- Add R15 record sanitizer with measured budgets and request-id grammar
+
+Record-read bytes (goal, decision memo, names, ledger refs) become terminal input at a seat, so the verb cleans them before the deliver path. The strip normalises rather than deletes: CRLF and lone CR fold to LF, U+0085 folds to LF, and remaining controls drop except LF and TAB, so line counts survive progress-bar captures. It operates on decoded chars, never byte ranges, so U+009B arriving as C2 9B cannot eat adjacent em dash, accented or CJK text; over-budget fields omit WHOLE with a marker (decision 8192, goal 4096, 16 newest ids) rather than truncating inside. is_request_id is deliberately narrower than the public minter: production prefixes and four-digit-year stamps only. Three surface classes exist because display_cell is a MENU projection that would corrupt a checkpoint body: rendered text projects, pasted input rides verbatim after the strip, markers carry constants and counts.
+
+Fuzz targets: sanitize_field, request_id_select.
+- Merge compactsanitize: add R15 record sanitizer with measured budgets and request-id grammar
 ## [v2026.9.74] - 2026-09-14
 
 ### Other
