@@ -198,6 +198,54 @@ pub fn request_id(prefix: &str, now: Timestamp, entropy: u64) -> String {
     format!("{prefix}-{compact}-{:08x}", entropy & 0xffff_ffff)
 }
 
+/// Whether `text` is a request id this ae minted for a production ask or
+/// review: `<ae|review>-<YYYYMMDDTHHMMSSZ>-<8 lowercase hex>`, at most 32
+/// chars. The grammar's one owner, beside the minter; R15's budget check
+/// calls this, never a copy.
+///
+/// DELIBERATELY narrower than [`request_id`]: the public minter takes any
+/// prefix and any [`Timestamp`], so it can produce foreign prefixes and
+/// five-digit-year stamps — this validator REJECTS those. Prefixes come from
+/// [`Kind::id_prefix`], the one owner of the production words. The stamp is
+/// digit SHAPE only, not calendar truth: a non-calendar digit stamp cannot be
+/// minted (the clock only emits real dates) and is clean bounded ASCII either
+/// way, so shape is the whole of the bind.
+///
+/// ```
+/// use ae::time::Timestamp;
+/// use ae::tracked::{Kind, is_request_id, request_id};
+///
+/// let now = Timestamp::parse("2026-08-27T07:11:12Z").unwrap();
+/// let minted = request_id(Kind::Ask.id_prefix(), now, 7);
+/// assert!(is_request_id(&minted));
+/// assert!(!is_request_id("ae-x"));
+/// assert!(!is_request_id("xx-20260827T071112Z-00000007"));
+/// ```
+#[must_use]
+pub fn is_request_id(text: &str) -> bool {
+    let after_prefix = [Kind::Ask, Kind::Review]
+        .iter()
+        .find_map(|kind| text.strip_prefix(kind.id_prefix()));
+    let Some(rest) = after_prefix.and_then(|tail| tail.strip_prefix('-')) else {
+        return false;
+    };
+    // `<YYYYMMDD>T<HHMMSS>Z-<8 lowercase hex>`: 25 chars exactly, so the
+    // whole id is 28 (`ae`) or 32 (`review`) — the stated bound holds by
+    // construction, no separate length check.
+    let stamp = rest.as_bytes();
+    if stamp.len() != 25 {
+        return false;
+    }
+    let digits = |part: &[u8]| part.iter().all(u8::is_ascii_digit);
+    let hex = |part: &[u8]| part.iter().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+    digits(&stamp[0..8])
+        && stamp[8] == b'T'
+        && digits(&stamp[9..15])
+        && stamp[15] == b'Z'
+        && stamp[16] == b'-'
+        && hex(&stamp[17..25])
+}
+
 /// The exact reply command the footer carries:
 /// `<dir>/reply --as "<target>" "<id>" "<label>"`.
 #[must_use]
@@ -1055,8 +1103,8 @@ pub(crate) fn delivery_code(
 mod tests {
     use super::{
         CrossSession, EventFields, Kind, Lookup, Parsed, ResolveError, Usage, compose, is_blank,
-        is_external, lookup, named_server, pane_server, parse, pick, record_tracked_delivery,
-        refusal, reply_command, request_id,
+        is_external, is_request_id, lookup, named_server, pane_server, parse, pick,
+        record_tracked_delivery, refusal, reply_command, request_id,
     };
     use crate::inventory::ServerId;
     use crate::meta::Selector;
@@ -1560,5 +1608,79 @@ mod tests {
             ResolveError::SessionNotFound("o".to_owned()).message(),
             "Error: session 'o' not found"
         );
+    }
+
+    #[test]
+    fn is_request_id_accepts_exactly_what_the_minter_mints_for_production() {
+        // R15 pin, accept direction: every Kind, every canonical four-digit-
+        // year Timestamp sampled, every entropy shape — minted with a
+        // production prefix, accepted, and within 32 chars.
+        let stamps = [
+            "0000-01-01T00:00:00Z",
+            "0001-12-31T23:59:59Z",
+            "1969-12-31T23:59:59Z",
+            "1970-01-01T00:00:00Z",
+            "2000-02-29T12:00:00Z",
+            "2026-08-27T07:11:12Z",
+            "2026-12-31T23:59:59Z",
+            "9999-12-31T23:59:59Z",
+        ];
+        let entropies = [0, 1, 0xffff_ffff, u64::MAX, 0x1234_5678_9abc_def0];
+        let check = |at: Timestamp| {
+            for kind in [Kind::Ask, Kind::Review] {
+                for entropy in entropies {
+                    let minted = request_id(kind.id_prefix(), at, entropy);
+                    assert!(is_request_id(&minted), "minted {minted:?} must validate");
+                    assert!(minted.len() <= 32, "minted {minted:?} over 32 chars");
+                }
+            }
+        };
+        for stamp in stamps {
+            check(Timestamp::parse(stamp).unwrap());
+        }
+        // A sweep across one mid-range day's seconds keeps the minute/second
+        // rendering honest without enumerating the calendar; offsets stay
+        // in-day so no sweep crosses into a five-digit year.
+        let mid = Timestamp::parse("2026-06-15T00:00:00Z").unwrap();
+        for second in [0, 1, 3600, 61_200, 86_399] {
+            check(Timestamp::from_epoch(mid.epoch() + second));
+        }
+    }
+
+    #[test]
+    fn is_request_id_rejects_what_the_minter_can_make_but_must_not_validate() {
+        // R15 pin, reject direction. Each of these is producible by the
+        // public minter (any prefix, any Timestamp) or one char past the
+        // grammar — the validator must refuse them all.
+        let five_digit = request_id("ae", Timestamp::from_epoch(253_402_300_800), 7);
+        assert_eq!(five_digit, "ae-100000101T000000Z-00000007");
+        let cases: Vec<String> = [
+            "ae-x",
+            "review-",
+            "",
+            "ae-20260827T071112Z-0000000G",
+            "ae-20260827T071112Z-ABCDEF01",
+            "AE-20260827T071112Z-abcdef01",
+            "ae-20260827T071112Z-0000007",
+            "ae-20260827T071112Z-000000007",
+            "ae-2026082T071112Z-00000007",
+            "ae-20260827T07111Z-00000007",
+            "ae-20260827T071112Z00000007",
+            "ae20260827T071112Z-00000007",
+            "ae-20260827T071112Z-00000007\n",
+            " ae-20260827T071112Z-00000007",
+            "xx-20260827T071112Z-00000007",
+            "ask-20260827T071112Z-00000007",
+            "reviewx-20260827T071112Z-00000007",
+            "review-20260827T071112Z-00000007x",
+        ]
+        .iter()
+        .map(|s| (*s).to_owned())
+        .chain([five_digit])
+        .collect();
+        assert_eq!(cases[17].len(), 33, "the 33rd-char case");
+        for bad in &cases {
+            assert!(!is_request_id(bad), "rejected {bad:?} must not validate");
+        }
     }
 }

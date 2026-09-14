@@ -67,6 +67,19 @@ A crash writes its input under `artifacts/<target>/`; reproduce it with
 | `picker_spend` | `tmux::parse_picker_spend` | one watchdog-owned `@ae_spend` value at a fixed clock |
 | `launch_stamp` | `store::parse_launch_attempt` | one `.launch-attempt` stamp's bytes |
 | `last_live_epochs` | `inventory::launch_epochs` | one session meta, read for its launch moments |
+| `sanitize_field` | `sanitize::sanitize` (both `Field`s) | one record field's raw bytes |
+| `request_id_select` | `tracked::is_request_id` + `sanitize::select_ids` | whole input as one candidate id, plus newline-split as positioned refs |
+
+### The two R15 readers
+
+`sanitize_field` and `request_id_select` are the seat-compact verb's readers
+of hostile persisted state (goal lines, memo records, ledger refs — all
+hand-editable). Know the instrument's input domain: both take BYTES. They
+prove byte-level robustness (no panic, no hang, refusal where specified) of
+the strip, the grammar and the newest-first 16-cap selection. They cannot
+create filesystem nodes, build ledger order (selection positions are
+synthetic), or observe caller composition — the verb's ordering and marker
+rendering are pinned by tests, not by these targets.
 
 ### The two reboot-proof reducers
 
