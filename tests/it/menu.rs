@@ -1597,6 +1597,15 @@ fn direct_terminal_client(
         "stty cols {width} rows {height}; exec tmux -S {} attach-session -t ={session}",
         socket.display()
     );
+    // The clients attached BEFORE this one, so the client this call adds is
+    // proven by exclusion. A bare suffix match would accept an earlier client
+    // with the same session and geometry, and a second direct client on the
+    // session would then be "proven" before it had attached at all.
+    let before: Vec<String> = tmux(socket, scratch, &["list-clients", "-F", "#{client_name}"])
+        .1
+        .lines()
+        .map(ToOwned::to_owned)
+        .collect();
     let mut terminal = helper_by_name("script");
     if cfg!(target_os = "macos") {
         terminal.args([
@@ -1627,6 +1636,7 @@ fn direct_terminal_client(
     let child = terminal
         .spawn()
         .unwrap_or_else(|error| panic!("private direct terminal starts: {error}"));
+    let suffix = format!("|{session}|{width}x{height}");
     let client = wait_for(
         "private direct menu client",
         || {
@@ -1643,17 +1653,22 @@ fn direct_terminal_client(
         },
         |seen| {
             seen.lines()
-                .any(|line| line.ends_with(&format!("|{session}|{width}x{height}")))
+                .any(|line| newly_attached(line, &suffix, &before).is_some())
         },
     );
     let client = client
         .lines()
-        .find_map(|line| {
-            line.strip_suffix(&format!("|{session}|{width}x{height}"))
-                .map(ToOwned::to_owned)
-        })
+        .find_map(|line| newly_attached(line, &suffix, &before).map(ToOwned::to_owned))
         .unwrap_or_else(|| panic!("private direct menu client: {client}"));
     (client, child)
+}
+
+/// The client name on one `list-clients` line that carries `suffix` (session
+/// and geometry) and was NOT among the clients attached `before` — the one a
+/// `direct_terminal_client` call just added, by exclusion.
+fn newly_attached<'a>(line: &'a str, suffix: &str, before: &[String]) -> Option<&'a str> {
+    line.strip_suffix(suffix)
+        .filter(|name| !before.iter().any(|seen| seen == name))
 }
 
 fn select_direct_client_pane(
@@ -6857,6 +6872,16 @@ struct ShowFacts {
 }
 
 /// Gather the facts from the live server for one staged session and client.
+///
+/// The client's pid comes from `list-clients`, matched by exact name, as
+/// `dialog_identity` reads it and as the product's clicker proof does.
+/// `display-message -t <client>` is NOT that read: `-t` is a target-pane, tmux
+/// resolves a client name there to the client's SESSION and expands
+/// `#{client_pid}` against the session's most recently active client — with a
+/// second client attached, whichever attached last — so the named client would
+/// be paired with another attachment's pid and the proof would refuse it. The
+/// session facts stay on the CLICKED session: a click on the fleet strip names
+/// a session the clicker need not be attached to.
 fn gather_show_facts(socket: &Path, scratch: &Path, session: &str, client: &str) -> ShowFacts {
     let read = |format: &str, target: Option<&str>| {
         let mut words = vec!["display-message".to_owned(), "-p".to_owned()];
@@ -6874,9 +6899,19 @@ fn gather_show_facts(socket: &Path, scratch: &Path, session: &str, client: &str)
         .trim()
         .to_owned()
     };
+    let listed = tmux(
+        socket,
+        scratch,
+        &["list-clients", "-F", "#{client_name}|#{client_pid}"],
+    )
+    .1;
+    let client_pid = listed
+        .lines()
+        .find_map(|line| line.strip_prefix(&format!("{client}|")))
+        .unwrap_or_else(|| panic!("client {client} answers its pid: {listed:?}"));
     ShowFacts {
         client: client.to_owned(),
-        client_pid: read("#{client_pid}", Some(client)),
+        client_pid: client_pid.to_owned(),
         session: session.to_owned(),
         session_id: read("#{session_id}", Some(session)),
         pane: read("#{pane_id}", Some(session)),
@@ -7406,19 +7441,22 @@ fn a_resize_between_the_reads_and_the_final_proof_degrades_the_root() {
     clippy::disallowed_methods,
     reason = "the direct terminal record must be repeatedly read before its client detaches"
 )]
-fn wait_for_direct_menu_geometry(record: &Path, needle: &str) -> (MenuGeometry, Vec<u8>) {
+fn wait_for_direct_menu_geometry(
+    record: &Path,
+    needle: &str,
+) -> Result<(MenuGeometry, Vec<u8>), Vec<u8>> {
     let deadline = Instant::now() + PATIENCE;
     let mut last = Vec::new();
     while Instant::now() < deadline {
         last = fs::read(record).unwrap_or_default();
         if let Some(geometry) = direct_menu_geometry(&last, needle) {
-            return (geometry, last);
+            return Ok((geometry, last));
         }
         std::thread::sleep(Duration::from_millis(100));
     }
-    let tail_start = last.len().saturating_sub(600);
-    let tail = String::from_utf8_lossy(&last[tail_start..]);
-    panic!("direct session-menu title never settled; terminal tail={tail:?}");
+    // The caller reports: it holds the `show` child whose stderr says whether
+    // the draw was refused, and a record without the menu cannot say that.
+    Err(last)
 }
 
 /// The direct terminal-byte oracle for the delegated draw: `show` is invoked
@@ -7471,7 +7509,29 @@ fn the_delegated_root_draws_declared_state_on_direct_terminal_bytes() {
 
     let facts = gather_show_facts(&socket, &scratch, session, &client);
     let child = show_child(&socket, &scratch, &root, &config, &facts);
-    let (geometry, raw) = wait_for_direct_menu_geometry(&viewed, session);
+    let (geometry, raw) = match wait_for_direct_menu_geometry(&viewed, session) {
+        Ok(found) => found,
+        Err(last) => {
+            // Say what the product said. A refused draw is one line on the
+            // show child's stderr and nothing on the client; without it, a
+            // record with no menu reads as a slow draw when none was asked for.
+            let mut child = child;
+            let _ = child.kill();
+            let (status, stderr) = match child.wait_with_output() {
+                Ok(output) => (
+                    output.status.to_string(),
+                    String::from_utf8_lossy(&output.stderr).into_owned(),
+                ),
+                Err(error) => (format!("unreaped ({error})"), String::new()),
+            };
+            let tail_start = last.len().saturating_sub(600);
+            let tail = String::from_utf8_lossy(&last[tail_start..]);
+            panic!(
+                "direct session-menu title never settled; show {status}, stderr={stderr:?}; \
+                 terminal tail={tail:?}"
+            );
+        }
+    };
     let text = String::from_utf8_lossy(&raw);
     assert!(
         text.contains("lead state: blocked — DIRECTBYTES-") && text.contains("..."),
