@@ -1,6 +1,26 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v2026.9.74] - 2026-09-14
+
+### Other
+
+- Add waiting-agent: the fifth declared work state
+- Fix waiting-agent read-side currency and contract prose
+- Document waiting-agent in the contract
+- Pin the current nudge generator against the footprint filter
+- Make waiting-agent relevance routing-aware and its cadence fail-closed
+- Measure a seat's activity age by its routing key
+- Return the ownership verdict with the relevant event
+- Name the zero-cadence exception in the deferral doc
+- Preserve model observations for all seats
+- Verify delivery submission outcomes
+
+### Testing
+
+- Prove the direct menu client by name and exclusion
+- Flush the direct terminal record on every write
+- Isolate adapter config homes
 ## [v2026.9.73] - 2026-09-13
 
 ### Bug Fixes
