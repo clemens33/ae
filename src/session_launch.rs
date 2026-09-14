@@ -5586,6 +5586,61 @@ mod tests {
         .expect("legacy bare override proceeds");
     }
 
+    /// The R4 call site, not just the comparison: a FIRST override on a seat
+    /// that never recorded one still re-takes the triple against the recorded
+    /// store. Skipping the call would let a conflicting store through.
+    #[test]
+    fn first_override_against_a_recorded_store_retakes_the_triple() {
+        let home = PathBuf::from("/home-op");
+        let cfg = crate::config::parse_identity(
+            "[clients]\ncc-a = claude config_home=/store-a\ncc-b = claude config_home=/store-b\n\
+             [profiles]\nf = \"claude --model fable\"\n\
+             [roster]\nlead = f\n[workspace]\nmain = lead\n",
+        )
+        .expect("two-store config");
+        let entry = recorded_entry("seat.main=lead\nprofile.main=f\nconfig_home.main=/store-a\n");
+        // Same store: proceeds, and the launch records the row from then on.
+        let matching = cfg
+            .command_with_client("f", "cc-a", Some(&home))
+            .expect("matching resolves")
+            .command;
+        super::refuse_recorded_client_conflict(
+            "s",
+            "lead",
+            "f",
+            Some("cc-a"),
+            &entry,
+            &cfg,
+            &matching,
+            ToolKind::Claude,
+            Some(&home),
+        )
+        .expect("matching first override proceeds");
+        // Another store: refuses, naming both.
+        let conflicting = cfg
+            .command_with_client("f", "cc-b", Some(&home))
+            .expect("conflicting resolves")
+            .command;
+        let line = match super::refuse_recorded_client_conflict(
+            "s",
+            "lead",
+            "f",
+            Some("cc-b"),
+            &entry,
+            &cfg,
+            &conflicting,
+            ToolKind::Claude,
+            Some(&home),
+        ) {
+            Err(super::SeatOverrideRefusal::Usage(line)) => line,
+            other => panic!("conflicting first override must refuse, got {other:?}"),
+        };
+        assert!(
+            line.contains("/store-a") && line.contains("/store-b"),
+            "{line:?}"
+        );
+    }
+
     /// R4: the recorded store triple (MODE + PATH + BASE) is re-taken against
     /// the current resolution at every launch. Path alone is not identity: an
     /// implicit and an explicit row over one path refuse each other.
