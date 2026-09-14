@@ -2224,20 +2224,40 @@ fn workspace_manifest_names_the_effective_seat() {
 }
 
 /// F2: a recorded label naming ANOTHER harness refuses on the read path — the
-/// recorded label gets the same adapter gate as a spelled one.
+/// recorded label gets the same adapter gate as a spelled one. The fixture
+/// records an IMPLICIT override store EQUAL to the default's, so the store
+/// re-take would pass a swapped-in default composition: ONLY the read-path
+/// adapter gate stands between this label and a silent wrong-harness seat.
+/// (With a distinct recorded store the re-take backstops the gate, and the
+/// test would kill a dropped gate for the wrong reason.)
 #[test]
 fn recorded_cross_harness_label_refuses_on_a_flagless_resume() {
     if skip() {
         return;
     }
     let rig = client_rig("seat-client-xharness");
-    let (code, stdout, stderr) = rig.launch(&["--local", "lnxharness", "--lead", "fablex@cc-mic"]);
+    let mut config = std::fs::read_to_string(&rig.config).unwrap_or_default();
+    let _ = writeln!(
+        config,
+        "\n[clients]\ncc-plain = {}/claude",
+        rig.bin.display()
+    );
+    assert!(
+        std::fs::write(&rig.config, config).is_ok(),
+        "a plain client"
+    );
+    assert!(
+        std::fs::create_dir_all(rig.scratch.join(".claude")).is_ok(),
+        "a default store"
+    );
+    let (code, stdout, stderr) =
+        rig.launch(&["--local", "lnxharness", "--lead", "fablex@cc-plain"]);
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
     stop(&rig, "lnxharness");
     let path = rig.dir("lnxharness").join("meta");
     let good = std::fs::read_to_string(&path).unwrap_or_default();
-    assert!(good.contains("client.main=cc-mic\n"), "{good}");
-    let bad = good.replace("client.main=cc-mic\n", "client.main=codex\n");
+    assert!(good.contains("client.main=cc-plain\n"), "{good}");
+    let bad = good.replace("client.main=cc-plain\n", "client.main=codex\n");
     assert!(std::fs::write(&path, &bad).is_ok(), "damage planted");
     let (code, _, stderr) = rig.launch(&["--local", "lnxharness"]);
     assert_eq!(code, Some(2), "{stderr}");

@@ -169,8 +169,9 @@ recorded label by itself — no `@` needed — and re-takes the store check, so 
 definition moved refuses exactly as if it had been spelled. An EXPLICIT bare profile on a
 recorded seat refuses instead: it cannot say whether the label stays or goes, so re-pairing
 means `<new-profile>@<same-label>`. Any different label refuses whatever its facts. A first
-start whose override resolves to no store at all refuses instead of launching blind; a resume
-under the same blindness proceeds on its retained store and records nothing new. Removing
+start whose override resolves to a store ae cannot verify refuses instead of launching blind;
+a resume under the same blindness proceeds on its retained store and records nothing new.
+Removing
 the recorded label from `[clients]` strands the session until the label is restored — that
 restore, or `ae end`, is the recovery. A store selected through an exported account variable
 the launcher cannot see refuses the same way; pin it in the `[clients]` row as
