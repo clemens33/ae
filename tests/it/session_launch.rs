@@ -1755,10 +1755,13 @@ fn client_override_launches_the_seat_against_the_override_store() {
     assert!(meta.contains("client.main=cc-mic\n"), "{meta}");
     assert!(meta.contains("agent_bin.main=claude\n"), "{meta}");
     assert!(!meta.contains('@'), "no @ spelling reaches meta: {meta}");
-    let store = format!("{}/.claude-mic", rig.scratch.display());
+    // The pane environment carries the CANONICAL store (`_run` canonicalizes
+    // before it records or exports), so the expectation canonicalizes too —
+    // `/tmp` is a symlink on macOS and the lexical scratch would mismatch.
+    let store = std::fs::canonicalize(rig.scratch.join(".claude-mic")).expect("a store");
     assert!(
         rig.launch_argv()
-            .contains(&format!("CLAUDE_CONFIG_DIR={store}")),
+            .contains(&format!("CLAUDE_CONFIG_DIR={}", store.display())),
         "the pane ran on the override store"
     );
     assert!(

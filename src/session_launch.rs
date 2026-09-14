@@ -1405,6 +1405,33 @@ fn validate_seat_overrides(
     if let Some(line) = solo_resume_refusal(plan, dir, resuming) {
         return Err(SeatOverrideRefusal::Usage(line));
     }
+    // A recorded `client.<slot>` row in an unusable SHAPE refuses here with
+    // its own remedy — before the solo-freeze check below, whose generic
+    // doubtful-roster refusal would otherwise claim every damaged row first.
+    // Shape alone decides, so no config is needed; the config-absent leg
+    // lives with the override checks further down. A running session takes
+    // the running refusal instead, never this one.
+    if resuming && !running {
+        let session = plan.name.as_deref().unwrap_or_default();
+        let refusal = meta::read_bytes(dir)
+            .ok()
+            .map(|bytes| Meta::parse(&String::from_utf8_lossy(&bytes)))
+            .as_ref()
+            .and_then(|parsed| {
+                parsed
+                    .roster()
+                    .iter()
+                    .find_map(|entry| match &entry.client {
+                        crate::meta::RecordedClient::Invalid => {
+                            Some(invalid_client_refusal(session, &entry.name, &entry.slot))
+                        }
+                        _ => None,
+                    })
+            });
+        if let Some(line) = refusal {
+            return Err(SeatOverrideRefusal::Failed(line));
+        }
+    }
     let frozen_solo_identity = frozen_solo_identity(plan, dir, resuming, running)?;
     if plan.seat_profiles.is_empty() && frozen_solo_identity.is_none() {
         return Ok(None);
