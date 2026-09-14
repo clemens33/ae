@@ -738,8 +738,13 @@ Shows each configured account's locally cached subscription-quota windows. Every
 is read, and so is every `[clients]` row on its own: an account no profile names is still an account
 whose headroom decides whether to launch a seat against it, and its `manual_resets` declaration is
 still a declaration. A client one or more profiles already name is one scope, not two — its PROFILES
-cell lists them, while a scope no profile names spells that cell `-`. Both the public command and
-session helper use Codex conversation ids recorded across the local ae fleet:
+cell lists them, while a scope no profile names spells that cell `-`. That holds when a discovery
+REFUSES too: a scope that resolved no vendor source is correlated by its client label instead, so a
+profile that cannot be expanded and the client row behind it stay one account rather than becoming
+two rows counting one `manual_resets` twice. The account that resolves is the account, and the
+refusal it displaces is kept as a note, never dropped; a scope naming no client at all is not
+attributable to an account and keeps its own row. Both the public command and session helper use
+Codex conversation ids recorded across the local ae fleet:
 
 ```bash
 ae quota

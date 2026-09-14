@@ -666,6 +666,102 @@ fn a_client_only_row_that_cannot_resolve_is_unknown_and_names_its_own_section() 
     assert!(text.contains("goodx") && text.contains("77%"), "{text}");
 }
 
+/// C1 — BOTH passes refuse for the same account. Two refusals are two facts
+/// and the operator needs both, but they are ONE account: two rows would read
+/// as two subscriptions AND would carry the declaration twice, deriving
+/// EFFECTIVE from it on each.
+#[test]
+fn a_profile_refusal_and_its_client_refusal_are_one_account_row_carrying_both() {
+    let root = rig("both-passes-refuse");
+    std::fs::write(
+        root.join("config"),
+        concat!(
+            "[clients]\n",
+            "cc = claude config_home=$HOME/x manual_resets=1\n",
+            "[profiles]\n",
+            "p = cc\n",
+        ),
+    )
+    .expect("refusing config");
+    // `home: None` makes the `$HOME`-rooted client path unresolvable in BOTH
+    // passes, each refusing in its own words.
+    let text = run_quota_with_home(&root, None);
+    let _ = std::fs::remove_dir_all(&root);
+    assert_eq!(
+        text.matches("claude · cc").count(),
+        1,
+        "one account, one row: {text}"
+    );
+    // The status cell wraps, so the profile refusal is asserted by its parts.
+    assert!(
+        text.contains("[profiles] p via") && text.contains("client 'cc': HOME"),
+        "the profile refusal is stated: {text}"
+    );
+    assert!(
+        text.contains("Error: [clients] cc: HOME unavailable"),
+        "the client refusal is not lost: {text}"
+    );
+    assert_eq!(
+        text.matches("manual_resets").count(),
+        0,
+        "one unresolved row states no declaration twice: {text}"
+    );
+    let rows: Vec<&str> = text
+        .lines()
+        .filter(|line| line.starts_with("p ") || line.starts_with("- "))
+        .collect();
+    assert_eq!(rows.len(), 1, "no second account row: {rows:?}");
+}
+
+/// C2 — the PROFILE refuses (a pane variable it cannot expand) while the bare
+/// client resolves. A resolvable account IS the account: one known row, the
+/// profile listed on it, and its refusal noted rather than split off.
+#[test]
+fn a_profile_that_cannot_expand_is_noted_on_the_account_that_does_resolve() {
+    let root = rig("profile-unknown-client-known");
+    std::fs::write(
+        root.join("config"),
+        concat!(
+            "[clients]\n",
+            "cc = claude config_home=$HOME/.claude-mic manual_resets=1\n",
+            "[profiles]\n",
+            "p = cc --model $MODEL\n",
+        ),
+    )
+    .expect("pane-variable config");
+    let text = run_quota(&root);
+    let _ = std::fs::remove_dir_all(&root);
+    assert_eq!(
+        text.matches("claude · cc").count(),
+        1,
+        "one account, one row: {text}"
+    );
+    assert!(
+        text.contains("77%"),
+        "the account that resolves is the account: {text}"
+    );
+    assert!(
+        text.contains("38.5% x1"),
+        "its declaration is counted once, on the row that resolved: {text}"
+    );
+    let row = text
+        .lines()
+        .find(|line| line.contains("claude · cc"))
+        .expect("the account row");
+    assert!(
+        row.starts_with("p "),
+        "the refusing profile is listed on it: {row:?}"
+    );
+    assert!(
+        text.contains("depends on pane variable MODEL"),
+        "its refusal survives as a note: {text}"
+    );
+    assert!(
+        !text.contains("unknown"),
+        "the refusal never becomes a second, unresolved account: {text}"
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn implicit_claude_profiles_do_not_merge_distinct_sources_after_home_canonicalization() {
