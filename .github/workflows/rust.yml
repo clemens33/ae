@@ -207,7 +207,7 @@ jobs:
                    | shasum -a 256 | cut -d' ' -f1 )"
           echo "hash=$hash" >> "$GITHUB_OUTPUT"
 
-      # `just` plus the six pinned dev tools, all built from source by
+      # `just` plus the seven pinned dev tools, all built from source by
       # `cargo install --locked`. Slow exactly once per pin change; after that
       # this cache makes rust-setup a no-op.
       - name: Cache pinned dev tools
