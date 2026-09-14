@@ -169,12 +169,26 @@ pub fn run(
     };
     let delivery = deliver::deliver(&request, err)?;
     match delivery {
-        Ok(delivered) => audit_landed(&caller, &fields, &delivered.body_file, false, err),
+        Ok(delivered) => audit_landed(
+            &caller,
+            &fields,
+            &delivered.body_file,
+            delivered.verification,
+            false,
+            err,
+        ),
         Err(deliver::Failure::Unconfirmed {
             body_file,
             notice: false,
             ..
-        }) => audit_landed(&caller, &fields, &body_file, true, err),
+        }) => audit_landed(
+            &caller,
+            &fields,
+            &body_file,
+            deliver::DeliveryVerification::Verified,
+            true,
+            err,
+        ),
         Err(failure) => audit_delivery_failure(&caller, &fields, &failure, err),
     }
 }
@@ -344,6 +358,7 @@ fn audit_landed(
     caller: &Caller,
     fields: &EventFields<'_>,
     body_file: &str,
+    verification: deliver::DeliveryVerification,
     unconfirmed: bool,
     err: &mut impl Write,
 ) -> io::Result<u8> {
@@ -363,7 +378,7 @@ fn audit_landed(
     let line = if unconfirmed {
         tracked::unconfirmed_event_line(&fields)
     } else {
-        tracked::event_line(&fields)
+        tracked::delivery_event_line(&fields, verification, false)
     };
     if let Err(why) = store::open(&caller.dir).append_event(&line) {
         writeln!(

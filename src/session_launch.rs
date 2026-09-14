@@ -3365,8 +3365,12 @@ fn deliver_launch_prompt(
             // ONLY thing that will ever create a rollout to capture. So the
             // press is PROVEN, and a turn left in the box falls through to the
             // durable failure below rather than passing as delivered.
-            Ok(()) if deliver::submit_staged(server, &agent.pane, model) => return Ok(()),
-            Ok(()) => "submit UNCONFIRMED — the turn is staged unsent in the input box".to_owned(),
+            Ok(()) => match deliver::submit_staged(server, &agent.pane, model) {
+                deliver::SubmitState::Submitted | deliver::SubmitState::Unknown(_) => return Ok(()),
+                deliver::SubmitState::StillStaged => {
+                    "submit UNCONFIRMED — the turn is staged unsent in the input box".to_owned()
+                }
+            },
             Err(failure) => format!("submit UNCONFIRMED ({failure:?}) — it may be staged unsent"),
         }
     } else {

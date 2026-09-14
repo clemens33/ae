@@ -571,22 +571,34 @@ pub struct EventFields<'a> {
 /// ```
 #[must_use]
 pub fn event_line(fields: &EventFields<'_>) -> String {
-    render_event_line(fields, false)
+    render_event_line(fields, false, None)
 }
 
-/// One cross-session event line, with the capability fact present.
+/// Render a delivered event, retaining submit uncertainty as an additive record
+/// field rather than a broadcast summary.
 #[must_use]
-pub(crate) fn cross_session_event_line(fields: &EventFields<'_>) -> String {
-    render_event_line(fields, true)
+pub(crate) fn delivery_event_line(
+    fields: &EventFields<'_>,
+    verification: crate::deliver::DeliveryVerification,
+    cross_session: bool,
+) -> String {
+    render_event_line(fields, cross_session, verification.unverifiable_marker())
 }
 
-/// Render the common event shape, optionally carrying the cross-session fact.
-fn render_event_line(fields: &EventFields<'_>, cross_session: bool) -> String {
-    let mut members = vec![
-        ("ts", Value::Str(fields.ts.to_string())),
+/// Render the common event shape, optionally carrying delivery and route facts.
+fn render_event_line(
+    fields: &EventFields<'_>,
+    cross_session: bool,
+    unverifiable: Option<&str>,
+) -> String {
+    let mut members = vec![("ts", Value::Str(fields.ts.to_string()))];
+    if let Some(reason) = unverifiable {
+        members.push(("unverifiable", Value::Str(reason.to_owned())));
+    }
+    members.extend([
         ("actor", Value::Str(fields.actor.to_owned())),
         ("action", Value::Str(fields.action.to_owned())),
-    ];
+    ]);
     let summary = state::summary_for(fields.action, fields.summary);
     for (key, value) in [
         ("target", fields.target),
@@ -647,7 +659,7 @@ fn render_unconfirmed_event_line(fields: &EventFields<'_>, cross_session: bool) 
         summary: &summary,
         body_file: fields.body_file,
     };
-    render_event_line(&fields, cross_session)
+    render_event_line(&fields, cross_session, None)
 }
 
 /// Refuse a resolved target outside `caller_session` unless the caller supplied
@@ -960,13 +972,17 @@ pub(crate) fn record_tracked_delivery(
     let action = fields.action;
     let req_id = fields.reference;
     let target_name = fields.target;
-    let (body_file, unconfirmed) = match delivery {
-        Ok(delivered) => (delivered.body_file, false),
+    let (body_file, verification, unconfirmed) = match delivery {
+        Ok(delivered) => (delivered.body_file, delivered.verification, false),
         Err(crate::deliver::Failure::Unconfirmed {
             body_file,
             notice: false,
             ..
-        }) => (body_file, true),
+        }) => (
+            body_file,
+            crate::deliver::DeliveryVerification::Verified,
+            true,
+        ),
         Err(_) => {
             // Every other refused delivery has already said what happened and
             // where the body is; nothing is recorded for one.
@@ -990,10 +1006,8 @@ pub(crate) fn record_tracked_delivery(
         cross_session_unconfirmed_event_line(&fields)
     } else if unconfirmed {
         unconfirmed_event_line(&fields)
-    } else if cross_session.is_some() {
-        cross_session_event_line(&fields)
     } else {
-        event_line(&fields)
+        delivery_event_line(&fields, verification, cross_session.is_some())
     };
     if let Err(why) = append_delivery_event(dir, &line, cross_session) {
         if unconfirmed {
@@ -1281,6 +1295,7 @@ mod tests {
             Ok(crate::deliver::Delivered {
                 body_file: "/messages/ae-1.ask.body.txt".to_owned(),
                 framed: "framed".to_owned(),
+                verification: crate::deliver::DeliveryVerification::Verified,
             }),
             Some(CrossSession {
                 caller: "caller",

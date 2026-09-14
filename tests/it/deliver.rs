@@ -35,9 +35,10 @@ use super::phase2::run_tmux;
 const FAKE_TUI: &str = r#"#!/usr/bin/perl
 use strict;
 use warnings;
-my ($out, $cols, $kind, $marker_secs) = @ARGV;
+my ($out, $enters, $cols, $kind, $marker_secs, $mode) = @ARGV;
 $cols ||= 400;
 $marker_secs ||= 0;
+$mode ||= '';
 system("stty raw -echo 2>/dev/null");
 # RAW, deliberately: the staged bytes come off STDIN already UTF-8, so an
 # encoding layer would re-encode each byte and the box would show mojibake —
@@ -65,6 +66,13 @@ sub draw {
     if ($kind eq 'codex') { print "\r\n"; } else { print "$border\r\n"; }
     print "  fake-model  ~/x\r\n";
 }
+sub draw_queued {
+    print "\e[H\e[2J";
+    print "fake tui transcript\r\n";
+    print "\xe2\x9d\xaf Press up to edit queued messages\r\n";
+    print "$border\r\n";
+    print "  fake-model  ~/x\r\n";
+}
 if ($marker_secs > 0) { markers(); } else { draw(""); }
 my $buf = "";
 my $pasting = 0;
@@ -80,7 +88,12 @@ while (1) {
     last unless sysread(STDIN, $ch, 1);
     $buf .= $ch;
     if ($buf =~ s/\e\[200~\z//) { $pasting = 1; next; }
-    if ($buf =~ s/\e\[201~\z//) { $pasting = 0; draw($buf) if $marker_secs == 0; next; }
+    if ($buf =~ s/\e\[201~\z//) {
+        $pasting = 0;
+        exit 0 if $mode eq 'vanish';
+        draw($buf) if $marker_secs == 0;
+        next;
+    }
     if ($pasting && $ch eq "\r") {
         # tmux `paste-buffer` (no -r) replaces LF with CR on the wire, so a
         # receiver that keeps the bytes it was given maps it back inside a
@@ -90,13 +103,20 @@ while (1) {
         next;
     }
     if (!$pasting && ($ch eq "\r" || $ch eq "\n")) {
+        open(my $keys, '>>', $enters) or die;
+        print $keys "enter\n";
+        close($keys);
+        if ($mode eq 'swallow') {
+            draw($buf) if $marker_secs == 0;
+            next;
+        }
         $buf =~ s/[\r\n]\z//;
         open(my $fh, '>>', $out) or die;
         binmode($fh);
         print $fh $buf;
         close($fh);
         $buf = "";
-        draw("") if $marker_secs == 0;
+        $mode eq 'queued' ? draw_queued() : draw("") if $marker_secs == 0;
         next;
     }
     draw($buf) if $marker_secs == 0;
@@ -112,10 +132,15 @@ struct Rig {
     session: String,
     pane: String,
     received: PathBuf,
+    enters: PathBuf,
 }
 
 impl Rig {
     fn new(tag: &str, tool: &str, marker_secs: u32) -> Self {
+        Self::with_mode(tag, tool, marker_secs, "")
+    }
+
+    fn with_mode(tag: &str, tool: &str, marker_secs: u32, mode: &str) -> Self {
         use std::os::unix::fs::PermissionsExt;
         let scratch = PathBuf::from(format!("/tmp/aedl.{}.{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&scratch);
@@ -131,7 +156,12 @@ impl Rig {
         );
         let session = format!("dl{tag}");
         let received = scratch.join("received");
+        let enters = scratch.join("enters");
         assert!(std::fs::write(&received, "").is_ok(), "the receipt file");
+        assert!(
+            std::fs::write(&enters, "").is_ok(),
+            "the Enter receipt file"
+        );
         let rig = Self {
             scratch: scratch.clone(),
             sock: scratch.join("sock"),
@@ -139,11 +169,13 @@ impl Rig {
             session: session.clone(),
             pane: String::new(),
             received,
+            enters,
         };
         let command = format!(
-            "exec perl {} {} 400 {tool} {marker_secs}",
+            "exec perl {} {} {} 400 {tool} {marker_secs} {mode}",
             script.display(),
-            rig.received.display()
+            rig.received.display(),
+            rig.enters.display(),
         );
         assert!(
             rig.tmux(&[
@@ -246,6 +278,13 @@ impl Rig {
             std::thread::sleep(Duration::from_millis(25));
         }
         std::fs::read_to_string(&self.received).unwrap_or_default()
+    }
+
+    fn enter_count(&self) -> usize {
+        std::fs::read_to_string(&self.enters)
+            .unwrap_or_default()
+            .lines()
+            .count()
     }
 
     fn events(&self) -> String {
@@ -536,6 +575,81 @@ fn a_multi_line_body_reaches_a_modelled_tui_byte_for_byte() {
         std::fs::read_to_string(body_file).unwrap_or_default(),
         expected,
         "the recovery record is the same bytes the pane got"
+    );
+}
+
+/// An unmodelled TUI can swallow Enter. ae must not call that a verified
+/// delivery, but it also must not turn every unmodelled helper send into a
+/// failure: the paste and one Enter are a successful, explicit caveat.
+#[test]
+fn an_unmodelled_unsent_message_is_reported_as_unverifiable_not_delivered() {
+    let rig = Rig::with_mode("unmodelled-unsent", "gemini", 0, "swallow");
+    let (code, stderr) = rig.run(ae::cli::SEND, &["tui", "did not submit"], &[]);
+
+    assert_eq!((code, stderr.as_str()), (Some(0), ""));
+    assert!(rig.submitted().is_empty(), "the fake TUI swallowed Enter");
+    assert_eq!(rig.enter_count(), 1, "unknown never receives retry Enters");
+    assert!(
+        rig.events()
+            .contains("\"unverifiable\":\"unmodelled-input\""),
+        "the success caveat is durable: {}",
+        rig.events()
+    );
+}
+
+/// Claude replaces the prompt with this queue affordance after accepting a
+/// message mid-turn. It is submitted, not an occupied draft, so a verifier
+/// must not inject retries into the busy pane.
+#[test]
+fn a_queued_claude_submission_is_confirmed_without_extra_enters() {
+    let rig = Rig::with_mode("queued", "claude", 0, "queued");
+    let (code, stderr) = rig.run(ae::cli::SEND, &["tui", "already queued"], &[]);
+
+    assert_eq!(
+        rig.submitted(),
+        "⟦ae:msg from tui⟧\nalready queued",
+        "the first Enter queued the message"
+    );
+    assert_eq!(
+        rig.enter_count(),
+        1,
+        "the queued affordance is submitted, never a retry target"
+    );
+    assert_eq!((code, stderr.as_str()), (Some(0), ""), "{stderr}");
+}
+
+/// A capture that disappears after paste cannot prove the message submitted.
+/// It is an explicit caveat rather than a fabricated confirmed delivery.
+#[test]
+fn an_unreadable_submit_capture_is_reported_as_unverifiable_not_confirmed() {
+    let rig = Rig::with_mode("capture-lost", "claude", 0, "vanish");
+    let (code, stderr) = rig.run(ae::cli::SEND, &["tui", "capture vanished"], &[]);
+
+    assert_eq!((code, stderr.as_str()), (Some(0), ""));
+    assert!(
+        rig.submitted().is_empty(),
+        "the vanished pane received no Enter"
+    );
+    assert!(
+        rig.events()
+            .contains("\"unverifiable\":\"unreadable-capture\""),
+        "the success caveat is durable: {}",
+        rig.events()
+    );
+}
+
+/// A successful unmodelled send remains a success. The caveat is informational
+/// and must not reclassify the six unmodelled adapters as delivery failures.
+#[test]
+fn an_unmodelled_submission_lands_with_a_success_caveat_not_a_failure() {
+    let rig = Rig::new("unmodelled-landed", "gemini", 0);
+    let (code, stderr) = rig.run(ae::cli::SEND, &["tui", "landed anyway"], &[]);
+
+    assert_eq!((code, stderr.as_str()), (Some(0), ""));
+    assert_eq!(rig.submitted(), "⟦ae:msg from tui⟧\nlanded anyway");
+    assert!(
+        rig.events()
+            .contains("\"unverifiable\":\"unmodelled-input\"")
     );
 }
 

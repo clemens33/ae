@@ -164,6 +164,7 @@ pub fn run(
         &target_name,
         &parsed.message,
         &delivered.body_file,
+        delivered.verification,
         now,
         actor,
         cross,
@@ -220,7 +221,17 @@ fn record(
     cross: Option<CrossDelivery<'_>>,
     err: &mut impl Write,
 ) -> io::Result<u8> {
-    record_with_body(dir, target, summary, "", now, actor, cross, err)
+    record_with_body(
+        dir,
+        target,
+        summary,
+        "",
+        deliver::DeliveryVerification::Verified,
+        now,
+        actor,
+        cross,
+        err,
+    )
 }
 
 /// The `interrupt` event.
@@ -233,6 +244,7 @@ fn record_with_body(
     target: &str,
     summary: &str,
     body_file: &str,
+    verification: deliver::DeliveryVerification,
     now: Timestamp,
     actor: &str,
     cross: Option<CrossDelivery<'_>>,
@@ -259,11 +271,7 @@ fn record_with_body(
         summary,
         body_file,
     };
-    let line = if cross.is_some() {
-        tracked::cross_session_event_line(&fields)
-    } else {
-        tracked::event_line(&fields)
-    };
+    let line = tracked::delivery_event_line(&fields, verification, cross.is_some());
     let cross_session = cross.map(|route| tracked::CrossSession {
         caller: route.caller_session,
         target: route.target_session,

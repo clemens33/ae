@@ -385,23 +385,30 @@ fn record_send_delivery(
 ) -> io::Result<u8> {
     let action = event.action;
     let target_name = event.target;
-    let (body_file, recorded, unconfirmed) = match delivery {
+    let (body_file, framed, verification, unconfirmed) = match delivery {
         Ok(delivered) => (
             delivered.body_file,
-            delivered_summary(env, &delivered.framed),
+            delivered.framed,
+            delivered.verification,
             false,
         ),
         Err(deliver::Failure::Unconfirmed {
             body_file,
             framed,
             notice: false,
-        }) => (body_file, delivered_summary(env, &framed), true),
+        }) => (
+            body_file,
+            framed,
+            deliver::DeliveryVerification::Verified,
+            true,
+        ),
         Err(_) => {
             // Every other refused delivery has already said what happened and
             // where the body is; nothing is recorded for one.
             return Ok(EXIT_FAILED);
         }
     };
+    let summary = delivered_summary(env, &framed);
     let fields = EventFields {
         ts: event.ts,
         actor: event.actor,
@@ -412,17 +419,15 @@ fn record_send_delivery(
         actor_session: event.actor_session,
         target_slot: event.target_slot,
         target_session: event.target_session,
-        summary: &recorded,
+        summary: &summary,
         body_file: &body_file,
     };
     let line = if unconfirmed && cross_session.is_some() {
         tracked::cross_session_unconfirmed_event_line(&fields)
     } else if unconfirmed {
         tracked::unconfirmed_event_line(&fields)
-    } else if cross_session.is_some() {
-        tracked::cross_session_event_line(&fields)
     } else {
-        tracked::event_line(&fields)
+        tracked::delivery_event_line(&fields, verification, cross_session.is_some())
     };
     if let Err(why) = tracked::append_delivery_event(dir, &line, cross_session) {
         if unconfirmed {

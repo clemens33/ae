@@ -104,6 +104,62 @@ pub struct Delivered {
     /// Exactly what was framed and stored, which is what a pane send's event
     /// summary is of.
     pub framed: String,
+    /// Whether ae verified the Enter reached the harness's input model.
+    pub verification: DeliveryVerification,
+}
+
+/// How certain ae is that a pasted message submitted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeliveryVerification {
+    /// The input box was positively observed clear after Enter.
+    Verified,
+    /// Enter was sent, but ae could not prove what the pane did with it.
+    Unverifiable(Unverifiable),
+}
+
+impl DeliveryVerification {
+    /// The reason an auditable event record carries for an unverifiable submit.
+    #[must_use]
+    pub const fn unverifiable_marker(self) -> Option<&'static str> {
+        match self {
+            Self::Verified => None,
+            Self::Unverifiable(reason) => Some(reason.event_marker()),
+        }
+    }
+}
+
+/// What observing a pasted message after Enter proved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubmitState {
+    /// The input box was positively observed clear after Enter.
+    Submitted,
+    /// The input box was positively observed to still contain the paste.
+    StillStaged,
+    /// Enter was sent, but ae could not prove what the pane did with it.
+    Unknown(Unverifiable),
+}
+
+/// Why a submit observation could not be made.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unverifiable {
+    /// ae has no grammar for this tool's input box.
+    Unmodelled,
+    /// tmux did not return a screen capture.
+    CaptureUnreadable,
+    /// A capture arrived, but it did not contain a readable live input box.
+    PaneUnparseable,
+}
+
+impl Unverifiable {
+    /// Stable marker spelling for the event ledger.
+    #[must_use]
+    pub const fn event_marker(self) -> &'static str {
+        match self {
+            Self::Unmodelled => "unmodelled-input",
+            Self::CaptureUnreadable => "unreadable-capture",
+            Self::PaneUnparseable => "unparseable-input",
+        }
+    }
 }
 
 /// Why a delivery did not land.
@@ -264,7 +320,11 @@ pub fn deliver(
         notice::Mode::Notice(pointer) => pointer.as_str(),
     };
     match submit(request, input, payload, &mode, &body_file, &framed, err)? {
-        Ok(()) => Ok(Ok(Delivered { body_file, framed })),
+        Ok(verification) => Ok(Ok(Delivered {
+            body_file,
+            framed,
+            verification,
+        })),
         Err(failure) => {
             // The submit's own line said WHICH step failed; this one names the
             // delivery and where its body is.
@@ -466,10 +526,22 @@ pub fn input_busy(server: &ServerId, pane: &str, model: InputModel) -> bool {
     read_occupancy(server, pane, model) != Occupancy::Idle
 }
 
-/// Is our pasted message STILL STAGED — `_paste_still_staged`?
+/// Observe whether our pasted message left the input box —
+/// `_paste_still_staged`.
 #[must_use]
-pub fn still_staged(server: &ServerId, pane: &str, model: InputModel) -> bool {
-    model.is_modelled() && read_occupancy(server, pane, model) == Occupancy::Occupied
+pub fn still_staged(server: &ServerId, pane: &str, model: InputModel) -> SubmitState {
+    if !model.is_modelled() {
+        return SubmitState::Unknown(Unverifiable::Unmodelled);
+    }
+    match transport::capture_screen(server, pane, Styling::Escapes) {
+        Some(region) if region::queued_submission(&region, model) => SubmitState::Submitted,
+        Some(region) => match region::occupancy(&region, model) {
+            Occupancy::Idle => SubmitState::Submitted,
+            Occupancy::Occupied => SubmitState::StillStaged,
+            Occupancy::Unreadable => SubmitState::Unknown(Unverifiable::PaneUnparseable),
+        },
+        None => SubmitState::Unknown(Unverifiable::CaptureUnreadable),
+    }
 }
 
 /// Capture and read the pane's input box.
@@ -592,7 +664,7 @@ fn submit(
     body_file: &str,
     framed: &str,
     err: &mut impl Write,
-) -> io::Result<Result<(), Failure>> {
+) -> io::Result<Result<DeliveryVerification, Failure>> {
     let model = input.model;
     let diagnostic = input.diagnostic;
     let buffer = buffer_name(request.pane);
@@ -633,8 +705,12 @@ fn submit(
             notice: true,
         }));
     }
-    if submit_staged(server, pane, model) {
-        return Ok(Ok(()));
+    match submit_staged(server, pane, model) {
+        SubmitState::Submitted => return Ok(Ok(DeliveryVerification::Verified)),
+        SubmitState::Unknown(reason) => {
+            return Ok(Ok(DeliveryVerification::Unverifiable(reason)));
+        }
+        SubmitState::StillStaged => {}
     }
     if matches!(request.shape, Shape::Send | Shape::Relay) {
         writeln!(
@@ -654,8 +730,7 @@ fn submit(
     }))
 }
 
-/// Press Enter, and PROVE the paste left the input box. False means it is
-/// still staged after every retry.
+/// Press Enter, then observe whether the paste left the input box.
 ///
 /// A booting TUI swallows the Enter often enough that a single bare press is
 /// not a submit — it is a hope. Measured live on 2026-09-04: two codex seats
@@ -663,7 +738,7 @@ fn submit(
 /// box. Every first-message delivery presses through here so the retry and the
 /// verdict have ONE owner.
 #[must_use]
-pub fn submit_staged(server: &ServerId, pane: &str, model: InputModel) -> bool {
+pub fn submit_staged(server: &ServerId, pane: &str, model: InputModel) -> SubmitState {
     let settle = if model == InputModel::BorderDelimited {
         SETTLE_BORDER_DELIMITED
     } else {
@@ -671,15 +746,18 @@ pub fn submit_staged(server: &ServerId, pane: &str, model: InputModel) -> bool {
     };
     std::thread::sleep(settle);
     let _ = transport::send_key(server, pane, Key::Enter);
-    for _ in 0..VERIFY_RETRIES {
+    for retry in 0..=VERIFY_RETRIES {
         std::thread::sleep(VERIFY_POLL);
-        if !still_staged(server, pane, model) {
-            return true;
+        let observed = still_staged(server, pane, model);
+        match observed {
+            SubmitState::Submitted | SubmitState::Unknown(_) => return observed,
+            SubmitState::StillStaged if retry == VERIFY_RETRIES => return SubmitState::StillStaged,
+            SubmitState::StillStaged => {
+                let _ = transport::send_key(server, pane, Key::Enter);
+            }
         }
-        let _ = transport::send_key(server, pane, Key::Enter);
     }
-    std::thread::sleep(VERIFY_POLL);
-    !still_staged(server, pane, model)
+    SubmitState::StillStaged
 }
 
 /// Prove the staged notice on screen before any Enter.

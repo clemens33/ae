@@ -319,6 +319,25 @@ pub fn occupancy(region: &str, model: InputModel) -> Occupancy {
     }
 }
 
+/// Does Claude's live prompt say it accepted a message into its turn queue?
+///
+/// The phrase is an affordance the TUI draws after a mid-turn submit, not
+/// draft text. It must therefore never make submit verification retry Enter.
+#[must_use]
+pub fn queued_submission(region: &str, model: InputModel) -> bool {
+    if model != InputModel::BorderDelimited {
+        return false;
+    }
+    let segments = parse(region);
+    let Some(found) = prompt(&segments, false, &["❯", ">", "▌"]) else {
+        return false;
+    };
+    found
+        .tail
+        .strip_prefix(found.ornament)
+        .is_some_and(|text| text.trim_start_matches(is_space) == "Press up to edit queued messages")
+}
+
 /// Everything after the first `needle` in `text`, or all of it when there is
 /// none.
 fn after_first(text: &str, needle: char) -> String {
