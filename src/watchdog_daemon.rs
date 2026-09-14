@@ -7649,7 +7649,7 @@ mod tests {
         ];
         assert_eq!(
             window_agents_line(&many, &look(), None),
-            "#[fg=#7fbf6a]✓#[default]lead #[fg=#57b6c2]●#[default]colead"
+            "#[fg=#7fbf6a]✓#[default]lead #[fg=#6897BB]●#[default]colead"
         );
         let frame = crate::theme::WorkingFrame {
             glyph: "⠙",

@@ -113,7 +113,7 @@ impl Palette {
         selected_ink: "#0d0f12",
         title: "#e5a03c",
         needs_you: "#e5a03c",
-        working: "#57b6c2",
+        working: "#6897BB",
         done: "#7fbf6a",
         stale: "#8a94a6",
         dead: "#e0605c",
@@ -132,7 +132,7 @@ impl Palette {
         selected_ink: "#14110e",
         title: "#e5a03c",
         needs_you: "#e5a03c",
-        working: "#57b6c2",
+        working: "#6897BB",
         done: "#7fbf6a",
         stale: "#8a94a6",
         dead: "#e0605c",
@@ -1816,6 +1816,22 @@ mod tests {
         plain
     }
 
+    /// The button's foreground colour: the first `fg=` value in the segment.
+    fn button_fg(strip: &str) -> String {
+        strip
+            .split_once(" fg=")
+            .map_or("", |(_, rest)| rest.split(' ').next().unwrap_or(""))
+            .to_owned()
+    }
+
+    /// The button's ground colour: the first `bg=` value in the segment.
+    fn button_ground(strip: &str) -> String {
+        strip
+            .split_once(" bg=")
+            .map_or("", |(_, rest)| rest.split(']').next().unwrap_or(""))
+            .to_owned()
+    }
+
     #[test]
     fn strip_selection_preserves_row_width_and_separator() {
         let row = |name: &str, current| FleetRow {
@@ -2109,6 +2125,79 @@ mod tests {
                 assert!(
                     !statics.contains(&pulsed),
                     "working pulse tick {tick} grazes a static verdict on {}: {pulsed}",
+                    palette.name,
+                );
+            }
+        }
+    }
+
+    /// The button has no text label left, so a foreground that matches its
+    /// ground is a full disappearance — Neutral and Warm set the working
+    /// accent equal to the selected ground. Every current and non-current
+    /// state must stay readable: all marks without a frame, and every working
+    /// pulse tick with one, on every palette.
+    #[test]
+    fn orchestrator_button_foreground_differs_from_its_ground() {
+        let marks = [
+            Mark::Dead,
+            Mark::NeedsYou,
+            Mark::Working,
+            Mark::Done,
+            Mark::Stale,
+            Mark::Idle,
+        ];
+        for palette in PALETTES {
+            let look = Look {
+                palette,
+                ..Look::DEFAULT
+            };
+            for current in [false, true] {
+                let row = |mark| FleetRow {
+                    name: "orchestrator".to_owned(),
+                    id: "$7".to_owned(),
+                    mark,
+                    current,
+                };
+                for mark in marks {
+                    let strip = orchestrator_strip(&look, &row(mark), None);
+                    let (fg, ground) = (button_fg(&strip), button_ground(&strip));
+                    assert!(
+                        !fg.eq_ignore_ascii_case(&ground),
+                        "invisible {mark:?} button (current={current}) on {}: fg={fg} ground={ground}",
+                        palette.name,
+                    );
+                }
+                for tick in 0..20 {
+                    let frame = super::working_frame(tick, &palette, true);
+                    let strip = orchestrator_strip(&look, &row(Mark::Working), Some(&frame));
+                    let (fg, ground) = (button_fg(&strip), button_ground(&strip));
+                    assert!(
+                        !fg.eq_ignore_ascii_case(&ground),
+                        "invisible working pulse tick {tick} (current={current}) on {}: fg={fg} ground={ground}",
+                        palette.name,
+                    );
+                }
+            }
+        }
+    }
+
+    /// CLASS INVARIANT: no mark accent may equal `selected` or `base` in any
+    /// palette. A glyph is only ever drawn on those two grounds, so equality
+    /// with either is a full disappearance. This pins the palettes themselves
+    /// so no future hex edit can reintroduce a vanishing accent.
+    #[test]
+    fn no_mark_accent_matches_a_ground_it_is_drawn_on() {
+        for palette in PALETTES {
+            for mark in Mark::BY_URGENCY {
+                let accent = palette.accent(mark);
+                assert!(
+                    !accent.eq_ignore_ascii_case(palette.selected),
+                    "{mark:?} accent vanishes into selected on {}: {accent}",
+                    palette.name,
+                );
+                assert!(
+                    !accent.eq_ignore_ascii_case(palette.base),
+                    "{mark:?} accent vanishes into base on {}: {accent}",
                     palette.name,
                 );
             }
