@@ -6,8 +6,10 @@ All notable changes to this project will be documented in this file.
 - Merge eventsfuzz: fuzz the events.jsonl parser
 - Merge quotaclients: discover configured clients and correlate scopes on proven identity
 - Merge identitygap: prove session identity across a durable cut, and never let NoSession mask a real gap
+- Merge seatclient: record each seat's config home as an explicit identity, and refuse a store ae cannot verify
 - Render one subject line per change in the generated changelog
 - List git-cliff in the pin table and the rust-setup tool count
+- Make the changelog unit the first-parent commit
 
 ## [v2026.9.75] - 2026-09-14
 - Merge lockpath: refuse non-regular and symlinked lock paths
