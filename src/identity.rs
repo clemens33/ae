@@ -343,6 +343,9 @@ fn parse_seat_records(stdin: &str, restored: bool) -> Result<Vec<SeatLines>, Str
             slot: (*slot).to_owned(),
             name: (*name).to_owned(),
             profile: (*profile).to_owned(),
+            // The 6-field stdin record predates the client row and names no
+            // override; absence of evidence, never a derived label.
+            client: None,
             binary: optional(binary),
             harness_session: optional(sid),
             config_home: None,
@@ -620,6 +623,9 @@ pub fn add_seat_slot(
         slot: slot.clone(),
         name: name.to_owned(),
         profile: profile.to_owned(),
+        // `spawn --using` takes a bare profile; a client override is
+        // launch-only, so a spawned seat never records one.
+        client: None,
         binary: Some(binary.to_owned()),
         harness_session: sid.map(ToOwned::to_owned),
         config_home: None,

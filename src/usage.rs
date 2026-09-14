@@ -9,7 +9,7 @@ use std::io::{BufRead, BufReader, Read as _};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::meta::{RecordedConfigHome, RecordedConfigHomeBase, RosterEntry};
+use crate::meta::{RecordedClient, RecordedConfigHome, RecordedConfigHomeBase, RosterEntry};
 use crate::quota::{Bounded, Budget};
 use crate::tool::{ToolKind, UsageSource};
 
@@ -973,6 +973,9 @@ fn add_retired(
             slot,
             name,
             profile: Some(profile),
+            // The retire summary predates the client row and names no
+            // override; the recorded store below carries the attribution.
+            client: RecordedClient::Missing,
             harness_session: Some(reference),
             config_home: if config_home.is_empty() {
                 RecordedConfigHome::Missing

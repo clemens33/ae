@@ -1199,6 +1199,9 @@ pub(crate) enum Bounded<T> {
 struct FleetRollout {
     owner: String,
     profile: String,
+    /// The seat's recorded `client.<slot>` label, if it records one: the
+    /// account an override selected, which a bare profile name cannot name.
+    client: Option<String>,
     id: String,
     tool: ToolKind,
     location: RolloutLocation,
@@ -1988,9 +1991,14 @@ fn fleet_rollouts(sessions: Option<&Path>, budget: &mut Budget) -> FleetRollouts
                 continue;
             };
             let location = recorded_rollout_location(&seat.config_home);
+            let client = match &seat.client {
+                crate::meta::RecordedClient::Label(label) => Some(label.clone()),
+                crate::meta::RecordedClient::Missing | crate::meta::RecordedClient::Invalid => None,
+            };
             rollouts.push(FleetRollout {
                 owner: format!("{session}:{}", seat.name),
                 profile: profile.clone(),
+                client,
                 id: id.clone(),
                 tool,
                 location,
@@ -2190,7 +2198,15 @@ fn scope_rollouts<'a>(scope: &Scope, fleet: &'a FleetRollouts) -> Vec<&'a FleetR
         .rollouts
         .iter()
         .filter(|rollout| match &rollout.location {
-            RolloutLocation::Configured => scope.configured_profiles.contains(&rollout.profile),
+            RolloutLocation::Configured => match &rollout.client {
+                // An override seat names its account, not its profile's
+                // default store: it belongs to the scope that account
+                // reached. No fallback to the profile name — a label no
+                // scope claims is unknown, and guessing a scope would read
+                // the wrong store's windows as this seat's.
+                Some(client) => scope.accounts.iter().any(|account| account == client),
+                None => scope.configured_profiles.contains(&rollout.profile),
+            },
             RolloutLocation::Recorded { source_key, .. } => {
                 scope.source_key.as_ref() == Some(source_key)
             }
@@ -3271,6 +3287,54 @@ mod tests {
         }
     }
 
+    /// An unstarted override seat's rollout is attributed to its EFFECTIVE
+    /// client: the recorded label selects the scope, never the bare profile
+    /// name — which would land the seat on its default account. A label no
+    /// scope claims matches nothing: unknown, never guessed.
+    #[test]
+    fn configured_rollout_with_recorded_client_matches_the_override_scope() {
+        let scope = |profiles: &[&str], accounts: &[&str]| Scope {
+            tool: ToolKind::Codex,
+            home: None,
+            source: None,
+            source_key: None,
+            profiles: profiles.iter().map(ToString::to_string).collect(),
+            configured_profiles: profiles.iter().map(ToString::to_string).collect(),
+            clients: Vec::new(),
+            accounts: accounts.iter().map(ToString::to_string).collect(),
+            rollouts: Vec::new(),
+            hint: None,
+            manual_resets: None,
+            notes: Vec::new(),
+        };
+        let default = scope(&["solx"], &["codex"]);
+        let mic = scope(&[], &["codex-mic"]);
+        let rollout = |profile: &str, client: Option<&str>, id: &str| FleetRollout {
+            owner: format!("session:{id}"),
+            profile: profile.to_owned(),
+            client: client.map(str::to_owned),
+            id: id.to_owned(),
+            tool: ToolKind::Codex,
+            location: RolloutLocation::Configured,
+        };
+        let fleet = FleetRollouts {
+            rollouts: vec![
+                rollout("solx", Some("codex-mic"), "overridden"),
+                rollout("solx", None, "legacy"),
+                rollout("solx", Some("ghost"), "unclaimed"),
+            ],
+            status: FleetStatus::Complete,
+        };
+        let owners = |scope: &Scope| {
+            super::scope_rollouts(scope, &fleet)
+                .iter()
+                .map(|rollout| rollout.id.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(owners(&mic), vec!["overridden".to_owned()]);
+        assert_eq!(owners(&default), vec!["legacy".to_owned()]);
+    }
+
     #[test]
     fn codex_rollouts_read_newest_files_first_then_display_three_by_record_clock() {
         const NOW: i64 = 1_788_858_600;
@@ -3308,6 +3372,7 @@ mod tests {
             fleet.rollouts.push(FleetRollout {
                 owner: format!("session:seat-{index}"),
                 profile: "codex-profile".to_owned(),
+                client: None,
                 id: id.to_owned(),
                 tool: ToolKind::Codex,
                 location: RolloutLocation::Configured,
@@ -3336,6 +3401,7 @@ mod tests {
         let older = FleetRollout {
             owner: "older".to_owned(),
             profile: "p".to_owned(),
+            client: None,
             id: ids[0].to_owned(),
             tool: ToolKind::Codex,
             location: RolloutLocation::Configured,
@@ -3343,6 +3409,7 @@ mod tests {
         let newer = FleetRollout {
             owner: "newer".to_owned(),
             profile: "p".to_owned(),
+            client: None,
             id: ids[1].to_owned(),
             tool: ToolKind::Codex,
             location: RolloutLocation::Configured,
@@ -3386,6 +3453,7 @@ mod tests {
             fleet.rollouts.push(FleetRollout {
                 owner: format!("session:seat-{index}"),
                 profile: "codex-profile".to_owned(),
+                client: None,
                 id,
                 tool: ToolKind::Codex,
                 location: RolloutLocation::Configured,
@@ -3452,6 +3520,7 @@ mod tests {
                 .map(|(index, id)| FleetRollout {
                     owner: format!("session:seat-{index}"),
                     profile: "codex-profile".to_owned(),
+                    client: None,
                     id: id.to_owned(),
                     tool: ToolKind::Codex,
                     location: RolloutLocation::Configured,

@@ -1043,6 +1043,11 @@ fn the_spawn_grammar_refuses_a_missing_profile_and_a_hostile_name() {
             vec!["helper", "--using", "nosuch"],
             "not defined in [profiles]",
         ),
+        // R5: `profile@client` is launch-only; spawn takes a bare profile.
+        (
+            vec!["helper", "--using", "fake@cc-mic"],
+            "profile@client is launch-only",
+        ),
     ] {
         let (code, stdout, stderr) = rig.run(ae::cli::SPAWN, &tail);
         assert_eq!(code, Some(1), "{tail:?}: {stdout}{stderr}");

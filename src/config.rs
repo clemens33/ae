@@ -314,6 +314,33 @@ impl ResolvedCommand {
     }
 }
 
+/// A profile resolved with its launch client replaced by an explicit label.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OverrideCommand {
+    /// The substituted command, carrying the override label.
+    pub command: ResolvedCommand,
+    /// The binary the profile resolves to WITHOUT the override — the harness
+    /// the adapter gate compares the override against. Resolved, path
+    /// stripped, `env` prefix peeled: the same word the pane would run.
+    pub original_binary: String,
+    /// The `[clients]` label that resolution expanded, if the profile named
+    /// one — the refusal's other value.
+    pub original_client: Option<String>,
+}
+
+/// Why a `profile@client` selection could not be resolved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OverrideError {
+    /// The profile names nothing under `[profiles]`.
+    UnknownProfile,
+    /// The client names nothing under `[clients]`.
+    UnknownClient,
+    /// The raw profile command is not one simple command (the lexer's `why`).
+    ProfileNotSimple(String),
+    /// The expansion refused: `ClientHome` or `ClientEnvConflict`.
+    Refused(ConfigError),
+}
+
 /// The identity v2 config: `[clients]`, `[profiles]`, `[roster]`, and the two
 /// workspace seat keys.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -416,6 +443,70 @@ impl IdentityConfig {
             text: client_replacement(None, label, client, home)?,
             client_label: Some(label.to_owned()),
         }))
+    }
+
+    /// Resolve `profile` with its launch client REPLACED by `client_label` —
+    /// the `profile@client` seat selection, honored at launch only.
+    ///
+    /// The substitution is at the raw profile's validated binary span, through
+    /// the same one-shot expansion [`Self::command`] uses: the override
+    /// client's executable and config-home assignment replace the profile's
+    /// own launch word, and the profile's prefix, flags and arguments are
+    /// untouched. The adapter gate (same known harness on both sides) is the
+    /// caller's: this returns both binaries' facts, it never judges them.
+    ///
+    /// # Errors
+    ///
+    /// [`OverrideError`]: the profile or the client is not configured, the
+    /// profile command is not one simple command, or the expansion refused
+    /// (`ClientHome`, `ClientEnvConflict`).
+    pub fn command_with_client(
+        &self,
+        profile: &str,
+        client_label: &str,
+        home: Option<&Path>,
+    ) -> Result<OverrideCommand, OverrideError> {
+        let raw = self.profile(profile).ok_or(OverrideError::UnknownProfile)?;
+        let client = self
+            .client(client_label)
+            .ok_or(OverrideError::UnknownClient)?;
+        let normal = self
+            .command(profile, home)
+            .map_err(OverrideError::Refused)?
+            .ok_or(OverrideError::UnknownProfile)?;
+        let normal_parsed = crate::launch_cmd::lex_simple_command(normal.as_str())
+            .map_err(|why| OverrideError::ProfileNotSimple(why.to_string()))?;
+        let raw_parsed = crate::launch_cmd::lex_simple_command(raw)
+            .map_err(|why| OverrideError::ProfileNotSimple(why.to_string()))?;
+        // The same fight the whole-config validation refuses: a profile whose
+        // own prefix sets the account variable cannot take a client that sets
+        // it too. The pair is not in the config, so the launch-time resolver
+        // re-takes the check for exactly this pair.
+        if client.config_home.is_some()
+            && let Some(variable) = client.tool.adapter().config_home_env
+            && crate::launch_cmd::prefix_mentions(&raw_parsed, variable)
+        {
+            return Err(OverrideError::Refused(ConfigError::ClientEnvConflict {
+                profile: profile.to_owned(),
+                client: client_label.to_owned(),
+                variable: variable.to_owned(),
+            }));
+        }
+        let binary = crate::launch_cmd::launch_binary(&raw_parsed);
+        let replacement = client_replacement(Some(profile), client_label, client, home)
+            .map_err(OverrideError::Refused)?;
+        let mut text = String::with_capacity(raw.len() + replacement.len());
+        text.push_str(&raw[..binary.span.0]);
+        text.push_str(&replacement);
+        text.push_str(&raw[binary.span.1..]);
+        Ok(OverrideCommand {
+            command: ResolvedCommand {
+                text,
+                client_label: Some(client_label.to_owned()),
+            },
+            original_binary: normal_parsed.binary,
+            original_client: normal.client_label().map(str::to_owned),
+        })
     }
 
     /// Type a command snapshot already resolved by [`Self::command`].
@@ -1142,6 +1233,10 @@ pub struct Seat {
     pub name: String,
     /// The profile bound in `[roster]`.
     pub profile: String,
+    /// The client override honored for this seat, if any: a `profile@client`
+    /// launch selection replaced the profile's own client with this label.
+    /// `None` is the whole legacy shape — no override was honored.
+    pub client_override: Option<String>,
     /// The profile's launch command after one-shot client expansion.
     pub command: ResolvedCommand,
     /// The RAW leading-assignment span (`cmd.assign`), byte-exact from the
@@ -1323,6 +1418,7 @@ fn resolve_seat(
         slot,
         name: name.to_owned(),
         profile: profile.to_owned(),
+        client_override: None,
         command,
         assign_span: parsed.assign_span,
         argv_span: parsed.argv_span,
@@ -1897,6 +1993,109 @@ mod tests {
             assert_eq!(resolved.as_str(), text, "{profile}");
             assert_eq!(resolved.client_label(), label, "{profile}");
         }
+    }
+
+    /// `command_with_client` substitutes the override expansion at the raw
+    /// profile's validated binary span: prefix, flags and arguments untouched,
+    /// the resolved text carrying the override label, and the ORIGINAL binary
+    /// reported for the caller's adapter gate.
+    #[test]
+    fn override_replaces_the_launch_word_and_reports_the_original_binary() {
+        let (_f, cfg) = v2(
+            "[clients]\ncc = claude config_home=$HOME/.claude-mic\nplain = codex\n\
+             [profiles]\nhomed = cc --model fable\nbare = plain -m sol\n\
+             abs = /usr/bin/cc --flag\nstranger = nosuchclient --x\n\
+             [roster]\nlead = homed\n[workspace]\nmain = lead\n",
+        );
+        let home = Path::new("/Users/a");
+        let resolved = cfg
+            .command_with_client("homed", "cc", Some(home))
+            .expect("same-client override resolves");
+        assert_eq!(
+            resolved.command.as_str(),
+            "CLAUDE_CONFIG_DIR='/Users/a/.claude-mic' claude --model fable"
+        );
+        assert_eq!(resolved.command.client_label(), Some("cc"));
+        assert_eq!(resolved.original_binary, "claude");
+        assert_eq!(resolved.original_client.as_deref(), Some("cc"));
+        // A word from another harness substitutes byte-identically: judging
+        // the pair is the caller's gate, never this resolver's.
+        let resolved = cfg
+            .command_with_client("homed", "plain", Some(home))
+            .expect("cross-harness override resolves here");
+        assert_eq!(resolved.command.as_str(), "codex --model fable");
+        assert_eq!(resolved.command.client_label(), Some("plain"));
+        assert_eq!(resolved.original_binary, "claude");
+        // A path-pinned profile keeps its span: only the launch word moves.
+        let resolved = cfg
+            .command_with_client("abs", "cc", Some(home))
+            .expect("path profile resolves");
+        assert_eq!(
+            resolved.command.as_str(),
+            "CLAUDE_CONFIG_DIR='/Users/a/.claude-mic' claude --flag"
+        );
+        assert_eq!(resolved.original_binary, "cc");
+        // A profile that names no client still reports its own word.
+        let resolved = cfg
+            .command_with_client("stranger", "cc", Some(home))
+            .expect("clientless profile resolves");
+        assert_eq!(
+            resolved.command.as_str(),
+            "CLAUDE_CONFIG_DIR='/Users/a/.claude-mic' claude --x"
+        );
+        assert_eq!(resolved.original_binary, "nosuchclient");
+        assert_eq!(resolved.original_client, None);
+    }
+
+    #[test]
+    fn override_distinguishes_an_unknown_profile_from_an_unknown_client() {
+        let (_f, cfg) = v2("[clients]\ncc = claude\n[profiles]\np = cc --x\n\
+             [roster]\nlead = p\n[workspace]\nmain = lead\n");
+        assert_eq!(
+            cfg.command_with_client("missing", "cc", None),
+            Err(OverrideError::UnknownProfile)
+        );
+        assert_eq!(
+            cfg.command_with_client("p", "ghost", None),
+            Err(OverrideError::UnknownClient)
+        );
+        assert!(cfg.command_with_client("p", "cc", None).is_ok());
+    }
+
+    /// The conflict check is re-taken for exactly the override pair: the raw
+    /// profile below is innocent against its OWN client (which sets nothing),
+    /// so the config reads — but it fights the override client over the
+    /// account variable, and that pair refuses.
+    #[test]
+    fn override_retakes_the_client_env_conflict_for_its_pair() {
+        let (_f, cfg) = v2(
+            "[clients]\nclaude = claude\ncc = claude config_home=$HOME/.claude-mic\n\
+             [profiles]\nclean = claude --model fable\n\
+             dirty = CLAUDE_CONFIG_DIR=/pinned claude --model fable\n\
+             [roster]\nlead = clean\n[workspace]\nmain = lead\n",
+        );
+        let home = Path::new("/Users/a");
+        assert!(cfg.command_with_client("clean", "cc", Some(home)).is_ok());
+        assert_eq!(
+            cfg.command_with_client("dirty", "cc", Some(home)),
+            Err(OverrideError::Refused(ConfigError::ClientEnvConflict {
+                profile: "dirty".to_owned(),
+                client: "cc".to_owned(),
+                variable: "CLAUDE_CONFIG_DIR".to_owned(),
+            }))
+        );
+    }
+
+    #[test]
+    fn override_reports_a_profile_command_that_is_not_one_simple_command() {
+        let (_f, cfg) = v2(
+            "[clients]\ncc = claude\n[profiles]\nbad = claude --x ; tail -f /dev/null\n\
+             [roster]\nlead = bad\n[workspace]\nmain = lead\n",
+        );
+        assert!(matches!(
+            cfg.command_with_client("bad", "cc", None),
+            Err(OverrideError::ProfileNotSimple(_))
+        ));
     }
 
     /// A `[clients]` row resolves on its own to its expansion ALONE — no

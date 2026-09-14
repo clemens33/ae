@@ -751,6 +751,7 @@ pub(crate) fn floor_refusal(server: &ServerId, session: &str) -> Option<String> 
 }
 
 /// One command-line seat override that could not be honored.
+#[derive(Debug)]
 enum SeatOverrideRefusal {
     /// The user named a profile or launch seat that does not exist, or asked a
     /// stopped conversation to cross harnesses.
@@ -762,9 +763,31 @@ enum SeatOverrideRefusal {
 /// One override resolved through the exact config snapshot preflight read.
 struct ResolvedSeatOverride {
     agent: String,
+    /// The bare profile label — `profile.<slot>` never carries `@`.
     profile: String,
+    /// The honored `profile@client` label, if the selection named one.
+    client: Option<String>,
     command: config::ResolvedCommand,
     parsed: crate::launch_cmd::SimpleCommand,
+}
+
+/// Split a `--lead`/`--colead`/`--seat` value into its profile and optional
+/// `profile@client` override label.
+///
+/// Neither the profile grammar (`is_config_key`) nor the client grammar
+/// (`is_agent_name`) admits `@`, so one `@` splits unambiguously; an empty
+/// half or a second `@` is a usage error naming the value.
+fn split_seat_override(value: &str) -> Result<(String, Option<String>), String> {
+    let Some((profile, client)) = value.split_once('@') else {
+        return Ok((value.to_owned(), None));
+    };
+    if profile.is_empty() || client.is_empty() || client.contains('@') {
+        return Err(format!(
+            "Error: --seat selection '{value}' is not <profile> or <profile>@<client> \
+             (e.g. --seat lead=solx, --lead fablex@cc-mic)."
+        ));
+    }
+    Ok((profile.to_owned(), Some(client.to_owned())))
 }
 
 /// Identity plus parsed override commands carried unchanged through the lock.
@@ -963,6 +986,414 @@ fn freeze_solo_config(
     Ok(())
 }
 
+/// Resolve one `profile@client` selection: both sides must exist, the pair
+/// must substitute — and then the R1 gate: BOTH binaries must be the SAME
+/// KNOWN harness. `Unknown` on either side refuses, because
+/// `ToolKind::from_binary_name` is `from_known_binary_name(...).unwrap_or(Unknown)`
+/// and any two unknowns would compare equal through it.
+fn resolve_client_override(
+    cfg: &IdentityConfig,
+    agent: &str,
+    profile: &str,
+    label: &str,
+    home: Option<&Path>,
+    known_profiles: &str,
+    known_clients: &str,
+) -> Result<(config::ResolvedCommand, crate::launch_cmd::SimpleCommand), SeatOverrideRefusal> {
+    let resolved = cfg
+        .command_with_client(profile, label, home)
+        .map_err(|why| match why {
+            config::OverrideError::UnknownProfile => SeatOverrideRefusal::Usage(format!(
+                "Error: unknown profile '{profile}' in --seat. Known profiles: {known_profiles}."
+            )),
+            config::OverrideError::UnknownClient => SeatOverrideRefusal::Usage(format!(
+                "Error: unknown client '{label}' in --seat. Known clients: {known_clients}."
+            )),
+            config::OverrideError::ProfileNotSimple(why) => SeatOverrideRefusal::Failed(format!(
+                "Error: [profiles] {profile} (seat '{agent}'): the launch command must be one simple command — it has {why}."
+            )),
+            config::OverrideError::Refused(why) => SeatOverrideRefusal::Failed(why.to_string()),
+        })?;
+    let parsed = crate::launch_cmd::lex_simple_command(resolved.command.as_str()).map_err(|why| {
+        SeatOverrideRefusal::Failed(format!(
+            "Error: [profiles] {profile} (seat '{agent}'): the launch command must be one simple command — it has {why}."
+        ))
+    })?;
+    let original = ToolKind::from_known_binary_name(&resolved.original_binary);
+    let switched = ToolKind::from_known_binary_name(&parsed.binary);
+    if original.is_none() || switched.is_none() || original != switched {
+        let from = match resolved.original_client.as_deref() {
+            Some(client) => format!("profile '{profile}' (client '{client}')"),
+            None => format!("profile '{profile}'"),
+        };
+        return Err(SeatOverrideRefusal::Usage(client_adapter_refusal(
+            agent,
+            profile,
+            label,
+            &from,
+            (&resolved.original_binary, original),
+            (&parsed.binary, switched),
+        )));
+    }
+    Ok((resolved.command, parsed))
+}
+
+/// What one side of an `@` pair runs, for the refusal's two values.
+fn adapter_word(binary: &str, known: Option<ToolKind>) -> String {
+    match known {
+        Some(kind) => kind.as_str().to_owned(),
+        None => format!("an unrecognized binary '{binary}'"),
+    }
+}
+
+fn client_adapter_refusal(
+    agent: &str,
+    profile: &str,
+    label: &str,
+    from: &str,
+    original: (&str, Option<ToolKind>),
+    switched: (&str, Option<ToolKind>),
+) -> String {
+    format!(
+        "Error: cannot launch seat '{agent}' as '{profile}@{label}': {from} runs {} but client '{label}' runs {} — \
+         a client override may change the account, never the harness adapter ('@' needs the same known harness on both sides). \
+         Use a duplicate profile to cross harnesses.",
+        adapter_word(original.0, original.1),
+        adapter_word(switched.0, switched.1)
+    )
+}
+
+/// A recorded `client.<slot>` row resolved against the CURRENT config.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RecordedSelection {
+    /// No row: no override was recorded for this seat.
+    Missing,
+    /// Exactly this label was recorded, and it still names a client.
+    Label(String),
+}
+
+/// A recorded row no launch may interpret: empty, duplicated or malformed.
+fn invalid_client_refusal(session: &str, agent: &str, slot: &str) -> String {
+    format!(
+        "Error: session '{session}' seat '{agent}' records an unusable client (client.{slot} is empty, duplicated or malformed) — \
+         fix the meta row, or end the session (ae end {session})."
+    )
+}
+
+/// A recorded label that selects a different client than this launch.
+fn different_label_refusal(
+    session: &str,
+    agent: &str,
+    profile: &str,
+    known: &str,
+    label: &str,
+) -> String {
+    format!(
+        "Error: session '{session}' seat '{agent}' recorded client override '{known}' but this launch selects '{label}' — \
+         a recorded client is write-once. Resume with '{profile}@{known}', restore the '{known}' client, or end the session (ae end {session})."
+    )
+}
+
+/// Resolve one recorded seat's client row, or refuse with its remedy.
+///
+/// Shape-Invalid and config-absent are BOTH unusable, but only the absent
+/// label has a cheap remedy: restoring the removed or renamed `[clients]` row
+/// is safe, because the row then reads `Label` again with its identity
+/// unchanged. A malformed row must be fixed by hand. Either way `ae end` is
+/// the last resort, never a silent fallback.
+fn recorded_selection(
+    session: &str,
+    cfg: &IdentityConfig,
+    entry: &meta::RosterEntry,
+) -> Result<RecordedSelection, String> {
+    match &entry.client {
+        crate::meta::RecordedClient::Missing => Ok(RecordedSelection::Missing),
+        crate::meta::RecordedClient::Label(label) if cfg.client(label).is_some() => {
+            Ok(RecordedSelection::Label(label.clone()))
+        }
+        crate::meta::RecordedClient::Label(label) => Err(format!(
+            "Error: session '{session}' seat '{}' recorded client override '{label}' but no [clients] row names it now — \
+             restore the '{label}' client, or end the session (ae end {session}).",
+            entry.name
+        )),
+        crate::meta::RecordedClient::Invalid => {
+            Err(invalid_client_refusal(session, &entry.name, &entry.slot))
+        }
+    }
+}
+
+/// Refuse an override the recorded seat cannot honor.
+///
+/// A recorded client is write-once: only its exact label is accepted, any
+/// different label refuses whatever its facts (config is mutable, so an
+/// equality proof cannot cross a config edit), and a bare profile cannot drop
+/// it. Whatever the labels say, the recorded STORE triple is re-taken against
+/// the current resolution, which catches a label whose definition moved.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one refusal site for one override against one recorded seat"
+)]
+fn refuse_recorded_client_conflict(
+    session: &str,
+    agent: &str,
+    profile: &str,
+    client: Option<&str>,
+    entry: &meta::RosterEntry,
+    cfg: &IdentityConfig,
+    command: &config::ResolvedCommand,
+    tool: ToolKind,
+    home: Option<&Path>,
+) -> Result<(), SeatOverrideRefusal> {
+    let recorded = recorded_selection(session, cfg, entry).map_err(SeatOverrideRefusal::Failed)?;
+    match (recorded, client) {
+        // No recorded override and none selected: the legacy path, untouched.
+        (RecordedSelection::Missing, None) => Ok(()),
+        // First override for this seat: the recorded store still rules.
+        (RecordedSelection::Missing, Some(label)) => refuse_store_conflict(
+            session,
+            agent,
+            &format!("{profile}@{label}"),
+            entry,
+            command,
+            tool,
+            home,
+        ),
+        // A bare profile names no label, so it cannot satisfy write-once.
+        (RecordedSelection::Label(known), None) => Err(SeatOverrideRefusal::Usage(format!(
+            "Error: session '{session}' seat '{agent}' recorded client override '{known}' — \
+             re-pair with '{profile}@{known}' to keep it, or end the session (ae end {session}). \
+             A bare profile cannot drop a recorded client."
+        ))),
+        // The exact label, re-proved against the current store below.
+        (RecordedSelection::Label(known), Some(label)) if known == label => refuse_store_conflict(
+            session,
+            agent,
+            &format!("{profile}@{label}"),
+            entry,
+            command,
+            tool,
+            home,
+        ),
+        // Any different label refuses, whatever its facts today.
+        (RecordedSelection::Label(known), Some(label)) => Err(SeatOverrideRefusal::Usage(
+            different_label_refusal(session, agent, profile, &known, label),
+        )),
+    }
+}
+
+/// One side of the R4 identity comparison, as the refusal names it.
+fn recorded_store_shown(
+    home: &crate::meta::RecordedConfigHome,
+    base: &crate::meta::RecordedConfigHomeBase,
+) -> String {
+    match home {
+        crate::meta::RecordedConfigHome::Path(path) => {
+            format!("{} (explicit)", path.display())
+        }
+        crate::meta::RecordedConfigHome::Implicit(path) => match base {
+            crate::meta::RecordedConfigHomeBase::Path(home) => {
+                format!("{} (implicit, base {})", path.display(), home.display())
+            }
+            _ => format!("{} (implicit)", path.display()),
+        },
+        crate::meta::RecordedConfigHome::Absent => "absent".to_owned(),
+        crate::meta::RecordedConfigHome::Unknown
+        | crate::meta::RecordedConfigHome::Invalid
+        | crate::meta::RecordedConfigHome::Missing => "unusable".to_owned(),
+    }
+}
+
+/// Re-take the R4 identity check for one override: the recorded store triple
+/// (MODE + PATH + BASE — never path alone, an implicit and an explicit row
+/// over one path are different accounts) against the CURRENT resolution of
+/// the command this launch would exec.
+///
+/// The lookup is controlled, not ambient: `HOME` is the launch home, every
+/// other variable unset. An explicit client assigns its own variable, so its
+/// resolution never consults the environment at all; an implicit one needs
+/// exactly `HOME`. A CURRENT resolution of `Unknown` (a pane-only `$VAR` the
+/// launcher cannot see) proves no conflict — `_run` retains the recorded
+/// store with a notice, so the seat stays safe without this gate refusing.
+fn refuse_store_conflict(
+    session: &str,
+    agent: &str,
+    spelling: &str,
+    entry: &meta::RosterEntry,
+    command: &config::ResolvedCommand,
+    tool: ToolKind,
+    home: Option<&Path>,
+) -> Result<(), SeatOverrideRefusal> {
+    if entry.config_home == crate::meta::RecordedConfigHome::Missing {
+        // First start for this seat: the override participates in the one
+        // resolution and is recorded normally.
+        return Ok(());
+    }
+    if entry.config_home == crate::meta::RecordedConfigHome::Invalid {
+        return Err(SeatOverrideRefusal::Failed(format!(
+            "Error: cannot resume seat '{agent}' as '{spelling}': seat '{}' has malformed or duplicate config_home metadata — \
+             fix the meta row, or end the session (ae end {session}).",
+            entry.slot
+        )));
+    }
+    if entry.config_home == crate::meta::RecordedConfigHome::Unknown {
+        return Err(SeatOverrideRefusal::Failed(format!(
+            "Error: cannot resume seat '{agent}' as '{spelling}': the recorded conversation store (config_home.{}) is unknown — \
+             end the session and start over (ae end {session}).",
+            entry.slot
+        )));
+    }
+    let home_value = home.map(|path| path.display().to_string());
+    let resolution = crate::launch_cmd::config_home_resolution(command, tool, &|name| {
+        if name == "HOME" {
+            home_value.clone()
+        } else {
+            None
+        }
+    });
+    let current =
+        crate::run::canonical_config_home(&resolution.home).map_err(SeatOverrideRefusal::Failed)?;
+    let current_base =
+        crate::run::canonical_config_home(&resolution.base).map_err(SeatOverrideRefusal::Failed)?;
+    if matches!(current, crate::launch_cmd::Resolved::Unknown(_)) {
+        return Ok(());
+    }
+    let matches = match (&entry.config_home, &current) {
+        (crate::meta::RecordedConfigHome::Absent, crate::launch_cmd::Resolved::Absent) => true,
+        (
+            crate::meta::RecordedConfigHome::Path(recorded),
+            crate::launch_cmd::Resolved::Path(now),
+        ) => resolution.explicit && recorded == now,
+        (
+            crate::meta::RecordedConfigHome::Implicit(recorded),
+            crate::launch_cmd::Resolved::Path(now),
+        ) => {
+            !resolution.explicit
+                && recorded == now
+                && matches!(
+                    (&entry.config_home_base, &current_base),
+                    (
+                        crate::meta::RecordedConfigHomeBase::Path(recorded),
+                        crate::launch_cmd::Resolved::Path(now)
+                    ) if recorded == now
+                )
+        }
+        _ => false,
+    };
+    if matches {
+        return Ok(());
+    }
+    let now = match (&current, resolution.explicit) {
+        (crate::launch_cmd::Resolved::Path(path), true) => {
+            format!("{} (explicit)", path.display())
+        }
+        (crate::launch_cmd::Resolved::Path(path), false) => match &current_base {
+            crate::launch_cmd::Resolved::Path(base) => {
+                format!("{} (implicit, base {})", path.display(), base.display())
+            }
+            _ => format!("{} (implicit)", path.display()),
+        },
+        (crate::launch_cmd::Resolved::Absent, _) => "absent".to_owned(),
+        (crate::launch_cmd::Resolved::Unknown(_), _) => "unresolvable".to_owned(),
+    };
+    Err(SeatOverrideRefusal::Usage(format!(
+        "Error: cannot resume seat '{agent}' as '{spelling}': the recorded conversation lives in {}, \
+         but this launch resolves to {now} — a client override cannot move a retained conversation. \
+         End the session to adopt the new account (ae end {session}).",
+        recorded_store_shown(&entry.config_home, &entry.config_home_base)
+    )))
+}
+
+/// The preflight snapshot one `--seat` value resolves against.
+struct OverrideCtx<'a> {
+    cfg: &'a IdentityConfig,
+    agents: &'a [String],
+    known_agents: &'a str,
+    known_profiles: &'a str,
+    known_clients: &'a str,
+    recorded: Option<&'a Meta>,
+    session: &'a str,
+    home: Option<&'a Path>,
+}
+
+/// Resolve one `--seat <agent>=<profile[@client]>` value: the agent must be a
+/// launch seat, the selection must resolve (with the R1 gate for `@`), and a
+/// recorded seat must honor it (write-once client, re-taken store, same tool).
+fn resolve_one_override(
+    ctx: &OverrideCtx,
+    agent: &str,
+    value: &str,
+) -> Result<ResolvedSeatOverride, SeatOverrideRefusal> {
+    if !ctx.agents.iter().any(|known| known == agent) {
+        return Err(SeatOverrideRefusal::Usage(format!(
+            "Error: unknown launch agent '{agent}' in --seat. Known agents: {}.",
+            ctx.known_agents
+        )));
+    }
+    let (profile, client) = split_seat_override(value).map_err(SeatOverrideRefusal::Usage)?;
+    let (command, parsed) = if let Some(label) = client.as_deref() {
+        resolve_client_override(
+            ctx.cfg,
+            agent,
+            &profile,
+            label,
+            ctx.home,
+            ctx.known_profiles,
+            ctx.known_clients,
+        )?
+    } else {
+        let command = ctx
+            .cfg
+            .command(&profile, ctx.home)
+            .map_err(|why| SeatOverrideRefusal::Failed(why.to_string()))?;
+        let Some(command) = command else {
+            return Err(SeatOverrideRefusal::Usage(format!(
+                "Error: unknown profile '{profile}' in --seat. Known profiles: {}.",
+                ctx.known_profiles
+            )));
+        };
+        let parsed = crate::launch_cmd::lex_simple_command(command.as_str()).map_err(|why| {
+            SeatOverrideRefusal::Failed(format!(
+                "Error: [profiles] {profile} (seat '{agent}'): the launch command must be one simple command — it has {why}."
+            ))
+        })?;
+        (command, parsed)
+    };
+    if let Some(parsed_meta) = ctx.recorded
+        && let Some(entry) = parsed_meta
+            .roster()
+            .iter()
+            .find(|entry| entry.name == agent)
+    {
+        refuse_recorded_client_conflict(
+            ctx.session,
+            agent,
+            &profile,
+            client.as_deref(),
+            entry,
+            ctx.cfg,
+            &command,
+            parsed.tool(),
+            ctx.home,
+        )?;
+        let old = ToolKind::from_binary_name(entry.binary.as_deref().unwrap_or_default());
+        let new = parsed.tool();
+        if old != new {
+            return Err(SeatOverrideRefusal::Usage(format!(
+                "Error: cannot change agent '{agent}' from {} to {} on resume — its recorded conversation cannot cross tool kinds.",
+                old.as_str(),
+                new.as_str()
+            )));
+        }
+    }
+    Ok(ResolvedSeatOverride {
+        agent: agent.to_owned(),
+        profile,
+        client,
+        command,
+        parsed,
+    })
+}
+
 /// Validate every explicit seat profile before the launch's first write.
 fn validate_seat_overrides(
     env: &Env,
@@ -1007,6 +1438,15 @@ fn validate_seat_overrides(
             .collect::<Vec<_>>()
             .join(", ")
     };
+    let known_clients = if cfg.clients.is_empty() {
+        "<none>".to_owned()
+    } else {
+        cfg.clients
+            .iter()
+            .map(|(client, _)| client.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
     let recorded = if resuming {
         meta::read_bytes(dir)
             .ok()
@@ -1014,50 +1454,32 @@ fn validate_seat_overrides(
     } else {
         None
     };
+    let session = plan.name.as_deref().unwrap_or_default();
+    // Every recorded seat's client row must be usable before any rewrite,
+    // whether or not this launch names that seat: the meta rewrite below
+    // would otherwise launder an Invalid row into a carried Label or drop it
+    // toward Missing. A launch without overrides takes the same gate past the
+    // lock, beside the doubtful-roster refusal.
+    if let Some(parsed_meta) = recorded.as_ref() {
+        for entry in parsed_meta.roster() {
+            recorded_selection(session, &cfg, entry).map_err(SeatOverrideRefusal::Failed)?;
+        }
+    }
 
     let mut overrides = Vec::with_capacity(plan.seat_profiles.len());
     let home = crate::doors::home();
-    for (agent, profile) in &plan.seat_profiles {
-        if !agents.iter().any(|known| known == agent) {
-            return Err(SeatOverrideRefusal::Usage(format!(
-                "Error: unknown launch agent '{agent}' in --seat. Known agents: {known_agents}."
-            )));
-        }
-        let command = cfg
-            .command(profile, home.as_deref())
-            .map_err(|why| SeatOverrideRefusal::Failed(why.to_string()))?;
-        let Some(command) = command else {
-            return Err(SeatOverrideRefusal::Usage(format!(
-                "Error: unknown profile '{profile}' in --seat. Known profiles: {known_profiles}."
-            )));
-        };
-        let parsed = crate::launch_cmd::lex_simple_command(command.as_str()).map_err(|why| {
-            SeatOverrideRefusal::Failed(format!(
-                "Error: [profiles] {profile} (seat '{agent}'): the launch command must be one simple command — it has {why}."
-            ))
-        })?;
-        if let Some(parsed_meta) = recorded.as_ref()
-            && let Some(entry) = parsed_meta
-                .roster()
-                .iter()
-                .find(|entry| entry.name == *agent)
-        {
-            let old = ToolKind::from_binary_name(entry.binary.as_deref().unwrap_or_default());
-            let new = parsed.tool();
-            if old != new {
-                return Err(SeatOverrideRefusal::Usage(format!(
-                    "Error: cannot change agent '{agent}' from {} to {} on resume — its recorded conversation cannot cross tool kinds.",
-                    old.as_str(),
-                    new.as_str()
-                )));
-            }
-        }
-        overrides.push(ResolvedSeatOverride {
-            agent: agent.clone(),
-            profile: profile.clone(),
-            command,
-            parsed,
-        });
+    let ctx = OverrideCtx {
+        cfg: &cfg,
+        agents: &agents,
+        known_agents: &known_agents,
+        known_profiles: &known_profiles,
+        known_clients: &known_clients,
+        recorded: recorded.as_ref(),
+        session,
+        home: home.as_deref(),
+    };
+    for (agent, value) in &plan.seat_profiles {
+        overrides.push(resolve_one_override(&ctx, agent, value)?);
     }
     for replacement in &overrides {
         if let Some((_, bound)) = cfg
@@ -1074,6 +1496,7 @@ fn validate_seat_overrides(
 /// Replace one resolved seat's profile and every command-derived field.
 fn reprofile_seat(seat: &mut Seat, replacement: &ResolvedSeatOverride) {
     replacement.profile.clone_into(&mut seat.profile);
+    seat.client_override.clone_from(&replacement.client);
     replacement.command.clone_into(&mut seat.command);
     seat.assign_span.clone_from(&replacement.parsed.assign_span);
     seat.argv_span.clone_from(&replacement.parsed.argv_span);
@@ -1847,6 +2270,18 @@ fn launch(
         let parsed = meta::read_bytes(&dir)
             .ok()
             .map(|bytes| Meta::parse(&String::from_utf8_lossy(&bytes)));
+        // The recorded-client gate for launches WITHOUT overrides (an
+        // override launch took it in preflight): an unusable row refuses with
+        // its own remedy before the generic doubtful-roster refusal below,
+        // which stays as the backstop for every other anomaly.
+        if let Some(refusal) = parsed.as_ref().and_then(|meta| {
+            meta.roster()
+                .iter()
+                .find_map(|entry| recorded_selection(&session, &cfg, entry).err())
+        }) {
+            writeln!(err, "{refusal}")?;
+            return Ok(EXIT_FAILED);
+        }
         if let Some(anomaly) = parsed.as_ref().and_then(|meta| {
             meta.anomalies()
                 .iter()
@@ -2006,7 +2441,14 @@ fn launch(
     // executed BOTH commands on resume — the same defect the spawn gate closed
     // (colead gate b5d60fec), reached through the restore instead.
     if resuming {
-        for entry in spawned_entries(&dir) {
+        let spawned = match spawned_entries(&dir, &session) {
+            Ok(spawned) => spawned,
+            Err(line) => {
+                writeln!(err, "{line}")?;
+                return Ok(EXIT_FAILED);
+            }
+        };
+        for entry in spawned {
             // An unconfigured profile is not a refusal: the seat is preserved
             // verbatim and never launched, which the restore already handles.
             let command = match cfg.command(&entry.profile, home.as_deref()) {
@@ -2125,6 +2567,10 @@ struct Launching {
     slot: String,
     name: String,
     profile: String,
+    /// The client override honored for this seat, if any: an explicit `@`
+    /// selection this launch, else the recorded `client.<slot>` carried
+    /// forward on a resume. `None` leaves the row absent.
+    client: Option<String>,
     binary: String,
     tool: ToolKind,
     session_id: String,
@@ -2305,8 +2751,50 @@ fn build(
     }
 
     // ---- the roster, and the ids each seat launches with ----
+    // The recorded client rows, re-read under the lifecycle lock: preflight
+    // (or the post-lock gate for a launch without overrides) already refused
+    // every unusable row, so an Invalid met here is a mid-flight hand edit —
+    // and it still refuses rather than laundering toward Missing.
+    let recorded_meta: Option<Meta> = if shape.resuming {
+        meta::read_bytes(&dir)
+            .ok()
+            .map(|bytes| Meta::parse(&String::from_utf8_lossy(&bytes)))
+    } else {
+        None
+    };
     let mut launching: Vec<Launching> = Vec::new();
     for (index, seat) in seats.iter().enumerate() {
+        let carried: Option<String> = match recorded_meta
+            .as_ref()
+            .and_then(|meta| meta.roster().iter().find(|entry| entry.slot == seat.slot))
+        {
+            None => None,
+            Some(entry) => match &entry.client {
+                crate::meta::RecordedClient::Missing => None,
+                crate::meta::RecordedClient::Label(label) => Some(label.clone()),
+                crate::meta::RecordedClient::Invalid => {
+                    return rollback_launch(
+                        shape,
+                        &dir,
+                        &server,
+                        &invalid_client_refusal(&shape.name, &seat.name, &seat.slot),
+                        err,
+                    );
+                }
+            },
+        };
+        if let (Some(selected), Some(known)) = (seat.client_override.as_deref(), carried.as_deref())
+            && selected != known
+        {
+            return rollback_launch(
+                shape,
+                &dir,
+                &server,
+                &different_label_refusal(&shape.name, &seat.name, &seat.profile, known, selected),
+                err,
+            );
+        }
+        let client = seat.client_override.clone().or(carried);
         let stored = shape
             .resuming
             .then(|| meta_value(&dir, &format!("harness_session.{}", seat.slot)))
@@ -2330,6 +2818,7 @@ fn build(
             slot: seat.slot.clone(),
             name: seat.name.clone(),
             profile: seat.profile.clone(),
+            client,
             binary: seat.binary.clone(),
             tool: seat.tool,
             session_id,
@@ -2351,7 +2840,11 @@ fn build(
 
     // ---- spawned agents, restored on resume ----
     if shape.resuming {
-        for entry in spawned_entries(&dir) {
+        let spawned = match spawned_entries(&dir, &shape.name) {
+            Ok(spawned) => spawned,
+            Err(line) => return rollback_launch(shape, &dir, &server, &line, err),
+        };
+        for entry in spawned {
             // A profile that is not configured on THIS machine keeps its seat
             // VERBATIM at its original index — a later resume with the profile
             // configured restores the worker, and preserving the index keeps
@@ -2387,6 +2880,7 @@ fn build(
                 slot: entry.slot,
                 name: entry.name,
                 profile: entry.profile,
+                client: entry.client,
                 binary: entry.binary,
                 tool,
                 session_id: entry.harness_session,
@@ -3113,6 +3607,7 @@ fn meta_document(
             slot: agent.slot.clone(),
             name: agent.name.clone(),
             profile: agent.profile.clone(),
+            client: agent.client.clone(),
             binary: (!agent.binary.is_empty()).then(|| agent.binary.clone()),
             harness_session: (!agent.session_id.is_empty()).then(|| agent.session_id.clone()),
             config_home: agent.config_home.clone(),
@@ -4076,6 +4571,11 @@ struct Spawned {
     slot: String,
     name: String,
     profile: String,
+    /// The recorded `client.<slot>` carried forward, if the seat records one.
+    /// A spawn never writes this row, so a label here is a hand edit — but a
+    /// carried label is evidence, and an Invalid row refuses rather than
+    /// laundering toward Missing.
+    client: Option<String>,
     binary: String,
     harness_session: String,
     config_home: Option<String>,
@@ -4083,26 +4583,41 @@ struct Spawned {
 }
 
 /// The `spawned.<n>` seats a resuming session's meta records, in slot order.
-fn spawned_entries(dir: &Path) -> Vec<Spawned> {
+///
+/// # Errors
+///
+/// An Invalid recorded client row, with its remedy — the meta rewrite would
+/// otherwise launder it.
+fn spawned_entries(dir: &Path, session: &str) -> Result<Vec<Spawned>, String> {
     let Ok(bytes) = meta::read_bytes(dir) else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let text = String::from_utf8_lossy(&bytes).into_owned();
     let parsed = Meta::parse(&text);
-    let mut out: Vec<Spawned> = parsed
+    let mut out: Vec<Spawned> = Vec::new();
+    for entry in parsed
         .roster()
         .iter()
         .filter(|entry| entry.slot.starts_with("spawned."))
-        .map(|entry| Spawned {
+    {
+        let client = match &entry.client {
+            crate::meta::RecordedClient::Missing => None,
+            crate::meta::RecordedClient::Label(label) => Some(label.clone()),
+            crate::meta::RecordedClient::Invalid => {
+                return Err(invalid_client_refusal(session, &entry.name, &entry.slot));
+            }
+        };
+        out.push(Spawned {
             slot: entry.slot.clone(),
             name: entry.name.clone(),
             profile: entry.profile.clone().unwrap_or_default(),
+            client,
             binary: entry.binary.clone().unwrap_or_default(),
             harness_session: entry.harness_session.clone().unwrap_or_default(),
             config_home: entry.config_home.record_value(),
             config_home_base: entry.config_home_base.record_value(),
-        })
-        .collect();
+        });
+    }
     out.sort_by_key(|entry| {
         entry
             .slot
@@ -4110,7 +4625,7 @@ fn spawned_entries(dir: &Path) -> Vec<Spawned> {
             .and_then(|(_, index)| index.parse::<u32>().ok())
             .unwrap_or(u32::MAX)
     });
-    out
+    Ok(out)
 }
 
 /// What the capture pass needs from each launched agent.
@@ -4709,6 +5224,7 @@ mod tests {
             slot: "main".to_owned(),
             name: "lead".to_owned(),
             profile: "fable5".to_owned(),
+            client: None,
             binary: "claude".to_owned(),
             tool: ToolKind::Claude,
             session_id: "sid".to_owned(),
@@ -4736,5 +5252,535 @@ mod tests {
             "{document}"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The `@` split: a bare profile selects no client, one `@` selects
+    /// exactly one label, and an empty half or a second `@` is a usage error
+    /// naming the value.
+    #[test]
+    fn seat_override_values_split_into_profile_and_optional_client() {
+        assert_eq!(
+            super::split_seat_override("fablex"),
+            Ok(("fablex".to_owned(), None))
+        );
+        assert_eq!(
+            super::split_seat_override("fablex@cc-mic"),
+            Ok(("fablex".to_owned(), Some("cc-mic".to_owned())))
+        );
+        // (An empty VALUE never reaches the split: the plan parser refuses
+        // empty `--lead` / `--seat` selections before preflight.)
+        for bad in ["@cc-mic", "fablex@", "@", "fablex@cc@mic"] {
+            let line = super::split_seat_override(bad).expect_err("usage");
+            assert!(
+                line.contains(bad) && line.contains("<profile>@<client>"),
+                "{line:?}"
+            );
+        }
+        // No `@` at all is never an error, even for a value no config names:
+        // existence is the resolver's question, not the split's.
+        assert_eq!(
+            super::split_seat_override("missing"),
+            Ok(("missing".to_owned(), None))
+        );
+    }
+
+    fn override_cfg() -> crate::config::IdentityConfig {
+        crate::config::parse_identity(
+            "[clients]\n\
+             claude = claude\n\
+             cc-mic = claude config_home=$HOME/.claude-mic\n\
+             cc-other = claude config_home=$HOME/.claude-other\n\
+             codex = codex\n\
+             u1 = sleep-u1\n\
+             u2 = sleep-u2\n\
+             [profiles]\n\
+             fablex = \"claude --model fable --effort xhigh\"\n\
+             solx = \"codex -m sol\"\n\
+             weird1 = \"sleep-u1 --x\"\n\
+             weird2 = \"sleep-u2 --x\"\n\
+             [roster]\n\
+             lead = fablex\n\
+             [workspace]\n\
+             main = lead\n",
+        )
+        .expect("readable override config")
+    }
+
+    /// R1: an override may change the account, never the harness adapter —
+    /// both sides must be the SAME KNOWN harness, and `Unknown` on either
+    /// side refuses. Gating on `from_binary_name` would let the two-unknown
+    /// pair through, because any two unknowns compare equal there.
+    #[test]
+    fn client_override_resolves_same_adapter_and_refuses_anything_else() {
+        let cfg = override_cfg();
+        let home = PathBuf::from("/Users/a");
+        let (command, parsed) = super::resolve_client_override(
+            &cfg,
+            "lead",
+            "fablex",
+            "cc-mic",
+            Some(&home),
+            "fablex, solx, weird1, weird2",
+            "claude, cc-mic, cc-other, codex, u1, u2",
+        )
+        .expect("same-adapter override resolves");
+        assert_eq!(
+            command.as_str(),
+            "CLAUDE_CONFIG_DIR='/Users/a/.claude-mic' claude --model fable --effort xhigh"
+        );
+        assert_eq!(command.client_label(), Some("cc-mic"));
+        assert_eq!(parsed.binary, "claude");
+        // Cross-adapter: both values named, duplicate profile as the way out.
+        let line = match super::resolve_client_override(
+            &cfg,
+            "lead",
+            "fablex",
+            "codex",
+            Some(&home),
+            "fablex",
+            "codex",
+        ) {
+            Err(super::SeatOverrideRefusal::Usage(line)) => line,
+            other => panic!("cross-adapter must refuse Usage, got {other:?}"),
+        };
+        assert!(
+            line.contains("fablex@codex")
+                && line.contains("claude")
+                && line.contains("codex")
+                && line.contains("never the harness adapter")
+                && line.contains("duplicate profile"),
+            "{line:?}"
+        );
+        // Unknown on EITHER side refuses — including unknown on BOTH.
+        for (profile, label) in [
+            ("weird1", "u2"),
+            ("weird2", "u1"),
+            ("fablex", "u1"),
+            ("weird1", "cc-mic"),
+        ] {
+            let refused = super::resolve_client_override(
+                &cfg,
+                "lead",
+                profile,
+                label,
+                Some(&home),
+                "fablex",
+                "codex",
+            );
+            assert!(
+                matches!(refused, Err(super::SeatOverrideRefusal::Usage(_))),
+                "{profile}@{label} must refuse, got {refused:?}"
+            );
+        }
+        // Unknown sides are named as unrecognized binaries, never as equal.
+        let line = match super::resolve_client_override(
+            &cfg,
+            "lead",
+            "weird1",
+            "u2",
+            Some(&home),
+            "fablex",
+            "codex",
+        ) {
+            Err(super::SeatOverrideRefusal::Usage(line)) => line,
+            other => panic!("two unknowns must refuse, got {other:?}"),
+        };
+        assert!(
+            line.contains("unrecognized binary 'sleep-u1'")
+                && line.contains("unrecognized binary 'sleep-u2'"),
+            "{line:?}"
+        );
+    }
+
+    #[test]
+    fn client_override_errors_mirror_the_unknown_profile_shape() {
+        let cfg = override_cfg();
+        let home = PathBuf::from("/Users/a");
+        match super::resolve_client_override(
+            &cfg,
+            "lead",
+            "missing",
+            "cc-mic",
+            Some(&home),
+            "fablex, solx",
+            "cc-mic, codex",
+        ) {
+            Err(super::SeatOverrideRefusal::Usage(line)) => assert_eq!(
+                line,
+                "Error: unknown profile 'missing' in --seat. Known profiles: fablex, solx."
+            ),
+            other => panic!("unknown profile must refuse Usage, got {other:?}"),
+        }
+        match super::resolve_client_override(
+            &cfg,
+            "lead",
+            "fablex",
+            "ghost",
+            Some(&home),
+            "fablex, solx",
+            "cc-mic, codex",
+        ) {
+            Err(super::SeatOverrideRefusal::Usage(line)) => assert_eq!(
+                line,
+                "Error: unknown client 'ghost' in --seat. Known clients: cc-mic, codex."
+            ),
+            other => panic!("unknown client must refuse Usage, got {other:?}"),
+        }
+    }
+
+    fn recorded_entry(meta: &str) -> crate::meta::RosterEntry {
+        crate::meta::Meta::parse(meta).roster().to_vec().remove(0)
+    }
+
+    /// R2b at the launch boundary: `Missing` is no override, `Label` needs
+    /// its label live in the current config, and `Invalid` fails closed.
+    /// Only the absent label names the restore remedy.
+    #[test]
+    fn recorded_client_states_resolve_or_refuse_with_their_remedy() {
+        let cfg = override_cfg();
+        let entry = recorded_entry("seat.main=lead\nprofile.main=fablex\n");
+        assert_eq!(
+            super::recorded_selection("s", &cfg, &entry),
+            Ok(super::RecordedSelection::Missing)
+        );
+        let entry = recorded_entry("seat.main=lead\nprofile.main=fablex\nclient.main=cc-mic\n");
+        assert_eq!(
+            super::recorded_selection("s", &cfg, &entry),
+            Ok(super::RecordedSelection::Label("cc-mic".to_owned()))
+        );
+        let entry = recorded_entry("seat.main=lead\nprofile.main=fablex\nclient.main=ghost\n");
+        let line = super::recorded_selection("s", &cfg, &entry).expect_err("absent refuses");
+        assert!(
+            line.contains("'ghost'")
+                && line.contains("restore the 'ghost' client")
+                && line.contains("ae end s"),
+            "{line:?}"
+        );
+        for meta in [
+            "seat.main=lead\nprofile.main=fablex\nclient.main=\n",
+            "seat.main=lead\nprofile.main=fablex\nclient.main=cc mic\n",
+            "seat.main=lead\nprofile.main=fablex\nclient.main=cc-mic\nclient.main=cc-other\n",
+        ] {
+            let entry = recorded_entry(meta);
+            let line = super::recorded_selection("s", &cfg, &entry).expect_err("invalid refuses");
+            assert!(
+                line.contains("client.main")
+                    && line.contains("fix the meta row")
+                    && line.contains("ae end s"),
+                "{meta:?} -> {line:?}"
+            );
+        }
+    }
+
+    /// R4b: once `Label(l)` is recorded, ONLY `l` is accepted. A different
+    /// label refuses whatever its facts, and a bare profile cannot drop the
+    /// row by saying nothing.
+    #[test]
+    fn recorded_label_accepts_only_its_exact_label() {
+        let cfg = override_cfg();
+        let home = PathBuf::from("/Users/a");
+        let entry = recorded_entry("seat.main=lead\nprofile.main=fablex\nclient.main=cc-mic\n");
+        let command = cfg
+            .command_with_client("fablex", "cc-mic", Some(&home))
+            .expect("override resolves")
+            .command;
+        // The exact label, with no recorded store yet: first start proceeds.
+        super::refuse_recorded_client_conflict(
+            "s",
+            "lead",
+            "fablex",
+            Some("cc-mic"),
+            &entry,
+            &cfg,
+            &command,
+            ToolKind::Claude,
+            Some(&home),
+        )
+        .expect("exact label proceeds");
+        // A different label refuses, naming the recorded one and the profile
+        // spelling that would satisfy write-once.
+        let line = match super::refuse_recorded_client_conflict(
+            "s",
+            "lead",
+            "fablex",
+            Some("cc-other"),
+            &entry,
+            &cfg,
+            &command,
+            ToolKind::Claude,
+            Some(&home),
+        ) {
+            Err(super::SeatOverrideRefusal::Usage(line)) => line,
+            other => panic!("different label must refuse, got {other:?}"),
+        };
+        assert!(
+            line.contains("'cc-mic'")
+                && line.contains("'cc-other'")
+                && line.contains("write-once")
+                && line.contains("fablex@cc-mic"),
+            "{line:?}"
+        );
+        // Identical facts today change nothing: the equality cannot cross a
+        // config edit, so even a twin store refuses by label.
+        let twin = crate::config::parse_identity(
+            "[clients]\ncc-mic = claude config_home=/twin\ncc-twin = claude config_home=/twin\n\
+             [profiles]\nfablex = \"claude --model fable\"\n\
+             [roster]\nlead = fablex\n[workspace]\nmain = lead\n",
+        )
+        .expect("twin config");
+        let twin_command = twin
+            .command_with_client("fablex", "cc-twin", None)
+            .expect("twin resolves")
+            .command;
+        let refused = super::refuse_recorded_client_conflict(
+            "s",
+            "lead",
+            "fablex",
+            Some("cc-twin"),
+            &entry,
+            &twin,
+            &twin_command,
+            ToolKind::Claude,
+            None,
+        );
+        assert!(
+            matches!(refused, Err(super::SeatOverrideRefusal::Usage(_))),
+            "a twin store under another label still refuses, got {refused:?}"
+        );
+        // A bare profile cannot drop the row.
+        let plain = cfg
+            .command("fablex", Some(&home))
+            .expect("profile resolves")
+            .expect("profile exists");
+        let line = match super::refuse_recorded_client_conflict(
+            "s",
+            "lead",
+            "astrax",
+            None,
+            &entry,
+            &cfg,
+            &plain,
+            ToolKind::Claude,
+            Some(&home),
+        ) {
+            Err(super::SeatOverrideRefusal::Usage(line)) => line,
+            other => panic!("bare re-pair must refuse, got {other:?}"),
+        };
+        assert!(
+            line.contains("'cc-mic'") && line.contains("astrax@cc-mic"),
+            "{line:?}"
+        );
+        // No recorded row and no selection: the legacy path is untouched.
+        let legacy = recorded_entry("seat.main=lead\nprofile.main=fablex\n");
+        super::refuse_recorded_client_conflict(
+            "s",
+            "lead",
+            "astrax",
+            None,
+            &legacy,
+            &cfg,
+            &plain,
+            ToolKind::Claude,
+            Some(&home),
+        )
+        .expect("legacy bare override proceeds");
+    }
+
+    /// R4: the recorded store triple (MODE + PATH + BASE) is re-taken against
+    /// the current resolution at every launch. Path alone is not identity: an
+    /// implicit and an explicit row over one path refuse each other.
+    #[test]
+    fn store_conflict_compares_mode_path_and_base_never_path_alone() {
+        let home = PathBuf::from("/home-op");
+        let mic = |store: &str| {
+            crate::config::parse_identity(&format!(
+                "[clients]\ncc = claude config_home={store}\n\
+                 [profiles]\nf = \"claude --model fable\"\n\
+                 [roster]\nlead = f\n[workspace]\nmain = lead\n",
+            ))
+            .expect("mic config")
+        };
+        let resolve = |cfg: &crate::config::IdentityConfig| {
+            cfg.command_with_client("f", "cc", Some(&home))
+                .expect("override resolves")
+                .command
+        };
+        // Matching explicit store proceeds.
+        let cfg = mic("/store-a");
+        let command = resolve(&cfg);
+        let entry = recorded_entry("seat.main=lead\nprofile.main=f\nconfig_home.main=/store-a\n");
+        super::refuse_store_conflict(
+            "s",
+            "lead",
+            "f@cc",
+            &entry,
+            &command,
+            ToolKind::Claude,
+            Some(&home),
+        )
+        .expect("matching store proceeds");
+        // A definition that moved under the label refuses, naming both.
+        let moved = mic("/store-b");
+        let moved_command = resolve(&moved);
+        let line = match super::refuse_store_conflict(
+            "s",
+            "lead",
+            "f@cc",
+            &entry,
+            &moved_command,
+            ToolKind::Claude,
+            Some(&home),
+        ) {
+            Err(super::SeatOverrideRefusal::Usage(line)) => line,
+            other => panic!("moved definition must refuse, got {other:?}"),
+        };
+        assert!(
+            line.contains("/store-a")
+                && line.contains("/store-b")
+                && line.contains("cannot move a retained conversation")
+                && line.contains("ae end s"),
+            "{line:?}"
+        );
+        // Implicit versus explicit over ONE path: different accounts.
+        let implicit_cfg = crate::config::parse_identity(
+            "[clients]\ncc = claude\n[profiles]\nf = \"claude --model fable\"\n\
+             [roster]\nlead = f\n[workspace]\nmain = lead\n",
+        )
+        .expect("implicit config");
+        let implicit_command = implicit_cfg
+            .command_with_client("f", "cc", Some(&home))
+            .expect("implicit override resolves")
+            .command;
+        let entry =
+            recorded_entry("seat.main=lead\nprofile.main=f\nconfig_home.main=/home-op/.claude\n");
+        let refused = super::refuse_store_conflict(
+            "s",
+            "lead",
+            "f@cc",
+            &entry,
+            &implicit_command,
+            ToolKind::Claude,
+            Some(&home),
+        );
+        assert!(
+            matches!(refused, Err(super::SeatOverrideRefusal::Usage(_))),
+            "explicit recorded versus implicit current refuses, got {refused:?}"
+        );
+        // The same path in the same mode proceeds.
+        let entry = recorded_entry(
+            "seat.main=lead\nprofile.main=f\nconfig_home.main=implicit:/home-op/.claude\nconfig_home_base.main=/home-op\n",
+        );
+        super::refuse_store_conflict(
+            "s",
+            "lead",
+            "f@cc",
+            &entry,
+            &implicit_command,
+            ToolKind::Claude,
+            Some(&home),
+        )
+        .expect("matching implicit store proceeds");
+        // ... but not under another base.
+        let elsewhere = PathBuf::from("/home-elsewhere");
+        let refused = super::refuse_store_conflict(
+            "s",
+            "lead",
+            "f@cc",
+            &entry,
+            &implicit_command,
+            ToolKind::Claude,
+            Some(&elsewhere),
+        );
+        assert!(
+            matches!(refused, Err(super::SeatOverrideRefusal::Usage(_))),
+            "same path under another HOME refuses, got {refused:?}"
+        );
+    }
+
+    /// The R4 edges: first start proceeds, a current `Unknown` proves no
+    /// conflict (`_run` retains with a notice), and recorded `Unknown` /
+    /// `Invalid` / mismatched `Absent` fail closed.
+    #[test]
+    fn store_conflict_edges_fail_closed_except_first_start_and_unknown_current() {
+        let home = PathBuf::from("/Users/a");
+        let cfg = override_cfg();
+        let command = cfg
+            .command_with_client("fablex", "cc-mic", Some(&home))
+            .expect("override resolves")
+            .command;
+        // First start: no recorded store, the override is recorded normally.
+        let entry = recorded_entry("seat.main=lead\nprofile.main=fablex\nclient.main=cc-mic\n");
+        super::refuse_store_conflict(
+            "s",
+            "lead",
+            "fablex@cc-mic",
+            &entry,
+            &command,
+            ToolKind::Claude,
+            Some(&home),
+        )
+        .expect("first start proceeds");
+        // Recorded damage fails closed.
+        for meta in [
+            "seat.main=lead\nprofile.main=fablex\nconfig_home.main=unknown\n",
+            "seat.main=lead\nprofile.main=fablex\nconfig_home.main=\n",
+        ] {
+            let entry = recorded_entry(meta);
+            assert!(
+                super::refuse_store_conflict(
+                    "s",
+                    "lead",
+                    "fablex@cc-mic",
+                    &entry,
+                    &command,
+                    ToolKind::Claude,
+                    Some(&home),
+                )
+                .is_err(),
+                "{meta:?} fails closed"
+            );
+        }
+        // Recorded Absent matches only Absent.
+        let entry =
+            recorded_entry("seat.main=lead\nprofile.main=fablex\nconfig_home.main=absent\n");
+        let refused = super::refuse_store_conflict(
+            "s",
+            "lead",
+            "fablex@cc-mic",
+            &entry,
+            &command,
+            ToolKind::Claude,
+            Some(&home),
+        );
+        assert!(
+            matches!(refused, Err(super::SeatOverrideRefusal::Usage(_))),
+            "absent recorded versus explicit current refuses, got {refused:?}"
+        );
+        // A current Unknown (a pane-only relative assignment the launcher
+        // cannot resolve) proves no conflict and proceeds. The override
+        // client is implicit, so the pair takes no conflict — the Unknown
+        // comes from the profile's own unresolvable assignment.
+        let relative = crate::config::parse_identity(
+            "[clients]\nplain = claude\n\
+             [profiles]\nr = \"CLAUDE_CONFIG_DIR=relative/path claude --model fable\"\n\
+             [roster]\nlead = r\n[workspace]\nmain = lead\n",
+        )
+        .expect("relative config");
+        let relative_command = relative
+            .command_with_client("r", "plain", Some(&home))
+            .expect("relative override resolves")
+            .command;
+        let entry =
+            recorded_entry("seat.main=lead\nprofile.main=r\nconfig_home.main=/Users/a/.claude\n");
+        super::refuse_store_conflict(
+            "s",
+            "lead",
+            "r@plain",
+            &entry,
+            &relative_command,
+            ToolKind::Claude,
+            Some(&home),
+        )
+        .expect("unknown current proceeds; _run retains");
     }
 }

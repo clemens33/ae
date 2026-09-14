@@ -158,6 +158,17 @@ the choices in session metadata, so a later stop/resume keeps them. A stopped se
 re-paired to another profile of the same tool kind while keeping its conversation; changing tool
 kind is refused. A running session must be stopped before any seat profile changes.
 
+Suffix a selection with `@<client>` to run that profile on another account of the SAME harness:
+`ae myproject --lead fablex@cc-mic`. Both clients must resolve to the same known tool — an
+unrecognized binary on either side refuses, and crossing harnesses needs a duplicate profile.
+The override is launch-only: `spawn --using` takes a bare profile and rejects `@`. ae records
+the bare profile in `profile.<slot>` and the label in a new `client.<slot>` row; a launch
+without an override leaves that row absent. A recorded client is write-once: later resumes
+must repeat its exact label (re-pairing means `<new-profile>@<same-label>`), any different
+label refuses, and the recorded store is re-compared every launch, so a label whose definition
+moved refuses too. Removing the recorded label from `[clients]` strands the session until the
+label is restored — that restore, or `ae end`, is the recovery.
+
 On a seat's first start, ae records the canonical config home and whether the tool-specific
 variable selected it explicitly or remained unset for the default, before the tool execs. A
 default-derived store also records the canonical effective `HOME`, because a symlinked default
