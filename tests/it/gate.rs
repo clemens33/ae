@@ -1183,3 +1183,261 @@ fn just_bump_derives_the_next_sequence_from_the_tags_and_refuses_a_stale_recover
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The sha argv values a recorded git-cliff invocation carries after `--skip-commit`, or
+/// the reason the crossing is malformed. A joined value (one argument holding several
+/// shas) or a non-sha is exactly what the boundary must never hand over.
+fn skip_values(record: &[String]) -> Result<Vec<String>, String> {
+    let mut values = Vec::new();
+    let mut collecting = false;
+    let mut flagged = false;
+    for arg in record {
+        if arg == "--skip-commit" {
+            collecting = true;
+            flagged = true;
+            continue;
+        }
+        if !collecting {
+            continue;
+        }
+        if arg.starts_with('-') {
+            collecting = false;
+            continue;
+        }
+        if arg.contains(' ') {
+            return Err(format!("joined skip value: {arg}"));
+        }
+        let hex = arg
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+        if arg.len() != 40 || !hex {
+            return Err(format!("malformed skip value: {arg}"));
+        }
+        values.push(arg.clone());
+    }
+    if flagged && values.is_empty() {
+        return Err("--skip-commit with no value".to_owned());
+    }
+    Ok(values)
+}
+
+/// The argv a stub recorded, one entry per line.
+fn recorded_argv(path: &Path) -> Vec<String> {
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+/// A fixture repository holding the REAL justfile (or a deliberate mutation) and a
+/// `git-cliff` stub that records its own argv, then refuses a `--skip-commit` value that
+/// is not exactly one 40-character lowercase hex sha — the receipt check for the
+/// boundary. `absorbed` commits are merged in from a side branch.
+fn cliff_fixture(dir: &Path, name: &str, absorbed: usize, justfile: &str) -> PathBuf {
+    let repo = dir.join(name);
+    assert!(
+        std::fs::create_dir_all(repo.join("bin")).is_ok(),
+        "a fixture repo"
+    );
+    assert!(
+        std::fs::write(repo.join("justfile"), justfile).is_ok(),
+        "the fixture justfile"
+    );
+    let shim = repo.join("bin").join("git-cliff");
+    assert!(
+        std::fs::write(
+            &shim,
+            "#!/bin/sh\nrec=${AE_CLIFF_ARGV:?}\n: > \"$rec\"\n\
+             for a in \"$@\"; do printf '%s\\n' \"$a\" >> \"$rec\"; done\n\
+             prev=\"\"\nfor a in \"$@\"; do\n\
+             if [ \"$prev\" = \"--skip-commit\" ]; then\n\
+             case \"$a\" in *[!0-9a-f]*) echo \"stub: non-hex or joined skip value\" >&2; exit 7 ;; esac\n\
+             [ \"${#a}\" -eq 40 ] || { echo \"stub: short skip value\" >&2; exit 7; }\n\
+             fi\nprev=\"$a\"\ndone\nexit 0\n",
+        )
+        .is_ok(),
+        "the git-cliff stub"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        assert!(
+            std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).is_ok(),
+            "an executable stub"
+        );
+    }
+    let mut words = vec![
+        vec!["init", "-q", "-b", "main"],
+        vec!["config", "user.email", "cliff@example.invalid"],
+        vec!["config", "user.name", "Cliff"],
+        vec!["commit", "-q", "--allow-empty", "-m", "Root"],
+    ];
+    if absorbed > 0 {
+        words.extend([
+            vec!["checkout", "-q", "-b", "slice"],
+            vec!["commit", "-q", "--allow-empty", "-m", "Absorbed one"],
+            vec!["commit", "-q", "--allow-empty", "-m", "Absorbed two"],
+            vec!["checkout", "-q", "main"],
+            vec![
+                "merge",
+                "-q",
+                "--no-ff",
+                "slice",
+                "-m",
+                "Merge slice: shipped change",
+            ],
+        ]);
+    }
+    for words in words {
+        let (code, _) = in_fixture(&repo, "git", &words, &[]);
+        assert_eq!(code, 0, "git {words:?} must succeed");
+    }
+    repo
+}
+
+/// `just <recipe> [args]` in a fixture; returns the exit code and the stub's argv record.
+fn cliff_run(repo: &Path, recipe: &str, args: &[&str]) -> (i32, Vec<String>) {
+    let argv_file = repo.join("argv");
+    let mut full = vec![recipe];
+    full.extend_from_slice(args);
+    let (code, _) = in_fixture(
+        repo,
+        "just",
+        &full,
+        &[("AE_CLIFF_ARGV", argv_file.to_str().unwrap_or_default())],
+    );
+    (code, recorded_argv(&argv_file))
+}
+
+/// The shas a fixture's side branch absorbed, resolved from git and sorted.
+fn absorbed_shas(repo: &Path) -> Vec<String> {
+    let mut shas = Vec::new();
+    for name in ["slice", "slice~1"] {
+        let (code, stdout) = in_fixture(repo, "git", &["rev-parse", name], &[]);
+        assert_eq!(code, 0, "the fixture resolves {name}");
+        shas.push(stdout.trim().to_owned());
+    }
+    shas.sort();
+    shas
+}
+
+/// The leading argv entries as string slices, for comparison against expected literals.
+fn as_strs(argv: &[String]) -> Vec<&str> {
+    argv.iter().map(String::as_str).collect()
+}
+
+/// `_cliff-run` owns the ONE place where the skip list stops being text and becomes argv.
+/// `_cliff-skip` can only prove its text, so these run the REAL recipes in fixture
+/// repositories with a git-cliff stub that records its OWN argv: an empty complement
+/// emits no flag, a non-empty one emits one argv entry per sha, and the joined crossing a
+/// quoted `$skip` would produce is refused rather than silently accepted.
+#[test]
+fn the_changelog_skip_list_crosses_to_git_cliff_as_separate_arguments() {
+    let dir = PathBuf::from(format!("/tmp/ae-gate-cliff.{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let justfile = read(&root().join("justfile"));
+
+    // An EMPTY complement: the linear fixture emits no flag at all.
+    let empty = cliff_fixture(&dir, "empty", 0, &justfile);
+    let (code, argv) = cliff_run(&empty, "changelog", &[]);
+    assert_eq!(code, 0, "an empty skip list must still generate");
+    assert!(
+        !argv.iter().any(|arg| arg == "--skip-commit"),
+        "an empty complement must emit no --skip-commit: {argv:?}"
+    );
+
+    // A NON-EMPTY complement: one argv entry per absorbed sha, at the real recipe.
+    let merge = cliff_fixture(&dir, "merge", 2, &justfile);
+    let expected = absorbed_shas(&merge);
+    let (code, argv) = cliff_run(&merge, "changelog", &[]);
+    assert_eq!(code, 0, "the merge fixture must generate");
+    let mut got = skip_values(&argv).unwrap_or_else(|why| panic!("the boundary: {why}"));
+    got.sort();
+    assert_eq!(
+        got, expected,
+        "every absorbed sha, one argv entry: {argv:?}"
+    );
+    assert_eq!(
+        as_strs(&argv[argv.len() - 2..]),
+        vec!["-o", "CHANGELOG.md"],
+        "trailing args preserved"
+    );
+
+    // The two RELEASE-shaped invocations run through the same owner and keep their own
+    // trailing arguments.
+    for trailing in [
+        vec!["--tag", "v0.0.1", "-o", "CHANGELOG.md"],
+        vec!["--tag", "v0.0.1", "--unreleased", "--strip", "header"],
+    ] {
+        let (code, argv) = cliff_run(&merge, "_cliff-run", &trailing);
+        assert_eq!(code, 0, "_cliff-run {trailing:?} must succeed");
+        let mut got = skip_values(&argv).unwrap_or_else(|why| panic!("the boundary: {why}"));
+        got.sort();
+        assert_eq!(
+            got, expected,
+            "the release shape carries the list: {argv:?}"
+        );
+        assert_eq!(
+            as_strs(&argv[argv.len() - trailing.len()..]),
+            trailing,
+            "trailing args preserved"
+        );
+    }
+
+    // A JOINED crossing: the quoted variant of the same owner is refused, not accepted.
+    let quoted = justfile.replace(
+        "git-cliff --skip-commit $skip \"$@\"",
+        "git-cliff --skip-commit \"$skip\" \"$@\"",
+    );
+    assert_ne!(
+        quoted, justfile,
+        "the mutation must apply to the real owner"
+    );
+    let joined = cliff_fixture(&dir, "joined", 2, &quoted);
+    let (code, argv) = cliff_run(&joined, "changelog", &[]);
+    assert_ne!(code, 0, "a joined skip value must fail the run");
+    assert!(
+        skip_values(&argv).is_err(),
+        "the joined value is detected as malformed, not accepted: {argv:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Every changelog invocation takes the skip list from the ONE owner, so the three call
+/// sites cannot drift into carrying or dropping it by themselves.
+#[test]
+fn every_changelog_invocation_takes_the_skip_list_from_the_one_owner() {
+    let justfile = read(&root().join("justfile"));
+    let changelog = recipe_text(&justfile, "changelog:");
+    let release = recipe_text(&justfile, "release:");
+    let owner = recipe_text(&justfile, "_cliff-run +args:");
+
+    let calls = |lines: &[String]| {
+        lines
+            .iter()
+            .filter(|line| line.contains("just _cliff-run"))
+            .count()
+    };
+    assert_eq!(
+        calls(&changelog),
+        1,
+        "changelog runs through the owner: {changelog:?}"
+    );
+    assert_eq!(
+        calls(&release),
+        2,
+        "release's two invocations run through the owner: {release:?}"
+    );
+    assert!(
+        owner
+            .iter()
+            .any(|line| line.contains("git-cliff --skip-commit $skip \"$@\"")),
+        "the owner passes the list unquoted, one argv per sha: {owner:?}"
+    );
+    assert!(
+        owner.iter().any(|line| line.trim() == "git-cliff \"$@\""),
+        "and emits no skip flag when the list is empty: {owner:?}"
+    );
+}

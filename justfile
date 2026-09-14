@@ -415,15 +415,26 @@ _cliff-skip:
     fi
     printf '%s\n' "$skip"
 
-# Generate full CHANGELOG.md from git history (first-parent skip list: `_cliff-skip` above)
-changelog:
+# The ONE owner of the text-to-argv boundary: every git-cliff invocation runs through
+# here, so the skip list crosses from space-separated TEXT to N argv values exactly once.
+# `$skip` is deliberately UNQUOTED — that is what makes N shas N argv entries — and the
+# empty list takes the other branch so no flag is emitted at all. A quoted crossing (one
+# joined argument, silently ignored by git-cliff) is the failure tests/it/gate.rs refuses
+# by executing THESE recipes against a stub. Why the list exists and what keeps it
+# complete: `_cliff-skip` above.
+_cliff-run +args:
     #!/usr/bin/env bash
     set -euo pipefail
     skip=$(just _cliff-skip)
-    skip_args=""
-    if [ -n "$skip" ]; then skip_args="--skip-commit $skip"; fi
-    # $skip_args is deliberately unquoted: one argv per sha, no flag at all when empty.
-    git-cliff $skip_args -o CHANGELOG.md
+    if [ -n "$skip" ]; then
+        git-cliff --skip-commit $skip "$@"
+    else
+        git-cliff "$@"
+    fi
+
+# Generate full CHANGELOG.md from git history (skip list: `_cliff-skip`; boundary: `_cliff-run`)
+changelog:
+    just _cliff-run -o CHANGELOG.md
 
 # ── Release ──────────────────────────────────────────────────────────
 
@@ -551,13 +562,11 @@ release:
         echo "Error: pre-release badge or checkout-install prose remains; edit it deliberately before tagging" >&2
         exit 1
     fi
-    # Generate changelog. The first-parent skip list, its WHY and its guards: `_cliff-skip`.
+    # Generate changelog. The skip list, its WHY and its guards: `_cliff-skip`; the
+    # text-to-argv boundary owner (and the proofs over it): `_cliff-run`.
     TAG="v$VERSION"
-    SKIP=$(just _cliff-skip)
-    SKIP_ARGS=""
-    if [ -n "$SKIP" ]; then SKIP_ARGS="--skip-commit $SKIP"; fi
-    git-cliff $SKIP_ARGS --tag "$TAG" -o CHANGELOG.md
-    RELEASE_BODY=$(git-cliff $SKIP_ARGS --tag "$TAG" --unreleased --strip header)
+    just _cliff-run --tag "$TAG" -o CHANGELOG.md
+    RELEASE_BODY=$(just _cliff-run --tag "$TAG" --unreleased --strip header)
     RELEASE_BODY="${RELEASE_BODY:-Release $TAG}"
 
     # The fuzz crate is outside the workspace, so nothing above refreshed ITS
