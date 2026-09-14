@@ -15,13 +15,21 @@ use super::parity::capture::ExitOutcome;
 use super::parity::capture::raw;
 use crate::phase2::run_tmux;
 
-/// The environment a hermetic run must NOT inherit.
+/// ae's own doors that a hermetic run must NOT inherit.
 ///
 /// `TMUX`/`TMUX_PANE` make the binary believe it is inside the CALLER'S pane,
 /// which is how a launch reaches `switch-client`. The rest are the checkout
 /// shape's own doors: inheriting them would let a fixture read the developer's
 /// config or pin a version.
-const AMBIENT: [&str; 4] = ["TMUX", "TMUX_PANE", "CONFIG_FILE", "AE_VERSION"];
+const AE_DOORS: [&str; 4] = ["TMUX", "TMUX_PANE", "CONFIG_FILE", "AE_VERSION"];
+
+/// Every process environment fact the hermetic runner removes.
+///
+/// Adapter-owned config-home variables are derived from the adapters themselves:
+/// registering another explicit config home cannot bypass runner isolation.
+fn ambient() -> impl Iterator<Item = &'static str> {
+    AE_DOORS.into_iter().chain(ae::tool::config_home_envs())
+}
 
 /// How long a hermetic scratch may sit in `/tmp` before the next test process
 /// sweeps it. Long enough that a concurrent run's directories are never taken.
@@ -476,7 +484,7 @@ fn dead_socket(dir: &std::path::Path) -> std::path::PathBuf {
 /// Apply the suite's baseline environment to any child process. Individual
 /// fixtures may then override only the pane/server facts they are testing.
 fn isolated(mut command: Runner, dir: &std::path::Path) -> Runner {
-    for name in AMBIENT {
+    for name in ambient() {
         command.env_remove(name);
     }
     command
@@ -506,11 +514,18 @@ fn the_black_box_runner_cannot_see_the_developers_own_home_or_tmux() {
         })
         .collect();
 
-    for door in AMBIENT {
+    for door in ambient() {
         assert_eq!(
             seen.get(door),
             Some(&None),
             "{door} is not dropped by the runner"
+        );
+    }
+    for name in ae::tool::config_home_envs() {
+        assert_eq!(
+            seen.get(name),
+            Some(&None),
+            "{name} is not dropped from the adapter config-home set"
         );
     }
     for (key, expected) in [

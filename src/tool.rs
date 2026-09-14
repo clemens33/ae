@@ -621,6 +621,14 @@ const UNKNOWN: ToolAdapter = ToolAdapter {
 
 const KNOWN: [&ToolAdapter; 7] = [&CLAUDE, &CODEX, &GEMINI, &AGY, &GROK, &MUSE, &OPENCODE];
 
+/// Every explicit config-home environment variable declared by a known adapter.
+///
+/// Consumers that must isolate a whole process environment use this instead of
+/// carrying a second list beside the adapter rows.
+pub fn config_home_envs() -> impl Iterator<Item = &'static str> {
+    KNOWN.iter().filter_map(|adapter| adapter.config_home_env)
+}
+
 impl ToolKind {
     /// Classify one known bare binary name, preserving absence as `None`.
     #[must_use]
@@ -716,6 +724,21 @@ mod tests {
         );
         assert_eq!(ToolKind::from_binary_name("other"), ToolKind::Unknown);
         assert_eq!(ToolKind::Unknown.adapter(), &UNKNOWN);
+    }
+
+    #[test]
+    fn config_home_envs_are_derived_from_known_adapter_rows() {
+        let envs = config_home_envs().collect::<Vec<_>>();
+        for expected in ["CLAUDE_CONFIG_DIR", "CODEX_HOME"] {
+            assert!(envs.contains(&expected), "missing {expected}: {envs:?}");
+        }
+        assert_eq!(
+            envs,
+            KNOWN
+                .iter()
+                .filter_map(|adapter| adapter.config_home_env)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
