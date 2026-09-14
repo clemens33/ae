@@ -1395,6 +1395,15 @@ fn resolve_one_override(
 }
 
 /// Validate every explicit seat profile before the launch's first write.
+/// Comma list of known names for a refusal, or `<none>` when empty.
+fn known_list(names: &[&str]) -> String {
+    if names.is_empty() {
+        "<none>".to_owned()
+    } else {
+        names.join(", ")
+    }
+}
+
 fn validate_seat_overrides(
     env: &Env,
     plan: &Plan,
@@ -1451,29 +1460,20 @@ fn validate_seat_overrides(
         return Err(SeatOverrideRefusal::Usage(line));
     }
     let agents = override_agents(&cfg, plan, dir, resuming);
-    let known_agents = if agents.is_empty() {
-        "<none>".to_owned()
-    } else {
-        agents.join(", ")
-    };
-    let known_profiles = if cfg.profiles.is_empty() {
-        "<none>".to_owned()
-    } else {
-        cfg.profiles
-            .iter()
-            .map(|(profile, _)| profile.as_str())
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
-    let known_clients = if cfg.clients.is_empty() {
-        "<none>".to_owned()
-    } else {
-        cfg.clients
-            .iter()
-            .map(|(client, _)| client.as_str())
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
+    let agent_names: Vec<&str> = agents.iter().map(String::as_str).collect();
+    let known_agents = known_list(&agent_names);
+    let profile_names: Vec<&str> = cfg
+        .profiles
+        .iter()
+        .map(|(profile, _)| profile.as_str())
+        .collect();
+    let known_profiles = known_list(&profile_names);
+    let client_names: Vec<&str> = cfg
+        .clients
+        .iter()
+        .map(|(client, _)| client.as_str())
+        .collect();
+    let known_clients = known_list(&client_names);
     let recorded = if resuming {
         meta::read_bytes(dir)
             .ok()
