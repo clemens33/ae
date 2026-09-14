@@ -208,6 +208,28 @@ pub fn tmux_env() -> Option<String> {
         .map(|value| value.to_string_lossy().into_owned())
 }
 
+/// How the caller's `TMUX` marker reads, with ABSENT and MALFORMED kept apart:
+/// the identity observation must never treat an unusable marker as no marker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CallerServer {
+    /// `TMUX` is unset or empty.
+    Absent,
+    /// `TMUX` is set but names no absolute socket (relative or malformed).
+    Malformed,
+    /// `TMUX` names an absolute socket.
+    Resolved(ServerId),
+}
+
+/// The caller-server READING, for callers that must tell absent from malformed.
+#[must_use]
+pub fn caller_server_reading() -> CallerServer {
+    match tmux_env() {
+        None => CallerServer::Absent,
+        Some(marker) => caller_server_from_marker(Some(&marker))
+            .map_or(CallerServer::Malformed, CallerServer::Resolved),
+    }
+}
+
 /// The server whose client invoked ae, resolved only from tmux's own marker.
 ///
 /// A checkout's `AE_TMUX_SERVER*` pair redirects launches; it says nothing
@@ -215,7 +237,10 @@ pub fn tmux_env() -> Option<String> {
 /// caller server rather than falling through to an ambient guess.
 #[must_use]
 pub fn caller_server() -> Option<ServerId> {
-    caller_server_from_marker(tmux_env().as_deref())
+    match caller_server_reading() {
+        CallerServer::Resolved(server) => Some(server),
+        CallerServer::Absent | CallerServer::Malformed => None,
+    }
 }
 
 fn caller_server_from_marker(marker: Option<&str>) -> Option<ServerId> {

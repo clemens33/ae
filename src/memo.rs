@@ -22,6 +22,7 @@ use crate::requests::Viewer;
 use crate::state;
 use crate::store;
 use crate::time::Timestamp;
+use crate::tracked::{self, EventFields};
 
 /// The usage text.
 pub const USAGE: &str =
@@ -167,22 +168,36 @@ impl Failure {
 ///
 /// [`Failure`] — see its variants.
 pub fn run(dir: &Path, viewer: &Viewer, add: &Add, now: Timestamp) -> Result<(), Failure> {
+    run_observed(dir, viewer, add, now, || tracked::observe_caller(dir))
+}
+
+/// The writer body. Tests inject the observation so a durable-cut pin does not
+/// need a live tmux.
+pub(crate) fn run_observed(
+    dir: &Path,
+    viewer: &Viewer,
+    add: &Add,
+    now: Timestamp,
+    observe: impl FnMut() -> Result<tracked::IdentityTriple, tracked::CorrelationGap>,
+) -> Result<(), Failure> {
     let author = if viewer.is_known() {
         viewer.display.as_str()
     } else {
         "human"
     };
     let store = store::open(dir);
-    store
-        .append_memo(record(now, author, add).as_bytes())
-        .map_err(|why| Failure::Tsv(why.into()))?;
-    let event = state::event_line(
-        now,
-        author,
-        "memo",
-        &add.topic,
-        &state::summary_of(&add.text),
+    let (tsv, outcome) = tracked::across_cut_with(observe, || {
+        store.append_memo(record(now, author, add).as_bytes())
+    });
+    tsv.map_err(|why| Failure::Tsv(why.into()))?;
+    let summary = state::summary_of(&add.text);
+    let fields = tracked::stamp_caller(
+        &EventFields::new(
+            now, author, "memo", "", &add.topic, "", "", "", "", &summary, "",
+        ),
+        &outcome,
     );
+    let event = tracked::event_line(&fields);
     store
         .append_event(&event)
         .map_err(|why| Failure::Event(why.into()))
@@ -549,5 +564,56 @@ short\tline\tonly\n\
             record(ts, "cl:lead", &add),
             "2026-08-27T08:00:00Z\tcl:lead\tp2\tthe note\n"
         );
+    }
+
+    #[test]
+    fn memo_event_bytes_carry_caller_facts_only_when_the_cut_holds() {
+        use crate::requests::Viewer;
+        use crate::tracked::IdentityTriple;
+        let dir = std::env::temp_dir().join(format!("ae-memo-cut.{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let ts = Timestamp::parse("2026-08-27T08:00:00Z").unwrap();
+        let add = Add {
+            topic: "goal".to_owned(),
+            text: "checkpoint".to_owned(),
+        };
+        let viewer = Viewer {
+            slot: "main".to_owned(),
+            session: "s".to_owned(),
+            display: "cl:lead".to_owned(),
+        };
+        let held = IdentityTriple {
+            server: "/tmp/ae".to_owned(),
+            pane: "%3".to_owned(),
+            session_uuid: "1b4e28ba-2fa1-11d2-883f-0016d3cc4321".to_owned(),
+        };
+        crate::tracked::clear_observe();
+        crate::tracked::queue_observe(Ok(held.clone()));
+        crate::tracked::queue_observe(Ok(held.clone()));
+        super::run(&dir, &viewer, &add, ts).expect("memo writes");
+        let events = std::fs::read_to_string(dir.join("events.jsonl")).expect("events");
+        assert!(events.contains(r#""action":"memo""#));
+        assert!(events.contains(r#""caller_server":"/tmp/ae""#));
+        assert!(events.contains(r#""caller_pane":"%3""#));
+        std::fs::write(dir.join("events.jsonl"), b"").unwrap();
+        crate::tracked::clear_observe();
+        crate::tracked::queue_observe(Ok(held.clone()));
+        crate::tracked::queue_observe(Ok(IdentityTriple {
+            pane: "%4".to_owned(),
+            ..held.clone()
+        }));
+        super::run(&dir, &viewer, &add, ts).expect("memo writes");
+        let events = std::fs::read_to_string(dir.join("events.jsonl")).expect("events");
+        assert!(
+            !events.contains("caller_server"),
+            "changed identity writes no correlated memo event"
+        );
+        assert!(
+            events.contains(r#""identity_gap":"session identity changed""#),
+            "a changed identity is named on the durable record: {events}"
+        );
+        crate::tracked::clear_observe();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

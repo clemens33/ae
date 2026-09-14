@@ -9,6 +9,7 @@ mod archive_from;
 mod archive_publish;
 mod archive_purge;
 mod brief;
+mod callerident;
 mod capture;
 mod cli;
 mod compact;

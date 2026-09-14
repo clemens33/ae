@@ -3389,6 +3389,13 @@ fn deliver_launch_prompt(
             actor_session: "",
             target_slot: &agent.slot,
             target_session: "",
+            target_server: "",
+            target_pane: "",
+            target_session_uuid: "",
+            caller_server: "",
+            caller_pane: "",
+            caller_session_uuid: "",
+            identity_gap: "",
             summary: &format!(
                 "launch prompt NOT delivered to {} ({}, pane {}): {reason}",
                 agent.slot,

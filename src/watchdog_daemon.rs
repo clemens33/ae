@@ -2374,6 +2374,13 @@ impl Journal<'_> {
             actor_session: self.session,
             target_slot: "",
             target_session: "",
+            target_server: "",
+            target_pane: "",
+            target_session_uuid: "",
+            caller_server: "",
+            caller_pane: "",
+            caller_session_uuid: "",
+            identity_gap: "",
             summary,
             body_file: "",
         });

@@ -115,6 +115,41 @@ impl Viewer {
     }
 }
 
+/// The target incarnation recorded at OPEN — and the ONLY form in which those
+/// three legs leave the sensor.
+///
+/// It can be built only from an [`Event`] that [`Event::parse_line`] already
+/// accepted, so a fact scraped from a hostile invalid or duplicate-known-key
+/// line can never become authoritative: there is no path from raw line bytes
+/// to a recorded target that does not cross the parser. A valid line carrying
+/// an incomplete triple is `None` too.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RecordedTarget {
+    server: String,
+    pane: String,
+    session_uuid: String,
+}
+
+impl RecordedTarget {
+    /// The ONE constructor. It takes a PARSED event, never raw bytes.
+    fn from_event(event: &Event) -> Option<Self> {
+        Some(Self {
+            server: event.target_server.clone()?,
+            pane: event.target_pane.clone()?,
+            session_uuid: event.target_session_uuid.clone()?,
+        })
+    }
+
+    /// The triple, complete by construction.
+    fn triple(&self) -> crate::tracked::IdentityTriple {
+        crate::tracked::IdentityTriple {
+            server: self.server.clone(),
+            pane: self.pane.clone(),
+            session_uuid: self.session_uuid.clone(),
+        }
+    }
+}
+
 /// One request, as the sensor emits it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Request {
@@ -140,6 +175,10 @@ pub struct Request {
     pub from_session: Key,
     /// Session of the target's routing key.
     pub to_session: Key,
+    /// The target incarnation recorded at open, authoritative only because the
+    /// opening line parsed as a ledger event; `None` otherwise. The populated
+    /// form is constructible only inside this module, from a parsed [`Event`].
+    pub(crate) recorded: Option<RecordedTarget>,
     /// The DISPLAY summary: the request's own text while pending, the closing
     /// event's text once closed.
     pub summary: Vec<u8>,
@@ -192,6 +231,13 @@ impl Request {
     #[must_use]
     fn askee_identity(&self) -> Identity<'_> {
         identity_of(&self.to_slot, &self.to_session, &self.to)
+    }
+
+    /// The target incarnation recorded at open, or `None` when the opening
+    /// line did not parse as an Event or any leg is missing.
+    #[must_use]
+    pub fn recorded_target(&self) -> Option<crate::tracked::IdentityTriple> {
+        self.recorded.as_ref().map(RecordedTarget::triple)
     }
 
     /// The table line for this row, `\n` included.
@@ -417,6 +463,7 @@ pub(crate) fn states_in(container: &[u8], session: &str) -> Vec<Request> {
                 to_slot: opening.to_slot,
                 from_session: opening.from_session,
                 to_session: opening.to_session,
+                recorded: opening.recorded,
                 summary,
             })
         })
@@ -486,6 +533,9 @@ struct Opening {
     to_slot: Key,
     from_session: Key,
     to_session: Key,
+    /// The recorded target, built ONLY from a parsed Event — see
+    /// [`RecordedTarget`]. The scraped bytes never reach a caller.
+    recorded: Option<RecordedTarget>,
     summary: Vec<u8>,
     /// The closure owner can judge this opening only if it parsed as a ledger
     /// record. Opaque compatibility rows remain pending when no owner can see
@@ -506,6 +556,12 @@ struct Closing {
 
 impl Opening {
     fn read(line: &[u8], action: &[u8]) -> Self {
+        // ONE parse decides both facts: whether the record is a valid ledger
+        // event at all, and whether it may carry an authoritative target.
+        // There is no second, weaker reading of the same line.
+        let event = std::str::from_utf8(line)
+            .ok()
+            .and_then(|text| Event::parse_line(text).ok());
         Self {
             kind: action.to_vec(),
             from: extract(line, "actor"),
@@ -516,10 +572,9 @@ impl Opening {
             to_slot: Key::read(line, "target_slot"),
             from_session: Key::read(line, "actor_session"),
             to_session: Key::read(line, "target_session"),
+            recorded: event.as_ref().and_then(RecordedTarget::from_event),
             summary: fold_newlines(extract(line, "summary")),
-            ledger_valid: std::str::from_utf8(line)
-                .ok()
-                .is_some_and(|line| Event::parse_line(line).is_ok()),
+            ledger_valid: event.is_some(),
         }
     }
 
@@ -1411,6 +1466,7 @@ mod tests {
             slot: Some("worker.2".to_owned()),
             session: Some("s".to_owned()),
             agent: Some("cl:w".to_owned()),
+            ..ObservedViewer::default()
         };
         assert_eq!(
             Viewer::from_pane(&stamped, "s"),
@@ -1433,6 +1489,7 @@ mod tests {
                 slot,
                 session: Some("s".to_owned()),
                 agent: Some("cl:w".to_owned()),
+                ..ObservedViewer::default()
             };
             let viewer = Viewer::from_pane(&unstamped, "s");
             assert!(viewer.is_known());
@@ -1444,6 +1501,7 @@ mod tests {
             slot: Some("main".to_owned()),
             session: Some("s".to_owned()),
             agent: None,
+            ..ObservedViewer::default()
         };
         assert!(!Viewer::from_pane(&anonymous, "s").is_known());
         assert_eq!(Viewer::from_pane(&anonymous, "s"), Viewer::default());
@@ -1453,6 +1511,7 @@ mod tests {
             slot: Some("main".to_owned()),
             session: None,
             agent: Some("cl:lead".to_owned()),
+            ..ObservedViewer::default()
         };
         assert_eq!(Viewer::from_pane(&sessionless, "s"), Viewer::default());
         assert!(!Viewer::from_pane(&sessionless, "s").is_known());
@@ -1539,6 +1598,35 @@ mod tests {
         assert_eq!(row.to_slot, Key::Value(b"worker.0".to_vec()));
         assert_eq!(row.from_session, Key::Value(b"s".to_vec()));
         assert_eq!(row.to_session, Key::Value(b"s".to_vec()));
+        assert!(
+            row.recorded_target().is_none(),
+            "old openings carry no triple"
+        );
+        let with_triple = container(&[concat!(
+            r#"{"ts":"2026-08-20T16:12:55Z","actor":"a:lead","action":"ask","target":"a:w","ref":"r3","#,
+            r#""actor_slot":"main","target_slot":"worker.0","actor_session":"s","target_session":"s","#,
+            r#""target_server":"/tmp/ae","target_pane":"%9","target_session_uuid":"1b4e28ba-2fa1-11d2-883f-0016d3cc4321","summary":"q"}"#,
+        )]);
+        let recorded = states(&with_triple)[0]
+            .recorded_target()
+            .expect("the opening triple is exact");
+        assert_eq!(recorded.server, "/tmp/ae");
+        assert_eq!(recorded.pane, "%9");
+        assert_eq!(
+            recorded.session_uuid,
+            "1b4e28ba-2fa1-11d2-883f-0016d3cc4321"
+        );
+        assert!(
+            !crate::tracked::caller_matches_recorded_target(
+                &crate::tracked::IdentityTriple {
+                    server: "/tmp/other".to_owned(),
+                    pane: "%9".to_owned(),
+                    session_uuid: recorded.session_uuid.clone(),
+                },
+                &recorded
+            ),
+            "an uncorrelated caller cannot match the recorded target"
+        );
         // And the three states are told apart on a published row, which is the
         // whole reason these are Keys and not bytes.
         let mixed = container(&[
@@ -1549,5 +1637,48 @@ mod tests {
         assert_eq!(row.from_session, Key::Absent, "not in the record at all");
         assert_eq!(row.from_slot.value(), Some(b"".as_slice()));
         assert_eq!(row.from_session.value(), None);
+    }
+
+    #[test]
+    fn a_fact_scraped_from_an_unparsed_opening_is_never_authoritative() {
+        let uuid = "1b4e28ba-2fa1-11d2-883f-0016d3cc4321";
+        // Invalid JSON that still carries every member the old byte-scrape
+        // would have read, so only the parse can refuse it.
+        let invalid = format!(
+            r#"{{"ts":"2026-08-20T16:12:55Z","actor":"a:lead","action":"ask","target":"a:w","ref":"bad","target_server":"/tmp/aut","target_pane":"%9","target_session_uuid":"{uuid}","summary":"q""#
+        );
+        // A KNOWN key named twice: the record does not say one thing.
+        let duplicate = format!(
+            r#"{{"ts":"2026-08-20T16:12:55Z","actor":"a:lead","action":"ask","target":"a:w","ref":"dup","target_server":"/tmp/aut","target_server":"/tmp/other","target_pane":"%9","target_session_uuid":"{uuid}","summary":"q"}}"#
+        );
+        let hostile = container(&[invalid.as_str(), duplicate.as_str()]);
+        let rows = states(&hostile);
+        let bad = rows
+            .iter()
+            .find(|row| row.id.as_slice() == b"bad")
+            .expect("an invalid opening is still scanned");
+        assert!(
+            bad.recorded_target().is_none(),
+            "a fact scraped from an unparsed line is not authoritative"
+        );
+        let dup = rows
+            .iter()
+            .find(|row| row.id.as_slice() == b"dup")
+            .expect("a duplicate-known-key opening is still scanned");
+        assert!(
+            dup.recorded_target().is_none(),
+            "a duplicate-known-key record is not authoritative either"
+        );
+        // The SAME members on a valid line DO expose the triple, so the pin is
+        // parse validity and not the members being absent.
+        let valid = format!(
+            r#"{{"ts":"2026-08-20T16:12:55Z","actor":"a:lead","action":"ask","target":"a:w","ref":"ok","target_server":"/tmp/aut","target_pane":"%9","target_session_uuid":"{uuid}","summary":"q"}}"#
+        );
+        let recorded = states(&container(&[valid.as_str()]))[0]
+            .recorded_target()
+            .expect("a parsed opening exposes its triple");
+        assert_eq!(recorded.server, "/tmp/aut");
+        assert_eq!(recorded.pane, "%9");
+        assert_eq!(recorded.session_uuid, uuid);
     }
 }
