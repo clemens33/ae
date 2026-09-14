@@ -743,7 +743,11 @@ identity only — one canonical vendor source is one account, whatever labels re
 that resolved NO source is never joined to another, because failing to resolve is not evidence of
 being the same account, and two refusals shown as one would assert what ae cannot observe; they
 render as separate rows, each stating its own refusal. A tool with no local quota source, such as
-`grok` or `agy`, can never prove one, so each of its profiles is its own row.
+`grok` or `agy`, can never prove one, so each of its profiles is its own row. The same holds for a
+retained Codex rollout whose recorded config home did not resolve: two seats that failed for the
+same reason are two failures that read alike, not one account, so each keeps its own row and its own
+rollout. The settings quota dialog groups by the same rule, so the two surfaces never disagree about
+whether something is one account.
 
 A `manual_resets` declaration belongs to its `[clients]` label, so only that label's OWN scope may
 spend it, and only when that scope proved a source. A profile that reaches the same label under a

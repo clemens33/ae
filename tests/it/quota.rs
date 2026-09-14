@@ -1863,3 +1863,70 @@ fn a_declaration_is_spent_by_the_client_rows_own_scope_not_the_first_one_seen() 
         "the pinned-HOME account never receives a count declared elsewhere: {text}"
     );
 }
+
+/// The THIRD instance of the same rule, in `add_recorded_codex_scopes`: two
+/// retained Codex seats whose recorded homes failed to resolve FOR THE SAME
+/// REASON were joined on that reason string. A matching reason is two failures
+/// that read alike, not one identity — and joining them made every profile on
+/// the row a candidate owner of every rollout under it.
+#[test]
+fn unknown_rollouts_failing_for_the_same_reason_are_not_one_scope() {
+    let root = rig("unknown-rollout-reason");
+    let ninety_one =
+        String::from_utf8_lossy(include_bytes!("../fixtures/quota/codex-rollout.jsonl"))
+            .replace("\"used_percent\":7.0", "\"used_percent\":91.0");
+    std::fs::write(
+        root.join(format!(
+            ".codex/sessions/2026/09/08/rollout-2026-09-08T09-00-00-{SECOND_ID}.jsonl"
+        )),
+        ninety_one.as_bytes(),
+    )
+    .expect("second rollout");
+    // Both seats record an ABSENT config home, so both rollouts are Unknown
+    // with the byte-identical reason "recorded config home is absent".
+    std::fs::write(
+        root.join("sessions/session/meta"),
+        format!(
+            "schema=2\nseat.main=lead\nprofile.main=pa\nharness_session.main={FIRST_ID}\nagent_bin.main=codex\nconfig_home.main=absent\nseat.worker.0=rev\nprofile.worker.0=pb\nharness_session.worker.0={SECOND_ID}\nagent_bin.worker.0=codex\nconfig_home.worker.0=absent\n"
+        ),
+    )
+    .expect("absent-home meta");
+    std::fs::write(
+        root.join("config"),
+        "[profiles]\npa = codex --model astra\npb = codex --model sol\n",
+    )
+    .expect("config");
+    let text = run_quota(&root);
+    let _ = std::fs::remove_dir_all(&root);
+    // `pa pb` on the CONFIGURED `~/.codex` scope is a legitimate merge: both
+    // profiles resolve to one proven source. The rows under test are the
+    // unattributable ones, whose scope never resolved a home at all.
+    let unattributable: Vec<&str> = text
+        .lines()
+        .filter(|line| line.contains("codex · unknown"))
+        .collect();
+    assert_eq!(
+        unattributable.len(),
+        2,
+        "each failed rollout keeps its own row: {text}"
+    );
+    assert!(
+        !unattributable.iter().any(|line| line.contains("pa pb")),
+        "a shared reason never gathers two seats onto one row: {unattributable:?}"
+    );
+    for profile in ["pa", "pb"] {
+        assert_eq!(
+            unattributable
+                .iter()
+                .filter(|line| line.starts_with(profile))
+                .count(),
+            1,
+            "{profile} owns exactly one unattributable row: {text}"
+        );
+    }
+    // Each row names its own seat, so neither rollout is offered the other's.
+    assert!(
+        text.contains("(session:lead)") && text.contains("(session:rev)"),
+        "each row names the seat it stands for: {text}"
+    );
+}

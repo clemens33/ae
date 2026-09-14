@@ -666,6 +666,11 @@ struct Scope {
     /// `clients` this is not a display list: a default alias is recorded here
     /// even though it is deliberately not shown.
     accounts: Vec<String>,
+    /// The recorded rollouts this scope stands for when it proved NO source.
+    /// An unattributable rollout has exactly one honest identity — itself —
+    /// so it is named by id rather than gathered with others that merely
+    /// failed for the same reason. Empty for every scope that proved one.
+    rollouts: Vec<String>,
     hint: Option<String>,
     manual_resets: Option<u8>,
     notes: Vec<String>,
@@ -1082,6 +1087,14 @@ fn settings_same_scope(left: &Group, right: &Group) -> bool {
         && left.profiles == right.profiles
         && left.clients == right.clients
         && left.hint == right.hint
+        // A scope that proved NO source is not an account, so it has no
+        // identity to be grouped by except the rollout it stands for: two of
+        // them collapse only if they ARE the same rollout. A scope that proved
+        // one keeps the shipped rule above — its rollout owners are evidence
+        // about that one account, not about more accounts. Without this the
+        // dialog would still gather what the table now holds apart, and the
+        // two surfaces would disagree about the same question.
+        && (left.source.is_some() || left.rollout == right.rollout)
 }
 
 /// Correlate a capped-render completeness summary back to its uncapped scope.
@@ -1640,6 +1653,7 @@ fn absorb_resolved(
             configured_profiles: owner.map(str::to_owned).into_iter().collect(),
             clients: client.into_iter().collect(),
             accounts: account.map(str::to_owned).into_iter().collect(),
+            rollouts: Vec::new(),
             hint,
             manual_resets: None,
             notes: Vec::new(),
@@ -1846,6 +1860,7 @@ fn unknown_scope(
         configured_profiles: owner.map(str::to_owned).into_iter().collect(),
         clients: client.into_iter().collect(),
         accounts: account.map(str::to_owned).into_iter().collect(),
+        rollouts: Vec::new(),
         hint,
         manual_resets: None,
         notes: Vec::new(),
@@ -2037,36 +2052,33 @@ fn add_recorded_codex_scopes(scopes: &mut Vec<Scope>, fleet: &FleetRollouts) {
                         configured_profiles: Vec::new(),
                         clients: Vec::new(),
                         accounts: Vec::new(),
+                        rollouts: Vec::new(),
                         hint: None,
                         manual_resets: None,
                         notes: Vec::new(),
                     });
                 }
             }
+            // A rollout whose recorded home did not resolve proved NO account.
+            // Two of them failing for the SAME REASON is two failures that read
+            // alike, not one identity, so they are never gathered: a matching
+            // reason string would otherwise attribute each seat's profile to
+            // the other's rollout. Each stands for itself, by id.
             RolloutLocation::Unknown(reason) => {
-                if let Some(scope) = scopes.iter_mut().find(|scope| {
-                    scope.tool == rollout.tool
-                        && scope.source.is_none()
-                        && scope.hint.as_ref() == Some(reason)
-                }) {
-                    if !scope.profiles.contains(&rollout.profile) {
-                        scope.profiles.push(rollout.profile.clone());
-                    }
-                } else {
-                    scopes.push(Scope {
-                        tool: rollout.tool,
-                        home: None,
-                        source: None,
-                        source_key: None,
-                        profiles: vec![rollout.profile.clone()],
-                        configured_profiles: Vec::new(),
-                        clients: Vec::new(),
-                        accounts: Vec::new(),
-                        hint: Some(reason.clone()),
-                        manual_resets: None,
-                        notes: Vec::new(),
-                    });
-                }
+                scopes.push(Scope {
+                    tool: rollout.tool,
+                    home: None,
+                    source: None,
+                    source_key: None,
+                    profiles: vec![rollout.profile.clone()],
+                    configured_profiles: Vec::new(),
+                    clients: Vec::new(),
+                    accounts: Vec::new(),
+                    rollouts: vec![rollout.id.clone()],
+                    hint: Some(reason.clone()),
+                    manual_resets: None,
+                    notes: Vec::new(),
+                });
             }
         }
     }
@@ -2182,11 +2194,8 @@ fn scope_rollouts<'a>(scope: &Scope, fleet: &'a FleetRollouts) -> Vec<&'a FleetR
             RolloutLocation::Recorded { source_key, .. } => {
                 scope.source_key.as_ref() == Some(source_key)
             }
-            RolloutLocation::Unknown(reason) => {
-                scope.source.is_none()
-                    && scope.hint.as_ref() == Some(reason)
-                    && scope.profiles.contains(&rollout.profile)
-            }
+            // Named by id: the scope stands for this rollout and no other.
+            RolloutLocation::Unknown(_) => scope.rollouts.contains(&rollout.id),
         })
         .fold(Vec::new(), |mut unique, rollout| {
             if !unique
@@ -3124,8 +3133,8 @@ mod tests {
         Row, Scope, Status, TABLE_MAX_LINE, TABLE_MAX_WIDTHS, bounded_tail, bounded_whole_file,
         classify, codex_groups, codex_rollout_dirs, configured_scopes, credits_label, derived,
         effective, find_codex_rollout, freshness, merge_declaration, order_located_rollouts,
-        percent_label, profiles_label, read_bounded_tail, read_claude, render_at, render_table,
-        rows_or_placeholder, sanitize_cell, vendor_timestamp,
+        percent_label, placeholder, profiles_label, read_bounded_tail, read_claude, render_at,
+        render_table, rows_or_placeholder, sanitize_cell, settings_same_scope, vendor_timestamp,
     };
     use crate::tool::ToolKind;
 
@@ -3202,6 +3211,49 @@ mod tests {
     }
 
     /// The plain configured Codex scope the rollout suites read through.
+    /// The settings dialog must not gather what the table holds apart.
+    ///
+    /// Both halves are pinned together on purpose. A scope that proved NO
+    /// source has no identity but its rollout, so two of them are one dialog
+    /// row only when they ARE one rollout. A scope that PROVED a source keeps
+    /// the shipped rule that its rollout owners are evidence about one
+    /// account — collapsing those is correct and must not regress.
+    #[test]
+    fn the_quota_dialog_groups_unproven_scopes_by_rollout_and_proven_ones_by_source() {
+        let group = |source: Option<&str>, rollout: &str, owner: &str| Group {
+            profiles: vec!["p".to_owned()],
+            tool: ToolKind::Codex,
+            home: source.map(|_| std::path::PathBuf::from("/tmp/cx")),
+            source: source.map(std::path::PathBuf::from),
+            clients: Vec::new(),
+            rollout: Some(rollout.to_owned()),
+            owner: Some(owner.to_owned()),
+            rows: vec![placeholder(Status::Unknown)],
+            hint: source
+                .is_none()
+                .then(|| "recorded config home is absent".to_owned()),
+            summary: None,
+            policy: Policy::default(),
+            notes: Vec::new(),
+        };
+        let unproven_a = group(None, "rollout-a", "session:lead");
+        let unproven_b = group(None, "rollout-b", "session:rev");
+        assert!(
+            !settings_same_scope(&unproven_a, &unproven_b),
+            "two unattributable rollouts are two dialog scopes"
+        );
+        assert!(
+            settings_same_scope(&unproven_a, &unproven_a.clone()),
+            "one rollout is still itself"
+        );
+        let proven_a = group(Some("/tmp/cx/sessions"), "rollout-a", "session:lead");
+        let proven_b = group(Some("/tmp/cx/sessions"), "rollout-b", "session:rev");
+        assert!(
+            settings_same_scope(&proven_a, &proven_b),
+            "one proven source is one account, whatever rollouts observed it"
+        );
+    }
+
     fn configured_codex_scope(root: &std::path::Path) -> Scope {
         Scope {
             tool: ToolKind::Codex,
@@ -3212,6 +3264,7 @@ mod tests {
             configured_profiles: vec!["codex-profile".to_owned()],
             clients: Vec::new(),
             accounts: Vec::new(),
+            rollouts: Vec::new(),
             hint: None,
             manual_resets: None,
             notes: Vec::new(),
@@ -3415,6 +3468,7 @@ mod tests {
             configured_profiles: vec!["codex-profile".to_owned()],
             clients: vec!["codex-client".to_owned()],
             accounts: Vec::new(),
+            rollouts: Vec::new(),
             hint: Some("configured scope hint".to_owned()),
             manual_resets: None,
             notes: Vec::new(),
@@ -3555,6 +3609,7 @@ mod tests {
                 configured_profiles: vec!["p".to_owned()],
                 clients: Vec::new(),
                 accounts: Vec::new(),
+                rollouts: Vec::new(),
                 hint: None,
                 manual_resets: None,
                 notes: Vec::new(),
@@ -4411,6 +4466,7 @@ mod tests {
                 configured_profiles: vec!["ax".to_owned()],
                 clients: vec!["a".to_owned()],
                 accounts: Vec::new(),
+                rollouts: Vec::new(),
                 hint: None,
                 manual_resets: first,
                 notes: Vec::new(),
