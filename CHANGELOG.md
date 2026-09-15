@@ -2,19 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [v2026.9.76] - 2026-09-15
 - Merge eventsfuzz: fuzz the events.jsonl parser
 - Merge quotaclients: discover configured clients and correlate scopes on proven identity
 - Merge identitygap: prove session identity across a durable cut, and never let NoSession mask a real gap
 - Merge seatclient: record each seat's config home as an explicit identity, and refuse a store ae cannot verify
 - Merge musesubmit: give muse a real input model, and let one rule name the composer
-- Render one subject line per change in the generated changelog
-- List git-cliff in the pin table and the rust-setup tool count
-- Make the changelog unit the first-parent commit
-- Regenerate the changelog on top of the merge base
-- Prove the skip list crosses to git-cliff as separate arguments
-- Regenerate the changelog after the boundary proof
-- Invoke git-cliff only from the boundary owner
+- Merge changelog: make the changelog unit the first-parent commit
+- **deliver**: Unmodelled readiness needs a composed frame, not only a settle
+- **deliver**: Prove a composed, live pane under the lock before the brief
+- **deliver**: Require a pid for every liveness proof and never call an unproven pane live
+- **spawn**: Never advise a send without a proven live pane
+- **spawn**: Every brief recovery can find the brief and claims no body it lacks
+- **spawn**: Say what a generic brief failure really establishes
+- Render the verdict's own word on the moving pane border
 
 ## [v2026.9.75] - 2026-09-14
 - Merge lockpath: refuse non-regular and symlinked lock paths
