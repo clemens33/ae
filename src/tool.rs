@@ -260,6 +260,41 @@ pub(crate) struct UsageSpec {
     pub(crate) source: UsageSource,
 }
 
+/// How ae treats a harness's live model alongside its model flag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ModelSpec {
+    /// ae cannot read this harness's live model: no flag spelling is known and
+    /// its seats are reported drift-unknown.
+    Unobserved,
+    /// ae reads the flag and reports the observed model, but never injects it:
+    /// the scraped text is a display label, not a value drawn from the flag's
+    /// own vocabulary.
+    ReportOnly(&'static [&'static str]),
+    /// The scraped text is drawn from the flag value's own vocabulary (a
+    /// harness id), so ae may replay an observed model into the flag on resume.
+    Replayable(&'static [&'static str]),
+}
+
+impl ModelSpec {
+    /// The model flag spellings ae may READ in a profile command.
+    pub(crate) const fn flags(self) -> &'static [&'static str] {
+        match self {
+            Self::Unobserved => &[],
+            Self::ReportOnly(flags) | Self::Replayable(flags) => flags,
+        }
+    }
+
+    /// Whether ae observes this harness's live model at all.
+    pub(crate) const fn observes(self) -> bool {
+        !matches!(self, Self::Unobserved)
+    }
+
+    /// Whether an observation may be replayed into the flag on resume.
+    pub(crate) const fn replays(self) -> bool {
+        matches!(self, Self::Replayable(_))
+    }
+}
+
 /// Everything ae needs to know about one agent harness.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ToolAdapter {
@@ -286,13 +321,16 @@ pub(crate) struct ToolAdapter {
     pub(crate) capture: CaptureSpec,
     /// Input observation and first-turn delivery behaviour.
     pub(crate) input: InputSpec,
-    /// Model flag spellings ae may READ and REWRITE in a profile command.
+    /// How ae reads this harness's live model and whether an observation may
+    /// be replayed into its model flag on resume.
     ///
-    /// Empty means ae neither observes nor preserves this tool's live model:
-    /// its seats are reported drift-unknown and no model is ever injected.
-    /// Only spellings whose resume flag order was measured are listed —
-    /// claude `--model` and codex `-m`/`--model` (2026-09-13).
-    pub(crate) model_flags: &'static [&'static str],
+    /// The listed spellings are the ones whose resume flag ORDER was measured
+    /// (2026-09-13) — claude `--model` and codex `-m`/`--model`. That
+    /// measurement proves ae can FIND and REWRITE the flag; it never proves
+    /// the text scraped from a live pane is a LEGAL VALUE for it, so replay is
+    /// its own capability ([`ModelSpec`]). An unobserved tool is never told a
+    /// model by ae and is reported drift-unknown.
+    pub(crate) model: ModelSpec,
     /// Local quota discovery behaviour.
     pub(crate) quota: QuotaSpec,
     /// Local usage discovery behaviour.
@@ -331,7 +369,7 @@ const CLAUDE: ToolAdapter = ToolAdapter {
         wait_for_process: true,
         paste_initial_on_resume: false,
     },
-    model_flags: &["--model"],
+    model: ModelSpec::ReportOnly(&["--model"]),
     quota: QuotaSpec {
         source: QuotaSource::ClaudeCache,
         config_home_env: Some("CLAUDE_CONFIG_DIR"),
@@ -372,7 +410,7 @@ const CODEX: ToolAdapter = ToolAdapter {
         wait_for_process: true,
         paste_initial_on_resume: true,
     },
-    model_flags: &["-m", "--model"],
+    model: ModelSpec::Replayable(&["-m", "--model"]),
     quota: QuotaSpec {
         source: QuotaSource::CodexRollouts,
         config_home_env: Some("CODEX_HOME"),
@@ -413,7 +451,7 @@ const GEMINI: ToolAdapter = ToolAdapter {
         wait_for_process: false,
         paste_initial_on_resume: false,
     },
-    model_flags: &[],
+    model: ModelSpec::Unobserved,
     quota: QuotaSpec {
         source: QuotaSource::Unsupported,
         config_home_env: None,
@@ -455,7 +493,7 @@ const AGY: ToolAdapter = ToolAdapter {
         wait_for_process: false,
         paste_initial_on_resume: false,
     },
-    model_flags: &[],
+    model: ModelSpec::Unobserved,
     quota: QuotaSpec {
         source: QuotaSource::Unsupported,
         config_home_env: None,
@@ -501,7 +539,7 @@ const GROK: ToolAdapter = ToolAdapter {
         wait_for_process: false,
         paste_initial_on_resume: false,
     },
-    model_flags: &[],
+    model: ModelSpec::Unobserved,
     quota: QuotaSpec {
         source: QuotaSource::Unsupported,
         config_home_env: None,
@@ -550,7 +588,7 @@ const MUSE: ToolAdapter = ToolAdapter {
         wait_for_process: false,
         paste_initial_on_resume: false,
     },
-    model_flags: &[],
+    model: ModelSpec::Unobserved,
     quota: QuotaSpec {
         source: QuotaSource::Unsupported,
         config_home_env: None,
@@ -598,7 +636,7 @@ const OPENCODE: ToolAdapter = ToolAdapter {
         wait_for_process: true,
         paste_initial_on_resume: false,
     },
-    model_flags: &[],
+    model: ModelSpec::Unobserved,
     quota: QuotaSpec {
         source: QuotaSource::Unsupported,
         config_home_env: None,
@@ -636,7 +674,7 @@ const UNKNOWN: ToolAdapter = ToolAdapter {
         wait_for_process: false,
         paste_initial_on_resume: false,
     },
-    model_flags: &[],
+    model: ModelSpec::Unobserved,
     quota: QuotaSpec {
         source: QuotaSource::Unsupported,
         config_home_env: None,
@@ -771,6 +809,40 @@ mod tests {
     }
 
     #[test]
+    fn the_model_capability_has_three_states_and_claude_is_report_only() {
+        // Observe nothing, observe-and-report, observe-and-replay. Claude's
+        // footer yields a DISPLAY label, so its observation is reported while
+        // its flag is still READ (for the pin and the report) — never rewritten.
+        assert_eq!(
+            ToolKind::Claude.adapter().model,
+            ModelSpec::ReportOnly(&["--model"])
+        );
+        assert!(ToolKind::Claude.adapter().model.observes());
+        assert!(!ToolKind::Claude.adapter().model.replays());
+        assert_eq!(ToolKind::Claude.adapter().model.flags(), &["--model"]);
+
+        assert_eq!(
+            ToolKind::Codex.adapter().model,
+            ModelSpec::Replayable(&["-m", "--model"])
+        );
+        assert!(ToolKind::Codex.adapter().model.replays());
+
+        for tool in [
+            ToolKind::Gemini,
+            ToolKind::Agy,
+            ToolKind::Grok,
+            ToolKind::Muse,
+            ToolKind::OpenCode,
+            ToolKind::Unknown,
+        ] {
+            assert_eq!(tool.adapter().model, ModelSpec::Unobserved, "{tool:?}");
+            assert!(!tool.adapter().model.observes(), "{tool:?}");
+            assert!(!tool.adapter().model.replays(), "{tool:?}");
+            assert!(tool.adapter().model.flags().is_empty(), "{tool:?}");
+        }
+    }
+
+    #[test]
     fn only_the_cwd_keyed_probe_can_break_on_a_directory_move() {
         // The rename's explicit-home preflight shares this owner: adding a
         // cwd-keyed probe to another tool must flip its row here.
@@ -841,7 +913,7 @@ mod tests {
                         wait_for_process: true,
                         paste_initial_on_resume: false,
                     },
-                    model_flags: &["--model"],
+                    model: ModelSpec::ReportOnly(&["--model"]),
                     quota: QuotaSpec {
                         source: QuotaSource::ClaudeCache,
                         config_home_env: Some("CLAUDE_CONFIG_DIR"),
@@ -881,7 +953,7 @@ mod tests {
                         wait_for_process: true,
                         paste_initial_on_resume: true,
                     },
-                    model_flags: &["-m", "--model"],
+                    model: ModelSpec::Replayable(&["-m", "--model"]),
                     quota: QuotaSpec {
                         source: QuotaSource::CodexRollouts,
                         config_home_env: Some("CODEX_HOME"),
@@ -921,7 +993,7 @@ mod tests {
                         wait_for_process: false,
                         paste_initial_on_resume: false,
                     },
-                    model_flags: &[],
+                    model: ModelSpec::Unobserved,
                     quota: QuotaSpec {
                         source: QuotaSource::Unsupported,
                         config_home_env: None,
@@ -962,7 +1034,7 @@ mod tests {
                         wait_for_process: false,
                         paste_initial_on_resume: false,
                     },
-                    model_flags: &[],
+                    model: ModelSpec::Unobserved,
                     quota: QuotaSpec {
                         source: QuotaSource::Unsupported,
                         config_home_env: None,
@@ -1006,7 +1078,7 @@ mod tests {
                         wait_for_process: false,
                         paste_initial_on_resume: false,
                     },
-                    model_flags: &[],
+                    model: ModelSpec::Unobserved,
                     quota: QuotaSpec {
                         source: QuotaSource::Unsupported,
                         config_home_env: None,
@@ -1046,7 +1118,7 @@ mod tests {
                         wait_for_process: false,
                         paste_initial_on_resume: false,
                     },
-                    model_flags: &[],
+                    model: ModelSpec::Unobserved,
                     quota: QuotaSpec {
                         source: QuotaSource::Unsupported,
                         config_home_env: None,
@@ -1086,7 +1158,7 @@ mod tests {
                         wait_for_process: true,
                         paste_initial_on_resume: false,
                     },
-                    model_flags: &[],
+                    model: ModelSpec::Unobserved,
                     quota: QuotaSpec {
                         source: QuotaSource::Unsupported,
                         config_home_env: None,
@@ -1131,7 +1203,7 @@ mod tests {
                     wait_for_process: false,
                     paste_initial_on_resume: false,
                 },
-                model_flags: &[],
+                model: ModelSpec::Unobserved,
                 quota: QuotaSpec {
                     source: QuotaSource::Unsupported,
                     config_home_env: None,

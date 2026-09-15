@@ -929,15 +929,15 @@ fn agent_entries(
             // UNKNOWN, never silently implied preserved.
             let tool =
                 crate::tool::ToolKind::from_binary_name(slot.binary.as_deref().unwrap_or_default());
-            let model_drift = if tool.adapter().model_flags.is_empty() {
-                crate::model_drift::ModelDrift::Unknown
-            } else {
+            let model_drift = if tool.adapter().model.observes() {
                 match meta.observed_model(&slot.slot) {
                     Some(observed) if meta.observed_model_pin(&slot.slot) != Some(observed) => {
                         crate::model_drift::ModelDrift::Observed(observed.to_owned())
                     }
                     _ => crate::model_drift::ModelDrift::Quiet,
                 }
+            } else {
+                crate::model_drift::ModelDrift::Unknown
             };
             AgentEntry {
                 reference: reference.clone(),

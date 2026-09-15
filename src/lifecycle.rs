@@ -1388,8 +1388,8 @@ fn supervise_one(
 /// still stops, with warnings from the caller.
 ///
 /// Returns one line per seat the durable cut could NOT cover: a missing pane,
-/// a missing launch guard, or a refused write. An empty `model_flags` list is
-/// the expected case for a tool ae cannot observe, so it is silent.
+/// a missing launch guard, or a refused write. A tool whose live model ae
+/// cannot observe is the expected case, so it is silent.
 fn observe_models_before_stop(
     dir: &Path,
     server: &ServerId,
@@ -1405,7 +1405,7 @@ fn observe_models_before_stop(
     for entry in parsed.roster() {
         let tool =
             crate::tool::ToolKind::from_binary_name(entry.binary.as_deref().unwrap_or_default());
-        if tool.adapter().model_flags.is_empty() {
+        if !tool.adapter().model.observes() {
             continue;
         }
         let Some(pane) = panes

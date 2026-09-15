@@ -424,9 +424,14 @@ fn build_with_snapshot(
 /// The two rows are an observed model and the profile's own model flag value
 /// at the time it was observed. The pin decides recency without timestamps:
 ///
-/// - recorded pin == the profile's model now: the human's manual choice is
-///   newer than any profile edit, so the model flag is REWRITTEN to the
-///   observed value.
+/// - recorded pin == the profile's model now, and the tool's adapter declares
+///   an observation replayable: the human's manual choice is newer than any
+///   profile edit, so the model flag is REWRITTEN to the observed value.
+/// - recorded pin == the profile's model now, but the adapter is report-only:
+///   the scraped text is a display name, not a value drawn from the flag's own
+///   vocabulary, so ae refuses to replay it — even one already PERSISTED in
+///   the meta. The row is retained for the report and the seat resumes on the
+///   profile pin.
 /// - recorded pin differs (including "the profile pins no model now"): the
 ///   profile edit is newer. Both rows are retired and the profile wins.
 /// - no recorded pin: the profile pins no model. Nothing is rewritten (ae never
@@ -462,6 +467,15 @@ fn apply_observed_model(dir: &Path, slot: &str, seat: &mut Seat) -> Option<Strin
     }
     if current.as_deref() == Some(observed.as_str()) {
         return None;
+    }
+    if !seat.tool.adapter().model.replays() {
+        // The adapter declares the scraped text a display label rather than a
+        // flag value. It is information for the human, never an argument for a
+        // process — including a value already recorded by an older ae.
+        return Some(format!(
+            "ae: seat {slot}: observed model {observed} is REPORT ONLY — the {} pane shows a display name, not a value its model flag takes, so ae will not replay it; resuming on the profile pin {recorded_pin}. A manual model choice does not survive a resume for this tool; set it in the profile instead.",
+            seat.tool.as_str()
+        ));
     }
     match crate::launch_cmd::replace_model_flag(seat.command.as_str(), seat.tool, &observed) {
         Ok(rewritten) => {
@@ -1609,6 +1623,28 @@ mod tests {
         assert_eq!(
             seat.command.as_str(),
             "codex --yolo -m gpt-6-astra -c model_reasoning_effort=xhigh"
+        );
+    }
+
+    #[test]
+    fn a_recorded_claude_label_is_reported_but_never_reaches_the_resume_command() {
+        // The Claude footer yields a DISPLAY label ("Opus 5 (1M context)"), not
+        // a value `--model` takes. A row an older ae already persisted must not
+        // be replayed: the seat resumes on the profile pin and says so.
+        let dir = std::env::temp_dir().join(format!("ae-run-model-label-{}", std::process::id()));
+        let mut seat = model_seat(
+            "claude --permission-mode bypassPermissions --model fable --effort xhigh",
+            ToolKind::Claude,
+            Some("Opus 5 (1M context)"),
+            Some("fable"),
+        );
+        let notice = apply_observed_model(&dir, "main", &mut seat).expect("a notice");
+        assert!(notice.contains("REPORT ONLY"), "{notice}");
+        assert!(!notice.contains("preserved"), "{notice}");
+        assert_eq!(
+            seat.command.as_str(),
+            "claude --permission-mode bypassPermissions --model fable --effort xhigh",
+            "the persisted label must never become an argv word"
         );
     }
 

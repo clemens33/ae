@@ -41,8 +41,10 @@ pub enum Decision {
     /// The frame's model equals the current pin: any retained row is retired.
     Retire,
     /// The frame's model differs from the pin, or the profile pins none:
-    /// record it. A `None` pin means report-only — the profile has no model
-    /// flag to rewrite, and ae never appends one.
+    /// record it. Recording is not injection — whether an observation may be
+    /// replayed into the flag on resume is the adapter's own capability
+    /// ([`crate::tool::ModelSpec`]). A `None` pin is report-only, because the
+    /// profile has no model flag to rewrite and ae never appends one.
     Record {
         /// The observed model.
         model: String,

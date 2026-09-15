@@ -1720,6 +1720,34 @@ fn a_resumed_model_retirement_refuses_empty_and_missing_launch_guards() {
     }
 }
 
+/// The migration trap: a display label an older ae ALREADY persisted must
+/// never be replayed. The adapter declares Claude's scraped text a display
+/// name, so the refusal sits on the injection path and the seat resumes on the
+/// profile pin. The argv is the proof, not the notice.
+#[test]
+fn an_already_recorded_claude_display_label_never_reaches_the_resume_argv() {
+    let rig = Rig::new("claude-label-replay");
+    rig.profile(
+        "claudefix",
+        &format!("{} --model fable", rig.tool("claude")),
+    );
+    rig.seat_with_launch_id("claudefix", "sid", Some("guard-1"));
+    rig.append_meta(
+        "agent_bin.main=claude\nobserved_model.main=Opus 5 (1M context)\nobserved_model_pin.main=fable\n",
+    );
+    rig.started();
+
+    let argv = rig.planned_argv();
+    assert!(
+        carries(&argv, &["--model", "fable"]),
+        "the profile pin is what runs: {argv:?}"
+    );
+    assert!(
+        !argv.iter().any(|word| word.contains("Opus 5")),
+        "the display label is no argv word: {argv:?}"
+    );
+}
+
 /// A launch id is meta-only for tools without a marker capability. Compare the
 /// whole plan because any injected-context byte is part of the command passed
 /// to the tool.

@@ -2855,7 +2855,7 @@ impl Cycle<'_> {
     /// then visible on the next cycle, and a pin that moved after the
     /// observation is what makes the resume RETIRE the row, not apply it.
     fn note_model(&self, capture: &str, tool: crate::tool::ToolKind, slot: &str) {
-        if tool.adapter().model_flags.is_empty() {
+        if !tool.adapter().model.observes() {
             return;
         }
         let Some(entry) = self.roster.iter().find(|entry| entry.slot == slot) else {

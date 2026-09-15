@@ -1264,8 +1264,10 @@ fn a_local_launch_builds_the_whole_session() {
 
 /// A Claude seat needs a launch id for the observed-model CAS even though it
 /// receives its harness session id at launch and needs no post-launch capture.
+/// The observation is REPORTED (the rows survive the stop), but the display
+/// label is never replayed: the resume stays on the profile pin.
 #[test]
-fn a_claude_launch_records_its_identity_and_preserves_its_observed_model() {
+fn a_claude_launch_records_its_identity_and_reports_without_replaying_its_model() {
     if skip() {
         return;
     }
@@ -1333,8 +1335,12 @@ print "  ⏵⏵ bypass permissions on\r\n";"#,
     );
     let plan = rig.plan(session, "main");
     assert!(
-        plan.contains("\"--model\",\"Opus 5\""),
-        "the resume honors the observed Claude model: {plan}"
+        plan.contains("\"--model\",\"fable\""),
+        "the resume stays on the profile pin: {plan}"
+    );
+    assert!(
+        !plan.contains("\"--model\",\"Opus 5\""),
+        "the observed display label is never replayed as a flag value: {plan}"
     );
 }
 

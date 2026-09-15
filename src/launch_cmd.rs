@@ -216,16 +216,19 @@ impl SimpleCommand {
     }
 }
 
-/// The model flag spellings ae may REWRITE for a tool. Empty means ae never
-/// touches this tool's model.
+/// The model flag spellings ae may READ for a tool. Empty means ae never
+/// reads or touches this tool's model.
 ///
 /// Only the harnesses whose model flag and resume flag order were MEASURED are
 /// listed (2026-09-13, `.local/proposal-modeldrift.md` B2): codex honors `-m`
 /// before its `resume` subcommand, claude honors `--model` before `--resume`.
-/// An unlisted tool is never told a model by ae; drift on it is reported, not
-/// preserved. The grammar itself lives in the adapter rows (`src/tool.rs`).
+/// That measurement proves ae can FIND and REWRITE the flag; it does not prove
+/// the text scraped from a live pane is a LEGAL VALUE for it — whether an
+/// observation may be replayed is the adapter's own capability
+/// ([`crate::tool::ModelSpec`]). The grammar itself lives in the adapter rows
+/// (`src/tool.rs`).
 fn model_flag_names(tool: ToolKind) -> &'static [&'static str] {
-    tool.adapter().model_flags
+    tool.adapter().model.flags()
 }
 
 /// Why a command does not carry exactly one model flag.
