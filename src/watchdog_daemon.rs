@@ -1771,7 +1771,12 @@ impl MotionState {
                 OptionScope::Pane,
                 &entry.pane,
                 theme::PANE_STATE_OPTION,
-                &theme::pane_state_frame(&frame, "working"),
+                // The VERDICT's word, never a literal: the set is mark-level,
+                // and `Quiet(WaitingAgent)` and `Meta(MetaSweeping)` share the
+                // Working mark (six marks, no seventh). A hardcoded "working"
+                // here repainted a just-published `● waiting-agent` as
+                // `● working` within one tick.
+                &theme::pane_state_frame(&frame, entry.verdict.reason()),
             ));
             if !windows.contains(&entry.window) {
                 windows.push(entry.window.clone());
@@ -5934,7 +5939,7 @@ mod tests {
                 "-t",
                 "%6",
                 "@ae_pane_state",
-                "#[fg=#537187]●#[default] working",
+                "#[fg=#537187]●#[default] sweeping",
                 ";",
                 "set-option",
                 "-w",
@@ -5951,6 +5956,53 @@ mod tests {
                 .iter()
                 .all(|word| !matches!(word.as_str(), "%2" | "%3" | "%4" | "%5" | "%7"))
         );
+    }
+
+    /// The ticker animates the WORKING-SHAPED marks: `Active` and a fresh
+    /// `Quiet(WaitingAgent)` share the glyph by design (six marks, no seventh),
+    /// and `MetaSweeping` shares it too. The word after the glyph is the
+    /// VERDICT's — a literal "working" written over all of them repainted a
+    /// pane that had just published `● waiting-agent` as `● working` a hundred
+    /// milliseconds later, and made two panes with different observed values
+    /// render identically.
+    #[test]
+    fn a_ticked_pane_keeps_the_word_its_own_verdict_declares() {
+        let mut state = MotionState {
+            verdicts: vec![
+                MotionVerdict {
+                    pane: "%1".to_owned(),
+                    window: "@7".to_owned(),
+                    verdict: Verdict::Active,
+                },
+                MotionVerdict {
+                    pane: "%2".to_owned(),
+                    window: "@7".to_owned(),
+                    verdict: Verdict::Quiet(QuietKind::WaitingAgent),
+                },
+                MotionVerdict {
+                    pane: "%3".to_owned(),
+                    window: "@7".to_owned(),
+                    verdict: Verdict::Meta(SweepVerdict::MetaSweeping),
+                },
+            ],
+            panes: vec![
+                motion("%1", "lead"),
+                motion("%2", "colead"),
+                motion("%3", "orchestrator"),
+            ],
+            ..MotionState::default()
+        };
+        let args = crate::tmux::set_options_args(&ServerId::Ambient, &state.step(&Look::DEFAULT));
+        for expected in [
+            "#[fg=#537187]●#[default] working",
+            "#[fg=#537187]●#[default] waiting-agent",
+            "#[fg=#537187]●#[default] sweeping",
+        ] {
+            assert!(
+                args.iter().any(|word| word == expected),
+                "missing {expected:?} in {args:?}"
+            );
+        }
     }
 
     #[test]
