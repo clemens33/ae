@@ -366,9 +366,74 @@ bump:
 
 # ── Changelog ────────────────────────────────────────────────────────
 
-# Generate full CHANGELOG.md from git history
+# The commits git-cliff must not see: every commit reachable from HEAD that is NOT on the
+# first-parent chain — the work commits a merge absorbed. WHY THIS EXISTS: git-cliff
+# cannot express a first-parent walk. No `--first-parent` flag and no `[git]` key in
+# v2.13.1 or current main, source grep `first_parent|first-parent|simplify_first` = 0 hits
+# in both tarballs, and libgit2's simplify_first_parent is never called. The exact
+# complement is computed here with git and handed to git-cliff through its own supported
+# `--skip-commit`, which matches FULL 40-char ids. Re-verify the negative with:
+#   curl -fsSL https://github.com/orhun/git-cliff/archive/refs/tags/v2.13.1.tar.gz | tar -xz
+#   grep -rniE 'first_parent|first-parent|simplify_first' git-cliff-2.13.1/   # 0 hits
+#
+# The anchor is HEAD, the same universe a range-less git-cliff walk uses. NEVER `--all`:
+# that reaches unmerged branches, so the output would depend on which worktree branches
+# happen to exist on the machine and would differ run to run.
+#
+# Failure is LOUD, never short. A missing sha silently turns absorbed work back into
+# changelog entries that still look normal, so the list is reconciled against two
+# independent rev-list counts, every token must be a full-length lowercase hex sha, and
+# the list is bounded before anything is printed.
+_cliff-skip:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    # comm is the SET difference, not a rev-list reachability exclusion: `--not <chain>`
+    # excludes the chain's whole ancestry, which already contains every absorbed commit.
+    all=$(git rev-list HEAD)
+    chain=$(git rev-list --first-parent HEAD)
+    skip=$(comm -23 <(printf '%s\n' "$all" | sort) <(printf '%s\n' "$chain" | sort) | tr '\n' ' ')
+
+    expected=$(( $(git rev-list HEAD | wc -l) - $(git rev-list --first-parent HEAD | wc -l) ))
+    have=$(printf '%s' "$skip" | wc -w | tr -d '[:space:]')
+    if [ "$have" -ne "$expected" ]; then
+        echo "error: changelog skip list is short: $have of $expected off-chain commits" >&2
+        exit 1
+    fi
+    for sha in $skip; do
+        if [ "${#sha}" -ne 40 ]; then
+            echo "error: changelog skip list holds a non-40-char sha: $sha" >&2
+            exit 1
+        fi
+        case "$sha" in
+            *[!0-9a-f]*) echo "error: changelog skip list holds a non-hex sha: $sha" >&2; exit 1 ;;
+        esac
+    done
+    if [ "${#skip}" -gt 65536 ]; then
+        echo "error: changelog skip list is ${#skip} bytes, past the 64KiB bound" >&2
+        exit 1
+    fi
+    printf '%s\n' "$skip"
+
+# The ONE owner of the text-to-argv boundary, and the ONE place `git-cliff` is invoked in
+# this file — tests/it/gate.rs asserts both structurally, so a direct call added anywhere
+# else fails by construction. `set --` prepends the skip flag and its UNQUOTED values to
+# the caller's own argv: N shas become N argv entries, and an empty list adds no flag at
+# all. A quoted crossing (one joined argument, silently ignored by git-cliff) is the
+# failure the boundary test executes these recipes to refuse. Why the list exists and what
+# keeps it complete: `_cliff-skip` above.
+_cliff-run +args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    skip=$(just _cliff-skip)
+    if [ -n "$skip" ]; then
+        set -- --skip-commit $skip "$@"
+    fi
+    git-cliff "$@"
+
+# Generate full CHANGELOG.md from git history (skip list: `_cliff-skip`; boundary: `_cliff-run`)
 changelog:
-    git-cliff -o CHANGELOG.md
+    just _cliff-run -o CHANGELOG.md
 
 # ── Release ──────────────────────────────────────────────────────────
 
@@ -496,10 +561,11 @@ release:
         echo "Error: pre-release badge or checkout-install prose remains; edit it deliberately before tagging" >&2
         exit 1
     fi
-    # Generate changelog
+    # Generate changelog. The skip list, its WHY and its guards: `_cliff-skip`; the
+    # text-to-argv boundary owner (and the proofs over it): `_cliff-run`.
     TAG="v$VERSION"
-    git-cliff --tag "$TAG" -o CHANGELOG.md
-    RELEASE_BODY=$(git-cliff --tag "$TAG" --unreleased --strip header)
+    just _cliff-run --tag "$TAG" -o CHANGELOG.md
+    RELEASE_BODY=$(just _cliff-run --tag "$TAG" --unreleased --strip header)
     RELEASE_BODY="${RELEASE_BODY:-Release $TAG}"
 
     # The fuzz crate is outside the workspace, so nothing above refreshed ITS
@@ -862,6 +928,10 @@ FUZZ_TARGETS := "config_parse meta_parse launch_cmd_lex config_command quota_cla
 # advisories/licenses/bans/sources, cargo-vet gates its PROVENANCE (who reviewed
 # the code). See `rust-vet`.
 VET_VERSION := "0.10.2"
+# The changelog generator. An UNPINNED generator means CHANGELOG.md and the GitHub
+# release body differ by machine and drift under us, so it is installed and probed
+# like every other dev tool.
+GIT_CLIFF_VERSION := "2.13.1"
 
 # The foreign target. musl, not gnu — ae ships a STATIC binary with no host
 # runtime dependency, and gnu is not that (see rust-toolchain.toml for the NSS caveat).
@@ -923,6 +993,7 @@ rust-setup:
     ensure cargo-mutants  "{{ MUTANTS_VERSION }}"  'cargo mutants --version'
     ensure cargo-llvm-cov "{{ LLVM_COV_VERSION }}" 'cargo llvm-cov --version'
     ensure cargo-vet      "{{ VET_VERSION }}"      'cargo vet --version'
+    ensure git-cliff      "{{ GIT_CLIFF_VERSION }}" 'git-cliff --version'
 
     # REPORTED, NOT PROVISIONED, and never fatal. The musl cross toolchain is
     # needed by `just bundles` (and so by `just release`) and by nothing else:

@@ -166,7 +166,7 @@ Pins, not channels. CI, laptop and agent sandbox must resolve to the same compil
 | Edition / MSRV | `2024` / `rust-version = "1.97.1"` | `Cargo.toml` |
 | Profile + components | `minimal` + rustfmt, clippy, llvm-tools | `rust-toolchain.toml` |
 | Targets | `aarch64-apple-darwin`, `x86_64-unknown-linux-musl` | `rust-toolchain.toml`, justfile, `deny.toml` |
-| Dev tools | nextest `0.9.143`, taplo `0.10.0`, deny `0.20.2`, mutants `27.1.0`, llvm-cov `0.9.0`, vet `0.10.2`; cargo-fuzz `0.13.2` on request, not by `rust-setup` | justfile `*_VERSION` — the single source |
+| Dev tools | nextest `0.9.143`, taplo `0.10.0`, deny `0.20.2`, mutants `27.1.0`, llvm-cov `0.9.0`, vet `0.10.2`, git-cliff `2.13.1`; cargo-fuzz `0.13.2` on request, not by `rust-setup` | justfile `*_VERSION` — the single source |
 | Fuzz compiler | `nightly-2026-08-20` (exact). The product compiler does not move; there is no `fuzz/rust-toolchain.toml`, the lane passes `cargo +<pin>` | justfile `FUZZ_TOOLCHAIN` — the only source |
 | `just` | `1.57.0` | justfile `JUST_VERSION`; CI reads the pin from there |
 | tmux floor | `3.4` — a launch and the picker REFUSE below it; `list`/`version`/`doctor`/`upgrade` do not. Ubuntu 24.04 and Homebrew both package a tmux that clears it, so CI installs the package | `src/tmux_floor.rs`; CI step in `.github/workflows/rust.yml` |

@@ -32,7 +32,7 @@ mkdocs.yml          — docs site config
 | cargo / rustfmt / clippy | Rust build, format, and lint tooling (provisioned by `just rust-setup`) |
 | [shellcheck](https://github.com/koalaman/shellcheck) | bash linter, pinned to **0.11.0** and enforced by `just lint` |
 | [shfmt](https://github.com/mvdan/sh) | bash formatter (indent=4, case-indent) |
-| [git-cliff](https://github.com/orhun/git-cliff) | changelog from conventional commits |
+| [git-cliff](https://github.com/orhun/git-cliff) | changelog from plain subjects on the first-parent chain — a merged slice contributes its merge subject |
 | [gh](https://cli.github.com/) | GitHub CLI — a hard prerequisite of `just release`, which attaches the assets itself |
 | [x86_64-unknown-linux-musl-gcc](https://github.com/messense/macos-cross-toolchains) | musl cross toolchain — needed by `just bundles` only. `brew install messense/macos-cross-toolchains/x86_64-unknown-linux-musl` |
 | [mkdocs-material](https://squidfunk.github.io/mkdocs-material/) | docs site (optional, only for `just docs`) |

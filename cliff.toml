@@ -1,3 +1,26 @@
+# Changelog generation. ONE body template feeds BOTH surfaces: CHANGELOG.md
+# (`just changelog`, `just release`) and the GitHub release body
+# (`git-cliff --tag … --unreleased --strip header` in `just release`).
+#
+# This repo commits PLAIN subjects (AGENTS.md forbids conventional-commit spellings), so
+# there are no type prefixes to group by: the changelog is ONE flat bullet list per
+# release. An entry is the SUBJECT LINE only — `commit.message` carries the whole message,
+# so the template takes its first line — and every entry is a FIRST-PARENT commit: a
+# merged slice contributes its merge subject, a commit landed directly on the branch
+# contributes its own subject, and the work commits a merge absorbed contribute nothing.
+# git-cliff cannot express that walk (verified: no `--first-parent` flag and no `[git]`
+# key in v2.13.1 or current main, source grep `first_parent|first-parent|simplify_first`
+# = 0 hits in both, and libgit2's simplify_first_parent is never called), so the justfile
+# computes the off-chain complement and passes it as `--skip-commit`, which matches FULL
+# 40-char ids. See `_cliff-skip` in the justfile for the mechanism and its guards.
+# `chore(release)` bumps are not changes and are skipped by the parser.
+#
+# The blank line before each `## [version]` is a POSTPROCESSOR, not body whitespace:
+# git-cliff trims every rendered release section, so a leading newline in the body cannot
+# survive. The replacement is a TOML basic string, so `\n` is a real newline by the time
+# the postprocessor (which runs per line, and whose pattern therefore cannot contain one)
+# sees it.
+
 [changelog]
 header = """# Changelog
 
@@ -9,28 +32,20 @@ body = """
 {% else %}\
 ## [Unreleased]
 {% endif %}\
-{% for group, commits in commits | group_by(attribute="group") %}
-### {{ group | striptags | trim | upper_first }}
-{% for commit in commits %}
-- {% if commit.scope %}**{{ commit.scope }}**: {% endif %}{{ commit.message | upper_first }}\
-{% endfor %}
-{% endfor %}
+{% for commit in commits %}\
+- {% if commit.scope %}**{{ commit.scope }}**: {% endif %}{{ commit.message | split(pat="\n") | first | upper_first }}
+{% endfor %}\
 """
 trim = true
+postprocessors = [
+    { pattern = "^## \\[", replace = "\n## [" },
+]
 
 [git]
 conventional_commits = true
 filter_unconventional = false
 commit_parsers = [
-    { message = "^feat", group = "Features" },
-    { message = "^fix", group = "Bug Fixes" },
-    { message = "^refactor", group = "Refactoring" },
-    { message = "^perf", group = "Performance" },
-    { message = "^doc", group = "Documentation" },
-    { message = "^test", group = "Testing" },
     { message = "^chore\\(release\\)", skip = true },
-    { message = "^chore", group = "Miscellaneous" },
-    { message = ".*", group = "Other" },
 ]
 tag_pattern = "v([0-9]{4}\\.[0-9]{1,2}\\.[0-9]+|[0-9]+\\.[0-9]+\\.[0-9]+)"
 sort_commits = "oldest"
