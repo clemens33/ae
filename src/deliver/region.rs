@@ -350,18 +350,60 @@ pub fn occupancy(region: &str, model: InputModel) -> Occupancy {
     }
 }
 
-/// Does `capture` carry any of an UNMODELLED tool's COMPOSED-UI markers —
-/// positive evidence its input box is drawn and can be pasted into?
+/// Does `capture` show a COMPOSED input box carrying one of `markers`?
 ///
-/// The markers are the tool adapter's measured literals (`InputSpec.composed`):
-/// `opencode` 1.18.31 draws the composer's `╹` corner and its `Ask anything…`
-/// placeholder at ~+3.0 s, while its boot frame is blank until then. Any one
-/// marker is enough — the list is a set of affordances, not a conjunction.
-/// An EMPTY list answers false, so a tool with no usable composed signal is
-/// refused by readiness rather than pasted into blind.
+/// The BOTTOM-MOST box owns the answer — a transcript echo or a modal higher
+/// on the screen is not the input, the same bottom-most-owner rule
+/// [`composer_row`] enforces for the modelled tools. The box is recognised by
+/// the measured `opencode` 1.18.31 geometry: rows whose first non-blank cell
+/// is the `┃` rail, closed by an edge row starting `╹▀`. A marker counts only
+/// INSIDE those rows, so a marker in a transcript echo, in scrollback or in a
+/// modal without a drawn box is never readiness. An empty marker list answers
+/// false: a tool with no usable composed signal is refused, not guessed.
+///
+/// The geometry is one tool's measured shape; a future unmodelled tool whose
+/// box is drawn differently needs its own detector, not this one's markers.
 #[must_use]
 pub fn composed_ui(capture: &str, markers: &[&str]) -> bool {
-    markers.iter().any(|marker| capture.contains(marker))
+    if markers.is_empty() {
+        return false;
+    }
+    // A capture may be plain or SGR-styled: join each row's segments first, so
+    // the box geometry and the markers are read from TEXT, never from the
+    // escape bytes a styled capture interleaves.
+    let segments = parse(capture);
+    let mut rows: Vec<String> = Vec::new();
+    for seg in &segments {
+        if rows.len() <= seg.line {
+            rows.resize(seg.line + 1, String::new());
+        }
+        if let Some(row) = rows.get_mut(seg.line) {
+            row.push_str(&seg.text);
+        }
+    }
+    let Some(edge) = rows.iter().rposition(|row| is_composer_edge(row)) else {
+        return false;
+    };
+    // The box: its edge plus the contiguous rail rows directly above it.
+    let top = (0..edge)
+        .rev()
+        .find(|&at| !is_composer_rail(&rows[at]))
+        .map_or(0, |at| at + 1);
+    rows[top..=edge]
+        .iter()
+        .any(|row| markers.iter().any(|marker| row.contains(marker)))
+}
+
+/// A composer box's left rail: the row's first non-blank cell is `┃`.
+fn is_composer_rail(row: &str) -> bool {
+    row.trim_start_matches(is_space).starts_with('┃')
+}
+
+/// A composer box's bottom edge: the row's first non-blank cell is the `╹`
+/// corner, directly followed by the `▀` underline run.
+fn is_composer_edge(row: &str) -> bool {
+    let mut cells = row.trim_start_matches(is_space).chars();
+    cells.next() == Some('╹') && cells.next() == Some('▀')
 }
 
 /// Does Claude's live prompt say it accepted a message into its turn queue?
@@ -491,7 +533,9 @@ fn digits(text: &str) -> (usize, &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Occupancy, Segment, initializing, occupancy, parse, prompt, queued_submission};
+    use super::{
+        Occupancy, Segment, composed_ui, initializing, occupancy, parse, prompt, queued_submission,
+    };
     use crate::tool::InputModel;
 
     /// The REAL stuck composer — muse-spark-1.3 via the muse CLI, captured
@@ -510,6 +554,14 @@ mod tests {
     /// Nothing staged; a backend 429 sits in the transcript, composer empty.
     const MUSE_IDLE: &str =
         include_str!("../../tests/fixtures/muse-composer/muse-idle-composer.esc");
+
+    /// The REAL opencode composed frame and its blank boot frame (provenance
+    /// beside them). The marker is the one the adapter pins for 1.18.31.
+    const OPENCODE_COMPOSED: &str =
+        include_str!("../../tests/fixtures/opencode-composer/opencode-composed-frame.esc");
+    const OPENCODE_BOOT: &str =
+        include_str!("../../tests/fixtures/opencode-composer/opencode-boot-frame.esc");
+    const OPENCODE_MARKERS: &[&str] = &["Ask anything…"];
 
     /// A row as `capture-pane -e` renders it: the styling matters, and it is
     /// spelled the way tmux legally spells it rather than one canonical way.
@@ -856,5 +908,32 @@ mod tests {
             occupancy(&cleared, InputModel::BorderDelimited),
             Occupancy::Idle
         );
+    }
+
+    #[test]
+    fn a_composed_marker_counts_only_inside_the_bottom_composer_box() {
+        // The real frames: the marker lives inside the drawn box, and the
+        // blank boot frame has no box at all.
+        assert!(composed_ui(OPENCODE_COMPOSED, OPENCODE_MARKERS));
+        assert!(
+            composed_ui(OPENCODE_COMPOSED, &["Build", "ctrl+p commands"]),
+            "any marker inside the box answers; the box is the anchor"
+        );
+        assert!(!composed_ui(OPENCODE_BOOT, OPENCODE_MARKERS));
+
+        // A transcript echo carrying the marker with NO composer drawn is not
+        // readiness — the whole-capture `contains` this replaces said it was.
+        let echoed = "❯ Ask anything… quoted from an earlier turn\nplain transcript\n";
+        assert!(!composed_ui(echoed, OPENCODE_MARKERS));
+
+        // A marker visible ABOVE a drawn box that does not carry it: the box
+        // owns the answer, so the echo above it must not grant readiness. The
+        // same box does compose for a marker inside it.
+        let boxed = "❯ Ask anything… quoted from an earlier turn\n\n   ┃\n   ┃  write here\n   ╹▀▀▀▀▀\n   tab agents\n";
+        assert!(!composed_ui(boxed, OPENCODE_MARKERS));
+        assert!(composed_ui(boxed, &["write here"]));
+
+        // A tool with no usable composed signal never composes anything.
+        assert!(!composed_ui(OPENCODE_COMPOSED, &[]));
     }
 }

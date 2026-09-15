@@ -166,6 +166,7 @@ pub fn run(
         body: &parsed.text,
         shape: deliver::Shape::Relay,
         defer,
+        composed: &[],
     };
     let delivery = deliver::deliver(&request, err)?;
     match delivery {
@@ -332,6 +333,8 @@ fn audit_delivery_failure(
         deliver::Failure::NoticeRefused { .. } => "verbatim relay limit was exceeded",
         deliver::Failure::Abandoned => "target stayed busy",
         deliver::Failure::Paste { .. } => "paste failed",
+        deliver::Failure::NotComposed { .. } => "the pane was not composed",
+        deliver::Failure::Unproven { .. } => "the pane could not be proven a live agent",
         deliver::Failure::Unconfirmed { .. } => "submit was not confirmed",
     };
     let summary = format!("refused: {reason}; {}", fields.summary);

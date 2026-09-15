@@ -102,6 +102,11 @@ pub struct Request<'a> {
     pub shape: Shape,
     /// How long to wait for a busy target.
     pub defer: Duration,
+    /// The COMPOSED-UI markers of the tool this delivery expects, read only by
+    /// the Launch recheck under the target lock of an UNMODELLED pane.
+    /// Callers of every other shape pass `&[]`; a modelled pane answers
+    /// through its [`InputModel`] instead.
+    pub composed: &'static [&'static str],
 }
 
 /// A delivery that landed.
@@ -175,6 +180,12 @@ impl Unverifiable {
 pub enum Failure {
     /// The target pane is a shell, not a running agent.
     DeadPane,
+    /// The under-lock pane probe could not prove a live agent (absent, or
+    /// naming no pid), so NOTHING was pasted — fail closed.
+    Unproven {
+        /// The published recovery body, still readable.
+        body_file: String,
+    },
     /// The recovery body could not be published.
     Storage,
     /// The per-target lock was not acquired.
@@ -188,6 +199,13 @@ pub enum Failure {
     Abandoned,
     /// The paste itself failed.
     Paste {
+        /// The published recovery body, still readable.
+        body_file: String,
+    },
+    /// The pane left its composed input box between the readiness proof and the
+    /// target lock; NOTHING was pasted. Death is a different failure
+    /// ([`Failure::DeadPane`]) and is checked first.
+    NotComposed {
         /// The published recovery body, still readable.
         body_file: String,
     },
@@ -209,6 +227,10 @@ impl fmt::Debug for Failure {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::DeadPane => formatter.write_str("DeadPane"),
+            Self::Unproven { body_file } => formatter
+                .debug_struct("Unproven")
+                .field("body_file", body_file)
+                .finish(),
             Self::Storage => formatter.write_str("Storage"),
             Self::Lock => formatter.write_str("Lock"),
             Self::NoticeRefused { body_file } => formatter
@@ -218,6 +240,10 @@ impl fmt::Debug for Failure {
             Self::Abandoned => formatter.write_str("Abandoned"),
             Self::Paste { body_file } => formatter
                 .debug_struct("Paste")
+                .field("body_file", body_file)
+                .finish(),
+            Self::NotComposed { body_file } => formatter
+                .debug_struct("NotComposed")
                 .field("body_file", body_file)
                 .finish(),
             Self::Unconfirmed {
@@ -239,6 +265,8 @@ impl Failure {
             Self::DeadPane | Self::Storage | Self::Lock | Self::Abandoned => "",
             Self::NoticeRefused { body_file }
             | Self::Paste { body_file }
+            | Self::NotComposed { body_file }
+            | Self::Unproven { body_file }
             | Self::Unconfirmed { body_file, .. } => body_file,
         }
     }
@@ -259,7 +287,7 @@ pub fn deliver(
     // Interpreted-sink guard: refuse to paste into a pane whose agent has DIED
     // and dropped to a shell — a stray Enter would EXECUTE the message as a
     // shell command.
-    if pane_agent_is_dead(request, &probe) {
+    if refuses_as_dead(pane_liveness(request, &probe)) {
         writeln!(err, "{}", dead_pane_line(request))?;
         return Ok(Err(Failure::DeadPane));
     }
@@ -306,16 +334,11 @@ pub fn deliver(
         )?;
         return Ok(Err(Failure::NoticeRefused { body_file }));
     };
-    if matches!(request.shape, Shape::Send | Shape::Relay) && !wait_for_quiet(request, input.model)
-    {
-        writeln!(
-            err,
-            "ae: {} to {} ABANDONED — target stayed busy / human input or attention (not clear within {}s; AE_SEND_DEFER_SEC overrides). Re-send.",
-            request.action,
-            request.logged_target,
-            request.defer.as_secs()
-        )?;
-        return Ok(Err(Failure::Abandoned));
+    if let Err(failure) = quiet_or_abandoned(request, input.model, err)? {
+        return Ok(Err(failure));
+    }
+    if let Err(failure) = launch_recheck(request, input, &body_file, err)? {
+        return Ok(Err(failure));
     }
     // Safe now: cancel, then paste — all by `-t` target, never by selection.
     let _ = transport::send_key(request.server, request.pane, Key::CancelCopyMode);
@@ -491,22 +514,84 @@ fn target_meta_dir(request: &Request<'_>) -> PathBuf {
     }
 }
 
-/// Is this pane a DEAD-agent shell — `_pane_agent_is_dead`?
-fn pane_agent_is_dead(request: &Request<'_>, probe: &crate::tmux::ObservedPaneProbe) -> bool {
+/// What the pane-level liveness observation says.
+///
+/// THREE states, because a boolean collapsed "cannot tell" into "alive": a
+/// shell in the foreground with an unusable snapshot, an unreadable recorded
+/// binary or no pid is UNPROVEN, and each caller decides policy explicitly
+/// ([`refuses_as_dead`] for ordinary delivery, [`under_lock_refusal`] for the
+/// unmodelled Launch re-proof).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PaneLiveness {
+    /// A real process owns the foreground, or the agent is a proven
+    /// descendant of the pane's pid.
+    Alive,
+    /// A shell owns the foreground and the recorded agent is PROVEN gone.
+    Dead,
+    /// A shell owns the foreground and no proof either way can be made.
+    Unproven,
+}
+
+/// What a refusal a liveness answer maps to, when it maps to one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LivenessRefusal {
+    Dead,
+    Unproven,
+}
+
+/// The decision a SHELL foreground leaves, once the recorded binary is known
+/// usable: a pid is required, and the process walk must not be Unknown. A
+/// `shelled` pane is never GUESSED alive — unknown is `Unproven`, never
+/// `Alive`.
+const fn shelled_liveness(
+    binary_known: bool,
+    pid: Option<u32>,
+    walk: crate::procs::Descendancy,
+) -> PaneLiveness {
+    if !binary_known || pid.is_none() {
+        return PaneLiveness::Unproven;
+    }
+    match walk {
+        crate::procs::Descendancy::Absent => PaneLiveness::Dead,
+        crate::procs::Descendancy::Present => PaneLiveness::Alive,
+        crate::procs::Descendancy::Unknown => PaneLiveness::Unproven,
+    }
+}
+
+/// The pane-level liveness observation — the one owner `_pane_agent_is_dead`
+/// grew three states out of. A non-shell foreground is Alive. A shell
+/// foreground is proven only by a recorded, non-shell binary that the process
+/// walk finds: anything else is Unproven.
+fn pane_liveness(request: &Request<'_>, probe: &crate::tmux::ObservedPaneProbe) -> PaneLiveness {
     if !crate::watchdog::command_is_shell(&probe.command) {
-        return false; // a real process is in the foreground -> alive
+        return PaneLiveness::Alive; // a real process is in the foreground
     }
     let binary = recorded_binary(&target_meta_dir(request), request.pane_slot);
-    if binary.is_empty() || crate::watchdog::command_is_shell(&binary) {
-        return false; // shell-based agent or undeterminable -> deliver
-    }
-    let Some(pid) = probe.pid else {
-        return false;
+    let binary_known = !binary.is_empty() && !crate::watchdog::command_is_shell(&binary);
+    let walk = match probe.pid {
+        Some(pid) => crate::procs::descendancy(crate::procs::snapshot().as_deref(), pid, &binary),
+        None => crate::procs::Descendancy::Unknown,
     };
-    matches!(
-        crate::procs::descendancy(crate::procs::snapshot().as_deref(), pid, &binary),
-        crate::procs::Descendancy::Absent
-    )
+    shelled_liveness(binary_known, probe.pid, walk)
+}
+
+/// ORDINARY delivery's policy (the pre-lock check, Send, Relay, Interrupt):
+/// only a PROVEN dead pane refuses. `Unproven` keeps the standing fail-open,
+/// because a transient process-snapshot failure must not refuse every
+/// delivery.
+const fn refuses_as_dead(liveness: PaneLiveness) -> bool {
+    matches!(liveness, PaneLiveness::Dead)
+}
+
+/// The UNDER-LOCK unmodelled Launch policy: the pane must be PROVEN alive.
+/// `Dead` refuses as a dead pane, `Unproven` refuses as unproven; only
+/// `Alive` may take the paste.
+const fn under_lock_refusal(liveness: PaneLiveness) -> Option<LivenessRefusal> {
+    match liveness {
+        PaneLiveness::Alive => None,
+        PaneLiveness::Dead => Some(LivenessRefusal::Dead),
+        PaneLiveness::Unproven => Some(LivenessRefusal::Unproven),
+    }
 }
 
 /// Wait until the target's input box is safe to paste into, or give up.
@@ -655,6 +740,11 @@ pub fn wait_input_ready(
 /// no usable composed signal. This slice did not give them one.
 #[must_use]
 fn wait_until_settled(server: &ServerId, pane: &str, composed: &[&str], polls: u32) -> bool {
+    if composed.is_empty() {
+        // No composed signal can ever pass here: refuse NOW rather than burn
+        // the whole budget on an answer that is already known.
+        return false;
+    }
     let mut previous = transport::capture_screen(server, pane, Styling::Plain);
     for _ in 1..polls {
         std::thread::sleep(READY_POLL);
@@ -675,6 +765,102 @@ fn wait_until_settled(server: &ServerId, pane: &str, composed: &[&str], polls: u
 fn unmodelled_ready(before: Option<&str>, after: Option<&str>, composed: &[&str]) -> bool {
     before.is_some_and(|capture| region::composed_ui(capture, composed))
         && pane_settled(before, after)
+}
+
+/// Re-read the pane's SCREEN once, under the target lock, and answer whether
+/// its composed box is still there. A failed capture and a marker-less screen
+/// answer false. This reads the screen ONLY: an agent that died leaves its
+/// composer DRAWN above the returning shell prompt and still matches, so it
+/// is never the only guard — [`launch_recheck`] runs the pane-level liveness
+/// owner ([`pane_liveness`]) first, exactly as the pre-lock path does.
+fn reconfirm_composed(server: &ServerId, pane: &str, composed: &[&str]) -> bool {
+    transport::capture_screen(server, pane, Styling::Plain)
+        .is_some_and(|capture| region::composed_ui(&capture, composed))
+}
+
+/// The Send/Relay quiet gate: a busy target (or a human's attention on it)
+/// abandons after the deferral, with nothing pasted. Every other shape
+/// proceeds — and so does an unmodelled target, whose `input_busy` is false.
+fn quiet_or_abandoned(
+    request: &Request<'_>,
+    model: InputModel,
+    err: &mut impl Write,
+) -> io::Result<Result<(), Failure>> {
+    if !matches!(request.shape, Shape::Send | Shape::Relay) || wait_for_quiet(request, model) {
+        return Ok(Ok(()));
+    }
+    writeln!(
+        err,
+        "ae: {} to {} ABANDONED — target stayed busy / human input or attention (not clear within {}s; AE_SEND_DEFER_SEC overrides). Re-send.",
+        request.action,
+        request.logged_target,
+        request.defer.as_secs()
+    )?;
+    Ok(Err(Failure::Abandoned))
+}
+
+/// The under-lock unproven refusal: an absent probe, a pid-less probe, an
+/// unreadable recorded binary or an unusable process walk all land here, and
+/// NOTHING is pasted.
+fn unproven_refusal(
+    request: &Request<'_>,
+    body_file: &str,
+    err: &mut impl Write,
+) -> io::Result<Failure> {
+    writeln!(
+        err,
+        "ae: brief for {} REFUSED — the pane could not be proven a live agent under the target lock; NOTHING was pasted. Body preserved at {body_file}; re-send once the pane is observable.",
+        request.logged_target
+    )?;
+    Ok(Failure::Unproven {
+        body_file: body_file.to_owned(),
+    })
+}
+
+/// The under-lock Launch re-proof: `Ok(Ok(()))` lets the paste proceed, and
+/// the `Err` arm is a visible refusal with nothing pasted. Only an UNMODELLED
+/// Launch is re-proven — every other shape and every modelled pane keeps the
+/// behaviour it had.
+///
+/// Two questions, in this order: is the PANE still a live agent — the one
+/// [`pane_liveness`] owner, whose `Dead` and `Unproven` both refuse here
+/// ([`under_lock_refusal`]), because a dead or unknowable agent's stale
+/// composer would still satisfy the screen read below — and does its SCREEN
+/// still show the composed box ([`reconfirm_composed`]).
+fn launch_recheck(
+    request: &Request<'_>,
+    input: TargetInput,
+    body_file: &str,
+    err: &mut impl Write,
+) -> io::Result<Result<(), Failure>> {
+    if request.shape != Shape::Launch || input.model.is_modelled() {
+        return Ok(Ok(()));
+    }
+    let Some(probe) = transport::observe_pane_probe(request.server, request.pane) else {
+        return Ok(Err(unproven_refusal(request, body_file, err)?));
+    };
+    match under_lock_refusal(pane_liveness(request, &probe)) {
+        None => {}
+        Some(LivenessRefusal::Dead) => {
+            writeln!(err, "{}", dead_pane_line(request))?;
+            writeln!(err, "ae: the recovery body is preserved at {body_file}.")?;
+            return Ok(Err(Failure::DeadPane));
+        }
+        Some(LivenessRefusal::Unproven) => {
+            return Ok(Err(unproven_refusal(request, body_file, err)?));
+        }
+    }
+    if !reconfirm_composed(request.server, request.pane, request.composed) {
+        writeln!(
+            err,
+            "ae: brief for {} REFUSED — the pane left its composed input box while the target lock was held; NOTHING was pasted. Body preserved at {body_file}; re-send once the pane is composed.",
+            request.logged_target
+        )?;
+        return Ok(Err(Failure::NotComposed {
+            body_file: body_file.to_owned(),
+        }));
+    }
+    Ok(Ok(()))
 }
 
 /// Paste `text` into `pane` and press Enter, verifying the submit.
@@ -1001,8 +1187,9 @@ fn lock_target(dir: &Path, pane: &str) -> Option<std::fs::File> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Failure, Request, Shape, TargetInput, UNVERIFIED, buffer_name, choose_input, frame,
-        is_name_safe, pane_settled, settle_for, store_body, unmodelled_ready,
+        Failure, LivenessRefusal, PaneLiveness, Request, Shape, TargetInput, UNVERIFIED,
+        buffer_name, choose_input, frame, is_name_safe, pane_settled, refuses_as_dead, settle_for,
+        shelled_liveness, store_body, under_lock_refusal, unmodelled_ready,
     };
     use crate::inventory::ServerId;
     use crate::tool::{InputModel, ToolKind};
@@ -1031,6 +1218,7 @@ mod tests {
             body,
             shape,
             defer: super::DEFAULT_DEFER,
+            composed: &[],
         }
     }
 
@@ -1314,6 +1502,59 @@ mod tests {
             ),
             "and a frame that keeps changing is not, however composed its seed"
         );
+    }
+
+    #[test]
+    fn a_shelled_pane_is_never_guessed_alive() {
+        use crate::procs::Descendancy;
+        // The process walk decides only when there IS one to trust: no usable
+        // binary, no pid, or an unusable snapshot are all UNPROVEN.
+        assert_eq!(
+            shelled_liveness(false, Some(4242), Descendancy::Present),
+            PaneLiveness::Unproven,
+            "an unreadable meta (or a shell-based profile) proves nothing"
+        );
+        assert_eq!(
+            shelled_liveness(true, None, Descendancy::Present),
+            PaneLiveness::Unproven,
+            "a pid-less probe proves nothing"
+        );
+        assert_eq!(
+            shelled_liveness(true, Some(4242), Descendancy::Unknown),
+            PaneLiveness::Unproven,
+            "an unusable process snapshot proves nothing"
+        );
+        assert_eq!(
+            shelled_liveness(true, Some(4242), Descendancy::Absent),
+            PaneLiveness::Dead
+        );
+        assert_eq!(
+            shelled_liveness(true, Some(4242), Descendancy::Present),
+            PaneLiveness::Alive
+        );
+    }
+
+    #[test]
+    fn each_delivery_path_picks_its_own_unproven_policy() {
+        // The under-lock unmodelled Launch requires a PROVEN live agent.
+        assert_eq!(under_lock_refusal(PaneLiveness::Alive), None);
+        assert_eq!(
+            under_lock_refusal(PaneLiveness::Dead),
+            Some(LivenessRefusal::Dead)
+        );
+        assert_eq!(
+            under_lock_refusal(PaneLiveness::Unproven),
+            Some(LivenessRefusal::Unproven),
+            "an unprovable pane must never take the Launch paste"
+        );
+        // Ordinary delivery keeps the standing fail-open: only Dead refuses,
+        // so a transient snapshot failure cannot refuse every send.
+        assert!(refuses_as_dead(PaneLiveness::Dead));
+        assert!(
+            !refuses_as_dead(PaneLiveness::Unproven),
+            "ordinary delivery must NOT start refusing on a transient ps failure"
+        );
+        assert!(!refuses_as_dead(PaneLiveness::Alive));
     }
 
     #[test]

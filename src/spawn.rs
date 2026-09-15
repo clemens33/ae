@@ -514,8 +514,8 @@ pub fn run_spawn(
     } else {
         None
     };
-    if let Some(reason) = failure {
-        report_undelivered(dir, &parsed.name, &pane, &brief, &reason, err)?;
+    if let Some(refusal) = failure {
+        report_undelivered(dir, &parsed.name, &pane, &brief, &refusal, err)?;
         record_spawn(dir, now, caller, &parsed.name, &parsed.prompt);
         let _ = store::open(dir).append_event(&tracked::event_line(&EventFields {
             ts: now,
@@ -534,7 +534,7 @@ pub fn run_spawn(
             caller_pane: "",
             caller_session_uuid: "",
             identity_gap: "",
-            summary: &format!("brief not delivered: {reason}"),
+            summary: &format!("brief not delivered: {}", refusal.reason),
             body_file: "",
         }));
         return Ok(EXIT_FAILED);
@@ -640,6 +640,22 @@ fn wait_for_agent_start(server: &ServerId, pane: &str, tool: ToolKind) {
     clippy::too_many_arguments,
     reason = "one call site, all six are facts"
 )]
+/// A brief that did not land, and the recovery its failure kind has.
+struct BriefRefusal {
+    reason: String,
+    /// The pane's agent is GONE (its pane is a shell): a `send` would only be
+    /// refused by the dead-pane guard, so the recovery is retire/re-spawn.
+    dead_seat: bool,
+}
+
+/// The brief refusal a dead seat gets, quoted by the reason and the recovery.
+const BRIEF_REFUSED_DEAD: &str = "brief REFUSED — the pane is a shell, not a running agent (it died before or during delivery); NOTHING was pasted";
+
+/// Deliver the brief to a tool whose context rode a system-prompt channel.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one call site; every argument is a fact about it"
+)]
 fn deliver_brief(
     dir: &Path,
     facts: &Facts,
@@ -650,7 +666,7 @@ fn deliver_brief(
     caller: &str,
     kind: ToolKind,
     err: &mut impl Write,
-) -> io::Result<Option<String>> {
+) -> io::Result<Option<BriefRefusal>> {
     // The tool is the CONFIGURED one, not the pane's live command: a wrapper, an
     // interpreter or a `.exe` launcher makes the live command say something
     // else while the box on screen is still the tool's.
@@ -658,9 +674,11 @@ fn deliver_brief(
     let composed = kind.adapter().input.composed;
     // DO NOT paste into a state we could not confirm idle.
     if !deliver::wait_input_ready(&facts.server, pane, model, composed, BRIEF_READY_POLLS) {
-        return Ok(Some(
-            "input never reached a confirmed-idle state (busy, modal, or unreadable)".to_owned(),
-        ));
+        return Ok(Some(BriefRefusal {
+            reason: "input never reached a confirmed-idle state (busy, modal, or unreadable)"
+                .to_owned(),
+            dead_seat: false,
+        }));
     }
     let request = deliver::Request {
         dir,
@@ -676,6 +694,7 @@ fn deliver_brief(
         body: brief,
         shape: Shape::Launch,
         defer: deliver::DEFAULT_DEFER,
+        composed,
     };
     let outcome = deliver::deliver(&request, err)?;
     let body_file = match &outcome {
@@ -683,9 +702,36 @@ fn deliver_brief(
         Err(failure) => failure.body_file().to_owned(),
     };
     if let Err(failure) = outcome {
-        return Ok(Some(format!(
-            "brief submit UNCONFIRMED ({failure:?}) — body preserved at {body_file}; it may be staged unsent"
-        )));
+        // A pre-paste refusal did not stage anything, so it must not borrow
+        // the submit uncertainty wording: nothing may be "staged unsent".
+        if let deliver::Failure::NotComposed { .. } = failure {
+            return Ok(Some(BriefRefusal {
+                reason: format!(
+                    "brief REFUSED — the pane was not composed when delivery reached it; NOTHING was pasted. Body preserved at {body_file}"
+                ),
+                dead_seat: false,
+            }));
+        }
+        if let deliver::Failure::Unproven { .. } = failure {
+            return Ok(Some(BriefRefusal {
+                reason: format!(
+                    "brief REFUSED — the pane could not be proven a live agent at delivery time; NOTHING was pasted. Body preserved at {body_file}"
+                ),
+                dead_seat: false,
+            }));
+        }
+        if let deliver::Failure::DeadPane = failure {
+            return Ok(Some(BriefRefusal {
+                reason: BRIEF_REFUSED_DEAD.to_owned(),
+                dead_seat: true,
+            }));
+        }
+        return Ok(Some(BriefRefusal {
+            reason: format!(
+                "brief submit UNCONFIRMED ({failure:?}) — body preserved at {body_file}; it may be staged unsent"
+            ),
+            dead_seat: false,
+        }));
     }
     // A booting TUI can swallow the post-paste Enter, leaving the brief staged
     // in the input box.
@@ -706,7 +752,7 @@ fn report_undelivered(
     name: &str,
     pane: &str,
     brief: &str,
-    reason: &str,
+    refusal: &BriefRefusal,
     err: &mut impl Write,
 ) -> io::Result<()> {
     let file = dir.join(format!("undelivered.{name}.txt"));
@@ -715,7 +761,18 @@ fn report_undelivered(
         err,
         "ae: SPAWN INCOMPLETE — {name} exists in pane {pane}, brief NOT delivered"
     )?;
-    writeln!(err, "ae: reason: {reason}")?;
+    writeln!(err, "ae: reason: {}", refusal.reason)?;
+    if refusal.dead_seat {
+        // The pane is a SHELL: a `send` would be refused by the dead-pane
+        // guard, so the only recovery is retiring the dead seat and spawning
+        // again. The live-seat wording must NOT appear here.
+        writeln!(
+            err,
+            "ae: the agent is GONE (its pane is a shell) — a send would be refused; retire the seat and spawn again:"
+        )?;
+        writeln!(err, "ae:   {}/retire {name}", dir.display())?;
+        return Ok(());
+    }
     writeln!(
         err,
         "ae: do NOT respawn (the pane is live) — send to the existing agent:"

@@ -966,3 +966,115 @@ fn a_paste_that_fails_after_the_load_leaves_no_buffer_behind() {
         "a failed paste must delete what it staged: {buffers:?}"
     );
 }
+
+/// The paste-and-Enter SINK has four entry shapes and its guards are NOT
+/// uniform. This table is the CURRENT TRUTH, gaps included — it is not a
+/// refactor plan, and it must not be "fixed" into one:
+///
+/// | shape            | pane-alive (proof currency)    | Unproven ->                  | target-lock | quiet-gate | composed+proof | submit-verify |
+/// |------------------|--------------------------------|------------------------------|-------------|------------|----------------|---------------|
+/// | Send             | pre-lock ONLY                  | DELIVER (standing fail-open) | yes         | YES        | no             | modelled / Unknown |
+/// | Relay            | pre-lock ONLY                  | DELIVER                      | yes         | YES        | no             | same |
+/// | Interrupt        | pre-lock ONLY                  | DELIVER                      | yes         | no         | no             | same |
+/// | Launch, modelled | pre-lock ONLY (inherited gap)  | DELIVER (inherited)          | yes         | no         | no (the CALLER's `InputModel` owns it) | modelled |
+/// | Launch, unmodel  | pre-lock + under-lock re-proof | REFUSE (`Failure::Unproven`) | yes         | no         | YES (probe, liveness, composed screen) | Unknown |
+///
+/// PINNED AS THEY ARE: Interrupt is quiet-ungated; Launch skips the quiet
+/// gate; and pane-alive is PROOF-CURRENT ONLY FOR AN UNMODELLED LAUNCH — Send,
+/// Relay, Interrupt and a modelled Launch prove liveness once, BEFORE the lock
+/// and never again (inherited, not fixed here). Unproven (a shell foreground
+/// ae cannot attribute to a live agent) DELIVERS on those four rows and
+/// REFUSES at the under-lock Launch. A modelled pane's readiness answers
+/// through `InputModel` in its caller, never here. LIVE below: pane-alive for
+/// every shape and both models, the quiet asymmetry, the composed asymmetry.
+/// NOT live: the target lock (its wait is two minutes; the failure shape is
+/// pinned elsewhere) and proof-currency (tests/it/spawn.rs exercises it under
+/// a held lock, both the Dead and the Unproven arm).
+#[test]
+fn every_path_into_the_paste_sink_carries_its_declared_guards() {
+    use deliver::{Failure, Shape};
+
+    let short = Duration::from_millis(50);
+    let rig = Rig::with_mode("guards", "claude", 0, "queued");
+    let rewrite_meta = |tool: &str| {
+        std::fs::write(
+            rig.dir.join("meta"),
+            format!(
+                "session={}\ntmux_server_kind=socket\ntmux_server={}\nseat.main=tui\nagent_bin.main={tool}\n",
+                rig.session,
+                rig.sock.display()
+            ),
+        )
+        .unwrap();
+    };
+    let send = |shape, composed, defer| -> Result<deliver::Delivered, Failure> {
+        let server = rig.server();
+        let mut err = Vec::new();
+        let request = deliver::Request {
+            dir: &rig.dir,
+            server: &server,
+            pane: &rig.pane,
+            logged_target: "tui",
+            target_session: &rig.session,
+            pane_slot: "main",
+            own_session: &rig.session,
+            action: "send",
+            reference: "guards-probe",
+            actor: "",
+            body: "guard probe",
+            shape,
+            defer,
+            composed,
+        };
+        deliver::deliver(&request, &mut err).expect("deliver writes only on i/o faults")
+    };
+
+    // Interrupt takes the busy-less lane and leaves the fake in its QUEUED
+    // state, which is a busy box for the two shapes that ARE quiet-gated.
+    assert!(send(Shape::Interrupt, &[], short).is_ok());
+    assert!(matches!(
+        send(Shape::Send, &[], short),
+        Err(Failure::Abandoned)
+    ));
+    assert!(matches!(
+        send(Shape::Relay, &[], short),
+        Err(Failure::Abandoned)
+    ));
+    assert!(
+        send(Shape::Launch, &[], short).is_ok(),
+        "Launch skips the quiet gate"
+    );
+
+    // The composed under-lock recheck is an UNMODELLED Launch ONLY, and the
+    // meta row is the classifier's first answer, exactly as in a real seat.
+    rewrite_meta("gemini");
+    assert!(matches!(
+        send(Shape::Launch, &[], short),
+        Err(Failure::NotComposed { .. })
+    ));
+    rewrite_meta("claude");
+    assert!(
+        send(Shape::Launch, &[], short).is_ok(),
+        "a modelled Launch never runs the composed recheck"
+    );
+
+    // The pane-alive guard is PRE-model and covers every shape: the agent dies
+    // and the pane drops to a shell.
+    rewrite_meta("gemini");
+    assert!(
+        rig.tmux(&["respawn-pane", "-k", "-t", &rig.pane, "exec sh"])
+            .0,
+        "the agent dies and its pane drops to a shell"
+    );
+    for shape in [Shape::Send, Shape::Relay, Shape::Interrupt, Shape::Launch] {
+        assert!(
+            matches!(send(shape, &[], short), Err(Failure::DeadPane)),
+            "{shape:?} must refuse a dead pane"
+        );
+    }
+    rewrite_meta("claude");
+    assert!(
+        matches!(send(Shape::Send, &[], short), Err(Failure::DeadPane)),
+        "and the same guard holds for a modelled row"
+    );
+}

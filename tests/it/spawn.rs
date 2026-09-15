@@ -74,6 +74,74 @@ while (1) {
 }
 "#;
 
+/// An opencode-shaped fake agent: it draws the MEASURED composed box (the `┃`
+/// rails, the placeholder inside them, the `╹▀` bottom edge) and, when the
+/// test's switch file appears, leaves it for a plain boot screen. Everything
+/// the pane receives is logged, so an empty receipt proves nothing was pasted.
+const FAKE_OPENCODE: &str = r#"#!/usr/bin/perl
+use strict;
+use warnings;
+system("stty raw -echo 2>/dev/null");
+binmode(STDIN, ':raw');
+binmode(STDOUT, ':raw');
+$| = 1;
+my $rail = "\xe2\x94\x83";
+my $corner = "\xe2\x95\xb9";
+my $block = "\xe2\x96\x80";
+my $ellipsis = "\xe2\x80\xa6";
+my $dot = "\xc2\xb7";
+sub draw_composed {
+    print "\e[H\e[2J";
+    print "opencode\r\n";
+    print "$rail\r\n";
+    print "$rail  Ask anything$ellipsis \"Fix broken tests\"\r\n";
+    print "$rail\r\n";
+    print "$rail  Build $dot fake model\r\n";
+    print "$corner", ($block x 60), "\r\n";
+    print "tab agents  ctrl+p commands\r\n";
+}
+sub draw_boot {
+    print "\e[H\e[2J";
+    print "opencode is starting\r\n";
+}
+sub mark {
+    my ($path) = @_;
+    open(my $fh, '>', $path) or die;
+    close($fh);
+}
+draw_composed();
+mark("__COMPOSED__");
+my $switched = 0;
+while (1) {
+    if (-e "__EXIT__") {
+        exit 0;
+    }
+    if (!$switched && -e "__SWITCH__") {
+        draw_boot();
+        mark("__SWITCHED__");
+        $switched = 1;
+    }
+    my $ready = '';
+    vec($ready, fileno(STDIN), 1) = 1;
+    if (select($ready, undef, undef, 0.05) > 0) {
+        my $chunk = '';
+        sysread(STDIN, $chunk, 4096);
+        open(my $fh, '>>', "__RECEIVED__") or die;
+        print $fh $chunk;
+        close($fh);
+    }
+}
+"#;
+
+/// The files a test drives the opencode-shaped fake with.
+struct OcControl {
+    composed: PathBuf,
+    switched: PathBuf,
+    switch: PathBuf,
+    exit: PathBuf,
+    received: PathBuf,
+}
+
 /// One isolated server with a live session, a v2 meta and a config whose
 /// `[profiles]` name the fake agent.
 struct Rig {
@@ -315,6 +383,66 @@ impl Rig {
         );
     }
 
+    /// Install an opencode-shaped fake and a profile that reaches it. Its tool
+    /// row is UNMODELLED with a composed signal, so a spawn must prove the box
+    /// and then re-prove it under the target lock.
+    fn enable_opencode_profile(&self) -> OcControl {
+        use std::fmt::Write as _;
+        use std::os::unix::fs::PermissionsExt;
+        let control = OcControl {
+            composed: self.scratch.join("oc-composed"),
+            switched: self.scratch.join("oc-switched"),
+            switch: self.scratch.join("oc-switch"),
+            exit: self.scratch.join("oc-exit"),
+            received: self.scratch.join("oc-received"),
+        };
+        let bin = self.scratch.join("opencode");
+        let body = FAKE_OPENCODE
+            .replace("__COMPOSED__", &control.composed.display().to_string())
+            .replace("__SWITCHED__", &control.switched.display().to_string())
+            .replace("__SWITCH__", &control.switch.display().to_string())
+            .replace("__EXIT__", &control.exit.display().to_string())
+            .replace("__RECEIVED__", &control.received.display().to_string());
+        assert!(std::fs::write(&bin, body).is_ok(), "the fake opencode");
+        assert!(
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).is_ok(),
+            "an executable fake opencode"
+        );
+        let config = self.scratch.join("config");
+        let mut text = std::fs::read_to_string(&config).unwrap_or_default();
+        assert!(
+            write!(text, "\n[profiles]\nocfake = \"{}\"\n", bin.display()).is_ok(),
+            "the opencode profile string"
+        );
+        assert!(std::fs::write(config, text).is_ok(), "the opencode profile");
+        control
+    }
+
+    /// Hold the delivery lock of every pane id a spawned window could take.
+    /// `deliver` waits up to two minutes on these, so the test decides exactly
+    /// when a delivery may proceed.
+    fn hold_delivery_locks(&self) -> Vec<std::fs::File> {
+        let Some(root) = self.dir.parent().map(|root| root.join(".locks")) else {
+            panic!("the session dir has a parent");
+        };
+        assert!(std::fs::create_dir_all(&root).is_ok(), "the lock root");
+        let mut held = Vec::new();
+        for id in 0..16 {
+            let Ok(file) = std::fs::OpenOptions::new()
+                .append(true)
+                .create(true)
+                .open(root.join(format!("send-lock-_{id}")))
+            else {
+                panic!("a delivery lock file");
+            };
+            let Ok(()) = file.try_lock() else {
+                panic!("the delivery lock is free");
+            };
+            held.push(file);
+        }
+        held
+    }
+
     fn enable_muse_profile(&self) {
         use std::fmt::Write as _;
         use std::os::unix::fs::PermissionsExt;
@@ -412,6 +540,47 @@ impl Drop for Rig {
 /// Whether tmux is here at all; without it these prove nothing.
 fn tmux_present(scratch: &Path) -> bool {
     super::phase2::tmux_present(scratch)
+}
+
+/// Wait, bounded, for a path a fake agent writes.
+fn wait_for_path(path: &Path, what: &str) {
+    for _ in 0..240 {
+        if path.exists() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    panic!("{what} never appeared at {}", path.display());
+}
+
+/// Wait, bounded, until the pane holding `slot` no longer has its recorded
+/// agent in its process tree — the shape the under-lock liveness check reads,
+/// NOT the wrapper shell (tmux reports the command that runs the script, which
+/// stays a shell for the whole life of a shebang agent). Returns the pane id.
+fn wait_for_agent_gone(rig: &Rig, slot: &str, binary: &str) -> String {
+    for _ in 0..240 {
+        let pane = rig
+            .panes()
+            .into_iter()
+            .find(|(_, pane_slot, _)| pane_slot == slot)
+            .map(|(pane, _, _)| pane)
+            .unwrap_or_default();
+        if !pane.is_empty() {
+            let (ok, pid_text) = rig.tmux(&["display-message", "-p", "-t", &pane, "#{pane_pid}"]);
+            let pid = pid_text.trim().parse::<u32>().ok();
+            if ok
+                && let Some(pid) = pid
+                && matches!(
+                    ae::procs::descendancy(ae::procs::snapshot().as_deref(), pid, binary),
+                    ae::procs::Descendancy::Absent
+                )
+            {
+                return pane;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    panic!("the {slot} pane's agent never went away");
 }
 
 /// The whole operation, end to end: seat, window, stamps, manifest, launch
@@ -683,6 +852,189 @@ fn a_spawn_that_cannot_store_its_task_rolls_the_whole_thing_back() {
     assert!(
         !events.contains("\"action\":\"spawn\""),
         "a rolled-back spawn never claims the task was assigned: {events}"
+    );
+}
+
+/// The readiness proof is taken BEFORE the target lock, and the wait for that
+/// lock can be the whole timeout. A pane that leaves its composed box in that
+/// window must REFUSE the brief: an unmodelled paste has no submit proof, so
+/// pasting into a boot frame is the silent loss this slice exists to kill.
+#[test]
+fn a_pane_that_leaves_its_composed_box_under_the_lock_refuses_the_brief() {
+    let probe = PathBuf::from(format!("/tmp/aesp-probe-ocbox.{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&probe);
+    let present = tmux_present(&probe);
+    let _ = std::fs::remove_dir_all(&probe);
+    if !present {
+        return;
+    }
+    let rig = Rig::new("ocbox");
+    let control = rig.enable_opencode_profile();
+    // Hold every delivery lock the spawned pane could take; the delivery then
+    // WAITS while the fake leaves its composer.
+    let mut locks = rig.hold_delivery_locks();
+
+    let (code, stdout, stderr) = std::thread::scope(|scope| {
+        let spawned = scope.spawn(|| {
+            rig.run(
+                ae::cli::SPAWN,
+                &["ocbox", "--using", "ocfake", "--", "do the thing"],
+            )
+        });
+        wait_for_path(&control.composed, "the composed frame");
+        // The pre-lock proof needs two captures 500 ms apart and starts only
+        // once the fake process is the pane's command; this is ~3x its cost.
+        std::thread::sleep(Duration::from_secs(3));
+        assert!(std::fs::write(&control.switch, "").is_ok(), "the switch");
+        wait_for_path(&control.switched, "the boot frame");
+        locks.clear();
+        spawned.join().expect("the spawn thread")
+    });
+
+    assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(stderr.contains("SPAWN INCOMPLETE"), "{stderr}");
+    assert!(
+        stderr.contains("left its composed input box"),
+        "the under-lock refusal is the one reported: {stderr}"
+    );
+    assert!(
+        std::fs::read(&control.received)
+            .unwrap_or_default()
+            .is_empty(),
+        "NOTHING may be pasted once the box is gone"
+    );
+    let events = rig.events();
+    assert!(
+        events.contains("brief not delivered: brief REFUSED"),
+        "{events}"
+    );
+}
+
+/// A dead agent leaves its composer DRAWN above the returning shell prompt, so
+/// a screen read still matches while a paste with Enter would EXECUTE the
+/// brief as shell commands. The under-lock guard must re-observe the PANE, not
+/// just the screen: the brief is refused and the canary inside it never runs.
+#[test]
+fn a_dead_agent_with_a_stale_composer_cannot_take_the_brief() {
+    let probe = PathBuf::from(format!("/tmp/aesp-probe-ocdead.{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&probe);
+    let present = tmux_present(&probe);
+    let _ = std::fs::remove_dir_all(&probe);
+    if !present {
+        return;
+    }
+    let rig = Rig::new("ocdead");
+    let control = rig.enable_opencode_profile();
+    // A task the SHELL would execute if the brief ever reached it. The fake
+    // exits before the lock is released, leaving the composer on the screen.
+    let canary = rig.scratch.join("canary");
+    let task = format!("/usr/bin/touch {}", canary.display());
+    let mut locks = rig.hold_delivery_locks();
+
+    let (code, stdout, stderr) = std::thread::scope(|scope| {
+        let spawned = scope.spawn(|| {
+            rig.run(
+                ae::cli::SPAWN,
+                &["ocdead", "--using", "ocfake", "--", &task],
+            )
+        });
+        wait_for_path(&control.composed, "the composed frame");
+        // Let the pre-lock proof and the pre-lock liveness check pass, so the
+        // delivery is already waiting on the lock when the agent dies.
+        std::thread::sleep(Duration::from_secs(3));
+        assert!(std::fs::write(&control.exit, "").is_ok(), "the exit");
+        let pane = wait_for_agent_gone(&rig, "spawned.0", "opencode");
+        let screen = rig.tmux(&["capture-pane", "-p", "-t", &pane]).1;
+        assert!(
+            screen.contains("Ask anything…"),
+            "the STALE composer is still drawn, so this test discriminates the \
+             screen read from the pane observation: {screen}"
+        );
+        locks.clear();
+        spawned.join().expect("the spawn thread")
+    });
+
+    assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(stderr.contains("SPAWN INCOMPLETE"), "{stderr}");
+    assert!(
+        stderr.contains("the pane is a shell, not a running agent"),
+        "the DEAD-pane refusal is the one reported: {stderr}"
+    );
+    assert!(
+        stderr.contains("the recovery body is preserved at"),
+        "and it is the UNDER-LOCK refusal, which alone names the body: {stderr}"
+    );
+    assert!(
+        !stderr.contains("the pane is live"),
+        "a dead seat must never get the live-seat resend wording: {stderr}"
+    );
+    assert!(
+        stderr.contains("the agent is GONE"),
+        "the dead-seat recovery is retire/re-spawn: {stderr}"
+    );
+    assert!(
+        !canary.exists(),
+        "the brief must never reach the shell: the canary would mean EXECUTION"
+    );
+}
+
+/// The SAME stale-composer trap, with the recorded binary gone: a shell
+/// foreground ae cannot attribute to any agent is UNPROVEN, and the under-lock
+/// Launch refuses it. Ordinary delivery keeps its fail-open; this path must
+/// not paste into a shell on a guess.
+#[test]
+fn an_unreadable_meta_with_a_stale_composer_cannot_take_the_brief() {
+    let probe = PathBuf::from(format!("/tmp/aesp-probe-ocmeta.{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&probe);
+    let present = tmux_present(&probe);
+    let _ = std::fs::remove_dir_all(&probe);
+    if !present {
+        return;
+    }
+    let rig = Rig::new("ocmeta");
+    let control = rig.enable_opencode_profile();
+    let canary = rig.scratch.join("canary");
+    let task = format!("/usr/bin/touch {}", canary.display());
+    let mut locks = rig.hold_delivery_locks();
+
+    let (code, stdout, stderr) = std::thread::scope(|scope| {
+        let spawned = scope.spawn(|| {
+            rig.run(
+                ae::cli::SPAWN,
+                &["ocmeta", "--using", "ocfake", "--", &task],
+            )
+        });
+        wait_for_path(&control.composed, "the composed frame");
+        std::thread::sleep(Duration::from_secs(3));
+        // The agent dies AND the seat's recorded binary goes away: the pane is
+        // a shell ae cannot attribute, with the composer still drawn.
+        assert!(std::fs::write(&control.exit, "").is_ok(), "the exit");
+        let pane = wait_for_agent_gone(&rig, "spawned.0", "opencode");
+        let screen = rig.tmux(&["capture-pane", "-p", "-t", &pane]).1;
+        assert!(screen.contains("Ask anything…"), "stale composer: {screen}");
+        let meta = std::fs::read_to_string(rig.dir.join("meta")).unwrap_or_default();
+        let stripped: String = meta
+            .lines()
+            .filter(|line| !line.starts_with("agent_bin.spawned.0="))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            std::fs::write(rig.dir.join("meta"), &stripped).is_ok(),
+            "the recorded binary is gone"
+        );
+        locks.clear();
+        spawned.join().expect("the spawn thread")
+    });
+
+    assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(stderr.contains("SPAWN INCOMPLETE"), "{stderr}");
+    assert!(
+        stderr.contains("could not be proven a live agent"),
+        "the UNPROVEN refusal is the one reported: {stderr}"
+    );
+    assert!(
+        !canary.exists(),
+        "a guess must never reach the shell: the canary would mean EXECUTION"
     );
 }
 

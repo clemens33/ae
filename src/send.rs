@@ -345,6 +345,7 @@ pub fn run(
         body: &parsed.message,
         shape: deliver::Shape::Send,
         defer,
+        composed: &[],
     };
     event.target = &target_name;
     if cross_session {

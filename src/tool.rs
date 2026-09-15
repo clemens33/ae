@@ -203,12 +203,14 @@ impl InputModel {
 pub(crate) struct InputSpec {
     /// The grammar used to observe the input box.
     pub(crate) model: InputModel,
-    /// Literals that prove an UNMODELLED tool's UI has COMPOSED — any one of
-    /// them present is the positive evidence that its box is drawn and can be
-    /// pasted into. An empty list is a tool with no usable composed signal:
-    /// its readiness REFUSES visibly rather than pasting into a frame ae
-    /// cannot read. Read only by the unmodelled readiness arm; a modelled
-    /// composer answers through [`InputModel`] instead.
+    /// Literals that prove an UNMODELLED tool's UI has COMPOSED: each is
+    /// tested INSIDE the bottom-most composer box, whose own drawn geometry
+    /// ([`crate::deliver::region::composed_ui`]) is the structural anchor, so
+    /// a stray occurrence in a transcript or a modal never counts. An empty
+    /// list is a tool with no usable composed signal: its readiness REFUSES
+    /// visibly rather than pasting into a frame ae cannot read. Read only by
+    /// the unmodelled readiness arm; a modelled composer answers through
+    /// [`InputModel`] instead.
     pub(crate) composed: &'static [&'static str],
     /// Whether launch waits for the harness process to replace the pane shell.
     pub(crate) wait_for_process: bool,
@@ -587,13 +589,12 @@ const OPENCODE: ToolAdapter = ToolAdapter {
         model: InputModel::Unmodelled,
         // MEASURED on opencode 1.18.31 (2026-09-15, ae-dev panes, 80x24):
         // the boot frame is BLANK for the first ~2.7 s — stable but not
-        // composed — while the composer's bottom-left corner `╹` and the
-        // `Ask anything…` placeholder appear together with the composed
-        // welcome at ~+3.0 s. The corner is the structural primary (layout,
-        // not copy); the placeholder is the semantic second. Both are UI
-        // text of ONE observed version and an inherited version-drift
-        // hazard: a renamed or restyled composer REFUSES visibly.
-        composed: &["╹", "Ask anything…"],
+        // composed — while the composer appears at ~+3.0 s. The structural
+        // anchor is the box's own `┃` rails and `╹▀` bottom edge, owned by
+        // `region::composed_ui`; this literal is the affordance that must sit
+        // INSIDE that box. It is UI text of ONE observed version and an
+        // inherited version-drift hazard: a renamed composer REFUSES visibly.
+        composed: &["Ask anything…"],
         wait_for_process: true,
         paste_initial_on_resume: false,
     },
@@ -1081,7 +1082,7 @@ mod tests {
                     capture: CaptureSpec::SessionList,
                     input: InputSpec {
                         model: InputModel::Unmodelled,
-                        composed: &["╹", "Ask anything…"],
+                        composed: &["Ask anything…"],
                         wait_for_process: true,
                         paste_initial_on_resume: false,
                     },
