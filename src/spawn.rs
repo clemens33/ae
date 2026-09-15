@@ -749,10 +749,11 @@ fn deliver_brief(
             ),
             // A held lock, a failed paste, a failed store, a failed notice
             // proof: nothing here proves anything about the pane, so observe
-            // it fresh rather than guessing it live.
+            // it fresh rather than guessing it live. No body claim: these
+            // failures carry no published body.
             _ => (
                 format!(
-                    "brief delivery FAILED ({failure:?}) — body preserved at {body_file}; the pane's liveness was never proven"
+                    "brief delivery FAILED ({failure:?}) — the pane's liveness was never proven"
                 ),
                 unproved_recovery(facts, dir, pane, slot),
             ),
@@ -788,6 +789,17 @@ fn report_undelivered(
         "ae: SPAWN INCOMPLETE — {name} exists in pane {pane}, brief NOT delivered"
     )?;
     writeln!(err, "ae: reason: {}", refusal.reason)?;
+    // Every recovery must be able to find the brief: name the fallback file
+    // this report just published, or say plainly that even that failed.
+    if preserved {
+        writeln!(err, "ae: the brief is preserved at {}", file.display())?;
+    } else {
+        writeln!(
+            err,
+            "ae: WARNING: the brief could not be preserved to disk at {}",
+            file.display()
+        )?;
+    }
     match refusal.recovery {
         // The pane is a SHELL: a `send` would be refused by the dead-pane
         // guard, so the only recovery is retiring the dead seat and spawning

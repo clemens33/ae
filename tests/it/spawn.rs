@@ -1519,4 +1519,47 @@ fn a_timed_out_brief_never_advises_a_send() {
         !stderr.contains(&format!("{}/send ocrage", rig.dir.display())),
         "and the send command must not be suggested: {stderr}"
     );
+    assert!(
+        stderr.contains("undelivered.ocrage.txt"),
+        "the recovery names the preserved fallback file: {stderr}"
+    );
+    assert!(stderr.contains("/peek ocrage"), "{stderr}");
+}
+
+/// A failed body store carries no published body: its recovery must not claim
+/// one, must name the fallback file this report published, and must decide the
+/// send advice from a fresh liveness observation.
+#[test]
+fn a_failed_body_store_names_the_fallback_file_without_an_empty_body_claim() {
+    let probe = PathBuf::from(format!("/tmp/aesp-probe-ocstore.{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&probe);
+    let present = tmux_present(&probe);
+    let _ = std::fs::remove_dir_all(&probe);
+    if !present {
+        return;
+    }
+    let rig = Rig::new("ocstore");
+    let _control = rig.enable_opencode_profile();
+    // `messages` as a FILE: the recovery-body store cannot create its
+    // directory, so delivery fails at Storage with NOTHING published.
+    std::fs::write(rig.dir.join("messages"), "not a directory").expect("the blocker");
+
+    let (code, stdout, stderr) = rig.run(
+        ae::cli::SPAWN,
+        &["ocstore", "--using", "ocfake", "--", "do the thing"],
+    );
+    assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(stderr.contains("SPAWN INCOMPLETE"), "{stderr}");
+    assert!(
+        stderr.contains("brief delivery FAILED (Storage)"),
+        "the Storage failure is named: {stderr}"
+    );
+    assert!(
+        !stderr.to_lowercase().contains("body preserved at"),
+        "a failure with no published body must not claim one: {stderr}"
+    );
+    assert!(
+        stderr.contains("undelivered.ocstore.txt"),
+        "and the fallback file is named: {stderr}"
+    );
 }
