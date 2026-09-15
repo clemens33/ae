@@ -1387,8 +1387,8 @@ fn the_changelog_skip_list_crosses_to_git_cliff_as_separate_arguments() {
 
     // A JOINED crossing: the quoted variant of the same owner is refused, not accepted.
     let quoted = justfile.replace(
-        "git-cliff --skip-commit $skip \"$@\"",
-        "git-cliff --skip-commit \"$skip\" \"$@\"",
+        "set -- --skip-commit $skip \"$@\"",
+        "set -- --skip-commit \"$skip\" \"$@\"",
     );
     assert_ne!(
         quoted, justfile,
@@ -1433,11 +1433,97 @@ fn every_changelog_invocation_takes_the_skip_list_from_the_one_owner() {
     assert!(
         owner
             .iter()
-            .any(|line| line.contains("git-cliff --skip-commit $skip \"$@\"")),
+            .any(|line| line.contains("set -- --skip-commit $skip \"$@\"")),
         "the owner passes the list unquoted, one argv per sha: {owner:?}"
     );
     assert!(
         owner.iter().any(|line| line.trim() == "git-cliff \"$@\""),
         "and emits no skip flag when the list is empty: {owner:?}"
+    );
+}
+
+/// Every non-comment line that spells the `git-cliff` command word, with the recipe it
+/// belongs to (or `<top level>`). Comments are skipped, so prose about the tool is not a
+/// site; a variable DEFINITION that spells the command is one, because it is a way to
+/// reach the tool from elsewhere.
+fn git_cliff_sites(justfile: &str) -> Vec<(String, String)> {
+    let mut recipe = String::from("<top level>");
+    let mut sites = Vec::new();
+    for line in justfile.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let indented = line.starts_with([' ', '\t']);
+        if !indented && trimmed.ends_with(':') {
+            recipe.clear();
+            recipe.push_str(trimmed);
+            continue;
+        }
+        if !indented {
+            // An unindented line that is not a recipe header is top level.
+            recipe.clear();
+            recipe.push_str("<top level>");
+        }
+        let is_site = if indented {
+            // Command position only: the command word itself, or inside a command
+            // substitution. The rust-setup probe (`ensure git-cliff … 'git-cliff
+            // --version'`) installs and asks a version; it runs neither generator nor
+            // changelog, so it is not an invocation.
+            trimmed.starts_with("git-cliff")
+                || trimmed.contains("$(git-cliff")
+                || trimmed.contains("| git-cliff")
+        } else {
+            // A top-level definition that spells the command is an indirection.
+            bare_word_count(line, "git-cliff") > 0
+        };
+        if is_site {
+            sites.push((recipe.clone(), trimmed.to_owned()));
+        }
+    }
+    sites
+}
+
+/// `git-cliff` is installed and probed by the justfile, but INVOKED in exactly one place:
+/// the boundary owner. A future direct call in any other recipe — or a top-level alias
+/// that spells the command — fails here by construction, with no list of call sites to
+/// maintain. `_cliff-skip` and `_cliff-run` keep the single invocation on the measured
+/// path; this keeps it the only path.
+///
+/// WHAT THIS SCAN DOES NOT COVER, so a silent gap is named rather than assumed: a command
+/// reached under a prefix this scan does not read (`command git-cliff`, `env git-cliff`,
+/// `sudo git-cliff`), a backtick substitution, an indirection that never spells the literal
+/// word (a runtime-assembled shell variable `c${X}-cliff`, a renamed binary behind
+/// `command -v`, a wrapper crate or binary), or a second justfile reached with `just -f`.
+/// The justfile is the artifact this gate owns (see the module doc); text it cannot see is
+/// text it cannot guard.
+#[test]
+fn git_cliff_is_invoked_only_from_the_boundary_owner() {
+    let justfile = read(&root().join("justfile"));
+    let sites = git_cliff_sites(&justfile);
+    assert_eq!(
+        sites.len(),
+        1,
+        "git-cliff must be invoked in exactly one place: {sites:?}"
+    );
+    assert_eq!(
+        sites[0].0, "_cliff-run +args:",
+        "and that place is the boundary owner: {sites:?}"
+    );
+
+    // The red cases: a fourth direct call in another recipe, and a top-level alias.
+    let bypass = format!("{justfile}\nbypass:\n    git-cliff -o OTHER.md\n");
+    let bypass_sites = git_cliff_sites(&bypass);
+    assert_eq!(
+        bypass_sites.len(),
+        2,
+        "a direct call elsewhere is a site: {bypass_sites:?}"
+    );
+    let alias = format!("{justfile}\ncliff := \"git-cliff\"\n");
+    assert!(
+        git_cliff_sites(&alias)
+            .iter()
+            .any(|(where_, _)| where_ == "<top level>"),
+        "a top-level alias that spells the command is a site: {alias:?}"
     );
 }

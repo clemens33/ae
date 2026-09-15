@@ -415,22 +415,21 @@ _cliff-skip:
     fi
     printf '%s\n' "$skip"
 
-# The ONE owner of the text-to-argv boundary: every git-cliff invocation runs through
-# here, so the skip list crosses from space-separated TEXT to N argv values exactly once.
-# `$skip` is deliberately UNQUOTED — that is what makes N shas N argv entries — and the
-# empty list takes the other branch so no flag is emitted at all. A quoted crossing (one
-# joined argument, silently ignored by git-cliff) is the failure tests/it/gate.rs refuses
-# by executing THESE recipes against a stub. Why the list exists and what keeps it
-# complete: `_cliff-skip` above.
+# The ONE owner of the text-to-argv boundary, and the ONE place `git-cliff` is invoked in
+# this file — tests/it/gate.rs asserts both structurally, so a direct call added anywhere
+# else fails by construction. `set --` prepends the skip flag and its UNQUOTED values to
+# the caller's own argv: N shas become N argv entries, and an empty list adds no flag at
+# all. A quoted crossing (one joined argument, silently ignored by git-cliff) is the
+# failure the boundary test executes these recipes to refuse. Why the list exists and what
+# keeps it complete: `_cliff-skip` above.
 _cliff-run +args:
     #!/usr/bin/env bash
     set -euo pipefail
     skip=$(just _cliff-skip)
     if [ -n "$skip" ]; then
-        git-cliff --skip-commit $skip "$@"
-    else
-        git-cliff "$@"
+        set -- --skip-commit $skip "$@"
     fi
+    git-cliff "$@"
 
 # Generate full CHANGELOG.md from git history (skip list: `_cliff-skip`; boundary: `_cliff-run`)
 changelog:
