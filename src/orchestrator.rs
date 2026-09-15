@@ -35,10 +35,10 @@ The bare seat also accepts `_launch`'s `--attach`, `--no-attach`,
 are picker usage errors.
 
 The menu lists this tmux server's running ae sessions in attention order, then
-creation order and name. Each row carries its live state, branch, spend and
-goal; the title carries the fleet's spend. Column widths follow the rows drawn.
-Choosing one switches this client to the captured session id and selects its
-lead pane when that pane still belongs there.
+creation order and name. Each row carries its live state, branch and goal.
+Only the current session's agent roster expands under it. Column widths follow
+the rows drawn. Choosing one switches this client to the captured session id
+and selects its lead pane when that pane still belongs there.
 
 Coming back is tmux's own: switch-client -l (prefix + L by default).
 
@@ -337,12 +337,6 @@ const PROFILE_CAP: usize = 12;
 /// How much of a goal survives into a row.
 const GOAL_WIDTH: usize = 36;
 
-/// The fixed width of the right-aligned spend column.
-///
-/// Every value [`money`] produces fits it, the `~` of an uncertain reading
-/// included, so the column never clips a number.
-const SPEND_WIDTH: usize = 8;
-
 /// The narrowest a dynamic column is drawn.
 ///
 /// A column whose rows are all empty still takes this much, so the columns
@@ -421,11 +415,18 @@ impl PickerRefusal {
     }
 }
 
+/// How much of the rosters one draw shows.
+///
+/// There is no expand-everything state: the human wants the roster under the
+/// session they are looking at and nothing else, so a draw that could afford
+/// every roster still shows only the current one's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Expansion {
-    All,
+    /// The current session's roster fits under the session rows.
     Current,
+    /// Not even that fits: every roster collapses to its summary suffix.
     Collapsed,
+    /// Not even the session rows fit: the tail goes behind an omission row.
     Capped,
 }
 
@@ -537,16 +538,11 @@ fn build_menu(
         .iter()
         .map(|session| crate::tmux::parse_picker_agents(&session.agents, bounds.now_epoch))
         .collect();
-    // The WHOLE fleet, not only the rows that fit: the title's sum counts the
-    // same sessions its running count does.
-    let spend: Vec<Option<crate::tmux::PickerSpend>> = ranked
-        .iter()
-        .map(|session| crate::tmux::parse_picker_spend(&session.spend, bounds.now_epoch))
-        .collect();
-    let fleet = fleet_spend(&spend);
     let overflow = usize::from(ranked.len() > shown);
     let item_capacity = bounds.height.saturating_sub(2);
-    let expanded_rows = agents
+    // The widest this draw could ever become — every roster expanded — which
+    // bounds the pre-allocation when the client height is unbounded.
+    let widest_rows = agents
         .iter()
         .map(|agents| agent_row_count(agents.as_deref()))
         .fold(shown.saturating_add(overflow), usize::saturating_add);
@@ -556,9 +552,7 @@ fn build_menu(
             .saturating_add(overflow)
             .saturating_add(agent_row_count(agents[index].as_deref()))
     });
-    let expansion = if expanded_rows <= item_capacity {
-        Expansion::All
-    } else if current_rows <= item_capacity {
+    let expansion = if current_rows <= item_capacity {
         Expansion::Current
     } else if shown.saturating_add(overflow) <= item_capacity {
         Expansion::Collapsed
@@ -594,7 +588,6 @@ fn build_menu(
             session,
             &Row {
                 columns,
-                spend: spend[index],
                 suffix: suffix.as_deref(),
                 max_width: inner_width,
             },
@@ -605,7 +598,7 @@ fn build_menu(
         ));
     }
     assign_keys(&mut session_items);
-    let mut items = Vec::with_capacity(item_capacity.min(expanded_rows));
+    let mut items = Vec::with_capacity(item_capacity.min(widest_rows));
     for (index, session_item) in session_items.into_iter().enumerate() {
         items.push(session_item);
         if expanded_row(expansion, current, index) {
@@ -640,13 +633,8 @@ fn build_menu(
     if items.is_empty() {
         items.push(disabled(clip_cells("no running ae sessions", inner_width)));
     }
-    // A fleet nobody published a spend fact for keeps the title it always had:
-    // an absent number stays absent rather than becoming a confident zero.
-    let spend_segment = fleet.map_or_else(String::new, |fleet| {
-        format!(" · {}", money(fleet.usd_micro, fleet.uncertain))
-    });
     let title = format!(
-        " ae session — {} running · {need_you} need you{spend_segment} — prefix a ",
+        " ae session — {} running · {need_you} need you — prefix a ",
         ranked.len(),
     );
     Menu {
@@ -657,72 +645,12 @@ fn build_menu(
 }
 
 /// Whether the row at `index` draws its agents under it.
+///
+/// Only ever under the CURRENT session, and only while the ladder holds that
+/// state: with no current session resolved there is nothing to expand, and a
+/// fleet that cannot fit even one roster keeps every session collapsed.
 const fn expanded_row(expansion: Expansion, current: Option<usize>, index: usize) -> bool {
-    matches!(expansion, Expansion::All)
-        || (matches!(expansion, Expansion::Current)
-            && matches!(current, Some(held) if held == index))
-}
-
-/// The fleet's spend, summed over the sessions whose fact is available.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct FleetSpend {
-    usd_micro: u64,
-    uncertain: bool,
-}
-
-/// Sum every available fact, or `None` when no session published one.
-///
-/// The sum is uncertain when ANY counted reading is, and equally when any session
-/// in the fleet has no reading at all: a total that silently left a session out
-/// would be the most confident number on the screen and the least true.
-fn fleet_spend(spend: &[Option<crate::tmux::PickerSpend>]) -> Option<FleetSpend> {
-    let mut total: Option<u64> = None;
-    // An absent fact is missing coverage, not a zero, so it qualifies the sum
-    // rather than joining it.
-    let mut uncertain = spend.iter().any(Option::is_none);
-    for found in spend.iter().flatten() {
-        total = Some(total.unwrap_or(0).saturating_add(found.usd_micro));
-        uncertain |= found.confidence.uncertain();
-    }
-    total.map(|usd_micro| FleetSpend {
-        usd_micro,
-        uncertain,
-    })
-}
-
-/// `usd_micro` as the spend column draws it, `~` when the reading is uncertain.
-///
-/// Cents below a thousand dollars, then tenths of a thousand, then whole
-/// thousands, so the widest result still fits [`SPEND_WIDTH`] with its prefix.
-/// ROUNDING decides the branch, not the raw value: `$999.999` draws as `$1.0k`
-/// rather than as a nine-cell `~$1000.00`.
-fn money(usd_micro: u64, uncertain: bool) -> String {
-    let prefix = if uncertain { "~" } else { "" };
-    let cents = usd_micro.saturating_add(5_000) / 10_000;
-    if cents < 100_000 {
-        return format!("{prefix}${}.{:02}", cents / 100, cents % 100);
-    }
-    let tenths = usd_micro.saturating_add(50_000_000) / 100_000_000;
-    if tenths < 10_000 {
-        format!("{prefix}${}.{}k", tenths / 10, tenths % 10)
-    } else {
-        format!(
-            "{prefix}${}k",
-            usd_micro.saturating_add(500_000_000) / 1_000_000_000
-        )
-    }
-}
-
-/// The spend cell for one session row. An unavailable fact draws a dash —
-/// never a zero, which would read as a session that has spent nothing.
-fn spend_cell(spend: Option<crate::tmux::PickerSpend>) -> String {
-    rpad(
-        &spend.map_or_else(
-            || "-".to_owned(),
-            |spend| money(spend.usd_micro, spend.confidence.uncertain()),
-        ),
-        SPEND_WIDTH,
-    )
+    matches!(expansion, Expansion::Current) && matches!(current, Some(held) if held == index)
 }
 
 fn agent_row_count(agents: Option<&[crate::tmux::PickerAgent]>) -> usize {
@@ -763,8 +691,6 @@ fn ranked_sessions(sessions: &[PickerSession]) -> Vec<&PickerSession> {
 struct Row<'a> {
     /// This draw's shared column widths.
     columns: Columns,
-    /// The session's parsed spend fact, absent when unavailable.
-    spend: Option<crate::tmux::PickerSpend>,
     /// The collapsed-roster summary, present only while the agents stay hidden.
     suffix: Option<&'a str>,
     /// The menu's inner width, which the finished label is clipped to.
@@ -788,15 +714,14 @@ fn session_item(
     };
     let mark = Mark::from_rank_value(session.rank);
     let head = format!(
-        "{} {} {} {} {}",
+        "{} {} {} {}",
         pad(&clean(&session.name), row.columns.name),
         pad(&clean(glyph), 1),
         pad(&clean(mark.word()), row.columns.state),
         pad(&clean(&session.branch), row.columns.branch),
-        spend_cell(row.spend),
     );
     let label = match row.suffix {
-        // The summary brings its own separator, so it joins the spend column
+        // The summary brings its own separator, so it joins the branch column
         // where the goal would have had a space before it.
         Some(suffix) => format!("{head}{suffix}"),
         None => format!("{head} {}", truncate(&clean(&session.goal), GOAL_WIDTH)),
@@ -904,18 +829,6 @@ fn key_at(index: usize) -> String {
 /// `text` cut to `width` terminal cells, the last cell an ellipsis when cut.
 fn truncate(text: &str, width: usize) -> String {
     clip_cells(text, width)
-}
-
-/// `text` cut to `width` cells and padded on the LEFT, so a column of numbers
-/// lines up on its last digit.
-fn rpad(text: &str, width: usize) -> String {
-    let text = truncate(text, width);
-    let mut out = String::new();
-    for _ in terminal_cells(&text)..width {
-        out.push(' ');
-    }
-    out.push_str(&text);
-    out
 }
 
 /// `text` cut to `width` cells and padded so the next column stays aligned.
@@ -1036,7 +949,6 @@ mod tests {
             main_pane: main_pane.to_owned(),
             branch: String::new(),
             agents: String::new(),
-            spend: String::new(),
             goal: String::new(),
         }
     }
@@ -1229,28 +1141,21 @@ mod tests {
     }
 
     #[test]
-    fn rows_show_bounded_state_branch_spend_and_goal_columns() {
+    fn rows_show_bounded_state_branch_and_goal_columns() {
         let mut shown = session("hub", "$1", 4, "");
         shown.glyph = "⚠".to_owned();
         shown.branch = "feat/menu".to_owned();
-        shown.spend = format!("v1;{NOW};300;12340000;exact");
         shown.goal = "ship it".to_owned();
         assert_eq!(
             labels(&bounded_menu(&[shown], 6))[0],
-            concat!(
+            format!(
+                "{} {} {} {} {}",
                 // Each column is as wide as its own content, not as wide as its
                 // cap: "hub" takes the four-cell floor, "feat/menu" nine cells.
-                "hub ",
-                " ",
-                "⚠",
-                " ",
-                "needs-you",
-                " ",
-                "feat/menu",
-                " ",
-                // Right-aligned in eight cells, so the digits line up down the menu.
-                "  $12.34",
-                " ",
+                super::pad("hub", 4),
+                super::pad("⚠", 1),
+                super::pad("needs-you", 9),
+                super::pad("feat/menu", 9),
                 "ship it"
             )
         );
@@ -1294,147 +1199,19 @@ mod tests {
     }
 
     #[test]
-    fn the_spend_column_states_money_uncertainty_or_nothing() {
-        let fact = |usd_micro: u64, flag: &str| format!("v1;{NOW};300;{usd_micro};{flag}");
-        let mut exact = session("exact", "$1", 0, "");
-        exact.spend = fact(12_340_000, "exact");
-        let mut partial = session("partial", "$2", 0, "");
-        partial.spend = fact(1_999_000_000, "partial");
-        let mut approx = session("approx", "$3", 0, "");
-        approx.spend = fact(500, "approx");
-        let mut stale = session("stale", "$4", 0, "");
-        stale.spend = format!("v1;{};300;9999;exact", NOW - 601);
-        let mut hostile = session("hostile", "$5", 0, "");
-        hostile.spend = format!("v1;{NOW};300;1;exact#[fg=red]");
-        let missing = session("missing", "$6", 0, "");
-        let drawn = labels(&bounded_menu(
-            &[exact, partial, approx, stale, hostile, missing],
-            10,
-        ));
-        for (name, expected) in [
-            ("exact", "$12.34"),
-            ("partial", "~$2.0k"),
-            ("approx", "~$0.00"),
-            ("stale", "-"),
-            ("hostile", "-"),
-            ("missing", "-"),
-        ] {
-            let label = drawn
-                .iter()
-                .find(|label| label.starts_with(name))
-                .unwrap_or_else(|| panic!("a row for {name}: {drawn:?}"));
-            // name, glyph, state, then the spend cell: the branch column is
-            // empty in this fixture and collapses out of the split.
-            assert_eq!(
-                label.split_whitespace().nth(3),
-                Some(expected),
-                "{name}: {label:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn money_rounds_into_cents_then_thousands_and_always_fits_its_column() {
-        for (usd_micro, drawn) in [
-            (0_u64, "$0.00"),
-            (4_999, "$0.00"),
-            (5_000, "$0.01"),
-            (12_345_000, "$12.35"),
-            (999_994_999, "$999.99"),
-            // ROUNDING picks the branch, not the raw value: one more micro-dollar
-            // here would draw an eight-cell "$1000.00" that "~" could not prefix.
-            (999_995_000, "$1.0k"),
-            (1_000_000_000, "$1.0k"),
-            (999_949_999_999, "$999.9k"),
-            (999_950_000_000, "$1000k"),
-            (crate::tmux::PICKER_SPEND_MAX_USD_MICRO, "$1000k"),
-            // A fleet sum has no cap of its own, so the formatter must stay
-            // total over the whole range rather than overflow at the top of it.
-            (u64::MAX, "$18446744073k"),
-        ] {
-            assert_eq!(super::money(usd_micro, false), drawn, "{usd_micro}");
-            assert_eq!(
-                super::money(usd_micro, true),
-                format!("~{drawn}"),
-                "{usd_micro}"
-            );
-        }
-        // The column never clips a number one session can publish.
-        for usd_micro in [
-            0,
-            1,
-            999_994_999,
-            999_995_000,
-            crate::tmux::PICKER_SPEND_MAX_USD_MICRO,
-        ] {
-            for uncertain in [false, true] {
-                assert!(
-                    super::terminal_cells(&super::money(usd_micro, uncertain))
-                        <= super::SPEND_WIDTH,
-                    "{usd_micro} {uncertain}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn the_title_sums_available_facts_and_omits_the_column_when_none_are() {
-        assert_eq!(
-            bounded_menu(&[session("quiet", "$1", 0, "")], 6).title,
-            " ae session — 1 running · 0 need you — prefix a ",
-            "no fact at all leaves the title it always had"
-        );
-        let mut one = session("one", "$1", 0, "");
-        one.spend = format!("v1;{NOW};300;1250000;exact");
-        let mut two = session("two", "$2", 0, "");
-        two.spend = format!("v1;{NOW};300;2500000;exact");
-        let mut unreadable = session("unreadable", "$3", 0, "");
-        unreadable.spend = "garbage".to_owned();
-        assert_eq!(
-            bounded_menu(&[one.clone(), two.clone(), unreadable], 8).title,
-            " ae session — 3 running · 0 need you · ~$3.75 — prefix a ",
-            "an unavailable session is left out of the sum and marks it incomplete, \
-             so the title never implies whole-fleet coverage it does not have"
-        );
-        two.spend = format!("v1;{NOW};300;2500000;partial");
-        assert_eq!(
-            bounded_menu(&[one, two], 8).title,
-            " ae session — 2 running · 0 need you · ~$3.75 — prefix a ",
-            "one uncertain reading makes the whole sum uncertain"
-        );
-    }
-
-    #[test]
-    fn the_title_sum_counts_sessions_whose_rows_did_not_fit() {
-        let many: Vec<PickerSession> = (0..ROW_CAP + 2)
-            .map(|index| {
-                let mut held = session(&format!("s{index:02}"), &format!("${}", index + 1), 0, "");
-                held.spend = format!("v1;{NOW};300;1000000;exact");
-                held
-            })
-            .collect();
-        let drawn = bounded_menu(&many, 24);
-        assert!(
-            drawn
-                .items
-                .last()
-                .is_some_and(|item| item.label.contains("sessions omitted")),
-            "this fixture must actually omit rows"
-        );
-        assert!(
-            drawn.title.contains(&format!("· ${}.00 ", ROW_CAP + 2)),
-            "the fleet sum covers every running session: {}",
-            drawn.title
-        );
-    }
-
-    #[test]
     fn column_widths_follow_the_drawn_rows_and_stop_at_their_caps() {
         let idle = crate::theme::Mark::Idle.glyph(true);
         let short = [session("ab", "$1", 2, ""), session("cd", "$2", 2, "")];
         assert_eq!(
             labels(&bounded_menu(&short, 6))[0],
-            format!("ab   {idle} working      {:>8} ", "-"),
+            format!(
+                "{} {} {} {} {}",
+                super::pad("ab", 4),
+                super::pad(idle, 1),
+                super::pad("working", 7),
+                super::pad("", 4),
+                ""
+            ),
             "two short names give a four-cell name column, and an empty branch its floor"
         );
 
@@ -1471,42 +1248,6 @@ mod tests {
             "a session row and the agent rows under it share one name column: {:?}",
             expanded[0]
         );
-    }
-
-    #[test]
-    fn the_spend_column_stays_inside_a_narrow_client() {
-        let mut wide = session("wide", "$1", 0, "");
-        wide.branch = "feature/long-branch".to_owned();
-        wide.spend = format!("v1;{NOW};300;999999000000;partial");
-        wide.goal = "界".repeat(40);
-        for width in [20, 32, 48, 80] {
-            let drawn = super::menu_for_client_session_in(
-                &[wide.clone()],
-                &[],
-                true,
-                &Palette::DARCULA,
-                None,
-                Some("$1"),
-                super::PickerBounds {
-                    height: 6,
-                    width,
-                    now_epoch: NOW,
-                },
-            )
-            .expect("a usable client");
-            let inner = width - 4;
-            assert!(
-                super::terminal_cells(&drawn.title) <= inner,
-                "title at {width}"
-            );
-            for item in &drawn.items {
-                assert!(
-                    super::terminal_cells(&item.label) <= inner,
-                    "row at {width}: {:?}",
-                    item.label
-                );
-            }
-        }
     }
 
     #[test]
@@ -1562,35 +1303,46 @@ mod tests {
 
     #[test]
     fn missing_invalid_and_stale_agent_facts_are_unavailable_not_partial() {
-        let mut missing = session("missing", "$1", 0, "");
-        let mut invalid = session("invalid", "$2", 0, "");
-        invalid.agents = "v1;2000;60;ok:fable5:done:%2;bad:fable5:unknown:%3".to_owned();
+        let mut facts = [
+            session("missing", "$1", 0, ""),
+            session("invalid", "$2", 0, ""),
+        ];
+        facts[1].agents = "v1;2000;60;ok:fable5:done:%2;bad:fable5:unknown:%3".to_owned();
         let mut stale = session("stale", "$3", 0, "");
         stale.agents = "v1;1879;60;lead:fable5:working:%3".to_owned();
-        let drawn = super::menu_for_client_session_in(
-            &[missing.clone(), invalid, stale],
-            &[],
-            true,
-            &Palette::DARCULA,
-            None,
-            Some("$1"),
-            super::PickerBounds {
-                height: 12,
-                width: 100,
-                now_epoch: 2_000,
-            },
-        )
-        .expect("room for every unavailable row");
-        let unavailable = drawn
-            .items
-            .iter()
-            .filter(|item| item.label == "  agents: unavailable")
-            .count();
-        assert_eq!(unavailable, 3);
-        missing.agents = "v1;1880;60;lead:fable5:working:%1".to_owned();
+        let mut all = facts.to_vec();
+        all.push(stale);
+        // ONLY the current session's roster expands, so each fact is judged by
+        // drawing its own session as the current one.
+        for current in ["$1", "$2", "$3"] {
+            let drawn = super::menu_for_client_session_in(
+                &all,
+                &[],
+                true,
+                &Palette::DARCULA,
+                None,
+                Some(current),
+                super::PickerBounds {
+                    height: 12,
+                    width: 100,
+                    now_epoch: 2_000,
+                },
+            )
+            .expect("room for every session row");
+            assert_eq!(
+                drawn
+                    .items
+                    .iter()
+                    .filter(|item| item.label == "  agents: unavailable")
+                    .count(),
+                1,
+                "{current} draws its own unavailable roster and no other"
+            );
+        }
+        all[0].agents = "v1;1880;60;lead:fable5:working:%1".to_owned();
         assert!(
             super::menu_for_client_session_in(
-                &[missing],
+                &all[..1],
                 &[],
                 true,
                 &Palette::DARCULA,
@@ -1638,13 +1390,20 @@ mod tests {
     }
 
     #[test]
-    fn height_degrades_current_then_all_then_caps_sessions() {
+    fn height_shows_the_current_roster_then_collapses_then_caps_sessions() {
         let sessions = [
             with_agents(session("current", "$1", 0, ""), 2_000, 3),
             with_agents(session("other", "$2", 0, ""), 2_000, 3),
         ];
-        let all = bounded_menu(&sessions, 10);
-        assert_eq!(all.items.len(), 8, "two sessions and all six agents");
+        // There is no expand-everything state: room for both rosters still
+        // draws only the current session's, and the other keeps its summary.
+        let roomy = bounded_menu(&sessions, 10);
+        assert_eq!(
+            roomy.items.len(),
+            5,
+            "two sessions and the current roster, never the other's"
+        );
+        assert!(roomy.items[4].label.contains("3 agents, 3 working"));
         let current = bounded_menu(&sessions, 7);
         assert_eq!(
             current.items.len(),
@@ -1660,7 +1419,7 @@ mod tests {
                 .iter()
                 .all(|item| item.label.contains("3 agents, 3 working"))
         );
-        for drawn in [&all, &current, &collapsed] {
+        for drawn in [&roomy, &current, &collapsed] {
             assert_eq!(
                 drawn
                     .items
@@ -1813,7 +1572,11 @@ mod tests {
             .map(|index| session(&format!("s{index:03}"), &format!("${index}"), 0, ""))
             .collect();
         let drawn = menu(&sessions, &[], true, &Palette::DARCULA);
-        assert_eq!(drawn.items.len(), ROW_CAP * 2 + 1);
+        assert_eq!(
+            drawn.items.len(),
+            ROW_CAP + 1,
+            "no current session resolved, so no roster expands"
+        );
         let last = drawn.items.last().expect("overflow note");
         assert_eq!(last.label, "+7 sessions omitted");
         assert!(matches!(last.action, MenuAction::Disabled));
@@ -1842,7 +1605,9 @@ mod tests {
         hostile.glyph = "!\u{7}".to_owned();
         hostile.branch = "bad\nbranch#[fg=blue]".to_owned();
         hostile.goal = "100% | #[bg=red] don't\nstop".to_owned();
-        let drawn = menu(&[hostile], &[], true, &Palette::DARCULA);
+        // The goal only draws under the CURRENT session's expanded row.
+        let drawn =
+            menu_for_client_session(&[hostile], &[], true, &Palette::DARCULA, None, Some("$1"));
         let label = &drawn.items[0].label;
         assert!(!label.chars().any(char::is_control), "{label:?}");
         assert!(!label.contains('\''), "{label:?}");

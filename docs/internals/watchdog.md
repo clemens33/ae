@@ -26,18 +26,6 @@ atomic option write; an unrepresentable roster or cadence unsets it instead of
 publishing a partial fact. `watchdog stop` also unsets it, so a stopped daemon
 cannot leave the picker claiming a live roster snapshot.
 
-On the quota cadence, and only there, the daemon also replaces one session-scoped `@ae_spend`
-value: `v1;<epoch>;<interval_secs>;<usd_micro>;<flag>`, with `<flag>` one of `exact`, `partial` or
-`approx`. It comes from one `usage::observe` pass over THIS session alone, priced from the same
-config `ae usage` reads, which is why it rides `quota_every_secs` (default 300; `0` disables spend
-too) instead of the verdict interval — one transcript pass per cadence, not per cycle. The
-`interval_secs` it publishes is that cadence ROUNDED UP to whole verdict cycles, which is the period
-the shared counter really lets through; the reader expires a fact after two of them, so advertising
-the unrounded request would strand a healthy fact between samples. Any coverage
-short of a fully read and fully priced session publishes `partial`, so a session ae cannot measure
-never shows a confident zero. A failed or unrepresentable observation UNSETS the option, as does
-`watchdog stop`, because the picker must read an absent fact as unavailable rather than current.
-
 The `_watchdog` pane runs the core directly: its command is the session's `watchdog` link,
 which is a symlink to the core binary under another name, dispatching to `_watchdog-run`.
 There is no generated script or shell process between tmux and the core.
@@ -76,18 +64,16 @@ that session fact outranks `AE_WATCHDOG_SWEEP_SEC`, which outranks 120.
 
 Launch also persists `[workspace] quota_every_secs` (default 300, `0` disables) for every session,
 and the canonical `[workspace] quota` awareness (`on` by default) beside it.
-The daemon rounds that cadence up to whole verdict cycles. One counter paces both readings this
-cadence owns: first — only when the session is quota-aware — the quota observation, then the spend
-fact above. The two attempts are independent: either failure does not suppress the other. Each due
-pass performs one bounded `ae quota` observation, keeps state by canonical
-source, rollout, bucket, qualifier, and window,
+The daemon rounds that cadence up to whole verdict cycles. Each due pass — only
+when the session is quota-aware — performs one bounded `ae quota` observation, keeps state by
+canonical source, rollout, bucket, qualifier, and window,
 then advises only the session's main and optional colead on threshold transitions. A refused paste
 is retried once at the next quota observation; newer state, silence, expiry, or changed recipient
 identity cancels the old booking. A helper's `UNCONFIRMED` submit counts as delivered because the
 paste may have landed; only its explicit pre-submit-refusal marker permits a retry. No quota state
 survives a watchdog restart. When the session is quota-unaware (`[workspace] quota = off`), the
-due pass refreshes the spend fact and skips the quota observation entirely: no vendor-cache read,
-no advisory booking, no held observation for the throttle line below.
+due pass skips the quota observation entirely: no vendor-cache read, no advisory booking, no held
+observation for the throttle line below.
 
 Launch persists `[workspace] idle_nudge_secs` too (default 300, `0` disables).
 This clock starts when the current Claude Code or Codex frame is positively
@@ -149,8 +135,7 @@ replacement task. The seat never runs `ae brief --all` on a timer.
 ## Per-cycle state machine
 
 Before walking panes, a due quota pass refreshes the session-local advisory state — unless the
-session is quota-unaware, in which case the pass refreshes the spend fact only and there is no
-advisory state to refresh. The first sample
+session is quota-unaware, in which case there is no advisory state to refresh. The first sample
 is silent. `headroom` is below 80%, `low` begins at 80%, and `critical` at 95%; downward hysteresis
 leaves those states below 75% and 90% respectively. Unsupported, unreadable, truncated, unknown,
 or older-than-60-minute rows are silent and drop prior state.

@@ -434,39 +434,6 @@ fn spawn_quota_daemon(
         .unwrap_or_else(|why| panic!("the ae binary should spawn: {why}"))
 }
 
-/// Plant `@ae_spend` SENTINEL and wait for a due pass to replace it. The
-/// spend pass runs on every due cycle whether aware or not, so its
-/// replacement proves the spend half still runs — nothing more. Phase
-/// ORDERING stands on `await_quota_trace`, never on this.
-fn spend_barrier(socket: &Path, scratch: &Path, session: &str) {
-    assert!(
-        tmux(
-            socket,
-            scratch,
-            &["set-option", "-t", session, "@ae_spend", "SENTINEL"]
-        )
-        .0,
-        "the planted spend fact"
-    );
-    let deadline = Instant::now() + BUDGET;
-    loop {
-        let shown = tmux(
-            socket,
-            scratch,
-            &["show-options", "-qv", "-t", session, "@ae_spend"],
-        )
-        .1;
-        if shown.trim() != "SENTINEL" {
-            return;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "no due pass replaced the spend sentinel for {session}"
-        );
-        std::thread::sleep(Duration::from_millis(100));
-    }
-}
-
 /// Wait for a NEW trace line that either attests the daemon observed `value`
 /// (`observed max=<value>`) or — when `accept_skip` — proves an unaware due
 /// pass flowed (`skipped`), ignoring stale attestations of older values.
@@ -506,12 +473,11 @@ fn await_quota_trace(trace: &Path, offset: &mut usize, value: &str, accept_skip:
 
 /// The production `_watchdog-run` wiring under a pinned `quota=off`: the
 /// daemon performs no quota read (no advisory is ever booked across an
-/// escalation that books when aware) while its spend pass still runs. Each
-/// escalation phase stands on a trace attestation, so the defeating edits
-/// red independent of scheduling: deleting the no-scan guard books
-/// advisories; gating the spend pass instead leaves a sentinel in place.
+/// escalation that books when aware). Each escalation phase stands on a trace
+/// attestation, so the defeating edits red independent of scheduling:
+/// deleting the no-scan guard books advisories.
 #[test]
-fn an_unaware_daemon_reads_no_quota_but_still_publishes_spend() {
+fn an_unaware_daemon_reads_no_quota() {
     let scratch = scratch("quota-off");
     require_tmux(&scratch);
     let socket = scratch.join("s");
@@ -557,8 +523,6 @@ fn an_unaware_daemon_reads_no_quota_but_still_publishes_spend() {
     while Instant::now() < pid_deadline && !meta_dir.join(".watchdog.pid").is_file() {
         std::thread::sleep(Duration::from_millis(50));
     }
-    // Spend half: the sentinel replaced proves the spend pass runs unaware.
-    spend_barrier(&socket, &scratch, "quota-off");
     // 79 is the only value ever written: attesting it settles the baseline
     // for a daemon that observes, while production flows past on `skipped`.
     await_quota_trace(&trace, &mut offset, "79", true);
@@ -613,8 +577,8 @@ fn an_unaware_daemon_reads_no_quota_but_still_publishes_spend() {
 
 /// An UNPINNED session follows the live config in both directions within one
 /// cycle: off stays silent, on books, off stays silent again. Every phase
-/// stands on a spend barrier, so each assertion follows a due pass that ran
-/// after its write — no fixed sleep decides anything.
+/// stands on a trace attestation, so each assertion follows a due pass that
+/// ran after its write — no fixed sleep decides anything.
 #[test]
 #[allow(
     clippy::too_many_lines,

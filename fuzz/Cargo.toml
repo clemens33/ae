@@ -112,13 +112,6 @@ doc = false
 bench = false
 
 [[bin]]
-name = "picker_spend"
-path = "fuzz_targets/picker_spend.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
 name = "sanitize_field"
 path = "fuzz_targets/sanitize_field.rs"
 test = false

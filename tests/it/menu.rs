@@ -422,7 +422,11 @@ fn stage(socket: &Path, main: &Path) -> Staged {
 }
 
 /// The menu the picker builds, as the argv that draws it on `socket`.
-fn picker_argv(socket: &Path, staged: &Staged) -> Vec<String> {
+///
+/// `opened` is the client's resolved current session, the one whose roster the
+/// picker expands — `None` when the client views a session this fixture does
+/// not list, so no roster expands.
+fn picker_argv(socket: &Path, staged: &Staged, opened: Option<&str>) -> Vec<String> {
     let sessions = [PickerSession {
         name: "hub".to_owned(),
         id: staged.hub_id.clone(),
@@ -436,10 +440,6 @@ fn picker_argv(socket: &Path, staged: &Staged) -> Vec<String> {
             staged.ids[0],
             staged.ids[1],
         ),
-        spend: format!(
-            "v1;{};300;12340000;exact",
-            ae::time::Timestamp::now().epoch()
-        ),
         goal: "100% of #{everything} | don't stop".to_owned(),
     }];
     let panes = staged
@@ -450,12 +450,13 @@ fn picker_argv(socket: &Path, staged: &Staged) -> Vec<String> {
             pane: pane.clone(),
         })
         .collect::<Vec<_>>();
-    let menu = ae::orchestrator::menu_for_client(
+    let menu = ae::orchestrator::menu_for_client_session(
         &sessions,
         &panes,
         true,
         &ae::theme::Palette::DARCULA,
         Some(&staged.client),
+        opened,
     );
     let server = ServerId::Selected(Selector::Socket(socket.to_path_buf()));
     display_menu_for_client_args(
@@ -467,6 +468,10 @@ fn picker_argv(socket: &Path, staged: &Staged) -> Vec<String> {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one real two-phase draw proves expanded roster navigation and its guarded fallback"
+)]
 fn agent_rows_draw_and_live_or_missing_rows_take_the_guarded_destination() {
     let scratch = scratch("agent-rows");
     if !tmux_present(&scratch) {
@@ -481,8 +486,19 @@ fn agent_rows_draw_and_live_or_missing_rows_take_the_guarded_destination() {
     let main = scratch.join("main");
     let watcher = scratch.join("watcher");
     let staged = stage(&socket, &main);
+    // The roster only expands under the client's CURRENT session, so the
+    // client must view hub for hub's agent rows to draw at all.
+    assert!(
+        tmux(
+            &socket,
+            &main,
+            &["switch-client", "-c", &staged.client, "-t", "hub"]
+        )
+        .0,
+        "the client must view hub to draw its roster"
+    );
 
-    let builder_argv = picker_argv(&socket, &staged);
+    let builder_argv = picker_argv(&socket, &staged, Some(&staged.hub_id));
     let drawn = std::thread::scope(|scope| {
         let driver = scope.spawn(|| {
             let seen = wait_for(
@@ -501,6 +517,10 @@ fn agent_rows_draw_and_live_or_missing_rows_take_the_guarded_destination() {
         driver.join().expect("agent key driver")
     });
     assert!(drawn.contains("● lead"), "frozen working mark: {drawn}");
+    assert!(
+        drawn.contains("100% of #{everything}") && drawn.contains("donʼt stop"),
+        "the expanded row draws its goal with the hash and percent intact: {drawn}"
+    );
     let landed = wait_for(
         "builder pane",
         || {
@@ -519,15 +539,10 @@ fn agent_rows_draw_and_live_or_missing_rows_take_the_guarded_destination() {
     );
     assert!(landed.contains(&format!("{}|hub|{}", staged.client, staged.ids[1])));
 
-    assert!(
-        tmux(
-            &socket,
-            &main,
-            &["switch-client", "-c", &staged.client, "-t", "home"]
-        )
-        .0
-    );
-    let missing_argv = picker_argv(&socket, &staged);
+    // The client still views hub, so its roster draws again for the fallback
+    // row: an empty pane hint must land in the captured session and leave the
+    // active pane alone rather than run the guarded tail.
+    let missing_argv = picker_argv(&socket, &staged, Some(&staged.hub_id));
     std::thread::scope(|scope| {
         let driver = scope.spawn(|| {
             wait_for(
@@ -563,7 +578,8 @@ fn agent_rows_draw_and_live_or_missing_rows_take_the_guarded_destination() {
     );
     assert!(
         landed.contains(&format!("{}|hub|{}", staged.client, staged.ids[1])),
-        "empty pane hint switches session without changing its active pane: {landed}"
+        "the empty pane hint lands in the captured session and leaves the guarded \
+         pane untouched: {landed}"
     );
 }
 
@@ -621,7 +637,6 @@ fn a_seven_line_client_draws_only_its_current_sessions_agents() {
         agents: format!(
             "v1;{now};60;{prefix}0:p:working:;{prefix}1:p:working:;{prefix}2:p:working:"
         ),
-        spend: String::new(),
         goal: String::new(),
     };
     let sessions = [
@@ -829,108 +844,6 @@ fn watchdog_replaces_the_agent_fact_across_spawn_and_retire_then_unsets_it_on_st
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one real watchdog lifecycle proves the publish, the cadence and the retraction"
-)]
-fn the_watchdog_publishes_a_spend_fact_at_its_quota_cadence_and_unsets_it_on_stop() {
-    let scratch = scratch("spend-fact");
-    if !tmux_present(&scratch) {
-        let _ = fs::remove_dir_all(&scratch);
-        panic!("tmux is not runnable here, so the spend fact lifecycle cannot be proven");
-    }
-    let socket = scratch.join("s");
-    let _cleanup = Cleanup {
-        socket: socket.clone(),
-        scratch: scratch.clone(),
-    };
-    let root = scratch.join("state");
-    let project = scratch.join("project");
-    let config = scratch.join("config");
-    // One second against a two-second verdict cycle: the cadence fires on the
-    // first cycle instead of in five minutes, and the request is DELIBERATELY
-    // unequal to what whole cycles can deliver, so the published interval proves
-    // which of the two the fact advertises.
-    write_watchdog_picker_config_with(&project, &config, &scratch, "quota_every_secs = 1\n");
-    let session = "spendlife";
-    launch_ae_session(&socket, &scratch, &root, &project, &config, session);
-    // A launched session derives its global config from its state root, the way
-    // an installed ae does; the launch flag is a test convenience.
-    assert!(fs::create_dir_all(&root).is_ok());
-    assert!(
-        fs::copy(&config, root.join("config")).is_ok(),
-        "the daemon reads prices from <root>/config"
-    );
-
-    let mut out = Vec::new();
-    let mut err = Vec::new();
-    let code = ae::watchdog_lifecycle::run(
-        &root,
-        &[
-            "start".to_owned(),
-            session.to_owned(),
-            "--".to_owned(),
-            "--interval".to_owned(),
-            "2".to_owned(),
-            "--quiet-beat-ms".to_owned(),
-            "10".to_owned(),
-            "--tg-supervise-secs".to_owned(),
-            "0".to_owned(),
-        ],
-        &mut out,
-        &mut err,
-    )
-    .expect("watchdog start writes to buffers");
-    assert_eq!(code, 0, "watchdog start: {}", String::from_utf8_lossy(&err));
-
-    let read_fact = || {
-        tmux(
-            &socket,
-            &scratch,
-            &[
-                "show-options",
-                "-qv",
-                "-t",
-                session,
-                ae::theme::SPEND_OPTION,
-            ],
-        )
-        .1
-        .trim()
-        .to_owned()
-    };
-    let published = wait_for("the spend fact", read_fact, |fact| {
-        ae::tmux::parse_picker_spend(fact, ae::time::Timestamp::now().epoch()).is_some()
-    });
-    assert_eq!(
-        published.split(';').nth(2),
-        Some("2"),
-        "the fact advertises the cadence whole cycles ACHIEVE, not the one the \
-         config requested — a reader expires it after two of these: {published}"
-    );
-    let parsed = ae::tmux::parse_picker_spend(&published, ae::time::Timestamp::now().epoch())
-        .expect("the waited-for fact still parses");
-    assert_eq!(parsed.usd_micro, 0, "{published}");
-    assert!(
-        parsed.confidence.uncertain(),
-        "a seat whose transcript ae cannot locate is never an exact zero: {published}"
-    );
-    assert_eq!(published.split(';').nth(4), Some("partial"), "{published}");
-
-    out.clear();
-    err.clear();
-    let code = ae::watchdog_lifecycle::run(
-        &root,
-        &["stop".to_owned(), session.to_owned()],
-        &mut out,
-        &mut err,
-    )
-    .expect("watchdog stop writes to buffers");
-    assert_eq!(code, 0, "watchdog stop: {}", String::from_utf8_lossy(&err));
-    assert!(read_fact().is_empty(), "watchdog stop unsets @ae_spend");
-}
-
-#[test]
 fn the_menu_ae_builds_draws_on_a_real_server_and_its_rows_land_the_client() {
     let scratch = scratch("draw");
     if !tmux_present(&scratch) {
@@ -949,7 +862,7 @@ fn the_menu_ae_builds_draws_on_a_real_server_and_its_rows_land_the_client() {
     let watcher = scratch.join("watcher");
 
     let staged = stage(&socket, &main);
-    let argv = picker_argv(&socket, &staged);
+    let argv = picker_argv(&socket, &staged, None);
 
     // `display-menu` holds its client until the menu closes, so the keys come
     // from a second thread while this one waits on tmux.
@@ -971,16 +884,13 @@ fn the_menu_ae_builds_draws_on_a_real_server_and_its_rows_land_the_client() {
 
     // What tmux DREW, which is the half no argv assertion can hold.
     assert!(
-        drawn.contains("100% of #{everything}"),
-        "one hash and one percent, as measured: {drawn}"
+        drawn.contains("ae session — 1 running · 0 need you — prefix a"),
+        "the drawn picker title carries the stable stem: {drawn}"
     );
     assert!(
-        drawn.contains("ae session — 1 running · 0 need you · $12.34 — prefix a"),
-        "the drawn picker title carries the stable stem and the fleet's spend: {drawn}"
-    );
-    assert!(
-        drawn.contains("  $12.34 100% of"),
-        "the row draws its spend right-aligned before the goal: {drawn}"
+        drawn.contains("3 agents, 1 working"),
+        "the client views home, which this menu does not list, so no roster \
+         expands and the row carries its summary: {drawn}"
     );
     // …and where the row LANDED the client.
     let landed = wait_for(
@@ -1040,7 +950,7 @@ fn stale_lead_row_lands_in_session(tag: &str, stale: StaleLead, focus_hook: bool
     let main = scratch.join("main");
     let watcher = scratch.join("watcher");
     let staged = stage(&socket, &main);
-    let argv = picker_argv(&socket, &staged);
+    let argv = picker_argv(&socket, &staged, None);
 
     let foreign_view = if matches!(stale, StaleLead::Moved) {
         assert!(

@@ -64,7 +64,6 @@ A crash writes its input under `artifacts/<target>/`; reproduce it with
 | `usage_prices` | `usage::prices::parse_row` | one `[prices]` alias row |
 | `harness_observed` | `harness_state::{decode_idle, observed_from_option}` | one watchdog-owned `@ae_observed` pane option |
 | `picker_agents` | `tmux::parse_picker_agents` | one watchdog-owned `@ae_agents` value at a fixed clock |
-| `picker_spend` | `tmux::parse_picker_spend` | one watchdog-owned `@ae_spend` value at a fixed clock |
 | `launch_stamp` | `store::parse_launch_attempt` | one `.launch-attempt` stamp's bytes |
 | `last_live_epochs` | `inventory::launch_epochs` | one session meta, read for its launch moments |
 | `sanitize_field` | `sanitize::sanitize` (both `Field`s) | one record field's raw bytes |

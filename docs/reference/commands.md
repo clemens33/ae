@@ -591,10 +591,11 @@ selected action provides the next clear.
 Sessions come in **attention rank order**, then tmux creation order, then name.
 Every live admitted ae session on the calling server stays eligible, including
 the current and orchestrator sessions. Each row carries bounded name, mark,
-state word, branch, spend and goal columns. The branch is sanitized in the tmux
+state word, branch and goal columns. The branch is sanitized in the tmux
 reader without changing its raw option, so delimiters and control bytes cannot
-split the record. Each session is followed by an indented
-`mark name profile state` row for every recorded agent.
+split the record. The current session is followed by an indented
+`mark name profile state` row for every recorded agent it has; no other
+session's roster is ever expanded.
 
 Column widths are fitted PER DRAW: name, state word, branch and profile are each
 as wide as the widest content among the rows that draw actually shows, with a
@@ -603,22 +604,9 @@ and the agent rows under it share one name column and one state column, so both
 kinds of row stay in a single grid. Two short session names therefore give narrow
 columns instead of a field of blanks, and one long name is cut at the cap.
 
-The SPEND column is the session's offline API-equivalent spend at reference
-prices, right-aligned in eight cells: `$12.34` below a thousand dollars, then
-`$1.2k`, with a leading `~` when the reading is not exact. It comes from the
-watchdog-owned `@ae_spend` fact, which is refreshed on the
-`[workspace] quota_every_secs` cadence (default 300 seconds; `0` disables spend
-too) rather than every verdict cycle, because each refresh costs one transcript
-pass. That cadence is rounded up to whole watchdog cycles, and the fact carries
-the ROUNDED period, not the requested one — the reader expires a fact after two
-of its own advertised intervals, so a one-second request on a sixty-second cycle
-would otherwise go stale between every pair of samples.
-
-A missing, malformed or stale fact draws `-`, never a confident zero. The title
-carries the fleet's sum over the sessions whose fact is available, and marks it
-`~` whenever the sum is not the whole fleet's: when any counted reading is itself
-inexact, and equally when any running session has no reading at all. The figure
-is omitted entirely when none does. `ae list` and `ae usage` are unchanged. The working mark is a frozen static mark: tmux
+A draw never expands more than that one roster, and when even it is too tall
+every session collapses to its summary suffix. The working mark is a frozen
+static mark: tmux
 draws a menu once and does not animate an open menu. Missing, malformed, more
 than two of their own published watchdog intervals old, or more than one such
 interval ahead of the local clock, agent facts draw `agents: unavailable`,
@@ -627,10 +615,9 @@ most 30 session rows; a disabled note names how many were left out.
 
 The client snapshot is also the hard draw budget: item rows plus two borders
 must fit its height, and row/title cells plus four borders must fit its width.
-When the full expansion is too tall, ae expands only the client's current
-session and collapses every other session to `N agents, M working`; then it
-collapses all sessions; finally it caps session rows and adds an honest
-`+N sessions omitted` row. Text is clipped by terminal cells, not UTF-8 bytes.
+When the current session's roster does not fit, ae collapses every session to
+`N agents, M working`; when not even the session rows fit, it caps them and adds
+an honest `+N sessions omitted` row. Text is clipped by terminal cells, not UTF-8 bytes.
 A missing or malformed client size, fewer than 6 rows, or fewer than 8 columns
 refuses before tmux can silently drop the menu.
 
@@ -883,8 +870,7 @@ tmux nor a vendor process, and writes no state.
 ### Advisories
 
 Each session watchdog reuses this bounded local observation every
-`[workspace] quota_every_secs` (default 300 seconds; `0` disables). That same cadence and the same
-counter also pace the fleet picker's `@ae_spend` fact, so one knob governs both readings. The first
+`[workspace] quota_every_secs` (default 300 seconds; `0` disables). The first
 sample establishes a
 baseline. Later transitions into `low` (80%), `critical` (95%), or back to `headroom` are pasted to
 that session's main seat and, for a lead-pair, its colead. The thresholds classify the `EFFECTIVE`
@@ -993,8 +979,8 @@ The [watchdog](../internals/watchdog.md) is on by default — only an explicit `
 The watchdog also observes the same local quota caches as `ae quota` on its persisted
 `[workspace] quota_every_secs` cadence — unless the session is quota-unaware
 (`[workspace] quota = off`, pinned at launch), in which case it books no quota
-advisory and renders no quota throttle line, while the spend fact still publishes
-on the cadence. It sends state changes only to its own leadership seats,
+advisory and renders no quota throttle line. It sends state changes only to its
+own leadership seats,
 retries a refused paste once on the next quota sweep, and records cancelled retries as
 `quota-advisory-dropped`. A throttle event includes the worst current quota row only when the last
 scheduled observation exactly matches that seat's recorded client source and, for Codex, rollout.

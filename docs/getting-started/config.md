@@ -185,8 +185,8 @@ Old seat files that still carry `[profiles]`/`[roster]` are ignored for identity
 | `layout`  | `lead-pair` (lead and colead each get 50% in window 0, other workers in window 1), `lead-solo` (lead alone in window 0, workers in window 1), `vertical` (side-by-side splits), `horizontal` (stacked splits) | `lead-pair`   |
 | `copy`    | Working directory mode (see below)                   | `local`       |
 | `watchdog`    | Auto-start the watchdog (`true` / `false`)            | `true`        |
-| `quota` | Whether ae acts on vendor quota at all (`on` / `off`); absent means `on`. When `off`, agents are never told about quota, the watchdog books no quota advisory and renders no quota throttle line, and the settings menu carries no quota entry. `ae quota` works identically in both states, and the `@ae_spend` fact still publishes on the cadence — spend is ae pricing its own agents transcripts offline (usage machinery), not vendor quota, so it is outside this toggle. `off` wins over `quota_every_secs` | `on` |
-| `quota_every_secs` | Watchdog cadence in seconds for BOTH the quota observation and the fleet picker's `@ae_spend` fact, rounded to whole watchdog cycles (`0` disables both) | `300` |
+| `quota` | Whether ae acts on vendor quota at all (`on` / `off`); absent means `on`. When `off`, agents are never told about quota, the watchdog books no quota advisory and renders no quota throttle line, and the settings menu carries no quota entry. `ae quota` works identically in both states. `off` wins over `quota_every_secs` | `on` |
+| `quota_every_secs` | Watchdog cadence in seconds for the quota observation, rounded to whole watchdog cycles (`0` disables it) | `300` |
 | `idle_nudge_secs` | Continuous positively observed empty-input time before the watchdog reminds the seat (`0` disables) | `300` |
 | `orchestrator` | Mark this session as the fleet overview seat (`true`); grants its panes the bare human-authority `relay` helper | `false`       |
 | `sweep` | Persist this orchestrator's changed-overview minimum spacing in seconds (`0` disables; positive values below `60` become `60`) | `AE_WATCHDOG_SWEEP_SEC`, then `120` |
@@ -317,10 +317,8 @@ unsigned integer seconds only; `0` disables quota advisories. `[workspace] quota
 the advisories (and the injected quota guidance, the throttle line, and the settings quota entry)
 regardless of the cadence; `ae quota` itself is unaffected in both states.
 
-One counter paces both readings this cadence owns. The same due pass also refreshes the fleet
-picker's per-session spend fact, which costs one walk of that session's transcripts — which is why
-spend does not ride the much shorter verdict interval, and why `0` takes the picker's spend column
-away along with the advisories.
+The cadence's due counter advances on whole watchdog cycles, so the
+effective observation period is the requested seconds rounded up to that grid.
 
 Idle reminders use `[workspace] idle_nudge_secs`, also persisted at launch and
 validated as unsigned integer seconds. The default is 300; `0` disables idle
