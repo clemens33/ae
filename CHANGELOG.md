@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.77] - 2026-09-15
+- Expand only the current session's roster and drop the spend column
+
 ## [v2026.9.76] - 2026-09-15
 - Merge eventsfuzz: fuzz the events.jsonl parser
 - Merge quotaclients: discover configured clients and correlate scopes on proven identity
