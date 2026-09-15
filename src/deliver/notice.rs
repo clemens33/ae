@@ -143,56 +143,71 @@ pub fn compose(
 #[must_use]
 pub fn reconstruct(model: InputModel, capture: &str, intended: &str) -> Option<String> {
     let rows: Vec<String> = capture.lines().map(strip_csi).collect();
-    // The head includes the request id, which disambiguates a whole-pane
-    // capture carrying several historical notices in its transcript.
+    // The head does NOT identify the live composer: the send arm's reference is
+    // empty (`[-]`), so every historical send echo from the same actor repeats
+    // the same head, and an ask/review echo can repeat its id too. What
+    // disambiguates is the anchor the occupancy read shares — the composer is
+    // the BOTTOM-MOST prompt row (`region::composer_row`). A whole-pane capture
+    // may carry several notices; only the last of them is still in the box.
     let head = head_of(intended);
     if head != GENERIC_HEAD && !head_is_wellformed(&head) {
         return None;
     }
-    let ornament = match model {
-        InputModel::BorderDelimited => '❯',
-        InputModel::StyleDelimited => '›',
+    let ornaments: &[&'static str] = match model {
+        InputModel::BorderDelimited => &["❯", ">", "▌"],
+        InputModel::StyleDelimited => &["›"],
         InputModel::Unmodelled => return None,
     };
-    for (index, row) in rows.iter().enumerate() {
-        let Some(at) = row.find(&head) else { continue };
-        let prefix = &row[..at];
-        let Some(orn_at) = prefix.find(ornament) else {
-            continue;
-        };
-        // A transcript line may contain the same bytes, but it is not a prompt
-        // row: everything before the ornament must be blank.
-        if !super::region::is_blank(&prefix[..orn_at]) {
-            continue;
-        }
-        let line = &row[orn_at + ornament.len_utf8()..];
-        let line = line
-            .strip_prefix(' ')
-            .or_else(|| line.strip_prefix('\u{a0}'))
-            .unwrap_or(line);
-        let mut candidate = line.to_owned();
-        for rest in &rows[index + 1..] {
-            let rest = rest.trim_end_matches(' ');
-            if model == InputModel::StyleDelimited && super::region::is_blank(rest) {
-                break;
-            }
-            if model == InputModel::BorderDelimited && is_rule(rest) {
-                break;
-            }
-            let Some(part) = rest.strip_prefix("  ") else {
-                break;
-            };
-            // Reinsert exactly the one wrap-space the intended bytes prove.
-            if let Some(remainder) = intended.strip_prefix(candidate.as_str())
-                && remainder.starts_with(' ')
-            {
-                candidate.push(' ');
-            }
-            candidate.push_str(part);
-        }
-        return Some(candidate);
+    let segments = super::region::parse(capture);
+    // Direction is the disambiguator here, so this anchor asks for NO styling
+    // filter. The filter can only ever REMOVE candidates: an echo lies above
+    // the box, so bottom-most already defeats it, while a live composer that
+    // failed the one (synthetic, unmeasured) styling model would be skipped in
+    // favour of a styled echo ABOVE it — a mis-anchor. Asking for `false` is
+    // also the FAITHFUL PORT of this function before the anchor change: the old
+    // scan ran over CSI-stripped rows and never filtered on styling at all. The
+    // occupancy read keeps its stricter filter from the same shared rule.
+    let (row_index, ornament) = super::region::composer_row(&segments, false, ornaments)?;
+    // `rows` (`capture.lines()`) and `segments` (`parse`) count each `\n` once,
+    // so composer_row's line index addresses the same row here. A `\n` inside a
+    // CSI or after a bare ESC would desync the two; tmux `-e` emits SGR only.
+    let row = rows.get(row_index)?;
+    let at = row.find(&head)?;
+    let prefix = &row[..at];
+    let orn_at = prefix.find(ornament)?;
+    // NOT redundant: composer_row judged blankness on PARSED segments, which
+    // drop OSC and non-CSI escapes, while this prefix comes from `strip_csi`,
+    // which keeps an OSC payload as text. A tmux `-e` capture emits SGR only,
+    // so the two views agree there; this check keeps any divergence a refusal.
+    if !super::region::is_blank(&prefix[..orn_at]) {
+        return None;
     }
-    None
+    let line = &row[orn_at + ornament.len()..];
+    let line = line
+        .strip_prefix(' ')
+        .or_else(|| line.strip_prefix('\u{a0}'))
+        .unwrap_or(line);
+    let mut candidate = line.to_owned();
+    for rest in &rows[row_index + 1..] {
+        let rest = rest.trim_end_matches(' ');
+        if model == InputModel::StyleDelimited && super::region::is_blank(rest) {
+            break;
+        }
+        if model == InputModel::BorderDelimited && is_rule(rest) {
+            break;
+        }
+        let Some(part) = rest.strip_prefix("  ") else {
+            break;
+        };
+        // Reinsert exactly the one wrap-space the intended bytes prove.
+        if let Some(remainder) = intended.strip_prefix(candidate.as_str())
+            && remainder.starts_with(' ')
+        {
+            candidate.push(' ');
+        }
+        candidate.push_str(part);
+    }
+    Some(candidate)
 }
 
 /// Does the pane show EXACTLY the notice that was staged — `_notice_prove`?
@@ -509,6 +524,77 @@ mod tests {
             Some(intended)
         );
         assert!(prove(InputModel::BorderDelimited, &at_space, intended));
+    }
+
+    #[test]
+    fn a_live_composer_wins_over_a_transcript_echo_of_an_earlier_notice() {
+        // A send notice has NO request id (the `[-]` sentinel), so a whole-pane
+        // capture can carry several rows with the SAME head — the historical
+        // echo sits ABOVE the live box. The proof must anchor on the composer,
+        // the bottom-most prompt row, exactly as the occupancy read does: a
+        // top-down scan takes the oldest echo and fails the send it should
+        // confirm.
+        let intended = "⟦ae:msg from worker⟧[-] LONG BODY 9000 B in your session dir: messages/new.send.bb.txt — read it first ⟧-⟧";
+        let old = "⟦ae:msg from worker⟧[-] LONG BODY 12345 B in your session dir: messages/old.send.aa.txt — read it first ⟧-⟧";
+        let capture = format!(
+            "\u{1b}[2m❯\u{1b}[0m {old}\ntranscript row\n\u{1b}[1m❯\u{1b}[0m {intended}\n{}\n  model  ~/x\n",
+            "─".repeat(60)
+        );
+        assert_eq!(
+            reconstruct(InputModel::BorderDelimited, &capture, intended).as_deref(),
+            Some(intended),
+            "the live composer, not the echo above it"
+        );
+        assert!(prove(InputModel::BorderDelimited, &capture, intended));
+    }
+
+    #[test]
+    fn a_wider_ornament_echo_does_not_capture_the_notice_anchor() {
+        // The anchor list is the occupancy read's own (["❯", ">", "▌"]), so a
+        // `>` transcript echo carrying the SAME head — above the live composer —
+        // must not be mistaken for the box. Before the shared anchor a lone-`❯`
+        // reconstruct skipped this row by luck; after the widening it must lose
+        // to the bottom-most row on purpose.
+        let intended = "⟦ae:msg from worker⟧[-] LONG BODY 9000 B in your session dir: messages/new.send.cc.txt — read it first ⟧-⟧";
+        let old = "⟦ae:msg from worker⟧[-] LONG BODY 12345 B in your session dir: messages/old.send.dd.txt — read it first ⟧-⟧";
+        let capture = format!(
+            "> {old}\ntranscript row\n\u{1b}[1m❯\u{1b}[0m {intended}\n{}\n  model  ~/x\n",
+            "─".repeat(60)
+        );
+        assert_eq!(
+            reconstruct(InputModel::BorderDelimited, &capture, intended).as_deref(),
+            Some(intended),
+            "the bottom-most row wins even when an echo uses another ornament"
+        );
+        assert!(prove(InputModel::BorderDelimited, &capture, intended));
+    }
+
+    #[test]
+    fn a_codex_echo_above_the_box_never_captures_the_notice_anchor() {
+        // Direction, not styling, defeats an echo: the anchor is the BOTTOM-MOST
+        // ornament row. The live composer here is deliberately PLAIN — the one
+        // styling model (codex bold-not-dim) is synthetic and unmeasured, and
+        // filtering on it here would be NEW behaviour, not a port: the
+        // pre-change scan never filtered on styling at all.
+        let intended = "⟦ae:msg from worker⟧[-] LONG BODY 9000 B in your session dir: messages/new.send.ee.txt — read it first ⟧-⟧";
+        let old = "⟦ae:msg from worker⟧[-] LONG BODY 12345 B in your session dir: messages/old.send.ff.txt — read it first ⟧-⟧";
+        let capture =
+            format!("\u{1b}[1;2m›\u{1b}[0m {old}\ntranscript\n› {intended}\n\n  gpt  ~/x\n");
+        assert_eq!(
+            reconstruct(InputModel::StyleDelimited, &capture, intended).as_deref(),
+            Some(intended),
+            "the bottom-most row wins; styling is not this anchor's question"
+        );
+        assert!(prove(InputModel::StyleDelimited, &capture, intended));
+        // A cleared box below the echo is NOT a staged notice, whatever the
+        // echo above still says.
+        let cleared =
+            format!("\u{1b}[1;2m›\u{1b}[0m {old}\ntranscript\n\u{1b}[1m›\u{1b}[0m\n\n  gpt  ~/x\n");
+        assert_eq!(
+            reconstruct(InputModel::StyleDelimited, &cleared, intended),
+            None
+        );
+        assert!(!prove(InputModel::StyleDelimited, &cleared, intended));
     }
 
     #[test]

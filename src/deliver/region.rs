@@ -178,8 +178,24 @@ struct Prompt {
     ornament: &'static str,
 }
 
-/// Find the live input prompt — `_input_region_prompt_seg`.
-fn prompt(segments: &[Segment], live_only: bool, ornaments: &[&'static str]) -> Option<Prompt> {
+/// The composer row — the BOTTOM-MOST row whose first non-blank run starts with
+/// one of `ornaments`.
+///
+/// Direction is the whole rule: a transcript echo of an already-submitted turn
+/// sits ABOVE the live box on every captured frame, so the live composer is
+/// always the lowest ornament row. `prompt` (the occupancy read) and
+/// `notice::reconstruct` (the notice proof) both select through this one rule,
+/// so selection can no longer drift between two loops. `live_only` stays a
+/// per-caller strictness choice — the occupancy read asks for its styling
+/// filter, the notice proof does not (see `reconstruct`'s comment) — so on a
+/// frame where a styled echo sits above a differently-styled composer they may
+/// name different ROWS, by that documented choice and never by disagreement
+/// about the rule. Returns the row's line index and the matched ornament.
+pub(super) fn composer_row(
+    segments: &[Segment],
+    live_only: bool,
+    ornaments: &[&'static str],
+) -> Option<(usize, &'static str)> {
     let last = segments.last()?;
     for line in (0..=last.line).rev() {
         let Some(index) = segments
@@ -196,14 +212,23 @@ fn prompt(segments: &[Segment], live_only: bool, ornaments: &[&'static str]) -> 
             if live_only && (!segments[index].bold || segments[index].dim) {
                 continue;
             }
-            return Some(Prompt {
-                index,
-                tail: tail.to_owned(),
-                ornament,
-            });
+            return Some((line, *ornament));
         }
     }
     None
+}
+
+/// Find the live input prompt — `_input_region_prompt_seg`.
+fn prompt(segments: &[Segment], live_only: bool, ornaments: &[&'static str]) -> Option<Prompt> {
+    let (line, ornament) = composer_row(segments, live_only, ornaments)?;
+    let index = segments
+        .iter()
+        .position(|seg| seg.line == line && !is_blank(&seg.text))?;
+    Some(Prompt {
+        index,
+        tail: segments[index].text.trim_start_matches(is_space).to_owned(),
+        ornament,
+    })
 }
 
 /// Is this row the input box's structural BORDER — `_input_region_is_border`?
@@ -315,7 +340,13 @@ pub fn occupancy(region: &str, model: InputModel) -> Occupancy {
             }
             verdict(&text)
         }
-        InputModel::Unmodelled => Occupancy::Idle,
+        // No grammar for this box: ae read NOTHING, so it claims nothing. Idle
+        // would be a claim it cannot honour. The callers that decide whether a
+        // paste may proceed short-circuit unmodelled BEFORE this
+        // (`input_busy`, `still_staged`), and the one caller left
+        // (`clear_is_measurable`, notice proof only) fails closed on the
+        // unreadable verdict.
+        InputModel::Unmodelled => Occupancy::Unreadable,
     }
 }
 
@@ -421,15 +452,6 @@ fn model_loading(line: &str) -> bool {
     rest.starts_with(is_space) && rest.contains(AFFORDANCE)
 }
 
-/// Does this capture show a composed TUI — the spawn readiness check for a tool
-/// ae does not model: `❯`, `bypass permissions` or `for shortcuts`.
-#[must_use]
-pub fn composed_ui(capture: &str) -> bool {
-    capture.contains('❯')
-        || capture.contains("bypass permissions")
-        || capture.contains("for shortcuts")
-}
-
 /// A POSIX `[[:space:]]` character.
 fn is_space(ch: char) -> bool {
     matches!(ch, ' ' | '\t' | '\n' | '\u{b}' | '\u{c}' | '\r')
@@ -455,8 +477,25 @@ fn digits(text: &str) -> (usize, &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Occupancy, Segment, composed_ui, initializing, occupancy, parse};
+    use super::{Occupancy, Segment, initializing, occupancy, parse, prompt, queued_submission};
     use crate::tool::InputModel;
+
+    /// The REAL stuck composer — muse-spark-1.3 via the muse CLI, captured
+    /// 2026-09-14. The harness REFUSED the pasted turn and its composer still
+    /// holds the staged token; provenance is beside the file.
+    const MUSE_STUCK: &str =
+        include_str!("../../tests/fixtures/muse-composer/muse-stuck-composer.esc");
+    /// Staged, before Enter, from a live ae-dev seat — the same full-composer
+    /// state as the stuck frame, with transcript echoes of earlier turns.
+    const MUSE_OCCUPIED: &str =
+        include_str!("../../tests/fixtures/muse-composer/muse-occupied-composer.esc");
+    /// ACCEPTED: the composer cleared and the staged token moved into the
+    /// TRANSCRIPT. Three `❯` rows on screen; only the bottom one is the box.
+    const MUSE_ACCEPTED: &str =
+        include_str!("../../tests/fixtures/muse-composer/muse-accepted-composer.esc");
+    /// Nothing staged; a backend 429 sits in the transcript, composer empty.
+    const MUSE_IDLE: &str =
+        include_str!("../../tests/fixtures/muse-composer/muse-idle-composer.esc");
 
     /// A row as `capture-pane -e` renders it: the styling matters, and it is
     /// spelled the way tmux legally spells it rather than one canonical way.
@@ -660,21 +699,13 @@ mod tests {
     }
 
     #[test]
-    fn an_unmodelled_tool_is_idle_so_delivery_to_it_is_never_blocked() {
+    fn an_unmodelled_tool_reads_unreadable_and_is_kept_unblocked_by_its_callers() {
         assert_eq!(
             occupancy(&claude_frame("busy"), InputModel::Unmodelled),
-            Occupancy::Idle
+            Occupancy::Unreadable,
+            "a box ae cannot read is never a claim of Idle"
         );
         assert!(!InputModel::Unmodelled.is_modelled() && InputModel::BorderDelimited.is_modelled());
-    }
-
-    #[test]
-    fn an_unmodelled_tool_keeps_the_marker_grep_it_always_had() {
-        assert!(composed_ui("some box\n❯ \n"));
-        assert!(composed_ui("? for shortcuts"));
-        assert!(composed_ui("bypass permissions on"));
-        assert!(!composed_ui(""));
-        assert!(!composed_ui("still booting\n"));
     }
 
     #[test]
@@ -721,5 +752,95 @@ mod tests {
         assert!(!initializing(progress, InputModel::BorderDelimited));
         assert!(!initializing(progress, InputModel::Unmodelled));
         assert!(!initializing("", InputModel::StyleDelimited));
+    }
+
+    #[test]
+    fn a_transcript_echo_of_a_submitted_turn_does_not_read_as_still_staged() {
+        // `❯` is NOT unique on screen: the accepted and occupied frames each
+        // carry three ornament rows, and one transcript echo still carries the
+        // staged token. Only the composer — the bottom-most ornament row,
+        // bounded downward by the box's rule — is the input box. A containment
+        // test would read the ACCEPTED turn as staged and duplicate it.
+        assert!(MUSE_ACCEPTED.matches('❯').count() >= 3);
+        assert!(MUSE_ACCEPTED.contains("[Pasted Content 1766 chars]"));
+        assert_eq!(
+            occupancy(MUSE_ACCEPTED, InputModel::BorderDelimited),
+            Occupancy::Idle,
+            "the token in the TRANSCRIPT is not staged content"
+        );
+        assert_eq!(
+            occupancy(MUSE_OCCUPIED, InputModel::BorderDelimited),
+            Occupancy::Occupied
+        );
+        assert_eq!(
+            occupancy(MUSE_IDLE, InputModel::BorderDelimited),
+            Occupancy::Idle,
+            "a backend error in the transcript does not keep the box occupied"
+        );
+        assert!(!queued_submission(
+            MUSE_ACCEPTED,
+            InputModel::BorderDelimited
+        ));
+        assert!(!queued_submission(
+            MUSE_OCCUPIED,
+            InputModel::BorderDelimited
+        ));
+        assert!(!queued_submission(MUSE_IDLE, InputModel::BorderDelimited));
+    }
+
+    #[test]
+    fn a_muse_composer_that_refused_the_turn_still_reads_occupied() {
+        // The real refusal: the box did NOT clear, so the EXISTING retry loop
+        // (still_staged -> StillStaged -> another Enter) is what answers the
+        // harness's own "try again" — no vendor string is matched.
+        assert_eq!(
+            occupancy(MUSE_STUCK, InputModel::BorderDelimited),
+            Occupancy::Occupied
+        );
+        assert!(
+            !queued_submission(MUSE_STUCK, InputModel::BorderDelimited),
+            "claude's queue affordance is inert on muse"
+        );
+    }
+
+    #[test]
+    fn the_muse_prompt_is_the_composer_row_and_its_bottom_rule_bounds_the_box() {
+        let segments = parse(MUSE_STUCK);
+        let found = prompt(&segments, false, &["❯", ">", "▌"]).expect("the live composer");
+        let composer_line = segments[found.index].line;
+        assert!(found.tail.starts_with('❯'));
+        assert!(
+            segments
+                .iter()
+                .any(|seg| seg.line == composer_line
+                    && seg.text.contains("[Pasted Content 1494 chars]")),
+            "the found prompt row is the COMPOSER row: line {composer_line}"
+        );
+
+        // A transcript echo carrying the SAME ornament must not capture the
+        // read: prompt() scans bottom-up, and the composer sits below every
+        // transcript row. (The captured frame itself carries one `❯`.)
+        let with_echo = format!("❯ a transcript echo\n{MUSE_STUCK}");
+        let echoed = parse(&with_echo);
+        let picked = prompt(&echoed, false, &["❯", ">", "▌"]).expect("still the live composer");
+        let picked_line = echoed[picked.index].line;
+        assert!(
+            echoed
+                .iter()
+                .any(|seg| seg.line == picked_line
+                    && seg.text.contains("[Pasted Content 1494 chars]")),
+            "the echo above does not capture the read; picked line {picked_line}"
+        );
+        assert!(picked_line > 0, "the echo really is above the composer");
+
+        // The same captured frame with the staged token removed. It reads Idle
+        // only if content_end stops at muse's bottom rule — otherwise the
+        // footer BELOW the box would read as content. The real ACCEPTED frame
+        // proves the cleared leg; this isolates the geometry.
+        let cleared = MUSE_STUCK.replace("[Pasted Content 1494 chars]", "");
+        assert_eq!(
+            occupancy(&cleared, InputModel::BorderDelimited),
+            Occupancy::Idle
+        );
     }
 }
