@@ -7,11 +7,14 @@ All notable changes to this project will be documented in this file.
 - Merge quotaclients: discover configured clients and correlate scopes on proven identity
 - Merge identitygap: prove session identity across a durable cut, and never let NoSession mask a real gap
 - Merge seatclient: record each seat's config home as an explicit identity, and refuse a store ae cannot verify
+- Merge musesubmit: give muse a real input model, and let one rule name the composer
 - Render one subject line per change in the generated changelog
 - List git-cliff in the pin table and the rust-setup tool count
 - Make the changelog unit the first-parent commit
 - Regenerate the changelog on top of the merge base
 - Prove the skip list crosses to git-cliff as separate arguments
+- Regenerate the changelog after the boundary proof
+- Invoke git-cliff only from the boundary owner
 
 ## [v2026.9.75] - 2026-09-14
 - Merge lockpath: refuse non-regular and symlinked lock paths
