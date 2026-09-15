@@ -635,17 +635,24 @@ fn wait_for_agent_start(server: &ServerId, pane: &str, tool: ToolKind) {
     }
 }
 
-/// Deliver the brief to a tool whose context rode a system-prompt channel.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "one call site, all six are facts"
-)]
 /// A brief that did not land, and the recovery its failure kind has.
 struct BriefRefusal {
     reason: String,
-    /// The pane's agent is GONE (its pane is a shell): a `send` would only be
-    /// refused by the dead-pane guard, so the recovery is retire/re-spawn.
-    dead_seat: bool,
+    recovery: BriefRecovery,
+}
+
+/// What a failed brief's recovery is, per failure kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BriefRecovery {
+    /// The seat looks like a live agent that did not take the brief: re-send.
+    Resend,
+    /// The agent is PROVEN gone (its pane is a shell): a `send` would be
+    /// refused by the dead-pane guard; retire and spawn again.
+    Retire,
+    /// The pane was NOT proven live or dead. Ordinary delivery fails OPEN on
+    /// an unproven pane, so a send could execute the brief in a shell: do NOT
+    /// send, inspect the seat first.
+    Inspect,
 }
 
 /// The brief refusal a dead seat gets, quoted by the reason and the recovery.
@@ -677,7 +684,7 @@ fn deliver_brief(
         return Ok(Some(BriefRefusal {
             reason: "input never reached a confirmed-idle state (busy, modal, or unreadable)"
                 .to_owned(),
-            dead_seat: false,
+            recovery: BriefRecovery::Resend,
         }));
     }
     let request = deliver::Request {
@@ -709,7 +716,7 @@ fn deliver_brief(
                 reason: format!(
                     "brief REFUSED — the pane was not composed when delivery reached it; NOTHING was pasted. Body preserved at {body_file}"
                 ),
-                dead_seat: false,
+                recovery: BriefRecovery::Resend,
             }));
         }
         if let deliver::Failure::Unproven { .. } = failure {
@@ -717,20 +724,20 @@ fn deliver_brief(
                 reason: format!(
                     "brief REFUSED — the pane could not be proven a live agent at delivery time; NOTHING was pasted. Body preserved at {body_file}"
                 ),
-                dead_seat: false,
+                recovery: BriefRecovery::Inspect,
             }));
         }
         if let deliver::Failure::DeadPane = failure {
             return Ok(Some(BriefRefusal {
                 reason: BRIEF_REFUSED_DEAD.to_owned(),
-                dead_seat: true,
+                recovery: BriefRecovery::Retire,
             }));
         }
         return Ok(Some(BriefRefusal {
             reason: format!(
                 "brief submit UNCONFIRMED ({failure:?}) — body preserved at {body_file}; it may be staged unsent"
             ),
-            dead_seat: false,
+            recovery: BriefRecovery::Resend,
         }));
     }
     // A booting TUI can swallow the post-paste Enter, leaving the brief staged
@@ -762,16 +769,30 @@ fn report_undelivered(
         "ae: SPAWN INCOMPLETE — {name} exists in pane {pane}, brief NOT delivered"
     )?;
     writeln!(err, "ae: reason: {}", refusal.reason)?;
-    if refusal.dead_seat {
+    match refusal.recovery {
         // The pane is a SHELL: a `send` would be refused by the dead-pane
         // guard, so the only recovery is retiring the dead seat and spawning
         // again. The live-seat wording must NOT appear here.
-        writeln!(
-            err,
-            "ae: the agent is GONE (its pane is a shell) — a send would be refused; retire the seat and spawn again:"
-        )?;
-        writeln!(err, "ae:   {}/retire {name}", dir.display())?;
-        return Ok(());
+        BriefRecovery::Retire => {
+            writeln!(
+                err,
+                "ae: the agent is GONE (its pane is a shell) — a send would be refused; retire the seat and spawn again:"
+            )?;
+            writeln!(err, "ae:   {}/retire {name}", dir.display())?;
+            return Ok(());
+        }
+        // The pane was not proven either way. Ordinary delivery FAILS OPEN on
+        // an unproven pane, so a send could execute the brief in a shell: the
+        // recovery must advise inspection, never a send.
+        BriefRecovery::Inspect => {
+            writeln!(
+                err,
+                "ae: the pane was NOT proven live or dead (a shell may hold a stale frame) — do NOT send; inspect the seat, then retire or re-spawn:"
+            )?;
+            writeln!(err, "ae:   {}/peek {name}", dir.display())?;
+            return Ok(());
+        }
+        BriefRecovery::Resend => {}
     }
     writeln!(
         err,

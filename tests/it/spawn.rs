@@ -1033,6 +1033,18 @@ fn an_unreadable_meta_with_a_stale_composer_cannot_take_the_brief() {
         "the UNPROVEN refusal is the one reported: {stderr}"
     );
     assert!(
+        stderr.contains("do NOT send; inspect the seat"),
+        "an UNPROVEN recovery must advise inspection: {stderr}"
+    );
+    assert!(
+        !stderr.contains("send to the existing agent"),
+        "an UNPROVEN pane must never be called a live seat: {stderr}"
+    );
+    assert!(
+        !stderr.contains(&format!("{}/send ocmeta", rig.dir.display())),
+        "and the send command must not be suggested: {stderr}"
+    );
+    assert!(
         !canary.exists(),
         "a guess must never reach the shell: the canary would mean EXECUTION"
     );

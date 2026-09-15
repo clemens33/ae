@@ -539,16 +539,24 @@ enum LivenessRefusal {
     Unproven,
 }
 
-/// The decision a SHELL foreground leaves, once the recorded binary is known
-/// usable: a pid is required, and the process walk must not be Unknown. A
-/// `shelled` pane is never GUESSED alive — unknown is `Unproven`, never
-/// `Alive`.
-const fn shelled_liveness(
+/// The liveness decision, PURE: a pid-less probe is UNPROVEN whatever the
+/// foreground says — a probe ae cannot fully read proves nothing — and only a
+/// NAMED pid lets a non-shell foreground count as Alive. A shell foreground is
+/// then proven only by a usable recorded binary and a process walk that is not
+/// Unknown.
+const fn observed_liveness(
+    shell_in_foreground: bool,
     binary_known: bool,
     pid: Option<u32>,
     walk: crate::procs::Descendancy,
 ) -> PaneLiveness {
-    if !binary_known || pid.is_none() {
+    if pid.is_none() {
+        return PaneLiveness::Unproven;
+    }
+    if !shell_in_foreground {
+        return PaneLiveness::Alive;
+    }
+    if !binary_known {
         return PaneLiveness::Unproven;
     }
     match walk {
@@ -559,20 +567,17 @@ const fn shelled_liveness(
 }
 
 /// The pane-level liveness observation — the one owner `_pane_agent_is_dead`
-/// grew three states out of. A non-shell foreground is Alive. A shell
-/// foreground is proven only by a recorded, non-shell binary that the process
-/// walk finds: anything else is Unproven.
+/// grew three states out of. Computes the raw readings and hands them to the
+/// pure [`observed_liveness`], so every branch of the decision is pinnable.
 fn pane_liveness(request: &Request<'_>, probe: &crate::tmux::ObservedPaneProbe) -> PaneLiveness {
-    if !crate::watchdog::command_is_shell(&probe.command) {
-        return PaneLiveness::Alive; // a real process is in the foreground
-    }
+    let shell_in_foreground = crate::watchdog::command_is_shell(&probe.command);
     let binary = recorded_binary(&target_meta_dir(request), request.pane_slot);
     let binary_known = !binary.is_empty() && !crate::watchdog::command_is_shell(&binary);
     let walk = match probe.pid {
         Some(pid) => crate::procs::descendancy(crate::procs::snapshot().as_deref(), pid, &binary),
         None => crate::procs::Descendancy::Unknown,
     };
-    shelled_liveness(binary_known, probe.pid, walk)
+    observed_liveness(shell_in_foreground, binary_known, probe.pid, walk)
 }
 
 /// ORDINARY delivery's policy (the pre-lock check, Send, Relay, Interrupt):
@@ -1188,8 +1193,8 @@ fn lock_target(dir: &Path, pane: &str) -> Option<std::fs::File> {
 mod tests {
     use super::{
         Failure, LivenessRefusal, PaneLiveness, Request, Shape, TargetInput, UNVERIFIED,
-        buffer_name, choose_input, frame, is_name_safe, pane_settled, refuses_as_dead, settle_for,
-        shelled_liveness, store_body, under_lock_refusal, unmodelled_ready,
+        buffer_name, choose_input, frame, is_name_safe, observed_liveness, pane_settled,
+        refuses_as_dead, settle_for, store_body, under_lock_refusal, unmodelled_ready,
     };
     use crate::inventory::ServerId;
     use crate::tool::{InputModel, ToolKind};
@@ -1505,31 +1510,43 @@ mod tests {
     }
 
     #[test]
-    fn a_shelled_pane_is_never_guessed_alive() {
+    fn a_pidless_probe_never_proves_a_live_agent() {
         use crate::procs::Descendancy;
-        // The process walk decides only when there IS one to trust: no usable
-        // binary, no pid, or an unusable snapshot are all UNPROVEN.
+        // A pid-less probe proves NOTHING, whatever the foreground says —
+        // including a non-shell command, which is otherwise the Alive shortcut.
         assert_eq!(
-            shelled_liveness(false, Some(4242), Descendancy::Present),
+            observed_liveness(false, true, None, Descendancy::Present),
+            PaneLiveness::Unproven,
+            "a non-shell foreground with no pid is unproven"
+        );
+        assert_eq!(
+            observed_liveness(true, true, None, Descendancy::Present),
+            PaneLiveness::Unproven,
+            "a shell foreground with no pid is unproven"
+        );
+        // The one Alive shortcut: a NAMED pid and a non-shell foreground.
+        assert_eq!(
+            observed_liveness(false, false, Some(4242), Descendancy::Unknown),
+            PaneLiveness::Alive
+        );
+        // A shell foreground needs a usable binary and a walk that is not
+        // Unknown: everything else is UNPROVEN.
+        assert_eq!(
+            observed_liveness(true, false, Some(4242), Descendancy::Present),
             PaneLiveness::Unproven,
             "an unreadable meta (or a shell-based profile) proves nothing"
         );
         assert_eq!(
-            shelled_liveness(true, None, Descendancy::Present),
-            PaneLiveness::Unproven,
-            "a pid-less probe proves nothing"
-        );
-        assert_eq!(
-            shelled_liveness(true, Some(4242), Descendancy::Unknown),
+            observed_liveness(true, true, Some(4242), Descendancy::Unknown),
             PaneLiveness::Unproven,
             "an unusable process snapshot proves nothing"
         );
         assert_eq!(
-            shelled_liveness(true, Some(4242), Descendancy::Absent),
+            observed_liveness(true, true, Some(4242), Descendancy::Absent),
             PaneLiveness::Dead
         );
         assert_eq!(
-            shelled_liveness(true, Some(4242), Descendancy::Present),
+            observed_liveness(true, true, Some(4242), Descendancy::Present),
             PaneLiveness::Alive
         );
     }
