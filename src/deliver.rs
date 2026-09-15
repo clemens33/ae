@@ -287,7 +287,11 @@ pub fn deliver(
     // Interpreted-sink guard: refuse to paste into a pane whose agent has DIED
     // and dropped to a shell — a stray Enter would EXECUTE the message as a
     // shell command.
-    if refuses_as_dead(pane_liveness(request, &probe)) {
+    if refuses_as_dead(pane_liveness_at(
+        &target_meta_dir(request),
+        request.pane_slot,
+        &probe,
+    )) {
         writeln!(err, "{}", dead_pane_line(request))?;
         return Ok(Err(Failure::DeadPane));
     }
@@ -522,7 +526,7 @@ fn target_meta_dir(request: &Request<'_>) -> PathBuf {
 /// ([`refuses_as_dead`] for ordinary delivery, [`under_lock_refusal`] for the
 /// unmodelled Launch re-proof).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PaneLiveness {
+pub(crate) enum PaneLiveness {
     /// A real process owns the foreground, or the agent is a proven
     /// descendant of the pane's pid.
     Alive,
@@ -569,15 +573,34 @@ const fn observed_liveness(
 /// The pane-level liveness observation — the one owner `_pane_agent_is_dead`
 /// grew three states out of. Computes the raw readings and hands them to the
 /// pure [`observed_liveness`], so every branch of the decision is pinnable.
-fn pane_liveness(request: &Request<'_>, probe: &crate::tmux::ObservedPaneProbe) -> PaneLiveness {
+fn pane_liveness_at(
+    meta_dir: &Path,
+    slot: &str,
+    probe: &crate::tmux::ObservedPaneProbe,
+) -> PaneLiveness {
     let shell_in_foreground = crate::watchdog::command_is_shell(&probe.command);
-    let binary = recorded_binary(&target_meta_dir(request), request.pane_slot);
+    let binary = recorded_binary(meta_dir, slot);
     let binary_known = !binary.is_empty() && !crate::watchdog::command_is_shell(&binary);
     let walk = match probe.pid {
         Some(pid) => crate::procs::descendancy(crate::procs::snapshot().as_deref(), pid, &binary),
         None => crate::procs::Descendancy::Unknown,
     };
     observed_liveness(shell_in_foreground, binary_known, probe.pid, walk)
+}
+
+/// Observe a pane's liveness OUTSIDE a delivery, for a caller that must not
+/// advise a send without proof (the spawn's failure recovery). An
+/// unobservable pane is Unproven, never Alive.
+pub(crate) fn observe_pane_liveness(
+    server: &ServerId,
+    meta_dir: &Path,
+    pane: &str,
+    slot: &str,
+) -> PaneLiveness {
+    match transport::observe_pane_probe(server, pane) {
+        Some(probe) => pane_liveness_at(meta_dir, slot, &probe),
+        None => PaneLiveness::Unproven,
+    }
 }
 
 /// ORDINARY delivery's policy (the pre-lock check, Send, Relay, Interrupt):
@@ -777,7 +800,7 @@ fn unmodelled_ready(before: Option<&str>, after: Option<&str>, composed: &[&str]
 /// answer false. This reads the screen ONLY: an agent that died leaves its
 /// composer DRAWN above the returning shell prompt and still matches, so it
 /// is never the only guard — [`launch_recheck`] runs the pane-level liveness
-/// owner ([`pane_liveness`]) first, exactly as the pre-lock path does.
+/// owner ([`pane_liveness_at`]) first, exactly as the pre-lock path does.
 fn reconfirm_composed(server: &ServerId, pane: &str, composed: &[&str]) -> bool {
     transport::capture_screen(server, pane, Styling::Plain)
         .is_some_and(|capture| region::composed_ui(&capture, composed))
@@ -828,7 +851,7 @@ fn unproven_refusal(
 /// behaviour it had.
 ///
 /// Two questions, in this order: is the PANE still a live agent — the one
-/// [`pane_liveness`] owner, whose `Dead` and `Unproven` both refuse here
+/// [`pane_liveness_at`] owner, whose `Dead` and `Unproven` both refuse here
 /// ([`under_lock_refusal`]), because a dead or unknowable agent's stale
 /// composer would still satisfy the screen read below — and does its SCREEN
 /// still show the composed box ([`reconfirm_composed`]).
@@ -844,7 +867,11 @@ fn launch_recheck(
     let Some(probe) = transport::observe_pane_probe(request.server, request.pane) else {
         return Ok(Err(unproven_refusal(request, body_file, err)?));
     };
-    match under_lock_refusal(pane_liveness(request, &probe)) {
+    match under_lock_refusal(pane_liveness_at(
+        &target_meta_dir(request),
+        request.pane_slot,
+        &probe,
+    )) {
         None => {}
         Some(LivenessRefusal::Dead) => {
             writeln!(err, "{}", dead_pane_line(request))?;

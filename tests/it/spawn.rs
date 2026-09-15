@@ -109,6 +109,9 @@ sub mark {
     open(my $fh, '>', $path) or die;
     close($fh);
 }
+if (-e "__EXIT__") {
+    exit 0;
+}
 draw_composed();
 mark("__COMPOSED__");
 my $switched = 0;
@@ -1449,5 +1452,71 @@ fn a_profile_that_is_not_one_simple_command_is_refused_before_any_effect() {
     assert!(
         !rig.meta().contains("spawned.0"),
         "nothing of the refused spawn survives in meta"
+    );
+}
+
+/// A brief whose readiness never settled proves NOTHING about the pane. With
+/// the agent gone and its recorded binary unreadable, the recovery must not
+/// advise a send — ordinary delivery fails open on an unproven pane, so a
+/// send could execute the brief as shell input.
+#[test]
+fn a_timed_out_brief_never_advises_a_send() {
+    let probe = PathBuf::from(format!("/tmp/aesp-probe-ocrage.{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&probe);
+    let present = tmux_present(&probe);
+    let _ = std::fs::remove_dir_all(&probe);
+    if !present {
+        return;
+    }
+    let rig = Rig::new("ocrage");
+    let control = rig.enable_opencode_profile();
+    // The agent exits BEFORE it draws, so readiness can never settle.
+    assert!(std::fs::write(&control.exit, "").is_ok(), "the exit");
+
+    let (code, stdout, stderr) = std::thread::scope(|scope| {
+        let spawned = scope.spawn(|| {
+            rig.run(
+                ae::cli::SPAWN,
+                &["ocrage", "--using", "ocfake", "--", "do the thing"],
+            )
+        });
+        // While the readiness wait burns its budget, make the seat's recorded
+        // binary unreadable: the pane is a shell ae cannot attribute.
+        for _ in 0..240 {
+            let meta = std::fs::read_to_string(rig.dir.join("meta")).unwrap_or_default();
+            if meta.contains("agent_bin.spawned.0=") {
+                let stripped: String = meta
+                    .lines()
+                    .filter(|line| !line.starts_with("agent_bin.spawned.0="))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                assert!(
+                    std::fs::write(rig.dir.join("meta"), &stripped).is_ok(),
+                    "the recorded binary is gone"
+                );
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        spawned.join().expect("the spawn thread")
+    });
+
+    assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(stderr.contains("SPAWN INCOMPLETE"), "{stderr}");
+    assert!(
+        stderr.contains("input never reached a confirmed-idle state"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("do NOT send; inspect the seat"),
+        "a readiness timeout proves nothing and must not advise a send: {stderr}"
+    );
+    assert!(
+        !stderr.contains("send to the existing agent"),
+        "the pane was never proven live: {stderr}"
+    );
+    assert!(
+        !stderr.contains(&format!("{}/send ocrage", rig.dir.display())),
+        "and the send command must not be suggested: {stderr}"
     );
 }

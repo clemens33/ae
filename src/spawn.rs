@@ -658,6 +658,18 @@ enum BriefRecovery {
 /// The brief refusal a dead seat gets, quoted by the reason and the recovery.
 const BRIEF_REFUSED_DEAD: &str = "brief REFUSED — the pane is a shell, not a running agent (it died before or during delivery); NOTHING was pasted";
 
+/// The recovery for a failure that PROVES NOTHING about the pane: re-observe
+/// it through the one liveness owner and choose from that, so a send is never
+/// advised on a guess. Ordinary delivery fails OPEN on an unproven pane, so a
+/// `send` following a wrong guess can execute the brief in a shell.
+fn unproved_recovery(facts: &Facts, dir: &Path, pane: &str, slot: &str) -> BriefRecovery {
+    match deliver::observe_pane_liveness(&facts.server, dir, pane, slot) {
+        deliver::PaneLiveness::Alive => BriefRecovery::Resend,
+        deliver::PaneLiveness::Dead => BriefRecovery::Retire,
+        deliver::PaneLiveness::Unproven => BriefRecovery::Inspect,
+    }
+}
+
 /// Deliver the brief to a tool whose context rode a system-prompt channel.
 #[allow(
     clippy::too_many_arguments,
@@ -684,7 +696,9 @@ fn deliver_brief(
         return Ok(Some(BriefRefusal {
             reason: "input never reached a confirmed-idle state (busy, modal, or unreadable)"
                 .to_owned(),
-            recovery: BriefRecovery::Resend,
+            // Readiness never ran, or ran and never settled: it proves nothing
+            // about liveness, so the recovery comes from a fresh observation.
+            recovery: unproved_recovery(facts, dir, pane, slot),
         }));
     }
     let request = deliver::Request {
@@ -709,36 +723,41 @@ fn deliver_brief(
         Err(failure) => failure.body_file().to_owned(),
     };
     if let Err(failure) = outcome {
-        // A pre-paste refusal did not stage anything, so it must not borrow
-        // the submit uncertainty wording: nothing may be "staged unsent".
-        if let deliver::Failure::NotComposed { .. } = failure {
-            return Ok(Some(BriefRefusal {
-                reason: format!(
+        let (reason, recovery) = match &failure {
+            // A pre-paste refusal did not stage anything, so it must not
+            // borrow the submit uncertainty wording.
+            deliver::Failure::NotComposed { .. } => (
+                format!(
                     "brief REFUSED — the pane was not composed when delivery reached it; NOTHING was pasted. Body preserved at {body_file}"
                 ),
-                recovery: BriefRecovery::Resend,
-            }));
-        }
-        if let deliver::Failure::Unproven { .. } = failure {
-            return Ok(Some(BriefRefusal {
-                reason: format!(
+                BriefRecovery::Resend,
+            ),
+            deliver::Failure::Unproven { .. } => (
+                format!(
                     "brief REFUSED — the pane could not be proven a live agent at delivery time; NOTHING was pasted. Body preserved at {body_file}"
                 ),
-                recovery: BriefRecovery::Inspect,
-            }));
-        }
-        if let deliver::Failure::DeadPane = failure {
-            return Ok(Some(BriefRefusal {
-                reason: BRIEF_REFUSED_DEAD.to_owned(),
-                recovery: BriefRecovery::Retire,
-            }));
-        }
-        return Ok(Some(BriefRefusal {
-            reason: format!(
-                "brief submit UNCONFIRMED ({failure:?}) — body preserved at {body_file}; it may be staged unsent"
+                BriefRecovery::Inspect,
             ),
-            recovery: BriefRecovery::Resend,
-        }));
+            deliver::Failure::DeadPane => (BRIEF_REFUSED_DEAD.to_owned(), BriefRecovery::Retire),
+            // The paste was ACCEPTED by the box; only its Enter went
+            // unconfirmed. That is positive evidence the pane was live.
+            deliver::Failure::Unconfirmed { notice: false, .. } => (
+                format!(
+                    "brief submit UNCONFIRMED ({failure:?}) — body preserved at {body_file}; it may be staged unsent"
+                ),
+                BriefRecovery::Resend,
+            ),
+            // A held lock, a failed paste, a failed store, a failed notice
+            // proof: nothing here proves anything about the pane, so observe
+            // it fresh rather than guessing it live.
+            _ => (
+                format!(
+                    "brief delivery FAILED ({failure:?}) — body preserved at {body_file}; the pane's liveness was never proven"
+                ),
+                unproved_recovery(facts, dir, pane, slot),
+            ),
+        };
+        return Ok(Some(BriefRefusal { reason, recovery }));
     }
     // A booting TUI can swallow the post-paste Enter, leaving the brief staged
     // in the input box.
