@@ -748,12 +748,13 @@ fn deliver_brief(
                 BriefRecovery::Resend,
             ),
             // A held lock, a failed paste, a failed store, a failed notice
-            // proof: nothing here proves anything about the pane, so observe
-            // it fresh rather than guessing it live. No body claim: these
-            // failures carry no published body.
+            // proof: the failure alone does not establish the pane's CURRENT
+            // liveness, so observe it fresh rather than guessing. Some of
+            // these carry a published body and some do not, so the reason
+            // claims none.
             _ => (
                 format!(
-                    "brief delivery FAILED ({failure:?}) — the pane's liveness was never proven"
+                    "brief delivery FAILED ({failure:?}) — the failure does not establish the pane's current liveness"
                 ),
                 unproved_recovery(facts, dir, pane, slot),
             ),
