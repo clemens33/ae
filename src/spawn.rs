@@ -655,8 +655,9 @@ fn deliver_brief(
     // interpreter or a `.exe` launcher makes the live command say something
     // else while the box on screen is still the tool's.
     let model = kind.adapter().input.model;
+    let composed = kind.adapter().input.composed;
     // DO NOT paste into a state we could not confirm idle.
-    if !deliver::wait_input_ready(&facts.server, pane, model, BRIEF_READY_POLLS) {
+    if !deliver::wait_input_ready(&facts.server, pane, model, composed, BRIEF_READY_POLLS) {
         return Ok(Some(
             "input never reached a confirmed-idle state (busy, modal, or unreadable)".to_owned(),
         ));

@@ -350,6 +350,20 @@ pub fn occupancy(region: &str, model: InputModel) -> Occupancy {
     }
 }
 
+/// Does `capture` carry any of an UNMODELLED tool's COMPOSED-UI markers —
+/// positive evidence its input box is drawn and can be pasted into?
+///
+/// The markers are the tool adapter's measured literals (`InputSpec.composed`):
+/// `opencode` 1.18.31 draws the composer's `╹` corner and its `Ask anything…`
+/// placeholder at ~+3.0 s, while its boot frame is blank until then. Any one
+/// marker is enough — the list is a set of affordances, not a conjunction.
+/// An EMPTY list answers false, so a tool with no usable composed signal is
+/// refused by readiness rather than pasted into blind.
+#[must_use]
+pub fn composed_ui(capture: &str, markers: &[&str]) -> bool {
+    markers.iter().any(|marker| capture.contains(marker))
+}
+
 /// Does Claude's live prompt say it accepted a message into its turn queue?
 ///
 /// The phrase is an affordance the TUI draws after a mid-turn submit, not

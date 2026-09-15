@@ -203,6 +203,13 @@ impl InputModel {
 pub(crate) struct InputSpec {
     /// The grammar used to observe the input box.
     pub(crate) model: InputModel,
+    /// Literals that prove an UNMODELLED tool's UI has COMPOSED — any one of
+    /// them present is the positive evidence that its box is drawn and can be
+    /// pasted into. An empty list is a tool with no usable composed signal:
+    /// its readiness REFUSES visibly rather than pasting into a frame ae
+    /// cannot read. Read only by the unmodelled readiness arm; a modelled
+    /// composer answers through [`InputModel`] instead.
+    pub(crate) composed: &'static [&'static str],
     /// Whether launch waits for the harness process to replace the pane shell.
     pub(crate) wait_for_process: bool,
     /// Whether a resumed seat receives its initial turn through a paste.
@@ -318,6 +325,7 @@ const CLAUDE: ToolAdapter = ToolAdapter {
     capture: CaptureSpec::None,
     input: InputSpec {
         model: InputModel::BorderDelimited,
+        composed: &[],
         wait_for_process: true,
         paste_initial_on_resume: false,
     },
@@ -358,6 +366,7 @@ const CODEX: ToolAdapter = ToolAdapter {
     capture: CaptureSpec::HandshakeRolloutOrTui,
     input: InputSpec {
         model: InputModel::StyleDelimited,
+        composed: &[],
         wait_for_process: true,
         paste_initial_on_resume: true,
     },
@@ -398,6 +407,7 @@ const GEMINI: ToolAdapter = ToolAdapter {
     capture: CaptureSpec::ChatHistory,
     input: InputSpec {
         model: InputModel::Unmodelled,
+        composed: &[],
         wait_for_process: false,
         paste_initial_on_resume: false,
     },
@@ -439,6 +449,7 @@ const AGY: ToolAdapter = ToolAdapter {
     capture: CaptureSpec::ConversationDatabaseOrLog,
     input: InputSpec {
         model: InputModel::Unmodelled,
+        composed: &[],
         wait_for_process: false,
         paste_initial_on_resume: false,
     },
@@ -484,6 +495,7 @@ const GROK: ToolAdapter = ToolAdapter {
     capture: CaptureSpec::None,
     input: InputSpec {
         model: InputModel::Unmodelled,
+        composed: &[],
         wait_for_process: false,
         paste_initial_on_resume: false,
     },
@@ -532,6 +544,7 @@ const MUSE: ToolAdapter = ToolAdapter {
         // full-width rule. Proven against real captures — stuck, occupied,
         // accepted, idle — in `tests/fixtures/muse-composer/`.
         model: InputModel::BorderDelimited,
+        composed: &[],
         wait_for_process: false,
         paste_initial_on_resume: false,
     },
@@ -572,6 +585,15 @@ const OPENCODE: ToolAdapter = ToolAdapter {
     capture: CaptureSpec::SessionList,
     input: InputSpec {
         model: InputModel::Unmodelled,
+        // MEASURED on opencode 1.18.31 (2026-09-15, ae-dev panes, 80x24):
+        // the boot frame is BLANK for the first ~2.7 s — stable but not
+        // composed — while the composer's bottom-left corner `╹` and the
+        // `Ask anything…` placeholder appear together with the composed
+        // welcome at ~+3.0 s. The corner is the structural primary (layout,
+        // not copy); the placeholder is the semantic second. Both are UI
+        // text of ONE observed version and an inherited version-drift
+        // hazard: a renamed or restyled composer REFUSES visibly.
+        composed: &["╹", "Ask anything…"],
         wait_for_process: true,
         paste_initial_on_resume: false,
     },
@@ -609,6 +631,7 @@ const UNKNOWN: ToolAdapter = ToolAdapter {
     capture: CaptureSpec::None,
     input: InputSpec {
         model: InputModel::Unmodelled,
+        composed: &[],
         wait_for_process: false,
         paste_initial_on_resume: false,
     },
@@ -813,6 +836,7 @@ mod tests {
                     capture: CaptureSpec::None,
                     input: InputSpec {
                         model: InputModel::BorderDelimited,
+                        composed: &[],
                         wait_for_process: true,
                         paste_initial_on_resume: false,
                     },
@@ -852,6 +876,7 @@ mod tests {
                     capture: CaptureSpec::HandshakeRolloutOrTui,
                     input: InputSpec {
                         model: InputModel::StyleDelimited,
+                        composed: &[],
                         wait_for_process: true,
                         paste_initial_on_resume: true,
                     },
@@ -891,6 +916,7 @@ mod tests {
                     capture: CaptureSpec::ChatHistory,
                     input: InputSpec {
                         model: InputModel::Unmodelled,
+                        composed: &[],
                         wait_for_process: false,
                         paste_initial_on_resume: false,
                     },
@@ -931,6 +957,7 @@ mod tests {
                     capture: CaptureSpec::ConversationDatabaseOrLog,
                     input: InputSpec {
                         model: InputModel::Unmodelled,
+                        composed: &[],
                         wait_for_process: false,
                         paste_initial_on_resume: false,
                     },
@@ -974,6 +1001,7 @@ mod tests {
                     capture: CaptureSpec::None,
                     input: InputSpec {
                         model: InputModel::Unmodelled,
+                        composed: &[],
                         wait_for_process: false,
                         paste_initial_on_resume: false,
                     },
@@ -1013,6 +1041,7 @@ mod tests {
                     capture: CaptureSpec::MuseDatedSessions,
                     input: InputSpec {
                         model: InputModel::BorderDelimited,
+                        composed: &[],
                         wait_for_process: false,
                         paste_initial_on_resume: false,
                     },
@@ -1052,6 +1081,7 @@ mod tests {
                     capture: CaptureSpec::SessionList,
                     input: InputSpec {
                         model: InputModel::Unmodelled,
+                        composed: &["╹", "Ask anything…"],
                         wait_for_process: true,
                         paste_initial_on_resume: false,
                     },
@@ -1096,6 +1126,7 @@ mod tests {
                 capture: CaptureSpec::None,
                 input: InputSpec {
                     model: InputModel::Unmodelled,
+                    composed: &[],
                     wait_for_process: false,
                     paste_initial_on_resume: false,
                 },

@@ -4074,7 +4074,14 @@ fn deliver_launch_prompt(
     err: &mut impl Write,
 ) -> io::Result<()> {
     let model = agent.tool.adapter().input.model;
-    let reason = if deliver::wait_input_ready(server, &agent.pane, model, LAUNCH_READY_POLLS) {
+    let composed = agent.tool.adapter().input.composed;
+    let reason = if deliver::wait_input_ready(
+        server,
+        &agent.pane,
+        model,
+        composed,
+        LAUNCH_READY_POLLS,
+    ) {
         // NO select-pane: `paste-buffer -t` writes to the NAMED pane, and
         // selecting mid-send routes the human's in-flight keystrokes into the
         // target — acute under lead-pair, where two agents share window 0.

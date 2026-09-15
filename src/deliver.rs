@@ -594,8 +594,9 @@ pub fn tool_initializing(server: &ServerId, pane: &str, model: InputModel) -> bo
 ///
 /// This is a ONE-OBSERVATION predicate, so it answers only for a MODELLED
 /// composer. An unmodelled tool has no grammar to recognise readiness from;
-/// for it readiness is a SETTLE — capture, wait, capture again — observed by
-/// [`wait_input_ready`]. Called with an unmodelled model this fails closed.
+/// for it readiness is COMPOSED *and* SETTLED — positive evidence its box is
+/// drawn, over two byte-identical captures — observed by [`wait_input_ready`].
+/// Called with an unmodelled model this fails closed.
 #[must_use]
 pub fn input_ready(server: &ServerId, pane: &str, model: InputModel) -> bool {
     if !model.is_modelled() {
@@ -614,11 +615,19 @@ const READY_POLL: Duration = Duration::from_millis(500);
 /// [`READY_POLL`] periods.
 ///
 /// A modelled pane is asked [`input_ready`] on each poll. An UNMODELLED one is
-/// asked whether it has settled ([`wait_until_settled`]).
+/// asked whether it is composed *and* settled ([`wait_until_settled`]) against
+/// the tool's own composed markers; with no markers it can never be ready and
+/// the caller REFUSES visibly, as it did before the markers were withdrawn.
 #[must_use]
-pub fn wait_input_ready(server: &ServerId, pane: &str, model: InputModel, polls: u32) -> bool {
+pub fn wait_input_ready(
+    server: &ServerId,
+    pane: &str,
+    model: InputModel,
+    composed: &[&str],
+    polls: u32,
+) -> bool {
     if !model.is_modelled() {
-        return wait_until_settled(server, pane, polls);
+        return wait_until_settled(server, pane, composed, polls);
     }
     for _ in 0..polls {
         if input_ready(server, pane, model) {
@@ -629,29 +638,43 @@ pub fn wait_input_ready(server: &ServerId, pane: &str, model: InputModel, polls:
     false
 }
 
-/// Wait, bounded, until an UNMODELLED pane has DRAWN something and STOPPED
-/// CHANGING — the whole of its readiness question, with no per-tool markers.
+/// Wait, bounded, until an UNMODELLED pane is COMPOSED and SETTLED.
 ///
-/// One capture seeds the comparison; every following [`READY_POLL`] takes
-/// another, and two successful, non-empty, byte-identical captures are settled
-/// ([`pane_settled`]). The wait is the existing poll, so the worst case is the
-/// budget the modelled arm has always had.
+/// Stability alone is never readiness: a blank or splash frame can be
+/// byte-identical for seconds while the tool is still initialising, and a
+/// paste into it is silently lost (measured on opencode 1.18.31, 2026-09-15 —
+/// blank until ~+3.0 s, and a paste at +1 s vanished with the tool reporting
+/// success). One capture seeds the comparison; every following [`READY_POLL`]
+/// takes another, and readiness is granted only when that pair is
+/// byte-identical AND the seeded capture carries one of the tool's composed
+/// markers ([`unmodelled_ready`]).
 ///
-/// The marker list this replaces was measured wrong on 2026-09-14: over 60 rows
-/// of three live panes, `OpenCode` matched none of its strings, so every
-/// `OpenCode` spawn failed by construction.
+/// A tool with NO markers (`composed` empty) can never be ready here — the
+/// wait runs out and the caller refuses visibly. That is the standing
+/// behaviour for gemini, agy, grok and unknown: they are unmodelled and carry
+/// no usable composed signal. This slice did not give them one.
 #[must_use]
-fn wait_until_settled(server: &ServerId, pane: &str, polls: u32) -> bool {
+fn wait_until_settled(server: &ServerId, pane: &str, composed: &[&str], polls: u32) -> bool {
     let mut previous = transport::capture_screen(server, pane, Styling::Plain);
     for _ in 1..polls {
         std::thread::sleep(READY_POLL);
         let current = transport::capture_screen(server, pane, Styling::Plain);
-        if pane_settled(previous.as_deref(), current.as_deref()) {
+        if unmodelled_ready(previous.as_deref(), current.as_deref(), composed) {
             return true;
         }
         previous = current;
     }
     false
+}
+
+/// The whole readiness verdict for one unmodelled capture pair: the seeded
+/// frame carries a COMPOSED marker, and the two frames are byte-identical and
+/// non-empty ([`pane_settled`]). Pure, so both halves are pinnable without
+/// tmux — and the composed half is the one `e737b6b3` dropped, which let a
+/// blank boot frame pass as ready.
+fn unmodelled_ready(before: Option<&str>, after: Option<&str>, composed: &[&str]) -> bool {
+    before.is_some_and(|capture| region::composed_ui(capture, composed))
+        && pane_settled(before, after)
 }
 
 /// Paste `text` into `pane` and press Enter, verifying the submit.
@@ -979,11 +1002,19 @@ fn lock_target(dir: &Path, pane: &str) -> Option<std::fs::File> {
 mod tests {
     use super::{
         Failure, Request, Shape, TargetInput, UNVERIFIED, buffer_name, choose_input, frame,
-        is_name_safe, pane_settled, settle_for, store_body,
+        is_name_safe, pane_settled, settle_for, store_body, unmodelled_ready,
     };
     use crate::inventory::ServerId;
-    use crate::tool::InputModel;
+    use crate::tool::{InputModel, ToolKind};
     use std::time::Duration;
+
+    /// The REAL opencode boot frame: blank, stable for ~2.7 s. This is the
+    /// frame `e737b6b3` accepted as ready.
+    const OPENCODE_BOOT: &str =
+        include_str!("../tests/fixtures/opencode-composer/opencode-boot-frame.esc");
+    /// The REAL opencode composed frame: the welcome screen with its composer.
+    const OPENCODE_COMPOSED: &str =
+        include_str!("../tests/fixtures/opencode-composer/opencode-composed-frame.esc");
 
     fn request<'a>(actor: &'a str, body: &'a str, shape: Shape) -> Request<'a> {
         Request {
@@ -1229,15 +1260,73 @@ mod tests {
         );
     }
 
+    /// The markers as the tool table hands them to `wait_input_ready`.
+    fn opencode_markers() -> &'static [&'static str] {
+        ToolKind::OpenCode.adapter().input.composed
+    }
+
     #[test]
-    fn a_stable_nonempty_pane_is_settled_even_with_none_of_the_old_markers() {
-        // The measured OpenCode shape: `composed_ui` matched none of its three
-        // strings, so readiness could never be recognised for this pane.
-        let opencode = "opencode\n  ~/projects/clemens33/ae\n  build\n";
-        assert!(!opencode.contains('❯'));
-        assert!(!opencode.contains("bypass permissions"));
-        assert!(!opencode.contains("for shortcuts"));
-        assert!(pane_settled(Some(opencode), Some(opencode)));
+    fn an_opencode_boot_frame_is_stable_but_not_composed_and_never_ready() {
+        // The regression, pinned: this frame is byte-identical and non-empty,
+        // so the OLD settle accepted it — but it carries no composed marker,
+        // and a paste into it is lost.
+        assert!(
+            pane_settled(Some(OPENCODE_BOOT), Some(OPENCODE_BOOT)),
+            "the boot frame IS settled: stability alone would call it ready"
+        );
+        assert!(
+            !super::region::composed_ui(OPENCODE_BOOT, opencode_markers()),
+            "a blank boot frame carries neither marker"
+        );
+        assert!(
+            !unmodelled_ready(Some(OPENCODE_BOOT), Some(OPENCODE_BOOT), opencode_markers()),
+            "composed AND settled, both: a stable blank frame is never ready"
+        );
+    }
+
+    #[test]
+    fn an_opencode_composed_frame_is_composed_and_ready() {
+        assert!(
+            OPENCODE_COMPOSED.contains('╹'),
+            "the composer's structural corner is load-bearing in the fixture"
+        );
+        assert!(
+            OPENCODE_COMPOSED.contains("Ask anything…"),
+            "the composer's placeholder is load-bearing in the fixture"
+        );
+        assert!(super::region::composed_ui(
+            OPENCODE_COMPOSED,
+            opencode_markers()
+        ));
+        assert!(
+            unmodelled_ready(
+                Some(OPENCODE_COMPOSED),
+                Some(OPENCODE_COMPOSED),
+                opencode_markers()
+            ),
+            "the real composed frame is ready"
+        );
+        assert!(
+            !unmodelled_ready(
+                Some(OPENCODE_COMPOSED),
+                Some(OPENCODE_BOOT),
+                opencode_markers()
+            ),
+            "and a frame that keeps changing is not, however composed its seed"
+        );
+    }
+
+    #[test]
+    fn a_tool_with_no_composed_signal_is_never_ready_however_settled() {
+        // gemini, agy, grok and the unknown fallback carry NO composed
+        // markers: for them readiness can only refuse, visibly, exactly as it
+        // did before the settle arm was introduced.
+        let stable = "a settled frame of some tool\n";
+        assert!(pane_settled(Some(stable), Some(stable)));
+        assert!(
+            !unmodelled_ready(Some(stable), Some(stable), &[]),
+            "an empty marker list is a refusal, not a fallback to settled-only"
+        );
     }
 
     #[test]
