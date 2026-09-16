@@ -26,7 +26,7 @@ ae usage [name…] [--json]
                        only the named live sessions
 ae board [session…] [--since <ts>] [--json]
                        The filtered cross-fleet record: genuine human turns from
-                       every seat's harness transcript (Claude Code and Codex)
+                       every seat's harness transcript (Claude Code, Codex and Grok)
 ae orchestrator        Start or reattach the orchestrator seat: a local session named
                        orchestrator, drawn as a `◆` button after the menu glyph
 ae orchestrator --popup
@@ -980,7 +980,7 @@ but archive metadata carries no harness ids.
 Shows the filtered cross-fleet record: genuine human turns from every seat's
 harness transcript, oldest first, with ae plumbing excluded. With no names it
 reads every running session; named sessions are read as given, stopped or
-running. The board reads Claude Code and Codex transcripts; every other seat renders
+running. The board reads Claude Code, Codex and Grok transcripts; every other seat renders
 an explicit `coverage incomplete: <session:seat> — <reason>` row naming its
 phase, never a silent subset.
 

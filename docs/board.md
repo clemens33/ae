@@ -48,8 +48,11 @@ ship the slice today
 
 ## Phases
 
-1b Claude CLI · 2 codex (this slice) · 3a grok · 3b muse · 4 `--follow` ·
+1b Claude CLI · 2 codex · 3a grok (this slice) · 3b muse · 4 `--follow` ·
 5 agy · 6 OpenCode (after its ruling) · 7 assistant rows · 8 predecessors.
 
 Codex reads the seat's current rollout only, and only the `response_item`
 record of each user turn — never its older `event_msg` twin.
+
+Grok reads the seat's current `updates.jsonl` only, one `user_message_chunk`
+per turn, time from `_meta.agentTimestampMs` millis when present.
