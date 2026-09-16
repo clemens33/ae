@@ -49,6 +49,7 @@ Two agents in own tmux windows, talking to each other through helpers linked to 
 - [Quick start](getting-started/quick-start.md)
 - [Configure agents and layouts](getting-started/config.md)
 - [Browse the command reference](reference/commands.md)
+- [Message board](board.md)
 - [Telegram bridge + orchestrator-centric routing](reference/telegram.md)
 
 ### Doctrine

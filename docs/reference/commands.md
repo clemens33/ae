@@ -24,6 +24,9 @@ ae quota               Show bounded local quota snapshots for every configured a
 ae usage [name…] [--json]
                        Show offline API-equivalent usage for all live sessions, or
                        only the named live sessions
+ae board [session…] [--since <ts>] [--json]
+                       The filtered cross-fleet record: genuine human turns from
+                       every seat's harness transcript (phase 1b: Claude only)
 ae orchestrator        Start or reattach the orchestrator seat: a local session named
                        orchestrator, drawn as a `◆` button after the menu glyph
 ae orchestrator --popup
@@ -971,6 +974,21 @@ unknown and partial, never a priced zero. Malformed required counters are unread
 final event follows a valid counter, the valid counter remains as an approximate observation. Ended
 archives stay out of scope: retained vendor transcripts may remain unless `--purge-history` was used,
 but archive metadata carries no harness ids.
+
+## `ae board`
+
+Shows the filtered cross-fleet record: genuine human turns from every seat's
+harness transcript, oldest first, with ae plumbing excluded. With no names it
+reads every running session; named sessions are read as given, stopped or
+running. Phase 1b reads Claude Code transcripts only; every other seat renders
+an explicit `coverage incomplete: <session:seat> — <reason>` row naming its
+phase, never a silent subset.
+
+The first line is always the scope statement: each seat shows its CURRENT
+conversation only, and a seat that resumed into a new conversation shows that
+conversation alone. `--since <ts>` (strict `YYYY-MM-DDTHH:MM:SSZ`) keeps rows
+at or after the instant; `--json` prints NDJSON — one `{"kind":"scope"}` line,
+then `coverage` lines, then `row` lines. See [the board](../board.md).
 
 ## Session helpers
 
