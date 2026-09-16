@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.86] - 2026-09-16
+- Teach the board a Grok reader over updates.jsonl
+- Locate Grok seats by uuid scan and read them through the board door
+- Cover Grok seats: unit rows, planted seat, locate failures
+- Fuzz the Grok board reader with synthetic updates seeds
+- Document Grok board coverage in help and board docs
+- Drop a semicolon the lint gate refuses
+
 ## [v2026.9.85] - 2026-09-16
 - Add GitHub bug report issue form
 - Document bug filing checklist in troubleshooting guide
