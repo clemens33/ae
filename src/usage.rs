@@ -269,7 +269,7 @@ fn observe_entry(
     }
 }
 
-fn source_for(
+pub(crate) fn source_for(
     entry: &RosterEntry,
     source: UsageSource,
     home: Option<&Path>,
@@ -436,10 +436,10 @@ fn observe_codex(
 
 type ClaudeFiles = Option<(claude::Parsed, Vec<claude::Parsed>, Option<i64>, bool)>;
 
-struct TranscriptFile {
-    path: PathBuf,
-    metadata: std::fs::Metadata,
-    modified: Option<SystemTime>,
+pub(crate) struct TranscriptFile {
+    pub(crate) path: PathBuf,
+    pub(crate) metadata: std::fs::Metadata,
+    pub(crate) modified: Option<SystemTime>,
 }
 
 struct TranscriptBudget {
@@ -462,7 +462,58 @@ impl TranscriptBudget {
     }
 }
 
+/// What the transcript walk found: the parent every consumer needs, plus the
+/// sidechains only usage prices.
+struct LocatedClaude {
+    parent: Option<TranscriptFile>,
+    sidechains: Vec<TranscriptFile>,
+    observed_at: Option<i64>,
+}
+
 fn claude_files(store: &Path, id: &str, budget: &mut Budget) -> Result<ClaudeFiles, Coverage> {
+    let located = locate_claude(store, id, budget, true)?;
+    let LocatedClaude {
+        parent,
+        sidechains,
+        observed_at,
+    } = located;
+    let Some(parent) = parent else {
+        return Ok(None);
+    };
+    let mut transcript_budget = TranscriptBudget::new();
+    let (parent, mut truncated) = parse_transcript(&parent, &mut transcript_budget)?;
+    let mut parsed_sidechains = Vec::new();
+    for sidechain in sidechains {
+        let (parsed, sidechain_truncated) = parse_transcript(&sidechain, &mut transcript_budget)?;
+        truncated |= sidechain_truncated;
+        parsed_sidechains.push(parsed);
+    }
+    Ok(Some((parent, parsed_sidechains, observed_at, truncated)))
+}
+
+/// Locate one seat's parent Claude transcript: the LOCATE half of
+/// [`claude_files`], shared with the message board, which streams the located
+/// file through its own door. Returns the located file with its lstat metadata
+/// so the reader can prove the file it opens is the file that was found.
+pub(crate) fn locate_claude_parent(
+    store: &Path,
+    id: &str,
+    budget: &mut Budget,
+) -> Result<Option<TranscriptFile>, Coverage> {
+    // Skip `subagents/` entirely: subagent transcripts carry the parent's
+    // prompts as `user` turns and would masquerade as the human on the board.
+    locate_claude(store, id, budget, false).map(|located| located.parent)
+}
+
+/// The walk [`claude_files`] and [`locate_claude_parent`] share. With
+/// sidechains it is usage's walk byte for byte — same claims, same order,
+/// same errors; without them it never descends into `subagents/`.
+fn locate_claude(
+    store: &Path,
+    id: &str,
+    budget: &mut Budget,
+    want_sidechains: bool,
+) -> Result<LocatedClaude, Coverage> {
     if !budget.claim_file() {
         return Err(Coverage::Truncated);
     }
@@ -493,6 +544,9 @@ fn claude_files(store: &Path, id: &str, budget: &mut Budget) -> Result<ClaudeFil
             observed_at = newer(observed_at, found.modified.and_then(epoch));
             parent = Some(found);
         }
+        if !want_sidechains {
+            continue;
+        }
         let Some(conversation) = derived_directory(&project, id, budget)? else {
             continue;
         };
@@ -509,18 +563,11 @@ fn claude_files(store: &Path, id: &str, budget: &mut Budget) -> Result<ClaudeFil
             }
         }
     }
-    let Some(parent) = parent else {
-        return Ok(None);
-    };
-    let mut transcript_budget = TranscriptBudget::new();
-    let (parent, mut truncated) = parse_transcript(&parent, &mut transcript_budget)?;
-    let mut parsed_sidechains = Vec::new();
-    for sidechain in sidechains {
-        let (parsed, sidechain_truncated) = parse_transcript(&sidechain, &mut transcript_budget)?;
-        truncated |= sidechain_truncated;
-        parsed_sidechains.push(parsed);
-    }
-    Ok(Some((parent, parsed_sidechains, observed_at, truncated)))
+    Ok(LocatedClaude {
+        parent,
+        sidechains,
+        observed_at,
+    })
 }
 
 fn derived_directory(
@@ -784,7 +831,7 @@ fn same_file(_: &std::fs::Metadata, _: &std::fs::Metadata) -> bool {
     true
 }
 
-fn valid_id(id: Option<&str>) -> Option<String> {
+pub(crate) fn valid_id(id: Option<&str>) -> Option<String> {
     let id = id?;
     let canonical = crate::archive::canonical_uuid(id);
     (canonical == id).then_some(canonical)
