@@ -33,7 +33,7 @@ headers with bodies:
 
 ```text
 scope: current conversations only (phase 1b) — a seat that resumed keeps only its current transcript
-coverage incomplete: demo:colead — codex: phase 2
+coverage incomplete: demo:colead — grok: phase 3a
 ## 2026-09-16T09:00:00.500000Z demo:lead
 ship the slice today
 
@@ -48,5 +48,8 @@ ship the slice today
 
 ## Phases
 
-1b Claude CLI (this slice) · 2 codex · 3a grok · 3b muse · 4 `--follow` ·
+1b Claude CLI · 2 codex (this slice) · 3a grok · 3b muse · 4 `--follow` ·
 5 agy · 6 OpenCode (after its ruling) · 7 assistant rows · 8 predecessors.
+
+Codex reads the seat's current rollout only, and only the `response_item`
+record of each user turn — never its older `event_msg` twin.
