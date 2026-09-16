@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.92] - 2026-09-16
+- Follow the board from identity-bound transcript offsets
+- Document and pin board follow mode
+- Share one seat locator and one reader dispatch
+
 ## [v2026.9.91] - 2026-09-16
 - Add the Muse column to the agent capability table
 - Drop the Codex project-doc turn from the board
