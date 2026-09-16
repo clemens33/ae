@@ -417,9 +417,9 @@ pub fn observe(inputs: &Inputs<'_>, since_micros: Option<i64>) -> Observation {
     }
 }
 
-/// Read one roster seat: Claude, Codex, Grok and Muse transcripts stream
-/// through the door into their reader; every other harness names its phase in
-/// a coverage row.
+/// Read one roster seat: locate it through THE one locator, stream it through
+/// the door, read it with the one dispatch for its tool. Every refusal is a
+/// coverage row, never a silent subset.
 fn observe_seat(
     session: &str,
     entry: &crate::meta::RosterEntry,
@@ -430,242 +430,44 @@ fn observe_seat(
 ) {
     let actor = format!("{}:{}", session, entry.name);
     let tool = ToolKind::from_binary_name(entry.binary.as_deref().unwrap_or(""));
-    let source = tool.adapter().usage.source;
-    if matches!(source, UsageSource::CodexRollout) {
-        observe_codex_seat(entry, home, &actor, tool, rows, coverage, seeds);
-        return;
-    }
-    // String dispatch, as `unsupported_reason` does: literals live in tool.rs.
-    if tool.adapter().name == "grok" {
-        observe_grok_seat(entry, home, &actor, tool, rows, coverage, seeds);
-        return;
-    }
-    if tool.adapter().name == "muse" {
-        observe_muse_seat(entry, home, &actor, tool, rows, coverage, seeds);
-        return;
-    }
-    if !matches!(source, UsageSource::ClaudeTranscripts) {
-        coverage.push(Coverage {
-            actor,
-            reason: unsupported_reason(tool).to_owned(),
-        });
-        return;
-    }
-    let cover = |reason: String| Coverage {
-        actor: actor.clone(),
-        reason,
-    };
-    let Some(id) = crate::usage::valid_id(entry.harness_session.as_deref()) else {
-        coverage.push(cover("invalid or missing conversation id".to_owned()));
-        return;
-    };
-    let store = match crate::usage::source_for(entry, UsageSource::ClaudeTranscripts, home) {
-        Ok(store) => store,
-        Err(reason) => {
-            coverage.push(cover(reason));
-            return;
-        }
-    };
-    let mut budget = Budget::new();
-    let located = match crate::usage::locate_claude_parent(&store, &id, &mut budget) {
-        Ok(located) => located,
-        Err(failure) => {
-            coverage.push(cover(locate_reason(&failure)));
-            return;
-        }
-    };
-    let Some(transcript) = located else {
-        coverage.push(cover("transcript not found".to_owned()));
-        return;
-    };
-    let streamed = match stream_transcript(&transcript.path, &transcript.metadata, 0) {
-        Ok(streamed) => streamed,
-        Err(failure) => {
-            coverage.push(cover(door_reason(failure).to_owned()));
-            return;
-        }
-    };
-    let file = file_identity(&transcript.path, &transcript.metadata);
-    seeds.push(seed(&actor, &transcript.metadata, &streamed));
-    let (mut seat_rows, mut seat_coverage) = claude::read_stream(&streamed, &actor, &file, tool);
-    rows.append(&mut seat_rows);
-    coverage.append(&mut seat_coverage);
-}
-
-/// Read one Codex roster seat through usage's source, quota's finder and the
-/// EXISTING door — the locator hands over its lstat, no second stat.
-fn observe_codex_seat(
-    entry: &crate::meta::RosterEntry,
-    home: Option<&Path>,
-    actor: &str,
-    tool: ToolKind,
-    rows: &mut Vec<Row>,
-    coverage: &mut Vec<Coverage>,
-    seeds: &mut Vec<SeatSeed>,
-) {
-    let cover = |reason: String| Coverage {
-        actor: actor.to_owned(),
-        reason,
-    };
-    let Some(id) = crate::usage::valid_id(entry.harness_session.as_deref()) else {
-        coverage.push(cover("invalid or missing conversation id".to_owned()));
-        return;
-    };
-    let root = match crate::usage::source_for(entry, UsageSource::CodexRollout, home) {
-        Ok(root) => root,
-        Err(reason) => {
-            coverage.push(cover(reason));
-            return;
-        }
-    };
-    let mut budget = Budget::new();
-    let rollout = match crate::quota::find_codex_rollout(&root, &id, &mut budget) {
-        Ok(Bounded::Ready(Some(rollout))) => rollout,
-        Ok(Bounded::Ready(None)) => {
-            coverage.push(cover("rollout not found".to_owned()));
-            return;
-        }
-        Ok(Bounded::Truncated) => {
-            coverage.push(cover("rollout scan truncated".to_owned()));
-            return;
-        }
-        // Quota's errors name the cause already; the message carries through.
-        Err(error) => {
-            coverage.push(cover(error.to_string()));
-            return;
-        }
-    };
-    let streamed = match stream_transcript(rollout.path(), rollout.metadata(), 0) {
-        Ok(streamed) => streamed,
-        Err(failure) => {
-            coverage.push(cover(door_reason(failure).to_owned()));
-            return;
-        }
-    };
-    let file = file_identity(rollout.path(), rollout.metadata());
-    seeds.push(seed(actor, rollout.metadata(), &streamed));
-    let (mut seat_rows, mut seat_coverage) = codex::read_stream(&streamed, actor, &file, tool);
-    rows.append(&mut seat_rows);
-    coverage.append(&mut seat_coverage);
-}
-
-/// Read one Grok roster seat: scan `<home>/.grok/sessions` for the uuid dir —
-/// the percent-encoded cwd is never derived — then stream it through the door.
-fn observe_grok_seat(
-    entry: &crate::meta::RosterEntry,
-    home: Option<&Path>,
-    actor: &str,
-    tool: ToolKind,
-    rows: &mut Vec<Row>,
-    coverage: &mut Vec<Coverage>,
-    seeds: &mut Vec<SeatSeed>,
-) {
-    let cover = |reason: String| Coverage {
-        actor: actor.to_owned(),
-        reason,
-    };
-    let Some(id) = crate::usage::valid_id(entry.harness_session.as_deref()) else {
-        coverage.push(cover("invalid or missing conversation id".to_owned()));
-        return;
-    };
-    let Some(home) = home else {
-        coverage.push(cover("legacy config home unavailable".to_owned()));
-        return;
-    };
-    // The `.grok` literal lives in the adapter row alone, as quota reads it.
-    let Some(dir) = tool.adapter().quota.default_home else {
-        coverage.push(cover("unsupported tool".to_owned()));
-        return;
-    };
-    let mut budget = Budget::new();
-    let root = home.join(dir).join("sessions");
-    let located = match locate_grok_updates(&root, &id, &mut budget) {
+    let (path, metadata) = match locate_seat(entry, home) {
         Ok(located) => located,
         Err(reason) => {
-            coverage.push(cover(reason));
-            return;
-        }
-    };
-    let Some(found) = located else {
-        coverage.push(cover("transcript not found".to_owned()));
-        return;
-    };
-    let streamed = match stream_transcript(&found.path, &found.metadata, 0) {
-        Ok(streamed) => streamed,
-        Err(failure) => {
-            coverage.push(cover(door_reason(failure).to_owned()));
-            return;
-        }
-    };
-    let file = file_identity(&found.path, &found.metadata);
-    seeds.push(seed(actor, &found.metadata, &streamed));
-    let (mut seat_rows, mut seat_coverage) = grok::read_stream(&streamed, actor, &file, tool);
-    rows.append(&mut seat_rows);
-    coverage.append(&mut seat_coverage);
-}
-
-/// Read one Muse roster seat: the recorded id names its day-dir basename; the
-/// finder, shared lstat and door stream the transcript into the reader.
-fn observe_muse_seat(
-    entry: &crate::meta::RosterEntry,
-    home: Option<&Path>,
-    actor: &str,
-    tool: ToolKind,
-    rows: &mut Vec<Row>,
-    coverage: &mut Vec<Coverage>,
-    seeds: &mut Vec<SeatSeed>,
-) {
-    let cover = |reason: String| Coverage {
-        actor: actor.to_owned(),
-        reason,
-    };
-    // Capture's grammar, never usage's: a Muse id is a lowercase UUID dir
-    // basename, and that grammar refuses every path separator by construction.
-    let id = entry.harness_session.as_deref().unwrap_or_default();
-    if !crate::session_launch::capture::is_lowercase_uuid(id) {
-        coverage.push(cover("invalid or missing conversation id".to_owned()));
-        return;
-    }
-    let Some(home) = home else {
-        coverage.push(cover("legacy config home unavailable".to_owned()));
-        return;
-    };
-    let mut budget = Budget::new();
-    let located =
-        match crate::session_launch::capture::find_muse_session_file(home, id, &mut budget) {
-            Ok(located) => located,
-            Err(reason) => {
-                coverage.push(cover(reason));
-                return;
-            }
-        };
-    let Some(path) = located else {
-        coverage.push(cover("transcript not found".to_owned()));
-        return;
-    };
-    let metadata = match lstat_regular(&path) {
-        Ok(Some(metadata)) => metadata,
-        Ok(None) => {
-            coverage.push(cover("transcript not found".to_owned()));
-            return;
-        }
-        Err(reason) => {
-            coverage.push(cover(reason));
+            coverage.push(Coverage { actor, reason });
             return;
         }
     };
     let streamed = match stream_transcript(&path, &metadata, 0) {
         Ok(streamed) => streamed,
         Err(failure) => {
-            coverage.push(cover(door_reason(failure).to_owned()));
+            coverage.push(Coverage {
+                actor,
+                reason: door_reason(failure).to_owned(),
+            });
             return;
         }
     };
     let file = file_identity(&path, &metadata);
-    seeds.push(seed(actor, &metadata, &streamed));
-    let (mut seat_rows, mut seat_coverage) = muse::read_stream(&streamed, actor, &file, tool);
+    seeds.push(seed(&actor, &metadata, &streamed));
+    let (mut seat_rows, mut seat_coverage) = reader_for(tool)(&streamed, &actor, &file, tool);
     rows.append(&mut seat_rows);
     coverage.append(&mut seat_coverage);
+}
+/// One harness reader: the door's stream in, rows and coverage out.
+pub(crate) type Reader = fn(&Streamed, &str, &str, ToolKind) -> (Vec<Row>, Vec<Coverage>);
+
+/// The reader for one transcript stream, chosen by its tool: ONE dispatch for
+/// the one-shot read and the follow's reassembled batches alike.
+pub(crate) fn reader_for(source: ToolKind) -> Reader {
+    if matches!(source.adapter().usage.source, UsageSource::CodexRollout) {
+        return codex::read_stream;
+    }
+    // String dispatch, as `unsupported_reason` does: literals live in tool.rs.
+    match source.adapter().name {
+        "grok" => grok::read_stream,
+        "muse" => muse::read_stream,
+        _ => claude::read_stream,
+    }
 }
 
 /// ONE lstat for every board locator: the candidate proved a regular file
@@ -695,10 +497,10 @@ fn lstat_regular(candidate: &Path) -> Result<Option<std::fs::Metadata>, String> 
     Ok(Some(metadata))
 }
 
-/// Locate one roster seat's current transcript through the EXISTING locators —
-/// the follow poll's impure half, the twin of `observe_seat`'s own locating.
-/// The returned reason IS the coverage row's text.
-fn locate_follow(
+/// THE seat locator, one owner for the one-shot read and every follow poll:
+/// resolve the harness's own store, then its current transcript. The returned
+/// reason IS the coverage row's text.
+fn locate_seat(
     entry: &crate::meta::RosterEntry,
     home: Option<&Path>,
 ) -> Result<(PathBuf, std::fs::Metadata), String> {
@@ -801,7 +603,7 @@ fn follow_seat(
 ) -> follow::Snapshot {
     let actor = format!("{}:{}", session, entry.name);
     let tool = ToolKind::from_binary_name(entry.binary.as_deref().unwrap_or(""));
-    let (path, metadata) = match locate_follow(entry, home) {
+    let (path, metadata) = match locate_seat(entry, home) {
         Ok(located) => located,
         Err(reason) => {
             return follow::Snapshot {

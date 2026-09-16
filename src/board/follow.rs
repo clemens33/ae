@@ -11,8 +11,8 @@
 use std::collections::BTreeMap;
 use std::time::SystemTime;
 
-use super::{Coverage, Observation, Row, SeatSeed, Streamed};
-use crate::tool::{ToolKind, UsageSource};
+use super::{Coverage, Observation, SeatSeed, Streamed, reader_for};
+use crate::tool::ToolKind;
 
 /// The follow's poll cadence: the driver sleeps this between polls.
 pub(crate) const POLL_SECS: u64 = 5;
@@ -187,7 +187,23 @@ impl Follow {
             }
             match streamed {
                 None => {}
-                Some(Err(reason)) => self.steady(&actor, vec![reason.to_owned()], &mut coverage),
+                Some(Err(reason)) => {
+                    if let Arm::Rescan(_) = arm {
+                        // The generation change is KNOWN even when its first
+                        // read failed: bind the new identity at zero so the
+                        // loud line names it ONCE and the retry streams the
+                        // whole generation from its start.
+                        self.seats.insert(
+                            actor.clone(),
+                            Seat {
+                                identity: loaded.observed.identity,
+                                mtime: loaded.observed.mtime,
+                                committed: 0,
+                            },
+                        );
+                    }
+                    self.steady(&actor, vec![reason.to_owned()], &mut coverage);
+                }
                 Some(Ok(streamed)) => {
                     let (mut seat_rows, seat_coverage) =
                         reader_for(loaded.source)(&streamed, &actor, &loaded.file, loaded.source);
@@ -234,21 +250,6 @@ impl Follow {
             }
         }
         self.printed.insert(actor.to_owned(), reasons);
-    }
-}
-
-/// One harness reader: the door's stream in, rows and coverage out.
-type Reader = fn(&Streamed, &str, &str, ToolKind) -> (Vec<Row>, Vec<Coverage>);
-
-/// The reader for a tool's rows: the same dispatch `observe_seat` makes.
-fn reader_for(source: ToolKind) -> Reader {
-    if matches!(source.adapter().usage.source, UsageSource::CodexRollout) {
-        return super::codex::read_stream;
-    }
-    match source.adapter().name {
-        "grok" => super::grok::read_stream,
-        "muse" => super::muse::read_stream,
-        _ => super::claude::read_stream,
     }
 }
 
@@ -382,6 +383,33 @@ mod tests {
         let small = &full[..(len / 2) as usize];
         let batch = poll(&mut follow, "s:lead", located(2, len / 2, 4), small);
         assert_eq!(batch.coverage[0].reason, "transcript replaced — rescanned");
+    }
+
+    #[test]
+    fn a_failed_rescan_names_the_generation_once_and_retries_from_zero() {
+        let mut follow = Follow::seeded(&[], &[], None);
+        let first = format!("{}\n", human("2026-09-16T09:00:00Z", "one"));
+        poll(
+            &mut follow,
+            "s:lead",
+            located(1, first.len() as u64, 1),
+            &first,
+        );
+        let replaced = format!("{}\n", human("2026-09-16T09:01:00Z", "two"));
+        let observed = located(2, replaced.len() as u64, 2);
+        let batch = follow.step(vec![Snapshot {
+            actor: "s:lead".to_owned(),
+            located: Ok(loaded(observed)),
+            streamed: Some(Err("transcript unreadable")),
+        }]);
+        assert_eq!(batch.coverage[0].reason, "transcript replaced — rescanned");
+        let batch = poll(&mut follow, "s:lead", observed, &replaced);
+        assert_eq!(batch.rows.len(), 1, "the new generation reads from zero");
+        assert_eq!(batch.rows[0].offset, 0);
+        assert!(
+            batch.coverage.is_empty(),
+            "the generation change is named once, not every poll"
+        );
     }
 
     #[test]
