@@ -1885,14 +1885,16 @@ fn run_brief(
     Ok(0)
 }
 
-/// `ae board [session…] [--since <ts>] [--json]` — the filtered cross-fleet
-/// record, derived on read from harness transcripts.
+/// `ae board [session…] [--since <ts>] [--json] [--follow]` — the filtered
+/// cross-fleet record, derived on read from harness transcripts.
 ///
 /// The impure half of the command, and deliberately thin: it resolves WHICH
 /// sessions the argv names — explicit names straight from durable state,
 /// stopped or running, liveness never consulted; no names from the running
 /// world `ae list` reports — and hands each one to [`board::observe`], which
-/// owns every read of a transcript.
+/// owns every read of a transcript. `--follow` keeps the same code path for
+/// the first pass, then loops [`board::follow_poll`] every
+/// [`board::follow::POLL_SECS`] seconds over the same fixed selection.
 fn run_board(
     tail: &[String],
     world: Option<&listing::World>,
@@ -1946,15 +1948,27 @@ fn run_board(
         selected
     };
     let home = doors::home();
-    let observation = board::observe(
-        &board::Inputs {
-            home: home.as_deref(),
-            sessions: &selected,
-        },
-        args.since_micros,
-    );
+    let inputs = board::Inputs {
+        home: home.as_deref(),
+        sessions: &selected,
+    };
+    let observation = board::observe(&inputs, args.since_micros);
     write!(out, "{}", board::render(&observation, args.json))?;
-    Ok(0)
+    if !args.follow {
+        return Ok(0);
+    }
+    // The follow: the pass above IS the one-shot board, and every poll after
+    // it appends only what is new. Selection is fixed at start; Ctrl-C ends it
+    // and no signal handling is installed.
+    out.flush()?;
+    let mut follow =
+        board::follow::Follow::seeded(&observation.seeds, &observation.coverage, args.since_micros);
+    loop {
+        std::thread::sleep(std::time::Duration::from_secs(board::follow::POLL_SECS));
+        let batch = board::follow_poll(&inputs, &mut follow);
+        write!(out, "{}", board::render_batch(&batch, args.json))?;
+        out.flush()?;
+    }
 }
 
 /// The session the calling pane sits in, on the server this invocation would

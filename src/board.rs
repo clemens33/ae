@@ -11,13 +11,14 @@
 
 pub mod claude;
 pub mod codex;
+pub(crate) mod follow;
 pub mod grok;
 pub mod muse;
 
 use std::fmt::Write as _;
 use std::fs::File;
-use std::io::{BufRead, BufReader, Read as _};
-use std::path::Path;
+use std::io::{BufRead, BufReader, Read as _, Seek as _};
+use std::path::{Path, PathBuf};
 
 use crate::json::Value;
 use crate::quota::{Bounded, Budget};
@@ -78,7 +79,7 @@ pub fn collect(mut rows: Vec<Row>) -> Vec<Row> {
 pub(crate) const LINE_CAP: usize = 1024 * 1024;
 
 /// What `ae board` prints when its argv does not parse.
-pub const USAGE: &str = "Usage: ae board [session…] [--since <ts>] [--json]\n\n  session       read this session (repeatable; default is every running session)\n  --since <ts>  keep rows at or after <ts>, strict YYYY-MM-DDTHH:MM:SSZ\n  --json        NDJSON: one scope line, coverage lines, then row lines\n";
+pub const USAGE: &str = "Usage: ae board [session…] [--since <ts>] [--json] [--follow]\n\n  session       read this session (repeatable; default is every running session)\n  --since <ts>  keep rows at or after <ts>, strict YYYY-MM-DDTHH:MM:SSZ\n  --json        NDJSON: one scope line, coverage lines, then row lines\n  --follow      keep printing new rows and coverage changes every 5 s until\n                interrupted; the selection is fixed at start (Ctrl-C to stop)\n";
 
 /// A parsed `ae board` argv.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -89,6 +90,8 @@ pub struct Args {
     pub since_micros: Option<i64>,
     /// `--json`: NDJSON instead of text.
     pub json: bool,
+    /// `--follow`: print the one-shot board, then keep printing new rows.
+    pub follow: bool,
 }
 
 /// The argv did not parse; the offending token, when there is one.
@@ -115,8 +118,9 @@ impl Usage {
 /// assert_eq!(parse(&[]), Ok(Args::default()));
 /// assert_eq!(
 ///     parse(&words(&["aedev", "--json"])),
-///     Ok(Args { sessions: vec!["aedev".to_owned()], since_micros: None, json: true })
+///     Ok(Args { sessions: vec!["aedev".to_owned()], since_micros: None, json: true, follow: false })
 /// );
+/// assert!(parse(&words(&["--follow"])).is_ok_and(|args| args.follow));
 /// assert!(parse(&words(&["--frobnicate"])).is_err());
 /// ```
 ///
@@ -130,6 +134,7 @@ pub fn parse(tail: &[String]) -> Result<Args, Usage> {
     while let Some(token) = tail.get(index) {
         match token.as_str() {
             "--json" => args.json = true,
+            "--follow" => args.follow = true,
             "--since" => {
                 let value = tail.get(index + 1).ok_or(Usage(Some(token.clone())))?;
                 let micros = crate::time::Timestamp::parse(value)
@@ -180,6 +185,9 @@ pub struct Streamed {
     pub(crate) lines: Vec<Line>,
     /// Trailing bytes without a newline were seen and NOT trusted.
     pub(crate) torn: bool,
+    /// Absolute position after the last newline-terminated line — the
+    /// splitter's base when none — so a follow's next read starts there.
+    pub(crate) committed: u64,
 }
 
 /// THE line splitter: bytes in, lines out, no I/O. The door feeds it buffer
@@ -199,7 +207,18 @@ impl Splitter {
     /// An empty splitter at byte zero.
     #[must_use]
     pub fn new() -> Self {
-        Self::default()
+        Self::at(0)
+    }
+
+    /// An empty splitter whose line offsets start at `base`: a follow streams
+    /// only a tail and every offset stays ABSOLUTE in the file.
+    #[must_use]
+    pub fn at(base: u64) -> Self {
+        Self {
+            start: base,
+            cursor: base,
+            ..Self::default()
+        }
     }
 
     /// Feed one chunk: newlines end lines, the cap trips mid-chunk, and a
@@ -220,12 +239,14 @@ impl Splitter {
     }
 
     /// The streamed transcript: every newline-terminated line, plus whether a
-    /// torn tail was seen and not trusted.
+    /// torn tail was seen and not trusted, plus the offset after the last
+    /// complete line.
     #[must_use]
     pub fn finish(self) -> Streamed {
         Streamed {
             lines: self.lines,
             torn: self.cursor != self.start,
+            committed: self.start,
         }
     }
 
@@ -273,26 +294,31 @@ pub(crate) enum DoorError {
 /// The caller located the file and hands over its lstat metadata; this
 /// function proves the opened file IS that file — regular, same dev+inode,
 /// length not shrunk — reads at most the located length, and feeds buffer
-/// chunks to the ONE [`Splitter`]. No splitting logic and no harness
+/// chunks to the ONE [`Splitter`]. `from` is the absolute byte offset the
+/// caller already committed to (`0` in the one-shot): the read starts there
+/// and every line offset stays absolute. No splitting logic and no harness
 /// knowledge inside: open, prove, feed.
 pub(crate) fn stream_transcript(
     path: &Path,
     expected: &std::fs::Metadata,
+    from: u64,
 ) -> Result<Streamed, DoorError> {
     #[allow(
         clippy::disallowed_methods,
         reason = "a door: streams only the lstat-checked board transcript"
     )]
-    let file = File::open(path).map_err(|_| DoorError::Unreadable)?;
+    let mut file = File::open(path).map_err(|_| DoorError::Unreadable)?;
     let opened = file.metadata().map_err(|_| DoorError::Unreadable)?;
     if !opened.file_type().is_file() {
         return Err(DoorError::NotRegular);
     }
-    if opened.len() < expected.len() || !same_file(expected, &opened) {
+    if opened.len() < expected.len() || expected.len() < from || !same_file(expected, &opened) {
         return Err(DoorError::Changed);
     }
-    let mut reader = BufReader::new(file.take(expected.len()));
-    let mut splitter = Splitter::new();
+    file.seek(std::io::SeekFrom::Start(from))
+        .map_err(|_| DoorError::Unreadable)?;
+    let mut reader = BufReader::new(file.take(expected.len() - from));
+    let mut splitter = Splitter::at(from);
     loop {
         let chunk = reader.fill_buf().map_err(|_| DoorError::Unreadable)?;
         if chunk.is_empty() {
@@ -327,6 +353,20 @@ pub struct Inputs<'a> {
     pub sessions: &'a [crate::usage::SessionInput],
 }
 
+/// One seat's read facts, exactly as a read observed them: the follow seed, so
+/// the first pass's read and the offsets it binds are ONE read, never two.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SeatSeed {
+    /// `session:seat`, from the meta roster.
+    pub(crate) actor: String,
+    /// The located file's dev+inode.
+    pub(crate) identity: (u64, u64),
+    /// The located file's mtime, when the OS reports one.
+    pub(crate) mtime: Option<std::time::SystemTime>,
+    /// Absolute position after the last complete line of the read.
+    pub(crate) committed: u64,
+}
+
 /// One board: every row read plus every seat that could not be read fully.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Observation {
@@ -334,6 +374,9 @@ pub struct Observation {
     pub rows: Vec<Row>,
     /// One row per seat the board could not read fully, caller order.
     pub coverage: Vec<Coverage>,
+    /// What each successfully streamed seat's read observed; the follow seeds
+    /// itself from these and a batch carries none.
+    pub(crate) seeds: Vec<SeatSeed>,
 }
 
 /// Read every Claude, Codex, Grok and Muse seat of the handed-in sessions.
@@ -343,6 +386,7 @@ pub struct Observation {
 pub fn observe(inputs: &Inputs<'_>, since_micros: Option<i64>) -> Observation {
     let mut rows = Vec::new();
     let mut coverage = Vec::new();
+    let mut seeds = Vec::new();
     for session in inputs.sessions {
         let Ok(meta) = crate::session::read_meta(&session.path) else {
             coverage.push(Coverage {
@@ -352,14 +396,25 @@ pub fn observe(inputs: &Inputs<'_>, since_micros: Option<i64>) -> Observation {
             continue;
         };
         for entry in meta.roster() {
-            observe_seat(&session.name, entry, inputs.home, &mut rows, &mut coverage);
+            observe_seat(
+                &session.name,
+                entry,
+                inputs.home,
+                &mut rows,
+                &mut coverage,
+                &mut seeds,
+            );
         }
     }
     let mut rows = collect(rows);
     if let Some(since) = since_micros {
         rows.retain(|row| row.ts >= since);
     }
-    Observation { rows, coverage }
+    Observation {
+        rows,
+        coverage,
+        seeds,
+    }
 }
 
 /// Read one roster seat: Claude, Codex, Grok and Muse transcripts stream
@@ -371,21 +426,22 @@ fn observe_seat(
     home: Option<&Path>,
     rows: &mut Vec<Row>,
     coverage: &mut Vec<Coverage>,
+    seeds: &mut Vec<SeatSeed>,
 ) {
     let actor = format!("{}:{}", session, entry.name);
     let tool = ToolKind::from_binary_name(entry.binary.as_deref().unwrap_or(""));
     let source = tool.adapter().usage.source;
     if matches!(source, UsageSource::CodexRollout) {
-        observe_codex_seat(entry, home, &actor, tool, rows, coverage);
+        observe_codex_seat(entry, home, &actor, tool, rows, coverage, seeds);
         return;
     }
     // String dispatch, as `unsupported_reason` does: literals live in tool.rs.
     if tool.adapter().name == "grok" {
-        observe_grok_seat(entry, home, &actor, tool, rows, coverage);
+        observe_grok_seat(entry, home, &actor, tool, rows, coverage, seeds);
         return;
     }
     if tool.adapter().name == "muse" {
-        observe_muse_seat(entry, home, &actor, tool, rows, coverage);
+        observe_muse_seat(entry, home, &actor, tool, rows, coverage, seeds);
         return;
     }
     if !matches!(source, UsageSource::ClaudeTranscripts) {
@@ -422,7 +478,7 @@ fn observe_seat(
         coverage.push(cover("transcript not found".to_owned()));
         return;
     };
-    let streamed = match stream_transcript(&transcript.path, &transcript.metadata) {
+    let streamed = match stream_transcript(&transcript.path, &transcript.metadata, 0) {
         Ok(streamed) => streamed,
         Err(failure) => {
             coverage.push(cover(door_reason(failure).to_owned()));
@@ -430,6 +486,7 @@ fn observe_seat(
         }
     };
     let file = file_identity(&transcript.path, &transcript.metadata);
+    seeds.push(seed(&actor, &transcript.metadata, &streamed));
     let (mut seat_rows, mut seat_coverage) = claude::read_stream(&streamed, &actor, &file, tool);
     rows.append(&mut seat_rows);
     coverage.append(&mut seat_coverage);
@@ -444,6 +501,7 @@ fn observe_codex_seat(
     tool: ToolKind,
     rows: &mut Vec<Row>,
     coverage: &mut Vec<Coverage>,
+    seeds: &mut Vec<SeatSeed>,
 ) {
     let cover = |reason: String| Coverage {
         actor: actor.to_owned(),
@@ -477,7 +535,7 @@ fn observe_codex_seat(
             return;
         }
     };
-    let streamed = match stream_transcript(rollout.path(), rollout.metadata()) {
+    let streamed = match stream_transcript(rollout.path(), rollout.metadata(), 0) {
         Ok(streamed) => streamed,
         Err(failure) => {
             coverage.push(cover(door_reason(failure).to_owned()));
@@ -485,6 +543,7 @@ fn observe_codex_seat(
         }
     };
     let file = file_identity(rollout.path(), rollout.metadata());
+    seeds.push(seed(actor, rollout.metadata(), &streamed));
     let (mut seat_rows, mut seat_coverage) = codex::read_stream(&streamed, actor, &file, tool);
     rows.append(&mut seat_rows);
     coverage.append(&mut seat_coverage);
@@ -499,6 +558,7 @@ fn observe_grok_seat(
     tool: ToolKind,
     rows: &mut Vec<Row>,
     coverage: &mut Vec<Coverage>,
+    seeds: &mut Vec<SeatSeed>,
 ) {
     let cover = |reason: String| Coverage {
         actor: actor.to_owned(),
@@ -530,7 +590,7 @@ fn observe_grok_seat(
         coverage.push(cover("transcript not found".to_owned()));
         return;
     };
-    let streamed = match stream_transcript(&found.path, &found.metadata) {
+    let streamed = match stream_transcript(&found.path, &found.metadata, 0) {
         Ok(streamed) => streamed,
         Err(failure) => {
             coverage.push(cover(door_reason(failure).to_owned()));
@@ -538,6 +598,7 @@ fn observe_grok_seat(
         }
     };
     let file = file_identity(&found.path, &found.metadata);
+    seeds.push(seed(actor, &found.metadata, &streamed));
     let (mut seat_rows, mut seat_coverage) = grok::read_stream(&streamed, actor, &file, tool);
     rows.append(&mut seat_rows);
     coverage.append(&mut seat_coverage);
@@ -552,6 +613,7 @@ fn observe_muse_seat(
     tool: ToolKind,
     rows: &mut Vec<Row>,
     coverage: &mut Vec<Coverage>,
+    seeds: &mut Vec<SeatSeed>,
 ) {
     let cover = |reason: String| Coverage {
         actor: actor.to_owned(),
@@ -592,7 +654,7 @@ fn observe_muse_seat(
             return;
         }
     };
-    let streamed = match stream_transcript(&path, &metadata) {
+    let streamed = match stream_transcript(&path, &metadata, 0) {
         Ok(streamed) => streamed,
         Err(failure) => {
             coverage.push(cover(door_reason(failure).to_owned()));
@@ -600,6 +662,7 @@ fn observe_muse_seat(
         }
     };
     let file = file_identity(&path, &metadata);
+    seeds.push(seed(actor, &metadata, &streamed));
     let (mut seat_rows, mut seat_coverage) = muse::read_stream(&streamed, actor, &file, tool);
     rows.append(&mut seat_rows);
     coverage.append(&mut seat_coverage);
@@ -630,6 +693,140 @@ fn lstat_regular(candidate: &Path) -> Result<Option<std::fs::Metadata>, String> 
         return Err("transcript is not a regular file".to_owned());
     }
     Ok(Some(metadata))
+}
+
+/// Locate one roster seat's current transcript through the EXISTING locators —
+/// the follow poll's impure half, the twin of `observe_seat`'s own locating.
+/// The returned reason IS the coverage row's text.
+fn locate_follow(
+    entry: &crate::meta::RosterEntry,
+    home: Option<&Path>,
+) -> Result<(PathBuf, std::fs::Metadata), String> {
+    let tool = ToolKind::from_binary_name(entry.binary.as_deref().unwrap_or(""));
+    let source = tool.adapter().usage.source;
+    if matches!(source, UsageSource::CodexRollout) {
+        let Some(id) = crate::usage::valid_id(entry.harness_session.as_deref()) else {
+            return Err("invalid or missing conversation id".to_owned());
+        };
+        let root = crate::usage::source_for(entry, UsageSource::CodexRollout, home)?;
+        let mut budget = Budget::new();
+        return match crate::quota::find_codex_rollout(&root, &id, &mut budget) {
+            Ok(Bounded::Ready(Some(rollout))) => {
+                Ok((rollout.path().to_owned(), rollout.metadata().clone()))
+            }
+            Ok(Bounded::Ready(None)) => Err("rollout not found".to_owned()),
+            Ok(Bounded::Truncated) => Err("rollout scan truncated".to_owned()),
+            Err(error) => Err(error.to_string()),
+        };
+    }
+    if tool.adapter().name == "grok" {
+        let Some(id) = crate::usage::valid_id(entry.harness_session.as_deref()) else {
+            return Err("invalid or missing conversation id".to_owned());
+        };
+        let Some(home) = home else {
+            return Err("legacy config home unavailable".to_owned());
+        };
+        let Some(dir) = tool.adapter().quota.default_home else {
+            return Err("unsupported tool".to_owned());
+        };
+        let mut budget = Budget::new();
+        return match locate_grok_updates(&home.join(dir).join("sessions"), &id, &mut budget)? {
+            Some(found) => Ok((found.path, found.metadata)),
+            None => Err("transcript not found".to_owned()),
+        };
+    }
+    if tool.adapter().name == "muse" {
+        let id = entry.harness_session.as_deref().unwrap_or_default();
+        if !crate::session_launch::capture::is_lowercase_uuid(id) {
+            return Err("invalid or missing conversation id".to_owned());
+        }
+        let Some(home) = home else {
+            return Err("legacy config home unavailable".to_owned());
+        };
+        let mut budget = Budget::new();
+        let Some(path) =
+            crate::session_launch::capture::find_muse_session_file(home, id, &mut budget)?
+        else {
+            return Err("transcript not found".to_owned());
+        };
+        return match lstat_regular(&path)? {
+            Some(metadata) => Ok((path, metadata)),
+            None => Err("transcript not found".to_owned()),
+        };
+    }
+    if !matches!(source, UsageSource::ClaudeTranscripts) {
+        return Err(unsupported_reason(tool).to_owned());
+    }
+    let Some(id) = crate::usage::valid_id(entry.harness_session.as_deref()) else {
+        return Err("invalid or missing conversation id".to_owned());
+    };
+    let store = crate::usage::source_for(entry, UsageSource::ClaudeTranscripts, home)?;
+    let mut budget = Budget::new();
+    let located = crate::usage::locate_claude_parent(&store, &id, &mut budget)
+        .map_err(|failure| locate_reason(&failure))?;
+    match located {
+        Some(transcript) => Ok((transcript.path, transcript.metadata)),
+        None => Err("transcript not found".to_owned()),
+    }
+}
+
+/// One follow poll: re-resolve every selected session's roster, re-locate every
+/// seat, read the bytes the held offsets ask for through the ONE door, and step
+/// the state. Selection itself is the caller's and is fixed for the follow.
+pub(crate) fn follow_poll(inputs: &Inputs<'_>, follow: &mut follow::Follow) -> Observation {
+    let mut snapshots = Vec::new();
+    for session in inputs.sessions {
+        let Ok(meta) = crate::session::read_meta(&session.path) else {
+            snapshots.push(follow::Snapshot {
+                actor: format!("{}:?", session.name),
+                located: Err("session meta unreadable".to_owned()),
+                streamed: None,
+            });
+            continue;
+        };
+        for entry in meta.roster() {
+            snapshots.push(follow_seat(&session.name, entry, inputs.home, follow));
+        }
+    }
+    follow.step(snapshots)
+}
+
+/// One seat's polled snapshot: locate, then read exactly the tail the held
+/// offset asks for. A refusal is carried as the reason, never as a silent skip.
+fn follow_seat(
+    session: &str,
+    entry: &crate::meta::RosterEntry,
+    home: Option<&Path>,
+    follow: &follow::Follow,
+) -> follow::Snapshot {
+    let actor = format!("{}:{}", session, entry.name);
+    let tool = ToolKind::from_binary_name(entry.binary.as_deref().unwrap_or(""));
+    let (path, metadata) = match locate_follow(entry, home) {
+        Ok(located) => located,
+        Err(reason) => {
+            return follow::Snapshot {
+                actor,
+                located: Err(reason),
+                streamed: None,
+            };
+        }
+    };
+    let observed = follow::Located::of(&metadata);
+    let streamed = match follow.plan(&actor, &observed) {
+        follow::Plan::Hold => None,
+        follow::Plan::Read(from) => {
+            Some(stream_transcript(&path, &metadata, from).map_err(door_reason))
+        }
+    };
+    follow::Snapshot {
+        actor,
+        located: Ok(follow::Loaded {
+            file: file_identity(&path, &metadata),
+            source: tool,
+            observed,
+        }),
+        streamed,
+    }
 }
 
 /// Scan `<sessions root>/*/<uuid>/updates.jsonl` for one seat's conversation.
@@ -740,16 +937,35 @@ const SCOPE_TEXT: &str = "scope: current conversations only (phase 1b) — a sea
 /// statement; coverage rows precede body rows; JSON never carries a bare line.
 #[must_use]
 pub fn render(observation: &Observation, json: bool) -> String {
-    if json {
-        render_json(observation)
+    let mut out = if json {
+        Value::obj([
+            ("kind", Value::str("scope")),
+            ("scope", Value::str("current-conversations")),
+            ("phase", Value::str("1b")),
+        ])
+        .render()
     } else {
-        render_text(observation)
+        SCOPE_TEXT.to_owned()
+    };
+    out.push('\n');
+    out.push_str(&render_batch(observation, json));
+    out
+}
+
+/// Render ONE board body — coverage rows, then body rows, no scope line. The
+/// one-shot prepends the scope statement once; the follow appends one of these
+/// per batch under it.
+#[must_use]
+pub(crate) fn render_batch(observation: &Observation, json: bool) -> String {
+    if json {
+        render_batch_json(observation)
+    } else {
+        render_batch_text(observation)
     }
 }
 
-fn render_text(observation: &Observation) -> String {
-    let mut out = String::from(SCOPE_TEXT);
-    out.push('\n');
+fn render_batch_text(observation: &Observation) -> String {
+    let mut out = String::new();
     for item in &observation.coverage {
         let _ = writeln!(out, "coverage incomplete: {} — {}", item.actor, item.reason);
     }
@@ -765,14 +981,8 @@ fn render_text(observation: &Observation) -> String {
     out
 }
 
-fn render_json(observation: &Observation) -> String {
-    let mut out = Value::obj([
-        ("kind", Value::str("scope")),
-        ("scope", Value::str("current-conversations")),
-        ("phase", Value::str("1b")),
-    ])
-    .render();
-    out.push('\n');
+fn render_batch_json(observation: &Observation) -> String {
+    let mut out = String::new();
     for item in &observation.coverage {
         let line = Value::obj([
             ("kind", Value::str("coverage")),
@@ -813,18 +1023,34 @@ fn format_micros(micros: i64) -> String {
     format!("{date}.{fraction:06}Z")
 }
 
-/// The source file's identity: path plus dev+inode, so a replaced file is a
-/// different file even at the same path.
+/// The located file's dev+inode where the OS has them — the follow's identity,
+/// and the `file` naming's second half. `(0, 0)` where the OS has neither.
 #[cfg(unix)]
-fn file_identity(path: &Path, metadata: &std::fs::Metadata) -> String {
+pub(crate) fn identity_of(metadata: &std::fs::Metadata) -> (u64, u64) {
     use std::os::unix::fs::MetadataExt as _;
-    format!("{}#{}:{}", path.display(), metadata.dev(), metadata.ino())
+    (metadata.dev(), metadata.ino())
 }
 
-/// The source file's identity where no dev+inode exists: the path alone.
 #[cfg(not(unix))]
-fn file_identity(path: &Path, _: &std::fs::Metadata) -> String {
-    path.display().to_string()
+pub(crate) fn identity_of(_: &std::fs::Metadata) -> (u64, u64) {
+    (0, 0)
+}
+
+/// The follow seed for one successful stream: what that read bound offsets to.
+fn seed(actor: &str, metadata: &std::fs::Metadata, streamed: &Streamed) -> SeatSeed {
+    SeatSeed {
+        actor: actor.to_owned(),
+        identity: identity_of(metadata),
+        mtime: metadata.modified().ok(),
+        committed: streamed.committed,
+    }
+}
+
+/// The source file's identity: path plus dev+inode, so a replaced file is a
+/// different file even at the same path.
+fn file_identity(path: &Path, metadata: &std::fs::Metadata) -> String {
+    let (dev, ino) = identity_of(metadata);
+    format!("{}#{dev}:{ino}", path.display())
 }
 
 /// A `u64` for the JSON stream: an integer while it fits, the raw literal past
@@ -835,7 +1061,10 @@ fn json_u64(value: u64) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::{Coverage, LINE_CAP, LineBody, Role, Row, Splitter, collect, format_micros};
+    use super::{
+        Coverage, DoorError, LINE_CAP, LineBody, Role, Row, Splitter, collect, format_micros,
+        stream_transcript,
+    };
     use crate::tool::ToolKind;
 
     fn row(ts: i64, file: &str, offset: u64, body: &str) -> Row {
@@ -969,5 +1198,54 @@ mod tests {
             streamed.lines[1].body,
             LineBody::Full(ref bytes) if bytes == b"ok"
         ));
+    }
+
+    #[test]
+    fn a_splitter_base_keeps_offsets_absolute_and_commit_after_the_last_line() {
+        let mut splitter = Splitter::at(100);
+        splitter.feed(b"ab\nc");
+        let streamed = splitter.finish();
+        assert!(streamed.torn);
+        assert_eq!(streamed.lines.len(), 1);
+        assert_eq!(streamed.lines[0].offset, 100);
+        assert_eq!(streamed.committed, 103, "the partial tail does not commit");
+        let mut splitter = Splitter::at(7);
+        splitter.feed(b"");
+        let streamed = splitter.finish();
+        assert!(!streamed.torn);
+        assert_eq!(streamed.committed, 7, "an empty read commits at its base");
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test: stats its own scratch file to drive the door"
+    )]
+    fn the_door_reads_from_the_offset_it_is_given_with_absolute_offsets() {
+        let dir = std::env::temp_dir().join(format!("ae-board-door-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("transcript.jsonl");
+        std::fs::write(&path, b"first\nsecond\n").unwrap();
+        let metadata = std::fs::metadata(&path).unwrap();
+
+        let streamed = stream_transcript(&path, &metadata, 6).unwrap();
+        assert!(!streamed.torn);
+        assert_eq!(streamed.lines.len(), 1);
+        assert_eq!(
+            streamed.lines[0].offset, 6,
+            "the tail's offsets stay absolute"
+        );
+        assert_eq!(streamed.committed, 13);
+
+        let whole = stream_transcript(&path, &metadata, 0).unwrap();
+        assert_eq!(whole.committed, 13);
+        assert_eq!(whole.lines.len(), 2);
+
+        assert_eq!(
+            stream_transcript(&path, &metadata, 14).unwrap_err(),
+            DoorError::Changed,
+            "an offset past the located length is a refusal, not a clipped read"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
