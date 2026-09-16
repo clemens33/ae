@@ -1,0 +1,2 @@
+{"type":"user","timestamp":"2026-01-02T03:04:05.678Z","message":{"role":"user","content":"whole line"}}
+{"type":"user","timestamp":"2026-01-02T03:04:06.000Z","message":{"role":"user","content":"torn tail without newline"}}

@@ -69,6 +69,7 @@ A crash writes its input under `artifacts/<target>/`; reproduce it with
 | `sanitize_field` | `sanitize::sanitize` (both `Field`s) | one record field's raw bytes |
 | `request_id_select` | `tracked::is_request_id` + `sanitize::select_ids` | whole input as one candidate id, plus newline-split as positioned refs |
 | `events_parse` | `events::Event::parse_line` + `from_json` | one `events.jsonl` line; `from_json` is driven with a value the real JSON parser produced, never a hand-built tree |
+| `board_claude` | `board::claude::read` + `board::collect` | one Claude transcript JSONL stream (synthetic records in the real shape; content is hand-written, never copied) |
 
 NOTE — production also emits `chat`, `focus`, `refused`, `delivery-failed` and `telegram_autostart_refused`, which carry no seeds: `from_json` never branches on `action`, so they add zero coverage to THIS target — but a future target driving `ref_meaning` or `alert_meaning` would need them.
 
