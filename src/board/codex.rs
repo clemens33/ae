@@ -64,8 +64,7 @@ pub fn read_stream(
     (sink.rows, sink.coverage)
 }
 
-/// One file's in-progress read: the caller's naming plus the rows, coverage
-/// and timestamp-miss count accumulated so far.
+/// One file's in-progress read.
 struct Sink<'a> {
     actor: &'a str,
     file: &'a str,
@@ -206,7 +205,7 @@ mod tests {
     #[test]
     fn non_human_and_unshaped_lines_stay_silent() {
         for line in [
-            r#"{"timestamp":"2026-09-16T09:00:00.500Z","type":"response_item","payload":{"type":"message","role":"assistant"}}"#.to_owned(),
+            r#"{"timestamp":"2026-09-16T09:00:00.500Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"input_text","text":"hi"}]}}"#.to_owned(),
             r#"{"timestamp":"2026-09-16T09:00:00.500Z","type":"response_item","payload":{"type":"reasoning"}}"#.to_owned(),
             r#"{"timestamp":"2026-09-16T09:00:00.500Z","type":"response_item","payload":{"type":"custom_tool_call"}}"#.to_owned(),
             user(r#""not a list""#),

@@ -178,8 +178,7 @@ fn non_claude_seats_name_their_phase_in_both_modes() {
     assert_eq!(
         reasons,
         [
-            // Codex reads now: this seat carries no id, so the read is
-            // attempted and covered — never a phase row.
+            // Codex reads now: no id, so the read is attempted and covered.
             "invalid or missing conversation id",
             "grok: phase 3a",
             "muse: phase 3b",
