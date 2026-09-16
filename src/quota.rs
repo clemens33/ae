@@ -1237,6 +1237,14 @@ pub(crate) struct RolloutFile {
 }
 
 impl RolloutFile {
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub(crate) fn metadata(&self) -> &std::fs::Metadata {
+        &self.metadata
+    }
+
     pub(crate) fn modified(&self) -> Option<SystemTime> {
         self.modified
     }

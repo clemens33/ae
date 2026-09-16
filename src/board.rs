@@ -10,6 +10,7 @@
 //! that is two rows, not one.
 
 pub mod claude;
+pub mod codex;
 
 use std::fmt::Write as _;
 use std::fs::File;
@@ -17,7 +18,7 @@ use std::io::{BufRead, BufReader, Read as _};
 use std::path::Path;
 
 use crate::json::Value;
-use crate::quota::Budget;
+use crate::quota::{Bounded, Budget};
 use crate::tool::{ToolKind, UsageSource};
 
 /// Who speaks in a board row.
@@ -333,9 +334,9 @@ pub struct Observation {
     pub coverage: Vec<Coverage>,
 }
 
-/// Read every Claude seat of the handed-in sessions. A seat that cannot be
-/// read — unknown tool, unlocated store, unreadable transcript — becomes a
-/// [`Coverage`], never a silent subset.
+/// Read every Claude and Codex seat of the handed-in sessions. A seat that
+/// cannot be read — unknown tool, unlocated store, unreadable transcript —
+/// becomes a [`Coverage`], never a silent subset.
 #[must_use]
 pub fn observe(inputs: &Inputs<'_>, since_micros: Option<i64>) -> Observation {
     let mut rows = Vec::new();
@@ -359,8 +360,8 @@ pub fn observe(inputs: &Inputs<'_>, since_micros: Option<i64>) -> Observation {
     Observation { rows, coverage }
 }
 
-/// Read one roster seat: Claude transcripts stream through the door into the
-/// reader; every other harness names its phase in a coverage row.
+/// Read one roster seat: Claude and Codex transcripts stream through the door
+/// into their reader; every other harness names its phase in a coverage row.
 fn observe_seat(
     session: &str,
     entry: &crate::meta::RosterEntry,
@@ -370,7 +371,12 @@ fn observe_seat(
 ) {
     let actor = format!("{}:{}", session, entry.name);
     let tool = ToolKind::from_binary_name(entry.binary.as_deref().unwrap_or(""));
-    if !matches!(tool.adapter().usage.source, UsageSource::ClaudeTranscripts) {
+    let source = tool.adapter().usage.source;
+    if matches!(source, UsageSource::CodexRollout) {
+        observe_codex_seat(entry, home, &actor, tool, rows, coverage);
+        return;
+    }
+    if !matches!(source, UsageSource::ClaudeTranscripts) {
         coverage.push(Coverage {
             actor,
             reason: unsupported_reason(tool).to_owned(),
@@ -417,12 +423,66 @@ fn observe_seat(
     coverage.append(&mut seat_coverage);
 }
 
+/// Read one Codex roster seat through usage's source, quota's finder and the
+/// EXISTING door — the locator hands over its lstat, no second stat.
+fn observe_codex_seat(
+    entry: &crate::meta::RosterEntry,
+    home: Option<&Path>,
+    actor: &str,
+    tool: ToolKind,
+    rows: &mut Vec<Row>,
+    coverage: &mut Vec<Coverage>,
+) {
+    let cover = |reason: String| Coverage {
+        actor: actor.to_owned(),
+        reason,
+    };
+    let Some(id) = crate::usage::valid_id(entry.harness_session.as_deref()) else {
+        coverage.push(cover("invalid or missing conversation id".to_owned()));
+        return;
+    };
+    let root = match crate::usage::source_for(entry, UsageSource::CodexRollout, home) {
+        Ok(root) => root,
+        Err(reason) => {
+            coverage.push(cover(reason));
+            return;
+        }
+    };
+    let mut budget = Budget::new();
+    let rollout = match crate::quota::find_codex_rollout(&root, &id, &mut budget) {
+        Ok(Bounded::Ready(Some(rollout))) => rollout,
+        Ok(Bounded::Ready(None)) => {
+            coverage.push(cover("rollout not found".to_owned()));
+            return;
+        }
+        Ok(Bounded::Truncated) => {
+            coverage.push(cover("rollout scan truncated".to_owned()));
+            return;
+        }
+        // Quota's errors name the cause already; the message carries through.
+        Err(error) => {
+            coverage.push(cover(error.to_string()));
+            return;
+        }
+    };
+    let streamed = match stream_transcript(rollout.path(), rollout.metadata()) {
+        Ok(streamed) => streamed,
+        Err(failure) => {
+            coverage.push(cover(door_reason(failure).to_owned()));
+            return;
+        }
+    };
+    let file = file_identity(rollout.path(), rollout.metadata());
+    let (mut seat_rows, mut seat_coverage) = codex::read_stream(&streamed, actor, &file, tool);
+    rows.append(&mut seat_rows);
+    coverage.append(&mut seat_coverage);
+}
+
 /// The phase (or ruling) behind a harness the board cannot read yet.
 fn unsupported_reason(tool: ToolKind) -> &'static str {
     // String dispatch, never `ToolKind::` arms: production tool literals live
     // in `src/tool.rs` alone (`per_tool_branches_live_only_in_the_adapter_rows`).
     match tool.adapter().name {
-        "codex" => "codex: phase 2",
         "grok" => "grok: phase 3a",
         "muse" => "muse: phase 3b",
         "agy" => "agy: phase 5",
