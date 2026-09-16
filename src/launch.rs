@@ -454,12 +454,14 @@ pub fn initial_prompt_for(tool: ToolKind, meta_dir: &Path, slot: &str) -> String
 
 /// The spawn turn: the registration handshake and the task, for codex alone.
 ///
-/// A spawn's brief rides the SAME turn as the launch handshake for codex — a
-/// tool with no system-prompt channel takes its context inline, and its brief
-/// as the same first turn. The turn's FIRST line is the
-/// [`crate::provenance::brief`] marker, not `ctx`: rule 8b gives only the first
-/// line authority, and this turn exists to hand the seat its TASK CONTRACT —
-/// marking it as ae setup would classify the contract as setup too.
+/// A spawn's brief rides the SAME turn as the launch handshake for codex — the
+/// one adapter whose launch needs a registration turn — so the seat's single
+/// first user turn carries the handshake and the task together. (Codex's
+/// workspace context is not on this turn; it rides `developer_instructions`.)
+/// The turn's FIRST line is the [`crate::provenance::brief`] marker, not `ctx`:
+/// rule 8b gives only the first line authority, and this turn exists to hand
+/// the seat its TASK CONTRACT — marking it as ae setup would classify the
+/// contract as setup too.
 #[must_use]
 pub fn initial_turn_with_brief(
     tool: ToolKind,

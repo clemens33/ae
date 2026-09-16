@@ -442,11 +442,11 @@ pub fn run_spawn(
         )?;
         return Ok(EXIT_FAILED);
     }
-    // For a tool with no system-prompt channel the context AND the brief travel
-    // as the launch command's inline first message, so the brief is RECORDED
-    // for `_run` to compose. Codex alone is such a tool, and its combined turn
-    // is the BRIEF: the registration handshake rides under the brief marker, so
-    // the task contract keeps the first line's authority (rule 8b).
+    // Codex's workspace context rides `developer_instructions`; what is left for
+    // the launch command is the seat's registration handshake, which travels
+    // with the brief as the inline first message `_run` composes. That combined
+    // turn is the BRIEF — the handshake rides under the brief marker, so the
+    // task contract keeps the first line's authority (rule 8b).
     // The actor every brief marker names: the verified caller, or `unverified`
     // when no pane identity could be bound — never bare, because bare is the
     // human's signature.
