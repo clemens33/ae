@@ -7,10 +7,12 @@
 //!
 //! Verified 2026-09-16 over 773 rollouts / 15,159 turns (shapes only): `content`
 //! always a list, timestamp top-level ISO, old CLIs twin turns as
-//! `event_msg`/`user_message` (type gate reads ONLY the `response_item`), the
-//! keyset UNIFORM (no structured twin — all five plumbing prefixes LOSSY).
-//! `<user_instructions>` unobserved, NOT filtered; image-led turns KEPT (prose
-//! follows the refs); ae turns filter via `is_ae_turn` on line 1.
+//! `event_msg`/`user_message` (type gate reads ONLY the `response_item`). The
+//! project-doc turn carries a structured twin, `content_item_kinds` =
+//! `agents_md.instructions`; the other five plumbing prefixes are LOSSY, the
+//! keyset otherwise UNIFORM. `<user_instructions>` unobserved, NOT filtered;
+//! image-led turns KEPT (prose follows the refs); ae turns filter via
+//! `is_ae_turn` on line 1.
 
 use super::{LineBody, Splitter, Streamed};
 use crate::board::{Coverage, Role, Row};
@@ -117,7 +119,7 @@ impl Sink<'_> {
         if crate::provenance::is_ae_turn(first) {
             return;
         }
-        if is_plumbing(first) {
+        if is_plumbing(payload, first) {
             return;
         }
         let Some(ts) = value
@@ -143,10 +145,15 @@ impl Sink<'_> {
     }
 }
 
-/// Codex's own harness turns, by first-line prefix — LOSSY throughout, since no
-/// structured twin exists. `<codex_internal_context` ends before `>`: its
-/// opener carries a `source="…"` attribute.
-fn is_plumbing(first: &str) -> bool {
+/// Codex's own harness turns. The project-doc turn drops on its structured
+/// twin first — `content_item_kinds` naming `agents_md.instructions` — exact
+/// even where the doc's opening line varies, while an explicit `user.text`
+/// claim keeps a human who quotes its prefix. The doc prefix itself remains
+/// the fallback where metadata is absent — LOSSY there, as the other five are
+/// throughout. `<codex_internal_context` ends before `>`: its opener carries
+/// a `source="…"` attribute.
+fn is_plumbing(payload: &crate::json::Value, first: &str) -> bool {
+    const DOC_PREFIX: &str = "# AGENTS.md instructions for ";
     const LOSSY: [&str; 5] = [
         "<environment_context>",
         "<user_shell_command>",
@@ -154,6 +161,21 @@ fn is_plumbing(first: &str) -> bool {
         "<turn_aborted>",
         "<codex_internal_context",
     ];
+    let kinds = payload
+        .get("internal_chat_message_metadata_passthrough")
+        .and_then(|meta| meta.get("content_item_kinds"));
+    let named = |wanted: &str| match kinds {
+        Some(crate::json::Value::Arr(items)) => {
+            items.iter().any(|item| item.as_str() == Some(wanted))
+        }
+        _ => false,
+    };
+    if named("agents_md.instructions") {
+        return true;
+    }
+    if first.starts_with(DOC_PREFIX) {
+        return !named("user.text");
+    }
     LOSSY.iter().any(|prefix| first.starts_with(prefix))
 }
 
@@ -177,6 +199,12 @@ mod tests {
             .replace('"', "\\\"")
             .replace('\n', "\\n");
         format!(r#"{{"type":"input_text","text":"{escaped}"}}"#)
+    }
+
+    fn user_with_kinds(content: &str, kinds: &str) -> String {
+        format!(
+            r#"{{"timestamp":"{TS}","type":"response_item","payload":{{"type":"message","role":"user","internal_chat_message_metadata_passthrough":{{"content_item_kinds":{kinds},"turn_id":"t"}},"content":{content}}}}}"#
+        )
     }
 
     fn read_lines(lines: &[&str]) -> (Vec<crate::board::Row>, Vec<crate::board::Coverage>) {
@@ -275,6 +303,7 @@ mod tests {
     #[test]
     fn lossy_prefixes_drop_even_a_human_collision() {
         for prefix in [
+            "# AGENTS.md instructions for ",
             "<environment_context>",
             "<user_shell_command>",
             "<recommended_plugins>",
@@ -287,6 +316,48 @@ mod tests {
             ))]);
             assert!(rows.is_empty(), "{prefix} collides");
         }
+    }
+
+    #[test]
+    fn the_project_doc_turn_filters_on_its_structured_kind() {
+        // A doc turn drops even where its first line is not the prefix.
+        let doc = user_with_kinds(
+            &format!("[{}]", part("# AGENTS.md instructions\nmade-up doc text")),
+            r#"["agents_md.instructions"]"#,
+        );
+        let (rows, _) = read_lines(&[&doc]);
+        assert!(rows.is_empty());
+        // A human turn quoting the prefix keeps its row: the kind decides.
+        let quoted = user_with_kinds(
+            &format!(
+                "[{}]",
+                part("# AGENTS.md instructions for /tmp/x\nquoted by a human")
+            ),
+            r#"["user.text"]"#,
+        );
+        let (rows, _) = read_lines(&[&quoted]);
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[test]
+    fn environment_context_filters_only_as_a_first_line() {
+        // Mid-body env context on a human line is a row: a human can quote it.
+        let human = user(&format!(
+            "[{}]",
+            part("read this\n<environment_context>\nnot a harness turn")
+        ));
+        let (rows, _) = read_lines(&[&human]);
+        assert_eq!(rows.len(), 1);
+        // Inside the doc turn it drops with the doc, never on its own.
+        let doc = user_with_kinds(
+            &format!(
+                "[{}]",
+                part("# AGENTS.md instructions for /tmp/x\n<environment_context>")
+            ),
+            r#"["agents_md.instructions","environments.environment_context"]"#,
+        );
+        let (rows, _) = read_lines(&[&doc]);
+        assert!(rows.is_empty());
     }
 
     #[test]
