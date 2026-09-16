@@ -408,8 +408,10 @@ impl Event {
     pub fn alert_meaning(&self) -> AlertMeaning {
         match self.action.as_str() {
             "alert" => AlertMeaning::Raised(alert_class(self.summary.as_deref())),
-            // The watchdog's own retractions.
-            "alert-cleared" | "throttle-cleared" => AlertMeaning::Cleared,
+            // The watchdog's own retractions. The ACTION decides, never the
+            // summary: a `dead-cleared` that quotes the dead alert it retracts
+            // is still a retraction.
+            "alert-cleared" | "throttle-cleared" | "dead-cleared" => AlertMeaning::Cleared,
             // A CARRIER, and the ACTION is the whole discrimination: an owner
             // plus an active contribution is wanted, `target` names the owner,
             // and `throttled` names the contribution outright.
@@ -1927,13 +1929,23 @@ mod tests {
     fn sc_509c_a_watchdog_clear_retracts_rather_than_deciding_nothing() {
         // Cleared and Undefined are different answers: a clear ENDS the scan,
         // an undefined record lets it look further back.
-        for action in ["alert-cleared", "throttle-cleared"] {
+        for action in ["alert-cleared", "throttle-cleared", "dead-cleared"] {
             assert_eq!(
                 event(action, Some("recovered")).alert_meaning(),
                 AlertMeaning::Cleared,
                 "{action}"
             );
         }
+        // The ACTION retracts, not the summary's wording: a clear naming the
+        // alert it retracts may not read as a fresh raise.
+        assert_eq!(
+            event(
+                "dead-cleared",
+                Some("agent process dead — dropped to shell")
+            )
+            .alert_meaning(),
+            AlertMeaning::Cleared,
+        );
     }
 
     #[test]

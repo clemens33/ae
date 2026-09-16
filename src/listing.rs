@@ -1869,6 +1869,44 @@ mod tests {
     }
 
     #[test]
+    fn sc_509c_a_dead_cleared_ledger_drops_the_attn_dead_marker() {
+        // The retraction has the SAME owner as the raise: the one verdict
+        // classifier reads `dead-cleared` as a clear, so the rollup that
+        // produced `attn:dead` takes it back down.
+        let meta = Some("mode=local\nseat.main=lead\nprofile.main=claude\n");
+        let alert = concat!(
+            r#"{"ts":"2026-05-29T14:00:00Z","actor":"_watchdog","action":"alert","#,
+            r#""target":"lead","summary":"agent process dead — dropped to shell"}"#
+        );
+        let cleared = concat!(
+            r#"{"ts":"2026-05-29T14:05:00Z","actor":"_watchdog","action":"dead-cleared","#,
+            r#""target":"lead","summary":"agent process back — resumed in place"}"#
+        );
+
+        let dead = DigestFixture::new("dead-kept", meta, Some(&format!("{alert}\n")));
+        let world =
+            Presentation::enter(&dead.snapshot("dead-kept")).world(NOW, DEFAULT_UNANSWERED_SECS);
+        assert!(
+            render(&args(&["--all"]), &world).contains("attn:dead"),
+            "the positive control: the alert alone still marks the session"
+        );
+
+        let back = DigestFixture::new("dead-cleared", meta, Some(&format!("{alert}\n{cleared}\n")));
+        let world =
+            Presentation::enter(&back.snapshot("dead-cleared")).world(NOW, DEFAULT_UNANSWERED_SECS);
+        let rendered = render(&args(&["--all"]), &world);
+        assert!(
+            !rendered.contains("attn:"),
+            "the clear retracts the marker: {rendered}"
+        );
+        assert_eq!(
+            back.entry("dead-cleared").get("needs_attention"),
+            Some(&json::Value::Bool(false)),
+            "and the digest agrees"
+        );
+    }
+
+    #[test]
     fn sc_509b_a_readable_empty_roster_is_exact_and_not_degraded() {
         let fixture = DigestFixture::new("empty-roster", Some("mode=local\n"), Some(""));
         let entry = fixture.entry("empty-roster");
