@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.84] - 2026-09-16
+- Add board schema and the one sort/dedup point
+- Add pure Claude transcript reader for the board
+- Add ae-turn first-line recognizer
+- Teach time fractional ISO timestamps at micro precision
+- Fuzz the Claude board reader
+- Pass board source from caller; no tool literal outside adapter
+- Add board_claude to the fuzz lane allowlist
+- Share the Claude transcript locate walk with the board
+- Add the board streaming door, seat glue and renders
+- Read Claude transcripts from the streamed door, fix orphan reminder
+- Wire ae board through entry, cli and dispatch
+- Pin the board scope, coverage, rows and door
+- Document ae board
+- Write the phase roster without format_push_string
+- Open board metas through the single meta door
+- Split board transcript bytes through one chunked splitter
+- Drive the board splitter from the fuzz target in chunks
+- Pin door overlong, torn tail and chunk boundaries
+
 ## [v2026.9.83] - 2026-09-16
 - Bump FORMAT_VERSION to 20 so running sessions repaint the orchestrator button
 - Measure the working pulse as a class at its peak frame
