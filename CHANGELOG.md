@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.80] - 2026-09-16
+- **config**: A """ block for [prompt] instructions, and a TOML-safe codex value
+- **config**: Rebase onto the provenance slice, pin the marked user turn, name the block exception
+
 ## [v2026.9.79] - 2026-09-16
 - Mark every ae-injected turn on its first line
 - Mark every user-turn context, keep the task verb in a combined turn
