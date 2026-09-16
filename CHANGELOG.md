@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.89] - 2026-09-16
+- Read a composer placeholder tip as the box's own chrome, not a draft
+- Drain an ae-staged paste chip once instead of abandoning the send
+- Document the staged-chip drain in send's deferral
+
 ## [v2026.9.88] - 2026-09-16
 - Locate a Muse transcript by session id through capture's door
 - Share one lstat between the board locators
