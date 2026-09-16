@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.88] - 2026-09-16
+- Locate a Muse transcript by session id through capture's door
+- Share one lstat between the board locators
+- Read Muse turns from the accepted intent's model text
+- Seat Muse transcripts on the board
+- Tighten the Muse reader to its line budget
+- Merge the Muse reader's hostile-line coverage tests
+- Trim the Muse slice to its line budget
+- Pin Muse seats on the board
+- Fuzz the Muse board reader with synthetic seeds
+- Add board_muse to the fuzz lane allowlist
+- Document Muse seats on the board
+- Drop a semicolon the lint gate refuses
+
 ## [v2026.9.87] - 2026-09-16
 - Omit the context turn from a subcommand exact resume
 - Pin Muse's exact resume argv and its fallback context turn
