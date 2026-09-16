@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.81] - 2026-09-16
+- Build stopped session rows into the fleet menu model
+- Resume a chosen stopped row through the launch owner
+- List proven stopped sessions and resume them from a row
+- Read stopped rows from meta alone, never the journal
+
 ## [v2026.9.80] - 2026-09-16
 - **config**: A """ block for [prompt] instructions, and a TOML-safe codex value
 - **config**: Rebase onto the provenance slice, pin the marked user turn, name the block exception
