@@ -16,8 +16,12 @@ use ae::tmux::{PickerPane, PickerSession, display_menu_for_client_args};
 use super::cli::{OwnedChild, ae, helper_by_name};
 use super::phase2::{run_tmux, tmux_present};
 
-/// How long a poll waits for tmux to catch up before the arm fails.
-const PATIENCE: Duration = Duration::from_secs(10);
+/// How long a poll waits for tmux (or a child process) to catch up before the
+/// arm fails. These polls await an external process, they are not speed
+/// assertions: the deadline has to outlast a fully loaded parallel gate, where
+/// a tmux client can take many seconds to get scheduled and render. A client
+/// that never renders still fails the arm — it just gets a fair chance first.
+const PATIENCE: Duration = Duration::from_secs(60);
 
 /// A scratch dir short enough to hold a socket path — `sun_path` is 104 bytes
 /// on macOS and the usual temp dir eats most of it.

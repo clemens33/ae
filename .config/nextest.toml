@@ -1,0 +1,16 @@
+# Test scheduling for the integration target.
+#
+# The `menu` module drives a REAL tmux server and real attached clients, then
+# polls until a client renders. Every test in it starts one or two servers and
+# several clients, so a fully parallel run can starve a client the test is
+# waiting on behind its siblings' redraws. Keep the whole module in one small
+# group: the class is defined by the module, so a menu test added tomorrow is
+# covered the day it lands, and the other slots stay free for the rest of the
+# suite. This is a scheduling fact, not a retry: no test is skipped, retried or
+# weakened, and the waits themselves still fail if a client never renders.
+[test-groups.tmux-clients]
+max-threads = 3
+
+[[profile.default.overrides]]
+filter = 'test(~menu::)'
+test-group = 'tmux-clients'
