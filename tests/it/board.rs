@@ -444,6 +444,74 @@ fn binary_unknown_session_exits_1_with_one_line() {
 }
 
 #[test]
+fn door_overlong_line_names_its_true_length_and_offsets_survive() {
+    let root = rig("overlong");
+    let store = root.join("claude");
+    let overhead = user("2026-09-16T09:00:00Z", "").len();
+    let big = "x".repeat(1024 * 1024 + 1 - overhead);
+    let first = user("2026-09-16T09:00:00Z", &big);
+    assert_eq!(first.len(), 1024 * 1024 + 1);
+    plant_transcript(
+        &store,
+        "work",
+        CLAUDE_ID,
+        &[first, user("2026-09-16T09:01:00Z", "after words")],
+    );
+    plant_session(
+        &root,
+        "big",
+        &claude_roster("main", "lead", CLAUDE_ID, &store),
+    );
+    let observation = observe(&root, &["big"], None);
+    assert_eq!(observation.coverage.len(), 1);
+    assert_eq!(
+        observation.coverage[0].reason,
+        format!("line exceeds 1 MiB cap ({} bytes)", 1024 * 1024 + 1)
+    );
+    assert_eq!(observation.rows.len(), 1);
+    assert_eq!(observation.rows[0].body, "after words");
+    assert_eq!(observation.rows[0].offset, (1024 * 1024 + 2) as u64);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn binary_torn_tail_keeps_earlier_rows_and_covers_the_tail() {
+    let root = rig("bin-torn");
+    let store = root.join("claude");
+    let dir = store.join("projects").join("work");
+    std::fs::create_dir_all(&dir).expect("project dir");
+    std::fs::write(
+        dir.join(format!("{CLAUDE_ID}.jsonl")),
+        format!(
+            "{}\n{}",
+            user("2026-09-16T09:00:00Z", "kept words"),
+            user("2026-09-16T09:01:00Z", "torn words")
+        ),
+    )
+    .expect("torn transcript");
+    plant_session(
+        &root,
+        "torn",
+        &claude_roster("main", "lead", CLAUDE_ID, &store),
+    );
+    let (code, stdout, stderr) = run(&root, &["board", "torn"]);
+    assert_eq!(code, Some(0), "stderr: {stderr}");
+    assert!(
+        stdout.contains("coverage incomplete: torn:lead — torn last record"),
+        "stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("## 2026-09-16T09:00:00.000000Z torn:lead\nkept words\n"),
+        "stdout: {stdout}"
+    );
+    assert!(
+        !stdout.contains("torn words"),
+        "the torn tail is never trusted: {stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn binary_empty_board_prints_scope_only() {
     let root = rig("bin-empty");
     std::fs::create_dir_all(root.join("sessions")).expect("sessions dir");
