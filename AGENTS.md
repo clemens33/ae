@@ -243,15 +243,15 @@ Name resolution takes the exact name, `%pane-id`, or `session:agent` / `@session
 
 ## Agent tool capabilities
 
-| | Claude Code | Codex | Gemini CLI | Antigravity (`agy`) | Grok Build | OpenCode |
-|---|---|---|---|---|---|---|
-| **Prompt injection** | `--append-system-prompt` | `-c developer_instructions=` | `-i` | none — rides `-i` as a user turn | none — rides positional `[PROMPT]`; never `--system-prompt-override` | `OPENCODE_CONFIG` json `instructions` |
-| **Session id at launch** | `--session-id UUID` | none | none | none | `--session-id UUID` | none |
-| **Id capture** | immediate | post-launch: sid file verified by launch-token rollout born at/after the pre-exec capture floor, then token scan. A token miss stays `pending`; cwd/TUI are legacy no-token fallbacks and may never replace an id | post-launch chat-history scan | post-launch: `<id>.db` bytes with a token, else `cli-*.log`. A token miss stays `pending` | immediate | post-launch `session list --format json` |
-| **Exact resume** | `--resume UUID` | `resume UUID` (subcommand) | `--resume UUID` | `--conversation UUID` | `--resume UUID` | `--session ID` |
-| **Resume fallback** | `--continue` | fresh start | `--resume latest` | `--continue` | `--continue` | `--continue` |
-| **TUI modelled for delivery** | yes | yes | no | no | no | no |
-| **`_run` re-run** | exact resume when the recorded id passes the tool's store probe (or the tool has no probe); a gone conversation takes the fallback above | same | same | same | same | same |
+| | Claude Code | Codex | Gemini CLI | Antigravity (`agy`) | Grok Build | Muse Code | OpenCode |
+|---|---|---|---|---|---|---|---|
+| **Prompt injection** | `--append-system-prompt` | `-c developer_instructions=` | `-i` | none — rides `-i` as a user turn | none — rides positional `[PROMPT]`; never `--system-prompt-override` | none — rides positional `[PROMPT]` | `OPENCODE_CONFIG` json `instructions` |
+| **Session id at launch** | `--session-id UUID` | none | none | none | `--session-id UUID` | none | none |
+| **Id capture** | immediate | post-launch: sid file verified by launch-token rollout born at/after the pre-exec capture floor, then token scan. A token miss stays `pending`; cwd/TUI are legacy no-token fallbacks and may never replace an id | post-launch chat-history scan | post-launch: `<id>.db` bytes with a token, else `cli-*.log`. A token miss stays `pending` | immediate | post-launch: launch-token scan of the dated `session.jsonl` store; the token-proven directory basename is the id. A token miss stays `pending` | post-launch `session list --format json` |
+| **Exact resume** | `--resume UUID` | `resume UUID` (subcommand) | `--resume UUID` | `--conversation UUID` | `--resume UUID` | `resume UUID` (subcommand; no positional context turn) | `--session ID` |
+| **Resume fallback** | `--continue` | fresh start | `--resume latest` | `--continue` | `--continue` | fresh start | `--continue` |
+| **TUI modelled for delivery** | yes | yes | no | no | no | yes | no |
+| **`_run` re-run** | exact resume when the recorded id passes the tool's store probe (or the tool has no probe); a gone conversation takes the fallback above | same | same | same | same | same | same |
 
 - A drawn input box is not an initialized tool. Paste-driven delivery is gated by
   `src/deliver.rs::input_ready` / `wait_input_ready`; a timeout is a loud, durable failure.
