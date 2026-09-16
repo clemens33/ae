@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.91] - 2026-09-16
+- Add the Muse column to the agent capability table
+- Drop the Codex project-doc turn from the board
+- Seed the board fuzzer with a synthetic project-doc turn
+- Document the Codex project-doc exclusion
+- Widen the project-doc fallback to the shorter prefix
+
 ## [v2026.9.90] - 2026-09-16
 - Clear a dead latch when the harness process is positively back
 - Read dead-cleared as a cleared watchdog verdict
