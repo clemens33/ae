@@ -380,4 +380,13 @@ idle_nudge_secs = 300      # positive empty-input reminder cadence; 0 disables
 
 [prompt]
 instructions = "Custom instructions injected into agent system prompts"
+# A long value goes in a block: the opener line is exactly instructions = """
+# and a line that is exactly """ closes it. Between them every line is raw
+# text — a [section] header, a key = value line and a # comment are NOT parsed.
+# A raw line that is exactly """ cannot appear inside the block, because that
+# line closes it; no escape exists.
+# instructions = """
+# SPEND POLICY: keep replies short.
+# Cite the file for every claim.
+# """
 ```

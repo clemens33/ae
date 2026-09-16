@@ -1,0 +1,14 @@
+fablex
+[prompt]
+instructions = """
+[clients]
+codex = codex config_home=$HOME/.codex-x
+"""
+[clients]
+claude = claude config_home=$HOME/.claude-x
+[profiles]
+fablex = claude --model fable
+[roster]
+lead = fablex
+[workspace]
+main = lead

@@ -192,6 +192,14 @@ watchdog = true
 # ~/.ae/sessions/<name>/workspace.md. Anything set here is APPENDED on top of that; per-project
 # .ae/config overrides the global one. Uncomment to add your own house rules:
 # instructions = "Always write tests. Prefer TypeScript."
+# A long value goes in a block instead: the opener line is exactly instructions = """ and a
+# line that is exactly """ closes it. Between them every line is raw text (# is not a comment,
+# and a key = value line is not a key). A raw line that is exactly """ cannot appear inside
+# the block — it would close it, and no escape exists.
+# instructions = """
+# SPEND POLICY: keep replies short.
+# Cite the file for every claim.
+# """
 "##;
 
 /// The text `ae help` prints — the glue's `cmd_help`, verbatim.
@@ -850,6 +858,11 @@ mod tests {
         assert!(DEFAULT_CONFIG.contains("orchestrator = gpt56luna\n"));
         assert!(DEFAULT_CONFIG.contains("model_reasoning_effort=xhigh"));
         assert!(!DEFAULT_CONFIG.contains("sonnet5"));
-        assert!(DEFAULT_CONFIG.ends_with("Prefer TypeScript.\"\n"));
+        assert!(DEFAULT_CONFIG.contains("Prefer TypeScript.\"\n"));
+        assert!(DEFAULT_CONFIG.contains("# instructions = \"\"\"\n"));
+        assert!(
+            DEFAULT_CONFIG.ends_with("# \"\"\"\n"),
+            "the seeded config ends on the block example's closer"
+        );
     }
 }

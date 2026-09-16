@@ -1,0 +1,11 @@
+[prompt]
+instructions = """
+[roster]
+lead = not a name!
+main = lead
+# a comment line
+key = value
+instructions = """
+"""
+[workspace]
+main = lead

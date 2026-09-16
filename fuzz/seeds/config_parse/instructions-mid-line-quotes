@@ -1,0 +1,7 @@
+[prompt]
+instructions = """
+a """ in the middle stays text
+   """ indented stays text
+"""
+[profiles]
+idle = "sleep 600"

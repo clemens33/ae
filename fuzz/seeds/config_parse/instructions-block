@@ -1,0 +1,8 @@
+[profiles]
+idle = "sleep 600"
+
+[prompt]
+instructions = """
+SPEND POLICY: keep replies short.
+second line, raw, verbatim
+"""

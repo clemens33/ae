@@ -31,6 +31,38 @@ fn single_quote_escape(text: &str) -> String {
     text.replace('\'', "'\\''")
 }
 
+/// The TOML basic-string spelling of `text`: what codex's own `-c` parser
+/// reads, and the ONLY shape that survives verbatim.
+///
+/// codex parses a `-c key=value` value as TOML and falls back to the raw
+/// string only when TOML refuses it (openai/codex `config_override.rs`), so a
+/// value left bare is transformed whenever it happens to parse (a number, a
+/// quoted word) and its outer quotes are TRIMMED by the fallback. Spelling the
+/// value as a TOML basic string takes the parse branch and yields the exact
+/// text, newlines and quotes included.
+fn toml_basic_string(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 2);
+    out.push('"');
+    for ch in text.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{8}' => out.push_str("\\b"),
+            '\u{c}' => out.push_str("\\f"),
+            ch if (ch as u32) < 0x20 || ch == '\u{7f}' => {
+                use std::fmt::Write as _;
+                let _ = write!(out, "\\u{:04X}", ch as u32);
+            }
+            ch => out.push(ch),
+        }
+    }
+    out.push('"');
+    out
+}
+
 /// The launch marker shared with capture readers, or no marker when either
 /// component is absent.
 fn launch_marker_text(prefix: Option<&str>, launch_id: &str, slot: &str) -> String {
@@ -280,11 +312,9 @@ pub fn inject_ae_context(
             let full = format!(
                 "{ctx} --- CRITICAL FIRST TASK: Enable session resume by running: {dir}/_register-sid{slot_arg} — do this NOW before anything else.{marker}"
             );
+            let value = format!("developer_instructions={}", toml_basic_string(&full));
             Injected {
-                cmd: format!(
-                    "{cmd} -c developer_instructions='{}'",
-                    single_quote_escape(&full)
-                ),
+                cmd: format!("{cmd} -c '{}'", single_quote_escape(&value)),
                 warning: None,
             }
         }
@@ -529,6 +559,7 @@ mod tests {
         PENDING, build_launch_command, generate_uuid, id_probeable, initial_prompt_for,
         initial_turn_with_brief, inject_ae_context, inject_session_id, opencode_context_files,
         shell_quote, strip_agy_session_flags, strip_grok_session_flags, strip_session_flags,
+        toml_basic_string,
     };
     use crate::tool::ToolKind;
     use std::path::PathBuf;
@@ -658,7 +689,7 @@ mod tests {
         );
         let codex = inject_ae_context("codex", &dir, "spawned.1", ctx, "tok-1");
         assert!(
-            codex.cmd.contains("-c developer_instructions='"),
+            codex.cmd.contains("-c 'developer_instructions=\""),
             "{}",
             codex.cmd
         );
@@ -726,6 +757,139 @@ mod tests {
         assert_eq!(
             inject_ae_context("weirdtool", &dir, "spawned.5", ctx, "").cmd,
             "weirdtool"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The test's own reader for the TOML basic string [`toml_basic_string`]
+    /// writes — a second implementation, so the encoder is not proven against
+    /// itself.
+    fn toml_decode(literal: &str) -> String {
+        let body = literal
+            .strip_prefix('"')
+            .and_then(|body| body.strip_suffix('"'))
+            .expect("a quoted TOML basic string");
+        let mut out = String::new();
+        let mut chars = body.chars();
+        while let Some(ch) = chars.next() {
+            if ch != '\\' {
+                out.push(ch);
+                continue;
+            }
+            match chars.next() {
+                Some('n') => out.push('\n'),
+                Some('r') => out.push('\r'),
+                Some('t') => out.push('\t'),
+                Some('b') => out.push('\u{8}'),
+                Some('f') => out.push('\u{c}'),
+                Some('"') => out.push('"'),
+                Some('\\') => out.push('\\'),
+                Some('u') => {
+                    let hex: String = chars.by_ref().take(4).collect();
+                    let code = u32::from_str_radix(&hex, 16).expect("four hex digits");
+                    out.push(char::from_u32(code).expect("a scalar value"));
+                }
+                other => panic!("unknown escape {other:?}"),
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn the_codex_value_is_a_toml_basic_string_that_round_trips() {
+        assert_eq!(toml_basic_string("plain"), "\"plain\"");
+        assert_eq!(
+            toml_basic_string("123"),
+            "\"123\"",
+            "a bare number would take codex's TOML branch as a number"
+        );
+        assert_eq!(toml_basic_string("a\"b"), "\"a\\\"b\"");
+        assert_eq!(toml_basic_string("one\ntwo"), "\"one\\ntwo\"");
+        assert_eq!(toml_basic_string("back\\slash\t"), "\"back\\\\slash\\t\"");
+        assert_eq!(toml_basic_string("del\u{7f}"), "\"del\\u007F\"");
+        assert_eq!(
+            toml_decode(&toml_basic_string("a\"b\nc\\d\te")),
+            "a\"b\nc\\d\te"
+        );
+    }
+
+    #[test]
+    fn a_context_with_newlines_and_quotes_survives_every_injection_path() {
+        let dir = scratch("multiline");
+        let ctx = "first line \"quoted\"\nsecond line 'single'\nthird back\\slash";
+        let words = |cmd: &str| crate::words::split(cmd, &|_| None).expect("the command lexes");
+
+        // claude: one --append-system-prompt shell word, verbatim.
+        let claude = words(&inject_ae_context("claude", &dir, "spawned.0", ctx, "").cmd);
+        assert_eq!(claude.last().map(String::as_str), Some(ctx));
+
+        // codex: a TOML basic string on the -c flag, whatever the context holds.
+        let codex = words(&inject_ae_context("codex", &dir, "spawned.1", ctx, "tok-9").cmd);
+        assert_eq!(codex[..2], ["codex".to_owned(), "-c".to_owned()]);
+        let value = codex[2]
+            .strip_prefix("developer_instructions=")
+            .expect("the -c key");
+        let decoded = toml_decode(value);
+        assert!(decoded.contains(ctx), "{decoded}");
+        assert!(decoded.contains("/_register-sid spawned.1"), "{decoded}");
+        assert!(decoded.contains("AE_CODEX_LAUNCH_ID=tok-9"), "{decoded}");
+
+        // agy: a USER TURN through -i, plus the wait suffix.
+        let agy = words(&inject_ae_context("agy", &dir, "spawned.2", ctx, "").cmd);
+        assert_eq!(agy[..2], ["agy".to_owned(), "-i".to_owned()]);
+        assert!(agy[2].starts_with(ctx), "{}", agy[2]);
+
+        // grok and muse: the context is the POSITIONAL prompt, no flag.
+        for tool in ["grok", "muse"] {
+            let argv = words(&inject_ae_context(tool, &dir, "spawned.3", ctx, "").cmd);
+            assert_eq!(argv.len(), 2, "{tool}: {argv:?}");
+            assert!(argv[1].starts_with(ctx), "{tool}: {}", argv[1]);
+            assert!(argv[1].contains("This is context only"), "{tool}");
+        }
+
+        // opencode: the payload is a FILE the JSON points at.
+        let opencode = inject_ae_context("opencode", &dir, "spawned.4", ctx, "");
+        let argv = words(&opencode.cmd);
+        assert_eq!(argv[0], "env");
+        let pointer = argv[1]
+            .strip_prefix("OPENCODE_CONFIG=")
+            .expect("the env prefix");
+        assert_eq!(argv.last().map(String::as_str), Some("opencode"));
+        let published =
+            std::fs::read_to_string(dir.join("opencode.spawned.4.md")).expect("the payload file");
+        assert_eq!(
+            published,
+            format!("{ctx}\n"),
+            "the payload file keeps the newlines"
+        );
+        let config = std::fs::read_to_string(pointer).expect("the config file");
+        let parsed = crate::json::parse(&config).expect("valid JSON");
+        let crate::json::Value::Arr(items) = parsed.get("instructions").expect("the array") else {
+            panic!("instructions is an array: {config}");
+        };
+        let expected = dir.join("opencode.spawned.4.md").display().to_string();
+        assert_eq!(
+            items.first().and_then(crate::json::Value::as_str),
+            Some(expected.as_str()),
+            "{config}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_opencode_json_survives_a_quote_and_a_newline_in_the_path() {
+        let dir = scratch("json-\"quote\nnl");
+        let path = opencode_context_files(&dir, "spawned.0", "ctx").expect("published");
+        let config = std::fs::read_to_string(&path).expect("the config file");
+        let parsed = crate::json::parse(&config).expect("valid JSON despite the path");
+        let crate::json::Value::Arr(items) = parsed.get("instructions").expect("the array") else {
+            panic!("instructions is an array: {config}");
+        };
+        let expected = dir.join("opencode.spawned.0.md").display().to_string();
+        assert_eq!(
+            items.first().and_then(crate::json::Value::as_str),
+            Some(expected.as_str()),
+            "{config}"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

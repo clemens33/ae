@@ -294,6 +294,26 @@ Custom instructions transported beside the ae workspace context through each har
 instructions = "Always cite the source file you used."
 ```
 
+A long policy is easier as a multi-line block. The opener line is exactly
+`instructions = """`; a line that is exactly `"""` closes the block. Between them
+every line is raw text — a `[section]` header, a `key = value` line and a `#`
+comment are all just text, and no escapes are interpreted. A raw line that is
+exactly `"""` cannot appear inside the block, because that line closes it; no
+escape exists. The single-line form above stays valid and unchanged, and the
+block is accepted for `prompt.instructions` alone.
+
+```toml
+[prompt]
+instructions = """
+SPEND POLICY: keep replies short.
+Cite the file for every claim.
+"""
+```
+
+Every harness receives the value on its own channel — a system-prompt flag, a
+developer-instructions value, an initial user turn, or a generated config file —
+so the newlines and quotes reach the agent's system prompt verbatim.
+
 ## Watchdog defaults
 
 The watchdog reads its tunables from environment variables (set them in the session shell before `ae <name>`, or via your shell rc):

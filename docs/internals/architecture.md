@@ -338,7 +338,7 @@ spawn task delivery.
 Every agent gets workspace context at launch, through its harness's supported channel:
 
 - **Claude Code** — `--append-system-prompt 'text'`
-- **Codex** — `-c developer_instructions='text'`
+- **Codex** — `-c 'developer_instructions="text"'`, the value spelled as a TOML basic string (codex parses the value as TOML, so a quoted, escaped string is the only shape that survives a newline or a quote verbatim)
 - **Gemini CLI** — `-i 'text'`
 - **Grok Build** — no append-style flag; ae passes the context as the positional `[PROMPT]` argv (`--system-prompt-override` would *replace* grok's own agent prompt, so ae never uses it)
 - **Muse Code** — no per-seat system-instruction channel; ae passes the context as the positional `[PROMPT]` argv, preserving Muse's own system prompt

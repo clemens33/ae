@@ -488,28 +488,48 @@ fn config_entries(files: &[PathBuf]) -> Vec<(String, String)> {
         )]
         let read = std::fs::read_to_string(file);
         let Ok(text) = read else { continue };
-        let raw: Vec<&str> = text.split('\n').collect();
-        let complete = if text.ends_with('\n') {
-            raw.len()
+        // The frozen reader drops a file's final line when it carries no closing
+        // newline — except a block closer, which the identity reader DOES see at
+        // EOF; dropping it would silently lose the whole instruction block.
+        let complete = if text.ends_with('\n') || final_line_closes_a_block(&text) {
+            text.as_str()
         } else {
-            raw.len().saturating_sub(1)
+            text.get(..text.rfind('\n').map_or(0, |at| at + 1))
+                .unwrap_or_default()
         };
         let mut section = String::new();
-        for line in &raw[..complete] {
-            let line = line.trim_matches(is_ini_space);
-            if line.is_empty() {
-                continue;
-            }
-            if let Some(name) = section_header(line) {
-                name.clone_into(&mut section);
-                continue;
-            }
-            if let Some((key, value)) = config_entry(line) {
-                entries.push((format!("{section}.{key}"), value));
-            }
+        for item in crate::config::config_lines(file, complete) {
+            let Ok(item) = item else { break };
+            let entry = match item {
+                crate::config::ConfigLine::Instructions(value) => {
+                    ("prompt.instructions".to_owned(), value)
+                }
+                crate::config::ConfigLine::Plain(_, line) => {
+                    let line = line.trim_matches(is_ini_space);
+                    if line.is_empty() {
+                        continue;
+                    }
+                    if let Some(name) = section_header(line) {
+                        name.clone_into(&mut section);
+                        continue;
+                    }
+                    let Some((key, value)) = config_entry(line) else {
+                        continue;
+                    };
+                    (format!("{section}.{key}"), value)
+                }
+            };
+            entries.push(entry);
         }
     }
     entries
+}
+
+/// Whether the final line of `text` is a `"""` block closer.
+fn final_line_closes_a_block(text: &str) -> bool {
+    text.rsplit('\n')
+        .next()
+        .is_some_and(|line| line.trim_end() == "\"\"\"")
 }
 
 /// `get_config <key>` — LAST match wins, so the local overlay beats the global
@@ -1093,6 +1113,47 @@ mod tests {
         let entries = config_entries(&[global, local]);
         assert_eq!(config_value(&entries, "prompt.instructions"), "local");
         assert_eq!(profile_inventory(&entries), "cl, cl");
+    }
+
+    #[test]
+    fn a_block_reaches_the_document_with_its_newlines_and_quotes() {
+        let dir = scratch("block");
+        let config = write(
+            &dir,
+            "config",
+            concat!(
+                "[prompt]\n",
+                "instructions = \"\"\"\n",
+                "first \"quoted\" line\n",
+                "second line\n",
+                "\"\"\"\n",
+            ),
+        );
+        let entries = config_entries(std::slice::from_ref(&config));
+        assert_eq!(
+            config_value(&entries, "prompt.instructions"),
+            "first \"quoted\" line\nsecond line"
+        );
+        let document = context_document(&dir, "s", "/w", "main", &[config]);
+        assert!(
+            document.ends_with(" --- Workspace instructions: first \"quoted\" line\nsecond line"),
+            "{document}"
+        );
+    }
+
+    #[test]
+    fn a_local_block_beats_a_global_single_line_and_a_closer_at_eof_closes() {
+        let dir = scratch("block-overlay");
+        let global = write(&dir, "global", "[prompt]\ninstructions = global\n");
+        // No trailing newline: the FROZEN reader drops a final partial line, but
+        // a block closer is the one line it must keep or the value is lost.
+        let local = write(
+            &dir,
+            "local",
+            "[prompt]\ninstructions = \"\"\"\none\ntwo\n\"\"\"",
+        );
+        let entries = config_entries(&[global, local]);
+        assert_eq!(config_value(&entries, "prompt.instructions"), "one\ntwo");
     }
 
     #[test]

@@ -105,7 +105,10 @@ fn apply_file(
 ) -> Result<(), ()> {
     let text = read_selected(file).map_err(|_| ())?;
     let mut section = String::new();
-    for raw in text.lines() {
+    for item in config_lines(file, &text) {
+        let ConfigLine::Plain(_, raw) = item.map_err(|_| ())? else {
+            continue;
+        };
         let line = raw.trim();
         if line.is_empty() {
             continue;
@@ -205,6 +208,113 @@ pub(crate) fn is_config_key(s: &str) -> bool {
         _ => return false,
     }
     bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+/// One logical line of INI text, with a `[prompt] instructions = """` block
+/// already resolved to its value.
+#[derive(Debug)]
+pub(crate) enum ConfigLine<'a> {
+    /// A line that is not a block: its 1-based number and its raw text.
+    Plain(usize, &'a str),
+    /// A resolved instruction block: the verbatim value (the newline after the
+    /// opener dropped, inner newlines kept, no trailing newline).
+    Instructions(String),
+}
+
+/// The one key that accepts a `"""` block, spelled `prompt.instructions`.
+const BLOCK_SECTION: &str = "prompt";
+const BLOCK_KEY: &str = "instructions";
+
+/// The `key = """` opener: a config key whose whole value is exactly three
+/// double quotes.
+fn block_opener(line: &str) -> Option<&str> {
+    let eq = line.find('=')?;
+    let key = line[..eq].trim();
+    if !is_config_key(key) || line[eq + 1..].trim() != "\"\"\"" {
+        return None;
+    }
+    Some(key)
+}
+
+/// The closing line: exactly `"""`, trailing whitespace tolerated. A raw line
+/// that is exactly `"""` therefore CANNOT appear inside a block — there is no
+/// escape — which is why no leading whitespace is tolerated either.
+fn block_closer(line: &str) -> bool {
+    line.trim_end() == "\"\"\""
+}
+
+/// Walk one selected config file line by line, resolving `"""` blocks.
+///
+/// The block is the ONE extension to the line reader, accepted for
+/// `prompt.instructions` alone. Every reader of a selected INI file routes
+/// through this iterator, so a block body is never parsed as keys, sections or
+/// comments and the opener on any other key is refused once, at the parser.
+pub(crate) fn config_lines<'a>(
+    file: &'a Path,
+    text: &'a str,
+) -> impl Iterator<Item = Result<ConfigLine<'a>, ConfigError>> + 'a {
+    ConfigLines {
+        file,
+        lines: text.lines(),
+        line: 0,
+        section: String::new(),
+    }
+}
+
+struct ConfigLines<'a> {
+    file: &'a Path,
+    lines: std::str::Lines<'a>,
+    line: usize,
+    section: String,
+}
+
+impl<'a> Iterator for ConfigLines<'a> {
+    type Item = Result<ConfigLine<'a>, ConfigError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let raw = self.lines.next()?;
+        self.line += 1;
+        let trimmed = raw.trim();
+        if let Some(name) = section_header(trimmed) {
+            self.section = name;
+            return Some(Ok(ConfigLine::Plain(self.line, raw)));
+        }
+        let Some(key) = block_opener(trimmed) else {
+            return Some(Ok(ConfigLine::Plain(self.line, raw)));
+        };
+        if self.section != BLOCK_SECTION || key != BLOCK_KEY {
+            let key = if self.section.is_empty() {
+                key.to_owned()
+            } else {
+                format!("{}.{key}", self.section)
+            };
+            return Some(Err(ConfigError::InstructionBlock {
+                file: self.file.to_owned(),
+                key,
+                line: self.line,
+            }));
+        }
+        let opening = self.line;
+        let mut value = String::new();
+        let mut first = true;
+        loop {
+            let Some(inner) = self.lines.next() else {
+                return Some(Err(ConfigError::UnterminatedInstructionBlock {
+                    file: self.file.to_owned(),
+                    line: opening,
+                }));
+            };
+            self.line += 1;
+            if block_closer(inner) {
+                return Some(Ok(ConfigLine::Instructions(value)));
+            }
+            if !first {
+                value.push('\n');
+            }
+            value.push_str(inner);
+            first = false;
+        }
+    }
 }
 
 /// The agent-name grammar, spelled as a refusal prints it.
@@ -613,6 +723,22 @@ pub enum ConfigError {
         /// The specific refusal.
         reason: String,
     },
+    /// A `"""` block on a key that cannot carry one.
+    InstructionBlock {
+        /// The file.
+        file: PathBuf,
+        /// `<section>.<key>`, or `<key>` outside a section.
+        key: String,
+        /// 1-based line of the opener.
+        line: usize,
+    },
+    /// A `"""` block that never closed.
+    UnterminatedInstructionBlock {
+        /// The file.
+        file: PathBuf,
+        /// 1-based line of the opener.
+        line: usize,
+    },
 }
 
 impl fmt::Display for ConfigError {
@@ -677,6 +803,16 @@ impl fmt::Display for ConfigError {
                 client,
                 reason,
             } => write!(f, "Error: [clients] {client}: {reason}"),
+            Self::InstructionBlock { file, key, line } => write!(
+                f,
+                "Error: {}:{line}: '{key}' cannot carry a \"\"\" block — prompt.instructions is the only key that accepts one.",
+                file.display()
+            ),
+            Self::UnterminatedInstructionBlock { file, line } => write!(
+                f,
+                "Error: {}:{line}: unterminated \"\"\" block — close it with a line that is exactly \"\"\".",
+                file.display()
+            ),
         }
     }
 }
@@ -768,8 +904,10 @@ fn overlay_identity_text(
 ) -> Result<(), ConfigError> {
     let mut section = String::new();
     let mut seen: Vec<(String, String)> = Vec::new();
-    for (index, raw) in text.lines().enumerate() {
-        let line = index + 1;
+    for item in config_lines(file, text) {
+        let ConfigLine::Plain(line, raw) = item? else {
+            continue;
+        };
         let trimmed = raw.trim();
         if trimmed.is_empty() {
             continue;
@@ -1581,7 +1719,10 @@ pub fn read_global_workspace_key(file: &Path, key: &str) -> Result<Option<String
     };
     let mut section = String::new();
     let mut found = None;
-    for raw in text.lines() {
+    for item in config_lines(file, &text) {
+        let ConfigLine::Plain(_, raw) = item.map_err(|why| why.to_string())? else {
+            continue;
+        };
         let line = raw.trim();
         if line.is_empty() {
             continue;
@@ -1633,7 +1774,13 @@ pub fn read_workspace_keys_with_identity_sections(
             continue;
         };
         let mut section = String::new();
-        for raw in text.lines() {
+        for item in config_lines(file, &text) {
+            let Ok(item) = item else {
+                break;
+            };
+            let ConfigLine::Plain(_, raw) = item else {
+                continue;
+            };
             let line = raw.trim();
             if line.is_empty() {
                 continue;
@@ -1853,6 +2000,182 @@ mod tests {
                 "'{v}' is not truthy"
             );
         }
+    }
+
+    // ---- the `prompt.instructions` block -------------------------------
+
+    /// Every logical line `text` yields, expecting no refusal.
+    fn lines_of(text: &str) -> Vec<ConfigLine<'_>> {
+        config_lines(Path::new("<config>"), text)
+            .collect::<Result<Vec<_>, _>>()
+            .expect("valid config text")
+    }
+
+    /// The one block value in `text`.
+    fn block_value(text: &str) -> String {
+        lines_of(text)
+            .into_iter()
+            .find_map(|line| match line {
+                ConfigLine::Instructions(value) => Some(value),
+                ConfigLine::Plain(..) => None,
+            })
+            .expect("one instruction block")
+    }
+
+    #[test]
+    fn an_instruction_block_keeps_its_body_verbatim_between_the_delimiters() {
+        let text = concat!(
+            "[prompt]\n",
+            "instructions = \"\"\"\n",
+            "SPEND POLICY: keep replies short.\n",
+            "second line, raw, verbatim\n",
+            "\"\"\"\n",
+        );
+        assert_eq!(
+            block_value(text),
+            "SPEND POLICY: keep replies short.\nsecond line, raw, verbatim",
+            "the opener's newline is dropped, inner newlines kept, no trailing newline"
+        );
+        // Trailing whitespace on the opener and the closer is tolerated; an
+        // empty body is the empty value.
+        assert_eq!(
+            block_value("[prompt]\ninstructions = \"\"\"   \n\"\"\"\t\n"),
+            ""
+        );
+        // A file that ends AT the closer, with no closing newline, still closes.
+        assert_eq!(
+            block_value("[prompt]\r\ninstructions = \"\"\"\r\nfirst\r\nsecond\r\n\"\"\""),
+            "first\nsecond",
+            "a CRLF file and an unterminated final newline behave like TOML"
+        );
+    }
+
+    #[test]
+    fn a_block_body_is_text_not_sections_keys_or_comments() {
+        let text = concat!(
+            "[prompt]\n",
+            "instructions = \"\"\"\n",
+            "[roster]\n",
+            "lead = not/a/name!\n",
+            "main = lead\n",
+            "# a comment line\n",
+            "instructions = \"\"\"\n",
+            "text \"\"\" in the middle\n",
+            "\"\"\"\n",
+            "[workspace]\n",
+            "main = lead\n",
+        );
+        assert_eq!(
+            block_value(text),
+            "[roster]\nlead = not/a/name!\nmain = lead\n# a comment line\ninstructions = \"\"\"\ntext \"\"\" in the middle"
+        );
+        // The identity reader sees the same text: the body claims no key, moves
+        // no section, and the [workspace] AFTER the block still parses.
+        let (_f, cfg) = v2(text);
+        assert_eq!(cfg.main.as_deref(), Some("lead"));
+        assert!(cfg.roster.is_empty(), "{:?}", cfg.roster);
+        assert!(cfg.clients.is_empty(), "{:?}", cfg.clients);
+    }
+
+    #[test]
+    fn a_triple_quote_line_must_be_exactly_alone_and_unindented_to_close() {
+        let text = concat!(
+            "[prompt]\n",
+            "instructions = \"\"\"\n",
+            "a \"\"\" b\n",
+            "   \"\"\"\n",
+            "\"\"\"   \n",
+            "after = not-in-the-block\n",
+        );
+        assert_eq!(block_value(text), "a \"\"\" b\n   \"\"\"");
+        assert!(
+            lines_of(text).iter().any(
+                |line| matches!(line, ConfigLine::Plain(_, raw) if raw.trim() == "after = not-in-the-block")
+            ),
+            "the line after the closer is config again"
+        );
+    }
+
+    #[test]
+    fn an_unterminated_block_names_its_opening_line() {
+        let err = config_lines(
+            Path::new("<config>"),
+            "[prompt]\ninstructions = \"\"\"\nnever closed\n",
+        )
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                ConfigError::UnterminatedInstructionBlock { line: 2, .. }
+            ),
+            "{err}"
+        );
+        assert!(err.to_string().contains(":2:"), "{err}");
+    }
+
+    #[test]
+    fn a_block_on_any_other_key_is_refused_naming_the_key() {
+        for (text, key, line) in [
+            ("[workspace]\nmain = \"\"\"\n\"\"\"\n", "workspace.main", 2),
+            ("[prompt]\nnotes = \"\"\"\n\"\"\"\n", "prompt.notes", 2),
+            ("instructions = \"\"\"\n\"\"\"\n", "instructions", 1),
+        ] {
+            let err = config_lines(Path::new("<config>"), text)
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap_err();
+            assert!(
+                matches!(
+                    &err,
+                    ConfigError::InstructionBlock { key: named, line: at, .. }
+                        if named == key && *at == line
+                ),
+                "{err}"
+            );
+            assert!(
+                err.to_string().contains("prompt.instructions"),
+                "the refusal says which key accepts a block: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_single_line_quoted_form_is_not_a_block() {
+        let (_f, cfg) =
+            v2("[prompt]\ninstructions = \"be brief\"\n[profiles]\nidle = \"sleep 600\"\n");
+        assert_eq!(cfg.profiles.len(), 1);
+        for text in [
+            "[prompt]\ninstructions = \"be brief\"\n",
+            "[prompt]\ninstructions = \"\"\"extra\n",
+            "[prompt]\ninstructions = \"\"\"\"\n",
+            "[prompt]\ninstructions = ''\n",
+        ] {
+            assert!(
+                lines_of(text)
+                    .iter()
+                    .all(|line| matches!(line, ConfigLine::Plain(..))),
+                "no block from {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_block_body_never_lands_in_a_workspace_key() {
+        let c = NamedTemp::new(
+            "block-skip",
+            concat!(
+                "[prompt]\n",
+                "instructions = \"\"\"\n",
+                "main = stolen\n",
+                "workers = stolen, stolen2\n",
+                "\"\"\"\n",
+                "[workspace]\n",
+                "main = real\n",
+            ),
+        );
+        let w = read_workspace(Some(c.path()), None).expect("readable config");
+        assert_eq!(w.main.as_deref(), Some("real"));
+        assert_eq!(w.workers, None, "a block body is not a workspace row");
     }
 
     // ---- identity v2 ---------------------------------------------------
