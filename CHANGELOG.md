@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.87] - 2026-09-16
+- Omit the context turn from a subcommand exact resume
+- Pin Muse's exact resume argv and its fallback context turn
+- Document Muse's positional context and its exact resume
+
 ## [v2026.9.86] - 2026-09-16
 - Teach the board a Grok reader over updates.jsonl
 - Locate Grok seats by uuid scan and read them through the board door
