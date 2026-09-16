@@ -9,6 +9,19 @@
 
 use crate::tool::InputModel;
 
+/// The foreground a captured run is painted in, when the capture names one.
+/// Only IDENTITY matters: a run is compared against the colour the box paints
+/// its OWN rule in, so the frame carries its own reference.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fg {
+    /// An SGR 30-37 / 90-97 named colour.
+    Named(u8),
+    /// An `38;5;N` indexed colour.
+    Indexed(u8),
+    /// An `38;2;R;G;B` truecolour.
+    Rgb(u8, u8, u8),
+}
+
 /// One run of captured text sharing an SGR intensity state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Segment {
@@ -16,6 +29,8 @@ pub struct Segment {
     pub bold: bool,
     /// SGR 2 is active.
     pub dim: bool,
+    /// The foreground, when the frame names one.
+    pub fg: Option<Fg>,
     /// The printable run.
     pub text: String,
     /// Its row in the region, counting from 0.
@@ -50,6 +65,7 @@ pub fn parse(region: &str) -> Vec<Segment> {
     let mut segments = Vec::new();
     let mut rest = region;
     let (mut bold, mut dim, mut line) = (false, false, 0usize);
+    let mut fg: Option<Fg> = None;
     while !rest.is_empty() {
         if let Some(after) = rest.strip_prefix("\u{1b}]") {
             rest = consume_osc(after, &mut line);
@@ -71,6 +87,7 @@ pub fn parse(region: &str) -> Vec<Segment> {
                 if params.is_empty() { "0" } else { params },
                 &mut bold,
                 &mut dim,
+                &mut fg,
             );
             continue;
         }
@@ -94,6 +111,7 @@ pub fn parse(region: &str) -> Vec<Segment> {
                 segments.push(Segment {
                     bold,
                     dim,
+                    fg,
                     text: chunk.to_owned(),
                     line,
                 });
@@ -140,28 +158,67 @@ fn consume_escape(mut rest: &str) -> &str {
     rest
 }
 
-/// Apply one SGR parameter list to the intensity state.
-fn apply_sgr(params: &str, bold: &mut bool, dim: &mut bool) {
+/// Apply one SGR parameter list to the intensity and foreground state.
+fn apply_sgr(params: &str, bold: &mut bool, dim: &mut bool, fg: &mut Option<Fg>) {
     let list: Vec<&str> = params.split(';').collect();
     let mut index = 0;
     while index < list.len() {
         let value = list[index];
         match value {
-            // 0 and its empty spelling reset both; 21 and 22 turn each off,
-            // and ae only tracks intensity, so all four land in one arm.
-            "" | "0" | "21" | "22" => {
+            // 0 and its empty spelling reset the foreground too; 21 and 22
+            // turn intensity off only, and ae tracks no other attribute, so
+            // both land in one arm here.
+            "" | "0" => {
+                *bold = false;
+                *dim = false;
+                *fg = None;
+            }
+            "21" | "22" => {
                 *bold = false;
                 *dim = false;
             }
             "1" => *bold = true,
             "2" => *dim = true,
-            "38" | "48" => match list.get(index + 1).copied() {
-                // 38;5;N (256) or 38;2;R;G;B (truecolour): skip the arguments.
+            "38" => match list.get(index + 1).copied() {
+                // 38;5;N or 38;2;R;G;B: the colour is the run's identity.
+                Some("5") => {
+                    *fg = list
+                        .get(index + 2)
+                        .and_then(|n| n.parse::<u8>().ok())
+                        .map(Fg::Indexed);
+                    index += 2;
+                }
+                Some("2") => {
+                    let channels = [
+                        list.get(index + 2),
+                        list.get(index + 3),
+                        list.get(index + 4),
+                    ]
+                    .map(|channel| channel.and_then(|n| n.parse::<u8>().ok()));
+                    *fg = match channels {
+                        [Some(red), Some(green), Some(blue)] => Some(Fg::Rgb(red, green, blue)),
+                        _ => None,
+                    };
+                    index += 4;
+                }
+                _ => {}
+            },
+            // The background and every other attribute are consumed, never
+            // tracked: this sensor reads the identity of a run, not its look.
+            "48" => match list.get(index + 1).copied() {
                 Some("5") => index += 2,
                 Some("2") => index += 4,
                 _ => {}
             },
-            _ => {}
+            _ => {
+                if let Ok(code) = value.parse::<u8>() {
+                    match code {
+                        30..=37 | 90..=97 => *fg = Some(Fg::Named(code)),
+                        39 => *fg = None,
+                        _ => {}
+                    }
+                }
+            }
         }
         index += 1;
     }
@@ -286,22 +343,18 @@ fn content_end(segments: &[Segment], prompt_line: usize, stop_at: StopAt) -> usi
     end
 }
 
-/// Read `region` as `tool`'s input box — `_input_region_occupied`.
-#[must_use]
-pub fn occupancy(region: &str, model: InputModel) -> Occupancy {
-    if region.is_empty() {
-        return Occupancy::Unreadable;
-    }
-    let segments = parse(region);
+/// Gather everything the LIVE composer holds, or `None` when the frame names no
+/// live prompt ae can read. The ONE owner of "what the box contains": occupancy
+/// and the staged-chip question both read it, so a later change to what counts
+/// as content cannot make one of them drift from the other.
+fn gather(segments: &[Segment], model: InputModel) -> Option<String> {
     match model {
         InputModel::StyleDelimited => {
             // The live prompt is the bottom-most row whose first non-blank cell
             // is `›` in BOLD-and-NOT-DIM state; a submitted transcript echo is
             // the same ornament bold AND dim.
-            let Some(found) = prompt(&segments, true, &["›"]) else {
-                return Occupancy::Unreadable;
-            };
-            let end = content_end(&segments, segments[found.index].line, StopAt::Blank);
+            let found = prompt(segments, true, &["›"])?;
+            let end = content_end(segments, segments[found.index].line, StopAt::Blank);
             // Content is everything after the ANCHOR ornament only.
             let mut text = after_first(&found.tail, '›');
             for seg in &segments[found.index + 1..] {
@@ -313,32 +366,43 @@ pub fn occupancy(region: &str, model: InputModel) -> Occupancy {
                 }
                 text.push_str(&seg.text);
             }
-            // ANY unstyled printable remainder is OCCUPIED — including the
-            // unstyled `[Pasted Content N chars]` staging token.
-            verdict(&text)
+            Some(text)
         }
         InputModel::BorderDelimited => {
             // STRUCTURE, because styling cannot identify claude's live prompt:
             // the submitted echo, the idle prompt and the mid-generation prompt
             // differ in colour and NONE of them is SGR-dim.
-            let Some(found) = prompt(&segments, false, &["❯", ">", "▌"]) else {
-                return Occupancy::Unreadable;
-            };
-            let end = content_end(&segments, segments[found.index].line, StopAt::Border);
+            let found = prompt(segments, false, &["❯", ">", "▌"])?;
+            let composer = segments[found.index].line;
+            let end = content_end(segments, composer, StopAt::Border);
+            // The placeholder a border-delimited TUI shows in an EMPTY composer
+            // is chrome, not a draft: Muse paints its rotating tip in the SAME
+            // foreground as the box's own rule (live capture 2026-09-16:
+            // truecolour 103;108;116), while typed text is the primary
+            // foreground and a staged chip is BOLD. The rule is the reference,
+            // read from THIS frame, so a theme change moves both together.
+            let chrome = segments
+                .iter()
+                .find(|seg| seg.line == end && !is_blank(&seg.text))
+                .and_then(|seg| seg.fg);
             let mut text = found
                 .tail
                 .strip_prefix(found.ornament)
                 .unwrap_or(&found.tail)
                 .to_owned();
             // Continuation rows of a multiline draft sit BELOW the prompt row,
-            // including below the edit cursor, and are real unsent input.
+            // including below the edit cursor, and are real unsent input. Only
+            // the composer row itself can carry a placeholder.
             for seg in &segments[found.index + 1..] {
                 if seg.line >= end {
                     break;
                 }
+                if seg.line == composer && !seg.bold && seg.fg.is_some() && seg.fg == chrome {
+                    continue;
+                }
                 text.push_str(&seg.text);
             }
-            verdict(&text)
+            Some(text)
         }
         // No grammar for this box: ae read NOTHING, so it claims nothing. Idle
         // would be a claim it cannot honour. The callers that decide whether a
@@ -346,8 +410,46 @@ pub fn occupancy(region: &str, model: InputModel) -> Occupancy {
         // (`input_busy`, `still_staged`), and the one caller left
         // (`clear_is_measurable`, notice proof only) fails closed on the
         // unreadable verdict.
-        InputModel::Unmodelled => Occupancy::Unreadable,
+        InputModel::Unmodelled => None,
     }
+}
+
+/// Read `region` as `tool`'s input box — `_input_region_occupied`.
+#[must_use]
+pub fn occupancy(region: &str, model: InputModel) -> Occupancy {
+    if region.is_empty() {
+        return Occupancy::Unreadable;
+    }
+    match gather(&parse(region), model) {
+        Some(text) => verdict(&text),
+        None => Occupancy::Unreadable,
+    }
+}
+
+/// Does the composer hold nothing but a staged bracketed-paste chip?
+///
+/// Muse and codex both spell it `[Pasted Content N chars]`, one BOLD, one
+/// unstyled — ae's only way to tell "our paste is sitting unsent" from "a human
+/// has a draft". A token plus ANY other text is not this shape.
+#[must_use]
+pub fn staged_paste(region: &str, model: InputModel) -> bool {
+    if region.is_empty() {
+        return false;
+    }
+    gather(&parse(region), model).is_some_and(|text| is_staged_chip(&text))
+}
+
+/// Whether `text` is exactly one bracketed-paste chip token.
+fn is_staged_chip(text: &str) -> bool {
+    // The separator is a regular space in Muse's capture, an NBSP in claude's.
+    let normalized = text.replace('\u{a0}', " ");
+    let Some(inner) = trim_posix(&normalized).strip_prefix("[Pasted Content ") else {
+        return false;
+    };
+    let Some(count) = inner.strip_suffix(" chars]") else {
+        return false;
+    };
+    !count.is_empty() && count.chars().all(|ch| ch.is_ascii_digit())
 }
 
 /// Does `capture` show a COMPOSED input box carrying one of `markers`?
@@ -534,7 +636,8 @@ fn digits(text: &str) -> (usize, &str) {
 #[cfg(test)]
 mod tests {
     use super::{
-        Occupancy, Segment, composed_ui, initializing, occupancy, parse, prompt, queued_submission,
+        Fg, Occupancy, Segment, composed_ui, initializing, occupancy, parse, prompt,
+        queued_submission, staged_paste,
     };
     use crate::tool::InputModel;
 
@@ -569,6 +672,7 @@ mod tests {
         Segment {
             bold,
             dim,
+            fg: None,
             text: text.to_owned(),
             line,
         }
@@ -908,6 +1012,104 @@ mod tests {
             occupancy(&cleared, InputModel::BorderDelimited),
             Occupancy::Idle
         );
+    }
+
+    #[test]
+    fn sgr_foregrounds_are_tracked_and_reset_by_the_parameters_that_mean_it() {
+        let fg = |spelling: &str| parse(spelling)[0].fg;
+        assert_eq!(
+            fg("\u{1b}[38;2;103;108;116mx"),
+            Some(Fg::Rgb(103, 108, 116))
+        );
+        assert_eq!(fg("\u{1b}[38;5;240mx"), Some(Fg::Indexed(240)));
+        assert_eq!(
+            fg("\u{1b}[31m\u{1b}[39mx"),
+            None,
+            "39 resets the foreground"
+        );
+        assert_eq!(
+            fg("\u{1b}[31m\u{1b}[22mx"),
+            Some(Fg::Named(31)),
+            "22 is an intensity reset, never a colour one"
+        );
+        assert_eq!(
+            fg("\u{1b}[48;2;1;2;3mx"),
+            None,
+            "a background is no foreground"
+        );
+        assert_eq!(fg("\u{1b}[38;2;1;2;3;42mx"), Some(Fg::Rgb(1, 2, 3)));
+    }
+
+    /// A Muse composer frame in the LIVE capture's spelling (2026-09-16,
+    /// `.local/live-tip.esc`): chrome is `SGR 2` + truecolour `103;108;116`,
+    /// the ornament is amber, and `composer` follows it.
+    fn muse_frame(composer: &str) -> String {
+        let rule = "\u{1b}[2m\u{1b}[38;2;103;108;116m";
+        let border = "─".repeat(80);
+        format!(
+            "◆ lead ready. Workspace read, session museprobe. Awaiting task.\n\n\
+             {rule}── \u{1b}[0m\u{1b}[38;2;138;144;152mVoice input (⌥ + v to start){rule} ────────\n\
+             \u{1b}[0m\u{1b}[38;2;251;191;36m❯ {composer}\n\
+             {rule}{border}\n"
+        )
+    }
+
+    #[test]
+    fn a_muse_placeholder_tip_is_the_boxes_own_chrome_and_never_a_draft() {
+        const TIP: &str = "/goal pins a session objective with a progress bar";
+        let occ = |frame: &str| occupancy(frame, InputModel::BorderDelimited);
+        let tip = muse_frame(&format!("\u{1b}[38;2;103;108;116m{TIP}\u{1b}[39m"));
+        assert_eq!(
+            occ(&tip),
+            Occupancy::Idle,
+            "the tip wears the box's rule colour: chrome, not content"
+        );
+        // The same WORDS in the primary foreground are a draft; so is a bright
+        // run beside a tip — the mutations this kills.
+        let typed = muse_frame(&format!("\u{1b}[38;2;204;211;219m{TIP}\u{1b}[39m"));
+        assert_eq!(occ(&typed), Occupancy::Occupied, "BRIGHT is a draft");
+        let mixed = muse_frame(&format!(
+            "\u{1b}[38;2;103;108;116m{TIP}\u{1b}[38;2;204;211;219m and half a sentence"
+        ));
+        assert_eq!(occ(&mixed), Occupancy::Occupied);
+        // An UNSTYLED rule names no chrome, so nothing is presumed chrome and
+        // the run stays content — the fail-safe half.
+        let border = "─".repeat(60);
+        let uncoloured = format!("❯ \u{1b}[38;2;103;108;116m{TIP}\u{1b}[39m\n{border}\n");
+        assert_eq!(occ(&uncoloured), Occupancy::Occupied);
+    }
+
+    #[test]
+    fn a_staged_chip_is_content_and_only_a_chip_alone_is_ae_own_paste() {
+        // The REAL stuck frame: Muse paints the chip BOLD mid-grey, and it is
+        // the composer's WHOLE content — the shape an unsent ae paste makes.
+        assert_eq!(
+            occupancy(MUSE_STUCK, InputModel::BorderDelimited),
+            Occupancy::Occupied
+        );
+        assert!(staged_paste(MUSE_STUCK, InputModel::BorderDelimited));
+        assert!(staged_paste(MUSE_OCCUPIED, InputModel::BorderDelimited));
+        assert!(
+            !staged_paste(MUSE_ACCEPTED, InputModel::BorderDelimited),
+            "the echoed token in the TRANSCRIPT is not the box"
+        );
+        assert!(!staged_paste(MUSE_IDLE, InputModel::BorderDelimited));
+        // codex spells the chip unstyled; a chip plus ANY other text is not
+        // a chip, and never ours to submit.
+        let codex = |input: &str| codex_frame("\u{1b}[1m›\u{1b}[0m ", input);
+        assert!(staged_paste(
+            &codex("[Pasted Content 1469 chars]"),
+            InputModel::StyleDelimited
+        ));
+        assert!(!staged_paste(
+            &codex("[Pasted Content 1469 chars] and then some"),
+            InputModel::StyleDelimited
+        ));
+        // A tip is not a chip, whatever its styling.
+        let tip = muse_frame("\u{1b}[38;2;103;108;116m/goal pins a session objective\u{1b}[39m");
+        assert!(!staged_paste(&tip, InputModel::BorderDelimited));
+        assert!(!staged_paste("", InputModel::BorderDelimited));
+        assert!(!staged_paste(MUSE_STUCK, InputModel::Unmodelled));
     }
 
     #[test]
