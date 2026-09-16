@@ -45,6 +45,7 @@ fuzz/               — the cargo-fuzz crate: one thin target per hostile parser
                       the product graph. Human-run, never a CI gate
 contrib/            — optional sidecars: aeorchestrator (templates only, no code)
 .github/workflows/  — rust lanes (both platforms) + dispatch-only release-proof lanes
+.github/ISSUE_TEMPLATE/ — the bug report form; docs/troubleshooting.md §Filing a bug is the fact list
 Cargo.toml          — one crate, bin + lib, both named `ae`. No workspace
 rust-toolchain.toml — compiler pin, profile, components, both targets
 clippy.toml         — tests-only unwrap/expect relaxation + the two capability denies.
@@ -132,6 +133,7 @@ Other rules of the loop:
 - **CI pins too**: runner images are exact (`ubuntu-24.04`, `macos-15`, never `-latest`), and
   actions are first-party and SHA-pinned with the version in a trailing comment.
 - **Port behaviour, not code.** Drop features on the way rather than transliterating.
+- **A bug report carries the facts in docs/troubleshooting.md §Filing a bug** (platform, tmux, terminal, locale, harness versions, `ae version`/`ae doctor`) — an issue or a triage without them asks for them first.
 
 ## Hard rules — never do these
 
