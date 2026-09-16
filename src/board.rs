@@ -12,6 +12,7 @@
 pub mod claude;
 pub mod codex;
 pub mod grok;
+pub mod muse;
 
 use std::fmt::Write as _;
 use std::fs::File;
