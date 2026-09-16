@@ -202,3 +202,32 @@ In priority order:
 5. **`workspace.md`** — manifest agents are pointed at.
 
 Almost every behavior in ae is observable from those five files.
+
+## Filing a bug
+
+A report without environment facts stalls on the first question, so gather these
+before opening an issue (the [bug report form](https://github.com/clemens33/ae/issues/new?template=bug_report.yml)
+asks for the same list):
+
+- What happened, what you expected, and steps to reproduce — without a repro the fix is a guess.
+- `ae version` output — pins the exact core the behaviour came from.
+- `ae doctor` output — the environment checklist plus reboot evidence; the first thing a maintainer asks for.
+- Platform (macOS Apple Silicon/Intel, Linux, WSL2, other) and OS version — WSL2 vs bare Linux decides whole failure classes.
+- `tmux -V` — the floor is 3.4, and 3.4 vs 3.5+ splits mouse handling.
+- Terminal emulator + version and `$TERM` / `$TERM_PROGRAM` / `$COLORTERM` — synchronized output and colour support decide flicker bugs.
+- Locale (`locale`, UTF-8 or not) and terminal font — glyph width and alignment live or die here; required for any rendering, flicker, glyph or alignment report.
+- Agent harness(es) in the session and their versions (`claude --version`, `codex --version`, `grok --version`, `muse --version`, `agy --version`, `opencode --version`) — resume and capture behaviour is per tool and per version.
+- `[workspace]` look settings in effect: `palette`, `icons`, `theme`, `motion`, `layout` (or "defaults") — the status line you see is drawn from these.
+- Session shape: single agent, lead-pair, or with workers, plus the profiles used — routing and delivery bugs depend on it.
+- Relevant `~/.ae/config` lines and logs if they add anything — and redact first: never paste tokens, `auth.json` contents, credentials, or transcript text; strip private `config_home` paths.
+
+One snippet prints most of it on macOS, Linux and WSL alike:
+
+```bash
+uname -srm; tmux -V; ae version; ae doctor
+locale; printf '%s\n' "$TERM" "$TERM_PROGRAM" "$COLORTERM"
+grep -qi microsoft /proc/version 2>/dev/null && echo WSL2
+sw_vers -productVersion 2>/dev/null
+. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME"
+# redact tokens, credentials and transcript text before pasting anywhere
+```
