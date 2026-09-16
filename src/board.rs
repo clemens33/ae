@@ -79,7 +79,9 @@ pub fn collect(mut rows: Vec<Row>) -> Vec<Row> {
 pub(crate) const LINE_CAP: usize = 1024 * 1024;
 
 /// What `ae board` prints when its argv does not parse.
-pub const USAGE: &str = "Usage: ae board [session…] [--since <ts>] [--json] [--follow]\n\n  session       read this session (repeatable; default is every running session)\n  --since <ts>  keep rows at or after <ts>, strict YYYY-MM-DDTHH:MM:SSZ\n  --json        NDJSON: one scope line, coverage lines, then row lines\n  --follow      keep printing new rows and coverage changes every 5 s until\n                interrupted; the selection is fixed at start (Ctrl-C to stop)\n";
+pub const USAGE: &str = "Usage: ae board [session…] [--since <ts>] [--json] [--follow] [--lines <n>]\n\n  session       read this session (repeatable; default is every running session)\n  --since <ts>  keep rows at or after <ts>, strict YYYY-MM-DDTHH:MM:SSZ\n  --json        NDJSON: one scope line, coverage lines, then row lines\n  --follow      keep printing new rows and coverage changes every 5 s until\n                interrupted; the selection is fixed at start (Ctrl-C to stop)\n  --lines <n>   text only: clip each body to its first <n> lines; the dropped\n                remainder prints one `… +k lines` marker\n";
+
+const LINES_TEXT_ONLY: &str = "--lines is text-only";
 
 /// A parsed `ae board` argv.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -92,6 +94,8 @@ pub struct Args {
     pub json: bool,
     /// `--follow`: print the one-shot board, then keep printing new rows.
     pub follow: bool,
+    /// `--lines <n>`: text rows clip each body to its first `n` lines.
+    pub lines: Option<usize>,
 }
 
 /// The argv did not parse; the offending token, when there is one.
@@ -118,16 +122,18 @@ impl Usage {
 /// assert_eq!(parse(&[]), Ok(Args::default()));
 /// assert_eq!(
 ///     parse(&words(&["aedev", "--json"])),
-///     Ok(Args { sessions: vec!["aedev".to_owned()], since_micros: None, json: true, follow: false })
+///     Ok(Args { sessions: vec!["aedev".to_owned()], since_micros: None, json: true, follow: false, lines: None })
 /// );
 /// assert!(parse(&words(&["--follow"])).is_ok_and(|args| args.follow));
+/// assert_eq!(parse(&words(&["--lines", "3"])).map(|args| args.lines), Ok(Some(3)));
 /// assert!(parse(&words(&["--frobnicate"])).is_err());
 /// ```
 ///
 /// # Errors
 ///
 /// [`Usage`] for an unknown flag, a repeated session name, `--since` without a
-/// strict `YYYY-MM-DDTHH:MM:SSZ` value, or a value missing entirely.
+/// strict `YYYY-MM-DDTHH:MM:SSZ` value, `--lines` without a positive decimal
+/// value or combined with `--json`, or a value missing entirely.
 pub fn parse(tail: &[String]) -> Result<Args, Usage> {
     let mut args = Args::default();
     let mut index = 0;
@@ -135,6 +141,18 @@ pub fn parse(tail: &[String]) -> Result<Args, Usage> {
         match token.as_str() {
             "--json" => args.json = true,
             "--follow" => args.follow = true,
+            "--lines" => {
+                let value = tail.get(index + 1).ok_or(Usage(Some(token.clone())))?;
+                if value.as_str() == "--json" || args.json {
+                    return Err(Usage(Some(LINES_TEXT_ONLY.to_owned())));
+                }
+                let count: usize = value.parse().map_err(|_| Usage(Some(value.clone())))?;
+                if count == 0 {
+                    return Err(Usage(Some(value.clone())));
+                }
+                args.lines = Some(count);
+                index += 1;
+            }
             "--since" => {
                 let value = tail.get(index + 1).ok_or(Usage(Some(token.clone())))?;
                 let micros = crate::time::Timestamp::parse(value)
@@ -154,6 +172,9 @@ pub fn parse(tail: &[String]) -> Result<Args, Usage> {
             }
         }
         index += 1;
+    }
+    if args.json && args.lines.is_some() {
+        return Err(Usage(Some(LINES_TEXT_ONLY.to_owned())));
     }
     Ok(args)
 }
@@ -737,8 +758,9 @@ const SCOPE_TEXT: &str = "scope: current conversations only (phase 1b) — a sea
 
 /// Render the observation as text or NDJSON. Line 1 is ALWAYS the scope
 /// statement; coverage rows precede body rows; JSON never carries a bare line.
+/// `lines` clips text bodies only — NDJSON always carries the whole body.
 #[must_use]
-pub fn render(observation: &Observation, json: bool) -> String {
+pub fn render(observation: &Observation, json: bool, lines: Option<usize>) -> String {
     let mut out = if json {
         Value::obj([
             ("kind", Value::str("scope")),
@@ -750,7 +772,7 @@ pub fn render(observation: &Observation, json: bool) -> String {
         SCOPE_TEXT.to_owned()
     };
     out.push('\n');
-    out.push_str(&render_batch(observation, json));
+    out.push_str(&render_batch(observation, json, lines));
     out
 }
 
@@ -758,27 +780,43 @@ pub fn render(observation: &Observation, json: bool) -> String {
 /// one-shot prepends the scope statement once; the follow appends one of these
 /// per batch under it.
 #[must_use]
-pub(crate) fn render_batch(observation: &Observation, json: bool) -> String {
+pub(crate) fn render_batch(observation: &Observation, json: bool, lines: Option<usize>) -> String {
     if json {
         render_batch_json(observation)
     } else {
-        render_batch_text(observation)
+        render_batch_text(observation, lines)
     }
 }
 
-fn render_batch_text(observation: &Observation) -> String {
+/// The indent every text body line wears, the clip marker included.
+const BODY_INDENT: &str = "  ";
+
+/// ONE text row renderer: the header, every body line indented, a blank line,
+/// and — with a clip — one marker naming the dropped remainder. Both the
+/// one-shot and every follow batch print rows through this function.
+fn text_row(row: &Row, lines: Option<usize>) -> String {
+    let mut out = format!("## {} {}\n", format_micros(row.ts), row.actor);
+    let total = row.body.lines().count();
+    let shown = lines.map_or(total, |count| count.min(total));
+    for line in row.body.lines().take(shown) {
+        let _ = writeln!(out, "{BODY_INDENT}{line}");
+    }
+    if let Some(count) = lines
+        && total > count
+    {
+        let _ = writeln!(out, "{BODY_INDENT}… +{} lines", total - count);
+    }
+    out.push('\n');
+    out
+}
+
+fn render_batch_text(observation: &Observation, lines: Option<usize>) -> String {
     let mut out = String::new();
     for item in &observation.coverage {
         let _ = writeln!(out, "coverage incomplete: {} — {}", item.actor, item.reason);
     }
     for row in &observation.rows {
-        let _ = writeln!(
-            out,
-            "## {} {}\n{}\n",
-            format_micros(row.ts),
-            row.actor,
-            row.body
-        );
+        out.push_str(&text_row(row, lines));
     }
     out
 }
@@ -1049,5 +1087,61 @@ mod tests {
             "an offset past the located length is a refusal, not a clipped read"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn rendered(rows: Vec<Row>, json: bool, lines: Option<usize>) -> String {
+        let board = super::Observation {
+            rows,
+            ..super::Observation::default()
+        };
+        super::render_batch(&board, json, lines)
+    }
+
+    fn words(items: &[&str]) -> Vec<String> {
+        items.iter().map(|word| (*word).to_owned()).collect()
+    }
+
+    #[test]
+    fn a_text_row_indents_the_body_and_unclipped_prints_no_marker() {
+        let text = rendered(vec![row(1, "a", 0, "one line")], false, None);
+        assert!(
+            text.contains("## 1970-01-01T00:00:00.000001Z s:seat\n  one line\n\n"),
+            "{text}"
+        );
+        let exact = rendered(vec![row(1, "a", 0, "one\ntwo")], false, Some(2));
+        assert!(exact.contains("  one\n  two\n\n"), "{exact}");
+    }
+
+    #[test]
+    fn a_five_line_body_clipped_to_two_names_the_three_dropped() {
+        let body = "one\ntwo\nthree\nfour\nfive";
+        let text = rendered(vec![row(1, "a", 0, body)], false, Some(2));
+        assert!(text.contains("  one\n  two\n  … +3 lines\n"), "{text}");
+        let json = rendered(vec![row(1, "a", 0, body)], true, Some(1));
+        assert!(
+            json.contains("\"body\":\"one\\ntwo\\nthree\\nfour\\nfive\""),
+            "{json}"
+        );
+    }
+
+    #[test]
+    fn lines_parses_anywhere_and_refuses_bad_values_and_combinations() {
+        let parsed = super::parse(&words(&["day", "--lines", "3"])).expect("clipped tail parses");
+        assert_eq!(parsed.lines, Some(3));
+        for tail in [
+            words(&["--lines", "0"]),
+            words(&["--lines", "x"]),
+            words(&["--lines"]),
+        ] {
+            assert!(super::parse(&tail).is_err(), "{tail:?}");
+        }
+        for tail in [
+            words(&["--json", "--lines", "2"]),
+            words(&["--lines", "2", "--json"]),
+        ] {
+            let usage = super::parse(&tail).expect_err("must refuse").render();
+            assert!(usage.contains("--lines is text-only"), "{usage}");
+        }
+        assert!(super::parse(&words(&["--lines", "--json"])).is_err());
     }
 }

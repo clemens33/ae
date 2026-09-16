@@ -24,10 +24,12 @@ ae quota               Show bounded local quota snapshots for every configured a
 ae usage [name…] [--json]
                        Show offline API-equivalent usage for all live sessions, or
                        only the named live sessions
-ae board [session…] [--since <ts>] [--json] [--follow]
+ae board [session…] [--since <ts>] [--json] [--follow] [--lines <n>]
                        The filtered cross-fleet record: genuine human turns from
                        every seat's harness transcript (Claude Code, Codex, Grok and Muse)
                        --follow keeps printing new rows and coverage changes every 5 s
+                       --lines clips each text body to its first <n> lines, with a
+                       marker for the dropped remainder (refused with --json)
 ae orchestrator        Start or reattach the orchestrator seat: a local session named
                        orchestrator, drawn as a `◆` button after the menu glyph
 ae orchestrator --popup
@@ -990,6 +992,13 @@ conversation only, and a seat that resumed into a new conversation shows that
 conversation alone. `--since <ts>` (strict `YYYY-MM-DDTHH:MM:SSZ`) keeps rows
 at or after the instant; `--json` prints NDJSON — one `{"kind":"scope"}` line,
 then `coverage` lines, then `row` lines. See [the board](../board.md).
+
+Text bodies render indented two spaces under their `## <ts> <session:seat>`
+header, one blank line closing each row. `--lines <n>` clips each text body to
+its first `<n>` lines and prints one `  … +k lines` marker for the dropped
+remainder; a body of at most `<n>` lines prints whole and gets no marker.
+`--lines` is text-only: combined with `--json` it is a usage error, because
+NDJSON always carries the whole body.
 
 `--follow` prints that board once, then — every 5 seconds until Ctrl-C — only
 what is new. The selection is fixed at start: a session started later is not

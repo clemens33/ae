@@ -1953,7 +1953,8 @@ fn run_board(
         sessions: &selected,
     };
     let observation = board::observe(&inputs, args.since_micros);
-    write!(out, "{}", board::render(&observation, args.json))?;
+    let rendered = board::render(&observation, args.json, args.lines);
+    write!(out, "{rendered}")?;
     if !args.follow {
         return Ok(0);
     }
@@ -1966,7 +1967,8 @@ fn run_board(
     loop {
         std::thread::sleep(std::time::Duration::from_secs(board::follow::POLL_SECS));
         let batch = board::follow_poll(&inputs, &mut follow);
-        write!(out, "{}", board::render_batch(&batch, args.json))?;
+        let rendered = board::render_batch(&batch, args.json, args.lines);
+        write!(out, "{rendered}")?;
         out.flush()?;
     }
 }

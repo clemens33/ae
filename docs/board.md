@@ -29,15 +29,22 @@ never a shim.
 ## Output
 
 Text (default): the scope line, coverage rows, then `## <ts> <session:seat>`
-headers with bodies:
+headers with bodies; every body line is indented two spaces, and one blank
+line closes each row:
 
 ```text
 scope: current conversations only (phase 1b) — a seat that resumed keeps only its current transcript
 coverage incomplete: demo:colead — grok: phase 3a
 ## 2026-09-16T09:00:00.500000Z demo:lead
-ship the slice today
+  ship the slice today
 
 ```
+
+`--lines <n>` clips each text body to its first `<n>` lines; the dropped
+remainder prints one indented marker, `  … +k lines` (k = dropped line count). A
+body of at most `<n>` lines prints whole and gets no marker. `--lines` is
+text-only: with `--json` it is a usage error, because NDJSON always carries the
+whole body.
 
 `--json` prints NDJSON — one scope line, coverage lines, then row lines:
 
@@ -73,8 +80,10 @@ After the first pass, coverage prints on CHANGE only: a seat that becomes
 readable prints nothing, a seat that becomes unreadable prints its new reason
 once. Rescan lines always print. Batches are sorted internally by
 `(ts, file, offset)` but never merged across batches — a late seat's older row
-prints later. Every row keeps its durable identity (`file` = `path#dev:ino`
-plus `offset`), so a consumer that wants dedup across generations can have it.
+prints later. Every batch prints its rows through the same renderer as the
+one-shot — same indented shape, same `--lines` clip. Every row keeps its
+durable identity (`file` = `path#dev:ino` plus `offset`), so a consumer that
+wants dedup across generations can have it.
 
 ## Phases
 

@@ -120,7 +120,7 @@ fn text_scope_line_is_first_and_coverage_precedes_rows() {
             claude_roster("main", "lead", CLAUDE_ID, &store)
         ),
     );
-    let text = board::render(&observe(&root, &["one"], None), false);
+    let text = board::render(&observe(&root, &["one"], None), false, None);
     let lines: Vec<&str> = text.lines().collect();
     assert_eq!(lines[0], SCOPE, "the scope statement is line 1: {text}");
     let coverage = lines
@@ -137,13 +137,14 @@ fn text_scope_line_is_first_and_coverage_precedes_rows() {
         "coverage incomplete: one:colead — invalid or missing conversation id"
     );
     assert_eq!(lines[row], "## 2026-09-16T09:00:00.500000Z one:lead");
+    assert_eq!(lines[row + 1], "  plain human words", "body is indented");
     let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
 fn json_empty_board_is_scope_alone() {
     let root = rig("empty-json");
-    let rendered = board::render(&observe(&root, &[], None), true);
+    let rendered = board::render(&observe(&root, &[], None), true, None);
     let lines: Vec<&str> = rendered.lines().collect();
     assert_eq!(lines.len(), 1, "scope alone on an empty board: {rendered}");
     let value = ae::json::parse(lines[0]).expect("the scope line parses");
@@ -187,9 +188,9 @@ fn non_claude_seats_name_their_phase_in_both_modes() {
             "gemini: out of scope",
         ]
     );
-    let text = board::render(&observation, false);
+    let text = board::render(&observation, false, None);
     assert_eq!(text.lines().count(), 7, "scope plus six coverage rows");
-    let json = board::render(&observation, true);
+    let json = board::render(&observation, true, None);
     let lines: Vec<&str> = json.lines().collect();
     assert_eq!(lines.len(), 7);
     for (line, reason) in lines[1..].iter().zip(reasons) {
@@ -387,7 +388,7 @@ fn json_lines_each_parse_with_their_kind_first() {
             claude_roster("main", "lead", CLAUDE_ID, &store)
         ),
     );
-    let rendered = board::render(&observe(&root, &["one"], None), true);
+    let rendered = board::render(&observe(&root, &["one"], None), true, None);
     let lines: Vec<&str> = rendered.lines().collect();
     assert_eq!(lines.len(), 3);
     let mut kinds = Vec::new();
@@ -505,12 +506,36 @@ fn binary_torn_tail_keeps_earlier_rows_and_covers_the_tail() {
         "stdout: {stdout}"
     );
     assert!(
-        stdout.contains("## 2026-09-16T09:00:00.000000Z torn:lead\nkept words\n"),
+        stdout.contains("## 2026-09-16T09:00:00.000000Z torn:lead\n  kept words\n"),
         "stdout: {stdout}"
     );
     assert!(
         !stdout.contains("torn words"),
         "the torn tail is never trusted: {stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn binary_lines_clips_a_multi_line_text_body() {
+    let root = rig("bin-lines");
+    let store = root.join("claude");
+    let record = "{\"type\":\"user\",\"timestamp\":\"2026-09-16T09:00:00Z\",\"message\":{\"role\":\"user\",\"content\":\"first\\nsecond\\nthird\\nfourth\"}}";
+    plant_transcript(&store, "work", CLAUDE_ID, &[record.to_owned()]);
+    plant_session(
+        &root,
+        "clip",
+        &claude_roster("main", "lead", CLAUDE_ID, &store),
+    );
+    let (code, stdout, stderr) = run(&root, &["board", "clip", "--lines", "2"]);
+    assert_eq!(code, Some(0), "stderr: {stderr}");
+    assert!(
+        stdout.contains("  first\n  second\n  … +2 lines\n"),
+        "{stdout}"
+    );
+    assert!(
+        !stdout.contains("third"),
+        "dropped lines never print: {stdout}"
     );
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -569,7 +594,7 @@ fn a_codex_seat_renders_rows_and_names_no_phase() {
     assert!(observation.coverage.is_empty(), "no phase row after a read");
     assert_eq!(observation.rows.len(), 1);
     assert_eq!(observation.rows[0].body, "codex human words");
-    let text = board::render(&observation, false);
+    let text = board::render(&observation, false, None);
     assert!(!text.contains("phase 2"), "the phase row is gone: {text}");
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -666,7 +691,7 @@ fn a_grok_seat_renders_rows_and_names_no_phase() {
     assert!(observation.coverage.is_empty(), "no phase row after a read");
     assert_eq!(observation.rows.len(), 1);
     assert_eq!(observation.rows[0].body, "grok human words");
-    let text = board::render(&observation, false);
+    let text = board::render(&observation, false, None);
     assert!(!text.contains("phase 3a"), "the phase row is gone: {text}");
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -733,7 +758,7 @@ fn a_muse_seat_renders_rows_and_names_no_phase() {
     assert!(observation.coverage.is_empty(), "no phase row after a read");
     assert_eq!(observation.rows.len(), 1);
     assert_eq!(observation.rows[0].body, "muse human words");
-    let text = board::render(&observation, false);
+    let text = board::render(&observation, false, None);
     assert!(!text.contains("phase 3b"), "the phase row is gone: {text}");
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -790,8 +815,10 @@ fn follow_parses_anywhere_in_the_tail_and_is_advertised() {
     assert!(args.follow && args.json, "follow composes with --json");
     assert_eq!(args.sessions, ["day"]);
     assert!(board::USAGE.contains("--follow"), "usage names it");
+    assert!(board::USAGE.contains("--lines <n>"), "usage names the clip");
     assert!(
-        ae::entry::HELP.contains("ae board [session…] [--since <ts>] [--json] [--follow]"),
+        ae::entry::HELP
+            .contains("ae board [session…] [--since <ts>] [--json] [--follow] [--lines <n>]"),
         "help carries the synopsis"
     );
     assert!(
@@ -822,8 +849,16 @@ fn the_first_follow_pass_is_the_plain_board() {
     let plain = board::parse(&[]).expect("plain parses");
     let follow = board::parse(&["--follow".to_owned()]).expect("follow parses");
     assert!(follow.follow && !plain.follow);
-    let plain = board::render(&observe(&root, &["one"], plain.since_micros), plain.json);
-    let followed = board::render(&observe(&root, &["one"], follow.since_micros), follow.json);
+    let plain = board::render(
+        &observe(&root, &["one"], plain.since_micros),
+        plain.json,
+        None,
+    );
+    let followed = board::render(
+        &observe(&root, &["one"], follow.since_micros),
+        follow.json,
+        None,
+    );
     assert_eq!(plain, followed);
     assert!(followed.contains("## 2026-09-16T09:00:00.500000Z one:lead"));
     let _ = std::fs::remove_dir_all(&root);
