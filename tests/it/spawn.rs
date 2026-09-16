@@ -1456,9 +1456,9 @@ fn a_profile_that_is_not_one_simple_command_is_refused_before_any_effect() {
 }
 
 /// A brief whose readiness never settled proves NOTHING about the pane. With
-/// the agent gone and its recorded binary unreadable, the recovery must not
-/// advise a send — ordinary delivery fails open on an unproven pane, so a
-/// send could execute the brief as shell input.
+/// the agent gone and its recorded binary unable to attribute the pane, the
+/// recovery must not advise a send — ordinary delivery fails open on an
+/// unproven pane, so a send could execute the brief as shell input.
 #[test]
 fn a_timed_out_brief_never_advises_a_send() {
     let probe = PathBuf::from(format!("/tmp/aesp-probe-ocrage.{}", std::process::id()));
@@ -1480,24 +1480,33 @@ fn a_timed_out_brief_never_advises_a_send() {
                 &["ocrage", "--using", "ocfake", "--", "do the thing"],
             )
         });
-        // While the readiness wait burns its budget, make the seat's recorded
-        // binary unreadable: the pane is a shell ae cannot attribute.
-        for _ in 0..240 {
-            let meta = std::fs::read_to_string(rig.dir.join("meta")).unwrap_or_default();
-            if meta.contains("agent_bin.spawned.0=") {
-                let stripped: String = meta
-                    .lines()
-                    .filter(|line| !line.starts_with("agent_bin.spawned.0="))
-                    .collect::<Vec<_>>()
-                    .join("\n");
+        // The seat's recorded binary is the ONE thing that lets ae attribute
+        // the pane. Rewrite it, UNDER THE CORE'S OWN META LOCK, to a shell:
+        // from then on the pane is a shell ae cannot attribute, and the
+        // condition is FORCED long before the readiness wait can end. A raw
+        // truncate loses this race — every later meta rewrite re-publishes the
+        // whole file from a read taken before it, so the row comes back and
+        // the dead-seat branch answers instead.
+        let mut forced = false;
+        for _ in 0..480 {
+            if rig.meta().contains("agent_bin.spawned.0=") {
                 assert!(
-                    std::fs::write(rig.dir.join("meta"), &stripped).is_ok(),
-                    "the recorded binary is gone"
+                    ae::meta::rewrite(&rig.dir, "agent_bin.spawned.0", Some("sh")).is_ok(),
+                    "the recorded binary is rewritten to a shell"
                 );
+                assert!(
+                    rig.meta().contains("agent_bin.spawned.0=sh"),
+                    "the rewritten row is what the core will read"
+                );
+                forced = true;
                 break;
             }
             std::thread::sleep(Duration::from_millis(25));
         }
+        assert!(
+            forced,
+            "the seat's recorded binary must appear in time to unrecord it"
+        );
         spawned.join().expect("the spawn thread")
     });
 
