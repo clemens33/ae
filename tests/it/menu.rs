@@ -21,7 +21,7 @@ use super::phase2::{run_tmux, tmux_present};
 /// assertions: the deadline has to outlast a fully loaded parallel gate, where
 /// a tmux client can take many seconds to get scheduled and render. A client
 /// that never renders still fails the arm — it just gets a fair chance first.
-const PATIENCE: Duration = Duration::from_secs(60);
+const PATIENCE: Duration = Duration::from_mins(1);
 
 /// A scratch dir short enough to hold a socket path — `sun_path` is 104 bytes
 /// on macOS and the usual temp dir eats most of it.

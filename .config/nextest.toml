@@ -12,5 +12,5 @@
 max-threads = 3
 
 [[profile.default.overrides]]
-filter = 'test(~menu::)'
+filter = 'test(/^menu::/)'
 test-group = 'tmux-clients'
