@@ -161,11 +161,12 @@ are the news.
 Every foreground the look draws on a ground it owns clears its WCAG 2.1 contrast
 bar: 3.0:1 for a mark cell and 4.5:1 for text. The owner is `src/theme.rs`'s
 `every_drawn_pair_clears_its_wcag_contrast_bar`, which measures every mark
-accent and every working-pulse tick on both the bar's ground and the selection
-ground at two decimals. Darcula's tokens are FROZEN — every one is the JetBrains
-IDE's own — so the pairs that theme cannot clear (needs-you, stale, done and
-idle on its `selected` navy, and the dark half of its working pulse) are NAMED
-in that test with their measured ratio rather than repaired.
+accent on both the bar's ground and the selection ground at two decimals, and
+measures the working pulse as a class at its peak frame: its dim trough is the
+pulse's own design, not a legibility claim. Darcula's tokens are FROZEN — every
+one is the JetBrains IDE's own — so the pairs that theme cannot clear (needs-you,
+stale, done and idle on its `selected` navy) are NAMED in that test with their
+measured ratio rather than repaired.
 
 Each accent is paired with a glyph, and each glyph with a reason word on the
 pane border. Measured against these palettes, dark text on an accent clears

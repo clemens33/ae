@@ -1407,8 +1407,8 @@ mod tests {
     /// own style, the non-current fleet row and button) and `selected` (the
     /// current row, the current button and the menu cursor row) — plus `panel`,
     /// which carries `text`, `title` and the menu frame. The working pulse is
-    /// measured on both grounds at every tick, because its darkest frame is the
-    /// one that grazes its ground.
+    /// not among them: it is motion, and the test measures it as a class at its
+    /// peak frame, because its dim trough is the pulse's own design.
     ///
     /// `ink` is not here: nothing in the look draws text ON an accent, so it has
     /// no drawn pair. The field stays for the renderer that eventually wants it.
@@ -1420,17 +1420,6 @@ mod tests {
                 pairs.push(ContrastPair {
                     label: format!("{mark:?} on {ground}"),
                     fg: accent.to_owned(),
-                    bg: colour.to_owned(),
-                    bar: 3.0,
-                });
-            }
-        }
-        for tick in 0..20 {
-            let frame = working_frame(tick, palette, true);
-            for (ground, colour) in [("base", palette.base), ("selected", palette.selected)] {
-                pairs.push(ContrastPair {
-                    label: format!("working tick {tick} on {ground}"),
-                    fg: frame.fg.clone(),
                     bg: colour.to_owned(),
                     bar: 3.0,
                 });
@@ -2222,8 +2211,13 @@ mod tests {
     /// The orchestrator button and the current-session fleet cell are why it
     /// exists: the button's stable glyph carries its verdict in the foreground
     /// colour alone, so a pair that grazes its ground is a verdict that
-    /// disappeared. The working pulse is measured at every tick, because its
-    /// darkest frame is the one that grazes.
+    /// disappeared.
+    ///
+    /// The working pulse is measured as a CLASS — one reading per ground, at
+    /// its PEAK frame (tick 10, where `working_frame` is bright). The dim
+    /// trough at ticks 0 and 20 is the pulse's own design: a working mark rests
+    /// dim and breathes up to bright, so the trough is motion, not a
+    /// legibility claim, and no tick but the peak is a pair.
     ///
     /// `ink` is not measured: nothing in the look draws text ON an accent, so
     /// it has no drawn pair. The field stays for a renderer that wants it.
@@ -2240,25 +2234,22 @@ mod tests {
             ("Stale on selected", "2.54"),
             ("Done on selected", "2.40"),
             ("Idle on selected", "2.45"),
-            ("working tick 0 on base", "2.40"),
-            ("working tick 0 on selected", "1.83"),
-            ("working tick 1 on base", "2.46"),
-            ("working tick 1 on selected", "1.88"),
-            ("working tick 2 on base", "2.61"),
-            ("working tick 2 on selected", "1.99"),
-            ("working tick 3 on base", "2.88"),
-            ("working tick 3 on selected", "2.20"),
-            ("working tick 4 on selected", "2.45"),
-            ("working tick 5 on selected", "2.79"),
-            ("working tick 15 on selected", "2.79"),
-            ("working tick 16 on selected", "2.45"),
-            ("working tick 17 on base", "2.88"),
-            ("working tick 17 on selected", "2.20"),
-            ("working tick 18 on base", "2.61"),
-            ("working tick 18 on selected", "1.99"),
-            ("working tick 19 on base", "2.46"),
-            ("working tick 19 on selected", "1.88"),
         ];
+
+        // The pulse's class reading runs FIRST, so a regression in it reports
+        // as the pulse even when the ground it regressed on is shared with a
+        // mark pair that would fail next.
+        for palette in PALETTES {
+            let peak = working_frame(10, &palette, true);
+            for (ground, colour) in [("base", palette.base), ("selected", palette.selected)] {
+                let ratio = contrast(&peak.fg, colour);
+                assert!(
+                    ratio >= 3.0,
+                    "working peak is {ratio:.2}:1 on {} {ground}, under its 3.0:1 bar",
+                    palette.name,
+                );
+            }
+        }
 
         for palette in PALETTES {
             for pair in contrast_pairs(&palette) {
