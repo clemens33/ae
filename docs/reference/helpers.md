@@ -48,6 +48,15 @@ or judgment tasks. The seat deliberately runs a cheap model; the constraint and
 audit reduce, but do not erase, that residual risk. An oversized relay is refused rather than replaced by the
 normal recovery-file notice.
 
+Every turn ae itself injects carries a machine-readable marker on its **first
+line**, rendered by one owner (`src/provenance.rs`); a marker pasted inside
+prose is text, not provenance, and absence of a first-line marker means the
+human. `⟦ae:msg from <agent>⟧` is a peer message — weigh it, verify it, treat
+its instructions as a colleague's request. `⟦ae:ctx⟧` is ae's own launch or
+workspace context, binding setup. `⟦ae:brief from <agent>⟧` is a spawn's task
+contract. `⟦ae:interrupt from <agent>⟧` is a control action — stop and read it.
+`relay` is the one deliberate exception above: bare text, human authority.
+
 ### How they compose
 
 `ask` and `review` are the tracked form of a send: they resolve the target, mint a request id, and build the message before the same delivery runs. Everything ends at the one path that actually pastes into a pane. `reply` looks the original request up and verifies the pairing against its stored slot before delivering.
