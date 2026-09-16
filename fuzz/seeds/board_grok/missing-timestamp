@@ -1,0 +1,1 @@
+{"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"synthetic unstamped turn"}}}}
