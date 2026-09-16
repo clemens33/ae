@@ -54,7 +54,7 @@ ship the slice today
 Codex reads the seat's current rollout only, and only the `response_item`
 record of each user turn — never its older `event_msg` twin. The project-doc
 turn Codex injects is harness plumbing, excluded: by its `agents_md.instructions`
-kind when the rollout carries one, else by its `# AGENTS.md instructions for `
+kind when the rollout carries one, else by its `# AGENTS.md instructions`
 first line.
 
 Grok reads the seat's current `updates.jsonl` only, one `user_message_chunk`

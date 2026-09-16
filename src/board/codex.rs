@@ -148,12 +148,12 @@ impl Sink<'_> {
 /// Codex's own harness turns. The project-doc turn drops on its structured
 /// twin first — `content_item_kinds` naming `agents_md.instructions` — exact
 /// even where the doc's opening line varies, while an explicit `user.text`
-/// claim keeps a human who quotes its prefix. The doc prefix itself remains
-/// the fallback where metadata is absent — LOSSY there, as the other five are
-/// throughout. `<codex_internal_context` ends before `>`: its opener carries
-/// a `source="…"` attribute.
+/// claim keeps a human who quotes its prefix. The `# AGENTS.md instructions`
+/// prefix itself remains the fallback where metadata is absent — LOSSY there,
+/// as the other five are throughout. `<codex_internal_context` ends before
+/// `>`: its opener carries a `source="…"` attribute.
 fn is_plumbing(payload: &crate::json::Value, first: &str) -> bool {
-    const DOC_PREFIX: &str = "# AGENTS.md instructions for ";
+    const DOC_PREFIX: &str = "# AGENTS.md instructions";
     const LOSSY: [&str; 5] = [
         "<environment_context>",
         "<user_shell_command>",
@@ -303,7 +303,7 @@ mod tests {
     #[test]
     fn lossy_prefixes_drop_even_a_human_collision() {
         for prefix in [
-            "# AGENTS.md instructions for ",
+            "# AGENTS.md instructions",
             "<environment_context>",
             "<user_shell_command>",
             "<recommended_plugins>",
