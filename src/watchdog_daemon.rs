@@ -110,8 +110,12 @@ impl Default for Knobs {
 pub struct PaneState {
     /// The slot+agent generation this carry belongs to.
     pub identity: Option<u64>,
-    /// Dead is LATCHED: once alerted, the pane is skipped every later cycle and
-    /// there is no watchdog-emitted clear.
+    /// Dead is LATCHED once alerted, and the latch ends exactly once: on a
+    /// POSITIVE process reading that shows the seat's harness back under the
+    /// pane (a re-run in place), which alerts nothing further and clears it
+    /// with one `dead-cleared`. A probe gap is not evidence of life, so an
+    /// UNKNOWN snapshot keeps the latch. A seat that dies again after a clear
+    /// is alerted again.
     pub dead_latched: bool,
     /// The previous cycle's filtered pane hash; `None` before the first.
     pub prev_hash: Option<u64>,
@@ -890,12 +894,48 @@ fn book_sweep(
     Some(Verdict::Meta(booked.verdict))
 }
 
+/// The ONE end a death latch has: a POSITIVE process-tree reading shows the
+/// seat's harness back under the pane (the human's re-run in place). An
+/// UNKNOWN snapshot is not evidence of life, so a probe gap — and a reading
+/// that says the process is still gone — keeps the latch and returns `None`.
+/// On a clear it emits the one `dead-cleared` and hands back the episode the
+/// ordinary judgement must run on: identity kept, and every clock, hash and
+/// nudge field the death interrupted reset, because a pre-death hash or idle
+/// clock must not feed a stale verdict. No hysteresis and no second-alert
+/// suppression: the caller alerts again if the seat dies again, because that
+/// is a real event each time.
+fn clear_death_latch(
+    prior: &PaneState,
+    next: &PaneState,
+    seen: &Observation,
+    effects: &mut Vec<Effect>,
+) -> Option<PaneState> {
+    if !prior.dead_latched || !matches!(seen.descendancy, Descendancy::Present) {
+        return None;
+    }
+    effects.push(Effect::Emit {
+        action: "dead-cleared",
+        summary: "agent process back — resumed in place".to_owned(),
+    });
+    effects.push(Effect::Notify("is BACK — process resumed".to_owned()));
+    Some(PaneState {
+        dead_latched: false,
+        prev_hash: None,
+        last_hash_change: None,
+        idle_since_epoch: None,
+        nudge_count: 0,
+        undelivered_streak: 0,
+        throttle_streak: 0,
+        ..next.clone()
+    })
+}
+
 /// Account for one pane in one cycle — the branch order, and the only place
 /// any of it is decided.
 #[must_use]
 pub fn account(prior: &PaneState, seen: &Observation, knobs: &Knobs) -> Accounting {
     let reset = PaneState::default();
-    let prior = if prior
+    let mut prior = if prior
         .identity
         .is_some_and(|identity| identity != seen.identity)
     {
@@ -908,14 +948,24 @@ pub fn account(prior: &PaneState, seen: &Observation, knobs: &Knobs) -> Accounti
     let mut effects = Vec::new();
     book_unknown(&mut next, &mut effects, seen.descendancy);
 
-    // 1. Already dead: no second alert, no further judgement.
-    if prior.dead_latched {
-        return Accounting {
-            next,
-            effects,
-            verdict: Verdict::Dead,
-            moved: false,
-        };
+    // 1. Already dead: no second alert, no further judgement — until the one
+    //    clear rule holds (`clear_death_latch`), which this cycle then judges.
+    let unlatched;
+    match clear_death_latch(prior, &next, seen, &mut effects) {
+        Some(state) => {
+            unlatched = state;
+            prior = &unlatched;
+            next = unlatched.clone();
+        }
+        None if prior.dead_latched => {
+            return Accounting {
+                next,
+                effects,
+                verdict: Verdict::Dead,
+                moved: false,
+            };
+        }
+        None => {}
     }
 
     // 2.
@@ -936,6 +986,19 @@ pub fn account(prior: &PaneState, seen: &Observation, knobs: &Knobs) -> Accounti
         };
     }
 
+    account_ordinary(prior, next, effects, seen, knobs)
+}
+
+/// Steps 3 through 9 — the ordinary judgement of a pane that is not dead (any
+/// more). `prior` is the carry the verdict is judged against: the reset
+/// episode a clear just returned, or the standing carry.
+fn account_ordinary(
+    prior: &PaneState,
+    mut next: PaneState,
+    mut effects: Vec<Effect>,
+    seen: &Observation,
+    knobs: &Knobs,
+) -> Accounting {
     // 3.
     if let Some(verdict) = book_sweep(prior, &mut next, &mut effects, seen, knobs) {
         next.idle_since_epoch = None;
@@ -6982,10 +7045,91 @@ mod tests {
             emitted(&first.effects),
             vec![("alert", "agent process dead — dropped to shell")]
         );
-        // There is no watchdog-emitted clear, and no second alert.
+        // Still positively gone: no second alert, and the latch holds.
         let second = account(&first.next, &observed, &Knobs::default());
         assert_eq!(second.verdict, Verdict::Dead);
+        assert!(second.next.dead_latched);
         assert!(emitted(&second.effects).is_empty(), "alerted twice");
+    }
+
+    #[test]
+    fn a_dead_agent_whose_process_is_back_is_cleared_once_and_judged_normally() {
+        // The human's own recovery path — a re-run in the SAME pane — keeps
+        // the identity, so only the process reading separates "still gone"
+        // from "back"; and the cycle that clears is the cycle that judges.
+        let knobs = Knobs::default();
+        let mut dead = seen();
+        dead.is_dead = true;
+        dead.descendancy = Descendancy::Absent;
+        let first = account(&PaneState::default(), &dead, &knobs);
+        assert_eq!(first.verdict, Verdict::Dead);
+        assert!(first.next.dead_latched);
+
+        let back = seen();
+        let mut carried = first.next.clone();
+        // A pre-death episode that must not feed the resumed judgement.
+        carried.prev_hash = Some(back.hash);
+        carried.last_hash_change = Some(back.now_epoch - 5_000);
+        carried.idle_since_epoch = Some(back.now_epoch - 5_000);
+        carried.nudge_count = 2;
+        carried.undelivered_streak = 3;
+        carried.throttle_streak = 4;
+        let cleared = account(&carried, &back, &knobs);
+        assert_eq!(cleared.verdict, Verdict::Active);
+        assert!(!cleared.next.dead_latched);
+        assert_eq!(
+            cleared.effects,
+            vec![
+                Effect::Emit {
+                    action: "dead-cleared",
+                    summary: "agent process back — resumed in place".to_owned(),
+                },
+                Effect::Notify("is BACK — process resumed".to_owned()),
+            ]
+        );
+        // One episode, not the pre-death one: the hash clock restarted, the
+        // idle clock is fresh, and no stale throttle clear leaks out.
+        assert_eq!(cleared.next.prev_hash, Some(back.hash));
+        assert_eq!(cleared.next.last_hash_change, Some(back.now_epoch));
+        assert_eq!(cleared.next.idle_since_epoch, None);
+        assert_eq!(cleared.next.nudge_count, 0);
+        assert_eq!(cleared.next.undelivered_streak, 0);
+        assert_eq!(cleared.next.throttle_streak, 0);
+
+        // The SECOND cycle after the clear is ordinary: the verdict is not
+        // Dead, nothing is emitted, and a real second death is a real event.
+        let again = account(&cleared.next, &back, &knobs);
+        assert_eq!(again.verdict, Verdict::Active, "the latch stayed cleared");
+        assert!(emitted(&again.effects).is_empty(), "one clear per return");
+        let died_again = account(&again.next, &dead, &knobs);
+        assert_eq!(died_again.verdict, Verdict::Dead);
+        assert_eq!(
+            emitted(&died_again.effects),
+            vec![("alert", "agent process dead — dropped to shell")],
+            "a seat that dies again is alerted again"
+        );
+    }
+
+    #[test]
+    fn a_probe_gap_never_clears_a_dead_latch() {
+        // `classify_dead` must not fire on an unusable snapshot, and neither
+        // may this: returning false because the tree could not be read is not
+        // evidence of life.
+        let mut prior = PaneState {
+            dead_latched: true,
+            ..PaneState::default()
+        };
+        prior.identity = Some(seen().identity);
+        let mut observed = seen();
+        observed.is_dead = false;
+        observed.descendancy = Descendancy::Unknown;
+        let booked = account(&prior, &observed, &Knobs::default());
+        assert_eq!(booked.verdict, Verdict::Dead);
+        assert!(
+            booked.next.dead_latched,
+            "an unknown snapshot keeps the latch"
+        );
+        assert!(booked.effects.is_empty(), "and raises nothing new");
     }
 
     #[test]
