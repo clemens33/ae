@@ -625,18 +625,71 @@ const fn under_lock_refusal(liveness: PaneLiveness) -> Option<LivenessRefusal> {
 }
 
 /// Wait until the target's input box is safe to paste into, or give up.
+///
+/// A box busy ONLY because of an ae-staged paste chip is not a human draft:
+/// once, and bounded, the wait drains it ([`flush_staged_chip`]) instead of
+/// deferring the whole budget; a chip plus other text still defers.
 fn wait_for_quiet(request: &Request<'_>, model: InputModel) -> bool {
     let started = Instant::now();
+    let mut flushed = false;
     loop {
-        if !input_busy(request.server, request.pane, model)
-            && !recently_viewed(request.server, request.pane)
-        {
+        let busy = input_busy(request.server, request.pane, model);
+        if !busy && !recently_viewed(request.server, request.pane) {
             return true;
+        }
+        if busy && !flushed && !recently_viewed(request.server, request.pane) {
+            flushed = true;
+            let budget = request.defer.saturating_sub(started.elapsed());
+            let _ = flush_staged_chip(request.server, request.pane, model, budget);
         }
         if started.elapsed() >= request.defer {
             return false;
         }
         std::thread::sleep(DEFER_POLL);
+    }
+}
+
+/// Is the composer holding NOTHING but a staged paste chip ae can own?
+fn staged_chip_present(server: &ServerId, pane: &str, model: InputModel) -> bool {
+    transport::capture_screen(server, pane, Styling::Escapes)
+        .is_some_and(|region| region::staged_paste(&region, model))
+}
+
+/// Submit a staged chip ONCE, after the pane has settled.
+///
+/// Waiting for the pane to stop redrawing is the recognizable "the tool is no
+/// longer answering" state; then one Enter drains the chip — never a second
+/// paste over it. `None` when the settle wait ran out, so the write is bounded.
+/// Residue: a human's own untouched chip would drain too, which is why no human
+/// attention may be recent at the call sites.
+fn flush_staged_chip(
+    server: &ServerId,
+    pane: &str,
+    model: InputModel,
+    budget: Duration,
+) -> Option<SubmitState> {
+    let started = Instant::now();
+    let mut previous = transport::capture_screen(server, pane, Styling::Plain);
+    loop {
+        std::thread::sleep(VERIFY_POLL);
+        let current = transport::capture_screen(server, pane, Styling::Plain);
+        if pane_settled(previous.as_deref(), current.as_deref()) {
+            break;
+        }
+        if started.elapsed() >= budget {
+            return None;
+        }
+        previous = current;
+    }
+    match still_staged(server, pane, model) {
+        // Re-read the SHAPE, not just the verdict: a draft typed under the chip
+        // is not ours to submit, and the chip may have drained on its own.
+        SubmitState::StillStaged if staged_chip_present(server, pane, model) => {
+            let _ = transport::send_key(server, pane, Key::Enter);
+            std::thread::sleep(VERIFY_POLL);
+            Some(still_staged(server, pane, model))
+        }
+        observed => Some(observed),
     }
 }
 
@@ -997,6 +1050,19 @@ fn submit(
             return Ok(Ok(DeliveryVerification::Unverifiable(reason)));
         }
         SubmitState::StillStaged => {}
+    }
+    // The box took the paste. If it still holds exactly an ae-staged chip, the
+    // harness refused the TURN (Muse's "turn-submit backlog full"): the same
+    // bounded retry the quiet gate uses, so a spawn's brief lands without an
+    // interrupt.
+    if staged_chip_present(server, pane, model) {
+        match flush_staged_chip(server, pane, model, request.defer) {
+            Some(SubmitState::Submitted) => return Ok(Ok(DeliveryVerification::Verified)),
+            Some(SubmitState::Unknown(reason)) => {
+                return Ok(Ok(DeliveryVerification::Unverifiable(reason)));
+            }
+            Some(SubmitState::StillStaged) | None => {}
+        }
     }
     if matches!(request.shape, Shape::Send | Shape::Relay) {
         writeln!(

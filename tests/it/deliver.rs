@@ -73,9 +73,9 @@ sub draw_queued {
     print "$border\r\n";
     print "  fake-model  ~/x\r\n";
 }
-if ($marker_secs > 0) { markers(); } else { draw(""); }
-my $buf = "";
+my $buf = ($mode =~ /^staged/) ? "[Pasted Content 42 chars]" : "";
 my $pasting = 0;
+$marker_secs > 0 ? markers() : draw($buf);
 my $ch;
 while (1) {
     if ($marker_secs > 0 && time() - $started >= $marker_secs) {
@@ -106,11 +106,25 @@ while (1) {
         open(my $keys, '>>', $enters) or die;
         print $keys "enter\n";
         close($keys);
+        # The Enter itself is already IN the buffer: strip it before any
+        # question is asked of what the composer holds.
+        $buf =~ s/[\r\n]\z//;
+        if ($mode eq 'staged' && $buf eq "[Pasted Content 42 chars]") {
+            # The harness drains a staged chip on Enter: the box clears, and
+            # the earlier paste is not this turn's receipt.
+            $buf = "";
+            draw("") if $marker_secs == 0;
+            next;
+        }
+        if ($mode eq 'staged-stuck' && $buf eq "[Pasted Content 42 chars]") {
+            # "turn-submit backlog full": the chip stays exactly where it was.
+            draw($buf) if $marker_secs == 0;
+            next;
+        }
         if ($mode eq 'swallow') {
             draw($buf) if $marker_secs == 0;
             next;
         }
-        $buf =~ s/[\r\n]\z//;
         open(my $fh, '>>', $out) or die;
         binmode($fh);
         print $fh $buf;
@@ -690,6 +704,63 @@ fn a_send_defers_while_the_input_box_holds_a_draft_and_abandons_loudly() {
     // The draft is still there, untouched — which is the whole point.
     let (_, screen) = rig.tmux(&["capture-pane", "-p", "-t", &rig.pane]);
     assert!(screen.contains("half a question"), "{screen}");
+}
+
+/// A composer holding ONLY an ae-staged paste chip is not a human draft: the
+/// send submits that chip once — never pasting a second message over it — and
+/// then delivers normally.
+#[test]
+fn a_send_flushes_an_ae_staged_chip_once_and_then_delivers_over_it() {
+    let rig = Rig::with_mode("staged-flush", "muse", 0, "staged");
+    assert!(
+        deliver::input_busy(&rig.server(), &rig.pane, InputModel::BorderDelimited),
+        "the staged chip reads OCCUPIED, as it did in the field"
+    );
+    let (code, stderr) = rig.run(
+        ae::cli::SEND,
+        &["tui", "after the chip"],
+        &[("AE_SEND_DEFER_SEC", "2")],
+    );
+    assert_eq!((code, stderr.as_str()), (Some(0), ""), "{stderr}");
+    assert_eq!(
+        rig.submitted(),
+        "⟦ae:msg from tui⟧\nafter the chip",
+        "the new message alone crossed the pane"
+    );
+    assert_eq!(
+        rig.enter_count(),
+        2,
+        "one Enter drains the stalled chip, one submits the send — never a third"
+    );
+}
+
+/// A chip the harness never drains is submitted exactly ONCE, and the send then
+/// abandons loudly: the retry is bounded, not a loop, and nothing is pasted
+/// over the chip.
+#[test]
+fn a_chip_the_harness_never_drains_is_submitted_once_and_abandons_loudly() {
+    let rig = Rig::with_mode("staged-stuck", "muse", 0, "staged-stuck");
+    let (code, stderr) = rig.run(
+        ae::cli::SEND,
+        &["tui", "over a refused chip"],
+        &[("AE_SEND_DEFER_SEC", "1")],
+    );
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(
+        stderr.contains("ABANDONED — target stayed busy"),
+        "{stderr}"
+    );
+    assert_eq!(
+        rig.enter_count(),
+        1,
+        "exactly one flush Enter; a second would be the unbounded retry"
+    );
+    assert!(
+        rig.submitted().is_empty(),
+        "nothing was pasted over the chip"
+    );
+    let (_, screen) = rig.tmux(&["capture-pane", "-p", "-t", &rig.pane]);
+    assert!(screen.contains("[Pasted Content 42 chars]"), "{screen}");
 }
 
 /// A body over the notice limit is NOT pasted: a pointer to the sender-owned
