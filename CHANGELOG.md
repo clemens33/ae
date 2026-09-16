@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.83] - 2026-09-16
+- Bump FORMAT_VERSION to 20 so running sessions repaint the orchestrator button
+- Measure the working pulse as a class at its peak frame
+
 ## [v2026.9.82] - 2026-09-16
 - Draw the orchestrator as an icon button after the menu glyph
 - Distinguish Done from Idle in the orchestrator button
