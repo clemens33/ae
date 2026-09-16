@@ -625,7 +625,7 @@ pub const SETTINGS_OPEN_OPTION: &str = "@ae_settings_open";
 /// changes shape: the version leads both stamps, so a session or window carrying
 /// an older one is rewritten by the next watchdog cycle rather than left on the
 /// layout an older core wrote.
-pub const FORMAT_VERSION: &str = "19";
+pub const FORMAT_VERSION: &str = "20";
 
 /// What [`WINDOW_STAMP_OPTION`] is set to: the LOOK the window was dressed in,
 /// formats version first.
@@ -2328,7 +2328,7 @@ mod tests {
     #[test]
     fn terminal_titles_are_part_of_the_drawn_layout() {
         let options = super::layout_options(&Look::DEFAULT);
-        assert_eq!(super::FORMAT_VERSION, "19");
+        assert_eq!(super::FORMAT_VERSION, "20");
         assert_eq!(
             options
                 .iter()

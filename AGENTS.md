@@ -99,8 +99,11 @@ Other rules of the loop:
   reaches only the current one). A RENAME rewrites the layout and the facts and leaves
   every verdict alone. The WATCHDOG owns the verdicts, refreshing them every cycle, and
   rewrites or UNSETS the layout only when `@ae_look_stamp` says the look has changed under
-  it. Never write a global (`-g`) option, never `#()` in a format, and prove a look change
-  by rendering it in `ae-dev` before it touches a live session. The launch also stamps, by
+  it. Any change to a status format or layout option MUST bump `theme::FORMAT_VERSION`,
+  because that stamp change is the only thing that makes the watchdog repaint a running
+  session's layout. Never write a global (`-g`) option, never `#()` in a format, and
+  prove a look change by rendering it in `ae-dev` before it touches a live session.
+  The launch also stamps, by
   main-pane ID, a session-scoped focus hook guarded by its captured session ID and a lead-pair
   window-scoped resize hook, never by name or globally; both apply with `theme = off` and are
   not part of the look. Launch and
