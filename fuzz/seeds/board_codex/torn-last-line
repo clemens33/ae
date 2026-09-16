@@ -1,0 +1,2 @@
+{"timestamp":"2026-01-02T03:04:05.678Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"whole line"}]}}
+{"timestamp":"2026-01-02T03:04:05.678Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"torn tail without newline"}]}}

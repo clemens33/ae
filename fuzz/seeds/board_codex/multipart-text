@@ -1,0 +1,1 @@
+{"timestamp":"2026-01-02T03:04:05.678Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"synthetic first part "},{"type":"input_text","text":"synthetic second part"}]}}

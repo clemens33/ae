@@ -138,3 +138,10 @@ path = "fuzz_targets/board_claude.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "board_codex"
+path = "fuzz_targets/board_codex.rs"
+test = false
+doc = false
+bench = false

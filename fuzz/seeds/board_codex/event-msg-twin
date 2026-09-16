@@ -1,0 +1,2 @@
+{"timestamp":"2026-01-02T03:04:05.678Z","type":"event_msg","payload":{"type":"user_message","message":"synthetic twin","images":[],"audio":[]}}
+{"timestamp":"2026-01-02T03:04:05.678Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"synthetic twin"}]}}
