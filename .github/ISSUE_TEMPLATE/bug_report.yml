@@ -1,0 +1,135 @@
+name: Bug report
+description: Report a bug in ae. Gather the facts first — see docs/troubleshooting.md §Filing a bug.
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you saw, including the exact error text if there was one.
+      placeholder: ae resumed the session onto the wrong tmux server.
+    validations:
+      required: true
+  - type: textarea
+    id: what-expected
+    attributes:
+      label: What you expected
+      description: What should have happened instead.
+      placeholder: The session resumes on the configured server.
+    validations:
+      required: true
+  - type: textarea
+    id: repro-steps
+    attributes:
+      label: Steps to reproduce
+      description: Numbered steps, starting from a known state. Without a repro the fix is a guess.
+      placeholder: |
+        1. ae my-feature
+        2. ...
+    validations:
+      required: true
+  - type: input
+    id: ae-version
+    attributes:
+      label: "`ae version` output"
+      description: Pins the exact core the behaviour came from.
+      placeholder: ae 2026.9.84
+    validations:
+      required: true
+  - type: textarea
+    id: ae-doctor
+    attributes:
+      label: "`ae doctor` output"
+      description: The environment checklist plus reboot evidence. Paste it whole.
+      render: shell
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      description: WSL2 vs bare Linux decides whole failure classes.
+      options:
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+        - Linux
+        - WSL2 on Windows
+        - other
+    validations:
+      required: true
+  - type: input
+    id: os-version
+    attributes:
+      label: OS version
+      description: "`sw_vers -productVersion` on macOS, PRETTY_NAME from /etc/os-release on Linux, Windows build for WSL."
+      placeholder: macOS 15.6.1 / Ubuntu 24.04.3 LTS / Windows 11 26100
+    validations:
+      required: true
+  - type: input
+    id: tmux-version
+    attributes:
+      label: "`tmux -V`"
+      description: The floor is 3.4, and 3.4 vs 3.5+ splits mouse handling.
+      placeholder: tmux 3.5a
+    validations:
+      required: true
+  - type: input
+    id: terminal
+    attributes:
+      label: Terminal emulator + version
+      description: e.g. Windows Terminal, iTerm2, Ghostty, kitty, Terminal.app, WezTerm.
+      placeholder: Ghostty 1.1.2
+    validations:
+      required: true
+  - type: input
+    id: term-vars
+    attributes:
+      label: "`$TERM` / `$TERM_PROGRAM` / `$COLORTERM`"
+      description: Synchronized output and colour support decide flicker bugs.
+      placeholder: xterm-ghostty / ghostty / truecolor
+    validations:
+      required: true
+  - type: textarea
+    id: locale-font
+    attributes:
+      label: Locale + terminal font
+      description: "`locale` output (UTF-8 or not) and the terminal font. REQUIRED for any rendering, flicker, glyph or alignment report — glyph width lives or dies here; optional otherwise."
+      placeholder: |
+        LANG=en_US.UTF-8
+        Font: Berkeley Mono 13
+    validations:
+      required: false
+  - type: textarea
+    id: harnesses
+    attributes:
+      label: Agent harness(es) + versions
+      description: Only the ones in the session. Resume and capture behaviour is per tool and per version.
+      placeholder: |
+        claude --version → 2.0.x
+        codex --version → 0.x.x
+    validations:
+      required: true
+  - type: input
+    id: look-settings
+    attributes:
+      label: "`[workspace]` look settings"
+      description: The status line is drawn from these. Say "defaults" if unset.
+      placeholder: palette = ..., icons = ..., theme = ..., motion = ..., layout = ...
+    validations:
+      required: true
+  - type: input
+    id: session-shape
+    attributes:
+      label: Session shape + profiles
+      description: Single agent, lead-pair, or with workers — and the profiles used.
+      placeholder: lead-pair, claude + codex
+    validations:
+      required: true
+  - type: textarea
+    id: config-logs
+    attributes:
+      label: Relevant `~/.ae/config` lines and logs
+      description: "REDACT FIRST: never paste tokens, auth.json contents, credentials, or transcript text; strip config_home paths if private."
+      render: shell
+    validations:
+      required: false
