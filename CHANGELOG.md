@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.78] - 2026-09-16
+- Model drift: never replay a display label as a model flag
+- Spawn test: force the unattributable pane under the meta lock
+- Menu tests: cap tmux-client concurrency and widen the render deadline
+- Menu tests: anchor the tmux test-group filter to the integration module
+- Record the tmux-client test group in the structure and test docs
+
 ## [v2026.9.77] - 2026-09-15
 - Expand only the current session's roster and drop the spend column
 
