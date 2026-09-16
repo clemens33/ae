@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.82] - 2026-09-16
+- Draw the orchestrator as an icon button after the menu glyph
+- Distinguish Done from Idle in the orchestrator button
+- Give Neutral and Warm a working accent readable on selected
+- Measure every drawn colour pair against its WCAG contrast bar
+- Record the ff-only merge convention
+
 ## [v2026.9.81] - 2026-09-16
 - Build stopped session rows into the fleet menu model
 - Resume a chosen stopped row through the launch owner
