@@ -229,6 +229,9 @@ Usage:
   ae brief [name] [--all] [--since <dur>]
                          Card one session or the fleet: goal, the latest note per memo
                          topic, each agent's declared state, and who is waiting on you
+  ae board [session…] [--since <ts>] [--json]
+                         The filtered cross-fleet record: genuine human turns from
+                         every seat's harness transcript (phase 1b: Claude only)
   ae quota               Show local cached quota windows for configured agent profiles
   ae usage [name…] [--json]
                          Show API-equivalent list-price usage for live sessions
@@ -488,6 +491,7 @@ pub fn route(preamble: &Preamble, argv: &[String], pane: Option<&str>) -> Route 
         }
         Some("next" | "jump") => Route::Core(with_head("next", &tail())),
         Some("brief") => Route::Core(with_head("brief", &tail())),
+        Some("board") => Route::Core(with_head("board", &tail())),
         Some("quota") => Route::Core(with_head("quota", &tail())),
         Some("usage") => Route::Core(with_head("usage", &tail())),
         Some("compact") => Route::Core(with_head(crate::cli::COMPACT, &tail())),

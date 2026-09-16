@@ -499,6 +499,11 @@ fn request_needs_world(request: &cli::Request) -> bool {
         // A brief is a reading of the same world, so a refused argv must not pay
         // for the scan either.
         cli::Request::Brief { tail } => brief::parse(tail).is_ok(),
+        // A board with explicit names reads durable state directly and never
+        // consults liveness; only the default needs the running world.
+        cli::Request::Board { tail } => {
+            board::parse(tail).is_ok_and(|args| args.sessions.is_empty())
+        }
         _ => false,
     }
 }
@@ -509,6 +514,7 @@ fn schedules_automatic_upgrade(request: &cli::Request) -> bool {
     match request {
         cli::Request::List(_) => true,
         cli::Request::Brief { tail } => brief::parse(tail).is_ok(),
+        cli::Request::Board { tail } => board::parse(tail).is_ok(),
         cli::Request::Orchestrator { tail } => orchestrator::parse(tail)
             .is_ok_and(|args| args.popup || args.settings || args.quota_dialog),
         _ => false,
@@ -1879,6 +1885,78 @@ fn run_brief(
     Ok(0)
 }
 
+/// `ae board [session…] [--since <ts>] [--json]` — the filtered cross-fleet
+/// record, derived on read from harness transcripts.
+///
+/// The impure half of the command, and deliberately thin: it resolves WHICH
+/// sessions the argv names — explicit names straight from durable state,
+/// stopped or running, liveness never consulted; no names from the running
+/// world `ae list` reports — and hands each one to [`board::observe`], which
+/// owns every read of a transcript.
+fn run_board(
+    tail: &[String],
+    world: Option<&listing::World>,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> Result<u8> {
+    let args = match board::parse(tail) {
+        Ok(args) => args,
+        Err(usage) => {
+            write!(err, "{}", usage.render())?;
+            return Ok(entry::EXIT_USAGE);
+        }
+    };
+    let Some(root) = state_root() else {
+        writeln!(err, "ae: {NO_STATE_ROOT}")?;
+        return Ok(EXIT_UNAVAILABLE);
+    };
+    let roots = inventory::Roots::under(&root);
+    let selected: Vec<usage::SessionInput> = if args.sessions.is_empty() {
+        let Some(world) = world else {
+            writeln!(err, "ae: {NO_STATE_ROOT}")?;
+            return Ok(EXIT_UNAVAILABLE);
+        };
+        // Before ANY absence claim: an enumeration that lost a source cannot
+        // prove a session is not there. The warning is `ae list`'s own, so
+        // the two surfaces say the same thing.
+        if let Some(warning) = listing::diagnostic(world) {
+            writeln!(err, "{warning}")?;
+        }
+        filters::Selection::running()
+            .select(&world.sessions, world.now)
+            .iter()
+            .map(|entry| usage::SessionInput {
+                name: entry.name.clone(),
+                path: roots.sessions().join(&entry.name),
+            })
+            .collect()
+    } else {
+        let scan = inventory::durable_meta_records(&roots);
+        let mut selected = Vec::new();
+        for name in &args.sessions {
+            let Some(record) = scan.records.iter().find(|record| &record.name == name) else {
+                writeln!(err, "ae board: no session named {name}")?;
+                return Ok(EXIT_UNAVAILABLE);
+            };
+            selected.push(usage::SessionInput {
+                name: record.name.clone(),
+                path: record.path.clone(),
+            });
+        }
+        selected
+    };
+    let home = doors::home();
+    let observation = board::observe(
+        &board::Inputs {
+            home: home.as_deref(),
+            sessions: &selected,
+        },
+        args.since_micros,
+    );
+    write!(out, "{}", board::render(&observation, args.json))?;
+    Ok(0)
+}
+
 /// The session the calling pane sits in, on the server this invocation would
 /// ask — `None` outside tmux, or when that server does not answer for the pane.
 fn calling_session_name() -> Option<String> {
@@ -2778,6 +2856,7 @@ pub fn run_with(
         }
         cli::Request::Next { tail } => run_next(tail, world, out, err)?,
         cli::Request::Brief { tail } => run_brief(tail, world, out, err)?,
+        cli::Request::Board { tail } => run_board(tail, world, out, err)?,
         // A parsed `--popup` is answered before `run_dispatch` reaches this
         // generic arm. Only a direct `run_with` caller can bring one here.
         cli::Request::Orchestrator { tail } => {

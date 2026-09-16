@@ -652,6 +652,12 @@ pub enum Request {
         /// Everything after the subcommand, as typed.
         tail: Vec<String>,
     },
+    /// `board [session…] [--since <ts>] [--json]` — validated by
+    /// [`crate::board::parse`], which owns the flag grammar and its usage text.
+    Board {
+        /// Everything after the subcommand, as typed.
+        tail: Vec<String>,
+    },
     /// `_quota <dir>` — read configured clients' local quota snapshots.
     Quota {
         /// The session directory the helper derives from `$0`.
@@ -789,6 +795,9 @@ impl Request {
                 tail: args[1..].to_vec(),
             },
             Some("brief") => Self::Brief {
+                tail: args[1..].to_vec(),
+            },
+            Some("board") => Self::Board {
                 tail: args[1..].to_vec(),
             },
             Some(QUOTA) => match &args[1..] {
@@ -1340,6 +1349,7 @@ impl Request {
             | Self::Next { .. }
             | Self::Orchestrator { .. }
             | Self::Brief { .. }
+            | Self::Board { .. }
             | Self::Quota { .. }
             | Self::Usage { .. }
             | Self::LaunchCandidate(_)
