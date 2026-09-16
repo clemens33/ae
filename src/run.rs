@@ -8,7 +8,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::launch;
-use crate::tool::{ResumeForm, StoreProbe, ToolKind};
+use crate::tool::{ContextChannel, ResumeForm, StoreProbe, ToolKind};
 
 /// Which form of the tool command a run builds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -664,21 +664,44 @@ fn compose(
         let (resume_form, fallback_form) =
             resume_forms(seat.command.as_str(), seat.tool, &seat.harness_session);
         // DECIDE, THEN INJECT.
-        let form = if resumable(seat.tool, &seat.harness_session, config_home) {
-            resume_form
+        let exact = resumable(seat.tool, &seat.harness_session, config_home);
+        let form = if exact { resume_form } else { fallback_form };
+        let cmd = if resume_keeps_context(seat.tool, exact) {
+            launch::inject_ae_context(&form, dir, slot, ctx, &seat.launch_id).cmd
         } else {
-            fallback_form
+            form
         };
-        let injected = launch::inject_ae_context(&form, dir, slot, ctx, &seat.launch_id);
         // A resume carries no inline first message: codex's is delivered once
         // its UI returns, and no other tool has one.
-        return launch::build_launch_command(&injected.cmd, "");
+        return launch::build_launch_command(&cmd, "");
     }
     let pre = launch::inject_session_id(seat.command.as_str(), &seat.harness_session);
     let injected = launch::inject_ae_context(&pre, dir, slot, ctx, &seat.launch_id);
     let prompt =
         read_prompt(dir, slot).unwrap_or_else(|| launch::initial_prompt_for(seat.tool, dir, slot));
     launch::build_launch_command(&injected.cmd, &prompt)
+}
+
+/// Whether an EXACT resume may keep the inline context turn.
+///
+/// A `Subcommand` resume puts the recorded id behind a subcommand word — Muse's
+/// `resume <uuid>` — and that subcommand parses no positional argument: an
+/// appended context turn is read as one and the harness falls back to its TUI
+/// parser, refusing the launch. The retained conversation already received the
+/// turn when it was created, so an exact resume of a positionally-contexted
+/// seat carries none. Every other exact resume keeps it, and so does every
+/// fallback, which starts a FRESH conversation that needs the binding.
+fn resume_keeps_context(tool: ToolKind, exact: bool) -> bool {
+    if !exact {
+        return true;
+    }
+    !matches!(
+        (tool.adapter().resume.form, tool.adapter().launch.context),
+        (
+            ResumeForm::Subcommand { .. },
+            ContextChannel::UserTurn { flag: None }
+        )
+    )
 }
 
 /// Should this seat be resumed with the id its meta records?
@@ -1550,6 +1573,27 @@ mod tests {
         assert_eq!(fallback, "agy --dangerously-skip-permissions --continue");
         assert!(!exact.contains("OLD") && !fallback.contains("OLD"));
         assert!(!exact.contains("--resume"), "agy has no --resume: {exact}");
+    }
+
+    #[test]
+    fn a_subcommand_exact_resume_keeps_no_positional_context_turn() {
+        // Muse's `resume <uuid>` parses no positional: its exact resume drops
+        // the turn, while its fallback starts a FRESH conversation and keeps
+        // it. Every other tool's exact resume keeps its own turn.
+        assert!(!resume_keeps_context(ToolKind::Muse, true));
+        assert!(resume_keeps_context(ToolKind::Muse, false));
+        for tool in [
+            ToolKind::Claude,
+            ToolKind::Codex,
+            ToolKind::Gemini,
+            ToolKind::Agy,
+            ToolKind::Grok,
+            ToolKind::OpenCode,
+            ToolKind::Unknown,
+        ] {
+            assert!(resume_keeps_context(tool, true), "{}", tool.as_str());
+            assert!(resume_keeps_context(tool, false), "{}", tool.as_str());
+        }
     }
 
     #[test]
