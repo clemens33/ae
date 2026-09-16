@@ -76,10 +76,23 @@ pub fn first_line(marker: &str, body: &str) -> String {
     format!("{marker}\n{body}")
 }
 
+/// THE ae-turn recognizer: true iff `first_line` — the turn's FIRST line and
+/// nothing else — carries one of this owner's own spellings. `relay` is bare
+/// and therefore never matches, by design. Callers pass line 1 only; a marker
+/// pasted into the body is prose and must not reach this function.
+#[must_use]
+pub fn is_ae_turn(first_line: &str) -> bool {
+    first_line.starts_with(PEER_PREFIX)
+        || first_line.starts_with(BRIEF_PREFIX)
+        || first_line.starts_with(INTERRUPT_PREFIX)
+        || first_line == ctx().as_str()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        BRIEF_PREFIX, PEER_HEAD, PEER_PREFIX, VERBS, brief, ctx, first_line, interrupt, peer,
+        BRIEF_PREFIX, PEER_HEAD, PEER_PREFIX, VERBS, brief, ctx, first_line, interrupt, is_ae_turn,
+        peer,
     };
 
     #[test]
@@ -120,6 +133,26 @@ mod tests {
         assert!(brief("x").starts_with(BRIEF_PREFIX));
         assert!(ctx().starts_with("⟦ae:ctx"));
         assert!(interrupt("x").starts_with("⟦ae:interrupt"));
+    }
+
+    #[test]
+    fn the_recognizer_matches_every_rendered_marker_on_line_one() {
+        for marker in [peer("lead"), ctx(), brief("lead"), interrupt("lead")] {
+            assert!(is_ae_turn(&marker), "{marker} is an ae turn");
+        }
+    }
+
+    #[test]
+    fn the_recognizer_refuses_bare_and_buried_markers() {
+        // Bare turns are the human (relay rides bare on purpose).
+        for bare in ["hello", "", "   ", "ae:msg from lead"] {
+            assert!(!is_ae_turn(bare), "{bare:?} is not an ae turn");
+        }
+        // A marker past the first character is prose, not provenance — and the
+        // bare ctx line matches exactly, never as a prefix of a longer line.
+        assert!(!is_ae_turn(&format!("x {}", peer("lead"))));
+        assert!(!is_ae_turn(&format!("{} trailing", ctx())));
+        assert!(!is_ae_turn("⟦ae:msg fromlead⟧"));
     }
 
     #[test]
