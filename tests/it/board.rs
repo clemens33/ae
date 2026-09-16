@@ -134,7 +134,7 @@ fn text_scope_line_is_first_and_coverage_precedes_rows() {
     assert!(coverage < row, "coverage precedes body rows: {text}");
     assert_eq!(
         lines[coverage],
-        "coverage incomplete: one:colead — codex: phase 2"
+        "coverage incomplete: one:colead — invalid or missing conversation id"
     );
     assert_eq!(lines[row], "## 2026-09-16T09:00:00.500000Z one:lead");
     let _ = std::fs::remove_dir_all(&root);
@@ -178,7 +178,9 @@ fn non_claude_seats_name_their_phase_in_both_modes() {
     assert_eq!(
         reasons,
         [
-            "codex: phase 2",
+            // Codex reads now: this seat carries no id, so the read is
+            // attempted and covered — never a phase row.
+            "invalid or missing conversation id",
             "grok: phase 3a",
             "muse: phase 3b",
             "agy: phase 5",
@@ -508,6 +510,117 @@ fn binary_torn_tail_keeps_earlier_rows_and_covers_the_tail() {
         !stdout.contains("torn words"),
         "the torn tail is never trusted: {stdout}"
     );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+const CODEX_ID: &str = "01a08046-1974-7352-ade3-81a786200795";
+
+/// One synthetic Codex user turn. Bodies are plain fixture prose.
+fn codex_user(ts: &str, body: &str) -> String {
+    let escaped = body
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n");
+    format!(
+        r#"{{"timestamp":"{ts}","type":"response_item","payload":{{"type":"message","role":"user","content":[{{"type":"input_text","text":"{escaped}"}}]}}}}"#
+    )
+}
+
+fn codex_roster(slot: &str, seat: &str, id: &str, store: &Path) -> String {
+    format!(
+        "seat.{slot}={seat}\nharness_session.{slot}={id}\nagent_bin.{slot}=codex\nconfig_home.{slot}={}\n",
+        store.display()
+    )
+}
+
+/// Plant `<store>/sessions/2026/09/08/rollout-…-{CODEX_ID}.jsonl`: the id's
+/// embedded time picks the day, as in `tests/it/usage.rs`.
+fn plant_rollout(store: &Path, lines: &[String]) {
+    let dir = store.join("sessions/2026/09/08");
+    std::fs::create_dir_all(&dir).expect("rollout day dir");
+    let mut body = lines.join("\n");
+    if !lines.is_empty() {
+        body.push('\n');
+    }
+    let path = dir.join(format!("rollout-2026-09-08T09-00-00-{CODEX_ID}.jsonl"));
+    std::fs::write(path, body).expect("rollout");
+}
+
+#[test]
+fn a_codex_seat_renders_rows_and_names_no_phase() {
+    let root = rig("codex-rows");
+    let store = root.join("codex");
+    plant_rollout(
+        &store,
+        &[
+            codex_user("2026-09-16T09:00:00.500Z", "codex human words"),
+            codex_user("2026-09-16T09:01:00Z", "⟦ae:msg from lead⟧\nnot human"),
+            codex_user("2026-09-16T09:02:00Z", "<environment_context>\nnoise"),
+        ],
+    );
+    plant_session(
+        &root,
+        "ship",
+        &codex_roster("main", "lead", CODEX_ID, &store),
+    );
+    let observation = observe(&root, &["ship"], None);
+    assert!(observation.coverage.is_empty(), "no phase row after a read");
+    assert_eq!(observation.rows.len(), 1);
+    assert_eq!(observation.rows[0].body, "codex human words");
+    let text = board::render(&observation, false);
+    assert!(!text.contains("phase 2"), "the phase row is gone: {text}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn claude_and_codex_seats_interleave_by_ts() {
+    let root = rig("codex-interleave");
+    let claude_store = root.join("claude");
+    plant_transcript(
+        &claude_store,
+        "work",
+        CLAUDE_ID,
+        &[user("2026-09-16T10:00:00Z", "claude later words")],
+    );
+    let codex_store = root.join("codex");
+    plant_rollout(
+        &codex_store,
+        &[codex_user("2026-09-16T09:00:00Z", "codex earlier words")],
+    );
+    plant_session(
+        &root,
+        "mixed",
+        &format!(
+            "{}{}",
+            claude_roster("main", "lead", CLAUDE_ID, &claude_store),
+            codex_roster("worker.0", "colead", CODEX_ID, &codex_store),
+        ),
+    );
+    let observation = observe(&root, &["mixed"], None);
+    assert!(observation.coverage.is_empty());
+    let actors: Vec<&str> = observation
+        .rows
+        .iter()
+        .map(|row| row.actor.as_str())
+        .collect();
+    assert_eq!(actors, ["mixed:colead", "mixed:lead"]);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_missing_codex_rollout_is_a_coverage_row() {
+    let root = rig("codex-missing");
+    let store = root.join("codex");
+    std::fs::create_dir_all(store.join("sessions/2026/09/08")).expect("day dir");
+    plant_session(
+        &root,
+        "gone",
+        &codex_roster("main", "lead", CODEX_ID, &store),
+    );
+    let observation = observe(&root, &["gone"], None);
+    assert!(observation.rows.is_empty());
+    assert_eq!(observation.coverage.len(), 1);
+    assert_eq!(observation.coverage[0].reason, "rollout not found");
     let _ = std::fs::remove_dir_all(&root);
 }
 
