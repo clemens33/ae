@@ -116,6 +116,7 @@ Other rules of the loop:
   current session for its transient open marker, and a row switches to the captured session id
   before selecting its still-member lead pane. A bind cannot be session-scoped.
 - **Workers get their own git worktree.** `git worktree add <path> -b <branch> main`.
+- **Land a slice with `git merge --ff-only`** after the worker rebases onto the main tip. Never `--no-ff`: `just release` runs `git pull --rebase` and flattens merge commits.
 - **One writer per file.** Other agents edit this tree concurrently; coordinate before
   reverting or overwriting anything you did not change.
 - **No lifecycle commands against a live session you do not own** — no `ae end`, `ae stop`,
