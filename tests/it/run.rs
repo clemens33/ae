@@ -69,7 +69,9 @@ impl Rig {
         }
         let out = scratch.join("argv");
         let mut profiles = String::from("[profiles]\n");
-        for tool in ["claude", "codex", "gemini", "grok", "opencode", "agy"] {
+        for tool in [
+            "claude", "codex", "gemini", "grok", "opencode", "agy", "muse",
+        ] {
             let path = bin.join(tool);
             let body = REPORTING_TOOL.replace("__OUT__", &out.display().to_string());
             assert!(std::fs::write(&path, body).is_ok(), "the fixture {tool}");
@@ -691,6 +693,7 @@ fn a_recorded_id_is_the_resume_target_for_every_tool() {
         ),
         ("agy", &["--conversation", "u-9"][..], &["--continue"][..]),
         ("grok", &["--resume", "u-9"][..], &["--continue"][..]),
+        ("muse", &["resume", "u-9"][..], &[][..]),
         ("opencode", &["--session", "u-9"][..], &["--continue"][..]),
     ] {
         // WITH an id: the exact form, for every tool. grok, gemini and opencode
@@ -731,6 +734,64 @@ fn a_recorded_id_is_the_resume_target_for_every_tool() {
             );
         }
     }
+}
+
+/// Muse's exact resume is a SUBCOMMAND that parses no positional argument:
+/// appending the ctx turn makes its parser fall back to TUI mode and refuse
+/// the launch (`invalid TUI options: unknown argument 'resume'`). The retained
+/// conversation already received the turn at creation, so the exact form
+/// carries none — and only that form, because the fallback starts a FRESH
+/// conversation. Grok's `--resume <uuid>` is a TUI invocation, not a
+/// subcommand, and keeps its positional turn.
+#[test]
+fn a_subcommand_resume_carries_no_positional_context_turn() {
+    let rig = Rig::new("muse-exact");
+    rig.seat("muse", "u-9");
+    rig.started();
+    let argv = rig.planned_argv();
+    assert_eq!(
+        argv,
+        [
+            rig.tool("muse"),
+            "--flag".to_owned(),
+            "resume".to_owned(),
+            "u-9".to_owned()
+        ],
+        "muse's exact resume is exactly the subcommand and the id: {argv:?}"
+    );
+    let ctx = ae::provenance::ctx();
+    assert!(
+        !argv.iter().any(|word| word.contains(ctx.as_str())),
+        "muse's exact resume carries no context turn: {argv:?}"
+    );
+
+    // The FALLBACK — a fresh Muse conversation — still carries the marked,
+    // passive turn, or the new conversation never learns its binding.
+    let rig = Rig::new("muse-fallback");
+    rig.seat("muse", "");
+    rig.started();
+    let argv = rig.planned_argv();
+    let turn = argv.last().expect("a context turn");
+    assert!(
+        turn.contains(ctx.as_str()) && turn.contains("This is context only"),
+        "the fallback keeps the context turn: {argv:?}"
+    );
+    assert!(
+        !argv.iter().any(|word| word == "resume"),
+        "the fallback starts fresh, with no subcommand: {argv:?}"
+    );
+
+    // Grok's exact resume is TUI mode with a positional prompt: unchanged.
+    let rig = Rig::new("grok-exact");
+    rig.seat("grok", "u-9");
+    rig.started();
+    let argv = rig.planned_argv();
+    assert!(carries(&argv, &["--resume", "u-9"]), "{argv:?}");
+    let turn = argv.last().expect("a context turn");
+    assert!(
+        turn.contains(ctx.as_str()),
+        "grok's exact resume keeps its positional turn: {argv:?}"
+    );
 }
 
 #[test]
