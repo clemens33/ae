@@ -29,31 +29,18 @@
 //!   in NO local transcript; both are TAKEN from the jq reference, first-line
 //!   prefix only, LOSSY with collision tests.
 
-use super::{LINE_CAP, Line, LineBody, Streamed};
+use super::{LINE_CAP, LineBody, Splitter, Streamed};
 use crate::board::{Coverage, Role, Row};
 use crate::tool::ToolKind;
 
-/// Read one Claude transcript from whole bytes: split into lines exactly as
-/// the door would stream them, then read the stream. A thin wrapper, so the
-/// fuzz target covers the code the door runs.
+/// Read one Claude transcript from whole bytes: one feed through the ONE
+/// splitter, then read the stream. A thin wrapper, so the fuzz target covers
+/// the code the door runs.
 #[must_use]
 pub fn read(bytes: &[u8], actor: &str, file: &str, source: ToolKind) -> (Vec<Row>, Vec<Coverage>) {
-    let mut lines = Vec::new();
-    let mut start = 0usize;
-    let mut torn = false;
-    while start < bytes.len() {
-        let Some(relative) = bytes[start..].iter().position(|byte| *byte == b'\n') else {
-            torn = !bytes[start..].is_empty();
-            break;
-        };
-        let end = start + relative;
-        lines.push(Line {
-            offset: start as u64,
-            body: LineBody::Full(bytes[start..end].to_vec()),
-        });
-        start = end + 1;
-    }
-    read_stream(&Streamed { lines, torn }, actor, file, source)
+    let mut splitter = Splitter::new();
+    splitter.feed(bytes);
+    read_stream(&splitter.finish(), actor, file, source)
 }
 
 /// Read one streamed Claude transcript: the door's lines in, human rows out.
@@ -63,7 +50,7 @@ pub fn read(bytes: &[u8], actor: &str, file: &str, source: ToolKind) -> (Vec<Row
 /// (`per_tool_branches_live_only_in_the_adapter_rows`), and the locating glue
 /// already classifies the seat before it calls here.
 #[must_use]
-pub(crate) fn read_stream(
+pub fn read_stream(
     streamed: &Streamed,
     actor: &str,
     file: &str,

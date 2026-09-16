@@ -152,7 +152,8 @@ pub fn parse(tail: &[String]) -> Result<Args, Usage> {
 
 /// One streamed transcript line: path in, lines out — the door carries no
 /// harness knowledge, so every later reader reuses it.
-pub(crate) struct Line {
+#[derive(Debug)]
+pub struct Line {
     /// Byte offset of the line's first byte in the file.
     pub(crate) offset: u64,
     /// The line's body, or its true length when it tripped the cap.
@@ -160,7 +161,8 @@ pub(crate) struct Line {
 }
 
 /// A line's body: bytes the reader may parse, or a length it must cover.
-pub(crate) enum LineBody {
+#[derive(Debug)]
+pub enum LineBody {
     /// A newline-terminated line, newline excluded, within the cap.
     Full(Vec<u8>),
     /// A line past [`LINE_CAP`]: its TRUE length in bytes, newline excluded.
@@ -169,11 +171,87 @@ pub(crate) enum LineBody {
 }
 
 /// One transcript, streamed: its lines plus whether the tail was torn.
-pub(crate) struct Streamed {
+#[derive(Debug)]
+pub struct Streamed {
     /// Every newline-terminated line, in file order with its byte offset.
     pub(crate) lines: Vec<Line>,
     /// Trailing bytes without a newline were seen and NOT trusted.
     pub(crate) torn: bool,
+}
+
+/// THE line splitter: bytes in, lines out, no I/O. The door feeds it buffer
+/// chunks and the whole-bytes reader feeds it one slice — one splitter, so
+/// the fuzz target covers the code hostile transcripts hit.
+#[derive(Debug, Default)]
+pub struct Splitter {
+    lines: Vec<Line>,
+    line: Vec<u8>,
+    start: u64,
+    cursor: u64,
+    overlong: bool,
+    line_len: usize,
+}
+
+impl Splitter {
+    /// An empty splitter at byte zero.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Feed one chunk: newlines end lines, the cap trips mid-chunk, and a
+    /// partial line carries over to the next feed.
+    pub fn feed(&mut self, chunk: &[u8]) {
+        let mut rest = chunk;
+        while !rest.is_empty() {
+            let Some(at) = rest.iter().position(|byte| *byte == b'\n') else {
+                self.push_body(rest);
+                self.cursor += rest.len() as u64;
+                break;
+            };
+            self.push_body(&rest[..at]);
+            self.cursor += (at + 1) as u64;
+            self.end_line();
+            rest = &rest[at + 1..];
+        }
+    }
+
+    /// The streamed transcript: every newline-terminated line, plus whether a
+    /// torn tail was seen and not trusted.
+    #[must_use]
+    pub fn finish(self) -> Streamed {
+        Streamed {
+            lines: self.lines,
+            torn: self.cursor != self.start,
+        }
+    }
+
+    fn push_body(&mut self, body: &[u8]) {
+        if !self.overlong {
+            if self.line.len() + body.len() > LINE_CAP {
+                self.line.clear();
+                self.overlong = true;
+            } else {
+                self.line.extend_from_slice(body);
+            }
+        }
+        self.line_len += body.len();
+    }
+
+    fn end_line(&mut self) {
+        let body = if self.overlong {
+            LineBody::Overlong(self.line_len)
+        } else {
+            LineBody::Full(std::mem::take(&mut self.line))
+        };
+        self.lines.push(Line {
+            offset: self.start,
+            body,
+        });
+        self.start = self.cursor;
+        self.overlong = false;
+        self.line_len = 0;
+    }
 }
 
 /// Why the streaming door refused a located transcript.
@@ -187,13 +265,13 @@ pub(crate) enum DoorError {
     NotRegular,
 }
 
-/// THE streaming door: open a located transcript and stream it line by line.
+/// THE streaming door: open a located transcript and feed it to the splitter.
 ///
 /// The caller located the file and hands over its lstat metadata; this
 /// function proves the opened file IS that file — regular, same dev+inode,
-/// length not shrunk — reads at most the located length, and enforces the
-/// per-line cap WHILE reading, so a hostile line is counted and discarded,
-/// never buffered. No harness knowledge inside: path in, lines out.
+/// length not shrunk — reads at most the located length, and feeds buffer
+/// chunks to the ONE [`Splitter`]. No splitting logic and no harness
+/// knowledge inside: open, prove, feed.
 pub(crate) fn stream_transcript(
     path: &Path,
     expected: &std::fs::Metadata,
@@ -211,53 +289,20 @@ pub(crate) fn stream_transcript(
         return Err(DoorError::Changed);
     }
     let mut reader = BufReader::new(file.take(expected.len()));
-    let mut lines = Vec::new();
-    let mut line: Vec<u8> = Vec::new();
-    let mut start: u64 = 0;
-    let mut cursor: u64 = 0;
-    let mut overlong = false;
-    let mut line_len: usize = 0;
+    let mut splitter = Splitter::new();
     loop {
         let chunk = reader.fill_buf().map_err(|_| DoorError::Unreadable)?;
         if chunk.is_empty() {
             break;
         }
-        let newline = chunk.iter().position(|byte| *byte == b'\n');
-        let consumed = newline.map_or(chunk.len(), |at| at + 1);
-        let body = newline.map_or(chunk, |at| &chunk[..at]);
-        if !overlong {
-            if line.len() + body.len() > LINE_CAP {
-                line.clear();
-                overlong = true;
-            } else {
-                line.extend_from_slice(body);
-            }
-        }
-        line_len += body.len();
+        let consumed = chunk.len();
+        splitter.feed(chunk);
         reader.consume(consumed);
-        cursor += consumed as u64;
-        if newline.is_some() {
-            let body = if overlong {
-                LineBody::Overlong(line_len)
-            } else {
-                LineBody::Full(std::mem::take(&mut line))
-            };
-            lines.push(Line {
-                offset: start,
-                body,
-            });
-            start = cursor;
-            overlong = false;
-            line_len = 0;
-        }
     }
     if reader.into_inner().limit() != 0 {
         return Err(DoorError::Changed);
     }
-    Ok(Streamed {
-        lines,
-        torn: cursor != start,
-    })
+    Ok(splitter.finish())
 }
 
 #[cfg(unix)]
@@ -509,7 +554,7 @@ fn json_u64(value: u64) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::{Coverage, Role, Row, collect, format_micros};
+    use super::{Coverage, LINE_CAP, LineBody, Role, Row, Splitter, collect, format_micros};
     use crate::tool::ToolKind;
 
     fn row(ts: i64, file: &str, offset: u64, body: &str) -> Row {
@@ -584,5 +629,64 @@ mod tests {
             format_micros(1_789_549_200_000_007),
             "2026-09-16T09:00:00.000007Z"
         );
+    }
+
+    #[test]
+    fn a_newline_split_across_two_feeds_ends_one_line() {
+        let mut splitter = Splitter::new();
+        splitter.feed(b"ab");
+        splitter.feed(b"c\nde\n");
+        let streamed = splitter.finish();
+        assert!(!streamed.torn);
+        assert_eq!(streamed.lines.len(), 2);
+        assert_eq!(streamed.lines[0].offset, 0);
+        assert!(matches!(
+            streamed.lines[0].body,
+            LineBody::Full(ref bytes) if bytes == b"abc"
+        ));
+        assert_eq!(streamed.lines[1].offset, 4);
+        assert!(matches!(
+            streamed.lines[1].body,
+            LineBody::Full(ref bytes) if bytes == b"de"
+        ));
+    }
+
+    #[test]
+    fn two_newlines_in_one_feed_end_two_lines() {
+        let mut splitter = Splitter::new();
+        splitter.feed(b"a\nb\n");
+        let streamed = splitter.finish();
+        assert!(!streamed.torn);
+        assert_eq!(streamed.lines.len(), 2);
+        assert_eq!(streamed.lines[0].offset, 0);
+        assert!(matches!(
+            streamed.lines[0].body,
+            LineBody::Full(ref bytes) if bytes == b"a"
+        ));
+        assert_eq!(streamed.lines[1].offset, 2);
+        assert!(matches!(
+            streamed.lines[1].body,
+            LineBody::Full(ref bytes) if bytes == b"b"
+        ));
+    }
+
+    #[test]
+    fn an_overlong_line_reports_and_the_next_line_starts_clean() {
+        let mut splitter = Splitter::new();
+        splitter.feed(&vec![b'x'; LINE_CAP + 1]);
+        splitter.feed(b"\nok\n");
+        let streamed = splitter.finish();
+        assert!(!streamed.torn);
+        assert_eq!(streamed.lines.len(), 2);
+        assert_eq!(streamed.lines[0].offset, 0);
+        assert!(matches!(
+            streamed.lines[0].body,
+            LineBody::Overlong(len) if len == LINE_CAP + 1
+        ));
+        assert_eq!(streamed.lines[1].offset, (LINE_CAP + 2) as u64);
+        assert!(matches!(
+            streamed.lines[1].body,
+            LineBody::Full(ref bytes) if bytes == b"ok"
+        ));
     }
 }
