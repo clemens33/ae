@@ -253,7 +253,7 @@ session's agents, by severity:
 
 | Reason | Meaning |
 |--------|---------|
-| `attn:dead` | an agent's pane vanished (or the watchdog flagged it missing) |
+| `attn:dead` | an agent's pane vanished (or the watchdog flagged it missing); clears when the process returns |
 | `attn:stale` | the watchdog gave up nudging an idle agent (max nudges) |
 | `attn:waiting-user` | an agent declared it's waiting on you |
 | `attn:blocked` | an agent declared it's blocked on an external dep |

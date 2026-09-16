@@ -128,6 +128,7 @@ Additive facts that prove a pane's session across servers and tmux incarnations.
 | `alert` | watchdog / ae internal | Attention required (dead, max-nudges, persistent throttle, missing pane). |
 | `throttled` | watchdog | First cycle of an upstream throttle streak. |
 | `throttle-cleared` | watchdog | Throttle pattern no longer present. |
+| `dead-cleared` | watchdog | The dead agent's process is positively back (re-run in place); retracts the `alert`. |
 | `recover` | watchdog | Post-launch session id captured for a previously-pending slot. |
 
 ## How `requests` reads events
