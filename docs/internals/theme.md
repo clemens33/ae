@@ -158,10 +158,19 @@ are the news.
 
 ## Colour is never the only signal
 
-Measured against these palettes, dark text on an accent clears 4.25:1 at best.
-That is fine for a glyph and thin for a word, so the accent carries the badge
-and every essential WORD stays as text on a neutral ground. Each accent is
-paired with a glyph, and each glyph with a reason word on the pane border.
+Every foreground the look draws on a ground it owns clears its WCAG 2.1 contrast
+bar: 3.0:1 for a mark cell and 4.5:1 for text. The owner is `src/theme.rs`'s
+`every_drawn_pair_clears_its_wcag_contrast_bar`, which measures every mark
+accent and every working-pulse tick on both the bar's ground and the selection
+ground at two decimals. Darcula's tokens are FROZEN — every one is the JetBrains
+IDE's own — so the pairs that theme cannot clear (needs-you, stale, done and
+idle on its `selected` navy, and the dark half of its working pulse) are NAMED
+in that test with their measured ratio rather than repaired.
+
+Each accent is paired with a glyph, and each glyph with a reason word on the
+pane border. Measured against these palettes, dark text on an accent clears
+4.25:1 at best. That is fine for a glyph and thin for a word, so the accent
+carries the badge and every essential WORD stays as text on a neutral ground.
 
 ## The two status lines
 
@@ -369,5 +378,12 @@ never touched.
 own: the accents are its syntax colours, so a mark reads the way the code in the
 pane below it already does. Two further variants, `a` (neutral dark) and `b`
 (warmer), differ from each other only in their neutrals.
+
+Every palette's `selected` ground is DEEP — darcula's `#214283` navy, `a`'s
+blue-grey, `b`'s brown-grey — with a light `selected_ink` on it. That is what
+keeps the contrast invariant true on `a` and `b`: their accents are light, so
+the light teal selection ground of the first draft swallowed every one of them,
+and a current row lost its verdict. The ground is dark on all three palettes;
+only its hue differs.
 
 `[workspace] palette = darcula | a | b`.

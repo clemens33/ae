@@ -55,7 +55,11 @@ pub struct Palette {
     pub ink: &'static str,
     /// Rules: the pane borders, and the menu and popup frames.
     pub border: &'static str,
-    /// The ground under the menu row the cursor is on.
+    /// The selection ground under the menu cursor row and every current row.
+    ///
+    /// DEEP and dark on every palette, never a light accent: the accents drawn
+    /// on it stay readable, and the light [`Palette::selected_ink`] carries the
+    /// selected row's word.
     pub selected: &'static str,
     /// Text on `selected`.
     pub selected_ink: &'static str,
@@ -100,7 +104,8 @@ impl Palette {
     ///
     /// Amber for "needs you" rather than red: red is what a failure looks like,
     /// and three of the five reasons behind this mark are an agent waiting
-    /// politely.
+    /// politely. The selection ground is deep and dark with light ink, so the
+    /// accents drawn on a current row stay readable.
     pub const NEUTRAL: Self = Self {
         name: "a",
         base: "#16181d",
@@ -109,17 +114,20 @@ impl Palette {
         dim: "#6f7787",
         ink: "#0d0f12",
         border: "#6f7787",
-        selected: "#57b6c2",
-        selected_ink: "#0d0f12",
+        selected: "#1c2231",
+        selected_ink: "#c8ccd4",
         title: "#e5a03c",
         needs_you: "#e5a03c",
-        working: "#6897BB",
+        working: "#57b6c2",
         done: "#7fbf6a",
         stale: "#8a94a6",
         dead: "#e0605c",
     };
 
     /// **B — slightly warmer.** The same accents over brown-grey neutrals.
+    ///
+    /// Its selection ground is deep and dark with light ink for the same
+    /// reason as A's.
     pub const WARM: Self = Self {
         name: "b",
         base: "#1b1917",
@@ -128,11 +136,11 @@ impl Palette {
         dim: "#857a6e",
         ink: "#14110e",
         border: "#857a6e",
-        selected: "#57b6c2",
-        selected_ink: "#14110e",
+        selected: "#2a2018",
+        selected_ink: "#d4ccc2",
         title: "#e5a03c",
         needs_you: "#e5a03c",
-        working: "#6897BB",
+        working: "#57b6c2",
         done: "#7fbf6a",
         stale: "#8a94a6",
         dead: "#e0605c",
@@ -1359,6 +1367,97 @@ mod tests {
     };
     use crate::attention::Reason;
 
+    /// WCAG 2.1 relative luminance of a six-digit hex colour: sRGB
+    /// linearisation, then the 0.2126/0.7152/0.0722 weights.
+    fn luminance(hex: &str) -> f64 {
+        let channel = |offset: usize| {
+            let raw = f64::from(super::hex_byte(hex, offset)) / 255.0;
+            if raw <= 0.03928 {
+                raw / 12.92
+            } else {
+                ((raw + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * channel(1) + 0.7152 * channel(3) + 0.0722 * channel(5)
+    }
+
+    /// WCAG 2.1 contrast ratio between two colours, symmetric in its arguments.
+    fn contrast(one: &str, other: &str) -> f64 {
+        let (left, right) = (luminance(one), luminance(other));
+        let (lighter, darker) = if left >= right {
+            (left, right)
+        } else {
+            (right, left)
+        };
+        (lighter + 0.05) / (darker + 0.05)
+    }
+
+    /// One pair the readability invariant measures: `fg` drawn on `bg`, and
+    /// the WCAG bar it must clear.
+    struct ContrastPair {
+        label: String,
+        fg: String,
+        bg: String,
+        bar: f64,
+    }
+
+    /// Every pair the readability invariant covers, for one palette.
+    ///
+    /// The grounds are the two an accent is ever drawn on — `base` (a mark's
+    /// own style, the non-current fleet row and button) and `selected` (the
+    /// current row, the current button and the menu cursor row) — plus `panel`,
+    /// which carries `text`, `title` and the menu frame. The working pulse is
+    /// measured on both grounds at every tick, because its darkest frame is the
+    /// one that grazes its ground.
+    ///
+    /// `ink` is not here: nothing in the look draws text ON an accent, so it has
+    /// no drawn pair. The field stays for the renderer that eventually wants it.
+    fn contrast_pairs(palette: &Palette) -> Vec<ContrastPair> {
+        let mut pairs = Vec::new();
+        for mark in Mark::BY_URGENCY {
+            let accent = palette.accent(mark);
+            for (ground, colour) in [("base", palette.base), ("selected", palette.selected)] {
+                pairs.push(ContrastPair {
+                    label: format!("{mark:?} on {ground}"),
+                    fg: accent.to_owned(),
+                    bg: colour.to_owned(),
+                    bar: 3.0,
+                });
+            }
+        }
+        for tick in 0..20 {
+            let frame = working_frame(tick, palette, true);
+            for (ground, colour) in [("base", palette.base), ("selected", palette.selected)] {
+                pairs.push(ContrastPair {
+                    label: format!("working tick {tick} on {ground}"),
+                    fg: frame.fg.clone(),
+                    bg: colour.to_owned(),
+                    bar: 3.0,
+                });
+            }
+        }
+        for (label, fg, bg, bar) in [
+            ("text on base", palette.text, palette.base, 4.5),
+            ("text on panel", palette.text, palette.panel, 4.5),
+            (
+                "selected_ink on selected",
+                palette.selected_ink,
+                palette.selected,
+                4.5,
+            ),
+            ("title on panel", palette.title, palette.panel, 4.5),
+            ("dim on base", palette.dim, palette.base, 3.0),
+        ] {
+            pairs.push(ContrastPair {
+                label: label.to_owned(),
+                fg: fg.to_owned(),
+                bg: bg.to_owned(),
+                bar,
+            });
+        }
+        pairs
+    }
+
     /// Every palette a session can be drawn in.
     const PALETTES: [Palette; 3] = [Palette::DARCULA, Palette::NEUTRAL, Palette::WARM];
 
@@ -1816,22 +1915,6 @@ mod tests {
         plain
     }
 
-    /// The button's foreground colour: the first `fg=` value in the segment.
-    fn button_fg(strip: &str) -> String {
-        strip
-            .split_once(" fg=")
-            .map_or("", |(_, rest)| rest.split(' ').next().unwrap_or(""))
-            .to_owned()
-    }
-
-    /// The button's ground colour: the first `bg=` value in the segment.
-    fn button_ground(strip: &str) -> String {
-        strip
-            .split_once(" bg=")
-            .map_or("", |(_, rest)| rest.split(']').next().unwrap_or(""))
-            .to_owned()
-    }
-
     #[test]
     fn strip_selection_preserves_row_width_and_separator() {
         let row = |name: &str, current| FleetRow {
@@ -2131,76 +2214,89 @@ mod tests {
         }
     }
 
-    /// The button has no text label left, so a foreground that matches its
-    /// ground is a full disappearance — Neutral and Warm set the working
-    /// accent equal to the selected ground. Every current and non-current
-    /// state must stay readable: all marks without a frame, and every working
-    /// pulse tick with one, on every palette.
+    /// CLASS INVARIANT: every foreground the look draws on a ground it owns
+    /// clears its WCAG 2.1 contrast bar — 3.0:1 for a mark cell (SC 1.4.11) and
+    /// 4.5:1 for text (SC 1.4.3). A ratio implies inequality, so this subsumes
+    /// the old "a foreground never equals its ground" guards.
+    ///
+    /// The orchestrator button and the current-session fleet cell are why it
+    /// exists: the button's stable glyph carries its verdict in the foreground
+    /// colour alone, so a pair that grazes its ground is a verdict that
+    /// disappeared. The working pulse is measured at every tick, because its
+    /// darkest frame is the one that grazes.
+    ///
+    /// `ink` is not measured: nothing in the look draws text ON an accent, so
+    /// it has no drawn pair. The field stays for a renderer that wants it.
+    ///
+    /// Darcula's tokens are FROZEN — every one is the `JetBrains` IDE's own — so
+    /// the pairs its own theme cannot clear are NAMED here instead of "fixed",
+    /// each entry pinning the measured ratio to two decimals: a later darcula
+    /// hex edit changes the measurement and fails this list rather than
+    /// silently widening it.
     #[test]
-    fn orchestrator_button_foreground_differs_from_its_ground() {
-        let marks = [
-            Mark::Dead,
-            Mark::NeedsYou,
-            Mark::Working,
-            Mark::Done,
-            Mark::Stale,
-            Mark::Idle,
+    fn every_drawn_pair_clears_its_wcag_contrast_bar() {
+        const DARCULA_EXEMPTIONS: &[(&str, &str)] = &[
+            ("NeedsYou on selected", "2.90"),
+            ("Stale on selected", "2.54"),
+            ("Done on selected", "2.40"),
+            ("Idle on selected", "2.45"),
+            ("working tick 0 on base", "2.40"),
+            ("working tick 0 on selected", "1.83"),
+            ("working tick 1 on base", "2.46"),
+            ("working tick 1 on selected", "1.88"),
+            ("working tick 2 on base", "2.61"),
+            ("working tick 2 on selected", "1.99"),
+            ("working tick 3 on base", "2.88"),
+            ("working tick 3 on selected", "2.20"),
+            ("working tick 4 on selected", "2.45"),
+            ("working tick 5 on selected", "2.79"),
+            ("working tick 15 on selected", "2.79"),
+            ("working tick 16 on selected", "2.45"),
+            ("working tick 17 on base", "2.88"),
+            ("working tick 17 on selected", "2.20"),
+            ("working tick 18 on base", "2.61"),
+            ("working tick 18 on selected", "1.99"),
+            ("working tick 19 on base", "2.46"),
+            ("working tick 19 on selected", "1.88"),
         ];
+
         for palette in PALETTES {
-            let look = Look {
-                palette,
-                ..Look::DEFAULT
-            };
-            for current in [false, true] {
-                let row = |mark| FleetRow {
-                    name: "orchestrator".to_owned(),
-                    id: "$7".to_owned(),
-                    mark,
-                    current,
+            for pair in contrast_pairs(&palette) {
+                let ratio = contrast(&pair.fg, &pair.bg);
+                let measured = format!("{ratio:.2}");
+                let recorded = if palette == Palette::DARCULA {
+                    DARCULA_EXEMPTIONS
+                        .iter()
+                        .find(|(label, _)| pair.label.as_str() == *label)
+                        .map(|(_, ratio)| *ratio)
+                } else {
+                    None
                 };
-                for mark in marks {
-                    let strip = orchestrator_strip(&look, &row(mark), None);
-                    let (fg, ground) = (button_fg(&strip), button_ground(&strip));
-                    assert!(
-                        !fg.eq_ignore_ascii_case(&ground),
-                        "invisible {mark:?} button (current={current}) on {}: fg={fg} ground={ground}",
-                        palette.name,
+                if let Some(recorded) = recorded {
+                    assert_eq!(
+                        measured, recorded,
+                        "darcula's {} moved off its recorded ratio",
+                        pair.label,
                     );
+                    continue;
                 }
-                for tick in 0..20 {
-                    let frame = super::working_frame(tick, &palette, true);
-                    let strip = orchestrator_strip(&look, &row(Mark::Working), Some(&frame));
-                    let (fg, ground) = (button_fg(&strip), button_ground(&strip));
-                    assert!(
-                        !fg.eq_ignore_ascii_case(&ground),
-                        "invisible working pulse tick {tick} (current={current}) on {}: fg={fg} ground={ground}",
-                        palette.name,
-                    );
-                }
+                assert!(
+                    ratio >= pair.bar,
+                    "{} is {measured}:1 on {}, under its {:.1}:1 bar",
+                    pair.label,
+                    palette.name,
+                    pair.bar,
+                );
             }
         }
-    }
-
-    /// CLASS INVARIANT: no mark accent may equal `selected` or `base` in any
-    /// palette. A glyph is only ever drawn on those two grounds, so equality
-    /// with either is a full disappearance. This pins the palettes themselves
-    /// so no future hex edit can reintroduce a vanishing accent.
-    #[test]
-    fn no_mark_accent_matches_a_ground_it_is_drawn_on() {
-        for palette in PALETTES {
-            for mark in Mark::BY_URGENCY {
-                let accent = palette.accent(mark);
-                assert!(
-                    !accent.eq_ignore_ascii_case(palette.selected),
-                    "{mark:?} accent vanishes into selected on {}: {accent}",
-                    palette.name,
-                );
-                assert!(
-                    !accent.eq_ignore_ascii_case(palette.base),
-                    "{mark:?} accent vanishes into base on {}: {accent}",
-                    palette.name,
-                );
-            }
+        // An exemption that no pair produces is a claim about nothing.
+        for (label, _) in DARCULA_EXEMPTIONS {
+            assert!(
+                contrast_pairs(&Palette::DARCULA)
+                    .iter()
+                    .any(|pair| pair.label == *label),
+                "stale darcula exemption: {label}",
+            );
         }
     }
 
