@@ -296,7 +296,7 @@ pub fn observe(inputs: &Inputs<'_>, since_micros: Option<i64>) -> Observation {
     let mut rows = Vec::new();
     let mut coverage = Vec::new();
     for session in inputs.sessions {
-        let Ok(meta) = crate::meta::Meta::read(&session.path) else {
+        let Ok(meta) = crate::session::read_meta(&session.path) else {
             coverage.push(Coverage {
                 actor: format!("{}:?", session.name),
                 reason: "session meta unreadable".to_owned(),
