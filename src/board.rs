@@ -538,6 +538,33 @@ fn observe_grok_seat(
     coverage.append(&mut seat_coverage);
 }
 
+/// ONE lstat for every board locator: the candidate proved a regular file
+/// without following a link. A missing candidate (or a non-directory on its
+/// path) is `Ok(None)` — the locator keeps looking; a symlink or non-file
+/// refuses; any other failure is unreadable.
+fn lstat_regular(candidate: &Path) -> Result<Option<std::fs::Metadata>, String> {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: board lstat proves the transcript candidate a regular file, never a symlink"
+    )]
+    let metadata = match std::fs::symlink_metadata(candidate) {
+        Ok(metadata) => metadata,
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            return Ok(None);
+        }
+        Err(_) => return Err("transcript unreadable".to_owned()),
+    };
+    if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+        return Err("transcript is not a regular file".to_owned());
+    }
+    Ok(Some(metadata))
+}
+
 /// Scan `<sessions root>/*/<uuid>/updates.jsonl` for one seat's conversation.
 /// Only the candidate file is classified — a missing candidate (or a
 /// non-directory on its path) skips; two hits refuse; a symlink refuses.
@@ -566,25 +593,9 @@ fn locate_grok_updates(
         }
         let entry = entry.map_err(|_| "directory entry unreadable".to_owned())?;
         let candidate = entry.path().join(id).join("updates.jsonl");
-        #[allow(
-            clippy::disallowed_methods,
-            reason = "a door: board lstat proves the grok candidate a regular file, never a symlink"
-        )]
-        let metadata = match std::fs::symlink_metadata(&candidate) {
-            Ok(metadata) => metadata,
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
-                ) =>
-            {
-                continue;
-            }
-            Err(_) => return Err("transcript unreadable".to_owned()),
+        let Some(metadata) = lstat_regular(&candidate)? else {
+            continue;
         };
-        if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
-            return Err("transcript is not a regular file".to_owned());
-        }
         if found.is_some() {
             return Err("conversation id is not unique".to_owned());
         }
