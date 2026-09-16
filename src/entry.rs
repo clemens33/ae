@@ -229,9 +229,11 @@ Usage:
   ae brief [name] [--all] [--since <dur>]
                          Card one session or the fleet: goal, the latest note per memo
                          topic, each agent's declared state, and who is waiting on you
-  ae board [session…] [--since <ts>] [--json]
+  ae board [session…] [--since <ts>] [--json] [--follow]
                          The filtered cross-fleet record: genuine human turns from
                          every seat's harness transcript (Claude Code, Codex, Grok and Muse)
+                         --follow keeps printing new rows and coverage changes every
+                         5 s until interrupted (the selection is fixed at start)
   ae quota               Show local cached quota windows for configured agent profiles
   ae usage [name…] [--json]
                          Show API-equivalent list-price usage for live sessions

@@ -24,9 +24,10 @@ ae quota               Show bounded local quota snapshots for every configured a
 ae usage [name…] [--json]
                        Show offline API-equivalent usage for all live sessions, or
                        only the named live sessions
-ae board [session…] [--since <ts>] [--json]
+ae board [session…] [--since <ts>] [--json] [--follow]
                        The filtered cross-fleet record: genuine human turns from
                        every seat's harness transcript (Claude Code, Codex, Grok and Muse)
+                       --follow keeps printing new rows and coverage changes every 5 s
 ae orchestrator        Start or reattach the orchestrator seat: a local session named
                        orchestrator, drawn as a `◆` button after the menu glyph
 ae orchestrator --popup
@@ -989,6 +990,19 @@ conversation only, and a seat that resumed into a new conversation shows that
 conversation alone. `--since <ts>` (strict `YYYY-MM-DDTHH:MM:SSZ`) keeps rows
 at or after the instant; `--json` prints NDJSON — one `{"kind":"scope"}` line,
 then `coverage` lines, then `row` lines. See [the board](../board.md).
+
+`--follow` prints that board once, then — every 5 seconds until Ctrl-C — only
+what is new. The selection is fixed at start: a session started later is not
+picked up (restart the follow). Each poll re-reads the roster and re-locates
+every seat's transcript; offsets bind to the file's identity (dev+inode), so an
+append streams from the committed offset while a replaced, shrunken or
+rewritten file is rescanned from zero behind one `transcript replaced —
+rescanned` / `transcript rewritten — rescanned` coverage line, with every row
+printed again. Coverage lines print on CHANGE after the first pass. Batches are
+sorted internally by `(ts, file, offset)` but never merged across batches — a
+late seat's older row prints later. Every `row` carries its durable identity
+(`file` = `path#dev:ino` plus `offset`), so a consumer can dedup across
+generations if it wants to.
 
 ## Session helpers
 

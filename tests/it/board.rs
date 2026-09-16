@@ -773,3 +773,58 @@ fn binary_empty_board_prints_scope_only() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn follow_parses_anywhere_in_the_tail_and_is_advertised() {
+    let args = board::parse(&["--follow".to_owned()]).expect("--follow parses");
+    assert!(args.follow);
+    assert!(!args.json);
+    let args = board::parse(&[
+        "day".to_owned(),
+        "--since".to_owned(),
+        "2026-09-16T09:00:00Z".to_owned(),
+        "--follow".to_owned(),
+        "--json".to_owned(),
+    ])
+    .expect("a mixed tail parses");
+    assert!(args.follow && args.json, "follow composes with --json");
+    assert_eq!(args.sessions, ["day"]);
+    assert!(board::USAGE.contains("--follow"), "usage names it");
+    assert!(
+        ae::entry::HELP.contains("ae board [session…] [--since <ts>] [--json] [--follow]"),
+        "help carries the synopsis"
+    );
+    assert!(
+        ae::entry::HELP.contains("--follow keeps printing"),
+        "help says what it does"
+    );
+}
+
+#[test]
+fn the_first_follow_pass_is_the_plain_board() {
+    // The loop itself sleeps on a clock and never returns, so it is not driven
+    // here: the unit tests own the arms and the driver shares this exact read
+    // path. What this pins is that `--follow` changes nothing about the pass it
+    // shares with the plain board — same args, same rows, same bytes.
+    let root = rig("follow-first");
+    let store = root.join("claude");
+    plant_transcript(
+        &store,
+        "work",
+        CLAUDE_ID,
+        &[user("2026-09-16T09:00:00.500Z", "plain human words")],
+    );
+    plant_session(
+        &root,
+        "one",
+        &claude_roster("main", "lead", CLAUDE_ID, &store),
+    );
+    let plain = board::parse(&[]).expect("plain parses");
+    let follow = board::parse(&["--follow".to_owned()]).expect("follow parses");
+    assert!(follow.follow && !plain.follow);
+    let plain = board::render(&observe(&root, &["one"], plain.since_micros), plain.json);
+    let followed = board::render(&observe(&root, &["one"], follow.since_micros), follow.json);
+    assert_eq!(plain, followed);
+    assert!(followed.contains("## 2026-09-16T09:00:00.500000Z one:lead"));
+    let _ = std::fs::remove_dir_all(&root);
+}

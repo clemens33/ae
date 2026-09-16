@@ -46,9 +46,39 @@ ship the slice today
 {"kind":"row","ts":1789549200500000,"actor":"demo:lead","role":"human","body":"ship the slice today","source":"claude","file":"/tmp/demo.jsonl#1:2","offset":0}
 ```
 
+## Follow
+
+`--follow` prints the one-shot board, then keeps printing NEW human rows and
+coverage changes every 5 seconds until Ctrl-C ends the process. The selection
+is fixed at start: the running sessions (or the named ones) are chosen once,
+and a session started later is not picked up — restart the follow. Every poll
+does re-read each selected session's roster and re-locate each seat's
+transcript, so a re-launched seat or a rotated file is caught immediately.
+
+Offsets bind to the transcript file's identity — dev+inode, never the path —
+and per seat the follow holds the identity, the commit point after the last
+complete line, and the mtime it last saw:
+
+- **append** — same identity, more bytes: stream from the commit point; only
+  the new rows print, with absolute offsets.
+- **rescan** — a new identity, a shrunken file, or the same length rewritten
+  (mtime changed): stream from zero and print EVERY row again, behind one
+  coverage line, `transcript replaced — rescanned` or `transcript rewritten —
+  rescanned`. Rescans are loud and complete; nothing is silently deduplicated
+  across generations. A torn last record holds the commit point at the last
+  newline and is retried next poll.
+- **hold** — nothing new: no read, no output.
+
+After the first pass, coverage prints on CHANGE only: a seat that becomes
+readable prints nothing, a seat that becomes unreadable prints its new reason
+once. Rescan lines always print. Batches are sorted internally by
+`(ts, file, offset)` but never merged across batches — a late seat's older row
+prints later. Every row keeps its durable identity (`file` = `path#dev:ino`
+plus `offset`), so a consumer that wants dedup across generations can have it.
+
 ## Phases
 
-1b Claude CLI · 2 codex · 3a grok · 3b muse (this slice) · 4 `--follow` ·
+1b Claude CLI · 2 codex · 3a grok · 3b muse · 4 `--follow` (this slice) ·
 5 agy · 6 OpenCode (after its ruling) · 7 assistant rows · 8 predecessors.
 
 Codex reads the seat's current rollout only, and only the `response_item`
