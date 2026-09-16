@@ -790,10 +790,11 @@ fn a_spawned_muse_agent_receives_positional_context_and_its_brief() {
     assert!(plan.contains(r#""mode":"resume""#), "{plan}");
     assert!(
         plan.contains(&format!(
-            r#""argv":["{}","You are in an ae multi-agent workspace."#,
-            rig.scratch.join("muse").display()
+            r#""argv":["{}","{}\nYou are in an ae multi-agent workspace."#,
+            rig.scratch.join("muse").display(),
+            ae::provenance::ctx()
         )),
-        "the missing-id fallback starts Muse fresh, with its context as the first argument: {plan}"
+        "the missing-id fallback starts Muse fresh, with its MARKED context as the first argument: {plan}"
     );
 
     let id = "01a09b51-c88a-7fc0-8f71-200ea396c8a7";
@@ -1321,6 +1322,27 @@ fn a_reused_codex_slot_never_inherits_the_retired_seats_session_id() {
     );
     assert_eq!(code, Some(0), "{stderr}");
     rig.wait_for_launch("spawned.0");
+    // The combined codex turn is the TASK CONTRACT, and rule 8b gives only the
+    // first line authority: the real argv must open it with the brief marker,
+    // not with the ctx setup. The argv log lands when the fake agent execs, a
+    // beat after the start marker.
+    let mut argv = String::new();
+    for _ in 0..200 {
+        argv = rig.launch_argv();
+        if !argv.is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert!(!argv.is_empty(), "the codex fake logged its argv");
+    // @ARGV carries the turn as the last word, the shell's quotes already gone:
+    // its FIRST line is the brief marker, and the handshake sentence follows it.
+    // (The ctx marker elsewhere in argv is the vocabulary quoted by rule 8b in
+    // the developer instructions — not a turn.)
+    assert!(
+        argv.contains(&format!(" {}\nRun ", ae::provenance::brief("lead"))),
+        "the combined turn's first line is the brief marker: {argv}"
+    );
     let first_meta = rig.meta();
     let first_floor = first_meta
         .lines()

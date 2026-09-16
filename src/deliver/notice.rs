@@ -124,17 +124,27 @@ pub fn compose(
             }
             if same_session {
                 format!(
-                    "⟦ae:msg from {actor}⟧[{reference}] LONG BODY {bytes} B in your session dir: {path} — read it first; then run your reply helper: reply {reference} ⟧{reference}⟧"
+                    "{}[{reference}] LONG BODY {bytes} B in your session dir: {path} — read it first; then run your reply helper: reply {reference} ⟧{reference}⟧",
+                    crate::provenance::peer(actor)
                 )
             } else {
                 format!(
-                    "⟦ae:msg from {actor}⟧[{reference}] LONG BODY {bytes} B: {path} — read it first; reply: {}/reply {reference} ⟧{reference}⟧",
+                    "{}[{reference}] LONG BODY {bytes} B: {path} — read it first; reply: {}/reply {reference} ⟧{reference}⟧",
+                    crate::provenance::peer(actor),
                     reply_dir.display()
                 )
             }
         }
+        // A control action keeps its own verb even as a pointer: demoting it to
+        // the peer envelope would tell the reader to weigh it as a colleague's
+        // message instead of stopping for it.
+        "interrupt" => format!(
+            "{}[-] LONG BODY {bytes} B in your session dir: {path} — read it first ⟧-⟧",
+            crate::provenance::interrupt(actor)
+        ),
         _ => format!(
-            "⟦ae:msg from {actor}⟧[-] LONG BODY {bytes} B in your session dir: {path} — read it first ⟧-⟧"
+            "{}[-] LONG BODY {bytes} B in your session dir: {path} — read it first ⟧-⟧",
+            crate::provenance::peer(actor)
         ),
     };
     (notice.len() <= NOTICE_CAP).then_some(notice)
@@ -247,7 +257,9 @@ fn head_of(intended: &str) -> String {
 /// Whether a head is one of the marker shapes a notice may carry.
 fn head_is_wellformed(head: &str) -> bool {
     head.starts_with(crate::provenance::PEER_PREFIX)
-        || (head.starts_with(crate::provenance::BRIEF_PREFIX) && head.ends_with(']'))
+        || ((head.starts_with(crate::provenance::BRIEF_PREFIX)
+            || head.starts_with(crate::provenance::INTERRUPT_PREFIX))
+            && head.ends_with(']'))
 }
 
 /// The first `[…]` group in `head`, if any — the request id sentinel.
@@ -302,7 +314,10 @@ fn strip_csi(row: &str) -> String {
 mod tests {
     use std::path::Path;
 
-    use super::{LIMIT, Mode, NOTICE_CAP, Refused, compose, prepare, prove, reconstruct};
+    use super::{
+        LIMIT, Mode, NOTICE_CAP, Refused, compose, head_is_wellformed, head_of, prepare, prove,
+        reconstruct,
+    };
     use crate::tool::InputModel;
 
     fn body(name: &str) -> std::path::PathBuf {
@@ -349,7 +364,7 @@ mod tests {
     }
 
     #[test]
-    fn the_other_two_arms_are_the_task_head_and_the_refless_default() {
+    fn the_other_arms_keep_their_own_authority_at_notice_size() {
         let task = compose(
             "spawn",
             "t1",
@@ -368,11 +383,33 @@ mod tests {
             )) && task.ends_with("then begin ⟧t1⟧"),
             "a spawn is an INSTRUCTION, not transcript chat: {task}"
         );
-        let bare = compose(
+        // An oversize INTERRUPT keeps the control-action verb: the peer head
+        // would tell the reader to weigh it as a colleague's message.
+        let interrupted = compose(
             "interrupt",
             "",
             "lead",
             &body("msg-x.interrupt.abc.txt"),
+            9000,
+            "s",
+            "s",
+            Path::new("/m/sessions/s"),
+        )
+        .expect("a pointer");
+        assert!(
+            interrupted.starts_with(&format!(
+                "{}[-] LONG BODY 9000 B",
+                crate::provenance::interrupt("lead")
+            )) && interrupted.ends_with("read it first ⟧-⟧"),
+            "{interrupted}"
+        );
+        assert!(head_is_wellformed(&head_of(&interrupted)), "{interrupted}");
+        // A plain send is the peer arm's refless default.
+        let bare = compose(
+            "send",
+            "",
+            "lead",
+            &body("msg-x.send.abc.txt"),
             9000,
             "s",
             "s",

@@ -290,7 +290,13 @@ pub fn inject_ae_context(
         }
         ContextChannel::UserTurn { flag } => {
             let marker = launch_marker_text(adapter.launch_marker, launch_id, slot);
-            let full = format!("{ctx}{marker}{WAIT_SUFFIX}");
+            // This whole turn is ae's, and it reaches the agent as a USER turn:
+            // unmarked it would be byte-identical to the human typing, so it
+            // opens with the ctx marker on its one first line.
+            let full = crate::provenance::first_line(
+                &crate::provenance::ctx(),
+                &format!("{ctx}{marker}{WAIT_SUFFIX}"),
+            );
             let turn = single_quote_escape(&full);
             Injected {
                 cmd: flag.map_or_else(
@@ -413,44 +419,64 @@ fn publish(dest: &Path, bytes: &[u8], mode: u32) -> Result<(), String> {
 /// The command is spelled out here rather than referred to, because a turn that
 /// points at the system prompt is a turn the agent has to go looking for.
 ///
-/// The turn is ae's own, so it opens with the [`crate::provenance::ctx`] marker
-/// on its first line: an agent that was never told the grammar still reads it
-/// as context, not as a human's typing.
-#[must_use]
-pub fn initial_prompt_for(tool: ToolKind, meta_dir: &Path, slot: &str) -> String {
-    if tool.adapter().launch.initial_turn != InitialTurn::RegisterSessionId {
-        return String::new();
-    }
+/// The command a registration turn exists to cause, spelled out rather than
+/// referred to, because a turn that points at the system prompt is a turn the
+/// agent has to go looking for.
+fn register_sid(meta_dir: &Path, slot: &str) -> String {
     let slot_arg = if slot.is_empty() {
         String::new()
     } else {
         format!(" {slot}")
     };
+    format!("{}/_register-sid{slot_arg}", meta_dir.display())
+}
+
+/// The passive launch turn.
+///
+/// The turn is ae's own, so it opens with the [`crate::provenance::ctx`] marker
+/// on its first line: an agent that was never told the grammar still reads it
+/// as context, not as a human's typing. It names the ONE action it exists to
+/// cause — the `_register-sid` handshake — and then tells the agent to wait; it
+/// is the user-turn twin of `WAIT_SUFFIX`.
+#[must_use]
+pub fn initial_prompt_for(tool: ToolKind, meta_dir: &Path, slot: &str) -> String {
+    if tool.adapter().launch.initial_turn != InitialTurn::RegisterSessionId {
+        return String::new();
+    }
     crate::provenance::first_line(
         &crate::provenance::ctx(),
         &format!(
-            "ae: this is your workspace context, delivered at start. Run {}/_register-sid{slot_arg} once so this session can resume, then WAIT — do not start any work until a task arrives from the human or a peer.",
-            meta_dir.display()
+            "ae: this is your workspace context, delivered at start. Run {} once so this session can resume, then WAIT — do not start any work until a task arrives from the human or a peer.",
+            register_sid(meta_dir, slot)
         ),
     )
 }
 
-/// The spawn turn: the passive launch turn, then the brief it is waiting for.
+/// The spawn turn: the registration handshake and the task, for codex alone.
 ///
-/// A spawn's brief rides the SAME turn as the launch prompt for codex, and only
-/// for codex — every other tool takes its context on a separate channel and its
-/// brief as a second, pasted turn. So the join has to say that the task the
-/// launch turn told the agent to wait for is the text right after it, and the
-/// brief itself opens on its own line with the [`crate::provenance::brief`]
-/// marker: the task contract is not peer chat and must not read as one.
+/// A spawn's brief rides the SAME turn as the launch handshake for codex — a
+/// tool with no system-prompt channel takes its context inline, and its brief
+/// as the same first turn. The turn's FIRST line is the
+/// [`crate::provenance::brief`] marker, not `ctx`: rule 8b gives only the first
+/// line authority, and this turn exists to hand the seat its TASK CONTRACT —
+/// marking it as ae setup would classify the contract as setup too.
 #[must_use]
-pub fn initial_turn_with_brief(prompt: &str, actor: &str, brief: &str) -> String {
-    if prompt.is_empty() {
+pub fn initial_turn_with_brief(
+    tool: ToolKind,
+    meta_dir: &Path,
+    slot: &str,
+    actor: &str,
+    brief: &str,
+) -> String {
+    if tool.adapter().launch.initial_turn != InitialTurn::RegisterSessionId {
         return String::new();
     }
-    format!(
-        "{prompt} --- That task has arrived, from the agent that spawned you:\n{}",
-        crate::provenance::first_line(&crate::provenance::brief(actor), brief)
+    crate::provenance::first_line(
+        &crate::provenance::brief(actor),
+        &format!(
+            "Run {} once so this session can resume, then do this task:\n{brief}",
+            register_sid(meta_dir, slot)
+        ),
     )
 }
 
@@ -654,6 +680,33 @@ mod tests {
         let grok = inject_ae_context("grok", &dir, "spawned.3", ctx, "");
         assert!(!grok.cmd.contains("--system-prompt"), "{}", grok.cmd);
         assert!(grok.cmd.contains("This is context only"));
+        // Every USER-TURN channel is a turn ae injects, so its first line is
+        // the ctx marker; the system-prompt and config channels are not turns
+        // and must stay marker-free.
+        let marker = format!("'{}", crate::provenance::ctx());
+        for (tool, injected) in [
+            ("gemini", &gemini.cmd),
+            ("grok", &grok.cmd),
+            (
+                "agy",
+                &inject_ae_context("agy", &dir, "spawned.6", ctx, "").cmd,
+            ),
+            (
+                "muse",
+                &inject_ae_context("muse", &dir, "spawned.7", ctx, "").cmd,
+            ),
+        ] {
+            assert!(
+                injected.contains(&marker),
+                "{tool}'s user turn opens with the ctx marker: {injected}"
+            );
+            assert!(
+                injected.find(&marker) < injected.find("WORKSPACE ctx"),
+                "{tool}'s marker leads the context, not the other way round: {injected}"
+            );
+        }
+        assert!(!claude.cmd.contains(&marker), "{}", claude.cmd);
+        assert!(!codex.cmd.contains(&marker), "{}", codex.cmd);
         // opencode gets FILES and an env prefix, not a flag.
         let opencode = inject_ae_context("opencode", &dir, "spawned.4", ctx, "");
         assert!(
@@ -709,27 +762,47 @@ mod tests {
     }
 
     #[test]
-    fn a_spawn_brief_arrives_as_the_task_the_passive_turn_waits_for() {
+    fn a_spawn_brief_arrives_as_the_combined_turn_s_task_contract() {
         let dir = PathBuf::from("/meta");
-        let turn = initial_prompt_for(ToolKind::Codex, &dir, "spawned.1");
-        let joined = initial_turn_with_brief(&turn, "lead", "review the diff");
-        assert!(joined.starts_with(&turn), "{joined}");
-        assert!(
-            joined.ends_with(
-                "--- That task has arrived, from the agent that spawned you:\n\
-                 ⟦ae:brief from lead⟧\nreview the diff"
-            ),
+        let joined = initial_turn_with_brief(
+            ToolKind::Codex,
+            &dir,
+            "spawned.1",
+            "lead",
+            "review the diff",
+        );
+        // Rule 8b gives only the FIRST line authority, and this turn IS the
+        // task contract: the brief verb must lead it, never the ctx setup.
+        assert_eq!(
+            joined.lines().next(),
+            Some(crate::provenance::brief("lead").as_str()),
             "{joined}"
         );
-        // The embedded brief is marked too: a task contract, not peer chat.
+        // The registration handshake the rollout needs rides under it.
+        assert!(joined.contains("/meta/_register-sid spawned.1"), "{joined}");
+        assert!(
+            joined.ends_with("then do this task:\nreview the diff"),
+            "{joined}"
+        );
+        // No ctx marker and no second marker buried in prose.
+        assert!(!joined.contains(&crate::provenance::ctx()), "{joined}");
         assert_eq!(
-            joined.lines().rev().nth(1),
-            Some(crate::provenance::brief("lead").as_str()),
+            joined.matches(&crate::provenance::brief("lead")).count(),
+            1,
             "{joined}"
         );
         // A tool with no first turn has no joined turn either: its brief is
         // pasted separately.
-        assert_eq!(initial_turn_with_brief("", "lead", "review the diff"), "");
+        assert_eq!(
+            initial_turn_with_brief(
+                ToolKind::Gemini,
+                &dir,
+                "spawned.1",
+                "lead",
+                "review the diff"
+            ),
+            ""
+        );
     }
 
     #[test]

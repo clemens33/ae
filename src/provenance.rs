@@ -38,6 +38,9 @@ pub const PEER_PREFIX: &str = "⟦ae:msg from ";
 /// The brief marker's opening bytes, through the space before the actor.
 pub const BRIEF_PREFIX: &str = "⟦ae:brief from ";
 
+/// The interrupt marker's opening bytes, through the space before the actor.
+pub const INTERRUPT_PREFIX: &str = "⟦ae:interrupt from ";
+
 /// The peer marker as it begins when there is no actor to cut after — the
 /// notice parser's no-anchor fallback.
 pub const PEER_HEAD: &str = "⟦ae:msg from";

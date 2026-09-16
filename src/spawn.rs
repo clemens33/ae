@@ -444,7 +444,9 @@ pub fn run_spawn(
     }
     // For a tool with no system-prompt channel the context AND the brief travel
     // as the launch command's inline first message, so the brief is RECORDED
-    // for `_run` to compose.
+    // for `_run` to compose. Codex alone is such a tool, and its combined turn
+    // is the BRIEF: the registration handshake rides under the brief marker, so
+    // the task contract keeps the first line's authority (rule 8b).
     // The actor every brief marker names: the verified caller, or `unverified`
     // when no pane identity could be bound — never bare, because bare is the
     // human's signature.
@@ -453,8 +455,7 @@ pub fn run_spawn(
     } else {
         caller
     };
-    let inline = launch::initial_prompt_for(tool, dir, &slot);
-    let initial = launch::initial_turn_with_brief(&inline, actor, &brief);
+    let initial = launch::initial_turn_with_brief(tool, dir, &slot, actor, &brief);
     // Publish the recoverable text BEFORE anything can paste it.
     if !initial.is_empty() {
         let stored = deliver::store_body(dir, &format!("spawn-{slot}"), SPAWN_ACTION, &initial)
