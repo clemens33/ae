@@ -83,6 +83,73 @@ impl Timestamp {
         Some(Self(days * 86_400 + hour * 3600 + minute * 60 + second))
     }
 
+    /// Read a vendor timestamp: `YYYY-MM-DDTHH:MM:SS`, an optional fractional
+    /// part of 1–9 ASCII digits, then `Z` or a `±hh:mm` offset — answered in
+    /// epoch MICROS.
+    ///
+    /// The datetime core is validated by [`Timestamp::parse`] itself, so this
+    /// rejects exactly what `parse` rejects there; the fraction (truncated,
+    /// never rounded, to micros) and the zone are the only added surface. A
+    /// transcript timestamp this refuses is a coverage row, never a guess.
+    ///
+    /// ```
+    /// use ae::time::Timestamp;
+    /// assert_eq!(
+    ///     Timestamp::parse_micros("2026-09-16T09:00:00.500Z"),
+    ///     Some(1_789_549_200_500_000)
+    /// );
+    /// assert_eq!(Timestamp::parse_micros("2026-09-16T09:00:00Z"), Timestamp::parse("2026-09-16T09:00:00Z").map(|t| t.epoch() * 1_000_000));
+    /// assert!(Timestamp::parse_micros("2026-09-16T09:00:00.Z").is_none());
+    /// assert!(Timestamp::parse_micros("2026-02-30T09:00:00.000Z").is_none());
+    /// ```
+    #[must_use]
+    pub fn parse_micros(text: &str) -> Option<i64> {
+        let core = text.get(..19)?;
+        let rest = text.get(19..)?;
+        let (fraction, zone) = match rest.strip_prefix('.') {
+            Some(tail) => {
+                let digits = tail.bytes().take_while(u8::is_ascii_digit).count();
+                if !(1..=9).contains(&digits) {
+                    return None;
+                }
+                (tail.get(..digits)?, tail.get(digits..)?)
+            }
+            None => ("", rest),
+        };
+        let offset_secs: i64 = if zone == "Z" {
+            0
+        } else {
+            let sign = match zone.as_bytes().first() {
+                Some(b'+') => 1,
+                Some(b'-') => -1,
+                _ => return None,
+            };
+            let hhmm = zone.get(1..)?;
+            if hhmm.len() != 5 || hhmm.as_bytes().get(2) != Some(&b':') {
+                return None;
+            }
+            let hours = number(hhmm.get(..2)?)?;
+            let minutes = number(hhmm.get(3..5)?)?;
+            if hours > 23 || minutes > 59 {
+                return None;
+            }
+            sign * (hours * 3600 + minutes * 60)
+        };
+        let mut canonical = String::with_capacity(20);
+        canonical.push_str(core);
+        canonical.push('Z');
+        let secs = Self::parse(&canonical)?.epoch();
+        let mut padded = String::with_capacity(6);
+        padded.push_str(fraction);
+        while padded.len() < 6 {
+            padded.push('0');
+        }
+        let micros = number(padded.get(..6)?)?;
+        secs.checked_mul(1_000_000)?
+            .checked_add(micros)?
+            .checked_sub(offset_secs.checked_mul(1_000_000)?)
+    }
+
     /// This instant, from the system clock.
     #[must_use]
     pub fn now() -> Self {
@@ -302,5 +369,60 @@ mod tests {
         // Not a value test — a smoke test that the clock path is wired and
         // lands this side of 2020 rather than at the epoch.
         assert!(Timestamp::now().epoch() > 1_577_836_800);
+    }
+
+    #[test]
+    fn micros_keeps_sub_second_precision_and_truncates_past_six() {
+        let base = Timestamp::parse("2026-09-16T09:00:00Z")
+            .expect("core parses")
+            .epoch();
+        assert_eq!(
+            Timestamp::parse_micros("2026-09-16T09:00:00.5Z"),
+            Some(base * 1_000_000 + 500_000)
+        );
+        assert_eq!(
+            Timestamp::parse_micros("2026-09-16T09:00:00.000001Z"),
+            Some(base * 1_000_000 + 1)
+        );
+        // Nine digits are accepted; past micros is truncated, never rounded.
+        assert_eq!(
+            Timestamp::parse_micros("2026-09-16T09:00:00.123456789Z"),
+            Some(base * 1_000_000 + 123_456)
+        );
+        assert_eq!(
+            Timestamp::parse_micros("2026-09-16T09:00:00Z"),
+            Some(base * 1_000_000)
+        );
+    }
+
+    #[test]
+    fn micros_shifts_numeric_offsets_to_utc() {
+        let utc = Timestamp::parse_micros("2026-09-16T09:00:00Z").expect("utc parses");
+        assert_eq!(
+            Timestamp::parse_micros("2026-09-16T11:00:00.000+02:00"),
+            Some(utc)
+        );
+        assert_eq!(
+            Timestamp::parse_micros("2026-09-16T04:00:00-05:00"),
+            Some(utc)
+        );
+    }
+
+    #[test]
+    fn micros_rejects_what_parse_rejects_and_malformed_additions() {
+        for bad in [
+            "2026-02-30T09:00:00.000Z",        // no such date
+            "2026-09-16T25:00:00.000Z",        // no such hour
+            "2026-09-16T09:00:00.Z",           // empty fraction
+            "2026-09-16T09:00:00.1234567890Z", // ten digits
+            "2026-09-16T09:00:00.000",         // no zone
+            "2026-09-16T09:00:00.000+0200",    // zone without colon
+            "2026-09-16T09:00:00.000+24:00",   // hour out of range
+            "2026-09-16T09:00:00.000+02:60",   // minute out of range
+            "2026-09-16 09:00:00.000Z",        // no T
+            "",
+        ] {
+            assert_eq!(Timestamp::parse_micros(bad), None, "{bad:?}");
+        }
     }
 }
