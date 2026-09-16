@@ -12,6 +12,7 @@
 pub mod archive;
 pub mod attention;
 pub mod autoupgrade;
+pub mod board;
 pub mod brief;
 pub mod cli;
 mod compact;
