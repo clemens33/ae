@@ -71,7 +71,10 @@ just docs-build       # build the static site into ./site
 the unit tests and the single `tests/it` integration target, and `cargo test --doc` for the
 doctests. `just test` is that same command — there is no inner-loop/gate split any more,
 because the whole suite now costs what one scoped bash domain used to. `just rust-mutants`
-asks the harder question: whether those tests would ever go red.
+asks the harder question: whether those tests would ever go red. The `menu` module drives a
+real tmux server and real attached clients, so `.config/nextest.toml` keeps all of it in one
+small test-group: parallel load can starve a client the test is waiting on, and the group
+bounds that contention without weakening a single assertion.
 
 Slice Z4 retired the bash suites. Every `tests/integration` section and every live
 `tests/unit` block was matched against a Rust test that already proved the same invariant,

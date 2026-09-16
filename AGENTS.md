@@ -50,6 +50,8 @@ rust-toolchain.toml — compiler pin, profile, components, both targets
 clippy.toml         — tests-only unwrap/expect relaxation + the two capability denies.
                       deny.toml — supply chain. taplo.toml — TOML scope. .cargo/ — aliases,
                       musl linker, cargo-mutants config
+.config/nextest.toml — test scheduling: the tmux-client menu tests run in one small
+                      group, so parallel load cannot starve a client they wait on
 README.md  VISION.md  AGENTS.md  CLAUDE.md (@AGENTS.md)
 ```
 
