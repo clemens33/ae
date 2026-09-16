@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.85] - 2026-09-16
+- Add GitHub bug report issue form
+- Document bug filing checklist in troubleshooting guide
+- Point bug reports at troubleshooting fact list
+- Teach the board to read Codex rollouts
+- Route Codex seats through the rollout locator and the board door
+- Pin Codex board rows, interleave and missing-rollout coverage
+- Fuzz the Codex board reader
+- Document the Codex board reader
+- Make the assistant board fixture row-capable except for its role
+- Aggregate over-cap board lines to one coverage row per seat
+
 ## [v2026.9.84] - 2026-09-16
 - Add board schema and the one sort/dedup point
 - Add pure Claude transcript reader for the board
