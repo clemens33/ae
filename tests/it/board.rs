@@ -184,7 +184,7 @@ fn non_claude_seats_name_their_phase_in_both_modes() {
             "invalid or missing conversation id",
             "invalid or missing conversation id",
             "agy: phase 5",
-            "opencode: ruling pending",
+            "opencode: not read",
             "gemini: out of scope",
         ]
     );

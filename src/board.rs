@@ -701,7 +701,7 @@ fn unsupported_reason(tool: ToolKind) -> &'static str {
     // in `src/tool.rs` alone (`per_tool_branches_live_only_in_the_adapter_rows`).
     match tool.adapter().name {
         "agy" => "agy: phase 5",
-        "opencode" => "opencode: ruling pending",
+        "opencode" => "opencode: not read",
         "gemini" => "gemini: out of scope",
         _ => "unknown tool: out of scope",
     }

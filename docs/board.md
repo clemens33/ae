@@ -34,7 +34,7 @@ line closes each row:
 
 ```text
 scope: current conversations only (phase 1b) — a seat that resumed keeps only its current transcript
-coverage incomplete: demo:colead — grok: phase 3a
+coverage incomplete: demo:colead — opencode: not read
 ## 2026-09-16T09:00:00.500000Z demo:lead
   ship the slice today
 
@@ -88,7 +88,7 @@ wants dedup across generations can have it.
 ## Phases
 
 1b Claude CLI · 2 codex · 3a grok · 3b muse · 4 `--follow` (this slice) ·
-5 agy · 6 OpenCode (after its ruling) · 7 assistant rows · 8 predecessors.
+5 agy · 6 OpenCode (ruled out — not read) · 7 assistant rows · 8 predecessors.
 
 Codex reads the seat's current rollout only, and only the `response_item`
 record of each user turn — never its older `event_msg` twin. The project-doc
