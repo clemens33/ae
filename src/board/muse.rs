@@ -93,7 +93,7 @@ impl Sink<'_> {
         };
         if value.get_str("payload_type") != Some("runtime.user_intent.accepted") {
             return;
-        };
+        }
         let Some(payload) = value.get("payload") else {
             return;
         };
