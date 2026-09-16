@@ -512,6 +512,32 @@ fn door_reason(failure: DoorError) -> &'static str {
     }
 }
 
+/// ONE coverage row for a seat's every over-cap line: the count plus the
+/// largest true length. Both readers skip `Overlong` lines in their loop and
+/// push this row after it — N huge lines name one row, never N.
+pub(crate) fn overlong_coverage(streamed: &Streamed, actor: &str) -> Option<Coverage> {
+    let mut count = 0;
+    let mut largest = 0;
+    for line in &streamed.lines {
+        if let LineBody::Overlong(len) = &line.body {
+            count += 1;
+            largest = largest.max(*len);
+        }
+    }
+    if count == 0 {
+        return None;
+    }
+    let noun = if count == 1 {
+        "line exceeds"
+    } else {
+        "lines exceed"
+    };
+    Some(Coverage {
+        actor: actor.to_owned(),
+        reason: format!("{count} {noun} the 1 MiB cap (largest {largest} bytes)"),
+    })
+}
+
 /// The scope statement: line 1 of EVERY board, even an empty one.
 const SCOPE_TEXT: &str = "scope: current conversations only (phase 1b) — a seat that resumed keeps only its current transcript";
 

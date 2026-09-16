@@ -467,7 +467,10 @@ fn door_overlong_line_names_its_true_length_and_offsets_survive() {
     assert_eq!(observation.coverage.len(), 1);
     assert_eq!(
         observation.coverage[0].reason,
-        format!("line exceeds 1 MiB cap ({} bytes)", 1024 * 1024 + 1)
+        format!(
+            "1 line exceeds the 1 MiB cap (largest {} bytes)",
+            1024 * 1024 + 1
+        )
     );
     assert_eq!(observation.rows.len(), 1);
     assert_eq!(observation.rows[0].body, "after words");

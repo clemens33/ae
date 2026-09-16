@@ -29,7 +29,7 @@
 //!   in NO local transcript; both are TAKEN from the jq reference, first-line
 //!   prefix only, LOSSY with collision tests.
 
-use super::{LINE_CAP, LineBody, Splitter, Streamed};
+use super::{LineBody, Splitter, Streamed};
 use crate::board::{Coverage, Role, Row};
 use crate::tool::ToolKind;
 
@@ -65,12 +65,12 @@ pub fn read_stream(
         missing_ts: 0,
     };
     for line in &streamed.lines {
-        match &line.body {
-            LineBody::Full(bytes) => sink.push_line(bytes, line.offset),
-            LineBody::Overlong(len) => {
-                sink.cover(&format!("line exceeds 1 MiB cap ({len} bytes)"));
-            }
+        if let LineBody::Full(bytes) = &line.body {
+            sink.push_line(bytes, line.offset);
         }
+    }
+    if let Some(overlong) = super::overlong_coverage(streamed, actor) {
+        sink.coverage.push(overlong);
     }
     if streamed.torn {
         sink.cover("torn last record");
@@ -105,12 +105,10 @@ impl Sink<'_> {
         });
     }
 
-    /// Attempt one newline-terminated line at byte `offset`.
+    /// Attempt one newline-terminated line at byte `offset`. Only `Full`
+    /// lines arrive here — the splitter trips longer ones into `Overlong`,
+    /// which the loop skips — so no cap check lives in this function.
     fn push_line(&mut self, line: &[u8], offset: u64) {
-        if line.len() > LINE_CAP {
-            self.cover(&format!("line exceeds 1 MiB cap ({} bytes)", line.len()));
-            return;
-        }
         // Not UTF-8 or not JSON is not a record — skipped silently, like the usage
         // reader skips malformed lines. Only a line that COULD be a turn and is
         // refused for a stated reason earns coverage.
@@ -292,14 +290,20 @@ mod tests {
     }
 
     #[test]
-    fn a_line_past_the_cap_is_skipped_with_its_length_named() {
-        let big = "x".repeat(1024 * 1024 + 1);
-        let line = user(&format!(r#""{big}""#));
-        let (rows, coverage) = read_one(&line);
+    fn overlong_lines_aggregate_to_one_coverage_row() {
+        let first = user(&format!(r#""{}""#, "x".repeat(1024 * 1024 + 1)));
+        let second = user(&format!(r#""{}""#, "y".repeat(1024 * 1024 + 7)));
+        let bytes = format!("{first}\n{second}\n");
+        let (rows, coverage) = read(bytes.as_bytes(), ACTOR, FILE, crate::tool::ToolKind::Claude);
         assert!(rows.is_empty());
         assert_eq!(coverage.len(), 1);
-        assert!(coverage[0].reason.starts_with("line exceeds 1 MiB cap ("));
-        assert!(coverage[0].reason.contains(&line.len().to_string()));
+        assert_eq!(
+            coverage[0].reason,
+            format!(
+                "2 lines exceed the 1 MiB cap (largest {} bytes)",
+                second.len()
+            )
+        );
     }
 
     #[test]

@@ -12,7 +12,7 @@
 //! `<user_instructions>` unobserved, NOT filtered; image-led turns KEPT (prose
 //! follows the refs); ae turns filter via `is_ae_turn` on line 1.
 
-use super::{LINE_CAP, LineBody, Splitter, Streamed};
+use super::{LineBody, Splitter, Streamed};
 use crate::board::{Coverage, Role, Row};
 use crate::tool::ToolKind;
 
@@ -43,12 +43,12 @@ pub fn read_stream(
         missing_ts: 0,
     };
     for line in &streamed.lines {
-        match &line.body {
-            LineBody::Full(bytes) => sink.push_line(bytes, line.offset),
-            LineBody::Overlong(len) => {
-                sink.cover(&format!("line exceeds 1 MiB cap ({len} bytes)"));
-            }
+        if let LineBody::Full(bytes) = &line.body {
+            sink.push_line(bytes, line.offset);
         }
+    }
+    if let Some(overlong) = super::overlong_coverage(streamed, actor) {
+        sink.coverage.push(overlong);
     }
     if streamed.torn {
         sink.cover("torn last record");
@@ -82,12 +82,9 @@ impl Sink<'_> {
         });
     }
 
-    /// Attempt one newline-terminated line at byte `offset`.
+    /// Attempt one newline-terminated `Full` line at byte `offset`: the loop
+    /// skips `Overlong` lines, so no cap check lives in this function.
     fn push_line(&mut self, line: &[u8], offset: u64) {
-        if line.len() > LINE_CAP {
-            self.cover(&format!("line exceeds 1 MiB cap ({} bytes)", line.len()));
-            return;
-        }
         // Not UTF-8 or not JSON is not a record — skipped silently.
         let Ok(text) = str::from_utf8(line) else {
             return;
@@ -253,6 +250,26 @@ mod tests {
         let (rows, _) = read_lines(&[&line]);
         assert_eq!(rows.len(), 1);
         assert!(rows[0].body.ends_with("describe this"));
+    }
+
+    #[test]
+    fn overlong_lines_aggregate_to_one_coverage_row() {
+        // Raw past-cap lines: the splitter trips before any parse is attempted.
+        let bytes = format!(
+            "{}\n{}\n",
+            "x".repeat(1024 * 1024 + 1),
+            "y".repeat(1024 * 1024 + 7)
+        );
+        let (rows, coverage) = read(bytes.as_bytes(), ACTOR, FILE, crate::tool::ToolKind::Codex);
+        assert!(rows.is_empty());
+        assert_eq!(coverage.len(), 1);
+        assert_eq!(
+            coverage[0].reason,
+            format!(
+                "2 lines exceed the 1 MiB cap (largest {} bytes)",
+                1024 * 1024 + 7
+            )
+        );
     }
 
     #[test]
