@@ -231,7 +231,7 @@ Usage:
                          topic, each agent's declared state, and who is waiting on you
   ae board [session…] [--since <ts>] [--json]
                          The filtered cross-fleet record: genuine human turns from
-                         every seat's harness transcript (Claude Code, Codex and Grok)
+                         every seat's harness transcript (Claude Code, Codex, Grok and Muse)
   ae quota               Show local cached quota windows for configured agent profiles
   ae usage [name…] [--json]
                          Show API-equivalent list-price usage for live sessions
