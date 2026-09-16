@@ -412,6 +412,10 @@ fn publish(dest: &Path, bytes: &[u8], mode: u32) -> Result<(), String> {
 ///
 /// The command is spelled out here rather than referred to, because a turn that
 /// points at the system prompt is a turn the agent has to go looking for.
+///
+/// The turn is ae's own, so it opens with the [`crate::provenance::ctx`] marker
+/// on its first line: an agent that was never told the grammar still reads it
+/// as context, not as a human's typing.
 #[must_use]
 pub fn initial_prompt_for(tool: ToolKind, meta_dir: &Path, slot: &str) -> String {
     if tool.adapter().launch.initial_turn != InitialTurn::RegisterSessionId {
@@ -422,9 +426,12 @@ pub fn initial_prompt_for(tool: ToolKind, meta_dir: &Path, slot: &str) -> String
     } else {
         format!(" {slot}")
     };
-    format!(
-        "ae: this is your workspace context, delivered at start. Run {}/_register-sid{slot_arg} once so this session can resume, then WAIT — do not start any work until a task arrives from the human or a peer.",
-        meta_dir.display()
+    crate::provenance::first_line(
+        &crate::provenance::ctx(),
+        &format!(
+            "ae: this is your workspace context, delivered at start. Run {}/_register-sid{slot_arg} once so this session can resume, then WAIT — do not start any work until a task arrives from the human or a peer.",
+            meta_dir.display()
+        ),
     )
 }
 
@@ -433,14 +440,18 @@ pub fn initial_prompt_for(tool: ToolKind, meta_dir: &Path, slot: &str) -> String
 /// A spawn's brief rides the SAME turn as the launch prompt for codex, and only
 /// for codex — every other tool takes its context on a separate channel and its
 /// brief as a second, pasted turn. So the join has to say that the task the
-/// launch turn told the agent to wait for is the text right after it; a bare
-/// separator leaves the agent holding a "WAIT" and a task at once.
+/// launch turn told the agent to wait for is the text right after it, and the
+/// brief itself opens on its own line with the [`crate::provenance::brief`]
+/// marker: the task contract is not peer chat and must not read as one.
 #[must_use]
-pub fn initial_turn_with_brief(prompt: &str, brief: &str) -> String {
+pub fn initial_turn_with_brief(prompt: &str, actor: &str, brief: &str) -> String {
     if prompt.is_empty() {
         return String::new();
     }
-    format!("{prompt} --- That task has arrived, from the peer that spawned you: {brief}")
+    format!(
+        "{prompt} --- That task has arrived, from the agent that spawned you:\n{}",
+        crate::provenance::first_line(&crate::provenance::brief(actor), brief)
+    )
 }
 
 // ---- the resume predicate -------------------------------------------------
@@ -668,6 +679,9 @@ mod tests {
     fn only_codex_needs_a_first_user_turn_and_that_turn_is_passive() {
         let dir = PathBuf::from("/meta");
         let turn = initial_prompt_for(ToolKind::Codex, &dir, "spawned.0");
+        // ae's own turn is MARKED on line 1: bare would read as the human.
+        let ctx = crate::provenance::ctx();
+        assert_eq!(turn.lines().next(), Some(ctx.as_str()), "{turn}");
         // The ONE action the turn exists to cause, spelled out rather than
         // referred to — codex creates no rollout until a user turn lands.
         assert!(turn.contains("/meta/_register-sid spawned.0"), "{turn}");
@@ -698,17 +712,24 @@ mod tests {
     fn a_spawn_brief_arrives_as_the_task_the_passive_turn_waits_for() {
         let dir = PathBuf::from("/meta");
         let turn = initial_prompt_for(ToolKind::Codex, &dir, "spawned.1");
-        let joined = initial_turn_with_brief(&turn, "review the diff");
+        let joined = initial_turn_with_brief(&turn, "lead", "review the diff");
         assert!(joined.starts_with(&turn), "{joined}");
         assert!(
             joined.ends_with(
-                "That task has arrived, from the peer that spawned you: review the diff"
+                "--- That task has arrived, from the agent that spawned you:\n\
+                 ⟦ae:brief from lead⟧\nreview the diff"
             ),
+            "{joined}"
+        );
+        // The embedded brief is marked too: a task contract, not peer chat.
+        assert_eq!(
+            joined.lines().rev().nth(1),
+            Some(crate::provenance::brief("lead").as_str()),
             "{joined}"
         );
         // A tool with no first turn has no joined turn either: its brief is
         // pasted separately.
-        assert_eq!(initial_turn_with_brief("", "review the diff"), "");
+        assert_eq!(initial_turn_with_brief("", "lead", "review the diff"), "");
     }
 
     #[test]

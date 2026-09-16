@@ -87,8 +87,12 @@ pub fn stale_composite(
 
 /// The origin envelope the send helper stamps on a watchdog-delivered message
 /// — the discriminator that separates a real nudge from an agent QUOTING one,
-/// since quoted text renders as prose with no envelope above it.
-const NUDGE_ENVELOPE: &str = "⟦ae:msg from watchdog⟧";
+/// since quoted text renders as prose with no envelope above it. Rendered by
+/// the one provenance owner, so the spelling cannot drift from what `send`
+/// actually emits.
+fn nudge_envelope() -> String {
+    crate::provenance::peer(NUDGE_ACTOR)
+}
 
 /// The nudge's own sentence, for the panes that render it unornamented.
 const NUDGE_SENTENCE: &str = "Status check: if you have more work, continue. \
@@ -132,7 +136,7 @@ fn submit_hdr(line: &str) -> bool {
     }
     let rest = chars.as_str();
     // `[[:space:]]+` — at least one, then the envelope and nothing else.
-    rest.starts_with(is_space) && trim_start_space(rest) == NUDGE_ENVELOPE
+    rest.starts_with(is_space) && trim_start_space(rest) == nudge_envelope()
 }
 
 /// Two leading whitespace characters — the wrapped body of a rendered block.
@@ -167,7 +171,7 @@ fn raw_nudge(line: &str) -> bool {
 /// The envelope ALONE on its line — an unmodeled pane's pair form, where the
 /// nudge follows on the next line instead of being wrapped under an ornament.
 fn raw_env(line: &str) -> bool {
-    trim_end_space(line) == NUDGE_ENVELOPE
+    trim_end_space(line) == nudge_envelope()
 }
 
 /// `Marked <agent> <state>` and its optional `:`/`.` remainder — the tail every

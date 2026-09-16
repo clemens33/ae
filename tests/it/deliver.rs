@@ -858,7 +858,7 @@ fn a_bare_interrupt_cancels_without_pasting_or_storing() {
 /// transcript chat — and does not wait for a quiet input box, which is the
 /// whole point of interrupting.
 #[test]
-fn a_message_interrupt_lands_unframed_even_with_a_draft_in_the_box() {
+fn a_message_interrupt_lands_marked_as_control_not_peer_chat_even_with_a_draft_in_the_box() {
     let rig = Rig::new("intmsg", "claude", 0);
     assert!(
         rig.tmux(&["send-keys", "-t", &rig.pane, "-l", "mid-generation draft"])
@@ -877,9 +877,14 @@ fn a_message_interrupt_lands_unframed_even_with_a_draft_in_the_box() {
         submitted.ends_with("try another way"),
         "the message arrived: {submitted:?}"
     );
+    let marker = ae::provenance::interrupt("tui");
+    assert!(
+        submitted.ends_with(&format!("{marker}\ntry another way")),
+        "the message arrives under its control-action marker, past the draft: {submitted:?}"
+    );
     assert!(
         !submitted.contains("⟦ae:msg from"),
-        "an interrupt carries no provenance envelope: {submitted:?}"
+        "and never borrows the peer envelope: {submitted:?}"
     );
     assert!(
         rig.events().contains("\"action\":\"interrupt\",\"target\":\"tui\",\"summary\":\"try another way\",\"body_file\":"),

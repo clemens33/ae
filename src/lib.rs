@@ -52,6 +52,7 @@ pub mod orchestrator;
 pub mod overview;
 pub mod panes;
 pub mod procs;
+pub mod provenance;
 pub mod quota;
 pub mod relay;
 pub mod rename;

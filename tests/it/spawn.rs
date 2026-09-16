@@ -676,14 +676,19 @@ fn a_spawn_seats_stamps_launches_and_briefs_its_agent() {
 
     // The BRIEF, in the agent's input box, with the reply-back instruction.
     let submitted = rig.submitted();
+    assert_eq!(
+        submitted.lines().next(),
+        Some(ae::provenance::brief("lead").as_str()),
+        "{submitted}"
+    );
     assert!(
-        submitted.starts_with("do the thing — When done, reply back via:"),
+        submitted.contains("\ndo the thing — When done, reply back via:"),
         "{submitted}"
     );
     assert!(submitted.contains("/send \"lead\""), "{submitted}");
     assert!(
         !submitted.contains("⟦ae:msg from"),
-        "a brief is the agent's own first instruction, not a framed peer message: {submitted}"
+        "a brief is the agent's own task contract, not a framed peer message: {submitted}"
     );
 
     // The EVENT, task-bearing, actored by the calling pane.
@@ -750,8 +755,13 @@ fn a_spawned_muse_agent_receives_positional_context_and_its_brief() {
     );
 
     let submitted = rig.submitted();
+    assert_eq!(
+        submitted.lines().next(),
+        Some(ae::provenance::brief("lead").as_str()),
+        "{submitted}"
+    );
     assert!(
-        submitted.starts_with("read the Muse brief — When done, reply back via:"),
+        submitted.contains("\nread the Muse brief — When done, reply back via:"),
         "{submitted}"
     );
     assert!(submitted.contains("/send \"lead\""), "{submitted}");

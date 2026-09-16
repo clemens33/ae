@@ -3481,9 +3481,13 @@ fn authorized_cross_session_deliveries_are_mirrored_to_both_ledgers() {
     );
     assert_eq!(interrupted, (Some(0), String::new(), String::new()));
     let interrupted_body = std::fs::read_to_string(&remote_received).unwrap_or_default();
-    assert!(
-        interrupted_body.ends_with("change direction\n") && !interrupted_body.contains("⟦ae:msg"),
-        "interrupt remains unframed: {interrupted_body:?}"
+    assert_eq!(
+        interrupted_body,
+        format!(
+            "\u{1b}{}\nchange direction\n",
+            ae::provenance::interrupt("lead")
+        ),
+        "the escape cancels first; the body follows under the control-action marker, never the peer envelope"
     );
     let caller_interrupt = fx.events().last().cloned().unwrap_or_default();
     let remote_interrupt = std::fs::read_to_string(remote_dir.join("events.jsonl"))

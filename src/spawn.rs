@@ -445,8 +445,16 @@ pub fn run_spawn(
     // For a tool with no system-prompt channel the context AND the brief travel
     // as the launch command's inline first message, so the brief is RECORDED
     // for `_run` to compose.
+    // The actor every brief marker names: the verified caller, or `unverified`
+    // when no pane identity could be bound — never bare, because bare is the
+    // human's signature.
+    let actor = if caller.is_empty() {
+        deliver::UNVERIFIED
+    } else {
+        caller
+    };
     let inline = launch::initial_prompt_for(tool, dir, &slot);
-    let initial = launch::initial_turn_with_brief(&inline, &brief);
+    let initial = launch::initial_turn_with_brief(&inline, actor, &brief);
     // Publish the recoverable text BEFORE anything can paste it.
     if !initial.is_empty() {
         let stored = deliver::store_body(dir, &format!("spawn-{slot}"), SPAWN_ACTION, &initial)
@@ -507,7 +515,7 @@ pub fn run_spawn(
             &slot,
             &parsed.name,
             &brief,
-            caller,
+            actor,
             tool,
             err,
         )?
@@ -682,7 +690,7 @@ fn deliver_brief(
     slot: &str,
     name: &str,
     brief: &str,
-    caller: &str,
+    actor: &str,
     kind: ToolKind,
     err: &mut impl Write,
 ) -> io::Result<Option<BriefRefusal>> {
@@ -711,7 +719,7 @@ fn deliver_brief(
         own_session: &facts.session,
         action: SPAWN_ACTION,
         reference: &format!("spawn-{slot}"),
-        actor: caller,
+        actor,
         body: brief,
         shape: Shape::Launch,
         defer: deliver::DEFAULT_DEFER,

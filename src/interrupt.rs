@@ -9,9 +9,11 @@
 //!   protects an ordinary send would defeat this one.
 //! * **It cancels first.** Copy mode, then `Escape` — and only then, after a
 //!   settle, is any message pasted.
-//! * **It is not framed.** An interrupt is a control action, not transcript
-//!   chat, so no provenance envelope leads it. The envelope's actor still
-//!   names the oversize notice, because a pointer has to say who is asking.
+//! * **It is framed as the control action it is.** The body is led by the
+//!   `⟦ae:interrupt from <agent>⟧` marker — never the peer envelope, because
+//!   an interrupt is a control action, not transcript chat. The envelope's
+//!   actor still names the oversize notice, because a pointer has to say who
+//!   is asking.
 //!
 //! A MESSAGE-less interrupt is just the two cancel keystrokes, and it is
 //! deliberately allowed against a pane whose agent has died: there is nothing

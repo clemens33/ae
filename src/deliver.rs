@@ -414,19 +414,21 @@ fn relay_oversize_refused(
 /// What an unbindable caller's envelope says.
 pub const UNVERIFIED: &str = "unverified";
 
-/// The message as it reaches the pane.
+/// The message as it reaches the pane. Every ae-originated turn is marked on
+/// its first line by [`crate::provenance`], with the verb that names its own
+/// authority; `relay` alone stays bare because it carries human authority.
 fn frame(request: &Request<'_>) -> String {
-    if matches!(
-        request.shape,
-        Shape::Relay | Shape::Interrupt | Shape::Launch
-    ) {
-        return request.body.to_owned();
+    let actor = envelope_actor(request);
+    match request.shape {
+        Shape::Send => crate::provenance::first_line(&crate::provenance::peer(actor), request.body),
+        Shape::Relay => request.body.to_owned(),
+        Shape::Interrupt => {
+            crate::provenance::first_line(&crate::provenance::interrupt(actor), request.body)
+        }
+        Shape::Launch => {
+            crate::provenance::first_line(&crate::provenance::brief(actor), request.body)
+        }
     }
-    format!(
-        "⟦ae:msg from {}⟧\n{}",
-        envelope_actor(request),
-        request.body
-    )
 }
 
 /// The name the envelope and the notice head carry — the verified sender, or
@@ -1301,8 +1303,13 @@ mod tests {
         );
         assert_eq!(
             frame(&request("cl:lead", "stop", Shape::Interrupt)),
-            "stop",
-            "an interrupt is a control action, not transcript chat"
+            "⟦ae:interrupt from cl:lead⟧\nstop",
+            "an interrupt is marked as the control action it is"
+        );
+        assert_eq!(
+            frame(&request("cl:lead", "task", Shape::Launch)),
+            "⟦ae:brief from cl:lead⟧\ntask",
+            "a spawn brief is marked as the task contract it is"
         );
         assert_eq!(
             frame(&request("orchestrator", "human words", Shape::Relay)),

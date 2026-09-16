@@ -115,7 +115,8 @@ pub fn compose(
     };
     let notice = match action {
         "spawn" => format!(
-            "⟦ae:task⟧[{reference}] LONG BODY {bytes} B in your session dir: {path} — read it fully, then begin ⟧{reference}⟧"
+            "{}[{reference}] LONG BODY {bytes} B in your session dir: {path} — read it fully, then begin ⟧{reference}⟧",
+            crate::provenance::brief(actor)
         ),
         "ask" | "review" | "reply" => {
             if reference.is_empty() {
@@ -233,7 +234,7 @@ pub fn prove(model: InputModel, capture: &str, intended: &str) -> bool {
 }
 
 /// The head used when the intended text carries no ` LONG BODY` marker at all.
-const GENERIC_HEAD: &str = "⟦ae:msg from";
+const GENERIC_HEAD: &str = crate::provenance::PEER_HEAD;
 
 /// The notice's head — everything before ` LONG BODY`, or [`GENERIC_HEAD`].
 fn head_of(intended: &str) -> String {
@@ -243,9 +244,10 @@ fn head_of(intended: &str) -> String {
     }
 }
 
-/// Whether a head is one of the two shapes a notice may carry.
+/// Whether a head is one of the marker shapes a notice may carry.
 fn head_is_wellformed(head: &str) -> bool {
-    head.starts_with("⟦ae:msg from ") || (head.starts_with("⟦ae:task⟧[") && head.ends_with(']'))
+    head.starts_with(crate::provenance::PEER_PREFIX)
+        || (head.starts_with(crate::provenance::BRIEF_PREFIX) && head.ends_with(']'))
 }
 
 /// The first `[…]` group in `head`, if any — the request id sentinel.
@@ -360,7 +362,10 @@ mod tests {
         )
         .expect("a pointer");
         assert!(
-            task.starts_with("⟦ae:task⟧[t1] LONG BODY 9000 B") && task.ends_with("then begin ⟧t1⟧"),
+            task.starts_with(&format!(
+                "{}[t1] LONG BODY 9000 B",
+                crate::provenance::brief("ae")
+            )) && task.ends_with("then begin ⟧t1⟧"),
             "a spawn is an INSTRUCTION, not transcript chat: {task}"
         );
         let bare = compose(

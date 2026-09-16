@@ -572,26 +572,8 @@ fn each_tool_gets_the_argv_its_capability_row_promises() {
     );
 
     // codex: no launch-time id flag exists, so nothing is baked; the context
-    // rides `developer_instructions` and a passive inline first user turn.
-    let rig = Rig::new("codex");
-    rig.seat("codex", "");
-    let argv = rig.planned_argv();
-    assert_eq!(
-        argv[..3],
-        [rig.tool("codex"), "--flag".to_owned(), "-c".to_owned()]
-    );
-    assert!(
-        argv[3].starts_with("developer_instructions=")
-            && argv[3].contains("_register-sid main")
-            && argv[3].contains("AE_CODEX_LAUNCH_ID=tok-1"),
-        "{}",
-        argv[3]
-    );
-    // The turn stays (codex-cli 0.153.2 writes no rollout without one) and it
-    // is PASSIVE — the reason is pinned at `launch::initial_prompt_for`.
-    assert!(argv[4].contains("/_register-sid main"), "{}", argv[4]);
-    assert!(argv[4].contains("do not start any work"), "{}", argv[4]);
-    assert_eq!(argv.len(), 5, "{argv:?}");
+    // rides `developer_instructions` and a passive inline first user turn. The
+    // turn itself is pinned in `codex_gets_a_marked_passive_inline_first_turn`.
 
     // gemini: `-i`, with the wait suffix that keeps a USER TURN from being
     // acted on.
@@ -664,6 +646,34 @@ fn each_tool_gets_the_argv_its_capability_row_promises() {
 /// Does `argv` carry `wanted` as a contiguous run of words?
 fn carries(argv: &[String], wanted: &[&str]) -> bool {
     wanted.is_empty() || argv.windows(wanted.len()).any(|run| run == wanted)
+}
+
+/// codex gets NO launch-time id flag, its context rides
+/// `developer_instructions`, and its passive inline first user turn is ae's own
+/// — so it opens with the ctx marker, never bare (bare reads as the human).
+#[test]
+fn codex_gets_a_marked_passive_inline_first_turn() {
+    let rig = Rig::new("codex");
+    rig.seat("codex", "");
+    let argv = rig.planned_argv();
+    assert_eq!(
+        argv[..3],
+        [rig.tool("codex"), "--flag".to_owned(), "-c".to_owned()]
+    );
+    assert!(
+        argv[3].starts_with("developer_instructions=")
+            && argv[3].contains("_register-sid main")
+            && argv[3].contains("AE_CODEX_LAUNCH_ID=tok-1"),
+        "{}",
+        argv[3]
+    );
+    // The turn stays (codex-cli 0.153.2 writes no rollout without one) and it
+    // is PASSIVE — the reason is pinned at `launch::initial_prompt_for`.
+    assert!(argv[4].contains("/_register-sid main"), "{}", argv[4]);
+    assert!(argv[4].contains("do not start any work"), "{}", argv[4]);
+    let ctx = ae::provenance::ctx();
+    assert_eq!(argv[4].lines().next(), Some(ctx.as_str()), "{}", argv[4]);
+    assert_eq!(argv.len(), 5, "{argv:?}");
 }
 
 #[test]
