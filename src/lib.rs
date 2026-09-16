@@ -1219,6 +1219,11 @@ fn run_entry(
     {
         return settings_menu::run_apply(preamble, &argv[1..], out, err);
     }
+    if argv.first().map(String::as_str) == Some(orchestrator::ORCHESTRATOR_SESSION)
+        && orchestrator::is_resume(&argv[1..])
+    {
+        return orchestrator::run_resume(preamble, &argv[1..], out, err);
+    }
     let code = match entry::route(preamble, argv, doors::calling_pane_id().as_deref()) {
         entry::Route::Help => {
             write!(out, "{}", entry::HELP)?;

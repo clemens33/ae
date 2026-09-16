@@ -57,6 +57,11 @@ pub(crate) enum ExpectedState {
     AbsentCanonical,
     /// This exact role identity existed and was stopped.
     StoppedRole { uuid: String },
+    /// This exact session name was proven stopped on the invoking server when
+    /// the picker row was drawn. The clicker's identity and the deadline are
+    /// the whole contribution: the launch's own meta re-read and absence proof
+    /// decide everything about the session itself, under the lifecycle lock.
+    StoppedSession,
 }
 
 /// The fixed clicker and role expectation carried into the launch lock.
@@ -106,10 +111,10 @@ impl ExpectedLaunch {
     /// re-prove the server and attachment that selected it.
     pub(crate) fn check_action(&self, now: i64) -> Result<(), String> {
         if now > self.deadline {
-            return Err("the settings action expired".to_owned());
+            return Err("the menu action expired".to_owned());
         }
         if now < self.deadline - crate::session_menu::CONFIRM_WINDOW_SECS {
-            return Err("the settings action is stamped in the future".to_owned());
+            return Err("the menu action is stamped in the future".to_owned());
         }
         self.check_attachment()
     }
@@ -140,7 +145,10 @@ impl ExpectedLaunch {
     }
 
     const fn is_resume(&self) -> bool {
-        matches!(self.state, ExpectedState::StoppedRole { .. })
+        matches!(
+            self.state,
+            ExpectedState::StoppedRole { .. } | ExpectedState::StoppedSession
+        )
     }
 }
 
@@ -1944,7 +1952,7 @@ fn launch(
 
     if let Some(expected) = expected_launch {
         if let Err(why) = expected.check_action(crate::time::Timestamp::now().epoch()) {
-            writeln!(err, "Error: {why}; settings action refused.")?;
+            writeln!(err, "Error: {why}; menu action refused.")?;
             return Ok(EXIT_FAILED);
         }
         match &expected.state {
@@ -1965,6 +1973,10 @@ fn launch(
                     }
                 }
             }
+            // The picker's row: the session's own record and its absence on the
+            // recorded server are re-read below, under the lifecycle lock, by
+            // the same code every resume crosses. Nothing extra to prove here.
+            ExpectedState::StoppedSession => {}
         }
     }
 

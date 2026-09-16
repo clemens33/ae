@@ -9,6 +9,7 @@
 //! where you were would be a second answer to a question tmux already answers,
 //! and two answers can disagree.
 
+use std::io::Write;
 use std::path::Path;
 
 use crate::theme::{Mark, Palette};
@@ -36,9 +37,13 @@ are picker usage errors.
 
 The menu lists this tmux server's running ae sessions in attention order, then
 creation order and name. Each row carries its live state, branch and goal.
-Only the current session's agent roster expands under it. Column widths follow
-the rows drawn. Choosing one switches this client to the captured session id
-and selects its lead pane when that pane still belongs there.
+Stopped ae sessions are listed after them, marked stopped, and choosing one
+resumes it through the ordinary launch and hands this client to it; stopped
+sessions recorded on another tmux server, or whose liveness this server cannot
+prove, stay unlisted. Only the current session's agent roster expands under it,
+never a stopped row's. Column widths follow the rows drawn. Choosing a running
+row switches this client to the captured session id and selects its lead pane
+when that pane still belongs there.
 
 Coming back is tmux's own: switch-client -l (prefix + L by default).
 
@@ -303,6 +308,228 @@ pub fn launch_tail_is_valid(tail: &[String]) -> bool {
 #[must_use]
 pub fn seat_launch_args() -> Vec<String> {
     vec![ORCHESTRATOR_SESSION.to_owned()]
+}
+
+/// The resume continuation's fixed hostile grammar, read from the menu row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CapturedResume {
+    name: String,
+    client: String,
+    client_pid: String,
+    server_pid: String,
+    server_start: String,
+    deadline: i64,
+}
+
+/// Whether the public orchestrator word carries the picker's resume
+/// continuation, decided by its first tail word alone.
+#[must_use]
+pub(crate) fn is_resume(tail: &[String]) -> bool {
+    tail.first().is_some_and(|word| word == PICKER_RESUME_FLAG)
+}
+
+/// Read [`PICKER_RESUME_FLAG`]'s grammar: the session name first, then each
+/// identity flag exactly once. Every value is validated by the grammar that
+/// already owns it — a name by the session grammar, a client by the menu
+/// client grammar, a pid by decimal, the deadline by epoch parse.
+fn parse_resume(tail: &[String]) -> Result<CapturedResume, String> {
+    let [flag, rest @ ..] = tail else {
+        return Err("incomplete picker resume invocation".to_owned());
+    };
+    if flag != PICKER_RESUME_FLAG {
+        return Err("not a picker resume invocation".to_owned());
+    }
+    let Some((name, after_name)) = rest.split_first() else {
+        return Err("the picker resume needs a session name".to_owned());
+    };
+    if !crate::session_launch::name::is_session_name(name) {
+        return Err("the picker resume target is not an ae session name".to_owned());
+    }
+    let mut client = None;
+    let mut client_pid = None;
+    let mut server_pid = None;
+    let mut server_start = None;
+    let mut deadline = None;
+    let mut remaining = after_name;
+    while let [flag, after @ ..] = remaining {
+        let Some((value, after)) = after.split_first() else {
+            return Err("a picker resume flag is missing its value".to_owned());
+        };
+        let slot: &mut Option<String> = match flag.as_str() {
+            "--client" => &mut client,
+            "--client-pid" => &mut client_pid,
+            "--server-pid" => &mut server_pid,
+            "--server-start" => &mut server_start,
+            "--deadline" => &mut deadline,
+            other => return Err(format!("unknown picker resume flag {other:?}")),
+        };
+        if slot.replace(value.clone()).is_some() {
+            return Err(format!("{flag} may be given only once"));
+        }
+        remaining = after;
+    }
+    let required =
+        |value: Option<String>, flag: &str| value.ok_or_else(|| format!("{flag} is required"));
+    let client = required(client, "--client")?;
+    if !crate::settings_menu::is_client_name(&client) {
+        return Err("--client is not an addressable tmux client".to_owned());
+    }
+    let decimal = |value: Option<String>, flag: &str| -> Result<String, String> {
+        let value = required(value, flag)?;
+        if !crate::tmux::is_decimal(&value) {
+            return Err(format!("{flag} is not a decimal"));
+        }
+        Ok(value)
+    };
+    let client_pid = decimal(client_pid, "--client-pid")?;
+    let server_pid = decimal(server_pid, "--server-pid")?;
+    let server_start = decimal(server_start, "--server-start")?;
+    let deadline = required(deadline, "--deadline")?
+        .parse::<i64>()
+        .map_err(|_| "--deadline is not an epoch second".to_owned())?;
+    Ok(CapturedResume {
+        name: name.clone(),
+        client,
+        client_pid,
+        server_pid,
+        server_start,
+        deadline,
+    })
+}
+
+/// Resume one stopped picker row through the ordinary launch owner, then hand
+/// the captured client to the session it resumed.
+///
+/// The clicker identity and deadline travel with the row and are re-proven
+/// under the same expectation the settings menu uses; the launch itself — the
+/// meta re-read, the absence proof on the recorded server, create-vs-resume —
+/// happens exactly where `ae <name>` makes it happen. On success this client is
+/// switched to the resumed session, which is what choosing a row means.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one action from captured identity proof through launch and client hand-off"
+)]
+pub(crate) fn run_resume(
+    preamble: &crate::entry::Preamble,
+    tail: &[String],
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> crate::Result<u8> {
+    let captured = match parse_resume(tail) {
+        Ok(captured) => captured,
+        Err(why) => {
+            writeln!(err, "ae picker: {why}.")?;
+            return Ok(crate::entry::EXIT_USAGE);
+        }
+    };
+    let Some(server) = preamble.caller_server.clone() else {
+        report_resume(
+            None,
+            None,
+            &captured,
+            "no calling tmux server; nothing was resumed",
+            err,
+        );
+        return Ok(crate::entry::EXIT_FAILED);
+    };
+    let expectation = crate::session_launch::ExpectedLaunch::new(
+        crate::session_launch::ExpectedState::StoppedSession,
+        server.clone(),
+        captured.server_pid.clone(),
+        captured.server_start.clone(),
+        captured.client.clone(),
+        captured.client_pid.clone(),
+        captured.deadline,
+    );
+    if let Err(why) = expectation.check_action(crate::time::Timestamp::now().epoch()) {
+        report_resume(
+            Some(&server),
+            Some(&expectation),
+            &captured,
+            &format!("{why}; nothing was resumed"),
+            err,
+        );
+        return Ok(crate::entry::EXIT_FAILED);
+    }
+    let deps = crate::doctor::check_deps(&[], err)?;
+    if deps != 0 {
+        report_resume(
+            Some(&server),
+            Some(&expectation),
+            &captured,
+            "launch dependencies are unavailable; nothing was resumed",
+            err,
+        );
+        return Ok(deps);
+    }
+    let mut seat = preamble.clone();
+    seat.attach = false;
+    let mut launch_out = Vec::new();
+    let mut launch_err = Vec::new();
+    let code = crate::session_launch::run_expected(
+        &seat,
+        std::slice::from_ref(&captured.name),
+        &expectation,
+        &mut launch_out,
+        &mut launch_err,
+    )?;
+    out.write_all(&launch_out)?;
+    err.write_all(&launch_err)?;
+    if code != 0 {
+        let detail = String::from_utf8_lossy(&launch_err)
+            .lines()
+            .next()
+            .unwrap_or("launch refused")
+            .to_owned();
+        report_resume(Some(&server), Some(&expectation), &captured, &detail, err);
+        return Ok(code);
+    }
+    if let Err(why) = expectation.check_attachment() {
+        report_resume(
+            Some(&server),
+            Some(&expectation),
+            &captured,
+            &format!(
+                "resumed '{}', but this client is gone ({why})",
+                captured.name
+            ),
+            err,
+        );
+        return Ok(crate::entry::EXIT_FAILED);
+    }
+    if !crate::transport::switch_client(&server, &captured.client, &captured.name) {
+        report_resume(
+            Some(&server),
+            Some(&expectation),
+            &captured,
+            &format!(
+                "resumed '{}', but tmux refused to switch this client; it is on this server",
+                captured.name
+            ),
+            err,
+        );
+        return Ok(crate::entry::EXIT_FAILED);
+    }
+    Ok(0)
+}
+
+/// Report a picker action to the still-proven clicker, then always to stderr.
+///
+/// The narrower attachment proof is deliberate: only a client that still IS
+/// the one that clicked may receive a message about the row.
+fn report_resume(
+    server: Option<&crate::inventory::ServerId>,
+    expectation: Option<&crate::session_launch::ExpectedLaunch>,
+    captured: &CapturedResume,
+    text: &str,
+    err: &mut impl Write,
+) {
+    if let (Some(server), Some(expectation)) = (server, expectation)
+        && expectation.check_attachment().is_ok()
+    {
+        let _ = crate::transport::display_client_message(server, &captured.client, text);
+    }
+    let _ = writeln!(err, "ae picker: {text}");
 }
 
 /// At most this many session rows, so the menu fits a terminal and the key
@@ -1265,6 +1492,160 @@ mod tests {
             ]),
             Err(Usage::DuplicateClient)
         );
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one acceptance table for the picker resume grammar"
+    )]
+    fn the_picker_resume_grammar_refuses_every_malformed_shape() {
+        let good = super::parse_resume(
+            &[
+                "--picker-resume",
+                "hub",
+                "--client",
+                "/dev/ttys007",
+                "--client-pid",
+                "42",
+                "--server-pid",
+                "9",
+                "--server-start",
+                "1789109660",
+                "--deadline",
+                "1789109890",
+            ]
+            .map(ToOwned::to_owned),
+        )
+        .expect("the documented grammar");
+        assert_eq!(good.name, "hub");
+        assert_eq!(good.deadline, 1_789_109_890);
+        assert!(super::is_resume(&[
+            "--picker-resume".to_owned(),
+            "hub".to_owned()
+        ]));
+        assert!(!super::is_resume(&["--popup".to_owned()]));
+
+        for (case, bad) in [
+            ("empty", Vec::new()),
+            ("no name", vec!["--picker-resume"]),
+            ("bad name", vec!["--picker-resume", "bad/name"]),
+            (
+                "unknown flag",
+                vec![
+                    "--picker-resume",
+                    "hub",
+                    "--client",
+                    "/dev/ttys007",
+                    "--client-pid",
+                    "42",
+                    "--server-pid",
+                    "9",
+                    "--server-start",
+                    "1789109660",
+                    "--deadline",
+                    "1789109890",
+                    "--nope",
+                    "x",
+                ],
+            ),
+            ("missing value", vec!["--picker-resume", "hub", "--client"]),
+            (
+                "bad client",
+                vec![
+                    "--picker-resume",
+                    "hub",
+                    "--client",
+                    "not a client",
+                    "--client-pid",
+                    "42",
+                    "--server-pid",
+                    "9",
+                    "--server-start",
+                    "1789109660",
+                    "--deadline",
+                    "1789109890",
+                ],
+            ),
+            (
+                "non-decimal pid",
+                vec![
+                    "--picker-resume",
+                    "hub",
+                    "--client",
+                    "/dev/ttys007",
+                    "--client-pid",
+                    "4x",
+                    "--server-pid",
+                    "9",
+                    "--server-start",
+                    "1789109660",
+                    "--deadline",
+                    "1789109890",
+                ],
+            ),
+            (
+                "duplicate flag",
+                vec![
+                    "--picker-resume",
+                    "hub",
+                    "--client",
+                    "/dev/ttys007",
+                    "--client",
+                    "/dev/ttys008",
+                    "--client-pid",
+                    "42",
+                    "--server-pid",
+                    "9",
+                    "--server-start",
+                    "1789109660",
+                    "--deadline",
+                    "1789109890",
+                ],
+            ),
+            (
+                "missing deadline",
+                vec![
+                    "--picker-resume",
+                    "hub",
+                    "--client",
+                    "/dev/ttys007",
+                    "--client-pid",
+                    "42",
+                    "--server-pid",
+                    "9",
+                    "--server-start",
+                    "1789109660",
+                ],
+            ),
+            (
+                "bad deadline",
+                vec![
+                    "--picker-resume",
+                    "hub",
+                    "--client",
+                    "/dev/ttys007",
+                    "--client-pid",
+                    "42",
+                    "--server-pid",
+                    "9",
+                    "--server-start",
+                    "1789109660",
+                    "--deadline",
+                    "soon",
+                ],
+            ),
+        ] {
+            assert!(
+                super::parse_resume(
+                    &bad.iter()
+                        .map(|word| (*word).to_owned())
+                        .collect::<Vec<String>>()
+                )
+                .is_err(),
+                "{case}"
+            );
+        }
     }
 
     #[test]
