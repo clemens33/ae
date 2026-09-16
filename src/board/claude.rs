@@ -37,120 +37,125 @@ const LINE_CAP: usize = 1024 * 1024;
 
 /// Read one Claude transcript: every newline-terminated line is attempted,
 /// torn or over-cap lines become [`Coverage`], human turns become [`Row`].
+///
+/// The caller supplies `source`: the reader translates bytes, it never decides
+/// which tool it reads — production tool literals live in `src/tool.rs` alone
+/// (`per_tool_branches_live_only_in_the_adapter_rows`), and the locating glue
+/// already classifies the seat before it calls here.
 #[must_use]
-pub fn read(bytes: &[u8], actor: &str, file: &str) -> (Vec<Row>, Vec<Coverage>) {
-    let mut rows = Vec::new();
-    let mut coverage = Vec::new();
-    let mut missing_ts = 0u64;
+pub fn read(bytes: &[u8], actor: &str, file: &str, source: ToolKind) -> (Vec<Row>, Vec<Coverage>) {
+    let mut sink = Sink {
+        actor,
+        file,
+        source,
+        rows: Vec::new(),
+        coverage: Vec::new(),
+        missing_ts: 0,
+    };
     let mut start = 0usize;
     while start < bytes.len() {
         let Some(relative) = bytes[start..].iter().position(|byte| *byte == b'\n') else {
             if !bytes[start..].is_empty() {
-                coverage.push(cover(actor, "torn last record"));
+                sink.cover("torn last record");
             }
             break;
         };
         let end = start + relative;
-        push_line(
-            &bytes[start..end],
-            start,
-            actor,
-            file,
-            &mut rows,
-            &mut coverage,
-            &mut missing_ts,
-        );
+        sink.push_line(&bytes[start..end], start);
         start = end + 1;
     }
-    if missing_ts > 0 {
-        let noun = if missing_ts == 1 { "record" } else { "records" };
-        coverage.push(cover(
-            actor,
-            &format!("{missing_ts} {noun} without a timestamp"),
-        ));
+    if sink.missing_ts > 0 {
+        let noun = if sink.missing_ts == 1 {
+            "record"
+        } else {
+            "records"
+        };
+        sink.cover(&format!("{} {noun} without a timestamp", sink.missing_ts));
     }
-    (rows, coverage)
+    (sink.rows, sink.coverage)
 }
 
-fn cover(actor: &str, reason: &str) -> Coverage {
-    Coverage {
-        actor: actor.to_owned(),
-        reason: reason.to_owned(),
-    }
+/// One file's in-progress read: the caller's naming plus the rows, coverage
+/// and timestamp-miss count accumulated so far.
+struct Sink<'a> {
+    actor: &'a str,
+    file: &'a str,
+    source: ToolKind,
+    rows: Vec<Row>,
+    coverage: Vec<Coverage>,
+    missing_ts: u64,
 }
 
-/// Attempt one newline-terminated line at byte `offset`.
-fn push_line(
-    line: &[u8],
-    offset: usize,
-    actor: &str,
-    file: &str,
-    rows: &mut Vec<Row>,
-    coverage: &mut Vec<Coverage>,
-    missing_ts: &mut u64,
-) {
-    if line.len() > LINE_CAP {
-        coverage.push(cover(
-            actor,
-            &format!("line exceeds 1 MiB cap ({} bytes)", line.len()),
-        ));
-        return;
+impl Sink<'_> {
+    fn cover(&mut self, reason: &str) {
+        self.coverage.push(Coverage {
+            actor: self.actor.to_owned(),
+            reason: reason.to_owned(),
+        });
     }
-    // Not UTF-8 or not JSON is not a record — skipped silently, like the usage
-    // reader skips malformed lines. Only a line that COULD be a turn and is
-    // refused for a stated reason earns coverage.
-    let Ok(text) = str::from_utf8(line) else {
-        return;
-    };
-    let Ok(value) = crate::json::parse(text) else {
-        return;
-    };
-    if value.get_str("type") != Some("user") {
-        return;
+
+    /// Attempt one newline-terminated line at byte `offset`.
+    fn push_line(&mut self, line: &[u8], offset: usize) {
+        if line.len() > LINE_CAP {
+            self.cover(&format!("line exceeds 1 MiB cap ({} bytes)", line.len()));
+            return;
+        }
+        // Not UTF-8 or not JSON is not a record — skipped silently, like the usage
+        // reader skips malformed lines. Only a line that COULD be a turn and is
+        // refused for a stated reason earns coverage.
+        let Ok(text) = str::from_utf8(line) else {
+            return;
+        };
+        let Ok(value) = crate::json::parse(text) else {
+            return;
+        };
+        if value.get_str("type") != Some("user") {
+            return;
+        }
+        if value
+            .get("isCompactSummary")
+            .is_some_and(|flag| *flag == crate::json::Value::Bool(true))
+        {
+            return;
+        }
+        let Some(content) = value
+            .get("message")
+            .and_then(|message| message.get("content"))
+        else {
+            return;
+        };
+        let crate::json::Value::Str(content) = content else {
+            // Array content is a tool result or structured turn, never prose.
+            return;
+        };
+        let first = content.lines().next().unwrap_or_default();
+        if crate::provenance::is_ae_turn(first) {
+            return;
+        }
+        if is_plumbing(&value, first) {
+            return;
+        }
+        let Some(ts) = value
+            .get_str("timestamp")
+            .and_then(crate::time::Timestamp::parse_micros)
+        else {
+            self.missing_ts += 1;
+            return;
+        };
+        let body = strip_reminders(content).trim().to_owned();
+        if body.is_empty() {
+            return;
+        }
+        self.rows.push(Row {
+            ts,
+            actor: self.actor.to_owned(),
+            role: Role::Human,
+            body,
+            source: self.source,
+            file: self.file.to_owned(),
+            offset: offset as u64,
+        });
     }
-    if value
-        .get("isCompactSummary")
-        .is_some_and(|flag| *flag == crate::json::Value::Bool(true))
-    {
-        return;
-    }
-    let Some(content) = value
-        .get("message")
-        .and_then(|message| message.get("content"))
-    else {
-        return;
-    };
-    let crate::json::Value::Str(content) = content else {
-        // Array content is a tool result or structured turn, never prose.
-        return;
-    };
-    let first = content.lines().next().unwrap_or_default();
-    if crate::provenance::is_ae_turn(first) {
-        return;
-    }
-    if is_plumbing(&value, first) {
-        return;
-    }
-    let Some(ts) = value
-        .get_str("timestamp")
-        .and_then(crate::time::Timestamp::parse_micros)
-    else {
-        *missing_ts += 1;
-        return;
-    };
-    let body = strip_reminders(content).trim().to_owned();
-    if body.is_empty() {
-        return;
-    }
-    rows.push(Row {
-        ts,
-        actor: actor.to_owned(),
-        role: Role::Human,
-        body,
-        source: ToolKind::Claude,
-        file: file.to_owned(),
-        offset: offset as u64,
-    });
 }
 
 /// Claude's own harness turns, by structured field where one exists.
@@ -211,7 +216,7 @@ mod tests {
     fn read_one(line: &str) -> (Vec<crate::board::Row>, Vec<crate::board::Coverage>) {
         let mut bytes = line.as_bytes().to_vec();
         bytes.push(b'\n');
-        read(&bytes, ACTOR, FILE)
+        read(&bytes, ACTOR, FILE, crate::tool::ToolKind::Claude)
     }
 
     #[test]
@@ -219,7 +224,7 @@ mod tests {
         let head = user(r#""first turn""#) + "\n";
         let tail = user(r#""second turn""#);
         let bytes = format!("{head}{tail}\n");
-        let (rows, coverage) = read(bytes.as_bytes(), ACTOR, FILE);
+        let (rows, coverage) = read(bytes.as_bytes(), ACTOR, FILE, crate::tool::ToolKind::Claude);
         assert!(coverage.is_empty());
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].body, "first turn");
@@ -254,7 +259,7 @@ mod tests {
     fn a_torn_last_record_is_reported_and_never_trusted() {
         let good = user(r#""kept""#) + "\n";
         let bytes = format!("{good}{}", user(r#""torn""#));
-        let (rows, coverage) = read(bytes.as_bytes(), ACTOR, FILE);
+        let (rows, coverage) = read(bytes.as_bytes(), ACTOR, FILE, crate::tool::ToolKind::Claude);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].body, "kept");
         assert_eq!(coverage.len(), 1);
@@ -266,7 +271,7 @@ mod tests {
         let (rows, coverage) = read_one(&user(r#""whole""#));
         assert_eq!(rows.len(), 1);
         assert!(coverage.is_empty());
-        let (rows, coverage) = read(b"", ACTOR, FILE);
+        let (rows, coverage) = read(b"", ACTOR, FILE, crate::tool::ToolKind::Claude);
         assert!(rows.is_empty() && coverage.is_empty());
     }
 
@@ -295,7 +300,7 @@ mod tests {
         assert!(rows.is_empty() && coverage.is_empty());
         let (rows, coverage) = read_one(r#"{"type":"user",broken"#);
         assert!(rows.is_empty() && coverage.is_empty());
-        let (rows, coverage) = read(b"\xff\xfe\n", ACTOR, FILE);
+        let (rows, coverage) = read(b"\xff\xfe\n", ACTOR, FILE, crate::tool::ToolKind::Claude);
         assert!(rows.is_empty() && coverage.is_empty());
     }
 
@@ -307,7 +312,7 @@ mod tests {
             user(r#""has ts""#),
             r#"{"type":"user","timestamp":"not-a-time","message":{"content":"bad ts"}}"#,
         );
-        let (rows, coverage) = read(bytes.as_bytes(), ACTOR, FILE);
+        let (rows, coverage) = read(bytes.as_bytes(), ACTOR, FILE, crate::tool::ToolKind::Claude);
         assert_eq!(rows.len(), 1);
         assert_eq!(coverage.len(), 1);
         assert_eq!(coverage[0].reason, "2 records without a timestamp");
