@@ -475,9 +475,9 @@ fn run_dispatch(args: &[String], out: &mut impl Write, err: &mut impl Write) -> 
         autoupgrade::schedule();
     }
     // The popup is deliberately dispatched BEFORE the world edge: its latency
-    // contract is a handful of live tmux listings plus one durable scan for
-    // the stopped rows — never the event journals, git probes or per-session
-    // runtime observation behind `current_world`.
+    // contract is a handful of live tmux listings plus one META-ONLY durable
+    // scan for the stopped rows — never the event journals, git probes or
+    // per-session runtime observation behind `current_world`.
     if popup && let cli::Request::Orchestrator { tail } = &request {
         return run_orchestrator(tail, err);
     }
@@ -611,7 +611,9 @@ fn run_orchestrator(tail: &[String], err: &mut impl Write) -> Result<u8> {
     // still answers to the socket `$TMUX` names — and a server ae cannot prove
     // equivalent stays `unknown` rather than being guessed at.
     let stopped = root.as_ref().map_or_else(Vec::new, |root| {
-        let scan = inventory::durable_records(&inventory::Roots::under(root));
+        // META ONLY: a stopped row needs name, goal and branch, never the
+        // event journal — this scan does not open `events.jsonl` at all.
+        let scan = inventory::durable_meta_records(&inventory::Roots::under(root));
         let mut sockets = SocketPaths::asking(transport::observe_socket_path);
         let mut servers = vec![server.clone()];
         for record in &scan.records {
@@ -630,7 +632,7 @@ fn run_orchestrator(tail: &[String], err: &mut impl Write) -> Result<u8> {
             live: &sessions,
             sockets: &sockets,
         };
-        picker_stopped(scan, &backend, &sessions, now)
+        picker_stopped(scan, &backend, &sessions)
     });
     // The resume pin: a stopped row acts as the client that opened this menu,
     // never as whichever attachment tmux last saw. A core or server identity
@@ -1311,16 +1313,16 @@ impl inventory::Discovery for PickerStoppedBackend<'_> {
 
 /// The stopped sessions the calling server PROVES, as picker rows.
 ///
-/// One durable scan, fed through the one classifier with a backend that knows
-/// only the calling server: every row here is a candidate `ae list --all`
-/// would also read `stopped`, and every gap — another recorded server, a
+/// One meta-only durable scan, fed through the one classifier with a backend
+/// that knows only the calling server: every row here is a candidate `ae list
+/// --all` would also read `stopped`, and every gap — another recorded server, a
 /// missing or ambiguous selector, a same-named live session whose ownership
-/// cannot be proven — stays `unknown` and is simply not a row.
+/// cannot be proven — stays `unknown` and is simply not a row. The scan never
+/// opens a session's event journal: name, goal and branch are meta facts.
 fn picker_stopped<D: inventory::Discovery + ?Sized>(
     scan: inventory::DurableScan,
     backend: &D,
     live: &[tmux::PickerSession],
-    now: i64,
 ) -> Vec<orchestrator::PickerStopped> {
     let taken = inventory::Inventory {
         candidates: scan
@@ -1338,21 +1340,18 @@ fn picker_stopped<D: inventory::Discovery + ?Sized>(
         .filter(|record| crate::session_launch::name::is_session_name(&record.name))
         .filter(|record| !live.iter().any(|row| row.name == record.name))
         .map(|record| {
-            let entry = session::entry_from(
-                &record.snapshot,
-                &record.name,
-                &session::SessionRuntime::new(digest::Status::Stopped),
-                crate::time::Timestamp::from_epoch(now),
-                session::DEFAULT_UNANSWERED_SECS,
-            );
+            // The picker's read never opened the journal: goal and branch are
+            // meta facts, so a stopped row costs its meta file and its stamps,
+            // never the session's communication history.
+            let (goal, branch) = session::stopped_display(&record.snapshot);
             let last_live = match inventory::last_live(&record.path) {
                 tmux::Evidence::At(epoch) => Some(epoch),
                 tmux::Evidence::Silent | tmux::Evidence::Unreadable => None,
             };
             orchestrator::PickerStopped {
                 name: record.name.clone(),
-                goal: entry.goal.unwrap_or_default(),
-                branch: entry.branch.unwrap_or_default(),
+                goal,
+                branch,
                 last_live,
             }
         })
@@ -3129,7 +3128,7 @@ mod tests {
             live: &live,
             sockets: &sockets,
         };
-        let rows = super::picker_stopped(scan, &backend, &live, 2_000);
+        let rows = super::picker_stopped(scan, &backend, &live);
         assert_eq!(
             rows.iter().map(|row| row.name.as_str()).collect::<Vec<_>>(),
             ["on-caller"],
@@ -3156,7 +3155,7 @@ mod tests {
             sockets: &sockets,
         };
         assert!(
-            super::picker_stopped(scan, &backend, &[], 2_000).is_empty(),
+            super::picker_stopped(scan, &backend, &[]).is_empty(),
             "a failed name listing proves nothing and claims nothing"
         );
     }
@@ -3180,6 +3179,59 @@ mod tests {
             rows.iter().map(|row| row.name.as_str()).collect::<Vec<_>>(),
             ["recent", "old", "undated-a", "undated-b"]
         );
+    }
+
+    /// The whole picker path over a real state directory: a stopped session's
+    /// journal is a DIRECTORY (so any read of it would fail), and the row still
+    /// draws with its meta goal — the assembly never opens it.
+    #[test]
+    fn a_stopped_row_draws_from_meta_alone_over_a_hostile_journal() {
+        let root = std::env::temp_dir().join(format!("ae-picker-stopped-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("sessions/parked");
+        std::fs::create_dir_all(&dir).expect("a session dir");
+        std::fs::write(
+            dir.join("meta"),
+            "goal=ship the picker\ntmux_server_kind=name\ntmux_server=ae\n",
+        )
+        .expect("a meta");
+        std::fs::create_dir_all(dir.join("events.jsonl")).expect("a hostile journal shape");
+
+        let calling = caller_server();
+        let mut sockets = super::SocketPaths::asking(fake_socket);
+        let _ = sockets.deduplicated(vec![
+            calling.clone(),
+            inventory::ServerId::Selected(crate::meta::Selector::Name("ae".to_owned())),
+        ]);
+        // The bare name listing succeeded and does not carry `parked`: exactly
+        // what proves the session stopped on the calling server.
+        let backend = super::PickerStoppedBackend {
+            server: &calling,
+            names: Some(&[]),
+            live: &[],
+            sockets: &sockets,
+        };
+        let scan = inventory::durable_meta_records(&inventory::Roots::under(&root));
+        assert_eq!(scan.records.len(), 1, "the scan found the session dir");
+        assert_eq!(
+            scan.records[0].meta_read,
+            crate::session::MetaRead::Parsed,
+            "the meta parsed"
+        );
+        assert_eq!(
+            scan.records[0].server,
+            crate::meta::ServerSelector::Positive(crate::meta::Selector::Name("ae".to_owned())),
+            "the selector is positive"
+        );
+        assert!(
+            scan.records[0].snapshot.events.is_none(),
+            "the picker's scan carries no journal"
+        );
+        let rows = super::picker_stopped(scan, &backend, &[]);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].name, "parked");
+        assert_eq!(rows[0].goal, "ship the picker");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

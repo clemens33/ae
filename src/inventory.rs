@@ -248,15 +248,49 @@ impl From<Vec<DurableRecord>> for DurableScan {
     }
 }
 
-/// Every durable candidate under `roots`, both layouts, path order.
+/// Which half of each record a scan reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Journal {
+    /// Both halves — the fleet listing's read, where events carry the facts
+    /// the digest renders.
+    Read,
+    /// Meta only, NEVER opening `events.jsonl` — the picker's stopped rows
+    /// read name, goal and branch, all meta facts, and a long-lived session's
+    /// journal outweighs every other byte of its state.
+    Skipped,
+}
+
+/// Every durable candidate under `roots`, both layouts, path order, journals
+/// read.
 #[must_use]
 pub fn durable_records(roots: &Roots) -> DurableScan {
+    durable_scan(roots, Journal::Read)
+}
+
+/// Every durable candidate under `roots`, both layouts, path order, with each
+/// record's meta read and its journal NEVER opened.
+///
+/// The snapshot's `events` is `None` for every record, by construction; a
+/// caller that needs a journal-derived fact (`last_active`, `goal_set_epoch`,
+/// attention, agent states) must use [`durable_records`]. This is the picker's
+/// read: it needs the same identities and the same `placed` rule, and nothing
+/// from the events container.
+#[must_use]
+pub fn durable_meta_records(roots: &Roots) -> DurableScan {
+    durable_scan(roots, Journal::Skipped)
+}
+
+/// Every durable candidate under `roots`, reading the journal only when the
+/// scan asks for it.
+fn durable_scan(roots: &Roots, journal: Journal) -> DurableScan {
     let mut scan = DurableScan::default();
 
     match child_dirs(roots.sessions()) {
-        Ok(paths) => scan
-            .records
-            .extend(paths.into_iter().map(|p| record_at(p, Layout::Canonical))),
+        Ok(paths) => scan.records.extend(
+            paths
+                .into_iter()
+                .map(|p| record_at(p, Layout::Canonical, journal)),
+        ),
         // An ABSENT root never reaches here: `child_dirs` answers it with an
         // empty list, because a machine that never ran ae has no sessions and
         // that is an answer, not a failure.
@@ -274,7 +308,7 @@ pub fn durable_records(roots: &Roots) -> DurableScan {
                     Ok(states) => scan.records.extend(
                         states
                             .into_iter()
-                            .map(|p| record_at(p, Layout::WorktreeNested)),
+                            .map(|p| record_at(p, Layout::WorktreeNested, journal)),
                     ),
                     Err(_) => scan
                         .incomplete
@@ -328,7 +362,7 @@ fn child_dirs(dir: &Path) -> io::Result<Vec<PathBuf>> {
 }
 
 /// The durable record for the state directory at `path`.
-fn record_at(path: PathBuf, layout: Layout) -> DurableRecord {
+fn record_at(path: PathBuf, layout: Layout, journal: Journal) -> DurableRecord {
     let name = path
         .file_name()
         .unwrap_or(path.as_os_str())
@@ -344,7 +378,10 @@ fn record_at(path: PathBuf, layout: Layout) -> DurableRecord {
     };
     // ONE read of this record, here, feeding both the selector and every field
     // the digest will need.
-    record.snapshot = RecordSnapshot::read(&record.path);
+    record.snapshot = match journal {
+        Journal::Read => RecordSnapshot::read(&record.path),
+        Journal::Skipped => RecordSnapshot::read_meta_only(&record.path),
+    };
     // BOTH facts from the ONE read.
     record.meta_read = record.snapshot.meta_read;
     if let Some(meta) = &record.snapshot.meta {
@@ -727,8 +764,8 @@ mod tests {
     use super::{
         Candidate, DiscoveredSession, Discovery, DurableRecord, DurableScan, FailedSource,
         Inventory, Layout, LiveSighting, MetaRead, Provenance, QueryFailed, Roots, Selector,
-        ServerId, ServerSelector, durable_records, entitled_servers, last_live, launch_epochs,
-        take,
+        ServerId, ServerSelector, durable_meta_records, durable_records, entitled_servers,
+        last_live, launch_epochs, take,
     };
     use crate::session::RecordSnapshot;
     use std::cell::RefCell;
@@ -806,6 +843,56 @@ mod tests {
                 .find(|(known, _)| known == server)
                 .map_or(Ok(Vec::new()), |(_, answer)| answer.clone())
         }
+    }
+
+    /// The picker's scan: meta yes, journal never — and the difference holds even
+    /// when the journal is huge or could not be read at all.
+    #[test]
+    fn the_meta_only_scan_never_opens_the_journal() {
+        let scratch = Scratch::new("meta-only-scan");
+        let dir = scratch.session("parked");
+        fs::write(dir.join("meta"), "goal=ship it\n").expect("a meta");
+        let mut huge = String::new();
+        for index in 0..20_000_u32 {
+            use std::fmt::Write as _;
+            let _ = writeln!(
+                huge,
+                "{{\"ts\":\"2026-01-01T00:00:00Z\",\"actor\":\"lead\",\"action\":\"memo\",\"i\":{index}}}"
+            );
+        }
+        fs::write(dir.join("events.jsonl"), &huge).expect("a large journal");
+
+        let full = durable_records(&scratch.roots());
+        assert!(
+            full.records[0].snapshot.events.is_some(),
+            "the fleet listing's scan opens it"
+        );
+        let light = durable_meta_records(&scratch.roots());
+        assert!(light.records[0].snapshot.events.is_none());
+        assert_eq!(light.records[0].meta_read, MetaRead::Parsed);
+        assert_eq!(
+            light.records[0]
+                .snapshot
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.goal()),
+            Some("ship it")
+        );
+
+        // Not even a journal shape that could never be read changes this scan.
+        fs::remove_file(dir.join("events.jsonl")).expect("the fixture");
+        fs::create_dir_all(dir.join("events.jsonl")).expect("a hostile shape");
+        let hostile = durable_meta_records(&scratch.roots());
+        assert!(hostile.records[0].snapshot.events.is_none());
+        assert_eq!(hostile.records[0].meta_read, MetaRead::Parsed);
+        assert_eq!(
+            hostile.records[0]
+                .snapshot
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.goal()),
+            Some("ship it")
+        );
     }
 
     /// `.locks` sits beside the session directories and is not a session.

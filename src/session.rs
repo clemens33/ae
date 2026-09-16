@@ -575,6 +575,48 @@ impl RecordSnapshot {
             legacy_created_epoch: legacy_created_epoch(dir),
         }
     }
+
+    /// Read the meta half only, NEVER opening the event journal.
+    ///
+    /// The journal is the most expensive file a session owns — a long-lived
+    /// session's `events.jsonl` outgrows every other byte of its state — and a
+    /// stopped picker row needs none of it: name, goal and branch are all meta
+    /// facts. `events` is therefore ALWAYS `None` here, which for this snapshot
+    /// means "not read", never damage. A consumer that needs any
+    /// journal-derived fact (`last_active`, `goal_set_epoch`, attention,
+    /// agent states) must use [`Self::read`] instead.
+    #[must_use]
+    pub fn read_meta_only(dir: &Path) -> Self {
+        let (meta, meta_read) = match read_meta(dir) {
+            Ok(meta) => (Some(meta), MetaRead::Parsed),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => (None, MetaRead::Absent),
+            Err(_) => (None, MetaRead::Unreadable),
+        };
+        Self {
+            meta,
+            meta_read,
+            events: None,
+            legacy_created_epoch: legacy_created_epoch(dir),
+        }
+    }
+}
+
+/// The goal and branch a STOPPED picker row draws, from a meta-only snapshot.
+///
+/// Meta facts only, by construction: the branch falls back to the recorded
+/// work directory's own git files exactly as [`entry_from`] reads it, and a
+/// snapshot without a meta yields two empty strings rather than a guess.
+#[must_use]
+pub fn stopped_display(snapshot: &RecordSnapshot) -> (String, String) {
+    match &snapshot.meta {
+        Some(meta) => (
+            meta.goal().unwrap_or_default().to_owned(),
+            meta.work_dir()
+                .and_then(|dir| branch_at(Path::new(dir)))
+                .unwrap_or_default(),
+        ),
+        None => (String::new(), String::new()),
+    }
 }
 
 /// One marker's mtime as epoch seconds, for the legacy creation fallback.
@@ -1252,6 +1294,39 @@ mod tests {
 
     fn at(seconds_ago: i64) -> String {
         Timestamp::from_epoch(NOW.epoch() - seconds_ago).to_string()
+    }
+
+    /// The picker's read: meta facts only, and the journal is never opened.
+    #[test]
+    fn a_meta_only_snapshot_reads_no_journal_in_any_shape() {
+        let scratch = Scratch::new("meta-only");
+        scratch.meta("goal=ship it\nwork_dir=/nope\n");
+        scratch.events(&[event("2026-01-01T00:00:00Z", "lead", "memo", "")]);
+
+        let full = super::RecordSnapshot::read(&scratch.0);
+        assert!(
+            full.events.is_some(),
+            "the fleet listing's read opens the journal"
+        );
+        let light = super::RecordSnapshot::read_meta_only(&scratch.0);
+        assert!(
+            light.events.is_none(),
+            "the picker's read must never open it"
+        );
+        let (goal, branch) = super::stopped_display(&light);
+        assert_eq!(goal, "ship it");
+        assert_eq!(
+            branch, "",
+            "a work dir that is not a git tree has no branch"
+        );
+
+        // A journal that is a DIRECTORY would be an error for any reader that
+        // touched it; this read does not notice it exists.
+        fs::remove_file(scratch.0.join("events.jsonl")).expect("the fixture");
+        fs::create_dir_all(scratch.0.join("events.jsonl")).expect("a hostile shape");
+        let hostile = super::RecordSnapshot::read_meta_only(&scratch.0);
+        assert!(hostile.events.is_none());
+        assert_eq!(super::stopped_display(&hostile), (goal, branch));
     }
 
     fn event(ts: &str, actor: &str, action: &str, extra: &str) -> String {
