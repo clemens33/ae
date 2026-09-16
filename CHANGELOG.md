@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.79] - 2026-09-16
+- Mark every ae-injected turn on its first line
+- Mark every user-turn context, keep the task verb in a combined turn
+- Correct the combined-turn comments
+- Name the delivery-provenance marker family
+
 ## [v2026.9.78] - 2026-09-16
 - Model drift: never replay a display label as a model flag
 - Spawn test: force the unattributable pane under the meta lock
