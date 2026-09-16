@@ -5,21 +5,17 @@
 //! `params.update.content.type == "text"`; the text is `content.text`.
 //! Trimmed, empties dropped. Newline-terminated lines only.
 //!
-//! Verified 2026-09-16 over 17 session dirs (shapes only): every
-//! `user_message_chunk` is its own row — NO chunk joining (73 user chunks vs
-//! 72 turns: a user turn is ONE chunk in practice). Time prefers
-//! `params.update._meta.agentTimestampMs` (millis to micros), else the
-//! top-level `timestamp` secs; ae turns filter via `is_ae_turn` on line 1
-//! (ae's grok context rides positional `[PROMPT]` and carries the `ctx`
-//! marker). No plumbing prefixes known — none filtered, none invented.
+//! Verified 2026-09-16 over 17 session dirs (shapes only): every chunk is
+//! its own row — NO joining (73 user chunks vs 72 turns). Time prefers
+//! `_meta.agentTimestampMs` millis, else top-level `timestamp` secs; ae turns
+//! filter via `is_ae_turn` on line 1. No plumbing prefixes: none known.
 
 use super::{LineBody, Splitter, Streamed};
 use crate::board::{Coverage, Role, Row};
 use crate::tool::ToolKind;
 
-/// Read one Grok updates file from whole bytes: one feed through the ONE
-/// splitter, then read the stream. A thin wrapper, so the fuzz target covers
-/// the code the door runs.
+/// Whole-bytes wrapper over the ONE splitter, so the fuzz target covers the
+/// code the door runs.
 #[must_use]
 pub fn read(bytes: &[u8], actor: &str, file: &str, source: ToolKind) -> (Vec<Row>, Vec<Coverage>) {
     let mut splitter = Splitter::new();
@@ -175,18 +171,10 @@ mod tests {
         )
     }
 
-    /// A text chunk of any kind: secs on top, no `_meta`.
-    fn stamped(kind: &str, text: &str) -> String {
+    /// A text chunk of any kind: `top` carries the secs prefix, or nothing.
+    fn rec(kind: &str, text: &str, top: &str) -> String {
         format!(
-            r#"{{"timestamp":{SECS},"method":"session/update","params":{{"sessionId":"s","update":{{"sessionUpdate":"{kind}","content":{{"type":"text","text":"{text}"}}}}}}}}"#,
-            text = esc(text)
-        )
-    }
-
-    /// A text chunk of any kind with no timestamp at all.
-    fn unstamped(kind: &str, text: &str) -> String {
-        format!(
-            r#"{{"method":"session/update","params":{{"sessionId":"s","update":{{"sessionUpdate":"{kind}","content":{{"type":"text","text":"{text}"}}}}}}}}"#,
+            r#"{{{top}"method":"session/update","params":{{"sessionId":"s","update":{{"sessionUpdate":"{kind}","content":{{"type":"text","text":"{text}"}}}}}}}}"#,
             text = esc(text)
         )
     }
@@ -198,7 +186,7 @@ mod tests {
     }
 
     #[test]
-    fn the_user_chunk_yields_one_row_at_millis_precision() {
+    fn the_user_chunk_yields_one_row_millis_first_secs_fallback() {
         let (rows, coverage) = read_lines(&[&user("plain human words")]);
         assert!(coverage.is_empty());
         assert_eq!(rows.len(), 1);
@@ -207,11 +195,8 @@ mod tests {
         assert_eq!(rows[0].actor, ACTOR);
         assert_eq!(rows[0].file, FILE);
         assert_eq!(rows[0].offset, 0);
-    }
-
-    #[test]
-    fn without_meta_millis_the_secs_field_decides() {
-        let (rows, coverage) = read_lines(&[&stamped("user_message_chunk", "secs words")]);
+        let top = format!(r#""timestamp":{SECS},"#);
+        let (rows, coverage) = read_lines(&[&rec("user_message_chunk", "secs words", &top)]);
         assert!(coverage.is_empty());
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].ts, SECS * 1_000_000);
@@ -228,7 +213,8 @@ mod tests {
             "task_completed",
             "task_backgrounded",
         ] {
-            let (rows, coverage) = read_lines(&[&stamped(kind, "not human")]);
+            let top = format!(r#""timestamp":{SECS},"#);
+            let (rows, coverage) = read_lines(&[&rec(kind, "not human", &top)]);
             assert!(rows.is_empty() && coverage.is_empty(), "{kind}");
         }
         for line in [
@@ -287,7 +273,7 @@ mod tests {
         assert_eq!(coverage[0].reason, "torn last record");
         let bytes = format!(
             "{}\n{}\n{}\n",
-            unstamped("user_message_chunk", "no ts"),
+            rec("user_message_chunk", "no ts", ""),
             user("has ts"),
             r#"{"timestamp":"not-a-time","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"bad ts"}}}}"#,
         );

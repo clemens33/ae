@@ -16,7 +16,7 @@ pub mod grok;
 use std::fmt::Write as _;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read as _};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::json::Value;
 use crate::quota::{Bounded, Budget};
@@ -378,8 +378,7 @@ fn observe_seat(
         observe_codex_seat(entry, home, &actor, tool, rows, coverage);
         return;
     }
-    // String dispatch, never a `ToolKind::` arm: production tool literals
-    // live in `src/tool.rs` alone, as `unsupported_reason` does.
+    // String dispatch, as `unsupported_reason` does: literals live in tool.rs.
     if tool.adapter().name == "grok" {
         observe_grok_seat(entry, home, &actor, tool, rows, coverage);
         return;
@@ -486,9 +485,8 @@ fn observe_codex_seat(
     coverage.append(&mut seat_coverage);
 }
 
-/// Read one Grok roster seat: the uuid directory is located by scanning the
-/// `<home>/.grok/sessions` root — the percent-encoded cwd is never derived —
-/// then the located file streams through the EXISTING door, no second stat.
+/// Read one Grok roster seat: scan `<home>/.grok/sessions` for the uuid dir —
+/// the percent-encoded cwd is never derived — then stream it through the door.
 fn observe_grok_seat(
     entry: &crate::meta::RosterEntry,
     home: Option<&Path>,
@@ -514,8 +512,8 @@ fn observe_grok_seat(
         coverage.push(cover("unsupported tool".to_owned()));
         return;
     };
-    let root = home.join(dir).join("sessions");
     let mut budget = Budget::new();
+    let root = home.join(dir).join("sessions");
     let located = match locate_grok_updates(&root, &id, &mut budget) {
         Ok(located) => located,
         Err(reason) => {
@@ -540,23 +538,14 @@ fn observe_grok_seat(
     coverage.append(&mut seat_coverage);
 }
 
-/// One located Grok transcript: the uuid directory's `updates.jsonl` plus the
-/// lstat that gates the door.
-struct LocatedGrok {
-    path: PathBuf,
-    metadata: std::fs::Metadata,
-}
-
-/// Scan `<sessions root>/*/<uuid>/updates.jsonl` for one seat's conversation:
-/// the cwd directories are never classified — only the candidate file is, and
-/// a missing candidate (or a non-directory on its path) skips silently. Two
-/// hits refuse as not unique; a symlinked candidate refuses, never followed.
-/// Every verdict is order-independent: any symlink anywhere fails the scan.
+/// Scan `<sessions root>/*/<uuid>/updates.jsonl` for one seat's conversation.
+/// Only the candidate file is classified — a missing candidate (or a
+/// non-directory on its path) skips; two hits refuse; a symlink refuses.
 fn locate_grok_updates(
     root: &Path,
     id: &str,
     budget: &mut Budget,
-) -> Result<Option<LocatedGrok>, String> {
+) -> Result<Option<crate::usage::TranscriptFile>, String> {
     if !budget.claim_file() {
         return Err("transcript scan truncated".to_owned());
     }
@@ -569,16 +558,13 @@ fn locate_grok_updates(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(_) => return Err("transcript unreadable".to_owned()),
     };
-    let mut found: Option<LocatedGrok> = None;
+    let mut found: Option<crate::usage::TranscriptFile> = None;
     for entry in listing {
+        // One claim per probe bounds the scan: survivors reach it, failures abort.
         if !budget.claim_file() {
             return Err("transcript scan truncated".to_owned());
         }
-        let entry =
-            entry.map_err(|_| "directory entry unreadable".to_owned())?;
-        if !budget.claim_file() {
-            return Err("transcript scan truncated".to_owned());
-        }
+        let entry = entry.map_err(|_| "directory entry unreadable".to_owned())?;
         let candidate = entry.path().join(id).join("updates.jsonl");
         #[allow(
             clippy::disallowed_methods,
@@ -602,9 +588,10 @@ fn locate_grok_updates(
         if found.is_some() {
             return Err("conversation id is not unique".to_owned());
         }
-        found = Some(LocatedGrok {
+        found = Some(crate::usage::TranscriptFile {
             path: candidate,
             metadata,
+            modified: None,
         });
     }
     Ok(found)

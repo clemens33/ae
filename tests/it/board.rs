@@ -178,9 +178,9 @@ fn non_claude_seats_name_their_phase_in_both_modes() {
     assert_eq!(
         reasons,
         [
-            // Codex reads now: no id, so the read is attempted and covered.
+            // Codex and Grok read now: no id, so the read is attempted and covered.
             "invalid or missing conversation id",
-            "grok: phase 3a",
+            "invalid or missing conversation id",
             "muse: phase 3b",
             "agy: phase 5",
             "opencode: ruling pending",
@@ -623,6 +623,82 @@ fn a_missing_codex_rollout_is_a_coverage_row() {
     assert!(observation.rows.is_empty());
     assert_eq!(observation.coverage.len(), 1);
     assert_eq!(observation.coverage[0].reason, "rollout not found");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+const GROK_ID: &str = "0199c0de-aaaa-4890-abcd-ef0123456789";
+const GROK_ABSENT: &str = "0199c0de-bbbb-4890-abcd-ef0123456789";
+const GROK_DUP: &str = "0199c0de-cccc-4890-abcd-ef0123456789";
+
+/// One synthetic Grok user chunk, stamped both ways. Bodies are plain prose.
+fn grok_user(body: &str) -> String {
+    let escaped = body.replace('"', "\\\"").replace('\n', "\\n");
+    format!(
+        r#"{{"timestamp":1789549200,"method":"session/update","params":{{"sessionId":"s","update":{{"sessionUpdate":"user_message_chunk","_meta":{{"agentTimestampMs":1789549200500}},"content":{{"type":"text","text":"{escaped}"}}}}}}}}"#
+    )
+}
+
+fn grok_roster(slot: &str, seat: &str, id: &str) -> String {
+    format!("seat.{slot}={seat}\nharness_session.{slot}={id}\nagent_bin.{slot}=grok\n")
+}
+
+/// Plant `.grok/sessions/<cwd>/<id>/updates.jsonl` with these lines.
+fn plant_grok(root: &Path, cwd: &str, id: &str, lines: &[String]) {
+    let dir = root.join(".grok/sessions").join(cwd).join(id);
+    std::fs::create_dir_all(&dir).expect("grok dir");
+    std::fs::write(dir.join("updates.jsonl"), lines.join("\n") + "\n").expect("updates");
+}
+
+#[test]
+fn a_grok_seat_renders_rows_and_names_no_phase() {
+    let root = rig("grok-rows");
+    plant_grok(
+        &root,
+        "work",
+        GROK_ID,
+        &[
+            grok_user("grok human words"),
+            grok_user("⟦ae:msg from lead⟧\nnot human"),
+        ],
+    );
+    plant_session(&root, "ship", &grok_roster("main", "lead", GROK_ID));
+    let observation = observe(&root, &["ship"], None);
+    assert!(observation.coverage.is_empty(), "no phase row after a read");
+    assert_eq!(observation.rows.len(), 1);
+    assert_eq!(observation.rows[0].body, "grok human words");
+    let text = board::render(&observation, false);
+    assert!(!text.contains("phase 3a"), "the phase row is gone: {text}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn grok_locate_failures_are_coverage_rows() {
+    let root = rig("grok-locate");
+    plant_session(&root, "linked", &grok_roster("main", "lead", GROK_ID));
+    let words = grok_user("words behind a link") + "\n";
+    std::fs::write(root.join("real.jsonl"), words).expect("target");
+    let dir = root.join(".grok/sessions").join("work").join(GROK_ID);
+    std::fs::create_dir_all(&dir).expect("grok dir");
+    std::os::unix::fs::symlink(root.join("real.jsonl"), dir.join("updates.jsonl")).expect("link");
+    plant_session(&root, "gone", &grok_roster("main", "lead", GROK_ABSENT));
+    plant_grok(&root, "one", GROK_DUP, &[grok_user("first")]);
+    plant_grok(&root, "two", GROK_DUP, &[grok_user("second")]);
+    plant_session(&root, "dup", &grok_roster("main", "lead", GROK_DUP));
+    let observation = observe(&root, &["linked", "gone", "dup"], None);
+    assert!(observation.rows.is_empty(), "locate failures yield no rows");
+    let reasons: Vec<&str> = observation
+        .coverage
+        .iter()
+        .map(|item| item.reason.as_str())
+        .collect();
+    assert_eq!(
+        reasons,
+        [
+            "transcript is not a regular file",
+            "transcript not found",
+            "conversation id is not unique",
+        ]
+    );
     let _ = std::fs::remove_dir_all(&root);
 }
 
