@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.90] - 2026-09-16
+- Clear a dead latch when the harness process is positively back
+- Read dead-cleared as a cleared watchdog verdict
+- Document the dead-cleared retraction
+
 ## [v2026.9.89] - 2026-09-16
 - Read a composer placeholder tip as the box's own chrome, not a draft
 - Drain an ae-staged paste chip once instead of abandoning the send
