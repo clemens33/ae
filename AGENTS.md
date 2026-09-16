@@ -349,7 +349,9 @@ Role doctrine: [docs/gatekeeping.md](docs/gatekeeping.md) before gating or revie
 
 ## Config
 
-INI-style, one regex parser, `src/config.rs`. No TOML/YAML/JSON parsing. Do not extend it.
+INI-style, one regex parser, `src/config.rs`. No TOML/YAML/JSON parsing. Do not extend it — the ONE
+exception is the `"""` block for `[prompt] instructions` shown above: raw multi-line text for that
+one key, and nothing else.
 
 ```toml
 [clients]

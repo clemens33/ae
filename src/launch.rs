@@ -813,6 +813,19 @@ mod tests {
         );
     }
 
+    /// The USER-TURN shape after the provenance slice: ae's ctx marker owns
+    /// line 1, and the context rides verbatim (newlines and quotes included)
+    /// under it, with the wait suffix last.
+    fn assert_user_turn(payload: &str, ctx: &str) {
+        assert_eq!(
+            payload.split('\n').next(),
+            Some(crate::provenance::ctx().as_str()),
+            "{payload}"
+        );
+        assert!(payload.contains(ctx), "{payload}");
+        assert!(payload.contains("This is context only"), "{payload}");
+    }
+
     #[test]
     fn a_context_with_newlines_and_quotes_survives_every_injection_path() {
         let dir = scratch("multiline");
@@ -834,17 +847,16 @@ mod tests {
         assert!(decoded.contains("/_register-sid spawned.1"), "{decoded}");
         assert!(decoded.contains("AE_CODEX_LAUNCH_ID=tok-9"), "{decoded}");
 
-        // agy: a USER TURN through -i, plus the wait suffix.
+        // agy: a USER TURN through -i — the provenance marker owns line 1.
         let agy = words(&inject_ae_context("agy", &dir, "spawned.2", ctx, "").cmd);
         assert_eq!(agy[..2], ["agy".to_owned(), "-i".to_owned()]);
-        assert!(agy[2].starts_with(ctx), "{}", agy[2]);
+        assert_user_turn(&agy[2], ctx);
 
-        // grok and muse: the context is the POSITIONAL prompt, no flag.
+        // grok and muse: the same user turn, POSITIONAL, no flag.
         for tool in ["grok", "muse"] {
             let argv = words(&inject_ae_context(tool, &dir, "spawned.3", ctx, "").cmd);
             assert_eq!(argv.len(), 2, "{tool}: {argv:?}");
-            assert!(argv[1].starts_with(ctx), "{tool}: {}", argv[1]);
-            assert!(argv[1].contains("This is context only"), "{tool}");
+            assert_user_turn(&argv[1], ctx);
         }
 
         // opencode: the payload is a FILE the JSON points at.

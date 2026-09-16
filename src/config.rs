@@ -1775,6 +1775,10 @@ pub fn read_workspace_keys_with_identity_sections(
         };
         let mut section = String::new();
         for item in config_lines(file, &text) {
+            // Lenient BY DESIGN: this is the compatibility-notice reader, and
+            // the identity parse refuses a bad block first; here it just ends
+            // the file's contribution rather than failing a caller that has no
+            // error channel.
             let Ok(item) = item else {
                 break;
             };
