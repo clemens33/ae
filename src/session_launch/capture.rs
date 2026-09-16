@@ -490,9 +490,10 @@ pub fn register_sid(
 /// The refusal `_register-sid` prints for a missing seat.
 pub const REGISTER_SID_USAGE: &str = "Usage: _register-sid <meta-dir> <slot> [<session-id>]";
 
-/// Whether `value` is a lowercase 8-4-4-4-12 hex UUID.
+/// Whether `value` is a lowercase 8-4-4-4-12 hex UUID — the Muse session-id
+/// grammar, shared with the board's Muse seat.
 #[must_use]
-fn is_lowercase_uuid(value: &str) -> bool {
+pub(crate) fn is_lowercase_uuid(value: &str) -> bool {
     let groups = [8, 4, 4, 4, 12];
     let mut parts = value.split('-');
     for width in groups {
@@ -736,6 +737,54 @@ pub(crate) fn find_muse_by_launch_id(
         }
     }
     found
+}
+
+/// The board's Muse transcript for one recorded session id:
+/// `<day>/<id>/session.jsonl` under [`MUSE_SESSIONS`], matched on the directory
+/// basename alone — no token scan. Every enumeration goes through the `entries`
+/// door, and every enumeration claims the caller's budget, so the walk is
+/// bounded by the same `QUOTA_MAX_FILES` every locator shares. Two hits
+/// refuse: one id names one conversation. The caller validated the id, so no
+/// path separator reaches the join.
+pub(crate) fn find_muse_session_file(
+    home: &Path,
+    id: &str,
+    budget: &mut crate::quota::Budget,
+) -> Result<Option<PathBuf>, String> {
+    if !budget.claim_file() {
+        return Err("transcript scan truncated".to_owned());
+    }
+    let mut found: Option<PathBuf> = None;
+    for year in entries(&home.join(MUSE_SESSIONS)) {
+        if !budget.claim_file() {
+            return Err("transcript scan truncated".to_owned());
+        }
+        for month in entries(&year) {
+            if !budget.claim_file() {
+                return Err("transcript scan truncated".to_owned());
+            }
+            for day in entries(&month) {
+                // Two claims: the day visit and its id probe below.
+                if !budget.claim_file() || !budget.claim_file() {
+                    return Err("transcript scan truncated".to_owned());
+                }
+                let under = entries(&day.join(id));
+                let present = under.iter().any(|path| {
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name == "session.jsonl")
+                });
+                if !present {
+                    continue;
+                }
+                if found.is_some() {
+                    return Err("conversation id is not unique".to_owned());
+                }
+                found = Some(day.join(id).join("session.jsonl"));
+            }
+        }
+    }
+    Ok(found)
 }
 
 // ---------------------------------------------------------------------------
