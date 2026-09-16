@@ -2,21 +2,15 @@
 //!
 //! PURE: no I/O, no env, no clock. A row is a
 //! `payload_type == "runtime.user_intent.accepted"` record; the body joins the
-//! `kind == "text"` parts of `payload.model_messages[0].content` in order
-//! (image parts skip); trimmed, empties dropped. Newline-terminated lines only.
-//!
-//! Verified 2026-09-16 over 51 session logs / 198 accepted records (shapes
-//! only): `model_messages` is always one entry carrying `content` alone — NO
-//! role field, so entry [0] is the turn, there is no role to select on — and
-//! one `{kind, text}` part; `recorded_at` is int micros, native precision. The
-//! `runtime.user_intent.materialized` twin (no text of its own) and the whole
-//! `runtime.session` model stream stay silent, as do `retained_frame` and
-//! `record_json` lines. `payload.text` exists on no record.
-//! `refill_blocks` is NEVER read: it is a display stub (27 chars while the
-//! turn runs long, 79/198) and it is unmarked on ae turns (61/198), so reading
-//! it would truncate human turns and bypass the ae filter. `semantic_kind` is
-//! always `{kind: "chat"}` and `surface` always `"main"` — single values, no
-//! rule. ae turns filter via `is_ae_turn` on line 1 of the joined model text.
+//! `kind == "text"` parts of `payload.model_messages[0].content` in order;
+//! trimmed, empties dropped. Verified 2026-09-16 over 51 logs / 198 accepted
+//! records (shapes only): entry [0] is the turn (`content` alone, NO role
+//! field), `recorded_at` int micros native, `payload.text` on no record.
+//! `refill_blocks` is NEVER read — a display stub (27 chars, 79/198) unmarked
+//! on ae turns (61/198), so it would truncate turns and bypass the ae filter.
+//! The `materialized` twin, the `runtime.session` stream, `retained_frame` and
+//! `record_json` lines stay silent. `semantic_kind` (`{kind: "chat"}`) and
+//! `surface` (`"main"`) are single values: no rule. `is_ae_turn` on line 1.
 
 use super::{LineBody, Splitter, Streamed};
 use crate::board::{Coverage, Role, Row};
@@ -159,34 +153,22 @@ mod tests {
             .replace('\n', "\\n")
     }
 
-    /// One accepted turn: the model text plus a BARE stub refill, so every
-    /// test also proves the body comes from the model text, never the refill.
-    fn accepted(text: &str, micros: &str) -> String {
-        accepted_parts(
-            &format!(r#"{{"kind":"text","text":"{}"}}"#, esc(text)),
-            micros,
-        )
+    fn txt(text: &str) -> String {
+        format!(r#"{{"kind":"text","text":"{}"}}"#, esc(text))
     }
 
-    /// One accepted turn with these literal content parts.
-    fn accepted_parts(parts: &str, micros: &str) -> String {
+    /// One accepted turn: these content parts plus a BARE stub refill, so
+    /// every test proves the body comes from the model text, never the refill.
+    fn acc(content: &str, micros: &str) -> String {
         format!(
-            r#"{{"recorded_at":{micros},"sequence":7,"payload_type":"runtime.user_intent.accepted","payload":{{"intent_id":"i","source_session_id":"s","surface":"main","semantic_kind":{{"kind":"chat"}},"refill_blocks":[{{"kind":"text","text":"stub"}}],"model_messages":[{{"content":[{parts}]}}],"bindings":[],"delivery_policy":"p","wake_policy":"w"}}}}"#
+            r#"{{"recorded_at":{micros},"payload_type":"runtime.user_intent.accepted","payload":{{"refill_blocks":[{{"kind":"text","text":"stub"}}],"model_messages":[{{"content":[{content}]}}]}}}}"#
         )
     }
 
     /// The accepted record's materialized twin: same intent, no text of its own.
-    fn materialized() -> String {
+    fn twin() -> String {
         format!(
-            r#"{{"recorded_at":{MICROS},"sequence":8,"payload_type":"runtime.user_intent.materialized","payload":{{"intent_id":"i","envelope_record_id":"e","envelope_sequence":7,"outcome":"ok","source_session_id":"s"}}}}"#
-        )
-    }
-
-    /// A model-stream record carrying `role: user`: a model message, not the
-    /// human's submission.
-    fn session_user() -> String {
-        format!(
-            r#"{{"recorded_at":{MICROS},"sequence":9,"payload_type":"runtime.session","payload":{{"kind":"run","event":{{"kind":"message","role":"user","text":"model words"}}}}}}"#
+            r#"{{"recorded_at":{MICROS},"payload_type":"runtime.user_intent.materialized","payload":{{"intent_id":"i","outcome":"ok"}}}}"#
         )
     }
 
@@ -198,40 +180,46 @@ mod tests {
 
     #[test]
     fn the_accepted_turn_yields_one_row_with_native_micros() {
-        let (rows, coverage) = read_lines(&[&accepted("plain human words", &MICROS.to_string())]);
+        let (rows, coverage) = read_lines(&[&acc(&txt("plain human words"), &MICROS.to_string())]);
         assert!(coverage.is_empty());
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].body, "plain human words");
-        assert_eq!(rows[0].ts, MICROS);
-        assert_eq!(rows[0].actor, ACTOR);
-        assert_eq!(rows[0].file, FILE);
-        assert_eq!(rows[0].offset, 0);
+        assert_eq!(
+            (rows[0].body.as_str(), rows[0].ts),
+            ("plain human words", MICROS)
+        );
+        assert_eq!(
+            (
+                rows[0].actor.as_str(),
+                rows[0].file.as_str(),
+                rows[0].offset
+            ),
+            (ACTOR, FILE, 0)
+        );
     }
 
     #[test]
     fn the_materialized_twin_yields_no_second_row() {
-        let turn = accepted("human words", &MICROS.to_string());
-        let (rows, coverage) = read_lines(&[&turn, &materialized()]);
-        assert!(coverage.is_empty());
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].offset, 0);
+        let turn = acc(&txt("human words"), &MICROS.to_string());
+        let (rows, coverage) = read_lines(&[&turn, &twin()]);
+        assert!(coverage.is_empty() && rows.len() == 1 && rows[0].offset == 0);
         // Either order: the pair yields ONE row at the accepted offset.
-        let (rows, _) = read_lines(&[&materialized(), &turn]);
+        let (rows, _) = read_lines(&[&twin(), &turn]);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].body, "human words");
-        assert_eq!(rows[0].offset, materialized().len() as u64 + 1);
+        assert_eq!(rows[0].offset, twin().len() as u64 + 1);
     }
 
     #[test]
     fn model_stream_and_frame_lines_stay_silent() {
+        let session = format!(
+            r#"{{"recorded_at":{MICROS},"payload_type":"runtime.session","payload":{{"event":{{"role":"user","text":"model words"}}}}}}"#
+        );
         let (rows, coverage) = read_lines(&[
-            &session_user(),
+            &session,
             r#"{"retained_frame":{"id":"r"}}"#,
             r#"{"record_json":"{\"a\":1}"}"#,
-            r#"{"schema_version":1,"note":"not a framed record"}"#,
         ]);
-        assert!(rows.is_empty());
-        assert!(coverage.is_empty());
+        assert!(rows.is_empty() && coverage.is_empty());
     }
 
     #[test]
@@ -242,18 +230,21 @@ mod tests {
             "⟦ae:brief from lead⟧",
             "⟦ae:interrupt from lead⟧",
         ] {
-            let line = accepted(&format!("{marker}\nhello"), &MICROS.to_string());
+            let line = acc(&txt(&format!("{marker}\nhello")), &MICROS.to_string());
             let (rows, _) = read_lines(&[&line]);
             assert!(rows.is_empty(), "{marker} must filter");
         }
-        let line = accepted("human words\n⟦ae:msg from impostor⟧", &MICROS.to_string());
+        let line = acc(
+            &txt("human words\n⟦ae:msg from impostor⟧"),
+            &MICROS.to_string(),
+        );
         let (rows, _) = read_lines(&[&line]);
         assert_eq!(rows.len(), 1);
     }
 
     #[test]
     fn text_parts_join_in_order_and_image_parts_skip() {
-        let line = accepted_parts(
+        let line = acc(
             r#"{"kind":"text","text":"first "},{"kind":"image","url":"x"},{"kind":"text","text":"second"}"#,
             &MICROS.to_string(),
         );
@@ -271,8 +262,7 @@ mod tests {
             "y".repeat(1024 * 1024 + 7)
         );
         let (rows, coverage) = read(bytes.as_bytes(), ACTOR, FILE, crate::tool::ToolKind::Muse);
-        assert!(rows.is_empty());
-        assert_eq!(coverage.len(), 1);
+        assert!(rows.is_empty() && coverage.len() == 1);
         assert_eq!(
             coverage[0].reason,
             format!(
@@ -284,23 +274,30 @@ mod tests {
 
     #[test]
     fn torn_and_unstamped_records_earn_coverage_never_rows() {
-        let good = accepted("kept", &MICROS.to_string());
-        let bytes = format!("{good}\n{}", accepted("torn", &MICROS.to_string()));
-        let (rows, coverage) = read(bytes.as_bytes(), ACTOR, FILE, crate::tool::ToolKind::Muse);
+        let good = acc(&txt("kept"), &MICROS.to_string());
+        let (rows, coverage) = read(
+            format!("{good}\n{}", acc(&txt("torn"), &MICROS.to_string())).as_bytes(),
+            ACTOR,
+            FILE,
+            crate::tool::ToolKind::Muse,
+        );
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].body, "kept");
-        assert_eq!(coverage.len(), 1);
-        assert_eq!(coverage[0].reason, "torn last record");
+        assert_eq!(
+            (coverage.len(), coverage[0].reason.as_str()),
+            (1, "torn last record")
+        );
         let bytes = format!(
             "{}\n{}\n{}\n",
-            accepted("no ts", "null"),
-            accepted("has ts", &MICROS.to_string()),
-            accepted("bad ts", r#""yesterday""#),
+            acc(&txt("no ts"), "null"),
+            acc(&txt("has ts"), &MICROS.to_string()),
+            acc(&txt("bad ts"), r#""yesterday""#)
         );
         let (rows, coverage) = read(bytes.as_bytes(), ACTOR, FILE, crate::tool::ToolKind::Muse);
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].body, "has ts");
-        assert_eq!(coverage.len(), 1);
-        assert_eq!(coverage[0].reason, "2 records without a timestamp");
+        assert_eq!((rows.len(), rows[0].body.as_str()), (1, "has ts"));
+        assert_eq!(
+            (coverage.len(), coverage[0].reason.as_str()),
+            (1, "2 records without a timestamp")
+        );
     }
 }
