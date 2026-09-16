@@ -1,0 +1,2 @@
+{"sequence":7,"payload_type":"runtime.user_intent.accepted","payload":{"model_messages":[{"content":[{"kind":"text","text":"synthetic unstamped turn"}]}]}}
+{"recorded_at":"yesterday","sequence":7,"payload_type":"runtime.user_intent.accepted","payload":{"model_messages":[{"content":[{"kind":"text","text":"synthetic bad-stamp turn"}]}]}}

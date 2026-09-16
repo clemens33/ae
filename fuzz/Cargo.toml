@@ -152,3 +152,10 @@ path = "fuzz_targets/board_grok.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "board_muse"
+path = "fuzz_targets/board_muse.rs"
+test = false
+doc = false
+bench = false
