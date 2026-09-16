@@ -178,10 +178,10 @@ fn non_claude_seats_name_their_phase_in_both_modes() {
     assert_eq!(
         reasons,
         [
-            // Codex and Grok read now: no id, so the read is attempted and covered.
+            // Codex, Grok and Muse read now: no id, so the read is attempted and covered.
             "invalid or missing conversation id",
             "invalid or missing conversation id",
-            "muse: phase 3b",
+            "invalid or missing conversation id",
             "agy: phase 5",
             "opencode: ruling pending",
             "gemini: out of scope",
@@ -699,6 +699,62 @@ fn grok_locate_failures_are_coverage_rows() {
             "conversation id is not unique",
         ]
     );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+const MUSE_ID: &str = "0199c0de-dddd-4890-abcd-ef0123456789";
+const MUSE_ABSENT: &str = "0199c0de-eeee-4890-abcd-ef0123456789";
+const MUSE_ENV: &str = r#"{"recorded_at":1789565338436454,"payload_type":"runtime.user_intent.accepted","payload":{"refill_blocks":[{"kind":"text","text":"stub"}],"model_messages":[{"content":[{"kind":"text","text":"{b}"}]}]}}"#;
+
+/// One synthetic Muse turn: model text plus a bare stub refill.
+fn muse_user(body: &str) -> String {
+    MUSE_ENV.replace("{b}", &body.replace('\n', "\\n"))
+}
+
+fn muse_roster(slot: &str, seat: &str, id: &str) -> String {
+    format!("seat.{slot}={seat}\nharness_session.{slot}={id}\nagent_bin.{slot}=muse\n")
+}
+
+/// Plant `.local/share/muse/sessions/<day>/<id>/session.jsonl` with these lines.
+fn plant_muse(root: &Path, day: &str, id: &str, lines: &[String]) {
+    let dir = root.join(".local/share/muse/sessions").join(day).join(id);
+    std::fs::create_dir_all(&dir).expect("muse dir");
+    std::fs::write(dir.join("session.jsonl"), lines.join("\n") + "\n").expect("session");
+}
+
+#[test]
+fn a_muse_seat_renders_rows_and_names_no_phase() {
+    let root = rig("muse-rows");
+    let one = muse_user("muse human words");
+    let two = muse_user("⟦ae:ctx⟧\nnot human");
+    plant_muse(&root, "2026/09/16", MUSE_ID, &[one, two]);
+    plant_session(&root, "ship", &muse_roster("main", "lead", MUSE_ID));
+    let observation = observe(&root, &["ship"], None);
+    assert!(observation.coverage.is_empty(), "no phase row after a read");
+    assert_eq!(observation.rows.len(), 1);
+    assert_eq!(observation.rows[0].body, "muse human words");
+    let text = board::render(&observation, false);
+    assert!(!text.contains("phase 3b"), "the phase row is gone: {text}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn muse_locate_failures_are_coverage_rows() {
+    let root = rig("muse-locate");
+    plant_session(&root, "linked", &muse_roster("main", "lead", MUSE_ID));
+    std::fs::write(root.join("real.jsonl"), muse_user("linked words") + "\n").expect("target");
+    let dir = root.join(format!(".local/share/muse/sessions/2026/09/16/{MUSE_ID}"));
+    std::fs::create_dir_all(&dir).expect("muse dir");
+    std::os::unix::fs::symlink(root.join("real.jsonl"), dir.join("session.jsonl")).expect("link");
+    plant_session(&root, "gone", &muse_roster("main", "lead", MUSE_ABSENT));
+    let observation = observe(&root, &["linked", "gone"], None);
+    assert!(observation.rows.is_empty(), "locate failures yield no rows");
+    assert_eq!(observation.coverage.len(), 2);
+    assert_eq!(
+        observation.coverage[0].reason,
+        "transcript is not a regular file"
+    );
+    assert_eq!(observation.coverage[1].reason, "transcript not found");
     let _ = std::fs::remove_dir_all(&root);
 }
 
