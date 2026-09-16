@@ -225,6 +225,47 @@ fn run_ps_has_exactly_one_product_caller() {
     );
 }
 
+/// The board's streaming door lives at exactly ONE product site: the
+/// transcript open in `src/board.rs`, reused by every harness reader. A second
+/// opener anywhere else is a review, not a diff.
+#[test]
+fn the_board_streaming_door_has_exactly_one_product_site() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut holders: Vec<String> = rust_sources()
+        .into_iter()
+        .filter(|p| p.starts_with(root.join("src")))
+        .filter(|p| fs::read_to_string(p).is_ok_and(|text| text.contains("stream_transcript(")))
+        .map(|p| {
+            p.strip_prefix(root)
+                .unwrap_or(&p)
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    holders.sort();
+
+    // Control FIRST: a scan that matched nothing would pass this vacuously.
+    assert!(
+        !holders.is_empty(),
+        "the scan found no `stream_transcript` anywhere in src/; it did not run"
+    );
+    assert_eq!(
+        holders,
+        vec!["src/board.rs".to_owned()],
+        "the board streaming door gained (or lost) a product site"
+    );
+
+    // And the site opens exactly once: a second `File::open` in the same file
+    // is the same bypass one file over.
+    let board = fs::read_to_string(root.join("src/board.rs"))
+        .unwrap_or_else(|err| panic!("the board module is readable: {err}"));
+    assert_eq!(
+        board.matches("File::open").count(),
+        1,
+        "src/board.rs opens more than once"
+    );
+}
+
 /// `transport::run_sysctl` is the FIXED-PROGRAM boot-time leg of the one
 /// process door — and it takes no arguments at all, because there is exactly
 /// one question ae asks `sysctl`.

@@ -1,0 +1,459 @@
+//! `ae board` over synthetic Claude transcripts — scope, coverage, rows.
+//!
+//! Fixtures copy `tests/it/usage.rs`: a scratch store with
+//! `.claude/projects/<slug>/<id>.jsonl` SYNTHETIC records (hand-written shapes,
+//! never copied transcript text) and a session dir with the meta rows
+//! `harness_session.<slot>`, `agent_bin.<slot>`, `config_home.<slot>`. Most
+//! pins drive `board::observe`/`board::render` directly; the exit codes ride
+//! the shipped binary like `tests/it/brief.rs`.
+
+#![allow(
+    clippy::disallowed_methods,
+    clippy::expect_used,
+    reason = "fixture setup crosses the filesystem boundary the product observes"
+)]
+
+use std::path::{Path, PathBuf};
+
+use ae::board::{self, Inputs};
+use ae::usage::SessionInput;
+
+use super::cli::ae;
+
+const SCOPE: &str = "scope: current conversations only (phase 1b) — a seat that resumed keeps only its current transcript";
+
+const CLAUDE_ID: &str = "0199c0de-1234-4890-abcd-ef0123456789";
+const OTHER_ID: &str = "0199c0de-1234-4890-abcd-ef0123456790";
+
+fn rig(tag: &str) -> PathBuf {
+    let root = std::env::temp_dir().join(format!("ae-board-it-{}-{tag}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    root
+}
+
+/// One synthetic Claude user turn. Bodies are plain fixture prose; the helper
+/// escapes what JSON strings forbid.
+fn user(ts: &str, body: &str) -> String {
+    let escaped = body.replace('\\', "\\\\").replace('"', "\\\"");
+    format!(
+        r#"{{"type":"user","timestamp":"{ts}","message":{{"role":"user","content":"{escaped}"}}}}"#
+    )
+}
+
+/// Plant `sessions/<name>/meta` carrying exactly these roster rows.
+fn plant_session(root: &Path, name: &str, roster: &str) -> PathBuf {
+    let dir = root.join("sessions").join(name);
+    std::fs::create_dir_all(&dir).expect("session dir");
+    std::fs::write(dir.join("meta"), format!("schema=2\n{roster}")).expect("meta");
+    dir
+}
+
+/// Plant `<store>/projects/<slug>/<id>.jsonl` with these newline-terminated lines.
+fn plant_transcript(store: &Path, slug: &str, id: &str, lines: &[String]) -> PathBuf {
+    let dir = store.join("projects").join(slug);
+    std::fs::create_dir_all(&dir).expect("project dir");
+    let path = dir.join(format!("{id}.jsonl"));
+    let mut body = lines.join("\n");
+    if !lines.is_empty() {
+        body.push('\n');
+    }
+    std::fs::write(&path, body).expect("transcript");
+    path
+}
+
+fn claude_roster(slot: &str, seat: &str, id: &str, store: &Path) -> String {
+    format!(
+        "seat.{slot}={seat}\nharness_session.{slot}={id}\nagent_bin.{slot}=claude\nconfig_home.{slot}={}\n",
+        store.display()
+    )
+}
+
+fn observe(root: &Path, names: &[&str], since: Option<i64>) -> board::Observation {
+    let inputs: Vec<SessionInput> = names
+        .iter()
+        .map(|name| SessionInput {
+            name: (*name).to_owned(),
+            path: root.join("sessions").join(name),
+        })
+        .collect();
+    board::observe(
+        &Inputs {
+            home: Some(root),
+            sessions: &inputs,
+        },
+        since,
+    )
+}
+
+/// Run the shipped binary over `root` with no pane identity.
+fn run(root: &Path, tail: &[&str]) -> (Option<i32>, String, String) {
+    let out = ae()
+        .env("HOME", root)
+        .env("AE_HOME", root)
+        .env_remove("TMUX_PANE")
+        .args(tail)
+        .output()
+        .expect("the ae binary should run");
+    (
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+#[test]
+fn text_scope_line_is_first_and_coverage_precedes_rows() {
+    let root = rig("scope-first");
+    let store = root.join("claude");
+    plant_transcript(
+        &store,
+        "work",
+        CLAUDE_ID,
+        &[user("2026-09-16T09:00:00.500Z", "plain human words")],
+    );
+    plant_session(
+        &root,
+        "one",
+        &format!(
+            "{}seat.worker.0=colead\nagent_bin.worker.0=codex\n",
+            claude_roster("main", "lead", CLAUDE_ID, &store)
+        ),
+    );
+    let text = board::render(&observe(&root, &["one"], None), false);
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines[0], SCOPE, "the scope statement is line 1: {text}");
+    let coverage = lines
+        .iter()
+        .position(|line| line.starts_with("coverage incomplete: "))
+        .expect("a coverage row");
+    let row = lines
+        .iter()
+        .position(|line| line.starts_with("## "))
+        .expect("a body row");
+    assert!(coverage < row, "coverage precedes body rows: {text}");
+    assert_eq!(
+        lines[coverage],
+        "coverage incomplete: one:colead — codex: phase 2"
+    );
+    assert_eq!(lines[row], "## 2026-09-16T09:00:00.500000Z one:lead");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn json_empty_board_is_scope_alone() {
+    let root = rig("empty-json");
+    let rendered = board::render(&observe(&root, &[], None), true);
+    let lines: Vec<&str> = rendered.lines().collect();
+    assert_eq!(lines.len(), 1, "scope alone on an empty board: {rendered}");
+    let value = ae::json::parse(lines[0]).expect("the scope line parses");
+    assert_eq!(value.get_str("kind"), Some("scope"));
+    assert_eq!(value.get_str("scope"), Some("current-conversations"));
+    assert_eq!(value.get_str("phase"), Some("1b"));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn non_claude_seats_name_their_phase_in_both_modes() {
+    let root = rig("phases");
+    let mut roster = String::new();
+    for (slot, seat, bin) in [
+        ("main", "lead", "codex"),
+        ("spawned.0", "a", "grok"),
+        ("spawned.1", "b", "muse"),
+        ("spawned.2", "c", "agy"),
+        ("spawned.3", "d", "opencode"),
+        ("spawned.4", "e", "gemini"),
+    ] {
+        roster.push_str(&format!("seat.{slot}={seat}\nagent_bin.{slot}={bin}\n"));
+    }
+    plant_session(&root, "fleet", &roster);
+    let observation = observe(&root, &["fleet"], None);
+    assert!(observation.rows.is_empty());
+    let reasons: Vec<&str> = observation
+        .coverage
+        .iter()
+        .map(|item| item.reason.as_str())
+        .collect();
+    assert_eq!(
+        reasons,
+        [
+            "codex: phase 2",
+            "grok: phase 3a",
+            "muse: phase 3b",
+            "agy: phase 5",
+            "opencode: ruling pending",
+            "gemini: out of scope",
+        ]
+    );
+    let text = board::render(&observation, false);
+    assert_eq!(text.lines().count(), 7, "scope plus six coverage rows");
+    let json = board::render(&observation, true);
+    let lines: Vec<&str> = json.lines().collect();
+    assert_eq!(lines.len(), 7);
+    for (line, reason) in lines[1..].iter().zip(reasons) {
+        let value = ae::json::parse(line).expect("every JSON line parses");
+        assert_eq!(value.get_str("kind"), Some("coverage"));
+        assert_eq!(value.get_str("reason"), Some(reason));
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn symlinked_transcript_is_covered_never_followed() {
+    let root = rig("symlink");
+    std::fs::create_dir_all(&root).expect("rig root");
+    let store = root.join("claude");
+    let target = root.join("real.jsonl");
+    std::fs::write(
+        &target,
+        format!(
+            "{}\n",
+            user("2026-09-16T09:00:00.500Z", "words behind a link")
+        ),
+    )
+    .expect("target");
+    let dir = store.join("projects").join("work");
+    std::fs::create_dir_all(&dir).expect("project dir");
+    std::os::unix::fs::symlink(&target, dir.join(format!("{CLAUDE_ID}.jsonl"))).expect("link");
+    plant_session(
+        &root,
+        "linked",
+        &claude_roster("main", "lead", CLAUDE_ID, &store),
+    );
+    let observation = observe(&root, &["linked"], None);
+    assert!(
+        observation.rows.is_empty(),
+        "a link is never followed into rows"
+    );
+    assert_eq!(observation.coverage.len(), 1);
+    assert_eq!(
+        observation.coverage[0].reason,
+        "transcript is not a regular file"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_subagents_transcript_never_yields_a_row() {
+    let root = rig("subagents");
+    let store = root.join("claude");
+    plant_transcript(
+        &store,
+        "work",
+        CLAUDE_ID,
+        &[user("2026-09-16T09:00:00.500Z", "parent words")],
+    );
+    // The sidechain carries the parent's prompt as a `user` turn — exactly
+    // what would masquerade as the human if the board read it.
+    let side = store
+        .join("projects")
+        .join("work")
+        .join(CLAUDE_ID)
+        .join("subagents");
+    std::fs::create_dir_all(&side).expect("subagents dir");
+    std::fs::write(
+        side.join("agent-x.jsonl"),
+        format!("{}\n", user("2026-09-16T09:01:00.500Z", "sidechain words")),
+    )
+    .expect("sidechain");
+    plant_session(
+        &root,
+        "sub",
+        &claude_roster("main", "lead", CLAUDE_ID, &store),
+    );
+    let observation = observe(&root, &["sub"], None);
+    assert!(observation.coverage.is_empty());
+    assert_eq!(observation.rows.len(), 1);
+    assert_eq!(observation.rows[0].body, "parent words");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn two_sessions_interleave_by_ts() {
+    let root = rig("interleave");
+    let store = root.join("claude");
+    plant_transcript(
+        &store,
+        "early",
+        CLAUDE_ID,
+        &[user("2026-09-16T10:00:00Z", "later words")],
+    );
+    plant_transcript(
+        &store,
+        "late",
+        OTHER_ID,
+        &[user("2026-09-16T09:00:00Z", "earlier words")],
+    );
+    plant_session(
+        &root,
+        "early",
+        &claude_roster("main", "lead", CLAUDE_ID, &store),
+    );
+    plant_session(
+        &root,
+        "late",
+        &claude_roster("main", "lead", OTHER_ID, &store),
+    );
+    // Caller order is late-first; the board sorts oldest-first regardless.
+    let observation = observe(&root, &["late", "early"], None);
+    let actors: Vec<&str> = observation
+        .rows
+        .iter()
+        .map(|row| row.actor.as_str())
+        .collect();
+    assert_eq!(actors, ["late:lead", "early:lead"]);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn since_keeps_the_equal_timestamp_row() {
+    let root = rig("since");
+    let store = root.join("claude");
+    plant_transcript(
+        &store,
+        "work",
+        CLAUDE_ID,
+        &[
+            user("2026-09-16T08:59:59Z", "too early"),
+            user("2026-09-16T09:00:00Z", "exactly since"),
+            user("2026-09-16T09:00:01Z", "after"),
+        ],
+    );
+    plant_session(
+        &root,
+        "day",
+        &claude_roster("main", "lead", CLAUDE_ID, &store),
+    );
+    let args = board::parse(&["--since".to_owned(), "2026-09-16T09:00:00Z".to_owned()])
+        .expect("the strict grammar parses");
+    let observation = observe(&root, &["day"], args.since_micros);
+    let bodies: Vec<&str> = observation
+        .rows
+        .iter()
+        .map(|row| row.body.as_str())
+        .collect();
+    assert_eq!(bodies, ["exactly since", "after"]);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn bad_since_is_a_usage_error_with_the_usage_text() {
+    let words = |items: &[&str]| {
+        items
+            .iter()
+            .map(|word| (*word).to_owned())
+            .collect::<Vec<_>>()
+    };
+    for tail in [
+        words(&["--since", "yesterday"]),
+        words(&["--since"]),
+        words(&["--frobnicate"]),
+        words(&["aedev", "aedev"]),
+    ] {
+        let rendered = board::parse(&tail)
+            .expect_err("this argv must not parse")
+            .render();
+        assert!(
+            rendered.starts_with("ae board: unexpected "),
+            "the token first: {rendered}"
+        );
+        assert!(
+            rendered.contains("Usage: ae board "),
+            "then the usage text: {rendered}"
+        );
+    }
+}
+
+#[test]
+fn json_lines_each_parse_with_their_kind_first() {
+    let root = rig("json-kinds");
+    let store = root.join("claude");
+    plant_transcript(
+        &store,
+        "work",
+        CLAUDE_ID,
+        &[user(
+            "2026-09-16T09:00:00.500Z",
+            "quoted \"body\" stays valid",
+        )],
+    );
+    plant_session(
+        &root,
+        "one",
+        &format!(
+            "{}seat.worker.0=colead\nagent_bin.worker.0=codex\n",
+            claude_roster("main", "lead", CLAUDE_ID, &store)
+        ),
+    );
+    let rendered = board::render(&observe(&root, &["one"], None), true);
+    let lines: Vec<&str> = rendered.lines().collect();
+    assert_eq!(lines.len(), 3);
+    let mut kinds = Vec::new();
+    for line in &lines {
+        let value = ae::json::parse(line).expect("every JSON line parses");
+        kinds.push(
+            value
+                .get_str("kind")
+                .expect("every line has a kind")
+                .to_owned(),
+        );
+    }
+    assert_eq!(kinds, ["scope", "coverage", "row"]);
+    let row = ae::json::parse(lines[2]).expect("the row line");
+    assert_eq!(
+        row.get("ts"),
+        Some(&ae::json::Value::Num(1_789_549_200_500_000))
+    );
+    assert_eq!(row.get_str("actor"), Some("one:lead"));
+    assert_eq!(row.get_str("role"), Some("human"));
+    assert_eq!(row.get_str("body"), Some("quoted \"body\" stays valid"));
+    assert_eq!(row.get_str("source"), Some("claude"));
+    assert!(
+        row.get_str("file")
+            .is_some_and(|file| file.contains(".jsonl#"))
+    );
+    assert_eq!(row.get("offset"), Some(&ae::json::Value::Num(0)));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn binary_bad_since_exits_2_with_usage() {
+    let root = rig("bin-since");
+    std::fs::create_dir_all(root.join("sessions")).expect("sessions dir");
+    let (code, stdout, stderr) = run(&root, &["board", "--since", "yesterday"]);
+    assert_eq!(code, Some(2), "stderr: {stderr}");
+    assert!(stdout.is_empty());
+    assert!(
+        stderr.starts_with("ae board: unexpected "),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("Usage: ae board "), "stderr: {stderr}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn binary_unknown_session_exits_1_with_one_line() {
+    let root = rig("bin-unknown");
+    std::fs::create_dir_all(root.join("sessions")).expect("sessions dir");
+    let (code, stdout, stderr) = run(&root, &["board", "nosuch"]);
+    assert_eq!(code, Some(1), "stderr: {stderr}");
+    assert!(stdout.is_empty());
+    assert_eq!(stderr, "ae board: no session named nosuch\n");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn binary_empty_board_prints_scope_only() {
+    let root = rig("bin-empty");
+    std::fs::create_dir_all(root.join("sessions")).expect("sessions dir");
+    let (code, stdout, stderr) = run(&root, &["board"]);
+    assert_eq!(code, Some(0), "stderr: {stderr}");
+    assert_eq!(stdout, format!("{SCOPE}\n"));
+    let (code, stdout, stderr) = run(&root, &["board", "--json"]);
+    assert_eq!(code, Some(0), "stderr: {stderr}");
+    assert_eq!(
+        stdout,
+        "{\"kind\":\"scope\",\"scope\":\"current-conversations\",\"phase\":\"1b\"}\n"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}

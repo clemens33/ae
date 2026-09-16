@@ -1732,6 +1732,11 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
             // The bounded, non-following reads of hostile `upgrade.check` and
             // `upgrade.log` state. Policy itself stays behind config.rs's door.
             "src/autoupgrade.rs".to_owned(),
+            // The message board's ONE streaming door: it opens only the
+            // transcript usage's locator lstat-checked (same dev+inode,
+            // length not shrunk) and streams it line by line under the
+            // board-wide 1 MiB per-line cap. Every later reader reuses it.
+            "src/board.rs".to_owned(),
             // Compact's own door: the stored request body a handover reply
             // names, read after its regular-file gate. An arbitrary path, not a
             // session file, which is why it is compact's and not the store's.
