@@ -106,7 +106,7 @@ impl Sink<'_> {
         };
         if content.get_str("type") != Some("text") {
             return;
-        };
+        }
         let Some(text) = content.get_str("text") else {
             return;
         };
