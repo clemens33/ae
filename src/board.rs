@@ -336,8 +336,8 @@ pub struct Observation {
     pub coverage: Vec<Coverage>,
 }
 
-/// Read every Claude, Codex and Grok seat of the handed-in sessions. A seat
-/// that cannot be read — unknown tool, unlocated store, unreadable
+/// Read every Claude, Codex, Grok and Muse seat of the handed-in sessions.
+/// A seat that cannot be read — unknown tool, unlocated store, unreadable
 /// transcript — becomes a [`Coverage`], never a silent subset.
 #[must_use]
 pub fn observe(inputs: &Inputs<'_>, since_micros: Option<i64>) -> Observation {
@@ -362,9 +362,9 @@ pub fn observe(inputs: &Inputs<'_>, since_micros: Option<i64>) -> Observation {
     Observation { rows, coverage }
 }
 
-/// Read one roster seat: Claude, Codex and Grok transcripts stream through
-/// the door into their reader; every other harness names its phase in a
-/// coverage row.
+/// Read one roster seat: Claude, Codex, Grok and Muse transcripts stream
+/// through the door into their reader; every other harness names its phase in
+/// a coverage row.
 fn observe_seat(
     session: &str,
     entry: &crate::meta::RosterEntry,
@@ -382,6 +382,10 @@ fn observe_seat(
     // String dispatch, as `unsupported_reason` does: literals live in tool.rs.
     if tool.adapter().name == "grok" {
         observe_grok_seat(entry, home, &actor, tool, rows, coverage);
+        return;
+    }
+    if tool.adapter().name == "muse" {
+        observe_muse_seat(entry, home, &actor, tool, rows, coverage);
         return;
     }
     if !matches!(source, UsageSource::ClaudeTranscripts) {
@@ -539,6 +543,69 @@ fn observe_grok_seat(
     coverage.append(&mut seat_coverage);
 }
 
+/// Read one Muse roster seat: the recorded id names its day-dir basename, the
+/// finder walks the dated store through capture's door, and the shared lstat
+/// plus the door stream the transcript into the reader.
+fn observe_muse_seat(
+    entry: &crate::meta::RosterEntry,
+    home: Option<&Path>,
+    actor: &str,
+    tool: ToolKind,
+    rows: &mut Vec<Row>,
+    coverage: &mut Vec<Coverage>,
+) {
+    let cover = |reason: String| Coverage {
+        actor: actor.to_owned(),
+        reason,
+    };
+    // Capture's grammar, never usage's: a Muse id is a lowercase UUID dir
+    // basename, and that grammar refuses every path separator by construction.
+    let id = entry.harness_session.as_deref().unwrap_or_default();
+    if !crate::session_launch::capture::is_lowercase_uuid(id) {
+        coverage.push(cover("invalid or missing conversation id".to_owned()));
+        return;
+    }
+    let Some(home) = home else {
+        coverage.push(cover("legacy config home unavailable".to_owned()));
+        return;
+    };
+    let mut budget = Budget::new();
+    let located = match crate::session_launch::capture::find_muse_session_file(home, id, &mut budget)
+    {
+        Ok(located) => located,
+        Err(reason) => {
+            coverage.push(cover(reason));
+            return;
+        }
+    };
+    let Some(path) = located else {
+        coverage.push(cover("transcript not found".to_owned()));
+        return;
+    };
+    let metadata = match lstat_regular(&path) {
+        Ok(Some(metadata)) => metadata,
+        Ok(None) => {
+            coverage.push(cover("transcript not found".to_owned()));
+            return;
+        }
+        Err(reason) => {
+            coverage.push(cover(reason));
+            return;
+        }
+    };
+    let streamed = match stream_transcript(&path, &metadata) {
+        Ok(streamed) => streamed,
+        Err(failure) => {
+            coverage.push(cover(door_reason(failure).to_owned()));
+            return;
+        }
+    };
+    let file = file_identity(&path, &metadata);
+    let (mut seat_rows, mut seat_coverage) = muse::read_stream(&streamed, actor, &file, tool);
+    rows.append(&mut seat_rows);
+    coverage.append(&mut seat_coverage);
+}
+
 /// ONE lstat for every board locator: the candidate proved a regular file
 /// without following a link. A missing candidate (or a non-directory on its
 /// path) is `Ok(None)` — the locator keeps looking; a symlink or non-file
@@ -614,7 +681,6 @@ fn unsupported_reason(tool: ToolKind) -> &'static str {
     // String dispatch, never `ToolKind::` arms: production tool literals live
     // in `src/tool.rs` alone (`per_tool_branches_live_only_in_the_adapter_rows`).
     match tool.adapter().name {
-        "muse" => "muse: phase 3b",
         "agy" => "agy: phase 5",
         "opencode" => "opencode: ruling pending",
         "gemini" => "gemini: out of scope",
