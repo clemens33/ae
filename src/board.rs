@@ -11,11 +11,12 @@
 
 pub mod claude;
 pub mod codex;
+pub mod grok;
 
 use std::fmt::Write as _;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read as _};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::json::Value;
 use crate::quota::{Bounded, Budget};
@@ -334,9 +335,9 @@ pub struct Observation {
     pub coverage: Vec<Coverage>,
 }
 
-/// Read every Claude and Codex seat of the handed-in sessions. A seat that
-/// cannot be read — unknown tool, unlocated store, unreadable transcript —
-/// becomes a [`Coverage`], never a silent subset.
+/// Read every Claude, Codex and Grok seat of the handed-in sessions. A seat
+/// that cannot be read — unknown tool, unlocated store, unreadable
+/// transcript — becomes a [`Coverage`], never a silent subset.
 #[must_use]
 pub fn observe(inputs: &Inputs<'_>, since_micros: Option<i64>) -> Observation {
     let mut rows = Vec::new();
@@ -360,8 +361,9 @@ pub fn observe(inputs: &Inputs<'_>, since_micros: Option<i64>) -> Observation {
     Observation { rows, coverage }
 }
 
-/// Read one roster seat: Claude and Codex transcripts stream through the door
-/// into their reader; every other harness names its phase in a coverage row.
+/// Read one roster seat: Claude, Codex and Grok transcripts stream through
+/// the door into their reader; every other harness names its phase in a
+/// coverage row.
 fn observe_seat(
     session: &str,
     entry: &crate::meta::RosterEntry,
@@ -374,6 +376,12 @@ fn observe_seat(
     let source = tool.adapter().usage.source;
     if matches!(source, UsageSource::CodexRollout) {
         observe_codex_seat(entry, home, &actor, tool, rows, coverage);
+        return;
+    }
+    // String dispatch, never a `ToolKind::` arm: production tool literals
+    // live in `src/tool.rs` alone, as `unsupported_reason` does.
+    if tool.adapter().name == "grok" {
+        observe_grok_seat(entry, home, &actor, tool, rows, coverage);
         return;
     }
     if !matches!(source, UsageSource::ClaudeTranscripts) {
@@ -478,12 +486,135 @@ fn observe_codex_seat(
     coverage.append(&mut seat_coverage);
 }
 
+/// Read one Grok roster seat: the uuid directory is located by scanning the
+/// `<home>/.grok/sessions` root — the percent-encoded cwd is never derived —
+/// then the located file streams through the EXISTING door, no second stat.
+fn observe_grok_seat(
+    entry: &crate::meta::RosterEntry,
+    home: Option<&Path>,
+    actor: &str,
+    tool: ToolKind,
+    rows: &mut Vec<Row>,
+    coverage: &mut Vec<Coverage>,
+) {
+    let cover = |reason: String| Coverage {
+        actor: actor.to_owned(),
+        reason,
+    };
+    let Some(id) = crate::usage::valid_id(entry.harness_session.as_deref()) else {
+        coverage.push(cover("invalid or missing conversation id".to_owned()));
+        return;
+    };
+    let Some(home) = home else {
+        coverage.push(cover("legacy config home unavailable".to_owned()));
+        return;
+    };
+    // The `.grok` literal lives in the adapter row alone, as quota reads it.
+    let Some(dir) = tool.adapter().quota.default_home else {
+        coverage.push(cover("unsupported tool".to_owned()));
+        return;
+    };
+    let root = home.join(dir).join("sessions");
+    let mut budget = Budget::new();
+    let located = match locate_grok_updates(&root, &id, &mut budget) {
+        Ok(located) => located,
+        Err(reason) => {
+            coverage.push(cover(reason));
+            return;
+        }
+    };
+    let Some(found) = located else {
+        coverage.push(cover("transcript not found".to_owned()));
+        return;
+    };
+    let streamed = match stream_transcript(&found.path, &found.metadata) {
+        Ok(streamed) => streamed,
+        Err(failure) => {
+            coverage.push(cover(door_reason(failure).to_owned()));
+            return;
+        }
+    };
+    let file = file_identity(&found.path, &found.metadata);
+    let (mut seat_rows, mut seat_coverage) = grok::read_stream(&streamed, actor, &file, tool);
+    rows.append(&mut seat_rows);
+    coverage.append(&mut seat_coverage);
+}
+
+/// One located Grok transcript: the uuid directory's `updates.jsonl` plus the
+/// lstat that gates the door.
+struct LocatedGrok {
+    path: PathBuf,
+    metadata: std::fs::Metadata,
+}
+
+/// Scan `<sessions root>/*/<uuid>/updates.jsonl` for one seat's conversation:
+/// the cwd directories are never classified — only the candidate file is, and
+/// a missing candidate (or a non-directory on its path) skips silently. Two
+/// hits refuse as not unique; a symlinked candidate refuses, never followed.
+/// Every verdict is order-independent: any symlink anywhere fails the scan.
+fn locate_grok_updates(
+    root: &Path,
+    id: &str,
+    budget: &mut Budget,
+) -> Result<Option<LocatedGrok>, String> {
+    if !budget.claim_file() {
+        return Err("transcript scan truncated".to_owned());
+    }
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: bounded board enumeration of the grok sessions root"
+    )]
+    let listing = match std::fs::read_dir(root) {
+        Ok(listing) => listing,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err("transcript unreadable".to_owned()),
+    };
+    let mut found: Option<LocatedGrok> = None;
+    for entry in listing {
+        if !budget.claim_file() {
+            return Err("transcript scan truncated".to_owned());
+        }
+        let entry =
+            entry.map_err(|_| "directory entry unreadable".to_owned())?;
+        if !budget.claim_file() {
+            return Err("transcript scan truncated".to_owned());
+        }
+        let candidate = entry.path().join(id).join("updates.jsonl");
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "a door: board lstat proves the grok candidate a regular file, never a symlink"
+        )]
+        let metadata = match std::fs::symlink_metadata(&candidate) {
+            Ok(metadata) => metadata,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) =>
+            {
+                continue;
+            }
+            Err(_) => return Err("transcript unreadable".to_owned()),
+        };
+        if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+            return Err("transcript is not a regular file".to_owned());
+        }
+        if found.is_some() {
+            return Err("conversation id is not unique".to_owned());
+        }
+        found = Some(LocatedGrok {
+            path: candidate,
+            metadata,
+        });
+    }
+    Ok(found)
+}
+
 /// The phase (or ruling) behind a harness the board cannot read yet.
 fn unsupported_reason(tool: ToolKind) -> &'static str {
     // String dispatch, never `ToolKind::` arms: production tool literals live
     // in `src/tool.rs` alone (`per_tool_branches_live_only_in_the_adapter_rows`).
     match tool.adapter().name {
-        "grok" => "grok: phase 3a",
         "muse" => "muse: phase 3b",
         "agy" => "agy: phase 5",
         "opencode" => "opencode: ruling pending",
