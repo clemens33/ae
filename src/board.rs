@@ -543,9 +543,8 @@ fn observe_grok_seat(
     coverage.append(&mut seat_coverage);
 }
 
-/// Read one Muse roster seat: the recorded id names its day-dir basename, the
-/// finder walks the dated store through capture's door, and the shared lstat
-/// plus the door stream the transcript into the reader.
+/// Read one Muse roster seat: the recorded id names its day-dir basename; the
+/// finder, shared lstat and door stream the transcript into the reader.
 fn observe_muse_seat(
     entry: &crate::meta::RosterEntry,
     home: Option<&Path>,
@@ -570,14 +569,14 @@ fn observe_muse_seat(
         return;
     };
     let mut budget = Budget::new();
-    let located = match crate::session_launch::capture::find_muse_session_file(home, id, &mut budget)
-    {
-        Ok(located) => located,
-        Err(reason) => {
-            coverage.push(cover(reason));
-            return;
-        }
-    };
+    let located =
+        match crate::session_launch::capture::find_muse_session_file(home, id, &mut budget) {
+            Ok(located) => located,
+            Err(reason) => {
+                coverage.push(cover(reason));
+                return;
+            }
+        };
     let Some(path) = located else {
         coverage.push(cover("transcript not found".to_owned()));
         return;

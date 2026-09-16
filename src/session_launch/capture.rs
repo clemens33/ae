@@ -739,13 +739,10 @@ pub(crate) fn find_muse_by_launch_id(
     found
 }
 
-/// The board's Muse transcript for one recorded session id:
-/// `<day>/<id>/session.jsonl` under [`MUSE_SESSIONS`], matched on the directory
-/// basename alone — no token scan. Every enumeration goes through the `entries`
-/// door, and every enumeration claims the caller's budget, so the walk is
-/// bounded by the same `QUOTA_MAX_FILES` every locator shares. Two hits
-/// refuse: one id names one conversation. The caller validated the id, so no
-/// path separator reaches the join.
+/// The board's Muse transcript: `<day>/<id>/session.jsonl` under
+/// [`MUSE_SESSIONS`] by directory basename, no token scan. Every enumeration
+/// goes through the `entries` door and claims the budget (`QUOTA_MAX_FILES`
+/// bounds the walk); two hits refuse. The caller validated the id.
 pub(crate) fn find_muse_session_file(
     home: &Path,
     id: &str,

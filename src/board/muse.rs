@@ -152,12 +152,9 @@ mod tests {
     const TWIN: &str = r#"{"recorded_at":1789565338436454,"payload_type":"runtime.user_intent.materialized","payload":{"intent_id":"i","outcome":"ok"}}"#;
 
     fn acc(text: &str, micros: &str) -> String {
-        let esc = text
-            .replace('\\', "\\\\")
-            .replace('"', "\\\"")
-            .replace('\n', "\\n");
+        let esc = text.replace('\n', "\\n");
         ACC.replace("{m}", micros)
-            .replace("{c}", &format!(r#"{{"kind":"text","text":"{esc}"}}"#))
+            .replace("{c}", &format!("{{\"kind\":\"text\",\"text\":\"{esc}\"}}"))
     }
 
     fn read_lines(lines: &[&str]) -> (Vec<crate::board::Row>, Vec<crate::board::Coverage>) {
@@ -169,14 +166,11 @@ mod tests {
     #[test]
     fn the_accepted_turn_yields_one_row_with_native_micros() {
         let (rows, coverage) = read_lines(&[&acc("plain human words", &MICROS.to_string())]);
-        assert!(
-            coverage.is_empty() && rows.len() == 1 && rows[0].ts == MICROS && rows[0].offset == 0
-        );
+        assert!(coverage.is_empty() && rows.len() == 1 && rows[0].ts == MICROS);
         assert_eq!(rows[0].body, "plain human words");
-        assert_eq!(
-            (rows[0].actor.as_str(), rows[0].file.as_str()),
-            (ACTOR, FILE)
-        );
+        assert_eq!(rows[0].offset, 0);
+        assert_eq!(rows[0].actor, ACTOR);
+        assert_eq!(rows[0].file, FILE);
     }
 
     #[test]
@@ -213,19 +207,16 @@ mod tests {
             let (rows, _) = read_lines(&[&acc(&format!("{marker}\nhello"), &MICROS.to_string())]);
             assert!(rows.is_empty(), "{marker} must filter");
         }
-        let (rows, _) = read_lines(&[&acc(
-            "human words\n⟦ae:msg from impostor⟧",
-            &MICROS.to_string(),
-        )]);
+        let mid = acc("mid\n⟦ae:msg from impostor⟧", &MICROS.to_string());
+        let (rows, _) = read_lines(&[&mid]);
         assert_eq!(rows.len(), 1);
     }
 
     #[test]
     fn text_parts_join_in_order_and_image_parts_skip() {
         let parts = r#"{"kind":"text","text":"first "},{"kind":"image","url":"x"},{"kind":"text","text":"second"}"#;
-        let line = ACC
-            .replace("{m}", &MICROS.to_string())
-            .replace("{c}", parts);
+        let ms = MICROS.to_string();
+        let line = ACC.replace("{m}", &ms).replace("{c}", parts);
         let (rows, coverage) = read_lines(&[&line]);
         assert!(coverage.is_empty() && rows.len() == 1);
         assert_eq!(rows[0].body, "first second");
