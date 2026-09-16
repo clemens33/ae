@@ -29,21 +29,46 @@
 //!   in NO local transcript; both are TAKEN from the jq reference, first-line
 //!   prefix only, LOSSY with collision tests.
 
+use super::{LINE_CAP, Line, LineBody, Streamed};
 use crate::board::{Coverage, Role, Row};
 use crate::tool::ToolKind;
 
-/// A line longer than this is hostile, not a record: skipped and reported.
-const LINE_CAP: usize = 1024 * 1024;
+/// Read one Claude transcript from whole bytes: split into lines exactly as
+/// the door would stream them, then read the stream. A thin wrapper, so the
+/// fuzz target covers the code the door runs.
+#[must_use]
+pub fn read(bytes: &[u8], actor: &str, file: &str, source: ToolKind) -> (Vec<Row>, Vec<Coverage>) {
+    let mut lines = Vec::new();
+    let mut start = 0usize;
+    let mut torn = false;
+    while start < bytes.len() {
+        let Some(relative) = bytes[start..].iter().position(|byte| *byte == b'\n') else {
+            torn = !bytes[start..].is_empty();
+            break;
+        };
+        let end = start + relative;
+        lines.push(Line {
+            offset: start as u64,
+            body: LineBody::Full(bytes[start..end].to_vec()),
+        });
+        start = end + 1;
+    }
+    read_stream(&Streamed { lines, torn }, actor, file, source)
+}
 
-/// Read one Claude transcript: every newline-terminated line is attempted,
-/// torn or over-cap lines become [`Coverage`], human turns become [`Row`].
+/// Read one streamed Claude transcript: the door's lines in, human rows out.
 ///
 /// The caller supplies `source`: the reader translates bytes, it never decides
 /// which tool it reads — production tool literals live in `src/tool.rs` alone
 /// (`per_tool_branches_live_only_in_the_adapter_rows`), and the locating glue
 /// already classifies the seat before it calls here.
 #[must_use]
-pub fn read(bytes: &[u8], actor: &str, file: &str, source: ToolKind) -> (Vec<Row>, Vec<Coverage>) {
+pub(crate) fn read_stream(
+    streamed: &Streamed,
+    actor: &str,
+    file: &str,
+    source: ToolKind,
+) -> (Vec<Row>, Vec<Coverage>) {
     let mut sink = Sink {
         actor,
         file,
@@ -52,17 +77,16 @@ pub fn read(bytes: &[u8], actor: &str, file: &str, source: ToolKind) -> (Vec<Row
         coverage: Vec::new(),
         missing_ts: 0,
     };
-    let mut start = 0usize;
-    while start < bytes.len() {
-        let Some(relative) = bytes[start..].iter().position(|byte| *byte == b'\n') else {
-            if !bytes[start..].is_empty() {
-                sink.cover("torn last record");
+    for line in &streamed.lines {
+        match &line.body {
+            LineBody::Full(bytes) => sink.push_line(bytes, line.offset),
+            LineBody::Overlong(len) => {
+                sink.cover(&format!("line exceeds 1 MiB cap ({len} bytes)"));
             }
-            break;
-        };
-        let end = start + relative;
-        sink.push_line(&bytes[start..end], start);
-        start = end + 1;
+        }
+    }
+    if streamed.torn {
+        sink.cover("torn last record");
     }
     if sink.missing_ts > 0 {
         let noun = if sink.missing_ts == 1 {
@@ -95,7 +119,7 @@ impl Sink<'_> {
     }
 
     /// Attempt one newline-terminated line at byte `offset`.
-    fn push_line(&mut self, line: &[u8], offset: usize) {
+    fn push_line(&mut self, line: &[u8], offset: u64) {
         if line.len() > LINE_CAP {
             self.cover(&format!("line exceeds 1 MiB cap ({} bytes)", line.len()));
             return;
@@ -153,7 +177,7 @@ impl Sink<'_> {
             body,
             source: self.source,
             file: self.file.to_owned(),
-            offset: offset as u64,
+            offset,
         });
     }
 }
@@ -186,16 +210,21 @@ fn is_plumbing(value: &crate::json::Value, first: &str) -> bool {
 
 /// Strip every `<system-reminder>…</system-reminder>` span, innermost first so
 /// nesting collapses correctly. An unclosed opener is left alone — eating the
-/// rest of a human turn on a guess would be the worse error.
+/// rest of a human turn on a guess would be the worse error — and an orphan
+/// closer is skipped past, so a proper span after it still strips.
 fn strip_reminders(body: &str) -> String {
     const OPEN: &str = "<system-reminder>";
     const CLOSE: &str = "</system-reminder>";
     let mut out = body.to_owned();
-    while let Some(close_at) = out.find(CLOSE) {
-        let Some(open_at) = out[..close_at].rfind(OPEN) else {
-            break;
-        };
-        out.replace_range(open_at..close_at + CLOSE.len(), "");
+    let mut cursor = 0;
+    while let Some(relative) = out[cursor..].find(CLOSE) {
+        let close_at = cursor + relative;
+        if let Some(open_at) = out[..close_at].rfind(OPEN) {
+            out.replace_range(open_at..close_at + CLOSE.len(), "");
+            cursor = open_at;
+        } else {
+            cursor = close_at + CLOSE.len();
+        }
     }
     out
 }
@@ -331,6 +360,15 @@ mod tests {
         let (rows, _) = read_one(&user(r#""kept <system-reminder>oops""#));
         assert_eq!(rows.len(), 1);
         assert!(rows[0].body.contains("<system-reminder>"));
+    }
+
+    #[test]
+    fn an_orphan_closer_is_skipped_and_a_later_span_still_strips() {
+        let (rows, _) = read_one(&user(
+            r#""before </system-reminder> middle <system-reminder>gone</system-reminder> after""#,
+        ));
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].body, "before </system-reminder> middle  after");
     }
 
     #[test]
