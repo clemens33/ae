@@ -650,10 +650,12 @@ fn a_seven_line_client_draws_only_its_current_sessions_agents() {
     let menu = ae::orchestrator::menu_for_client_session_in(
         &sessions,
         &[],
+        &[],
         true,
         &ae::theme::Palette::DARCULA,
         Some(&staged.client),
         Some(&home_id),
+        None,
         ae::orchestrator::PickerBounds {
             height,
             width,

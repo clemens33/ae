@@ -610,11 +610,13 @@ fn run_orchestrator(tail: &[String], err: &mut impl Write) -> Result<u8> {
     let look = picker_look(&server, opened_session.as_deref());
     let menu = match orchestrator::menu_for_client_session_in(
         &sessions,
+        &[],
         &panes,
         look.icons,
         &look.palette,
         client,
         opened_session.as_deref(),
+        None,
         orchestrator::PickerBounds {
             height: client_snapshot.height,
             width: client_snapshot.width,

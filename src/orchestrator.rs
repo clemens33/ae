@@ -430,6 +430,45 @@ enum Expansion {
     Capped,
 }
 
+/// One STOPPED ae session the durable reader proved absent from the calling
+/// server, as the picker draws it.
+///
+/// The caller supplies these rows already ordered (most recently live first);
+/// the builder draws them after the running rows and never expands a roster
+/// under one — a stopped session has no agents to show.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PickerStopped {
+    /// The durable session name.
+    pub name: String,
+    /// The recorded goal, empty when the record carries none.
+    pub goal: String,
+    /// The recorded git branch, empty when the record carries none.
+    pub branch: String,
+    /// The last moment only a live session produces, when the record dates one.
+    pub last_live: Option<i64>,
+}
+
+/// The captured clicker a stopped row's resume is pinned to.
+///
+/// Every field was read from the invoking client and its server at DRAW time;
+/// the continuation re-proves them before it launches anything, so a row a
+/// different attachment picked up cannot resume a session on its behalf.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PickerResume<'a> {
+    /// The client that opened the picker.
+    pub client: &'a str,
+    /// That client's process at draw time.
+    pub client_pid: &'a str,
+    /// The invoking server's process at draw time.
+    pub server_pid: &'a str,
+    /// The invoking server's start second at draw time.
+    pub server_start: &'a str,
+    /// The epoch after which the row is too stale to act on.
+    pub deadline: i64,
+    /// The argv prefix that re-executes this core (`picker_launcher`).
+    pub launcher: &'a [String],
+}
+
 /// The picker, as a menu model — the whole pure step.
 #[must_use]
 pub fn menu(
@@ -466,11 +505,13 @@ pub fn menu_for_client_session(
 ) -> Menu {
     build_menu(
         sessions,
+        &[],
         panes,
         icons,
         palette,
         client,
         opened_session,
+        None,
         PickerBounds {
             height: usize::MAX,
             width: usize::MAX,
@@ -481,17 +522,28 @@ pub fn menu_for_client_session(
 
 /// The picker model constrained by the exact calling-client snapshot.
 ///
+/// `stopped` arrives already ordered by its caller and is drawn after the
+/// running rows. `resume` pins every stopped row's action to the client that
+/// opened the picker; without it those rows draw dim and unselectable rather
+/// than offering an action nothing could prove.
+///
 /// # Errors
 ///
 /// [`PickerRefusal::TinyClient`] before any tmux draw when the border itself
 /// would leave no useful menu surface.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one pure build call carrying both row sources and the resume pin"
+)]
 pub fn menu_for_client_session_in(
     sessions: &[PickerSession],
+    stopped: &[PickerStopped],
     panes: &[PickerPane],
     icons: bool,
     palette: &Palette,
     client: Option<&str>,
     opened_session: Option<&str>,
+    resume: Option<&PickerResume<'_>>,
     bounds: PickerBounds,
 ) -> Result<Menu, PickerRefusal> {
     if bounds.height < 6 || bounds.width < 8 {
@@ -499,14 +551,27 @@ pub fn menu_for_client_session_in(
     }
     Ok(build_menu(
         sessions,
+        stopped,
         panes,
         icons,
         palette,
         client,
         opened_session,
+        resume,
         bounds,
     ))
 }
+
+/// The state word every stopped row draws beside its glyph.
+///
+/// The mark is `Dead`'s own glyph — the process behind the pane IS gone — and
+/// this word keeps the row from reading as the attention verdict `dead`: a
+/// stopped session is a fleet fact, not a verdict, and it is never ranked.
+const STOPPED_WORD: &str = "stopped";
+
+/// The resume continuation's flag word, unique enough that it can never be
+/// mistaken for a session name or a menu flag.
+pub(crate) const PICKER_RESUME_FLAG: &str = "--picker-resume";
 
 #[allow(
     clippy::too_many_arguments,
@@ -515,11 +580,13 @@ pub fn menu_for_client_session_in(
 )]
 fn build_menu(
     sessions: &[PickerSession],
+    stopped: &[PickerStopped],
     panes: &[PickerPane],
     icons: bool,
     palette: &Palette,
     client: Option<&str>,
     opened_session: Option<&str>,
+    resume: Option<&PickerResume<'_>>,
     bounds: PickerBounds,
 ) -> Menu {
     let ranked = ranked_sessions(sessions);
@@ -538,32 +605,54 @@ fn build_menu(
         .iter()
         .map(|session| crate::tmux::parse_picker_agents(&session.agents, bounds.now_epoch))
         .collect();
-    let overflow = usize::from(ranked.len() > shown);
+    let running_overflow = usize::from(ranked.len() > shown);
+    // Stopped rows carry their own cap and their own overflow note, so a huge
+    // stopped fleet cannot crowd out the running rows above it.
+    let shown_stopped = stopped.len().min(ROW_CAP);
+    let stopped_visible = &stopped[..shown_stopped];
+    let stopped_overflow = usize::from(stopped.len() > shown_stopped);
     let item_capacity = bounds.height.saturating_sub(2);
     // The widest this draw could ever become — every roster expanded — which
     // bounds the pre-allocation when the client height is unbounded.
     let widest_rows = agents
         .iter()
         .map(|agents| agent_row_count(agents.as_deref()))
-        .fold(shown.saturating_add(overflow), usize::saturating_add);
+        .fold(
+            shown
+                .saturating_add(running_overflow)
+                .saturating_add(shown_stopped)
+                .saturating_add(stopped_overflow),
+            usize::saturating_add,
+        );
     let current = opened_session.and_then(|id| visible.iter().position(|row| row.id == id));
     let current_rows = current.map_or(usize::MAX, |index| {
         shown
-            .saturating_add(overflow)
+            .saturating_add(running_overflow)
+            .saturating_add(shown_stopped)
+            .saturating_add(stopped_overflow)
             .saturating_add(agent_row_count(agents[index].as_deref()))
     });
+    // Every row this draw knows about, rosters excluded — the collapsed floor.
+    let flat_rows = shown
+        .saturating_add(running_overflow)
+        .saturating_add(shown_stopped)
+        .saturating_add(stopped_overflow);
     let expansion = if current_rows <= item_capacity {
         Expansion::Current
-    } else if shown.saturating_add(overflow) <= item_capacity {
+    } else if flat_rows <= item_capacity {
         Expansion::Collapsed
     } else {
         Expansion::Capped
     };
     let inner_width = bounds.width.saturating_sub(4);
-    let displayed = if expansion == Expansion::Capped {
-        shown.min(item_capacity.saturating_sub(1))
+    // Running rows keep today's share exactly; stopped rows fill what is left,
+    // one row staying reserved for the omission note.
+    let (displayed, displayed_stopped) = if expansion == Expansion::Capped {
+        let running = shown.min(item_capacity.saturating_sub(1));
+        let remaining = item_capacity.saturating_sub(running).saturating_sub(1);
+        (running, shown_stopped.min(remaining))
     } else {
-        shown
+        (shown, shown_stopped)
     };
     // One pass over exactly the rows this draw will show, so every column is
     // only as wide as the content under it.
@@ -579,6 +668,9 @@ fn build_menu(
                 columns.hold_agent(&agent.name, &agent.profile, &agent.state);
             }
         }
+    }
+    for row in stopped_visible.iter().take(displayed_stopped) {
+        columns.hold_session(&clean(&row.name), STOPPED_WORD, &clean(&row.branch));
     }
     let mut session_items = Vec::with_capacity(displayed);
     for (index, session) in visible.iter().take(displayed).enumerate() {
@@ -597,7 +689,24 @@ fn build_menu(
             opened_session,
         ));
     }
-    assign_keys(&mut session_items);
+    let next_key = assign_keys(&mut session_items);
+    let mut stopped_items: Vec<MenuItem> = stopped_visible
+        .iter()
+        .take(displayed_stopped)
+        .map(|row| {
+            stopped_item(
+                row,
+                &Row {
+                    columns,
+                    suffix: None,
+                    max_width: inner_width,
+                },
+                icons,
+                resume,
+            )
+        })
+        .collect();
+    assign_keys_from(&mut stopped_items, next_key);
     let mut items = Vec::with_capacity(item_capacity.min(widest_rows));
     for (index, session_item) in session_items.into_iter().enumerate() {
         items.push(session_item);
@@ -619,10 +728,17 @@ fn build_menu(
             }
         }
     }
+    items.extend(stopped_items);
     let omitted = if expansion == Expansion::Capped {
-        ranked.len().saturating_sub(displayed)
+        ranked
+            .len()
+            .saturating_sub(displayed)
+            .saturating_add(stopped.len().saturating_sub(displayed_stopped))
     } else {
-        ranked.len().saturating_sub(shown)
+        ranked
+            .len()
+            .saturating_sub(shown)
+            .saturating_add(stopped.len().saturating_sub(shown_stopped))
     };
     if omitted > 0 {
         items.push(disabled(clip_cells(
@@ -633,10 +749,20 @@ fn build_menu(
     if items.is_empty() {
         items.push(disabled(clip_cells("no running ae sessions", inner_width)));
     }
-    let title = format!(
-        " ae session — {} running · {need_you} need you — prefix a ",
-        ranked.len(),
-    );
+    // The stopped count joins the title only when there is one, so a draw
+    // without stopped rows keeps today's bytes exactly.
+    let title = if stopped.is_empty() {
+        format!(
+            " ae session — {} running · {need_you} need you — prefix a ",
+            ranked.len(),
+        )
+    } else {
+        format!(
+            " ae session — {} running · {} stopped · {need_you} need you — prefix a ",
+            ranked.len(),
+            stopped.len(),
+        )
+    };
     Menu {
         title: clip_cells(&title, inner_width),
         title_style: crate::theme::menu_title_style(palette),
@@ -733,6 +859,57 @@ fn session_item(
     }
 }
 
+/// One stopped session row. It shares the running rows' column grid, draws a
+/// keyless-dim row when no resume pin exists, and never expands anything.
+fn stopped_item(
+    row: &PickerStopped,
+    drawn: &Row<'_>,
+    icons: bool,
+    resume: Option<&PickerResume<'_>>,
+) -> MenuItem {
+    let label = format!(
+        "{} {} {} {} {}",
+        pad(&clean(&row.name), drawn.columns.name),
+        pad(Mark::Dead.glyph(icons), 1),
+        pad(STOPPED_WORD, drawn.columns.state),
+        pad(&clean(&row.branch), drawn.columns.branch),
+        truncate(&clean(&row.goal), GOAL_WIDTH),
+    );
+    let action = resume.map_or(MenuAction::Disabled, |resume| {
+        MenuAction::Run(resume_command(row, resume))
+    });
+    MenuItem {
+        label: clip_cells(&label, drawn.max_width),
+        key: String::new(),
+        action,
+    }
+}
+
+/// The `run-shell -b` re-exec that resumes `row` for the captured clicker.
+///
+/// The continuation re-proves the captured client and server before the
+/// ordinary launch owner runs, so this command carries identity, never
+/// authority: nothing here decides anything on its own.
+fn resume_command(row: &PickerStopped, resume: &PickerResume<'_>) -> String {
+    let mut argv: Vec<String> = resume.launcher.to_vec();
+    argv.extend([
+        "orchestrator".to_owned(),
+        PICKER_RESUME_FLAG.to_owned(),
+        row.name.clone(),
+        "--client".to_owned(),
+        resume.client.to_owned(),
+        "--client-pid".to_owned(),
+        resume.client_pid.to_owned(),
+        "--server-pid".to_owned(),
+        resume.server_pid.to_owned(),
+        "--server-start".to_owned(),
+        resume.server_start.to_owned(),
+        "--deadline".to_owned(),
+        resume.deadline.to_string(),
+    ]);
+    crate::tmux::menu_run_shell_command(&argv)
+}
+
 /// One agent row, sharing the session row's two-phase pane-membership guard.
 #[allow(
     clippy::too_many_arguments,
@@ -797,9 +974,14 @@ fn picker_action(
     }
 }
 
-/// Hand out shortcuts to selectable rows.
-fn assign_keys(items: &mut [MenuItem]) {
-    let mut next = 0;
+/// Hand out shortcuts to selectable rows; returns the first unused index, so a
+/// second block of rows (stopped sessions) can CONTINUE the alphabet.
+fn assign_keys(items: &mut [MenuItem]) -> usize {
+    assign_keys_from(items, 0)
+}
+
+/// Hand out shortcuts from `next` on, returning the first index after them.
+fn assign_keys_from(items: &mut [MenuItem], mut next: usize) -> usize {
     for item in items {
         if matches!(item.action, MenuAction::Disabled) {
             continue;
@@ -807,6 +989,7 @@ fn assign_keys(items: &mut [MenuItem]) {
         item.key = key_at(next);
         next += 1;
     }
+    next
 }
 
 /// A row that is drawn dim and cannot be chosen.
@@ -1258,11 +1441,13 @@ mod tests {
                 .to_owned();
         let drawn = super::menu_for_client_session_in(
             &[hub],
+            &[],
             &[pane("$7", "%10"), pane("$7", "%11")],
             true,
             &Palette::DARCULA,
             Some("client"),
             Some("$7"),
+            None,
             super::PickerBounds {
                 height: 10,
                 width: 100,
@@ -1318,10 +1503,12 @@ mod tests {
             let drawn = super::menu_for_client_session_in(
                 &all,
                 &[],
+                &[],
                 true,
                 &Palette::DARCULA,
                 None,
                 Some(current),
+                None,
                 super::PickerBounds {
                     height: 12,
                     width: 100,
@@ -1344,10 +1531,12 @@ mod tests {
             super::menu_for_client_session_in(
                 &all[..1],
                 &[],
+                &[],
                 true,
                 &Palette::DARCULA,
                 None,
                 Some("$1"),
+                None,
                 super::PickerBounds {
                     height: 6,
                     width: 100,
@@ -1376,10 +1565,12 @@ mod tests {
         super::menu_for_client_session_in(
             sessions,
             &[],
+            &[],
             true,
             &Palette::DARCULA,
             None,
             Some("$1"),
+            None,
             super::PickerBounds {
                 height,
                 width: 100,
@@ -1477,10 +1668,12 @@ mod tests {
         let drawn = super::menu_for_client_session_in(
             &[wide],
             &[],
+            &[],
             true,
             &Palette::DARCULA,
             None,
             Some("$1"),
+            None,
             super::PickerBounds {
                 height: 6,
                 width: 32,
@@ -1500,8 +1693,10 @@ mod tests {
                 super::menu_for_client_session_in(
                     &[],
                     &[],
+                    &[],
                     true,
                     &Palette::DARCULA,
+                    None,
                     None,
                     None,
                     super::PickerBounds {
@@ -1658,6 +1853,210 @@ mod tests {
             words
                 .iter()
                 .any(|word| word == "switch-client -c 'client' -t $1")
+        );
+    }
+
+    fn stopped_row(name: &str, last_live: Option<i64>) -> super::PickerStopped {
+        super::PickerStopped {
+            name: name.to_owned(),
+            goal: format!("goal of {name}"),
+            branch: "feat/x".to_owned(),
+            last_live,
+        }
+    }
+
+    fn resume_ctx(launcher: &[String]) -> super::PickerResume<'_> {
+        super::PickerResume {
+            client: "/dev/ttys007",
+            client_pid: "4242",
+            server_pid: "911",
+            server_start: "1789109660",
+            deadline: 1_789_109_890,
+            launcher,
+        }
+    }
+
+    fn stopped_menu(
+        sessions: &[PickerSession],
+        stopped: &[super::PickerStopped],
+        opened: Option<&str>,
+        resume: Option<&super::PickerResume<'_>>,
+        height: usize,
+    ) -> Menu {
+        super::menu_for_client_session_in(
+            sessions,
+            stopped,
+            &[],
+            true,
+            &Palette::DARCULA,
+            Some("/dev/ttys007"),
+            opened,
+            resume,
+            super::PickerBounds {
+                height,
+                width: 100,
+                now_epoch: 2_000,
+            },
+        )
+        .expect("test dimensions")
+    }
+
+    #[test]
+    fn stopped_rows_draw_after_running_rows_and_continue_the_shortcut_alphabet() {
+        let launcher = vec!["/opt/ae".to_owned()];
+        let resume = resume_ctx(&launcher);
+        let sessions = [session("hub", "$1", 0, ""), session("two", "$2", 0, "")];
+        let stopped = [stopped_row("old-a", Some(100)), stopped_row("old-b", None)];
+        let drawn = stopped_menu(&sessions, &stopped, None, Some(&resume), 12);
+        let rows: Vec<String> = drawn
+            .items
+            .iter()
+            .map(|item| {
+                item.label
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or_default()
+                    .to_owned()
+            })
+            .collect();
+        assert_eq!(rows, ["hub", "two", "old-a", "old-b"]);
+        assert_eq!(
+            drawn
+                .items
+                .iter()
+                .map(|item| item.key.as_str())
+                .collect::<Vec<_>>(),
+            ["1", "2", "3", "4"],
+            "stopped rows continue the alphabet after the running rows"
+        );
+        // Shares the session-row grid: name, glyph, state word, branch, goal.
+        let old = &drawn.items[2].label;
+        assert!(old.contains("stopped"), "{old:?}");
+        assert!(
+            old.contains(crate::theme::Mark::Dead.glyph(true)),
+            "{old:?}"
+        );
+        assert!(
+            old.starts_with(&format!("{} ", super::pad("old-a", 5))),
+            "{old:?}"
+        );
+        assert!(old.contains("goal of old-a"), "{old:?}");
+    }
+
+    #[test]
+    fn a_stopped_row_runs_the_resume_continuation_for_its_captured_client() {
+        let launcher = vec!["/opt/ae".to_owned()];
+        let resume = resume_ctx(&launcher);
+        let drawn = stopped_menu(&[], &[stopped_row("old", Some(5))], None, Some(&resume), 8);
+        let MenuAction::Run(command) = &drawn.items[0].action else {
+            panic!("a stopped row with a resume pin is selectable");
+        };
+        let expected = crate::tmux::menu_run_shell_command(
+            &[
+                "/opt/ae",
+                "orchestrator",
+                "--picker-resume",
+                "old",
+                "--client",
+                "/dev/ttys007",
+                "--client-pid",
+                "4242",
+                "--server-pid",
+                "911",
+                "--server-start",
+                "1789109660",
+                "--deadline",
+                "1789109890",
+            ]
+            .map(ToOwned::to_owned),
+        );
+        assert_eq!(command, &expected);
+        // And with no pin at all the row is information, never a live action.
+        let unpinned = stopped_menu(&[], &[stopped_row("old", Some(5))], None, None, 8);
+        assert!(matches!(unpinned.items[0].action, MenuAction::Disabled));
+        assert!(unpinned.items[0].key.is_empty());
+    }
+
+    #[test]
+    fn stopped_rows_join_the_height_budget_before_the_omission_row() {
+        let launcher = vec!["/opt/ae".to_owned()];
+        let resume = resume_ctx(&launcher);
+        let sessions = [
+            session("hub", "$1", 0, ""),
+            session("two", "$2", 0, ""),
+            session("tri", "$3", 0, ""),
+        ];
+        let stopped = [
+            stopped_row("old-a", Some(3)),
+            stopped_row("old-b", Some(2)),
+            stopped_row("old-c", Some(1)),
+        ];
+        // Six rows and a six-line client: the running rows keep today's share,
+        // every stopped row waits behind the omission note.
+        let tight = stopped_menu(&sessions, &stopped, None, Some(&resume), 6);
+        assert_eq!(
+            tight.items.last().map(|item| item.label.as_str()),
+            Some("+3 sessions omitted")
+        );
+        // One more line lets exactly one stopped row through.
+        let looser = stopped_menu(&sessions, &stopped, None, Some(&resume), 7);
+        assert_eq!(looser.items.len(), 5);
+        assert!(
+            looser.items[3].label.contains("old-a"),
+            "{}",
+            looser.items[3].label
+        );
+        assert_eq!(
+            looser.items.last().map(|item| item.label.as_str()),
+            Some("+2 sessions omitted")
+        );
+    }
+
+    #[test]
+    fn a_stopped_row_never_expands_a_roster_and_never_renumbers_a_running_key() {
+        let launcher = vec!["/opt/ae".to_owned()];
+        let resume = resume_ctx(&launcher);
+        let mut hub = session("hub", "$1", 0, "");
+        hub.agents = "v1;2000;60;lead:fable5:working:%10".to_owned();
+        let drawn = stopped_menu(
+            &[hub],
+            &[stopped_row("old", Some(5))],
+            Some("$1"),
+            Some(&resume),
+            10,
+        );
+        assert_eq!(drawn.items.len(), 3, "session, its agent, the stopped row");
+        assert!(drawn.items[1].label.contains("lead"));
+        assert!(drawn.items[2].label.contains("stopped"));
+        assert_eq!(drawn.items[0].key, "1");
+        assert_eq!(
+            drawn.items[2].key, "2",
+            "the running key was not renumbered"
+        );
+        assert!(drawn.items[1].key.is_empty(), "agent rows stay keyless");
+    }
+
+    #[test]
+    fn without_stopped_rows_the_draw_is_byte_identical_to_todays() {
+        let sessions = [session("hub", "$1", 0, ""), session("two", "$2", 0, "")];
+        let legacy = menu_for_client_session(&sessions, &[], true, &Palette::DARCULA, None, None);
+        let with_slice = stopped_menu(&sessions, &[], None, None, usize::MAX >> 1);
+        assert_eq!(legacy.title, with_slice.title);
+        assert_eq!(labels(&legacy), labels(&with_slice));
+        assert_eq!(
+            legacy.title,
+            " ae session — 2 running · 0 need you — prefix a "
+        );
+        let stopped_present = stopped_menu(
+            &sessions,
+            &[stopped_row("old", Some(5))],
+            None,
+            None,
+            usize::MAX >> 1,
+        );
+        assert_eq!(
+            stopped_present.title,
+            " ae session — 2 running · 1 stopped · 0 need you — prefix a "
         );
     }
 }
