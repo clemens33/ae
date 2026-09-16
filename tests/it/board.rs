@@ -13,6 +13,7 @@
     reason = "fixture setup crosses the filesystem boundary the product observes"
 )]
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use ae::board::{self, Inputs};
@@ -164,7 +165,7 @@ fn non_claude_seats_name_their_phase_in_both_modes() {
         ("spawned.3", "d", "opencode"),
         ("spawned.4", "e", "gemini"),
     ] {
-        roster.push_str(&format!("seat.{slot}={seat}\nagent_bin.{slot}={bin}\n"));
+        let _ = writeln!(roster, "seat.{slot}={seat}\nagent_bin.{slot}={bin}");
     }
     plant_session(&root, "fleet", &roster);
     let observation = observe(&root, &["fleet"], None);
