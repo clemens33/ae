@@ -549,19 +549,31 @@ exact recorded name, for example `ae renamed --no-attach`.
 ## `ae orchestrator --popup`
 
 The fleet picker is drawn by tmux itself at the left edge above its status button.
-Its rows come only from one live `list-sessions` call on the calling server; one
+Its RUNNING rows come from one live `list-sessions` call on the calling server; one
 `list-panes -a` call proves which published lead and agent pane hints still
 belong to their sessions. One `list-clients` call resolves the explicitly named
-client's current session and drawable height and width. Numeric
+client's current session, process and drawable height and width. Numeric
 `display-menu -x 0` is the menu's bottom-left client column on tmux 3.4
 ([source](https://github.com/tmux/tmux/blob/3.4/cmd-display-menu.c#L214-L233)), so the picker
-needs no target pane. It never builds [`ae list`](#ae-list)'s durable inventory,
-walks session directories, reads events or probes git.
+needs no target pane.
+
+STOPPED rows need a second source, because a stopped session has no tmux session
+to list: the picker reads ae's durable session inventory once and asks the same
+classifier [`ae list`](#ae-list) uses which of those sessions the calling server
+proves stopped. The caller's socket spelling and each record's recorded server
+are reconciled through tmux's own socket answer first, so a session recorded as
+`-L ae` still answers to the socket `$TMUX` names. A row is drawn exactly where
+`ae list` would read `stopped`: the exact name absent from a successful listing
+of its own server. A session live on another server, a record with no usable
+server pointer, a same-named tmux session whose ae ownership cannot be proven,
+and a damaged record are all **unlisted** — `ae list --all` may show some of
+them, and that gap is deliberate: the picker never guesses a state it did not
+prove. `ae list` remains the complete view.
 
 Left- or right-click the menu glyph or overflow count, or press `<prefix> a`
-(default `C-b a`), to open it. The picker shows at most 30 attention-ordered sessions. Its title starts
-with `ae session`, then counts sessions and those whose mark is needs-you or
-dead. An invocation
+(default `C-b a`), to open it. The picker shows at most 30 running sessions. Its title starts
+with `ae session`, then counts running sessions and those whose mark is needs-you or
+dead; a stopped count joins the title whenever a stopped row is listed. An invocation
 names its tmux client explicitly through the menu and every action, so another
 client watching the same pane is untouched; if that client vanishes, the
 picker refuses instead of choosing another.
@@ -578,13 +590,14 @@ selected action provides the next clear.
 
 ```text
 # opened with prefix a; its binding supplies --client
-┌─ ae session — 3 running · 1 need you · ~$13.21 — prefix a ────────────┐
-│ gamma ✖ dead    fix/menu   $12.34 restore its lead pane            (1) │
+┌─ ae session — 3 running · 1 stopped · 1 need you — prefix a ──────────┐
+│ gamma ✖ dead    fix/menu   restore its lead pane                   (1) │
 │   ✖ lead  fable5    dead                                               │
-│ beta  ◌ stale   main       ~$0.87 port the watchdog                (2) │
+│ beta  ◌ stale   main       port the watchdog                       (2) │
 │   ● lead  gpt56sol  working                                            │
-│ alpha · idle    picker          - ship the S0 picker               (3) │
+│ alpha · idle    picker     ship the S0 picker                      (3) │
 │   ✓ lead  gpt56luna done                                               │
+│ notes ✖ stopped feat/docs  park the spend notes                    (4) │
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -596,6 +609,18 @@ reader without changing its raw option, so delimiters and control bytes cannot
 split the record. The current session is followed by an indented
 `mark name profile state` row for every recorded agent it has; no other
 session's roster is ever expanded.
+
+**Stopped sessions follow the running ones**, most recently live first and then
+by name, drawn with the `stopped` state word and the same bounded name, branch
+and goal columns. A stopped row is a fleet fact, not a verdict: it carries no
+rank, never expands a roster, and no agent row ever hangs under it. Choosing it
+starts the session — the row re-execs ae as `orchestrator --picker-resume` with
+the exact client that opened the menu, which re-proves that client and the
+server before resuming the session through the ordinary launch path — and then
+switches that client into the resumed session. The other client watching the
+same pane is untouched, exactly like a running row's jump. A row clicked after
+its client detached or its server was replaced refuses without starting
+anything.
 
 Column widths are fitted PER DRAW: name, state word, branch and profile are each
 as wide as the widest content among the rows that draw actually shows, with a
@@ -611,15 +636,17 @@ draws a menu once and does not animate an open menu. Missing, malformed, more
 than two of their own published watchdog intervals old, or more than one such
 interval ahead of the local clock, agent facts draw `agents: unavailable`,
 never a confident zero. Each fact's interval is bounded to 1–3600 seconds. At
-most 30 session rows; a disabled note names how many were left out.
+most 30 running session rows; a disabled note names how many were left out.
 
 The client snapshot is also the hard draw budget: item rows plus two borders
 must fit its height, and row/title cells plus four borders must fit its width.
 When the current session's roster does not fit, ae collapses every session to
 `N agents, M working`; when not even the session rows fit, it caps them and adds
-an honest `+N sessions omitted` row. Text is clipped by terminal cells, not UTF-8 bytes.
-A missing or malformed client size, fewer than 6 rows, or fewer than 8 columns
-refuses before tmux can silently drop the menu.
+an honest `+N sessions omitted` row. Stopped rows share both budgets: at most 30
+of their own, counted into the same height ladder and the same omission note,
+with the running rows keeping their share of a capped draw. Text is clipped by
+terminal cells, not UTF-8 bytes. A missing or malformed client size, fewer than 6
+rows, or fewer than 8 columns refuses before tmux can silently drop the menu.
 
 Choosing a row first runs `switch-client` against the captured `$<id>`, so a
 rename after the menu opened cannot redirect it. When the one pane snapshot
@@ -642,9 +669,13 @@ remembers nothing about where you were — a second answer to a question tmux al
 is a second chance to disagree with it.
 
 **One server only.** `switch-client` cannot cross tmux servers, so the picker
-lists only live sessions on the calling server. Sessions recorded on other
-servers are absent. If the live session listing fails, ae refuses instead of
-drawing a confident empty fleet.
+lists only sessions on the calling server — running ones it saw live, stopped
+ones whose recorded server tmux proves to be that same server. Sessions that
+live on, or are recorded on, another server are absent (a named gap: `ae list
+--all` lists them); the picker never claims a state for a server it did not ask.
+If the live session listing fails, ae refuses instead of drawing a confident
+empty fleet; if only the bare-name listing for the stopped check fails, the
+stopped rows are left off rather than guessed.
 
 ### Hotkey and mouse
 

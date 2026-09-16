@@ -475,8 +475,9 @@ fn run_dispatch(args: &[String], out: &mut impl Write, err: &mut impl Write) -> 
         autoupgrade::schedule();
     }
     // The popup is deliberately dispatched BEFORE the world edge: its latency
-    // contract is three live tmux listings, never the durable inventory, event
-    // journals, git probes or liveness model behind `current_world`.
+    // contract is a handful of live tmux listings plus one durable scan for
+    // the stopped rows — never the event journals, git probes or per-session
+    // runtime observation behind `current_world`.
     if popup && let cli::Request::Orchestrator { tail } = &request {
         return run_orchestrator(tail, err);
     }
@@ -602,6 +603,68 @@ fn run_orchestrator(tail: &[String], err: &mut impl Write) -> Result<u8> {
     // A missing membership snapshot removes only the lead hint: every row can
     // still make the rename-safe switch to the captured session id.
     let panes = transport::observe_picker_panes(&server).unwrap_or_default();
+    let now = crate::time::Timestamp::now().epoch();
+    let root = doors::state_root(shape::current());
+    // The second source: which durable sessions the CALLING server proves
+    // stopped. Its spellings are reconciled with the caller's socket through
+    // the same proof the fleet listing uses, so a record written as `-L ae`
+    // still answers to the socket `$TMUX` names — and a server ae cannot prove
+    // equivalent stays `unknown` rather than being guessed at.
+    let stopped = root.as_ref().map_or_else(Vec::new, |root| {
+        let scan = inventory::durable_records(&inventory::Roots::under(root));
+        let mut sockets = SocketPaths::asking(transport::observe_socket_path);
+        let mut servers = vec![server.clone()];
+        for record in &scan.records {
+            if let Some(selector) = record.server.entitles() {
+                let id = inventory::ServerId::Selected(selector.clone());
+                if !servers.contains(&id) {
+                    servers.push(id);
+                }
+            }
+        }
+        let _ = sockets.deduplicated(servers);
+        let names = transport::session_names(&server);
+        let backend = PickerStoppedBackend {
+            server: &server,
+            names: names.as_deref(),
+            live: &sessions,
+            sockets: &sockets,
+        };
+        picker_stopped(scan, &backend, &sessions, now)
+    });
+    // The resume pin: a stopped row acts as the client that opened this menu,
+    // never as whichever attachment tmux last saw. A core or server identity
+    // that cannot be captured leaves those rows informational instead of
+    // offering an action nothing could prove.
+    let launcher = root.as_ref().and_then(|root| {
+        let core = shape::resolved_exe()?;
+        let config = doors::config_file(shape::current(), root);
+        Some(session_tmux::picker_launcher(
+            shape::current(),
+            &core,
+            root,
+            &config,
+            &server,
+        ))
+    });
+    let identity = transport::observe_server_identity(&server);
+    let resume = match (&launcher, &identity) {
+        (Some(launcher), Some(identity)) => Some(orchestrator::PickerResume {
+            client: client_name,
+            client_pid: &client_snapshot.pid,
+            server_pid: &identity.pid,
+            server_start: &identity.start,
+            deadline: now + session_menu::CONFIRM_WINDOW_SECS,
+            launcher,
+        }),
+        _ => None,
+    };
+    if resume.is_none() && !stopped.is_empty() {
+        writeln!(
+            err,
+            "ae orchestrator: the invoking server's identity or this core could not be captured, so stopped rows are informational only."
+        )?;
+    }
     // The picker draws in the calling session's own look, so a session running
     // the ASCII fallback gets an ASCII menu and a themed one gets its palette.
     // A look ae could not read draws the picker in the default one: a menu is
@@ -610,17 +673,17 @@ fn run_orchestrator(tail: &[String], err: &mut impl Write) -> Result<u8> {
     let look = picker_look(&server, opened_session.as_deref());
     let menu = match orchestrator::menu_for_client_session_in(
         &sessions,
-        &[],
+        &stopped,
         &panes,
         look.icons,
         &look.palette,
         client,
         opened_session.as_deref(),
-        None,
+        resume.as_ref(),
         orchestrator::PickerBounds {
             height: client_snapshot.height,
             width: client_snapshot.width,
-            now_epoch: crate::time::Timestamp::now().epoch(),
+            now_epoch: now,
         },
     ) {
         Ok(menu) => menu,
@@ -1204,6 +1267,109 @@ impl<D: inventory::Discovery> inventory::Discovery for FleetDiscovery<'_, D> {
             answer => answer,
         }
     }
+}
+
+/// The picker's stopped-row `Discovery`: it answers ONLY the server that
+/// opened the menu, and only from reads the draw already paid for.
+///
+/// The name set is the calling server's own bare-name listing; the marker is
+/// ae's rank row for that exact name, which is the same ownership fact every
+/// running picker row is admitted on. A name that IS there without that fact
+/// is `unknown` — never `stopped` — and every other recorded server is a
+/// failed query, so a session elsewhere cannot claim a stopped row here.
+struct PickerStoppedBackend<'a> {
+    server: &'a inventory::ServerId,
+    names: Option<&'a [String]>,
+    live: &'a [tmux::PickerSession],
+    sockets: &'a SocketPaths,
+}
+
+impl inventory::Discovery for PickerStoppedBackend<'_> {
+    fn enumerate(
+        &self,
+        server: &inventory::ServerId,
+    ) -> std::result::Result<Vec<inventory::DiscoveredSession>, inventory::QueryFailed> {
+        if !self.sockets.equivalent(server, self.server) {
+            return Err(inventory::QueryFailed);
+        }
+        let Some(names) = self.names else {
+            return Err(inventory::QueryFailed);
+        };
+        Ok(names
+            .iter()
+            .map(|name| inventory::DiscoveredSession {
+                name: name.clone(),
+                marker: self
+                    .live
+                    .iter()
+                    .any(|row| row.name == *name)
+                    .then(|| "1".to_owned()),
+            })
+            .collect())
+    }
+}
+
+/// The stopped sessions the calling server PROVES, as picker rows.
+///
+/// One durable scan, fed through the one classifier with a backend that knows
+/// only the calling server: every row here is a candidate `ae list --all`
+/// would also read `stopped`, and every gap — another recorded server, a
+/// missing or ambiguous selector, a same-named live session whose ownership
+/// cannot be proven — stays `unknown` and is simply not a row.
+fn picker_stopped<D: inventory::Discovery + ?Sized>(
+    scan: inventory::DurableScan,
+    backend: &D,
+    live: &[tmux::PickerSession],
+    now: i64,
+) -> Vec<orchestrator::PickerStopped> {
+    let taken = inventory::Inventory {
+        candidates: scan
+            .records
+            .into_iter()
+            .map(inventory::Candidate::durable)
+            .collect(),
+        incomplete: scan.incomplete,
+    };
+    let mut rows: Vec<orchestrator::PickerStopped> = liveness::classify(taken, backend)
+        .sessions
+        .into_iter()
+        .filter(|classified| classified.status == digest::Status::Stopped)
+        .filter_map(|classified| classified.candidate.durable)
+        .filter(|record| crate::session_launch::name::is_session_name(&record.name))
+        .filter(|record| !live.iter().any(|row| row.name == record.name))
+        .map(|record| {
+            let entry = session::entry_from(
+                &record.snapshot,
+                &record.name,
+                &session::SessionRuntime::new(digest::Status::Stopped),
+                crate::time::Timestamp::from_epoch(now),
+                session::DEFAULT_UNANSWERED_SECS,
+            );
+            let last_live = match inventory::last_live(&record.path) {
+                tmux::Evidence::At(epoch) => Some(epoch),
+                tmux::Evidence::Silent | tmux::Evidence::Unreadable => None,
+            };
+            orchestrator::PickerStopped {
+                name: record.name.clone(),
+                goal: entry.goal.unwrap_or_default(),
+                branch: entry.branch.unwrap_or_default(),
+                last_live,
+            }
+        })
+        .collect();
+    sort_stopped_rows(&mut rows);
+    rows
+}
+
+/// Most recently live first, then name: a row with no readable moment sorts
+/// after every dated one rather than guessing at one.
+fn sort_stopped_rows(rows: &mut [orchestrator::PickerStopped]) {
+    rows.sort_by(|left, right| {
+        right
+            .last_live
+            .cmp(&left.last_live)
+            .then_with(|| left.name.cmp(&right.name))
+    });
 }
 
 /// The human route: what `ae` itself answers, once the doors have said what
@@ -2651,6 +2817,7 @@ mod tests {
     };
     use crate::digest::{SessionEntry, Status};
     use crate::time::Timestamp;
+    use crate::{inventory, orchestrator, tmux};
     use std::io::{self, Write};
 
     #[test]
@@ -2855,10 +3022,164 @@ mod tests {
         let popup = crate::cli::Request::parse(&argv(&["orchestrator", "--popup"]));
         assert!(
             !super::request_needs_world(&popup),
-            "the fast picker must bypass current_world"
+            "the picker must build its own bounded read, never current_world"
         );
         let list = crate::cli::Request::parse(&argv(&["list"]));
         assert!(super::request_needs_world(&list));
+    }
+
+    fn durable_record(name: &str, server: crate::meta::ServerSelector) -> inventory::DurableRecord {
+        inventory::DurableRecord {
+            path: std::path::PathBuf::from(format!("/s/{name}")),
+            name: name.to_owned(),
+            layout: inventory::Layout::Canonical,
+            server,
+            meta_read: crate::session::MetaRead::Parsed,
+            snapshot: crate::session::RecordSnapshot::default(),
+        }
+    }
+
+    fn live_row(name: &str) -> tmux::PickerSession {
+        tmux::PickerSession {
+            name: name.to_owned(),
+            id: "$1".to_owned(),
+            rank: 0,
+            glyph: String::new(),
+            main_pane: String::new(),
+            branch: String::new(),
+            agents: String::new(),
+            goal: String::new(),
+        }
+    }
+
+    /// A fake socket resolution: `-L ae` and `/tmp/ae.sock` are ONE server;
+    /// every other spelling does not answer.
+    fn fake_socket(server: &inventory::ServerId) -> Option<String> {
+        match server {
+            inventory::ServerId::Selected(crate::meta::Selector::Socket(path))
+                if path == std::path::Path::new("/tmp/ae.sock") =>
+            {
+                Some("/tmp/ae.sock".to_owned())
+            }
+            inventory::ServerId::Selected(crate::meta::Selector::Name(name)) if name == "ae" => {
+                Some("/tmp/ae.sock".to_owned())
+            }
+            _ => None,
+        }
+    }
+
+    fn caller_server() -> inventory::ServerId {
+        inventory::ServerId::Selected(crate::meta::Selector::Socket(std::path::PathBuf::from(
+            "/tmp/ae.sock",
+        )))
+    }
+
+    fn picker_scan(records: Vec<inventory::DurableRecord>) -> inventory::DurableScan {
+        inventory::DurableScan::from(records)
+    }
+
+    #[test]
+    fn picker_stopped_reads_only_the_calling_server_spelled_either_way() {
+        let calling = caller_server();
+        let scan = picker_scan(vec![
+            durable_record(
+                "on-caller",
+                crate::meta::ServerSelector::Positive(crate::meta::Selector::Name("ae".to_owned())),
+            ),
+            durable_record(
+                "bad/name",
+                crate::meta::ServerSelector::Positive(crate::meta::Selector::Name("ae".to_owned())),
+            ),
+            durable_record(
+                "elsewhere",
+                crate::meta::ServerSelector::Positive(crate::meta::Selector::Name(
+                    "other".to_owned(),
+                )),
+            ),
+            durable_record(
+                "unowned-live",
+                crate::meta::ServerSelector::Positive(crate::meta::Selector::Name("ae".to_owned())),
+            ),
+            durable_record(
+                "running",
+                crate::meta::ServerSelector::Positive(crate::meta::Selector::Name("ae".to_owned())),
+            ),
+            durable_record("no-selector", crate::meta::ServerSelector::Missing),
+            durable_record("ambiguous", crate::meta::ServerSelector::Ambiguous),
+        ]);
+        let mut sockets = super::SocketPaths::asking(fake_socket);
+        let mut servers = vec![calling.clone()];
+        for record in &scan.records {
+            if let Some(selector) = record.server.entitles() {
+                let id = inventory::ServerId::Selected(selector.clone());
+                if !servers.contains(&id) {
+                    servers.push(id);
+                }
+            }
+        }
+        let _ = sockets.deduplicated(servers);
+        // The server's own listing: `on-caller` and `bad/name` are ABSENT (so
+        // stopped); `unowned-live` exists without an ae fact (unknown, not
+        // stopped); `running` exists AND owns a rank row.
+        let names = ["unowned-live".to_owned(), "running".to_owned()];
+        let live = [live_row("running")];
+        let backend = super::PickerStoppedBackend {
+            server: &calling,
+            names: Some(&names),
+            live: &live,
+            sockets: &sockets,
+        };
+        let rows = super::picker_stopped(scan, &backend, &live, 2_000);
+        assert_eq!(
+            rows.iter().map(|row| row.name.as_str()).collect::<Vec<_>>(),
+            ["on-caller"],
+            "the caller alias answered; foreign, unowned-live and malformed names never became rows"
+        );
+    }
+
+    #[test]
+    fn picker_stopped_fails_closed_without_a_name_listing() {
+        let calling = caller_server();
+        let scan = picker_scan(vec![durable_record(
+            "on-caller",
+            crate::meta::ServerSelector::Positive(crate::meta::Selector::Name("ae".to_owned())),
+        )]);
+        let mut sockets = super::SocketPaths::asking(fake_socket);
+        let _ = sockets.deduplicated(vec![
+            calling.clone(),
+            inventory::ServerId::Selected(crate::meta::Selector::Name("ae".to_owned())),
+        ]);
+        let backend = super::PickerStoppedBackend {
+            server: &calling,
+            names: None,
+            live: &[],
+            sockets: &sockets,
+        };
+        assert!(
+            super::picker_stopped(scan, &backend, &[], 2_000).is_empty(),
+            "a failed name listing proves nothing and claims nothing"
+        );
+    }
+
+    #[test]
+    fn stopped_rows_order_by_their_last_live_moment_then_name() {
+        let row = |name: &str, last_live: Option<i64>| orchestrator::PickerStopped {
+            name: name.to_owned(),
+            goal: String::new(),
+            branch: String::new(),
+            last_live,
+        };
+        let mut rows = [
+            row("undated-b", None),
+            row("old", Some(100)),
+            row("recent", Some(900)),
+            row("undated-a", None),
+        ];
+        super::sort_stopped_rows(&mut rows);
+        assert_eq!(
+            rows.iter().map(|row| row.name.as_str()).collect::<Vec<_>>(),
+            ["recent", "old", "undated-a", "undated-b"]
+        );
     }
 
     #[test]

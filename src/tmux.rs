@@ -2205,15 +2205,22 @@ pub fn interpret_fleet_sessions(succeeded: bool, stdout: &str) -> Option<Vec<Fle
 // The fleet picker's live-server reads.
 // ---------------------------------------------------------------------------
 
-/// The explicit client, its current session id and its drawable dimensions.
+/// The explicit client, its current session id, its process and its drawable
+/// dimensions.
+///
+/// The pid travels in the SAME row as the identity it belongs to: a second
+/// listing could observe a replacement client and pair the old session id with
+/// the new attachment, which is exactly what the resume pin must never do.
 pub const PICKER_CLIENT_SESSION_FORMAT: &str =
-    "#{client_name} | #{session_id} | #{client_height} | #{client_width}";
+    "#{client_name} | #{session_id} | #{client_pid} | #{client_height} | #{client_width}";
 
 /// One exact picker client's live snapshot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PickerClient {
     /// The captured rename-safe session id.
     pub session_id: String,
+    /// The client process, as tmux reports it.
+    pub pid: String,
     /// The client's terminal rows.
     pub height: usize,
     /// The client's terminal columns.
@@ -2241,14 +2248,15 @@ pub fn interpret_picker_client_session(
     }
     let mut matches = stdout.lines().filter_map(|line| {
         let fields: Vec<&str> = line.split(FIELD_SEPARATOR).collect();
-        let [found, session_id, height, width] = fields.as_slice() else {
+        let [found, session_id, pid, height, width] = fields.as_slice() else {
             return None;
         };
-        if *found != client || !session_id_is_valid(session_id) {
+        if *found != client || !session_id_is_valid(session_id) || !is_decimal(pid) {
             return None;
         }
         Some(PickerClient {
             session_id: (*session_id).to_owned(),
+            pid: (*pid).to_owned(),
             height: height.parse().ok()?,
             width: width.parse().ok()?,
         })
@@ -3285,14 +3293,15 @@ mod tests {
             [
                 "list-clients",
                 "-F",
-                "#{client_name} | #{session_id} | #{client_height} | #{client_width}",
+                "#{client_name} | #{session_id} | #{client_pid} | #{client_height} | #{client_width}",
             ]
         );
-        let listing = "/dev/ttys001 | $1 | 24 | 80\n/dev/ttys002 | $7 | 40 | 140\n";
+        let listing = "/dev/ttys001 | $1 | 4242 | 24 | 80\n/dev/ttys002 | $7 | 4243 | 40 | 140\n";
         assert_eq!(
             super::interpret_picker_client_session(true, listing, "/dev/ttys002"),
             Some(PickerClient {
                 session_id: "$7".to_owned(),
+                pid: "4243".to_owned(),
                 height: 40,
                 width: 140,
             })
@@ -3305,17 +3314,19 @@ mod tests {
         assert_eq!(
             super::interpret_picker_client_session(
                 true,
-                "/dev/ttys002 | named | 40 | 140\n",
+                "/dev/ttys002 | named | 4243 | 40 | 140\n",
                 "/dev/ttys002",
             ),
             None,
             "only a tmux session id can become a write target"
         );
         for malformed in [
-            "/dev/ttys002 | $7 | | 140\n",
-            "/dev/ttys002 | $7 | 40 | \n",
-            "/dev/ttys002 | $7 | tall | 140\n",
-            "/dev/ttys002 | $7 | 40 | wide\n",
+            "/dev/ttys002 | $7 | 4243 | | 140\n",
+            "/dev/ttys002 | $7 | 4243 | 40 | \n",
+            "/dev/ttys002 | $7 | 4243 | tall | 140\n",
+            "/dev/ttys002 | $7 | 4243 | 40 | wide\n",
+            "/dev/ttys002 | $7 | notapid | 40 | 140\n",
+            "/dev/ttys002 | $7 | | 40 | 140\n",
         ] {
             assert_eq!(
                 super::interpret_picker_client_session(true, malformed, "/dev/ttys002"),

@@ -929,6 +929,228 @@ fn the_menu_ae_builds_draws_on_a_real_server_and_its_rows_land_the_client() {
     );
 }
 
+/// The stopped rows' half of the drawn model: their shared column grid, their
+/// keys after the running rows, and the resume argv a row carries.
+///
+/// A stopped row has no tmux session id, so there is nothing the client could
+/// be "viewing" among them; the pins below hold that no roster can ever hang
+/// under one, even when the invoking client views a live session this menu
+/// does not list.
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one pinned stopped-row draw: columns, keys and resume argv"
+)]
+fn stopped_rows_pin_their_columns_keys_and_resume_argv() {
+    let live = |name: &str, id: &str| PickerSession {
+        name: name.to_owned(),
+        id: id.to_owned(),
+        rank: 0,
+        glyph: "·".to_owned(),
+        main_pane: String::new(),
+        branch: String::new(),
+        agents: "v1;2000;60;lead:fable5:working:%10".to_owned(),
+        goal: String::new(),
+    };
+    let stopped = [
+        ae::orchestrator::PickerStopped {
+            name: "parked".to_owned(),
+            goal: "ship it".to_owned(),
+            branch: "main".to_owned(),
+            last_live: Some(900),
+        },
+        ae::orchestrator::PickerStopped {
+            name: "older".to_owned(),
+            goal: String::new(),
+            branch: String::new(),
+            last_live: None,
+        },
+    ];
+    let launcher = vec!["/opt/ae".to_owned()];
+    let resume = ae::orchestrator::PickerResume {
+        client: "/dev/ttys001",
+        client_pid: "42",
+        server_pid: "9",
+        server_start: "111",
+        deadline: 222,
+        launcher: &launcher,
+    };
+    let sessions = [live("hub", "$1")];
+    let menu = ae::orchestrator::menu_for_client_session_in(
+        &sessions,
+        &stopped,
+        &[],
+        true,
+        &ae::theme::Palette::DARCULA,
+        Some("/dev/ttys001"),
+        Some("$1"),
+        Some(&resume),
+        ae::orchestrator::PickerBounds {
+            height: 12,
+            width: 100,
+            now_epoch: 2_000,
+        },
+    )
+    .expect("room for one running and two stopped rows");
+    assert_eq!(
+        menu.items
+            .iter()
+            .map(|item| item.key.as_str())
+            .collect::<Vec<_>>(),
+        ["1", "", "2", "3"],
+        "the current session's agent row stays keyless; stopped rows continue after it"
+    );
+    assert_eq!(
+        menu.title,
+        " ae session — 1 running · 2 stopped · 0 need you — prefix a "
+    );
+    // The name column is the widest DRAWN name, shared by both kinds of row.
+    assert!(
+        menu.items[0].label.starts_with("hub   "),
+        "{}",
+        menu.items[0].label
+    );
+    assert!(
+        menu.items[1].label.contains("lead"),
+        "{}",
+        menu.items[1].label
+    );
+    assert!(
+        menu.items[2].label.starts_with("parked "),
+        "{}",
+        menu.items[2].label
+    );
+    assert!(
+        menu.items[2].label.contains("stopped"),
+        "{}",
+        menu.items[2].label
+    );
+    assert!(menu.items[2].label.contains("✖"), "{}", menu.items[2].label);
+    assert!(
+        menu.items[2].label.contains("main"),
+        "{}",
+        menu.items[2].label
+    );
+    let argv = display_menu_for_client_args(&ServerId::Ambient, Some("/dev/ttys001"), &menu, false);
+    let resumed = argv
+        .iter()
+        .find(|word| word.contains("'--picker-resume'"))
+        .unwrap_or_else(|| panic!("the stopped row's command is in the argv: {argv:?}"));
+    for exact in [
+        "'/opt/ae' 'orchestrator' '--picker-resume' 'parked'",
+        "'--client' '/dev/ttys001'",
+        "'--client-pid' '42'",
+        "'--server-pid' '9'",
+        "'--server-start' '111'",
+        "'--deadline' '222'",
+    ] {
+        assert!(resumed.contains(exact), "{exact} missing from {resumed}");
+    }
+    assert!(
+        !argv.iter().any(|word| word.contains("agents, ")),
+        "no stopped row carries a roster summary: {argv:?}"
+    );
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one durable stopped row drawn, chosen and resumed against a real server"
+)]
+fn a_stopped_row_resumes_its_session_for_the_clicking_client() {
+    let scratch = scratch("stopped-resume");
+    if !tmux_present(&scratch) {
+        let _ = fs::remove_dir_all(&scratch);
+        panic!("tmux is not runnable here, so the stopped-row action cannot be proven");
+    }
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let main = scratch.join("main");
+    let watcher = scratch.join("watcher");
+    let root = scratch.join("state");
+    let project = scratch.join("project");
+    let config = scratch.join("config");
+    write_picker_config(&project, &config);
+    let staged = stage(&socket, &main);
+    // A durable ae session on THIS server with no tmux session behind it: the
+    // exact shape a stopped row is built from.
+    launch_ae_session(&socket, &scratch, &root, &project, &config, "parked");
+    assert!(
+        tmux(&socket, &main, &["kill-session", "-t", "=parked"]).0,
+        "park the session: state stays, tmux does not"
+    );
+    assert!(!tmux(&socket, &main, &["has-session", "-t", "=parked"]).0);
+
+    let drawn = std::thread::scope(|scope| {
+        let driver = scope.spawn(|| {
+            let seen = wait_for(
+                "the stopped-row menu",
+                || tmux(&socket, &watcher, &["capture-pane", "-p", "-t", "viewer"]).1,
+                |text| text.contains("ae session —") && text.contains("parked"),
+            );
+            assert!(
+                seen.contains("stopped"),
+                "the row is marked stopped: {seen}"
+            );
+            assert!(seen.contains("0 running · 1 stopped"), "{seen}");
+            assert!(tmux(&socket, &watcher, &["send-keys", "-t", "viewer", "1"]).0);
+            seen
+        });
+        let output = picker_invocation(
+            &socket,
+            &scratch,
+            &root,
+            &config,
+            &staged.ids[0],
+            &staged.client,
+        );
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "popup: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        driver.join().expect("the stopped-row key driver")
+    });
+    assert!(drawn.contains("parked"), "{drawn}");
+
+    // The row's one job: start the session, then hand THIS client to it.
+    wait_for(
+        "the stopped row's resume",
+        || {
+            let exists = tmux(&socket, &main, &["has-session", "-t", "=parked"]).0;
+            let clients = tmux(
+                &socket,
+                &main,
+                &["list-clients", "-F", "#{client_name}|#{client_session}"],
+            )
+            .1;
+            format!("{exists}|{clients}")
+        },
+        |seen| {
+            let (exists, clients) = seen.split_once('|').unwrap_or(("false", ""));
+            exists == "true"
+                && clients
+                    .lines()
+                    .any(|line| line.starts_with(&format!("{}|parked", staged.client)))
+        },
+    );
+    let clients = tmux(
+        &socket,
+        &main,
+        &["list-clients", "-F", "#{client_name}|#{client_session}"],
+    )
+    .1;
+    assert!(
+        clients.contains(&format!("{}|home", staged.other_client)),
+        "the other client must not move: {clients}"
+    );
+}
+
 #[derive(Clone, Copy)]
 enum StaleLead {
     Moved,
