@@ -1561,6 +1561,39 @@ fn a_resume_reruns_with_the_resume_variant() {
 }
 
 #[test]
+fn a_resume_carries_the_predecessor_row_through_the_rebuilt_meta() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::new("prior-carry", &["claude"], None);
+    let (code, stdout, stderr) = rig.launch(&["--local", "lnpriorcarry"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        !rig.launch_argv().is_empty(),
+        "the pasted command started the agent"
+    );
+    stop(&rig, "lnpriorcarry");
+    // A predecessor, recorded the way the writers record one.
+    let prior = "0199c0de-1234-4890-abcd-ef0123456789";
+    ae::meta::rewrite(
+        &rig.dir("lnpriorcarry"),
+        "harness_session_prior.main",
+        Some(prior),
+    )
+    .expect("the fixture predecessor");
+
+    let (code, stdout, stderr) = rig.launch(&["--local", "lnpriorcarry"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    // The launch publishes the WHOLE meta, so a row it does not enumerate is
+    // deleted — the predecessor chain is enumerated.
+    let resumed = rig.meta("lnpriorcarry");
+    assert!(
+        resumed.contains(&format!("harness_session_prior.main={prior}\n")),
+        "the predecessor row survives a resume: {resumed}"
+    );
+}
+
+#[test]
 fn a_legacy_resume_promotes_the_main_marker_to_created() {
     if skip() {
         return;

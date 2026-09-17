@@ -3829,12 +3829,14 @@ fn meta_document(
             };
             row(&key, &floor);
         }
-        // The observed-model pair is EVIDENCE a later resume applies. This
-        // document is the WHOLE meta, so a pair not enumerated here is deleted
-        // by the first resume — before it could ever be honored.
+        // The observed-model pair and the predecessor chain are EVIDENCE a
+        // later resume applies. This document is the WHOLE meta, so a row not
+        // enumerated here is deleted by the first resume — before it could
+        // ever be honored.
         for key in [
             format!("{}{}", crate::meta::OBSERVED_MODEL_PREFIX, agent.slot),
             format!("{}{}", crate::meta::OBSERVED_MODEL_PIN_PREFIX, agent.slot),
+            format!("{}{}", crate::meta::HARNESS_SESSION_PRIOR_PREFIX, agent.slot),
         ] {
             if let Some(value) = sole_preserved(&key) {
                 row(&key, &value);

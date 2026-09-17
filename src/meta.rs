@@ -47,6 +47,14 @@ const PROFILE_PREFIX: &str = "profile.";
 /// recorded — never a derived value.
 const CLIENT_PREFIX: &str = "client.";
 const HARNESS_SESSION_PREFIX: &str = "harness_session.";
+/// The durable PREDECESSOR row: the harness conversation ids this seat has
+/// ABANDONED, oldest first, comma-joined — a resume fallback and an
+/// authoritative re-registration both leave the id they replace here, so a
+/// reader can follow the seat's real chain instead of a dead id.
+pub const HARNESS_SESSION_PRIOR_PREFIX: &str = "harness_session_prior.";
+/// How many predecessor ids one [`HARNESS_SESSION_PRIOR_PREFIX`] row carries.
+/// The cap is a bound, not a claim: wording says "up to this many recorded".
+pub const PRIOR_MAX: usize = 4;
 const CONFIG_HOME_PREFIX: &str = "config_home.";
 const CONFIG_HOME_BASE_PREFIX: &str = "config_home_base.";
 /// The observed-model pair, as `key<slot>` — the model a live seat actually
@@ -377,6 +385,10 @@ pub struct Meta {
     observed_models: Vec<(String, String)>,
     /// `observed_model_pin.<slot>` rows, same rule.
     observed_model_pins: Vec<(String, String)>,
+    /// `harness_session_prior.<slot>` rows, kept RAW until the accessor splits
+    /// them. The row family belongs to this parser, so it never surfaces as an
+    /// unknown key and never doubts the roster.
+    harness_session_priors: Vec<(String, String)>,
     /// The raw `meta_version=` value — the shape this document is written in.
     declared_version: Option<String>,
     roster: Vec<RosterEntry>,
@@ -536,6 +548,9 @@ impl Meta {
                         entry.harness_session = None;
                     }
                     self.mark_metadata_duplicated(key);
+                } else if key.strip_prefix(HARNESS_SESSION_PRIOR_PREFIX).is_some() {
+                    self.harness_session_priors
+                        .retain(|(recorded, _)| recorded != key);
                 } else if let Some(slot) = key.strip_prefix(CONFIG_HOME_PREFIX) {
                     if let Some(entry) = self.roster.iter_mut().find(|e| e.slot == slot) {
                         entry.config_home = RecordedConfigHome::Invalid;
@@ -602,6 +617,12 @@ impl Meta {
                     self.set_metadata(Metadata::Profile, slot, key, value, line);
                 } else if let Some(slot) = key.strip_prefix(HARNESS_SESSION_PREFIX) {
                     self.set_metadata(Metadata::HarnessSession, slot, key, value, line);
+                } else if key.strip_prefix(HARNESS_SESSION_PRIOR_PREFIX).is_some() {
+                    // RAW, like the observed-model rows: the accessor is the
+                    // one place the list is split and `valid_priors` the one
+                    // place it is judged.
+                    self.harness_session_priors
+                        .push((key.to_owned(), value.to_owned()));
                 } else if let Some(slot) = key.strip_prefix(CONFIG_HOME_PREFIX) {
                     self.set_metadata(Metadata::ConfigHome, slot, key, value, line);
                 } else if let Some(slot) = key.strip_prefix(CONFIG_HOME_BASE_PREFIX) {
@@ -976,6 +997,30 @@ impl Meta {
     #[must_use]
     pub fn observed_model_pin(&self, slot: &str) -> Option<&str> {
         observed_row(&self.observed_model_pins, OBSERVED_MODEL_PIN_PREFIX, slot)
+    }
+
+    /// The conversations this seat has ABANDONED, oldest first — the raw
+    /// `harness_session_prior.<slot>` list, split on commas.
+    ///
+    /// The row family belongs to this parser, so a meta carrying it raises no
+    /// unknown-key anomaly and never doubts the roster. The list is RAW: a
+    /// consumer that builds a path or looks a conversation up must prove each
+    /// element well-formed (a lowercase UUID) first — [`valid_priors`] is that
+    /// judgement for the writers, the purge and the board. A malformed element
+    /// is NOT a refusal: a hand-edited predecessor list must not make a
+    /// session unresumable. A row the reader dropped (a duplicated key)
+    /// reads as empty.
+    #[must_use]
+    pub fn harness_session_prior(&self, slot: &str) -> Vec<&str> {
+        let key = format!("{HARNESS_SESSION_PRIOR_PREFIX}{slot}");
+        let Some((_, value)) = self
+            .harness_session_priors
+            .iter()
+            .find(|(recorded, _)| *recorded == key)
+        else {
+            return Vec::new();
+        };
+        value.split(',').collect()
     }
 
     /// The version of the core binary this session's helpers are pinned to.
@@ -1592,6 +1637,53 @@ mod tests {
         reason = "fixtures build and inspect real directories; the boundary is about \
                   what PRODUCT code may reach"
     )]
+
+    #[test]
+    fn a_prior_row_is_the_parsers_own_and_reads_as_a_raw_list() {
+        // The row family belongs to the parser: a meta carrying it raises NO
+        // anomaly, so it can never doubt the roster (which would refuse every
+        // resume) and never surfaces as an unknown key.
+        let meta = super::Meta::parse(
+            "seat.main=lead\nprofile.main=claude\nagent_bin.main=claude\n\
+             harness_session.main=aabbccdd-1122-4333-8444-5566778899aa\n\
+             harness_session_prior.main=11111111-1111-4111-8111-111111111111,22222222-2222-4222-8222-222222222222\n",
+        );
+        assert!(meta.anomalies().is_empty(), "{:?}", meta.anomalies());
+        assert!(
+            !meta
+                .anomalies()
+                .iter()
+                .any(crate::roster::roster_doubting)
+        );
+        assert_eq!(
+            meta.harness_session_prior("main"),
+            [
+                "11111111-1111-4111-8111-111111111111",
+                "22222222-2222-4222-8222-222222222222"
+            ]
+        );
+        assert_eq!(meta.harness_session_prior("other"), Vec::<&str>::new());
+        // The prior row never disturbs the CURRENT id's classification.
+        assert_eq!(
+            meta.roster()[0].harness_session.as_deref(),
+            Some("aabbccdd-1122-4333-8444-5566778899aa")
+        );
+    }
+
+    #[test]
+    fn a_duplicated_prior_row_reads_as_no_predecessors() {
+        let meta = super::Meta::parse(
+            "seat.main=lead\nharness_session_prior.main=11111111-1111-4111-8111-111111111111\n\
+             harness_session_prior.main=22222222-2222-4222-8222-222222222222\n",
+        );
+        assert!(meta.harness_session_prior("main").is_empty());
+        assert!(
+            !meta
+                .anomalies()
+                .iter()
+                .any(crate::roster::roster_doubting)
+        );
+    }
 
     #[test]
     fn observed_model_rows_read_as_one_validated_pair() {
