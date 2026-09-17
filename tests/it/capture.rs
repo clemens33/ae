@@ -449,8 +449,7 @@ fn plant_rollout(rig: &Rig, id: &str) {
     );
 }
 
-/// Run the `_register-sid` handshake for `main` with `id`, rendering the helper
-/// links first.
+/// Run the `_register-sid` handshake for `main` with `id`.
 fn register_sid(rig: &Rig, id: &str) -> std::process::Output {
     use super::cli::helper;
 

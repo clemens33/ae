@@ -3041,11 +3041,10 @@ fn build(
             .then(|| meta_value(&dir, &format!("harness_session.{}", seat.slot)))
             .flatten()
             .filter(|id| !id.is_empty() && id != PENDING);
-        // A RESUME never MINTS a fresh id for a flag tool: a seat whose row is
-        // absent or `pending` has no conversation to name, and a minted UUID
-        // would name one that does not exist — the resume takes its tool's own
-        // fallback instead. A CREATE still mints, because there the id IS the
-        // conversation the tool is about to open.
+        // A RESUME never MINTS for a flag tool: a seat whose row is absent or
+        // `pending` has no conversation to name, and a minted UUID would name
+        // one that does not exist — it takes the tool's own fallback instead.
+        // A CREATE still mints: there the id IS the conversation about to open.
         let session_id = match stored {
             Some(id) => id,
             None if shape.resuming => PENDING.to_owned(),

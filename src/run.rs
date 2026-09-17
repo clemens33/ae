@@ -54,8 +54,8 @@ pub struct Plan {
     config_home_notice: Option<String>,
     /// What a resumed seat says about a recorded manual model.
     model_notice: Option<String>,
-    /// The conversation a resume FALLBACK abandoned — the id the seat is about
-    /// to leave behind. Recorded before the exec; never part of `render()`.
+    /// The conversation a resume FALLBACK abandoned; recorded before the exec,
+    /// never part of `render()`.
     abandoned_session: Option<String>,
 }
 
@@ -670,10 +670,8 @@ fn prove_implicit_store(
     ))
 }
 
-/// The composed shell command line, in builder order — and the conversation
-/// the resume FALLBACK abandons, when it takes one. `Some` only when a
-/// recorded, probeable id was passed over: the fallback starts a different
-/// conversation, so the id the meta still names is no longer reachable.
+/// The composed shell command line, in builder order — and the conversation a
+/// resume FALLBACK abandons: a recorded, probeable id it starts away from.
 fn compose(
     dir: &Path,
     slot: &str,

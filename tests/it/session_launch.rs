@@ -2679,6 +2679,23 @@ fn a_stopped_seat_can_repair_within_its_tool_kind_and_keeps_its_conversation() {
         rig.tmux(&["kill-session", "-t", "=lnseatrepair"]).0,
         "the session stops"
     );
+    // The conversation must be PROVABLE for a resume to keep it: claude's own
+    // transcript, where its store derives it from the pane's cwd.
+    let key = std::fs::canonicalize(&rig.project)
+        .unwrap_or_else(|_| rig.project.clone())
+        .display()
+        .to_string()
+        .replace('/', "-");
+    let store = rig.scratch.join(".claude/projects").join(key);
+    assert!(
+        std::fs::create_dir_all(&store).is_ok(),
+        "a transcript store"
+    );
+    assert!(std::fs::write(store.join(format!("{sid}.jsonl")), "{}\n").is_ok());
+    assert!(
+        std::fs::write(store.join(format!("{sid}.jsonl")), "{}\n").is_ok(),
+        "the recorded conversation"
+    );
 
     let (code, stdout, stderr) =
         rig.launch(&["--local", "lnseatrepair", "--seat", "lead=otherclaude"]);

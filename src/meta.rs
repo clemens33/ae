@@ -48,8 +48,7 @@ const PROFILE_PREFIX: &str = "profile.";
 const CLIENT_PREFIX: &str = "client.";
 const HARNESS_SESSION_PREFIX: &str = "harness_session.";
 /// The durable PREDECESSOR row: the harness conversation ids this seat has
-/// ABANDONED, oldest first, comma-joined — a resume fallback and an
-/// authoritative re-registration both leave the id they replace here.
+/// ABANDONED, oldest first — both writers leave the id they replace here.
 pub const HARNESS_SESSION_PRIOR_PREFIX: &str = "harness_session_prior.";
 /// How many predecessor ids one predecessor row carries.
 pub const PRIOR_MAX: usize = 4;
@@ -384,8 +383,7 @@ pub struct Meta {
     /// `observed_model_pin.<slot>` rows, same rule.
     observed_model_pins: Vec<(String, String)>,
     /// `harness_session_prior.<slot>` rows, kept RAW until the accessor splits
-    /// them; the family is this parser's own, so it never reads as an unknown
-    /// key and never doubts the roster.
+    /// them; the family is this parser's own, so it never doubts the roster.
     harness_session_priors: Vec<(String, String)>,
     /// The raw `meta_version=` value — the shape this document is written in.
     declared_version: Option<String>,
@@ -1207,9 +1205,9 @@ fn is_observed_row_value(value: &str) -> bool {
 
 /// The predecessor list `raw` with `id` appended — oldest first, the oldest
 /// evicted once [`PRIOR_MAX`] is exceeded. Every element, `id` included, is a
-/// lowercase UUID — the grammar [`crate::session_launch::capture::is_lowercase_uuid`]
-/// owns — so an `opencode` `ses_…` (or a hand edit) records no predecessor, and
-/// a list carrying anything unusable reads as EMPTY rather than refusing: a
+/// lowercase UUID (the grammar
+/// [`crate::session_launch::capture::is_lowercase_uuid`] owns), and a list
+/// carrying anything unusable reads as EMPTY rather than refusing: a
 /// hand-edited predecessor list must not make a session unresumable. `None`
 /// means `id` itself is unusable; nothing is recorded.
 #[must_use]
@@ -1719,7 +1717,7 @@ mod tests {
         // A key named twice says nothing: neither occurrence is a predecessor,
         // and the roster is still not in doubt.
         let duplicated = super::Meta::parse(&format!(
-            "seat.main=lead\nharness_session_prior.main={A}\nharness_session_prior.main={B}\n"
+            "harness_session_prior.main={A}\nharness_session_prior.main={B}\n"
         ));
         assert!(duplicated.harness_session_prior("main").is_empty());
         assert!(
