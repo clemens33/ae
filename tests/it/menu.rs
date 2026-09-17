@@ -6140,7 +6140,7 @@ fn show_argv(
     .map(ToOwned::to_owned)
     .collect::<Vec<_>>();
     if let Some(word) = view {
-        argv.insert(1, word.to_owned());
+        argv.insert(2, word.to_owned());
     }
     argv
 }
@@ -7527,6 +7527,7 @@ fn a_resize_between_the_reads_and_the_final_proof_degrades_the_root() {
             &facts.pane,
             &facts.server_pid,
             &facts.server_start,
+            None,
         ));
     let mut child = command
         .spawn()
