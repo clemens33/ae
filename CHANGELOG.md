@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.95] - 2026-09-17
+- Add the board --assistant flag, Assistant role and reply plumbing
+- Read Claude assistant replies on the board
+- Read Codex assistant replies on the board
+- Pin assistant rows end to end and cover the board fuzz targets
+- Document the board --assistant flag
+- Write the assistant fuzz seeds as text
+
 ## [v2026.9.94] - 2026-09-17
 - Read Antigravity seats on the board
 - Pin the Antigravity board seat end to end
