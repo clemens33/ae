@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.96] - 2026-09-17
+- Parse and carry the predecessor row
+- Record the id an authoritative capture replaces
+- Record the conversation a resume fallback abandons
+- Format the predecessor row changes
+- Document the predecessor row
+- Trim the predecessor row diff
+- Prove the transcript probe on a restored recorded id
+- Prove the repaired seat keeps a provable conversation
+- Share one locked read-modify-write for meta rows
+- Trim the row-writer fold comments
+
 ## [v2026.9.95] - 2026-09-17
 - Add the board --assistant flag, Assistant role and reply plumbing
 - Read Claude assistant replies on the board
