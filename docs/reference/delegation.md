@@ -13,7 +13,7 @@ assigned owner (whoever opens a topic proposes its owner); the other peer
 challenges once, concretely, with evidence — then the owner rules and both
 commit. Escalate to the human only when ownership itself is unclear or
 disputed, or when safety/irreversibility warrants it. The `main` slot remains
-the *technical* lifecycle anchor (compact handover, non-retirable) — that is
+the *technical* lifecycle anchor (reboot handover, non-retirable) — that is
 infrastructure, not rank. Each peer owns review and retirement of its own
 spawns. "The lead" below therefore means *whichever peer spawned the worker*.
 

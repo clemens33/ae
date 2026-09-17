@@ -59,7 +59,10 @@ ae archive preview [name]
                        emits no event, does not stop the session
 ae <name> --from <archive-uuid>
                        Start a NEW session that explicitly continues an archived one
-ae compact [-f] [--digest-only] [--keep-history] [name]
+ae compact [name]
+                       Not yet available — the in-place seat compaction ships in the
+                       next release; the destructive handover is 'ae reboot'
+ae reboot [-f] [--digest-only] [--keep-history] [name]
                        Archive the session and start a fresh one under the SAME name,
                        continuing from that archive. Local mode only in v1.
 ae end|rm [-f] [--purge-history|--keep-history] [name]
@@ -1638,13 +1641,20 @@ true, and `workspace.md` says the digest is no longer available.
 
 ## `ae compact [name]`
 
+Not yet available — the in-place seat compaction ships in the next release; the
+destructive handover below is `ae reboot`. Any destructive flag (`-f`, `--force`,
+`--keep-history`, `--digest-only`, `--exec-plan`) on `ae compact` is refused with a
+pointer to the verb that owns it.
+
+## `ae reboot [name]`
+
 The three commands above, composed into the one move they are usually used for: archive
 what this session knows, end it, and start a fresh session under the **same name** that
 continues from that archive.
 
 ```bash
-ae compact my-feature                 # ask the main agent for a handover first
-ae compact --digest-only my-feature   # skip the ask; the digest is the handover
+ae reboot my-feature                 # ask the main agent for a handover first
+ae reboot --digest-only my-feature   # skip the ask; the digest is the handover
 ```
 
 It exists because agents run out of context. The alternative is doing it by hand — end,
@@ -1653,15 +1663,15 @@ the second one is a transcription and the whole thing is unrecoverable if you fu
 after the session is already gone.
 
 **v1 is local mode only.** A `git` or `full` session refuses, and the reason is not
-caution — it is that compact would *lie*. The fresh session's workspace is built from the
-canonical origin's HEAD, which normally lags the session's own branch, so a compacted
+caution — it is that reboot would *lie*. The fresh session's workspace is built from the
+canonical origin's HEAD, which normally lags the session's own branch, so a rebooted
 managed session would report success and hand you back a workspace missing the code it
 just archived. Ending it and starting the next one yourself keeps that decision where it
 belongs. Managed-mode continuity is tracked separately.
 
 ### What it does, in order
 
-1. **Refuses if you are inside the target.** compact ends the session your terminal is
+1. **Refuses if you are inside the target.** reboot ends the session your terminal is
    attached to and starts another; one command cannot honestly hand your terminal over.
    Run it from outside, or detach first.
 2. **Freezes the session's identity** — name, uuid, mode, origin, config, history policy,
@@ -1685,7 +1695,7 @@ belongs. Managed-mode continuity is tracked separately.
 
 - Running **from inside** the target session.
 - A **`git` or `full`** session (v1).
-- A session with **spawned agents**. compact never retires someone else's worker — retire
+- A session with **spawned agents**. reboot never retires someone else's worker — retire
   them yourself, then re-run. `--digest-only` does not weaken this.
 - A session whose config enables **`purge_agent_history`**, which contradicts an operation
   whose whole purpose is keeping the record. Pass `--keep-history` to proceed.
@@ -1699,7 +1709,7 @@ belongs. Managed-mode continuity is tracked separately.
 ### Its output is a contract
 
 **stdout is empty unless the boundary was crossed.** A refusal, a decline, and a prompt
-answered `n` all write nothing to it. When the compact does happen, stdout is exactly four
+answered `n` all write nothing to it. When the reboot does happen, stdout is exactly four
 lines, in this order:
 
 ```text
@@ -1718,20 +1728,20 @@ The relaunch announcement is progress, and goes to stderr with everything else.
 Everything else goes to stderr: the frozen facts, the confirmation and its question,
 end's own progress, the handover chatter, `Aborted.`, the relaunch announcement — and a
 second copy of the `Recovery:` line, so that a broken or closed stdout cannot destroy the
-only route back. Anything printed after the contract belongs to the fresh session: compact
+only route back. Anything printed after the contract belongs to the fresh session: reboot
 `exec`s into the launch, so from there on you are reading the child.
 
-Piping compact is supported, including to a consumer that exits early. A reporting failure
+Piping reboot is supported, including to a consumer that exits early. A reporting failure
 never suppresses the relaunch.
 
-Because of that `exec`, compact's exit status is the launch's: in a terminal it attaches
+Because of that `exec`, reboot's exit status is the launch's: in a terminal it attaches
 you to the new session and exits when you detach. With no terminal to attach to, the
 launch reports failure the same way a plain `ae <name>` does — the archive and the fresh
 session are already there, and the `Recovery:` line names how to reach it.
 
-`ae compact` distinguishes **declining** from **not being asked**. A typed `n` is an
+`ae reboot` distinguishes **declining** from **not being asked**. A typed `n` is an
 answer: it prints `Aborted.` and exits 0. End-of-input is not an answer — with no stdin
-(a script, cron, `< /dev/null`) compact reports that it could not obtain confirmation and
+(a script, cron, `< /dev/null`) reboot reports that it could not obtain confirmation and
 exits **non-zero**, because stdout is empty in both cases and the exit status is a
 caller's only way to tell "the operator said no" from "the question never reached anyone".
 Pass `-f` if you mean to proceed without being asked.
@@ -1742,7 +1752,7 @@ process may `exec` into the launch and never return: a recovery command emitted 
 error path is one that does not exist at the moment it is needed. If the relaunch fails,
 the line is already on your screen.
 
-`ae compact` never deletes an archive. Not the one it just published, not an older one —
+`ae reboot` never deletes an archive. Not the one it just published, not an older one —
 its cleanup is live session state only.
 
 ## Hidden subcommands

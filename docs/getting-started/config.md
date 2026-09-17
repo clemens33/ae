@@ -180,7 +180,7 @@ Old seat files that still carry `[profiles]`/`[roster]` are ignored for identity
 
 | Key       | Description                                          | Default       |
 |-----------|------------------------------------------------------|---------------|
-| `main`    | `[roster]` name for the standing main seat. Under `lead-pair` this is a *technical* lifecycle anchor (compact handover, non-retirable), not a rank | `lead` |
+| `main`    | `[roster]` name for the standing main seat. Under `lead-pair` this is a *technical* lifecycle anchor (reboot handover, non-retirable), not a rank | `lead` |
 | `workers` | Comma-separated `[roster]` names launched at startup. Under `lead-pair` the FIRST worker is the colead seat — an equal leadership peer of the lead (interchangeable, same level). Recommended default: the colead ONLY — builders/reviewers are spawned on demand per slice and retired when done | `colead` |
 | `layout`  | `lead-pair` (lead and colead each get 50% in window 0, other workers in window 1), `lead-solo` (lead alone in window 0, workers in window 1), `vertical` (side-by-side splits), `horizontal` (stacked splits) | `lead-pair`   |
 | `copy`    | Working directory mode (see below)                   | `local`       |

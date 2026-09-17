@@ -218,9 +218,9 @@ keeping — so it archives with an empty roster rather than being refused.
 Only a target with nothing to lose — a leftover worktree, or a directory holding just
 generated helpers — is treated as "nothing to archive".
 
-## `ae compact` — end and continue as one operation
+## `ae reboot` — end and continue as one operation
 
-`ae compact <name>` archives a session, ends it, and starts a fresh session under the
+`ae reboot <name>` archives a session, ends it, and starts a fresh session under the
 **same name** continuing from that archive. It is a composition of three existing
 commands, and the interesting part is that it adds no new lifecycle: it reuses `ae end`'s
 own locked implementation rather than shelling out or restating its ordering.
@@ -228,9 +228,9 @@ own locked implementation rather than shelling out or restating its ordering.
 **The frozen tuple is the authorization payload.** `_compact_freeze_source` resolves the
 session once into eight `\x1f`-separated fields — name, uuid, uuid provenance, mode,
 canonical origin, config, effective history policy, archive path — and everything
-downstream reads *that*, never the meta again. The same tuple is what compact hands `end`:
-it sets `_AE_END_FROZEN_PLAN[<name>]` and `_AE_END_FROZEN_AUTHORITY[<name>]="compact"`
-before entering `_end_session_locked`, so end takes compact's decision as its confirmed
+downstream reads *that*, never the meta again. The same tuple is what reboot hands `end`:
+it sets `_AE_END_FROZEN_PLAN[<name>]` and `_AE_END_FROZEN_AUTHORITY[<name>]="reboot"`
+before entering `_end_session_locked`, so end takes reboot's decision as its confirmed
 plan instead of resolving a second one. One mechanism, two callers.
 
 **Two revalidations, positioned by what they protect.** `_compact_revalidate` re-proves
@@ -239,7 +239,7 @@ human's answer — so a session that was replaced under the prompt is never *mes
 second runs inside the lifecycle lock, immediately before teardown — so a replacement is
 never *stopped*. A mismatch names the field that moved rather than saying no.
 
-**The handover needs two facts.** compact asks the main agent for a handover and waits for
+**The handover needs two facts.** reboot asks the main agent for a handover and waits for
 a reply to that request **and** a new `handover`-topic memo written after the request went
 out (`_compact_wait_handover` polls the event log and `memo.tsv`, never pane output —
 pane text has repeatedly proved unable to answer "did it land"). A reply alone is an agent
@@ -253,9 +253,11 @@ survives into the archive as evidence for free.
 outstanding (so no archive reports an open request nobody is waiting on) and treats the
 digest as the handover.
 
-**compact is a sender, not an agent.** Its requests are attributed to the reserved actor
-`ae:compact:<uuid>`, which joins `telegram:`/`discord:` in the event-only sink family —
+**reboot is a sender, not an agent.** Its requests are attributed to the reserved actor
+`ae:reboot:<uuid>`, which joins `telegram:`/`discord:` in the event-only sink family —
 recognised on both the send and the reply side, so nothing tries to resolve it to a pane.
+The pre-rename `ae:compact:<uuid>` opener is legacy-only, never written again, and still
+recognised everywhere; `ae:seats:` is a reserved third namespace with no writer yet.
 That required one prerequisite fix in the request protocol: a slotless override sender
 must still be replyable by its assignee, which the bash request lookup and reply body got
 wrong because they framed their fields with tabs and IFS-whitespace collapsed an empty
@@ -269,8 +271,8 @@ The boundary report also ignores `SIGPIPE` while it writes and restores it befor
 `exec`: a consumer that exits before reading would otherwise kill the process between the
 archive and the launch, leaving a session archived, deleted and never replaced with the
 recovery line lost down the same closed pipe — and an ignored disposition left set would
-be inherited by every child session. End's own progress, compact's frozen facts, the confirmation body, the question
-and `Aborted.` all go to stderr, so a caller can pipe compact and parse it, and a
+be inherited by every child session. End's own progress, reboot's frozen facts, the confirmation body, the question
+and `Aborted.` all go to stderr, so a caller can pipe reboot and parse it, and a
 non-empty stdout means the session really was archived and replaced. The confirmation read
 treats EOF as **no** — a bare `read` returns 1 at end-of-input and `set -e` would kill the
 command between the question and any word about what happened. The `Recovery:` line
@@ -284,7 +286,7 @@ child's launch re-proves the parent archive (`_AE_FROM_EXPECTED`) immediately be
 publishing its own meta, and rolls the launch back on a mismatch rather than creating a
 child with no lineage.
 
-**What compact never does**: it never calls `_ar_purge_archive` and never removes an
+**What reboot never does**: it never calls `_ar_purge_archive` and never removes an
 archive by hand — its cleanup is live session state only. It refuses from inside the
 target (asking the same C1..C4 question `ae stop` asks; an *unproven* answer means "not
 inside", the safe direction), refuses `git`/`full` sessions in v1, refuses a session with

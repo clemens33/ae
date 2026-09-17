@@ -149,7 +149,7 @@ ae end my-feature              # commit + push to ae/my-feature, archive the ses
 ```bash
 ae archive preview my-feature  # what an end would keep (read-only, writes nothing)
 ae my-feature-2 --from <uuid>  # a NEW session that explicitly continues an archived one
-ae compact my-feature          # archive it and start fresh under the SAME name, continuing
+ae reboot my-feature           # archive it and start fresh under the SAME name, continuing
                                #   from that archive (local mode; --digest-only skips the ask)
 ```
 
@@ -158,10 +158,11 @@ that memory kept — goal, memo, event log, request payloads — as an inert, im
 UUID-keyed snapshot with no executable file in it. `--from` is the only way to inherit
 one: lineage is explicit, never inferred from a name that happens to match.
 
-`ae compact` is the move you actually want when an agent runs out of context: it asks the
+`ae reboot` is the move you actually want when an agent runs out of context: it asks the
 main agent for a handover, archives, ends, and relaunches the same name from that archive
 — one command instead of three, the middle one of which is you transcribing a UUID after
-the session is already gone.
+the session is already gone. (`ae compact` will be the in-place seat compaction; it ships
+in the next release.)
 
 Full command reference: **[docs/reference/commands.md](docs/reference/commands.md)**.
 

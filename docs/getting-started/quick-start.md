@@ -83,9 +83,12 @@ When the agent is out of context but the *work* isn't, do both in one move — a
 and relaunch the same name continuing from that archive:
 
 ```bash
-ae compact my-feature              # asks the main agent for a handover first
-ae compact --digest-only my-feature  # skip the ask; the digest is the handover
+ae reboot my-feature              # asks the main agent for a handover first
+ae reboot --digest-only my-feature  # skip the ask; the digest is the handover
 ```
+
+(`ae compact` is the coming in-place seat compaction — not yet available; the
+destructive handover above is `ae reboot`.)
 
 It runs from *outside* the session (it ends the one you would be sitting in), local mode
 only for now, and prints a `Recovery:` line before the relaunch so you can start the fresh

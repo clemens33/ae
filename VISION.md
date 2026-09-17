@@ -16,7 +16,7 @@ nothing else:
 | **Requests** | `ask` / `review` carry a request id and an exact reply command, so a question has a findable answer |
 | **State** | each agent declares `working` / `waiting-user` / `blocked` / `done`; the session surfaces who needs a human |
 | **Memory** | `memo`, the event log, and the archive — shared, durable, restart-surviving |
-| **Lifecycle** | start, stop, resume, transfer, end, archive, compact; lineage is explicit (`--from <uuid>`), never inferred |
+| **Lifecycle** | start, stop, resume, transfer, end, archive, reboot; lineage is explicit (`--from <uuid>`), never inferred |
 | **Human bridge** | Telegram out and back in — the human is a participant, not a spectator |
 
 Panes, splits, scrollback and attach are tmux's job and stay there. What ae is *not* is

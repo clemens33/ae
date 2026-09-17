@@ -49,7 +49,7 @@ row, and a `last-live:<name>` row per session. The same evidence decides
 listed as holding nothing, rather than leaving `unknown` rows and an "inventory
 incomplete" warning.
 
-`stop`, `end` and `compact` never use this reasoning. They are irreversible, so
+`stop`, `end` and `reboot` never use this reasoning. They are irreversible, so
 they still require the server's own answer.
 
 Three things leave a session unprovable, and `ae doctor` says which:

@@ -207,7 +207,7 @@ the session doing the enumerating. Stating the interaction is the fix.
 ## The absence proof, and who is allowed to weaken it (2026-09-11)
 
 The contract above is about `stop`. The same question — *is that session gone?* — is asked
-by a resume, by the fleet listing and by `compact`, and the answer is `src/tmux.rs`'s
+by a resume, by the fleet listing and by `reboot`, and the answer is `src/tmux.rs`'s
 `StopProbe`. It has one strict reading and one widened one, and which one a caller gets is
 the whole design.
 
@@ -215,7 +215,7 @@ the whole design.
 said so: it listed its sessions without the name, or it reported the clean-exit
 `no server running on …` diagnostic. Every failure is `Unknown`, including
 `error connecting to … (No such file or directory)` — because a server that is still
-running answers exactly that once something unlinks its socket. `stop` and `compact`
+running answers exactly that once something unlinks its socket. `stop` and `reboot`
 cross this one and nothing else.
 
 **The widened reading** is `classify_absence`. A RESUME, the fleet LISTING, an END and a
@@ -298,4 +298,4 @@ server being empty — and a resume lands on the configured server regardless.
 `tests/it/doors.rs::the_boot_time_proof_is_reachable_from_exactly_its_named_operations` is
 what keeps the destructive gates out of the widened reading: it names every file allowed to
 reach the proof, pins the one shared gate end and rename compose, and pins `stop` and
-`compact` as the two verbs that still refuse on the strict reading alone.
+`reboot` as the two verbs that still refuse on the strict reading alone.
