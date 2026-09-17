@@ -55,10 +55,17 @@ read, an empty body drops silently, and an unstamped record counts into the
 same missing-timestamp coverage. Claude Code excludes `isApiErrorMessage ==
 true` records whole and reads `type=="assistant"` records only; Codex reads
 `response_item`/`message`/`role=="assistant"` and its `output_text` parts only,
-never the `reasoning`, call or `event_msg` twins. Markers classify human rows
-only — a reply may legitimately quote one. Grok, Muse and Antigravity seats
-print their human rows as today (their replies arrive later). Without the flag
-the stream is byte-identical to the human-only board.
+never the `reasoning`, call or `event_msg` twins. Grok joins the
+`agent_message_chunk` deltas of one turn into a single row at the run's first
+chunk — a user chunk, a `turn_completed` or EOF ends the turn, and a message
+boundary inside one turn fuses (the store carries no separator). Muse reads
+the whole text of each `assistant_message_committed` event. Antigravity has
+no assistant records: each agy seat prints one coverage line saying so. Under
+`--follow` a grok stream ending mid-turn holds its commit point at the open
+run's first chunk, so the next poll re-reads and joins the whole turn instead
+of printing a fragment. Markers classify human rows only — a reply may
+legitimately quote one. Without the flag the stream is byte-identical to the
+human-only board.
 
 ```text
 scope: current conversations only (phase 1b) — a seat that resumed keeps only its current transcript

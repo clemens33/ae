@@ -1011,7 +1011,10 @@ record, ` · assistant` after the actor in the text header and
 Claude Code reads `type=="assistant"` records (`thinking` and `tool_use` parts
 never read; `isApiErrorMessage == true` records excluded); Codex reads its
 `response_item`/`message`/`role=="assistant"` record and its `output_text`
-parts only — never the `reasoning`, call or `event_msg` twins. Empty bodies drop
+parts only — never the `reasoning`, call or `event_msg` twins. Grok joins one
+turn's `agent_message_chunk` deltas into a single row, Muse reads each
+`assistant_message_committed` event whole, and Antigravity seats print one
+coverage line (no assistant records exist). Empty bodies drop
 silently, an unstamped record counts into the missing-timestamp coverage, and
 without the flag the stream is byte-identical to the human-only board.
 
