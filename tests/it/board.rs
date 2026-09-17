@@ -1124,10 +1124,16 @@ fn grok_muse_and_agy_replies_render_only_behind_the_flag() {
         bodies,
         ["grok human words", "agy human words", "muse human words"]
     );
-    assert!(!board::render(&off, false, None).contains("assistant"), "off");
+    assert!(
+        !board::render(&off, false, None).contains("assistant"),
+        "off"
+    );
     let on = observe_with(&root, &["one"], None, true);
     assert_eq!(
-        on.rows.iter().filter(|row| row.role == board::Role::Assistant).count(),
+        on.rows
+            .iter()
+            .filter(|row| row.role == board::Role::Assistant)
+            .count(),
         3,
         "two grok turns plus the muse reply"
     );

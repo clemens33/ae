@@ -122,10 +122,7 @@ impl Sink<'_> {
     fn push_human(&mut self, value: &crate::json::Value, offset: u64) {
         // `split_line` proved the method, the params and the kind; the
         // content gate stays here, where the body is read.
-        let Some(update) = value
-            .get("params")
-            .and_then(|params| params.get("update"))
-        else {
+        let Some(update) = value.get("params").and_then(|params| params.get("update")) else {
             return;
         };
         let Some(content) = update.get("content") else {
@@ -141,7 +138,7 @@ impl Sink<'_> {
         if crate::provenance::is_ae_turn(first) {
             return;
         }
-        let Some(ts) = grok_ts(&value, update) else {
+        let Some(ts) = grok_ts(value, update) else {
             self.missing_ts += 1;
             return;
         };
@@ -166,10 +163,7 @@ impl Sink<'_> {
     /// run whose first chunk has no stamp never opens. No marker
     /// classification: a reply may legitimately quote one.
     fn push_agent(&mut self, value: &crate::json::Value, offset: u64) {
-        let Some(update) = value
-            .get("params")
-            .and_then(|params| params.get("update"))
-        else {
+        let Some(update) = value.get("params").and_then(|params| params.get("update")) else {
             return;
         };
         let Some(text) = update
@@ -535,8 +529,7 @@ mod tests {
         let streamed = splitter.finish().with_assistant(true);
         let at = (human.len() + 1) as u64;
         assert_eq!(super::open_run_start(&streamed), Some(at));
-        let (rows, _) =
-            super::read_stream(&streamed, ACTOR, FILE, crate::tool::ToolKind::Grok);
+        let (rows, _) = super::read_stream(&streamed, ACTOR, FILE, crate::tool::ToolKind::Grok);
         assert_eq!(rows.len(), 2);
         assert_eq!((rows[1].body.as_str(), rows[1].offset), ("synthetic", at));
         let open = [human.as_str(), first.as_str(), second.as_str()].join("\n");

@@ -228,10 +228,7 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(coverage.len(), 1);
         assert_eq!(
-            (
-                coverage[0].actor.as_str(),
-                coverage[0].reason.as_str()
-            ),
+            (coverage[0].actor.as_str(), coverage[0].reason.as_str()),
             (
                 ACTOR,
                 "agy: no assistant records (history carries prompts only)"
