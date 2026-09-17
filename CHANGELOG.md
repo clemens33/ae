@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.107] - 2026-09-17
+- Split the throttle catalog into transient and usage-limit classes
+- A limit verdict for a pane showing the vendor usage limit
+- Refresh quota once when a seat leaves the vendor usage limit
+- Hold the limit latch on a failed capture and show limit on the agent line
+- Map the limit verdict word to its mark
+
 ## [v2026.9.106] - 2026-09-17
 - Open Activity/Memos dialogs from the session root
 - Pin both dialogs end to end
