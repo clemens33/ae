@@ -30,11 +30,13 @@ use crate::tool::{ToolKind, UsageSource};
 pub enum Role {
     /// A genuine human turn: bare of any ae marker.
     Human,
-    // Phase 7 adds `Assistant`. It is absent on purpose until then: a variant
-    // nothing constructs would be dead code the gate refuses.
+    /// A model turn from the harness's own transcript, read only with
+    /// `--assistant`: text parts joined, thinking and tool calls never read.
+    Assistant,
 }
 
-/// One board row: one human turn from one harness transcript.
+/// One board row: one turn — a human's, or with `--assistant` a model's text
+/// reply — from one harness transcript.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
     /// Epoch micros, in the source store's native precision.
@@ -80,7 +82,7 @@ pub fn collect(mut rows: Vec<Row>) -> Vec<Row> {
 pub(crate) const LINE_CAP: usize = 1024 * 1024;
 
 /// What `ae board` prints when its argv does not parse.
-pub const USAGE: &str = "Usage: ae board [session…] [--since <ts>] [--json] [--follow] [--lines <n>]\n\n  session       read this session (repeatable; default is every running session)\n  --since <ts>  keep rows at or after <ts>, strict YYYY-MM-DDTHH:MM:SSZ\n  --json        NDJSON: one scope line, coverage lines, then row lines\n  --follow      keep printing new rows and coverage changes every 5 s until\n                interrupted; the selection is fixed at start (Ctrl-C to stop)\n  --lines <n>   text only: clip each body to its first <n> lines; the dropped\n                remainder prints one `… +k lines` marker\n";
+pub const USAGE: &str = "Usage: ae board [session…] [--since <ts>] [--json] [--follow] [--lines <n>] [--assistant]\n\n  session       read this session (repeatable; default is every running session)\n  --since <ts>  keep rows at or after <ts>, strict YYYY-MM-DDTHH:MM:SSZ\n  --json        NDJSON: one scope line, coverage lines, then row lines\n  --follow      keep printing new rows and coverage changes every 5 s until\n                interrupted; the selection is fixed at start (Ctrl-C to stop)\n  --lines <n>   text only: clip each body to its first <n> lines; the dropped\n                remainder prints one `… +k lines` marker\n  --assistant   add the model's replies (text only; off by default)\n";
 
 const LINES_TEXT_ONLY: &str = "--lines is text-only";
 
@@ -97,6 +99,8 @@ pub struct Args {
     pub follow: bool,
     /// `--lines <n>`: text rows clip each body to its first `n` lines.
     pub lines: Option<usize>,
+    /// `--assistant`: also read the model's replies (text only).
+    pub assistant: bool,
 }
 
 /// The argv did not parse; the offending token, when there is one.
@@ -123,10 +127,11 @@ impl Usage {
 /// assert_eq!(parse(&[]), Ok(Args::default()));
 /// assert_eq!(
 ///     parse(&words(&["aedev", "--json"])),
-///     Ok(Args { sessions: vec!["aedev".to_owned()], since_micros: None, json: true, follow: false, lines: None })
+///     Ok(Args { sessions: vec!["aedev".to_owned()], since_micros: None, json: true, follow: false, lines: None, assistant: false })
 /// );
 /// assert!(parse(&words(&["--follow"])).is_ok_and(|args| args.follow));
 /// assert_eq!(parse(&words(&["--lines", "3"])).map(|args| args.lines), Ok(Some(3)));
+/// assert!(parse(&words(&["--assistant"])).is_ok_and(|args| args.assistant));
 /// assert!(parse(&words(&["--frobnicate"])).is_err());
 /// ```
 ///
@@ -142,6 +147,7 @@ pub fn parse(tail: &[String]) -> Result<Args, Usage> {
         match token.as_str() {
             "--json" => args.json = true,
             "--follow" => args.follow = true,
+            "--assistant" => args.assistant = true,
             "--lines" => {
                 let value = tail.get(index + 1).ok_or(Usage(Some(token.clone())))?;
                 if value.as_str() == "--json" || args.json {
@@ -214,6 +220,10 @@ pub struct Streamed {
     /// that interleaves conversations (agy) filters on it; every other reader
     /// ignores it. The splitter stays pure, so this is bound by the caller.
     pub(crate) seat_id: String,
+    /// `--assistant`: read the model's replies too, text parts only. False
+    /// until the caller binds it, so a reader with the flag off takes exactly
+    /// the human-only path it took before the flag existed.
+    pub(crate) assistant: bool,
 }
 
 impl Streamed {
@@ -223,6 +233,14 @@ impl Streamed {
     #[must_use]
     pub fn for_seat(mut self, seat_id: &str) -> Self {
         seat_id.clone_into(&mut self.seat_id);
+        self
+    }
+
+    /// Bind `--assistant` to this read: readers emit the model's replies
+    /// beside the human turns, text parts only.
+    #[must_use]
+    pub fn with_assistant(mut self, assistant: bool) -> Self {
+        self.assistant = assistant;
         self
     }
 }
@@ -278,7 +296,7 @@ impl Splitter {
     /// The streamed transcript: every newline-terminated line, plus whether a
     /// torn tail was seen and not trusted, plus the offset after the last
     /// complete line. A fresh stream carries no seat id; [`Streamed::for_seat`]
-    /// binds one.
+    /// binds one, [`Streamed::with_assistant`] the reply flag.
     #[must_use]
     pub fn finish(self) -> Streamed {
         Streamed {
@@ -286,6 +304,7 @@ impl Splitter {
             torn: self.cursor != self.start,
             committed: self.start,
             seat_id: String::new(),
+            assistant: false,
         }
     }
 
@@ -390,6 +409,8 @@ pub struct Inputs<'a> {
     pub home: Option<&'a Path>,
     /// The sessions to read, caller order.
     pub sessions: &'a [crate::usage::SessionInput],
+    /// `--assistant`: read the model's replies (text only) beside the humans.
+    pub assistant: bool,
 }
 
 /// One seat's read facts, exactly as a read observed them: the follow seed, so
@@ -409,7 +430,8 @@ pub(crate) struct SeatSeed {
 /// One board: every row read plus every seat that could not be read fully.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Observation {
-    /// Human turns, oldest first through [`collect`], `--since` applied.
+    /// Board turns — human, and with `--assistant` the model's text replies —
+    /// oldest first through [`collect`], `--since` applied.
     pub rows: Vec<Row>,
     /// One row per seat the board could not read fully, caller order.
     pub coverage: Vec<Coverage>,
@@ -439,6 +461,7 @@ pub fn observe(inputs: &Inputs<'_>, since_micros: Option<i64>) -> Observation {
                 &session.name,
                 entry,
                 inputs.home,
+                inputs.assistant,
                 &mut rows,
                 &mut coverage,
                 &mut seeds,
@@ -463,6 +486,7 @@ fn observe_seat(
     session: &str,
     entry: &crate::meta::RosterEntry,
     home: Option<&Path>,
+    assistant: bool,
     rows: &mut Vec<Row>,
     coverage: &mut Vec<Coverage>,
     seeds: &mut Vec<SeatSeed>,
@@ -477,7 +501,9 @@ fn observe_seat(
         }
     };
     let streamed = match stream_transcript(&path, &metadata, 0) {
-        Ok(streamed) => streamed.for_seat(entry.harness_session.as_deref().unwrap_or_default()),
+        Ok(streamed) => streamed
+            .for_seat(entry.harness_session.as_deref().unwrap_or_default())
+            .with_assistant(assistant),
         Err(failure) => {
             coverage.push(Coverage {
                 actor,
@@ -647,7 +673,13 @@ pub(crate) fn follow_poll(inputs: &Inputs<'_>, follow: &mut follow::Follow) -> O
             continue;
         };
         for entry in meta.roster() {
-            snapshots.push(follow_seat(&session.name, entry, inputs.home, follow));
+            snapshots.push(follow_seat(
+                &session.name,
+                entry,
+                inputs.home,
+                follow,
+                inputs.assistant,
+            ));
         }
     }
     follow.step(snapshots)
@@ -660,6 +692,7 @@ fn follow_seat(
     entry: &crate::meta::RosterEntry,
     home: Option<&Path>,
     follow: &follow::Follow,
+    assistant: bool,
 ) -> follow::Snapshot {
     let actor = format!("{}:{}", session, entry.name);
     let tool = ToolKind::from_binary_name(entry.binary.as_deref().unwrap_or(""));
@@ -680,7 +713,9 @@ fn follow_seat(
             stream_transcript(&path, &metadata, from)
                 .map_err(door_reason)
                 .map(|streamed| {
-                    streamed.for_seat(entry.harness_session.as_deref().unwrap_or_default())
+                    streamed
+                        .for_seat(entry.harness_session.as_deref().unwrap_or_default())
+                        .with_assistant(assistant)
                 }),
         ),
     };
@@ -837,7 +872,11 @@ const BODY_INDENT: &str = "  ";
 /// and — with a clip — one marker naming the dropped remainder. Both the
 /// one-shot and every follow batch print rows through this function.
 fn text_row(row: &Row, lines: Option<usize>) -> String {
-    let mut out = format!("## {} {}\n", format_micros(row.ts), row.actor);
+    let mut out = format!("## {} {}", format_micros(row.ts), row.actor);
+    if row.role == Role::Assistant {
+        out.push_str(" · assistant");
+    }
+    out.push('\n');
     let total = row.body.lines().count();
     let shown = lines.map_or(total, |count| count.min(total));
     for line in row.body.lines().take(shown) {
@@ -878,6 +917,7 @@ fn render_batch_json(observation: &Observation) -> String {
     for row in &observation.rows {
         let role = match row.role {
             Role::Human => "human",
+            Role::Assistant => "assistant",
         };
         let line = Value::obj([
             ("kind", Value::str("row")),

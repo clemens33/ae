@@ -1951,6 +1951,7 @@ fn run_board(
     let inputs = board::Inputs {
         home: home.as_deref(),
         sessions: &selected,
+        assistant: args.assistant,
     };
     let observation = board::observe(&inputs, args.since_micros);
     let rendered = board::render(&observation, args.json, args.lines);
