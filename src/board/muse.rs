@@ -1,9 +1,14 @@
-//! The Muse board reader: session.jsonl bytes in, human rows out.
+//! The Muse board reader: session.jsonl bytes in, human rows — and with
+//! `--assistant` the model's committed replies — out.
 //!
 //! PURE: no I/O, no env, no clock. A row is a
 //! `payload_type == "runtime.user_intent.accepted"` record; the body joins the
 //! `kind == "text"` parts of `payload.model_messages[0].content` in order;
-//! trimmed, empties dropped. Verified 2026-09-16 over 51 logs / 198 accepted
+//! trimmed, empties dropped. With `--assistant`, a `payload_type ==
+//! "runtime.session"` record whose `payload.event.kind ==
+//! "assistant_message_committed"` yields one row with `payload.event.text`
+//! whole. Reasoning, `output` chunks and session frames are never read.
+//! Verified 2026-09-16 over 51 logs / 198 accepted
 //! records (shapes only): entry [0] is the turn (`content` alone, NO role
 //! field), `recorded_at` int micros native, `payload.text` on no record.
 //! `refill_blocks` is NEVER read — a display stub (27 chars, 79/198) unmarked
@@ -37,6 +42,7 @@ pub fn read_stream(
         actor,
         file,
         source,
+        assistant: streamed.assistant,
         rows: Vec::new(),
         coverage: Vec::new(),
         missing_ts: 0,
@@ -68,6 +74,9 @@ struct Sink<'a> {
     actor: &'a str,
     file: &'a str,
     source: ToolKind,
+    /// `--assistant`: the reply path is live. Off, a session record is
+    /// classified and dropped exactly as before the flag existed.
+    assistant: bool,
     rows: Vec<Row>,
     coverage: Vec<Coverage>,
     missing_ts: u64,
@@ -91,9 +100,15 @@ impl Sink<'_> {
         let Ok(value) = crate::json::parse(text) else {
             return;
         };
-        if value.get_str("payload_type") != Some("runtime.user_intent.accepted") {
-            return;
+        match value.get_str("payload_type") {
+            Some("runtime.user_intent.accepted") => self.push_human(&value, offset),
+            Some("runtime.session") if self.assistant => self.push_assistant(&value, offset),
+            _ => {}
         }
+    }
+
+    /// One accepted intent: the human path, markers filtered, empties dropped.
+    fn push_human(&mut self, value: &crate::json::Value, offset: u64) {
         let Some(payload) = value.get("payload") else {
             return;
         };
@@ -137,6 +152,42 @@ impl Sink<'_> {
             offset,
         });
     }
+
+    /// One committed assistant message with `--assistant` on: the event's
+    /// whole text, one record one row. Every other `runtime.session` event —
+    /// reasoning, `output` chunks, frames — is never read, and the reply path
+    /// classifies no markers: a model may legitimately quote one.
+    fn push_assistant(&mut self, value: &crate::json::Value, offset: u64) {
+        let Some(event) = value
+            .get("payload")
+            .and_then(|payload| payload.get("event"))
+        else {
+            return;
+        };
+        if event.get_str("kind") != Some("assistant_message_committed") {
+            return;
+        }
+        let Some(text) = event.get_str("text") else {
+            return;
+        };
+        let Some(crate::json::Value::Num(micros)) = value.get("recorded_at") else {
+            self.missing_ts += 1;
+            return;
+        };
+        let body = text.trim().to_owned();
+        if body.is_empty() {
+            return;
+        }
+        self.rows.push(Row {
+            ts: *micros,
+            actor: self.actor.to_owned(),
+            role: Role::Assistant,
+            body,
+            source: self.source,
+            file: self.file.to_owned(),
+            offset,
+        });
+    }
 }
 
 #[cfg(test)]
@@ -161,6 +212,38 @@ mod tests {
         let mut bytes = lines.join("\n").into_bytes();
         bytes.push(b'\n');
         read(&bytes, ACTOR, FILE, crate::tool::ToolKind::Muse)
+    }
+
+    /// Read these lines through the flag: the one-shot `read` stays the
+    /// off-path, so the reply tests bind [`super::read_stream`] directly.
+    fn read_lines_with(
+        lines: &[&str],
+        assistant: bool,
+    ) -> (Vec<crate::board::Row>, Vec<crate::board::Coverage>) {
+        let mut bytes = lines.join("\n").into_bytes();
+        bytes.push(b'\n');
+        let mut splitter = super::Splitter::new();
+        splitter.feed(&bytes);
+        super::read_stream(
+            &splitter.finish().with_assistant(assistant),
+            ACTOR,
+            FILE,
+            crate::tool::ToolKind::Muse,
+        )
+    }
+
+    /// One synthetic `runtime.session` event record; `body` is the event.
+    fn event(body: &str) -> String {
+        format!(
+            r#"{{"recorded_at":{MICROS},"payload_type":"runtime.session","payload":{{"event":{body}}}}}"#
+        )
+    }
+
+    /// One committed assistant message; `micros` raw (non-numeric unstamps).
+    fn comm(text: &str, micros: &str) -> String {
+        format!(
+            r#"{{"recorded_at":{micros},"payload_type":"runtime.session","payload":{{"event":{{"kind":"assistant_message_committed","message_id":"m","response_id":"r","provider_item_id":"p","text":"{text}"}}}}}}"#
+        )
     }
 
     #[test]
@@ -251,5 +334,44 @@ mod tests {
             (coverage.len(), coverage[0].reason.as_str()),
             (1, "2 records without a timestamp")
         );
+    }
+
+    #[test]
+    fn a_committed_message_is_one_row_only_with_the_flag() {
+        let human = acc("plain human words", &MICROS.to_string());
+        let reply = comm("synthetic reply", &MICROS.to_string());
+        let lines = [human.as_str(), reply.as_str()];
+        let (rows, coverage) = read_lines_with(&lines, true);
+        assert!(coverage.is_empty() && rows.len() == 2);
+        assert_eq!(rows[1].body, "synthetic reply");
+        assert_eq!(rows[1].ts, MICROS);
+        assert_eq!(rows[1].offset, human.len() as u64 + 1);
+        assert_eq!(rows[1].role, crate::board::Role::Assistant);
+        let (rows, _) = read_lines_with(&lines, false);
+        assert_eq!(rows.len(), 1, "flag off: the human row alone");
+    }
+
+    #[test]
+    fn reasoning_output_and_frame_events_stay_silent() {
+        let lines = [
+            event(r#"{"kind":"reasoning_summary_committed","text":"hidden"}"#),
+            event(r#"{"kind":"reasoning_committed","text":"hidden"}"#),
+            event(r#"{"kind":"output","chunk":"hidden"}"#),
+            event(r#"{"role":"user","text":"model words"}"#),
+        ];
+        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+        let (rows, coverage) = read_lines_with(&refs, true);
+        assert!(rows.is_empty() && coverage.is_empty());
+    }
+
+    #[test]
+    fn an_empty_reply_drops_and_an_unstamped_one_counts() {
+        let blank = comm("   ", &MICROS.to_string());
+        let (rows, coverage) = read_lines_with(&[blank.as_str()], true);
+        assert!(rows.is_empty() && coverage.is_empty(), "empty drops");
+        let bare = comm("no ts", "null");
+        let (rows, coverage) = read_lines_with(&[bare.as_str()], true);
+        assert!(rows.is_empty());
+        assert_eq!(coverage[0].reason, "1 record without a timestamp");
     }
 }
