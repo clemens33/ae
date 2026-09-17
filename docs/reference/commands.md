@@ -26,7 +26,8 @@ ae usage [name…] [--json]
                        only the named live sessions
 ae board [session…] [--since <ts>] [--json] [--follow] [--lines <n>]
                        The filtered cross-fleet record: genuine human turns from
-                       every seat's harness transcript (Claude Code, Codex, Grok and Muse)
+                       every seat's harness transcript (Claude Code, Codex, Grok,
+                       Muse and Antigravity)
                        --follow keeps printing new rows and coverage changes every 5 s
                        --lines clips each text body to its first <n> lines, with a
                        marker for the dropped remainder (refused with --json)
@@ -983,7 +984,8 @@ but archive metadata carries no harness ids.
 Shows the filtered cross-fleet record: genuine human turns from every seat's
 harness transcript, oldest first, with ae plumbing excluded. With no names it
 reads every running session; named sessions are read as given, stopped or
-running. The board reads Claude Code, Codex, Grok and Muse transcripts; every other seat renders
+running. The board reads Claude Code, Codex, Grok, Muse and Antigravity
+transcripts; every other seat renders
 an explicit `coverage incomplete: <session:seat> — <reason>` row naming its
 phase, never a silent subset.
 

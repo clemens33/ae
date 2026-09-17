@@ -231,7 +231,8 @@ Usage:
                          topic, each agent's declared state, and who is waiting on you
   ae board [session…] [--since <ts>] [--json] [--follow] [--lines <n>]
                          The filtered cross-fleet record: genuine human turns from
-                         every seat's harness transcript (Claude Code, Codex, Grok and Muse)
+                         every seat's harness transcript (Claude Code, Codex, Grok,
+                         Muse and Antigravity)
                          --follow keeps printing new rows and coverage changes every
                          5 s until interrupted (the selection is fixed at start)
                          --lines clips each text body to its first <n> lines, with a

@@ -10,7 +10,8 @@ brief-writing time.
 Harness transcripts, derived on read. The board opens the transcript files the
 agents' own CLIs wrote — no hooks, no writer, no board database. Each seat is
 located through the conversation identity and config home ae recorded at
-first start.
+first start. Claude Code, Codex, Grok, Muse and Antigravity seats read today;
+every other seat renders an explicit coverage row, never a silent subset.
 
 ## Scope
 
@@ -87,8 +88,8 @@ wants dedup across generations can have it.
 
 ## Phases
 
-1b Claude CLI · 2 codex · 3a grok · 3b muse · 4 `--follow` (this slice) ·
-5 agy · 6 OpenCode (ruled out — not read) · 7 assistant rows · 8 predecessors.
+1b Claude CLI · 2 codex · 3a grok · 3b muse · 4 `--follow` · 5 agy (this slice) ·
+6 OpenCode (ruled out — not read) · 7 assistant rows · 8 predecessors.
 
 Codex reads the seat's current rollout only, and only the `response_item`
 record of each user turn — never its older `event_msg` twin. The project-doc
@@ -101,3 +102,9 @@ per turn, time from `_meta.agentTimestampMs` millis when present.
 
 Muse reads the seat's current `session.jsonl` only — each accepted intent's
 model text, never its materialized twin, `recorded_at` micros native.
+
+Antigravity reads the seat's own `history.jsonl` records only. One file per home
+carries every agy conversation, so attribution is by the captured conversation
+id alone — a record of another conversation is skipped silently, `workspace` is
+never consulted, and a pre-field CLI record can never match. `display` is the
+typed prompt (`"type":"slash_command"` included), `timestamp` integer millis.
