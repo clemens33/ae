@@ -3288,6 +3288,36 @@ fn a_bash_shaped_request_is_consumed_a_pane_less_asker_is_answered_event_only_an
     assert!(requests_all(&fx).contains("from the bridge") || requests_all(&fx).contains("hello"));
 }
 
+#[test]
+fn a_reply_to_each_ae_handover_asker_is_recorded_and_pastes_nothing() {
+    let fx = Tracked::new("ae3");
+    for (n, asker) in [
+        ("c", "ae:compact:u1"),
+        ("r", "ae:reboot:u1"),
+        ("s", "ae:seats:u1"),
+    ] {
+        let id = format!("ae-20260827T100001Z-0badf00{n}");
+        append_event(
+            &fx,
+            &format!(
+                r#"{{"ts":"2026-08-27T10:00:01Z","actor":"{asker}","action":"ask","target":"worker","ref":"{id}","target_slot":"worker.0","target_session":"trae3","summary":"handover"}}"#
+            ),
+        );
+        fx.forget();
+        let replied = fx.run(ae::cli::REPLY, Some(&fx.worker), &[&id, "done"], &[]);
+        assert_eq!(replied, (Some(0), String::new(), String::new()), "{asker}");
+        assert!(
+            fx.received_now("main").is_empty() && fx.received_now("worker").is_empty(),
+            "nothing is pasted to {asker}"
+        );
+        let last = fx.events().pop().unwrap_or_default();
+        assert!(
+            last.contains(&format!("\"target\":\"{asker}\",\"ref\":\"{id}\"")),
+            "{asker}: {last}"
+        );
+    }
+}
+
 // ---- the public send ------------------------------------------------------
 
 #[test]

@@ -1,6 +1,7 @@
-//! `ae _compact-freeze <session-dir> [--keep-history]` — compact's freeze/resolve step
+//! `ae _compact-freeze <session-dir> [--keep-history]` — reboot's freeze/resolve step
 //! on the built binary, black-box. Pure read-only: it emits the frozen tuple or a
-//! clear refusal, and mutates nothing.
+//! clear refusal, and mutates nothing. Plus the B-release public surface: the
+//! `ae compact` tripwire + stub, and `ae reboot` answering the destructive argv.
 
 #![allow(
     clippy::disallowed_methods,
@@ -304,8 +305,8 @@ fn a_managed_mode_is_refused_clearly() {
     assert!(stdout(&out).is_empty(), "no tuple on refusal");
 }
 
-/// Seed a compact handover ask (slotless compact actor → main) into
-/// `<dir>/events.jsonl`, with a stored body carrying memo baseline 0.
+/// Seed a LEGACY handover ask (slotless pre-rename `ae:compact:` actor → main)
+/// into `<dir>/events.jsonl`, with a stored body carrying memo baseline 0.
 fn seed_handover(dir: &Path) -> String {
     let reference = "ae-20260829T000000Z-abcd1234";
     std::fs::create_dir_all(dir.join("messages")).unwrap();
@@ -378,5 +379,141 @@ fn compact_cancel_withdraws_end_to_end() {
     assert!(
         ledger.contains("\"action\":\"cancel\"") && ledger.contains(&reference),
         "cancel event recorded: {ledger}"
+    );
+}
+
+/// Run a PUBLIC verb (`compact`, `reboot`) with the hermetic env the entry
+/// rig uses: a scratch HOME/AE_HOME/config, no tmux inheritance.
+fn public(s: &Scratch, args: &[&str]) -> std::process::Output {
+    let mut cmd = crate::cli::ae();
+    cmd.env("HOME", &s.0)
+        .env("AE_HOME", &s.0)
+        .env("CONFIG_FILE", s.0.join("config"))
+        .env("AE_NO_AUTOSTART", "1")
+        .env("TMUX_TMPDIR", &s.0)
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
+        .env_remove("AE_TMUX_SERVER_KIND")
+        .env_remove("AE_TMUX_SERVER");
+    for a in args {
+        cmd.arg(a);
+    }
+    crate::cli::bounded(
+        cmd.stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn public verb"),
+        Duration::from_secs(10),
+    )
+    .expect("public verb returned")
+}
+
+#[test]
+fn compact_tripwire_fires_the_exact_line_for_every_destructive_flag() {
+    let s = Scratch::new("tripwire");
+    for (args, flag) in [
+        (vec!["compact", "-f", "sess"], "-f"),
+        (vec!["compact", "--force", "sess"], "--force"),
+        (vec!["compact", "--keep-history", "sess"], "--keep-history"),
+        (vec!["compact", "--digest-only", "sess"], "--digest-only"),
+        (
+            vec!["compact", "--exec-plan", "/tmp/p", "sess"],
+            "--exec-plan",
+        ),
+        (vec!["compact", "--exec-plan"], "--exec-plan"),
+    ] {
+        let out = public(&s, &args);
+        assert_eq!(out.status.code(), Some(2), "{args:?}: {}", stderr(&out));
+        assert_eq!(
+            stderr(&out),
+            format!(
+                "ae: '{flag}' belongs to the destructive verb, which is now 'ae reboot'. Run: ae reboot {flag} [name]\n"
+            ),
+            "{args:?}"
+        );
+        assert!(stdout(&out).is_empty(), "{args:?}");
+    }
+    // Named-but-refused and unknown flags get the generic error.
+    for flag in ["--purge-history", "--bogus"] {
+        let out = public(&s, &["compact", flag, "sess"]);
+        assert_eq!(out.status.code(), Some(2), "{flag}");
+        assert_eq!(stderr(&out), format!("Error: unknown flag '{flag}'.\n"));
+    }
+}
+
+#[test]
+fn bare_compact_prints_the_one_line_stub() {
+    let s = Scratch::new("stub");
+    for args in [vec!["compact"], vec!["compact", "sess"]] {
+        let out = public(&s, &args);
+        assert_eq!(out.status.code(), Some(2), "{args:?}: {}", stderr(&out));
+        assert_eq!(
+            stderr(&out),
+            "ae compact: not yet available — the in-place seat compaction ships in the next release; the destructive handover is 'ae reboot'\n",
+            "{args:?}"
+        );
+        assert!(stdout(&out).is_empty(), "{args:?}");
+    }
+}
+
+#[test]
+fn reboot_accepts_every_tripwire_flag_past_its_parser() {
+    // The parser side of the list-equals-parser pin: each tripwire spelling
+    // reaches the missing-name usage (never unknown-flag), so the tripwire
+    // fires exactly for what the destructive verb accepts.
+    let s = Scratch::new("reboot-flags");
+    for (args, accepted) in [
+        (vec!["reboot", "-f"], true),
+        (vec!["reboot", "--force"], true),
+        (vec!["reboot", "--keep-history"], true),
+        (vec!["reboot", "--digest-only"], true),
+        (vec!["reboot", "--exec-plan", "/tmp/p"], true),
+        (vec!["reboot", "--bogus"], false),
+    ] {
+        let out = public(&s, &args);
+        assert_eq!(out.status.code(), Some(2), "{args:?}");
+        if accepted {
+            assert!(
+                stderr(&out).starts_with("Usage: _compact "),
+                "{args:?}: {}",
+                stderr(&out)
+            );
+        } else {
+            assert!(
+                stderr(&out).contains("unknown flag"),
+                "{args:?}: {}",
+                stderr(&out)
+            );
+        }
+        assert!(stdout(&out).is_empty(), "{args:?}");
+    }
+}
+
+#[test]
+fn a_legacy_compact_handover_is_found_and_withdrawn_with_its_bytes() {
+    // Seed OLD, resume (find-outstanding), cancel: the withdrawal lands and
+    // keeps the legacy opener bytes, never rewritten to the new namespace.
+    let s = Scratch::new("legacy-e2e");
+    let dir = local_session(&s, "sess", "local", "[workspace]\nmain = cl\n");
+    let reference = seed_handover(&dir);
+    let out = core(
+        s.0.as_path(),
+        &["_compact-find-outstanding", dir.to_str().unwrap()],
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(stdout(&out), reference, "the resume path finds it");
+    let out = core(
+        s.0.as_path(),
+        &["_compact-cancel", dir.to_str().unwrap(), &reference],
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let ledger = std::fs::read_to_string(dir.join("events.jsonl")).unwrap();
+    let cancel = ledger
+        .lines()
+        .find(|line| line.contains("\"action\":\"cancel\""))
+        .expect("a cancel record");
+    assert!(
+        cancel.contains(&format!("\"actor\":\"ae:compact:{UUID}\"")),
+        "{cancel}"
     );
 }

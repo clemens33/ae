@@ -1478,6 +1478,7 @@ fn help_is_the_command_set_and_names_no_retired_word() {
         "  ae telegram ",
         "  ae stop [",
         "  ae compact [",
+        "  ae reboot [",
         "  ae archive preview ",
         "  ae end|rm [",
         "  ae version",
