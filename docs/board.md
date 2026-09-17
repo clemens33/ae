@@ -63,7 +63,9 @@ the whole text of each `assistant_message_committed` event. Antigravity has
 no assistant records: each agy seat prints one coverage line saying so. Under
 `--follow` a grok stream ending mid-turn holds its commit point at the open
 run's first chunk, so the next poll re-reads and joins the whole turn instead
-of printing a fragment. Markers classify human rows only — a reply may
+of printing a fragment. The first pass still prints an open run as-is, and the
+next poll prints the completed turn again at the same offset — loud,
+dedup-able by `file`+`offset`. Markers classify human rows only — a reply may
 legitimately quote one. Without the flag the stream is byte-identical to the
 human-only board.
 
