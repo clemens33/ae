@@ -60,8 +60,8 @@ ae archive preview [name]
 ae <name> --from <archive-uuid>
                        Start a NEW session that explicitly continues an archived one
 ae compact [name]
-                       Not yet available — the in-place seat compaction ships in the
-                       next release; the destructive handover is 'ae reboot'
+                       Compact every fixed seat of a session in place: checkpoint
+                       each seat's durable state, then paste its compaction command
 ae reboot [-f] [--digest-only] [--keep-history] [name]
                        Archive the session and start a fresh one under the SAME name,
                        continuing from that archive. Local mode only in v1.
@@ -1684,10 +1684,26 @@ true, and `workspace.md` says the digest is no longer available.
 
 ## `ae compact [name]`
 
-Not yet available — the in-place seat compaction ships in the next release; the
-destructive handover below is `ae reboot`. Any destructive flag (`-f`, `--force`,
-`--keep-history`, `--digest-only`, `--exec-plan`) on `ae compact` is refused with a
-pointer to the verb that owns it.
+Compact every fixed seat of a session in place, in roster order, without stopping
+anything. `[name]` defaults to the current session when run inside one, else is
+required. One nonblocking run lock is held for the whole run; a second invocation
+refuses immediately. There is no confirmation prompt: each seat's checkpoint
+round-trip is the consent gate.
+
+Per seat: the R7 gate first (spawned seats are skipped untouched, as are seats
+whose tool exposes no compaction command or whose input box is unmodelled —
+those are named for hand compaction), then a fresh durable checkpoint opened as
+`ae:seats:<session-uuid>`: the seat must reply AND write a memo carrying the
+request id, both bound to its live incarnation. Only when both facts land is the
+seat's compaction command pasted through the guarded deliver operation, which
+re-proves identity under the lifecycle lock first. Every outcome advances; the
+report carries one line per seat plus the hand-compaction line.
+
+`dispatched` means attempted: the command was pasted and Enter was sent; it is
+never proof of submission. `not dispatched (staged text)` means the text may sit
+unsubmitted in the seat's composer — clear it before any send. Any destructive
+flag (`-f`, `--force`, `--keep-history`, `--digest-only`, `--exec-plan`) on
+`ae compact` is refused with a pointer to the verb that owns it (`ae reboot`).
 
 ## `ae reboot [name]`
 
