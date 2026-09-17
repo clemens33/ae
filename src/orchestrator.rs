@@ -1867,6 +1867,59 @@ mod tests {
         );
     }
 
+    /// A fresh `waiting-agent` carries its own seventh mark in the picker's
+    /// agent rows — `⧗` with icons, `~` without — and the collapsed summary
+    /// counts only working-mark seats: waiting is quiet, not working.
+    #[test]
+    fn waiting_agent_agent_rows_carry_the_seventh_mark_and_leave_the_working_count() {
+        let mut hub = session("hub", "$7", 2, "%10");
+        hub.agents =
+            "v1;2000;60;lead:fable5:working:%10;colead:gpt56sol:waiting-agent:%11".to_owned();
+        let panes = [pane("$7", "%10"), pane("$7", "%11")];
+        for (icons, glyph, working) in [(true, "⧗", "●"), (false, "~", "*")] {
+            let drawn = super::menu_for_client_session_in(
+                &[hub.clone()],
+                &[],
+                &panes,
+                icons,
+                &Palette::DARCULA,
+                Some("client"),
+                Some("$7"),
+                None,
+                super::PickerBounds {
+                    height: 10,
+                    width: 100,
+                    now_epoch: 2_000,
+                },
+            )
+            .expect("room for one session and two agents");
+            assert_eq!(drawn.items.len(), 3, "icons={icons}");
+            let row = &drawn.items[2].label;
+            assert!(
+                row.starts_with(&format!("  {glyph} ")) && row.contains("waiting-agent"),
+                "icons={icons}: {row}"
+            );
+            assert!(
+                !row.contains(working),
+                "icons={icons}: no working glyph on a waiting row: {row}"
+            );
+        }
+
+        let mut other = session("other", "$2", 0, "");
+        other.agents =
+            "v1;2000;60;lead:p:working:%10;colead:p:waiting-agent:%11".to_owned();
+        let sessions = [
+            with_agents(session("current", "$1", 0, ""), 2_000, 1),
+            other,
+        ];
+        let roomy = bounded_menu(&sessions, 10);
+        assert!(
+            roomy.items[2].label.contains("2 agents, 1 working"),
+            "waiting-agent is not counted as working: {}",
+            roomy.items[2].label
+        );
+    }
+
     #[test]
     fn missing_invalid_and_stale_agent_facts_are_unavailable_not_partial() {
         let mut facts = [
