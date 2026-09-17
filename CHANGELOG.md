@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.99] - 2026-09-17
+- Swap the waiting-agent mark ⧗ for ◔
+
 ## [v2026.9.98] - 2026-09-17
 - Join grok agent chunks into one assistant row per turn
 - Hold the follow commit point at an open grok run
