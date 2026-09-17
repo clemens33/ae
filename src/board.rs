@@ -53,6 +53,10 @@ pub struct Row {
     pub file: String,
     /// Byte offset of the record's first byte in that file.
     pub offset: u64,
+    /// Which conversation this turn comes from: 0 is the seat's current one,
+    /// n ≥ 1 its nth recorded predecessor, nearest first. Readers always
+    /// build 0; the seat read stamps the generation it read.
+    pub generation: u8,
 }
 
 /// A per-seat coverage row: the board is INCOMPLETE for this seat, and says
@@ -475,11 +479,13 @@ pub fn observe(inputs: &Inputs<'_>, since_micros: Option<i64>) -> Observation {
             continue;
         };
         for entry in meta.roster() {
+            let priors = meta.harness_session_prior(&entry.slot);
             observe_seat(
                 &session.name,
                 entry,
                 inputs.home,
                 inputs.assistant,
+                &priors,
                 &mut rows,
                 &mut coverage,
                 &mut seeds,
@@ -498,24 +504,74 @@ pub fn observe(inputs: &Inputs<'_>, since_micros: Option<i64>) -> Observation {
     }
 }
 
-/// Read one roster seat: locate it through THE one locator, stream it through
-/// the door, read it with the one dispatch for its tool. Every refusal is a
-/// coverage row, never a silent subset.
+/// Read one roster seat: its current conversation, then — nearest first, at
+/// most [`crate::meta::PRIOR_MAX`] — its recorded predecessors. Every
+/// generation runs through the ONE read below; the current seat's id may be
+/// `pending` after a fallback, and then its coverage row prints as today while
+/// the predecessors still read.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the seat read's eight facts — session, entry, home, flag, priors, rows, coverage, seeds — are each a distinct borrow"
+)]
 fn observe_seat(
     session: &str,
     entry: &crate::meta::RosterEntry,
     home: Option<&Path>,
     assistant: bool,
+    priors: &[&str],
+    rows: &mut Vec<Row>,
+    coverage: &mut Vec<Coverage>,
+    seeds: &mut Vec<SeatSeed>,
+) {
+    observe_generation(session, entry, home, assistant, 0, rows, coverage, seeds);
+    let mut generation: u8 = 0;
+    for id in priors.iter().rev().take(crate::meta::PRIOR_MAX) {
+        generation += 1;
+        let mut prior = entry.clone();
+        prior.harness_session = Some((*id).to_owned());
+        observe_generation(
+            session, &prior, home, assistant, generation, rows, coverage, seeds,
+        );
+    }
+}
+
+/// Read one generation of one roster seat: locate it through THE one locator,
+/// stream it through the door, read it with the one dispatch for its tool.
+/// Every refusal is a coverage row, never a silent subset. Generation 0 seeds
+/// the follow; predecessors never do — an abandoned conversation never grows,
+/// so no poll revisits one. Every predecessor row is stamped with its
+/// generation and every predecessor coverage reason wears its `predecessor n:`
+/// prefix, actor unchanged.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one generation's nine facts — the seat read's eight plus its number — are each a distinct borrow"
+)]
+fn observe_generation(
+    session: &str,
+    entry: &crate::meta::RosterEntry,
+    home: Option<&Path>,
+    assistant: bool,
+    generation: u8,
     rows: &mut Vec<Row>,
     coverage: &mut Vec<Coverage>,
     seeds: &mut Vec<SeatSeed>,
 ) {
     let actor = format!("{}:{}", session, entry.name);
     let tool = ToolKind::from_binary_name(entry.binary.as_deref().unwrap_or(""));
+    let mut cover = |reason: String| {
+        coverage.push(Coverage {
+            actor: actor.clone(),
+            reason: if generation == 0 {
+                reason
+            } else {
+                format!("predecessor {generation}: {reason}")
+            },
+        });
+    };
     let (path, metadata) = match locate_seat(entry, home) {
         Ok(located) => located,
         Err(reason) => {
-            coverage.push(Coverage { actor, reason });
+            cover(reason);
             return;
         }
     };
@@ -524,18 +580,22 @@ fn observe_seat(
             .for_seat(entry.harness_session.as_deref().unwrap_or_default())
             .with_assistant(assistant),
         Err(failure) => {
-            coverage.push(Coverage {
-                actor,
-                reason: door_reason(failure).to_owned(),
-            });
+            cover(door_reason(failure).to_owned());
             return;
         }
     };
     let file = file_identity(&path, &metadata);
-    let (mut seat_rows, mut seat_coverage) = reader_for(tool)(&streamed, &actor, &file, tool);
-    seeds.push(seed(&actor, &metadata, &streamed, tool, &seat_rows));
+    let (mut seat_rows, seat_coverage) = reader_for(tool)(&streamed, &actor, &file, tool);
+    for row in &mut seat_rows {
+        row.generation = generation;
+    }
+    if generation == 0 {
+        seeds.push(seed(&actor, &metadata, &streamed, tool, &seat_rows));
+    }
     rows.append(&mut seat_rows);
-    coverage.append(&mut seat_coverage);
+    for item in seat_coverage {
+        cover(item.reason);
+    }
 }
 /// One harness reader: the door's stream in, rows and coverage out.
 pub(crate) type Reader = fn(&Streamed, &str, &str, ToolKind) -> (Vec<Row>, Vec<Coverage>);
@@ -850,7 +910,7 @@ pub(crate) fn overlong_coverage(streamed: &Streamed, actor: &str) -> Option<Cove
 }
 
 /// The scope statement: line 1 of EVERY board, even an empty one.
-const SCOPE_TEXT: &str = "scope: current conversations only (phase 1b) — a seat that resumed keeps only its current transcript";
+const SCOPE_TEXT: &str = "scope: current conversations plus each seat's recorded predecessors (up to 4, newest first) — nothing is inferred from time";
 
 /// Render the observation as text or NDJSON. Line 1 is ALWAYS the scope
 /// statement; coverage rows precede body rows; JSON never carries a bare line.
@@ -860,8 +920,8 @@ pub fn render(observation: &Observation, json: bool, lines: Option<usize>) -> St
     let mut out = if json {
         Value::obj([
             ("kind", Value::str("scope")),
-            ("scope", Value::str("current-conversations")),
-            ("phase", Value::str("1b")),
+            ("scope", Value::str("current-and-recorded-predecessors")),
+            ("phase", Value::str("8b")),
         ])
         .render()
     } else {
@@ -893,6 +953,9 @@ const BODY_INDENT: &str = "  ";
 fn text_row(row: &Row, lines: Option<usize>) -> String {
     let (_, time) = clock_text(row.ts);
     let mut out = format!("## {time} {}", row.actor);
+    if row.generation > 0 {
+        let _ = write!(out, " · prior {}", row.generation);
+    }
     if row.role == Role::Assistant {
         out.push_str(" · assistant");
     }
@@ -957,6 +1020,7 @@ fn render_batch_json(observation: &Observation) -> String {
             ("source", Value::str(row.source.as_str())),
             ("file", Value::str(&row.file)),
             ("offset", json_u64(row.offset)),
+            ("generation", Value::Num(i64::from(row.generation))),
         ])
         .render();
         out.push_str(&line);
@@ -1039,6 +1103,7 @@ mod tests {
         stream_transcript,
     };
     use crate::tool::ToolKind;
+    use std::path::PathBuf;
 
     fn row(ts: i64, file: &str, offset: u64, body: &str) -> Row {
         Row {
@@ -1049,6 +1114,7 @@ mod tests {
             source: ToolKind::Claude,
             file: file.to_owned(),
             offset,
+            generation: 0,
         }
     }
 
@@ -1297,6 +1363,128 @@ mod tests {
             json.contains("\"body\":\"one\\ntwo\\nthree\\nfour\\nfive\""),
             "{json}"
         );
+    }
+
+    const PRIOR_OLD: &str = "0199c0de-1111-4890-abcd-ef0123456789";
+    const PRIOR_NEW: &str = "0199c0de-2222-4890-abcd-ef0123456789";
+    const CURRENT_ID: &str = "0199c0de-3333-4890-abcd-ef0123456789";
+
+    /// A seat's store: readable transcripts for the handed ids, plus the meta
+    /// carrying `current` as its id — `pending` plants no current transcript.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test: plants its own scratch store to drive the seat read"
+    )]
+    fn prior_rig(tag: &str, current: &str, readable: &[&str]) -> (PathBuf, crate::meta::Meta) {
+        let root =
+            std::env::temp_dir().join(format!("ae-board-prior-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let store = root.join("claude");
+        let dir = store.join("projects").join("work");
+        std::fs::create_dir_all(&dir).expect("project dir");
+        for &id in readable {
+            std::fs::write(
+                dir.join(format!("{id}.jsonl")),
+                format!(
+                    "{{\"type\":\"user\",\"timestamp\":\"2026-09-16T09:00:00Z\",\"message\":{{\"role\":\"user\",\"content\":\"words {id}\"}}}}\n"
+                ),
+            )
+            .expect("transcript");
+        }
+        let meta = crate::meta::Meta::parse(&format!(
+            "schema=2\nseat.main=lead\nharness_session.main={current}\nagent_bin.main=claude\nconfig_home.main={}\n",
+            store.display()
+        ));
+        (root, meta)
+    }
+
+    fn read_seat(
+        root: &std::path::Path,
+        meta: &crate::meta::Meta,
+        priors: &[&str],
+    ) -> (Vec<Row>, Vec<Coverage>, Vec<super::SeatSeed>) {
+        let entry = meta.roster().first().expect("one seat");
+        let mut rows = Vec::new();
+        let mut coverage = Vec::new();
+        let mut seeds = Vec::new();
+        super::observe_seat(
+            "s",
+            entry,
+            Some(root),
+            false,
+            priors,
+            &mut rows,
+            &mut coverage,
+            &mut seeds,
+        );
+        (rows, coverage, seeds)
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test: removes its own scratch dir"
+    )]
+    fn predecessors_read_nearest_first_with_prefixed_coverage_and_no_seeds() {
+        let (root, meta) = prior_rig("order", CURRENT_ID, &[CURRENT_ID, PRIOR_NEW]);
+        let (rows, coverage, seeds) = read_seat(&root, &meta, &[PRIOR_OLD, PRIOR_NEW]);
+        let mut pairs: Vec<(u8, &str)> = rows
+            .iter()
+            .map(|row| (row.generation, row.body.as_str()))
+            .collect();
+        pairs.sort_unstable();
+        assert_eq!(
+            pairs,
+            [
+                (0, &*format!("words {CURRENT_ID}")),
+                (1, &*format!("words {PRIOR_NEW}")),
+            ]
+        );
+        let reasons: Vec<&str> = coverage.iter().map(|item| item.reason.as_str()).collect();
+        assert_eq!(reasons, ["predecessor 2: transcript not found"]);
+        assert_eq!(coverage[0].actor, "s:lead", "actor unchanged");
+        assert_eq!(seeds.len(), 1, "the current read alone seeds");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test: removes its own scratch dir"
+    )]
+    fn a_pending_current_covers_while_its_predecessor_reads() {
+        let (root, meta) = prior_rig("pending", "pending", &[PRIOR_NEW]);
+        let (rows, coverage, seeds) = read_seat(&root, &meta, &[PRIOR_NEW]);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].generation, 1);
+        let reasons: Vec<&str> = coverage.iter().map(|item| item.reason.as_str()).collect();
+        assert_eq!(reasons, ["invalid or missing conversation id"]);
+        assert!(seeds.is_empty(), "a covered read seeds nothing");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_prior_header_composes_with_assistant_and_json_names_every_generation() {
+        let mut prior = row(1_789_549_201_000_000, "a", 0, "old words");
+        prior.generation = 1;
+        prior.role = Role::Assistant;
+        let text = rendered(vec![row(1, "b", 0, "new words"), prior], false, None);
+        assert!(
+            text.contains("## 09:00:01 s:seat · prior 1 · assistant\n  old words\n"),
+            "{text}"
+        );
+        assert!(!text.contains("· prior 0"), "{text}");
+        let json = rendered(
+            vec![row(1, "b", 0, "new words"), {
+                let mut prior = row(1_789_549_201_000_000, "a", 0, "old words");
+                prior.generation = 1;
+                prior
+            }],
+            true,
+            None,
+        );
+        assert!(json.contains("\"generation\":0"), "{json}");
+        assert!(json.contains("\"generation\":1"), "{json}");
     }
 
     #[test]

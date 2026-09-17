@@ -287,8 +287,11 @@ impl Follow {
 #[cfg(test)]
 mod tests {
     use super::{Follow, Loaded, Located, Plan, Snapshot};
-    use crate::board::{Coverage, Observation, SeatSeed, Splitter, render_batch};
+    use crate::board::{
+        Coverage, Inputs, Observation, SeatSeed, Splitter, follow_poll, observe, render_batch,
+    };
     use crate::tool::ToolKind;
+    use std::fmt::Write as _;
     use std::time::{Duration, SystemTime};
 
     fn human(ts: &str, body: &str) -> String {
@@ -659,6 +662,83 @@ mod tests {
         );
         assert!(batch.rows.is_empty(), "the seed row is older than since");
         assert_eq!(batch.day_floor, None, "nothing printed, no floor");
+    }
+
+    const PRIOR_CURRENT: &str = "0199c0de-4444-4890-abcd-ef0123456789";
+    const PRIOR_PRIOR: &str = "0199c0de-5555-4890-abcd-ef0123456789";
+
+    /// A session dir whose meta carries a current id plus one recorded prior,
+    /// with a readable transcript for each. Returns the root and the current
+    /// transcript's path.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test: plants its own scratch session to drive the follow"
+    )]
+    fn prior_session(tag: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let root = std::env::temp_dir().join(format!(
+            "ae-board-follow-prior-{}-{tag}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let store = root.join("claude");
+        let dir = store.join("projects").join("work");
+        std::fs::create_dir_all(&dir).expect("project dir");
+        for (id, body) in [(PRIOR_CURRENT, "current"), (PRIOR_PRIOR, "prior")] {
+            std::fs::write(
+                dir.join(format!("{id}.jsonl")),
+                format!(
+                    "{{\"type\":\"user\",\"timestamp\":\"2026-09-16T09:00:00Z\",\"message\":{{\"role\":\"user\",\"content\":\"{body} words\"}}}}\n"
+                ),
+            )
+            .expect("transcript");
+        }
+        let session = root.join("sessions").join("one");
+        std::fs::create_dir_all(&session).expect("session dir");
+        std::fs::write(
+            session.join("meta"),
+            format!(
+                "schema=2\nseat.main=lead\nharness_session.main={PRIOR_CURRENT}\nharness_session_prior.main={PRIOR_PRIOR}\nagent_bin.main=claude\nconfig_home.main={}\n",
+                store.display()
+            ),
+        )
+        .expect("meta");
+        (root, dir.join(format!("{PRIOR_CURRENT}.jsonl")))
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test: drives its own scratch session and removes it"
+    )]
+    fn predecessors_print_on_the_first_pass_and_no_poll_revisits_them() {
+        let (root, current) = prior_session("once");
+        let sessions = vec![crate::usage::SessionInput {
+            name: "one".to_owned(),
+            path: root.join("sessions").join("one"),
+        }];
+        let inputs = Inputs {
+            home: Some(root.as_path()),
+            sessions: &sessions,
+            assistant: false,
+        };
+        let first = observe(&inputs, None);
+        assert_eq!(first.rows.len(), 2, "current plus its predecessor");
+        assert!(first.coverage.is_empty());
+        let text = render_batch(&first, false, None);
+        assert!(text.contains("· prior 1"), "{text}");
+        let mut follow = Follow::seeded(&first.seeds, &first.coverage, None);
+        let mut body = std::fs::read_to_string(&current).expect("transcript");
+        let _ = writeln!(
+            body,
+            "{}",
+            human("2026-09-16T10:00:00Z", "new current words")
+        );
+        std::fs::write(&current, &body).expect("append");
+        let batch = follow_poll(&inputs, &mut follow);
+        assert_eq!(batch.rows.len(), 1, "only the new current row prints");
+        assert_eq!(batch.rows[0].generation, 0);
+        assert_eq!(batch.rows[0].body, "new current words");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

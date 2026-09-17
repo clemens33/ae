@@ -154,6 +154,7 @@ impl Sink<'_> {
             source: self.source,
             file: self.file.to_owned(),
             offset,
+            generation: 0,
         });
     }
 
@@ -206,6 +207,7 @@ impl Sink<'_> {
             source: self.source,
             file: self.file.to_owned(),
             offset: run.offset,
+            generation: 0,
         });
     }
 }

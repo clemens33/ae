@@ -149,6 +149,7 @@ impl Sink<'_> {
             source: self.source,
             file: self.file.to_owned(),
             offset,
+            generation: 0,
         });
     }
 }
