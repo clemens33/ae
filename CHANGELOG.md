@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.102] - 2026-09-17
+- Draw the session facts block above the menu states
+- Reword the no-activity-or-memos pin for slice 2a
+- Fold the source-gate matches to rustfmt shape
+- Wire the facts block into the root draw and ladder
+
 ## [v2026.9.101] - 2026-09-17
 - Refuse waiting-user from a spawned seat
 - Pin the spawned-seat waiting-user refusal end to end
