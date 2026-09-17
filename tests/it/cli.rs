@@ -1912,6 +1912,83 @@ fn state_declares_for_the_pane_and_a_held_lock_fails_it_at_the_bound() {
 }
 
 #[test]
+fn a_spawned_pane_cannot_declare_waiting_user_but_can_declare_waiting_agent() {
+    // A real isolated server, as in the main-slot state test beside this one.
+    let scratch_dir = std::path::PathBuf::from(format!("/tmp/aesp.{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch_dir);
+    std::fs::create_dir_all(&scratch_dir).expect("a scratch directory");
+    let sock = scratch_dir.join("sock");
+    let server = ae::inventory::ServerId::Selected(ae::meta::Selector::Socket(sock.clone()));
+    let tmux = |tail: &[&str]| {
+        let mut args = ae::tmux::server_args(&server);
+        args.extend(tail.iter().map(|arg| (*arg).to_owned()));
+        run_tmux(&args, &scratch_dir)
+    };
+    assert!(tmux(&["-f", "/dev/null", "new-session", "-d", "-s", "spsess"]).0);
+    let (_, pane) = tmux(&["display-message", "-p", "-t", "spsess", "#{pane_id}"]);
+    let pane = pane.trim().to_owned();
+    assert!(tmux(&["set-option", "-p", "-t", &pane, "@ae_slot", "spawned.0"]).0);
+    assert!(tmux(&["set-option", "-p", "-t", &pane, "@ae_agent", "worker"]).0);
+
+    let root = scratch("state-spawned");
+    let dir = root.join("sessions").join("spsess");
+    std::fs::create_dir_all(&dir).expect("a session dir");
+    std::fs::write(dir.join("meta"), "session=spsess\n").expect("a meta file");
+    let run = |tail: &[&str]| {
+        let out = ae()
+            .env("TMUX", format!("{},0,0", sock.display()))
+            .env("TMUX_PANE", &pane)
+            .arg(ae::cli::STATE)
+            .arg(&dir)
+            .args(tail)
+            .output()
+            .expect("the ae binary should run");
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+
+    let refused = run(&["waiting-user", &"x".repeat(120)]);
+    let held_after_refusal = std::fs::read_to_string(dir.join("events.jsonl")).unwrap_or_default();
+    let agent_reason = format!(
+        "lead: need the ruling on the slice boundaries; details: .local/waiting.md{}",
+        "x".repeat(40)
+    );
+    let accepted = run(&["waiting-agent", &agent_reason]);
+    let after_accept = std::fs::read_to_string(dir.join("events.jsonl")).unwrap_or_default();
+    let _ = tmux(&["kill-server"]);
+    let _ = std::fs::remove_dir_all(&scratch_dir);
+
+    assert_eq!(refused.0, Some(2), "usage error: {refused:?}");
+    assert!(refused.1.is_empty(), "no success line: {refused:?}");
+    assert_eq!(
+        refused.2,
+        format!("{}\n{}", ae::state::SPAWNED_WAITING_USER, ae::state::USAGE),
+        "the exact refusal, then the usage block"
+    );
+    assert!(
+        held_after_refusal.is_empty(),
+        "a refused declaration writes nothing: {held_after_refusal}"
+    );
+
+    assert_eq!(accepted.0, Some(0), "{accepted:?}");
+    assert!(
+        accepted.1.starts_with("Marked worker waiting-agent: "),
+        "{accepted:?}"
+    );
+    assert!(
+        after_accept.contains("\"ref\":\"waiting-agent\""),
+        "{after_accept}"
+    );
+    assert!(
+        !after_accept.contains("\"ref\":\"waiting-user\""),
+        "{after_accept}"
+    );
+}
+
+#[test]
 fn requests_defaults_to_mine_and_refuses_at_one_with_no_identity() {
     // The default mode is `mine`, and outside a pane `mine` cannot be answered.
     let root = scratch("requests-default");
