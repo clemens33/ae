@@ -109,7 +109,7 @@ across the exec) is gone with it, not replaced.
 
 When you start a session, ae creates `~/.ae/sessions/<name>/` and fills it with:
 
-- **`meta`** — INI-style key/value pairs: session name, work_dir, origin, mode, layout, per-slot agent records (`seat.<slot>` = the agent's bare name, `profile.<slot>` = the launch profile, `agent_bin.<slot>` = the launched binary, and `harness_session.<slot>` = the captured tool session id, for `main` / `worker.<n>` / `spawned.<n>`); a pre-v2 meta instead carries `agent.<slot>` = `alias:name:session_id`, read but never written. Read on resume.
+- **`meta`** — INI-style key/value pairs: session name, work_dir, origin, mode, layout, per-slot agent records (`seat.<slot>` = the agent's bare name, `profile.<slot>` = the launch profile, `agent_bin.<slot>` = the launched binary, `harness_session.<slot>` = the captured tool session id, and `harness_session_prior.<slot>` = up to four abandoned predecessor conversation ids, oldest first, for `main` / `worker.<n>` / `spawned.<n>`); a pre-v2 meta instead carries `agent.<slot>` = `alias:name:session_id`, read but never written. Read on resume.
 - **`events.jsonl`** — append-only JSONL audit log. Single source of truth for messaging and request state.
 - **`memo.tsv`** — shared session memory (durable findings, decisions, handoffs).
 - **`workspace.md`** — human/agent-readable manifest of the session (regenerated on every resume).

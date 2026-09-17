@@ -262,7 +262,9 @@ Name resolution takes the exact name, `%pane-id`, or `session:agent` / `@session
   turn stays, and it is PASSIVE: wording and reason at `src/launch.rs::initial_prompt_for`.
 - **agy's trust modal blocks the pane** until a human answers, and its trust list is
   exact-path. ae's context survives it (argv), a pasted brief would not.
-- Meta v2 roster: `seat.<slot>` / `profile.<slot>` / `agent_bin.<slot>` / `harness_session.<slot>`.
+- Meta v2 roster: `seat.<slot>` / `profile.<slot>` / `agent_bin.<slot>` / `harness_session.<slot>`,
+  plus `harness_session_prior.<slot>` — up to four abandoned predecessor conversations, oldest
+  first, with the current row cleared to `pending` when a resume falls back.
   A legacy `agent.<slot>` row is refused and recorded `degraded: true`, never migrated.
 
 ## Environment doors
