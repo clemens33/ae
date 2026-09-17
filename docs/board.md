@@ -15,9 +15,18 @@ every other seat renders an explicit coverage row, never a silent subset.
 
 ## Scope
 
-Current conversations only (phase 1b): a seat that resumed into a new
-conversation shows that conversation alone. Predecessor transcripts arrive in
-phase 8, behind a durable predecessor record written at resume. Turns written
+Current conversations plus each seat's recorded predecessors (phase 8b):
+every seat reads its current conversation and, newest first, the up-to-4
+abandoned conversations its `harness_session_prior.<slot>` row records —
+nothing is inferred from time. A predecessor that cannot be read becomes a
+coverage row prefixed `predecessor n:` with the reason the current seat would
+print. After a resume fallback the current id may be `pending`: then the
+current read yields its coverage row as today and the predecessors still read.
+Under `--follow` predecessors read ONCE, on the first pass — an abandoned
+conversation never grows, so no poll revisits one and the follow holds no
+offsets for them. Every row carries its `generation` (0 = current, n = nth
+predecessor); text headers read `## HH:MM:SS <session:seat> · prior n` for
+n ≥ 1, composed with ` · assistant` as ` · prior 1 · assistant`. Turns written
 before provenance shipped (`v2026.9.79`) read as human — an accepted gap,
 never a shim.
 
@@ -37,7 +46,7 @@ previously printed row's — within one board and across `--follow` batches.
 Times are UTC, stated once in the divider, never on the row:
 
 ```text
-scope: current conversations only (phase 1b) — a seat that resumed keeps only its current transcript
+scope: current conversations plus each seat's recorded predecessors (up to 4, newest first) — nothing is inferred from time
 coverage incomplete: demo:colead — opencode: not read
 # 2026-09-16 UTC
 ## 09:00:00 demo:lead
@@ -74,7 +83,7 @@ legitimately quote one. Without the flag the stream is byte-identical to the
 human-only board.
 
 ```text
-scope: current conversations only (phase 1b) — a seat that resumed keeps only its current transcript
+scope: current conversations plus each seat's recorded predecessors (up to 4, newest first) — nothing is inferred from time
 # 2026-09-16 UTC
 ## 09:00:00 demo:lead
   ship the slice today
@@ -85,8 +94,8 @@ scope: current conversations only (phase 1b) — a seat that resumed keeps only 
 `--json` prints NDJSON — one scope line, coverage lines, then row lines:
 
 ```json
-{"kind":"scope","scope":"current-conversations","phase":"1b"}
-{"kind":"row","ts":1789549200500000,"actor":"demo:lead","role":"human","body":"ship the slice today","source":"claude","file":"/tmp/demo.jsonl#1:2","offset":0}
+{"kind":"scope","scope":"current-and-recorded-predecessors","phase":"8b"}
+{"kind":"row","ts":1789549200500000,"actor":"demo:lead","role":"human","body":"ship the slice today","source":"claude","file":"/tmp/demo.jsonl#1:2","offset":0,"generation":0}
 ```
 
 ## Follow
@@ -127,7 +136,7 @@ wants dedup across generations can have it.
 
 1b Claude CLI · 2 codex · 3a grok · 3b muse · 4 `--follow` · 5 agy · 6 OpenCode
 (ruled out — not read) · 7a assistant rows (Claude Code, Codex) · 7b assistant
-rows (grok, muse, agy coverage) · 8 predecessors.
+rows (grok, muse, agy coverage) · 8 predecessors (done: 8a records, 8b reads).
 
 Codex reads the seat's current rollout only, and only the `response_item`
 record of each user turn — never its older `event_msg` twin — and, with

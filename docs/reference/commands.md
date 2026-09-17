@@ -992,16 +992,18 @@ transcripts; every other seat renders
 an explicit `coverage incomplete: <session:seat> — <reason>` row naming its
 phase, never a silent subset.
 
-The first line is always the scope statement: each seat shows its CURRENT
-conversation only, and a seat that resumed into a new conversation shows that
-conversation alone. `--since <ts>` (strict `YYYY-MM-DDTHH:MM:SSZ`) keeps rows
+The first line is always the scope statement: each seat shows its current
+conversation plus its recorded predecessors (up to 4, newest first).
+`--since <ts>` (strict `YYYY-MM-DDTHH:MM:SSZ`) keeps rows
 at or after the instant; `--json` prints NDJSON — one `{"kind":"scope"}` line,
-then `coverage` lines, then `row` lines. See [the board](../board.md).
+then `coverage` lines, then `row` lines, every row carrying `"generation":n`
+(0 = current, n = nth predecessor). See [the board](../board.md).
 
 Text bodies render indented two spaces under their `## HH:MM:SS
-<session:seat>` header, one blank line closing each row, under a `# YYYY-MM-DD
-UTC` divider that reprints only when the UTC day moves past the previously
-printed row's. `--lines <n>` clips each text body to
+<session:seat>` header — predecessor rows append ` · prior n` after the actor —
+one blank line closing each row, under a `# YYYY-MM-DD UTC` divider that
+reprints only when the UTC day moves past the previously printed row's.
+`--lines <n>` clips each text body to
 its first `<n>` lines and prints one `  … +k lines` marker for the dropped
 remainder; a body of at most `<n>` lines prints whole and gets no marker.
 `--lines` is text-only: combined with `--json` it is a usage error, because
