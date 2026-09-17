@@ -998,8 +998,10 @@ conversation alone. `--since <ts>` (strict `YYYY-MM-DDTHH:MM:SSZ`) keeps rows
 at or after the instant; `--json` prints NDJSON — one `{"kind":"scope"}` line,
 then `coverage` lines, then `row` lines. See [the board](../board.md).
 
-Text bodies render indented two spaces under their `## <ts> <session:seat>`
-header, one blank line closing each row. `--lines <n>` clips each text body to
+Text bodies render indented two spaces under their `## HH:MM:SS
+<session:seat>` header, one blank line closing each row, under a `# YYYY-MM-DD
+UTC` divider that reprints only when the UTC day moves past the previously
+printed row's. `--lines <n>` clips each text body to
 its first `<n>` lines and prints one `  … +k lines` marker for the dropped
 remainder; a body of at most `<n>` lines prints whole and gets no marker.
 `--lines` is text-only: combined with `--json` it is a usage error, because

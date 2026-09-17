@@ -12,7 +12,7 @@
 pub mod agy;
 pub mod claude;
 pub mod codex;
-pub(crate) mod follow;
+pub mod follow;
 pub mod grok;
 pub mod muse;
 
@@ -403,6 +403,17 @@ fn same_file(_: &std::fs::Metadata, _: &std::fs::Metadata) -> bool {
     true
 }
 
+/// ONE clock for the text board: the UTC day and the wall time at second
+/// precision, fraction dropped. The day drives the `# YYYY-MM-DD UTC` divider,
+/// the time the `## HH:MM:SS` header. Built on the one timestamp spelling, so
+/// a negative (pre-epoch) instant still renders.
+pub(crate) fn clock_text(micros: i64) -> (String, String) {
+    let stamped = crate::time::Timestamp::from_epoch(micros.div_euclid(1_000_000)).to_string();
+    let day: String = stamped.chars().take(10).collect();
+    let time: String = stamped.chars().skip(11).take(8).collect();
+    (day, time)
+}
+
 /// Filesystem roots and already-selected sessions.
 pub struct Inputs<'a> {
     /// The effective home, for legacy stores no meta row pins down.
@@ -416,7 +427,7 @@ pub struct Inputs<'a> {
 /// One seat's read facts, exactly as a read observed them: the follow seed, so
 /// the first pass's read and the offsets it binds are ONE read, never two.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SeatSeed {
+pub struct SeatSeed {
     /// `session:seat`, from the meta roster.
     pub(crate) actor: String,
     /// The located file's dev+inode.
@@ -425,6 +436,9 @@ pub(crate) struct SeatSeed {
     pub(crate) mtime: Option<std::time::SystemTime>,
     /// Absolute position after the last complete line of the read.
     pub(crate) committed: u64,
+    /// The newest row timestamp this read observed, if it observed any row.
+    /// The follow seeds its divider day from these, `--since` applied there.
+    pub(crate) last_row_ts: Option<i64>,
 }
 
 /// One board: every row read plus every seat that could not be read fully.
@@ -437,7 +451,11 @@ pub struct Observation {
     pub coverage: Vec<Coverage>,
     /// What each successfully streamed seat's read observed; the follow seeds
     /// itself from these and a batch carries none.
-    pub(crate) seeds: Vec<SeatSeed>,
+    pub seeds: Vec<SeatSeed>,
+    /// The UTC day printed before this observation's first row — `None` on a
+    /// one-shot, the follow's held day on a batch. The text divider prints
+    /// before the first row unless it names this day; JSON never reads it.
+    pub(crate) day_floor: Option<String>,
 }
 
 /// Read every Claude, Codex, Grok, Muse and Antigravity seat of the handed-in
@@ -476,6 +494,7 @@ pub fn observe(inputs: &Inputs<'_>, since_micros: Option<i64>) -> Observation {
         rows,
         coverage,
         seeds,
+        day_floor: None,
     }
 }
 
@@ -513,8 +532,8 @@ fn observe_seat(
         }
     };
     let file = file_identity(&path, &metadata);
-    seeds.push(seed(&actor, &metadata, &streamed, tool));
     let (mut seat_rows, mut seat_coverage) = reader_for(tool)(&streamed, &actor, &file, tool);
+    seeds.push(seed(&actor, &metadata, &streamed, tool, &seat_rows));
     rows.append(&mut seat_rows);
     coverage.append(&mut seat_coverage);
 }
@@ -661,7 +680,7 @@ fn locate_seat(
 /// One follow poll: re-resolve every selected session's roster, re-locate every
 /// seat, read the bytes the held offsets ask for through the ONE door, and step
 /// the state. Selection itself is the caller's and is fixed for the follow.
-pub(crate) fn follow_poll(inputs: &Inputs<'_>, follow: &mut follow::Follow) -> Observation {
+pub fn follow_poll(inputs: &Inputs<'_>, follow: &mut follow::Follow) -> Observation {
     let mut snapshots = Vec::new();
     for session in inputs.sessions {
         let Ok(meta) = crate::session::read_meta(&session.path) else {
@@ -857,7 +876,7 @@ pub fn render(observation: &Observation, json: bool, lines: Option<usize>) -> St
 /// one-shot prepends the scope statement once; the follow appends one of these
 /// per batch under it.
 #[must_use]
-pub(crate) fn render_batch(observation: &Observation, json: bool, lines: Option<usize>) -> String {
+pub fn render_batch(observation: &Observation, json: bool, lines: Option<usize>) -> String {
     if json {
         render_batch_json(observation)
     } else {
@@ -872,7 +891,8 @@ const BODY_INDENT: &str = "  ";
 /// and — with a clip — one marker naming the dropped remainder. Both the
 /// one-shot and every follow batch print rows through this function.
 fn text_row(row: &Row, lines: Option<usize>) -> String {
-    let mut out = format!("## {} {}", format_micros(row.ts), row.actor);
+    let (_, time) = clock_text(row.ts);
+    let mut out = format!("## {time} {}", row.actor);
     if row.role == Role::Assistant {
         out.push_str(" · assistant");
     }
@@ -896,7 +916,16 @@ fn render_batch_text(observation: &Observation, lines: Option<usize>) -> String 
     for item in &observation.coverage {
         let _ = writeln!(out, "coverage incomplete: {} — {}", item.actor, item.reason);
     }
+    // The divider names the UTC day once and reprints only when the day moves
+    // past the previously printed row's — within this batch, and across follow
+    // batches through the observation's floor. Coverage stays above it.
+    let mut last = observation.day_floor.clone();
     for row in &observation.rows {
+        let (day, _) = clock_text(row.ts);
+        if last.as_deref() != Some(day.as_str()) {
+            let _ = writeln!(out, "# {day} UTC");
+            last = Some(day);
+        }
         out.push_str(&text_row(row, lines));
     }
     out
@@ -936,7 +965,9 @@ fn render_batch_json(observation: &Observation) -> String {
     out
 }
 
-/// Epoch micros as ISO 8601 UTC at micro precision.
+/// Epoch micros as ISO 8601 UTC at micro precision. The text board reads the
+/// clock now; this spelling stays for the tests that need identity.
+#[cfg(test)]
 fn format_micros(micros: i64) -> String {
     let secs = micros.div_euclid(1_000_000);
     let fraction = micros.rem_euclid(1_000_000);
@@ -958,18 +989,21 @@ pub(crate) fn identity_of(_: &std::fs::Metadata) -> (u64, u64) {
     (0, 0)
 }
 
-/// The follow seed for one successful stream: what that read bound offsets to.
+/// The follow seed for one successful stream: what that read bound offsets
+/// to, plus the newest row it observed for the divider day.
 fn seed(
     actor: &str,
     metadata: &std::fs::Metadata,
     streamed: &Streamed,
     tool: ToolKind,
+    seat_rows: &[Row],
 ) -> SeatSeed {
     SeatSeed {
         actor: actor.to_owned(),
         identity: identity_of(metadata),
         mtime: metadata.modified().ok(),
         committed: hold_at(streamed, tool).unwrap_or(streamed.committed),
+        last_row_ts: seat_rows.iter().map(|row| row.ts).max(),
     }
 }
 
@@ -1204,11 +1238,53 @@ mod tests {
     fn a_text_row_indents_the_body_and_unclipped_prints_no_marker() {
         let text = rendered(vec![row(1, "a", 0, "one line")], false, None);
         assert!(
-            text.contains("## 1970-01-01T00:00:00.000001Z s:seat\n  one line\n\n"),
+            text.contains("# 1970-01-01 UTC\n## 00:00:00 s:seat\n  one line\n\n"),
             "{text}"
         );
         let exact = rendered(vec![row(1, "a", 0, "one\ntwo")], false, Some(2));
         assert!(exact.contains("  one\n  two\n\n"), "{exact}");
+    }
+
+    #[test]
+    fn the_clock_drops_the_fraction_and_survives_pre_epoch() {
+        assert_eq!(
+            super::clock_text(1_789_549_200_500_000),
+            ("2026-09-16".to_owned(), "09:00:00".to_owned())
+        );
+        assert_eq!(
+            super::clock_text(-1),
+            ("1969-12-31".to_owned(), "23:59:59".to_owned())
+        );
+    }
+
+    #[test]
+    fn the_day_flips_exactly_at_midnight_utc() {
+        // 2026-09-16T00:00:00Z, and the micro before it.
+        assert_eq!(
+            super::clock_text(1_789_516_800_000_000),
+            ("2026-09-16".to_owned(), "00:00:00".to_owned())
+        );
+        assert_eq!(
+            super::clock_text(1_789_516_799_999_999),
+            ("2026-09-15".to_owned(), "23:59:59".to_owned())
+        );
+    }
+
+    #[test]
+    fn the_divider_prints_once_per_day_unless_the_floor_names_it() {
+        let day_one = row(1_789_549_200_000_000, "a", 0, "morning");
+        let day_two = row(1_789_636_800_000_000, "a", 1, "next day");
+        let text = rendered(vec![day_one.clone(), day_two], false, None);
+        assert_eq!(text.matches("# 2026-09-16 UTC\n").count(), 1, "{text}");
+        assert_eq!(text.matches("# 2026-09-17 UTC\n").count(), 1, "{text}");
+        let floored = super::Observation {
+            rows: vec![day_one],
+            day_floor: Some("2026-09-16".to_owned()),
+            ..super::Observation::default()
+        };
+        let text = super::render_batch(&floored, false, None);
+        assert!(!text.contains("# 2026-09-16"), "{text}");
+        assert!(text.contains("## 09:00:00 s:seat"), "{text}");
     }
 
     #[test]

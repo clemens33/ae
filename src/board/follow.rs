@@ -110,17 +110,24 @@ fn classify(held: Option<&Seat>, observed: &Located) -> Arm {
 
 /// The follow state machine: one held seat per actor plus the steady coverage
 /// reasons already printed for each.
-pub(crate) struct Follow {
+pub struct Follow {
     since: Option<i64>,
     seats: BTreeMap<String, Seat>,
     printed: BTreeMap<String, Vec<String>>,
+    /// The UTC day of the last row printed so far: the text divider prints
+    /// only when a row moves past it. Seeded from the first pass, held across
+    /// polls — the ONE divider memory the follow loop has.
+    last_day: Option<String>,
 }
 
 impl Follow {
     /// Seed from the first pass: its reads set the offsets the follow
     /// continues from, and its coverage rows are what a later poll must not
-    /// repeat. No row prints twice and none is missed.
-    pub(crate) fn seeded(seeds: &[SeatSeed], first_pass: &[Coverage], since: Option<i64>) -> Self {
+    /// repeat. No row prints twice and none is missed. The divider day is the
+    /// newest surviving row the first pass printed — `--since` applied, so a
+    /// first pass that printed nothing leaves no day behind.
+    #[must_use]
+    pub fn seeded(seeds: &[SeatSeed], first_pass: &[Coverage], since: Option<i64>) -> Self {
         let mut printed: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for item in first_pass {
             printed
@@ -128,8 +135,15 @@ impl Follow {
                 .or_default()
                 .push(item.reason.clone());
         }
+        let last_day = seeds
+            .iter()
+            .filter_map(|seed| seed.last_row_ts)
+            .filter(|ts| since.is_none_or(|floor| *ts >= floor))
+            .max()
+            .map(|ts| super::clock_text(ts).0);
         Self {
             since,
+            last_day,
             seats: seeds
                 .iter()
                 .map(|seed| {
@@ -158,8 +172,11 @@ impl Follow {
     }
 
     /// One poll: the three arms, the LOUD rescans, and coverage that prints
-    /// when it changes. No clock, no sleep, no I/O.
+    /// when it changes. No clock, no sleep, no I/O. The batch carries the
+    /// held divider day as its floor, and the batch's own last printed row —
+    /// dropped fragments and `--since` applied — becomes the new held day.
     pub(crate) fn step(&mut self, snapshots: Vec<Snapshot>) -> Observation {
+        let floor = self.last_day.clone();
         let mut rows = Vec::new();
         let mut coverage = Vec::new();
         for snapshot in snapshots {
@@ -238,10 +255,14 @@ impl Follow {
         if let Some(since) = self.since {
             rows.retain(|row| row.ts >= since);
         }
+        if let Some(last) = rows.last() {
+            self.last_day = Some(super::clock_text(last.ts).0);
+        }
         Observation {
             rows,
             coverage,
             seeds: Vec::new(),
+            day_floor: floor,
         }
     }
 
@@ -266,7 +287,7 @@ impl Follow {
 #[cfg(test)]
 mod tests {
     use super::{Follow, Loaded, Located, Plan, Snapshot};
-    use crate::board::{Coverage, Observation, SeatSeed, Splitter};
+    use crate::board::{Coverage, Observation, SeatSeed, Splitter, render_batch};
     use crate::tool::ToolKind;
     use std::time::{Duration, SystemTime};
 
@@ -395,6 +416,7 @@ mod tests {
                 identity: (1, 7),
                 mtime: Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1)),
                 committed: first.len() as u64,
+                last_row_ts: None,
             }],
             &[],
             None,
@@ -575,6 +597,68 @@ mod tests {
         let batch = poll_grok(&mut follow, "s:lead", seen, &open, false);
         assert_eq!(batch.rows.len(), 1);
         assert_eq!(follow.plan("s:lead", &seen), Plan::Hold);
+    }
+
+    #[test]
+    fn the_floor_is_the_first_pass_day_until_a_row_moves_it() {
+        let first = format!("{}\n", human("2026-09-16T09:00:00Z", "one"));
+        let mut follow = Follow::seeded(
+            &[SeatSeed {
+                actor: "s:lead".to_owned(),
+                identity: (1, 7),
+                mtime: Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1)),
+                committed: first.len() as u64,
+                last_row_ts: Some(1_789_549_200_000_000),
+            }],
+            &[],
+            None,
+        );
+        let full = format!("{first}{}\n", human("2026-09-16T10:00:00Z", "two"));
+        let batch = poll(
+            &mut follow,
+            "s:lead",
+            located(1, full.len() as u64, 2),
+            &full,
+        );
+        assert_eq!(batch.rows.len(), 1);
+        let text = render_batch(&batch, false, None);
+        assert!(!text.contains("# 2026-09-16"), "{text}");
+        let next = format!("{full}{}\n", human("2026-09-17T09:00:00Z", "new day"));
+        let batch = poll(
+            &mut follow,
+            "s:lead",
+            located(1, next.len() as u64, 3),
+            &next,
+        );
+        let text = render_batch(&batch, false, None);
+        assert!(
+            text.contains("# 2026-09-17 UTC\n## 09:00:00 s:lead"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_since_filtered_first_pass_leaves_no_floor_behind() {
+        let first = format!("{}\n", human("2026-09-16T09:00:00Z", "one"));
+        let mut follow = Follow::seeded(
+            &[SeatSeed {
+                actor: "s:lead".to_owned(),
+                identity: (1, 7),
+                mtime: Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1)),
+                committed: first.len() as u64,
+                last_row_ts: Some(1_789_549_200_000_000),
+            }],
+            &[],
+            Some(1_789_549_200_000_001),
+        );
+        let batch = poll(
+            &mut follow,
+            "s:lead",
+            located(1, first.len() as u64, 2),
+            &first,
+        );
+        assert!(batch.rows.is_empty(), "the seed row is older than since");
+        assert_eq!(batch.day_floor, None, "nothing printed, no floor");
     }
 
     #[test]

@@ -29,14 +29,18 @@ never a shim.
 
 ## Output
 
-Text (default): the scope line, coverage rows, then `## <ts> <session:seat>`
-headers with bodies; every body line is indented two spaces, and one blank
-line closes each row:
+Text (default): the scope line, coverage rows, then one `# YYYY-MM-DD UTC`
+date divider and `## HH:MM:SS <session:seat>` headers with bodies; every body
+line is indented two spaces, and one blank line closes each row. The divider
+prints before the first row and again only when the UTC day moves past the
+previously printed row's — within one board and across `--follow` batches.
+Times are UTC, stated once in the divider, never on the row:
 
 ```text
 scope: current conversations only (phase 1b) — a seat that resumed keeps only its current transcript
 coverage incomplete: demo:colead — opencode: not read
-## 2026-09-16T09:00:00.500000Z demo:lead
+# 2026-09-16 UTC
+## 09:00:00 demo:lead
   ship the slice today
 
 ```
@@ -71,9 +75,10 @@ human-only board.
 
 ```text
 scope: current conversations only (phase 1b) — a seat that resumed keeps only its current transcript
-## 2026-09-16T09:00:00.500000Z demo:lead
+# 2026-09-16 UTC
+## 09:00:00 demo:lead
   ship the slice today
-## 2026-09-16T09:00:01.000000Z demo:lead · assistant
+## 09:00:01 demo:lead · assistant
   drafted it; the review is open
 ```
 
@@ -112,7 +117,9 @@ readable prints nothing, a seat that becomes unreadable prints its new reason
 once. Rescan lines always print. Batches are sorted internally by
 `(ts, file, offset)` but never merged across batches — a late seat's older row
 prints later. Every batch prints its rows through the same renderer as the
-one-shot — same indented shape, same `--lines` clip. Every row keeps its
+one-shot — same indented shape, same `--lines` clip, same divider rule: a
+batch on the printed day opens with no divider, a new day opens with one.
+Every row keeps its
 durable identity (`file` = `path#dev:ino` plus `offset`), so a consumer that
 wants dedup across generations can have it.
 

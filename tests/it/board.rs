@@ -153,7 +153,8 @@ fn text_scope_line_is_first_and_coverage_precedes_rows() {
         lines[coverage],
         "coverage incomplete: one:colead — invalid or missing conversation id"
     );
-    assert_eq!(lines[row], "## 2026-09-16T09:00:00.500000Z one:lead");
+    assert_eq!(lines[row], "## 09:00:00 one:lead");
+    assert_eq!(lines[row - 1], "# 2026-09-16 UTC", "divider above: {text}");
     assert_eq!(lines[row + 1], "  plain human words", "body is indented");
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -523,7 +524,7 @@ fn binary_torn_tail_keeps_earlier_rows_and_covers_the_tail() {
         "stdout: {stdout}"
     );
     assert!(
-        stdout.contains("## 2026-09-16T09:00:00.000000Z torn:lead\n  kept words\n"),
+        stdout.contains("# 2026-09-16 UTC\n## 09:00:00 torn:lead\n  kept words\n"),
         "stdout: {stdout}"
     );
     assert!(
@@ -954,8 +955,8 @@ fn assistant_seats_render_rows_and_roles_only_behind_the_flag() {
     );
     let text = board::render(&on, false, None);
     for header in [
-        "## 2026-09-16T09:00:01.000000Z one:lead · assistant\n  synthetic reply\n",
-        "## 2026-09-16T09:00:03.000000Z one:colead · assistant\n  codex synthetic reply\n",
+        "## 09:00:01 one:lead · assistant\n  synthetic reply\n",
+        "## 09:00:03 one:colead · assistant\n  codex synthetic reply\n",
     ] {
         assert!(text.contains(header), "{text}");
     }
@@ -1192,6 +1193,75 @@ fn the_first_follow_pass_is_the_plain_board() {
         None,
     );
     assert_eq!(plain, followed);
-    assert!(followed.contains("## 2026-09-16T09:00:00.500000Z one:lead"));
+    assert!(followed.contains("# 2026-09-16 UTC\n## 09:00:00 one:lead"));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn dividers_mark_utc_days_and_follow_polls_carry_the_day() {
+    let two = rig("dividers-two");
+    let store = two.join("claude");
+    plant_transcript(
+        &store,
+        "work",
+        CLAUDE_ID,
+        &[
+            user("2026-09-16T23:00:00Z", "late words"),
+            user("2026-09-17T00:00:00Z", "next day words"),
+        ],
+    );
+    plant_session(
+        &two,
+        "one",
+        &claude_roster("main", "lead", CLAUDE_ID, &store),
+    );
+    let text = board::render(&observe(&two, &["one"], None), false, None);
+    assert_eq!(text.matches("# 2026-09-16 UTC\n").count(), 1, "{text}");
+    assert_eq!(text.matches("# 2026-09-17 UTC\n").count(), 1, "{text}");
+    let _ = std::fs::remove_dir_all(&two);
+
+    let root = rig("dividers");
+    let store = root.join("claude");
+    let first = user("2026-09-16T09:00:00Z", "same day one");
+    let second = user("2026-09-16T10:00:00Z", "same day two");
+    let path = plant_transcript(&store, "work", CLAUDE_ID, &[first, second]);
+    plant_session(
+        &root,
+        "one",
+        &claude_roster("main", "lead", CLAUDE_ID, &store),
+    );
+    let text = board::render(&observe(&root, &["one"], None), false, None);
+    assert_eq!(text.matches("# 2026-09-16 UTC\n").count(), 1, "{text}");
+    assert!(text.contains("## 09:00:00 one:lead"), "{text}");
+
+    // The follow, driven exactly as the binary drives it: the first pass IS
+    // the one-shot board, then polls append only what is new.
+    let sessions = vec![SessionInput {
+        name: "one".to_owned(),
+        path: root.join("sessions").join("one"),
+    }];
+    let inputs = Inputs {
+        home: Some(root.as_path()),
+        sessions: &sessions,
+        assistant: false,
+    };
+    let first_pass = board::observe(&inputs, None);
+    let mut follow = board::follow::Follow::seeded(&first_pass.seeds, &first_pass.coverage, None);
+    let mut body = std::fs::read_to_string(&path).expect("transcript");
+    let _ = writeln!(body, "{}", user("2026-09-16T11:00:00Z", "same day three"));
+    std::fs::write(&path, &body).expect("append");
+    let batch = board::follow_poll(&inputs, &mut follow);
+    assert_eq!(batch.rows.len(), 1);
+    let text = board::render_batch(&batch, false, None);
+    assert!(!text.contains("# 2026-"), "same day, no divider: {text}");
+    assert!(text.contains("## 11:00:00 one:lead"), "{text}");
+    let _ = writeln!(body, "{}", user("2026-09-17T09:00:00Z", "new day"));
+    std::fs::write(&path, &body).expect("append");
+    let batch = board::follow_poll(&inputs, &mut follow);
+    let text = board::render_batch(&batch, false, None);
+    assert!(
+        text.contains("# 2026-09-17 UTC\n## 09:00:00 one:lead"),
+        "{text}"
+    );
     let _ = std::fs::remove_dir_all(&root);
 }
