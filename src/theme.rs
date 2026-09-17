@@ -330,9 +330,11 @@ impl Mark {
         match reason {
             Reason::Dead => Self::Dead,
             Reason::Stale => Self::Stale,
-            Reason::WaitingUser | Reason::Blocked | Reason::Throttled | Reason::Unanswered => {
-                Self::NeedsYou
-            }
+            Reason::WaitingUser
+            | Reason::Blocked
+            | Reason::Limit
+            | Reason::Throttled
+            | Reason::Unanswered => Self::NeedsYou,
         }
     }
 }

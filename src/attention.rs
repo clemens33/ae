@@ -1,8 +1,11 @@
 //! Why a session wants a human, and which reason wins.
 //!
 //! The attention marker is "the single most-actionable reason by
-//! documented severity: dead > stale > waiting-user > blocked > throttled >
-//! unanswered, derived as a rollup across the session's agents". The digest
+//! documented severity: dead > stale > waiting-user > blocked > limit >
+//! throttled > unanswered, derived as a rollup across the session's agents".
+//! `limit` and `blocked` share rank 3 — a vendor usage limit is as
+//! human-owed as a declared external block — and the derived tie-break is
+//! toward the broader word, `blocked`. The digest
 //! carries the same fact twice: `attention` (the name) and
 //! `attention_rank` (the number, `dead` 6 → `unanswered` 1).
 //!
@@ -19,6 +22,11 @@ pub enum Reason {
     Unanswered,
     /// Rank 2 — an agent is being rate-limited upstream.
     Throttled,
+    /// Rank 3 — the vendor's own usage limit reached the agent's pane: a
+    /// human must wait for the window reset or re-login, so it weighs exactly
+    /// as much as a declared block. Declared BEFORE `Blocked`, so the derived
+    /// `Ord` breaks the rank-3 tie toward the broader word.
+    Limit,
     /// Rank 3 — an agent is blocked: it declared a concrete external
     /// dependency, or a `waiting-agent` declaration outlived its ceiling.
     Blocked,
@@ -32,21 +40,26 @@ pub enum Reason {
 
 impl Reason {
     /// Every reason, most severe first — the order, written once.
-    pub const BY_SEVERITY: [Self; 6] = [
+    pub const BY_SEVERITY: [Self; 7] = [
         Self::Dead,
         Self::Stale,
         Self::WaitingUser,
         Self::Blocked,
+        Self::Limit,
         Self::Throttled,
         Self::Unanswered,
     ];
 
     /// The numeric severity published as `attention_rank`.
     ///
+    /// `Limit` weighs exactly what `Blocked` weighs: the human can no more
+    /// clear it than an external dependency.
+    ///
     /// ```
     /// use ae::attention::Reason;
     /// assert_eq!(Reason::Dead.rank(), 6);
     /// assert_eq!(Reason::Blocked.rank(), 3);
+    /// assert_eq!(Reason::Limit.rank(), Reason::Blocked.rank());
     /// assert_eq!(Reason::Unanswered.rank(), 1);
     /// ```
     #[must_use]
@@ -54,7 +67,7 @@ impl Reason {
         match self {
             Self::Unanswered => 1,
             Self::Throttled => 2,
-            Self::Blocked => 3,
+            Self::Blocked | Self::Limit => 3,
             Self::WaitingUser => 4,
             Self::Stale => 5,
             Self::Dead => 6,
@@ -75,6 +88,7 @@ impl Reason {
             Self::Unanswered => "unanswered",
             Self::Throttled => "throttled",
             Self::Blocked => "blocked",
+            Self::Limit => "limit",
             Self::WaitingUser => "waiting-user",
             Self::Stale => "stale",
             Self::Dead => "dead",
@@ -113,20 +127,26 @@ mod tests {
         // unanswered 1)", and its worked example pairs "blocked" with 3.
         assert_eq!(
             Reason::BY_SEVERITY.map(Reason::rank),
-            [6, 5, 4, 3, 2, 1],
-            "the published ranks"
+            [6, 5, 4, 3, 3, 2, 1],
+            "the published ranks, with limit exactly blocked's"
         );
         assert_eq!(Reason::Blocked.rank(), 3);
+        assert_eq!(Reason::Limit.rank(), Reason::Blocked.rank());
     }
 
     #[test]
     fn sc_017g_severity_orders_dead_over_stale_over_waiting_over_blocked_over_throttled_over_unanswered()
      {
-        // The row's order, asserted as the pairwise chain it claims.
+        // The row's order, asserted as the pairwise chain it claims. Ranks are
+        // non-increasing because `limit` is the ONE documented tie: it weighs
+        // what `blocked` weighs.
         for pair in Reason::BY_SEVERITY.windows(2) {
             let (more, less) = (pair[0], pair[1]);
             assert!(more > less, "{more} should outrank {less}");
-            assert!(more.rank() > less.rank(), "{more} should outrank {less}");
+            assert!(
+                more.rank() >= less.rank(),
+                "{more} should not weigh less than {less}"
+            );
         }
     }
 
@@ -139,6 +159,11 @@ mod tests {
         assert_eq!(
             Reason::rollup([Reason::Throttled, Reason::Unanswered]),
             Some(Reason::Throttled)
+        );
+        // The documented rank-3 tie breaks toward the broader word.
+        assert_eq!(
+            Reason::rollup([Reason::Blocked, Reason::Limit]),
+            Some(Reason::Blocked)
         );
         // Order of arrival must not decide it.
         assert_eq!(
@@ -161,6 +186,7 @@ mod tests {
                 "stale",
                 "waiting-user",
                 "blocked",
+                "limit",
                 "throttled",
                 "unanswered"
             ]

@@ -20,9 +20,9 @@ use crate::tracked::{self, EventFields};
 use crate::transport;
 use crate::watchdog::{
     QuietCycle, QuietKind, QuietPane, SweepAlert, SweepEffect, SweepKnobs, SweepObservation,
-    SweepState, SweepVerdict, classify_dead, declaration_key, is_sweep_target,
+    SweepState, SweepVerdict, Throttle, classify_dead, declaration_key, is_sweep_target,
     latest_relevant_event, quiet_hash, quiet_pane_decision, quiet_reason, quiet_stabilize,
-    record_sweep, shows_throttle, stale_composite, sweep_step,
+    record_sweep, stale_composite, sweep_step, throttle_class,
 };
 
 /// The event actor every watchdog emission carries.
@@ -129,6 +129,11 @@ pub struct PaneState {
     pub nudge_count: u32,
     /// Consecutive throttled cycles.
     pub throttle_streak: u32,
+    /// The usage-limit latch: the seat's pane showed the vendor's own usage
+    /// limit. Its ONE release is a cycle judged at all (a dead pane returns
+    /// before the ordinary branches) that no longer shows the phrase; that
+    /// cycle retracts the durable verdict and requests the recovery refresh.
+    pub limit_latched: bool,
     /// Consecutive nudges that did not land.
     pub undelivered_streak: u32,
     /// Consecutive cycles whose process snapshot was unusable.
@@ -156,8 +161,10 @@ pub struct Observation {
     pub identity: u64,
     /// [`classify_dead`]'s answer.
     pub is_dead: bool,
-    /// [`shows_throttle`]'s answer.
-    pub is_throttled: bool,
+    /// [`crate::watchdog::throttle_class`]'s answer: WHICH upstream trouble the
+    /// pane shows, if any — transient throttling or the vendor's own usage
+    /// limit.
+    pub throttle: Option<Throttle>,
     /// The worst exact-match row from the last scheduled quota observation.
     pub throttle_quota: Option<String>,
     /// The RESOLVED quiet suppression: `Done` always, `WaitingUser`/`Blocked`
@@ -198,6 +205,9 @@ pub enum Verdict {
     Quiet(QuietKind),
     /// Upstream is rate-limiting this agent.
     Throttled,
+    /// The pane shows the vendor's own usage limit, which waits on a window
+    /// reset or a re-login rather than on upstream.
+    Limit,
     /// The modeled harness is positively waiting at an empty input box.
     Idle,
     /// Silent past the window, with nothing recent anywhere.
@@ -211,7 +221,7 @@ pub enum Verdict {
 impl Verdict {
     /// The theme mark this verdict is drawn as.
     ///
-    /// SEVEN marks for eleven verdicts: the accent and the reason word beside
+    /// SEVEN marks for twelve verdicts: the accent and the reason word beside
     /// it carry the difference, and a status bar that spent a distinct glyph
     /// on each verdict asked its reader to learn a private alphabet. A gone
     /// process keeps its own mark, because "this will never move again" is not
@@ -222,6 +232,7 @@ impl Verdict {
             Self::Dead => Mark::Dead,
             Self::Quiet(QuietKind::WaitingUser | QuietKind::Blocked)
             | Self::Throttled
+            | Self::Limit
             | Self::Meta(SweepVerdict::MetaWedged) => Mark::NeedsYou,
             // A FRESH `waiting-agent` is quiet but no longer borrows Working's
             // mark: it draws the seventh glyph, statically — the ticker below
@@ -245,6 +256,7 @@ impl Verdict {
             Self::Quiet(QuietKind::WaitingAgent) => "waiting-agent",
             Self::Quiet(QuietKind::Blocked) => "blocked",
             Self::Throttled => "throttled",
+            Self::Limit => "limit",
             Self::Idle => "idle",
             Self::Stale => "stale",
             Self::Active => "working",
@@ -819,6 +831,26 @@ fn book_throttle(
     next.nudge_count = 0;
 }
 
+/// The usage-limit branch: the same nudge suppression as throttling, plus ONE
+/// durable `limit` event per episode — the word `ae list` reads — and the latch
+/// the release edge in `account_ordinary` fires from.
+fn book_limit(next: &mut PaneState, effects: &mut Vec<Effect>, seen: &Observation) {
+    if !next.limit_latched {
+        next.limit_latched = true;
+        effects.push(Effect::Emit {
+            action: "limit",
+            summary: "vendor usage limit reached — waits for a reset or a re-login".to_owned(),
+        });
+    }
+    // The limit episode ends any transient streak: a return to plain
+    // throttling is news again, not a continuation.
+    next.throttle_streak = 0;
+    next.prev_hash = Some(seen.hash);
+    next.last_hash_change = Some(seen.now_epoch);
+    next.idle_since_epoch = None;
+    next.nudge_count = 0;
+}
+
 /// What a stale pane earns: a nudge, the one max-nudges alert, or nothing.
 fn book_stale(
     prior: &PaneState,
@@ -926,6 +958,7 @@ fn clear_death_latch(
         nudge_count: 0,
         undelivered_streak: 0,
         throttle_streak: 0,
+        limit_latched: false,
         ..next.clone()
     })
 }
@@ -989,7 +1022,7 @@ pub fn account(prior: &PaneState, seen: &Observation, knobs: &Knobs) -> Accounti
     account_ordinary(prior, next, effects, seen, knobs)
 }
 
-/// Steps 3 through 9 — the ordinary judgement of a pane that is not dead (any
+/// Steps 3 through 10 — the ordinary judgement of a pane that is not dead (any
 /// more). `prior` is the carry the verdict is judged against: the reset
 /// episode a clear just returned, or the standing carry.
 fn account_ordinary(
@@ -1022,12 +1055,24 @@ fn account_ordinary(
     }
 
     // 5.
-    if !seen.is_throttled && prior.throttle_streak > 0 {
+    if seen.throttle.is_none() && prior.throttle_streak > 0 {
         effects.push(Effect::Emit {
             action: "throttle-cleared",
             summary: format!("throttling cleared after {} cycles", prior.throttle_streak),
         });
         next.throttle_streak = 0;
+    }
+
+    // 5b. The limit latch's ONE release: this cycle judged the pane (a dead
+    //     pane returned already, and an identity change reset the latch), and
+    //     the phrase is gone. The durable verdict is retracted here; the
+    //     recovery refresh rides the same edge (see `run`).
+    if prior.limit_latched && seen.throttle != Some(Throttle::LimitReached) {
+        next.limit_latched = false;
+        effects.push(Effect::Emit {
+            action: "alert-cleared",
+            summary: "usage limit cleared — pane no longer shows it".to_owned(),
+        });
     }
 
     // 6. A quiet declaration. A FRESH `waiting-agent` holds like the other
@@ -1057,8 +1102,20 @@ fn account_ordinary(
         };
     }
 
-    // 7.
-    if seen.is_throttled {
+    // 7. The vendor's own usage limit outranks a transient throttle: it is the
+    //    fact that outlives the cycle, and it is what the human must act on.
+    if seen.throttle == Some(Throttle::LimitReached) {
+        book_limit(&mut next, &mut effects, seen);
+        return Accounting {
+            next,
+            effects,
+            verdict: Verdict::Limit,
+            moved: false,
+        };
+    }
+
+    // 8.
+    if seen.throttle.is_some() {
         book_throttle(&mut next, &mut effects, seen, knobs);
         return Accounting {
             next,
@@ -1068,7 +1125,7 @@ fn account_ordinary(
         };
     }
 
-    // 8. Harness frames outrank the legacy motion heuristic.
+    // 9. Harness frames outrank the legacy motion heuristic.
     if let Some(verdict) = account_harness(prior, &mut next, &mut effects, seen, knobs) {
         return Accounting {
             next,
@@ -1078,7 +1135,7 @@ fn account_ordinary(
         };
     }
 
-    // 9. Unknown frames retain the legacy motion and actor-event rule.
+    // 10. Unknown frames retain the legacy motion and actor-event rule.
     account_unknown(prior, next, effects, seen, knobs)
 }
 
@@ -3101,8 +3158,8 @@ impl Cycle<'_> {
             let hash = quiet_hash(&capture);
             // Model drift rides the SAME capture, under the seat's launch guard.
             self.note_model(&capture, tool, &slot);
-            let is_throttled = shows_throttle(&capture, agent_bin.as_deref().unwrap_or_default());
-            let throttle_quota = self.throttle_quota(&carry.quota, &slot, now, is_throttled);
+            let throttle = throttle_class(&capture, agent_bin.as_deref().unwrap_or_default());
+            let throttle_quota = self.throttle_quota(&carry.quota, &slot, now, throttle.is_some());
             // ONE process-tree reading: the dead verdict and the unknown-snapshot
             // counter are two questions about the same answer.
             let descendancy = descendancy_of(table.as_deref(), pane.pane_pid, agent_bin.as_deref());
@@ -3115,7 +3172,7 @@ impl Cycle<'_> {
                 harness: self.harness_observation(&capture, tool, &events, &slot, agent),
                 identity,
                 is_dead: classify_dead(&pane.current_command, descendancy),
-                is_throttled,
+                throttle,
                 throttle_quota,
                 quiet: self.resolve_quiet(
                     &quiet_query(&events, agent, &slot, hash, index, &pane.pane_id),
@@ -4081,7 +4138,7 @@ mod tests {
     use crate::session::OwnWork;
     use crate::tmux::StopProbe;
     use crate::watchdog::{
-        QuietKind, SweepAlert, SweepEffect, SweepObservation, SweepVerdict, WedgeDetail,
+        QuietKind, SweepAlert, SweepEffect, SweepObservation, SweepVerdict, Throttle, WedgeDetail,
         declaration_key, quiet_filter, quiet_hash,
     };
     use std::io::ErrorKind;
@@ -4101,7 +4158,7 @@ mod tests {
             },
             identity: 1,
             is_dead: false,
-            is_throttled: false,
+            throttle: None,
             throttle_quota: None,
             quiet: None,
             descendancy: Descendancy::Present,
@@ -5508,7 +5565,7 @@ mod tests {
         );
 
         let mut observed = seen();
-        observed.is_throttled = true;
+        observed.throttle = Some(Throttle::Throttled);
         observed.throttle_quota = Some(line.clone());
         let first = account(&PaneState::default(), &observed, &Knobs::default());
         assert_eq!(emitted(&first.effects)[0].0, "throttled");
@@ -6455,7 +6512,7 @@ mod tests {
         all.is_dead = true;
         all.sweep = Some(SweepObservation::new(std::time::UNIX_EPOCH, None));
         all.quiet = Some(QuietKind::Done);
-        all.is_throttled = true;
+        all.throttle = Some(Throttle::Throttled);
         all.harness.frame = crate::harness_state::HarnessState::Idle;
         assert_eq!(
             account(&PaneState::default(), &all, &Knobs::default()).verdict,
@@ -6480,11 +6537,18 @@ mod tests {
             Verdict::Quiet(QuietKind::Done)
         );
         all.quiet = None;
+        // The usage limit outranks transient throttling on the same pane.
+        all.throttle = Some(Throttle::LimitReached);
+        assert_eq!(
+            account(&PaneState::default(), &all, &Knobs::default()).verdict,
+            Verdict::Limit
+        );
+        all.throttle = Some(Throttle::Throttled);
         assert_eq!(
             account(&PaneState::default(), &all, &Knobs::default()).verdict,
             Verdict::Throttled
         );
-        all.is_throttled = false;
+        all.throttle = None;
         assert_eq!(
             account(&PaneState::default(), &all, &Knobs::default()).verdict,
             Verdict::Idle
@@ -6839,7 +6903,7 @@ mod tests {
         );
 
         let mut throttled = observed.clone();
-        throttled.is_throttled = true;
+        throttled.throttle = Some(Throttle::Throttled);
         assert_eq!(
             account(&prior, &throttled, &knobs).verdict,
             Verdict::Throttled
@@ -7169,10 +7233,79 @@ mod tests {
     }
 
     #[test]
+    fn a_usage_limit_pane_reads_limit_and_does_not_classify_dead() {
+        let knobs = Knobs::default();
+        let mut observed = seen();
+        observed.throttle = Some(Throttle::LimitReached);
+        let first = account(&PaneState::default(), &observed, &knobs);
+        assert_eq!(
+            first.verdict,
+            Verdict::Limit,
+            "the usage limit is its own word, not throttled"
+        );
+        assert_eq!(first.verdict.reason(), "limit");
+        assert_eq!(
+            emitted(&first.effects),
+            vec![(
+                "limit",
+                "vendor usage limit reached — waits for a reset or a re-login"
+            )]
+        );
+        assert!(first.next.limit_latched);
+        // The event is one per episode, never one per cycle.
+        let second = account(&first.next, &observed, &knobs);
+        assert_eq!(second.verdict, Verdict::Limit);
+        assert!(emitted(&second.effects).is_empty(), "one limit event");
+    }
+
+    #[test]
+    fn a_dead_pane_wins_over_a_usage_limit() {
+        // Dead is dead: the union phrase sits on a pane whose process is gone,
+        // and the death branch returns before the limit branch is reached.
+        let mut observed = seen();
+        observed.is_dead = true;
+        observed.throttle = Some(Throttle::LimitReached);
+        let booked = account(&PaneState::default(), &observed, &Knobs::default());
+        assert_eq!(booked.verdict, Verdict::Dead);
+        assert!(!booked.next.limit_latched, "no limit episode was entered");
+    }
+
+    #[test]
+    fn the_limit_release_retracts_once_and_never_repeats_on_clear_cycles() {
+        let knobs = Knobs::default();
+        let mut observed = seen();
+        observed.throttle = Some(Throttle::LimitReached);
+        let limited = account(&PaneState::default(), &observed, &knobs);
+        assert_eq!(limited.verdict, Verdict::Limit);
+
+        // The phrase gone from a live pane: ONE retraction and the latch is down.
+        let released = account(&limited.next, &seen(), &knobs);
+        assert_eq!(released.verdict, Verdict::Active);
+        assert_eq!(
+            emitted(&released.effects),
+            vec![(
+                "alert-cleared",
+                "usage limit cleared — pane no longer shows it"
+            )]
+        );
+        assert!(!released.next.limit_latched);
+        // Two consecutive clear cycles: the second says nothing.
+        let again = account(&released.next, &seen(), &knobs);
+        assert!(
+            emitted(&again.effects).is_empty(),
+            "one retraction per episode"
+        );
+        // A SECOND episode is news again.
+        let second = account(&again.next, &observed, &knobs);
+        assert_eq!(second.verdict, Verdict::Limit);
+        assert_eq!(emitted(&second.effects).len(), 1, "limit event per episode");
+    }
+
+    #[test]
     fn throttling_says_so_once_alerts_at_the_bound_and_clears_on_recovery() {
         let knobs = Knobs::default();
         let mut observed = seen();
-        observed.is_throttled = true;
+        observed.throttle = Some(Throttle::Throttled);
         let mut state = PaneState::default();
         let first = account(&state, &observed, &knobs);
         assert_eq!(first.verdict, Verdict::Throttled);
@@ -7728,6 +7861,9 @@ mod tests {
                 "blocked",
             ),
             (Verdict::Throttled, Mark::NeedsYou, "throttled"),
+            // The vendor's own usage limit: the existing NeedsYou mark, a new
+            // word. A published VALUE, not a format.
+            (Verdict::Limit, Mark::NeedsYou, "limit"),
             (Verdict::Quiet(QuietKind::Done), Mark::Done, "done"),
             (Verdict::Stale, Mark::Stale, "stale"),
             (Verdict::Active, Mark::Working, "working"),

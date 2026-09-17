@@ -416,6 +416,9 @@ impl Event {
             // plus an active contribution is wanted, `target` names the owner,
             // and `throttled` names the contribution outright.
             "throttled" => AlertMeaning::Raised(Reason::Throttled),
+            // The vendor's own usage limit, a rank-3 sibling of `blocked`: the
+            // human waits on a window reset or a re-login.
+            "limit" => AlertMeaning::Raised(Reason::Limit),
             _ => AlertMeaning::Undefined,
         }
     }
@@ -1976,6 +1979,23 @@ mod tests {
                 event("throttled", summary).alert_meaning(),
                 AlertMeaning::Raised(Reason::Throttled),
                 "{summary:?}: the action decides, and the summary may not narrow it"
+            );
+        }
+    }
+
+    #[test]
+    fn sc_509c_a_limit_action_is_a_carrier_on_its_action_alone() {
+        // The usage-limit carrier mirrors `throttled`: the ACTION decides, and
+        // the summary may not narrow it.
+        for summary in [
+            Some("vendor usage limit reached — waits for a reset or a re-login"),
+            Some("the process looks dead"),
+            None,
+        ] {
+            assert_eq!(
+                event("limit", summary).alert_meaning(),
+                AlertMeaning::Raised(Reason::Limit),
+                "{summary:?}: only the action classifies this carrier"
             );
         }
     }

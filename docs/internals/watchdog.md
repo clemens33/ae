@@ -160,7 +160,9 @@ flowchart TD
     Meta -- yes --> Sweep[overview sweep verdict]
     Meta -- no --> Done{Quiet state<br/>latest?}
     Done -- yes --> SkipDone[skip — honor quiet<br/>done: event-only<br/>waiting-user/-agent/blocked: until pane touched<br/>waiting-agent past ceiling: as blocked, nudged when the cadence is on]
-    Done -- no --> Throttled{Throttle phrase<br/>in pane?}
+    Done -- no --> Limit{Usage-limit phrase<br/>in pane?}
+    Limit -- yes --> SkipLimit[skip + emit limit once per episode<br/>clear on release + refresh quota]
+    Limit -- no --> Throttled{Throttle phrase<br/>in pane?}
     Throttled -- yes --> SkipThrottle[skip + emit throttled<br/>escalate after N cycles]
     Throttled -- no --> Frame{Current harness frame}
     Frame -- Busy --> MarkActive[working — clear stale alert]
@@ -185,9 +187,10 @@ In source order:
 1. **Dead** — pane's foreground command is a shell AND no agent binary is in the descendant process tree. Alert once, mark dead, ignore in future cycles — until a POSITIVE process reading shows the agent binary back under the pane (a re-run in place), which clears the latch with one `dead-cleared` and judges that same cycle normally. An UNKNOWN snapshot is not evidence of life and keeps the latch; a seat that dies again is alerted again.
 2. **Orchestrator main** — use overview-sweep accounting; no harness-idle reminder competes with it.
 3. **Declared quiet state** — agent's latest relevant event is its own `state` declaration of `done`, `waiting-user`, `waiting-agent`, or `blocked` (`mark-done`/`done` events count as `done`), AND no newer ae event mentions them as actor or target. `done` is skipped silently and is event-only (pane churn never revives it). `waiting-user`/`waiting-agent`/`blocked` are also skipped, but yield to pane activity: if the pane changed since the declaration (e.g. the human replied directly in it, leaving no event), the quiet state no longer holds and the normal branches resume — so a post-reply hang is still caught. `waiting-agent` is the quiet fifth state: it means the seat waits on ANOTHER ae agent, claims no human while fresh, and — once its declaration has aged past `idle_nudge_secs * OWN_WORK_AGE_CAP` nudge periods (the same multiplier as the own-work deferral, with ONE deliberate exception: at `idle_nudge_secs = 0` the deferral is vacuous — there is no nudge to defer — while the attention ceiling scales from the documented default 300 s, so 1200 s, because zero keeps the marker and only suppresses the nudge) — it stops holding and is judged exactly as `blocked`: the nudge budget resumes (the nudge half, off when `idle_nudge_secs = 0` like every nudge) and the verdict published is `blocked` (the attention half). The ceiling is measured from the declaration's own timestamp and has ONE owner (`watchdog::waiting_agent_escalated`), shared by the daemon and the read surfaces, so they cannot disagree about escalation: `session::declared_reason` asks it AND the daemon's currency rule, and every human surface consumes that answer through `AgentEntry.reason` rather than recomputing any arithmetic. Currency itself is judged by the ONE routing-aware relevance owner (`watchdog::latest_relevant_event`, over `event_is_actor`/`event_is_addressed_to`), called by BOTH the daemon and `session::agent_entries` with the same routing key the declaration is matched by, so a rename-back history cannot make one selection routing-aware and the other display-only. ONE pane-only residual is named rather than faked: the daemon also yields the hold after the pane keeps changing for two cycles, and a directory read cannot see panes, so a declaration the daemon has already yielded by pane activity can still read as current on the human-marker surfaces (the pane border follows the daemon).
-4. **Throttled** — the current capture contains a known upstream rate-limit / overload phrase for the agent's binary. Skip nudge, emit `throttled` event first time per streak, escalate to `alert` after `THROTTLE_ALERT_CYCLES` continuous cycles.
-5. **Busy frame** — positively recognized execution. Mark working, reset idle and reminder state, and clear a durable stale alert.
-6. **Idle frame** — positively recognized empty input. Mark idle immediately; after `idle_nudge_secs`, send `you look idle: declare state or continue` through the existing `send` path. At the normal maximum, emit the same durable stale alert and keep it across daemon restarts until real Busy recovery.
+4. **Usage limit** — the current capture contains a phrase from the vendor's OWN usage-limit catalog for the agent's binary (measured per tool; see below). Outranks the transient branch: skip the nudge like throttling, emit ONE durable `limit` event per episode, and publish the verdict word `limit` (the existing NeedsYou mark, attention rank 3 — exactly `blocked`'s). When a later cycle judges the pane and the phrase is gone, the latch releases with one `alert-cleared` and the quota recovery pass runs once (see below). Dead wins: a pane whose process is gone is never judged here.
+5. **Throttled** — the current capture contains a known upstream rate-limit / overload phrase for the agent's binary. Skip nudge, emit `throttled` event first time per streak, escalate to `alert` after `THROTTLE_ALERT_CYCLES` continuous cycles.
+6. **Busy frame** — positively recognized execution. Mark working, reset idle and reminder state, and clear a durable stale alert.
+7. **Idle frame** — positively recognized empty input. Mark idle immediately; after `idle_nudge_secs`, send `you look idle: declare state or continue` through the existing `send` path. At the normal maximum, emit the same durable stale alert and keep it across daemon restarts until real Busy recovery.
    - **Outstanding own work DEFERS that reminder.** A seat with a request it SENT that the ledger has not closed, or an agent it SPAWNED that still holds a seat here, is not idle — it is the thing everybody else is waiting on. The empty input box is the right reading of the pixels and the wrong reading of the facts. Both are facts ae already owns: [`session::Outstanding`](../../src/session.rs) reads them from the pending-request sensor and the spawn/retire ledger, and nothing new is persisted, captured or published for them. Requests RECEIVED never count — answering one is the seat's own job.
    - THREE records close a request and stop it deferring, and nothing else does. A `reply` closes one by its REQUEST ID. A `cancel` closes one by its REQUEST ID, but no agent helper emits one: the only production emitter is `ae reboot --digest-only`, which refuses any handover reboot did not open. A `retire` closes one by SEAT at EITHER end — the slot the request was sent to or the slot that sent it, compared by routing key and never by display name — and it counts only when it is recorded in the SAME session and that session has not been renamed since the request was recorded. Retiring a worker clears the questions it asked from its target's inbox: nobody is left to read a reply. The retire rides the same forward pass a reply rides, and that pass only ever removes, so a name or a `spawned.<n>` slot handed to a replacement raises nothing.
    - EVERY other request keeps deferring, however unanswerable it has become. A CROSS-SESSION request keeps deferring in the CALLER's log: the record is written into both participants' logs carrying the TARGET's session, so the sessions agree only in the target's log, which is also the only log the seat's own retire is written to — and the asker arm judges by that same target-home session, so the caller's copy stays open whichever end the retire names. A request recorded BEFORE its session was renamed keeps deferring: [`rename`](../../src/rename.rs) moves the session directory and rewrites the meta, so the reader supplies the new name while the record still carries the old one. A party that vanished with NO retire record keeps deferring, because there is nothing to match. So does whatever [`requests`](../../src/requests.rs) decides on its own, which is a separate state machine. None of these is closed anywhere: closing the first means one session judging another's ledger, and closing the second needs a session identity that survives renaming, which the routing key deliberately does not have.
@@ -195,16 +198,16 @@ In source order:
    - A seat is matched on its ROUTING KEY wherever the writer recorded one (`session::is_actor`, the same rule a declaration is matched by), and only on the display name for a legacy record that carries no key. A rename churns the name; it must not hand a seat somebody else's open work, nor lose its own.
    - A spawn defers only while its seat is actually HELD, decided on the cycle's own evidence: the Dead verdict does not hold, and the pane is not sitting at a bare shell — the two conjuncts `ae list` renders, so the publisher's decision and the human's explanation cannot disagree. A spawned tool that exited into its retained shell excuses nobody. UNKNOWN policy is two cases, not one rule, because the pane's foreground command is read first: a pane at a bare shell holds no seat whatever the snapshot says, so an uncertain snapshot never rescues it; a pane running a real tool keeps its seat when the snapshot cannot confirm the process, because the Dead verdict demands positive absence and a probe gap is not proof of death. That second deferral is retained rather than unbounded — the same two clocks end it.
    - `ae list` prints the same reason on the agent's line (`· waiting on 2 requests, 1 spawn`), so the human reads why a seat is quiet without opening its pane.
-7. **Unknown frame** — run the legacy hash/event heuristic: changed or recently changed is active; a recent ae event is active; otherwise send the legacy status check, then alert at the same maximum.
+8. **Unknown frame** — run the legacy hash/event heuristic: changed or recently changed is active; a recent ae event is active; otherwise send the legacy status check, then alert at the same maximum.
 
 After the per-pane pass:
 
-8. **Missing pane check** — agents registered in `meta` whose tmux panes have vanished. Alert once each.
-9. **Recover pending session ids** — retry codex/gemini/opencode post-launch session capture for slots still marked `pending`.
+9. **Missing pane check** — agents registered in `meta` whose tmux panes have vanished. Alert once each.
+10. **Recover pending session ids** — retry codex/gemini/opencode post-launch session capture for slots still marked `pending`.
 
 The list/brief attention reader treats the session's latest successful launch as
 a recovery boundary: a durable watchdog alert older than `started=` no longer
-contributes `attn:dead`, `attn:stale`, or `attn:throttled`. An alert at or
+contributes `attn:dead`, `attn:stale`, `attn:limit`, or `attn:throttled`. An alert at or
 after that boundary still contributes normally, so a seat that dies after
 relaunch is visible. Legacy metadata uses the newest `launch_time.main` or
 `launch_time.worker.*` as the boundary; only sessions lacking both clock forms
@@ -231,7 +234,9 @@ Concretely:
 
 ## Throttle detection
 
-Tool-specific patterns inside the watchdog body. Narrow phrases only — false positives compound badly.
+Tool-specific patterns inside the watchdog body, split into the two classes: **transient** throttling (upstream recovers on its own) and the vendor's **usage limit** (persists until a window reset or a re-login). One classifier reads both, and a usage-limit phrase wins when both appear. Narrow phrases only — false positives compound badly.
+
+Transient phrases:
 
 | Tool | Patterns |
 |---|---|
@@ -241,12 +246,35 @@ Tool-specific patterns inside the watchdog body. Narrow phrases only — false p
 | `opencode` | Union of the three above (TUI wraps configurable providers) |
 | generic | `429 Too Many Requests`, `503 Service Unavailable` |
 
-When detected:
+Usage-limit phrases, MEASURED from each tool's own strings (provenance:
+`.local/limitstate-evidence.md`; a tool with no measurement ships an empty list, never a guess):
+
+| Tool | Patterns |
+|---|---|
+| `claude` | `You've hit your`, `You're out of usage credits`, `Your org is out of usage`, `usage limit reached` |
+| `codex` | `You've hit your usage limit`, `You've reached your usage limit`, `Quota exceeded. Check your plan` |
+| `gemini` / others | *(none measured)* |
+| `opencode` | Union of the claude and codex limit lists |
+
+When a transient phrase is detected:
 
 1. Skip the nudge. Reset nudge counter (so a previously stale agent's count doesn't carry over).
 2. First detection of a streak → emit `throttled` event.
 3. After `THROTTLE_ALERT_CYCLES` consecutive throttled cycles → emit `alert` event + tmux banner. Once.
 4. When the pattern no longer matches → emit `throttle-cleared` event, reset streak.
+
+When a usage-limit phrase is detected:
+
+1. Skip the nudge, the same way. Enter the per-pane limit latch.
+2. First detection of an episode → emit exactly one `limit` event, which reads as
+   `attn:limit` (rank 3, exactly `blocked`'s) on `ae list` and in the digest, and draws the
+   existing NeedsYou mark with the word `limit` on the pane border.
+3. Every later matching cycle keeps the verdict, silently — one event per episode.
+4. When a cycle judges the pane and the phrase is gone (a dead pane never reaches this branch —
+   it returns at step 1 of the branch order), the latch releases with one `alert-cleared`.
+
+A return to plain throttling after a limit episode emits a fresh `throttled` event: the limit
+episode ends the transient streak.
 
 On the first throttle event only, the watchdog may append the worst row from its last scheduled
 quota observation — never when quota-unaware, where there is no scheduled observation to read

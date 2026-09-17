@@ -265,10 +265,11 @@ session's agents, by severity:
 | `attn:stale` | the watchdog gave up nudging an idle agent (max nudges) |
 | `attn:waiting-user` | an agent declared it's waiting on you |
 | `attn:blocked` | an agent declared it's blocked on an external dep |
+| `attn:limit` | an agent's pane shows the vendor's own usage limit (rank 3, exactly `blocked`'s); clears when the phrase leaves a live pane |
 | `attn:throttled` | an agent is being rate-limited upstream |
 | `attn:unanswered` | an inter-agent `ask`/`review` went unanswered past the fixed 1800-second (30-minute) threshold |
 
-(`dead`/`stale`/`throttled` reuse the watchdog's own alert events;
+(`dead`/`stale`/`throttled`/`limit` reuse the watchdog's own alert events;
 `waiting-user`/`blocked` are self-declared and require a reason. A `waiting-user`
 reason is a self-contained 2–5 sentence decision in 80–600 characters after trimming:
 each option gets one clause, the recommendation gives its reason, and the text points

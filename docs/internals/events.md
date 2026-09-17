@@ -17,7 +17,7 @@ flowchart LR
         MDH[mark-done]
         MEH[memo]
         SPH[spawn / retire]
-        LP1["watchdog<br/>nudge / alert /<br/>throttled / throttle-cleared /<br/>recover"]
+        LP1["watchdog<br/>nudge / alert /<br/>throttled / limit /<br/>throttle-cleared / recover"]
         IH[interrupt / focus]
     end
     EE["ae core emit<br/>(JSON escape,<br/>lock + append)"]
@@ -127,6 +127,8 @@ Additive facts that prove a pane's session across servers and tmux incarnations.
 | `nudge` | watchdog | Stale-agent status check. |
 | `alert` | watchdog / ae internal | Attention required (dead, max-nudges, persistent throttle, missing pane). |
 | `throttled` | watchdog | First cycle of an upstream throttle streak. |
+| `limit` | watchdog | First cycle of a vendor usage-limit episode; one per episode. Reads as `attn:limit` (rank 3). |
+| `alert-cleared` | watchdog | Retraction of a standing watchdog alert (a limit episode's release, a recovered stale alert, …). |
 | `throttle-cleared` | watchdog | Throttle pattern no longer present. |
 | `dead-cleared` | watchdog | The dead agent's process is positively back (re-run in place); retracts the `alert`. |
 | `recover` | watchdog | Post-launch session id captured for a previously-pending slot. |
