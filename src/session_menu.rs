@@ -799,7 +799,28 @@ fn root_stop_item(stop: &str) -> crate::tmux::MenuItem {
 /// The full root: every status row, then the action floor.
 #[must_use]
 pub fn root_menu(session: &str, rows: &[RootRow], stop: Option<&str>) -> crate::tmux::Menu {
-    let mut items: Vec<crate::tmux::MenuItem> = rows.iter().map(root_row_item).collect();
+    root_menu_full(session, &[], rows, stop)
+}
+
+/// The full root with its facts block: facts, states, then the action floor.
+/// Facts are display-only — dim, unselectable, like a gap.
+#[must_use]
+pub fn root_menu_full(
+    session: &str,
+    facts: &[String],
+    rows: &[RootRow],
+    stop: Option<&str>,
+) -> crate::tmux::Menu {
+    let mut items: Vec<crate::tmux::MenuItem> = Vec::new();
+    if !facts.is_empty() {
+        items.extend(facts.iter().map(|fact| crate::tmux::MenuItem {
+            label: fact.clone(),
+            key: String::new(),
+            action: crate::tmux::MenuAction::Disabled,
+        }));
+        items.push(root_separator());
+    }
+    items.extend(rows.iter().map(root_row_item));
     items.push(root_separator());
     items.push(root_flip_item());
     if let Some(stop) = stop {
@@ -843,20 +864,28 @@ pub fn floor_menu(session: &str, stop: Option<&str>) -> crate::tmux::Menu {
 }
 
 /// Reselect the root against the FINAL live client dimensions: full, then
-/// status-only, then today's floor. A build-dimension fit proves nothing about
-/// the client the draw reaches.
+/// facts-dropped, then status-only, then today's floor. Facts are the FIRST
+/// thing dropped when the height budget bites. A build-dimension fit proves
+/// nothing about the client the draw reaches.
 #[must_use]
 pub fn select_root(
     session: &str,
+    facts: &[String],
     rows: &[RootRow],
     stop: Option<&str>,
     client_width: usize,
     client_height: usize,
 ) -> crate::tmux::Menu {
-    let full = root_menu(session, rows, stop);
+    let full = root_menu_full(session, facts, rows, stop);
     let (columns, lines) = menu_budget(&full);
     if client_width >= columns && client_height >= lines {
         return full;
+    }
+    // Facts-dropped IS today's full root, byte for byte.
+    let bare = root_menu(session, rows, stop);
+    let (columns, lines) = menu_budget(&bare);
+    if client_width >= columns && client_height >= lines {
+        return bare;
     }
     if let Some(first) = rows.first() {
         let degraded = status_only_menu(session, first, stop);
@@ -896,6 +925,7 @@ fn stop_row_command(captured: &Captured, launcher: &[String]) -> String {
 /// so a resize during a 1.6 MB scan can only shrink the menu, not trim it.
 struct ShowSources {
     server: ServerId,
+    facts: Vec<String>,
     rows: Vec<RootRow>,
     stop: Option<String>,
     menu_mouse: bool,
@@ -941,6 +971,7 @@ fn read_sources(root: &Path, captured: &Captured, err: &mut impl Write) -> Optio
         crate::store::SourceRead::Absent
     };
     let rows = root_rows(&option, &meta, &events, crate::time::Timestamp::now());
+    let facts = fact_rows(&option, &meta);
     let config = crate::doors::config_file(crate::shape::current(), root);
     let launcher = crate::session_tmux::picker_launcher(
         crate::shape::current(),
@@ -958,6 +989,7 @@ fn read_sources(root: &Path, captured: &Captured, err: &mut impl Write) -> Optio
     };
     Some(ShowSources {
         server,
+        facts,
         rows,
         stop,
         menu_mouse,
@@ -983,6 +1015,7 @@ fn run_show(root: &Path, captured: &Captured, err: &mut impl Write) -> u8 {
     };
     let menu = select_root(
         &captured.session,
+        &sources.facts,
         &sources.rows,
         sources.stop.as_deref(),
         clicker.client.width,
@@ -1721,7 +1754,7 @@ mod tests {
         // Built for a 200x50 client, drawn for a live 80x8 one: the LIVE
         // dimensions decide, and the full three-declaration menu no longer
         // fits while the action floor must survive.
-        let live = super::select_root("aedev", &rows, Some(stop), 80, 8);
+        let live = super::select_root("aedev", &[], &rows, Some(stop), 80, 8);
         let (live_columns, live_rows) = menu_budget(&live);
         assert!(
             live_columns <= 80 && live_rows <= 8,
@@ -1744,12 +1777,59 @@ mod tests {
         );
 
         // Below every variant, today's trim behaviour: a menu is still drawn.
-        let tiny = super::select_root("aedev", &rows, Some(stop), 4, 2);
+        let tiny = super::select_root("aedev", &[], &rows, Some(stop), 4, 2);
         let labels: Vec<&str> = tiny.items.iter().map(|item| item.label.as_str()).collect();
         assert_eq!(labels, vec![super::FLIP_ROW_LABEL, STOP_ROW_LABEL]);
         assert!(
             full_columns > 4,
             "the fixture really is wider than the tiny client"
+        );
+    }
+
+    /// Facts are the FIRST thing dropped when the height budget bites, and the
+    /// facts-dropped menu IS today's full root, byte for byte.
+    #[test]
+    fn the_ladder_drops_facts_first_and_keeps_todays_full_root() {
+        let facts = vec!["mode: local".to_owned(), "dir: /repo".to_owned()];
+        let rows = vec![RootRow::Declaration("lead state: working (3m)".to_owned())];
+        let stop = "run-shell -b 'stop'";
+        let full = super::root_menu_full("aedev", &facts, &rows, Some(stop));
+        let bare = super::root_menu("aedev", &rows, Some(stop));
+        let (_, full_rows) = menu_budget(&full);
+        let (bare_columns, bare_rows) = menu_budget(&bare);
+        assert!(full_rows > bare_rows, "the facts cost rows: {full_rows}");
+        // Tall enough for the bare root but not the facts block: facts go,
+        // the declaration and both actions stay.
+        let menu = super::select_root("aedev", &facts, &rows, Some(stop), 200, bare_rows);
+        let labels: Vec<&str> = menu.items.iter().map(|item| item.label.as_str()).collect();
+        assert!(
+            !labels.iter().any(|label| label.starts_with("mode: ")),
+            "facts dropped first: {labels:?}"
+        );
+        assert!(
+            labels.contains(&"lead state: working (3m)"),
+            "states survive the facts: {labels:?}"
+        );
+        assert_eq!(
+            menu.items.len(),
+            bare.items.len(),
+            "the facts-dropped menu is today's full root"
+        );
+        assert!(labels.contains(&super::FLIP_ROW_LABEL));
+        assert!(labels.contains(&STOP_ROW_LABEL));
+        // Wide room for everything: the facts draw above the states.
+        let menu = super::select_root(
+            "aedev",
+            &facts,
+            &rows,
+            Some(stop),
+            bare_columns.max(80),
+            full_rows,
+        );
+        let labels: Vec<&str> = menu.items.iter().map(|item| item.label.as_str()).collect();
+        assert_eq!(
+            labels[0], "mode: local",
+            "the facts block opens the full root: {labels:?}"
         );
     }
 
@@ -1788,7 +1868,7 @@ mod tests {
             (columns, rows - 1),
             (columns - 1, rows - 1),
         ] {
-            let menu = super::select_root("aedev", &[], Some(stop), width, height);
+            let menu = super::select_root("aedev", &[], &[], Some(stop), width, height);
             assert_eq!(menu.items.len(), floor.items.len(), "{width}x{height}");
         }
     }
@@ -1804,6 +1884,12 @@ mod tests {
         ];
         let variants = [
             super::root_menu("aedev", &rows, Some("run-shell -b 'stop'")),
+            super::root_menu_full(
+                "aedev",
+                &["mode: local".to_owned()],
+                &rows,
+                Some("run-shell -b 'stop'"),
+            ),
             super::status_only_menu("aedev", &rows[0], Some("run-shell -b 'stop'")),
             super::floor_menu("aedev", Some("run-shell -b 'stop'")),
         ];
@@ -1978,7 +2064,8 @@ mod tests {
                 "{option:?} must not render declarations: {rows:?}"
             );
             assert_eq!(gap_rows(&rows).len(), 1, "{rows:?}");
-            let menu = super::select_root("aedev", &rows, Some("run-shell -b 'stop'"), 200, 60);
+            let menu =
+                super::select_root("aedev", &[], &rows, Some("run-shell -b 'stop'"), 200, 60);
             assert!(
                 menu.items
                     .iter()
@@ -2054,7 +2141,7 @@ mod tests {
             gap_rows(&rows),
             vec!["state: unavailable (meta: unreadable)"]
         );
-        let menu = super::select_root("aedev", &rows, Some("run-shell -b 'stop'"), 200, 60);
+        let menu = super::select_root("aedev", &[], &rows, Some("run-shell -b 'stop'"), 200, 60);
         let actions: Vec<&str> = menu
             .items
             .iter()
