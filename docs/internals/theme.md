@@ -275,6 +275,27 @@ row, then caps session rows with an honest omitted count. A missing or hostile
 agent fact draws `agents: unavailable`; a missing or too-small client dimension
 refuses instead of asking tmux to silently reject an oversized menu.
 
+One connection carries the picker's whole read, so the pre-draw does not pay one
+round trip per question. The picker issues ONE tmux invocation whose
+`;`-separated command list carries the invoking client's `list-clients` snapshot,
+the picker's `list-sessions` rows, its `list-panes -a` membership snapshot, the
+bare session-name list the stopped rows are classified against, the server's
+identity pair and socket path, and — last, because it is the only command that
+can fail while the server is alive — the invoking client's own look, each behind
+its own `ae-picker:<kind>|` line prefix and followed by its `ae-picker!<kind>`
+completion marker. A non-empty line carrying neither vocabulary is refused, never
+read as a partial roster, and a section whose marker never arrived stays unknown
+rather than empty. Three things stay separate calls: the tmux-floor probe before
+anything else, the `@ae_menu_open` marker write (a write does not ride a read),
+and one socket-path probe per further server spelling a durable record names,
+because it addresses another server selection. Measured in the `ae-dev` namespace
+(2026-09-17, 48 stopped metas, a two-session fleet, load average ~20): 12 tmux
+invocations before the draw at a 245 ms median became 6 at 130 ms; the remaining
+calls are this batch, the floor probe, the marker write, two entry-path reads and
+that spelling probe. The rows, keys, widths and degrade ladder are unchanged —
+the same fixture fleet renders a byte-identical `display-menu` argv, pinned by
+`the_batched_read_draws_the_fixture_fleet_byte_identically`.
+
 The picker writes `@ae_menu_open=<epoch>` on the explicitly named client's
 current session before drawing. Every reopen refreshes that epoch and stays lit;
 every row clears it before switching; the watchdog clears it once it is half a
