@@ -99,7 +99,7 @@ commas, so a comma-separated style list inside one tears the format in half.
 tmux reads a space-separated style list identically, and its own default
 `status-format[0]` is written that way for exactly this reason.
 
-## The six marks
+## The seven marks
 
 One vocabulary, shared by the status bar, the window entries, the pane borders
 and the `ae orchestrator` picker. Every mark has its own glyph as well as its
@@ -111,6 +111,7 @@ different characters.
 | dead | `✖` | `x` | the process behind the pane is gone |
 | needs-you | `⚠` | `!` | waiting-user, blocked, throttled, unanswered |
 | working | `●` | `*` | active within the watchdog's liveness window |
+| waiting-agent | `⧗` | `~` | waiting on ANOTHER agent — quiet, no human needed; escalates to needs-you past its ceiling |
 | done | `✓` | `+` | declared complete or paused |
 | stale / unknown | `◌` | `?` | silent past the window, or a fact ae could not establish |
 | idle | `·` | `-` | no agent, or no verdict yet |
@@ -138,7 +139,7 @@ A pane spawned after the last verdict cycle has no cached verdict yet, so it
 starts animating from the next cycle.
 
 The pulse is subordinate to the state: it stands in for the working glyph and
-nothing else, so done, needs-you, dead, stale and idle panes stay still.
+nothing else, so done, needs-you, dead, stale, waiting-agent and idle panes stay still.
 `[workspace] icons = off` selects the ASCII column. `motion = off` or
 `theme = off` disables the ticker. The watchdog re-reads the look every cycle, so
 flipping either knob on a live session takes effect on the next one.
@@ -191,7 +192,9 @@ each drawn as its live glyph, one blank, then its name. A session keeps its
 place while its attention changes, so a click never moves the thing that was
 clicked; the current session uses the palette's selection ground, ink and
 weight, never extra leading or trailing blanks, so selection never changes row
-width. The orchestrator button is the ONE place the seat
+width. One published rank is shared: waiting-agent ties with working at 2, so
+another session's strip shows a waiting-agent session as working while its own
+border, list line and picker rows show `⧗`. The orchestrator button is the ONE place the seat
 is drawn — exactly three cells (one blank, the stable `◆` glyph, one blank;
 `o` with icons off) inside a tmux `range=session` target for the
 canonical `orchestrator` session, with the verdict in the foreground colour.

@@ -29,7 +29,7 @@ reasoning, the retired rules and every measurement narrative are in
 ```
 src/                — Rust sources. main.rs thin (argv in, exit code out); lib.rs and one
                       module per domain hold everything testable. theme.rs is PURE: the
-                      palettes, the six marks and every tmux format ae draws a session with
+                      palettes, the seven marks and every tmux format ae draws a session with
 tests/it/           — the one integration-test target. The behaviours of the retired bash
                       suites are pinned here as Rust tests.
                       doors.rs = capability boundary; gate.rs = justfile/install guards;
@@ -94,7 +94,7 @@ Other rules of the loop:
   `TMUX_TMPDIR="$probe" AE_HOME="$probe/state" CONFIG_FILE="$probe/config" env -u TMUX -u TMUX_PANE target/debug/ae …`.
   `TMUX_TMPDIR` must EXIST — tmux silently falls back to the real socket dir otherwise (3.7b).
 - **A session's LOOK is session-scoped, and it has three writers with one job each.**
-  `src/theme.rs` owns the palettes, the six marks and every format. A LAUNCH writes the
+  `src/theme.rs` owns the palettes, the seven marks and every format. A LAUNCH writes the
   layout, the look facts and the attention SEED, and stamps each WINDOW (tmux keeps pane
   borders, window entries and menu styles in the window table, where `set -t <session>`
   reaches only the current one). A RENAME rewrites the layout and the facts and leaves
