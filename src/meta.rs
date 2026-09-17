@@ -1374,6 +1374,36 @@ pub(crate) fn record_abandoned_session(
     slot: &str,
     abandoned: &str,
 ) -> Result<(), RewriteError> {
+    rewrite_under_lock(dir, |current| {
+        let parsed = Meta::parse(current);
+        let prior = prior_with(&parsed.harness_session_prior(slot), abandoned);
+        let mut next = current.to_owned();
+        if let Some(list) = prior {
+            next = rewritten(
+                &next,
+                &format!("{HARNESS_SESSION_PRIOR_PREFIX}{slot}"),
+                Some(&list),
+            );
+        }
+        let next = rewritten(
+            &next,
+            &format!("{HARNESS_SESSION_PREFIX}{slot}"),
+            Some(crate::launch::PENDING),
+        );
+        (next != current).then_some(next)
+    })
+}
+
+/// The ONE locked read-modify-write the row writers share: take `meta.lock`,
+/// read the document, hand it to `transform`, and publish what it returns.
+/// `None` means the document is already what it should be, so nothing is
+/// written; an ABSENT meta is handed over as an empty document and, because
+/// only a caller that WOULD write can tell the difference, the refusal keeps
+/// the read's own `NotFound`.
+fn rewrite_under_lock(
+    dir: &Path,
+    transform: impl FnOnce(&str) -> Option<String>,
+) -> Result<(), RewriteError> {
     let path = crate::store::open(dir).meta_path();
     let _held = crate::store::lock(
         &crate::store::open(dir).meta_lock(),
@@ -1384,55 +1414,29 @@ pub(crate) fn record_abandoned_session(
         clippy::disallowed_methods,
         reason = "a door: the meta read, for its locked rewrite — see clippy.toml"
     )]
-    let current = fs::read_to_string(&path).map_err(RewriteError::NotWritten)?;
-    let parsed = Meta::parse(&current);
-    let prior = prior_with(&parsed.harness_session_prior(slot), abandoned);
-    let mut next = current.clone();
-    if let Some(list) = prior {
-        next = rewritten(
-            &next,
-            &format!("{HARNESS_SESSION_PRIOR_PREFIX}{slot}"),
-            Some(&list),
-        );
-    }
-    next = rewritten(
-        &next,
-        &format!("{HARNESS_SESSION_PREFIX}{slot}"),
-        Some(crate::launch::PENDING),
-    );
-    if next == current {
+    let read = fs::read_to_string(&path);
+    let (current, absent) = match read {
+        Ok(text) => (text, None),
+        Err(why) if why.kind() == io::ErrorKind::NotFound => (String::new(), Some(why)),
+        Err(why) => return Err(RewriteError::NotWritten(why)),
+    };
+    let Some(next) = transform(&current) else {
         return Ok(());
+    };
+    if let Some(why) = absent {
+        return Err(RewriteError::NotWritten(why));
     }
     publish_bytes(dir, &path, next.as_bytes())
 }
 
 fn rewrite_rows(dir: &Path, rows: &[(&str, Option<&str>)]) -> Result<(), RewriteError> {
-    let path = crate::store::open(dir).meta_path();
-    let _held = crate::store::lock(
-        &crate::store::open(dir).meta_lock(),
-        crate::store::LOCK_WAIT,
-    )
-    .map_err(RewriteError::NotWritten)?;
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "a door: the meta read, for its locked rewrite — see clippy.toml"
-    )]
-    let current = fs::read_to_string(&path);
-    let current = match current {
-        Ok(text) => text,
-        Err(why)
-            if why.kind() == io::ErrorKind::NotFound
-                && rows.iter().all(|(_, value)| value.is_none()) =>
-        {
-            return Ok(());
+    rewrite_under_lock(dir, |current| {
+        let mut next = current.to_owned();
+        for (key, value) in rows {
+            next = rewritten(&next, key, *value);
         }
-        Err(why) => return Err(RewriteError::NotWritten(why)),
-    };
-    let mut next = current;
-    for (key, value) in rows {
-        next = rewritten(&next, key, *value);
-    }
-    publish_bytes(dir, &path, next.as_bytes())
+        (next != current).then_some(next)
+    })
 }
 
 /// Publish or clear one seat's observed-model pair as ONE atomic, guarded
