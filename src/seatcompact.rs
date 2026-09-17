@@ -3,7 +3,12 @@
 //! reads the world; bytes and facts come in as arguments.
 
 use crate::deliver::SubmitState;
+use crate::event_text::{self as text, extract, read_lines};
+use crate::json::Value;
+use crate::state::{event_line, summary_of};
+use crate::time::Timestamp;
 use crate::tool::InputModel;
+use std::str;
 
 pub const DISPATCHED: &str = "dispatched";
 pub const SKIPPED: &str = "skipped";
@@ -246,6 +251,153 @@ pub fn hand_remedy_line(seats: &[(&str, &str, Gate)]) -> Option<String> {
     Some(format!("compact by hand: {}", named.join(", ")))
 }
 
+/// The seat action and the run action of the audit ledger.
+pub const ACTION: &str = "seat-compact";
+pub const RUN_ACTION: &str = "seat-compact-run";
+/// The run record's two summary words.
+pub const RUN_START: &str = "start";
+pub const RUN_END: &str = "end";
+
+/// One seat's audit record: the outcome plus the facts that bind it to the run
+/// and the target.
+#[derive(Debug, Clone, Copy)]
+pub struct SeatRecord<'a> {
+    pub ts: Timestamp,
+    pub actor: &'a str,
+    pub run: &'a str,
+    pub request: &'a str,
+    pub slot: &'a str,
+    pub session: &'a str,
+    pub outcome: &'a Outcome,
+    pub sanitized: usize,
+}
+
+/// The `seat-compact` event line: [`crate::state::event_line`]'s shape, plus
+/// the run, the target and the verdict's additive fields.
+#[must_use]
+pub fn seat_record(record: &SeatRecord<'_>) -> String {
+    let mut members = vec![
+        ("ts".to_owned(), Value::Str(record.ts.to_string())),
+        ("actor".to_owned(), Value::Str(record.actor.to_owned())),
+        ("action".to_owned(), Value::Str(ACTION.to_owned())),
+    ];
+    if !record.request.is_empty() {
+        members.push(("ref".to_owned(), Value::Str(record.request.to_owned())));
+    }
+    let summary = summary_of(&format!("{} {}", record.outcome.word(), record.slot));
+    members.push(("summary".to_owned(), Value::Str(summary)));
+    for (key, text) in [
+        ("run", record.run),
+        ("target_slot", record.slot),
+        ("target_session", record.session),
+    ] {
+        if !text.is_empty() {
+            members.push((key.to_owned(), Value::Str(text.to_owned())));
+        }
+    }
+    if let Some(marker) = record.outcome.unverifiable() {
+        members.push(("unverifiable".to_owned(), Value::Str(marker.to_owned())));
+    }
+    if let Some(reason) = record.outcome.reason() {
+        members.push(("reason".to_owned(), Value::Str(reason.to_owned())));
+    }
+    if record.sanitized > 0 {
+        members.push((
+            "sanitized".to_owned(),
+            Value::Num(i64::try_from(record.sanitized).unwrap_or(i64::MAX)),
+        ));
+    }
+    let mut line = Value::Obj(members).render();
+    line.push('\n');
+    line
+}
+
+/// The `seat-compact-run` event line.
+#[must_use]
+pub fn run_record(ts: Timestamp, actor: &str, run: &str, phase: &str) -> String {
+    event_line(ts, actor, RUN_ACTION, run, phase)
+}
+
+/// A compact elapsed span (`59s`, `3m`, `2h`, `4d`); a negative delta reads
+/// `0s`.
+#[must_use]
+pub fn span(seconds: i64) -> String {
+    let seconds = seconds.max(0);
+    if seconds < 60 {
+        format!("{seconds}s")
+    } else if seconds < 3_600 {
+        format!("{}m", seconds / 60)
+    } else if seconds < 86_400 {
+        format!("{}h", seconds / 3_600)
+    } else {
+        format!("{}d", seconds / 86_400)
+    }
+}
+
+/// The R1 start-of-run warning, pure: bytes and `now` in, one line out for
+/// every seat of THIS actor whose `dispatched` record names a run with no
+/// `end`. An unparseable `ts` omits its line; nothing gates on the result.
+#[must_use]
+pub fn audit_warning(bytes: &[u8], actor: &str, now: Timestamp) -> Vec<String> {
+    let records: Vec<&[u8]> = read_lines(bytes)
+        .into_iter()
+        .filter_map(text::event_line)
+        .collect();
+    let mut out = Vec::new();
+    for line in &records {
+        if member_value(line, "actor").as_deref() != Some(actor)
+            || member_value(line, "action").as_deref() != Some(ACTION)
+        {
+            continue;
+        }
+        let summary = extract(line, "summary");
+        let word = summary
+            .split(|byte| *byte == b' ')
+            .next()
+            .unwrap_or_default();
+        if word != DISPATCHED.as_bytes() {
+            continue;
+        }
+        let run = extract(line, "run");
+        if run.is_empty() || run_ended(&records, actor, &run) {
+            continue;
+        }
+        let Some(age) = dispatch_age(line, now) else {
+            continue;
+        };
+        let slot = String::from_utf8_lossy(&extract(line, "target_slot")).into_owned();
+        out.push(format!(
+            "note: {} was dispatched {age} ago by a run that did not end",
+            cell(&slot)
+        ));
+    }
+    out
+}
+
+/// A flat member as text, or `None` when it is absent or not UTF-8.
+fn member_value(line: &[u8], key: &str) -> Option<String> {
+    str::from_utf8(&extract(line, key))
+        .ok()
+        .map(ToOwned::to_owned)
+}
+
+/// Whether the actor's own `end` record names this run.
+fn run_ended(records: &[&[u8]], actor: &str, run: &[u8]) -> bool {
+    records.iter().any(|line| {
+        member_value(line, "actor").as_deref() == Some(actor)
+            && member_value(line, "action").as_deref() == Some(RUN_ACTION)
+            && member_value(line, "summary").as_deref() == Some(RUN_END)
+            && extract(line, "ref").as_slice() == run
+    })
+}
+
+/// The dispatched record's age, or `None` when its `ts` is unreadable.
+fn dispatch_age(line: &[u8], now: Timestamp) -> Option<String> {
+    let bytes = extract(line, "ts");
+    let ts = Timestamp::parse(str::from_utf8(&bytes).ok()?)?;
+    Some(span(now.epoch().saturating_sub(ts.epoch())))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -451,5 +603,118 @@ mod tests {
             1,
             "one projection owner"
         );
+    }
+
+    const TS: Timestamp = Timestamp::from_epoch(1_787_000_000);
+    const NOW: Timestamp = Timestamp::from_epoch(1_787_000_300);
+    const ACTOR: &str = "ae:seats:u";
+    const REQUEST: &str = "ae-20260917T120000Z-00000001";
+
+    fn record<'a>(outcome: &'a Outcome, request: &'a str, sanitized: usize) -> String {
+        seat_record(&SeatRecord {
+            ts: TS,
+            actor: ACTOR,
+            run: "run-1",
+            request,
+            slot: "w1",
+            session: "s",
+            outcome,
+            sanitized,
+        })
+    }
+
+    #[test]
+    fn a_seat_record_carries_the_word_the_run_and_the_additive_fields() {
+        let unknown = Outcome::from_verdict(
+            Verdict::State(SubmitState::Unknown(Unverifiable::CaptureUnreadable)),
+            "%3",
+        );
+        let line = record(&unknown, REQUEST, 2);
+        let bytes = line.as_bytes();
+        assert_eq!(extract(bytes, "action"), ACTION.as_bytes());
+        assert_eq!(extract(bytes, "summary"), b"dispatched w1");
+        assert_eq!(extract(bytes, "ref"), REQUEST.as_bytes());
+        assert_eq!(extract(bytes, "run"), b"run-1");
+        assert_eq!(extract(bytes, "target_slot"), b"w1");
+        assert_eq!(extract(bytes, "target_session"), b"s");
+        assert_eq!(extract(bytes, "unverifiable"), b"unreadable-capture");
+        assert!(line.contains("\"sanitized\":2"));
+        assert!(
+            !line.contains("\"reason\""),
+            "a dispatched record has no reason"
+        );
+    }
+
+    #[test]
+    fn a_skip_record_carries_its_leg_and_never_a_marker() {
+        let line = record(&Outcome::identity_gap(GapLeg::Live), "", 0);
+        let bytes = line.as_bytes();
+        assert_eq!(
+            extract(bytes, "summary"),
+            b"skipped (identity gap: live) w1"
+        );
+        assert_eq!(extract(bytes, "reason"), b"identity gap: live");
+        assert!(!line.contains("\"unverifiable\""));
+        assert!(!line.contains("\"sanitized\""));
+        assert!(!line.contains("\"ref\""), "a gate skip opened no request");
+    }
+
+    #[test]
+    fn a_run_record_is_the_shared_event_shape() {
+        assert_eq!(
+            run_record(TS, ACTOR, "run-1", RUN_END),
+            event_line(TS, ACTOR, RUN_ACTION, "run-1", RUN_END)
+        );
+    }
+
+    fn audit(lines: &[String]) -> Vec<u8> {
+        lines.concat().into_bytes()
+    }
+
+    #[test]
+    fn a_dispatched_run_without_an_end_is_warned_and_an_end_silences_it() {
+        let dispatched = Outcome::from_verdict(Verdict::State(SubmitState::Submitted), "%1");
+        let seat = record(&dispatched, REQUEST, 0);
+        let start = run_record(TS, ACTOR, "run-1", RUN_START);
+        assert_eq!(
+            audit_warning(&audit(&[start, seat.clone()]), ACTOR, NOW),
+            ["note: w1 was dispatched 5m ago by a run that did not end"]
+        );
+        let end = run_record(TS, ACTOR, "run-1", RUN_END);
+        assert!(audit_warning(&audit(&[seat, end]), ACTOR, NOW).is_empty());
+    }
+
+    #[test]
+    fn a_trimmed_audit_and_another_actors_records_are_silent() {
+        let dispatched = Outcome::from_verdict(Verdict::State(SubmitState::Submitted), "%1");
+        let foreign = seat_record(&SeatRecord {
+            ts: TS,
+            actor: "other",
+            run: "run-1",
+            request: "",
+            slot: "w1",
+            session: "s",
+            outcome: &dispatched,
+            sanitized: 0,
+        });
+        assert!(audit_warning(&audit(&[foreign]), ACTOR, NOW).is_empty());
+        assert!(audit_warning(b"", ACTOR, NOW).is_empty());
+    }
+
+    #[test]
+    fn an_unreadable_ts_omits_the_line_and_a_hostile_slot_is_projected() {
+        let bad = "{\"ts\":\"nope\",\"actor\":\"ae:seats:u\",\"action\":\"seat-compact\",\
+                   \"run\":\"run-1\",\"target_slot\":\"w1\",\"summary\":\"dispatched w1\"}\n";
+        assert!(audit_warning(bad.as_bytes(), ACTOR, NOW).is_empty());
+        let slot = format!("\u{1b}[31m{}", "x".repeat(300));
+        let seed = format!(
+            "{{\"ts\":\"{TS}\",\"actor\":\"{ACTOR}\",\"action\":\"seat-compact\",\
+             \"run\":\"run-1\",\"target_slot\":\"{slot}\",\"summary\":\"dispatched w1\"}}\n"
+        );
+        let lines = audit_warning(seed.as_bytes(), ACTOR, NOW);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("did not end"));
+        assert!(!lines[0].contains('\u{1b}'), "no raw escape byte");
+        assert!(lines[0].len() < 130, "one bounded line");
     }
 }
