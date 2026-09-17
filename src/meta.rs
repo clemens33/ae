@@ -49,11 +49,9 @@ const CLIENT_PREFIX: &str = "client.";
 const HARNESS_SESSION_PREFIX: &str = "harness_session.";
 /// The durable PREDECESSOR row: the harness conversation ids this seat has
 /// ABANDONED, oldest first, comma-joined — a resume fallback and an
-/// authoritative re-registration both leave the id they replace here, so a
-/// reader can follow the seat's real chain instead of a dead id.
+/// authoritative re-registration both leave the id they replace here.
 pub const HARNESS_SESSION_PRIOR_PREFIX: &str = "harness_session_prior.";
-/// How many predecessor ids one [`HARNESS_SESSION_PRIOR_PREFIX`] row carries.
-/// The cap is a bound, not a claim: wording says "up to this many recorded".
+/// How many predecessor ids one predecessor row carries.
 pub const PRIOR_MAX: usize = 4;
 const CONFIG_HOME_PREFIX: &str = "config_home.";
 const CONFIG_HOME_BASE_PREFIX: &str = "config_home_base.";
@@ -386,8 +384,8 @@ pub struct Meta {
     /// `observed_model_pin.<slot>` rows, same rule.
     observed_model_pins: Vec<(String, String)>,
     /// `harness_session_prior.<slot>` rows, kept RAW until the accessor splits
-    /// them. The row family belongs to this parser, so it never surfaces as an
-    /// unknown key and never doubts the roster.
+    /// them; the family is this parser's own, so it never reads as an unknown
+    /// key and never doubts the roster.
     harness_session_priors: Vec<(String, String)>,
     /// The raw `meta_version=` value — the shape this document is written in.
     declared_version: Option<String>,
@@ -1000,27 +998,20 @@ impl Meta {
     }
 
     /// The conversations this seat has ABANDONED, oldest first — the raw
-    /// `harness_session_prior.<slot>` list, split on commas.
-    ///
-    /// The row family belongs to this parser, so a meta carrying it raises no
-    /// unknown-key anomaly and never doubts the roster. The list is RAW: a
-    /// consumer that builds a path or looks a conversation up must prove each
-    /// element well-formed (a lowercase UUID) first — [`valid_priors`] is that
-    /// judgement for the writers, the purge and the board. A malformed element
-    /// is NOT a refusal: a hand-edited predecessor list must not make a
-    /// session unresumable. A row the reader dropped (a duplicated key)
-    /// reads as empty.
+    /// `harness_session_prior.<slot>` list, split on commas. The family is this
+    /// parser's own: no unknown-key anomaly, never a doubt against the roster.
+    /// The list is RAW — a consumer building a path must judge each element
+    /// first ([`prior_with`] does) — but a malformed element is NOT a refusal: a
+    /// hand-edited predecessor list must not make a session unresumable. A row
+    /// the reader dropped (a duplicated key) reads as empty.
     #[must_use]
     pub fn harness_session_prior(&self, slot: &str) -> Vec<&str> {
         let key = format!("{HARNESS_SESSION_PRIOR_PREFIX}{slot}");
-        let Some((_, value)) = self
-            .harness_session_priors
+        self.harness_session_priors
             .iter()
             .find(|(recorded, _)| *recorded == key)
-        else {
-            return Vec::new();
-        };
-        value.split(',').collect()
+            .map(|(_, value)| value.split(',').collect())
+            .unwrap_or_default()
     }
 
     /// The version of the core binary this session's helpers are pinned to.
@@ -1216,36 +1207,24 @@ fn is_observed_row_value(value: &str) -> bool {
     !value.is_empty() && value.len() <= 256 && !value.chars().any(char::is_control)
 }
 
-/// The elements of a raw predecessor list that are usable CONVERSATION NAMES:
-/// at most [`PRIOR_MAX`] lowercase UUIDs, no empty element. The grammar is the
-/// one [`crate::session_launch::capture::is_lowercase_uuid`] owns, so an id
-/// ae minted, codex registered, muse or agy captured passes and an `opencode`
-/// `ses_…` (or a hand edit) does not — such a seat records no predecessor.
-///
-/// A list that fails any of those reads as EMPTY, never as a refusal: a
-/// hand-edited predecessor list must not make a session unresumable.
+/// The predecessor list `raw` with `id` appended — oldest first, the oldest
+/// evicted once [`PRIOR_MAX`] is exceeded. Every element, `id` included, is a
+/// lowercase UUID — the grammar [`crate::session_launch::capture::is_lowercase_uuid`]
+/// owns — so an `opencode` `ses_…` (or a hand edit) records no predecessor, and
+/// a list carrying anything unusable reads as EMPTY rather than refusing: a
+/// hand-edited predecessor list must not make a session unresumable. `None`
+/// means `id` itself is unusable; nothing is recorded.
 #[must_use]
-pub(crate) fn valid_priors<'a>(raw: &'a [&'a str]) -> Vec<&'a str> {
-    let usable = raw.len() <= PRIOR_MAX
-        && raw
-            .iter()
-            .all(|id| crate::session_launch::capture::is_lowercase_uuid(id));
-    if !usable {
-        return Vec::new();
-    }
-    raw.to_vec()
-}
-
-/// A validated `prior` list with `id` appended — oldest first, the oldest
-/// evicted once [`PRIOR_MAX`] is exceeded. `None` when `id` is not a usable
-/// conversation name: an id that could never have opened a conversation is
-/// never recorded as a predecessor.
-#[must_use]
-pub(crate) fn append_prior(prior: &[&str], id: &str) -> Option<String> {
-    if !crate::session_launch::capture::is_lowercase_uuid(id) {
+pub(crate) fn prior_with(raw: &[&str], id: &str) -> Option<String> {
+    let grammar = crate::session_launch::capture::is_lowercase_uuid;
+    if !grammar(id) {
         return None;
     }
-    let mut ids: Vec<&str> = prior.to_vec();
+    let mut ids = if raw.len() <= PRIOR_MAX && raw.iter().all(|element| grammar(element)) {
+        raw.to_vec()
+    } else {
+        Vec::new()
+    };
     ids.push(id);
     let excess = ids.len().saturating_sub(PRIOR_MAX);
     ids.drain(..excess);
@@ -1383,23 +1362,18 @@ pub(crate) fn record_config_home(
     rewrite_rows(dir, &[(&home_key, Some(value)), (&base_key, base)])
 }
 
-/// Record the conversation a resume FALLBACK just abandoned: the seat's
-/// predecessor list gains `abandoned` (when it is a usable conversation name)
-/// and its current `harness_session.<slot>` row becomes `pending` — ONE
-/// replacement under the meta lock, so no reader can see the cleared row
-/// without the predecessor that explains it.
+/// Record the conversation a resume FALLBACK just abandoned: the predecessor
+/// list gains `abandoned` (when usable) and `harness_session.<slot>` becomes
+/// `pending` — ONE replacement under the meta lock, so no reader sees the
+/// cleared row without the predecessor that explains it.
 ///
-/// The current row is cleared even when `abandoned` is not usable, because the
-/// fallback has just proven the recorded id does not name a conversation this
-/// seat can reach; `pending` is the honest unknown every consumer already
-/// reads. Idempotent: a seat whose row is already `pending` (a re-run with
-/// nothing new to abandon) writes nothing at all.
+/// Cleared even when `abandoned` is unusable: the fallback proved the recorded
+/// id is not reachable. Idempotent — a row already `pending` writes nothing.
 ///
 /// # Errors
 ///
 /// [`RewriteError::NotWritten`] when the lock, the read or the write fails;
-/// [`RewriteError::Unknown`] when the replacement became visible but the
-/// directory sync failed.
+/// [`RewriteError::Unknown`] on an unsynced directory after the rename.
 pub(crate) fn record_abandoned_session(
     dir: &Path,
     slot: &str,
@@ -1417,17 +1391,20 @@ pub(crate) fn record_abandoned_session(
     )]
     let current = fs::read_to_string(&path).map_err(RewriteError::NotWritten)?;
     let parsed = Meta::parse(&current);
-    let prior_key = format!("{HARNESS_SESSION_PRIOR_PREFIX}{slot}");
-    let current_key = format!("{HARNESS_SESSION_PREFIX}{slot}");
-    let prior = append_prior(
-        &valid_priors(&parsed.harness_session_prior(slot)),
-        abandoned,
-    );
+    let prior = prior_with(&parsed.harness_session_prior(slot), abandoned);
     let mut next = current.clone();
     if let Some(list) = prior {
-        next = rewritten(&next, &prior_key, Some(&list));
+        next = rewritten(
+            &next,
+            &format!("{HARNESS_SESSION_PRIOR_PREFIX}{slot}"),
+            Some(&list),
+        );
     }
-    next = rewritten(&next, &current_key, Some(crate::launch::PENDING));
+    next = rewritten(
+        &next,
+        &format!("{HARNESS_SESSION_PREFIX}{slot}"),
+        Some(crate::launch::PENDING),
+    );
     if next == current {
         return Ok(());
     }
@@ -1726,74 +1703,69 @@ mod tests {
     )]
 
     #[test]
-    fn a_prior_row_is_the_parsers_own_and_reads_as_a_raw_list() {
-        // The row family belongs to the parser: a meta carrying it raises NO
-        // anomaly, so it can never doubt the roster (which would refuse every
-        // resume) and never surfaces as an unknown key.
-        let meta = super::Meta::parse(
-            "seat.main=lead\nprofile.main=claude\nagent_bin.main=claude\n\
-             harness_session.main=aabbccdd-1122-4333-8444-5566778899aa\n\
-             harness_session_prior.main=11111111-1111-4111-8111-111111111111,22222222-2222-4222-8222-222222222222\n",
-        );
+    fn a_prior_row_is_the_parsers_own_and_a_duplicate_reads_as_none() {
+        const A: &str = "11111111-1111-4111-8111-111111111111";
+        const B: &str = "22222222-2222-4222-8222-222222222222";
+        const CURRENT: &str = "aabbccdd-1122-4333-8444-5566778899aa";
+        // The family is the parser's own: NO anomaly, so it can never doubt the
+        // roster (which would refuse every resume) nor read as an unknown key.
+        let meta = super::Meta::parse(&format!(
+            "seat.main=lead\nagent_bin.main=claude\nharness_session.main={CURRENT}\n\
+             harness_session_prior.main={A},{B}\n"
+        ));
         assert!(meta.anomalies().is_empty(), "{:?}", meta.anomalies());
-        assert!(!meta.anomalies().iter().any(crate::roster::roster_doubting));
-        assert_eq!(
-            meta.harness_session_prior("main"),
-            [
-                "11111111-1111-4111-8111-111111111111",
-                "22222222-2222-4222-8222-222222222222"
-            ]
-        );
+        assert_eq!(meta.harness_session_prior("main"), [A, B]);
         assert_eq!(meta.harness_session_prior("other"), Vec::<&str>::new());
         // The prior row never disturbs the CURRENT id's classification.
-        assert_eq!(
-            meta.roster()[0].harness_session.as_deref(),
-            Some("aabbccdd-1122-4333-8444-5566778899aa")
-        );
-    }
+        assert_eq!(meta.roster()[0].harness_session.as_deref(), Some(CURRENT));
 
-    #[test]
-    fn a_duplicated_prior_row_reads_as_no_predecessors() {
-        let meta = super::Meta::parse(
-            "seat.main=lead\nharness_session_prior.main=11111111-1111-4111-8111-111111111111\n\
-             harness_session_prior.main=22222222-2222-4222-8222-222222222222\n",
+        // A key named twice says nothing: neither occurrence is a predecessor,
+        // and the roster is still not in doubt.
+        let duplicated = super::Meta::parse(&format!(
+            "seat.main=lead\nharness_session_prior.main={A}\nharness_session_prior.main={B}\n"
+        ));
+        assert!(duplicated.harness_session_prior("main").is_empty());
+        assert!(
+            !duplicated
+                .anomalies()
+                .iter()
+                .any(crate::roster::roster_doubting)
         );
-        assert!(meta.harness_session_prior("main").is_empty());
-        assert!(!meta.anomalies().iter().any(crate::roster::roster_doubting));
     }
 
     #[test]
     fn a_prior_append_is_grammar_checked_capped_and_oldest_first() {
-        let four = [
+        const FOUR: [&str; 4] = [
             "11111111-1111-4111-8111-111111111111",
             "22222222-2222-4222-8222-222222222222",
             "33333333-3333-4333-8333-333333333333",
             "44444444-4444-4444-8444-444444444444",
         ];
+        const FIFTH: &str = "55555555-5555-4555-8555-555555555555";
         // The 5th append evicts the OLDEST; order stays oldest first.
         assert_eq!(
-            super::append_prior(&four, "55555555-5555-4555-8555-555555555555").as_deref(),
+            super::prior_with(&FOUR, FIFTH).as_deref(),
             Some(
                 "22222222-2222-4222-8222-222222222222,33333333-3333-4333-8333-333333333333,\
                  44444444-4444-4444-8444-444444444444,55555555-5555-4555-8555-555555555555"
             )
         );
-        // An unusable id is never recorded as a predecessor.
+        // An unusable id is never appended; a malformed or over-cap list is
+        // DROPPED, never carried and never a refusal.
         for id in [
             "pending",
             "",
             "ses_abc",
-            "ABC",
             "AAAA1111-1111-4111-8111-111111111111",
         ] {
-            assert_eq!(super::append_prior(&four, id), None, "{id:?}");
+            assert_eq!(super::prior_with(&FOUR, id), None, "{id:?}");
         }
-        // A malformed LIST reads as empty: over cap, an empty element, a
-        // non-UUID element.
-        assert!(super::valid_priors(&["a", "b", "c", "d", "e"]).is_empty());
-        assert!(super::valid_priors(&[""]).is_empty());
-        assert!(super::valid_priors(&[four[0], "not-a-uuid"]).is_empty());
-        assert_eq!(super::valid_priors(&four), four);
+        assert_eq!(
+            super::prior_with(&["not-a-uuid"], FIFTH).as_deref(),
+            Some(FIFTH)
+        );
+        let over = [FOUR[0], FOUR[1], FOUR[2], FOUR[3], FIFTH];
+        assert_eq!(super::prior_with(&over, FIFTH).as_deref(), Some(FIFTH));
     }
 
     #[test]

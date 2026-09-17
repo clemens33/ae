@@ -827,7 +827,7 @@ fn a_probe_that_can_run_and_fails_still_falls_back() {
 }
 
 #[test]
-fn a_resume_fallback_records_the_abandoned_id_and_clears_the_current_one() {
+fn a_resume_fallback_records_the_abandoned_id_once_and_clears_the_current_one() {
     let rig = Rig::new("fallback");
     let gone = "0199c0de-1234-4890-abcd-ef0123456789";
     rig.seat("claude", gone);
@@ -835,28 +835,18 @@ fn a_resume_fallback_records_the_abandoned_id_and_clears_the_current_one() {
     // No transcript for the id: claude's probe misses and the run falls back.
     let (argv, _) = rig.exec();
     assert!(carries(&argv, &["--continue"]), "{argv:?}");
-    let meta = std::fs::read_to_string(rig.dir.join("meta")).expect("the meta");
-    assert!(
-        meta.contains(&format!("harness_session_prior.main={gone}\n")),
-        "the passed-over conversation is recorded: {meta}"
-    );
-    assert!(
-        meta.contains("harness_session.main=pending\n"),
-        "the dead id is cleared to the honest unknown: {meta}"
-    );
-}
-
-#[test]
-fn a_fallback_re_run_with_a_pending_id_writes_nothing() {
-    let rig = Rig::new("fallback-twice");
-    let gone = "0199c0de-1234-4890-abcd-ef0123456789";
-    rig.seat("claude", gone);
-    rig.started();
-    let (argv, _) = rig.exec();
-    assert!(carries(&argv, &["--continue"]), "{argv:?}");
     let settled = std::fs::read_to_string(rig.dir.join("meta")).expect("the meta");
+    assert!(
+        settled.contains(&format!("harness_session_prior.main={gone}\n")),
+        "the passed-over conversation is recorded: {settled}"
+    );
+    assert!(
+        settled.contains("harness_session.main=pending\n"),
+        "the dead id is cleared to the honest unknown: {settled}"
+    );
 
-    // Nothing new to abandon: the same fallback on an already-pending seat.
+    // Nothing new to abandon: the same fallback on an already-pending seat is
+    // a no-op, byte for byte, and the predecessor is recorded exactly once.
     let (argv, _) = rig.exec();
     assert!(carries(&argv, &["--continue"]), "{argv:?}");
     let again = std::fs::read_to_string(rig.dir.join("meta")).expect("the meta");
@@ -866,7 +856,7 @@ fn a_fallback_re_run_with_a_pending_id_writes_nothing() {
             .matches(&format!("harness_session_prior.main={gone}"))
             .count(),
         1,
-        "the predecessor is recorded exactly once: {again}"
+        "once: {again}"
     );
 }
 

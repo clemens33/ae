@@ -401,20 +401,7 @@ fn the_register_sid_handshake_is_the_id_the_capture_reports() {
             &format!("harness_session.main={wrong}"),
         ),
     );
-    let day = ae::time::Timestamp::now().to_string()[..10].replace('-', "/");
-    let started = ae::time::Timestamp::now();
-    rig.write(
-        &rig.home
-            .join(".codex")
-            .join("sessions")
-            .join(day)
-            .join(format!("rollout-{id}.jsonl")),
-        &format!(
-            "{{\"timestamp\":\"{started}\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"cwd\":\"{}\"}}}}\n\
-             {{\"text\":\"AE_CODEX_LAUNCH_ID=tok-1\"}}\n",
-            rig.project.display()
-        ),
-    );
+    plant_rollout(&rig, id);
     let registered = helper(&shim)
         .args(["main", id])
         .env("HOME", &rig.home)
@@ -441,7 +428,7 @@ fn the_register_sid_handshake_is_the_id_the_capture_reports() {
     );
 }
 
-/// A codex rollout that proves `id` to the launch token the rig records, so the
+/// A codex rollout proving `id` to the launch token the rig records, so the
 /// handshake takes its authoritative arm.
 fn plant_rollout(rig: &Rig, id: &str) {
     let day = ae::time::Timestamp::now().to_string()[..10].replace('-', "/");
@@ -460,8 +447,8 @@ fn plant_rollout(rig: &Rig, id: &str) {
     );
 }
 
-/// Render this session's helper links and run the `_register-sid` handshake for
-/// `main` with `id`.
+/// Run the `_register-sid` handshake for `main` with `id`, rendering the helper
+/// links first.
 fn register_sid(rig: &Rig, id: &str) -> std::process::Output {
     use super::cli::helper;
 
@@ -482,62 +469,31 @@ fn register_sid(rig: &Rig, id: &str) -> std::process::Output {
         .unwrap_or_else(|why| panic!("the shim should run: {why}"))
 }
 
-/// The authoritative codex handshake REPLACES a live id. The id it replaces is
-/// not lost: it becomes the seat's newest predecessor, published in the same
-/// replacement that records the new one.
+/// The authoritative codex handshake may REPLACE a live id. The id it replaces
+/// becomes the seat's newest predecessor — but only when it is a usable
+/// conversation name that is not the id being recorded.
 #[test]
-fn an_authoritative_capture_keeps_the_id_it_replaces_as_a_predecessor() {
-    let rig = Rig::new("predecessor", "codex", 1);
+fn an_authoritative_capture_keeps_only_a_usable_replaced_id_as_a_predecessor() {
     let old = "0199c0de-1234-4890-abcd-ef0123456789";
     let new = "0199c0de-9999-4890-abcd-ef0123456789";
-    rig.write(
-        &rig.session.join("meta"),
-        &rig.meta().replace(
-            "harness_session.main=pending",
-            &format!("harness_session.main={old}"),
-        ),
-    );
-    plant_rollout(&rig, new);
-    let registered = register_sid(&rig, new);
-    assert!(
-        registered.status.success(),
-        "{}",
-        String::from_utf8_lossy(&registered.stderr)
-    );
-    let meta = rig.meta();
-    assert!(
-        meta.contains(&format!("harness_session.main={new}\n")),
-        "{meta}"
-    );
-    assert!(
-        meta.contains(&format!("harness_session_prior.main={old}\n")),
-        "the replaced id must survive as a predecessor: {meta}"
-    );
-}
-
-/// Without an id the capture actually replaces, nothing is appended: the old
-/// row is `pending`, it IS the id being recorded (an exact re-registration of
-/// one conversation), or it is not a conversation name at all.
-#[test]
-fn an_authoritative_capture_appends_nothing_without_a_replaced_id() {
-    let id = "0199c0de-9999-4890-abcd-ef0123456789";
-    for (tag, old) in [
-        ("pending", "pending"),
-        ("same", id),
-        ("not-uuid", "NOT-A-UUID"),
+    for (tag, recorded, replaced) in [
+        ("replaced", old, true),
+        ("pending", "pending", false),
+        ("same", new, false),
+        ("not-uuid", "NOT-A-UUID", false),
     ] {
         let rig = Rig::new(tag, "codex", 1);
-        if old != "pending" {
+        if recorded != "pending" {
             rig.write(
                 &rig.session.join("meta"),
                 &rig.meta().replace(
                     "harness_session.main=pending",
-                    &format!("harness_session.main={old}"),
+                    &format!("harness_session.main={recorded}"),
                 ),
             );
         }
-        plant_rollout(&rig, id);
-        let registered = register_sid(&rig, id);
+        plant_rollout(&rig, new);
+        let registered = register_sid(&rig, new);
         assert!(
             registered.status.success(),
             "{tag}: {}",
@@ -545,13 +501,21 @@ fn an_authoritative_capture_appends_nothing_without_a_replaced_id() {
         );
         let meta = rig.meta();
         assert!(
-            meta.contains(&format!("harness_session.main={id}\n")),
+            meta.contains(&format!("harness_session.main={new}\n")),
             "{tag}: {meta}"
         );
-        assert!(
-            !meta.contains("harness_session_prior"),
-            "{tag}: nothing usable was replaced: {meta}"
+        let expected = usize::from(replaced);
+        assert_eq!(
+            meta.matches("harness_session_prior").count(),
+            expected,
+            "{tag}: {meta}"
         );
+        if replaced {
+            assert!(
+                meta.contains(&format!("harness_session_prior.main={old}\n")),
+                "{tag}: {meta}"
+            );
+        }
     }
 }
 

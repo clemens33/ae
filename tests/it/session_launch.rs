@@ -1560,71 +1560,44 @@ fn a_resume_reruns_with_the_resume_variant() {
     );
 }
 
+/// What a resume leaves on a flag tool's meta rows: the predecessor row it
+/// CARRIES through the rebuild (a row the rebuild does not enumerate is
+/// deleted), and `pending` rather than a freshly MINTED id for a seat whose
+/// recorded conversation is gone.
 #[test]
-fn a_resume_carries_the_predecessor_row_through_the_rebuilt_meta() {
+fn a_resume_carries_the_predecessor_row_and_never_mints_a_fresh_id() {
     if skip() {
         return;
     }
-    let rig = Rig::new("prior-carry", &["claude"], None);
-    let (code, stdout, stderr) = rig.launch(&["--local", "lnpriorcarry"]);
+    let rig = Rig::new("resume-rows", &["claude"], None);
+    let (code, stdout, stderr) = rig.launch(&["--local", "lnrows"]);
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
     assert!(
         !rig.launch_argv().is_empty(),
         "the pasted command started the agent"
     );
-    stop(&rig, "lnpriorcarry");
-    // A predecessor, recorded the way the writers record one.
+    stop(&rig, "lnrows");
     let prior = "0199c0de-1234-4890-abcd-ef0123456789";
-    ae::meta::rewrite(
-        &rig.dir("lnpriorcarry"),
-        "harness_session_prior.main",
-        Some(prior),
-    )
-    .expect("the fixture predecessor");
+    for (key, value) in [
+        ("harness_session_prior.main", prior),
+        ("harness_session.main", "pending"),
+    ] {
+        ae::meta::rewrite(&rig.dir("lnrows"), key, Some(value)).expect("a fixture row");
+    }
 
-    let (code, stdout, stderr) = rig.launch(&["--local", "lnpriorcarry"]);
+    let (code, stdout, stderr) = rig.launch(&["--local", "lnrows"]);
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
-    // The launch publishes the WHOLE meta, so a row it does not enumerate is
-    // deleted — the predecessor chain is enumerated.
-    let resumed = rig.meta("lnpriorcarry");
+    let resumed = rig.meta("lnrows");
     assert!(
         resumed.contains(&format!("harness_session_prior.main={prior}\n")),
-        "the predecessor row survives a resume: {resumed}"
+        "the predecessor row survives the rebuilt meta: {resumed}"
     );
-}
-
-#[test]
-fn a_resume_never_mints_a_fresh_id_for_a_flag_tool() {
-    if skip() {
-        return;
-    }
-    let rig = Rig::new("no-mint", &["claude"], None);
-    let (code, stdout, stderr) = rig.launch(&["--local", "lnnomint"]);
-    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
-    assert!(
-        !rig.launch_argv().is_empty(),
-        "the pasted command started the agent"
-    );
-    stop(&rig, "lnnomint");
-    // The seat's conversation is gone (a fallback cleared it), so the recorded
-    // id is `pending`. A resume must carry that honest unknown rather than mint
-    // a UUID naming a conversation that does not exist.
-    ae::meta::rewrite(
-        &rig.dir("lnnomint"),
-        "harness_session.main",
-        Some("pending"),
-    )
-    .expect("the fixture makes the seat pending");
-
-    let (code, stdout, stderr) = rig.launch(&["--local", "lnnomint"]);
-    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
-    let resumed = rig.meta("lnnomint");
     assert!(
         resumed.contains("harness_session.main=pending\n"),
         "a resume must not mint for a flag tool: {resumed}"
     );
     // And the pane takes the tool's own fallback: there is no id to resume by.
-    let plan = rig.plan("lnnomint", "main");
+    let plan = rig.plan("lnrows", "main");
     assert!(
         plan.contains(r#""--continue""#) && !plan.contains("--resume"),
         "the fallback, with no minted id: {plan}"
