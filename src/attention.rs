@@ -3,9 +3,7 @@
 //! The attention marker is "the single most-actionable reason by
 //! documented severity: dead > stale > waiting-user > blocked > limit >
 //! throttled > unanswered, derived as a rollup across the session's agents".
-//! `limit` and `blocked` share rank 3 — a vendor usage limit is as
-//! human-owed as a declared external block — and the derived tie-break is
-//! toward the broader word, `blocked`. The digest
+//! `limit` and `blocked` share rank 3, broken toward the broader word. The digest
 //! carries the same fact twice: `attention` (the name) and
 //! `attention_rank` (the number, `dead` 6 → `unanswered` 1).
 //!
@@ -22,10 +20,8 @@ pub enum Reason {
     Unanswered,
     /// Rank 2 — an agent is being rate-limited upstream.
     Throttled,
-    /// Rank 3 — the vendor's own usage limit reached the agent's pane: a
-    /// human must wait for the window reset or re-login, so it weighs exactly
-    /// as much as a declared block. Declared BEFORE `Blocked`, so the derived
-    /// `Ord` breaks the rank-3 tie toward the broader word.
+    /// Rank 3 — the vendor's own usage limit reached the pane; the human
+    /// waits. Declared before `Blocked` so `Ord` ties toward the broader word.
     Limit,
     /// Rank 3 — an agent is blocked: it declared a concrete external
     /// dependency, or a `waiting-agent` declaration outlived its ceiling.
@@ -50,10 +46,7 @@ impl Reason {
         Self::Unanswered,
     ];
 
-    /// The numeric severity published as `attention_rank`.
-    ///
-    /// `Limit` weighs exactly what `Blocked` weighs: the human can no more
-    /// clear it than an external dependency.
+    /// The numeric severity published as `attention_rank`; `Limit` ties `Blocked`.
     ///
     /// ```
     /// use ae::attention::Reason;
@@ -137,9 +130,8 @@ mod tests {
     #[test]
     fn sc_017g_severity_orders_dead_over_stale_over_waiting_over_blocked_over_throttled_over_unanswered()
      {
-        // The row's order, asserted as the pairwise chain it claims. Ranks are
-        // non-increasing because `limit` is the ONE documented tie: it weighs
-        // what `blocked` weighs.
+        // The row's order, asserted as the pairwise chain it claims. Ranks
+        // are non-increasing because `limit` is the ONE documented tie.
         for pair in Reason::BY_SEVERITY.windows(2) {
             let (more, less) = (pair[0], pair[1]);
             assert!(more > less, "{more} should outrank {less}");

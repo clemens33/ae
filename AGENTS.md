@@ -282,7 +282,7 @@ inventoried by the clippy `disallowed-methods` boundary. Never read the world ad
 | `AE_TMUX_SERVER` + `AE_TMUX_SERVER_KIND` | which tmux server a launch lands on; absent → named server `ae` | CHECKOUT only |
 | `AE_NO_AUTOSTART` | start no companion: neither the watchdog nor the Telegram bridge | both |
 | `AE_TEST_BOOT_TIME` | the host boot time the absence proof compares against | CHECKOUT only |
-| `AE_TEST_QUOTA_TRACE` | when set to a path, each due quota pass appends one attestation line there (`skipped`, or `observed max=<pct> booked=<n>`); test seam, unset in production | CHECKOUT only |
+| `AE_TEST_QUOTA_TRACE` | when set to a path, each quota pass appends one attestation line there (`skipped`, or `observed max=<pct> booked=<n>`) — a due cadence pass and the limit-release recovery pass alike; test seam, unset in production | CHECKOUT only |
 | `AE_TEST_RENAME_CRASH_AT` | when set to exactly one of `after-intent`, `after-work-move`, `after-state-move`, `after-meta`, `after-assets`, `after-result`, a stopped rename attests `rename-crash-boundary: <value>` on stderr past the named facts, then parks at most 60s and exits `1` with `rename-crash-timeout: <value>`; test seam, unset in production | CHECKOUT only |
 | `TMUX` / `TMUX_PANE` | which pane this shell is, for `stop` and `watchdog` | both |
 

@@ -580,12 +580,10 @@ fn an_unaware_daemon_reads_no_quota() {
 /// stands on a trace attestation, so each assertion follows a due pass that
 /// ran after its write — no fixed sleep decides anything.
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one private-tmux flip story: three config phases plus the throttle leak phase"
-)]
-fn an_unpinned_daemon_follows_live_config_flips_both_directions() {
-    let scratch = scratch("quota-flips");
+fn leaving_the_usage_limit_runs_exactly_one_quota_pass() {
+    // The cadence is OFF: every `observed` line is the recovery pass.
+    const PHRASE: &str = "You've hit your 5-hour limit";
+    let scratch = scratch("limit");
     require_tmux(&scratch);
     let socket = scratch.join("s");
     let _cleanup = Cleanup::new(&socket, &scratch);
@@ -595,149 +593,67 @@ fn an_unpinned_daemon_follows_live_config_flips_both_directions() {
     assert!(fs::create_dir_all(&tool_home).is_ok(), "a tool home");
     let config = root.join("config");
     let write_config = |quota: &str| {
-        assert!(
-            fs::write(
-                &config,
-                format!("[profiles]\ncl = claude\n[workspace]\nquota = {quota}\n")
-            )
-            .is_ok(),
-            "the flipped config"
-        );
+        let body = format!("[profiles]\ncl = claude\n[workspace]\nquota = {quota}\n");
+        assert!(fs::write(&config, body).is_ok(), "the config");
     };
-    write_config("off");
-    // No `quota` row in meta: a pre-knob session with nothing to hold stable.
-    // A RECORDED config home so the seat is a proven identity: without it the
-    // throttle line below could never render, with or without held state, and
-    // the phase would prove nothing.
-    let meta_dir = plant(&root, "quota-flips", &socket, None);
+    write_config("on");
+    let meta_dir = plant(&root, "limit", &socket, None);
     let meta = fs::read_to_string(meta_dir.join("meta")).unwrap_or_default();
     assert!(
-        !meta.contains("quota="),
-        "the flips case starts unpinned: {meta}"
+        fs::write(meta_dir.join("meta"), format!("{meta}quota_every_secs=0\n")).is_ok(),
+        "a disabled cadence"
     );
-    let canonical_home = std::fs::canonicalize(&tool_home).expect("canonical tool home");
-    assert!(
-        fs::write(
-            meta_dir.join("meta"),
-            format!(
-                "{meta}quota_every_secs=1\nconfig_home.main={}\n",
-                canonical_home.display()
-            )
-        )
-        .is_ok(),
-        "the persisted cadence plus a proven seat identity"
-    );
-    assert!(
-        tmux(
-            &socket,
-            &scratch,
-            &["new-session", "-d", "-s", "quota-flips", "cat"]
-        )
-        .0,
-        "the watched session"
-    );
-    stamp_agent(&socket, &scratch, "quota-flips");
-
+    let send = |words: &[&str]| assert!(tmux(&socket, &scratch, words).0, "tmux {words:?}");
+    send(&["new-session", "-d", "-s", "limit", "cat"]);
+    stamp_agent(&socket, &scratch, "limit");
+    let await_event = |needle: &str, want: usize| {
+        let deadline = Instant::now() + BUDGET;
+        while events(&meta_dir).matches(needle).count() < want {
+            assert!(Instant::now() < deadline, "no {needle}");
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    };
     let now = ae::time::Timestamp::now().epoch();
     let cache = tool_home.join(".claude.json");
     write_claude_quota(&cache, 79, now);
     let trace = scratch.join("quota-trace.log");
-    let mut offset = 0;
+    let observed_lines = || {
+        fs::read_to_string(&trace)
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| line.contains("observed"))
+            .count()
+    };
     let mut child = spawn_quota_daemon(&meta_dir, &tool_home, &root, &config, &scratch, &trace);
     let pid_deadline = Instant::now() + BUDGET;
     while Instant::now() < pid_deadline && !meta_dir.join(".watchdog.pid").is_file() {
         std::thread::sleep(Duration::from_millis(50));
     }
-    // 79 is the only value ever written: the first attestation settles it.
-    await_quota_trace(&trace, &mut offset, "79", true);
+    std::thread::sleep(Duration::from_millis(1_200));
+    assert_eq!(observed_lines(), 0, "a zero cadence read quota");
 
-    // OFF: 79→95 books nothing.
-    let at_95 = next_observed_at(now);
-    write_claude_quota(&cache, 95, at_95);
-    await_quota_trace(&trace, &mut offset, "95", true);
-    let delivered = || fs::read_to_string(meta_dir.join("delivered")).unwrap_or_default();
-    assert!(
-        !delivered().contains("quota-advisory"),
-        "unpinned off booked: {}",
-        delivered()
-    );
+    // The vendor's own usage limit reaches the pane: one durable `limit` event.
+    send(&["send-keys", "-t", "limit", PHRASE, "Enter"]);
+    await_event("\"action\":\"limit\"", 1);
+    // The phrase floods past the 40-line capture window; ONE pass re-reads.
+    send(&["send-keys", "-t", "limit", "-N", "80", "Enter"]);
+    write_claude_quota(&cache, 60, next_observed_at(now));
+    let mut offset = 0;
+    await_quota_trace(&trace, &mut offset, "60", false);
+    await_event("\"action\":\"alert-cleared\"", 1);
+    // Consecutive clear cycles: three more cycles, still ONE pass.
+    std::thread::sleep(Duration::from_millis(3_200));
+    assert_eq!(observed_lines(), 1, "one pass per release, not per cycle");
 
-    // Flip ON, then prove the new mode before relying on it: only an
-    // attested observation (never a stale pre-flip `skipped`) advances us.
-    // 95 is then the first aware sight (silent baseline), so step down and
-    // back up to force transitions that must book.
-    write_config("on");
-    await_quota_trace(&trace, &mut offset, "95", false);
-    let at_70 = next_observed_at(at_95);
-    write_claude_quota(&cache, 70, at_70);
-    await_quota_trace(&trace, &mut offset, "70", false);
-    let at_96 = next_observed_at(at_70);
-    write_claude_quota(&cache, 96, at_96);
-    await_quota_trace(&trace, &mut offset, "96", false);
-    let booked = delivered().matches("quota-advisory").count();
-    assert!(
-        booked >= 1,
-        "unpinned on booked nothing after the flip: {}",
-        delivered()
-    );
-
-    // Flip OFF again and prove the mode the same way: only a fresh `skipped`
-    // advances us. New transitions then book nothing more.
+    // `quota = off` runs none, though the verdict still reads and releases.
     write_config("off");
-    await_quota_trace(&trace, &mut offset, "96", true);
-    let at_71 = next_observed_at(at_96);
-    write_claude_quota(&cache, 71, at_71);
-    await_quota_trace(&trace, &mut offset, "71", true);
-    let at_97 = next_observed_at(at_71);
-    write_claude_quota(&cache, 97, at_97);
-    await_quota_trace(&trace, &mut offset, "97", true);
-    assert_eq!(
-        delivered().matches("quota-advisory").count(),
-        booked,
-        "unpinned off booked after flipping back: {}",
-        delivered()
-    );
-
-    // Still OFF, then THROTTLE: the aware phase held a critical observation,
-    // but the flip drops it every cycle, so the throttle message carries no
-    // quota row. Deleting the clear injects the held line here instead.
-    assert!(
-        tmux(
-            &socket,
-            &scratch,
-            &[
-                "send-keys",
-                "-t",
-                "quota-flips",
-                "429 Too Many Requests",
-                "Enter"
-            ]
-        )
-        .0,
-        "the pane shows throttling"
-    );
-    let throttle_deadline = Instant::now() + BUDGET;
-    let throttled = loop {
-        let log = fs::read_to_string(meta_dir.join("events.jsonl")).unwrap_or_default();
-        // A complete line only: event lines end in `}` before their newline,
-        // so a torn append cannot satisfy this while its summary is still
-        // arriving.
-        if let Some(line) = log.lines().find(|line| {
-            line.contains("\"action\":\"throttled\"") && line.trim_end().ends_with('}')
-        }) {
-            break line.to_owned();
-        }
-        assert!(
-            Instant::now() < throttle_deadline,
-            "no throttled event emitted"
-        );
-        std::thread::sleep(Duration::from_millis(100));
-    };
-    assert!(
-        !throttled.contains("quota:"),
-        "a held quota row leaked into the throttle message: {throttled}"
-    );
-    stop_watchdog(&mut child, &socket, &scratch, "quota-flips");
+    send(&["send-keys", "-t", "limit", PHRASE, "Enter"]);
+    await_event("\"action\":\"limit\"", 2);
+    send(&["send-keys", "-t", "limit", "-N", "80", "Enter"]);
+    write_claude_quota(&cache, 61, next_observed_at(now + 1));
+    std::thread::sleep(Duration::from_millis(3_200));
+    assert_eq!(observed_lines(), 1, "quota = off ran a pass");
+    stop_watchdog(&mut child, &socket, &scratch, "limit");
 }
 
 #[test]

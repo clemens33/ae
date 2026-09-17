@@ -24,11 +24,8 @@ pub fn classify_dead(current_command: &str, descendant: Descendancy) -> bool {
     command_is_shell(current_command) && matches!(descendant, Descendancy::Absent)
 }
 
-/// Which class of upstream trouble a captured pane buffer shows.
-///
-/// Two classes, because they ask for two different things from the human: a
-/// TRANSIENT throttle clears upstream on its own, while the vendor's own usage
-/// limit persists until the window resets or the seat re-logs in.
+/// Which class of upstream trouble a pane shows: a TRANSIENT throttle clears
+/// upstream on its own; the vendor's usage limit waits for a reset or re-login.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Throttle {
     /// Transient rate limiting or overload — upstream recovers on its own.
@@ -57,16 +54,12 @@ const GEMINI: &[&str] = &["RESOURCE_EXHAUSTED", "Quota exceeded"];
 const GENERIC: &[&str] = &["429 Too Many Requests", "503 Service Unavailable"];
 
 /// The USAGE-LIMIT phrases keyed by agent BINARY, MEASURED from each tool's own
-/// strings (phrases and provenance: `.local/limitstate-evidence.md`). A binary
-/// with no measurement gets an empty list, never a guess.
+/// strings (provenance: `.local/limitstate-evidence.md`). No measurement, no
+/// phrase. `You've hit your` is the vendor's own `_nr` prefix matcher.
 const CLAUDE_LIMIT: &[&str] = &[
-    // The vendor's own prefix matcher for the composed limit line
-    // (`_nr=["You've hit your", …]`, Claude Code 2.1.274).
     "You've hit your",
-    // Rendered banners.
     "You're out of usage credits",
     "Your org is out of usage",
-    // The Goal-paused status line and the error classifier.
     "usage limit reached",
 ];
 const CODEX_LIMIT: &[&str] = &[
@@ -75,11 +68,9 @@ const CODEX_LIMIT: &[&str] = &[
     "Quota exceeded. Check your plan",
 ];
 
-/// Which class of upstream trouble `buf` shows for `agent_bin`, if any.
-///
-/// ONE classifier, and [`shows_throttle`] is its union answer: a
-/// `LimitReached` phrase wins over a transient one when both appear, because
-/// the usage limit is the fact that outlives the cycle.
+/// Which class of upstream trouble `buf` shows for `agent_bin`, if any — the
+/// ONE classifier, of which [`shows_throttle`] is the union answer. A
+/// `LimitReached` phrase wins: the usage limit outlives the cycle.
 #[must_use]
 pub fn throttle_class(buf: &str, agent_bin: &str) -> Option<Throttle> {
     if buf.is_empty() {
@@ -1475,22 +1466,19 @@ mod tests {
     }
 
     #[test]
-    fn a_measured_usage_limit_phrase_classifies_as_limit_reached() {
-        // claude: the composed limit line, matched by the vendor's own prefix,
-        // and the rendered `_nr` banners (Claude Code 2.1.274).
+    fn throttle_classes_split_measured_limit_phrases_from_transient_ones() {
+        // Measured phrases, claude 2.1.274 then codex 0.154.0.
         for phrase in [
             "You've hit your 5-hour limit \u{b7} resets in 2h",
             "You're out of usage credits. /model to switch models.",
             "Your org is out of usage \u{b7} contact your admin",
-            "Goal paused \u{b7} usage limit reached \u{b7} send a message after it resets",
+            "Goal paused \u{b7} usage limit reached \u{b7} send a message",
         ] {
             assert_eq!(
                 throttle_class(phrase, "claude"),
-                Some(Throttle::LimitReached),
-                "claude: {phrase:?}"
+                Some(Throttle::LimitReached)
             );
         }
-        // codex: the rendered usage-limit lines (codex-cli 0.154.0).
         for phrase in [
             "You've hit your usage limit. Upgrade to Pro to continue",
             "You've reached your usage limit",
@@ -1498,56 +1486,31 @@ mod tests {
         ] {
             assert_eq!(
                 throttle_class(phrase, "codex"),
-                Some(Throttle::LimitReached),
-                "codex: {phrase:?}"
+                Some(Throttle::LimitReached)
             );
         }
-    }
-
-    #[test]
-    fn a_usage_limit_phrase_never_classes_for_a_binary_that_did_not_measure_it() {
-        // claude-only phrases miss codex, gemini and an unknown bin…
-        for bin in ["codex", "gemini", "grok"] {
-            for phrase in ["You're out of usage credits", "Your org is out of usage"] {
-                assert_eq!(
-                    throttle_class(phrase, bin),
-                    None,
-                    "{bin} must not claim claude's {phrase:?}"
-                );
-            }
-        }
-        // …and the codex-only phrase misses claude and an unknown bin.
-        for bin in ["claude", "grok"] {
-            assert_eq!(
-                throttle_class("Quota exceeded. Check your plan", bin),
-                None,
-                "{bin} must not claim codex's quota phrase"
-            );
-        }
-        // gemini does match it — but as its OWN transient phrase, which is a
-        // prefix here: a class claim, never a usage-limit one.
+        // A phrase of one catalog misses a binary that never measured it;
+        // gemini's OWN transient phrase is a prefix of codex's — still a
+        // transient claim — and opencode is the union of both limit catalogs.
+        assert_eq!(throttle_class("You're out of usage credits", "codex"), None);
+        assert_eq!(
+            throttle_class("Quota exceeded. Check your plan", "claude"),
+            None
+        );
         assert_eq!(
             throttle_class("Quota exceeded. Check your plan", "gemini"),
             Some(Throttle::Throttled)
         );
-    }
-
-    #[test]
-    fn opencode_is_the_union_of_the_usage_limit_catalogs_too() {
         for phrase in [
-            "You're out of usage credits",     // claude
-            "Quota exceeded. Check your plan", // codex
+            "You're out of usage credits",
+            "Quota exceeded. Check your plan",
         ] {
             assert_eq!(
                 throttle_class(phrase, "opencode"),
-                Some(Throttle::LimitReached),
-                "opencode union misses {phrase:?}"
+                Some(Throttle::LimitReached)
             );
         }
-    }
-
-    #[test]
-    fn an_existing_throttle_phrase_never_classifies_as_a_usage_limit() {
+        // Every existing transient phrase keeps its class.
         for (phrase, bin) in [
             ("Server is temporarily limiting requests", "claude"),
             ("API Error: Overloaded", "claude"),
@@ -1560,19 +1523,14 @@ mod tests {
             ("HTTP 429 Too Many Requests", "grok"),
             ("503 Service Unavailable", "somethingelse"),
         ] {
-            assert_eq!(
-                throttle_class(phrase, bin),
-                Some(Throttle::Throttled),
-                "{bin}: {phrase:?} stays transient"
-            );
+            assert_eq!(throttle_class(phrase, bin), Some(Throttle::Throttled));
         }
-        // Neither class on nothing: the same guard as `shows_throttle`.
         for bin in ["claude", "codex", "gemini", "opencode", "grok"] {
             assert_eq!(throttle_class("", bin), None, "{bin}: empty buffer");
             assert_eq!(
-                throttle_class("all normal here, no errors", bin),
+                throttle_class("all normal, no errors", bin),
                 None,
-                "{bin}: ordinary prose"
+                "{bin}: prose"
             );
         }
     }

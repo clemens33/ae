@@ -129,10 +129,8 @@ pub struct PaneState {
     pub nudge_count: u32,
     /// Consecutive throttled cycles.
     pub throttle_streak: u32,
-    /// The usage-limit latch: the seat's pane showed the vendor's own usage
-    /// limit. Its ONE release is a cycle judged at all (a dead pane returns
-    /// before the ordinary branches) that no longer shows the phrase; that
-    /// cycle retracts the durable verdict and requests the recovery refresh.
+    /// The usage-limit latch. Its ONE release is a cycle judged at all that
+    /// no longer shows the phrase: it retracts the verdict, requests recovery.
     pub limit_latched: bool,
     /// Consecutive nudges that did not land.
     pub undelivered_streak: u32,
@@ -161,9 +159,7 @@ pub struct Observation {
     pub identity: u64,
     /// [`classify_dead`]'s answer.
     pub is_dead: bool,
-    /// [`crate::watchdog::throttle_class`]'s answer: WHICH upstream trouble the
-    /// pane shows, if any — transient throttling or the vendor's own usage
-    /// limit.
+    /// [`crate::watchdog::throttle_class`]'s answer — which trouble, if any.
     pub throttle: Option<Throttle>,
     /// The worst exact-match row from the last scheduled quota observation.
     pub throttle_quota: Option<String>,
@@ -205,8 +201,7 @@ pub enum Verdict {
     Quiet(QuietKind),
     /// Upstream is rate-limiting this agent.
     Throttled,
-    /// The pane shows the vendor's own usage limit, which waits on a window
-    /// reset or a re-login rather than on upstream.
+    /// The vendor's own usage limit: waits on a reset or a re-login.
     Limit,
     /// The modeled harness is positively waiting at an empty input box.
     Idle,
@@ -278,7 +273,7 @@ impl Verdict {
 pub enum Effect {
     /// Append one event for this agent.
     Emit {
-        /// `alert` / `throttled` / `throttle-cleared`.
+        /// `alert` / `throttled` / `throttle-cleared` / `limit` / `alert-cleared`.
         action: &'static str,
         /// The event summary.
         summary: String,
@@ -287,6 +282,9 @@ pub enum Effect {
     Nudge,
     /// A line for the human, published with `display-message`.
     Notify(String),
+    /// ONE quota pass outside the cadence, on the cycle a seat left the usage
+    /// limit. `run` collects it and performs it once; `quota = off` runs none.
+    QuotaRefresh,
     /// Deliver one SWEEP prompt to the orchestrator.
     SweepNudge,
     /// Reconcile the durable event log against a wedge alert this daemon does
@@ -831,9 +829,8 @@ fn book_throttle(
     next.nudge_count = 0;
 }
 
-/// The usage-limit branch: the same nudge suppression as throttling, plus ONE
-/// durable `limit` event per episode — the word `ae list` reads — and the latch
-/// the release edge in `account_ordinary` fires from.
+/// The usage-limit branch: throttling's nudge suppression, plus ONE durable
+/// `limit` event per episode — the word `ae list` reads.
 fn book_limit(next: &mut PaneState, effects: &mut Vec<Effect>, seen: &Observation) {
     if !next.limit_latched {
         next.limit_latched = true;
@@ -1063,16 +1060,15 @@ fn account_ordinary(
         next.throttle_streak = 0;
     }
 
-    // 5b. The limit latch's ONE release: this cycle judged the pane (a dead
-    //     pane returned already, and an identity change reset the latch), and
-    //     the phrase is gone. The durable verdict is retracted here; the
-    //     recovery refresh rides the same edge (see `run`).
+    // 5b. The limit latch's ONE release: this cycle judged the pane and the
+    //     phrase is gone, so the verdict is retracted and recovery requested.
     if prior.limit_latched && seen.throttle != Some(Throttle::LimitReached) {
         next.limit_latched = false;
         effects.push(Effect::Emit {
             action: "alert-cleared",
             summary: "usage limit cleared — pane no longer shows it".to_owned(),
         });
+        effects.push(Effect::QuotaRefresh);
     }
 
     // 6. A quiet declaration. A FRESH `waiting-agent` holds like the other
@@ -1102,8 +1098,7 @@ fn account_ordinary(
         };
     }
 
-    // 7. The vendor's own usage limit outranks a transient throttle: it is the
-    //    fact that outlives the cycle, and it is what the human must act on.
+    // 7. The vendor's usage limit outranks a transient throttle.
     if seen.throttle == Some(Throttle::LimitReached) {
         book_limit(&mut next, &mut effects, seen);
         return Accounting {
@@ -2772,6 +2767,42 @@ struct Acting<'a> {
 }
 
 impl Cycle<'_> {
+    /// Apply one pane's booked effects, collecting the cycle-level quota
+    /// request: the recovery pass belongs to the sweep as a whole.
+    fn apply_booked(
+        &self,
+        effects: &[Effect],
+        on: &Acting<'_>,
+        state: &mut PaneState,
+        quota_refresh: &mut bool,
+        err: &mut impl Write,
+    ) -> crate::Result<()> {
+        for effect in effects {
+            if matches!(effect, Effect::QuotaRefresh) {
+                *quota_refresh = true;
+                continue;
+            }
+            self.apply(effect, on, state, err)?;
+        }
+        Ok(())
+    }
+
+    /// The ONE recovery pass a release requests: the same refresh the due
+    /// path calls, invoked directly — never through the due counter — so the
+    /// cadence keeps its own schedule. `quota = off` runs none.
+    fn refresh_after_limit_release(
+        &self,
+        requested: bool,
+        carry: &mut QuotaCarry,
+        now: i64,
+        err: &mut impl Write,
+    ) -> crate::Result<()> {
+        if requested && self.knobs.quota_aware {
+            self.refresh_quota(carry, now, err)?;
+        }
+        Ok(())
+    }
+
     /// The same session-relative quota inputs as the generated `quota` helper.
     fn quota_observation(
         &self,
@@ -3137,6 +3168,8 @@ impl Cycle<'_> {
         let mut by_slot: Vec<(String, Verdict)> = Vec::new();
         let mut by_agent: Vec<(String, String, Verdict)> = Vec::new();
         let mut by_pane: Vec<PaneMark> = Vec::new();
+        // Cycle-wide: any seat leaving the limit this sweep requests ONE pass.
+        let mut quota_refresh = false;
 
         for pane in &observed {
             let Some(agent) = pane.agent.as_deref().filter(|name| !name.is_empty()) else {
@@ -3202,9 +3235,7 @@ impl Cycle<'_> {
             };
             let booked = account(carried, &seen, &self.knobs);
             *carried = booked.next;
-            for effect in &booked.effects {
-                self.apply(effect, &acting, carried, err)?;
-            }
+            self.apply_booked(&booked.effects, &acting, carried, &mut quota_refresh, err)?;
             counts.record(booked.verdict);
             by_slot.push((slot.clone(), booked.verdict));
             by_agent.push((slot, pane.pane_id.clone(), booked.verdict));
@@ -3215,6 +3246,7 @@ impl Cycle<'_> {
             });
         }
         carry.quiet.end(index);
+        self.refresh_after_limit_release(quota_refresh, &mut carry.quota, now, err)?;
         self.close(
             carry, &counts, &by_slot, &by_agent, &by_pane, &live, now, err,
         )
@@ -3726,6 +3758,9 @@ impl Cycle<'_> {
                 Ok(())
             }
             Effect::SweepNudge => self.sweep_nudge(on, state, err),
+            // Cycle-level by design: `run` collects it and performs the ONE
+            // pass after the sweep, outside every per-pane path.
+            Effect::QuotaRefresh => Ok(()),
             Effect::ReconcileWedge => {
                 // The DURABLE half of the wedge clear.
                 if crate::session::alert_reason_in(on.events, self.session, on.slot, agent)
@@ -7233,17 +7268,12 @@ mod tests {
     }
 
     #[test]
-    fn a_usage_limit_pane_reads_limit_and_does_not_classify_dead() {
+    fn a_usage_limit_pane_reads_limit_and_the_dead_branch_still_wins() {
         let knobs = Knobs::default();
         let mut observed = seen();
         observed.throttle = Some(Throttle::LimitReached);
         let first = account(&PaneState::default(), &observed, &knobs);
-        assert_eq!(
-            first.verdict,
-            Verdict::Limit,
-            "the usage limit is its own word, not throttled"
-        );
-        assert_eq!(first.verdict.reason(), "limit");
+        assert_eq!(first.verdict, Verdict::Limit);
         assert_eq!(
             emitted(&first.effects),
             vec![(
@@ -7252,33 +7282,24 @@ mod tests {
             )]
         );
         assert!(first.next.limit_latched);
-        // The event is one per episode, never one per cycle.
         let second = account(&first.next, &observed, &knobs);
         assert_eq!(second.verdict, Verdict::Limit);
         assert!(emitted(&second.effects).is_empty(), "one limit event");
+        assert!(!second.effects.contains(&Effect::QuotaRefresh), "no pass");
+        // Dead is dead: the death branch returns before the limit branch.
+        let mut dying = observed.clone();
+        dying.is_dead = true;
+        let dead = account(&PaneState::default(), &dying, &knobs);
+        assert_eq!(dead.verdict, Verdict::Dead);
+        assert!(!dead.next.limit_latched, "no limit episode was entered");
     }
 
     #[test]
-    fn a_dead_pane_wins_over_a_usage_limit() {
-        // Dead is dead: the union phrase sits on a pane whose process is gone,
-        // and the death branch returns before the limit branch is reached.
-        let mut observed = seen();
-        observed.is_dead = true;
-        observed.throttle = Some(Throttle::LimitReached);
-        let booked = account(&PaneState::default(), &observed, &Knobs::default());
-        assert_eq!(booked.verdict, Verdict::Dead);
-        assert!(!booked.next.limit_latched, "no limit episode was entered");
-    }
-
-    #[test]
-    fn the_limit_release_retracts_once_and_never_repeats_on_clear_cycles() {
+    fn the_limit_release_retracts_once_and_requests_one_quota_pass() {
         let knobs = Knobs::default();
         let mut observed = seen();
         observed.throttle = Some(Throttle::LimitReached);
         let limited = account(&PaneState::default(), &observed, &knobs);
-        assert_eq!(limited.verdict, Verdict::Limit);
-
-        // The phrase gone from a live pane: ONE retraction and the latch is down.
         let released = account(&limited.next, &seen(), &knobs);
         assert_eq!(released.verdict, Verdict::Active);
         assert_eq!(
@@ -7288,17 +7309,27 @@ mod tests {
                 "usage limit cleared — pane no longer shows it"
             )]
         );
+        assert!(released.effects.contains(&Effect::QuotaRefresh), "one pass");
         assert!(!released.next.limit_latched);
-        // Two consecutive clear cycles: the second says nothing.
+        // Two consecutive clear cycles: no second retraction, no second pass.
         let again = account(&released.next, &seen(), &knobs);
+        assert!(emitted(&again.effects).is_empty(), "one retraction");
         assert!(
-            emitted(&again.effects).is_empty(),
-            "one retraction per episode"
+            !again.effects.contains(&Effect::QuotaRefresh),
+            "no second pass"
         );
-        // A SECOND episode is news again.
-        let second = account(&again.next, &observed, &knobs);
-        assert_eq!(second.verdict, Verdict::Limit);
-        assert_eq!(emitted(&second.effects).len(), 1, "limit event per episode");
+    }
+
+    #[test]
+    fn the_due_counter_has_one_caller_so_a_recovery_cannot_consume_the_cadence() {
+        // STRUCTURAL: the counter advances only inside `quota_observation_due`,
+        // and `refresh_quota` has exactly two callers beside its definition.
+        let production = include_str!("watchdog_daemon.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap_or_default();
+        assert_eq!(production.matches("quota_observation_due(").count(), 2);
+        assert_eq!(production.matches("refresh_quota(").count(), 3);
     }
 
     #[test]

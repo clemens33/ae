@@ -271,7 +271,12 @@ When a usage-limit phrase is detected:
    existing NeedsYou mark with the word `limit` on the pane border.
 3. Every later matching cycle keeps the verdict, silently — one event per episode.
 4. When a cycle judges the pane and the phrase is gone (a dead pane never reaches this branch —
-   it returns at step 1 of the branch order), the latch releases with one `alert-cleared`.
+   it returns at step 1 of the branch order), the latch releases with one `alert-cleared`, and the
+   sweep runs ONE immediate quota pass for the seat's client scope — the same refresh the cadence's
+   due path calls, invoked directly and at most once per release, never through the due counter, so
+   the cadence keeps its own schedule. A re-login that restores headroom is therefore visible on the
+   next `ae list` instead of after `quota_every_secs`. The pass runs even when the cadence is
+   disabled (`quota_every_secs = 0`); `quota = off` runs none.
 
 A return to plain throttling after a limit episode emits a fresh `throttled` event: the limit
 episode ends the transient streak.
