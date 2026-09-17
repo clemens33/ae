@@ -368,6 +368,7 @@ fn compact_cancel_withdraws_end_to_end() {
     let s = Scratch::new("cancel-e2e");
     let dir = s.0.join("sessions").join("sess");
     std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("meta"), format!("session_id={UUID}\nmode=local\n")).unwrap();
     let reference = seed_handover(&dir);
     let out = core(
         s.0.as_path(),
