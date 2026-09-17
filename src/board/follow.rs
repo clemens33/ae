@@ -50,11 +50,14 @@ pub(crate) struct Loaded {
 }
 
 /// One seat's polled snapshot: what the locate found, and — unless the plan
-/// held — what the door read. A refusal is a reason, never a silent skip.
+/// held — what the door read. A refusal is a reason, never a silent skip. The
+/// passive launch-turn body rides along because the batch's `hidden` filter
+/// runs after the reader and the actor alone cannot carry it.
 pub(crate) struct Snapshot {
     pub(crate) actor: String,
     pub(crate) located: Result<Loaded, String>,
     pub(crate) streamed: Option<Result<Streamed, &'static str>>,
+    pub(crate) passive: Option<String>,
 }
 
 /// The bytes this poll must read for a seat, decided BEFORE any read.
@@ -175,15 +178,19 @@ impl Follow {
     /// when it changes. No clock, no sleep, no I/O. The batch carries the
     /// held divider day as its floor, and the batch's own last printed row —
     /// dropped fragments and `--since` applied — becomes the new held day.
+    /// Hidden ae-injected turns are counted for THIS batch alone, `--since`
+    /// applied first, and a batch that hid none carries no count.
     pub(crate) fn step(&mut self, snapshots: Vec<Snapshot>) -> Observation {
         let floor = self.last_day.clone();
         let mut rows = Vec::new();
         let mut coverage = Vec::new();
+        let mut hidden = Vec::new();
         for snapshot in snapshots {
             let Snapshot {
                 actor,
                 located,
                 streamed,
+                passive,
             } = snapshot;
             let loaded = match located {
                 Err(reason) => {
@@ -222,13 +229,19 @@ impl Follow {
                     self.steady(&actor, vec![reason.to_owned()], &mut coverage);
                 }
                 Some(Ok(streamed)) => {
-                    let (mut seat_rows, seat_coverage) =
+                    let (seat_rows, seat_coverage) =
                         reader_for(loaded.source)(&streamed, &actor, &loaded.file, loaded.source);
                     self.steady(
                         &actor,
                         seat_coverage.into_iter().map(|item| item.reason).collect(),
                         &mut coverage,
                     );
+                    // The ONE ae-turn filter, after the reader: a hidden turn
+                    // counts for this batch and never reaches the rows.
+                    let (mut seat_rows, mut seat_hidden): (Vec<super::Row>, Vec<super::Row>) =
+                        seat_rows
+                            .into_iter()
+                            .partition(|row| !super::hidden(row, passive.as_deref()));
                     // A grok `--assistant` stream ending mid-turn: drop the
                     // open run's fragment row and hold the commit point at
                     // its first chunk, so the next poll re-reads and joins
@@ -239,6 +252,7 @@ impl Follow {
                             .retain(|row| !(row.role == Role::Assistant && row.offset == start));
                         committed = start;
                     }
+                    hidden.append(&mut seat_hidden);
                     rows.append(&mut seat_rows);
                     self.seats.insert(
                         actor,
@@ -254,6 +268,7 @@ impl Follow {
         let mut rows = super::collect(rows);
         if let Some(since) = self.since {
             rows.retain(|row| row.ts >= since);
+            hidden.retain(|row| row.ts >= since);
         }
         if let Some(last) = rows.last() {
             self.last_day = Some(super::clock_text(last.ts).0);
@@ -261,6 +276,7 @@ impl Follow {
         Observation {
             rows,
             coverage,
+            hidden: super::count_hidden(hidden),
             seeds: Vec::new(),
             day_floor: floor,
         }
@@ -288,7 +304,8 @@ impl Follow {
 mod tests {
     use super::{Follow, Loaded, Located, Plan, Snapshot};
     use crate::board::{
-        Coverage, Inputs, Observation, SeatSeed, Splitter, follow_poll, observe, render_batch,
+        Coverage, Hidden, Inputs, Observation, SeatSeed, Splitter, follow_poll, observe,
+        render_batch,
     };
     use crate::tool::ToolKind;
     use std::fmt::Write as _;
@@ -330,6 +347,7 @@ mod tests {
             actor: actor.to_owned(),
             located: Ok(loaded(observed)),
             streamed: Some(Ok(splitter.finish())),
+            passive: None,
         }])
     }
 
@@ -339,6 +357,7 @@ mod tests {
             actor: actor.to_owned(),
             located: Ok(loaded(observed)),
             streamed: None,
+            passive: None,
         }])
     }
 
@@ -347,6 +366,7 @@ mod tests {
             actor: actor.to_owned(),
             located: Ok(loaded(observed)),
             streamed: Some(Err(reason)),
+            passive: None,
         }
     }
 
@@ -382,6 +402,7 @@ mod tests {
                 ..loaded(observed)
             }),
             streamed: Some(Ok(splitter.finish().with_assistant(assistant))),
+            passive: None,
         }])
     }
 
@@ -471,6 +492,7 @@ mod tests {
             actor: "s:lead".to_owned(),
             located: Ok(loaded(observed)),
             streamed: Some(Err("transcript unreadable")),
+            passive: None,
         }]);
         assert_eq!(batch.coverage[0].reason, "transcript replaced — rescanned");
         let batch = poll(&mut follow, "s:lead", observed, &replaced);
@@ -757,5 +779,42 @@ mod tests {
         );
         let bodies: Vec<&str> = batch.rows.iter().map(|row| row.body.as_str()).collect();
         assert_eq!(bodies, ["exactly since"]);
+    }
+
+    #[test]
+    fn a_batch_counts_only_the_turns_it_hid() {
+        let mut follow = Follow::seeded(&[], &[], None);
+        // The live store writes a leading space before the marker, which is
+        // exactly what the reader passes through and this filter must catch.
+        let marker = format!(" {}", crate::provenance::peer("x"));
+        let full = format!(
+            "{}\n{}\n{}\n",
+            human("2026-09-16T09:00:00Z", "human words"),
+            human("2026-09-16T09:00:01Z", &marker),
+            human("2026-09-16T09:00:02Z", "later words")
+        );
+        let batch = poll(
+            &mut follow,
+            "s:lead",
+            located(1, full.len() as u64, 1),
+            &full,
+        );
+        assert_eq!(batch.rows.len(), 2, "the ae turn never reaches the rows");
+        assert_eq!(
+            batch.hidden,
+            [Hidden {
+                actor: "s:lead".to_owned(),
+                count: 1,
+            }]
+        );
+        // A poll that hid nothing prints no line.
+        let more = format!("{full}{}\n", human("2026-09-16T09:00:03Z", "new words"));
+        let batch = poll(
+            &mut follow,
+            "s:lead",
+            located(1, more.len() as u64, 2),
+            &more,
+        );
+        assert!(batch.hidden.is_empty(), "nothing hidden this batch");
     }
 }

@@ -69,6 +69,15 @@ pub struct Coverage {
     pub reason: String,
 }
 
+/// One seat's hidden count: ae-injected turns [`hidden`] removed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Hidden {
+    /// `session:seat`, from the meta roster.
+    pub actor: String,
+    /// How many of this seat's turns were hidden.
+    pub count: usize,
+}
+
 /// THE one sort/dedup point: stable sort by (`ts`, `file`, `offset`), then
 /// drop an identical (`file`, `offset`) read twice. Same-timestamp rows from
 /// different files all survive; so do two seats' identical words.
@@ -79,6 +88,43 @@ pub fn collect(mut rows: Vec<Row>) -> Vec<Row> {
     });
     rows.dedup_by(|later, first| first.file == later.file && first.offset == later.offset);
     rows
+}
+
+/// THE ae-turn filter, after every reader and before [`collect`]. A row is
+/// HIDDEN when its body's FIRST line is one of the marker spellings
+/// [`crate::provenance`] owns — its predicate, never a respelling — or when the
+/// whole body IS this seat's Codex passive launch turn ([`passive_turn`]).
+/// Assistant rows are never hidden: a model may legitimately quote a marker.
+#[must_use]
+fn hidden(row: &Row, passive: Option<&str>) -> bool {
+    if row.role != Role::Human {
+        return false;
+    }
+    let first = row.body.lines().next().unwrap_or_default();
+    crate::provenance::is_ae_turn(first) || passive.is_some_and(|turn| row.body == turn)
+}
+
+/// The body of one seat's passive launch turn, where its tool has one: the text
+/// [`crate::launch::initial_prompt_for`] renders under its own marker line.
+fn passive_turn(tool: ToolKind, meta_dir: &Path, slot: &str) -> Option<String> {
+    let prompt = crate::launch::initial_prompt_for(tool, meta_dir, slot);
+    let (_, body) = prompt.split_once('\n')?;
+    Some(body.to_owned())
+}
+
+/// Count hidden rows into one [`Hidden`] per seat, first-encountered order.
+fn count_hidden(rows: Vec<Row>) -> Vec<Hidden> {
+    let mut counted: Vec<Hidden> = Vec::new();
+    for row in rows {
+        match counted.iter_mut().find(|item| item.actor == row.actor) {
+            Some(item) => item.count += 1,
+            None => counted.push(Hidden {
+                actor: row.actor,
+                count: 1,
+            }),
+        }
+    }
+    counted
 }
 
 /// A line longer than this is hostile, not a record: the door reports its
@@ -453,6 +499,8 @@ pub struct Observation {
     pub rows: Vec<Row>,
     /// One row per seat the board could not read fully, caller order.
     pub coverage: Vec<Coverage>,
+    /// One row per seat whose read hid ae-injected turns, `--since` applied.
+    pub hidden: Vec<Hidden>,
     /// What each successfully streamed seat's read observed; the follow seeds
     /// itself from these and a batch carries none.
     pub seeds: Vec<SeatSeed>,
@@ -464,12 +512,14 @@ pub struct Observation {
 
 /// Read every Claude, Codex, Grok, Muse and Antigravity seat of the handed-in
 /// sessions. A seat that cannot be read — unknown tool, unlocated store,
-/// unreadable transcript — becomes a [`Coverage`], never a silent subset.
+/// unreadable transcript — becomes a [`Coverage`], never a silent subset; ae's
+/// own injected turns are removed by [`hidden`] and counted per seat.
 #[must_use]
 pub fn observe(inputs: &Inputs<'_>, since_micros: Option<i64>) -> Observation {
     let mut rows = Vec::new();
     let mut coverage = Vec::new();
     let mut seeds = Vec::new();
+    let mut hidden_rows = Vec::new();
     for session in inputs.sessions {
         let Ok(meta) = crate::session::read_meta(&session.path) else {
             coverage.push(Coverage {
@@ -480,8 +530,8 @@ pub fn observe(inputs: &Inputs<'_>, since_micros: Option<i64>) -> Observation {
         };
         for entry in meta.roster() {
             let priors = meta.harness_session_prior(&entry.slot);
-            observe_seat(
-                &session.name,
+            hidden_rows.extend(observe_seat(
+                session,
                 entry,
                 inputs.home,
                 inputs.assistant,
@@ -489,16 +539,18 @@ pub fn observe(inputs: &Inputs<'_>, since_micros: Option<i64>) -> Observation {
                 &mut rows,
                 &mut coverage,
                 &mut seeds,
-            );
+            ));
         }
     }
     let mut rows = collect(rows);
     if let Some(since) = since_micros {
         rows.retain(|row| row.ts >= since);
+        hidden_rows.retain(|row| row.ts >= since);
     }
     Observation {
         rows,
         coverage,
+        hidden: count_hidden(hidden_rows),
         seeds,
         day_floor: None,
     }
@@ -508,13 +560,14 @@ pub fn observe(inputs: &Inputs<'_>, since_micros: Option<i64>) -> Observation {
 /// most [`crate::meta::PRIOR_MAX`] — its recorded predecessors. Every
 /// generation runs through the ONE read below; the current seat's id may be
 /// `pending` after a fallback, and then its coverage row prints as today while
-/// the predecessors still read.
+/// the predecessors still read. Returns every generation's hidden rows, so the
+/// caller counts them under the one actor after `--since`.
 #[allow(
     clippy::too_many_arguments,
     reason = "the seat read's eight facts — session, entry, home, flag, priors, rows, coverage, seeds — are each a distinct borrow"
 )]
 fn observe_seat(
-    session: &str,
+    session: &crate::usage::SessionInput,
     entry: &crate::meta::RosterEntry,
     home: Option<&Path>,
     assistant: bool,
@@ -522,32 +575,34 @@ fn observe_seat(
     rows: &mut Vec<Row>,
     coverage: &mut Vec<Coverage>,
     seeds: &mut Vec<SeatSeed>,
-) {
-    observe_generation(session, entry, home, assistant, 0, rows, coverage, seeds);
+) -> Vec<Row> {
+    let mut hidden = observe_generation(session, entry, home, assistant, 0, rows, coverage, seeds);
     let mut generation: u8 = 0;
     for id in priors.iter().rev().take(crate::meta::PRIOR_MAX) {
         generation += 1;
         let mut prior = entry.clone();
         prior.harness_session = Some((*id).to_owned());
-        observe_generation(
+        hidden.extend(observe_generation(
             session, &prior, home, assistant, generation, rows, coverage, seeds,
-        );
+        ));
     }
+    hidden
 }
 
 /// Read one generation of one roster seat: locate it through THE one locator,
-/// stream it through the door, read it with the one dispatch for its tool.
-/// Every refusal is a coverage row, never a silent subset. Generation 0 seeds
-/// the follow; predecessors never do — an abandoned conversation never grows,
-/// so no poll revisits one. Every predecessor row is stamped with its
-/// generation and every predecessor coverage reason wears its `predecessor n:`
-/// prefix, actor unchanged.
+/// stream it through the door, read it with the one dispatch for its tool,
+/// then hide every ae-injected turn this generation's read produced. Every
+/// refusal is a coverage row, never a silent subset. Generation 0 seeds the
+/// follow; predecessors never do — an abandoned conversation never grows, so
+/// no poll revisits one. Every predecessor row is stamped with its generation
+/// and every predecessor coverage reason wears its `predecessor n:` prefix,
+/// actor unchanged.
 #[allow(
     clippy::too_many_arguments,
     reason = "one generation's nine facts — the seat read's eight plus its number — are each a distinct borrow"
 )]
 fn observe_generation(
-    session: &str,
+    session: &crate::usage::SessionInput,
     entry: &crate::meta::RosterEntry,
     home: Option<&Path>,
     assistant: bool,
@@ -555,8 +610,8 @@ fn observe_generation(
     rows: &mut Vec<Row>,
     coverage: &mut Vec<Coverage>,
     seeds: &mut Vec<SeatSeed>,
-) {
-    let actor = format!("{}:{}", session, entry.name);
+) -> Vec<Row> {
+    let actor = format!("{}:{}", session.name, entry.name);
     let tool = ToolKind::from_binary_name(entry.binary.as_deref().unwrap_or(""));
     let mut cover = |reason: String| {
         coverage.push(Coverage {
@@ -572,7 +627,7 @@ fn observe_generation(
         Ok(located) => located,
         Err(reason) => {
             cover(reason);
-            return;
+            return Vec::new();
         }
     };
     let streamed = match stream_transcript(&path, &metadata, 0) {
@@ -581,11 +636,15 @@ fn observe_generation(
             .with_assistant(assistant),
         Err(failure) => {
             cover(door_reason(failure).to_owned());
-            return;
+            return Vec::new();
         }
     };
     let file = file_identity(&path, &metadata);
-    let (mut seat_rows, seat_coverage) = reader_for(tool)(&streamed, &actor, &file, tool);
+    let passive = passive_turn(tool, &session.path, &entry.slot);
+    let (seat_rows, seat_coverage) = reader_for(tool)(&streamed, &actor, &file, tool);
+    let (mut seat_rows, hidden_rows): (Vec<Row>, Vec<Row>) = seat_rows
+        .into_iter()
+        .partition(|row| !hidden(row, passive.as_deref()));
     for row in &mut seat_rows {
         row.generation = generation;
     }
@@ -596,6 +655,7 @@ fn observe_generation(
     for item in seat_coverage {
         cover(item.reason);
     }
+    hidden_rows
 }
 /// One harness reader: the door's stream in, rows and coverage out.
 pub(crate) type Reader = fn(&Streamed, &str, &str, ToolKind) -> (Vec<Row>, Vec<Coverage>);
@@ -748,12 +808,13 @@ pub fn follow_poll(inputs: &Inputs<'_>, follow: &mut follow::Follow) -> Observat
                 actor: format!("{}:?", session.name),
                 located: Err("session meta unreadable".to_owned()),
                 streamed: None,
+                passive: None,
             });
             continue;
         };
         for entry in meta.roster() {
             snapshots.push(follow_seat(
-                &session.name,
+                session,
                 entry,
                 inputs.home,
                 follow,
@@ -766,15 +827,18 @@ pub fn follow_poll(inputs: &Inputs<'_>, follow: &mut follow::Follow) -> Observat
 
 /// One seat's polled snapshot: locate, then read exactly the tail the held
 /// offset asks for. A refusal is carried as the reason, never as a silent skip.
+/// The passive launch-turn body rides along: the batch's [`hidden`] filter
+/// runs after the reader and an actor alone cannot carry it.
 fn follow_seat(
-    session: &str,
+    session: &crate::usage::SessionInput,
     entry: &crate::meta::RosterEntry,
     home: Option<&Path>,
     follow: &follow::Follow,
     assistant: bool,
 ) -> follow::Snapshot {
-    let actor = format!("{}:{}", session, entry.name);
+    let actor = format!("{}:{}", session.name, entry.name);
     let tool = ToolKind::from_binary_name(entry.binary.as_deref().unwrap_or(""));
+    let passive = passive_turn(tool, &session.path, &entry.slot);
     let (path, metadata) = match locate_seat(entry, home) {
         Ok(located) => located,
         Err(reason) => {
@@ -782,6 +846,7 @@ fn follow_seat(
                 actor,
                 located: Err(reason),
                 streamed: None,
+                passive,
             };
         }
     };
@@ -806,6 +871,7 @@ fn follow_seat(
             observed,
         }),
         streamed,
+        passive,
     }
 }
 
@@ -913,7 +979,8 @@ pub(crate) fn overlong_coverage(streamed: &Streamed, actor: &str) -> Option<Cove
 const SCOPE_TEXT: &str = "scope: current conversations plus each seat's recorded predecessors (up to 4, newest first) — nothing is inferred from time";
 
 /// Render the observation as text or NDJSON. Line 1 is ALWAYS the scope
-/// statement; coverage rows precede body rows; JSON never carries a bare line.
+/// statement; coverage rows precede the per-seat hidden lines, which precede
+/// body rows; JSON never carries a bare line.
 /// `lines` clips text bodies only — NDJSON always carries the whole body.
 #[must_use]
 pub fn render(observation: &Observation, json: bool, lines: Option<usize>) -> String {
@@ -979,6 +1046,13 @@ fn render_batch_text(observation: &Observation, lines: Option<usize>) -> String 
     for item in &observation.coverage {
         let _ = writeln!(out, "coverage incomplete: {} — {}", item.actor, item.reason);
     }
+    for item in &observation.hidden {
+        let _ = writeln!(
+            out,
+            "hidden: {} — {} ae-injected turns",
+            item.actor, item.count
+        );
+    }
     // The divider names the UTC day once and reprints only when the day moves
     // past the previously printed row's — within this batch, and across follow
     // batches through the observation's floor. Coverage stays above it.
@@ -1001,6 +1075,19 @@ fn render_batch_json(observation: &Observation) -> String {
             ("kind", Value::str("coverage")),
             ("actor", Value::str(&item.actor)),
             ("reason", Value::str(&item.reason)),
+        ])
+        .render();
+        out.push_str(&line);
+        out.push('\n');
+    }
+    for item in &observation.hidden {
+        let line = Value::obj([
+            ("kind", Value::str("hidden")),
+            ("actor", Value::str(&item.actor)),
+            (
+                "count",
+                json_u64(u64::try_from(item.count).unwrap_or(u64::MAX)),
+            ),
         ])
         .render();
         out.push_str(&line);
@@ -1103,7 +1190,7 @@ mod tests {
         stream_transcript,
     };
     use crate::tool::ToolKind;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     fn row(ts: i64, file: &str, offset: u64, body: &str) -> Row {
         Row {
@@ -1166,6 +1253,47 @@ mod tests {
             reason: "torn last record".to_owned(),
         };
         assert_eq!(coverage.reason, "torn last record");
+    }
+
+    #[test]
+    fn a_row_hides_when_its_first_line_is_an_ae_spelling() {
+        for marker in [
+            crate::provenance::peer("lead"),
+            crate::provenance::ctx(),
+            crate::provenance::brief("lead"),
+            crate::provenance::interrupt("lead"),
+        ] {
+            assert!(super::hidden(&row(1, "a", 0, &marker), None), "{marker}");
+            let buried = format!("human words\n{marker}");
+            assert!(
+                !super::hidden(&row(1, "a", 0, &buried), None),
+                "a marker past line 1 is prose: {marker}"
+            );
+            let mut assistant = row(1, "a", 0, &marker);
+            assistant.role = Role::Assistant;
+            assert!(
+                !super::hidden(&assistant, None),
+                "assistant rows are never hidden: {marker}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_codex_passive_launch_turn_hides_by_its_exact_body() {
+        let meta = Path::new("/tmp/ae-board-passive");
+        let passive = super::passive_turn(ToolKind::Codex, meta, "main")
+            .expect("codex carries a launch turn");
+        assert!(
+            !crate::provenance::is_ae_turn(&passive),
+            "the marker line is not part of the body"
+        );
+        assert!(super::hidden(&row(1, "a", 0, &passive), Some(&passive)));
+        let extended = format!("{passive} and one more word");
+        assert!(
+            !super::hidden(&row(1, "a", 0, &extended), Some(&passive)),
+            "the body must match exactly"
+        );
+        assert!(super::passive_turn(ToolKind::Claude, meta, "main").is_none());
     }
 
     #[test]
@@ -1404,11 +1532,15 @@ mod tests {
         priors: &[&str],
     ) -> (Vec<Row>, Vec<Coverage>, Vec<super::SeatSeed>) {
         let entry = meta.roster().first().expect("one seat");
+        let session = crate::usage::SessionInput {
+            name: "s".to_owned(),
+            path: root.join("sessions").join("s"),
+        };
         let mut rows = Vec::new();
         let mut coverage = Vec::new();
         let mut seeds = Vec::new();
-        super::observe_seat(
-            "s",
+        let hidden = super::observe_seat(
+            &session,
             entry,
             Some(root),
             false,
@@ -1417,6 +1549,7 @@ mod tests {
             &mut coverage,
             &mut seeds,
         );
+        assert!(hidden.is_empty(), "the fixtures inject no ae turn");
         (rows, coverage, seeds)
     }
 
