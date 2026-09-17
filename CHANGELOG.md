@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.104] - 2026-09-17
+- Swap the destructive verb to ae reboot, add the compact tripwire and ledger namespaces
+- Pin the B-release surface: tripwire, stub, reboot parser, legacy handover, ae reply routing
+- Move the destructive verb to ae reboot in AGENTS.md and the user docs
+- Backtick the env paths in the e2e helper doc
+- Answer the colead gate: exact-actor cancel, pre-preamble compact route, parser-owned flags
+- Give the legacy cancel e2e the meta its exact actor match needs
+- Route compact before the ignored-doors notice; pin installed-shape exact stderr
+
 ## [v2026.9.103] - 2026-09-17
 - Hide ae-injected turns on the board and count them per seat
 - Pin the hidden-turn filter end to end
