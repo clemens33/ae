@@ -427,10 +427,6 @@ fn recorded_server(dir: &Path) -> (String, String) {
     }
 }
 
-/// The B-release `ae compact` stub: ONE line on stderr, exit 2. C replaces it
-/// with the in-place seat compaction.
-pub(crate) const COMPACT_STUB: &str = "ae compact: not yet available — the in-place seat compaction ships in the next release; the destructive handover is 'ae reboot'";
-
 /// The argv echo budget for the tripwire and unknown-flag lines.
 const FLAG_CELLS: usize = 64;
 
@@ -446,13 +442,15 @@ const ACCEPTED_FLAGS: &[&str] = &[
     "--exec-plan",
 ];
 
-/// `ae compact ...` in the B release — the R9 tripwire over the destructive
-/// parser's ACCEPTED set, else the stub.
+/// `ae compact ...` — the R9 tripwire over the destructive parser's
+/// ACCEPTED set, answered BEFORE any state is read, so it fires without a
+/// state root.
 ///
 /// The first dash-led token decides, in argv order: on [`ACCEPTED_FLAGS`] it
 /// trips, otherwise it errors — the tripwire list IS the parser's list, never
-/// a copy. A bare `ae compact [name]` prints the stub.
-pub(crate) fn run_compact_entry(tail: &[String], err: &mut impl Write) -> io::Result<u8> {
+/// a copy. A bare `ae compact [name]` answers `None`: the caller falls through
+/// to the stateful verb.
+pub(crate) fn compact_tripwire(tail: &[String], err: &mut impl Write) -> io::Result<Option<u8>> {
     for arg in tail {
         if !arg.starts_with('-') {
             continue;
@@ -466,10 +464,9 @@ pub(crate) fn run_compact_entry(tail: &[String], err: &mut impl Write) -> io::Re
         } else {
             writeln!(err, "Error: unknown flag '{shown}'.")?;
         }
-        return Ok(EXIT_USAGE);
+        return Ok(Some(EXIT_USAGE));
     }
-    writeln!(err, "{COMPACT_STUB}")?;
-    Ok(EXIT_USAGE)
+    Ok(None)
 }
 
 fn parse(tail: &[String]) -> Result<Args, String> {
@@ -821,8 +818,8 @@ mod tests {
             assert!(super::parse(&tail).is_ok(), "{flag} parses");
             let mut err = Vec::new();
             let code =
-                super::run_compact_entry(&[flag.to_string(), "sess".to_owned()], &mut err).unwrap();
-            assert_eq!(code, crate::state::EXIT_USAGE, "{flag}");
+                super::compact_tripwire(&[flag.to_string(), "sess".to_owned()], &mut err).unwrap();
+            assert_eq!(code, Some(crate::state::EXIT_USAGE), "{flag}");
             assert_eq!(
                 String::from_utf8_lossy(&err),
                 format!(
@@ -842,8 +839,8 @@ mod tests {
         ] {
             assert!(!super::ACCEPTED_FLAGS.contains(&flag), "{flag} errors");
             let mut err = Vec::new();
-            let code = super::run_compact_entry(&[flag.to_owned()], &mut err).unwrap();
-            assert_eq!(code, crate::state::EXIT_USAGE, "{flag}");
+            let code = super::compact_tripwire(&[flag.to_owned()], &mut err).unwrap();
+            assert_eq!(code, Some(crate::state::EXIT_USAGE), "{flag}");
             assert_eq!(
                 String::from_utf8_lossy(&err),
                 format!("Error: unknown flag '{flag}'.\n")
@@ -852,25 +849,23 @@ mod tests {
     }
 
     #[test]
-    fn bare_compact_prints_the_one_line_stub() {
+    fn bare_compact_falls_through_to_the_stateful_verb() {
+        // No dash-led token: no answer, no output — the caller runs the verb.
         for tail in [vec![], vec!["sess".to_owned()]] {
             let mut err = Vec::new();
-            let code = super::run_compact_entry(&tail, &mut err).unwrap();
-            assert_eq!(code, crate::state::EXIT_USAGE);
-            assert_eq!(
-                String::from_utf8_lossy(&err),
-                format!("{}\n", super::COMPACT_STUB)
-            );
+            let code = super::compact_tripwire(&tail, &mut err).unwrap();
+            assert_eq!(code, None);
+            assert!(err.is_empty());
         }
         // The first dash-led token decides, in argv order, wherever it sits.
         let mut err = Vec::new();
         let code =
-            super::run_compact_entry(&["sess".to_owned(), "--force".to_owned()], &mut err).unwrap();
-        assert_eq!(code, crate::state::EXIT_USAGE);
+            super::compact_tripwire(&["sess".to_owned(), "--force".to_owned()], &mut err).unwrap();
+        assert_eq!(code, Some(crate::state::EXIT_USAGE));
         assert!(String::from_utf8_lossy(&err).starts_with("ae: '--force' belongs"));
         // A control-byte flag is projected, never echoed raw.
         let mut err = Vec::new();
-        super::run_compact_entry(&["--bogus\u{1b}[31m".to_owned()], &mut err).unwrap();
+        super::compact_tripwire(&["--bogus\u{1b}[31m".to_owned()], &mut err).unwrap();
         let msg = String::from_utf8_lossy(&err).into_owned();
         assert!(!msg.contains('\u{1b}'), "{msg:?}");
         assert!(msg.starts_with("Error: unknown flag '--bogus?"), "{msg:?}");

@@ -299,7 +299,7 @@ impl ModelSpec {
 /// drive in this harness, if any (R11). Data only — the call site matches
 /// this enum, never the tool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CompactSpec {
+pub enum CompactSpec {
     /// `<command> <instructions>`: the harness takes guidance with the
     /// command (claude, grok).
     Guided {

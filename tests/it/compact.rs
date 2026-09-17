@@ -1,7 +1,7 @@
 //! `ae _compact-freeze <session-dir> [--keep-history]` — reboot's freeze/resolve step
 //! on the built binary, black-box. Pure read-only: it emits the frozen tuple or a
-//! clear refusal, and mutates nothing. Plus the B-release public surface: the
-//! `ae compact` tripwire + stub, and `ae reboot` answering the destructive argv.
+//! clear refusal, and mutates nothing. Plus the public surface: the `ae compact`
+//! tripwire + verb usage, and `ae reboot` answering the destructive argv.
 
 #![allow(
     clippy::disallowed_methods,
@@ -464,18 +464,15 @@ fn compact_tripwire_fires_without_any_state_root() {
 }
 
 #[test]
-fn bare_compact_prints_the_one_line_stub() {
-    let s = Scratch::new("stub");
-    for args in [vec!["compact"], vec!["compact", "sess"]] {
-        let out = public_with(&s, &args, false);
-        assert_eq!(out.status.code(), Some(2), "{args:?}: {}", stderr(&out));
-        assert_eq!(
-            stderr(&out),
-            "ae compact: not yet available — the in-place seat compaction ships in the next release; the destructive handover is 'ae reboot'\n",
-            "{args:?}"
-        );
-        assert!(stdout(&out).is_empty(), "{args:?}");
-    }
+fn bare_compact_needs_a_name_outside_a_session() {
+    let s = Scratch::new("compact-usage");
+    let out = public_with(&s, &["compact"], false);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert_eq!(stderr(&out), ae::entry::COMPACT_USAGE);
+    assert!(stdout(&out).is_empty());
+    let out = public_with(&s, &["compact", "sess"], false);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert_eq!(stderr(&out), "ae: no session state for 'sess'.\n");
 }
 
 #[test]

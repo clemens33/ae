@@ -7,6 +7,7 @@ use crate::event_text::{self as text, extract, read_lines};
 use crate::json::Value;
 use crate::state::{event_line, summary_of};
 use crate::time::Timestamp;
+pub use crate::tool::CompactSpec;
 use crate::tool::InputModel;
 use std::fmt::Write as _;
 use std::str;
@@ -21,6 +22,9 @@ pub const UNSUPPORTED: &str = "unsupported";
 pub const INPUT_NOT_MODELLED: &str = "input not modelled";
 pub const DEAD: &str = "dead";
 pub const BUSY: &str = "busy";
+pub const TARGET_LOCKED: &str = "target locked";
+pub const LIFECYCLE_LOCKED: &str = "lifecycle locked";
+pub const PASTE_FAILED: &str = "paste failed";
 
 /// What `dispatched` claims, and what it never claims. The help text asserts
 /// this sentence.
@@ -148,15 +152,6 @@ impl Outcome {
             _ => None,
         }
     }
-}
-
-/// A LOCAL mirror of the R11 adapter row's compaction capability, until the
-/// adapter carries one; C2b replaces it with the adapter's own enum.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CompactSpec {
-    Guided { command: &'static str },
-    Bare { command: &'static str },
-    Unsupported { reason: &'static str },
 }
 
 /// The arm a modelled seat dispatches with.

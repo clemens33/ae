@@ -202,7 +202,13 @@ watchdog = true
 # """
 "##;
 
-/// The text `ae help` prints — the glue's `cmd_help`, verbatim.
+/// The text `ae compact` prints when it needs a name it cannot default.
+pub const COMPACT_USAGE: &str =
+    "Usage: ae compact [name]\n(Run inside an ae tmux session to compact it without naming it.)\n";
+
+/// The text `ae help` prints — the glue's `cmd_help`, verbatim, except the
+/// `ae compact` row, which carries the R5 definition (pinned below against
+/// the const, since `concat!` takes literals only).
 pub const HELP: &str = r"ae - agentic engineering: tmux multi-agent workspace
 
 Usage:
@@ -258,8 +264,9 @@ Usage:
   ae stop [name]         Pause session, keep ae + agent conversation state for resume
                          (or 'ae stop all')
   ae compact [name]
-                         Not yet available — the in-place seat compaction ships in the
-                         next release; the destructive handover is 'ae reboot'
+                         Compact every fixed seat of a session in place: checkpoint
+                         each seat's durable state, then paste its compaction command.
+                         dispatched means attempted: the command was pasted and Enter was sent; it is never proof of submission
   ae reboot [-f] [--keep-history] [--digest-only] [name]
                          Hand this session over to a fresh one: freeze the roster, archive
                          the memory, end it, and relaunch the same agents against that
@@ -460,8 +467,8 @@ pub enum Route {
     /// A word the core already answers: the effective argv, environmental facts
     /// appended, for the ordinary dispatch.
     Core(Vec<String>),
-    /// `ae compact …` in the B release: the R9 tripwire plus the stub C
-    /// replaces, answered by [`crate::lifecycle::compaction::run_compact_entry`].
+    /// `ae compact …`: the R9 tripwire is answered before the preamble, and
+    /// a bare tail reaches the stateful verb through this route.
     Compact(Vec<String>),
     /// An EMPTY argv: attach to the ae tmux server or list from inside it.
     Attach,
@@ -869,6 +876,10 @@ mod tests {
         assert!(HELP.starts_with("ae - agentic engineering: tmux multi-agent workspace\n"));
         assert!(HELP.contains("  ae reboot [-f] [--keep-history] [--digest-only] [name]\n"));
         assert!(HELP.contains("  ae compact [name]\n"));
+        assert!(
+            HELP.contains(crate::seatcompact::DISPATCH_DEFINITION),
+            "the help carries the R5 definition"
+        );
         assert!(HELP.contains(
             "  ae init [--yes]        Discover installed harnesses and propose a global config\n"
         ));

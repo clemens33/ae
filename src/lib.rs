@@ -64,6 +64,7 @@ pub mod roster;
 pub mod run;
 pub mod sanitize;
 pub mod seatcompact;
+mod seatcompact_run;
 pub mod send;
 pub mod session;
 pub mod session_launch;
@@ -266,14 +267,14 @@ pub fn run(args: &[String], out: &mut impl Write, err: &mut impl Write) -> Resul
         }
         return run_dispatch(args, out, err);
     }
-    // `compact` in the B release is pure argv text — the tripwire plus the
-    // stub, no state read at all — so it routes before the preamble, whose
-    // missing-root refusal would otherwise mask the exit-2 with an exit-1,
-    // and before the ignored-doors notice, which would otherwise join its
-    // stderr. The `run_entry` arm holds the router's truth for C's stateful
-    // verb.
-    if args.first().map(String::as_str) == Some("compact") {
-        let code = crate::lifecycle::compaction::run_compact_entry(&args[1..], err)?;
+    // The tripwire is pure argv text — no state read at all — so it answers
+    // before the preamble, whose missing-root refusal would otherwise mask
+    // the exit-2 with an exit-1, and before the ignored-doors notice, which
+    // would otherwise join its stderr. A bare `ae compact [name]` falls
+    // through to the preamble and the `run_entry` arm, which runs the verb.
+    if args.first().map(String::as_str) == Some("compact")
+        && let Some(code) = crate::lifecycle::compaction::compact_tripwire(&args[1..], err)?
+    {
         out.flush()?;
         err.flush()?;
         return Ok(code);
@@ -1474,7 +1475,7 @@ fn run_entry(
         }
         entry::Route::Core(effective) => return run_dispatch(&effective, out, err),
         entry::Route::Compact(tail) => {
-            return Ok(crate::lifecycle::compaction::run_compact_entry(&tail, err)?);
+            return run_compact(preamble, &tail, out, err);
         }
         entry::Route::Attach => return run_bare_attach(preamble, out, err),
         entry::Route::Launch(user) => {
@@ -1547,6 +1548,55 @@ fn run_bare_attach(
         writeln!(err, "Stopped sessions: {}", stopped.join(", "))?;
     }
     Ok(entry::EXIT_FAILED)
+}
+
+/// `ae compact [name]` — resolve the target, path-check it, then hand the
+/// state root and name to the in-place seat-compaction verb. Dash-led tokens
+/// never reach here: the tripwire answered them before the preamble.
+fn run_compact(
+    preamble: &entry::Preamble,
+    tail: &[String],
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> Result<u8> {
+    if let Some(extra) = tail.get(1) {
+        let shown = event_text::display_cell(extra, 64);
+        writeln!(
+            err,
+            "ae compact: unexpected extra argument '{shown}' — compact takes one session name."
+        )?;
+        err.flush()?;
+        return Ok(entry::EXIT_USAGE);
+    }
+    let named = tail
+        .first()
+        .map(ToOwned::to_owned)
+        .or_else(|| current_session_name(preamble));
+    let Some(target) = named else {
+        write!(err, "{}", entry::COMPACT_USAGE)?;
+        err.flush()?;
+        return Ok(entry::EXIT_USAGE);
+    };
+    if !session_name_usable(preamble, &target) {
+        writeln!(err, "ae: '{target}' is not a usable session name.")?;
+        err.flush()?;
+        return Ok(entry::EXIT_FAILED);
+    }
+    let dir = preamble.sessions().join(&target);
+    if !lifecycle::dir_exists(&dir) {
+        writeln!(err, "ae: no session state for '{target}'.")?;
+        err.flush()?;
+        return Ok(entry::EXIT_FAILED);
+    }
+    if !session_path_is_safe(preamble, &target) {
+        write_unsafe_path(&dir, err)?;
+        err.flush()?;
+        return Ok(entry::EXIT_FAILED);
+    }
+    let code = seatcompact_run::run(&preamble.home, &target, out, err)?;
+    out.flush()?;
+    err.flush()?;
+    Ok(code)
 }
 
 /// `ae archive preview [name]` — resolve the target, path-check it, then hand
