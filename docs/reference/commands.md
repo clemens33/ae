@@ -747,6 +747,48 @@ running server for you.
           an older distro needs its backport, a newer package, or a source build).
 ```
 
+## Session context menu
+
+Right-click a session range on the status line (`MouseDown3Status` on tmux 3.5+,
+`MouseUp3Status` on 3.4) to open that session's context menu, drawn by the
+read-only `_session-menu show` path: it reads every source first, then takes
+one final clicker proof (server identity plus client pid), and draws against
+the live dimensions that proof returned. No action in the menu writes session
+state except Stop, which asks first.
+
+The root shows three blocks, then the actions:
+
+- The facts block: `mode:` (`local`, `copy` or `worktree` — the words the
+  human asked for, whatever the meta spells), `dir:`, `source:` for
+  copy/worktree sessions only, and `branch:` when the meta records one. A
+  missing fact prints `unrecorded`, never a guess.
+- The declared states: newest per roster actor, at most three, with truthful
+  age. States render only when the live session uuid matches the meta's
+  `session_id`; anything else is a named gap, never another incarnation.
+- Two keyed rows between the states and Flip: `Activity…` (`a`) and `Memos…`
+  (`m`), opening read-only dialogs (see below).
+
+`Flip` (`f`) returns to the previous session; `Stop session...` (`s`) starts
+the guarded stop chain. On a short client the root degrades in order — facts
+first, then the two dialog rows, then all but the first state — down to
+today's status-only menu and floor; it never refuses once the clicker is
+proven.
+
+The `Activity` dialog lists the newest 10 records a human cares about, newest
+first: `state`, `done`, `goal`, `spawn`, `retire`, `ask`, `review` and
+`reply`, each with actor, kind, clipped text and truthful age. Watchdog
+ticks, quota samples, audits, delivery records, `memo`, `chat`, `focus`,
+`cancel`, `spawn-failed` and lifecycle request/result pairs are not activity
+and never render. The `Memos` dialog lists the latest record per memo topic
+exactly as `ae brief` computes it, newest first, at most 10. A short client
+drops each dialog's oldest rows until title, rows, separator and Close fit.
+
+Dialog rows are informational and keyless; `Close` (`c`) dismisses and writes
+nothing. There is no Back row — dismiss and right-click again. Like the
+settings quota dialog, a row starting with `-` would read as a tmux separator;
+actor names cannot start there, and a hostile memo topic starting with one
+renders as a divider line.
+
 ## `ae doctor`
 
 Pre-flight + post-upgrade self-test. Walks a fixed checklist of `OK / WARN / FAIL` items and

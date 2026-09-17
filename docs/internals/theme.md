@@ -43,14 +43,24 @@ nothing itself: it hands the same seven captured facts to the read-only
 and draws the root centred on the invoking client. Every source is read
 BEFORE that one final clicker proof, so the fit and the draw use the live
 dimensions the proof returned and nothing reads the world after it; the root
-refuses neither enrichment nor fit — it reselects full → status-only → today's
-exact floor (title, Flip, Stop), and below the floor tmux trims the way it
-always has. A draw tmux itself refuses is still reported and exits nonzero. The root it draws is declared state
-only — the newest declaration per roster actor, at most three, with a truthful
+refuses neither enrichment nor fit — it reselects full → facts-dropped →
+rows-dropped → status-only → today's exact floor (title, Flip, Stop), and below
+the floor tmux trims the way it always has. A draw tmux itself refuses is still
+reported and exits nonzero. The root it draws is a facts block
+(mode/dir/source/branch, `unrecorded` never a guess) above the declared states
+— the newest declaration per roster actor, at most three, with a truthful
 age and a reason clipped by the one `event_text::display_cell` projection — and
 a correlation gap is named rather than filled: `state: unavailable (…)` for a
 missing, invalid or mismatched identity and `state: unreadable (events: …)` for
-a container that exists and cannot be read. Correlation is the session-scoped
+a container that exists and cannot be read. Between the states and Flip sit two
+keyed rows, `Activity…` and `Memos…`, each re-invoking the same `show` path
+with one new word (`--activity` / `--memos`): same seven facts, same final
+proof, no new binding. Each opens a read-only dialog shaped like the settings
+quota dialog — keyless informational rows, one blank separator, `Close` — with
+the newest 10 activity records (`state`, `done`, `goal`, `spawn`, `retire`,
+`ask`, `review`, `reply`) or the latest memo per topic exactly as `ae brief`
+computes it; a short client drops the oldest rows until the dialog fits.
+Correlation is the session-scoped
 `@ae_session_uuid` read through argv-only `show-options` and the `session_id`
 of the clicked session's `meta`, from one read: a same-name recreation gets a
 new tmux id and floors, and a replaced state directory renders the mismatch
