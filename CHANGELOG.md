@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.108] - 2026-09-17
+- Add the seat-compact outcome vocabulary and its verdict mapping
+- Add the R7 gate classifier and the compact-by-hand line
+- Add the seat-compact audit records and the start-of-run warning
+- Add the seat-compact report renderer
+
 ## [v2026.9.107] - 2026-09-17
 - Split the throttle catalog into transient and usage-limit classes
 - A limit verdict for a pane showing the vendor usage limit
