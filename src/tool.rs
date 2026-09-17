@@ -295,6 +295,30 @@ impl ModelSpec {
     }
 }
 
+/// In-place compaction capability: which `/compact`-shaped command ae may
+/// drive in this harness, if any (R11). Data only — the call site matches
+/// this enum, never the tool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CompactSpec {
+    /// `<command> <instructions>`: the harness takes guidance with the
+    /// command (claude, grok).
+    Guided {
+        /// The compaction command.
+        command: &'static str,
+    },
+    /// `<command>` alone; the checkpoint carried the guidance (codex, gemini,
+    /// muse, opencode).
+    Bare {
+        /// The compaction command.
+        command: &'static str,
+    },
+    /// No drivable command (agy, unknown).
+    Unsupported {
+        /// Why no command can be driven.
+        reason: &'static str,
+    },
+}
+
 /// Everything ae needs to know about one agent harness.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ToolAdapter {
@@ -321,6 +345,8 @@ pub(crate) struct ToolAdapter {
     pub(crate) capture: CaptureSpec,
     /// Input observation and first-turn delivery behaviour.
     pub(crate) input: InputSpec,
+    /// In-place compaction capability (R11).
+    pub(crate) compact: CompactSpec,
     /// How ae reads this harness's live model and whether an observation may
     /// be replayed into its model flag on resume.
     ///
@@ -379,6 +405,9 @@ const CLAUDE: ToolAdapter = ToolAdapter {
     usage: UsageSpec {
         source: UsageSource::ClaudeTranscripts,
     },
+    compact: CompactSpec::Guided {
+        command: "/compact",
+    },
 };
 
 const CODEX: ToolAdapter = ToolAdapter {
@@ -419,6 +448,9 @@ const CODEX: ToolAdapter = ToolAdapter {
     },
     usage: UsageSpec {
         source: UsageSource::CodexRollout,
+    },
+    compact: CompactSpec::Bare {
+        command: "/compact",
     },
 };
 
@@ -461,6 +493,9 @@ const GEMINI: ToolAdapter = ToolAdapter {
     usage: UsageSpec {
         source: UsageSource::Unsupported,
     },
+    compact: CompactSpec::Bare {
+        command: "/compress",
+    },
 };
 
 const AGY: ToolAdapter = ToolAdapter {
@@ -502,6 +537,9 @@ const AGY: ToolAdapter = ToolAdapter {
     },
     usage: UsageSpec {
         source: UsageSource::Unsupported,
+    },
+    compact: CompactSpec::Unsupported {
+        reason: "agy exposes no compaction command",
     },
 };
 
@@ -548,6 +586,9 @@ const GROK: ToolAdapter = ToolAdapter {
     },
     usage: UsageSpec {
         source: UsageSource::Unsupported,
+    },
+    compact: CompactSpec::Guided {
+        command: "/compact",
     },
 };
 
@@ -598,6 +639,9 @@ const MUSE: ToolAdapter = ToolAdapter {
     usage: UsageSpec {
         source: UsageSource::Unsupported,
     },
+    compact: CompactSpec::Bare {
+        command: "/compact",
+    },
 };
 
 const OPENCODE: ToolAdapter = ToolAdapter {
@@ -646,6 +690,9 @@ const OPENCODE: ToolAdapter = ToolAdapter {
     usage: UsageSpec {
         source: UsageSource::Unsupported,
     },
+    compact: CompactSpec::Bare {
+        command: "/compact",
+    },
 };
 
 const UNKNOWN: ToolAdapter = ToolAdapter {
@@ -683,6 +730,9 @@ const UNKNOWN: ToolAdapter = ToolAdapter {
     },
     usage: UsageSpec {
         source: UsageSource::Unsupported,
+    },
+    compact: CompactSpec::Unsupported {
+        reason: "unknown tool",
     },
 };
 
@@ -923,6 +973,9 @@ mod tests {
                     usage: UsageSpec {
                         source: UsageSource::ClaudeTranscripts,
                     },
+                    compact: CompactSpec::Guided {
+                        command: "/compact"
+                    },
                 },
                 ToolAdapter {
                     kind: ToolKind::Codex,
@@ -962,6 +1015,9 @@ mod tests {
                     },
                     usage: UsageSpec {
                         source: UsageSource::CodexRollout,
+                    },
+                    compact: CompactSpec::Bare {
+                        command: "/compact"
                     },
                 },
                 ToolAdapter {
@@ -1003,6 +1059,9 @@ mod tests {
                     usage: UsageSpec {
                         source: UsageSource::Unsupported,
                     },
+                    compact: CompactSpec::Bare {
+                        command: "/compress"
+                    },
                 },
                 ToolAdapter {
                     kind: ToolKind::Agy,
@@ -1043,6 +1102,9 @@ mod tests {
                     },
                     usage: UsageSpec {
                         source: UsageSource::Unsupported,
+                    },
+                    compact: CompactSpec::Unsupported {
+                        reason: "agy exposes no compaction command",
                     },
                 },
                 ToolAdapter {
@@ -1088,6 +1150,9 @@ mod tests {
                     usage: UsageSpec {
                         source: UsageSource::Unsupported,
                     },
+                    compact: CompactSpec::Guided {
+                        command: "/compact"
+                    },
                 },
                 ToolAdapter {
                     kind: ToolKind::Muse,
@@ -1128,6 +1193,9 @@ mod tests {
                     usage: UsageSpec {
                         source: UsageSource::Unsupported,
                     },
+                    compact: CompactSpec::Bare {
+                        command: "/compact"
+                    },
                 },
                 ToolAdapter {
                     kind: ToolKind::OpenCode,
@@ -1167,6 +1235,9 @@ mod tests {
                     },
                     usage: UsageSpec {
                         source: UsageSource::Unsupported,
+                    },
+                    compact: CompactSpec::Bare {
+                        command: "/compact"
                     },
                 },
             ]
@@ -1213,7 +1284,42 @@ mod tests {
                 usage: UsageSpec {
                     source: UsageSource::Unsupported,
                 },
+                compact: CompactSpec::Unsupported {
+                    reason: "unknown tool",
+                },
             }
         );
+    }
+
+    #[test]
+    fn every_adapter_row_carries_its_compaction_command() {
+        // R11 pin: the §2 measured table, one row per adapter. The call site
+        // matches `CompactSpec`, never `ToolKind`.
+        const GUIDED_COMPACT: CompactSpec = CompactSpec::Guided {
+            command: "/compact",
+        };
+        const BARE_COMPACT: CompactSpec = CompactSpec::Bare {
+            command: "/compact",
+        };
+        const BARE_COMPRESS: CompactSpec = CompactSpec::Bare {
+            command: "/compress",
+        };
+        for (kind, expected) in [
+            (ToolKind::Claude, GUIDED_COMPACT),
+            (ToolKind::Codex, BARE_COMPACT),
+            (ToolKind::Gemini, BARE_COMPRESS),
+            (ToolKind::Grok, GUIDED_COMPACT),
+            (ToolKind::Muse, BARE_COMPACT),
+            (ToolKind::OpenCode, BARE_COMPACT),
+        ] {
+            assert_eq!(kind.adapter().compact, expected, "{kind:?}");
+        }
+        for kind in [ToolKind::Agy, ToolKind::Unknown] {
+            let spec = kind.adapter().compact;
+            assert!(
+                matches!(spec, CompactSpec::Unsupported { reason } if !reason.is_empty()),
+                "{kind:?}"
+            );
+        }
     }
 }
