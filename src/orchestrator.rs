@@ -2013,6 +2013,90 @@ mod tests {
         .expect("test dimensions")
     }
 
+    /// RULING 4's byte pin: a fixture fleet parsed from the BATCHED read's own
+    /// output builds exactly the `display-menu` argv this golden fixes. The read
+    /// side may change its connections; the bytes drawn may not.
+    #[test]
+    fn the_batched_read_draws_the_fixture_fleet_byte_identically() {
+        let listing = concat!(
+            "ae-picker:c|/dev/ttys002 | $7 | 4243 | 40 | 140\n",
+            "ae-picker!c\n",
+            "ae-picker:s|hub | $7 | 2 |  | %10 | main | v1;2000;60;lead:fable5:working:%10 | ship it\n",
+            "ae-picker:s|rest | $2 | 0 |  | %20 | main |  | \n",
+            "ae-picker!s\n",
+            "ae-picker:p|$7 | %10\n",
+            "ae-picker!p\n",
+            "ae-picker:n|hub\n",
+            "ae-picker:n|rest\n",
+            "ae-picker!n\n",
+            "ae-picker:i|4242 | 1700000000\n",
+            "ae-picker!i\n",
+            "ae-picker:k|/tmp/ae.sock\n",
+            "ae-picker!k\n",
+            "ae-picker:l|on | a | on | on\n",
+            "ae-picker!l\n",
+        );
+        let read = crate::tmux::interpret_picker_read(listing, "/dev/ttys002").expect("one read");
+        let look = read
+            .look
+            .as_ref()
+            .map_or(crate::theme::Look::DEFAULT, |look| {
+                crate::theme::Look::read(&look.icons, &look.palette, &look.drawn, &look.motion)
+            });
+        let menu = super::menu_for_client_session_in(
+            &read.sessions.expect("sessions"),
+            &[super::PickerStopped {
+                name: "old".to_owned(),
+                goal: "gone".to_owned(),
+                branch: "main".to_owned(),
+                last_live: Some(1_999),
+            }],
+            &read.panes.expect("panes"),
+            look.icons,
+            &look.palette,
+            Some("/dev/ttys002"),
+            Some("$7"),
+            None,
+            super::PickerBounds {
+                height: 24,
+                width: 100,
+                now_epoch: NOW,
+            },
+        )
+        .expect("room for the fixture fleet");
+        let argv =
+            display_menu_for_client_args(&ServerId::Ambient, Some("/dev/ttys002"), &menu, false);
+        assert_eq!(
+            argv,
+            [
+                "display-menu",
+                "-O",
+                "-c",
+                "/dev/ttys002",
+                "-x",
+                "0",
+                "-y",
+                "S",
+                "-T",
+                "#[fg=#e5a03c bold] ae session — 2 running · 1 stopped · 0 need you — prefix a ",
+                "--",
+                "hub  · working main ship it",
+                "1",
+                "set-option -u -t $7 @ae_menu_open ; switch-client -c '/dev/ttys002' -t $7 ; if-shell -F -t %10 '##{==:##{session_id},$7}' 'select-window -t %10 ; select-pane -t %10'",
+                "  ● lead fable5 working",
+                "",
+                "set-option -u -t $7 @ae_menu_open ; switch-client -c '/dev/ttys002' -t $7 ; if-shell -F -t %10 '##{==:##{session_id},$7}' 'select-window -t %10 ; select-pane -t %10'",
+                "rest · idle    main · agents unavailable",
+                "2",
+                "set-option -u -t $7 @ae_menu_open ; switch-client -c '/dev/ttys002' -t $2",
+                "-old  ✖ stopped main gone",
+                "",
+                "",
+            ],
+            "the fixture fleet's drawn bytes, frozen"
+        );
+    }
+
     #[test]
     fn height_shows_the_current_roster_then_collapses_then_caps_sessions() {
         let sessions = [
