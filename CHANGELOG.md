@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.109] - 2026-09-17
+- Add the compaction-command adapter row (R11)
+- Add the guarded deliver operation and its pins (R10)
+
 ## [v2026.9.108] - 2026-09-17
 - Add the seat-compact outcome vocabulary and its verdict mapping
 - Add the R7 gate classifier and the compact-by-hand line
