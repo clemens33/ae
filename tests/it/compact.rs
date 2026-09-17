@@ -383,7 +383,7 @@ fn compact_cancel_withdraws_end_to_end() {
 }
 
 /// Run a PUBLIC verb (`compact`, `reboot`) with the hermetic env the entry
-/// rig uses: a scratch HOME/AE_HOME/config, no tmux inheritance.
+/// rig uses: a scratch `HOME`/`AE_HOME`/config, no tmux inheritance.
 fn public(s: &Scratch, args: &[&str]) -> std::process::Output {
     let mut cmd = crate::cli::ae();
     cmd.env("HOME", &s.0)
