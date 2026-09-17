@@ -47,6 +47,27 @@ body of at most `<n>` lines prints whole and gets no marker. `--lines` is
 text-only: with `--json` it is a usage error, because NDJSON always carries the
 whole body.
 
+`--assistant` (off by default) adds the model's replies beside the human turns:
+one row per transcript record, ` · assistant` after the actor in the text header
+and `"role":"assistant"` in JSON, body joined from the record's TEXT parts alone
+in order. `thinking`, `tool_use`, reasoning parts and every tool call are never
+read, an empty body drops silently, and an unstamped record counts into the
+same missing-timestamp coverage. Claude Code excludes `isApiErrorMessage ==
+true` records whole and reads `type=="assistant"` records only; Codex reads
+`response_item`/`message`/`role=="assistant"` and its `output_text` parts only,
+never the `reasoning`, call or `event_msg` twins. Markers classify human rows
+only — a reply may legitimately quote one. Grok, Muse and Antigravity seats
+print their human rows as today (their replies arrive later). Without the flag
+the stream is byte-identical to the human-only board.
+
+```text
+scope: current conversations only (phase 1b) — a seat that resumed keeps only its current transcript
+## 2026-09-16T09:00:00.500000Z demo:lead
+  ship the slice today
+## 2026-09-16T09:00:01.000000Z demo:lead · assistant
+  drafted it; the review is open
+```
+
 `--json` prints NDJSON — one scope line, coverage lines, then row lines:
 
 ```json
@@ -88,14 +109,16 @@ wants dedup across generations can have it.
 
 ## Phases
 
-1b Claude CLI · 2 codex · 3a grok · 3b muse · 4 `--follow` · 5 agy (this slice) ·
-6 OpenCode (ruled out — not read) · 7 assistant rows · 8 predecessors.
+1b Claude CLI · 2 codex · 3a grok · 3b muse · 4 `--follow` · 5 agy · 6 OpenCode
+(ruled out — not read) · 7a assistant rows (Claude Code, Codex) · 7b assistant
+rows (grok, muse, agy coverage) · 8 predecessors.
 
 Codex reads the seat's current rollout only, and only the `response_item`
-record of each user turn — never its older `event_msg` twin. The project-doc
-turn Codex injects is harness plumbing, excluded: by its `agents_md.instructions`
-kind when the rollout carries one, else by its `# AGENTS.md instructions`
-first line.
+record of each user turn — never its older `event_msg` twin — and, with
+`--assistant`, only the `output_text` parts of its `role=="assistant"` message.
+The project-doc turn Codex injects is harness plumbing, excluded: by its
+`agents_md.instructions` kind when the rollout carries one, else by its
+`# AGENTS.md instructions` first line.
 
 Grok reads the seat's current `updates.jsonl` only, one `user_message_chunk`
 per turn, time from `_meta.agentTimestampMs` millis when present.

@@ -24,10 +24,11 @@ ae quota               Show bounded local quota snapshots for every configured a
 ae usage [name…] [--json]
                        Show offline API-equivalent usage for all live sessions, or
                        only the named live sessions
-ae board [session…] [--since <ts>] [--json] [--follow] [--lines <n>]
+ae board [session…] [--since <ts>] [--json] [--follow] [--lines <n>] [--assistant]
                        The filtered cross-fleet record: genuine human turns from
                        every seat's harness transcript (Claude Code, Codex, Grok,
                        Muse and Antigravity)
+                       --assistant adds the model's replies (text only; off by default)
                        --follow keeps printing new rows and coverage changes every 5 s
                        --lines clips each text body to its first <n> lines, with a
                        marker for the dropped remainder (refused with --json)
@@ -1001,6 +1002,16 @@ its first `<n>` lines and prints one `  … +k lines` marker for the dropped
 remainder; a body of at most `<n>` lines prints whole and gets no marker.
 `--lines` is text-only: combined with `--json` it is a usage error, because
 NDJSON always carries the whole body.
+
+`--assistant` (off by default) adds the model's replies: one row per transcript
+record, ` · assistant` after the actor in the text header and
+`"role":"assistant"` in JSON, body joined from the record's text parts alone.
+Claude Code reads `type=="assistant"` records (`thinking` and `tool_use` parts
+never read; `isApiErrorMessage == true` records excluded); Codex reads its
+`response_item`/`message`/`role=="assistant"` record and its `output_text`
+parts only — never the `reasoning`, call or `event_msg` twins. Empty bodies drop
+silently, an unstamped record counts into the missing-timestamp coverage, and
+without the flag the stream is byte-identical to the human-only board.
 
 `--follow` prints that board once, then — every 5 seconds until Ctrl-C — only
 what is new. The selection is fixed at start: a session started later is not
