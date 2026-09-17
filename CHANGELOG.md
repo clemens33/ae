@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.105] - 2026-09-17
+- Read the picker's pre-draw state in one batched tmux invocation
+- Pin the picker's fixture fleet as an exact display-menu argv golden
+- Document the picker's batched read and its measured pre-draw
+
 ## [v2026.9.104] - 2026-09-17
 - Swap the destructive verb to ae reboot, add the compact tripwire and ledger namespaces
 - Pin the B-release surface: tripwire, stub, reboot parser, legacy handover, ae reply routing
