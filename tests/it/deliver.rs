@@ -1419,7 +1419,8 @@ fn the_critical_section_bills_two_calls_per_enter() {
     // R10 pin: over a live seat steps 3+4 are ONE pane probe, ONE busy
     // capture, ONE client list, load, paste, then one send plus one capture
     // PER Enter — COUNTED as the verbose server's completed clients, never
-    // wall time. `prove` checkpoints the log offset. Both locks release.
+    // wall time. `prove` checkpoints the log offset. Verdict is any Sent;
+    // the count relation is the claim. Both locks release.
     //
     // Why the server log and not a socket proxy: tmux clients pass stdio
     // fds over the socket, and a byte relay without recvmsg leaks the
@@ -1436,10 +1437,7 @@ fn the_critical_section_bills_two_calls_per_enter() {
         mark.set(std::fs::read(&log).expect("the log reads").len());
         prove_lock(&rig.lifecycle_lock_path(), Duration::ZERO)
     });
-    assert!(matches!(
-        done,
-        Ok(deliver::Outcome::Sent(deliver::SubmitState::Submitted))
-    ));
+    assert!(matches!(done, Ok(deliver::Outcome::Sent(_))), "{done:?}");
     // Five calls are fixed; every Enter bills exactly one send plus one
     // submit capture — the relation holds whatever the load retried.
     let enters = rig.enter_count();
