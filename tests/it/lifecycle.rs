@@ -737,6 +737,45 @@ fn purge_history_writes_no_archive_at_all() {
     assert!(!exists(&rig.dir), "the live session state is gone");
 }
 
+/// The history purge removes a seat's PREDECESSOR conversations too — same
+/// UUID proof, same `left in place` note for a row that names nothing.
+#[test]
+fn the_history_purge_removes_predecessor_conversations_and_notes_unusable_ones() {
+    let rig = Rig::new("purgeprior");
+    let prior = "0199c0de-1234-4890-abcd-ef0123456789";
+    let store = rig.home.join(".claude");
+    let project = store.join("projects").join("work");
+    std::fs::create_dir_all(&project).expect("a project store");
+    let file = project.join(format!("{prior}.jsonl"));
+    std::fs::write(&file, "conversation").expect("a predecessor's conversation");
+    let canonical = std::fs::canonicalize(&store).expect("the canonical store");
+    std::fs::write(
+        rig.dir.join("meta"),
+        format!(
+            "session={}\nsession_id={UUID}\nwork_dir={}\nmode=local\nlayout=vertical\n\
+             main_pane={}\ntmux_server_kind=socket\ntmux_server={}\nschema=2\n\
+             seat.main=lead\nprofile.main=fake\nagent_bin.main=claude\nconfig_home.main={}\n\
+             harness_session.main=pending\nharness_session_prior.main={prior},not-a-uuid\n",
+            rig.name,
+            rig.home.display(),
+            rig.pane,
+            rig.sock.display(),
+            canonical.display(),
+        ),
+    )
+    .expect("a claude meta with a predecessor row");
+
+    let (code, out, err) = rig.run(&["_end", "-f", "--purge-history", &rig.name]);
+    assert_eq!(code, Some(0), "stdout: {out}\nstderr: {err}");
+    assert!(!exists(&file), "the predecessor's file is purged: {out}");
+    assert!(out.contains("removed claude conversation"), "{out}");
+    assert!(
+        err.contains("left in place") && err.contains("not a UUID"),
+        "a predecessor that names nothing is reported: {err}"
+    );
+    assert!(!exists(&rig.dir), "the live session state is gone");
+}
+
 /// The reboot that makes a STOPPED session immortal: the recorded server is
 /// gone and its socket can never answer again, while the session's own last
 /// sign of life is planted before any boot a test will claim. Returns that

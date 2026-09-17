@@ -1216,6 +1216,42 @@ fn is_observed_row_value(value: &str) -> bool {
     !value.is_empty() && value.len() <= 256 && !value.chars().any(char::is_control)
 }
 
+/// The elements of a raw predecessor list that are usable CONVERSATION NAMES:
+/// at most [`PRIOR_MAX`] lowercase UUIDs, no empty element. The grammar is the
+/// one [`crate::session_launch::capture::is_lowercase_uuid`] owns, so an id
+/// ae minted, codex registered, muse or agy captured passes and an `opencode`
+/// `ses_…` (or a hand edit) does not — such a seat records no predecessor.
+///
+/// A list that fails any of those reads as EMPTY, never as a refusal: a
+/// hand-edited predecessor list must not make a session unresumable.
+#[must_use]
+pub(crate) fn valid_priors<'a>(raw: &'a [&'a str]) -> Vec<&'a str> {
+    let usable = raw.len() <= PRIOR_MAX
+        && raw
+            .iter()
+            .all(|id| crate::session_launch::capture::is_lowercase_uuid(id));
+    if !usable {
+        return Vec::new();
+    }
+    raw.to_vec()
+}
+
+/// A validated `prior` list with `id` appended — oldest first, the oldest
+/// evicted once [`PRIOR_MAX`] is exceeded. `None` when `id` is not a usable
+/// conversation name: an id that could never have opened a conversation is
+/// never recorded as a predecessor.
+#[must_use]
+pub(crate) fn append_prior(prior: &[&str], id: &str) -> Option<String> {
+    if !crate::session_launch::capture::is_lowercase_uuid(id) {
+        return None;
+    }
+    let mut ids: Vec<&str> = prior.to_vec();
+    ids.push(id);
+    let excess = ids.len().saturating_sub(PRIOR_MAX);
+    ids.drain(..excess);
+    Some(ids.join(","))
+}
+
 /// What raw session metadata says about the privileged orchestrator role.
 ///
 /// This is deliberately byte-exact. `meta_agent=true\r` is not the authority
@@ -1683,6 +1719,34 @@ mod tests {
                 .iter()
                 .any(crate::roster::roster_doubting)
         );
+    }
+
+    #[test]
+    fn a_prior_append_is_grammar_checked_capped_and_oldest_first() {
+        let four = [
+            "11111111-1111-4111-8111-111111111111",
+            "22222222-2222-4222-8222-222222222222",
+            "33333333-3333-4333-8333-333333333333",
+            "44444444-4444-4444-8444-444444444444",
+        ];
+        // The 5th append evicts the OLDEST; order stays oldest first.
+        assert_eq!(
+            super::append_prior(&four, "55555555-5555-4555-8555-555555555555").as_deref(),
+            Some(
+                "22222222-2222-4222-8222-222222222222,33333333-3333-4333-8333-333333333333,\
+                 44444444-4444-4444-8444-444444444444,55555555-5555-4555-8555-555555555555"
+            )
+        );
+        // An unusable id is never recorded as a predecessor.
+        for id in ["pending", "", "ses_abc", "ABC", "AAAA1111-1111-4111-8111-111111111111"] {
+            assert_eq!(super::append_prior(&four, id), None, "{id:?}");
+        }
+        // A malformed LIST reads as empty: over cap, an empty element, a
+        // non-UUID element.
+        assert!(super::valid_priors(&["a", "b", "c", "d", "e"]).is_empty());
+        assert!(super::valid_priors(&[""]).is_empty());
+        assert!(super::valid_priors(&[four[0], "not-a-uuid"]).is_empty());
+        assert_eq!(super::valid_priors(&four), four);
     }
 
     #[test]

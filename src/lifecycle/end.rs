@@ -1515,11 +1515,23 @@ fn purge_conversation_files(
     let text = String::from_utf8_lossy(bytes);
     let parsed = meta::Meta::parse(&text);
     let home = root.parent().map(Path::to_path_buf);
+    // Every conversation this session can NAME: each seat's current id and the
+    // predecessors it abandoned — same proof, same body, same promise.
+    let mut conversations: Vec<(&meta::RosterEntry, &str)> = Vec::new();
     for entry in parsed.roster() {
         let recorded = entry.harness_session.as_deref().unwrap_or_default();
-        if recorded.is_empty() || recorded == "pending" {
-            continue;
+        if !recorded.is_empty() && recorded != "pending" {
+            conversations.push((entry, recorded));
         }
+        conversations.extend(
+            parsed
+                .harness_session_prior(&entry.slot)
+                .into_iter()
+                .filter(|prior| !prior.is_empty() && *prior != "pending")
+                .map(|prior| (entry, prior)),
+        );
+    }
+    for (entry, recorded) in conversations {
         // A NAME, NEVER A PATH. `harness_session.<slot>` is metadata — a
         // hand-editable file, and `set-harness-session` screens only for control
         // bytes — and every arm below interpolates it into a filename that is
@@ -1530,7 +1542,8 @@ fn purge_conversation_files(
         // to be a UUID first, with the grammar the archive already uses, and an
         // id that is not one names NOTHING — reported as a loss, because a
         // conversation ae cannot safely name is a conversation the purge did not
-        // remove, and the operator asked for it to be gone.
+        // remove, and the operator asked for it to be gone. A predecessor id is
+        // the same hand-editable class and crosses the same proof.
         let uuid = crate::archive::canonical_uuid(recorded);
         if uuid.is_empty() {
             writeln!(

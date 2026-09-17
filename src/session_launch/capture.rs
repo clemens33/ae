@@ -390,8 +390,27 @@ fn commit_inner(dir: &Path, slot: &str, captured: &Captured, may_replace: bool) 
     if current_launch != captured.launch_id {
         return false;
     }
+    // Writer A: an authoritative capture may REPLACE a live id. The id it
+    // replaces is not lost — it becomes the seat's newest predecessor, and both
+    // rows land in ONE publication. Nothing is appended when the old id is
+    // `pending`/empty (no conversation to keep), when it is not a lowercase
+    // UUID (an id that could never have opened a conversation is not one), or
+    // when it IS the captured id (an exact codex resume re-registers the same
+    // conversation).
+    let old = entry.harness_session.as_deref().unwrap_or_default();
+    let mut next = text;
+    if old != captured.id
+        && let Some(list) =
+            crate::meta::append_prior(&crate::meta::valid_priors(&parsed.harness_session_prior(slot)), old)
+    {
+        next = crate::meta::rewritten(
+            &next,
+            &format!("{}{}", crate::meta::HARNESS_SESSION_PRIOR_PREFIX, slot),
+            Some(&list),
+        );
+    }
     let next = crate::meta::rewritten(
-        &text,
+        &next,
         &format!("harness_session.{slot}"),
         Some(&captured.id),
     );
