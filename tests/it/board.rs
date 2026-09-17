@@ -293,6 +293,122 @@ fn a_subagents_transcript_never_yields_a_row() {
 }
 
 #[test]
+fn ae_injected_turns_are_hidden_and_counted_per_seat() {
+    let root = rig("hidden");
+    let store = root.join("claude");
+    // The live store writes a leading space before the marker: that shape
+    // slips past the reader's own line-1 check, so the board must hide it.
+    plant_transcript(
+        &store,
+        "work",
+        CLAUDE_ID,
+        &[
+            user("2026-09-16T09:00:00Z", "human one"),
+            user(
+                "2026-09-16T09:01:00Z",
+                &format!(" {}", ae::provenance::peer("worker")),
+            ),
+            user("2026-09-16T09:02:00Z", "human two"),
+            user(
+                "2026-09-16T09:03:00Z",
+                &format!(" {}", ae::provenance::ctx()),
+            ),
+        ],
+    );
+    plant_transcript(
+        &store,
+        "work",
+        PRIOR_NEW_ID,
+        &[user(
+            "2026-09-15T09:00:00Z",
+            &format!(" {}", ae::provenance::brief("lead")),
+        )],
+    );
+    plant_session(
+        &root,
+        "one",
+        &format!(
+            "{}harness_session_prior.main={PRIOR_NEW_ID}\n",
+            claude_roster("main", "lead", CLAUDE_ID, &store)
+        ),
+    );
+    let observation = observe(&root, &["one"], None);
+    let bodies: Vec<&str> = observation
+        .rows
+        .iter()
+        .map(|row| row.body.as_str())
+        .collect();
+    assert_eq!(bodies, ["human one", "human two"]);
+    assert_eq!(
+        (observation.hidden.len(), observation.hidden[0].count),
+        (1, 3),
+        "the predecessor's hidden turn counts under the same actor"
+    );
+    let text = board::render(&observation, false, None);
+    assert_eq!(
+        text.lines().nth(1),
+        Some("hidden: one:lead — 3 ae-injected turns"),
+        "{text}"
+    );
+    let json = board::render(&observation, true, None);
+    assert!(
+        json.contains("{\"kind\":\"hidden\",\"actor\":\"one:lead\",\"count\":3}\n"),
+        "{json}"
+    );
+    // `--since` (2026-09-16T00:00:00Z) applies before counting.
+    let after = observe(&root, &["one"], Some(1_789_516_800_000_000));
+    assert_eq!((after.hidden.len(), after.hidden[0].count), (1, 2));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn the_codex_passive_launch_turn_is_hidden_not_rendered() {
+    let root = rig("hidden-codex");
+    let store = root.join("codex");
+    let session = root.join("sessions").join("ship");
+    let prompt = ae::launch::initial_prompt_for(ae::tool::ToolKind::Codex, &session, "main");
+    let body = prompt.split_once('\n').expect("marker plus body").1;
+    plant_rollout(
+        &store,
+        &[
+            codex_user("2026-09-16T09:00:00Z", body),
+            codex_user("2026-09-16T09:01:00Z", "codex human words"),
+        ],
+    );
+    plant_session(
+        &root,
+        "ship",
+        &codex_roster("main", "lead", CODEX_ID, &store),
+    );
+    let observation = observe(&root, &["ship"], None);
+    assert_eq!(
+        observation.hidden,
+        [board::Hidden {
+            actor: "ship:lead".to_owned(),
+            count: 1,
+        }]
+    );
+    assert_eq!(observation.rows.len(), 1);
+    assert_eq!(observation.rows[0].body, "codex human words");
+    let text = board::render(&observation, false, None);
+    assert!(
+        text.contains("hidden: ship:lead — 1 ae-injected turns"),
+        "{text}"
+    );
+    assert!(!text.contains("_register-sid"), "gone: {text}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn the_board_respells_no_provenance_marker() {
+    let source = include_str!("../../src/board.rs");
+    assert!(
+        !source.contains("⟦ae:"),
+        "the marker spellings live in src/provenance.rs alone"
+    );
+}
+
+#[test]
 fn two_sessions_interleave_by_ts() {
     let root = rig("interleave");
     let store = root.join("claude");
