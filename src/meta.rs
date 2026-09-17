@@ -1360,15 +1360,9 @@ pub(crate) fn record_config_home(
 
 /// Record the conversation a resume FALLBACK just abandoned: the predecessor
 /// list gains `abandoned` (when usable) and `harness_session.<slot>` becomes
-/// `pending` — ONE replacement under the meta lock, so no reader sees the
-/// cleared row without the predecessor that explains it. Cleared even when
-/// `abandoned` is unusable, and idempotent: a row already `pending` writes
-/// nothing.
-///
-/// # Errors
-///
-/// [`RewriteError::NotWritten`] when the lock, the read or the write fails;
-/// [`RewriteError::Unknown`] on an unsynced directory after the rename.
+/// `pending`, in one locked replacement — no reader sees the cleared row
+/// without the predecessor that explains it. Cleared even when `abandoned` is
+/// unusable, and idempotent: a row already `pending` writes nothing.
 pub(crate) fn record_abandoned_session(
     dir: &Path,
     slot: &str,
@@ -1396,10 +1390,8 @@ pub(crate) fn record_abandoned_session(
 
 /// The ONE locked read-modify-write the row writers share: take `meta.lock`,
 /// read the document, hand it to `transform`, and publish what it returns.
-/// `None` means the document is already what it should be, so nothing is
-/// written; an ABSENT meta is handed over as an empty document and, because
-/// only a caller that WOULD write can tell the difference, the refusal keeps
-/// the read's own `NotFound`.
+/// `None` means nothing to write; an ABSENT meta is handed over as an empty
+/// document and a write refused with the read's own `NotFound`.
 fn rewrite_under_lock(
     dir: &Path,
     transform: impl FnOnce(&str) -> Option<String>,
