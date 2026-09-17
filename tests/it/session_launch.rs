@@ -1594,6 +1594,40 @@ fn a_resume_carries_the_predecessor_row_through_the_rebuilt_meta() {
 }
 
 #[test]
+fn a_resume_never_mints_a_fresh_id_for_a_flag_tool() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::new("no-mint", &["claude"], None);
+    let (code, stdout, stderr) = rig.launch(&["--local", "lnnomint"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        !rig.launch_argv().is_empty(),
+        "the pasted command started the agent"
+    );
+    stop(&rig, "lnnomint");
+    // The seat's conversation is gone (a fallback cleared it), so the recorded
+    // id is `pending`. A resume must carry that honest unknown rather than mint
+    // a UUID naming a conversation that does not exist.
+    ae::meta::rewrite(&rig.dir("lnnomint"), "harness_session.main", Some("pending"))
+        .expect("the fixture makes the seat pending");
+
+    let (code, stdout, stderr) = rig.launch(&["--local", "lnnomint"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let resumed = rig.meta("lnnomint");
+    assert!(
+        resumed.contains("harness_session.main=pending\n"),
+        "a resume must not mint for a flag tool: {resumed}"
+    );
+    // And the pane takes the tool's own fallback: there is no id to resume by.
+    let plan = rig.plan("lnnomint", "main");
+    assert!(
+        plan.contains(r#""--continue""#) && !plan.contains("--resume"),
+        "the fallback, with no minted id: {plan}"
+    );
+}
+
+#[test]
 fn a_legacy_resume_promotes_the_main_marker_to_created() {
     if skip() {
         return;

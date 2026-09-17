@@ -54,6 +54,9 @@ pub struct Plan {
     config_home_notice: Option<String>,
     /// What a resumed seat says about a recorded manual model.
     model_notice: Option<String>,
+    /// The conversation a resume FALLBACK abandoned — the id the seat is about
+    /// to leave behind. Recorded before the exec; never part of `render()`.
+    abandoned_session: Option<String>,
 }
 
 impl Plan {
@@ -283,6 +286,21 @@ pub fn run(
         writeln!(err, "{RESUMING}")?;
         err.flush()?;
     }
+    // A resume FALLBACK has just passed on the recorded conversation: the id
+    // becomes a predecessor and the seat's current id is cleared to `pending`,
+    // in one replacement, before the tool opens a different conversation. A
+    // failed recording is REPORTED and the launch proceeds — the row is
+    // bookkeeping, the conversation the pane is about to become is not.
+    if let Some(abandoned) = plan.abandoned_session.as_deref()
+        && let Err(why) = crate::meta::record_abandoned_session(dir, slot, abandoned)
+    {
+        writeln!(
+            err,
+            "ae: could not record the abandoned conversation {abandoned} for seat {slot} ({})",
+            why.cause()
+        )?;
+        err.flush()?;
+    }
     let why = exec(&plan);
     // Reached only because the exec did NOT happen, so this seat has not been
     // launched after all: take the marker back rather than leave a seat that
@@ -396,7 +414,8 @@ fn build_with_snapshot(
                 identity.current.shown()
             )
         });
-    let composed = compose(dir, slot, &seat, &ctx, mode, &identity.effective);
+    let (composed, abandoned_session) =
+        compose(dir, slot, &seat, &ctx, mode, &identity.effective);
     let words = crate::words::split_words(&composed, &env_lookup)?;
     let (mut prefix, mut argv) = peel_env(words)?;
     if let Some((mut inner, binary_at)) = nested_env_prefix(&argv) {
@@ -416,6 +435,7 @@ fn build_with_snapshot(
         config_home_base_row: identity.new_base_row,
         config_home_notice,
         model_notice,
+        abandoned_session,
     })
 }
 
@@ -651,7 +671,10 @@ fn prove_implicit_store(
     ))
 }
 
-/// The composed shell command line, in builder order.
+/// The composed shell command line, in builder order — and the conversation
+/// the resume FALLBACK abandons, when it takes one. `Some` only when a
+/// recorded, probeable id was passed over: the fallback starts a different
+/// conversation, so the id the meta still names is no longer reachable.
 fn compose(
     dir: &Path,
     slot: &str,
@@ -659,7 +682,7 @@ fn compose(
     ctx: &str,
     mode: Mode,
     config_home: &crate::launch_cmd::Resolved,
-) -> String {
+) -> (String, Option<String>) {
     if mode == Mode::Resume {
         let (resume_form, fallback_form) =
             resume_forms(seat.command.as_str(), seat.tool, &seat.harness_session);
@@ -671,15 +694,17 @@ fn compose(
         } else {
             form
         };
+        let abandoned = (!exact && launch::id_probeable(&seat.harness_session))
+            .then(|| seat.harness_session.clone());
         // A resume carries no inline first message: codex's is delivered once
         // its UI returns, and no other tool has one.
-        return launch::build_launch_command(&cmd, "");
+        return (launch::build_launch_command(&cmd, ""), abandoned);
     }
     let pre = launch::inject_session_id(seat.command.as_str(), &seat.harness_session);
     let injected = launch::inject_ae_context(&pre, dir, slot, ctx, &seat.launch_id);
     let prompt =
         read_prompt(dir, slot).unwrap_or_else(|| launch::initial_prompt_for(seat.tool, dir, slot));
-    launch::build_launch_command(&injected.cmd, &prompt)
+    (launch::build_launch_command(&injected.cmd, &prompt), None)
 }
 
 /// Whether an EXACT resume may keep the inline context turn.
@@ -1353,6 +1378,7 @@ mod tests {
             config_home_base_row: None,
             config_home_notice: None,
             model_notice: None,
+            abandoned_session: None,
         };
         let line = plan.render();
         assert!(!line.contains('\n'), "{line}");
@@ -1499,6 +1525,7 @@ mod tests {
             config_home_base_row: None,
             config_home_notice: None,
             model_notice: None,
+            abandoned_session: None,
         };
         assert!(
             plan.render().contains(r#""env_clear":true"#),

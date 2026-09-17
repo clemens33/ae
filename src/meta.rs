@@ -1383,6 +1383,57 @@ pub(crate) fn record_config_home(
     rewrite_rows(dir, &[(&home_key, Some(value)), (&base_key, base)])
 }
 
+/// Record the conversation a resume FALLBACK just abandoned: the seat's
+/// predecessor list gains `abandoned` (when it is a usable conversation name)
+/// and its current `harness_session.<slot>` row becomes `pending` — ONE
+/// replacement under the meta lock, so no reader can see the cleared row
+/// without the predecessor that explains it.
+///
+/// The current row is cleared even when `abandoned` is not usable, because the
+/// fallback has just proven the recorded id does not name a conversation this
+/// seat can reach; `pending` is the honest unknown every consumer already
+/// reads. Idempotent: a seat whose row is already `pending` (a re-run with
+/// nothing new to abandon) writes nothing at all.
+///
+/// # Errors
+///
+/// [`RewriteError::NotWritten`] when the lock, the read or the write fails;
+/// [`RewriteError::Unknown`] when the replacement became visible but the
+/// directory sync failed.
+pub(crate) fn record_abandoned_session(
+    dir: &Path,
+    slot: &str,
+    abandoned: &str,
+) -> Result<(), RewriteError> {
+    let path = crate::store::open(dir).meta_path();
+    let _held = crate::store::lock(
+        &crate::store::open(dir).meta_lock(),
+        crate::store::LOCK_WAIT,
+    )
+    .map_err(RewriteError::NotWritten)?;
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: the meta read, for its locked rewrite — see clippy.toml"
+    )]
+    let current = fs::read_to_string(&path).map_err(RewriteError::NotWritten)?;
+    let parsed = Meta::parse(&current);
+    let prior_key = format!("{HARNESS_SESSION_PRIOR_PREFIX}{slot}");
+    let current_key = format!("{HARNESS_SESSION_PREFIX}{slot}");
+    let prior = append_prior(
+        &valid_priors(&parsed.harness_session_prior(slot)),
+        abandoned,
+    );
+    let mut next = current.clone();
+    if let Some(list) = prior {
+        next = rewritten(&next, &prior_key, Some(&list));
+    }
+    next = rewritten(&next, &current_key, Some(crate::launch::PENDING));
+    if next == current {
+        return Ok(());
+    }
+    publish_bytes(dir, &path, next.as_bytes())
+}
+
 fn rewrite_rows(dir: &Path, rows: &[(&str, Option<&str>)]) -> Result<(), RewriteError> {
     let path = crate::store::open(dir).meta_path();
     let _held = crate::store::lock(

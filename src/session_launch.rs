@@ -3041,13 +3041,17 @@ fn build(
             .then(|| meta_value(&dir, &format!("harness_session.{}", seat.slot)))
             .flatten()
             .filter(|id| !id.is_empty() && id != PENDING);
-        let session_id = stored.unwrap_or_else(|| {
-            if launch::takes_launch_session_id(seat.tool) {
-                launch::generate_uuid()
-            } else {
-                PENDING.to_owned()
-            }
-        });
+        // A RESUME never MINTS a fresh id for a flag tool: a seat whose row is
+        // absent or `pending` has no conversation to name, and a minted UUID
+        // would name one that does not exist — the resume takes its tool's own
+        // fallback instead. A CREATE still mints, because there the id IS the
+        // conversation the tool is about to open.
+        let session_id = match stored {
+            Some(id) => id,
+            None if shape.resuming => PENDING.to_owned(),
+            None if launch::takes_launch_session_id(seat.tool) => launch::generate_uuid(),
+            None => PENDING.to_owned(),
+        };
         let launch_id = launch_token(
             seat.tool,
             shape
