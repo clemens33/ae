@@ -1736,12 +1736,7 @@ mod tests {
              harness_session_prior.main=11111111-1111-4111-8111-111111111111,22222222-2222-4222-8222-222222222222\n",
         );
         assert!(meta.anomalies().is_empty(), "{:?}", meta.anomalies());
-        assert!(
-            !meta
-                .anomalies()
-                .iter()
-                .any(crate::roster::roster_doubting)
-        );
+        assert!(!meta.anomalies().iter().any(crate::roster::roster_doubting));
         assert_eq!(
             meta.harness_session_prior("main"),
             [
@@ -1764,12 +1759,7 @@ mod tests {
              harness_session_prior.main=22222222-2222-4222-8222-222222222222\n",
         );
         assert!(meta.harness_session_prior("main").is_empty());
-        assert!(
-            !meta
-                .anomalies()
-                .iter()
-                .any(crate::roster::roster_doubting)
-        );
+        assert!(!meta.anomalies().iter().any(crate::roster::roster_doubting));
     }
 
     #[test]
@@ -1789,7 +1779,13 @@ mod tests {
             )
         );
         // An unusable id is never recorded as a predecessor.
-        for id in ["pending", "", "ses_abc", "ABC", "AAAA1111-1111-4111-8111-111111111111"] {
+        for id in [
+            "pending",
+            "",
+            "ses_abc",
+            "ABC",
+            "AAAA1111-1111-4111-8111-111111111111",
+        ] {
             assert_eq!(super::append_prior(&four, id), None, "{id:?}");
         }
         // A malformed LIST reads as empty: over cap, an empty element, a

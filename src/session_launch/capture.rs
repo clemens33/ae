@@ -400,8 +400,10 @@ fn commit_inner(dir: &Path, slot: &str, captured: &Captured, may_replace: bool) 
     let old = entry.harness_session.as_deref().unwrap_or_default();
     let mut next = text;
     if old != captured.id
-        && let Some(list) =
-            crate::meta::append_prior(&crate::meta::valid_priors(&parsed.harness_session_prior(slot)), old)
+        && let Some(list) = crate::meta::append_prior(
+            &crate::meta::valid_priors(&parsed.harness_session_prior(slot)),
+            old,
+        )
     {
         next = crate::meta::rewritten(
             &next,

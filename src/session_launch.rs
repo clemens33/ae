@@ -3840,7 +3840,11 @@ fn meta_document(
         for key in [
             format!("{}{}", crate::meta::OBSERVED_MODEL_PREFIX, agent.slot),
             format!("{}{}", crate::meta::OBSERVED_MODEL_PIN_PREFIX, agent.slot),
-            format!("{}{}", crate::meta::HARNESS_SESSION_PRIOR_PREFIX, agent.slot),
+            format!(
+                "{}{}",
+                crate::meta::HARNESS_SESSION_PRIOR_PREFIX,
+                agent.slot
+            ),
         ] {
             if let Some(value) = sole_preserved(&key) {
                 row(&key, &value);

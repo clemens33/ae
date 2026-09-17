@@ -414,8 +414,7 @@ fn build_with_snapshot(
                 identity.current.shown()
             )
         });
-    let (composed, abandoned_session) =
-        compose(dir, slot, &seat, &ctx, mode, &identity.effective);
+    let (composed, abandoned_session) = compose(dir, slot, &seat, &ctx, mode, &identity.effective);
     let words = crate::words::split_words(&composed, &env_lookup)?;
     let (mut prefix, mut argv) = peel_env(words)?;
     if let Some((mut inner, binary_at)) = nested_env_prefix(&argv) {

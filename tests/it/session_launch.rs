@@ -1609,8 +1609,12 @@ fn a_resume_never_mints_a_fresh_id_for_a_flag_tool() {
     // The seat's conversation is gone (a fallback cleared it), so the recorded
     // id is `pending`. A resume must carry that honest unknown rather than mint
     // a UUID naming a conversation that does not exist.
-    ae::meta::rewrite(&rig.dir("lnnomint"), "harness_session.main", Some("pending"))
-        .expect("the fixture makes the seat pending");
+    ae::meta::rewrite(
+        &rig.dir("lnnomint"),
+        "harness_session.main",
+        Some("pending"),
+    )
+    .expect("the fixture makes the seat pending");
 
     let (code, stdout, stderr) = rig.launch(&["--local", "lnnomint"]);
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");

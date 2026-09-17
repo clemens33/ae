@@ -862,7 +862,9 @@ fn a_fallback_re_run_with_a_pending_id_writes_nothing() {
     let again = std::fs::read_to_string(rig.dir.join("meta")).expect("the meta");
     assert_eq!(again, settled, "a re-run with a pending id is a no-op");
     assert_eq!(
-        again.matches(&format!("harness_session_prior.main={gone}")).count(),
+        again
+            .matches(&format!("harness_session_prior.main={gone}"))
+            .count(),
         1,
         "the predecessor is recorded exactly once: {again}"
     );
