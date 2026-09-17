@@ -1868,7 +1868,7 @@ mod tests {
     }
 
     /// A fresh `waiting-agent` carries its own seventh mark in the picker's
-    /// agent rows — `⧗` with icons, `~` without — and the collapsed summary
+    /// agent rows — `◔` with icons, `~` without — and the collapsed summary
     /// counts only working-mark seats: waiting is quiet, not working.
     #[test]
     fn waiting_agent_agent_rows_carry_the_seventh_mark_and_leave_the_working_count() {
@@ -1876,7 +1876,7 @@ mod tests {
         hub.agents =
             "v1;2000;60;lead:fable5:working:%10;colead:gpt56sol:waiting-agent:%11".to_owned();
         let panes = [pane("$7", "%10"), pane("$7", "%11")];
-        for (icons, glyph, working) in [(true, "⧗", "●"), (false, "~", "*")] {
+        for (icons, glyph, working) in [(true, "◔", "●"), (false, "~", "*")] {
             let drawn = super::menu_for_client_session_in(
                 &[hub.clone()],
                 &[],

@@ -252,7 +252,7 @@ The marks are the **watchdog's verdict**, never a claim about what an agent is "
 | `✖` | `x` | the process behind the pane is gone |
 | `⚠` | `!` | waiting on you, blocked, throttled, or an unanswered request |
 | `●` | `*` | working according to the latest liveness verdict |
-| `⧗` | `~` | waiting on another agent — quiet, no human needed |
+| `◔` | `~` | waiting on another agent — quiet, no human needed |
 | `✓` | `+` | declared done or paused |
 | `◌` | `?` | stale, or a fact ae could not establish |
 | `·` | `-` | positively idle at an empty modeled input, no agent, or no verdict yet |

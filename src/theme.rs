@@ -248,7 +248,7 @@ impl Mark {
             (Self::NeedsYou, false) => "!",
             (Self::Working, true) => "●",
             (Self::Working, false) => "*",
-            (Self::WaitingAgent, true) => "⧗",
+            (Self::WaitingAgent, true) => "◔",
             (Self::WaitingAgent, false) => "~",
             (Self::Done, true) => "✓",
             (Self::Done, false) => "+",
@@ -2568,9 +2568,9 @@ mod tests {
     /// two glyphs.
     #[test]
     fn waiting_agent_has_its_own_glyph_workings_rank_and_accent() {
-        assert_eq!(Mark::WaitingAgent.glyph(true), "⧗");
+        assert_eq!(Mark::WaitingAgent.glyph(true), "◔");
         assert_eq!(Mark::WaitingAgent.glyph(false), "~");
-        assert_eq!(crate::orchestrator::terminal_cells("⧗"), 1);
+        assert_eq!(crate::orchestrator::terminal_cells("◔"), 1);
         assert_eq!(Mark::WaitingAgent.rank(), Mark::Working.rank());
         assert_eq!(Mark::from_rank("2"), Mark::Working);
         assert_eq!(Mark::from_rank_value(2), Mark::Working);

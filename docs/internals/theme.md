@@ -111,10 +111,12 @@ different characters.
 | dead | `✖` | `x` | the process behind the pane is gone |
 | needs-you | `⚠` | `!` | waiting-user, blocked, throttled, unanswered |
 | working | `●` | `*` | active within the watchdog's liveness window |
-| waiting-agent | `⧗` | `~` | waiting on ANOTHER agent — quiet, no human needed; escalates to needs-you past its ceiling |
+| waiting-agent | `◔` | `~` | waiting on ANOTHER agent — quiet, no human needed; escalates to needs-you past its ceiling |
 | done | `✓` | `+` | declared complete or paused |
 | stale / unknown | `◌` | `?` | silent past the window, or a fact ae could not establish |
 | idle | `·` | `-` | no agent, or no verdict yet |
+
+The waiting-agent glyph comes from Geometric Shapes, the block the other marks already draw from, so terminals render it from the same font instead of a mismatched fallback.
 
 Dead keeps its own mark because "this will never move again" is not the news
 that "this is waiting for you" is, and a gone process must never be drawn like a
@@ -194,7 +196,7 @@ clicked; the current session uses the palette's selection ground, ink and
 weight, never extra leading or trailing blanks, so selection never changes row
 width. One published rank is shared: waiting-agent ties with working at 2, so
 another session's strip shows a waiting-agent session as working while its own
-border, list line and picker rows show `⧗`. The orchestrator button is the ONE place the seat
+border, list line and picker rows show `◔`. The orchestrator button is the ONE place the seat
 is drawn — exactly three cells (one blank, the stable `◆` glyph, one blank;
 `o` with icons off) inside a tmux `range=session` target for the
 canonical `orchestrator` session, with the verdict in the foreground colour.

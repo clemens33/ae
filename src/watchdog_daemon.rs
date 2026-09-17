@@ -1826,7 +1826,7 @@ impl MotionState {
                 // "working" here repainted a just-published `● sweeping` as
                 // `● working` within one tick. A fresh `waiting-agent` is not
                 // repainted at all — its mark is static, so the published
-                // `⧗ waiting-agent` stands until the next verdict cycle.
+                // `◔ waiting-agent` stands until the next verdict cycle.
                 &theme::pane_state_frame(&frame, entry.verdict.reason()),
             ));
             if !windows.contains(&entry.window) {
@@ -5795,7 +5795,7 @@ mod tests {
     /// published `● sweeping` as `● working` a hundred milliseconds later, and
     /// made two panes with different observed values render identically. A
     /// fresh `Quiet(WaitingAgent)` is NOT repainted: its seventh mark is
-    /// static, so the published `⧗ waiting-agent` stands.
+    /// static, so the published `◔ waiting-agent` stands.
     #[test]
     fn a_ticked_pane_keeps_the_word_its_own_verdict_declares() {
         let mut state = MotionState {
@@ -7760,7 +7760,7 @@ mod tests {
         assert_eq!(Mark::Dead.glyph(false), "x");
         assert_eq!(Mark::NeedsYou.glyph(true), "⚠");
         assert_eq!(Mark::Working.glyph(true), "●");
-        assert_eq!(Mark::WaitingAgent.glyph(true), "⧗");
+        assert_eq!(Mark::WaitingAgent.glyph(true), "◔");
         assert_eq!(Mark::Done.glyph(true), "✓");
         assert_eq!(Mark::Stale.glyph(true), "◌");
         assert_eq!(Mark::Idle.glyph(true), "·");
