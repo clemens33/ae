@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.106] - 2026-09-17
+- Open Activity/Memos dialogs from the session root
+- Pin both dialogs end to end
+- Document the session context menu
+- Prove tick exclusion at the newest position
+- Fix dialog e2e argv word order
+- Satisfy the gate lints at net-negative lines
+
 ## [v2026.9.105] - 2026-09-17
 - Read the picker's pre-draw state in one batched tmux invocation
 - Pin the picker's fixture fleet as an exact display-menu argv golden
