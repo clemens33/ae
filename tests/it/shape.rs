@@ -248,6 +248,32 @@ fn an_installed_ae_ignores_the_home_and_server_doors_and_says_which() {
     );
 }
 
+#[test]
+fn installed_compact_tripwire_prints_alone_despite_inherited_doors() {
+    // Routed before the notice: inherited checkout doors cannot join the
+    // tripwire's stderr. The same env on `doctor` names every variable (the
+    // control above), so a vacuous fixture would fail there, not here.
+    let rig = Install::plant("compact-notice");
+    let doors = &[
+        ("AE_HOME", "/evil/ae"),
+        ("CONFIG_FILE", "/evil/config"),
+        ("AE_TMUX_SERVER_KIND", "name"),
+        ("AE_TMUX_SERVER", "someone-elses"),
+    ];
+    let (_, _, doctor_err) = rig.run(doors, &["doctor"]);
+    assert!(
+        doctor_err.contains("ae: ignoring inherited"),
+        "control: the notice fires here: {doctor_err}"
+    );
+    let (code, stdout, stderr) = rig.run(doors, &["compact", "--force", "sess"]);
+    assert_eq!(code, Some(2), "{stderr}");
+    assert_eq!(
+        stderr,
+        "ae: '--force' belongs to the destructive verb, which is now 'ae reboot'. Run: ae reboot --force [name]\n"
+    );
+    assert!(stdout.is_empty());
+}
+
 /// A2: the installed core never reads the crash seam. An armed value emits
 /// no attestation and parks nothing; an invalid ambient value cannot enable
 /// a hook or change the normal rename — the outputs are identical with and

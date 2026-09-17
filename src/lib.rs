@@ -265,6 +265,18 @@ pub fn run(args: &[String], out: &mut impl Write, err: &mut impl Write) -> Resul
         }
         return run_dispatch(args, out, err);
     }
+    // `compact` in the B release is pure argv text — the tripwire plus the
+    // stub, no state read at all — so it routes before the preamble, whose
+    // missing-root refusal would otherwise mask the exit-2 with an exit-1,
+    // and before the ignored-doors notice, which would otherwise join its
+    // stderr. The `run_entry` arm holds the router's truth for C's stateful
+    // verb.
+    if args.first().map(String::as_str) == Some("compact") {
+        let code = crate::lifecycle::compaction::run_compact_entry(&args[1..], err)?;
+        out.flush()?;
+        err.flush()?;
+        return Ok(code);
+    }
     let shape = shape::current();
     // ONE aggregated notice, and only on the public path: an agent's `send`
     // would otherwise turn one stale export into a line of noise in every pane.
@@ -299,16 +311,6 @@ pub fn run(args: &[String], out: &mut impl Write, err: &mut impl Write) -> Resul
     // sessions once, then hands only live durable roots to the pure reader.
     if args.first().map(String::as_str) == Some("usage") {
         let code = run_public_usage(shape, &args[1..], out, err)?;
-        out.flush()?;
-        err.flush()?;
-        return Ok(code);
-    }
-    // `compact` in the B release is pure argv text — the tripwire plus the
-    // stub, no state read at all — so it routes before the preamble, whose
-    // missing-root refusal would otherwise mask the exit-2 with an exit-1.
-    // The `run_entry` arm holds the router's truth for C's stateful verb.
-    if args.first().map(String::as_str) == Some("compact") {
-        let code = crate::lifecycle::compaction::run_compact_entry(&args[1..], err)?;
         out.flush()?;
         err.flush()?;
         return Ok(code);
