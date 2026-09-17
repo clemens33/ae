@@ -2491,7 +2491,7 @@ pub fn parse_picker_agents(raw: &str, now_epoch: i64) -> Option<Vec<PickerAgent>
 fn picker_agent_mark(state: &str) -> Option<Mark> {
     match state {
         "dead" => Some(Mark::Dead),
-        "waiting-user" | "blocked" | "throttled" | "wedged" => Some(Mark::NeedsYou),
+        "waiting-user" | "blocked" | "throttled" | "limit" | "wedged" => Some(Mark::NeedsYou),
         // A FRESH `waiting-agent` is quiet with its own seventh mark. An
         // ESCALATED one reaches this map as `blocked` above.
         "waiting-agent" => Some(Mark::WaitingAgent),
@@ -4402,12 +4402,44 @@ mod tests {
     }
 
     #[test]
+    fn every_daemon_verdict_word_has_a_picker_mark() {
+        // The daemon publishes `Verdict::reason()` into `@ae_agents`; one
+        // unmapped word refuses the whole roster. Enumerate the verdicts
+        // THEMSELVES so the next word cannot repeat this.
+        use crate::watchdog::{QuietKind, SweepVerdict};
+        use crate::watchdog_daemon::Verdict;
+        for verdict in [
+            Verdict::Dead,
+            Verdict::Quiet(QuietKind::Done),
+            Verdict::Quiet(QuietKind::WaitingUser),
+            Verdict::Quiet(QuietKind::WaitingAgent),
+            Verdict::Quiet(QuietKind::Blocked),
+            Verdict::Throttled,
+            Verdict::Limit,
+            Verdict::Idle,
+            Verdict::Stale,
+            Verdict::Active,
+            Verdict::Meta(SweepVerdict::MetaSweeping),
+            Verdict::Meta(SweepVerdict::MetaWedged),
+            Verdict::Meta(SweepVerdict::MetaStarting),
+        ] {
+            let word = verdict.reason();
+            assert_eq!(
+                super::picker_agent_mark(word),
+                Some(verdict.mark()),
+                "{word:?} must map to the verdict's own mark"
+            );
+        }
+    }
+
+    #[test]
     fn picker_agents_fuzz_seeds_reach_their_named_parser_paths() {
         let valid = include_str!("../fuzz/seeds/picker_agents/valid");
         let empty_pane = include_str!("../fuzz/seeds/picker_agents/empty-pane");
         let duplicate = include_str!("../fuzz/seeds/picker_agents/duplicate");
         let style_byte = include_str!("../fuzz/seeds/picker_agents/style-byte");
-        for seed in [valid, empty_pane, duplicate, style_byte] {
+        let limit = include_str!("../fuzz/seeds/picker_agents/limit");
+        for seed in [valid, empty_pane, duplicate, style_byte, limit] {
             assert!(
                 seed.bytes().all(|byte| (b' '..=b'~').contains(&byte)),
                 "seed must reach its named parser branch"
@@ -4422,6 +4454,11 @@ mod tests {
         assert_eq!(super::parse_picker_agents(duplicate, 2_000_000_000), None);
         assert!(style_byte.contains('#'));
         assert_eq!(super::parse_picker_agents(style_byte, 2_000_000_000), None);
+        assert!(
+            super::parse_picker_agents(limit, 2_000_000_000)
+                .is_some_and(|agents| agents[0].state == "limit" && agents[0].pane == "%1"),
+            "the usage-limit verdict word reaches its parser path"
+        );
     }
 
     #[test]
