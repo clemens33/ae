@@ -69,6 +69,10 @@ pub struct Palette {
     pub needs_you: &'static str,
     /// Movement.
     pub working: &'static str,
+    /// Waiting on ANOTHER agent — quiet, no human needed; escalates to
+    /// NeedsYou past its ceiling. An amber/ochre, distinct from working's
+    /// blue-grey and from done's green.
+    pub waiting_agent: &'static str,
     /// A declared finish.
     pub done: &'static str,
     /// Silence, and what ae could not establish — never green.
@@ -95,6 +99,7 @@ impl Palette {
         title: "#FFC66D",
         needs_you: "#CC7832",
         working: "#6897BB",
+        waiting_agent: "#D9A441",
         done: "#6A8759",
         stale: "#9876AA",
         dead: "#FF6B68",
@@ -119,6 +124,7 @@ impl Palette {
         title: "#e5a03c",
         needs_you: "#e5a03c",
         working: "#57b6c2",
+        waiting_agent: "#CDA434",
         done: "#7fbf6a",
         stale: "#8a94a6",
         dead: "#e0605c",
@@ -141,6 +147,7 @@ impl Palette {
         title: "#e5a03c",
         needs_you: "#e5a03c",
         working: "#57b6c2",
+        waiting_agent: "#CDA434",
         done: "#7fbf6a",
         stale: "#8a94a6",
         dead: "#e0605c",
@@ -171,6 +178,7 @@ impl Palette {
             Mark::Dead => self.dead,
             Mark::NeedsYou => self.needs_you,
             Mark::Working => self.working,
+            Mark::WaitingAgent => self.waiting_agent,
             Mark::Done => self.done,
             Mark::Stale => self.stale,
             Mark::Idle => self.dim,
@@ -184,7 +192,7 @@ impl Palette {
 
 /// What a session, a window, a pane or a picker row is saying.
 ///
-/// SIX states and no more: the colour carries the nuance and the pane border
+/// SEVEN states and no more: the colour carries the nuance and the pane border
 /// carries the word, so the glyph only has to be legible at one character wide.
 /// Every state has its own glyph as well as its own accent — a reader who
 /// cannot separate two of the colours still reads two different characters.
@@ -197,6 +205,12 @@ pub enum Mark {
     NeedsYou,
     /// Moving, or recently moved.
     Working,
+    /// Waiting on ANOTHER agent — quiet, no human needed; escalates to
+    /// NeedsYou past its ceiling. Its own glyph and accent, but the SAME
+    /// published rank as Working: a rank is read by other sessions' older
+    /// cores, so the numbers 0–5 keep their meaning and another session's
+    /// strip still reads this as working.
+    WaitingAgent,
     /// Declared complete or paused.
     Done,
     /// Silent past the window, or a fact ae could not establish. The two share
@@ -208,11 +222,12 @@ pub enum Mark {
 
 impl Mark {
     /// Every mark, most actionable first.
-    pub const BY_URGENCY: [Self; 6] = [
+    pub const BY_URGENCY: [Self; 7] = [
         Self::Dead,
         Self::NeedsYou,
         Self::Stale,
         Self::Working,
+        Self::WaitingAgent,
         Self::Done,
         Self::Idle,
     ];
@@ -233,6 +248,8 @@ impl Mark {
             (Self::NeedsYou, false) => "!",
             (Self::Working, true) => "●",
             (Self::Working, false) => "*",
+            (Self::WaitingAgent, true) => "⧗",
+            (Self::WaitingAgent, false) => "~",
             (Self::Done, true) => "✓",
             (Self::Done, false) => "+",
             (Self::Stale, true) => "◌",
@@ -244,19 +261,27 @@ impl Mark {
 
     /// How urgently this mark wants a human — the fleet strip's sort key, and
     /// the number the watchdog publishes for other sessions to sort by.
+    ///
+    /// `WaitingAgent` TIES with `Working` at 2: the numbers 0–5 are read by
+    /// other sessions' watchdogs and pickers, which may still run an older
+    /// core, so no existing rank renumbers and `from_rank(2)` stays Working.
     #[must_use]
     pub const fn rank(self) -> u8 {
         match self {
             Self::Dead => 5,
             Self::NeedsYou => 4,
             Self::Stale => 3,
-            Self::Working => 2,
+            Self::Working | Self::WaitingAgent => 2,
             Self::Done => 1,
             Self::Idle => 0,
         }
     }
 
     /// The mark a published rank names, or [`Mark::Idle`] for anything else.
+    ///
+    /// Rank 2 names Working even though WaitingAgent publishes it too: an
+    /// explicit table, never an index into [`Mark::BY_URGENCY`], because the
+    /// tie means the table is no longer a bijection.
     #[must_use]
     pub fn from_rank(raw: &str) -> Self {
         let rank = raw.trim().parse::<u8>().unwrap_or(0);
@@ -266,10 +291,13 @@ impl Mark {
     /// The mark a parsed rank names, or [`Mark::Idle`] for anything else.
     #[must_use]
     pub const fn from_rank_value(rank: u8) -> Self {
-        if rank <= 5 {
-            Self::BY_URGENCY[(5 - rank) as usize]
-        } else {
-            Self::Idle
+        match rank {
+            5 => Self::Dead,
+            4 => Self::NeedsYou,
+            3 => Self::Stale,
+            2 => Self::Working,
+            1 => Self::Done,
+            _ => Self::Idle,
         }
     }
 
@@ -280,6 +308,7 @@ impl Mark {
             Self::Dead => "dead",
             Self::NeedsYou => "needs-you",
             Self::Working => "working",
+            Self::WaitingAgent => "waiting-agent",
             Self::Done => "done",
             Self::Stale => "stale",
             Self::Idle => "idle",
@@ -625,7 +654,7 @@ pub const SETTINGS_OPEN_OPTION: &str = "@ae_settings_open";
 /// changes shape: the version leads both stamps, so a session or window carrying
 /// an older one is rewritten by the next watchdog cycle rather than left on the
 /// layout an older core wrote.
-pub const FORMAT_VERSION: &str = "20";
+pub const FORMAT_VERSION: &str = "21";
 
 /// What [`WINDOW_STAMP_OPTION`] is set to: the LOOK the window was dressed in,
 /// formats version first.
@@ -1700,6 +1729,7 @@ mod tests {
         assert_eq!(darcula.title, "#FFC66D");
         assert_eq!(darcula.accent(Mark::NeedsYou), "#CC7832");
         assert_eq!(darcula.accent(Mark::Working), "#6897BB");
+        assert_eq!(darcula.accent(Mark::WaitingAgent), "#D9A441");
         assert_eq!(darcula.accent(Mark::Done), "#6A8759");
         assert_eq!(darcula.accent(Mark::Stale), "#9876AA");
         assert_eq!(darcula.accent(Mark::Idle), darcula.dim);
@@ -1861,6 +1891,7 @@ mod tests {
             Mark::Dead,
             Mark::NeedsYou,
             Mark::Stale,
+            Mark::WaitingAgent,
             Mark::Done,
             Mark::Idle,
         ] {
@@ -2145,7 +2176,7 @@ mod tests {
     }
 
     /// With a stable glyph the foreground colour is the ONLY verdict signal,
-    /// so all six verdicts must differ by colour on every palette — including
+    /// so all seven verdicts must differ by colour on every palette — including
     /// Done versus Idle, which the old calm pin rendered identically dim.
     #[test]
     fn orchestrator_verdicts_differ_by_colour_on_every_palette() {
@@ -2159,6 +2190,7 @@ mod tests {
             Mark::Dead,
             Mark::NeedsYou,
             Mark::Working,
+            Mark::WaitingAgent,
             Mark::Done,
             Mark::Stale,
             Mark::Idle,
@@ -2319,7 +2351,7 @@ mod tests {
     #[test]
     fn terminal_titles_are_part_of_the_drawn_layout() {
         let options = super::layout_options(&Look::DEFAULT);
-        assert_eq!(super::FORMAT_VERSION, "20");
+        assert_eq!(super::FORMAT_VERSION, "21");
         assert_eq!(
             options
                 .iter()
@@ -2499,9 +2531,15 @@ mod tests {
 
     /// A rank published by one session's watchdog is read back as the same mark
     /// by every other session's strip — the whole reason the rank exists.
+    ///
+    /// With ONE tie: WaitingAgent publishes 2 and reads back as Working, so an
+    /// older core — or another session's strip — still sees a working session.
     #[test]
     fn a_published_rank_round_trips_through_the_strip() {
         for mark in Mark::BY_URGENCY {
+            if mark == Mark::WaitingAgent {
+                continue;
+            }
             assert_eq!(Mark::from_rank(&mark.rank().to_string()), mark, "{mark:?}");
             assert_eq!(Mark::from_rank_value(mark.rank()), mark, "{mark:?}");
         }
@@ -2513,8 +2551,50 @@ mod tests {
         assert_eq!(Mark::from_rank_value(99), Mark::Idle);
         assert_eq!(
             Mark::BY_URGENCY.map(Mark::word),
-            ["dead", "needs-you", "stale", "working", "done", "idle"]
+            [
+                "dead",
+                "needs-you",
+                "stale",
+                "working",
+                "waiting-agent",
+                "done",
+                "idle"
+            ]
         );
+    }
+
+    /// The seventh mark: its own glyph pair, Working's rank, and a foreground
+    /// that is never Working's — otherwise the two would be one mark wearing
+    /// two glyphs.
+    #[test]
+    fn waiting_agent_has_its_own_glyph_workings_rank_and_accent() {
+        assert_eq!(Mark::WaitingAgent.glyph(true), "⧗");
+        assert_eq!(Mark::WaitingAgent.glyph(false), "~");
+        assert_eq!(crate::orchestrator::terminal_cells("⧗"), 1);
+        assert_eq!(Mark::WaitingAgent.rank(), Mark::Working.rank());
+        assert_eq!(Mark::from_rank("2"), Mark::Working);
+        assert_eq!(Mark::from_rank_value(2), Mark::Working);
+        assert_eq!(Mark::BY_URGENCY.len(), 7);
+        assert_eq!(
+            Mark::BY_URGENCY,
+            [
+                Mark::Dead,
+                Mark::NeedsYou,
+                Mark::Stale,
+                Mark::Working,
+                Mark::WaitingAgent,
+                Mark::Done,
+                Mark::Idle,
+            ]
+        );
+        for palette in PALETTES {
+            assert_ne!(
+                palette.accent(Mark::WaitingAgent),
+                palette.accent(Mark::Working),
+                "{}",
+                palette.name,
+            );
+        }
     }
 
     /// The window stamp is a VALUE, not a presence: a window dressed by an
