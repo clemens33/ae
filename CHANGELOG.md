@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.93] - 2026-09-17
+- Indent board text rows and clip them with --lines
+- Name OpenCode board seats not read
+
 ## [v2026.9.92] - 2026-09-16
 - Follow the board from identity-bound transcript offsets
 - Document and pin board follow mode
