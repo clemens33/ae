@@ -24,10 +24,24 @@ pub fn classify_dead(current_command: &str, descendant: Descendancy) -> bool {
     command_is_shell(current_command) && matches!(descendant, Descendancy::Absent)
 }
 
-/// The throttle phrases keyed by agent BINARY, at MODULE level rather than
-/// inside [`shows_throttle`]: a `const` declared after that function's empty-buffer
-/// guard is `clippy::items_after_statements`, and this crate gates on `-D
-/// warnings`.
+/// Which class of upstream trouble a captured pane buffer shows.
+///
+/// Two classes, because they ask for two different things from the human: a
+/// TRANSIENT throttle clears upstream on its own, while the vendor's own usage
+/// limit persists until the window resets or the seat re-logs in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Throttle {
+    /// Transient rate limiting or overload — upstream recovers on its own.
+    Throttled,
+    /// The vendor's own usage limit, which persists until a reset or a
+    /// re-login.
+    LimitReached,
+}
+
+/// The TRANSIENT throttle phrases keyed by agent BINARY, at MODULE level rather
+/// than inside [`throttle_class`]: a `const` declared after that function's
+/// empty-buffer guard is `clippy::items_after_statements`, and this crate gates
+/// on `-D warnings`.
 const CLAUDE: &[&str] = &[
     "Server is temporarily limiting requests",
     "API Error: Overloaded",
@@ -42,26 +56,63 @@ const GEMINI: &[&str] = &["RESOURCE_EXHAUSTED", "Quota exceeded"];
 /// The pair that applies to EVERY tool — an unknown binary matches only these.
 const GENERIC: &[&str] = &["429 Too Many Requests", "503 Service Unavailable"];
 
-/// Whether the captured pane buffer shows upstream throttling for the agent
-/// whose binary is `agent_bin`.
+/// The USAGE-LIMIT phrases keyed by agent BINARY, MEASURED from each tool's own
+/// strings (phrases and provenance: `.local/limitstate-evidence.md`). A binary
+/// with no measurement gets an empty list, never a guess.
+const CLAUDE_LIMIT: &[&str] = &[
+    // The vendor's own prefix matcher for the composed limit line
+    // (`_nr=["You've hit your", …]`, Claude Code 2.1.274).
+    "You've hit your",
+    // Rendered banners.
+    "You're out of usage credits",
+    "Your org is out of usage",
+    // The Goal-paused status line and the error classifier.
+    "usage limit reached",
+];
+const CODEX_LIMIT: &[&str] = &[
+    "You've hit your usage limit",
+    "You've reached your usage limit",
+    "Quota exceeded. Check your plan",
+];
+
+/// Which class of upstream trouble `buf` shows for `agent_bin`, if any.
+///
+/// ONE classifier, and [`shows_throttle`] is its union answer: a
+/// `LimitReached` phrase wins over a transient one when both appear, because
+/// the usage limit is the fact that outlives the cycle.
 #[must_use]
-pub fn shows_throttle(buf: &str, agent_bin: &str) -> bool {
+pub fn throttle_class(buf: &str, agent_bin: &str) -> Option<Throttle> {
     if buf.is_empty() {
-        return false;
+        return None;
     }
     // opencode is the union — refactor here, never duplicate, so the branches
     // cannot drift.
-    let tool: &[&[&str]] = match agent_bin {
-        "claude" => &[CLAUDE],
-        "codex" => &[CODEX],
-        "gemini" => &[GEMINI],
-        "opencode" => &[CLAUDE, CODEX, GEMINI],
-        _ => &[],
+    let (transient, limit): (&[&[&str]], &[&[&str]]) = match agent_bin {
+        "claude" => (&[CLAUDE], &[CLAUDE_LIMIT]),
+        "codex" => (&[CODEX], &[CODEX_LIMIT]),
+        "gemini" => (&[GEMINI], &[]),
+        "opencode" => (&[CLAUDE, CODEX, GEMINI], &[CLAUDE_LIMIT, CODEX_LIMIT]),
+        _ => (&[], &[]),
     };
-    tool.iter()
-        .flat_map(|set| set.iter())
-        .chain(GENERIC.iter())
-        .any(|pattern| buf.contains(pattern))
+    let shows = |sets: &[&[&str]]| {
+        sets.iter()
+            .flat_map(|set| set.iter())
+            .any(|pattern| buf.contains(pattern))
+    };
+    if shows(limit) {
+        return Some(Throttle::LimitReached);
+    }
+    if shows(transient) || GENERIC.iter().any(|pattern| buf.contains(pattern)) {
+        return Some(Throttle::Throttled);
+    }
+    None
+}
+
+/// Whether the captured pane buffer shows upstream throttling of EITHER class
+/// for the agent whose binary is `agent_bin`.
+#[must_use]
+pub fn shows_throttle(buf: &str, agent_bin: &str) -> bool {
+    throttle_class(buf, agent_bin).is_some()
 }
 
 /// Whether an agent is STALE — the composite the watchdog's branches 4, 5 and 6
@@ -1054,11 +1105,11 @@ mod tests {
     use super::{
         DEFAULT_IDLE_NUDGE_SECS, OVERVIEW_HOLD_WHILE_WORKING_SECS, OWN_WORK_AGE_CAP, QuietCycle,
         QuietKind, QuietPane, SweepAlert, SweepEffect, SweepKnobs, SweepObservation, SweepState,
-        SweepVerdict, WedgeDetail, classify_dead, command_is_shell, declaration_key, indented,
-        is_echo, is_sweep_target, latest_relevant_event, quiet_cursor_advance, quiet_filter,
-        quiet_hash, quiet_pane_decision, quiet_reason, quiet_stabilize, quiet_stabilize_allowed,
-        raw_nudge, record_sweep, shows_throttle, stale_composite, submit_hdr, sweep_step,
-        waiting_agent_cap_secs, waiting_agent_escalated,
+        SweepVerdict, Throttle, WedgeDetail, classify_dead, command_is_shell, declaration_key,
+        indented, is_echo, is_sweep_target, latest_relevant_event, quiet_cursor_advance,
+        quiet_filter, quiet_hash, quiet_pane_decision, quiet_reason, quiet_stabilize,
+        quiet_stabilize_allowed, raw_nudge, record_sweep, shows_throttle, stale_composite,
+        submit_hdr, sweep_step, throttle_class, waiting_agent_cap_secs, waiting_agent_escalated,
     };
     use crate::events::Event;
     use crate::procs::Descendancy;
@@ -1421,6 +1472,109 @@ mod tests {
             !shows_throttle("RateLimitError", "grok"),
             "unknown bin sees only generics"
         );
+    }
+
+    #[test]
+    fn a_measured_usage_limit_phrase_classifies_as_limit_reached() {
+        // claude: the composed limit line, matched by the vendor's own prefix,
+        // and the rendered `_nr` banners (Claude Code 2.1.274).
+        for phrase in [
+            "You've hit your 5-hour limit \u{b7} resets in 2h",
+            "You're out of usage credits. /model to switch models.",
+            "Your org is out of usage \u{b7} contact your admin",
+            "Goal paused \u{b7} usage limit reached \u{b7} send a message after it resets",
+        ] {
+            assert_eq!(
+                throttle_class(phrase, "claude"),
+                Some(Throttle::LimitReached),
+                "claude: {phrase:?}"
+            );
+        }
+        // codex: the rendered usage-limit lines (codex-cli 0.154.0).
+        for phrase in [
+            "You've hit your usage limit. Upgrade to Pro to continue",
+            "You've reached your usage limit",
+            "Quota exceeded. Check your plan and billing details.",
+        ] {
+            assert_eq!(
+                throttle_class(phrase, "codex"),
+                Some(Throttle::LimitReached),
+                "codex: {phrase:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_usage_limit_phrase_never_classes_for_a_binary_that_did_not_measure_it() {
+        // claude-only phrases miss codex, gemini and an unknown bin…
+        for bin in ["codex", "gemini", "grok"] {
+            for phrase in ["You're out of usage credits", "Your org is out of usage"] {
+                assert_eq!(
+                    throttle_class(phrase, bin),
+                    None,
+                    "{bin} must not claim claude's {phrase:?}"
+                );
+            }
+        }
+        // …and the codex-only phrase misses claude and an unknown bin.
+        for bin in ["claude", "grok"] {
+            assert_eq!(
+                throttle_class("Quota exceeded. Check your plan", bin),
+                None,
+                "{bin} must not claim codex's quota phrase"
+            );
+        }
+        // gemini does match it — but as its OWN transient phrase, which is a
+        // prefix here: a class claim, never a usage-limit one.
+        assert_eq!(
+            throttle_class("Quota exceeded. Check your plan", "gemini"),
+            Some(Throttle::Throttled)
+        );
+    }
+
+    #[test]
+    fn opencode_is_the_union_of_the_usage_limit_catalogs_too() {
+        for phrase in [
+            "You're out of usage credits",     // claude
+            "Quota exceeded. Check your plan", // codex
+        ] {
+            assert_eq!(
+                throttle_class(phrase, "opencode"),
+                Some(Throttle::LimitReached),
+                "opencode union misses {phrase:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_existing_throttle_phrase_never_classifies_as_a_usage_limit() {
+        for (phrase, bin) in [
+            ("Server is temporarily limiting requests", "claude"),
+            ("API Error: Overloaded", "claude"),
+            ("Anthropic API error", "claude"),
+            ("Rate limit exceeded", "codex"),
+            ("RateLimitError", "codex"),
+            ("ratelimit_exceeded", "codex"),
+            ("RESOURCE_EXHAUSTED", "gemini"),
+            ("Quota exceeded", "gemini"),
+            ("HTTP 429 Too Many Requests", "grok"),
+            ("503 Service Unavailable", "somethingelse"),
+        ] {
+            assert_eq!(
+                throttle_class(phrase, bin),
+                Some(Throttle::Throttled),
+                "{bin}: {phrase:?} stays transient"
+            );
+        }
+        // Neither class on nothing: the same guard as `shows_throttle`.
+        for bin in ["claude", "codex", "gemini", "opencode", "grok"] {
+            assert_eq!(throttle_class("", bin), None, "{bin}: empty buffer");
+            assert_eq!(
+                throttle_class("all normal here, no errors", bin),
+                None,
+                "{bin}: ordinary prose"
+            );
+        }
     }
 
     /// The container as APPEND ORDER gives it: oldest first, the way every
