@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.98] - 2026-09-17
+- Join grok agent chunks into one assistant row per turn
+- Hold the follow commit point at an open grok run
+- Read Muse committed replies on the board
+- Cover the missing Antigravity replies on the board
+- Pin 7b replies end to end and cover the board fuzz targets
+- Document the 7b board replies
+- Apply cargo fmt and drop a needless borrow
+- Name the follow first-pass open-run reprint
+
 ## [v2026.9.97] - 2026-09-17
 - Add the seventh mark for a fresh waiting-agent declaration
 - Draw a fresh waiting-agent verdict with the seventh mark
