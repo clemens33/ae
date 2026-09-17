@@ -5,6 +5,14 @@
 //! from the `input_text` parts of the `payload.content` array (`input_image`
 //! parts skip); trimmed, empties dropped. Newline-terminated lines only.
 //!
+//! With `--assistant` the reply twin is read the same way:
+//! `payload.role == "assistant"` joining `output_text` parts, one record one
+//! row. `payload.type == "reasoning"`, `function_call`, `custom_tool_call` and
+//! every `event_msg` twin (`item_completed`/`AgentMessage`, the old
+//! `agent_message`) are never read, exactly as the user side ignores its twin;
+//! an empty body drops silently and an unstamped record counts into the same
+//! `missing_ts` coverage.
+//!
 //! Verified 2026-09-16 over 773 rollouts / 15,159 turns (shapes only): `content`
 //! always a list, timestamp top-level ISO, old CLIs twin turns as
 //! `event_msg`/`user_message` (type gate reads ONLY the `response_item`). The
@@ -40,6 +48,7 @@ pub fn read_stream(
         actor,
         file,
         source,
+        assistant: streamed.assistant,
         rows: Vec::new(),
         coverage: Vec::new(),
         missing_ts: 0,
@@ -71,6 +80,9 @@ struct Sink<'a> {
     actor: &'a str,
     file: &'a str,
     source: ToolKind,
+    /// `--assistant`: the reply path is live. Off, an assistant record is
+    /// classified and dropped exactly as before the flag existed.
+    assistant: bool,
     rows: Vec<Row>,
     coverage: Vec<Coverage>,
     missing_ts: u64,
@@ -100,9 +112,24 @@ impl Sink<'_> {
         let Some(payload) = value.get("payload") else {
             return;
         };
-        if payload.get_str("type") != Some("message") || payload.get_str("role") != Some("user") {
+        if payload.get_str("type") != Some("message") {
             return;
         }
+        match payload.get_str("role") {
+            Some("user") => self.push_human(&value, payload, offset),
+            Some("assistant") if self.assistant => self.push_assistant(&value, payload, offset),
+            _ => {}
+        }
+    }
+
+    /// One `role == "user"` message: the human path, markers and plumbing
+    /// filtered, empties dropped.
+    fn push_human(
+        &mut self,
+        value: &crate::json::Value,
+        payload: &crate::json::Value,
+        offset: u64,
+    ) {
         let Some(crate::json::Value::Arr(parts)) = payload.get("content") else {
             // Unobserved shape: fail silent, never guess.
             return;
@@ -138,6 +165,50 @@ impl Sink<'_> {
             actor: self.actor.to_owned(),
             role: Role::Human,
             body,
+            source: self.source,
+            file: self.file.to_owned(),
+            offset,
+        });
+    }
+
+    /// One `role == "assistant"` message with `--assistant` on: join the
+    /// `output_text` parts in order, one record one row. Reasoning, calls and
+    /// every `event_msg` twin are never read, and the reply path classifies no
+    /// markers — a model may legitimately quote one.
+    fn push_assistant(
+        &mut self,
+        value: &crate::json::Value,
+        payload: &crate::json::Value,
+        offset: u64,
+    ) {
+        let Some(crate::json::Value::Arr(parts)) = payload.get("content") else {
+            // Unobserved shape: fail silent, never guess.
+            return;
+        };
+        let mut joined = String::new();
+        for part in parts {
+            if part.get_str("type") == Some("output_text")
+                && let Some(text) = part.get_str("text")
+            {
+                joined.push_str(text);
+            }
+        }
+        let Some(ts) = value
+            .get_str("timestamp")
+            .and_then(crate::time::Timestamp::parse_micros)
+        else {
+            self.missing_ts += 1;
+            return;
+        };
+        let body = joined.trim();
+        if body.is_empty() {
+            return;
+        }
+        self.rows.push(Row {
+            ts,
+            actor: self.actor.to_owned(),
+            role: Role::Assistant,
+            body: body.to_owned(),
             source: self.source,
             file: self.file.to_owned(),
             offset,
@@ -211,6 +282,38 @@ mod tests {
         let mut bytes = lines.join("\n").into_bytes();
         bytes.push(b'\n');
         read(&bytes, ACTOR, FILE, crate::tool::ToolKind::Codex)
+    }
+
+    fn assistant(content: &str) -> String {
+        format!(
+            r#"{{"timestamp":"{TS}","type":"response_item","payload":{{"type":"message","role":"assistant","content":{content}}}}}"#
+        )
+    }
+
+    fn output(text: &str) -> String {
+        let escaped = text
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('\n', "\\n");
+        format!(r#"{{"type":"output_text","text":"{escaped}"}}"#)
+    }
+
+    /// Read these lines through the flag: the one-shot `read` stays the
+    /// off-path, so the reply tests bind [`super::read_stream`] directly.
+    fn read_lines_with(
+        lines: &[&str],
+        assistant: bool,
+    ) -> (Vec<crate::board::Row>, Vec<crate::board::Coverage>) {
+        let mut bytes = lines.join("\n").into_bytes();
+        bytes.push(b'\n');
+        let mut splitter = super::Splitter::new();
+        splitter.feed(&bytes);
+        super::read_stream(
+            &splitter.finish().with_assistant(assistant),
+            ACTOR,
+            FILE,
+            crate::tool::ToolKind::Codex,
+        )
     }
 
     #[test]
@@ -379,5 +482,74 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(coverage.len(), 1);
         assert_eq!(coverage[0].reason, "2 records without a timestamp");
+    }
+
+    #[test]
+    fn an_assistant_output_text_part_is_one_row_only_with_the_flag() {
+        let human = user(&format!("[{}]", part("human words")));
+        let reply = assistant(&format!("[{}]", output("synthetic reply")));
+        let (rows, coverage) = read_lines_with(&[&human, &reply], false);
+        assert_eq!(
+            (rows, coverage),
+            read_lines_with(&[&human], false),
+            "flag off changes no row, no coverage"
+        );
+        let (rows, coverage) = read_lines_with(&[&human, &reply], true);
+        assert!(coverage.is_empty());
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[1].role, crate::board::Role::Assistant);
+        assert_eq!(rows[1].body, "synthetic reply");
+        assert_eq!(rows[1].ts, 1_789_549_200_500_000);
+        assert_eq!(
+            (
+                rows[1].actor.as_str(),
+                rows[1].file.as_str(),
+                rows[1].offset
+            ),
+            (ACTOR, FILE, human.len() as u64 + 1)
+        );
+    }
+
+    #[test]
+    fn an_assistant_multipart_message_joins_output_text_parts_only() {
+        let line = assistant(&format!(
+            r#"[{},{{"type":"input_text","text":"never"}},{}]"#,
+            output("first "),
+            output("second"),
+        ));
+        let (rows, _) = read_lines_with(&[&line], true);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].body, "first second");
+    }
+
+    #[test]
+    fn records_that_are_not_a_stamped_text_message_never_become_rows() {
+        let silent = [
+            r#"{"timestamp":"2026-09-16T09:00:00.500Z","type":"response_item","payload":{"type":"reasoning","summary":[]}}"#.to_owned(),
+            r#"{"timestamp":"2026-09-16T09:00:00.500Z","type":"response_item","payload":{"type":"function_call","name":"x"}}"#.to_owned(),
+            r#"{"timestamp":"2026-09-16T09:00:00.500Z","type":"response_item","payload":{"type":"custom_tool_call","name":"x"}}"#.to_owned(),
+        ];
+        for line in silent {
+            let (rows, coverage) = read_lines_with(&[&line], true);
+            assert!(rows.is_empty() && coverage.is_empty(), "{line}");
+        }
+        // The current CLI's twin and the old one alike: the response_item is
+        // the only assistant record that may become a row.
+        for twin in [
+            r#"{"timestamp":"2026-09-16T09:00:00.500Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"AgentMessage","text":"same words"}}}"#,
+            r#"{"timestamp":"2026-09-16T09:00:00.500Z","type":"event_msg","payload":{"type":"agent_message","message":"same words"}}"#,
+        ] {
+            let item = assistant(&format!("[{}]", output("same words")));
+            let (rows, _) = read_lines_with(&[twin, &item], true);
+            assert_eq!(rows.len(), 1, "one row, at the response_item: {twin}");
+            assert_eq!(rows[0].offset, (twin.len() + 1) as u64);
+        }
+        // An empty body drops silently; only the unstamped record covers.
+        let empty = assistant(&format!("[{}]", output("   ")));
+        let unstamped = r#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"no ts"}]}}"#;
+        let (rows, coverage) = read_lines_with(&[&empty, unstamped], true);
+        assert!(rows.is_empty());
+        assert_eq!(coverage.len(), 1);
+        assert_eq!(coverage[0].reason, "1 record without a timestamp");
     }
 }
