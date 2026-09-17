@@ -577,10 +577,7 @@ pub enum RootRow {
 /// session's state directory name the SAME incarnation, else the short reason.
 /// The states, the facts and both sub-menus read this ONE verdict, so no
 /// surface can render another incarnation's records while its sibling refuses.
-fn correlation_gap(
-    option: &crate::tmux::OptionReading,
-    meta: &MetaSource,
-) -> Option<String> {
+fn correlation_gap(option: &crate::tmux::OptionReading, meta: &MetaSource) -> Option<String> {
     use crate::tmux::OptionReading;
     let uuid = match option {
         OptionReading::Set(value) => {
@@ -603,7 +600,9 @@ fn correlation_gap(
             "meta: {}",
             crate::event_text::display_cell(reason, STATE_REASON_CELLS)
         )),
-        MetaSource::Parsed { uuid: meta_uuid, .. } => {
+        MetaSource::Parsed {
+            uuid: meta_uuid, ..
+        } => {
             if meta_uuid.is_empty() {
                 Some("meta: no identity".to_owned())
             } else if *meta_uuid != uuid {
@@ -672,10 +671,7 @@ pub fn root_rows(
 /// only for copy/worktree modes (a local session's origin is its own dir, not
 /// a fact worth a row), and `branch` only when the meta records one.
 #[must_use]
-pub fn fact_rows(
-    option: &crate::tmux::OptionReading,
-    meta: &MetaSource,
-) -> Vec<String> {
+pub fn fact_rows(option: &crate::tmux::OptionReading, meta: &MetaSource) -> Vec<String> {
     if correlation_gap(option, meta).is_some() {
         return Vec::new();
     }
@@ -693,10 +689,7 @@ pub fn fact_rows(
         format!("mode: {}", mode_cell(mode)),
         format!("dir: {}", fact_cell(work_dir)),
     ];
-    if matches!(
-        mode.as_str(),
-        "git" | "full" | "copy" | "worktree"
-    ) {
+    if matches!(mode.as_str(), "git" | "full" | "copy" | "worktree") {
         facts.push(format!("source: {}", fact_cell(origin)));
     }
     if !branch.is_empty() {
