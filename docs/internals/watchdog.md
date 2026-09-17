@@ -270,6 +270,8 @@ When a usage-limit phrase is detected:
    `attn:limit` (rank 3, exactly `blocked`'s) on `ae list` and in the digest, and draws the
    existing NeedsYou mark with the word `limit` on the pane border.
 3. Every later matching cycle keeps the verdict, silently — one event per episode.
+   A FAILED pane read is not a release: the latch holds and the verdict stays `limit` until a
+   capture SUCCEEDS and lacks the phrase (the same absence-of-evidence rule the dead latch follows).
 4. When a cycle judges the pane and the phrase is gone (a dead pane never reaches this branch —
    it returns at step 1 of the branch order), the latch releases with one `alert-cleared`, and the
    sweep runs ONE immediate quota pass for the seat's client scope — the same refresh the cadence's

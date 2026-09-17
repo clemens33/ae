@@ -317,13 +317,20 @@ pub fn table_at(sessions: &[&SessionEntry], now: Timestamp) -> String {
             // drift.
             push_padded(&mut out, agent.display_session_id(), ID_WIDTH);
             // Per-agent HEALTH is deliberately NOT a column here.
-            out.push_str(
-                match (session.agent_state_is_exact(), agent.state.as_deref()) {
-                    (true, Some(state)) => state,
-                    (true, None) => "-",
-                    (false, _) => "unknown",
-                },
-            );
+            // The verdict cell. A standing usage limit REPLACES the declared state
+            // here — the pane fact is what needs the human, and the JSON digest
+            // keeps the declaration under its own `state` key.
+            if agent.reason == Some(crate::attention::Reason::Limit) {
+                out.push_str("limit");
+            } else {
+                out.push_str(
+                    match (session.agent_state_is_exact(), agent.state.as_deref()) {
+                        (true, Some(state)) => state,
+                        (true, None) => "-",
+                        (false, _) => "unknown",
+                    },
+                );
+            }
             out.push_str(" · observed:");
             out.push_str(agent.observed.as_str());
             // Observed model drift, or the loud absence of an observer for this
@@ -1122,6 +1129,34 @@ mod tests {
     }
 
     #[test]
+    fn a_standing_usage_limit_replaces_the_agents_state_cell() {
+        let render = |state: Option<&str>, reason: Option<Reason>| {
+            let mut session = SessionEntry::new("solo", Status::Running);
+            let mut entry = agent("lead", Some(true), state);
+            entry.reason = reason;
+            session.agents = vec![entry];
+            table(&[&session])
+        };
+        // The pane verdict replaces a declaration…
+        let limited = render(Some("working"), Some(Reason::Limit));
+        assert!(limited.contains("limit · observed:unknown"), "{limited}");
+        assert!(
+            !limited.contains("working"),
+            "the cell was replaced: {limited}"
+        );
+        // …and stands even with nothing declared.
+        assert!(render(None, Some(Reason::Limit)).contains("limit · observed:"));
+        // Every other reason, and none, leaves the cell exactly as it was.
+        for reason in [Some(Reason::Throttled), Some(Reason::Dead), None] {
+            assert!(render(None, reason).contains("- · observed:unknown"));
+        }
+        // The JSON keeps the declaration under its own key.
+        let mut entry = agent("lead", Some(true), Some("working"));
+        entry.reason = Some(Reason::Limit);
+        assert_eq!(entry.to_json().get_str("state"), Some("working"));
+    }
+
+    #[test]
     fn sc_017h_an_agent_that_declared_nothing_is_not_rendered_as_blank() {
         // CONTENT, not form.
         let rendered_with = |state: Option<&str>| {
@@ -1157,13 +1192,17 @@ mod tests {
     #[test]
     fn sc_017h_the_agent_level_reason_is_not_the_session_marker() {
         // The header names three nouns and `attn:` is the SESSION rollup, so an
-        // agent's OWN reason is not rendered at all.
+        // agent's OWN reason is not rendered at all — the ONE ruled exception
+        // is `limit`, which owns the verdict cell (see the test above).
         let mut session = SessionEntry::new("s", Status::Running);
         session.attention = Some(Reason::Dead);
         session.agents = vec![agent("lead", Some(false), Some("working"))];
 
         let unflagged = table(&[&session]);
         for reason in Reason::BY_SEVERITY {
+            if reason == Reason::Limit {
+                continue;
+            }
             let mut flagged = session.clone();
             flagged.agents[0].reason = Some(reason);
             assert_eq!(

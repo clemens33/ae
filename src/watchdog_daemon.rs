@@ -161,6 +161,10 @@ pub struct Observation {
     pub is_dead: bool,
     /// [`crate::watchdog::throttle_class`]'s answer — which trouble, if any.
     pub throttle: Option<Throttle>,
+    /// Whether THIS cycle's pane capture SUCCEEDED. A failed read is an
+    /// absence of evidence: the usage-limit latch may not clear on it, exactly
+    /// as the dead latch may not.
+    pub capture_ok: bool,
     /// The worst exact-match row from the last scheduled quota observation.
     pub throttle_quota: Option<String>,
     /// The RESOLVED quiet suppression: `Done` always, `WaitingUser`/`Blocked`
@@ -1060,9 +1064,11 @@ fn account_ordinary(
         next.throttle_streak = 0;
     }
 
-    // 5b. The limit latch's ONE release: this cycle judged the pane and the
-    //     phrase is gone, so the verdict is retracted and recovery requested.
-    if prior.limit_latched && seen.throttle != Some(Throttle::LimitReached) {
+    // 5b. The limit latch's ONE release: this cycle READ the pane, judged it,
+    //     and the phrase is gone, so the verdict is retracted and recovery
+    //     requested. A FAILED capture is an absence of evidence, not evidence
+    //     of absence: the latch holds and the verdict stays `limit` below.
+    if prior.limit_latched && seen.capture_ok && seen.throttle != Some(Throttle::LimitReached) {
         next.limit_latched = false;
         effects.push(Effect::Emit {
             action: "alert-cleared",
@@ -1098,8 +1104,10 @@ fn account_ordinary(
         };
     }
 
-    // 7. The vendor's usage limit outranks a transient throttle.
-    if seen.throttle == Some(Throttle::LimitReached) {
+    // 7. The vendor's usage limit outranks a transient throttle. A latched seat
+    //    whose capture FAILED this cycle keeps the verdict too: no reading is
+    //    not a clearing.
+    if seen.throttle == Some(Throttle::LimitReached) || (prior.limit_latched && !seen.capture_ok) {
         book_limit(&mut next, &mut effects, seen);
         return Accounting {
             next,
@@ -1260,6 +1268,17 @@ fn account_unknown(
         effects,
         verdict: Verdict::Stale,
         moved: false,
+    }
+}
+
+/// One pane's text and whether the READ succeeded. The main loop tolerates a
+/// failed capture (an unreadable pane hashes as empty), but the text of a
+/// failed read is an absence of evidence, not an absence of the phrase — the
+/// usage-limit latch may not clear on it.
+fn capture_pane(server: &crate::inventory::ServerId, pane: &str) -> (String, bool) {
+    match transport::capture_pane(server, pane) {
+        Some(text) => (text, true),
+        None => (String::new(), false),
     }
 }
 
@@ -3130,6 +3149,11 @@ impl Cycle<'_> {
     }
 
     /// One pass over the session's panes.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the cycle's branch order and its per-pane handoff read as one place; the \
+                  cycle-wide quota request is the one addition past the line limit"
+    )]
     fn run(&self, carry: &mut Carry, err: &mut impl Write) -> crate::Result<()> {
         if !self.knobs.quota_aware {
             // Property: while unaware, nothing holds a quota observation. A
@@ -3185,9 +3209,7 @@ impl Cycle<'_> {
             let tool =
                 crate::tool::ToolKind::from_binary_name(agent_bin.as_deref().unwrap_or_default());
 
-            // The main loop tolerates a failed capture: an unreadable pane
-            // hashes as empty here.
-            let capture = transport::capture_pane(self.server, &pane.pane_id).unwrap_or_default();
+            let (capture, capture_ok) = capture_pane(self.server, &pane.pane_id);
             let hash = quiet_hash(&capture);
             // Model drift rides the SAME capture, under the seat's launch guard.
             self.note_model(&capture, tool, &slot);
@@ -3206,6 +3228,7 @@ impl Cycle<'_> {
                 identity,
                 is_dead: classify_dead(&pane.current_command, descendancy),
                 throttle,
+                capture_ok,
                 throttle_quota,
                 quiet: self.resolve_quiet(
                     &quiet_query(&events, agent, &slot, hash, index, &pane.pane_id),
@@ -4194,6 +4217,7 @@ mod tests {
             identity: 1,
             is_dead: false,
             throttle: None,
+            capture_ok: true,
             throttle_quota: None,
             quiet: None,
             descendancy: Descendancy::Present,
@@ -7330,6 +7354,36 @@ mod tests {
             .unwrap_or_default();
         assert_eq!(production.matches("quota_observation_due(").count(), 2);
         assert_eq!(production.matches("refresh_quota(").count(), 3);
+    }
+
+    #[test]
+    fn a_failed_capture_never_releases_a_usage_limit() {
+        let knobs = Knobs::default();
+        let mut limited_seen = seen();
+        limited_seen.throttle = Some(Throttle::LimitReached);
+        let limited = account(&PaneState::default(), &limited_seen, &knobs);
+        assert_eq!(limited.verdict, Verdict::Limit);
+
+        // A failed tmux read: empty text, `capture_ok` false — no reading is
+        // not a clearing.
+        let mut failed = seen();
+        failed.capture_ok = false;
+        let held = account(&limited.next, &failed, &knobs);
+        assert_eq!(held.verdict, Verdict::Limit, "no reading is not a clearing");
+        assert!(held.next.limit_latched);
+        assert!(emitted(&held.effects).is_empty(), "no retraction");
+        assert!(!held.effects.contains(&Effect::QuotaRefresh), "no pass");
+
+        // The next GOOD capture that still shows the phrase keeps it, silently.
+        let again = account(&held.next, &limited_seen, &knobs);
+        assert_eq!(again.verdict, Verdict::Limit);
+        assert!(emitted(&again.effects).is_empty(), "still one episode");
+        assert!(!again.effects.contains(&Effect::QuotaRefresh), "no pass");
+
+        // A good capture WITHOUT the phrase releases with one pass.
+        let released = account(&again.next, &seen(), &knobs);
+        assert_eq!(released.verdict, Verdict::Active);
+        assert!(released.effects.contains(&Effect::QuotaRefresh), "one pass");
     }
 
     #[test]
