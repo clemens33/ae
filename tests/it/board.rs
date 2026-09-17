@@ -21,7 +21,7 @@ use ae::usage::SessionInput;
 
 use super::cli::ae;
 
-const SCOPE: &str = "scope: current conversations only (phase 1b) — a seat that resumed keeps only its current transcript";
+const SCOPE: &str = "scope: current conversations plus each seat's recorded predecessors (up to 4, newest first) — nothing is inferred from time";
 
 const CLAUDE_ID: &str = "0199c0de-1234-4890-abcd-ef0123456789";
 const OTHER_ID: &str = "0199c0de-1234-4890-abcd-ef0123456790";
@@ -167,8 +167,11 @@ fn json_empty_board_is_scope_alone() {
     assert_eq!(lines.len(), 1, "scope alone on an empty board: {rendered}");
     let value = ae::json::parse(lines[0]).expect("the scope line parses");
     assert_eq!(value.get_str("kind"), Some("scope"));
-    assert_eq!(value.get_str("scope"), Some("current-conversations"));
-    assert_eq!(value.get_str("phase"), Some("1b"));
+    assert_eq!(
+        value.get_str("scope"),
+        Some("current-and-recorded-predecessors")
+    );
+    assert_eq!(value.get_str("phase"), Some("8b"));
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -856,7 +859,7 @@ fn binary_empty_board_prints_scope_only() {
     assert_eq!(code, Some(0), "stderr: {stderr}");
     assert_eq!(
         stdout,
-        "{\"kind\":\"scope\",\"scope\":\"current-conversations\",\"phase\":\"1b\"}\n"
+        "{\"kind\":\"scope\",\"scope\":\"current-and-recorded-predecessors\",\"phase\":\"8b\"}\n"
     );
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -1160,6 +1163,64 @@ fn grok_muse_and_agy_replies_render_only_behind_the_flag() {
     let _ = std::fs::remove_dir_all(&plain);
 }
 
+const PRIOR_OLD_ID: &str = "0199c0de-6666-4890-abcd-ef0123456789";
+const PRIOR_NEW_ID: &str = "0199c0de-7777-4890-abcd-ef0123456789";
+
+#[test]
+fn predecessors_read_newest_first_with_coverage_for_the_missing() {
+    let root = rig("priors");
+    let store = root.join("claude");
+    plant_transcript(
+        &store,
+        "work",
+        CLAUDE_ID,
+        &[user("2026-09-16T09:00:00Z", "current words")],
+    );
+    plant_transcript(
+        &store,
+        "work",
+        PRIOR_NEW_ID,
+        &[user("2026-09-15T09:00:00Z", "prior words")],
+    );
+    plant_session(
+        &root,
+        "one",
+        &format!(
+            "{}harness_session_prior.main={PRIOR_OLD_ID},{PRIOR_NEW_ID}\n",
+            claude_roster("main", "lead", CLAUDE_ID, &store)
+        ),
+    );
+    let observation = observe(&root, &["one"], None);
+    let generations: Vec<u8> = observation.rows.iter().map(|row| row.generation).collect();
+    assert_eq!(generations, [1, 0], "oldest first across generations");
+    assert_eq!(observation.coverage.len(), 1);
+    assert_eq!(
+        observation.coverage[0].reason,
+        "predecessor 2: transcript not found"
+    );
+    let text = board::render(&observation, false, None);
+    assert_eq!(text.lines().next(), Some(SCOPE));
+    assert!(
+        text.contains("## 09:00:00 one:lead · prior 1\n  prior words\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("predecessor 2: transcript not found"),
+        "{text}"
+    );
+    let json = board::render(&observation, true, None);
+    let lines: Vec<&str> = json.lines().collect();
+    assert_eq!(lines.len(), 4, "scope, coverage, two rows: {json}");
+    for (line, expected) in lines[2..].iter().zip([1, 0]) {
+        let value = ae::json::parse(line).expect("row parses");
+        assert_eq!(
+            value.get("generation"),
+            Some(&ae::json::Value::Num(expected))
+        );
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 #[test]
 fn the_first_follow_pass_is_the_plain_board() {
     // The loop itself sleeps on a clock and never returns, so it is not driven
@@ -1174,10 +1235,19 @@ fn the_first_follow_pass_is_the_plain_board() {
         CLAUDE_ID,
         &[user("2026-09-16T09:00:00.500Z", "plain human words")],
     );
+    plant_transcript(
+        &store,
+        "work",
+        PRIOR_NEW_ID,
+        &[user("2026-09-15T09:00:00Z", "prior words")],
+    );
     plant_session(
         &root,
         "one",
-        &claude_roster("main", "lead", CLAUDE_ID, &store),
+        &format!(
+            "{}harness_session_prior.main={PRIOR_NEW_ID}\n",
+            claude_roster("main", "lead", CLAUDE_ID, &store)
+        ),
     );
     let plain = board::parse(&[]).expect("plain parses");
     let follow = board::parse(&["--follow".to_owned()]).expect("follow parses");
@@ -1194,6 +1264,7 @@ fn the_first_follow_pass_is_the_plain_board() {
     );
     assert_eq!(plain, followed);
     assert!(followed.contains("# 2026-09-16 UTC\n## 09:00:00 one:lead"));
+    assert!(followed.contains("· prior 1"), "predecessors ride along");
     let _ = std::fs::remove_dir_all(&root);
 }
 
