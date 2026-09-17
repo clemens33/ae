@@ -2728,6 +2728,7 @@ mod tests {
             ("co", "state", r#","ref":"b","summary":"f""#),
             ("co", "done", r#","summary":"g""#),
             ("co", "goal", r#","summary":"h""#),
+            ("w", "nudge", r#","summary":"T""#),
         ];
         let container = fixture
             .iter()
