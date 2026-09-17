@@ -9,6 +9,7 @@
 //! or the body: two seats may type the same words in the same microsecond, and
 //! that is two rows, not one.
 
+pub mod agy;
 pub mod claude;
 pub mod codex;
 pub(crate) mod follow;
@@ -209,6 +210,21 @@ pub struct Streamed {
     /// Absolute position after the last newline-terminated line — the
     /// splitter's base when none — so a follow's next read starts there.
     pub(crate) committed: u64,
+    /// The seat's harness conversation id, when the caller bound one. A store
+    /// that interleaves conversations (agy) filters on it; every other reader
+    /// ignores it. The splitter stays pure, so this is bound by the caller.
+    pub(crate) seat_id: String,
+}
+
+impl Streamed {
+    /// Bind the seat's harness conversation id to this read. ONE store — agy's
+    /// history — carries several seats' turns, so its reader matches each
+    /// record against this id and nothing else.
+    #[must_use]
+    pub fn for_seat(mut self, seat_id: &str) -> Self {
+        seat_id.clone_into(&mut self.seat_id);
+        self
+    }
 }
 
 /// THE line splitter: bytes in, lines out, no I/O. The door feeds it buffer
@@ -261,13 +277,15 @@ impl Splitter {
 
     /// The streamed transcript: every newline-terminated line, plus whether a
     /// torn tail was seen and not trusted, plus the offset after the last
-    /// complete line.
+    /// complete line. A fresh stream carries no seat id; [`Streamed::for_seat`]
+    /// binds one.
     #[must_use]
     pub fn finish(self) -> Streamed {
         Streamed {
             lines: self.lines,
             torn: self.cursor != self.start,
             committed: self.start,
+            seat_id: String::new(),
         }
     }
 
@@ -400,9 +418,9 @@ pub struct Observation {
     pub(crate) seeds: Vec<SeatSeed>,
 }
 
-/// Read every Claude, Codex, Grok and Muse seat of the handed-in sessions.
-/// A seat that cannot be read — unknown tool, unlocated store, unreadable
-/// transcript — becomes a [`Coverage`], never a silent subset.
+/// Read every Claude, Codex, Grok, Muse and Antigravity seat of the handed-in
+/// sessions. A seat that cannot be read — unknown tool, unlocated store,
+/// unreadable transcript — becomes a [`Coverage`], never a silent subset.
 #[must_use]
 pub fn observe(inputs: &Inputs<'_>, since_micros: Option<i64>) -> Observation {
     let mut rows = Vec::new();
@@ -459,7 +477,7 @@ fn observe_seat(
         }
     };
     let streamed = match stream_transcript(&path, &metadata, 0) {
-        Ok(streamed) => streamed,
+        Ok(streamed) => streamed.for_seat(entry.harness_session.as_deref().unwrap_or_default()),
         Err(failure) => {
             coverage.push(Coverage {
                 actor,
@@ -485,6 +503,7 @@ pub(crate) fn reader_for(source: ToolKind) -> Reader {
     }
     // String dispatch, as `unsupported_reason` does: literals live in tool.rs.
     match source.adapter().name {
+        "agy" => agy::read_stream,
         "grok" => grok::read_stream,
         "muse" => muse::read_stream,
         _ => claude::read_stream,
@@ -577,6 +596,26 @@ fn locate_seat(
             None => Err("transcript not found".to_owned()),
         };
     }
+    if tool.adapter().name == "agy" {
+        // ONE history file per home carries every agy conversation, so the
+        // reader — not the locator — separates this seat's turns. The home
+        // names the store; the literal lives in tool.rs's adapter row alone.
+        let id = entry.harness_session.as_deref().unwrap_or_default();
+        if !crate::session_launch::capture::is_lowercase_uuid(id) {
+            return Err("invalid or missing conversation id".to_owned());
+        }
+        let Some(home) = home else {
+            return Err("legacy config home unavailable".to_owned());
+        };
+        let Some(dir) = tool.adapter().quota.default_home else {
+            return Err("unsupported tool".to_owned());
+        };
+        let path = home.join(dir).join("history.jsonl");
+        return match lstat_regular(&path)? {
+            Some(metadata) => Ok((path, metadata)),
+            None => Err("transcript not found".to_owned()),
+        };
+    }
     if !matches!(source, UsageSource::ClaudeTranscripts) {
         return Err(unsupported_reason(tool).to_owned());
     }
@@ -637,9 +676,13 @@ fn follow_seat(
     let observed = follow::Located::of(&metadata);
     let streamed = match follow.plan(&actor, &observed) {
         follow::Plan::Hold => None,
-        follow::Plan::Read(from) => {
-            Some(stream_transcript(&path, &metadata, from).map_err(door_reason))
-        }
+        follow::Plan::Read(from) => Some(
+            stream_transcript(&path, &metadata, from)
+                .map_err(door_reason)
+                .map(|streamed| {
+                    streamed.for_seat(entry.harness_session.as_deref().unwrap_or_default())
+                }),
+        ),
     };
     follow::Snapshot {
         actor,
@@ -700,7 +743,6 @@ fn unsupported_reason(tool: ToolKind) -> &'static str {
     // String dispatch, never `ToolKind::` arms: production tool literals live
     // in `src/tool.rs` alone (`per_tool_branches_live_only_in_the_adapter_rows`).
     match tool.adapter().name {
-        "agy" => "agy: phase 5",
         "opencode" => "opencode: not read",
         "gemini" => "gemini: out of scope",
         _ => "unknown tool: out of scope",

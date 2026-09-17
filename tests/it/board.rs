@@ -179,11 +179,11 @@ fn non_claude_seats_name_their_phase_in_both_modes() {
     assert_eq!(
         reasons,
         [
-            // Codex, Grok and Muse read now: no id, so the read is attempted and covered.
+            // Codex, Grok, Muse and agy read now: no id, so the read is attempted and covered.
             "invalid or missing conversation id",
             "invalid or missing conversation id",
             "invalid or missing conversation id",
-            "agy: phase 5",
+            "invalid or missing conversation id",
             "opencode: not read",
             "gemini: out of scope",
         ]
