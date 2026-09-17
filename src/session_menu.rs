@@ -1800,10 +1800,10 @@ mod tests {
         }
     }
 
-    /// No dead entries, ever: Slice 1 ships the state section and the two
-    /// actions ONLY.
+    /// No dead entries, ever: slice 2a ships the facts block, the state
+    /// section and the two actions ONLY — Activity and Memos wait for 2b.
     #[test]
-    fn the_slice_1_root_never_offers_activity_or_memos() {
+    fn the_slice_2a_root_not_yet_offers_activity_or_memos() {
         let rows = vec![
             RootRow::Declaration("state: working — on it (3m)".to_owned()),
             RootRow::Declaration("state: blocked — waiting (41s)".to_owned()),
