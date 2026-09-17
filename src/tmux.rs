@@ -2492,10 +2492,10 @@ fn picker_agent_mark(state: &str) -> Option<Mark> {
     match state {
         "dead" => Some(Mark::Dead),
         "waiting-user" | "blocked" | "throttled" | "wedged" => Some(Mark::NeedsYou),
-        // A FRESH `waiting-agent` is quiet and reuses Working's mark; the
-        // picker WORD stays distinct in its state column (R6, no seventh
-        // mark). An ESCALATED one reaches this map as `blocked` above.
-        "waiting-agent" | "working" | "sweeping" | "busy" => Some(Mark::Working),
+        // A FRESH `waiting-agent` is quiet with its own seventh mark. An
+        // ESCALATED one reaches this map as `blocked` above.
+        "waiting-agent" => Some(Mark::WaitingAgent),
+        "working" | "sweeping" | "busy" => Some(Mark::Working),
         "done" => Some(Mark::Done),
         "stale" | "starting" => Some(Mark::Stale),
         "idle" => Some(Mark::Idle),

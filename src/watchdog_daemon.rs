@@ -211,9 +211,9 @@ pub enum Verdict {
 impl Verdict {
     /// The theme mark this verdict is drawn as.
     ///
-    /// SIX marks for ten verdicts: the accent and the reason word beside it
-    /// carry the difference, and a status bar that spent a distinct glyph on
-    /// each verdict asked its reader to learn a private alphabet. A gone
+    /// SEVEN marks for eleven verdicts: the accent and the reason word beside
+    /// it carry the difference, and a status bar that spent a distinct glyph
+    /// on each verdict asked its reader to learn a private alphabet. A gone
     /// process keeps its own mark, because "this will never move again" is not
     /// the same news as "this is waiting for you".
     #[must_use]
@@ -223,12 +223,12 @@ impl Verdict {
             Self::Quiet(QuietKind::WaitingUser | QuietKind::Blocked)
             | Self::Throttled
             | Self::Meta(SweepVerdict::MetaWedged) => Mark::NeedsYou,
-            // A FRESH `waiting-agent` is quiet like `working` to the marks
-            // (R6): no seventh glyph. An escalated one arrives here as
+            // A FRESH `waiting-agent` is quiet but no longer borrows Working's
+            // mark: it draws the seventh glyph, statically — the ticker below
+            // only repaints Working marks. An escalated one arrives here as
             // `Quiet(Blocked)` and draws NeedsYou above.
-            Self::Quiet(QuietKind::WaitingAgent)
-            | Self::Active
-            | Self::Meta(SweepVerdict::MetaSweeping) => Mark::Working,
+            Self::Quiet(QuietKind::WaitingAgent) => Mark::WaitingAgent,
+            Self::Active | Self::Meta(SweepVerdict::MetaSweeping) => Mark::Working,
             Self::Quiet(QuietKind::Done) => Mark::Done,
             Self::Idle => Mark::Idle,
             Self::Stale | Self::Meta(SweepVerdict::MetaStarting) => Mark::Stale,
@@ -1821,11 +1821,12 @@ impl MotionState {
                 OptionScope::Pane,
                 &entry.pane,
                 theme::PANE_STATE_OPTION,
-                // The VERDICT's word, never a literal: the set is mark-level,
-                // and `Quiet(WaitingAgent)` and `Meta(MetaSweeping)` share the
-                // Working mark (six marks, no seventh). A hardcoded "working"
-                // here repainted a just-published `● waiting-agent` as
-                // `● working` within one tick.
+                // The VERDICT's word, never a literal: `Active` and
+                // `Meta(MetaSweeping)` share the Working mark, and a hardcoded
+                // "working" here repainted a just-published `● sweeping` as
+                // `● working` within one tick. A fresh `waiting-agent` is not
+                // repainted at all — its mark is static, so the published
+                // `⧗ waiting-agent` stands until the next verdict cycle.
                 &theme::pane_state_frame(&frame, entry.verdict.reason()),
             ));
             if !windows.contains(&entry.window) {
@@ -5788,13 +5789,13 @@ mod tests {
         );
     }
 
-    /// The ticker animates the WORKING-SHAPED marks: `Active` and a fresh
-    /// `Quiet(WaitingAgent)` share the glyph by design (six marks, no seventh),
-    /// and `MetaSweeping` shares it too. The word after the glyph is the
-    /// VERDICT's — a literal "working" written over all of them repainted a
-    /// pane that had just published `● waiting-agent` as `● working` a hundred
-    /// milliseconds later, and made two panes with different observed values
-    /// render identically.
+    /// The ticker animates the WORKING mark only: `Active` and
+    /// `MetaSweeping` share the glyph, and the word after it is the VERDICT's —
+    /// a literal "working" written over both repainted a pane that had just
+    /// published `● sweeping` as `● working` a hundred milliseconds later, and
+    /// made two panes with different observed values render identically. A
+    /// fresh `Quiet(WaitingAgent)` is NOT repainted: its seventh mark is
+    /// static, so the published `⧗ waiting-agent` stands.
     #[test]
     fn a_ticked_pane_keeps_the_word_its_own_verdict_declares() {
         let mut state = MotionState {
@@ -5825,7 +5826,6 @@ mod tests {
         let args = crate::tmux::set_options_args(&ServerId::Ambient, &state.step(&Look::DEFAULT));
         for expected in [
             "#[fg=#537187]●#[default] working",
-            "#[fg=#537187]●#[default] waiting-agent",
             "#[fg=#537187]●#[default] sweeping",
         ] {
             assert!(
@@ -5833,6 +5833,10 @@ mod tests {
                 "missing {expected:?} in {args:?}"
             );
         }
+        assert!(
+            !args.iter().any(|word| word == "%2"),
+            "the waiting-agent pane is never repainted by the ticker: {args:?}"
+        );
     }
 
     #[test]
@@ -7699,8 +7703,8 @@ mod tests {
         assert_ne!(bar_glyph(1, 0, true), bar_glyph(0, 3, true));
     }
 
-    /// Ten verdicts, six marks: the mapping is the whole vocabulary the status
-    /// bar, the pane borders and the picker share.
+    /// Eleven verdicts, seven marks: the mapping is the whole vocabulary the
+    /// status bar, the pane borders and the picker share.
     #[test]
     fn every_verdict_maps_onto_one_of_the_marks() {
         for (verdict, mark, reason) in [
@@ -7711,10 +7715,11 @@ mod tests {
                 "waiting-user",
             ),
             (
-                // A fresh waiting-agent is quiet like working (R6): the mark is
-                // shared, the published WORD stays distinct.
+                // A fresh waiting-agent is quiet with its own mark; the
+                // escalated form arrives as `Quiet(Blocked)` and draws
+                // NeedsYou instead.
                 Verdict::Quiet(QuietKind::WaitingAgent),
-                Mark::Working,
+                Mark::WaitingAgent,
                 "waiting-agent",
             ),
             (
@@ -7755,11 +7760,13 @@ mod tests {
         assert_eq!(Mark::Dead.glyph(false), "x");
         assert_eq!(Mark::NeedsYou.glyph(true), "⚠");
         assert_eq!(Mark::Working.glyph(true), "●");
+        assert_eq!(Mark::WaitingAgent.glyph(true), "⧗");
         assert_eq!(Mark::Done.glyph(true), "✓");
         assert_eq!(Mark::Stale.glyph(true), "◌");
         assert_eq!(Mark::Idle.glyph(true), "·");
         assert_eq!(Mark::NeedsYou.glyph(false), "!");
         assert_eq!(Mark::Working.glyph(false), "*");
+        assert_eq!(Mark::WaitingAgent.glyph(false), "~");
         assert_eq!(Mark::Done.glyph(false), "+");
         assert_eq!(Mark::Stale.glyph(false), "?");
         assert_eq!(Mark::Idle.glyph(false), "-");
