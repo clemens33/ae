@@ -4,10 +4,11 @@
 //! The steps, each its own process, each carrying the SAME captured facts as
 //! literal arguments:
 //!
-//! 1. `show` reads the clicked session's declared state read-only, then takes
-//!    ONE final clicker proof, then draws the centred root menu itself against
-//!    the dimensions that proof returned; with no launcher the status binding
-//!    keeps tmux's own native draw instead.
+//! 1. `show` reads the clicked session's records read-only, then takes ONE
+//!    final clicker proof, then draws the centred root menu — or, with
+//!    `--activity` / `--memos`, one read-only dialog — against the dimensions
+//!    that proof returned; with no launcher the status binding keeps tmux's
+//!    own native draw instead.
 //! 2. `confirm` proves the captured facts still describe the live world, then
 //!    draws a second centred menu on the SAME client: Cancel first, the exact
 //!    consequence in the middle, the destructive row last.
@@ -56,6 +57,17 @@ const STATE_REASON_CELLS: usize = 60;
 /// The most cells one fact value keeps in a root row.
 const FACT_VALUE_CELLS: usize = 60;
 
+/// How many records the Activity dialog keeps, newest first.
+const ACTIVITY_ROWS_MAX: usize = 10;
+
+/// How many topics the Memos dialog keeps, newest first.
+const MEMO_ROWS_MAX: usize = 10;
+
+/// The event kinds a human cares about; the docs name what is not.
+const ACTIVITY_KINDS: [&str; 8] = [
+    "state", "done", "goal", "spawn", "retire", "ask", "review", "reply",
+];
+
 /// The context-menu row that starts the stop chain. ASCII, because the row is
 /// drawn from a server-global binding that no session's look reaches.
 pub const STOP_ROW_LABEL: &str = "Stop session...";
@@ -69,7 +81,15 @@ pub const STOP_ROW_LABEL: &str = "Stop session...";
 pub const CONFIRM_WINDOW_SECS: i64 = 120;
 
 /// The usage line, for an argv this module cannot read.
-pub const USAGE: &str = "Usage: _session-menu <show|confirm|apply> --client <name> --client-pid <pid> --session <name> --session-id <$id> --pane <%id> --server-pid <pid> --server-start <epoch> [show takes no more; confirm takes --action <stop|pause-orchestrator>; apply takes --action, --uuid <uuid> and --deadline <epoch>]";
+pub const USAGE: &str = "Usage: _session-menu <show|confirm|apply> --client <name> --client-pid <pid> --session <name> --session-id <$id> --pane <%id> --server-pid <pid> --server-start <epoch> [show takes only --activity or --memos; confirm takes --action <stop|pause-orchestrator>; apply takes --action, --uuid <uuid> and --deadline <epoch>]";
+
+/// What one `show` draws: the root or one read-only dialog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShowView {
+    Root,
+    Activity,
+    Memos,
+}
 
 /// The facts one click captured, proven against this crate's grammars.
 ///
@@ -133,8 +153,8 @@ impl Refusal {
 /// Which step of the chain an argv asked for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Step {
-    /// Prove the click, then draw the root menu read-only.
-    Show,
+    /// Prove the click, then draw the root or one dialog read-only.
+    Show(ShowView),
     /// Prove the capture, then ask the human.
     Confirm,
     /// Prove the capture and the human's answer, then hand it over.
@@ -185,8 +205,8 @@ pub fn parse(tail: &[String]) -> Result<(Step, Captured), Refusal> {
     let Some((step, rest)) = tail.split_first() else {
         return Err(Refusal::Usage(USAGE.to_owned()));
     };
-    let step = match step.as_str() {
-        SHOW => Step::Show,
+    let mut step = match step.as_str() {
+        SHOW => Step::Show(ShowView::Root),
         CONFIRM => Step::Confirm,
         APPLY => Step::Apply,
         other => {
@@ -206,6 +226,21 @@ pub fn parse(tail: &[String]) -> Result<(Step, Captured), Refusal> {
     let mut index = 0;
     while index < rest.len() {
         let flag = rest[index].as_str();
+        // The dialog words are valueless, take no slot, and belong to show.
+        if flag == "--activity" || flag == "--memos" {
+            if !matches!(step, Step::Show(ShowView::Root)) {
+                return Err(Refusal::Usage(
+                    "a dialog word opens one dialog, once, on show alone".to_owned(),
+                ));
+            }
+            step = Step::Show(if flag == "--activity" {
+                ShowView::Activity
+            } else {
+                ShowView::Memos
+            });
+            index += 1;
+            continue;
+        }
         let value = rest.get(index + 1);
         let slot = match flag {
             "--action" => &mut action,
@@ -264,7 +299,7 @@ pub fn parse(tail: &[String]) -> Result<(Step, Captured), Refusal> {
     let server_start = server_start.ok_or_else(|| missing("--server-start"))?;
     positive("--server-start", &server_start)?;
     let (action, uuid, deadline) = match step {
-        Step::Show => {
+        Step::Show(_) => {
             if action.is_some() || uuid.is_some() || deadline.is_some() {
                 return Err(Refusal::Usage(
                     "show reads the captured facts alone; it takes no --action, --uuid or --deadline"
@@ -723,6 +758,150 @@ fn mode_cell(mode: &str) -> String {
     }
 }
 
+/// One dialog's source: ready bytes, or the named gap under the ONE verdict.
+fn sub_ready<'a>(
+    word: &str,
+    source: &str,
+    option: &crate::tmux::OptionReading,
+    meta: &MetaSource,
+    read: &'a crate::store::SourceRead,
+) -> Result<&'a [u8], RootRow> {
+    if let Some(reason) = correlation_gap(option, meta) {
+        return Err(RootRow::Gap(format!("{word}: unavailable ({reason})")));
+    }
+    match read {
+        crate::store::SourceRead::Invalid(reason)
+        | crate::store::SourceRead::Unreadable(reason) => Err(RootRow::Gap(format!(
+            "{word}: unreadable ({source}: {})",
+            crate::event_text::display_cell(reason, STATE_REASON_CELLS)
+        ))),
+        crate::store::SourceRead::Absent => Err(RootRow::Gap(format!("{word}: none"))),
+        crate::store::SourceRead::Ready(bytes) => Ok(bytes),
+    }
+}
+
+/// The newest [`ACTIVITY_ROWS_MAX`] [`ACTIVITY_KINDS`] records, newest first.
+#[must_use]
+pub fn activity_rows(
+    option: &crate::tmux::OptionReading,
+    meta: &MetaSource,
+    events: &crate::store::SourceRead,
+    now: crate::time::Timestamp,
+) -> Vec<RootRow> {
+    let bytes = match sub_ready("activity", "events", option, meta, events) {
+        Ok(bytes) => bytes,
+        Err(gap) => return vec![gap],
+    };
+    let stream = crate::event_text::reversed(bytes);
+    let mut rows: Vec<RootRow> = Vec::new();
+    for line in crate::event_text::read_lines(&stream) {
+        if rows.len() >= ACTIVITY_ROWS_MAX {
+            break;
+        }
+        let Some(line) = crate::event_text::event_line(line) else {
+            continue;
+        };
+        let action = crate::event_text::extract(line, "action");
+        let Some(kind) = ACTIVITY_KINDS
+            .iter()
+            .find(|kind| kind.as_bytes() == action.as_slice())
+        else {
+            continue;
+        };
+        let f = |key| crate::event_text::extract(line, key);
+        let (actor, target, reference, summary, ts) =
+            (f("actor"), f("target"), f("ref"), f("summary"), f("ts"));
+        rows.push(RootRow::Declaration(activity_label(
+            kind, &actor, &target, &reference, &summary, &ts, now,
+        )));
+    }
+    if rows.is_empty() {
+        rows.push(RootRow::Gap("activity: none".to_owned()));
+    }
+    rows
+}
+
+/// Actor + kind + clipped text + truthful age; the kind is the matched
+/// static, and `state` reads exactly as the root's declaration row.
+fn activity_label(
+    kind: &str,
+    actor: &[u8],
+    target: &[u8],
+    reference: &[u8],
+    summary: &[u8],
+    ts: &[u8],
+    now: crate::time::Timestamp,
+) -> String {
+    if kind == "state" {
+        return declaration_label(
+            &String::from_utf8_lossy(actor),
+            &crate::state::Latest {
+                value: reference.to_vec(),
+                reason: summary.to_vec(),
+                ts: ts.to_vec(),
+            },
+            now,
+        );
+    }
+    let cell = |bytes: &[u8], max: usize| {
+        crate::event_text::display_cell(&String::from_utf8_lossy(bytes), max)
+    };
+    let actor = cell(actor, STATE_ACTOR_CELLS);
+    let mut detail = [target, reference]
+        .iter()
+        .filter(|part| !part.is_empty())
+        .map(|part| cell(part, STATE_ACTOR_CELLS))
+        .collect::<Vec<_>>()
+        .join(" ");
+    if !summary.is_empty() {
+        if !detail.is_empty() {
+            detail.push_str(" — ");
+        }
+        detail.push_str(&cell(summary, STATE_REASON_CELLS));
+    }
+    let age = crate::brief::age(
+        crate::time::Timestamp::parse(&String::from_utf8_lossy(ts))
+            .map(|stamp| stamp.seconds_until(now)),
+    );
+    let head = if detail.is_empty() {
+        String::new()
+    } else {
+        format!(": {detail}")
+    };
+    format!("{actor} {kind}{head} ({age})")
+}
+
+/// Brief's latest record per topic — [`crate::brief::topic_lines`] owns that
+/// rule — newest first, at most [`MEMO_ROWS_MAX`].
+#[must_use]
+pub fn memo_rows(
+    option: &crate::tmux::OptionReading,
+    meta: &MetaSource,
+    memo: &crate::store::SourceRead,
+    now: crate::time::Timestamp,
+) -> Vec<RootRow> {
+    let bytes = match sub_ready("memos", "memo", option, meta, memo) {
+        Ok(bytes) => bytes,
+        Err(gap) => return vec![gap],
+    };
+    let rows: Vec<RootRow> = crate::brief::topic_lines(bytes, now, None)
+        .iter()
+        .take(MEMO_ROWS_MAX)
+        .map(|line| {
+            let topic = crate::event_text::display_cell(&line.topic, STATE_ACTOR_CELLS);
+            let text = crate::event_text::display_cell(&line.text, STATE_REASON_CELLS);
+            RootRow::Declaration(format!(
+                "{topic}: {text} ({})",
+                crate::brief::age(line.age_secs)
+            ))
+        })
+        .collect();
+    if rows.is_empty() {
+        return vec![RootRow::Gap("memos: none".to_owned())];
+    }
+    rows
+}
+
 /// One declaration as a root row: `<actor> state: <value> — <reason> (<age>)`,
 /// with the reason omitted when the declaration carries none and every piece
 /// projected through [`crate::event_text::display_cell`]. The actor is the
@@ -799,16 +978,17 @@ fn root_stop_item(stop: &str) -> crate::tmux::MenuItem {
 /// The full root: every status row, then the action floor.
 #[must_use]
 pub fn root_menu(session: &str, rows: &[RootRow], stop: Option<&str>) -> crate::tmux::Menu {
-    root_menu_full(session, &[], rows, stop)
+    root_menu_full(session, &[], rows, None, None, stop)
 }
 
-/// The full root with its facts block: facts, states, then the action floor.
-/// Facts are display-only — dim, unselectable, like a gap.
+/// The full root: facts, states, the two dialog rows, then the action floor.
 #[must_use]
 pub fn root_menu_full(
     session: &str,
     facts: &[String],
     rows: &[RootRow],
+    activity: Option<&str>,
+    memos: Option<&str>,
     stop: Option<&str>,
 ) -> crate::tmux::Menu {
     let mut items: Vec<crate::tmux::MenuItem> = Vec::new();
@@ -822,6 +1002,18 @@ pub fn root_menu_full(
     }
     items.extend(rows.iter().map(root_row_item));
     items.push(root_separator());
+    for (label, key, command) in [("Activity…", "a", activity), ("Memos…", "m", memos)] {
+        if let Some(command) = command {
+            items.push(crate::tmux::MenuItem {
+                label: label.to_owned(),
+                key: key.to_owned(),
+                action: crate::tmux::MenuAction::Run(command.to_owned()),
+            });
+        }
+    }
+    if activity.is_some() || memos.is_some() {
+        items.push(root_separator());
+    }
     items.push(root_flip_item());
     if let Some(stop) = stop {
         items.push(root_stop_item(stop));
@@ -863,29 +1055,66 @@ pub fn floor_menu(session: &str, stop: Option<&str>) -> crate::tmux::Menu {
     }
 }
 
+/// One dialog (quota shape, no Back) against the FINAL live dimensions,
+/// dropping the OLDEST rows until it fits; the newest row always survives.
+#[must_use]
+pub fn select_dialog(
+    title: &str,
+    rows: &[RootRow],
+    client_width: usize,
+    client_height: usize,
+) -> crate::tmux::Menu {
+    let build = |kept: usize| {
+        let mut items: Vec<crate::tmux::MenuItem> =
+            rows[..kept].iter().map(root_row_item).collect();
+        items.push(root_separator());
+        items.push(crate::tmux::MenuItem {
+            label: "Close".to_owned(),
+            key: "c".to_owned(),
+            action: crate::tmux::MenuAction::Run(String::new()),
+        });
+        crate::tmux::Menu {
+            title: title.to_owned(),
+            title_style: String::new(),
+            items,
+        }
+    };
+    let mut kept = rows.len();
+    loop {
+        let menu = build(kept);
+        let (columns, lines) = menu_budget(&menu);
+        if (client_width >= columns && client_height >= lines) || kept <= 1 {
+            return menu;
+        }
+        kept -= 1;
+    }
+}
+
 /// Reselect the root against the FINAL live client dimensions: full, then
-/// facts-dropped, then status-only, then today's floor. Facts are the FIRST
-/// thing dropped when the height budget bites. A build-dimension fit proves
+/// facts-dropped, then rows-dropped, then status-only, then today's floor.
+/// Facts go FIRST, then the two dialog rows. A build-dimension fit proves
 /// nothing about the client the draw reaches.
 #[must_use]
 pub fn select_root(
     session: &str,
     facts: &[String],
     rows: &[RootRow],
+    activity: Option<&str>,
+    memos: Option<&str>,
     stop: Option<&str>,
     client_width: usize,
     client_height: usize,
 ) -> crate::tmux::Menu {
-    let full = root_menu_full(session, facts, rows, stop);
-    let (columns, lines) = menu_budget(&full);
-    if client_width >= columns && client_height >= lines {
-        return full;
-    }
-    // Facts-dropped IS today's full root, byte for byte.
-    let bare = root_menu(session, rows, stop);
-    let (columns, lines) = menu_budget(&bare);
-    if client_width >= columns && client_height >= lines {
-        return bare;
+    for menu in [
+        root_menu_full(session, facts, rows, activity, memos, stop),
+        root_menu_full(session, &[], rows, activity, memos, stop),
+        // Rows-dropped IS today's full root, byte for byte.
+        root_menu(session, rows, stop),
+    ] {
+        let (columns, lines) = menu_budget(&menu);
+        if client_width >= columns && client_height >= lines {
+            return menu;
+        }
     }
     if let Some(first) = rows.first() {
         let degraded = status_only_menu(session, first, stop);
@@ -897,11 +1126,12 @@ pub fn select_root(
     floor_menu(session, stop)
 }
 
-/// The Stop row's confirm argv: today's seven captured facts, one quoted word
-/// each, and never a `--uuid`.
-fn stop_row_command(captured: &Captured, launcher: &[String]) -> String {
+/// One row's re-exec argv: the launcher, the step words, the same seven
+/// captured facts one quoted word each — and never a `--uuid`.
+fn row_command(captured: &Captured, launcher: &[String], step: &[&str]) -> String {
     let mut argv = launcher.to_vec();
-    argv.extend([crate::cli::SESSION_MENU, CONFIRM, "--action", STOP].map(ToOwned::to_owned));
+    argv.push(crate::cli::SESSION_MENU.to_owned());
+    argv.extend(step.iter().map(|word| (*word).to_owned()));
     for (flag, value) in [
         ("--client", &captured.client),
         ("--client-pid", &captured.client_pid),
@@ -927,14 +1157,22 @@ struct ShowSources {
     server: ServerId,
     facts: Vec<String>,
     rows: Vec<RootRow>,
+    dialog: Vec<RootRow>,
     stop: Option<String>,
+    activity: Option<String>,
+    memos: Option<String>,
     menu_mouse: bool,
 }
 
 /// Read every source, in the order the draw needs them, with NO proof yet.
 ///
 /// A failure here is pre-proof: stderr alone, no draw and no client message.
-fn read_sources(root: &Path, captured: &Captured, err: &mut impl Write) -> Option<ShowSources> {
+fn read_sources(
+    root: &Path,
+    captured: &Captured,
+    view: ShowView,
+    err: &mut impl Write,
+) -> Option<ShowSources> {
     let Some(server) = crate::doors::caller_server() else {
         let _ = writeln!(
             err,
@@ -970,8 +1208,14 @@ fn read_sources(root: &Path, captured: &Captured, err: &mut impl Write) -> Optio
     } else {
         crate::store::SourceRead::Absent
     };
-    let rows = root_rows(&option, &meta, &events, crate::time::Timestamp::now());
+    let now = crate::time::Timestamp::now();
+    let rows = root_rows(&option, &meta, &events, now);
     let facts = fact_rows(&option, &meta);
+    let dialog = match view {
+        ShowView::Root => Vec::new(),
+        ShowView::Activity => activity_rows(&option, &meta, &events, now),
+        ShowView::Memos => memo_rows(&option, &meta, &crate::store::open(&dir).memo_source(), now),
+    };
     let config = crate::doors::config_file(crate::shape::current(), root);
     let launcher = crate::session_tmux::picker_launcher(
         crate::shape::current(),
@@ -980,7 +1224,10 @@ fn read_sources(root: &Path, captured: &Captured, err: &mut impl Write) -> Optio
         &config,
         &server,
     );
-    let stop = (!launcher.is_empty()).then(|| stop_row_command(captured, &launcher));
+    let row = |step: &[&str]| row_command(captured, &launcher, step);
+    let stop = (!launcher.is_empty()).then(|| row(&[CONFIRM, "--action", STOP]));
+    let activity = (!launcher.is_empty()).then(|| row(&[SHOW, "--activity"]));
+    let memos = (!launcher.is_empty()).then(|| row(&[SHOW, "--memos"]));
     let menu_mouse = match crate::transport::probe_tmux_version(&server) {
         crate::tmux::VersionProbe::Answered(found) => {
             crate::tmux_floor::Probe::Server(found).menu_mouse()
@@ -991,21 +1238,19 @@ fn read_sources(root: &Path, captured: &Captured, err: &mut impl Write) -> Optio
         server,
         facts,
         rows,
+        dialog,
         stop,
+        activity,
+        memos,
         menu_mouse,
     })
 }
 
-/// `_session-menu show …` — read every source, prove the click ONCE, then draw
-/// the root read-only.
-///
-/// Post-proof the root refuses neither ENRICHMENT nor FIT: every enrichment
-/// failure became a row, and a menu the client cannot hold degrades to today's
-/// floor. A clicker proof that fails is one failure, reported on stderr alone;
-/// a draw tmux itself refuses is the other, reported to the client and exiting
-/// nonzero.
-fn run_show(root: &Path, captured: &Captured, err: &mut impl Write) -> u8 {
-    let Some(sources) = read_sources(root, captured, err) else {
+/// `show` reads every source, proves the click ONCE, draws the root or one
+/// dialog. Post-proof neither refuses FIT nor ENRICHMENT; only a tmux-refused
+/// DRAW reports to the client and exits nonzero.
+fn run_show(root: &Path, captured: &Captured, view: ShowView, err: &mut impl Write) -> u8 {
+    let Some(sources) = read_sources(root, captured, view, err) else {
         return crate::entry::EXIT_FAILED;
     };
     // THE ONE PROOF, immediately before the fit and the draw; nothing reads
@@ -1013,14 +1258,21 @@ fn run_show(root: &Path, captured: &Captured, err: &mut impl Write) -> u8 {
     let Some(clicker) = prove_clicker(captured, err) else {
         return crate::entry::EXIT_FAILED;
     };
-    let menu = select_root(
-        &captured.session,
-        &sources.facts,
-        &sources.rows,
-        sources.stop.as_deref(),
-        clicker.client.width,
-        clicker.client.height,
-    );
+    let (width, height) = (clicker.client.width, clicker.client.height);
+    let menu = match view {
+        ShowView::Root => select_root(
+            &captured.session,
+            &sources.facts,
+            &sources.rows,
+            sources.activity.as_deref(),
+            sources.memos.as_deref(),
+            sources.stop.as_deref(),
+            width,
+            height,
+        ),
+        ShowView::Activity => select_dialog("Activity", &sources.dialog, width, height),
+        ShowView::Memos => select_dialog("Memos", &sources.dialog, width, height),
+    };
     if !crate::transport::display_menu_centred(
         &sources.server,
         &captured.client,
@@ -1373,7 +1625,7 @@ pub fn run(
         }
     };
     match step {
-        Step::Show => Ok(run_show(root, &captured, err)),
+        Step::Show(view) => Ok(run_show(root, &captured, view, err)),
         Step::Confirm => Ok(run_confirm(root, &captured, err)),
         Step::Apply => run_apply(root, &captured, out, err),
     }
@@ -1673,7 +1925,7 @@ mod tests {
     fn the_stop_row_carries_every_action_fact_and_matches_todays_argv() {
         let captured = super::parse(&show_argv(&[])).expect("the show grammar").1;
         let launcher = vec!["/opt/ae".to_owned()];
-        let stop = super::stop_row_command(&captured, &launcher);
+        let stop = super::row_command(&captured, &launcher, &[super::CONFIRM, "--action", STOP]);
         let menu = super::floor_menu("aedev", Some(&stop));
         let row = menu.items.last().expect("the Stop row");
         assert_eq!(row.label, STOP_ROW_LABEL);
@@ -1754,7 +2006,7 @@ mod tests {
         // Built for a 200x50 client, drawn for a live 80x8 one: the LIVE
         // dimensions decide, and the full three-declaration menu no longer
         // fits while the action floor must survive.
-        let live = super::select_root("aedev", &[], &rows, Some(stop), 80, 8);
+        let live = super::select_root("aedev", &[], &rows, None, None, Some(stop), 80, 8);
         let (live_columns, live_rows) = menu_budget(&live);
         assert!(
             live_columns <= 80 && live_rows <= 8,
@@ -1777,7 +2029,7 @@ mod tests {
         );
 
         // Below every variant, today's trim behaviour: a menu is still drawn.
-        let tiny = super::select_root("aedev", &[], &rows, Some(stop), 4, 2);
+        let tiny = super::select_root("aedev", &[], &rows, None, None, Some(stop), 4, 2);
         let labels: Vec<&str> = tiny.items.iter().map(|item| item.label.as_str()).collect();
         assert_eq!(labels, vec![super::FLIP_ROW_LABEL, STOP_ROW_LABEL]);
         assert!(
@@ -1786,51 +2038,42 @@ mod tests {
         );
     }
 
-    /// Facts are the FIRST thing dropped when the height budget bites, and the
-    /// facts-dropped menu IS today's full root, byte for byte.
+    /// Full → no-facts → no-rows → status-only → floor, in that order.
     #[test]
-    fn the_ladder_drops_facts_first_and_keeps_todays_full_root() {
-        let facts = vec!["mode: local".to_owned(), "dir: /repo".to_owned()];
-        let rows = vec![RootRow::Declaration("lead state: working (3m)".to_owned())];
-        let stop = "run-shell -b 'stop'";
-        let full = super::root_menu_full("aedev", &facts, &rows, Some(stop));
-        let bare = super::root_menu("aedev", &rows, Some(stop));
+    fn the_ladder_drops_facts_first_then_the_dialog_rows() {
+        let facts = vec!["mode: local".to_owned()];
+        let rows = vec![
+            RootRow::Declaration("s (3m)".to_owned()),
+            RootRow::Declaration("t (4s)".to_owned()),
+        ];
+        let (s, a, m) = ("run-shell -b 's'", "run-shell -b 'a'", "run-shell -b 'm'");
+        let sel =
+            |w, h| super::select_root("aedev", &facts, &rows, Some(a), Some(m), Some(s), w, h);
+        fn has(menu: &crate::tmux::Menu, label: &str) -> bool {
+            menu.items.iter().any(|item| item.label == label)
+        }
+        let full = super::root_menu_full("aedev", &facts, &rows, Some(a), Some(m), Some(s));
+        let bare = super::root_menu("aedev", &rows, Some(s));
+        let second = super::root_menu_full("aedev", &[], &rows, Some(a), Some(m), Some(s));
+        let status_only = super::status_only_menu("aedev", &rows[0], Some(s));
         let (_, full_rows) = menu_budget(&full);
-        let (bare_columns, bare_rows) = menu_budget(&bare);
-        assert!(full_rows > bare_rows, "the facts cost rows: {full_rows}");
-        // Tall enough for the bare root but not the facts block: facts go,
-        // the declaration and both actions stay.
-        let menu = super::select_root("aedev", &facts, &rows, Some(stop), 200, bare_rows);
-        let labels: Vec<&str> = menu.items.iter().map(|item| item.label.as_str()).collect();
-        assert!(
-            !labels.iter().any(|label| label.starts_with("mode: ")),
-            "facts dropped first: {labels:?}"
-        );
-        assert!(
-            labels.contains(&"lead state: working (3m)"),
-            "states survive the facts: {labels:?}"
-        );
+        let (_, second_rows) = menu_budget(&second);
+        let (_, bare_rows) = menu_budget(&bare);
+        let (_, status_rows) = menu_budget(&status_only);
+        let menu = sel(200, full_rows);
+        assert!(has(&menu, "mode: local") && has(&menu, "Activity…") && has(&menu, "t (4s)"));
+        let menu = sel(200, second_rows);
+        assert!(!has(&menu, "mode: local") && has(&menu, "Memos…") && has(&menu, "t (4s)"));
+        let menu = sel(200, bare_rows);
+        assert!(!has(&menu, "Activity…") && has(&menu, "t (4s)"));
+        assert_eq!(menu.items.len(), bare.items.len(), "today's full root");
+        let menu = sel(200, status_rows);
         assert_eq!(
             menu.items.len(),
-            bare.items.len(),
-            "the facts-dropped menu is today's full root"
+            status_only.items.len(),
+            "today's status-only bytes"
         );
-        assert!(labels.contains(&super::FLIP_ROW_LABEL));
-        assert!(labels.contains(&STOP_ROW_LABEL));
-        // Wide room for everything: the facts draw above the states.
-        let menu = super::select_root(
-            "aedev",
-            &facts,
-            &rows,
-            Some(stop),
-            bare_columns.max(80),
-            full_rows,
-        );
-        let labels: Vec<&str> = menu.items.iter().map(|item| item.label.as_str()).collect();
-        assert_eq!(
-            labels[0], "mode: local",
-            "the facts block opens the full root: {labels:?}"
-        );
+        assert!(has(&menu, "s (3m)") && !has(&menu, "t (4s)"));
     }
 
     #[test]
@@ -1868,46 +2111,61 @@ mod tests {
             (columns, rows - 1),
             (columns - 1, rows - 1),
         ] {
-            let menu = super::select_root("aedev", &[], &[], Some(stop), width, height);
+            let menu = super::select_root("aedev", &[], &[], None, None, Some(stop), width, height);
             assert_eq!(menu.items.len(), floor.items.len(), "{width}x{height}");
         }
     }
 
-    /// No dead entries, ever: slice 2a ships the facts block, the state
-    /// section and the two actions ONLY — Activity and Memos wait for 2b.
+    /// The full root OFFERS both dialog rows, keyed; the tail keeps today's.
     #[test]
-    fn the_slice_2a_root_not_yet_offers_activity_or_memos() {
-        let rows = vec![
-            RootRow::Declaration("state: working — on it (3m)".to_owned()),
-            RootRow::Declaration("state: blocked — waiting (41s)".to_owned()),
-            RootRow::Gap("state: none declared".to_owned()),
-        ];
-        let variants = [
-            super::root_menu("aedev", &rows, Some("run-shell -b 'stop'")),
-            super::root_menu_full(
-                "aedev",
-                &["mode: local".to_owned()],
-                &rows,
-                Some("run-shell -b 'stop'"),
-            ),
-            super::status_only_menu("aedev", &rows[0], Some("run-shell -b 'stop'")),
-            super::floor_menu("aedev", Some("run-shell -b 'stop'")),
-        ];
-        for menu in variants {
-            for item in &menu.items {
-                assert!(
-                    !item.label.contains("Activity") && !item.label.contains("Memos"),
-                    "an entry without a working submenu must not exist: {:?}",
-                    item.label
-                );
-            }
+    fn the_slice_2b_root_offers_activity_and_memos() {
+        let rows = vec![RootRow::Declaration("s (3m)".to_owned())];
+        let (a, m, s) = ("run-shell -b 'a'", "run-shell -b 'm'", "run-shell -b 's'");
+        let menu =
+            super::root_menu_full("aedev", &["f".to_owned()], &rows, Some(a), Some(m), Some(s));
+        let labels: Vec<&str> = menu.items.iter().map(|item| item.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            [
+                "f",
+                "",
+                "s (3m)",
+                "",
+                "Activity…",
+                "Memos…",
+                "",
+                super::FLIP_ROW_LABEL,
+                STOP_ROW_LABEL
+            ]
+        );
+        let row = |label: &str| {
+            menu.items
+                .iter()
+                .find(|item| item.label == label)
+                .expect(label)
+        };
+        assert_eq!(
+            [row("Activity…").key.as_str(), row("Memos…").key.as_str()],
+            ["a", "m"]
+        );
+        assert!(matches!(&row("Activity…").action, crate::tmux::MenuAction::Run(c) if c == a));
+        assert!(matches!(&row("Memos…").action, crate::tmux::MenuAction::Run(c) if c == m));
+        for menu in [
+            super::status_only_menu("aedev", &rows[0], Some(s)),
+            super::floor_menu("aedev", Some(s)),
+        ] {
+            assert!(
+                menu.items
+                    .iter()
+                    .all(|item| !item.label.contains("Activity") && !item.label.contains("Memos"))
+            );
         }
     }
 
     #[test]
     fn show_reads_the_seven_facts_only_and_mints_nothing() {
         let (step, captured) = parse(&show_argv(&[])).expect("the show grammar");
-        assert_eq!(step, Step::Show);
+        assert_eq!(step, Step::Show(super::ShowView::Root));
         assert_eq!(captured.session, "aedev");
         assert!(captured.action.is_empty() && captured.uuid.is_empty() && captured.deadline == 0);
         for extra in [
@@ -2064,8 +2322,16 @@ mod tests {
                 "{option:?} must not render declarations: {rows:?}"
             );
             assert_eq!(gap_rows(&rows).len(), 1, "{rows:?}");
-            let menu =
-                super::select_root("aedev", &[], &rows, Some("run-shell -b 'stop'"), 200, 60);
+            let menu = super::select_root(
+                "aedev",
+                &[],
+                &rows,
+                None,
+                None,
+                Some("run-shell -b 'stop'"),
+                200,
+                60,
+            );
             assert!(
                 menu.items
                     .iter()
@@ -2141,7 +2407,16 @@ mod tests {
             gap_rows(&rows),
             vec!["state: unavailable (meta: unreadable)"]
         );
-        let menu = super::select_root("aedev", &[], &rows, Some("run-shell -b 'stop'"), 200, 60);
+        let menu = super::select_root(
+            "aedev",
+            &[],
+            &rows,
+            None,
+            None,
+            Some("run-shell -b 'stop'"),
+            200,
+            60,
+        );
         let actions: Vec<&str> = menu
             .items
             .iter()
@@ -2298,6 +2573,16 @@ mod tests {
                 "source: unrecorded".to_owned(),
             ]
         );
+        // A fact longer than its budget middle-cuts; it never draws raw.
+        let long = "d".repeat(200);
+        let facts = super::fact_rows(
+            &OptionReading::Set(UUID_A.to_owned()),
+            &parsed_meta_full(UUID_A, &["lead"], "local", "", &long, ""),
+        );
+        assert!(
+            facts[1].contains("...") && !facts[1].contains(&long),
+            "{facts:?}"
+        );
     }
 
     /// `source` exists only for copy/worktree: a local session's origin is
@@ -2412,6 +2697,160 @@ mod tests {
             matches!(&dup, super::MetaSource::Parsed { branch, .. } if branch.is_empty()),
             "a duplicated branch is ambiguous: {dup:?}"
         );
+    }
+
+    // ── the Activity and Memos dialogs ──────────────────────────────────
+
+    fn event(ts: &str, actor: &str, action: &str, extra: &str) -> String {
+        format!(r#"{{"ts":"{ts}","actor":"{actor}","action":"{action}"{extra}}}"#)
+    }
+
+    /// The eight human kinds, newest first, at most ten; gaps named.
+    #[test]
+    fn activity_picks_only_the_human_kinds_newest_first() {
+        use crate::tmux::OptionReading;
+        // Every shown kind plus excluded records; eleven shown keep ten.
+        let fixture = [
+            ("lead", "nudge", r#","summary":"x""#),
+            ("lead", "state", r#","ref":"w","summary":"a""#),
+            ("lead", "done", r#","summary":"s""#),
+            ("lead", "goal", r#","summary":"t""#),
+            ("lead", "spawn", r#","target":"h","summary":"b""#),
+            ("lead", "retire", r#","target":"h""#),
+            ("lead", "spawn-failed", r#","summary":"x""#),
+            ("lead", "ask", r#","target":"w","ref":"r1","summary":"c""#),
+            ("w", "reply", r#","target":"v","ref":"r1","summary":"d""#),
+            (
+                "lead",
+                "review",
+                r#","target":"w","ref":"r2","summary":"e""#,
+            ),
+            ("co", "state", r#","ref":"b","summary":"f""#),
+            ("co", "done", r#","summary":"g""#),
+            ("co", "goal", r#","summary":"h""#),
+        ];
+        let container = fixture
+            .iter()
+            .map(|r| event("2026-09-17T08:00:00Z", r.0, r.1, r.2))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        let now = crate::time::Timestamp::parse("2026-09-17T12:00:00Z").expect("now parses");
+        let meta = parsed_meta(UUID_A, &["lead"]);
+        let rows = super::activity_rows(
+            &OptionReading::Set(UUID_A.to_owned()),
+            &meta,
+            &events(&container),
+            now,
+        );
+        let shown = declaration_rows(&rows);
+        let kinds: Vec<&str> = shown
+            .iter()
+            .map(|row| row.split([' ', ':']).nth(1).expect("kind word"))
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                "goal", "done", "state", "review", "reply", "ask", "retire", "spawn", "goal",
+                "done"
+            ],
+            "{shown:?}"
+        );
+        assert_eq!(
+            shown[2], "co state: b — f (4h)",
+            "a state reads as the root row"
+        );
+        assert_eq!(shown[5], "lead ask: w r1 — c (4h)");
+        let wide = event(
+            "2026-09-17T08:00:00Z",
+            "lead",
+            "ask",
+            &format!(r#","summary":"{}""#, "y".repeat(200)),
+        ) + "\n";
+        let rows = super::activity_rows(
+            &OptionReading::Set(UUID_A.to_owned()),
+            &meta,
+            &events(&wide),
+            now,
+        );
+        let shown = declaration_rows(&rows);
+        assert_eq!(shown.len(), 1);
+        assert!(
+            shown[0].contains("...") && shown[0].len() < 100,
+            "{shown:?}"
+        );
+        let bad = super::activity_rows(
+            &OptionReading::Set("fa4a9b3e-0000-4000-8000-000000000000".to_owned()),
+            &meta,
+            &events(""),
+            now,
+        );
+        assert_eq!(
+            gap_rows(&bad),
+            vec!["activity: unavailable (meta: identity mismatch)"]
+        );
+        let bad = super::activity_rows(
+            &OptionReading::Set(UUID_A.to_owned()),
+            &meta,
+            &crate::store::SourceRead::Invalid("a directory".to_owned()),
+            now,
+        );
+        assert_eq!(
+            gap_rows(&bad),
+            vec!["activity: unreadable (events: a directory)"]
+        );
+        let rows = super::activity_rows(
+            &OptionReading::Set(UUID_A.to_owned()),
+            &meta,
+            &crate::store::SourceRead::Absent,
+            now,
+        );
+        assert_eq!(gap_rows(&rows), vec!["activity: none"]);
+    }
+
+    /// Brief's latest-per-topic: superseded stays out, ten kept.
+    #[test]
+    fn memos_match_brief_latest_per_topic_newest_first() {
+        use crate::tmux::OptionReading;
+        let now = crate::time::Timestamp::parse("2026-09-17T12:00:00Z").expect("now parses");
+        let meta = parsed_meta(UUID_A, &["lead"]);
+        let mut file = String::from("2026-09-17T08:00:00Z\tcl:lead\tdecision\told\n");
+        for h in 1..10 {
+            file.push_str(&format!("2026-09-17T{h:02}:00:00Z\tcl:lead\tt{h}\tw{h}\n"));
+        }
+        file.push_str("2026-09-17T10:00:00Z\tcl:lead\tdecision\tnew\n");
+        file.push_str("2026-09-17T11:00:00Z\tcl:lead\tparking\tresume here: x\n");
+        let ready = |b: &[u8]| crate::store::SourceRead::Ready(b.to_vec());
+        let set = OptionReading::Set(UUID_A.to_owned());
+        let rows = super::memo_rows(&set, &meta, &ready(file.as_bytes()), now);
+        let shown = declaration_rows(&rows);
+        assert_eq!(shown.len(), 10, "{rows:?}");
+        assert_eq!(
+            &shown[..2],
+            &["parking: resume here: x (1h)", "decision: new (2h)"]
+        );
+        assert!(!shown.iter().any(|row| row.contains("old")), "{shown:?}");
+        assert!(!shown.iter().any(|row| row.starts_with("t1:")), "{shown:?}");
+        let rows = super::memo_rows(&set, &meta, &ready(b""), now);
+        assert_eq!(gap_rows(&rows), vec!["memos: none"]);
+    }
+
+    /// A short client drops the OLDEST rows first; Close always survives.
+    #[test]
+    fn the_dialog_degrades_oldest_first_and_always_closes() {
+        let rows: Vec<RootRow> = (0..10)
+            .map(|index| RootRow::Declaration(format!("row {index}")))
+            .collect();
+        let (_, full_rows) = menu_budget(&super::select_dialog("Activity", &rows, 200, 60));
+        let menu = super::select_dialog("Activity", &rows, 200, full_rows - 5);
+        let labels: Vec<&str> = menu.items.iter().map(|item| item.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            ["row 0", "row 1", "row 2", "row 3", "row 4", "", "Close"]
+        );
+        let menu = super::select_dialog("Activity", &rows, 4, 2);
+        let labels: Vec<&str> = menu.items.iter().map(|item| item.label.as_str()).collect();
+        assert_eq!(labels, ["row 0", "", "Close"], "never refuses: {labels:?}");
     }
 
     /// Per-roster provenance: two actors' declarations must stay
