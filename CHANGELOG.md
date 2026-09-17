@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.94] - 2026-09-17
+- Read Antigravity seats on the board
+- Pin the Antigravity board seat end to end
+- Fuzz the Antigravity board reader with synthetic seeds
+- Document Antigravity as a board source
+- Format the Antigravity fuzz target
+
 ## [v2026.9.93] - 2026-09-17
 - Indent board text rows and clip them with --lines
 - Name OpenCode board seats not read
