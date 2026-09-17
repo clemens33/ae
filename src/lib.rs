@@ -63,6 +63,7 @@ pub mod requests;
 pub mod roster;
 pub mod run;
 pub mod sanitize;
+pub mod seatcompact;
 pub mod send;
 pub mod session;
 pub mod session_launch;
