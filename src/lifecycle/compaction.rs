@@ -434,21 +434,31 @@ pub(crate) const COMPACT_STUB: &str = "ae compact: not yet available — the in-
 /// The argv echo budget for the tripwire and unknown-flag lines.
 const FLAG_CELLS: usize = 64;
 
+/// Every flag spelling the destructive parser accepts, in one place. `parse`
+/// dispatches accepted spellings through this list, the tripwire reads it,
+/// and the battery below reads it — a spelling added to or dropped from the
+/// parser moves all three, and a const entry with no parse arm errors loudly.
+const ACCEPTED_FLAGS: &[&str] = &[
+    "-f",
+    "--force",
+    "--keep-history",
+    "--digest-only",
+    "--exec-plan",
+];
+
 /// `ae compact ...` in the B release — the R9 tripwire over the destructive
 /// parser's ACCEPTED set, else the stub.
 ///
-/// The first dash-led token decides, in argv order, by asking [`parse`]
-/// itself: accepted there trips here, refused or unknown there errors here —
-/// so the tripwire list cannot drift from the parser's accepted set.
-/// `--exec-plan` is probed with the path it takes. A bare `ae compact [name]`
-/// prints the stub.
+/// The first dash-led token decides, in argv order: on [`ACCEPTED_FLAGS`] it
+/// trips, otherwise it errors — the tripwire list IS the parser's list, never
+/// a copy. A bare `ae compact [name]` prints the stub.
 pub(crate) fn run_compact_entry(tail: &[String], err: &mut impl Write) -> io::Result<u8> {
     for arg in tail {
         if !arg.starts_with('-') {
             continue;
         }
         let shown = crate::event_text::display_cell(arg, FLAG_CELLS);
-        if parse_accepts(arg) {
+        if ACCEPTED_FLAGS.contains(&arg.as_str()) {
             writeln!(
                 err,
                 "ae: '{shown}' belongs to the destructive verb, which is now 'ae reboot'. Run: ae reboot {shown} [name]"
@@ -462,19 +472,6 @@ pub(crate) fn run_compact_entry(tail: &[String], err: &mut impl Write) -> io::Re
     Ok(EXIT_USAGE)
 }
 
-/// Whether the destructive [`parse`] accepts `flag` — probed with a dummy
-/// name (and the path `--exec-plan` takes), so acceptance is the parser's own
-/// answer, never a second list.
-fn parse_accepts(flag: &str) -> bool {
-    let probe = "probe".to_owned();
-    let tail: Vec<String> = if flag == "--exec-plan" {
-        vec![flag.to_owned(), probe.clone(), probe]
-    } else {
-        vec![flag.to_owned(), probe]
-    };
-    parse(&tail).is_ok()
-}
-
 fn parse(tail: &[String]) -> Result<Args, String> {
     let mut args = Args {
         name: String::new(),
@@ -486,17 +483,28 @@ fn parse(tail: &[String]) -> Result<Args, String> {
     let mut rest = tail;
     while let [arg, tail @ ..] = rest {
         rest = tail;
-        match arg.as_str() {
-            "-f" | "--force" => args.force = true,
-            "--keep-history" => args.keep_history = true,
-            "--digest-only" => args.digest_only = true,
-            "--exec-plan" => match rest {
-                [path, tail @ ..] => {
-                    args.exec_plan = Some(PathBuf::from(path));
-                    rest = tail;
+        let word = arg.as_str();
+        if ACCEPTED_FLAGS.contains(&word) {
+            match word {
+                "-f" | "--force" => args.force = true,
+                "--keep-history" => args.keep_history = true,
+                "--digest-only" => args.digest_only = true,
+                "--exec-plan" => match rest {
+                    [path, tail @ ..] => {
+                        args.exec_plan = Some(PathBuf::from(path));
+                        rest = tail;
+                    }
+                    [] => return Err("Error: --exec-plan needs a path.".to_owned()),
+                },
+                other => {
+                    return Err(format!(
+                        "Error: internal error — accepted flag '{other}' is not implemented."
+                    ));
                 }
-                [] => return Err("Error: --exec-plan needs a path.".to_owned()),
-            },
+            }
+            continue;
+        }
+        match word {
             "--purge-history" => {
                 return Err(
                     "Error: --purge-history contradicts reboot, which exists to keep the archive.\n  To end a session and delete its archive: ae end --purge-history <name>"
@@ -797,23 +805,23 @@ mod tests {
         assert_eq!(shell_quote("a'b"), "'a'\\''b'");
     }
 
-    /// The R9 tripwire list IS the parser's accepted set: every one of the
-    /// five spellings trips with the exact text, and the probe answers from
-    /// `parse` itself, so a spelling added to or dropped from the parser moves
-    /// the tripwire with it.
+    /// The R9 tripwire list IS the parser's accepted set: the battery reads
+    /// the parser-owned [`super::ACCEPTED_FLAGS`], every entry trips with the
+    /// exact text, and every entry parses `Ok` — so a spelling added to the
+    /// const without a parse arm fails here, and one dropped from it fails
+    /// the black-box battery (which enumerates the five spellings literally).
     #[test]
     fn the_tripwire_trips_exactly_the_parser_accepted_set() {
-        for flag in [
-            "-f",
-            "--force",
-            "--keep-history",
-            "--digest-only",
-            "--exec-plan",
-        ] {
-            assert!(super::parse_accepts(flag), "{flag} trips");
+        for flag in super::ACCEPTED_FLAGS {
+            let tail: Vec<String> = if *flag == "--exec-plan" {
+                vec![flag.to_string(), "p".to_owned(), "n".to_owned()]
+            } else {
+                vec![flag.to_string(), "n".to_owned()]
+            };
+            assert!(super::parse(&tail).is_ok(), "{flag} parses");
             let mut err = Vec::new();
             let code =
-                super::run_compact_entry(&[flag.to_owned(), "sess".to_owned()], &mut err).unwrap();
+                super::run_compact_entry(&[flag.to_string(), "sess".to_owned()], &mut err).unwrap();
             assert_eq!(code, crate::state::EXIT_USAGE, "{flag}");
             assert_eq!(
                 String::from_utf8_lossy(&err),
@@ -832,7 +840,7 @@ mod tests {
             "--worktree",
             "--bogus",
         ] {
-            assert!(!super::parse_accepts(flag), "{flag} errors");
+            assert!(!super::ACCEPTED_FLAGS.contains(&flag), "{flag} errors");
             let mut err = Vec::new();
             let code = super::run_compact_entry(&[flag.to_owned()], &mut err).unwrap();
             assert_eq!(code, crate::state::EXIT_USAGE, "{flag}");

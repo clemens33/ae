@@ -303,6 +303,16 @@ pub fn run(args: &[String], out: &mut impl Write, err: &mut impl Write) -> Resul
         err.flush()?;
         return Ok(code);
     }
+    // `compact` in the B release is pure argv text — the tripwire plus the
+    // stub, no state read at all — so it routes before the preamble, whose
+    // missing-root refusal would otherwise mask the exit-2 with an exit-1.
+    // The `run_entry` arm holds the router's truth for C's stateful verb.
+    if args.first().map(String::as_str) == Some("compact") {
+        let code = crate::lifecycle::compaction::run_compact_entry(&args[1..], err)?;
+        out.flush()?;
+        err.flush()?;
+        return Ok(code);
+    }
     let Some(preamble) = resolve_facts(shape, err)? else {
         err.flush()?;
         return Ok(EXIT_UNAVAILABLE);

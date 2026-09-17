@@ -829,7 +829,9 @@ pub(crate) fn cancel_step(dir: &Path, reference: &str, err: &mut impl Write) -> 
         return Ok(EXIT_FAILED);
     };
     let actor = String::from_utf8_lossy(&req.from).into_owned();
-    if !actor.starts_with("ae:compact:") && !actor.starts_with("ae:reboot:") {
+    let ours = reboot_actor(dir);
+    let legacy = legacy_compact_actor(dir);
+    if ours.is_empty() || (req.from != ours.as_bytes() && req.from != legacy.as_bytes()) {
         writeln!(
             err,
             "reboot: refusing to withdraw {reference} — it was not opened by reboot (opener '{actor}')."
@@ -1630,6 +1632,7 @@ mod tests {
     fn wait_succeeds_when_both_facts_are_present() {
         let s = Scratch::new("wait-both");
         let dir = handover_dir(&s);
+        std::fs::write(dir.join("meta"), format!("session_id={UUID}\nmode=local\n")).unwrap();
         seed_handover(&dir, 0);
         append_reply(&dir);
         std::fs::write(
@@ -1647,6 +1650,7 @@ mod tests {
     fn wait_times_out_and_leaves_the_request_pending_when_only_the_memo_arrived() {
         let s = Scratch::new("wait-memo");
         let dir = handover_dir(&s);
+        std::fs::write(dir.join("meta"), format!("session_id={UUID}\nmode=local\n")).unwrap();
         seed_handover(&dir, 0);
         std::fs::write(
             dir.join("memo.tsv"),
@@ -1673,6 +1677,7 @@ mod tests {
         // re-run must send a fresh request — the guidance says so.
         let s = Scratch::new("wait-reply");
         let dir = handover_dir(&s);
+        std::fs::write(dir.join("meta"), format!("session_id={UUID}\nmode=local\n")).unwrap();
         seed_handover(&dir, 0);
         append_reply(&dir);
         let mut err = Vec::new();
@@ -1750,6 +1755,7 @@ mod tests {
     fn cancel_withdraws_a_reboot_handover_and_pins_it_cancelled() {
         let s = Scratch::new("cancel-ok");
         let dir = handover_dir(&s);
+        std::fs::write(dir.join("meta"), format!("session_id={UUID}\nmode=local\n")).unwrap();
         seed_handover_as(&dir, 0, &format!("ae:reboot:{UUID}"));
         assert_eq!(status_of(&dir), requests::Status::Pending, "precondition");
         let mut err = Vec::new();
@@ -1767,6 +1773,7 @@ mod tests {
     fn cancel_withdraws_a_legacy_compact_handover_and_keeps_its_actor_bytes() {
         let s = Scratch::new("cancel-legacy");
         let dir = handover_dir(&s);
+        std::fs::write(dir.join("meta"), format!("session_id={UUID}\nmode=local\n")).unwrap();
         seed_handover(&dir, 0);
         let mut err = Vec::new();
         assert_eq!(
@@ -1792,6 +1799,7 @@ mod tests {
     fn cancel_refuses_an_ae_seats_opener() {
         let s = Scratch::new("cancel-seats");
         let dir = handover_dir(&s);
+        std::fs::write(dir.join("meta"), format!("session_id={UUID}\nmode=local\n")).unwrap();
         seed_handover_as(&dir, 0, &format!("ae:seats:{UUID}"));
         let mut err = Vec::new();
         assert_eq!(cancel_step(&dir, REF, &mut err).unwrap(), EXIT_FAILED);
@@ -1803,6 +1811,7 @@ mod tests {
     fn cancel_refuses_a_request_not_opened_by_reboot() {
         let s = Scratch::new("cancel-foreign");
         let dir = handover_dir(&s);
+        std::fs::write(dir.join("meta"), format!("session_id={UUID}\nmode=local\n")).unwrap();
         // A normal pane-to-pane ask, not a reserved handover actor.
         let ask = format!(
             "{{\"ts\":\"2026-08-29T00:00:00Z\",\"actor\":\"cl:lead\",\"action\":\"ask\",\"target\":\"cl:main\",\"ref\":\"{REF}\",\"actor_slot\":\"main\",\"actor_session\":\"sess\",\"target_slot\":\"worker.0\",\"target_session\":\"sess\"}}\n"
@@ -1814,11 +1823,37 @@ mod tests {
     }
 
     #[test]
+    fn cancel_refuses_a_handover_opened_under_a_foreign_uuid() {
+        let s = Scratch::new("cancel-foreign-uuid");
+        let dir = handover_dir(&s);
+        std::fs::write(dir.join("meta"), format!("session_id={UUID}\nmode=local\n")).unwrap();
+        for prefix in ["ae:reboot", "ae:compact"] {
+            seed_handover_as(
+                &dir,
+                0,
+                &format!("{prefix}:99999999-9999-9999-9999-999999999999"),
+            );
+            let mut err = Vec::new();
+            assert_eq!(
+                cancel_step(&dir, REF, &mut err).unwrap(),
+                EXIT_FAILED,
+                "{prefix}"
+            );
+            assert!(
+                String::from_utf8_lossy(&err).contains("not opened by reboot"),
+                "{prefix}"
+            );
+            assert_eq!(status_of(&dir), requests::Status::Pending);
+        }
+    }
+
+    #[test]
     fn cancel_is_idempotent_once_withdrawn() {
         // The already-closed no-op: a second withdrawal finds the request no longer
         // Pending and writes nothing — no duplicate cancel event, still Cancelled.
         let s = Scratch::new("cancel-twice");
         let dir = handover_dir(&s);
+        std::fs::write(dir.join("meta"), format!("session_id={UUID}\nmode=local\n")).unwrap();
         seed_handover(&dir, 0);
         let mut err = Vec::new();
         assert_eq!(cancel_step(&dir, REF, &mut err).unwrap(), 0);

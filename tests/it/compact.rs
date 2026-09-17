@@ -384,12 +384,19 @@ fn compact_cancel_withdraws_end_to_end() {
 
 /// Run a PUBLIC verb (`compact`, `reboot`) with the hermetic env the entry
 /// rig uses: a scratch `HOME`/`AE_HOME`/config, no tmux inheritance.
-fn public(s: &Scratch, args: &[&str]) -> std::process::Output {
+/// `rootless` drops every state-root door instead, for the pre-preamble pin.
+fn public_with(s: &Scratch, args: &[&str], rootless: bool) -> std::process::Output {
     let mut cmd = crate::cli::ae();
-    cmd.env("HOME", &s.0)
-        .env("AE_HOME", &s.0)
-        .env("CONFIG_FILE", s.0.join("config"))
-        .env("AE_NO_AUTOSTART", "1")
+    if rootless {
+        cmd.env_remove("HOME")
+            .env_remove("AE_HOME")
+            .env_remove("CONFIG_FILE");
+    } else {
+        cmd.env("HOME", &s.0)
+            .env("AE_HOME", &s.0)
+            .env("CONFIG_FILE", s.0.join("config"));
+    }
+    cmd.env("AE_NO_AUTOSTART", "1")
         .env("TMUX_TMPDIR", &s.0)
         .env_remove("TMUX")
         .env_remove("TMUX_PANE")
@@ -422,7 +429,7 @@ fn compact_tripwire_fires_the_exact_line_for_every_destructive_flag() {
         ),
         (vec!["compact", "--exec-plan"], "--exec-plan"),
     ] {
-        let out = public(&s, &args);
+        let out = public_with(&s, &args, false);
         assert_eq!(out.status.code(), Some(2), "{args:?}: {}", stderr(&out));
         assert_eq!(
             stderr(&out),
@@ -435,17 +442,31 @@ fn compact_tripwire_fires_the_exact_line_for_every_destructive_flag() {
     }
     // Named-but-refused and unknown flags get the generic error.
     for flag in ["--purge-history", "--bogus"] {
-        let out = public(&s, &["compact", flag, "sess"]);
+        let out = public_with(&s, &["compact", flag, "sess"], false);
         assert_eq!(out.status.code(), Some(2), "{flag}");
         assert_eq!(stderr(&out), format!("Error: unknown flag '{flag}'.\n"));
     }
 }
 
 #[test]
+fn compact_tripwire_fires_without_any_state_root() {
+    // Routed before the preamble: with neither HOME nor AE_HOME set there is
+    // no exit-1 state-root refusal, just the exit-2 tripwire, alone on stderr.
+    let s = Scratch::new("noroot");
+    let out = public_with(&s, &["compact", "--force", "sess"], true);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert_eq!(
+        stderr(&out),
+        "ae: '--force' belongs to the destructive verb, which is now 'ae reboot'. Run: ae reboot --force [name]\n"
+    );
+    assert!(stdout(&out).is_empty());
+}
+
+#[test]
 fn bare_compact_prints_the_one_line_stub() {
     let s = Scratch::new("stub");
     for args in [vec!["compact"], vec!["compact", "sess"]] {
-        let out = public(&s, &args);
+        let out = public_with(&s, &args, false);
         assert_eq!(out.status.code(), Some(2), "{args:?}: {}", stderr(&out));
         assert_eq!(
             stderr(&out),
@@ -470,7 +491,7 @@ fn reboot_accepts_every_tripwire_flag_past_its_parser() {
         (vec!["reboot", "--exec-plan", "/tmp/p"], true),
         (vec!["reboot", "--bogus"], false),
     ] {
-        let out = public(&s, &args);
+        let out = public_with(&s, &args, false);
         assert_eq!(out.status.code(), Some(2), "{args:?}");
         if accepted {
             assert!(
