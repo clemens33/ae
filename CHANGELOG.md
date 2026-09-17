@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.97] - 2026-09-17
+- Add the seventh mark for a fresh waiting-agent declaration
+- Draw a fresh waiting-agent verdict with the seventh mark
+- Pin the waiting-agent picker mark and the new format stamp
+- Document the seventh mark and the shared working rank
+- Fold the overlong picker test line
+- Satisfy clippy for the seventh mark
+
 ## [v2026.9.96] - 2026-09-17
 - Parse and carry the predecessor row
 - Record the id an authoritative capture replaces
