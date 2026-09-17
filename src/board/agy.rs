@@ -9,7 +9,9 @@
 //!
 //! A record is one prompt the human typed: `display` is its text, `timestamp`
 //! is integer MILLIS native (→ micros ×1000), and a `"type":"slash_command"`
-//! record is KEPT — the human typed it. No assistant text lives in this store.
+//! record is KEPT — the human typed it. No assistant text lives in this store:
+//! with `--assistant` the reader covers that fact once per read, silent
+//! (documented) with the flag off.
 //! ae's context rides `-i` as a USER turn, so the ctx turn IS a history record:
 //! line 1 carries the ae marker → `is_ae_turn` drops it.
 //!
@@ -63,6 +65,11 @@ pub fn read_stream(
         if let LineBody::Full(bytes) = &line.body {
             sink.push_line(bytes, line.offset);
         }
+    }
+    // The store carries prompts only: with `--assistant` the seat says so,
+    // once per read. Silent (documented) with the flag off.
+    if streamed.assistant {
+        sink.cover("agy: no assistant records (history carries prompts only)");
     }
     if let Some(overlong) = super::overlong_coverage(streamed, actor) {
         sink.coverage.push(overlong);
@@ -177,6 +184,24 @@ mod tests {
         read(&bytes, ACTOR, FILE, crate::tool::ToolKind::Agy, SEAT)
     }
 
+    /// Read these lines through the flag: the one-shot `read` stays the
+    /// off-path, so the coverage test binds [`super::read_stream`] directly.
+    fn read_lines_with(
+        lines: &[&str],
+        assistant: bool,
+    ) -> (Vec<crate::board::Row>, Vec<crate::board::Coverage>) {
+        let mut bytes = lines.join("\n").into_bytes();
+        bytes.push(b'\n');
+        let mut splitter = super::Splitter::new();
+        splitter.feed(&bytes);
+        super::read_stream(
+            &splitter.finish().for_seat(SEAT).with_assistant(assistant),
+            ACTOR,
+            FILE,
+            crate::tool::ToolKind::Agy,
+        )
+    }
+
     #[test]
     fn the_matching_record_yields_one_row_with_millis_as_micros() {
         let (rows, coverage) = read_lines(&[
@@ -194,6 +219,27 @@ mod tests {
         assert_eq!(rows[0].actor, ACTOR);
         assert_eq!(rows[0].file, FILE);
         assert_eq!(rows[0].offset, 0);
+    }
+
+    #[test]
+    fn the_flag_on_covers_the_missing_replies_once_off_stays_silent() {
+        let line = rec(Some(SEAT), "plain human words", &MILLIS.to_string());
+        let (rows, coverage) = read_lines_with(&[line.as_str()], true);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(coverage.len(), 1);
+        assert_eq!(
+            (
+                coverage[0].actor.as_str(),
+                coverage[0].reason.as_str()
+            ),
+            (
+                ACTOR,
+                "agy: no assistant records (history carries prompts only)"
+            )
+        );
+        let (rows, coverage) = read_lines_with(&[line.as_str()], false);
+        assert_eq!(rows.len(), 1);
+        assert!(coverage.is_empty(), "flag off: nothing");
     }
 
     #[test]
