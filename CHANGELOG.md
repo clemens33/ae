@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.101] - 2026-09-17
+- Refuse waiting-user from a spawned seat
+- Pin the spawned-seat waiting-user refusal end to end
+- Document the spawned-seat waiting-user refusal
+
 ## [v2026.9.100] - 2026-09-17
 - Render board headers as clock time under a date divider
 - Read each seat's recorded predecessors, nearest first
