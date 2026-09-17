@@ -1896,7 +1896,7 @@ const fn motion_observation_due(ticks_since_observation: u8) -> bool {
 }
 
 /// Whether this look permits periodic redraws at all.
-const fn motion_ticker_enabled(look: Look) -> bool {
+const fn motion_ticker_enabled(look: &Look) -> bool {
     look.drawn && look.motion
 }
 
@@ -2264,7 +2264,7 @@ fn wait_between_cycles(
     interval_secs: u64,
 ) {
     let interval = Duration::from_secs(interval_secs);
-    let Some(look) = carry.look.filter(|look| motion_ticker_enabled(*look)) else {
+    let Some(look) = carry.look.filter(motion_ticker_enabled) else {
         std::thread::sleep(interval);
         return;
     };
@@ -5863,12 +5863,12 @@ mod tests {
         detached.session_attached = 0;
         assert_eq!(motion_cadence(&[attached]), Duration::from_millis(100));
         assert_eq!(motion_cadence(&[detached]), Duration::from_secs(2));
-        assert!(motion_ticker_enabled(Look::DEFAULT));
-        assert!(!motion_ticker_enabled(Look {
+        assert!(motion_ticker_enabled(&Look::DEFAULT));
+        assert!(!motion_ticker_enabled(&Look {
             motion: false,
             ..Look::DEFAULT
         }));
-        assert!(!motion_ticker_enabled(Look {
+        assert!(!motion_ticker_enabled(&Look {
             drawn: false,
             ..Look::DEFAULT
         }));

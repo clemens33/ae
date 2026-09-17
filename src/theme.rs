@@ -70,7 +70,7 @@ pub struct Palette {
     /// Movement.
     pub working: &'static str,
     /// Waiting on ANOTHER agent — quiet, no human needed; escalates to
-    /// NeedsYou past its ceiling. An amber/ochre, distinct from working's
+    /// `NeedsYou` past its ceiling. An amber/ochre, distinct from working's
     /// blue-grey and from done's green.
     pub waiting_agent: &'static str,
     /// A declared finish.
@@ -206,7 +206,7 @@ pub enum Mark {
     /// Moving, or recently moved.
     Working,
     /// Waiting on ANOTHER agent — quiet, no human needed; escalates to
-    /// NeedsYou past its ceiling. Its own glyph and accent, but the SAME
+    /// `NeedsYou` past its ceiling. Its own glyph and accent, but the SAME
     /// published rank as Working: a rank is read by other sessions' older
     /// cores, so the numbers 0–5 keep their meaning and another session's
     /// strip still reads this as working.
@@ -279,7 +279,7 @@ impl Mark {
 
     /// The mark a published rank names, or [`Mark::Idle`] for anything else.
     ///
-    /// Rank 2 names Working even though WaitingAgent publishes it too: an
+    /// Rank 2 names Working even though `WaitingAgent` publishes it too: an
     /// explicit table, never an index into [`Mark::BY_URGENCY`], because the
     /// tie means the table is no longer a bijection.
     #[must_use]
@@ -2532,7 +2532,7 @@ mod tests {
     /// A rank published by one session's watchdog is read back as the same mark
     /// by every other session's strip — the whole reason the rank exists.
     ///
-    /// With ONE tie: WaitingAgent publishes 2 and reads back as Working, so an
+    /// With ONE tie: `WaitingAgent` publishes 2 and reads back as Working, so an
     /// older core — or another session's strip — still sees a working session.
     #[test]
     fn a_published_rank_round_trips_through_the_strip() {
