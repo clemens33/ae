@@ -159,3 +159,10 @@ path = "fuzz_targets/board_muse.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "board_agy"
+path = "fuzz_targets/board_agy.rs"
+test = false
+doc = false
+bench = false
