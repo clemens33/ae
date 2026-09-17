@@ -6108,33 +6108,24 @@ fn listing_id(socket: &Path, scratch: &Path, session: &str) -> String {
 
 /// The `_session-menu show` argv for one staged click, with an optional
 /// wrong client pid so the clicker proof can be defeated on purpose.
-fn show_argv(
-    client: &str,
-    client_pid: &str,
-    session: &str,
-    session_id: &str,
-    pane: &str,
-    server_pid: &str,
-    server_start: &str,
-    view: Option<&str>,
-) -> Vec<String> {
+fn show_argv(facts: &ShowFacts, view: Option<&str>) -> Vec<String> {
     let mut argv = [
         "_session-menu",
         "show",
         "--client",
-        client,
+        facts.client.as_str(),
         "--client-pid",
-        client_pid,
+        facts.client_pid.as_str(),
         "--session",
-        session,
+        facts.session.as_str(),
         "--session-id",
-        session_id,
+        facts.session_id.as_str(),
         "--pane",
-        pane,
+        facts.pane.as_str(),
         "--server-pid",
-        server_pid,
+        facts.server_pid.as_str(),
         "--server-start",
-        server_start,
+        facts.server_start.as_str(),
     ]
     .into_iter()
     .map(ToOwned::to_owned)
@@ -7089,16 +7080,7 @@ fn show_child(
         .env_remove("TMUX_PANE")
         .stderr(Stdio::piped())
         .stdout(Stdio::null())
-        .args(show_argv(
-            &facts.client,
-            &facts.client_pid,
-            &facts.session,
-            &facts.session_id,
-            &facts.pane,
-            &facts.server_pid,
-            &facts.server_start,
-            view,
-        ));
+        .args(show_argv(facts, view));
     command
         .spawn()
         .unwrap_or_else(|error| panic!("the show invocation starts: {error}"))
@@ -7519,16 +7501,7 @@ fn a_resize_between_the_reads_and_the_final_proof_degrades_the_root() {
         .env("AE_SHIM_REAL_PATH", &real_path)
         .stderr(Stdio::null())
         .stdout(Stdio::null())
-        .args(show_argv(
-            &facts.client,
-            &facts.client_pid,
-            &facts.session,
-            &facts.session_id,
-            &facts.pane,
-            &facts.server_pid,
-            &facts.server_start,
-            None,
-        ));
+        .args(show_argv(&facts, None));
     let mut child = command
         .spawn()
         .unwrap_or_else(|error| panic!("the shimmed show starts: {error}"));
@@ -8010,17 +7983,15 @@ fn dialog_text(tag: &str, view: &str, title: &str, events: &str, memo: &str) -> 
     write_state_fixture_config(&project, &config);
     launch_ae_session(&socket, &scratch, &root, &project, &config, tag);
     let dir = root.join("sessions").join(tag);
-    fs::write(dir.join("events.jsonl"), events).expect("plant events");
-    fs::write(dir.join("memo.tsv"), memo).expect("plant memo");
+    fs::write(dir.join("events.jsonl"), events).unwrap_or_else(|error| panic!("plant: {error}"));
+    fs::write(dir.join("memo.tsv"), memo).unwrap_or_else(|error| panic!("plant: {error}"));
     let record = scratch.join("dialog.terminal");
     let (client, _terminal) =
         direct_terminal_client(&socket, &scratch, &root, &config, tag, 120, 30, &record);
     let facts = gather_show_facts(&socket, &scratch, tag, &client);
     let mut child = show_child(&socket, &scratch, &root, &config, &facts, Some(view));
-    let raw = match wait_for_direct_menu_geometry(&record, title) {
-        Ok((_, raw)) => raw,
-        Err(_) => panic!("{tag} drew no {title} dialog"),
-    };
+    let (_, raw) = wait_for_direct_menu_geometry(&record, title)
+        .unwrap_or_else(|_| panic!("{tag} drew no {title} dialog"));
     let _ = child.kill();
     let _ = child.wait();
     String::from_utf8_lossy(&raw).into_owned()

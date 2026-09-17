@@ -1102,8 +1102,7 @@ pub fn select_root(
     activity: Option<&str>,
     memos: Option<&str>,
     stop: Option<&str>,
-    client_width: usize,
-    client_height: usize,
+    dims: (usize, usize),
 ) -> crate::tmux::Menu {
     for menu in [
         root_menu_full(session, facts, rows, activity, memos, stop),
@@ -1112,14 +1111,14 @@ pub fn select_root(
         root_menu(session, rows, stop),
     ] {
         let (columns, lines) = menu_budget(&menu);
-        if client_width >= columns && client_height >= lines {
+        if dims.0 >= columns && dims.1 >= lines {
             return menu;
         }
     }
     if let Some(first) = rows.first() {
         let degraded = status_only_menu(session, first, stop);
         let (columns, lines) = menu_budget(&degraded);
-        if client_width >= columns && client_height >= lines {
+        if dims.0 >= columns && dims.1 >= lines {
             return degraded;
         }
     }
@@ -1267,8 +1266,7 @@ fn run_show(root: &Path, captured: &Captured, view: ShowView, err: &mut impl Wri
             sources.activity.as_deref(),
             sources.memos.as_deref(),
             sources.stop.as_deref(),
-            width,
-            height,
+            (width, height),
         ),
         ShowView::Activity => select_dialog("Activity", &sources.dialog, width, height),
         ShowView::Memos => select_dialog("Memos", &sources.dialog, width, height),
@@ -2006,7 +2004,7 @@ mod tests {
         // Built for a 200x50 client, drawn for a live 80x8 one: the LIVE
         // dimensions decide, and the full three-declaration menu no longer
         // fits while the action floor must survive.
-        let live = super::select_root("aedev", &[], &rows, None, None, Some(stop), 80, 8);
+        let live = super::select_root("aedev", &[], &rows, None, None, Some(stop), (80, 8));
         let (live_columns, live_rows) = menu_budget(&live);
         assert!(
             live_columns <= 80 && live_rows <= 8,
@@ -2029,7 +2027,7 @@ mod tests {
         );
 
         // Below every variant, today's trim behaviour: a menu is still drawn.
-        let tiny = super::select_root("aedev", &[], &rows, None, None, Some(stop), 4, 2);
+        let tiny = super::select_root("aedev", &[], &rows, None, None, Some(stop), (4, 2));
         let labels: Vec<&str> = tiny.items.iter().map(|item| item.label.as_str()).collect();
         assert_eq!(labels, vec![super::FLIP_ROW_LABEL, STOP_ROW_LABEL]);
         assert!(
@@ -2041,6 +2039,9 @@ mod tests {
     /// Full → no-facts → no-rows → status-only → floor, in that order.
     #[test]
     fn the_ladder_drops_facts_first_then_the_dialog_rows() {
+        fn has(menu: &crate::tmux::Menu, label: &str) -> bool {
+            menu.items.iter().any(|item| item.label == label)
+        }
         let facts = vec!["mode: local".to_owned()];
         let rows = vec![
             RootRow::Declaration("s (3m)".to_owned()),
@@ -2048,10 +2049,7 @@ mod tests {
         ];
         let (s, a, m) = ("run-shell -b 's'", "run-shell -b 'a'", "run-shell -b 'm'");
         let sel =
-            |w, h| super::select_root("aedev", &facts, &rows, Some(a), Some(m), Some(s), w, h);
-        fn has(menu: &crate::tmux::Menu, label: &str) -> bool {
-            menu.items.iter().any(|item| item.label == label)
-        }
+            |w, h| super::select_root("aedev", &facts, &rows, Some(a), Some(m), Some(s), (w, h));
         let full = super::root_menu_full("aedev", &facts, &rows, Some(a), Some(m), Some(s));
         let bare = super::root_menu("aedev", &rows, Some(s));
         let second = super::root_menu_full("aedev", &[], &rows, Some(a), Some(m), Some(s));
@@ -2111,7 +2109,8 @@ mod tests {
             (columns, rows - 1),
             (columns - 1, rows - 1),
         ] {
-            let menu = super::select_root("aedev", &[], &[], None, None, Some(stop), width, height);
+            let menu =
+                super::select_root("aedev", &[], &[], None, None, Some(stop), (width, height));
             assert_eq!(menu.items.len(), floor.items.len(), "{width}x{height}");
         }
     }
@@ -2329,8 +2328,7 @@ mod tests {
                 None,
                 None,
                 Some("run-shell -b 'stop'"),
-                200,
-                60,
+                (200, 60),
             );
             assert!(
                 menu.items
@@ -2414,8 +2412,7 @@ mod tests {
             None,
             None,
             Some("run-shell -b 'stop'"),
-            200,
-            60,
+            (200, 60),
         );
         let actions: Vec<&str> = menu
             .items
@@ -2738,12 +2735,8 @@ mod tests {
             + "\n";
         let now = crate::time::Timestamp::parse("2026-09-17T12:00:00Z").expect("now parses");
         let meta = parsed_meta(UUID_A, &["lead"]);
-        let rows = super::activity_rows(
-            &OptionReading::Set(UUID_A.to_owned()),
-            &meta,
-            &events(&container),
-            now,
-        );
+        let set = OptionReading::Set(UUID_A.to_owned());
+        let rows = super::activity_rows(&set, &meta, &events(&container), now);
         let shown = declaration_rows(&rows);
         let kinds: Vec<&str> = shown
             .iter()
@@ -2768,12 +2761,7 @@ mod tests {
             "ask",
             &format!(r#","summary":"{}""#, "y".repeat(200)),
         ) + "\n";
-        let rows = super::activity_rows(
-            &OptionReading::Set(UUID_A.to_owned()),
-            &meta,
-            &events(&wide),
-            now,
-        );
+        let rows = super::activity_rows(&set, &meta, &events(&wide), now);
         let shown = declaration_rows(&rows);
         assert_eq!(shown.len(), 1);
         assert!(
@@ -2800,12 +2788,7 @@ mod tests {
             gap_rows(&bad),
             vec!["activity: unreadable (events: a directory)"]
         );
-        let rows = super::activity_rows(
-            &OptionReading::Set(UUID_A.to_owned()),
-            &meta,
-            &crate::store::SourceRead::Absent,
-            now,
-        );
+        let rows = super::activity_rows(&set, &meta, &crate::store::SourceRead::Absent, now);
         assert_eq!(gap_rows(&rows), vec!["activity: none"]);
     }
 
@@ -2813,11 +2796,12 @@ mod tests {
     #[test]
     fn memos_match_brief_latest_per_topic_newest_first() {
         use crate::tmux::OptionReading;
+        use std::fmt::Write as _;
         let now = crate::time::Timestamp::parse("2026-09-17T12:00:00Z").expect("now parses");
         let meta = parsed_meta(UUID_A, &["lead"]);
         let mut file = String::from("2026-09-17T08:00:00Z\tcl:lead\tdecision\told\n");
         for h in 1..10 {
-            file.push_str(&format!("2026-09-17T{h:02}:00:00Z\tcl:lead\tt{h}\tw{h}\n"));
+            let _ = writeln!(file, "2026-09-17T{h:02}:00:00Z\tcl:lead\tt{h}\tw{h}");
         }
         file.push_str("2026-09-17T10:00:00Z\tcl:lead\tdecision\tnew\n");
         file.push_str("2026-09-17T11:00:00Z\tcl:lead\tparking\tresume here: x\n");
