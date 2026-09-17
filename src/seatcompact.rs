@@ -8,6 +8,7 @@ use crate::json::Value;
 use crate::state::{event_line, summary_of};
 use crate::time::Timestamp;
 use crate::tool::InputModel;
+use std::fmt::Write as _;
 use std::str;
 
 pub const DISPATCHED: &str = "dispatched";
@@ -140,9 +141,10 @@ impl Outcome {
             Self::NotDispatched {
                 reason,
                 pane: Some(pane),
-            } if reason == STAGED_TEXT => {
-                Some(format!("clear the composer of {pane} before any send"))
-            }
+            } if reason == STAGED_TEXT => Some(format!(
+                "clear the composer of {} before any send",
+                cell(pane)
+            )),
             _ => None,
         }
     }
@@ -398,6 +400,48 @@ fn dispatch_age(line: &[u8], now: Timestamp) -> Option<String> {
     Some(span(now.epoch().saturating_sub(ts.epoch())))
 }
 
+/// One seat's report entry: what the hand line names, the gate verdict the
+/// caller already took, the outcome, the elapsed seconds, and R4's cancelled
+/// earlier checkpoint, if any.
+#[derive(Debug, Clone, Copy)]
+pub struct SeatLine<'a> {
+    pub slot: &'a str,
+    pub tool: &'a str,
+    pub gate: Gate,
+    pub outcome: &'a Outcome,
+    pub elapsed: i64,
+    pub earlier_checkpoint: Option<&'a str>,
+}
+
+/// The P1 report: one line per seat, then the `compact by hand:` line. Every
+/// record-derived field is projected through [`cell`].
+#[must_use]
+pub fn report(lines: &[SeatLine<'_>]) -> String {
+    let mut out = String::new();
+    for line in lines {
+        let _ = write!(
+            out,
+            "{} {} ({})",
+            cell(&line.outcome.word()),
+            cell(line.slot),
+            span(line.elapsed)
+        );
+        if let Some(remedy) = line.outcome.remedy() {
+            let _ = write!(out, " — {remedy}");
+        }
+        out.push('\n');
+        if let Some(reference) = line.earlier_checkpoint {
+            let _ = writeln!(out, "  note: earlier checkpoint {}", cell(reference));
+        }
+    }
+    let gates: Vec<(&str, &str, Gate)> = lines.iter().map(|l| (l.slot, l.tool, l.gate)).collect();
+    if let Some(hand) = hand_remedy_line(&gates) {
+        out.push_str(&hand);
+        out.push('\n');
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -603,6 +647,16 @@ mod tests {
             1,
             "one projection owner"
         );
+        for wrapped in [
+            "cell(&line.outcome.word())",
+            "cell(line.slot)",
+            "cell(reference)",
+            "cell(pane)",
+            "cell(slot)",
+            "cell(tool)",
+        ] {
+            assert!(production.contains(wrapped), "unwrapped: {wrapped}");
+        }
     }
 
     const TS: Timestamp = Timestamp::from_epoch(1_787_000_000);
@@ -610,10 +664,15 @@ mod tests {
     const ACTOR: &str = "ae:seats:u";
     const REQUEST: &str = "ae-20260917T120000Z-00000001";
 
-    fn record<'a>(outcome: &'a Outcome, request: &'a str, sanitized: usize) -> String {
+    fn record<'a>(
+        actor: &'a str,
+        outcome: &'a Outcome,
+        request: &'a str,
+        sanitized: usize,
+    ) -> String {
         seat_record(&SeatRecord {
             ts: TS,
-            actor: ACTOR,
+            actor,
             run: "run-1",
             request,
             slot: "w1",
@@ -629,7 +688,7 @@ mod tests {
             Verdict::State(SubmitState::Unknown(Unverifiable::CaptureUnreadable)),
             "%3",
         );
-        let line = record(&unknown, REQUEST, 2);
+        let line = record(ACTOR, &unknown, REQUEST, 2);
         let bytes = line.as_bytes();
         assert_eq!(extract(bytes, "action"), ACTION.as_bytes());
         assert_eq!(extract(bytes, "summary"), b"dispatched w1");
@@ -639,15 +698,12 @@ mod tests {
         assert_eq!(extract(bytes, "target_session"), b"s");
         assert_eq!(extract(bytes, "unverifiable"), b"unreadable-capture");
         assert!(line.contains("\"sanitized\":2"));
-        assert!(
-            !line.contains("\"reason\""),
-            "a dispatched record has no reason"
-        );
+        assert!(!line.contains("\"reason\""));
     }
 
     #[test]
     fn a_skip_record_carries_its_leg_and_never_a_marker() {
-        let line = record(&Outcome::identity_gap(GapLeg::Live), "", 0);
+        let line = record(ACTOR, &Outcome::identity_gap(GapLeg::Live), "", 0);
         let bytes = line.as_bytes();
         assert_eq!(
             extract(bytes, "summary"),
@@ -674,7 +730,7 @@ mod tests {
     #[test]
     fn a_dispatched_run_without_an_end_is_warned_and_an_end_silences_it() {
         let dispatched = Outcome::from_verdict(Verdict::State(SubmitState::Submitted), "%1");
-        let seat = record(&dispatched, REQUEST, 0);
+        let seat = record(ACTOR, &dispatched, REQUEST, 0);
         let start = run_record(TS, ACTOR, "run-1", RUN_START);
         assert_eq!(
             audit_warning(&audit(&[start, seat.clone()]), ACTOR, NOW),
@@ -687,16 +743,7 @@ mod tests {
     #[test]
     fn a_trimmed_audit_and_another_actors_records_are_silent() {
         let dispatched = Outcome::from_verdict(Verdict::State(SubmitState::Submitted), "%1");
-        let foreign = seat_record(&SeatRecord {
-            ts: TS,
-            actor: "other",
-            run: "run-1",
-            request: "",
-            slot: "w1",
-            session: "s",
-            outcome: &dispatched,
-            sanitized: 0,
-        });
+        let foreign = record("other", &dispatched, "", 0);
         assert!(audit_warning(&audit(&[foreign]), ACTOR, NOW).is_empty());
         assert!(audit_warning(b"", ACTOR, NOW).is_empty());
     }
@@ -716,5 +763,75 @@ mod tests {
         assert!(lines[0].contains("did not end"));
         assert!(!lines[0].contains('\u{1b}'), "no raw escape byte");
         assert!(lines[0].len() < 130, "one bounded line");
+    }
+
+    fn entry<'a>(
+        slot: &'a str,
+        tool: &'a str,
+        gate: Gate,
+        outcome: &'a Outcome,
+        elapsed: i64,
+        checkpoint: Option<&'a str>,
+    ) -> SeatLine<'a> {
+        SeatLine {
+            slot,
+            tool,
+            gate,
+            outcome,
+            elapsed,
+            earlier_checkpoint: checkpoint,
+        }
+    }
+
+    #[test]
+    fn the_report_is_one_line_per_seat_then_the_hand_line() {
+        let busy = Outcome::skipped(BUSY);
+        let dispatched = outcome(SubmitState::Submitted);
+        let staged = outcome(SubmitState::StillStaged);
+        let hand = Outcome::skipped(INPUT_NOT_MODELLED);
+        let guided = classify(GUIDED, InputModel::BorderDelimited, false);
+        let bare = classify(BARE, InputModel::StyleDelimited, false);
+        let unmodelled = classify(BARE, InputModel::Unmodelled, false);
+        let rendered = report(&[
+            entry("w1", "claude", guided, &busy, 12, None),
+            entry("w2", "codex", bare, &dispatched, 3, None),
+            entry("w3", "codex", bare, &staged, 61, Some(REQUEST)),
+            entry("w4", "opencode", unmodelled, &hand, 2, None),
+        ]);
+        assert_eq!(
+            rendered,
+            "skipped (busy) w1 (12s)\n\
+             dispatched w2 (3s)\n\
+             not dispatched (staged text) w3 (1m) — clear the composer of %3 before any send\n  \
+             note: earlier checkpoint ae-20260917T120000Z-00000001\n\
+             skipped (input not modelled) w4 (2s)\n\
+             compact by hand: w4 (opencode: input not modelled)\n"
+        );
+    }
+
+    #[test]
+    fn every_record_derived_field_reaches_the_report_projected() {
+        let slot = format!("\u{1b}[31m{}", "x".repeat(300));
+        let reason = format!("r\u{7}eason {}", "y".repeat(300));
+        let pane = "%\u{1b}3";
+        let reference = format!("ref\u{1b}]0;t\u{7}{}", "z".repeat(300));
+        let skipped = Outcome::Skipped { reason };
+        let staged = Outcome::NotDispatched {
+            reason: STAGED_TEXT.to_owned(),
+            pane: Some(pane.to_owned()),
+        };
+        let bare = classify(BARE, InputModel::StyleDelimited, false);
+        let guided = classify(GUIDED, InputModel::BorderDelimited, false);
+        let rendered = report(&[
+            entry(&slot, "codex", bare, &staged, 61, Some(&reference)),
+            entry("w9", "claude", guided, &skipped, 2, None),
+        ]);
+        assert!(!rendered.contains('\u{1b}'), "no raw escape byte");
+        assert!(!rendered.contains('\u{7}'), "no raw control byte");
+        assert!(
+            rendered.matches('?').count() >= 4,
+            "the projection said each one"
+        );
+        assert!(rendered.lines().all(|line| line.len() < 200), "bounded");
     }
 }
