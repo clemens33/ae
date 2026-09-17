@@ -1116,6 +1116,237 @@ pub fn submit_staged(server: &ServerId, pane: &str, model: InputModel) -> Submit
     SubmitState::StillStaged
 }
 
+// ---- the guarded operation ---------------------------------------------------
+
+/// One guarded paste: everything [`deliver()`] waits for, then the caller's
+/// identity proof under the lifecycle lock, then an instant re-proof, the
+/// paste and a bounded submit. R10's one owner — the caller duplicates none.
+#[derive(Debug, Clone)]
+pub struct GuardedRequest<'a> {
+    /// The session meta directory: the send-lock root and the meta the
+    /// pre-lock dead-pane guard reads.
+    pub dir: &'a Path,
+    /// The server the TARGET is on, not the caller's ambient one.
+    pub server: &'a ServerId,
+    /// The target pane id.
+    pub pane: &'a str,
+    /// The target pane's `@ae_slot`, or empty.
+    pub pane_slot: &'a str,
+    /// The target's session — which session's meta the dead-pane guard reads.
+    pub target_session: &'a str,
+    /// This session's name.
+    pub own_session: &'a str,
+    /// The target's input-box grammar.
+    pub model: InputModel,
+    /// The exact bytes to paste — verbatim, no envelope, no notice arm.
+    pub text: &'a str,
+    /// How long to wait for a busy target before abandoning.
+    pub defer: Duration,
+}
+
+/// Why the guarded operation pasted nothing. Every leg is a constant, never
+/// the offending value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Leg {
+    /// A shell owns the foreground: pre-lock PROVEN gone through meta+`ps`
+    /// (the [`deliver()`] policy), under the lock read from the probe alone —
+    /// and an unreadable probe fails closed to this same leg. Nothing typed.
+    Dead,
+    /// The target stayed busy, or human attention stayed on it: the full
+    /// deferral pre-lock, one snapshot under it. Nothing typed.
+    Busy,
+    /// Another delivery held the pane's send-lock for the whole wait.
+    TargetLocked,
+    /// The lifecycle lock could not be taken — returned by the caller's
+    /// `prove`, never by the operation itself.
+    LifecycleLocked,
+    /// Staging or pasting failed under the lock; a staged-then-refused buffer
+    /// was already deleted, so no byte reached the pane.
+    PasteFailed,
+    /// Identity legs — constructed ONLY by the caller's `prove` closure,
+    /// never by the operation itself. The live identity read could not be
+    /// made.
+    Unreadable,
+    /// The seat's live identity is vacant where the carried facts name it.
+    Vacant,
+    /// The live identity differs from the carried facts.
+    Mismatch,
+    /// A coherent same-name replacement holds the seat: the live occupant is
+    /// not ours, and is left untouched.
+    Live,
+}
+
+/// What the guarded operation did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Outcome {
+    /// Nothing was pasted, for the named leg.
+    Skipped(Leg),
+    /// The bytes were pasted and Enter was sent: the RAW submit verdict.
+    Sent(SubmitState),
+}
+
+/// The KNOWN submit failure: `send_key` refused an Enter. Matched at the one
+/// call site into `not dispatched (enter failed)` — never `?`-propagated,
+/// never `Unknown`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EnterFailed;
+
+/// Paste `request`'s bytes through the lifecycle lock the caller's `prove`
+/// takes — R10's ONE guarded operation.
+///
+/// Steps: (1) every long wait first — the [`deliver()`] dead-pane refusal
+/// (meta+`ps`), the pane's send-lock, the busy/human-input deferral; (2) the
+/// caller's `prove`, which takes the lifecycle lock and re-proves identity,
+/// returning the held lock or a leg; (3) under that lock, the operation's OWN
+/// instant delivery-safety variants — one pane probe, one busy snapshot, no
+/// loop, no file, no process; (4) the paste ([`stage_and_paste`]) and the
+/// BOUNDED submit ([`submit_bounded`]); (5) the lifecycle lock drops, (6) then
+/// the send-lock.
+///
+/// What step (1) deliberately OMITS from [`deliver()`]: the envelope (the
+/// bytes paste verbatim), the recovery-body store (the caller's checkpoint is
+/// the durability), the notice arm (the caller composes exact bytes) and the
+/// Launch-only re-proof. No `wait_input_ready`: the seat proved itself
+/// interactive before the call, and the deferral below owns busy.
+///
+/// # Errors
+/// Returns `Err(EnterFailed)` when `send_key` refuses an Enter during the
+/// bounded submit — the paste is already staged, so this is `not dispatched`,
+/// never a skip and never `Unknown`.
+pub fn deliver_guarded(
+    request: &GuardedRequest<'_>,
+    prove: impl FnOnce() -> Result<std::fs::File, Leg>,
+) -> Result<Outcome, EnterFailed> {
+    // The `deliver()`-shaped view the guard owners below take. They read
+    // `dir`, `server`, `pane`, `defer` and the meta-routing triple only; the
+    // envelope fields stay empty because this operation frames nothing.
+    let view = Request {
+        dir: request.dir,
+        server: request.server,
+        pane: request.pane,
+        logged_target: "",
+        target_session: request.target_session,
+        pane_slot: request.pane_slot,
+        own_session: request.own_session,
+        action: "",
+        reference: "",
+        actor: "",
+        body: "",
+        shape: Shape::Send,
+        defer: request.defer,
+        composed: &[],
+    };
+    // (1a) The `deliver()`-identical dead-pane refusal — the meta+`ps` owner —
+    // BEFORE any lock, so a dead pane refuses fast and lock-free.
+    let liveness = pane_liveness_at(
+        &target_meta_dir(&view),
+        request.pane_slot,
+        &transport::observe_pane_probe(request.server, request.pane).unwrap_or_default(),
+    );
+    if refuses_as_dead(liveness) {
+        return Ok(Outcome::Skipped(Leg::Dead));
+    }
+    // (1b) The pane's send-lock. Declared BEFORE the lifecycle guard so every
+    // exit — explicit or by scope — releases the lifecycle lock first.
+    let Some(send_lock) = lock_target(request.dir, request.pane) else {
+        return Ok(Outcome::Skipped(Leg::TargetLocked));
+    };
+    // (1c) The full busy/human-input deferral — the `wait_for_quiet` owner,
+    // OUTSIDE the lifecycle lock.
+    if !wait_for_quiet(&view, request.model) {
+        return Ok(Outcome::Skipped(Leg::Busy));
+    }
+    // (2) The caller's proof: the lifecycle lock, then identity. A leg skips
+    // with the send-lock released by the scope.
+    let lifecycle_lock = match prove() {
+        Ok(guard) => guard,
+        Err(leg) => return Ok(Outcome::Skipped(leg)),
+    };
+    // (3)+(4) under the held lock; (5) the lifecycle lock drops first, (6)
+    // then the send-lock.
+    let outcome = under_lock(request);
+    drop(lifecycle_lock);
+    drop(send_lock);
+    outcome
+}
+
+/// Steps (3)+(4) under the caller-held lifecycle lock: the instant re-proof —
+/// tmux reads ONLY, no file, no process, no wait — and the paste with its
+/// bounded submit.
+fn under_lock(request: &GuardedRequest<'_>) -> Result<Outcome, EnterFailed> {
+    // (3) One probe: a shell in the foreground — or no readable probe at all,
+    // which fails closed — refuses as Dead. Meta and `ps` are NOT consulted.
+    let alive = match transport::observe_pane_probe(request.server, request.pane) {
+        Some(probe) => instant_alive(probe.pid, crate::watchdog::command_is_shell(&probe.command)),
+        None => false,
+    };
+    if !alive {
+        return Ok(Outcome::Skipped(Leg::Dead));
+    }
+    // (3) One busy snapshot, no loop.
+    if input_busy(request.server, request.pane, request.model)
+        || recently_viewed(request.server, request.pane)
+    {
+        return Ok(Outcome::Skipped(Leg::Busy));
+    }
+    // (4) The paste, then the bounded submit under the same lock.
+    if stage_and_paste(
+        request.server,
+        &buffer_name(request.pane),
+        request.text.as_bytes(),
+        request.pane,
+    )
+    .is_err()
+    {
+        return Ok(Outcome::Skipped(Leg::PasteFailed));
+    }
+    submit_bounded(request.server, request.pane, request.model).map(Outcome::Sent)
+}
+
+/// The under-lock liveness verdict, PURE: only a NAMED pid with a non-shell
+/// foreground counts as alive. Meta and `ps` are not consulted, and an
+/// unreadable probe fails closed to false.
+const fn instant_alive(pid: Option<u32>, shell_in_foreground: bool) -> bool {
+    pid.is_some() && !shell_in_foreground
+}
+
+/// Press Enter, then observe whether the paste left the input box —
+/// [`submit_staged`]'s logic with `send_key`'s refusal propagated as the
+/// KNOWN failure [`EnterFailed`] instead of swallowed.
+///
+/// The sleep budget is one settle (at most 300 ms) plus up to three 300 ms
+/// verification reads — ≤ 1.2 s. Wall time past that is tmux responsiveness,
+/// unbounded by ae like every lifecycle-lock holder.
+///
+/// # Errors
+/// Returns `Err(EnterFailed)` when `send_key` refuses any Enter.
+pub fn submit_bounded(
+    server: &ServerId,
+    pane: &str,
+    model: InputModel,
+) -> Result<SubmitState, EnterFailed> {
+    std::thread::sleep(settle_for(model));
+    if !transport::send_key(server, pane, Key::Enter) {
+        return Err(EnterFailed);
+    }
+    for retry in 0..=VERIFY_RETRIES {
+        std::thread::sleep(VERIFY_POLL);
+        let observed = still_staged(server, pane, model);
+        match observed {
+            SubmitState::Submitted | SubmitState::Unknown(_) => return Ok(observed),
+            SubmitState::StillStaged if retry == VERIFY_RETRIES => {
+                return Ok(SubmitState::StillStaged);
+            }
+            SubmitState::StillStaged => {
+                if !transport::send_key(server, pane, Key::Enter) {
+                    return Err(EnterFailed);
+                }
+            }
+        }
+    }
+    Ok(SubmitState::StillStaged)
+}
+
 /// Positive proof an unmodelled pane has DRAWN something and STOPPED CHANGING.
 ///
 /// True only when both captures succeeded, are non-empty and byte-identical; a
@@ -1288,8 +1519,9 @@ fn lock_target(dir: &Path, pane: &str) -> Option<std::fs::File> {
 mod tests {
     use super::{
         Failure, LivenessRefusal, PaneLiveness, Request, Shape, TargetInput, UNVERIFIED,
-        buffer_name, choose_input, frame, is_name_safe, observed_liveness, pane_settled,
-        refuses_as_dead, settle_for, store_body, under_lock_refusal, unmodelled_ready,
+        VERIFY_POLL, buffer_name, choose_input, frame, instant_alive, is_name_safe,
+        observed_liveness, pane_settled, refuses_as_dead, settle_for, store_body,
+        under_lock_refusal, unmodelled_ready,
     };
     use crate::inventory::ServerId;
     use crate::tool::{InputModel, ToolKind};
@@ -1700,5 +1932,32 @@ mod tests {
         assert!(!pane_settled(Some("booting 1"), Some("booting 2")));
         assert!(!pane_settled(Some(""), Some("drawn")));
         assert!(!pane_settled(Some("drawn"), Some("")));
+    }
+
+    #[test]
+    fn the_guarded_submit_sleep_budget_fits_1_2s_on_every_input_model() {
+        // R10 pin: one settle (worst arm) plus up to three verification
+        // reads. The retry bound itself is pinned by the counted tmux calls
+        // in tests/it/deliver.rs — never by wall time.
+        for model in [
+            InputModel::BorderDelimited,
+            InputModel::StyleDelimited,
+            InputModel::Unmodelled,
+        ] {
+            let budget = settle_for(model) + VERIFY_POLL * 3;
+            assert!(
+                budget <= Duration::from_millis(1200),
+                "{model:?}: {budget:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_under_lock_liveness_verdict_fails_closed() {
+        // R10 pin: only a NAMED pid with a non-shell foreground is alive.
+        assert!(instant_alive(Some(4242), false));
+        assert!(!instant_alive(Some(4242), true));
+        assert!(!instant_alive(None, false));
+        assert!(!instant_alive(None, true));
     }
 }

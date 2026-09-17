@@ -1154,3 +1154,393 @@ fn every_path_into_the_paste_sink_carries_its_declared_guards() {
         "and the same guard holds for a modelled row"
     );
 }
+
+// ---- R10: the guarded operation ---------------------------------------------
+// Pins for `deliver::deliver_guarded`, driven in-process. Every call matches
+// the `Result` — never `?` (pinned against this file).
+
+impl Rig {
+    /// A guarded request against this rig's pane.
+    fn guarded<'a>(
+        &'a self,
+        server: &'a ServerId,
+        text: &'a str,
+        defer: Duration,
+    ) -> deliver::GuardedRequest<'a> {
+        deliver::GuardedRequest {
+            dir: &self.dir,
+            server,
+            pane: &self.pane,
+            pane_slot: "main",
+            target_session: &self.session,
+            own_session: &self.session,
+            model: InputModel::BorderDelimited,
+            text,
+            defer,
+        }
+    }
+
+    /// The pane's send-lock path, as `lock_target` derives it.
+    fn send_lock_path(&self) -> PathBuf {
+        let sanitized = self
+            .pane
+            .replace(|ch: char| !ch.is_ascii_alphanumeric(), "_");
+        self.scratch
+            .join("sessions")
+            .join(".locks")
+            .join(format!("send-lock-{sanitized}"))
+    }
+
+    /// The session's lifecycle-lock path, as `lifecycle::lock` derives it.
+    fn lifecycle_lock_path(&self) -> PathBuf {
+        self.scratch
+            .join("sessions")
+            .join(format!(".lifecycle.{}.lock", self.session))
+    }
+}
+
+/// Take the lifecycle lock at `path`, mapping any refusal to the
+/// caller-owned leg — the shape the C2b verb's `prove` takes.
+fn prove_lock(path: &Path, wait: Duration) -> Result<std::fs::File, deliver::Leg> {
+    ae::store::lock(path, wait).map_err(|_| deliver::Leg::LifecycleLocked)
+}
+
+fn lock_is_free(path: &Path) -> bool {
+    ae::store::lock(path, Duration::ZERO).is_ok()
+}
+
+#[test]
+fn a_held_send_lock_delays_the_guarded_run_before_the_lifecycle_lock() {
+    // R10 order pin: a held send-lock delays the run BEFORE the lifecycle
+    // lock is taken — the lifecycle path stays acquirable meanwhile.
+    let rig = Rig::new("guardlock", "claude", 0);
+    let server = rig.server();
+    std::fs::create_dir_all(rig.send_lock_path().parent().expect("a locks root"))
+        .expect("a locks root");
+    let held = ae::store::lock(&rig.send_lock_path(), Duration::ZERO).expect("the foreign hold");
+    let called = std::sync::atomic::AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        let running = scope.spawn(|| {
+            let request = rig.guarded(&server, "/compact", Duration::from_secs(5));
+            deliver::deliver_guarded(&request, || {
+                called.store(true, std::sync::atomic::Ordering::SeqCst);
+                prove_lock(&rig.lifecycle_lock_path(), Duration::ZERO)
+            })
+        });
+        std::thread::sleep(Duration::from_millis(500));
+        assert!(
+            !called.load(std::sync::atomic::Ordering::SeqCst),
+            "prove must not run while the send-lock is held"
+        );
+        let free = lock_is_free(&rig.lifecycle_lock_path());
+        assert!(free, "acquirable meanwhile");
+        drop(held);
+        let done = running.join().expect("the run finishes");
+        let proved = called.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(proved, "prove runs once the send-lock releases");
+        assert!(matches!(done, Ok(deliver::Outcome::Sent(_))), "{done:?}");
+    });
+}
+
+#[test]
+fn a_seat_dead_to_shell_after_step_1_is_refused_pre_paste() {
+    // R10 pin: the process exits to a shell DURING the run, identity still
+    // matches — the under-lock probe refuses pre-paste, NOTHING typed.
+    let rig = Rig::new("guardshell", "claude", 0);
+    let server = rig.server();
+    let request = rig.guarded(&server, "/compact", Duration::from_secs(5));
+    let done = deliver::deliver_guarded(&request, || {
+        assert!(
+            rig.tmux(&["respawn-pane", "-k", "-t", &rig.pane, "exec sh"])
+                .0,
+            "the agent dies to a shell under the lock"
+        );
+        prove_lock(&rig.lifecycle_lock_path(), Duration::ZERO)
+    });
+    assert!(
+        matches!(done, Ok(deliver::Outcome::Skipped(deliver::Leg::Dead))),
+        "{done:?}"
+    );
+    assert_eq!(rig.enter_count(), 0, "no Enter reached the shell");
+    assert!(
+        std::fs::read_to_string(&rig.received)
+            .unwrap_or_default()
+            .is_empty(),
+        "nothing submitted"
+    );
+    let (_, screen) = rig.tmux(&["capture-pane", "-p", "-t", &rig.pane]);
+    assert!(!screen.contains("/compact"), "nothing typed: {screen}");
+}
+
+#[test]
+fn a_composer_busy_between_step_1_and_3_skips_at_once() {
+    // R10 pin: the composer turns busy between step 1 and step 3 — one
+    // snapshot refuses at once, no wait. A loop would burn the 30 s deferral.
+    let rig = Rig::new("guardbusy", "claude", 0);
+    let server = rig.server();
+    let request = rig.guarded(&server, "/compact", Duration::from_secs(30));
+    let started = std::time::Instant::now();
+    let done = deliver::deliver_guarded(&request, || {
+        assert!(
+            rig.tmux(&["send-keys", "-t", &rig.pane, "-l", "a half-typed draft"])
+                .0,
+            "the composer turns busy under the lock"
+        );
+        let seen = (0..100).any(|_| {
+            deliver::input_busy(&rig.server(), &rig.pane, InputModel::BorderDelimited) || {
+                std::thread::sleep(Duration::from_millis(50));
+                false
+            }
+        });
+        assert!(seen, "the snapshot must see the draft");
+        prove_lock(&rig.lifecycle_lock_path(), Duration::ZERO)
+    });
+    assert!(
+        matches!(done, Ok(deliver::Outcome::Skipped(deliver::Leg::Busy))),
+        "{done:?}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "no wait, at once"
+    );
+    assert_eq!(rig.enter_count(), 0, "no Enter over the draft");
+}
+
+#[test]
+fn a_fifo_at_the_meta_path_leaves_the_critical_section_unaffected() {
+    // R10 pin: under the lock NO file is opened — a FIFO at the meta path
+    // would block any open forever. Bounded 30 s, then rescue-or-fail.
+    let rig = Rig::new("guardfifo", "claude", 0);
+    let (done_send, done_recv) = std::sync::mpsc::channel();
+    let dir = rig.dir.clone();
+    let server = rig.server();
+    let pane = rig.pane.clone();
+    let session = rig.session.clone();
+    let lock_path = rig.lifecycle_lock_path();
+    let meta = rig.dir.join("meta");
+    let stash = rig.dir.join("meta.stash");
+    std::thread::spawn(move || {
+        let request = deliver::GuardedRequest {
+            dir: &dir,
+            server: &server,
+            pane: &pane,
+            pane_slot: "main",
+            target_session: &session,
+            own_session: &session,
+            model: InputModel::BorderDelimited,
+            text: "/compact",
+            defer: Duration::from_secs(5),
+        };
+        let done = deliver::deliver_guarded(&request, || {
+            std::fs::rename(&meta, &stash).expect("the meta stashes");
+            super::cli::mkfifo(&meta);
+            prove_lock(&lock_path, Duration::ZERO)
+        });
+        let _ = done_send.send(done);
+    });
+    let first = done_recv.recv_timeout(Duration::from_secs(30));
+    if first.is_err() {
+        if let Ok(mut fifo) = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(rig.dir.join("meta"))
+        {
+            let _ = std::io::Write::write_all(&mut fifo, b"session=garbage\n");
+        }
+        let _ = done_recv.recv_timeout(Duration::from_secs(30));
+        panic!("the critical section blocked on the meta FIFO");
+    }
+    let outcome = first.expect("the first wait succeeded");
+    assert!(
+        matches!(outcome, Ok(deliver::Outcome::Sent(_))),
+        "{outcome:?}"
+    );
+}
+
+/// Restart the rig's server VERBOSE: the server log then records every
+/// client's lifecycle for the count pin. Pane, stamps and meta rebuilt.
+fn restart_verbose(rig: &mut Rig) {
+    assert!(rig.tmux(&["kill-server"]).0, "the plain server dies");
+    let command = format!(
+        "exec perl {}/faketui.pl {} {} 400 claude 0 ",
+        rig.scratch.display(),
+        rig.received.display(),
+        rig.enters.display()
+    );
+    let mut tail = vec![
+        "-v",
+        "-f",
+        "/dev/null",
+        "new-session",
+        "-d",
+        "-x",
+        "400",
+        "-y",
+        "40",
+        "-s",
+    ];
+    tail.push(&rig.session);
+    tail.push(&command);
+    assert!(rig.tmux(&tail).0, "the verbose server starts");
+    let (_, panes) = rig.tmux(&["list-panes", "-s", "-t", &rig.session, "-F", "#{pane_id}"]);
+    panes
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .clone_into(&mut rig.pane);
+    assert!(!rig.pane.is_empty(), "{panes}");
+    assert!(
+        rig.tmux(&["set-option", "-p", "-t", &rig.pane, "@ae_slot", "main"])
+            .0
+    );
+    assert!(
+        rig.tmux(&["set-option", "-p", "-t", &rig.pane, "@ae_agent", "tui"])
+            .0
+    );
+    rig.settle();
+}
+
+/// The verbose server's log — exactly one, started by [`restart_verbose`].
+fn server_log(scratch: &Path) -> Option<PathBuf> {
+    let found: Vec<PathBuf> = std::fs::read_dir(scratch)
+        .ok()?
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| path.display().to_string().contains("tmux-server-"))
+        .collect();
+    if found.len() == 1 {
+        found.into_iter().next()
+    } else {
+        None
+    }
+}
+
+#[test]
+fn the_critical_section_bills_two_calls_per_enter() {
+    // R10 pin: over a live seat steps 3+4 are ONE pane probe, ONE busy
+    // capture, ONE client list, load, paste, then one send plus one capture
+    // PER Enter — COUNTED as the verbose server's completed clients, never
+    // wall time. `prove` checkpoints the log offset. Both locks release.
+    //
+    // Why the server log and not a socket proxy: tmux clients pass stdio
+    // fds over the socket, and a byte relay without recvmsg leaks the
+    // client's stdout write-end into this process — `output()` then blocks
+    // forever on a self-held pipe (measured). std has no recvmsg.
+    // Marker verified on tmux 3.7b; a rename fails loudly, never silently.
+    let mut rig = Rig::new("guardcount", "claude", 0);
+    restart_verbose(&mut rig);
+    let server = rig.server();
+    let request = rig.guarded(&server, "/compact", Duration::from_secs(5));
+    let log = server_log(&rig.scratch).expect("one server log");
+    let mark = std::cell::Cell::new(0usize);
+    let done = deliver::deliver_guarded(&request, || {
+        mark.set(std::fs::read(&log).expect("the log reads").len());
+        prove_lock(&rig.lifecycle_lock_path(), Duration::ZERO)
+    });
+    assert!(matches!(
+        done,
+        Ok(deliver::Outcome::Sent(deliver::SubmitState::Submitted))
+    ));
+    // Five calls are fixed; every Enter bills exactly one send plus one
+    // submit capture — the relation holds whatever the load retried.
+    let enters = rig.enter_count();
+    assert!((1..=3).contains(&enters), "{enters}");
+    let mut freed = 0;
+    for _ in 0..600 {
+        let bytes = std::fs::read(&log).expect("the log reads");
+        freed = String::from_utf8_lossy(&bytes[mark.get()..])
+            .matches("free client")
+            .count();
+        if freed == 5 + 2 * enters {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(
+        freed,
+        5 + 2 * enters,
+        "five fixed, then send + capture per Enter"
+    );
+    let free_send = lock_is_free(&rig.send_lock_path());
+    let free_life = lock_is_free(&rig.lifecycle_lock_path());
+    assert!(free_send, "the send-lock releases");
+    assert!(free_life, "the lifecycle lock releases");
+}
+
+#[test]
+fn a_refused_enter_is_enter_failed_never_unknown() {
+    // R10/R5 pin: `send_key` refuses every send to a dead socket, so the
+    // operation's own submit answers `Err(EnterFailed)` — never `Unknown`,
+    // on the FIRST Enter, deterministically. No TUI needed.
+    let sock = PathBuf::from("/tmp/aedl.dead-server-guard/sock");
+    let server = ServerId::Selected(Selector::Socket(sock));
+    let done = deliver::submit_bounded(&server, "%9", InputModel::BorderDelimited);
+    assert!(matches!(done, Err(deliver::EnterFailed)), "{done:?}");
+}
+
+#[test]
+fn a_prove_leg_skips_with_the_send_lock_released() {
+    // R10 pin: the caller's identity proof refuses — the leg skips, the
+    // send-lock releases with the scope, the lifecycle lock was never taken.
+    let rig = Rig::new("guardleg", "claude", 0);
+    let server = rig.server();
+    let request = rig.guarded(&server, "/compact", Duration::from_secs(5));
+    let done = deliver::deliver_guarded(&request, || Err(deliver::Leg::Vacant));
+    assert!(
+        matches!(done, Ok(deliver::Outcome::Skipped(deliver::Leg::Vacant))),
+        "{done:?}"
+    );
+    let free_send = lock_is_free(&rig.send_lock_path());
+    let free_life = lock_is_free(&rig.lifecycle_lock_path());
+    assert!(free_send, "the send-lock releases");
+    assert!(free_life, "never taken");
+}
+
+#[test]
+fn the_guarded_operation_is_pinned_against_its_own_source() {
+    // R10 pins asked of the source text, doors-style.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let product = std::fs::read_to_string(root.join("src/deliver.rs")).expect("the product source");
+    // No guard is implemented twice. (`pane_agent_is_dead` is the design's
+    // name for what main calls `pane_liveness_at` — pinned under its real
+    // name.)
+    for owner in [
+        "fn pane_liveness_at(",
+        "fn wait_for_quiet(",
+        "fn recently_viewed(",
+        "fn input_busy(",
+    ] {
+        assert_eq!(product.match_indices(owner).count(), 1, "{owner}");
+    }
+    // The operation calls those owners, and its submit maps — never `?`.
+    let op = product
+        .find("pub fn deliver_guarded(")
+        .expect("the operation");
+    let end = product.find("pub fn submit_bounded(").expect("the submit");
+    let body = &product[op..end];
+    for call in [
+        "pane_liveness_at(",
+        "wait_for_quiet(",
+        "observe_pane_probe(",
+        "input_busy(",
+        "recently_viewed(",
+        "stage_and_paste(",
+        "submit_bounded(",
+        ".map(Outcome::Sent)",
+    ] {
+        assert!(body.contains(call), "{call}");
+    }
+    // The lifecycle lock releases before the send-lock — explicit drops, in
+    // order, on the single exit.
+    let drop_lifecycle = body.find("drop(lifecycle_lock);").expect("the (5) drop");
+    let drop_send = body.find("drop(send_lock);").expect("the (6) drop");
+    assert!(drop_lifecycle < drop_send, "lifecycle first");
+    // The operation's call is never `?`-propagated — every call site in this
+    // file matches the `Result` instead.
+    let pins = std::fs::read_to_string(root.join("tests/it/deliver.rs")).expect("the pins");
+    for (idx, line) in pins.lines().enumerate() {
+        if line.contains("deliver_guarded(&") {
+            let n = idx + 1;
+            assert!(!line.contains('?'), "line {n}: {line}");
+        }
+    }
+}
