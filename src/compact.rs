@@ -1,11 +1,11 @@
-//! `ae compact`'s freeze/resolve step, in the pinned core.
+//! `ae reboot`'s freeze/resolve step, in the pinned core.
 //!
-//! `_compact-freeze <session-dir> [--keep-history]` resolves everything the compact
+//! `_compact-freeze <session-dir> [--keep-history]` resolves everything the reboot
 //! boundary is authorized against — BEFORE anything is messaged, stopped or archived —
 //! and emits it as one frozen tuple. It is PURE READ-ONLY: it reads meta and config
 //! and resolves paths, and writes nothing.
 //!
-//! CLEAN CUT. compact is local-mode only, and a session ae cannot cleanly classify —
+//! CLEAN CUT. reboot is local-mode only, and a session ae cannot cleanly classify —
 //! a managed mode, an unknown mode, no origin, an unresolvable origin, an unreadable
 //! config, or NO VALID SESSION ID — is refused with a clear reason rather than
 //! emulated or migrated on the fly. In particular a session with no parseable
@@ -51,7 +51,7 @@ pub(crate) fn freeze(
     let Ok(bytes) = meta::read_bytes(dir) else {
         writeln!(
             err,
-            "compact: no ae session state for '{name}' — nothing to compact."
+            "reboot: no ae session state for '{name}' — nothing to reboot."
         )?;
         return Ok(EXIT_FAILED);
     };
@@ -63,21 +63,21 @@ pub(crate) fn freeze(
         "git" | "full" => {
             writeln!(
                 err,
-                "compact: '{name}' is {mode} mode; compact is local-mode only. A fresh {mode} workspace would be based on the canonical origin's HEAD, which normally lags the session's own branch — you would get a session missing the code it just archived. Use: ae end {name}, then start a new session yourself."
+                "reboot: '{name}' is {mode} mode; reboot is local-mode only. A fresh {mode} workspace would be based on the canonical origin's HEAD, which normally lags the session's own branch — you would get a session missing the code it just archived. Use: ae end {name}, then start a new session yourself."
             )?;
             return Ok(EXIT_FAILED);
         }
         "" => {
             writeln!(
                 err,
-                "compact: session '{name}' records no mode — refusing to compact a session ae cannot classify."
+                "reboot: session '{name}' records no mode — refusing to reboot a session ae cannot classify."
             )?;
             return Ok(EXIT_FAILED);
         }
         other => {
             writeln!(
                 err,
-                "compact: session '{name}' records an unknown mode '{other}'."
+                "reboot: session '{name}' records an unknown mode '{other}'."
             )?;
             return Ok(EXIT_FAILED);
         }
@@ -88,14 +88,14 @@ pub(crate) fn freeze(
     if origin.is_empty() {
         writeln!(
             err,
-            "compact: session '{name}' records no origin — the fresh session would have nowhere to start."
+            "reboot: session '{name}' records no origin — the fresh session would have nowhere to start."
         )?;
         return Ok(EXIT_FAILED);
     }
     if !dir_exists(Path::new(&origin)) {
         writeln!(
             err,
-            "compact: session '{name}' records origin '{origin}', which does not resolve to a directory."
+            "reboot: session '{name}' records origin '{origin}', which does not resolve to a directory."
         )?;
         return Ok(EXIT_FAILED);
     }
@@ -118,19 +118,19 @@ pub(crate) fn freeze(
     if uuid.is_empty() {
         writeln!(
             err,
-            "compact: session '{name}' records no valid session id — refresh or migrate the session, then retry."
+            "reboot: session '{name}' records no valid session id — refresh or migrate the session, then retry."
         )?;
         return Ok(EXIT_FAILED);
     }
     let uuid_origin = meta_str(&bytes, "session_id_origin").unwrap_or_else(|| "session".to_owned());
 
-    // compact keeps the archive and the history by definition; a config that opts into
+    // reboot keeps the archive and the history by definition; a config that opts into
     // purge is a contradiction the human resolves explicitly with --keep-history.
     let purge = !keep_history && workspace.purge_agent_history;
     if purge {
         writeln!(
             err,
-            "compact: session '{name}' has purge_agent_history enabled, which contradicts compact. To proceed: ae compact --keep-history {name}."
+            "reboot: session '{name}' has purge_agent_history enabled, which contradicts reboot. To proceed: ae reboot --keep-history {name}."
         )?;
         return Ok(EXIT_FAILED);
     }
@@ -147,7 +147,7 @@ pub(crate) fn freeze(
     else {
         writeln!(
             err,
-            "compact: session '{name}' records no main agent to hand over from."
+            "reboot: session '{name}' records no main agent to hand over from."
         )?;
         return Ok(EXIT_FAILED);
     };
@@ -156,14 +156,14 @@ pub(crate) fn freeze(
     let Some(roster_main) = workspace.main.as_deref().filter(|m| !m.is_empty()) else {
         writeln!(
             err,
-            "compact: the recorded config names no [workspace] main — the fresh session would have no agent."
+            "reboot: the recorded config names no [workspace] main — the fresh session would have no agent."
         )?;
         return Ok(EXIT_FAILED);
     };
     let roster = roster_string(roster_main, workspace.workers.as_deref());
 
     let Some(root) = crate::state_root() else {
-        writeln!(err, "compact: cannot resolve the ae state root.")?;
+        writeln!(err, "reboot: cannot resolve the ae state root.")?;
         return Ok(EXIT_FAILED);
     };
     let archive_path = root.join("archive").join(&uuid);
@@ -175,7 +175,7 @@ pub(crate) fn freeze(
         mode,
         origin,
         config,
-        // Always false: compact keeps the history, and a purge config was already
+        // Always false: reboot keeps the history, and a purge config was already
         // refused above (or overridden by --keep-history), so the boundary that
         // consumes this tuple never sees purge=true.
         "false".to_owned(),
@@ -190,7 +190,7 @@ pub(crate) fn freeze(
     {
         writeln!(
             err,
-            "compact: a resolved value contains a control byte (U+001F or newline) that would corrupt the frozen tuple: {bad:?}"
+            "reboot: a resolved value contains a control byte (U+001F or newline) that would corrupt the frozen tuple: {bad:?}"
         )?;
         return Ok(EXIT_FAILED);
     }
@@ -226,7 +226,7 @@ fn resolve_workspace(name: &str, config: &str, origin: &str) -> Result<Workspace
             ConfigNode::Regular => Some(PathBuf::from(config)),
             ConfigNode::Absent | ConfigNode::Other => {
                 return Err(format!(
-                    "compact: session '{name}' records config '{config}', which is not a readable regular file (absent, a directory/FIFO/special node, or unreadable). The fresh session's roster comes from that config; compact will not guess it."
+                    "reboot: session '{name}' records config '{config}', which is not a readable regular file (absent, a directory/FIFO/special node, or unreadable). The fresh session's roster comes from that config; reboot will not guess it."
                 ));
             }
         }
@@ -238,7 +238,7 @@ fn resolve_workspace(name: &str, config: &str, origin: &str) -> Result<Workspace
         ConfigNode::Regular => Some(local_cfg_path),
         ConfigNode::Other => {
             return Err(format!(
-                "compact: session '{name}' has a local .ae/config that exists but is not a readable regular file (a directory/FIFO/special node, or unreadable); refusing rather than silently ignoring it."
+                "reboot: session '{name}' has a local .ae/config that exists but is not a readable regular file (a directory/FIFO/special node, or unreadable); refusing rather than silently ignoring it."
             ));
         }
     };
@@ -246,7 +246,7 @@ fn resolve_workspace(name: &str, config: &str, origin: &str) -> Result<Workspace
     // error still refuses.
     read_workspace(global_cfg.as_deref(), local_cfg.as_deref()).map_err(|path| {
         format!(
-            "compact: session '{name}' records config '{}', which cannot be read. The fresh session's roster comes from that config; compact will not guess it.",
+            "reboot: session '{name}' records config '{}', which cannot be read. The fresh session's roster comes from that config; reboot will not guess it.",
             path.display()
         )
     })
@@ -346,13 +346,13 @@ fn revalidate(
     let basename = dir.file_name().and_then(|n| n.to_str()).unwrap_or_default();
     if frozen.name != basename {
         return Err(format!(
-            "compact: the authorization names '{}' but the session directory is '{basename}' ({when}); refusing — the frozen tuple does not point at this session.",
+            "reboot: the authorization names '{}' but the session directory is '{basename}' ({when}); refusing — the frozen tuple does not point at this session.",
             frozen.name
         ));
     }
     let Ok(bytes) = meta::read_bytes(dir) else {
         return Err(format!(
-            "compact: session '{}' no longer has ae state ({when}).",
+            "reboot: session '{}' no longer has ae state ({when}).",
             frozen.name
         ));
     };
@@ -365,28 +365,28 @@ fn revalidate(
             &now_uuid
         };
         return Err(format!(
-            "compact: '{}' is not the session that was authorized ({when}) — authorized id {}, on disk now {shown}. Nothing was stopped and nothing was archived.",
+            "reboot: '{}' is not the session that was authorized ({when}) — authorized id {}, on disk now {shown}. Nothing was stopped and nothing was archived.",
             frozen.name, frozen.uuid
         ));
     }
     let now_mode = meta_str(&bytes, "mode").unwrap_or_default();
     if now_mode != frozen.mode {
         return Err(format!(
-            "compact: '{}' changed mode from {} to {now_mode} ({when}); refusing.",
+            "reboot: '{}' changed mode from {} to {now_mode} ({when}); refusing.",
             frozen.name, frozen.mode
         ));
     }
     let now_origin = meta_str(&bytes, "origin").unwrap_or_default();
     if now_origin != frozen.origin {
         return Err(format!(
-            "compact: '{}' changed origin from {} to {now_origin} ({when}); refusing.",
+            "reboot: '{}' changed origin from {} to {now_origin} ({when}); refusing.",
             frozen.name, frozen.origin
         ));
     }
     let now_config = meta_str(&bytes, "config").unwrap_or_default();
     if now_config != frozen.config {
         return Err(format!(
-            "compact: '{}' changed its recorded config from '{}' to '{now_config}' ({when}); refusing.",
+            "reboot: '{}' changed its recorded config from '{}' to '{now_config}' ({when}); refusing.",
             frozen.name, frozen.config
         ));
     }
@@ -394,25 +394,25 @@ fn revalidate(
     let workspace = resolve_workspace(&frozen.name, &now_config, &now_origin)?;
     if !frozen.purge && workspace.purge_agent_history && !keep_history {
         return Err(format!(
-            "compact: '{}' now has purge_agent_history enabled ({when}), which contradicts the authorized compact. Re-run with --keep-history if that is what you want.",
+            "reboot: '{}' now has purge_agent_history enabled ({when}), which contradicts the authorized reboot. Re-run with --keep-history if that is what you want.",
             frozen.name
         ));
     }
     // The roster is an AUTHORIZED FACT, not merely a resolvable one: it was PRINTED at the
     // prompt as what the child will start, so a config rewritten during the window that now
     // resolves to a DIFFERENT roster must refuse — proving merely that SOME roster resolves
-    // would let a child start agents nobody approved. Edits made BEFORE compact are adopted;
+    // would let a child start agents nobody approved. Edits made BEFORE reboot are adopted;
     // only a change DURING the window is caught here. The current roster is read from the
     // same config `resolve_workspace` did.
     let now_main = workspace.main.as_deref().unwrap_or_default();
     let now_roster = roster_string(now_main, workspace.workers.as_deref());
     if now_roster != frozen.roster {
         return Err(format!(
-            "compact: '{}' would now start a different roster than the one shown ({when}); refusing. Shown: {}. Now: {now_roster}. Nothing was stopped and nothing was archived.",
+            "reboot: '{}' would now start a different roster than the one shown ({when}); refusing. Shown: {}. Now: {now_roster}. Nothing was stopped and nothing was archived.",
             frozen.name, frozen.roster
         ));
     }
-    // Spawn closure: compact never retires someone else's worker, so a spawned agent must
+    // Spawn closure: reboot never retires someone else's worker, so a spawned agent must
     // be gone before the fresh roster (main + workers) replaces the session.
     let parsed = meta::Meta::parse(&String::from_utf8_lossy(&bytes));
     let spawned: Vec<String> = parsed
@@ -423,7 +423,7 @@ fn revalidate(
         .collect();
     if !spawned.is_empty() {
         return Err(format!(
-            "compact: '{}' still has spawned agents ({when}): {}. compact never retires someone else's worker — retire them, then re-run.",
+            "reboot: '{}' still has spawned agents ({when}): {}. reboot never retires someone else's worker — retire them, then re-run.",
             frozen.name,
             spawned.join(", ")
         ));
@@ -444,7 +444,7 @@ pub(crate) fn revalidate_step(
     let Some(frozen) = FrozenTuple::parse(tuple) else {
         writeln!(
             err,
-            "compact: internal error — the frozen tuple did not parse (expected ten fields)."
+            "reboot: internal error — the frozen tuple did not parse (expected ten fields)."
         )?;
         return Ok(EXIT_FAILED);
     };
@@ -474,7 +474,7 @@ fn gate_revalidate_and_stopped(
     let Ok(bytes) = meta::read_bytes(dir) else {
         writeln!(
             err,
-            "compact: session '{}' state vanished at the stop check ({when}).",
+            "reboot: session '{}' state vanished at the stop check ({when}).",
             frozen.name
         )?;
         return Ok(Err(EXIT_FAILED));
@@ -484,7 +484,7 @@ fn gate_revalidate_and_stopped(
         StopState::Alive => {
             writeln!(
                 err,
-                "compact: '{}' is still running on its recorded tmux server ({when}) — refusing to cross the destructive boundary on a live session.",
+                "reboot: '{}' is still running on its recorded tmux server ({when}) — refusing to cross the destructive boundary on a live session.",
                 frozen.name
             )?;
             Ok(Err(EXIT_FAILED))
@@ -492,7 +492,7 @@ fn gate_revalidate_and_stopped(
         StopState::Unknown => {
             writeln!(
                 err,
-                "compact: could not PROVE '{}' is stopped on its recorded tmux server ({when}) — the server did not answer, or none is recorded. Refusing rather than act on a session that may still be live.",
+                "reboot: could not PROVE '{}' is stopped on its recorded tmux server ({when}) — the server did not answer, or none is recorded. Refusing rather than act on a session that may still be live.",
                 frozen.name
             )?;
             Ok(Err(EXIT_FAILED))
@@ -521,7 +521,7 @@ pub(crate) fn archive_step(
     let Some(frozen) = FrozenTuple::parse(tuple) else {
         writeln!(
             err,
-            "compact: internal error — the frozen tuple did not parse (expected ten fields)."
+            "reboot: internal error — the frozen tuple did not parse (expected ten fields)."
         )?;
         return Ok(EXIT_FAILED);
     };
@@ -531,7 +531,7 @@ pub(crate) fn archive_step(
         return Ok(code);
     }
     let Some(root) = crate::state_root() else {
-        writeln!(err, "compact: cannot resolve the ae state root.")?;
+        writeln!(err, "reboot: cannot resolve the ae state root.")?;
         return Ok(EXIT_FAILED);
     };
     let archive_root = root.join("archive");
@@ -548,13 +548,13 @@ pub(crate) fn archive_step(
             Ok(true) => {
                 writeln!(
                     err,
-                    "compact: an archive for this session already exists and still matches the live state — reusing it as the recovery point."
+                    "reboot: an archive for this session already exists and still matches the live state — reusing it as the recovery point."
                 )?;
             }
             Ok(false) => {
                 writeln!(
                     err,
-                    "compact: '{}' has an existing archive that no longer matches the live session (it drifted after a previous attempt). Refusing teardown — that would lose the drift. Both the live session and the archive are retained.",
+                    "reboot: '{}' has an existing archive that no longer matches the live session (it drifted after a previous attempt). Refusing teardown — that would lose the drift. Both the live session and the archive are retained.",
                     frozen.name
                 )?;
                 return Ok(EXIT_FAILED);
@@ -572,7 +572,7 @@ pub(crate) fn archive_step(
             workdir,
             archived_at,
         };
-        // publish's own `target\tfiles\tbytes` line is diagnostics for compact; `out` is
+        // publish's own `target\tfiles\tbytes` line is diagnostics for reboot; `out` is
         // kept for the recovery contract alone.
         let mut sink = Vec::new();
         let code = crate::archive::publish::run(dir, &ops, &mut sink, err)?;
@@ -586,7 +586,7 @@ pub(crate) fn archive_step(
     if code != 0 {
         writeln!(
             err,
-            "compact: the archive was published but is not inheritable — refusing to tear down against a recovery point that would not restore."
+            "reboot: the archive was published but is not inheritable — refusing to tear down against a recovery point that would not restore."
         )?;
         return Ok(code);
     }
@@ -617,7 +617,7 @@ pub(crate) fn teardown_step(
     let Some(frozen) = FrozenTuple::parse(tuple) else {
         writeln!(
             err,
-            "compact: internal error — the frozen tuple did not parse (expected ten fields)."
+            "reboot: internal error — the frozen tuple did not parse (expected ten fields)."
         )?;
         return Ok(EXIT_FAILED);
     };
@@ -627,7 +627,7 @@ pub(crate) fn teardown_step(
         return Ok(code);
     }
     let Some(root) = crate::state_root() else {
-        writeln!(err, "compact: cannot resolve the ae state root.")?;
+        writeln!(err, "reboot: cannot resolve the ae state root.")?;
         return Ok(EXIT_FAILED);
     };
     let archive_root = root.join("archive");
@@ -637,7 +637,7 @@ pub(crate) fn teardown_step(
     if !archive_recovery_point_valid(&archive_root, &frozen.uuid, err)? {
         writeln!(
             err,
-            "compact: refusing teardown — no durable, inheritable archive at {} to recover from. The live session is retained.",
+            "reboot: refusing teardown — no durable, inheritable archive at {} to recover from. The live session is retained.",
             archive_root.join(&frozen.uuid).display()
         )?;
         return Ok(EXIT_FAILED);
@@ -646,7 +646,7 @@ pub(crate) fn teardown_step(
     if code != 0 {
         return Ok(code);
     }
-    // The exec plan: the driver relaunches `ae <name> --from <uuid>` (compact is local-only, so
+    // The exec plan: the driver relaunches `ae <name> --from <uuid>` (reboot is local-only, so
     // the fresh session is the default local mode).
     writeln!(out, "{}\u{1f}{}", frozen.name, frozen.uuid)?;
     Ok(0)
@@ -655,9 +655,10 @@ pub(crate) fn teardown_step(
 // ── The semantic handover: wait for BOTH facts, or withdraw ──────────────────────
 //
 // The handover is delivered through the session's own `ask` as a tracked request from the
-// reserved compact actor `ae:compact:<uuid>`, carrying a memo BASELINE in its body. These
+// reserved reboot actor `ae:reboot:<uuid>`, carrying a memo BASELINE in its body. These
 // two cores own the WAIT and the WITHDRAWAL, reading the ledger and the memo; the caller
-// branches on the exit code alone.
+// branches on the exit code alone. The pre-rename `ae:compact:<uuid>` opener is
+// legacy-only, never written again, and matched permanently beside the new one.
 
 /// The poll interval between reads while waiting.
 const HANDOVER_POLL: Duration = Duration::from_secs(2);
@@ -756,7 +757,7 @@ pub(crate) fn wait_step(
     let Some(req) = request_by_ref(dir, reference) else {
         writeln!(
             err,
-            "compact: cannot wait on {reference} — the ledger has no such request. Nothing was stopped and nothing was archived."
+            "reboot: cannot wait on {reference} — the ledger has no such request. Nothing was stopped and nothing was archived."
         )?;
         return Ok(EXIT_FAILED);
     };
@@ -766,7 +767,7 @@ pub(crate) fn wait_step(
     else {
         writeln!(
             err,
-            "compact: cannot establish the handover memo baseline for {reference} — its request body is missing, not a regular file, or carries no valid AE-COMPACT-MEMO-BASELINE marker. Refusing the wait; nothing was stopped and nothing was archived."
+            "reboot: cannot establish the handover memo baseline for {reference} — its request body is missing, not a regular file, or carries no valid AE-COMPACT-MEMO-BASELINE marker. Refusing the wait; nothing was stopped and nothing was archived."
         )?;
         return Ok(EXIT_FAILED);
     };
@@ -781,7 +782,7 @@ pub(crate) fn wait_step(
         if saw_reply && saw_memo {
             writeln!(
                 err,
-                "compact: handover complete (reply {reference} and a new handover memo)."
+                "reboot: handover complete (reply {reference} and a new handover memo)."
             )?;
             return Ok(0);
         }
@@ -794,44 +795,44 @@ pub(crate) fn wait_step(
 
     writeln!(
         err,
-        "compact: no complete handover within {timeout_secs}s — a reply AND a new handover memo are both required."
+        "reboot: no complete handover within {timeout_secs}s — a reply AND a new handover memo are both required."
     )?;
     if saw_reply {
         // The reply CLOSED the request, so there is nothing left to keep waiting on and a
         // re-run asks again from scratch.
         writeln!(
             err,
-            "  The reply arrived; the handover memo did not. {reference} is answered and closed, so a re-run sends a FRESH request. Ask your main agent to write the memo first (memo add --topic handover ...), or run ae compact --digest-only {name} to archive the digest as it stands."
+            "  The reply arrived; the handover memo did not. {reference} is answered and closed, so a re-run sends a FRESH request. Ask your main agent to write the memo first (memo add --topic handover ...), or run ae reboot --digest-only {name} to archive the digest as it stands."
         )?;
     } else if saw_memo {
         writeln!(
             err,
-            "  The handover memo was written; the reply did not arrive. The request stays open: re-run ae compact {name} to keep waiting on it, or ae compact --digest-only {name} to archive the digest as it stands."
+            "  The handover memo was written; the reply did not arrive. The request stays open: re-run ae reboot {name} to keep waiting on it, or ae reboot --digest-only {name} to archive the digest as it stands."
         )?;
     } else {
         writeln!(
             err,
-            "  The request stays open: re-run ae compact {name} to keep waiting on it, or ae compact --digest-only {name} to archive the digest as it stands."
+            "  The request stays open: re-run ae reboot {name} to keep waiting on it, or ae reboot --digest-only {name} to archive the digest as it stands."
         )?;
     }
     Ok(EXIT_FAILED)
 }
 
-/// `_compact-cancel <session-dir> <ref>` core — withdraw an outstanding compact
+/// `_compact-cancel <session-dir> <ref>` core — withdraw an outstanding reboot
 /// handover request, the `--digest-only` degradation.
 pub(crate) fn cancel_step(dir: &Path, reference: &str, err: &mut impl Write) -> io::Result<u8> {
     let Some(req) = request_by_ref(dir, reference) else {
         writeln!(
             err,
-            "compact: cannot withdraw {reference} — the ledger has no such request."
+            "reboot: cannot withdraw {reference} — the ledger has no such request."
         )?;
         return Ok(EXIT_FAILED);
     };
     let actor = String::from_utf8_lossy(&req.from).into_owned();
-    if !actor.starts_with("ae:compact:") {
+    if !actor.starts_with("ae:compact:") && !actor.starts_with("ae:reboot:") {
         writeln!(
             err,
-            "compact: refusing to withdraw {reference} — it was not opened by compact (opener '{actor}')."
+            "reboot: refusing to withdraw {reference} — it was not opened by reboot (opener '{actor}')."
         )?;
         return Ok(EXIT_FAILED);
     }
@@ -850,15 +851,32 @@ pub(crate) fn cancel_step(dir: &Path, reference: &str, err: &mut impl Write) -> 
     Ok(0)
 }
 
-/// The reserved compact actor for the session at `dir` —
-/// `ae:compact:<session-uuid>`, the sender the handover is delivered as and the
-/// opener a withdrawal must match.
-fn compact_actor(dir: &Path) -> String {
-    let uuid = meta::read_bytes(dir)
+/// The session uuid the handover binds to, or empty when the meta names
+/// none valid.
+fn handover_uuid(dir: &Path) -> String {
+    meta::read_bytes(dir)
         .ok()
         .and_then(|b| meta_str(&b, "session_id"))
         .map(|raw| crate::archive::canonical_uuid(&raw))
-        .unwrap_or_default();
+        .unwrap_or_default()
+}
+
+/// The reserved reboot actor for the session at `dir` —
+/// `ae:reboot:<session-uuid>`, the sender the handover is delivered as and the
+/// opener a withdrawal must match.
+fn reboot_actor(dir: &Path) -> String {
+    let uuid = handover_uuid(dir);
+    if uuid.is_empty() {
+        String::new()
+    } else {
+        format!("ae:reboot:{uuid}")
+    }
+}
+
+/// The pre-rename writer — `ae:compact:<session-uuid>`, legacy-only, never
+/// written again, matched permanently beside [`reboot_actor`].
+fn legacy_compact_actor(dir: &Path) -> String {
+    let uuid = handover_uuid(dir);
     if uuid.is_empty() {
         String::new()
     } else {
@@ -876,18 +894,19 @@ pub(crate) fn memo_baseline_step(dir: &Path, out: &mut impl Write) -> io::Result
 }
 
 /// `_compact-find-outstanding <dir>` core — print the ref of the FIRST
-/// still-pending handover request opened by this session's compact actor, or
-/// nothing.
+/// still-pending handover request opened by this session's reboot actor — or
+/// its legacy pre-rename actor — or nothing.
 pub(crate) fn find_outstanding_step(dir: &Path, out: &mut impl Write) -> io::Result<u8> {
-    let actor = compact_actor(dir);
+    let actor = reboot_actor(dir);
+    let legacy = legacy_compact_actor(dir);
     if actor.is_empty() {
         return Ok(0);
     }
     let container = store::open(dir).container();
-    if let Some(req) = requests::states(&container)
-        .into_iter()
-        .find(|r| r.status == requests::Status::Pending && r.from == actor.as_bytes())
-    {
+    if let Some(req) = requests::states(&container).into_iter().find(|r| {
+        r.status == requests::Status::Pending
+            && (r.from == actor.as_bytes() || r.from == legacy.as_bytes())
+    }) {
         out.write_all(&req.id)?;
     }
     Ok(0)
@@ -1512,18 +1531,24 @@ mod tests {
         dir
     }
 
-    /// Seed a compact handover ask opening from the reserved compact actor —
+    /// Seed a handover ask opening from the LEGACY pre-rename actor —
     /// SLOTLESS sender (`actor_session` present, no `actor_slot`), addressed to
-    /// main, with a stored body carrying the memo baseline.
+    /// main, with a stored body carrying the memo baseline. Every wait/cancel/
+    /// find test built on this seeder pins the permanent legacy acceptance.
     fn seed_handover(dir: &Path, baseline: usize) {
+        seed_handover_as(dir, baseline, &format!("ae:compact:{UUID}"));
+    }
+
+    /// Seed the same handover ask from an explicit opener actor.
+    fn seed_handover_as(dir: &Path, baseline: usize, actor: &str) {
         let body = dir.join("messages").join("handover.ask.txt");
         std::fs::write(
             &body,
-            format!("COMPACT HANDOVER ...\nAE-COMPACT-MEMO-BASELINE={baseline}\n"),
+            format!("REBOOT HANDOVER ...\nAE-COMPACT-MEMO-BASELINE={baseline}\n"),
         )
         .unwrap();
         let ask = format!(
-            "{{\"ts\":\"2026-08-29T00:00:00Z\",\"actor\":\"ae:compact:{UUID}\",\"action\":\"ask\",\"target\":\"cl:main\",\"ref\":\"{REF}\",\"body_file\":\"{}\",\"actor_session\":\"sess\",\"target_slot\":\"main\",\"target_session\":\"sess\"}}\n",
+            "{{\"ts\":\"2026-08-29T00:00:00Z\",\"actor\":\"{actor}\",\"action\":\"ask\",\"target\":\"cl:main\",\"ref\":\"{REF}\",\"body_file\":\"{}\",\"actor_session\":\"sess\",\"target_slot\":\"main\",\"target_session\":\"sess\"}}\n",
             body.display()
         );
         std::fs::write(dir.join("events.jsonl"), ask).unwrap();
@@ -1635,7 +1660,7 @@ mod tests {
         // The guidance names the session, as the integration arms assert, and points
         // at the two ways forward.
         assert!(
-            msg.contains("stays open") && msg.contains("ae compact --digest-only sess"),
+            msg.contains("stays open") && msg.contains("ae reboot --digest-only sess"),
             "{msg}"
         );
         // Ruling A: a normal timeout writes NOTHING to the ledger — the request is reusable.
@@ -1722,10 +1747,10 @@ mod tests {
     // ---- cancel_step (--digest-only withdrawal), pinned in the request VIEW ----
 
     #[test]
-    fn cancel_withdraws_a_compact_handover_and_pins_it_cancelled() {
+    fn cancel_withdraws_a_reboot_handover_and_pins_it_cancelled() {
         let s = Scratch::new("cancel-ok");
         let dir = handover_dir(&s);
-        seed_handover(&dir, 0);
+        seed_handover_as(&dir, 0, &format!("ae:reboot:{UUID}"));
         assert_eq!(status_of(&dir), requests::Status::Pending, "precondition");
         let mut err = Vec::new();
         assert_eq!(
@@ -1739,17 +1764,53 @@ mod tests {
     }
 
     #[test]
-    fn cancel_refuses_a_request_not_opened_by_compact() {
+    fn cancel_withdraws_a_legacy_compact_handover_and_keeps_its_actor_bytes() {
+        let s = Scratch::new("cancel-legacy");
+        let dir = handover_dir(&s);
+        seed_handover(&dir, 0);
+        let mut err = Vec::new();
+        assert_eq!(
+            cancel_step(&dir, REF, &mut err).unwrap(),
+            0,
+            "{}",
+            String::from_utf8_lossy(&err)
+        );
+        assert_eq!(status_of(&dir), requests::Status::Cancelled);
+        // The cancel record preserves the OPENING actor bytes, never rewritten.
+        let container = String::from_utf8_lossy(&store::open(&dir).container()).into_owned();
+        let cancel = container
+            .lines()
+            .find(|line| line.contains("\"action\":\"cancel\""))
+            .expect("a cancel record");
+        assert!(
+            cancel.contains(&format!("\"actor\":\"ae:compact:{UUID}\"")),
+            "{cancel}"
+        );
+    }
+
+    #[test]
+    fn cancel_refuses_an_ae_seats_opener() {
+        let s = Scratch::new("cancel-seats");
+        let dir = handover_dir(&s);
+        seed_handover_as(&dir, 0, &format!("ae:seats:{UUID}"));
+        let mut err = Vec::new();
+        assert_eq!(cancel_step(&dir, REF, &mut err).unwrap(), EXIT_FAILED);
+        assert!(String::from_utf8_lossy(&err).contains("not opened by reboot"));
+        assert_eq!(status_of(&dir), requests::Status::Pending);
+    }
+
+    #[test]
+    fn cancel_refuses_a_request_not_opened_by_reboot() {
         let s = Scratch::new("cancel-foreign");
         let dir = handover_dir(&s);
-        // A normal pane-to-pane ask, not the reserved compact actor.
+        // A normal pane-to-pane ask, not a reserved handover actor.
         let ask = format!(
             "{{\"ts\":\"2026-08-29T00:00:00Z\",\"actor\":\"cl:lead\",\"action\":\"ask\",\"target\":\"cl:main\",\"ref\":\"{REF}\",\"actor_slot\":\"main\",\"actor_session\":\"sess\",\"target_slot\":\"worker.0\",\"target_session\":\"sess\"}}\n"
         );
         std::fs::write(dir.join("events.jsonl"), ask).unwrap();
         let mut err = Vec::new();
         assert_eq!(cancel_step(&dir, REF, &mut err).unwrap(), EXIT_FAILED);
-        assert!(String::from_utf8_lossy(&err).contains("not opened by compact"));
+        assert!(String::from_utf8_lossy(&err).contains("not opened by reboot"));
     }
 
     #[test]
@@ -1799,7 +1860,7 @@ mod tests {
     }
 
     #[test]
-    fn find_outstanding_prints_a_pending_compact_ref_only() {
+    fn find_outstanding_prints_a_pending_reboot_ref_only() {
         let s = Scratch::new("find-outstanding");
         let dir = handover_dir(&s);
         std::fs::write(dir.join("meta"), format!("session_id={UUID}\nmode=local\n")).unwrap();
@@ -1808,8 +1869,8 @@ mod tests {
         let mut out = Vec::new();
         find_outstanding_step(&dir, &mut out).unwrap();
         assert!(out.is_empty(), "no request → no ref");
-        // A pending compact handover → its ref.
-        seed_handover(&dir, 0);
+        // A pending reboot handover → its ref.
+        seed_handover_as(&dir, 0, &format!("ae:reboot:{UUID}"));
         let mut out2 = Vec::new();
         find_outstanding_step(&dir, &mut out2).unwrap();
         assert_eq!(out2, REF.as_bytes());
@@ -1819,20 +1880,25 @@ mod tests {
         let mut out3 = Vec::new();
         find_outstanding_step(&dir, &mut out3).unwrap();
         assert!(out3.is_empty(), "a cancelled request is not outstanding");
+        // A pending LEGACY handover → its ref too, permanently.
+        seed_handover(&dir, 0);
+        let mut out4 = Vec::new();
+        find_outstanding_step(&dir, &mut out4).unwrap();
+        assert_eq!(out4, REF.as_bytes());
     }
 
     #[test]
-    fn find_outstanding_ignores_a_non_compact_pending_request() {
+    fn find_outstanding_ignores_a_non_reboot_pending_request() {
         let s = Scratch::new("find-foreign");
         let dir = handover_dir(&s);
         std::fs::write(dir.join("meta"), format!("session_id={UUID}\nmode=local\n")).unwrap();
-        // A normal pane-to-pane ask is pending but NOT a compact request.
+        // A normal pane-to-pane ask is pending but NOT a reboot request.
         let ask = format!(
             "{{\"ts\":\"t\",\"actor\":\"cl:lead\",\"action\":\"ask\",\"target\":\"cl:main\",\"ref\":\"{REF}\",\"actor_slot\":\"main\",\"actor_session\":\"sess\"}}\n"
         );
         std::fs::write(dir.join("events.jsonl"), ask).unwrap();
         let mut out = Vec::new();
         find_outstanding_step(&dir, &mut out).unwrap();
-        assert!(out.is_empty(), "only a compact-actor request counts");
+        assert!(out.is_empty(), "only a handover-actor request counts");
     }
 }

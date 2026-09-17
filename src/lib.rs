@@ -1424,6 +1424,9 @@ fn run_entry(
             return run_archive_preview(preamble, name.as_deref(), out, err);
         }
         entry::Route::Core(effective) => return run_dispatch(&effective, out, err),
+        entry::Route::Compact(tail) => {
+            return Ok(crate::lifecycle::compaction::run_compact_entry(&tail, err)?);
+        }
         entry::Route::Attach => return run_bare_attach(preamble, out, err),
         entry::Route::Launch(user) => {
             if user.first().map(String::as_str) == Some(orchestrator::ORCHESTRATOR_SESSION) {

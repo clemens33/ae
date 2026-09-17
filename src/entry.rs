@@ -171,7 +171,7 @@ orchestrator = gpt56luna
 # The leads delegate by rule (see docs/reference/delegation.md — spawn workers on demand).
 # Standing seats are the JUDGMENT PAIR only: under lead-pair the FIRST worker (worker.0)
 # is the COLEAD seat — an EQUAL leadership peer of the lead (interchangeable, same level,
-# sharing the leads window 0:leads); main stays the technical lifecycle anchor (compact
+# sharing the leads window 0:leads); main stays the technical lifecycle anchor (reboot
 # handover), which is infrastructure, not seniority. Builders and reviewers are NOT
 # standing seats: either peer spawns them per slice (spawn builder --using opus5 / spawn
 # reviewer --using grok46) and retires its own spawns when the work is verified — every spawn
@@ -257,7 +257,10 @@ Usage:
                          Machine-global Telegram bridge (forwards events to a chat)
   ae stop [name]         Pause session, keep ae + agent conversation state for resume
                          (or 'ae stop all')
-  ae compact [-f] [--keep-history] [--digest-only] [name]
+  ae compact [name]
+                         Not yet available — the in-place seat compaction ships in the
+                         next release; the destructive handover is 'ae reboot'
+  ae reboot [-f] [--keep-history] [--digest-only] [name]
                          Hand this session over to a fresh one: freeze the roster, archive
                          the memory, end it, and relaunch the same agents against that
                          archive. --digest-only writes nothing and prints what it would say
@@ -276,7 +279,7 @@ Usage:
 
 Modes: --local (default), --copy (full cp -a), --worktree (git worktree).
 Sessions persist across reboots. Agents with session support resume conversations; others start fresh.
-When inside an ae session, stop/end/compact work without specifying the name.
+When inside an ae session, stop/end/reboot work without specifying the name.
 
 Config: ~/.ae/config (per-project override: .ae/config in project dir)
 Session helpers, in every session dir: send, relay, ask, review, reply, requests, state,
@@ -457,6 +460,9 @@ pub enum Route {
     /// A word the core already answers: the effective argv, environmental facts
     /// appended, for the ordinary dispatch.
     Core(Vec<String>),
+    /// `ae compact …` in the B release: the R9 tripwire plus the stub C
+    /// replaces, answered by [`crate::lifecycle::compaction::run_compact_entry`].
+    Compact(Vec<String>),
     /// An EMPTY argv: attach to the ae tmux server or list from inside it.
     Attach,
     /// Everything else: create or resume an explicitly named session.
@@ -500,7 +506,8 @@ pub fn route(preamble: &Preamble, argv: &[String], pane: Option<&str>) -> Route 
         Some("board") => Route::Core(with_head("board", &tail())),
         Some("quota") => Route::Core(with_head("quota", &tail())),
         Some("usage") => Route::Core(with_head("usage", &tail())),
-        Some("compact") => Route::Core(with_head(crate::cli::COMPACT, &tail())),
+        Some("reboot") => Route::Core(with_head(crate::cli::COMPACT, &tail())),
+        Some("compact") => Route::Compact(tail()),
         Some("archive") => match argv.get(1).map(String::as_str) {
             Some("preview") => Route::ArchivePreview(argv.get(2).cloned()),
             _ => Route::ArchiveUsage,
@@ -685,7 +692,7 @@ mod tests {
         let table = [
             (argv(&["end", "-f", "x"]), argv(&["_end", "-f", "x"])),
             (argv(&["rm", "x"]), argv(&["_end", "x"])),
-            (argv(&["compact", "x"]), argv(&["_compact", "x"])),
+            (argv(&["reboot", "x"]), argv(&["_compact", "x"])),
             (argv(&["rename", "a", "b"]), argv(&["rename", "a", "b"])),
             (argv(&["ls", "--all"]), argv(&["list", "--all"])),
             (argv(&["jump", "--attach"]), argv(&["next", "--attach"])),
@@ -694,6 +701,18 @@ mod tests {
         for (typed, effective) in table {
             assert_eq!(route(&preamble(), &typed, None), Route::Core(effective));
         }
+    }
+
+    #[test]
+    fn compact_routes_to_the_tripwire_entry_not_the_core() {
+        assert_eq!(
+            route(&preamble(), &argv(&["compact", "--force", "x"]), None),
+            Route::Compact(argv(&["--force", "x"]))
+        );
+        assert_eq!(
+            route(&preamble(), &argv(&["compact"]), None),
+            Route::Compact(vec![])
+        );
     }
 
     #[test]
@@ -848,7 +867,8 @@ mod tests {
     #[test]
     fn the_embedded_texts_are_the_ones_the_glue_printed() {
         assert!(HELP.starts_with("ae - agentic engineering: tmux multi-agent workspace\n"));
-        assert!(HELP.contains("  ae compact [-f] [--keep-history] [--digest-only] [name]\n"));
+        assert!(HELP.contains("  ae reboot [-f] [--keep-history] [--digest-only] [name]\n"));
+        assert!(HELP.contains("  ae compact [name]\n"));
         assert!(HELP.contains(
             "  ae init [--yes]        Discover installed harnesses and propose a global config\n"
         ));

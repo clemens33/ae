@@ -3,7 +3,8 @@
 //! Up to the paste: the body is refused when blank; the caller is
 //! `AE_SENDER_OVERRIDE` or the pane's own stamp (no identity at all falls back
 //! to a plain `send`, with a warning); an external sink (`telegram:*`,
-//! `discord:*`, `ae:compact:*`) is event-only; any other target is resolved —
+//! `discord:*`, `ae:compact:*`, `ae:reboot:*`, `ae:seats:*`) is event-only;
+//! any other target is resolved —
 //! `%pane` passthrough, `@session:agent` across sessions when explicitly
 //! authorized, exact `alias:name`, else a unique alias, else a unique bare name;
 //! a request id is minted (`<prefix>-<YYYYMMDDTHHMMSSZ>-<8 hex>`); the message
@@ -166,7 +167,9 @@ pub fn refusal(action: &str) -> String {
 pub const NO_IDENTITY_WARNING: &str = "Warning: could not detect caller identity (no @ae_agent on this pane). Using 'send' instead.\n";
 
 /// Whether `target` is an event-only sink that is never resolved:
-/// `telegram:*`, `discord:*` or exactly the `ae:compact:` prefix — a
+/// `telegram:*`, `discord:*` or exactly one of the three permanent `ae:`
+/// ledger namespaces — `ae:compact:` (legacy-only, never written again),
+/// `ae:reboot:` (the destructive writer) and `ae:seats:` (reserved) — a
 /// whitelist, because the failure this family can produce is a silent no-op
 /// delivery, so an `ae:`-shaped typo must still fail loudly.
 #[must_use]
@@ -174,6 +177,8 @@ pub fn is_external(target: &str) -> bool {
     target.starts_with("telegram:")
         || target.starts_with("discord:")
         || target.starts_with("ae:compact:")
+        || target.starts_with("ae:reboot:")
+        || target.starts_with("ae:seats:")
 }
 
 /// `ae_make_req_id`: `<prefix>-<YYYYMMDDTHHMMSSZ>-<8 lowercase hex>`. The
@@ -1800,6 +1805,27 @@ mod tests {
         assert!(
             is_external("telegram:123") && is_external("ae:compact:u") && !is_external("ae:other")
         );
+    }
+
+    #[test]
+    fn is_external_is_exactly_the_three_permanent_ae_namespaces() {
+        for accepted in [
+            "ae:compact:0199c0de",
+            "ae:reboot:0199c0de",
+            "ae:seats:0199c0de",
+        ] {
+            assert!(is_external(accepted), "{accepted}");
+        }
+        for refused in [
+            "ae:",
+            "ae:compact",
+            "ae:seats",
+            "ae:seatsx:",
+            "ae:reboots:",
+            "ae:other:x",
+        ] {
+            assert!(!is_external(refused), "{refused}");
+        }
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! `_compact`: the whole compact operation, in order.
+//! `_compact`: the whole reboot operation, in order.
 //!
 //! Each STEP is its own core entry (`_compact-freeze`, `-revalidate`,
 //! `-memo-baseline`, `-find-outstanding`, `-cancel`, `-wait`, `-archive`,
@@ -77,7 +77,7 @@ pub(crate) fn run(
     if transport::observe_current_session(&ServerId::Ambient).as_deref() == Some(name.as_str()) {
         writeln!(
             err,
-            "Error: cannot compact the current session. Detach, then run: ae compact {name}"
+            "Error: cannot reboot the current session. Detach, then run: ae reboot {name}"
         )?;
         return Ok(EXIT_FAILED);
     }
@@ -94,7 +94,7 @@ pub(crate) fn run(
     let Some(frozen) = Frozen::parse(&tuple) else {
         writeln!(
             err,
-            "compact: internal error — the frozen tuple did not parse (expected ten fields)."
+            "reboot: internal error — the frozen tuple did not parse (expected ten fields)."
         )?;
         return Ok(EXIT_FAILED);
     };
@@ -103,11 +103,11 @@ pub(crate) fn run(
     // disk.
     let (child_server_kind, child_server_value) = recorded_server(&dir);
 
-    // STDERR: compact's STDOUT is a contract — the four boundary lines, in
+    // STDERR: reboot's STDOUT is a contract — the four boundary lines, in
     // order, and nothing else.
     writeln!(
         err,
-        "compact: {} ({}) resolved and frozen.",
+        "reboot: {} ({}) resolved and frozen.",
         frozen.name, frozen.mode
     )?;
     writeln!(err, "session: {}", frozen.name)?;
@@ -183,12 +183,12 @@ pub(crate) fn run(
                 if compact::cancel_step(&dir, &pending, err)? != 0 {
                     return Ok(EXIT_FAILED);
                 }
-                writeln!(err, "compact: withdrew {pending} (--digest-only).")?;
+                writeln!(err, "reboot: withdrew {pending} (--digest-only).")?;
                 pending.clear();
             }
             writeln!(
                 err,
-                "compact: semantic handover skipped (--digest-only); the digest is the handover."
+                "reboot: semantic handover skipped (--digest-only); the digest is the handover."
             )?;
         } else if pending.is_empty() {
             let mut baseline = Vec::new();
@@ -199,7 +199,7 @@ pub(crate) fn run(
             };
             let body = request_text(&dir, &baseline);
             let sender = tracked::Sender {
-                display: format!("ae:compact:{}", frozen.uuid),
+                display: format!("ae:reboot:{}", frozen.uuid),
                 slot: String::new(),
                 session: String::new(),
             };
@@ -238,12 +238,12 @@ pub(crate) fn run(
             }
             writeln!(
                 err,
-                "compact: handover requested as {pending}; waiting for the reply AND a new handover memo."
+                "reboot: handover requested as {pending}; waiting for the reply AND a new handover memo."
             )?;
         } else {
             writeln!(
                 err,
-                "compact: reusing the outstanding handover request {pending}."
+                "reboot: reusing the outstanding handover request {pending}."
             )?;
         }
         reference = pending;
@@ -282,7 +282,7 @@ pub(crate) fn run(
         if let ServerSelector::Positive(selector) = server_of(&bytes) {
             let server = ServerId::Selected(selector);
             if let Some(id) = live_id(&server, &frozen.name)
-                && !kill_verified(&server, &frozen.name, "compact", &id, err)?
+                && !kill_verified(&server, &frozen.name, "reboot", &id, err)?
             {
                 return Ok(EXIT_FAILED);
             }
@@ -397,7 +397,7 @@ pub(crate) fn run(
         server_kind: &child_server_kind,
         server_value: &child_server_value,
     };
-    // A child that will not start is NOT a failed compact: the archive is
+    // A child that will not start is NOT a failed reboot: the archive is
     // published and proven, and the recovery command above is the route back.
     let mut sink = Vec::new();
     if !matches!(
@@ -427,6 +427,54 @@ fn recorded_server(dir: &Path) -> (String, String) {
     }
 }
 
+/// The B-release `ae compact` stub: ONE line on stderr, exit 2. C replaces it
+/// with the in-place seat compaction.
+pub(crate) const COMPACT_STUB: &str = "ae compact: not yet available — the in-place seat compaction ships in the next release; the destructive handover is 'ae reboot'";
+
+/// The argv echo budget for the tripwire and unknown-flag lines.
+const FLAG_CELLS: usize = 64;
+
+/// `ae compact ...` in the B release — the R9 tripwire over the destructive
+/// parser's ACCEPTED set, else the stub.
+///
+/// The first dash-led token decides, in argv order, by asking [`parse`]
+/// itself: accepted there trips here, refused or unknown there errors here —
+/// so the tripwire list cannot drift from the parser's accepted set.
+/// `--exec-plan` is probed with the path it takes. A bare `ae compact [name]`
+/// prints the stub.
+pub(crate) fn run_compact_entry(tail: &[String], err: &mut impl Write) -> io::Result<u8> {
+    for arg in tail {
+        if !arg.starts_with('-') {
+            continue;
+        }
+        let shown = crate::event_text::display_cell(arg, FLAG_CELLS);
+        if parse_accepts(arg) {
+            writeln!(
+                err,
+                "ae: '{shown}' belongs to the destructive verb, which is now 'ae reboot'. Run: ae reboot {shown} [name]"
+            )?;
+        } else {
+            writeln!(err, "Error: unknown flag '{shown}'.")?;
+        }
+        return Ok(EXIT_USAGE);
+    }
+    writeln!(err, "{COMPACT_STUB}")?;
+    Ok(EXIT_USAGE)
+}
+
+/// Whether the destructive [`parse`] accepts `flag` — probed with a dummy
+/// name (and the path `--exec-plan` takes), so acceptance is the parser's own
+/// answer, never a second list.
+fn parse_accepts(flag: &str) -> bool {
+    let probe = "probe".to_owned();
+    let tail: Vec<String> = if flag == "--exec-plan" {
+        vec![flag.to_owned(), probe.clone(), probe]
+    } else {
+        vec![flag.to_owned(), probe]
+    };
+    parse(&tail).is_ok()
+}
+
 fn parse(tail: &[String]) -> Result<Args, String> {
     let mut args = Args {
         name: String::new(),
@@ -451,36 +499,35 @@ fn parse(tail: &[String]) -> Result<Args, String> {
             },
             "--purge-history" => {
                 return Err(
-                    "Error: --purge-history contradicts compact, which exists to keep the archive.\n  To end a session and delete its archive: ae end --purge-history <name>"
+                    "Error: --purge-history contradicts reboot, which exists to keep the archive.\n  To end a session and delete its archive: ae end --purge-history <name>"
                         .to_owned(),
                 );
             }
             "--assume-stopped" => {
                 return Err(
-                    "Error: --assume-stopped is an 'ae end' acknowledgement; compact stops the session itself."
+                    "Error: --assume-stopped is an 'ae end' acknowledgement; reboot stops the session itself."
                         .to_owned(),
                 );
             }
             flag if flag.starts_with("--from") => {
                 return Err(
-                    "Error: --from is not a compact flag — compact inherits from the archive it just wrote."
+                    "Error: --from is not a reboot flag — reboot inherits from the archive it just wrote."
                         .to_owned(),
                 );
             }
             flag @ ("--local" | "--copy" | "--worktree") => {
                 return Err(format!(
-                    "Error: '{flag}' is not a compact flag — the fresh session keeps the mode the archived one had."
+                    "Error: '{flag}' is not a reboot flag — the fresh session keeps the mode the archived one had."
                 ));
             }
             "all" => {
                 return Err(
-                    "Error: compact takes one session name; 'all' has no meaning for it."
-                        .to_owned(),
+                    "Error: reboot takes one session name; 'all' has no meaning for it.".to_owned(),
                 );
             }
             "use" => {
                 return Err(
-                    "Error: 'use' is not a compact argument — the fresh session starts the roster your config names now."
+                    "Error: 'use' is not a reboot argument — the fresh session starts the roster your config names now."
                         .to_owned(),
                 );
             }
@@ -490,7 +537,7 @@ fn parse(tail: &[String]) -> Result<Args, String> {
             name if args.name.is_empty() => name.clone_into(&mut args.name),
             extra => {
                 return Err(format!(
-                    "Error: unexpected extra argument '{extra}' — compact takes one session name."
+                    "Error: unexpected extra argument '{extra}' — reboot takes one session name."
                 ));
             }
         }
@@ -552,7 +599,7 @@ impl Frozen {
 
 /// The confirmation body, on stderr.
 fn confirm_body(frozen: &Frozen, digest_only: bool, err: &mut impl Write) -> io::Result<()> {
-    writeln!(err, "Compact session '{}'?", frozen.name)?;
+    writeln!(err, "Reboot session '{}'?", frozen.name)?;
     writeln!(
         err,
         "  - Session id: {} ({}), mode: {}",
@@ -616,7 +663,7 @@ fn shell_quote(word: &str) -> String {
     format!("'{}'", word.replace('\'', "'\\''"))
 }
 
-/// The ref of the still-pending handover request this session's compact actor
+/// The ref of the still-pending handover request this session's reboot actor
 /// opened, or empty.
 fn outstanding(dir: &Path) -> io::Result<String> {
     let mut found = Vec::new();
@@ -651,7 +698,7 @@ fn handover_secs(err: &mut impl Write) -> io::Result<u64> {
 /// The handover request body.
 fn request_text(dir: &Path, baseline: &str) -> String {
     format!(
-        "COMPACT HANDOVER — this session is about to be archived and restarted fresh from its\n\
+        "REBOOT HANDOVER — this session is about to be archived and restarted fresh from its\n\
          digest. You are its main agent; what you write now is what the next session begins with.\n\
          \n\
          1. Stop accepting new work.\n\
@@ -660,7 +707,7 @@ fn request_text(dir: &Path, baseline: &str) -> String {
          \x20      {}/memo add --topic handover \"<what the next session must know>\"\n\
          \x20  Write what cannot be re-derived from the code: decisions and their reasons, what was\n\
          \x20  ruled out, what is in flight, what will bite. Not a summary of the diff.\n\
-         4. Retire every agent you spawned. compact refuses while any spawned slot remains, and it\n\
+         4. Retire every agent you spawned. reboot refuses while any spawned slot remains, and it\n\
          \x20  will not retire them for you.\n\
          5. Reply with the exact command in this message.\n\
          6. Do no further work after replying.\n\
@@ -748,5 +795,76 @@ mod tests {
     #[test]
     fn a_quote_in_a_word_cannot_end_the_quoting() {
         assert_eq!(shell_quote("a'b"), "'a'\\''b'");
+    }
+
+    /// The R9 tripwire list IS the parser's accepted set: every one of the
+    /// five spellings trips with the exact text, and the probe answers from
+    /// `parse` itself, so a spelling added to or dropped from the parser moves
+    /// the tripwire with it.
+    #[test]
+    fn the_tripwire_trips_exactly_the_parser_accepted_set() {
+        for flag in [
+            "-f",
+            "--force",
+            "--keep-history",
+            "--digest-only",
+            "--exec-plan",
+        ] {
+            assert!(super::parse_accepts(flag), "{flag} trips");
+            let mut err = Vec::new();
+            let code =
+                super::run_compact_entry(&[flag.to_owned(), "sess".to_owned()], &mut err).unwrap();
+            assert_eq!(code, crate::state::EXIT_USAGE, "{flag}");
+            assert_eq!(
+                String::from_utf8_lossy(&err),
+                format!(
+                    "ae: '{flag}' belongs to the destructive verb, which is now 'ae reboot'. Run: ae reboot {flag} [name]\n"
+                )
+            );
+        }
+        // Named-but-refused and unknown spellings get the generic error.
+        for flag in [
+            "--purge-history",
+            "--assume-stopped",
+            "--from",
+            "--local",
+            "--copy",
+            "--worktree",
+            "--bogus",
+        ] {
+            assert!(!super::parse_accepts(flag), "{flag} errors");
+            let mut err = Vec::new();
+            let code = super::run_compact_entry(&[flag.to_owned()], &mut err).unwrap();
+            assert_eq!(code, crate::state::EXIT_USAGE, "{flag}");
+            assert_eq!(
+                String::from_utf8_lossy(&err),
+                format!("Error: unknown flag '{flag}'.\n")
+            );
+        }
+    }
+
+    #[test]
+    fn bare_compact_prints_the_one_line_stub() {
+        for tail in [vec![], vec!["sess".to_owned()]] {
+            let mut err = Vec::new();
+            let code = super::run_compact_entry(&tail, &mut err).unwrap();
+            assert_eq!(code, crate::state::EXIT_USAGE);
+            assert_eq!(
+                String::from_utf8_lossy(&err),
+                format!("{}\n", super::COMPACT_STUB)
+            );
+        }
+        // The first dash-led token decides, in argv order, wherever it sits.
+        let mut err = Vec::new();
+        let code =
+            super::run_compact_entry(&["sess".to_owned(), "--force".to_owned()], &mut err).unwrap();
+        assert_eq!(code, crate::state::EXIT_USAGE);
+        assert!(String::from_utf8_lossy(&err).starts_with("ae: '--force' belongs"));
+        // A control-byte flag is projected, never echoed raw.
+        let mut err = Vec::new();
+        super::run_compact_entry(&["--bogus\u{1b}[31m".to_owned()], &mut err).unwrap();
+        let msg = String::from_utf8_lossy(&err).into_owned();
+        assert!(!msg.contains('\u{1b}'), "{msg:?}");
+        assert!(msg.starts_with("Error: unknown flag '--bogus?"), "{msg:?}");
     }
 }
