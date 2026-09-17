@@ -10,6 +10,14 @@
 //!   first line is bare of any ae marker and is not Claude's own plumbing;
 //! * `<system-reminder>` spans are stripped, the body trimmed, empties dropped.
 //!
+//! With `--assistant` a second row kind is read: `type == "assistant"` records
+//! with ARRAY `message.content`, joining the `text` of the parts whose
+//! `type == "text"` in order — one record, one row. `thinking` and `tool_use`
+//! parts are never read, `isApiErrorMessage == true` records are excluded, an
+//! empty body drops silently, and an unstamped record counts into the same
+//! `missing_ts` coverage. The reply path classifies NO markers: a model may
+//! legitimately quote one.
+//!
 //! Plumbing filter, verified 2026-09-16 against a 15,435-line local transcript
 //! (567 string user turns; shapes only, content never quoted):
 //!
@@ -60,6 +68,7 @@ pub fn read_stream(
         actor,
         file,
         source,
+        assistant: streamed.assistant,
         rows: Vec::new(),
         coverage: Vec::new(),
         missing_ts: 0,
@@ -92,6 +101,9 @@ struct Sink<'a> {
     actor: &'a str,
     file: &'a str,
     source: ToolKind,
+    /// `--assistant`: the reply path is live. Off, an assistant record is
+    /// classified and dropped exactly as before the flag existed.
+    assistant: bool,
     rows: Vec<Row>,
     coverage: Vec<Coverage>,
     missing_ts: u64,
@@ -118,9 +130,16 @@ impl Sink<'_> {
         let Ok(value) = crate::json::parse(text) else {
             return;
         };
-        if value.get_str("type") != Some("user") {
-            return;
+        match value.get_str("type") {
+            Some("user") => self.push_human(&value, offset),
+            Some("assistant") if self.assistant => self.push_assistant(&value, offset),
+            _ => {}
         }
+    }
+
+    /// One `type == "user"` record: the human path, markers and plumbing
+    /// filtered, reminders stripped, empties dropped.
+    fn push_human(&mut self, value: &crate::json::Value, offset: u64) {
         if value
             .get("isCompactSummary")
             .is_some_and(|flag| *flag == crate::json::Value::Bool(true))
@@ -141,7 +160,7 @@ impl Sink<'_> {
         if crate::provenance::is_ae_turn(first) {
             return;
         }
-        if is_plumbing(&value, first) {
+        if is_plumbing(value, first) {
             return;
         }
         let Some(ts) = value
@@ -160,6 +179,54 @@ impl Sink<'_> {
             actor: self.actor.to_owned(),
             role: Role::Human,
             body,
+            source: self.source,
+            file: self.file.to_owned(),
+            offset,
+        });
+    }
+
+    /// One `type == "assistant"` record with `--assistant` on: join the `text`
+    /// parts in order, one record one row. `thinking` and `tool_use` parts are
+    /// never read and an API-error record is excluded whole, before anything
+    /// else; plumbing and marker classification stay the human path's alone.
+    fn push_assistant(&mut self, value: &crate::json::Value, offset: u64) {
+        if value
+            .get("isApiErrorMessage")
+            .is_some_and(|flag| *flag == crate::json::Value::Bool(true))
+        {
+            return;
+        }
+        let Some(crate::json::Value::Arr(parts)) = value
+            .get("message")
+            .and_then(|message| message.get("content"))
+        else {
+            // Unobserved shape: fail silent, never guess.
+            return;
+        };
+        let mut joined = String::new();
+        for part in parts {
+            if part.get_str("type") == Some("text")
+                && let Some(text) = part.get_str("text")
+            {
+                joined.push_str(text);
+            }
+        }
+        let Some(ts) = value
+            .get_str("timestamp")
+            .and_then(crate::time::Timestamp::parse_micros)
+        else {
+            self.missing_ts += 1;
+            return;
+        };
+        let body = joined.trim();
+        if body.is_empty() {
+            return;
+        }
+        self.rows.push(Row {
+            ts,
+            actor: self.actor.to_owned(),
+            role: Role::Assistant,
+            body: body.to_owned(),
             source: self.source,
             file: self.file.to_owned(),
             offset,
@@ -231,6 +298,30 @@ mod tests {
         let mut bytes = line.as_bytes().to_vec();
         bytes.push(b'\n');
         read(&bytes, ACTOR, FILE, crate::tool::ToolKind::Claude)
+    }
+
+    fn assistant(content: &str) -> String {
+        format!(
+            r#"{{"type":"assistant","timestamp":"2026-09-16T09:00:00.500Z","message":{{"role":"assistant","content":{content}}}}}"#
+        )
+    }
+
+    /// Read these lines through the flag: the one-shot `read` stays the
+    /// off-path, so the reply tests bind [`super::read_stream`] directly.
+    fn read_lines_with(
+        lines: &[&str],
+        assistant: bool,
+    ) -> (Vec<crate::board::Row>, Vec<crate::board::Coverage>) {
+        let mut bytes = lines.join("\n").into_bytes();
+        bytes.push(b'\n');
+        let mut splitter = super::Splitter::new();
+        splitter.feed(&bytes);
+        super::read_stream(
+            &splitter.finish().with_assistant(assistant),
+            ACTOR,
+            FILE,
+            crate::tool::ToolKind::Claude,
+        )
     }
 
     #[test]
@@ -404,5 +495,71 @@ mod tests {
             let (rows, _) = read_one(&user(&format!(r#""{prefix} typed by a human""#)));
             assert!(rows.is_empty(), "{prefix} collides");
         }
+    }
+
+    #[test]
+    fn an_assistant_text_part_is_one_row_only_with_the_flag() {
+        let human = user(r#""human words""#);
+        let reply = assistant(r#"[{"type":"text","text":"synthetic reply"}]"#);
+        let (rows, coverage) = read_lines_with(&[&human, &reply], false);
+        assert_eq!(
+            (rows, coverage),
+            read_lines_with(&[&human], false),
+            "flag off changes no row, no coverage"
+        );
+        let (rows, coverage) = read_lines_with(&[&human, &reply], true);
+        assert!(coverage.is_empty());
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[1].role, crate::board::Role::Assistant);
+        assert_eq!(rows[1].body, "synthetic reply");
+        assert_eq!(rows[1].ts, 1_789_549_200_500_000);
+        assert_eq!(
+            (
+                rows[1].actor.as_str(),
+                rows[1].file.as_str(),
+                rows[1].offset
+            ),
+            (ACTOR, FILE, human.len() as u64 + 1)
+        );
+    }
+
+    #[test]
+    fn assistant_text_parts_join_and_non_text_parts_stay_silent() {
+        let line = assistant(
+            r#"[{"type":"thinking","thinking":"hidden"},{"type":"text","text":"first "},{"type":"tool_use","id":"t","name":"Read","input":{}},{"type":"text","text":"second"}]"#,
+        );
+        let (rows, _) = read_lines_with(&[&line], true);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].body, "first second");
+        for content in [
+            r#"[{"type":"thinking","thinking":"hidden"}]"#,
+            r#"[{"type":"tool_use","id":"t","name":"Bash","input":{}}]"#,
+        ] {
+            let (rows, coverage) = read_lines_with(&[&assistant(content)], true);
+            assert!(rows.is_empty() && coverage.is_empty(), "{content}");
+        }
+    }
+
+    #[test]
+    fn assistant_exclusions_drop_silently_or_into_the_timestamp_coverage() {
+        // An API error is excluded whole and an empty body drops silently;
+        // only the unstamped record earns the one coverage row.
+        let api_error = r#"{"type":"assistant","isApiErrorMessage":true,"timestamp":"2026-09-16T09:00:00.500Z","message":{"role":"assistant","content":[{"type":"text","text":"synthetic api error"}]}}"#;
+        let empty = assistant(r#"[{"type":"text","text":"   \n  "}]"#);
+        let unstamped = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"no ts"}]}}"#;
+        let (rows, coverage) = read_lines_with(&[api_error, &empty, unstamped], true);
+        assert!(rows.is_empty());
+        assert_eq!(coverage.len(), 1);
+        assert_eq!(coverage[0].reason, "1 record without a timestamp");
+    }
+
+    #[test]
+    fn an_assistant_reply_may_quote_an_ae_marker() {
+        // Markers classify HUMAN rows only: a reply that opens with one is
+        // prose, not an injected turn.
+        let line = assistant(r#"[{"type":"text","text":"⟦ae:msg from lead⟧\nsynthetic reply"}]"#);
+        let (rows, _) = read_lines_with(&[&line], true);
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].body.contains("synthetic reply"));
     }
 }
