@@ -1513,8 +1513,10 @@ fn a_resume_reruns_with_the_resume_variant() {
     );
 
     // Plant the transcript claude would have written, and the same seat resumes
-    // the SAME conversation. Under the RIG'S home, so nothing is written into
-    // the developer's own `~/.claude/projects`.
+    // the SAME conversation. The fallback above CLEARED the recorded id, so the
+    // fixture restores it: what is proven here is the transcript probe.
+    ae::meta::rewrite(&rig.dir("lnres"), "harness_session.main", Some(&sid))
+        .expect("the fixture restores the recorded id");
     let home = rig.scratch.display().to_string();
     // The PHYSICAL path, because the probe asks `getcwd(2)` — which is what
     // claude's own `process.cwd()` asks, and on macOS `/tmp` is a symlink.

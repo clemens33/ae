@@ -737,7 +737,7 @@ fn purge_history_writes_no_archive_at_all() {
     assert!(!exists(&rig.dir), "the live session state is gone");
 }
 
-/// The history purge removes a seat's PREDECESSOR conversations too — same
+/// The history purge removes a seat's PREDECESSOR conversations too: same
 /// UUID proof, same `left in place` note for a row that names nothing.
 #[test]
 fn the_history_purge_removes_predecessor_conversations_and_notes_unusable_ones() {

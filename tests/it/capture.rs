@@ -418,9 +418,12 @@ fn the_register_sid_handshake_is_the_id_the_capture_reports() {
         meta.contains(&format!("harness_session.main={id}")),
         "the capture must report the handshake's id:\n{meta}"
     );
+    // The replaced id is no longer the current one — and it is not lost either:
+    // the authoritative arm moves it into the seat's predecessor row.
     assert!(
-        !meta.contains(wrong),
-        "the wrong prior capture survived:\n{meta}"
+        !meta.contains(&format!("harness_session.main={wrong}"))
+            && meta.contains(&format!("harness_session_prior.main={wrong}\n")),
+        "the replaced id is a predecessor, never again the current id:\n{meta}"
     );
     assert!(
         !rig.session.join("codex.main.sid").exists(),
@@ -428,8 +431,7 @@ fn the_register_sid_handshake_is_the_id_the_capture_reports() {
     );
 }
 
-/// A codex rollout proving `id` to the launch token the rig records, so the
-/// handshake takes its authoritative arm.
+/// A codex rollout proving `id` to the launch token the rig records.
 fn plant_rollout(rig: &Rig, id: &str) {
     let day = ae::time::Timestamp::now().to_string()[..10].replace('-', "/");
     let started = ae::time::Timestamp::now();
@@ -469,9 +471,8 @@ fn register_sid(rig: &Rig, id: &str) -> std::process::Output {
         .unwrap_or_else(|why| panic!("the shim should run: {why}"))
 }
 
-/// The authoritative codex handshake may REPLACE a live id. The id it replaces
-/// becomes the seat's newest predecessor — but only when it is a usable
-/// conversation name that is not the id being recorded.
+/// The authoritative codex handshake may REPLACE a live id: the id it replaces
+/// becomes the seat's newest predecessor, when it is a usable conversation name.
 #[test]
 fn an_authoritative_capture_keeps_only_a_usable_replaced_id_as_a_predecessor() {
     let old = "0199c0de-1234-4890-abcd-ef0123456789";
@@ -504,18 +505,10 @@ fn an_authoritative_capture_keeps_only_a_usable_replaced_id_as_a_predecessor() {
             meta.contains(&format!("harness_session.main={new}\n")),
             "{tag}: {meta}"
         );
-        let expected = usize::from(replaced);
-        assert_eq!(
-            meta.matches("harness_session_prior").count(),
-            expected,
-            "{tag}: {meta}"
-        );
-        if replaced {
-            assert!(
-                meta.contains(&format!("harness_session_prior.main={old}\n")),
-                "{tag}: {meta}"
-            );
-        }
+        let prior = meta
+            .lines()
+            .find_map(|line| line.strip_prefix("harness_session_prior.main="));
+        assert_eq!(prior, replaced.then_some(old), "{tag}: {meta}");
     }
 }
 

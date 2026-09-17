@@ -1001,9 +1001,7 @@ impl Meta {
     /// `harness_session_prior.<slot>` list, split on commas. The family is this
     /// parser's own: no unknown-key anomaly, never a doubt against the roster.
     /// The list is RAW — a consumer building a path must judge each element
-    /// first ([`prior_with`] does) — but a malformed element is NOT a refusal: a
-    /// hand-edited predecessor list must not make a session unresumable. A row
-    /// the reader dropped (a duplicated key) reads as empty.
+    /// first ([`prior_with`] does) — and a malformed element is NOT a refusal.
     #[must_use]
     pub fn harness_session_prior(&self, slot: &str) -> Vec<&str> {
         let key = format!("{HARNESS_SESSION_PRIOR_PREFIX}{slot}");
@@ -1365,10 +1363,9 @@ pub(crate) fn record_config_home(
 /// Record the conversation a resume FALLBACK just abandoned: the predecessor
 /// list gains `abandoned` (when usable) and `harness_session.<slot>` becomes
 /// `pending` — ONE replacement under the meta lock, so no reader sees the
-/// cleared row without the predecessor that explains it.
-///
-/// Cleared even when `abandoned` is unusable: the fallback proved the recorded
-/// id is not reachable. Idempotent — a row already `pending` writes nothing.
+/// cleared row without the predecessor that explains it. Cleared even when
+/// `abandoned` is unusable, and idempotent: a row already `pending` writes
+/// nothing.
 ///
 /// # Errors
 ///
