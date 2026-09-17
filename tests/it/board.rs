@@ -41,6 +41,13 @@ fn user(ts: &str, body: &str) -> String {
     )
 }
 
+/// One synthetic Claude assistant turn; `content` is the parts array.
+fn claude_assistant(ts: &str, content: &str) -> String {
+    format!(
+        r#"{{"type":"assistant","timestamp":"{ts}","message":{{"role":"assistant","content":{content}}}}}"#
+    )
+}
+
 /// Plant `sessions/<name>/meta` carrying exactly these roster rows.
 fn plant_session(root: &Path, name: &str, roster: &str) -> PathBuf {
     let dir = root.join("sessions").join(name);
@@ -70,6 +77,15 @@ fn claude_roster(slot: &str, seat: &str, id: &str, store: &Path) -> String {
 }
 
 fn observe(root: &Path, names: &[&str], since: Option<i64>) -> board::Observation {
+    observe_with(root, names, since, false)
+}
+
+fn observe_with(
+    root: &Path,
+    names: &[&str],
+    since: Option<i64>,
+    assistant: bool,
+) -> board::Observation {
     let inputs: Vec<SessionInput> = names
         .iter()
         .map(|name| SessionInput {
@@ -81,6 +97,7 @@ fn observe(root: &Path, names: &[&str], since: Option<i64>) -> board::Observatio
         &Inputs {
             home: Some(root),
             sessions: &inputs,
+            assistant,
         },
         since,
     )
@@ -560,6 +577,13 @@ fn codex_roster(slot: &str, seat: &str, id: &str, store: &Path) -> String {
     )
 }
 
+/// One synthetic Codex assistant message; `content` is the parts array.
+fn codex_assistant(ts: &str, content: &str) -> String {
+    format!(
+        r#"{{"timestamp":"{ts}","type":"response_item","payload":{{"type":"message","role":"assistant","content":{content}}}}}"#
+    )
+}
+
 /// Plant `<store>/sessions/2026/09/08/rollout-…-{CODEX_ID}.jsonl`: the id's
 /// embedded time picks the day, as in `tests/it/usage.rs`.
 fn plant_rollout(store: &Path, lines: &[String]) {
@@ -854,14 +878,180 @@ fn follow_parses_anywhere_in_the_tail_and_is_advertised() {
     assert!(board::USAGE.contains("--follow"), "usage names it");
     assert!(board::USAGE.contains("--lines <n>"), "usage names the clip");
     assert!(
-        ae::entry::HELP
-            .contains("ae board [session…] [--since <ts>] [--json] [--follow] [--lines <n>]"),
-        "help carries the synopsis"
+        ae::entry::HELP.contains(
+            "ae board [session…] [--since <ts>] [--json] [--follow] [--lines <n>] [--assistant]"
+        ),
+        "help carries the pinned synopsis"
     );
     assert!(
         ae::entry::HELP.contains("--follow keeps printing"),
         "help says what it does"
     );
+    assert!(
+        ae::entry::HELP
+            .contains("--assistant adds the model's replies (text only; off by default)"),
+        "help names the flag"
+    );
+}
+
+#[test]
+fn assistant_seats_render_rows_and_roles_only_behind_the_flag() {
+    let root = rig("assistant-flag");
+    let claude_store = root.join("claude");
+    plant_transcript(
+        &claude_store,
+        "work",
+        CLAUDE_ID,
+        &[
+            user("2026-09-16T09:00:00Z", "human words"),
+            claude_assistant(
+                "2026-09-16T09:00:01Z",
+                r#"[{"type":"thinking","thinking":"hidden"},{"type":"text","text":"synthetic reply"}]"#,
+            ),
+        ],
+    );
+    let codex_store = root.join("codex");
+    plant_rollout(
+        &codex_store,
+        &[
+            codex_user("2026-09-16T09:00:02Z", "codex human words"),
+            codex_assistant(
+                "2026-09-16T09:00:03Z",
+                r#"[{"type":"output_text","text":"codex synthetic reply"}]"#,
+            ),
+        ],
+    );
+    plant_session(
+        &root,
+        "one",
+        &format!(
+            "{}{}",
+            claude_roster("main", "lead", CLAUDE_ID, &claude_store),
+            codex_roster("worker.0", "colead", CODEX_ID, &codex_store),
+        ),
+    );
+    let off = observe(&root, &["one"], None);
+    let bodies: Vec<&str> = off.rows.iter().map(|row| row.body.as_str()).collect();
+    assert_eq!(bodies, ["human words", "codex human words"], "human only");
+    assert!(
+        !board::render(&off, false, None).contains("assistant"),
+        "off"
+    );
+    assert!(
+        !board::render(&off, true, None).contains("\"role\":\"assistant\""),
+        "off"
+    );
+    let on = observe_with(&root, &["one"], None, true);
+    let roles: Vec<board::Role> = on.rows.iter().map(|row| row.role).collect();
+    assert_eq!(
+        roles,
+        [
+            board::Role::Human,
+            board::Role::Assistant,
+            board::Role::Human,
+            board::Role::Assistant,
+        ]
+    );
+    let text = board::render(&on, false, None);
+    for header in [
+        "## 2026-09-16T09:00:01.000000Z one:lead · assistant\n  synthetic reply\n",
+        "## 2026-09-16T09:00:03.000000Z one:colead · assistant\n  codex synthetic reply\n",
+    ] {
+        assert!(text.contains(header), "{text}");
+    }
+    let json = board::render(&on, true, None);
+    assert_eq!(json.matches("\"role\":\"assistant\"").count(), 2, "{json}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn the_flag_off_board_is_byte_identical_to_the_human_only_store() {
+    // Two roots, ONE session name: the assistant records exist only in the
+    // first, and with the flag off the two boards must print the same bytes.
+    let replied = rig("identical-replied");
+    let plain = rig("identical-plain");
+    for (root, with_replies) in [(&replied, true), (&plain, false)] {
+        let store = root.join("claude");
+        let mut lines = vec![user("2026-09-16T09:00:00Z", "human words")];
+        if with_replies {
+            lines.push(claude_assistant(
+                "2026-09-16T09:00:01Z",
+                r#"[{"type":"text","text":"synthetic reply"}]"#,
+            ));
+        }
+        plant_transcript(&store, "work", CLAUDE_ID, &lines);
+        plant_session(
+            root,
+            "same",
+            &claude_roster("main", "lead", CLAUDE_ID, &store),
+        );
+    }
+    let with_reply = board::render(&observe(&replied, &["same"], None), false, None);
+    let human_only = board::render(&observe(&plain, &["same"], None), false, None);
+    assert_eq!(with_reply, human_only, "the flag-off stream is unchanged");
+    let _ = std::fs::remove_dir_all(&replied);
+    let _ = std::fs::remove_dir_all(&plain);
+}
+
+#[test]
+fn the_assistant_flag_parses_with_every_other_flag_and_is_advertised() {
+    let words = |items: &[&str]| {
+        items
+            .iter()
+            .map(|word| (*word).to_owned())
+            .collect::<Vec<_>>()
+    };
+    let args = board::parse(&words(&[
+        "day",
+        "--since",
+        "2026-09-16T09:00:00Z",
+        "--follow",
+        "--json",
+        "--assistant",
+    ]))
+    .expect("the flag composes");
+    assert!(args.assistant && args.follow && args.json);
+    let clipped =
+        board::parse(&words(&["--lines", "3", "--assistant"])).expect("composes with --lines");
+    assert_eq!(clipped.lines, Some(3));
+    assert!(clipped.assistant);
+    assert!(board::USAGE.contains("--assistant"), "usage names it");
+}
+
+#[test]
+fn binary_assistant_flag_reaches_the_reader() {
+    let root = rig("bin-assistant");
+    let store = root.join("claude");
+    plant_transcript(
+        &store,
+        "work",
+        CLAUDE_ID,
+        &[
+            user("2026-09-16T09:00:00Z", "human words"),
+            claude_assistant(
+                "2026-09-16T09:00:01Z",
+                r#"[{"type":"text","text":"synthetic reply"}]"#,
+            ),
+        ],
+    );
+    plant_session(
+        &root,
+        "one",
+        &claude_roster("main", "lead", CLAUDE_ID, &store),
+    );
+    let (code, stdout, stderr) = run(&root, &["board", "one"]);
+    assert_eq!(code, Some(0), "stderr: {stderr}");
+    assert!(!stdout.contains("assistant"), "off: {stdout}");
+    let (code, stdout, stderr) = run(&root, &["board", "one", "--assistant"]);
+    assert_eq!(code, Some(0), "stderr: {stderr}");
+    assert!(
+        stdout.contains("one:lead · assistant\n  synthetic reply\n"),
+        "{stdout}"
+    );
+    let (code, stdout, stderr) = run(&root, &["board", "one", "--assistant", "--json"]);
+    assert_eq!(code, Some(0), "stderr: {stderr}");
+    assert!(stdout.contains("\"role\":\"assistant\""), "{stdout}");
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
