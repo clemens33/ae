@@ -270,7 +270,9 @@ session's agents, by severity:
 reason is a self-contained 2–5 sentence decision in 80–600 characters after trimming:
 each option gets one clause, the recommendation gives its reason, and the text points
 to any long form in `.local/<file>` or a memo topic. Never use pointers such as “see
-pane” or “as discussed.” `waiting-agent` declares a wait on ANOTHER ae agent: it is quiet
+pane” or “as discussed.” A spawned (`spawned.<n>`) seat cannot declare `waiting-user`
+— it exits 2, because the seat's spawner owns the human question: the seat declares
+`waiting-agent` and the spawner escalates. `waiting-agent` declares a wait on ANOTHER ae agent: it is quiet
 (no marker) while fresh and ESCALATES to exactly `blocked` (attention marker, and
 nudging too only when the idle-nudge cadence is enabled) once it is older than
 `idle_nudge_secs * OWN_WORK_AGE_CAP` nudge periods — the same multiplier as the
