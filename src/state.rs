@@ -51,6 +51,10 @@ const REASON_SHAPE: &str = "Reason required: waiting-user gives a self-contained
 pub const NO_IDENTITY: &str =
     "Error: could not detect current agent identity; declare state from an ae pane";
 
+/// The refusal when a `spawned.<n>` seat declares `waiting-user`: the spawner
+/// owns the human question, and the spawned seat's own path is `waiting-agent`.
+pub const SPAWNED_WAITING_USER: &str = "Error: a spawned agent cannot declare waiting-user — its spawner owns the human question; declare 'state waiting-agent <spawner>: <what you need decided>' and let the spawner escalate";
+
 /// The exit status of every refusal and failure on this path: it went wrong.
 pub const EXIT_FAILED: u8 = 1;
 
@@ -356,11 +360,21 @@ pub fn event_body(ts: Timestamp, actor: &str, declaration: &Declaration) -> Stri
     body
 }
 
+/// Whether a roster slot is a spawned seat — the grammar `spawned.<n>`, the
+/// same shape [`crate::requests::is_slot`] admits.
+fn is_spawned_slot(slot: &str) -> bool {
+    slot.strip_prefix("spawned.")
+        .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
+}
+
 /// Why a declaration was not recorded.
 #[derive(Debug)]
 pub enum Failure {
     /// No pane identity — nothing was opened.
     NoIdentity,
+    /// A `spawned.<n>` seat asked for `waiting-user` — its spawner owns the
+    /// human question, and nothing was touched.
+    SpawnedWaitingUser,
     /// The lock was not acquired within [`crate::store::LOCK_WAIT`], or could not be opened.
     Lock(String, io::Error),
     /// The container could not be opened or the write did not complete.
@@ -373,6 +387,7 @@ impl Failure {
     pub fn message(&self) -> String {
         match self {
             Self::NoIdentity => NO_IDENTITY.to_owned(),
+            Self::SpawnedWaitingUser => format!("{SPAWNED_WAITING_USER}\n{USAGE}"),
             Self::Lock(path, why) => format!(
                 "ae: state not recorded: could not lock {path} within {}s: {why}",
                 store::LOCK_WAIT.as_secs()
@@ -399,6 +414,9 @@ pub fn declare(
     if !viewer.is_known() {
         return Err(Failure::NoIdentity);
     }
+    if declaration.value == "waiting-user" && is_spawned_slot(&viewer.slot) {
+        return Err(Failure::SpawnedWaitingUser);
+    }
     let body = event_body(now, &viewer.display, declaration);
     match store::open(dir).append_event(&body) {
         Ok(()) => {}
@@ -423,9 +441,9 @@ pub fn declare(
 )]
 mod tests {
     use super::{
-        CHAT_SUMMARY_CAP, Command, Declaration, Failure, Latest, REASON_MAX, REASON_MIN, USAGE,
-        Usage, declare, event_body, event_line, latest, latest_for_all, parse, read, read_line,
-        summary_for, summary_of,
+        CHAT_SUMMARY_CAP, Command, Declaration, Failure, Latest, REASON_MAX, REASON_MIN,
+        SPAWNED_WAITING_USER, USAGE, Usage, declare, event_body, event_line, is_spawned_slot,
+        latest, latest_for_all, parse, read, read_line, summary_for, summary_of,
     };
     use crate::requests::Viewer;
     use crate::time::Timestamp;
@@ -447,6 +465,22 @@ mod tests {
             slot: "main".to_owned(),
             session: "s".to_owned(),
             display: "cl:lead".to_owned(),
+        }
+    }
+
+    fn worker() -> Viewer {
+        Viewer {
+            slot: "worker.0".to_owned(),
+            session: "s".to_owned(),
+            display: "cl:colead".to_owned(),
+        }
+    }
+
+    fn spawned() -> Viewer {
+        Viewer {
+            slot: "spawned.0".to_owned(),
+            session: "s".to_owned(),
+            display: "cl:helper".to_owned(),
         }
     }
 
@@ -626,6 +660,81 @@ mod tests {
             std::fs::read_dir(&dir).unwrap().next().is_none(),
             "no lock, no container"
         );
+    }
+
+    #[test]
+    fn a_spawned_seat_cannot_declare_waiting_user_and_nothing_is_touched() {
+        let dir = scratch("spawned-waiting-user");
+        let decl = Declaration {
+            value: "waiting-user".to_owned(),
+            reason: "x".repeat(REASON_MIN),
+        };
+        let failure = declare(&dir, &spawned(), &decl, Timestamp::now())
+            .expect_err("a spawned seat has no human question to own");
+        assert!(matches!(failure, Failure::SpawnedWaitingUser));
+        assert_eq!(
+            failure.message(),
+            format!("{SPAWNED_WAITING_USER}\n{USAGE}"),
+            "the exact refusal, then the usage block"
+        );
+        assert!(
+            std::fs::read_dir(&dir).unwrap().next().is_none(),
+            "no lock, no container: the refusal precedes every write"
+        );
+    }
+
+    #[test]
+    fn only_waiting_user_is_refused_for_a_spawned_seat() {
+        for value in ["working", "waiting-agent", "blocked", "done"] {
+            let dir = scratch(&format!("spawned-{value}"));
+            let decl = Declaration {
+                value: value.to_owned(),
+                reason: "x".repeat(REASON_MIN),
+            };
+            declare(&dir, &spawned(), &decl, Timestamp::now())
+                .expect("a spawned seat keeps every state but waiting-user");
+            let container = std::fs::read_to_string(dir.join("events.jsonl")).unwrap();
+            assert!(
+                container.contains(&format!("\"ref\":\"{value}\"")),
+                "{value}: {container}"
+            );
+        }
+    }
+
+    #[test]
+    fn waiting_user_stays_open_to_main_and_worker_seats() {
+        for (viewer, tag) in [(lead(), "main"), (worker(), "worker")] {
+            let dir = scratch(&format!("accepted-{tag}"));
+            let decl = Declaration {
+                value: "waiting-user".to_owned(),
+                reason: "x".repeat(REASON_MIN),
+            };
+            let line = declare(&dir, &viewer, &decl, Timestamp::now())
+                .expect("only spawned.<n> is refused");
+            assert!(line.starts_with("Marked "), "{line}");
+            let container = std::fs::read_to_string(dir.join("events.jsonl")).unwrap();
+            assert!(
+                container.contains("\"ref\":\"waiting-user\""),
+                "{container}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_spawned_slot_grammar_is_exactly_the_roster_s_spawned_seats() {
+        assert!(is_spawned_slot("spawned.0"));
+        assert!(is_spawned_slot("spawned.12"));
+        for other in [
+            "main",
+            "worker.0",
+            "spawned.",
+            "spawned.x",
+            "spawned.0x",
+            "@elsewhere:spawned.1",
+            "",
+        ] {
+            assert!(!is_spawned_slot(other), "{other:?}");
+        }
     }
 
     #[test]

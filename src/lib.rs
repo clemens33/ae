@@ -1789,6 +1789,10 @@ fn run_state(
             Ok(0)
         }
         Err(failure) => {
+            if matches!(failure, state::Failure::SpawnedWaitingUser) {
+                write!(err, "{}", failure.message())?;
+                return Ok(state::EXIT_USAGE);
+            }
             writeln!(err, "{}", failure.message())?;
             Ok(state::EXIT_FAILED)
         }
