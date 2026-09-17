@@ -14,7 +14,9 @@ fuzz_target!(|data: &[u8]| {
         splitter.feed(piece);
     }
     let (rows, coverage) = ae::board::agy::read_stream(
-        &splitter.finish().for_seat("0199c0de-ffff-4890-abcd-ef0123456789"),
+        &splitter
+            .finish()
+            .for_seat("0199c0de-ffff-4890-abcd-ef0123456789"),
         "s:seat",
         "fuzz.jsonl",
         ae::tool::ToolKind::Agy,
