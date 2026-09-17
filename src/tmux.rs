@@ -2637,6 +2637,177 @@ pub(crate) fn pane_id_is_valid(pane: &str) -> bool {
         .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
 }
 
+// ---------------------------------------------------------------------------
+// The picker's ONE pre-draw read.
+// ---------------------------------------------------------------------------
+
+/// The row prefix and the completion marker of every command in
+/// [`picker_read_args`].
+///
+/// tmux runs a `;`-separated command list in ONE server connection, so the
+/// picker's whole read costs one process. Rows would blur together without a
+/// per-command prefix, and a line carrying neither a prefix nor a marker is
+/// refused rather than read as somebody else's rows; `ae-picker!<kind>` after a
+/// command's rows PROVES that command completed, because tmux stops the list at
+/// the first failure — so a section without its marker is unknown, never empty.
+/// All printable ASCII, so no format rule is bent.
+const READ_STEM: &str = "ae-picker:";
+const READ_DONE_STEM: &str = "ae-picker!";
+const READ_CLIENTS: char = 'c';
+const READ_SESSIONS: char = 's';
+const READ_PANES: char = 'p';
+const READ_NAMES: char = 'n';
+const READ_IDENTITY: char = 'i';
+const READ_SOCKET: char = 'k';
+const READ_LOOK: char = 'l';
+
+/// Which field of [`PickerRead`] a kind letter fills.
+fn read_section(kind: char) -> Option<usize> {
+    [
+        READ_CLIENTS,
+        READ_SESSIONS,
+        READ_PANES,
+        READ_NAMES,
+        READ_IDENTITY,
+        READ_SOCKET,
+        READ_LOOK,
+    ]
+    .iter()
+    .position(|known| *known == kind)
+}
+
+/// Everything the picker's ONE read carried; a field is absent when its command
+/// did not complete.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PickerRead {
+    /// The invoking client resolved to exactly one live session.
+    pub client: Option<PickerClient>,
+    /// Every live session, pane membership and bare session name, as their
+    /// parsers admit them.
+    pub sessions: Option<Vec<PickerSession>>,
+    pub panes: Option<Vec<PickerPane>>,
+    pub names: Option<Vec<String>>,
+    /// The server's own identity pair and socket path.
+    pub identity: Option<ServerIdentity>,
+    pub socket: Option<String>,
+    /// The invoking client's session look.
+    pub look: Option<LookOptions>,
+}
+
+/// The one tmux invocation carrying every picker READ before its draw.
+///
+/// One connection: the client snapshot, the session rows, the pane membership,
+/// the bare name list, the server identity, its socket path and the invoking
+/// client's look, each behind its own line prefix and followed by its completion
+/// marker. tmux's own `;` separates the commands — this list never passes
+/// through a shell, and the `@ae_menu_open` marker write is deliberately NOT
+/// here: a write does not ride a read.
+#[must_use]
+pub fn picker_read_args(server: &ServerId, client: &str) -> Vec<String> {
+    let reads: [(char, &[&str], String); 7] = [
+        (
+            READ_CLIENTS,
+            &["list-clients", "-F"],
+            format!("{READ_STEM}{READ_CLIENTS}|{PICKER_CLIENT_SESSION_FORMAT}"),
+        ),
+        (
+            READ_SESSIONS,
+            &["list-sessions", "-F"],
+            format!("{READ_STEM}{READ_SESSIONS}|{PICKER_SESSION_FORMAT}"),
+        ),
+        (
+            READ_PANES,
+            &["list-panes", "-a", "-F"],
+            format!("{READ_STEM}{READ_PANES}|{PICKER_PANE_FORMAT}"),
+        ),
+        (
+            READ_NAMES,
+            &["list-sessions", "-F"],
+            format!("{READ_STEM}{READ_NAMES}|{SESSION_NAME_FORMAT}"),
+        ),
+        (
+            READ_IDENTITY,
+            &["display-message", "-p"],
+            format!("{READ_STEM}{READ_IDENTITY}|{SERVER_IDENTITY_FORMAT}"),
+        ),
+        (
+            READ_SOCKET,
+            &["display-message", "-p"],
+            format!("{READ_STEM}{READ_SOCKET}|#{{socket_path}}"),
+        ),
+        // The client-targeted read goes LAST: it is the only command that can
+        // fail while the server is alive, and tmux stops the list there, so
+        // nothing that must run waits behind it.
+        (
+            READ_LOOK,
+            &["display-message", "-p", "-c", client],
+            format!("{READ_STEM}{READ_LOOK}|{LOOK_FORMAT}"),
+        ),
+    ];
+    let mut queue: Vec<String> = Vec::new();
+    for (kind, words, format) in reads {
+        let mut command: Vec<String> = words.iter().map(|word| (*word).to_owned()).collect();
+        command.push(format);
+        let done = vec![
+            "display-message".to_owned(),
+            "-p".to_owned(),
+            format!("{READ_DONE_STEM}{kind}"),
+        ];
+        for words in [command, done] {
+            if !queue.is_empty() {
+                queue.push(";".to_owned());
+            }
+            queue.extend(words);
+        }
+    }
+    let mut args = server_args(server);
+    args.extend(queue);
+    args
+}
+
+/// Split and interpret the combined output of [`picker_read_args`].
+///
+/// `None` when any non-empty line carries NEITHER a row prefix nor a completion
+/// marker: the output then belongs to something other than this read, and a
+/// partial roster is worse than none. An empty line is skipped — it can carry
+/// no row. A section whose marker never arrived is left absent, never empty.
+#[must_use]
+pub fn interpret_picker_read(stdout: &str, client: &str) -> Option<PickerRead> {
+    let mut rows: [String; 7] = Default::default();
+    let mut complete = [false; 7];
+    for line in stdout.lines() {
+        let line = line.trim_end_matches('\r');
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(marker) = line.strip_prefix(READ_DONE_STEM) {
+            if marker.len() != 1 {
+                return None;
+            }
+            let kind = marker.chars().next()?;
+            complete[read_section(kind)?] = true;
+            continue;
+        }
+        let rest = line.strip_prefix(READ_STEM)?;
+        let mut characters = rest.chars();
+        let kind = characters.next()?;
+        let body = characters.as_str().strip_prefix('|')?;
+        let section = read_section(kind)?;
+        rows[section].push_str(body);
+        rows[section].push('\n');
+    }
+    let section = |index: usize| complete[index].then(|| rows[index].as_str());
+    Some(PickerRead {
+        client: section(0).and_then(|rows| interpret_picker_client_session(true, rows, client)),
+        sessions: section(1).and_then(|rows| interpret_picker_sessions(true, rows)),
+        panes: section(2).and_then(|rows| interpret_picker_panes(true, rows)),
+        names: section(3).and_then(|rows| interpret_sessions(true, rows).ok()),
+        identity: section(4).and_then(|rows| interpret_server_identity(true, rows)),
+        socket: section(5).and_then(|rows| interpret_display_value(true, rows)),
+        look: section(6).and_then(|rows| interpret_look(true, rows)),
+    })
+}
+
 /// The two look knobs the watchdog re-reads every cycle, in ONE query — so a
 /// human who flips `@ae_icons` on a live session sees the next cycle in ASCII.
 pub const LOOK_FORMAT: &str = "#{@ae_icons} | #{@ae_palette} | #{@ae_look} | #{@ae_motion}";
@@ -3337,6 +3508,140 @@ mod tests {
         assert_eq!(
             super::interpret_picker_client_session(false, listing, "/dev/ttys002"),
             None
+        );
+    }
+
+    /// The picker's pre-draw read is ONE tmux invocation: every read command and
+    /// its completion marker in one queued list, with tmux's own `;` between the
+    /// commands and NO write anywhere in it. The exact argv is the pin; the
+    /// mutation it kills is moving the `@ae_menu_open` marker write — or any
+    /// other command — into the batch.
+    #[test]
+    fn the_picker_read_is_one_queued_invocation_and_carries_no_write() {
+        use super::{READ_CLIENTS, READ_DONE_STEM, READ_LOOK, READ_SESSIONS, READ_STEM};
+        let args = super::picker_read_args(&ServerId::Ambient, "/dev/ttys002");
+        assert_eq!(
+            args.join(" "),
+            concat!(
+                "list-clients -F ae-picker:c|#{client_name} | #{session_id} | #{client_pid} | #{client_height} | #{client_width}",
+                " ; display-message -p ae-picker!c",
+                " ; list-sessions -F ae-picker:s|#{session_name} | #{session_id} | #{@ae_attn_rank} | #{@ae_attn_glyph} | #{@ae_main_pane} | #{s/#{l:[|[:cntrl:]]}//:@ae_branch_name} | #{s/#{l:[|[:cntrl:]]}/!/:@ae_agents} | #{@ae_goal_status}",
+                " ; display-message -p ae-picker!s",
+                " ; list-panes -a -F ae-picker:p|#{session_id} | #{pane_id}",
+                " ; display-message -p ae-picker!p",
+                " ; list-sessions -F ae-picker:n|#{session_name}",
+                " ; display-message -p ae-picker!n",
+                " ; display-message -p ae-picker:i|#{pid} | #{start_time}",
+                " ; display-message -p ae-picker!i",
+                " ; display-message -p ae-picker:k|#{socket_path}",
+                " ; display-message -p ae-picker!k",
+                " ; display-message -p -c /dev/ttys002 ae-picker:l|#{@ae_icons} | #{@ae_palette} | #{@ae_look} | #{@ae_motion}",
+                " ; display-message -p ae-picker!l",
+            ),
+            "one queued read, one prefix per command, no write"
+        );
+        assert_eq!(
+            args.iter().filter(|arg| *arg == ";").count(),
+            13,
+            "each separator is an argument of its own: 14 commands, ONE invocation"
+        );
+        let args =
+            super::picker_read_args(&ServerId::Selected(Selector::Name("ae".to_owned())), "c");
+        assert_eq!(args[..2], ["-L", "ae"], "the server args lead, once");
+        assert!(
+            !args.iter().any(|arg| arg == "set-option"),
+            "the marker write stays its own call"
+        );
+        assert!(
+            args.iter().all(|arg| !arg.chars().any(char::is_control)),
+            "no format smuggles a control byte tmux would escape"
+        );
+        assert_eq!(READ_STEM, "ae-picker:");
+        assert_eq!(READ_DONE_STEM, "ae-picker!");
+        assert_eq!(
+            [READ_CLIENTS, READ_SESSIONS, READ_LOOK].map(super::read_section),
+            [Some(0), Some(1), Some(6)],
+            "each kind letter names its own field"
+        );
+    }
+
+    #[test]
+    fn the_picker_read_splits_by_prefix_and_refuses_a_foreign_line() {
+        use super::PickerClient;
+        let listing = concat!(
+            "ae-picker:c|/dev/ttys002 | $7 | 4243 | 40 | 140\n",
+            "ae-picker!c\n",
+            "ae-picker:s|hub | $7 | 2 |  | %10 | main | v1;2000;60;lead:fable5:working:%10 | the goal\n",
+            "ae-picker!s\n",
+            "ae-picker:p|$7 | %10\n",
+            "ae-picker!p\n",
+            "ae-picker:n|hub\n",
+            "ae-picker!n\n",
+            "ae-picker:i|4242 | 1700000000\n",
+            "ae-picker!i\n",
+            "ae-picker:k|/tmp/ae.sock\n",
+            "ae-picker!k\n",
+            "ae-picker:l|on | a | on | on\n",
+            "ae-picker!l\n",
+        );
+        let read = super::interpret_picker_read(listing, "/dev/ttys002").expect("one read");
+        assert_eq!(
+            (
+                read.client,
+                read.sessions
+                    .as_ref()
+                    .and_then(|rows| rows.first())
+                    .map(|row| row.name.as_str()),
+                read.panes.as_ref().map(Vec::len),
+                read.names.as_deref(),
+                read.socket.as_deref(),
+            ),
+            (
+                Some(PickerClient {
+                    session_id: "$7".to_owned(),
+                    pid: "4243".to_owned(),
+                    height: 40,
+                    width: 140,
+                }),
+                Some("hub"),
+                Some(1),
+                Some(["hub".to_owned()].as_slice()),
+                Some("/tmp/ae.sock"),
+            )
+        );
+        assert_eq!(
+            read.identity,
+            Some(super::ServerIdentity {
+                pid: "4242".to_owned(),
+                start: "1700000000".to_owned(),
+            })
+        );
+        assert_eq!(
+            read.look.map(|look| (look.icons, look.palette)),
+            Some(("on".to_owned(), "a".to_owned()))
+        );
+        assert_eq!(
+            super::interpret_picker_read(
+                &format!("{listing}plausible but unknown\n"),
+                "/dev/ttys002"
+            ),
+            None,
+            "a line from neither vocabulary refuses the WHOLE read, never a partial roster"
+        );
+        let missing = listing.replace("ae-picker!p\n", "");
+        let read = super::interpret_picker_read(&missing, "/dev/ttys002").expect("one read");
+        assert_eq!(read.panes, None, "a marker that never arrived is unknown");
+        assert_eq!(
+            read.names,
+            Some(vec!["hub".to_owned()]),
+            "later sections still count"
+        );
+        assert_eq!(
+            super::interpret_picker_read("", "/dev/ttys002")
+                .expect("an empty run")
+                .client,
+            None,
+            "a silent server resolves no client"
         );
     }
 

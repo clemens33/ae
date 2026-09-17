@@ -597,8 +597,20 @@ fn run_orchestrator(tail: &[String], err: &mut impl Write) -> Result<u8> {
     if args.quota_dialog {
         return Ok(run_quota_dialog(&server, tail, probe.menu_mouse(), err));
     }
-    let Some(client_snapshot) = transport::observe_picker_client_session(&server, client_name)
-    else {
+    // The picker's WHOLE read in one tmux invocation: the client snapshot, the
+    // session rows, the membership snapshot, the bare name list, the server
+    // identity, its socket path and the invoking client's look. Only the floor
+    // probe above and the marker write below stay separate calls.
+    let Some(read) = transport::observe_picker_read(&server, client_name) else {
+        writeln!(
+            err,
+            "ae orchestrator: {} answered the picker's batched read with output that is not this read's, so ae cannot build the picker.",
+            tmux_floor::server_label(&server)
+        )?;
+        err.flush()?;
+        return Ok(EXIT_UNAVAILABLE);
+    };
+    let Some(client_snapshot) = read.client else {
         writeln!(
             err,
             "ae orchestrator: tmux did not resolve client {client_name:?} to one live session with dimensions (it may have vanished)."
@@ -610,7 +622,7 @@ fn run_orchestrator(tail: &[String], err: &mut impl Write) -> Result<u8> {
     // A FAILED listing is not an empty fleet. The server just cleared the
     // version probe, so losing its identity snapshot is a refusal rather than
     // a confident "no sessions" menu.
-    let Some(sessions) = transport::observe_picker_sessions(&server) else {
+    let Some(sessions) = read.sessions else {
         writeln!(
             err,
             "ae orchestrator: {} did not list its sessions, so ae cannot build the picker.",
@@ -621,7 +633,7 @@ fn run_orchestrator(tail: &[String], err: &mut impl Write) -> Result<u8> {
     };
     // A missing membership snapshot removes only the lead hint: every row can
     // still make the rename-safe switch to the captured session id.
-    let panes = transport::observe_picker_panes(&server).unwrap_or_default();
+    let panes = read.panes.unwrap_or_default();
     let now = crate::time::Timestamp::now().epoch();
     let root = doors::state_root(shape::current());
     // The second source: which durable sessions the CALLING server proves
@@ -633,7 +645,10 @@ fn run_orchestrator(tail: &[String], err: &mut impl Write) -> Result<u8> {
         // META ONLY: a stopped row needs name, goal and branch, never the
         // event journal — this scan does not open `events.jsonl` at all.
         let scan = inventory::durable_meta_records(&inventory::Roots::under(root));
-        let mut sockets = SocketPaths::asking(transport::observe_socket_path);
+        // The caller's own socket answer came from the batched read, so the
+        // cache never asks the same server twice.
+        let mut sockets =
+            SocketPaths::primed(transport::observe_socket_path, &server, read.socket.clone());
         let mut servers = vec![server.clone()];
         for record in &scan.records {
             if let Some(selector) = record.server.entitles() {
@@ -644,10 +659,9 @@ fn run_orchestrator(tail: &[String], err: &mut impl Write) -> Result<u8> {
             }
         }
         let _ = sockets.deduplicated(servers);
-        let names = transport::session_names(&server);
         let backend = PickerStoppedBackend {
             server: &server,
-            names: names.as_deref(),
+            names: read.names.as_deref(),
             live: &sessions,
             sockets: &sockets,
         };
@@ -668,7 +682,7 @@ fn run_orchestrator(tail: &[String], err: &mut impl Write) -> Result<u8> {
             &server,
         ))
     });
-    let identity = transport::observe_server_identity(&server);
+    let identity = read.identity;
     let resume = match (&launcher, &identity) {
         (Some(launcher), Some(identity)) => Some(orchestrator::PickerResume {
             client: client_name,
@@ -691,7 +705,9 @@ fn run_orchestrator(tail: &[String], err: &mut impl Write) -> Result<u8> {
     // A look ae could not read draws the picker in the default one: a menu is
     // a transient surface that writes nothing, so a wrong palette on it costs
     // one keystroke rather than a session's appearance.
-    let look = picker_look(&server, opened_session.as_deref());
+    let look = read.look.as_ref().map_or(theme::Look::DEFAULT, |read| {
+        theme::Look::read(&read.icons, &read.palette, &read.drawn, &read.motion)
+    });
     let menu = match orchestrator::menu_for_client_session_in(
         &sessions,
         &stopped,
@@ -1185,6 +1201,19 @@ impl SocketPaths {
         }
     }
 
+    /// A cache already knowing what the CALLER server answered its own batched
+    /// read, so the picker's stopped scan does not ask the same server twice.
+    pub(crate) fn primed(
+        resolve: fn(&inventory::ServerId) -> Option<String>,
+        caller: &inventory::ServerId,
+        socket: Option<String>,
+    ) -> Self {
+        Self {
+            resolve,
+            seen: vec![(caller.clone(), socket)],
+        }
+    }
+
     /// What `server` calls its own socket, or `None` when it did not answer.
     fn of(&mut self, server: &inventory::ServerId) -> Option<String> {
         if let Some((_, path)) = self.seen.iter().find(|(known, _)| known == server) {
@@ -1343,6 +1372,7 @@ fn picker_stopped<D: inventory::Discovery + ?Sized>(
     backend: &D,
     live: &[tmux::PickerSession],
 ) -> Vec<orchestrator::PickerStopped> {
+    let launch_evidence = scan.launch_evidence;
     let taken = inventory::Inventory {
         candidates: scan
             .records
@@ -1363,7 +1393,13 @@ fn picker_stopped<D: inventory::Discovery + ?Sized>(
             // meta facts, so a stopped row costs its meta file and its stamps,
             // never the session's communication history.
             let (goal, branch) = session::stopped_display(&record.snapshot);
-            let last_live = match inventory::last_live(&record.path) {
+            // The meta half of the sign of life comes from the SCAN's one read
+            // of this record's meta, so a draw never re-opens the file.
+            let meta = launch_evidence
+                .iter()
+                .find(|(path, _)| *path == record.path)
+                .map_or(tmux::Evidence::Unreadable, |(_, evidence)| *evidence);
+            let last_live = match inventory::last_live_with_meta_evidence(&record.path, meta) {
                 tmux::Evidence::At(epoch) => Some(epoch),
                 tmux::Evidence::Silent | tmux::Evidence::Unreadable => None,
             };

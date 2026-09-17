@@ -236,6 +236,10 @@ pub struct DurableScan {
     pub records: Vec<DurableRecord>,
     /// Durable sources whose enumeration failed.
     pub incomplete: Vec<FailedSource>,
+    /// The launch-epoch evidence each record's ONE meta read produced, keyed by
+    /// the record's path: a meta-only scan reads every meta exactly once, and
+    /// the picker's liveness fold consumes this instead of re-opening the file.
+    pub launch_evidence: Vec<(PathBuf, crate::tmux::Evidence)>,
 }
 
 impl From<Vec<DurableRecord>> for DurableScan {
@@ -244,6 +248,7 @@ impl From<Vec<DurableRecord>> for DurableScan {
         Self {
             records,
             incomplete: Vec::new(),
+            launch_evidence: Vec::new(),
         }
     }
 }
@@ -286,11 +291,11 @@ fn durable_scan(roots: &Roots, journal: Journal) -> DurableScan {
     let mut scan = DurableScan::default();
 
     match child_dirs(roots.sessions()) {
-        Ok(paths) => scan.records.extend(
-            paths
-                .into_iter()
-                .map(|p| record_at(p, Layout::Canonical, journal)),
-        ),
+        Ok(paths) => {
+            for path in paths {
+                take_record(&mut scan, path, Layout::Canonical, journal);
+            }
+        }
         // An ABSENT root never reaches here: `child_dirs` answers it with an
         // empty list, because a machine that never ran ae has no sessions and
         // that is an answer, not a failure.
@@ -305,11 +310,11 @@ fn durable_scan(roots: &Roots, journal: Journal) -> DurableScan {
                 // The candidate is the NESTED state directory.
                 let state_root = worktree.join(WORKTREE_STATE_DIR);
                 match child_dirs(&state_root) {
-                    Ok(states) => scan.records.extend(
-                        states
-                            .into_iter()
-                            .map(|p| record_at(p, Layout::WorktreeNested, journal)),
-                    ),
+                    Ok(states) => {
+                        for path in states {
+                            take_record(&mut scan, path, Layout::WorktreeNested, journal);
+                        }
+                    }
                     Err(_) => scan
                         .incomplete
                         .push(FailedSource::WorktreeState(state_root)),
@@ -361,8 +366,23 @@ fn child_dirs(dir: &Path) -> io::Result<Vec<PathBuf>> {
     Ok(found)
 }
 
-/// The durable record for the state directory at `path`.
-fn record_at(path: PathBuf, layout: Layout, journal: Journal) -> DurableRecord {
+/// Add one record's scan result, keeping its liveness evidence beside the
+/// record that produced it.
+fn take_record(scan: &mut DurableScan, path: PathBuf, layout: Layout, journal: Journal) {
+    let (record, evidence) = record_at(path, layout, journal);
+    if let Some(evidence) = evidence {
+        scan.launch_evidence.push((record.path.clone(), evidence));
+    }
+    scan.records.push(record);
+}
+
+/// The durable record for the state directory at `path`, with the launch-epoch
+/// evidence of its ONE meta read when this scan read the meta itself.
+fn record_at(
+    path: PathBuf,
+    layout: Layout,
+    journal: Journal,
+) -> (DurableRecord, Option<crate::tmux::Evidence>) {
     let name = path
         .file_name()
         .unwrap_or(path.as_os_str())
@@ -376,11 +396,18 @@ fn record_at(path: PathBuf, layout: Layout, journal: Journal) -> DurableRecord {
         meta_read: MetaRead::Absent,
         snapshot: RecordSnapshot::default(),
     };
-    // ONE read of this record, here, feeding both the selector and every field
-    // the digest will need.
-    record.snapshot = match journal {
-        Journal::Read => RecordSnapshot::read(&record.path),
-        Journal::Skipped => RecordSnapshot::read_meta_only(&record.path),
+    // ONE read of this record, here, feeding the selector, every field the
+    // digest will need, and the liveness evidence from the very same bytes.
+    let evidence = match journal {
+        Journal::Read => {
+            record.snapshot = RecordSnapshot::read(&record.path);
+            None
+        }
+        Journal::Skipped => {
+            let (snapshot, evidence) = read_meta_once(&record.path);
+            record.snapshot = snapshot;
+            Some(evidence)
+        }
     };
     // BOTH facts from the ONE read.
     record.meta_read = record.snapshot.meta_read;
@@ -389,7 +416,39 @@ fn record_at(path: PathBuf, layout: Layout, journal: Journal) -> DurableRecord {
         // is querying a server on a guess.
         record.server = meta.server_selector();
     }
-    record
+    (record, evidence)
+}
+
+/// One record's meta, read ONCE through the classified reader, with the
+/// launch-epoch evidence folded from the same bytes. A `meta` that is a symlink,
+/// a FIFO or any other non-regular node is refused BEFORE any open, so a hostile
+/// session directory can neither be followed nor block the scan.
+fn read_meta_once(path: &Path) -> (RecordSnapshot, crate::tmux::Evidence) {
+    use crate::store::{SourceRead, open, read_source};
+    let snapshot = |meta, meta_read| RecordSnapshot {
+        meta,
+        meta_read,
+        events: None,
+        legacy_created_epoch: crate::session::legacy_created_epoch(path),
+    };
+    match read_source(&open(path).meta_path()) {
+        SourceRead::Ready(bytes) => {
+            let evidence = launch_epochs(&bytes);
+            let (meta, meta_read) = match std::str::from_utf8(&bytes) {
+                Ok(text) => (Some(crate::meta::Meta::parse(text)), MetaRead::Parsed),
+                Err(_) => (None, MetaRead::Unreadable),
+            };
+            (snapshot(meta, meta_read), evidence)
+        }
+        SourceRead::Absent => (
+            snapshot(None, MetaRead::Absent),
+            crate::tmux::Evidence::Silent,
+        ),
+        SourceRead::Invalid(_) | SourceRead::Unreadable(_) => (
+            snapshot(None, MetaRead::Unreadable),
+            crate::tmux::Evidence::Unreadable,
+        ),
+    }
 }
 
 /// When the session at `dir` last did something only a LIVE session does.
@@ -431,9 +490,21 @@ fn record_at(path: PathBuf, layout: Layout, journal: Journal) -> DurableRecord {
 /// session gone.
 #[must_use]
 pub fn last_live(dir: &Path) -> crate::tmux::Evidence {
+    last_live_with_meta_evidence(dir, meta_launch_epochs(dir))
+}
+
+/// The same sign of life as [`last_live`], with the meta half supplied by a
+/// caller that already read those bytes: the picker's scan reads every meta once
+/// and folds its evidence instead of re-opening the file. The rule about what
+/// counts stays HERE — [`last_live`] is this fold with the meta read in place.
+#[must_use]
+pub fn last_live_with_meta_evidence(
+    dir: &Path,
+    meta: crate::tmux::Evidence,
+) -> crate::tmux::Evidence {
     crate::tmux::Evidence::folded(&[
         crate::store::open(dir).launch_attempt(),
-        meta_launch_epochs(dir),
+        meta,
         crate::watchdog_glue::pidfile_modified(dir),
         crate::run::newest_start_marker(dir),
     ])

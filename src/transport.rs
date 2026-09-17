@@ -785,6 +785,24 @@ pub fn observe_picker_client_session(
     tmux::interpret_picker_client_session(succeeded, &stdout, client)
 }
 
+/// The picker's whole pre-draw read in ONE tmux invocation — see
+/// [`tmux::picker_read_args`] for what travels and why one connection.
+///
+/// The run's exit status is deliberately not consulted: tmux stops a command
+/// list at the first failure, and each command's own completion marker is the
+/// finer proof — a section whose marker never arrived is unknown, and output
+/// that is not this read's at all is refused. That is the same verdict a failed
+/// run would produce, without letting one late failure discard the sections
+/// that did answer.
+#[must_use]
+pub fn observe_picker_read(server: &ServerId, client: &str) -> Option<tmux::PickerRead> {
+    if !addressable(server) {
+        return None;
+    }
+    let (_, stdout) = run(PROGRAM, &tmux::picker_read_args(server, client));
+    tmux::interpret_picker_read(&stdout, client)
+}
+
 /// `server`'s identity pair, or `None` when it did not answer with one.
 #[must_use]
 pub fn observe_server_identity(server: &ServerId) -> Option<tmux::ServerIdentity> {
