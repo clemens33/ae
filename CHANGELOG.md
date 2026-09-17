@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.100] - 2026-09-17
+- Render board headers as clock time under a date divider
+- Read each seat's recorded predecessors, nearest first
+- Pin the predecessor read end to end
+- Document the 8b predecessor read
+
 ## [v2026.9.99] - 2026-09-17
 - Swap the waiting-agent mark ⧗ for ◔
 
