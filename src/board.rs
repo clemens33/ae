@@ -513,7 +513,7 @@ fn observe_seat(
         }
     };
     let file = file_identity(&path, &metadata);
-    seeds.push(seed(&actor, &metadata, &streamed));
+    seeds.push(seed(&actor, &metadata, &streamed, tool));
     let (mut seat_rows, mut seat_coverage) = reader_for(tool)(&streamed, &actor, &file, tool);
     rows.append(&mut seat_rows);
     coverage.append(&mut seat_coverage);
@@ -959,13 +959,30 @@ pub(crate) fn identity_of(_: &std::fs::Metadata) -> (u64, u64) {
 }
 
 /// The follow seed for one successful stream: what that read bound offsets to.
-fn seed(actor: &str, metadata: &std::fs::Metadata, streamed: &Streamed) -> SeatSeed {
+fn seed(
+    actor: &str,
+    metadata: &std::fs::Metadata,
+    streamed: &Streamed,
+    tool: ToolKind,
+) -> SeatSeed {
     SeatSeed {
         actor: actor.to_owned(),
         identity: identity_of(metadata),
         mtime: metadata.modified().ok(),
-        committed: streamed.committed,
+        committed: hold_at(streamed, tool).unwrap_or(streamed.committed),
     }
+}
+
+/// The follow hold for a grok `--assistant` stream ending mid-turn: the open
+/// run's first-chunk offset, where the commit point holds so the next poll
+/// re-reads the whole turn. `None` everywhere else — other tools, the flag
+/// off, or no open run — and the stream's own commit stands. String dispatch,
+/// as `reader_for` does: no `ToolKind::` arms.
+pub(crate) fn hold_at(streamed: &Streamed, source: ToolKind) -> Option<u64> {
+    if !streamed.assistant || source.adapter().name != "grok" {
+        return None;
+    }
+    grok::open_run_start(streamed)
 }
 
 /// The source file's identity: path plus dev+inode, so a replaced file is a

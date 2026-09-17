@@ -11,7 +11,7 @@
 use std::collections::BTreeMap;
 use std::time::SystemTime;
 
-use super::{Coverage, Observation, SeatSeed, Streamed, reader_for};
+use super::{Coverage, Observation, Role, SeatSeed, Streamed, reader_for};
 use crate::tool::ToolKind;
 
 /// The follow's poll cadence: the driver sleeps this between polls.
@@ -212,13 +212,23 @@ impl Follow {
                         seat_coverage.into_iter().map(|item| item.reason).collect(),
                         &mut coverage,
                     );
+                    // A grok `--assistant` stream ending mid-turn: drop the
+                    // open run's fragment row and hold the commit point at
+                    // its first chunk, so the next poll re-reads and joins
+                    // the whole turn. The one-shot prints it as-is.
+                    let mut committed = streamed.committed;
+                    if let Some(start) = super::hold_at(&streamed, loaded.source) {
+                        seat_rows
+                            .retain(|row| !(row.role == Role::Assistant && row.offset == start));
+                        committed = start;
+                    }
                     rows.append(&mut seat_rows);
                     self.seats.insert(
                         actor,
                         Seat {
                             identity: loaded.observed.identity,
                             mtime: loaded.observed.mtime,
-                            committed: streamed.committed,
+                            committed,
                         },
                     );
                 }
@@ -314,6 +324,41 @@ mod tests {
             located: Ok(loaded(observed)),
             streamed: Some(Err(reason)),
         }
+    }
+
+    /// One synthetic grok line: a text chunk, or a content-free record.
+    fn grok_line(kind: &str, text: Option<&str>) -> String {
+        let content = text.map_or(String::new(), |text| {
+            format!(r#","content":{{"type":"text","text":"{text}"}}"#)
+        });
+        format!(
+            r#"{{"timestamp":1789549200,"method":"session/update","params":{{"sessionId":"s","update":{{"sessionUpdate":"{kind}"{content}}}}}}}"#
+        )
+    }
+
+    /// One grok poll exactly as the driver drives it, through the flag.
+    fn poll_grok(
+        follow: &mut Follow,
+        actor: &str,
+        observed: Located,
+        full: &str,
+        assistant: bool,
+    ) -> Observation {
+        let from = match follow.plan(actor, &observed) {
+            Plan::Read(from) => from,
+            Plan::Hold => panic!("this poll should read"),
+        };
+        let mut splitter = Splitter::at(from);
+        let at = usize::try_from(from).expect("test offsets fit a usize");
+        splitter.feed(&full.as_bytes()[at..]);
+        follow.step(vec![Snapshot {
+            actor: actor.to_owned(),
+            located: Ok(Loaded {
+                source: ToolKind::Grok,
+                ..loaded(observed)
+            }),
+            streamed: Some(Ok(splitter.finish().with_assistant(assistant))),
+        }])
     }
 
     #[test]
@@ -499,6 +544,37 @@ mod tests {
         }
         let batch = hold(&mut follow, "s:a", observed);
         assert!(batch.rows.is_empty(), "the other seat kept reading");
+    }
+
+    #[test]
+    fn an_open_grok_run_holds_and_completes_next_poll() {
+        let human = grok_line("user_message_chunk", Some("human words"));
+        let first = grok_line("agent_message_chunk", Some("syn"));
+        let second = grok_line("agent_message_chunk", Some("thetic"));
+        let open = format!("{human}\n{first}\n{second}\n");
+        let at = (human.len() + 1) as u64;
+        let mut follow = Follow::seeded(&[], &[], None);
+        let seen = located(1, open.len() as u64, 1);
+        let batch = poll_grok(&mut follow, "s:lead", seen, &open, true);
+        assert_eq!(batch.rows.len(), 1, "the fragment row drops");
+        assert_eq!(batch.rows[0].body, "human words");
+        assert_eq!(follow.plan("s:lead", &seen), Plan::Read(at), "holds");
+        let whole = format!("{open}{}\n", grok_line("turn_completed", None));
+        let batch = poll_grok(
+            &mut follow,
+            "s:lead",
+            located(1, whole.len() as u64, 2),
+            &whole,
+            true,
+        );
+        assert_eq!(batch.rows.len(), 1);
+        assert_eq!(batch.rows[0].body, "synthetic");
+        assert_eq!(batch.rows[0].offset, at);
+        // Flag off: no hold, the agent chunks stay silent, the poll commits.
+        let mut follow = Follow::seeded(&[], &[], None);
+        let batch = poll_grok(&mut follow, "s:lead", seen, &open, false);
+        assert_eq!(batch.rows.len(), 1);
+        assert_eq!(follow.plan("s:lead", &seen), Plan::Hold);
     }
 
     #[test]
