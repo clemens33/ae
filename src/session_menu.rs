@@ -53,6 +53,9 @@ const STATE_ACTOR_CELLS: usize = 24;
 /// The most cells one declaration's reason keeps in a root row.
 const STATE_REASON_CELLS: usize = 60;
 
+/// The most cells one fact value keeps in a root row.
+const FACT_VALUE_CELLS: usize = 60;
+
 /// The context-menu row that starts the stop chain. ASCII, because the row is
 /// drawn from a server-global binding that no session's look reaches.
 pub const STOP_ROW_LABEL: &str = "Stop session...";
@@ -485,13 +488,23 @@ pub enum MetaSource {
     /// A `meta` that exists and could not be read, in the observed shape or as
     /// bytes. The reason is rendered into the gap row.
     Unreadable(String),
-    /// The parsed roster names, and the canonical `session_id` the same bytes
-    /// carry. An empty uuid means the document records no usable identity.
+    /// The parsed roster names, the canonical `session_id` the same bytes
+    /// carry, and the facts block. An empty uuid means the document records no
+    /// usable identity; an empty fact means the document does not record it.
     Parsed {
         /// The canonical `session_id`, or empty.
         uuid: String,
         /// The roster actors, in meta order.
         actors: Vec<String>,
+        /// The recorded `mode=`, or empty.
+        mode: String,
+        /// The recorded `origin=`, or empty.
+        origin: String,
+        /// The recorded `work_dir=`, or empty.
+        work_dir: String,
+        /// The recorded `branch=`, or empty. No producer writes one today, so
+        /// the row is dormant until one does.
+        branch: String,
     },
 }
 
@@ -527,6 +540,16 @@ impl MetaSource {
                 .iter()
                 .map(crate::meta::RosterEntry::reference)
                 .collect(),
+            // The SAME bytes, read once: the facts block never re-opens the
+            // meta. `branch` has no typed accessor — no producer writes it —
+            // so it is read raw, and a duplicated row says nothing.
+            mode: parsed.mode().unwrap_or_default().to_owned(),
+            origin: parsed.origin().unwrap_or_default().to_owned(),
+            work_dir: parsed.work_dir().unwrap_or_default().to_owned(),
+            branch: crate::meta::sole_value(bytes, "branch")
+                .map(|value| value.strip_suffix(b"\r").unwrap_or(value))
+                .map(|value| String::from_utf8_lossy(value).into_owned())
+                .unwrap_or_default(),
         }
     }
 }
@@ -549,6 +572,49 @@ pub enum RootRow {
     Gap(String),
 }
 
+/// The correlation verdict every record-derived menu row shares: `None` when
+/// the live `@ae_session_uuid` option and the meta read from the clicked
+/// session's state directory name the SAME incarnation, else the short reason.
+/// The states, the facts and both sub-menus read this ONE verdict, so no
+/// surface can render another incarnation's records while its sibling refuses.
+fn correlation_gap(
+    option: &crate::tmux::OptionReading,
+    meta: &MetaSource,
+) -> Option<String> {
+    use crate::tmux::OptionReading;
+    let uuid = match option {
+        OptionReading::Set(value) => {
+            let canonical = crate::archive::canonical_uuid(value);
+            if canonical.is_empty() {
+                return Some("session identity invalid".to_owned());
+            }
+            canonical
+        }
+        OptionReading::Vacant => {
+            return Some("session identity not recorded".to_owned());
+        }
+        OptionReading::Unknown => {
+            return Some("session identity unreadable".to_owned());
+        }
+    };
+    match meta {
+        MetaSource::Absent => Some("meta: missing".to_owned()),
+        MetaSource::Unreadable(reason) => Some(format!(
+            "meta: {}",
+            crate::event_text::display_cell(reason, STATE_REASON_CELLS)
+        )),
+        MetaSource::Parsed { uuid: meta_uuid, .. } => {
+            if meta_uuid.is_empty() {
+                Some("meta: no identity".to_owned())
+            } else if *meta_uuid != uuid {
+                Some("meta: identity mismatch".to_owned())
+            } else {
+                None
+            }
+        }
+    }
+}
+
 /// The state section of the root menu, from the sources as they were read.
 ///
 /// Record-derived rows exist ONLY under a proven correlation: a nonempty
@@ -562,56 +628,15 @@ pub fn root_rows(
     events: &crate::store::SourceRead,
     now: crate::time::Timestamp,
 ) -> Vec<RootRow> {
-    use crate::tmux::OptionReading;
-    let uuid = match option {
-        OptionReading::Set(value) => {
-            let canonical = crate::archive::canonical_uuid(value);
-            if canonical.is_empty() {
-                return vec![RootRow::Gap(
-                    "state: unavailable (session identity invalid)".to_owned(),
-                )];
-            }
-            canonical
-        }
-        OptionReading::Vacant => {
-            return vec![RootRow::Gap(
-                "state: unavailable (session identity not recorded)".to_owned(),
-            )];
-        }
-        OptionReading::Unknown => {
-            return vec![RootRow::Gap(
-                "state: unavailable (session identity unreadable)".to_owned(),
-            )];
-        }
-    };
-    let actors = match meta {
-        MetaSource::Absent => {
-            return vec![RootRow::Gap(
-                "state: unavailable (meta: missing)".to_owned(),
-            )];
-        }
-        MetaSource::Unreadable(reason) => {
-            return vec![RootRow::Gap(format!(
-                "state: unavailable (meta: {})",
-                crate::event_text::display_cell(reason, STATE_REASON_CELLS)
-            ))];
-        }
-        MetaSource::Parsed {
-            uuid: meta_uuid,
-            actors,
-        } => {
-            if meta_uuid.is_empty() {
-                return vec![RootRow::Gap(
-                    "state: unavailable (meta: no identity)".to_owned(),
-                )];
-            }
-            if *meta_uuid != uuid {
-                return vec![RootRow::Gap(
-                    "state: unavailable (meta: identity mismatch)".to_owned(),
-                )];
-            }
-            actors
-        }
+    if let Some(reason) = correlation_gap(option, meta) {
+        return vec![RootRow::Gap(format!("state: unavailable ({reason})"))];
+    }
+    // Proven: the meta names the clicked incarnation, so its roster is this
+    // session's. The fallback is unreachable and fails closed.
+    let MetaSource::Parsed { actors, .. } = meta else {
+        return vec![RootRow::Gap(
+            "state: unavailable (meta: identity mismatch)".to_owned(),
+        )];
     };
     match events {
         crate::store::SourceRead::Invalid(reason)
@@ -636,6 +661,72 @@ pub fn root_rows(
             }
             rows
         }
+    }
+}
+
+/// The facts block: what the session IS, above its declared states.
+///
+/// Proven correlation only — a foreign meta's facts are another incarnation's,
+/// and the states gap already says so. Every value is `display_cell`-clipped;
+/// a missing fact prints `<name>: unrecorded`, never a guess. `source` exists
+/// only for copy/worktree modes (a local session's origin is its own dir, not
+/// a fact worth a row), and `branch` only when the meta records one.
+#[must_use]
+pub fn fact_rows(
+    option: &crate::tmux::OptionReading,
+    meta: &MetaSource,
+) -> Vec<String> {
+    if correlation_gap(option, meta).is_some() {
+        return Vec::new();
+    }
+    let MetaSource::Parsed {
+        mode,
+        origin,
+        work_dir,
+        branch,
+        ..
+    } = meta
+    else {
+        return Vec::new();
+    };
+    let mut facts = vec![
+        format!("mode: {}", mode_cell(mode)),
+        format!("dir: {}", fact_cell(work_dir)),
+    ];
+    if matches!(
+        mode.as_str(),
+        "git" | "full" | "copy" | "worktree"
+    ) {
+        facts.push(format!("source: {}", fact_cell(origin)));
+    }
+    if !branch.is_empty() {
+        facts.push(format!(
+            "branch: {}",
+            crate::event_text::display_cell(branch, FACT_VALUE_CELLS)
+        ));
+    }
+    facts
+}
+
+/// One fact value: clipped, or `unrecorded` when the document says nothing.
+fn fact_cell(value: &str) -> String {
+    if value.is_empty() {
+        return "unrecorded".to_owned();
+    }
+    crate::event_text::display_cell(value, FACT_VALUE_CELLS)
+}
+
+/// The mode word the facts block draws, in the CLI's vocabulary: the meta
+/// records `local`/`git`/`full`, the human asked for `--local`/`--copy`/
+/// `--worktree`. A recorded-but-foreign spelling shows the record, never a
+/// guess.
+fn mode_cell(mode: &str) -> String {
+    match mode {
+        "" => "unrecorded".to_owned(),
+        "local" => "local".to_owned(),
+        "git" | "worktree" => "worktree".to_owned(),
+        "full" | "copy" => "copy".to_owned(),
+        other => crate::event_text::display_cell(other, FACT_VALUE_CELLS),
     }
 }
 
@@ -1769,9 +1860,24 @@ mod tests {
     const UUID_A: &str = "1b4e28ba-2fa1-11d2-883f-0016d3cc4321";
 
     fn parsed_meta(uuid: &str, actors: &[&str]) -> super::MetaSource {
+        parsed_meta_full(uuid, actors, "", "", "", "")
+    }
+
+    fn parsed_meta_full(
+        uuid: &str,
+        actors: &[&str],
+        mode: &str,
+        origin: &str,
+        work_dir: &str,
+        branch: &str,
+    ) -> super::MetaSource {
         super::MetaSource::Parsed {
             uuid: uuid.to_owned(),
             actors: actors.iter().map(|actor| (*actor).to_owned()).collect(),
+            mode: mode.to_owned(),
+            origin: origin.to_owned(),
+            work_dir: work_dir.to_owned(),
+            branch: branch.to_owned(),
         }
     }
 
@@ -2051,6 +2157,181 @@ mod tests {
             "a symlink is never followed"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── the facts block ─────────────────────────────────────────────────
+
+    /// All four facts from one parsed meta: the mode in the CLI's vocabulary,
+    /// the working dir, the origin for a non-local mode, the branch.
+    #[test]
+    fn facts_draw_mode_dir_source_and_branch_from_the_same_meta() {
+        use crate::tmux::OptionReading;
+        let facts = super::fact_rows(
+            &OptionReading::Set(UUID_A.to_owned()),
+            &parsed_meta_full(UUID_A, &["lead"], "git", "/repo", "/repo-wt", "feat/menu"),
+        );
+        assert_eq!(
+            facts,
+            vec![
+                "mode: worktree".to_owned(),
+                "dir: /repo-wt".to_owned(),
+                "source: /repo".to_owned(),
+                "branch: feat/menu".to_owned(),
+            ]
+        );
+        let facts = super::fact_rows(
+            &OptionReading::Set(UUID_A.to_owned()),
+            &parsed_meta_full(UUID_A, &["lead"], "full", "/repo", "/repo-copy", ""),
+        );
+        assert_eq!(
+            facts,
+            vec![
+                "mode: copy".to_owned(),
+                "dir: /repo-copy".to_owned(),
+                "source: /repo".to_owned(),
+            ]
+        );
+    }
+
+    /// A missing fact is `unrecorded`, never a guess and never a blank row.
+    #[test]
+    fn a_missing_fact_prints_unrecorded() {
+        use crate::tmux::OptionReading;
+        let facts = super::fact_rows(
+            &OptionReading::Set(UUID_A.to_owned()),
+            &parsed_meta_full(UUID_A, &["lead"], "", "", "", ""),
+        );
+        assert_eq!(
+            facts,
+            vec!["mode: unrecorded".to_owned(), "dir: unrecorded".to_owned(),]
+        );
+        // A copy mode with no recorded origin still owns the row.
+        let facts = super::fact_rows(
+            &OptionReading::Set(UUID_A.to_owned()),
+            &parsed_meta_full(UUID_A, &["lead"], "full", "", "/repo-copy", ""),
+        );
+        assert_eq!(
+            facts,
+            vec![
+                "mode: copy".to_owned(),
+                "dir: /repo-copy".to_owned(),
+                "source: unrecorded".to_owned(),
+            ]
+        );
+    }
+
+    /// `source` exists only for copy/worktree: a local session's origin is
+    /// its own dir, and an unrecorded mode says nothing about which kind.
+    #[test]
+    fn the_source_row_exists_only_for_copy_or_worktree() {
+        use crate::tmux::OptionReading;
+        for (mode, want) in [
+            ("local", false),
+            ("", false),
+            ("weird", false),
+            ("git", true),
+            ("full", true),
+            ("copy", true),
+            ("worktree", true),
+        ] {
+            let facts = super::fact_rows(
+                &OptionReading::Set(UUID_A.to_owned()),
+                &parsed_meta_full(UUID_A, &["lead"], mode, "/repo", "/wt", ""),
+            );
+            assert_eq!(
+                facts.iter().any(|fact| fact.starts_with("source: ")),
+                want,
+                "mode={mode:?}: {facts:?}"
+            );
+        }
+    }
+
+    /// The mode word is the CLI's vocabulary whatever the meta spells, and a
+    /// foreign spelling shows the record rather than guessing a kind.
+    #[test]
+    fn the_mode_word_is_the_cli_vocabulary() {
+        assert_eq!(super::mode_cell("local"), "local");
+        assert_eq!(super::mode_cell("git"), "worktree");
+        assert_eq!(super::mode_cell("full"), "copy");
+        assert_eq!(super::mode_cell("copy"), "copy");
+        assert_eq!(super::mode_cell("worktree"), "worktree");
+        assert_eq!(super::mode_cell(""), "unrecorded");
+        assert_eq!(super::mode_cell("weird"), "weird");
+    }
+
+    /// Facts are record-derived: under a failed correlation they render
+    /// nothing, and the states gap is the whole explanation.
+    #[test]
+    fn facts_render_nothing_without_a_proven_correlation() {
+        use crate::tmux::OptionReading;
+        let meta = parsed_meta_full(UUID_A, &["lead"], "git", "/repo", "/wt", "b");
+        assert!(
+            super::fact_rows(&OptionReading::Vacant, &meta).is_empty(),
+            "no option, no facts"
+        );
+        assert!(
+            super::fact_rows(
+                &OptionReading::Set("fa4a9b3e-0000-4000-8000-000000000000".to_owned()),
+                &meta
+            )
+            .is_empty(),
+            "a mismatched incarnation's facts must not render"
+        );
+        assert!(
+            super::fact_rows(
+                &OptionReading::Set(UUID_A.to_owned()),
+                &super::MetaSource::Absent
+            )
+            .is_empty(),
+            "no meta, no facts"
+        );
+    }
+
+    /// The facts come off the same bytes as the roster and the identity: one
+    /// read, one parse, no second open.
+    #[test]
+    fn from_bytes_carries_the_facts_beside_the_roster() {
+        let source = super::MetaSource::from_bytes(
+            format!(
+                "session_id={UUID_A}\nmode=git\norigin=/repo\nwork_dir=/wt\nbranch=feat/x\nseat.main=lead\n"
+            )
+            .as_bytes(),
+        );
+        let super::MetaSource::Parsed {
+            mode,
+            origin,
+            work_dir,
+            branch,
+            actors,
+            ..
+        } = source
+        else {
+            panic!("the bytes parse");
+        };
+        assert_eq!(mode, "git");
+        assert_eq!(origin, "/repo");
+        assert_eq!(work_dir, "/wt");
+        assert_eq!(branch, "feat/x");
+        assert_eq!(actors, vec!["lead".to_owned()]);
+        // Absent rows are empty, and a duplicated branch says nothing.
+        let bare = super::MetaSource::from_bytes(
+            format!("session_id={UUID_A}\nseat.main=lead\n").as_bytes(),
+        );
+        assert!(
+            matches!(
+                &bare,
+                super::MetaSource::Parsed { mode, origin, work_dir, branch, .. }
+                if mode.is_empty() && origin.is_empty() && work_dir.is_empty() && branch.is_empty()
+            ),
+            "{bare:?}"
+        );
+        let dup = super::MetaSource::from_bytes(
+            format!("session_id={UUID_A}\nbranch=a\nbranch=b\n").as_bytes(),
+        );
+        assert!(
+            matches!(&dup, super::MetaSource::Parsed { branch, .. } if branch.is_empty()),
+            "a duplicated branch is ambiguous: {dup:?}"
+        );
     }
 
     /// Per-roster provenance: two actors' declarations must stay
