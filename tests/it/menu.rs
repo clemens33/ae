@@ -6116,8 +6116,9 @@ fn show_argv(
     pane: &str,
     server_pid: &str,
     server_start: &str,
+    view: Option<&str>,
 ) -> Vec<String> {
-    [
+    let mut argv = [
         "_session-menu",
         "show",
         "--client",
@@ -6137,7 +6138,11 @@ fn show_argv(
     ]
     .into_iter()
     .map(ToOwned::to_owned)
-    .collect()
+    .collect::<Vec<_>>();
+    if let Some(word) = view {
+        argv.insert(1, word.to_owned());
+    }
+    argv
 }
 
 /// A hostile option value with a quote, a command separator and a sentinel.
@@ -6371,7 +6376,7 @@ fn an_unproven_replaced_clicker_gets_no_draw_and_no_client_message() {
 
     let mut facts = gather_show_facts(&socket, &scratch, "clicker", &client);
     facts.client_pid = "1".to_owned();
-    let child = show_child(&socket, &scratch, &root, &config, &facts);
+    let child = show_child(&socket, &scratch, &root, &config, &facts, None);
     let output = reap_bounded(child, "the replaced-clicker show");
     assert_eq!(
         output.status.code(),
@@ -7072,6 +7077,7 @@ fn show_child(
     root: &Path,
     config: &Path,
     facts: &ShowFacts,
+    view: Option<&str>,
 ) -> OwnedChild {
     let mut command = ae();
     command
@@ -7091,6 +7097,7 @@ fn show_child(
             &facts.pane,
             &facts.server_pid,
             &facts.server_start,
+            view,
         ));
     command
         .spawn()
@@ -7203,7 +7210,7 @@ fn a_nonregular_meta_still_draws_the_floor_and_never_blocks() {
         let client = nested_client(&socket, &scratch, "meta-bad", &viewer);
         std::thread::sleep(Duration::from_millis(400));
         let facts = gather_show_facts(&socket, &scratch, "meta-bad", &client);
-        let child = show_child(&socket, &scratch, &root, &config, &facts);
+        let child = show_child(&socket, &scratch, &root, &config, &facts, None);
         let drawn = wait_for(
             &format!("the {label} meta gap root"),
             || tmux(&socket, &scratch, &["capture-pane", "-p", "-t", &viewer]).1,
@@ -7653,7 +7660,7 @@ fn the_delegated_root_draws_declared_state_on_direct_terminal_bytes() {
     );
 
     let facts = gather_show_facts(&socket, &scratch, session, &client);
-    let child = show_child(&socket, &scratch, &root, &config, &facts);
+    let child = show_child(&socket, &scratch, &root, &config, &facts, None);
     let (geometry, raw) = match wait_for_direct_menu_geometry(&viewed, session) {
         Ok(found) => found,
         Err(last) => {
@@ -7985,4 +7992,65 @@ fn the_uuid_outcome_reports_the_final_state_not_a_cause() {
             .as_deref(),
         Some(other)
     );
+}
+
+/// Draw one dialog for a direct client; return its terminal bytes.
+fn dialog_text(tag: &str, view: &str, title: &str, events: &str, memo: &str) -> String {
+    let scratch = scratch(tag);
+    assert!(tmux_present(&scratch), "tmux runs here");
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let root = scratch.join("state");
+    let project = scratch.join("project");
+    let config = scratch.join("config");
+    write_state_fixture_config(&project, &config);
+    launch_ae_session(&socket, &scratch, &root, &project, &config, tag);
+    let dir = root.join("sessions").join(tag);
+    fs::write(dir.join("events.jsonl"), events).expect("plant events");
+    fs::write(dir.join("memo.tsv"), memo).expect("plant memo");
+    let record = scratch.join("dialog.terminal");
+    let (client, _terminal) =
+        direct_terminal_client(&socket, &scratch, &root, &config, tag, 120, 30, &record);
+    let facts = gather_show_facts(&socket, &scratch, tag, &client);
+    let mut child = show_child(&socket, &scratch, &root, &config, &facts, Some(view));
+    let raw = match wait_for_direct_menu_geometry(&record, title) {
+        Ok((_, raw)) => raw,
+        Err(_) => panic!("{tag} drew no {title} dialog"),
+    };
+    let _ = child.kill();
+    let _ = child.wait();
+    String::from_utf8_lossy(&raw).into_owned()
+}
+
+/// `show --activity` draws human records plus Close; a tick never renders.
+#[test]
+fn the_activity_dialog_draws_the_newest_human_records() {
+    let text = dialog_text(
+        "dlg-activity",
+        "--activity",
+        "Activity",
+        "{\"ts\":\"x\",\"actor\":\"l\",\"action\":\"ask\",\"target\":\"w\",\"ref\":\"r\",\"summary\":\"M1\"}\n\
+         {\"ts\":\"x\",\"actor\":\"w\",\"action\":\"nudge\",\"summary\":\"T9\"}\n",
+        "",
+    );
+    assert!(text.contains("M1") && text.contains("Close"), "{text}");
+    assert!(!text.contains("T9"), "a tick is not activity: {text}");
+}
+
+/// `show --memos` draws the latest record per topic; superseded stays out.
+#[test]
+fn the_memos_dialog_draws_brief_latest_per_topic() {
+    let text = dialog_text(
+        "dlg-memos",
+        "--memos",
+        "Memos",
+        "",
+        "2026-09-17T08:00:00Z\tcl:lead\tdecision\tOLDM\n\
+         2026-09-17T09:00:00Z\tcl:lead\tdecision\tNEWM\n",
+    );
+    assert!(text.contains("NEWM") && text.contains("Close"), "{text}");
+    assert!(!text.contains("OLDM"), "superseded stays out: {text}");
 }
