@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.110] - 2026-09-17
+- Wire the in-place ae compact verb over the guarded deliver operation
+- Document the in-place ae compact verb
+
 ## [v2026.9.109] - 2026-09-17
 - Add the compaction-command adapter row (R11)
 - Add the guarded deliver operation and its pins (R10)
