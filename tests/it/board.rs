@@ -783,6 +783,43 @@ fn muse_locate_failures_are_coverage_rows() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+const AGY_ID: &str = "0199c0de-ffff-4890-abcd-ef0123456789";
+const AGY_OTHER: &str = "0199c0de-0000-4890-abcd-ef0123456790";
+
+/// One synthetic agy history record: `{id}` absent when no conversation id.
+fn agy_record(id: Option<&str>, body: &str, millis: i64) -> String {
+    let id = id.map_or(String::new(), |id| format!(r#""conversationId":"{id}","#));
+    format!(r#"{{"display":"{body}","timestamp":{millis},{id}"workspace":"/work"}}"#)
+}
+
+fn agy_roster(slot: &str, seat: &str, id: &str) -> String {
+    format!("seat.{slot}={seat}\nharness_session.{slot}={id}\nagent_bin.{slot}=agy\n")
+}
+
+#[test]
+fn an_agy_seat_reads_only_its_own_conversation() {
+    // ONE history file per home carries every agy conversation, so the seat's
+    // captured id alone separates its turns from a sibling's.
+    let root = rig("agy-rows");
+    let dir = root.join(".gemini/antigravity-cli");
+    std::fs::create_dir_all(&dir).expect("agy dir");
+    let lines = [
+        agy_record(Some(AGY_ID), "agy human words", 1_789_549_200_500),
+        agy_record(Some(AGY_OTHER), "another seat's words", 1_789_549_200_500),
+    ];
+    std::fs::write(dir.join("history.jsonl"), lines.join("\n") + "\n").expect("history");
+    plant_session(&root, "ship", &agy_roster("main", "lead", AGY_ID));
+    let observation = observe(&root, &["ship"], None);
+    assert!(observation.coverage.is_empty(), "no phase row after a read");
+    assert_eq!(observation.rows.len(), 1, "the foreign record stays silent");
+    assert_eq!(observation.rows[0].body, "agy human words");
+    assert_eq!(observation.rows[0].ts, 1_789_549_200_500_000);
+    assert_eq!(observation.rows[0].actor, "ship:lead");
+    let text = board::render(&observation, false, None);
+    assert!(!text.contains("phase 5"), "the phase row is gone: {text}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 #[test]
 fn binary_empty_board_prints_scope_only() {
     let root = rig("bin-empty");

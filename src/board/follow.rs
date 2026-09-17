@@ -478,6 +478,30 @@ mod tests {
     }
 
     #[test]
+    fn two_seats_on_one_identity_each_hold_their_own_commit_point() {
+        // ONE file per home carries several seats (agy's history): offsets are
+        // per (seat, file), so an append prints once per seat and one seat's
+        // read never advances another's commit point.
+        let mut follow = Follow::seeded(&[], &[], None);
+        let first = format!("{}\n", human("2026-09-16T09:00:00Z", "one"));
+        let observed = located(1, first.len() as u64, 1);
+        for actor in ["s:a", "s:b"] {
+            let batch = poll(&mut follow, actor, observed, &first);
+            assert_eq!(batch.rows.len(), 1, "{actor} reads the first sight once");
+        }
+        let full = format!("{first}{}\n", human("2026-09-16T09:01:00Z", "two"));
+        let observed = located(1, full.len() as u64, 2);
+        for actor in ["s:a", "s:b"] {
+            let batch = poll(&mut follow, actor, observed, &full);
+            assert_eq!(batch.rows.len(), 1, "{actor} sees the append once");
+            assert_eq!(batch.rows[0].body, "two");
+            assert_eq!(batch.rows[0].offset, first.len() as u64, "absolute");
+        }
+        let batch = hold(&mut follow, "s:a", observed);
+        assert!(batch.rows.is_empty(), "the other seat kept reading");
+    }
+
+    #[test]
     fn since_applies_to_every_batch() {
         let mut follow = Follow::seeded(&[], &[], Some(1_789_549_200_000_000));
         let full = format!(
