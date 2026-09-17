@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.103] - 2026-09-17
+- Hide ae-injected turns on the board and count them per seat
+- Pin the hidden-turn filter end to end
+- Document the board's hidden turns
+
 ## [v2026.9.102] - 2026-09-17
 - Draw the session facts block above the menu states
 - Reword the no-activity-or-memos pin for slice 2a
