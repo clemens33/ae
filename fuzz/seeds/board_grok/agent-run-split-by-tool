@@ -1,0 +1,4 @@
+{#{"timestamp":1789549200,"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"seed "}}}}
+{"timestamp":1789549200,"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"tool_call"}}}
+{"timestamp":1789549200,"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"reply"}}}}
+{"timestamp":1789549200,"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"turn_completed"}}}

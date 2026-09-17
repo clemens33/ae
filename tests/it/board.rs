@@ -1054,6 +1054,105 @@ fn binary_assistant_flag_reaches_the_reader() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// One synthetic grok agent text chunk; `{b}` is the delta.
+const GROK_AGENT: &str = r#"{"timestamp":1789549200,"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"{b}"}}}}"#;
+
+/// One content-free grok record; `{k}` is the kind (a boundary or inert).
+const GROK_BARE: &str = r#"{"timestamp":1789549200,"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"{k}"}}}"#;
+
+/// One synthetic Muse committed reply; `{b}` is the whole text.
+const MUSE_COMM: &str = r#"{"recorded_at":1789565338436454,"payload_type":"runtime.session","payload":{"event":{"kind":"assistant_message_committed","message_id":"m","response_id":"r","provider_item_id":"p","text":"{b}"}}}"#;
+
+fn grok_agent(body: &str) -> String {
+    GROK_AGENT.replace("{b}", &body.replace('"', "\\\"").replace('\n', "\\n"))
+}
+
+fn grok_bare(kind: &str) -> String {
+    GROK_BARE.replace("{k}", kind)
+}
+
+fn muse_comm(body: &str) -> String {
+    MUSE_COMM.replace("{b}", body)
+}
+
+/// Plant the 7b session: grok (two turns, the first split by a tool record),
+/// muse and agy seats beside their human rows; replies only when asked.
+fn plant_7b(root: &Path, with_replies: bool) {
+    let mut grok = vec![grok_user("grok human words")];
+    if with_replies {
+        grok.extend([
+            grok_agent("syn"),
+            grok_bare("tool_call"),
+            grok_agent("thetic reply"),
+            grok_bare("turn_completed"),
+            grok_agent("second turn"),
+            grok_bare("turn_completed"),
+        ]);
+    }
+    plant_grok(root, "work", GROK_ID, &grok);
+    let mut muse = vec![muse_user("muse human words")];
+    if with_replies {
+        muse.push(muse_comm("muse synthetic reply"));
+    }
+    plant_muse(root, "2026/09/16", MUSE_ID, &muse);
+    let dir = root.join(".gemini/antigravity-cli");
+    std::fs::create_dir_all(&dir).expect("agy dir");
+    std::fs::write(
+        dir.join("history.jsonl"),
+        agy_record(Some(AGY_ID), "agy human words", 1_789_549_201_500) + "\n",
+    )
+    .expect("history");
+    plant_session(
+        root,
+        "one",
+        &format!(
+            "{}{}{}",
+            grok_roster("main", "lead", GROK_ID),
+            muse_roster("worker.0", "colead", MUSE_ID),
+            agy_roster("worker.1", "scout", AGY_ID),
+        ),
+    );
+}
+
+#[test]
+fn grok_muse_and_agy_replies_render_only_behind_the_flag() {
+    let root = rig("assistant-7b");
+    plant_7b(&root, true);
+    let off = observe(&root, &["one"], None);
+    let bodies: Vec<&str> = off.rows.iter().map(|row| row.body.as_str()).collect();
+    assert_eq!(
+        bodies,
+        ["grok human words", "agy human words", "muse human words"]
+    );
+    assert!(!board::render(&off, false, None).contains("assistant"), "off");
+    let on = observe_with(&root, &["one"], None, true);
+    assert_eq!(
+        on.rows.iter().filter(|row| row.role == board::Role::Assistant).count(),
+        3,
+        "two grok turns plus the muse reply"
+    );
+    let text = board::render(&on, false, None);
+    for header in [
+        "one:lead · assistant\n  synthetic reply\n",
+        "one:lead · assistant\n  second turn\n",
+        "one:colead · assistant\n  muse synthetic reply\n",
+        "coverage incomplete: one:scout — agy: no assistant records (history carries prompts only)",
+    ] {
+        assert!(text.contains(header), "{text}");
+    }
+    let json = board::render(&on, true, None);
+    assert_eq!(json.matches("\"role\":\"assistant\"").count(), 3, "{json}");
+    // Flag off, the replied store prints exactly the human-only rendering.
+    let plain = rig("assistant-7b-plain");
+    plant_7b(&plain, false);
+    assert_eq!(
+        board::render(&observe(&root, &["one"], None), false, None),
+        board::render(&observe(&plain, &["one"], None), false, None)
+    );
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_dir_all(&plain);
+}
+
 #[test]
 fn the_first_follow_pass_is_the_plain_board() {
     // The loop itself sleeps on a clock and never returns, so it is not driven
