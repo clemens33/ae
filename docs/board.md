@@ -60,6 +60,20 @@ body of at most `<n>` lines prints whole and gets no marker. `--lines` is
 text-only: with `--json` it is a usage error, because NDJSON always carries the
 whole body.
 
+Turns ae itself injected never print as the human's. A row whose body's FIRST
+line is one of the four provenance markers (`msg`, `ctx`, `brief`, `interrupt` —
+the spellings and their recognizer live in `src/provenance.rs`) is hidden, and so
+is the Codex passive launch turn (`src/launch.rs::initial_prompt_for`, whose
+marker line that harness does not persist). A marker pasted below line 1 is
+prose and stays, and assistant rows are never hidden — a model may legitimately
+quote a marker. Hidden turns are counted, never silent: a seat that hid at least
+one prints ONE line between the coverage lines and the first divider,
+`hidden: <actor> — <n> ae-injected turns`; JSON carries
+`{"kind":"hidden","actor":…,"count":n}` after the coverage lines. A seat that
+hid none prints none, and `--since` applies before counting. There is no flag to
+show them back: the board's premise is the human's own words, and the harness
+transcript is where the rest is read.
+
 `--assistant` (off by default) adds the model's replies beside the human turns:
 one row per transcript record, ` · assistant` after the actor in the text header
 and `"role":"assistant"` in JSON, body joined from the record's TEXT parts alone
