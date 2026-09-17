@@ -1906,8 +1906,7 @@ mod tests {
         }
 
         let mut other = session("other", "$2", 0, "");
-        other.agents =
-            "v1;2000;60;lead:p:working:%10;colead:p:waiting-agent:%11".to_owned();
+        other.agents = "v1;2000;60;lead:p:working:%10;colead:p:waiting-agent:%11".to_owned();
         let sessions = [
             with_agents(session("current", "$1", 0, ""), 2_000, 1),
             other,
