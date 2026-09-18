@@ -2089,6 +2089,17 @@ mod tests {
             "oc DeepSeek V4.1 Flash",
             "an observed model with no effort carries no trailing blank"
         );
+        // The plainer rung is asserted as TEXT, not only through the width it
+        // produces: a cell that ignored its rung would otherwise be caught only
+        // by a column arithmetic pin, one indirection away from the claim.
+        assert_eq!(
+            model_cell(
+                &cell_agent("cc", "Fable 5.1", "xhigh", "fable5"),
+                FidelityRung::NoEffort
+            ),
+            "cc Fable 5.1",
+            "the plainer rung drops the effort and nothing else"
+        );
         assert_eq!(
             at(&cell_agent("cx", "", "", "gpt56sol")),
             "cx ~gpt56sol",
@@ -2138,6 +2149,11 @@ mod tests {
     /// Effort is the first thing to go, and the rung boundary is exact.
     #[test]
     fn the_picker_drops_effort_before_it_clips_a_model() {
+        // The VALUE, not just the name: every width below derives from this
+        // constant, so a test that only spelled it would move with the product
+        // and prove nothing. An agent row is two indent cells, one glyph and
+        // the three blanks between its four fields.
+        assert_eq!(AGENT_ROW_OVERHEAD, 2 + 1 + 3);
         let agent = cell_agent("cc", "Opus 5", "xhigh", "fable5");
         let full = terminal_cells("cc Opus 5 xhigh");
         let overhead = AGENT_ROW_OVERHEAD + terminal_cells("lead") + terminal_cells("working");
@@ -2179,9 +2195,13 @@ mod tests {
             row.contains("cc…") || row.contains("cc "),
             "and the client is still the head of the clipped cell: {row:?}"
         );
-        // A client too narrow to budget anything at all must not panic.
+        // A client too narrow to budget anything at all must not panic. The
+        // ladder sets its rung and width on EVERY pass and returns on the first
+        // that fits, so a roster that fits at no rung falls out of the loop
+        // already holding the plainest one — there is no arm after it.
         let none = fitted(&[&agent], 0);
         assert_eq!(none.model, 0);
+        assert_eq!(none.rung, FidelityRung::NoEffort);
     }
 
     /// Widths are terminal CELLS, not bytes.
@@ -2202,7 +2222,7 @@ mod tests {
         let overhead = AGENT_ROW_OVERHEAD + terminal_cells("lead") + terminal_cells("working");
         let fits = fitted(&[&agent], overhead + 13);
         assert_eq!(fits.rung, FidelityRung::Full);
-        assert_eq!(fits.model, 13, "measured in cells, not the 17 bytes");
+        assert_eq!(fits.model, 13, "measured in cells, not the 16 bytes");
         let tight = fitted(&[&agent], overhead + 12);
         assert_eq!(tight.rung, FidelityRung::NoEffort);
     }

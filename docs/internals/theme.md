@@ -278,7 +278,8 @@ watchdog's 30-cycle hold on its last proven identity expires. The drift mark the
 fact carries is deliberately not drawn, because durable drift compares a display
 string with a pin string today and would mark every observed seat. Those
 column widths are fitted per draw — the widest content among the drawn rows,
-floored at four cells and capped at the layout's 18/28/14/12 — and a session row
+floored at four cells and capped at the layout's name 18, state 13, branch 14
+and model 28 — and a session row
 shares its name and state columns with the agent rows under it. The model column
 is chosen in a second pass, after those shared columns are final: one fidelity
 rung for the whole menu, dropping the effort before the model is clipped, and
