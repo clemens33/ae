@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.114] - 2026-09-18
+- Seat pane line follows the command link across upgrades (#131)
+- Name the pane line head in run.rs docs; tighten upgrade prose
+
 ## [v2026.9.113] - 2026-09-18
 - Leave an unwatched session its seed and an off mark
 - Pin the unwatched row, the seed it keeps and the off mark
