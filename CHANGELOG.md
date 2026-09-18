@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.129] - 2026-09-18
+- Read model and effort from four more harness panes
+- Scrub the derived identity fixtures
+- Anchor the four identity grammars on the live frame
+- Pin the agy lone-label frame and correct the identity docs
+- Correct two identity doc spellings
+- Read OpenCode board seats through their own export
+- Name the lossy export door and pin the byte cap
+
 ## [v2026.9.128] - 2026-09-18
 - Say why the quota dialog refused on the invoking client
 - Pin the brief-retry arms for exhaustion, cross-session and lock loss
