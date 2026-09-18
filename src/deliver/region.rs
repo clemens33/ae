@@ -460,9 +460,12 @@ fn is_staged_chip(text: &str) -> bool {
 /// spec's [`ComposerAnchor`]: a `┃`-rail box, a `│`-rail rounded box, or a
 /// rule-fenced `>` prompt. A marker counts only INSIDE those rows, so a
 /// marker in a transcript echo, in scrollback or in a modal without the drawn
-/// structure is never readiness. An empty marker list answers false: a tool
-/// with no usable composed signal is refused, not guessed — the anchor is
-/// unread then.
+/// structure is never readiness. For the rounded box and the ruled prompt the
+/// marker is not the whole answer: their composer row must also hold NO draft,
+/// because the drawn structure and the marker both survive a human's unsent
+/// text and a paste into that row would merge with it. An empty marker list
+/// answers false: a tool with no usable composed signal is refused, not
+/// guessed — the anchor is unread then.
 #[must_use]
 pub fn composed_ui(capture: &str, spec: Composed) -> bool {
     if spec.is_empty() {
@@ -482,9 +485,11 @@ pub fn composed_ui(capture: &str, spec: Composed) -> bool {
         }
     }
     match spec.anchor {
-        ComposerAnchor::HeavyRail => rail_box(&rows, spec.markers, BoxTable::HEAVY, None, true),
+        ComposerAnchor::HeavyRail => {
+            rail_box(&rows, spec.markers, BoxTable::HEAVY, None, true, false)
+        }
         ComposerAnchor::RoundedBox => {
-            rail_box(&rows, spec.markers, BoxTable::ROUNDED, Some(2), false)
+            rail_box(&rows, spec.markers, BoxTable::ROUNDED, Some(2), false, true)
         }
         ComposerAnchor::RuledPrompt => ruled_prompt(&rows, spec.markers),
     }
@@ -522,13 +527,18 @@ impl BoxTable {
 ///
 /// `bottom_slack` pins the edge row to that many rows above the last
 /// non-blank row (`None` = unanchored); `literal_on_edge` lets the marker sit
-/// on the edge row itself, else it must sit on a rail row.
+/// on the edge row itself, else it must sit on a rail row. `empty_interior`
+/// additionally requires every rail row to hold nothing but its rails and,
+/// on one of them, the marker: a draft keeps the box drawn and the marker
+/// visible, so a marker alone cannot prove a paste would land in an empty
+/// composer.
 fn rail_box(
     rows: &[String],
     markers: &[&str],
     table: BoxTable,
     bottom_slack: Option<usize>,
     literal_on_edge: bool,
+    empty_interior: bool,
 ) -> bool {
     let Some(edge) = rows.iter().rposition(|row| is_box_edge(row, table)) else {
         return false;
@@ -550,9 +560,28 @@ fn rail_box(
         .find(|&at| !is_box_rail(&rows[at], table))
         .map_or(0, |at| at + 1);
     let end = if literal_on_edge { edge + 1 } else { edge };
+    if empty_interior
+        && !rows[top..end].iter().all(|row| {
+            let interior = trim_posix(rail_interior(row, table));
+            interior.is_empty() || markers.iter().any(|marker| trim_posix(marker) == interior)
+        })
+    {
+        return false;
+    }
     rows[top..end]
         .iter()
         .any(|row| markers.iter().any(|marker| row.contains(marker)))
+}
+
+/// What a composer box's rail row holds between its rails.
+fn rail_interior(row: &str, table: BoxTable) -> &str {
+    let Some(rest) = row.trim_start_matches(is_space).strip_prefix(table.rail) else {
+        return "";
+    };
+    match rest.rfind(table.rail) {
+        Some(at) => &rest[..at],
+        None => rest,
+    }
 }
 
 /// A composer box's left rail: the row's first non-blank cell is the table's.
@@ -567,14 +596,19 @@ fn is_box_edge(row: &str, table: BoxTable) -> bool {
     cells.next() == Some(table.edge.0) && cells.next() == Some(table.edge.1)
 }
 
-/// Does the bottom-most rule-fenced `>` prompt carry a marker?
+/// Does the bottom-most rule-fenced `>` prompt carry a marker on an EMPTY
+/// composer?
 ///
 /// MEASURED shape (agy 1.2.6, 2026-09-18, 80x24 and 200x50): a full-width `─`
 /// rule, a `>` prompt row, a second `─` rule, then the footer row carrying
 /// `? for shortcuts` — the footer IS the last non-blank row, so the bottom
 /// rule sits exactly one row above it. The folder-trust modal has a `>`
 /// cursor row but no rules, and any rule pair higher on the screen fails the
-/// bottom anchor; both refuse.
+/// bottom anchor; both refuse. The prompt row must be exactly `>`, because a
+/// draft drawn beside it keeps the fence and could leave the marker in its
+/// footer; measured draft frames (2026-09-18) put the draft on that row and
+/// drop the hint, and a wrapped draft adds continuation rows between the
+/// prompt row and the bottom rule, which fails the rule/prompt/rule scan.
 fn ruled_prompt(rows: &[String], markers: &[&str]) -> bool {
     let Some(last) = rows.iter().rposition(|row| !is_blank(row)) else {
         return false;
@@ -592,6 +626,9 @@ fn ruled_prompt(rows: &[String], markers: &[&str]) -> bool {
         return false;
     };
     if top + 2 + 1 != last {
+        return false;
+    }
+    if !is_empty_prompt_row(&rows[top + 1]) {
         return false;
     }
     // The fenced rows, or at most two rows under the bottom rule.
@@ -616,6 +653,12 @@ const RULE_MIN_WIDTH: usize = 10;
 /// Agy's prompt row: the first non-blank cell is `>`.
 fn is_prompt_row(row: &str) -> bool {
     row.trim_start_matches(is_space).starts_with('>')
+}
+
+/// Whether agy's prompt row is EMPTY: the `>` ornament and blanks, nothing
+/// else. Any other cell on it is a human draft ae must not paste into.
+fn is_empty_prompt_row(row: &str) -> bool {
+    trim_posix(row) == ">"
 }
 
 /// Does Claude's live prompt say it accepted a message into its turn queue?
@@ -793,6 +836,20 @@ mod tests {
     const AGY_BOOT: &str = include_str!("../../tests/fixtures/agy-composer/agy-boot-frame.txt");
     const AGY_MODAL: &str =
         include_str!("../../tests/fixtures/agy-composer/agy-trust-modal-frame.txt");
+    /// The REAL agy draft frames (2026-09-18, 80x24): a single-line draft on
+    /// the prompt row, and a wrapped one with a continuation row. Provenance
+    /// beside them.
+    const AGY_DRAFT: &str =
+        include_str!("../../tests/fixtures/agy-composer/agy-draft-frame-80x24.txt");
+    const AGY_WRAPPED_DRAFT: &str =
+        include_str!("../../tests/fixtures/agy-composer/agy-wrapped-draft-frame-80x24.txt");
+    /// The REAL grok draft frames (2026-09-18, 80x24): the box and `❯` stay
+    /// drawn while the input row carries text, and a wrapped draft adds
+    /// continuation rail rows. Provenance beside them.
+    const GROK_DRAFT: &str =
+        include_str!("../../tests/fixtures/grok-composer/grok-draft-frame-80x24.txt");
+    const GROK_WRAPPED_DRAFT: &str =
+        include_str!("../../tests/fixtures/grok-composer/grok-wrapped-draft-frame-80x24.txt");
 
     /// A row as `capture-pane -e` renders it: the styling matters, and it is
     /// spelled the way tmux legally spells it rather than one canonical way.
@@ -1293,6 +1350,23 @@ mod tests {
         // Marker on the EDGE row only: the ruling says rail rows.
         let edged = "  ╭─╮\n  │   │\n  ╰─❯─╯\n\nv\n";
         assert!(!composed_ui(edged, GROK));
+        // `❯` survives the human's draft, so the marker alone is not
+        // readiness: the REAL draft frames keep the box and the glyph with
+        // text on the input row, and the wrapped one adds rail rows.
+        assert!(!composed_ui(GROK_DRAFT, GROK));
+        assert!(!composed_ui(GROK_WRAPPED_DRAFT, GROK));
+        // Synthetic, anchored and marked: blanks only are ready.
+        let empty = "  ╭─╮\n  │ ❯      │\n  ╰─╯\n\nv\n";
+        let drafted = "  ╭─╮\n  │ ❯ half │\n  ╰─╯\n\nv\n";
+        assert!(composed_ui(empty, GROK));
+        assert!(!composed_ui(drafted, GROK));
+        // A narrow clip may lose the right rail; the interior still reads.
+        let clipped = "  ╭─╮\n  │ ❯\n  ╰─╯\n\nv\n";
+        assert!(composed_ui(clipped, GROK));
+        assert!(
+            !composed_ui(&clipped.replace("❯\n", "❯ draft\n"), GROK),
+            "a clipped rail row with a draft still refuses"
+        );
     }
 
     #[test]
@@ -1320,6 +1394,19 @@ mod tests {
         );
         assert!(!composed_ui(AGY_MODAL, AGY));
         assert!(!composed_ui("? for shortcuts quoted above\nplain\n", AGY));
+        // The REAL draft frames: the fence stays drawn and the prompt row
+        // holds the human's text — the wrapped one breaks the rule pair too.
+        assert!(!composed_ui(AGY_DRAFT, AGY));
+        assert!(!composed_ui(AGY_WRAPPED_DRAFT, AGY));
+        // Synthetic, marker still drawn under the bottom rule: the prompt row
+        // alone decides, and blanks only are ready.
+        let rules = "─".repeat(40);
+        let clean = format!("{rules}\n>\n{rules}\n? for shortcuts\n");
+        let padded = format!("{rules}\n>   \n{rules}\n? for shortcuts\n");
+        let drafted = format!("{rules}\n> half a draft\n{rules}\n? for shortcuts\n");
+        assert!(composed_ui(&clean, AGY));
+        assert!(composed_ui(&padded, AGY), "trailing blanks are empty");
+        assert!(!composed_ui(&drafted, AGY));
     }
 
     #[test]

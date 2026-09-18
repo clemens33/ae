@@ -224,7 +224,10 @@ pub enum ComposerAnchor {
 pub struct Composed {
     /// Which drawn structure the markers must sit inside.
     pub anchor: ComposerAnchor,
-    /// Literals that prove the UI has COMPOSED, tested INSIDE the anchor.
+    /// Literals that prove the UI has COMPOSED, tested INSIDE the anchor. For
+    /// [`ComposerAnchor::RoundedBox`] and [`ComposerAnchor::RuledPrompt`] the
+    /// composer must also hold no draft: the box, the fence and the marker
+    /// outlive a human's unsent text, so the marker alone would paste into it.
     pub markers: &'static [&'static str],
 }
 
@@ -579,7 +582,11 @@ const AGY: ToolAdapter = ToolAdapter {
         // `region::composed_ui`; this literal is the affordance that must sit
         // in those rows. The model label (`Gemini 3.8 Flash · high`) is NOT a
         // marker: the folder-trust modal carries it too, with no composer.
-        // One version's UI text, same inherited drift hazard as opencode's.
+        // The prompt row must ALSO be empty: a measured single-line draft
+        // (2026-09-18) replaces the footer hint with the model label alone,
+        // and a wrapped draft adds continuation rows that break the
+        // rule/prompt/rule scan. One version's UI text, same inherited drift
+        // hazard as opencode's.
         composed: Composed {
             anchor: ComposerAnchor::RuledPrompt,
             markers: &["? for shortcuts"],
@@ -637,11 +644,15 @@ const GROK: ToolAdapter = ToolAdapter {
         // drawn and stable from ~+2 s. The structural anchor is the rounded
         // `╭`/`│`/`╰╯` box, owned by `region::composed_ui`; this literal is
         // the input affordance that must sit on one of its rail rows. The
-        // bottom-edge footer (`Weekly limit left: ...`, model, flags) is NOT
-        // a marker: quota text is account state, not layout. The "Help
-        // improve Grok" banner coexists WITH the composer; no composer-less
-        // banner state was observed. One version's UI text, same inherited
-        // drift hazard as opencode's.
+        // rail row carrying it must hold nothing else and no other rail row
+        // may carry text: a measured draft (2026-09-18) keeps `❯` drawn and
+        // fills the input row or adds continuation rail rows, so the marker
+        // alone would paste into the human's text. The bottom-edge footer
+        // (`Weekly limit left: ...`, model, flags) is NOT a marker: quota
+        // text is account state, not layout. The "Help improve Grok" banner
+        // coexists WITH the composer; no composer-less banner state was
+        // observed. One version's UI text, same inherited drift hazard as
+        // opencode's.
         composed: Composed {
             anchor: ComposerAnchor::RoundedBox,
             markers: &["❯"],
