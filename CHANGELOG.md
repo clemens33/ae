@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.127] - 2026-09-18
+- Give an undelivered spawn brief a durable record
+- Refuse to publish over a live brief record
+- Retry an undelivered brief from its own record
+- Reduce the brief-retry record module
+- Split the brief-retry delivery leg from the record
+- Rotate the brief-retry pass so a stuck record cannot starve the rest
+- Pin the brief-retry ordering, ledger and damage-dating claims
+- Make the damage-budget and rotation-order pins discriminate
+- Pin every arm of the brief-retry gate and both of its edges
+- Prove a retried brief reaches a real pane verbatim
+- Claim the slot before dropping the previous occupant's record
+- Pin when a spawn writes a retry record and when a retire cancels one
+- Share a helper across the spawn retry-record tests
+- Decide a failed brief delivery's outcome in one pure mapping
+
 ## [v2026.9.126] - 2026-09-18
 - Refuse composed readiness when the rounded box or ruled prompt holds a draft
 
