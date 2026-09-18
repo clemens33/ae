@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.120] - 2026-09-18
+- Hand stop/end viewers to a rankless live session before detach
+
 ## [v2026.9.119] - 2026-09-18
 - Bind publish input map to command link; dedupe doctor server rows; name another ae
 
