@@ -1124,6 +1124,15 @@ whole command of the monitor pane. `ae loop` is the deprecated spelling, kept as
 
 The [watchdog](../internals/watchdog.md) is on by default — only an explicit `false` / `no` / `off` / `0` in config or session meta keeps it off. `watchdog start` is idempotent; running it again just confirms the meta flag.
 
+`stop` takes back every fact only a live daemon could vouch for — the agent
+roster, the fleet strip, the goal, the version and the branch — but the session
+stays a row: its attention goes back to the Stale mark a launch seeds, so every
+other session's fleet strip and the picker still list it and can still switch to
+it. Its own status line says `◌ watchdog off` (`? watchdog off` with
+`[workspace] icons = off`) where a running daemon's health segment sits, and a
+session launched with `watchdog = false` carries that from the start. `start`
+needs nothing after a stop; the daemon publishes over it on its way up.
+
 The watchdog also observes the same local quota caches as `ae quota` on its persisted
 `[workspace] quota_every_secs` cadence — unless the session is quota-unaware
 (`[workspace] quota = off`, pinned at launch), in which case it books no quota

@@ -26,6 +26,23 @@ atomic option write; an unrepresentable roster or cadence unsets it instead of
 publishing a partial fact. `watchdog stop` also unsets it, so a stopped daemon
 cannot leave the picker claiming a live roster snapshot.
 
+A stop retracts everything only a live daemon could vouch for — that roster, the
+fleet strip, the goal, the version and the branch pair — but NOT the session's
+attention. Those three options (`@ae_attn_rank`, `@ae_attn_glyph`,
+`@ae_attn_style`) go back to exactly what a launch seeds, the Stale mark, because
+every fleet reader drops a session that publishes no rank: unsetting them hid a
+session that was still running from every other session's strip and from the
+picker, while `ae list` went on calling it running. The seed is an ae fact, so it
+is written only onto a session tmux still reports as ae-owned by this state root.
+The session's own bar says why, in `@ae_watchdog_status`: a dim Stale mark and
+`watchdog off`, from the one owner `theme::watchdog_off_segment`. A launch that
+starts no watchdog (`watchdog = false`) writes that same segment, and
+`watchdog start` needs no repair — the daemon publishes over it on its way up.
+The same seed goes back when a daemon exits because its record stopped naming
+exactly one server. It does NOT when the session is proven gone, and not on the
+server a daemon is LEAVING after a rebind: neither is a session this state root
+still owns, and a rank left on a stranger would put it on every ae strip.
+
 The `_watchdog` pane runs the core directly: its command is the session's `watchdog` link,
 which is a symlink to the core binary under another name, dispatching to `_watchdog-run`.
 There is no generated script or shell process between tmux and the core.
