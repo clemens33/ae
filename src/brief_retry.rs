@@ -527,7 +527,7 @@ pub fn read(dir: &Path, slot: &str) -> Option<Result<Record, Damaged>> {
 /// Publish `record` durably, at `0600`, for a slot that has NONE yet.
 ///
 /// IT DOES NOT SERIALIZE ITSELF. Every mutation of a slot's record — this,
-/// [`remove`] and [`swap_if_unchanged`] — must be made under that slot's RECORD
+/// [`remove`] and `swap_if_unchanged` — must be made under that slot's RECORD
 /// LOCK, because the lock has to span a caller's whole read-modify-write, not
 /// one write inside it. A caller that mutates a record without holding it is
 /// the defect this sentence exists to prevent.
@@ -634,7 +634,7 @@ pub const FUTURE_SKEW_SECS: i64 = 300;
 /// What a cycle should do with one record — the ONE place the bounds, the
 /// incarnation and the readiness are weighed together.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Decision {
+enum Decision {
     /// Take the record: publish the flight mark and enter delivery.
     Deliver,
     /// Destroy it, loudly, for this reason.
@@ -649,19 +649,19 @@ pub(crate) enum Decision {
 /// token are META, the live pane is THIS CYCLE'S tmux read, and liveness and
 /// readiness belong to the delivery module.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct Facts<'a> {
+struct Facts<'a> {
     /// The roster name meta gives this slot; `None` if meta did not answer.
-    pub meta_name: Option<&'a str>,
+    meta_name: Option<&'a str>,
     /// `launch_id.<slot>` as meta spells it now; `None` if meta did not answer.
-    pub meta_launch_id: Option<&'a str>,
+    meta_launch_id: Option<&'a str>,
     /// The pane this cycle saw carrying the slot, if any.
-    pub live_pane: Option<&'a str>,
+    live_pane: Option<&'a str>,
     /// What the one liveness owner says about that pane.
-    pub liveness: crate::deliver::PaneLiveness,
+    liveness: crate::deliver::PaneLiveness,
     /// Whether the input box proved idle.
-    pub ready: bool,
+    ready: bool,
     /// Now.
-    pub now: i64,
+    now: i64,
 }
 
 /// Weigh one record against what the cycle knows. FAIL CLOSED: every answer
@@ -674,7 +674,7 @@ pub(crate) struct Facts<'a> {
 /// the shape [`crate::tmux::classify_absence`] uses for a session. Busy and
 /// human-typing land on the readiness arm, which is what keeps them free: they
 /// skip the cycle and spend no attempt.
-pub(crate) fn decide(record: &Record, facts: &Facts<'_>) -> Decision {
+fn decide(record: &Record, facts: &Facts<'_>) -> Decision {
     // THE CRASH WINDOW. A flight published this before entering delivery and
     // never recorded an outcome, so ae cannot know whether the paste landed.
     // This is the arm that makes delivering it twice impossible.
@@ -774,7 +774,7 @@ pub(crate) fn mark_damaged(dir: &Path, slot: &str, now: i64) -> Result<PathBuf, 
 ///
 /// The write that failed, named. The caller gives up loudly rather than leaving
 /// a flight mark behind. A delete never errors.
-pub(crate) fn swap_if_unchanged(
+fn swap_if_unchanged(
     dir: &Path,
     slot: &str,
     witness: &[u8],
@@ -797,402 +797,17 @@ pub(crate) fn swap_if_unchanged(
 ///
 /// The unconditional delete, for a caller that owns the slot outright — a
 /// `spawn` claiming it, a `retire` releasing it. A flight uses
-/// [`swap_if_unchanged`] instead. Like [`publish`], it does not serialize
+/// `swap_if_unchanged` instead. Like [`publish`], it does not serialize
 /// itself: it belongs under that slot's record lock.
 pub fn remove(dir: &Path, slot: &str) {
     let _ = std::fs::remove_file(path(dir, slot));
 }
 
-// ---------------------------------------------------------------------------
-// The delivery leg.
+mod leg;
 
-/// The action a caller names to reach this leg. It selects the leg and NOTHING
-/// else — the text and the actor come from the record — so the worst a forged
-/// trigger can do is re-fire a brief the spawner already authorized.
-pub const RETRY_ACTION: &str = "brief-retry";
-
-/// The event a landed retry writes.
-pub const DELIVERED_ACTION: &str = "brief-delivered";
-
-/// The event a record's end writes, whatever ended it.
-pub const GAVE_UP_ACTION: &str = "brief-gave-up";
-
-/// The action the body store names the recovery file after — the SAME one the
-/// original spawn used, because this is that spawn's brief, not a new message.
-const SPAWN_ACTION: &str = "spawn";
-
-/// How many readiness polls a retry spends. Short on purpose: a cycle that
-/// finds the box busy simply looks again next cycle, and spends no attempt.
-const RETRY_READY_POLLS: u32 = 4;
-
-/// Deliver the brief `slot`'s record holds, or say why it did not. The argv
-/// named only WHICH seat: everything that reaches the pane — the text, and the
-/// actor its provenance line names — is read from the record, so no caller can
-/// put words in a brief's mouth.
-///
-/// # Errors
-///
-/// Only a failure to write `out` or `err`.
-pub fn run(
-    dir: &Path,
-    target: &str,
-    own_session: &str,
-    now: crate::time::Timestamp,
-    out: &mut impl Write,
-    err: &mut impl Write,
-) -> std::io::Result<u8> {
-    use crate::state::EXIT_FAILED;
-
-    // Every refusal below is the same sentence with a different clause.
-    let refuse = |err: &mut dyn Write, clause: &str| -> std::io::Result<u8> {
-        writeln!(err, "ae: {RETRY_ACTION} {clause}")?;
-        Ok(EXIT_FAILED)
-    };
-    let (resolved, server) = match crate::tracked::resolve_on(target, own_session, dir) {
-        Ok(resolved) => resolved,
-        Err(why) => {
-            writeln!(err, "{}", why.message())?;
-            return Ok(EXIT_FAILED);
-        }
-    };
-    // OWN SESSION ONLY. The record is named from this session's own directory,
-    // so another session's target is a mistake or an attempt to aim someone
-    // else's brief.
-    if !resolved.session.is_empty() && resolved.session != own_session {
-        return refuse(
-            err,
-            &format!(
-                "refused — {target} is in session '{}', and a brief is retried only into its own",
-                resolved.session
-            ),
-        );
-    }
-    if resolved.slot.is_empty() {
-        return refuse(err, &format!("refused — {target} carries no slot"));
-    }
-    // THE RECORD LOCK, held across the whole read-decide-write sequence. A
-    // second helper — a restarted daemon's orphan, or a forged trigger — waits,
-    // fails and skips, so two flights can never both publish a mark and paste.
-    let Ok(_held) = crate::store::lock(&path(dir, &resolved.slot), crate::store::LOCK_WAIT) else {
-        let slot = &resolved.slot;
-        return refuse(
-            err,
-            &format!("skipped — another flight holds {slot}'s record"),
-        );
-    };
-    let Some(reading) = read(dir, &resolved.slot) else {
-        return refuse(
-            err,
-            &format!("refused — {target} has no undelivered brief on record"),
-        );
-    };
-    let record = match reading {
-        Ok(record) => record,
-        // Damage is the sweep's to classify and set aside; a delivery leg that
-        // acted on it would be deciding with bytes it could not read.
-        Err(damaged) => {
-            let (slot, kind) = (&resolved.slot, damaged.kind);
-            return refuse(
-                err,
-                &format!("refused — {slot}'s record is damaged: {kind}"),
-            );
-        }
-    };
-    let seat = seat_facts(dir, &resolved.slot);
-    let input = seat.tool.adapter().input;
-    // The pane the NAME resolves to now. If the slot moved, this is a different
-    // pane than the record names, and the gate refuses on that.
-    let live_pane = (resolved.slot == record.slot).then(|| resolved.pane.clone());
-    let liveness =
-        crate::deliver::observe_pane_liveness(&server, dir, &resolved.pane, &resolved.slot);
-    let ready = liveness == crate::deliver::PaneLiveness::Alive
-        && crate::deliver::wait_input_ready(
-            &server,
-            &resolved.pane,
-            input.model,
-            input.composed,
-            RETRY_READY_POLLS,
-        );
-    let facts = Facts {
-        meta_name: seat.name.as_deref(),
-        meta_launch_id: seat.launch_id.as_deref(),
-        live_pane: live_pane.as_deref(),
-        liveness,
-        ready,
-        now: now.epoch(),
-    };
-    let name = seat.name.as_deref().unwrap_or(target);
-    match decide(&record, &facts) {
-        Decision::Skip(why) => refuse(err, &format!("skipped for {name} — {why}")),
-        Decision::GiveUp(why) => {
-            let witness = render(&record);
-            give_up(dir, &record, name, why, witness.as_bytes(), now, err)?;
-            writeln!(err, "ae: brief for {name} given up — {why}")?;
-            Ok(EXIT_FAILED)
-        }
-        Decision::Deliver => fly(
-            &Flight {
-                dir,
-                server: &server,
-                pane: &resolved.pane,
-                own_session,
-                name,
-                record: &record,
-                composed: input.composed,
-                now,
-            },
-            out,
-            err,
-        ),
-    }
-}
-
-/// What meta says about the seat a slot holds right now. `None` on either
-/// field means meta did not answer, which the gate skips on rather than acts.
-struct Seat {
-    name: Option<String>,
-    launch_id: Option<String>,
-    /// The seat's tool, for the input grammar readiness is proved against.
-    tool: crate::tool::ToolKind,
-}
-
-/// Read the seat's facts from ONE read of the meta document. The roster and
-/// `launch_id.<slot>` are two lookups over those same bytes, because the
-/// roster entry does not carry the launch token.
-fn seat_facts(dir: &Path, slot: &str) -> Seat {
-    let bytes = crate::meta::read_bytes(dir).unwrap_or_default();
-    let text = String::from_utf8_lossy(&bytes);
-    let meta = crate::meta::Meta::parse(&text);
-    let entry = meta.roster().iter().find(|entry| entry.slot == slot);
-    Seat {
-        name: entry.map(|entry| entry.name.clone()),
-        launch_id: crate::meta::sole_value(&bytes, &format!("launch_id.{slot}"))
-            .map(|value| String::from_utf8_lossy(value).into_owned())
-            .filter(|value| !value.is_empty()),
-        tool: crate::tool::ToolKind::from_binary_name(
-            entry
-                .and_then(|entry| entry.binary.as_deref())
-                .unwrap_or(""),
-        ),
-    }
-}
-
-/// Everything one flight needs, kept as a struct because inlining it buys a
-/// `too_many_arguments` allow and nothing else.
-struct Flight<'a> {
-    dir: &'a Path,
-    server: &'a crate::inventory::ServerId,
-    pane: &'a str,
-    own_session: &'a str,
-    name: &'a str,
-    record: &'a Record,
-    composed: crate::tool::Composed,
-    now: crate::time::Timestamp,
-}
-
-/// Publish the flight mark, deliver, and record what happened.
-///
-/// THE ORDER IS THE PROOF: the bumped attempt and the `pasting` mark are made
-/// durable BEFORE the paste, so a crash anywhere past this point leaves a
-/// record the next cycle refuses to paste again. Only a failure that proves
-/// NOTHING was staged re-arms it.
-fn fly(flight: &Flight<'_>, out: &mut impl Write, err: &mut impl Write) -> std::io::Result<u8> {
-    use crate::state::EXIT_FAILED;
-
-    let witness = render(flight.record);
-    let mut taking_off = flight.record.clone();
-    taking_off.attempts = taking_off.attempts.saturating_add(1);
-    taking_off.phase = Phase::Pasting;
-    let mark = render(&taking_off);
-    if let Err(why) = swap_if_unchanged(
-        flight.dir,
-        &taking_off.slot,
-        witness.as_bytes(),
-        Some(&taking_off),
-    ) {
-        writeln!(
-            err,
-            "ae: brief for {} not attempted — its flight mark could not be published: {why}",
-            flight.name
-        )?;
-        return Ok(EXIT_FAILED);
-    }
-    let request = crate::deliver::Request {
-        dir: flight.dir,
-        server: flight.server,
-        pane: flight.pane,
-        logged_target: flight.name,
-        target_session: flight.own_session,
-        pane_slot: &flight.record.slot,
-        own_session: flight.own_session,
-        action: SPAWN_ACTION,
-        reference: &flight.record.reference,
-        actor: &flight.record.actor,
-        body: &flight.record.body,
-        shape: crate::deliver::Shape::Launch,
-        defer: crate::deliver::DEFAULT_DEFER,
-        composed: flight.composed,
-    };
-    let outcome = crate::deliver::deliver(&request, err)?;
-    let age = flight.now.epoch().saturating_sub(flight.record.created);
-    match outcome {
-        Ok(delivered) => {
-            if swap_if_unchanged(flight.dir, &flight.record.slot, mark.as_bytes(), None) == Ok(true)
-            {
-                let _ = std::fs::remove_file(
-                    flight.dir.join(format!("undelivered.{}.txt", flight.name)),
-                );
-            }
-            record_event(
-                flight.dir,
-                DELIVERED_ACTION,
-                flight.record,
-                flight.name,
-                &format!(
-                    "brief delivered on attempt {} after {age}s",
-                    taking_off.attempts
-                ),
-                &delivered.body_file,
-                flight.now,
-            );
-            writeln!(out, "Delivered the undelivered brief to {}", flight.name)?;
-            Ok(0)
-        }
-        // PROVEN pre-stage: deliver refuses these before the first key reaches
-        // the pane, so nothing was staged and the record may be armed again.
-        Err(
-            failure @ (crate::deliver::Failure::DeadPane
-            | crate::deliver::Failure::Lock
-            | crate::deliver::Failure::Abandoned
-            | crate::deliver::Failure::NotComposed { .. }),
-        ) => {
-            rearm_after_prestage(flight, &taking_off, &mark, &failure, err)?;
-            Ok(EXIT_FAILED)
-        }
-        // Everything else may have staged something. The brief is given up
-        // rather than risked twice — the file is kept, so nothing is lost.
-        Err(failure) => {
-            let why = if matches!(failure, crate::deliver::Failure::Unconfirmed { .. }) {
-                "submit unconfirmed; the brief may be staged unsent"
-            } else {
-                "delivery failed in a way that proves nothing about what was pasted"
-            };
-            give_up(
-                flight.dir,
-                &taking_off,
-                flight.name,
-                why,
-                mark.as_bytes(),
-                flight.now,
-                err,
-            )?;
-            Ok(EXIT_FAILED)
-        }
-    }
-}
-
-/// Put a record back after a refusal that PROVED nothing was staged. The
-/// attempt is already spent — ae entered delivery, which is what the count
-/// means — so the record goes back armed with the higher count, and the seat
-/// keeps whatever attempts remain. Compare-and-swapped for the successor case
-/// [`swap_if_unchanged`] names.
-fn rearm_after_prestage(
-    flight: &Flight<'_>,
-    taking_off: &Record,
-    mark: &str,
-    failure: &crate::deliver::Failure,
-    err: &mut impl Write,
-) -> std::io::Result<()> {
-    if taking_off.attempts >= MAX_ATTEMPTS {
-        return give_up(
-            flight.dir,
-            taking_off,
-            flight.name,
-            "delivery was attempted twice",
-            mark.as_bytes(),
-            flight.now,
-            err,
-        );
-    }
-    let mut armed = taking_off.clone();
-    armed.phase = Phase::Armed;
-    let clause = match swap_if_unchanged(flight.dir, &armed.slot, mark.as_bytes(), Some(&armed)) {
-        Ok(true) => {
-            format!("refused before anything was pasted ({failure:?}) — it stays on record")
-        }
-        Ok(false) => {
-            "was replaced while its delivery was in the air — nothing was written back".to_owned()
-        }
-        Err(why) => format!(
-            "could not be re-armed ({why}) — its flight mark stands, so it will be given up rather than pasted twice"
-        ),
-    };
-    writeln!(err, "ae: brief for {} {clause}", flight.name)
-}
-
-/// End a record: drop it if this flight still owns it, KEEP the preserved
-/// `.txt`, and say so in the ledger. The file stays on purpose — a given-up
-/// brief is one a human now has to hand over, and the event says so.
-fn give_up(
-    dir: &Path,
-    record: &Record,
-    name: &str,
-    why: &str,
-    witness: &[u8],
-    now: crate::time::Timestamp,
-    err: &mut impl Write,
-) -> std::io::Result<()> {
-    if swap_if_unchanged(dir, &record.slot, witness, None) != Ok(true) {
-        writeln!(
-            err,
-            "ae: brief for {name} was replaced before it could be given up — nothing was removed"
-        )?;
-        return Ok(());
-    }
-    let age = now.epoch().saturating_sub(record.created);
-    record_event(
-        dir,
-        GAVE_UP_ACTION,
-        record,
-        name,
-        &format!(
-            "{why} (attempts {}, age {age}s); the brief is preserved at undelivered.{name}.txt",
-            record.attempts
-        ),
-        "",
-        now,
-    );
-    Ok(())
-}
-
-/// Append one brief event, named by the ORIGINAL spawner — never the watchdog
-/// and never ae. The authority this brief carries is the one that spawned the
-/// seat, and the ledger says what the pane's provenance line does.
-fn record_event(
-    dir: &Path,
-    action: &str,
-    record: &Record,
-    name: &str,
-    summary: &str,
-    body_file: &str,
-    now: crate::time::Timestamp,
-) {
-    let _ = crate::store::open(dir).append_event(&crate::tracked::event_line(
-        &crate::tracked::EventFields::new(
-            now,
-            &record.actor,
-            action,
-            name,
-            &record.reference,
-            "",
-            "",
-            &record.slot,
-            "",
-            summary,
-            body_file,
-        ),
-    ));
-}
+// The leg's vocabulary is re-exported, so every caller outside this module
+// keeps naming `crate::brief_retry::<item>` and the split changes no call site.
+pub use leg::{DELIVERED_ACTION, GAVE_UP_ACTION, RETRY_ACTION, run};
 
 #[cfg(test)]
 mod tests {
