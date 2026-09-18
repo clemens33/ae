@@ -433,10 +433,6 @@ pub fn run_spawn(
     // Everything a launch command is made of — the context injection, the
     // session id, the create-vs-resume decision — is composed by `_run` IN the
     // pane, from this session's own state.
-    // A slot being claimed again takes nothing from the seat that had it: a
-    // retry record left by a PREVIOUS occupant would otherwise outlive it and
-    // be weighed against this new seat's incarnation.
-    crate::brief_retry::remove(dir, &slot);
     if let Err(why) = crate::run::clear_slot(dir, &slot) {
         rollback(dir, &facts, &slot, &pane, &parsed.name, err)?;
         writeln!(
@@ -446,6 +442,15 @@ pub fn run_spawn(
         )?;
         return Ok(EXIT_FAILED);
     }
+    // A slot being claimed again takes nothing from the seat that had it: a
+    // retry record left by a PREVIOUS occupant would otherwise outlive it and
+    // be weighed against this new seat's incarnation.
+    //
+    // AFTER the claim succeeded, never before: the arm above ROLLS BACK, and a
+    // clear that failed leaves the previous occupant still holding the slot —
+    // so removing its record first would destroy a brief that is still owed to
+    // a seat that still exists.
+    crate::brief_retry::remove(dir, &slot);
     // Codex's workspace context rides `developer_instructions`; what is left for
     // the launch command is the seat's registration handshake, which travels
     // with the brief as the inline first message `_run` composes. That combined

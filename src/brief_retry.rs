@@ -526,11 +526,22 @@ pub fn read(dir: &Path, slot: &str) -> Option<Result<Record, Damaged>> {
 
 /// Publish `record` durably, at `0600`, for a slot that has NONE yet.
 ///
-/// IT DOES NOT SERIALIZE ITSELF. Every mutation of a slot's record — this,
-/// [`remove`] and `swap_if_unchanged` — must be made under that slot's RECORD
-/// LOCK, because the lock has to span a caller's whole read-modify-write, not
-/// one write inside it. A caller that mutates a record without holding it is
-/// the defect this sentence exists to prevent.
+/// IT DOES NOT SERIALIZE ITSELF. A FLIGHT's mutations — this, [`remove`] and
+/// `swap_if_unchanged` — are made under that slot's RECORD LOCK, because the
+/// lock has to span a caller's whole read-modify-write, not one write inside
+/// it.
+///
+/// `spawn` is the ONE documented exception, and it holds no lock on purpose:
+/// its own sequence spans a 15 s readiness wait, and no seat may be held out of
+/// its session's lifecycle for that. Three things make it safe without one. It
+/// publishes only on the undelivered path, where the pane it is writing about
+/// has just failed to take a brief; an occupied name is REFUSED rather than
+/// replaced, so it can never overwrite a live record; and every flight mutation
+/// is compare-and-swapped against the bytes that flight read, so a record
+/// `spawn` replaces under a flight in the air makes that flight write nothing
+/// at all. The interleaving that would otherwise bite — a retire and a re-spawn
+/// claiming the same slot while a flight is pasting — therefore ends with the
+/// successor's record intact and the old flight silent.
 ///
 /// AN OCCUPIED NAME IS REFUSED, loudly, and the check is sound only because of
 /// that lock contract. A silent replace would reset an attempt count and
