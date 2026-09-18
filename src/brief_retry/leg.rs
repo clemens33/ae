@@ -269,36 +269,48 @@ fn fly(flight: &Flight<'_>, out: &mut impl Write, err: &mut impl Write) -> std::
             writeln!(out, "Delivered the undelivered brief to {}", flight.name)?;
             Ok(0)
         }
-        // PROVEN pre-stage: deliver refuses these before the first key reaches
-        // the pane, so nothing was staged and the record may be armed again.
-        Err(
-            failure @ (crate::deliver::Failure::DeadPane
-            | crate::deliver::Failure::Lock
-            | crate::deliver::Failure::Abandoned
-            | crate::deliver::Failure::NotComposed { .. }),
-        ) => {
-            rearm_after_prestage(flight, &taking_off, &mark, &failure, err)?;
-            Ok(EXIT_FAILED)
-        }
-        // Everything else may have staged something. The brief is given up
-        // rather than risked twice — the file is kept, so nothing is lost.
         Err(failure) => {
-            let why = if matches!(failure, crate::deliver::Failure::Unconfirmed { .. }) {
-                "submit unconfirmed; the brief may be staged unsent"
-            } else {
-                "delivery failed in a way that proves nothing about what was pasted"
-            };
-            give_up(
-                flight.dir,
-                &taking_off,
-                flight.name,
-                why,
-                mark.as_bytes(),
-                flight.now,
-                err,
-            )?;
+            match outcome_of(&failure) {
+                Outcome::Rearm => rearm_after_prestage(flight, &taking_off, &mark, &failure, err)?,
+                Outcome::GiveUp(why) => give_up(
+                    flight.dir,
+                    &taking_off,
+                    flight.name,
+                    why,
+                    mark.as_bytes(),
+                    flight.now,
+                    err,
+                )?,
+            }
             Ok(EXIT_FAILED)
         }
+    }
+}
+
+/// What a delivery failure means for the record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Outcome {
+    /// Nothing was staged: the record goes back, its attempt spent.
+    Rearm,
+    /// Something may have been staged. End the record with this reason rather
+    /// than risk the brief twice; the `.txt` is kept, so nothing is lost.
+    GiveUp(&'static str),
+}
+
+/// RULING 4, as one pure function: the four refusals `deliver` decides BEFORE
+/// its first key reaches the pane are the only re-armable ones. Pure because it
+/// is the MAPPING, not the delivery, that decides whether a brief can be pasted
+/// twice — so it can be asserted without a pane.
+const fn outcome_of(failure: &crate::deliver::Failure) -> Outcome {
+    match *failure {
+        crate::deliver::Failure::DeadPane
+        | crate::deliver::Failure::Lock
+        | crate::deliver::Failure::Abandoned
+        | crate::deliver::Failure::NotComposed { .. } => Outcome::Rearm,
+        crate::deliver::Failure::Unconfirmed { .. } => {
+            Outcome::GiveUp("submit unconfirmed; the brief may be staged unsent")
+        }
+        _ => Outcome::GiveUp("delivery failed in a way that proves nothing about what was pasted"),
     }
 }
 
@@ -412,7 +424,7 @@ mod tests {
         reason = "a fixture inspects the real directory the leg wrote; the capability                   boundary is about what PRODUCT code may reach, which is why the                   inventory in tests/it/phase3.rs counts product lines only"
     )]
 
-    use super::{GAVE_UP_ACTION, give_up};
+    use super::{GAVE_UP_ACTION, Outcome, give_up, outcome_of};
     use crate::brief_retry::{Phase, Record, publish, render};
 
     fn scratch(tag: &str) -> std::path::PathBuf {
@@ -526,5 +538,39 @@ mod tests {
             String::from_utf8_lossy(&err)
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// RULING 4, asserted without a pane. A failure in the wrong half of this
+    /// mapping is silent: one that should have ended the record pastes a brief
+    /// that may already be staged, and one that should have re-armed burns the
+    /// retry a live seat was owed. Nothing else fails when it moves.
+    #[test]
+    fn only_the_refusals_that_prove_nothing_was_staged_may_re_arm_a_record() {
+        use crate::deliver::Failure;
+        let file = || "body-file".to_owned();
+        // The four PROVEN pre-stage refusals, and nothing else, re-arm.
+        for failure in [
+            Failure::DeadPane,
+            Failure::Lock,
+            Failure::Abandoned,
+            Failure::NotComposed { body_file: file() },
+        ] {
+            assert_eq!(outcome_of(&failure), Outcome::Rearm, "{failure:?}");
+        }
+        // An unconfirmed submit may be staged unsent, so it ENDS the record
+        // and says so — the `.txt` it keeps is what a human hands over.
+        assert_eq!(
+            outcome_of(&Failure::Unconfirmed {
+                body_file: file(),
+                framed: "framed".to_owned(),
+                notice: false,
+            }),
+            Outcome::GiveUp("submit unconfirmed; the brief may be staged unsent")
+        );
+        // And every other failure proves nothing about what was pasted.
+        assert_eq!(
+            outcome_of(&Failure::NoticeRefused { body_file: file() }),
+            Outcome::GiveUp("delivery failed in a way that proves nothing about what was pasted")
+        );
     }
 }

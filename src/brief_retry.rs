@@ -229,7 +229,8 @@ pub struct Record {
     /// `launch_id.<slot>` when the brief was composed: the incarnation guard.
     pub launch_id: String,
     /// The ORIGINAL spawner — the actor the brief marker names, never the
-    /// watchdog that carries it.
+    /// watchdog that carries it. `deliver`'s `frame` STAMPS the marker line
+    /// from this field under `Shape::Launch`; the record never stores one.
     pub actor: String,
     /// How many times ae has entered delivery for this brief.
     pub attempts: u32,
@@ -237,7 +238,9 @@ pub struct Record {
     pub created: i64,
     /// Whether a flight is outstanding.
     pub phase: Phase,
-    /// The brief itself, byte for byte as `spawn` would have pasted it.
+    /// The brief BELOW its marker line, byte for byte as `spawn` composed it.
+    /// A marker written in here would be pasted a second time under the one
+    /// `deliver` stamps, so this field holds the body and nothing else.
     pub body: String,
 }
 
