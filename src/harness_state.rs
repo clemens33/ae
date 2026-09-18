@@ -179,6 +179,74 @@ pub fn current_identity(capture: &str, tool: ToolKind) -> HarnessIdentity {
     }
 }
 
+/// The identity this capture proves, gated on the tool's own live-composer
+/// signal in the SAME capture.
+///
+/// This discharges the module doc's WIRING OBLIGATION: [`current_identity`]
+/// reads a grammar, and a grammar alone cannot tell a live frame from a
+/// quoted one that happens to end at the same geometry. A caller that will
+/// SHOW the answer takes this; the drift observer keeps the ungated read,
+/// because those are different questions — what the frame says, versus what
+/// this frame currently is.
+#[must_use]
+pub fn observed_identity(capture: &str, tool: ToolKind) -> HarnessIdentity {
+    if composer_present(capture, tool) {
+        current_identity(capture, tool)
+    } else {
+        HarnessIdentity::default()
+    }
+}
+
+/// Whether `capture` proves this tool's own composer is drawn on it.
+///
+/// Per identity class, because the classes differ in what they already prove:
+///
+/// - claude and codex need NOTHING added. Their grammars already require the
+///   live input box in the same capture — claude a bare `❯` inside
+///   [`claude_input_frame`], codex its exact empty prompt row above the
+///   footer with no modal over it. Asking [`crate::deliver::region`] again
+///   would also be wrong for codex: its `StyleDelimited` composer is found by
+///   SGR weight, and the watchdog captures PLAIN (`capture-pane -p -J`), so
+///   the read would answer `Unreadable` on every live frame.
+/// - muse draws a modelled `BorderDelimited` box but carries no composed
+///   marker set ([`crate::tool::Composed::NONE`]), so `composed_ui` can never
+///   pass for it. Its own input box is the signal instead, read
+///   STRUCTURALLY — `live_only = false`, ornaments `❯ > ▌` — which is exactly
+///   what survives a plain capture.
+/// - opencode, grok and agy are unmodelled composers with measured markers,
+///   which is what [`crate::deliver::region::composed_ui`] answers for. The
+///   spec is DATA off the adapter row, never a per-tool branch here.
+///
+/// Named residual, not fixed: for muse the ornament row this finds may sit
+/// ABOVE a quoted footer. The gate proves the tool's composer is drawn on
+/// this frame, not that the footer belongs to it — strictly more than the
+/// grammar proved alone, and honestly less than provenance would.
+///
+/// Fails CLOSED: an identity class with no composer signal proves nothing.
+fn composer_present(capture: &str, tool: ToolKind) -> bool {
+    match tool.adapter().identity {
+        IdentitySpec::BorderComposer | IdentitySpec::StyleFooter => true,
+        IdentitySpec::RuleFooter => {
+            crate::deliver::region::occupancy(capture, tool.input_model())
+                != crate::deliver::region::Occupancy::Unreadable
+        }
+        IdentitySpec::RailStatus | IdentitySpec::BorderText | IdentitySpec::TrailingLabel => {
+            crate::deliver::region::composed_ui(capture, tool.adapter().input.composed)
+        }
+        IdentitySpec::Unmodelled => false,
+    }
+}
+
+/// Whether `value` is one of the efforts a harness frame may prove.
+///
+/// Published so the picker's roster fact validates an effort field against
+/// THIS list rather than a second copy of it: the vocabulary is closed, so it
+/// is the validation, and a byte cap is only its width.
+#[must_use]
+pub fn is_effort_word(value: &str) -> bool {
+    valid_effort(value)
+}
+
 /// Normalize one drawn row: a U+00A0 anywhere becomes a plain space, then
 /// ASCII/NBSP whitespace is trimmed from the edges. Only a row carrying an
 /// interior NBSP allocates; every other row stays borrowed.
@@ -580,7 +648,8 @@ fn valid_effort(value: &str) -> bool {
 mod tests {
     use super::{
         HarnessIdentity, HarnessState, IdleCarry, classify, clean_lines, current_identity,
-        decode_idle, encode_idle, has_human_draft, observed_from_option,
+        decode_idle, encode_idle, has_human_draft, is_effort_word, observed_from_option,
+        observed_identity,
     };
     use crate::tool::ToolKind;
 
@@ -1224,5 +1293,141 @@ mod tests {
         ] {
             assert!(decode_idle(seed).is_some(), "{name}: {seed:?}");
         }
+    }
+
+    /// The residual the module doc names, closed for the four bottom-anchored
+    /// grammars: a frame that ENDS at the tool's live geometry while the
+    /// tool's own composer is absent must not read as observed.
+    ///
+    /// Each hostile capture is DERIVED from the measured fixture beside it by
+    /// removing only the composer, so the footer, the rule and the row order
+    /// the grammar anchors on are the recorded bytes. The ungated read is
+    /// asserted to still see a model on every one of them — without that, a
+    /// mutant that deletes the gate would have nothing to fail.
+    #[test]
+    fn a_quoted_frame_without_the_tools_composer_is_not_observed() {
+        const DRAFT: &str = " half a thought";
+        let muse = include_str!("../tests/fixtures/runtime-identity/muse-idle-plain-80x24.txt");
+        // Drop the composer row and the rule that opens it; the closing rule
+        // and the footer under it — the whole of what `RuleFooter` reads —
+        // stay exactly where the capture put them.
+        let quoted_muse: String = muse
+            .lines()
+            .filter(|line| !line.trim_start().starts_with('\u{276f}'))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let grok = include_str!("../tests/fixtures/grok-composer/grok-composed-frame-80x24.txt");
+        // Grok's border IS its identity row, so the composer cannot be taken
+        // away without taking the model with it. A DRAFT is the honest second
+        // case: the box and the label both survive one, and `composed_ui`
+        // refuses it because a paste would merge with the human's text.
+        let drafted_grok: String = grok
+            .lines()
+            .map(|line| match line.split_once('\u{276f}') {
+                // The rail row's padding absorbs the draft, so the box keeps
+                // the width the capture measured.
+                Some((head, pad)) if pad.len() >= DRAFT.len() => {
+                    format!("{head}\u{276f}{DRAFT}{}", &pad[DRAFT.len()..])
+                }
+                _ => line.to_owned(),
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        for (name, capture, tool) in [
+            ("muse", quoted_muse.as_str(), ToolKind::Muse),
+            ("grok", drafted_grok.as_str(), ToolKind::Grok),
+            (
+                "agy",
+                include_str!("../tests/fixtures/agy-composer/agy-draft-frame-80x24.txt"),
+                ToolKind::Agy,
+            ),
+        ] {
+            assert!(
+                current_identity(capture, tool).model.is_some(),
+                "{name}: the ungated grammar must still read a model here, or this \
+                 fixture proves nothing about the gate"
+            );
+            assert_eq!(
+                observed_identity(capture, tool),
+                HarnessIdentity::default(),
+                "{name}: a frame without the tool's own live composer is unobserved"
+            );
+        }
+    }
+
+    /// The gate must not cost a single live frame its identity. Every measured
+    /// composer fixture reads the same through it as around it.
+    #[test]
+    fn every_modelled_tool_still_observes_through_the_composer_gate() {
+        for (name, capture, tool) in [
+            (
+                "claude",
+                include_str!("../tests/fixtures/harness-state/claude-idle-167x40.txt"),
+                ToolKind::Claude,
+            ),
+            (
+                "codex",
+                include_str!("../tests/fixtures/harness-state/codex-idle-112x40.txt"),
+                ToolKind::Codex,
+            ),
+            (
+                "muse",
+                include_str!("../tests/fixtures/runtime-identity/muse-idle-plain-80x24.txt"),
+                ToolKind::Muse,
+            ),
+            (
+                "muse-occupied",
+                include_str!("../tests/fixtures/runtime-identity/muse-occupied-plain-80x24.txt"),
+                ToolKind::Muse,
+            ),
+            (
+                "opencode",
+                include_str!(
+                    "../tests/fixtures/runtime-identity/opencode-composed-plain-80x24.txt"
+                ),
+                ToolKind::OpenCode,
+            ),
+            (
+                "grok",
+                include_str!("../tests/fixtures/grok-composer/grok-composed-frame-80x24.txt"),
+                ToolKind::Grok,
+            ),
+            (
+                "agy",
+                include_str!("../tests/fixtures/agy-composer/agy-composed-frame.txt"),
+                ToolKind::Agy,
+            ),
+        ] {
+            assert_eq!(
+                observed_identity(capture, tool),
+                current_identity(capture, tool),
+                "{name}: the gate changed a live frame's answer"
+            );
+        }
+        // An unmodelled tool proves nothing either way, gated or not.
+        assert_eq!(
+            observed_identity(
+                include_str!("../tests/fixtures/harness-state/claude-idle-167x40.txt"),
+                ToolKind::Gemini
+            ),
+            HarnessIdentity::default()
+        );
+    }
+
+    #[test]
+    fn the_effort_vocabulary_is_closed_and_published() {
+        for word in ["low", "medium", "high", "xhigh", "max", "ultra"] {
+            assert!(is_effort_word(word), "{word}");
+        }
+        for word in ["", "LOW", "lowest", "med", "xxhigh", "max "] {
+            assert!(!is_effort_word(word), "{word:?}");
+        }
+        assert_eq!(
+            "medium".len(),
+            6,
+            "the widest effort word, which is what the fact's cap and the \
+             picker's column are sized to"
+        );
     }
 }

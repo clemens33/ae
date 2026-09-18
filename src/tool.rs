@@ -400,6 +400,16 @@ pub(crate) struct ToolAdapter {
     pub(crate) name: &'static str,
     /// Human-facing name, or the full profile command for an unknown tool.
     pub(crate) label: Option<&'static str>,
+    /// The client token a roster row draws beside an observed model, at most
+    /// four terminal cells.
+    ///
+    /// A NAME, not an abbreviation rule: the picker's agent row has room for
+    /// the model or for the client, not for both spelled out, and the human
+    /// reading it already knows their fleet. Unknown is `-`, which says ae
+    /// could not classify the binary rather than naming a tool it did not
+    /// see. Short enough that the client never has to drop out of a narrow
+    /// row — the model clips instead.
+    pub(crate) client: &'static str,
     /// Prefix shared by launch-marker writers and tool-store readers.
     pub(crate) launch_marker: Option<&'static str>,
     /// Environment variable that relocates this harness's account/config home.
@@ -441,6 +451,7 @@ const CLAUDE: ToolAdapter = ToolAdapter {
     kind: ToolKind::Claude,
     name: "claude",
     label: Some("claude code"),
+    client: "cc",
     launch_marker: None,
     config_home_env: Some("CLAUDE_CONFIG_DIR"),
     config_home_default: Some(".claude"),
@@ -489,6 +500,7 @@ const CODEX: ToolAdapter = ToolAdapter {
     kind: ToolKind::Codex,
     name: "codex",
     label: Some("codex"),
+    client: "cx",
     launch_marker: Some("CODEX"),
     config_home_env: Some("CODEX_HOME"),
     config_home_default: Some(".codex"),
@@ -534,6 +546,7 @@ const GEMINI: ToolAdapter = ToolAdapter {
     kind: ToolKind::Gemini,
     name: "gemini",
     label: Some("gemini cli"),
+    client: "gem",
     launch_marker: Some("GEMINI"),
     config_home_env: None,
     config_home_default: None,
@@ -579,6 +592,7 @@ const AGY: ToolAdapter = ToolAdapter {
     kind: ToolKind::Agy,
     name: "agy",
     label: Some("antigravity cli"),
+    client: "agy",
     launch_marker: Some("AGY"),
     config_home_env: None,
     config_home_default: None,
@@ -641,6 +655,7 @@ const GROK: ToolAdapter = ToolAdapter {
     kind: ToolKind::Grok,
     name: "grok",
     label: Some("grok build"),
+    client: "grok",
     launch_marker: None,
     config_home_env: None,
     config_home_default: None,
@@ -708,6 +723,7 @@ const MUSE: ToolAdapter = ToolAdapter {
     kind: ToolKind::Muse,
     name: "muse",
     label: Some("muse code"),
+    client: "muse",
     launch_marker: Some("MUSE"),
     config_home_env: None,
     config_home_default: None,
@@ -761,6 +777,7 @@ const OPENCODE: ToolAdapter = ToolAdapter {
     kind: ToolKind::OpenCode,
     name: "opencode",
     label: Some("opencode"),
+    client: "oc",
     launch_marker: None,
     config_home_env: None,
     config_home_default: None,
@@ -816,6 +833,7 @@ const UNKNOWN: ToolAdapter = ToolAdapter {
     kind: ToolKind::Unknown,
     name: "unknown",
     label: None,
+    client: "-",
     launch_marker: None,
     config_home_env: None,
     config_home_default: None,
@@ -864,6 +882,18 @@ pub fn config_home_envs() -> impl Iterator<Item = &'static str> {
     KNOWN.iter().filter_map(|adapter| adapter.config_home_env)
 }
 
+/// Whether `token` is a client token some adapter row declares.
+///
+/// The picker's roster fact is hostile persisted state, so its client field is
+/// validated against THIS table rather than by shape: a closed vocabulary is
+/// its own validation, and `-` is part of it because an unclassifiable binary
+/// is a thing ae can honestly report. `UNKNOWN` is not in [`KNOWN`], so it is
+/// named beside it.
+#[must_use]
+pub fn is_client_token(token: &str) -> bool {
+    KNOWN.iter().any(|adapter| adapter.client == token) || token == UNKNOWN.client
+}
+
 impl ToolKind {
     /// Classify one known bare binary name, preserving absence as `None`.
     #[must_use]
@@ -898,6 +928,12 @@ impl ToolKind {
     #[must_use]
     pub(crate) const fn input_model(self) -> InputModel {
         self.adapter().input.model
+    }
+
+    /// The client token a roster row draws beside this harness's model.
+    #[must_use]
+    pub const fn client_token(self) -> &'static str {
+        self.adapter().client
     }
 
     /// The capabilities of this harness.
@@ -945,6 +981,40 @@ impl ToolKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_adapter_row_carries_a_unique_client_token() {
+        let mut seen: Vec<&str> = Vec::new();
+        for adapter in KNOWN {
+            let token = adapter.kind.client_token();
+            assert_eq!(token, adapter.client, "{}: one owner", adapter.name);
+            assert!(
+                !token.is_empty() && token.len() <= 4,
+                "{}: {token:?} must be 1..=4 bytes — the picker's client column",
+                adapter.name
+            );
+            assert!(
+                token.bytes().all(|byte| byte.is_ascii_lowercase()),
+                "{}: {token:?} must be plain lowercase ASCII — it rides the \
+                 roster fact, whose byte set forbids the rest",
+                adapter.name
+            );
+            assert!(
+                !seen.contains(&token),
+                "{}: {token:?} already names another client",
+                adapter.name
+            );
+            seen.push(token);
+            assert!(is_client_token(token), "{}: {token:?}", adapter.name);
+        }
+        // Unknown is deliberately outside KNOWN and outside that spelling: it
+        // says ae could not classify the binary, never that it saw a tool.
+        assert_eq!(ToolKind::Unknown.client_token(), "-");
+        assert!(is_client_token("-"));
+        for absent in ["", "claude", "CC", "cc ", "oc!"] {
+            assert!(!is_client_token(absent), "{absent:?}");
+        }
+    }
 
     #[test]
     fn each_supported_binary_resolves_to_its_complete_adapter_row() {
@@ -1053,6 +1123,7 @@ mod tests {
                     kind: ToolKind::Claude,
                     name: "claude",
                     label: Some("claude code"),
+                    client: "cc",
                     launch_marker: None,
                     config_home_env: Some("CLAUDE_CONFIG_DIR"),
                     config_home_default: Some(".claude"),
@@ -1100,6 +1171,7 @@ mod tests {
                     kind: ToolKind::Codex,
                     name: "codex",
                     label: Some("codex"),
+                    client: "cx",
                     launch_marker: Some("CODEX"),
                     config_home_env: Some("CODEX_HOME"),
                     config_home_default: Some(".codex"),
@@ -1144,6 +1216,7 @@ mod tests {
                     kind: ToolKind::Gemini,
                     name: "gemini",
                     label: Some("gemini cli"),
+                    client: "gem",
                     launch_marker: Some("GEMINI"),
                     config_home_env: None,
                     config_home_default: None,
@@ -1188,6 +1261,7 @@ mod tests {
                     kind: ToolKind::Agy,
                     name: "agy",
                     label: Some("antigravity cli"),
+                    client: "agy",
                     launch_marker: Some("AGY"),
                     config_home_env: None,
                     config_home_default: None,
@@ -1236,6 +1310,7 @@ mod tests {
                     kind: ToolKind::Grok,
                     name: "grok",
                     label: Some("grok build"),
+                    client: "grok",
                     launch_marker: None,
                     config_home_env: None,
                     config_home_default: None,
@@ -1287,6 +1362,7 @@ mod tests {
                     kind: ToolKind::Muse,
                     name: "muse",
                     label: Some("muse code"),
+                    client: "muse",
                     launch_marker: Some("MUSE"),
                     config_home_env: None,
                     config_home_default: None,
@@ -1331,6 +1407,7 @@ mod tests {
                     kind: ToolKind::OpenCode,
                     name: "opencode",
                     label: Some("opencode"),
+                    client: "oc",
                     launch_marker: None,
                     config_home_env: None,
                     config_home_default: None,
@@ -1386,6 +1463,7 @@ mod tests {
                 kind: ToolKind::Unknown,
                 name: "unknown",
                 label: None,
+                client: "-",
                 launch_marker: None,
                 config_home_env: None,
                 config_home_default: None,
