@@ -117,29 +117,41 @@ pub fn human_prompt_class(buf: &str, agent_bin: &str) -> Option<HumanPrompt> {
     ) {
         return None;
     }
-    let question = window
+    // EVERY question row is tried, top-down, and the first COMPLETE shape wins.
+    // A single-shot first match would blind the detector on its own evidence: a
+    // transcript row above the modal that merely ENDS in `?`, paired with the
+    // real hint row below it, encloses no selected option — and the live modal
+    // under it would read as nothing at all. One residual is named rather than
+    // fixed: when leaked scrollback inside the window carries its own question,
+    // that row can be the one REPORTED, while the latch and the keys stay the
+    // modal's.
+    window
         .iter()
-        .position(|row| row.trim_end().ends_with('?'))?;
-    let after = &window[question + 1..];
-    let keys = after
-        .iter()
-        .position(|row| HUMAN_PROMPT_KEYS.iter().any(|key| row.contains(key)))?;
-    // TWO option rows at least, and one of them SELECTED: a lone paragraph
-    // between a question and a hint is prose, not a choice.
-    let options = &after[..keys];
-    let selected = options
-        .iter()
-        .position(|row| row.trim_start().starts_with('>'))?;
-    if !options[selected + 1..]
-        .iter()
-        .any(|row| !row.trim().is_empty())
-    {
-        return None;
-    }
-    Some(HumanPrompt {
-        question: window[question].trim().to_owned(),
-        keys: after[keys].trim().to_owned(),
-    })
+        .enumerate()
+        .filter(|(_, row)| row.trim_end().ends_with('?'))
+        .find_map(|(question, _)| {
+            let after = &window[question + 1..];
+            let keys = after
+                .iter()
+                .position(|row| HUMAN_PROMPT_KEYS.iter().any(|key| row.contains(key)))?;
+            // TWO option rows at least, and one of them SELECTED: a lone
+            // paragraph between a question and a hint is prose, not a choice.
+            // The sibling may sit on EITHER side of the selected row — the
+            // selection travels with the human's arrow keys, and on the last
+            // option there is nothing below it to find.
+            let options = &after[..keys];
+            let selected = options
+                .iter()
+                .position(|row| row.trim_start().starts_with('>'))?;
+            let sibling = |rows: &[&str]| rows.iter().any(|row| !row.trim().is_empty());
+            if !sibling(&options[..selected]) && !sibling(&options[selected + 1..]) {
+                return None;
+            }
+            Some(HumanPrompt {
+                question: window[question].trim().to_owned(),
+                keys: after[keys].trim().to_owned(),
+            })
+        })
 }
 
 /// Which class of upstream trouble `buf` shows for `agent_bin`, if any — the
@@ -3014,6 +3026,52 @@ tail line
         assert_eq!(without("Do you trust the contents of this project?"), None);
         assert_eq!(without("  ↑/↓ Navigate · enter Confirm"), None);
         assert_eq!(without("> Yes, I trust this folder"), None, "none selected");
-        assert_eq!(without("  No, exit"), None, "one option is not a choice");
+        // The SELECTED row is the load-bearing discriminator; a sibling that is
+        // really prose still counts, which errs toward naming a seat rather
+        // than leaving a human waiting on one nobody mentions.
+        assert!(
+            without("  No, exit").is_some(),
+            "the description is a sibling"
+        );
+    }
+
+    /// The selection TRAVELS: a human pressing ↓ puts `>` on the last option,
+    /// where there is no row beneath it. Reading the sibling on one side only
+    /// would lose the modal exactly when someone is working through it.
+    #[test]
+    fn a_modal_whose_selection_sits_on_its_last_option_is_still_a_prompt() {
+        let moved: Vec<&str> = MODAL
+            .iter()
+            .map(|row| match *row {
+                "> Yes, I trust this folder" => "  Yes, I trust this folder",
+                "  No, exit" => "> No, exit",
+                other => other,
+            })
+            .collect();
+        let found = super::human_prompt_class(&buffer(&moved), "agy");
+        assert!(found.is_some(), "selection on the last option still counts");
+        assert_eq!(
+            found.map(|prompt| prompt.keys).unwrap_or_default(),
+            "↑/↓ Navigate · enter Confirm"
+        );
+    }
+
+    /// The PAIRING, over a window that carries its own `?` row above the modal.
+    /// A single-shot first match pairs that row with the real hint, finds no
+    /// selected option between them, and reports nothing — losing a live modal
+    /// because of text that merely sits above it.
+    #[test]
+    fn a_question_row_above_the_modal_does_not_hide_the_modal_below_it() {
+        // The leaked hint literal is what makes this bite: the chatter question
+        // pairs with IT, encloses no selected row, and a single-shot match
+        // stops there — with the real modal sitting right underneath.
+        let mut rows = vec![
+            "so I asked it, do you want me to continue?",
+            "it said to press ↑/↓ Navigate · enter Confirm at the modal",
+        ];
+        rows.extend_from_slice(MODAL);
+        let found = super::human_prompt_class(&buffer(&rows), "agy");
+        let found = found.expect("the modal below the chatter still classifies");
+        assert_eq!(found.keys, "↑/↓ Navigate · enter Confirm");
     }
 }

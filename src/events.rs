@@ -440,13 +440,20 @@ impl Event {
             // The watchdog's own retractions. The ACTION decides, never the
             // summary: a `dead-cleared` that quotes the dead alert it retracts
             // is still a retraction.
-            "alert-cleared" | "throttle-cleared" | "dead-cleared" => AlertMeaning::Cleared,
+            "alert-cleared" | "throttle-cleared" | "dead-cleared" | "human-prompt-cleared" => {
+                AlertMeaning::Cleared
+            }
             // A CARRIER, and the ACTION is the whole discrimination: an owner
             // plus an active contribution is wanted, `target` names the owner,
             // and `throttled` names the contribution outright.
             "throttled" => AlertMeaning::Raised(Reason::Throttled),
             // The vendor's usage limit, a rank-3 sibling of `blocked`.
             "limit" => AlertMeaning::Raised(Reason::Limit),
+            // A prompt only the human may answer reuses the EXISTING `Blocked`
+            // reason: the seven-reason contract is frozen, and a seat waiting
+            // on a modal IS blocked on a human. The event summary and the
+            // Notify line carry which seat and what to press.
+            "human-prompt" => AlertMeaning::Raised(Reason::Blocked),
             _ => AlertMeaning::Undefined,
         }
     }

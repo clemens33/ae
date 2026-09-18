@@ -73,6 +73,9 @@ pub struct Knobs {
     pub throttle_alert_cycles: u32,
     /// Consecutive undelivered nudges before attempts stop and one alert fires.
     pub undelivered_max: u32,
+    /// Consecutive cycles a human-only prompt must hold before it is NAMED.
+    /// Two: one cycle is a redraw, two is a seat that is actually stuck.
+    pub human_prompt_cycles: u32,
     /// The beat between the two captures a quiet baseline must match across.
     pub quiet_beat_ms: u64,
     /// How many re-captures the stabilizer may take before giving up.
@@ -96,6 +99,7 @@ impl Default for Knobs {
             max_nudges: 2,
             throttle_alert_cycles: 5,
             undelivered_max: 3,
+            human_prompt_cycles: 2,
             quiet_beat_ms: 1000,
             quiet_tries: 4,
             quiet_panes_per_cycle: 2,
@@ -132,6 +136,12 @@ pub struct PaneState {
     /// The usage-limit latch. Its ONE release is a cycle judged at all that
     /// no longer shows the phrase: it retracts the verdict, requests recovery.
     pub limit_latched: bool,
+    /// Consecutive cycles showing a human-only prompt. It lives HERE, in the
+    /// carry, so a dead seat's reset clears it for free and a restart begins
+    /// again — exactly like the two latches above it. There is NO separate
+    /// latch flag: the streak IS the latch, reaching the bound exactly once,
+    /// which is how `throttle_streak` already names a persistent throttle.
+    pub human_prompt_streak: u32,
     /// Consecutive nudges that did not land.
     pub undelivered_streak: u32,
     /// Consecutive cycles whose process snapshot was unusable.
@@ -165,6 +175,9 @@ pub struct Observation {
     /// absence of evidence: the usage-limit latch may not clear on it, exactly
     /// as the dead latch may not.
     pub capture_ok: bool,
+    /// [`crate::watchdog::human_prompt_class`]'s answer for THIS cycle's
+    /// capture: a prompt only the human may answer, and what to press.
+    pub human_prompt: Option<crate::watchdog::HumanPrompt>,
     /// The worst exact-match row from the last scheduled quota observation.
     pub throttle_quota: Option<String>,
     /// The RESOLVED quiet suppression: `Done` always, `WaitingUser`/`Blocked`
@@ -207,6 +220,9 @@ pub enum Verdict {
     Throttled,
     /// The vendor's own usage limit: waits on a reset or a re-login.
     Limit,
+    /// A prompt only the HUMAN may answer is on screen. ae never answers it;
+    /// naming it IS the whole feature.
+    HumanPrompt,
     /// The modeled harness is positively waiting at an empty input box.
     Idle,
     /// Silent past the window, with nothing recent anywhere.
@@ -232,6 +248,7 @@ impl Verdict {
             Self::Quiet(QuietKind::WaitingUser | QuietKind::Blocked)
             | Self::Throttled
             | Self::Limit
+            | Self::HumanPrompt
             | Self::Meta(SweepVerdict::MetaWedged) => Mark::NeedsYou,
             // A FRESH `waiting-agent` is quiet but no longer borrows Working's
             // mark: it draws the seventh glyph, statically — the ticker below
@@ -256,6 +273,7 @@ impl Verdict {
             Self::Quiet(QuietKind::Blocked) => "blocked",
             Self::Throttled => "throttled",
             Self::Limit => "limit",
+            Self::HumanPrompt => "prompt",
             Self::Idle => "idle",
             Self::Stale => "stale",
             Self::Active => "working",
@@ -1109,6 +1127,40 @@ fn book_throttle(
 
 /// The usage-limit branch: throttling's nudge suppression, plus ONE durable
 /// `limit` event per episode — the word `ae list` reads.
+/// Count a human-only prompt, and NAME it once it has held. `None` means the
+/// pane shows none this cycle and the branch does not apply.
+///
+/// The stability count is the whole false-positive bound: a menu a human is
+/// scrolling through redraws, and one cycle of it is not a seat that is stuck.
+/// The event and the Notify line name WHICH seat and WHAT to press, because a
+/// verdict nobody can act on is not news. ae NEVER sends the key.
+fn book_human_prompt(
+    prior: &PaneState,
+    next: &mut PaneState,
+    effects: &mut Vec<Effect>,
+    seen: &Observation,
+    knobs: &Knobs,
+) -> Option<Verdict> {
+    let prompt = seen.human_prompt.as_ref()?;
+    next.human_prompt_streak = prior.human_prompt_streak.saturating_add(1);
+    if next.human_prompt_streak < knobs.human_prompt_cycles {
+        return None;
+    }
+    // EXACTLY at the bound, so the episode is named once however long it
+    // lasts — `book_throttle`'s rule, and the reason no latch flag is needed.
+    if next.human_prompt_streak == knobs.human_prompt_cycles {
+        effects.push(Effect::Emit {
+            action: "human-prompt",
+            summary: format!("{} — press: {}", prompt.question, prompt.keys),
+        });
+        effects.push(Effect::Notify(format!(
+            "waiting for you: {} — press: {}",
+            prompt.question, prompt.keys
+        )));
+    }
+    Some(Verdict::HumanPrompt)
+}
+
 fn book_limit(next: &mut PaneState, effects: &mut Vec<Effect>, seen: &Observation) {
     if !next.limit_latched {
         next.limit_latched = true;
@@ -1234,6 +1286,7 @@ fn clear_death_latch(
         undelivered_streak: 0,
         throttle_streak: 0,
         limit_latched: false,
+        human_prompt_streak: 0,
         ..next.clone()
     })
 }
@@ -1351,6 +1404,20 @@ fn account_ordinary(
         effects.push(Effect::QuotaRefresh);
     }
 
+    // 5c. The human-prompt latch's ONE release, on 5b's rule: a cycle that
+    //     READ the pane and no longer shows the prompt. A FAILED capture is an
+    //     absence of evidence — clearing on it would flap the latch with
+    //     clear-and-relatch pairs while a live modal sits untouched.
+    if seen.capture_ok && seen.human_prompt.is_none() {
+        if prior.human_prompt_streak >= knobs.human_prompt_cycles {
+            effects.push(Effect::Emit {
+                action: "human-prompt-cleared",
+                summary: "the human-only prompt is gone from the pane".to_owned(),
+            });
+        }
+        next.human_prompt_streak = 0;
+    }
+
     // 6. A quiet declaration. A FRESH `waiting-agent` holds like the other
     // quiet states; past its ceiling it escalates (see the helper). While the
     // hold stands, the newest event this agent is the actor of IS its
@@ -1398,6 +1465,20 @@ fn account_ordinary(
             next,
             effects,
             verdict: Verdict::Throttled,
+            moved: false,
+        };
+    }
+
+    // 8.5. A prompt only the HUMAN may answer. It sits BELOW dead, the sweep,
+    //      a declaration and the two vendor verdicts — all of which are worse
+    //      news — and ABOVE the harness frames, because those are where `Stale`
+    //      is decided and a seat waiting on a modal is silent BY NATURE. If
+    //      stale won here the feature would never draw.
+    if let Some(prompt) = book_human_prompt(prior, &mut next, &mut effects, seen, knobs) {
+        return Accounting {
+            next,
+            effects,
+            verdict: prompt,
             moved: false,
         };
     }
@@ -4186,6 +4267,10 @@ impl Cycle<'_> {
                 is_dead: classify_dead(&pane.current_command, descendancy),
                 throttle,
                 capture_ok,
+                human_prompt: crate::watchdog::human_prompt_class(
+                    &capture,
+                    agent_bin.as_deref().unwrap_or_default(),
+                ),
                 throttle_quota,
                 quiet: self.resolve_quiet(
                     &quiet_query(&events, agent, &slot, hash, index, &pane.pane_id),
@@ -5315,6 +5400,168 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+    fn prompt() -> crate::watchdog::HumanPrompt {
+        crate::watchdog::HumanPrompt {
+            question: "Do you trust the contents of this project?".to_owned(),
+            keys: "↑/↓ Navigate · enter Confirm".to_owned(),
+        }
+    }
+
+    fn on_a_modal() -> Observation {
+        Observation {
+            human_prompt: Some(prompt()),
+            ..seen()
+        }
+    }
+
+    fn actions(effects: &[Effect]) -> Vec<&str> {
+        effects
+            .iter()
+            .filter_map(|effect| match effect {
+                Effect::Emit { action, .. } => Some(*action),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// EXACTLY two cycles, and the episode is named EXACTLY once. One cycle is
+    /// a redraw; naming every cycle would page the human on a loop.
+    #[test]
+    fn a_human_only_prompt_is_named_on_its_second_cycle_and_only_once() {
+        let knobs = Knobs::default();
+        let first = account(&PaneState::default(), &on_a_modal(), &knobs);
+        assert_ne!(first.verdict, Verdict::HumanPrompt, "one cycle is a redraw");
+        assert!(actions(&first.effects).is_empty(), "nothing said yet");
+
+        let second = account(&first.next, &on_a_modal(), &knobs);
+        assert_eq!(second.verdict, Verdict::HumanPrompt);
+        assert_eq!(actions(&second.effects), ["human-prompt"], "named once");
+
+        let third = account(&second.next, &on_a_modal(), &knobs);
+        assert_eq!(third.verdict, Verdict::HumanPrompt, "still waiting");
+        assert!(actions(&third.effects).is_empty(), "not named again");
+    }
+
+    /// The Notify line and the event both say WHICH question and WHAT to press.
+    /// A verdict the human cannot act on is not news.
+    #[test]
+    fn naming_a_human_only_prompt_says_the_question_and_the_keys() {
+        let knobs = Knobs::default();
+        let first = account(&PaneState::default(), &on_a_modal(), &knobs);
+        let named = account(&first.next, &on_a_modal(), &knobs);
+        let said = format!("{:?}", named.effects);
+        assert!(
+            said.contains("Do you trust the contents of this project?"),
+            "{said}"
+        );
+        assert!(said.contains("↑/↓ Navigate · enter Confirm"), "{said}");
+        assert!(
+            named
+                .effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::Notify(_))),
+            "the human is told: {said}"
+        );
+    }
+
+    /// The mark is SET while it waits and UNSET when it goes, and the clear is
+    /// emitted exactly once — not on every quiet cycle afterwards.
+    #[test]
+    fn a_cleared_human_prompt_retracts_the_mark_once() {
+        let knobs = Knobs::default();
+        let first = account(&PaneState::default(), &on_a_modal(), &knobs);
+        let named = account(&first.next, &on_a_modal(), &knobs);
+        assert_eq!(named.verdict.mark(), crate::theme::Mark::NeedsYou);
+
+        let gone = account(&named.next, &seen(), &knobs);
+        assert_eq!(actions(&gone.effects), ["human-prompt-cleared"]);
+        assert_ne!(gone.verdict, Verdict::HumanPrompt);
+        assert_ne!(gone.verdict.mark(), crate::theme::Mark::NeedsYou);
+
+        let still_gone = account(&gone.next, &seen(), &knobs);
+        assert!(actions(&still_gone.effects).is_empty(), "retracted once");
+    }
+
+    /// A FAILED capture is an absence of evidence, not evidence of absence —
+    /// branch 5b's rule. Clearing on it would flap the latch against a live
+    /// modal nobody has touched.
+    #[test]
+    fn a_failed_capture_neither_clears_nor_relatches_a_human_prompt() {
+        let knobs = Knobs::default();
+        let first = account(&PaneState::default(), &on_a_modal(), &knobs);
+        let named = account(&first.next, &on_a_modal(), &knobs);
+
+        let blind = account(
+            &named.next,
+            &Observation {
+                capture_ok: false,
+                ..seen()
+            },
+            &knobs,
+        );
+        assert!(actions(&blind.effects).is_empty(), "it says nothing");
+        assert_eq!(
+            blind.next.human_prompt_streak, named.next.human_prompt_streak,
+            "the streak is untouched, so the next real read decides"
+        );
+    }
+
+    /// The seat is SILENT by nature — that is what a modal does — so `Stale`
+    /// must not win. The branch sits ABOVE where stale is decided; if it ever
+    /// moves below, this seat goes quiet on the bar and the feature is dead.
+    #[test]
+    fn a_silent_seat_on_a_modal_is_named_rather_than_called_stale() {
+        let knobs = Knobs::default();
+        let silent = Observation {
+            last_actor_event_age_secs: knobs.stale_secs * 4,
+            ..on_a_modal()
+        };
+        let first = account(&PaneState::default(), &silent, &knobs);
+        let second = account(&first.next, &silent, &knobs);
+        assert_eq!(second.verdict, Verdict::HumanPrompt);
+        assert_ne!(second.verdict, Verdict::Stale);
+    }
+
+    /// A DECLARED quiet state outranks the modal: branch 6 returns above 8.5.
+    /// An agent that said `done` is not news because its pane draws a menu.
+    #[test]
+    fn a_declared_quiet_seat_on_a_modal_stays_quiet_and_is_never_named() {
+        let knobs = Knobs::default();
+        let quiet = Observation {
+            quiet: Some(crate::watchdog::QuietKind::Done),
+            ..on_a_modal()
+        };
+        let first = account(&PaneState::default(), &quiet, &knobs);
+        let second = account(&first.next, &quiet, &knobs);
+        assert_eq!(
+            second.verdict,
+            Verdict::Quiet(crate::watchdog::QuietKind::Done)
+        );
+        assert!(
+            !actions(&second.effects).contains(&"human-prompt"),
+            "a declared-quiet seat is not paged: {:?}",
+            second.effects
+        );
+    }
+
+    /// The two vendor verdicts are WORSE news and keep their rank above it.
+    #[test]
+    fn a_throttled_or_limited_seat_on_a_modal_keeps_the_vendor_verdict() {
+        let knobs = Knobs::default();
+        for (throttle, expected) in [
+            (crate::watchdog::Throttle::Throttled, Verdict::Throttled),
+            (crate::watchdog::Throttle::LimitReached, Verdict::Limit),
+        ] {
+            let both = Observation {
+                throttle: Some(throttle),
+                ..on_a_modal()
+            };
+            let first = account(&PaneState::default(), &both, &knobs);
+            let second = account(&first.next, &both, &knobs);
+            assert_eq!(second.verdict, expected, "{throttle:?} outranks the modal");
+        }
+    }
+
     /// A pane nobody has seen before, with nothing wrong.
     fn seen() -> Observation {
         Observation {
@@ -5329,6 +5576,7 @@ mod tests {
             identity: 1,
             is_dead: false,
             throttle: None,
+            human_prompt: None,
             capture_ok: true,
             throttle_quota: None,
             quiet: None,
