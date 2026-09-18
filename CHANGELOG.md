@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.131] - 2026-09-18
+- Draw each seat's client and model in the picker agent row
+- Prove a v2 roster draws its models in a real tmux menu
+- Pin the plainer rung's text, the row overhead and the column caps
+
 ## [v2026.9.130] - 2026-09-18
 - Gate a shown harness identity on the tool's own live composer
 - Accept a v2 agent roster fact carrying observed cells
