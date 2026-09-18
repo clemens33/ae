@@ -1247,6 +1247,14 @@ impl OptionWrite {
             value: value.to_owned(),
         }
     }
+
+    /// Which option this write sets — the fact a caller writing into ANOTHER
+    /// session's table has to be held to, read directly rather than recovered
+    /// from its argv. Only the pins on that boundary ask.
+    #[cfg(test)]
+    pub(crate) fn option_name(&self) -> &str {
+        &self.name
+    }
 }
 
 /// Batch several option writes into one tmux invocation. `;` is the argv form
@@ -2257,6 +2265,115 @@ pub fn interpret_fleet_sessions(succeeded: bool, stdout: &str) -> Option<Vec<Fle
             })
             .collect(),
     )
+}
+
+// ---------------------------------------------------------------------------
+// The watchdog's own fleet listing: the strip's rows AND each session's look.
+// ---------------------------------------------------------------------------
+
+/// The listing the WATCHDOG asks `list-sessions` for: [`FLEET_SESSION_FORMAT`]'s
+/// three fields, then the four [`LOOK_FORMAT`] carries.
+///
+/// ONE read, because a daemon that fills a watchdog-less peer's fleet strip must
+/// draw it in THAT session's colours, and a second query per peer per tick is a
+/// tmux process per peer per tick. The tail is `LOOK_FORMAT` VERBATIM, so the
+/// look is parsed by the one look parser rather than by a second spelling of the
+/// same four fields; `the_listing_format_ends_in_the_one_look_format` pins the
+/// equality, and the literal is still written out because a format assembled by
+/// `concat!` cannot be read at its use site.
+pub const FLEET_LISTING_FORMAT: &str = "#{session_name} | #{session_id} | #{@ae_attn_rank} | #{@ae_icons} | #{@ae_palette} | #{@ae_look} | #{@ae_motion}";
+
+/// How many fields [`FLEET_LISTING_FORMAT`] yields: three, then the look's four.
+const FLEET_LISTING_FIELDS: usize = FLEET_SESSION_FIELDS + 4;
+
+/// One ae session as the watchdog's fleet listing reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FleetListingRow {
+    /// The session name.
+    pub name: String,
+    /// Its `$<n>` id.
+    pub id: String,
+    /// The published attention rank, proven to be one — or `None` when the
+    /// session published NO rank, which is a different fact from a bad one.
+    /// Unlike [`interpret_fleet_sessions`], a rankless row survives the read:
+    /// whether it is an ae session nobody is measuring or a stranger is settled
+    /// by ae's own records, not by a tmux option a stranger could also set.
+    pub rank: Option<String>,
+    /// The look this session is drawn in, as its own options declare it.
+    pub look: LookOptions,
+}
+
+/// The arguments listing every session on `server` with its attention AND its
+/// look.
+#[must_use]
+pub fn fleet_listing_args(server: &ServerId) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(["list-sessions", "-F", FLEET_LISTING_FORMAT].map(ToOwned::to_owned));
+    args
+}
+
+/// What a completed [`fleet_listing_args`] run means.
+#[must_use]
+pub fn interpret_fleet_listing(succeeded: bool, stdout: &str) -> Option<Vec<FleetListingRow>> {
+    if !succeeded {
+        return None;
+    }
+    Some(
+        stdout
+            .lines()
+            .map(|line| line.trim_end_matches(['\r', '\n']))
+            .filter(|line| !line.is_empty())
+            .filter_map(fleet_listing_row)
+            .collect(),
+    )
+}
+
+/// One listing line, or `None` for a line ae will not read.
+///
+/// EXACT field count, never `splitn`: `@ae_palette` and the other look options
+/// are human-settable and a session ae did not create may hold a
+/// [`FIELD_SEPARATOR`] in its NAME, so a row carrying the separator inside a
+/// value is DROPPED rather than read with every field behind it shifted one
+/// place into its neighbour. Every field is then proven the same way the
+/// three-field reader proves its own, because both are rendered into an option
+/// value the drawer reads `#[…]` out of.
+fn fleet_listing_row(line: &str) -> Option<FleetListingRow> {
+    let fields: Vec<&str> = line.split(FIELD_SEPARATOR).collect();
+    if fields.len() != FLEET_LISTING_FIELDS {
+        return None;
+    }
+    let (name, id, rank) = (fields[0].trim(), fields[1].trim(), fields[2].trim());
+    if !crate::session_launch::name::is_session_name(name) || !is_session_id(id) {
+        return None;
+    }
+    // THREE outcomes, not two: no rank is a session that published none, a
+    // rank ae recognises is a verdict, and anything else is a row ae will not
+    // read at all — the same refusal the three-field reader makes by dropping
+    // it, so neither reader can be talked into drawing a value it cannot name.
+    let rank = match rank {
+        "" => None,
+        value if is_attention_rank(value) => Some(value.to_owned()),
+        _ => return None,
+    };
+    // The ONE look parser, over the tail rejoined exactly as tmux wrote it.
+    let look = interpret_look(true, &fields[FLEET_SESSION_FIELDS..].join(FIELD_SEPARATOR))?;
+    Some(FleetListingRow {
+        name: name.to_owned(),
+        id: id.to_owned(),
+        rank,
+        look,
+    })
+}
+
+/// Whether `id` is a tmux `$<n>` session id.
+fn is_session_id(id: &str) -> bool {
+    id.strip_prefix('$')
+        .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// Whether `rank` is one of the ranks [`crate::theme::Mark`] publishes.
+fn is_attention_rank(rank: &str) -> bool {
+    rank.parse::<u8>().is_ok_and(|rank| rank <= HIGHEST_RANK)
 }
 
 // ---------------------------------------------------------------------------
@@ -4244,6 +4361,7 @@ mod tests {
             super::PICKER_PANE_FORMAT,
             super::PICKER_SESSION_FORMAT,
             super::LOOK_FORMAT,
+            super::FLEET_LISTING_FORMAT,
         ] {
             assert!(
                 !format.chars().any(char::is_control),
@@ -4300,6 +4418,129 @@ mod tests {
             "only rows whose name, id and rank all check out"
         );
         assert!(interpret_fleet_sessions(false, listing).is_none());
+    }
+
+    /// PIN (lead condition C2): the listing's tail IS the look format.
+    ///
+    /// The whole reason one `list-sessions` can answer "who is here" and "what
+    /// is each of them drawn in" at once. Written out at both sites because a
+    /// format ae cannot read at its use site is a format nobody checks — so the
+    /// equality is pinned instead of assembled, and a hand edit to either
+    /// literal reds here rather than silently feeding four fields in the wrong
+    /// order to the one look parser.
+    #[test]
+    fn the_listing_format_ends_in_the_one_look_format() {
+        assert!(
+            super::FLEET_LISTING_FORMAT.ends_with(super::LOOK_FORMAT),
+            "the look tail must be LOOK_FORMAT verbatim: {}",
+            super::FLEET_LISTING_FORMAT
+        );
+        assert!(
+            super::FLEET_LISTING_FORMAT.starts_with(super::FLEET_SESSION_FORMAT),
+            "and the head must be the strip's own three fields: {}",
+            super::FLEET_LISTING_FORMAT
+        );
+        assert_eq!(
+            super::FLEET_LISTING_FORMAT
+                .matches(super::FIELD_SEPARATOR)
+                .count()
+                + 1,
+            super::FLEET_LISTING_FIELDS,
+            "the field count the parser demands is the one the format yields"
+        );
+    }
+
+    /// PIN (lead condition C4 + navigator I5): a row that does not parse
+    /// EXACTLY is skipped, never shifted into its neighbour.
+    ///
+    /// Every field here is attacker-reachable: the look options are settable by
+    /// hand on any session, and a session ae did not create may hold the
+    /// separator in its NAME. Reading such a row positionally would put a
+    /// session name in the rank column and a palette in the look column.
+    #[test]
+    fn a_listing_row_is_dropped_whole_rather_than_read_misaligned() {
+        use super::{FleetListingRow, LookOptions, interpret_fleet_listing};
+
+        let listing = "\
+            good | $1 | 4 | off | b | on | off\n\
+            unwatched | $2 |  | on | a | on | on\n\
+            piped-palette | $3 | 4 | on | a | b | on | on\n\
+            pipe | name | $4 | 4 | on | a | on | on\n\
+            short | $5 | 4 | on\n\
+            overranked | $6 | 99 | on | a | on | on\n\
+            wordrank | $7 | four | on | a | on | on\n\
+            evil#[bg=red] | $8 | 4 | on | a | on | on\n\
+            badid | @9 | 4 | on | a | on | on\n";
+        let read = interpret_fleet_listing(true, listing).unwrap_or_default();
+        assert_eq!(
+            read,
+            vec![
+                FleetListingRow {
+                    name: "good".to_owned(),
+                    id: "$1".to_owned(),
+                    rank: Some("4".to_owned()),
+                    look: LookOptions {
+                        icons: "off".to_owned(),
+                        palette: "b".to_owned(),
+                        drawn: "on".to_owned(),
+                        motion: "off".to_owned(),
+                    },
+                },
+                FleetListingRow {
+                    name: "unwatched".to_owned(),
+                    id: "$2".to_owned(),
+                    // The POINT of this reader: no rank is not a bad rank.
+                    rank: None,
+                    look: LookOptions {
+                        icons: "on".to_owned(),
+                        palette: "a".to_owned(),
+                        drawn: "on".to_owned(),
+                        motion: "on".to_owned(),
+                    },
+                },
+            ],
+            "a separator inside a value, a short row, an unreadable rank, a \
+             styled name and a bad id each drop their whole row"
+        );
+        assert!(interpret_fleet_listing(false, listing).is_none());
+        assert_eq!(interpret_fleet_listing(true, ""), Some(Vec::new()));
+    }
+
+    /// PIN: the two fleet readers differ in EXACTLY one way.
+    ///
+    /// A rank the three-field reader will not read is a row neither reader
+    /// admits; a row with NO rank is the one the listing keeps and the strip's
+    /// own reader drops. Anything else diverging means one of them could draw a
+    /// session the other proved it should not.
+    #[test]
+    fn the_two_fleet_readers_disagree_only_about_a_missing_rank() {
+        use super::{interpret_fleet_listing, interpret_fleet_sessions};
+
+        for rank in ["99", "four", "-1", "6"] {
+            let three = format!("peer | $1 | {rank}\n");
+            let seven = format!("peer | $1 | {rank} | on | a | on | on\n");
+            assert_eq!(
+                interpret_fleet_sessions(true, &three),
+                Some(Vec::new()),
+                "the strip reader drops rank {rank:?}"
+            );
+            assert_eq!(
+                interpret_fleet_listing(true, &seven).map(|rows| rows.len()),
+                Some(0),
+                "and so does the listing reader"
+            );
+        }
+        assert_eq!(
+            interpret_fleet_sessions(true, "peer | $1 | \n"),
+            Some(Vec::new()),
+            "an unranked row is not a row the strip reader can draw"
+        );
+        assert_eq!(
+            interpret_fleet_listing(true, "peer | $1 |  | on | a | on | on\n")
+                .map(|rows| rows.len()),
+            Some(1),
+            "but the listing keeps it, for ae's own records to judge"
+        );
     }
 
     #[test]

@@ -954,6 +954,21 @@ pub fn observe_fleet_sessions(server: &ServerId) -> Option<Vec<tmux::FleetSessio
     tmux::interpret_fleet_sessions(succeeded, &stdout)
 }
 
+/// Every session on `server` with its attention AND the look it is drawn in, or
+/// `None` when the server did not answer.
+///
+/// The watchdog's read: the same one process answers who is on the server and
+/// what each of them is drawn in, so a daemon filling a watchdog-less peer's
+/// fleet strip draws it in THAT session's colours without a query per peer.
+#[must_use]
+pub fn observe_fleet_listing(server: &ServerId) -> Option<Vec<tmux::FleetListingRow>> {
+    if !addressable(server) {
+        return None;
+    }
+    let (succeeded, stdout) = run(PROGRAM, &tmux::fleet_listing_args(server));
+    tmux::interpret_fleet_listing(succeeded, &stdout)
+}
+
 /// The `(icons, palette)` pair `session` is drawn with, each empty when unset.
 #[must_use]
 pub fn observe_look(server: &ServerId, session: &str) -> Option<tmux::LookOptions> {

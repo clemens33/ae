@@ -2,7 +2,7 @@
 //! asks [`crate::watchdog`] what it is looking at, and applies the answers.
 
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::digest::Status;
@@ -1761,11 +1761,12 @@ impl MotionState {
     fn replace_observation(
         &mut self,
         panes: Vec<tmux::MotionPane>,
-        sessions: &[tmux::FleetSession],
+        sessions: &[tmux::FleetListingRow],
+        known: &[String],
         session: &str,
     ) {
         self.panes = panes;
-        self.replace_fleet(sessions, session);
+        self.replace_fleet(sessions, known, session);
     }
 
     /// Take this cycle's fleet order. Called from the VERDICT path only: the
@@ -1778,20 +1779,21 @@ impl MotionState {
     /// Replace the fleet half of an observation and remember which exact
     /// session table owns the strip. The stored order is deliberately untouched
     /// — an observation says who is on the server, never how to arrange them.
-    fn replace_fleet(&mut self, sessions: &[tmux::FleetSession], session: &str) {
+    ///
+    /// `known` is the adoption scan's answer to "which of these does ae's own
+    /// record vouch for", which is what lets a RANKLESS running session be
+    /// drawn Stale here instead of vanishing from this session's own strip.
+    fn replace_fleet(
+        &mut self,
+        sessions: &[tmux::FleetListingRow],
+        known: &[String],
+        session: &str,
+    ) {
         self.fleet_target = sessions
             .iter()
             .find(|entry| entry.name == session)
             .map(|entry| entry.id.clone());
-        self.fleet = sessions
-            .iter()
-            .map(|entry| theme::FleetRow {
-                name: entry.name.clone(),
-                id: entry.id.clone(),
-                mark: Mark::from_rank(&entry.rank),
-                current: entry.name == session,
-            })
-            .collect();
+        self.fleet = fleet_rows(sessions, known, session);
     }
 
     /// Add the fleet strip when its text has changed. A working frame makes
@@ -1984,10 +1986,361 @@ impl MotionState {
     }
 }
 
+// ---------------------------------------------------------------------------
+// ADOPTION: the fleet strip of a session whose own watchdog is not running.
+// ---------------------------------------------------------------------------
+
+/// How often a daemon redraws the strips it has adopted.
+///
+/// Adoption's OWN cadence, deliberately not the ticker's: [`MotionState::step`]
+/// draws nothing while no client is attached, and the peer being filled is
+/// exactly the session somebody IS looking at. A detached adopter must keep
+/// drawing, so this runs attached or not, in every [`TickerMode`].
+const ADOPTION_TICK: Duration = DETACHED_MOTION_TICK;
+
+/// One session this daemon fills the fleet strip for, because nothing else is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Adopted {
+    /// The session name, as ae's own records and the server agreed on it.
+    name: String,
+    /// The `$<n>` the enumeration proved, and the ONLY target ever written to.
+    /// An id, never a name: tmux never reuses one while the server runs, so a
+    /// write cannot land on a session that took the name over since.
+    id: String,
+    /// Its state directory — read for the pidfile, never written.
+    meta_dir: PathBuf,
+    /// The watchdog pid this session's pidfile named at enumeration, `None`
+    /// when it had none. The pause test compares against THIS rather than
+    /// against presence: a dead daemon leaves its pidfile behind, and a target
+    /// that paused on a stale file would never be filled at all.
+    enum_pid: Option<u32>,
+    /// The strip text last published here — the write-on-change memory, one
+    /// per target.
+    published: Option<String>,
+}
+
+/// Who this daemon is drawing the fleet strip for besides itself.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct Adoption {
+    /// The adopted sessions, refreshed once per verdict cycle.
+    targets: Vec<Adopted>,
+    /// Every session ae's OWN records prove is a running ae session of this
+    /// state root — adopted or not.
+    ///
+    /// The strip's rank rule cannot answer this: a session nobody measures
+    /// publishes no rank, and a rank is a tmux option a stranger could set too.
+    /// So the rows a rankless session is drawn in are admitted on ae's records
+    /// and the ownership proof, never on the option.
+    known: Vec<String>,
+}
+
+/// Whether a session's own watchdog is running, from its pidfile and ONE
+/// process table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WatchdogPresence {
+    /// A pidfile naming a process the table lists.
+    Live,
+    /// No pidfile, or one naming a process the table does not list — with the
+    /// pid it named, so a later tick can tell a lingering file from a new one.
+    Absent(Option<u32>),
+    /// There was no table to ask. Never adopted: the peer's own daemon may be
+    /// right there.
+    Unknown,
+}
+
+/// Read `meta_dir`'s pidfile and judge it against `table`.
+///
+/// READ-ONLY, deliberately not [`crate::watchdog_lifecycle::presence`]: that one
+/// deletes a stale pidfile, and this is another session's state directory. The
+/// pane proof that `presence` also makes is a tmux process per peer, which is
+/// what this whole path exists to avoid; a pidfile plus the cycle's own table
+/// is the same two facts minus the third.
+fn watchdog_presence(meta_dir: &Path, table: Option<&[procs::Proc]>) -> WatchdogPresence {
+    let Some(pid) = crate::watchdog_glue::read_pid(meta_dir) else {
+        return WatchdogPresence::Absent(None);
+    };
+    match table {
+        None => WatchdogPresence::Unknown,
+        // ACCEPTED: a recycled pid makes a dead watchdog read as live, which
+        // costs the peer its adopted strip until something reuses the pid no
+        // longer. `watchdog stop`'s own stale-pidfile cleanup narrows it.
+        Some(table) if table.iter().any(|proc| proc.pid == pid) => WatchdogPresence::Live,
+        Some(_) => WatchdogPresence::Absent(Some(pid)),
+    }
+}
+
+/// The liveness backend for the adoption scan: it answers only THIS server, and
+/// only from the ownership proof already read for each name.
+///
+/// The picker's stopped rows are enumerated the same way and admit a live name
+/// on ae's rank row; this one cannot, because the sessions it is looking for are
+/// exactly the ones that publish no rank. So the marker IS
+/// `seed_unwatched`'s proof — an `AE_SESSION` marker plus an `AE_HOME` naming
+/// this state root — which is also what decides whether a peer may be written
+/// to at all. One read, one rule, both questions.
+struct AdoptionBackend<'a> {
+    server: &'a crate::inventory::ServerId,
+    sockets: &'a crate::SocketPaths,
+    proven: &'a [crate::inventory::DiscoveredSession],
+}
+
+impl crate::inventory::Discovery for AdoptionBackend<'_> {
+    fn enumerate(
+        &self,
+        server: &crate::inventory::ServerId,
+    ) -> std::result::Result<Vec<crate::inventory::DiscoveredSession>, crate::inventory::QueryFailed>
+    {
+        if !self.sockets.equivalent(server, self.server) {
+            return Err(crate::inventory::QueryFailed);
+        }
+        Ok(self.proven.to_vec())
+    }
+}
+
+/// The ownership a peer must prove before this daemon writes a display fact
+/// into it — `seed_unwatched`'s proof, and for the same reason.
+///
+/// A NAME is not an identity. The marker says a session is ae's; the home says
+/// WHICH ae state root launched it. Without both, a stranger who took the name
+/// over on a shared server would be handed this fleet's strip, and a session
+/// belonging to another `AE_HOME` would be drawn into a fleet it is not part of.
+fn proven_ownership(owned: Option<&transport::SessionOwnership>, root: &Path) -> Option<String> {
+    owned
+        .filter(|owned| !owned.marker.is_empty() && Path::new(&owned.home) == root)
+        .map(|owned| owned.marker.clone())
+}
+
+/// Who this daemon owes a fleet strip, once per verdict cycle.
+///
+/// `None` when there is no state root to scan, which is not evidence that
+/// anything changed: the caller keeps the adoption it already had.
+///
+/// `table` is the cycle's OWN process snapshot, passed in rather than taken:
+/// one `ps` per cycle regardless of how many peers there are, and none at all
+/// on the 2 s tick.
+fn enumerate_adoption(
+    server: &crate::inventory::ServerId,
+    session: &str,
+    listing: &[tmux::FleetListingRow],
+    table: Option<&[procs::Proc]>,
+    prior: &Adoption,
+) -> Option<Adoption> {
+    let root = crate::state_root()?;
+    // META ONLY: the picker's read. Identities and the `placed` rule, never a
+    // session's journal — nothing here is derived from events.
+    let scan = crate::inventory::durable_meta_records(&crate::inventory::Roots::under(&root));
+    let mut sockets = crate::SocketPaths::asking(transport::observe_socket_path);
+    // Warm the cache ONLY for a spelling that is not already ours: two records
+    // naming the same server the same way need no tmux probe to be equivalent.
+    for candidate in &scan.records {
+        if let Some(selector) = candidate.server.entitles() {
+            let recorded = crate::inventory::ServerId::Selected(selector.clone());
+            if &recorded != server {
+                let _ = sockets.proven_same(server, &recorded);
+            }
+        }
+    }
+    // The OWNERSHIP proof, made once per name this server is actually showing.
+    // A record whose session is not on this server costs nothing.
+    let proven: Vec<crate::inventory::DiscoveredSession> = scan
+        .records
+        .iter()
+        .map(|record| record.name.clone())
+        .filter(|name| listing.iter().any(|row| &row.name == name))
+        .map(|name| crate::inventory::DiscoveredSession {
+            marker: proven_ownership(
+                transport::observe_session_ownership(server, &name).as_ref(),
+                &root,
+            ),
+            name,
+        })
+        .collect();
+    let backend = AdoptionBackend {
+        server,
+        sockets: &sockets,
+        proven: &proven,
+    };
+    let inventory = crate::inventory::Inventory {
+        candidates: scan
+            .records
+            .into_iter()
+            .map(crate::inventory::Candidate::durable)
+            .collect(),
+        // Carried, never recomputed: an incomplete scan is a REPORT, not a
+        // refusal. The sessions ae could enumerate are adopted; the ones it
+        // could not are simply not targets this cycle.
+        incomplete: scan.incomplete,
+    };
+    Some(adoption_from(
+        crate::liveness::classify(inventory, &backend).sessions,
+        session,
+        listing,
+        prior,
+        |meta_dir| watchdog_presence(meta_dir, table),
+    ))
+}
+
+/// The adoption a classified scan decides — the whole rule, with no world in it.
+///
+/// RUNNING only, never this session itself, never a candidate the server is not
+/// currently showing, and never one whose own watchdog is live or unproven. An
+/// `unknown` candidate is simply not a target: the classifier says `unknown`
+/// exactly when it could not prove the session, and an incomplete scan is
+/// therefore adopt-the-known, skip-the-unknown rather than a refusal.
+fn adoption_from(
+    classified: Vec<crate::liveness::Classified>,
+    session: &str,
+    listing: &[tmux::FleetListingRow],
+    prior: &Adoption,
+    presence: impl Fn(&Path) -> WatchdogPresence,
+) -> Adoption {
+    let mut next = Adoption::default();
+    for classified in classified {
+        if classified.status != Status::Running {
+            continue;
+        }
+        let Some(record) = classified.candidate.durable else {
+            continue;
+        };
+        // This daemon's own session is never a target: it publishes its own
+        // strip, and a second writer would fight it every tick.
+        if record.name == session {
+            continue;
+        }
+        next.known.push(record.name.clone());
+        let Some(row) = listing.iter().find(|row| row.name == record.name) else {
+            continue;
+        };
+        let WatchdogPresence::Absent(enum_pid) = presence(&record.path) else {
+            continue;
+        };
+        next.targets.push(Adopted {
+            name: record.name.clone(),
+            id: row.id.clone(),
+            meta_dir: record.path,
+            enum_pid,
+            // Carried across the re-enumeration so a target that has not
+            // changed is not rewritten once a minute for nothing.
+            published: prior
+                .targets
+                .iter()
+                .find(|held| held.id == row.id && held.name == record.name)
+                .and_then(|held| held.published.clone()),
+        });
+    }
+    next
+}
+
+/// The rows one strip draws, from ONE listing.
+///
+/// A ranked row draws its rank. A rankless row draws [`Mark::Stale`] when ae's
+/// own records vouch for it — that is the rule "a session that RUNS is always a
+/// row, and a row nobody is measuring says so", and it holds on every strip this
+/// daemon writes, its own included. A rankless row nothing vouches for is
+/// DROPPED: it is a session ae did not create, and the strip draws no strangers.
+fn fleet_rows(
+    listing: &[tmux::FleetListingRow],
+    known: &[String],
+    current: &str,
+) -> Vec<theme::FleetRow> {
+    listing
+        .iter()
+        .filter_map(|row| {
+            let mark = match row.rank.as_deref() {
+                Some(rank) => Mark::from_rank(rank),
+                None if known.iter().any(|name| name == &row.name) => Mark::Stale,
+                None => return None,
+            };
+            Some(theme::FleetRow {
+                name: row.name.clone(),
+                id: row.id.clone(),
+                mark,
+                current: row.name == current,
+            })
+        })
+        .collect()
+}
+
+/// The strips this daemon owes its adopted peers — and NOTHING else.
+///
+/// Every write this returns sets [`theme::FLEET_STRIP_OPTION`] on a peer, and
+/// the pin beside it turns red if a second option ever joins them. That is the
+/// whole of the fourth writer's licence: a rank, a glyph, a health segment or a
+/// roster written here would be this daemon vouching for a session it is not
+/// measuring.
+///
+/// Each strip is drawn STATIC, in the TARGET's look, with the TARGET as the
+/// current row — a strip that cannot show you where you are is not a map — and
+/// in the fleet order every writer shares.
+fn adoption_writes(
+    adoption: &mut Adoption,
+    listing: &[tmux::FleetListingRow],
+    order: &theme::FleetOrder,
+) -> Vec<tmux::OptionWrite> {
+    let Adoption { targets, known } = adoption;
+    let mut writes = Vec::new();
+    for target in targets.iter_mut() {
+        // The OWNER is back. Stop writing and let it publish over this; a
+        // pidfile naming the SAME pid as at enumeration is the dead daemon's
+        // leftover, not a live one, and must not pause the adoption.
+        let pid = crate::watchdog_glue::read_pid(&target.meta_dir);
+        if pid.is_some() && pid != target.enum_pid {
+            continue;
+        }
+        // Proven again from THIS listing, by id and name together: a target
+        // that has gone is skipped rather than written to, and a look ae could
+        // not read is a target ae leaves alone this tick.
+        let Some(row) = listing
+            .iter()
+            .find(|row| row.id == target.id && row.name == target.name)
+        else {
+            continue;
+        };
+        let look = Look::read(
+            &row.look.icons,
+            &row.look.palette,
+            &row.look.drawn,
+            &row.look.motion,
+        );
+        // `theme = off` on the TARGET does not stop this: ae fills `@ae_*` on
+        // an undrawn session too, so a hand-written `status-right` still has
+        // the strip to put in it.
+        let strip = theme::fleet_strip(
+            &look,
+            &fleet_rows(listing, known, &target.name),
+            None,
+            order,
+        );
+        if target.published.as_deref() == Some(&strip) {
+            continue;
+        }
+        writes.push(tmux::OptionWrite::new(
+            OptionScope::Session,
+            &target.id,
+            theme::FLEET_STRIP_OPTION,
+            &strip,
+        ));
+        target.published = Some(strip);
+    }
+    writes
+}
+
+/// Whether the adoption cadence is due now, stamping it when it is.
+fn adoption_due(last: &mut Option<Instant>, now: Instant) -> bool {
+    if last.is_some_and(|stamp| now.duration_since(stamp) < ADOPTION_TICK) {
+        return false;
+    }
+    *last = Some(now);
+    true
+}
+
 /// The fleet target the orchestrator segment may jump to: absent for this session
 /// when it is itself the orchestrator, or when the fleet has none. The exact
 /// canonical seat name is intentional: a renamed seat loses the click target.
-fn orchestrator_id_for<'a>(sessions: &'a [tmux::FleetSession], session: &str) -> Option<&'a str> {
+fn orchestrator_id_for<'a>(
+    sessions: &'a [tmux::FleetListingRow],
+    session: &str,
+) -> Option<&'a str> {
     if session == crate::orchestrator::ORCHESTRATOR_SESSION {
         return None;
     }
@@ -2412,12 +2765,14 @@ fn wait_between_cycles(
 ) {
     let interval = Duration::from_secs(interval_secs);
     let Some(look) = carry.look else {
-        std::thread::sleep(interval);
+        // No look has EVER answered, so this session draws nothing of its own —
+        // but a peer it is filling still has a line to keep.
+        wait_idle_between_cycles(server, carry, interval);
         return;
     };
     match ticker_mode(carry.look.as_ref()) {
         TickerMode::Idle => {
-            std::thread::sleep(interval);
+            wait_idle_between_cycles(server, carry, interval);
             return;
         }
         TickerMode::Static => {
@@ -2430,16 +2785,21 @@ fn wait_between_cycles(
     let mut cadence = ATTACHED_MOTION_TICK;
     let mut ticks_since_observation = MOTION_OBSERVATION_TICKS;
     let mut failures = 0_u8;
+    let mut adopted_at: Option<Instant> = None;
     loop {
         let remaining = interval.saturating_sub(started.elapsed());
         if remaining.is_zero() {
             break;
         }
         let mut next = carry.motion.clone();
+        // STAGED like the motion carry beside it: a batch tmux refused must
+        // leave both write-on-change memories where they were.
+        let mut adoption = carry.adoption.clone();
+        let mut adopted: Vec<tmux::OptionWrite> = Vec::new();
         let observed = motion_observation_due(ticks_since_observation);
         if observed {
             let reading = transport::observe_motion_panes(server, session);
-            let fleet = transport::observe_fleet_sessions(server);
+            let fleet = transport::observe_fleet_listing(server);
             let (Some(reading), Some(fleet)) = (reading, fleet) else {
                 let failed = motion_failure(failures);
                 failures = failed.0;
@@ -2452,9 +2812,16 @@ fn wait_between_cycles(
                 continue;
             };
             cadence = motion_cadence(&reading);
-            next.replace_observation(reading, &fleet, session);
+            next.replace_observation(reading, &fleet, &carry.adoption.known, session);
+            // Adoption's own cadence, inside the branch that just read the
+            // fleet: one listing per tick, never two, and never a frame this
+            // daemon's own attachment gates.
+            if adoption_due(&mut adopted_at, Instant::now()) {
+                adopted = adoption_writes(&mut adoption, &fleet, &next.fleet_order);
+            }
         }
-        let writes = next.step(&look);
+        let mut writes = next.step(&look);
+        writes.extend(adopted);
         if !writes.is_empty() && !transport::publish_options(server, &writes) {
             ticks_since_observation = MOTION_OBSERVATION_TICKS;
             let failed = motion_publish_failure(failures, observed);
@@ -2469,6 +2836,7 @@ fn wait_between_cycles(
         }
         failures = 0;
         carry.motion = next;
+        carry.adoption = adoption;
         ticks_since_observation = if cadence == DETACHED_MOTION_TICK {
             MOTION_OBSERVATION_TICKS
         } else if observed {
@@ -2478,6 +2846,61 @@ fn wait_between_cycles(
         };
         let remaining = interval.saturating_sub(started.elapsed());
         std::thread::sleep(cadence.min(remaining));
+    }
+}
+
+/// Wait for the next verdict cycle with nothing of this session's OWN to draw.
+///
+/// `theme = off`, or no look has ever answered: the verdict cycle owns every
+/// `@ae_*` this session publishes, so the whole interval is one sleep — which is
+/// what it costs when this daemon has adopted nobody, the common case.
+///
+/// A daemon that IS filling a watchdog-less peer's fleet strip owes that duty to
+/// the TARGET's look, not to its own, so it cannot sleep through the interval:
+/// it wakes at the adoption cadence for one listing and at most one write per
+/// tick, and goes back to the whole-interval sleep as soon as the peer's own
+/// watchdog comes back.
+fn wait_idle_between_cycles(
+    server: &crate::inventory::ServerId,
+    carry: &mut Carry,
+    interval: Duration,
+) {
+    // Decided ONCE: the target set is the verdict cycle's to change, so a
+    // daemon with none sleeps exactly as it did before adoption existed.
+    if carry.adoption.targets.is_empty() {
+        std::thread::sleep(interval);
+        return;
+    }
+    let started = Instant::now();
+    let mut failures = 0_u8;
+    loop {
+        let remaining = interval.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            break;
+        }
+        let mut adoption = carry.adoption.clone();
+        let landed = match transport::observe_fleet_listing(server) {
+            Some(listing) => {
+                let writes = adoption_writes(&mut adoption, &listing, &carry.motion.fleet_order);
+                writes.is_empty() || transport::publish_options(server, &writes)
+            }
+            None => false,
+        };
+        if !landed {
+            let failed = motion_failure(failures);
+            failures = failed.0;
+            let remaining = interval.saturating_sub(started.elapsed());
+            if failed.1 {
+                std::thread::sleep(remaining);
+                break;
+            }
+            std::thread::sleep(ADOPTION_TICK.min(remaining));
+            continue;
+        }
+        failures = 0;
+        carry.adoption = adoption;
+        let remaining = interval.saturating_sub(started.elapsed());
+        std::thread::sleep(ADOPTION_TICK.min(remaining));
     }
 }
 
@@ -2494,14 +2917,16 @@ fn wait_static_between_cycles(
     let started = Instant::now();
     let mut cadence = static_observe_cadence(&carry.motion.panes);
     let mut failures = 0_u8;
+    let mut adopted_at: Option<Instant> = None;
     loop {
         let remaining = interval.saturating_sub(started.elapsed());
         if remaining.is_zero() {
             break;
         }
         let mut next = carry.motion.clone();
+        let mut adoption = carry.adoption.clone();
         let reading = transport::observe_motion_panes(server, session);
-        let fleet = transport::observe_fleet_sessions(server);
+        let fleet = transport::observe_fleet_listing(server);
         let (Some(reading), Some(fleet)) = (reading, fleet) else {
             let failed = motion_failure(failures);
             failures = failed.0;
@@ -2514,8 +2939,11 @@ fn wait_static_between_cycles(
             continue;
         };
         cadence = static_observe_cadence(&reading);
-        next.replace_observation(reading, &fleet, session);
-        let writes = next.step_static(look);
+        next.replace_observation(reading, &fleet, &carry.adoption.known, session);
+        let mut writes = next.step_static(look);
+        if adoption_due(&mut adopted_at, Instant::now()) {
+            writes.extend(adoption_writes(&mut adoption, &fleet, &next.fleet_order));
+        }
         if !writes.is_empty() && !transport::publish_options(server, &writes) {
             let failed = motion_publish_failure(failures, true);
             failures = failed.0;
@@ -2529,6 +2957,7 @@ fn wait_static_between_cycles(
         }
         failures = 0;
         carry.motion = next;
+        carry.adoption = adoption;
         let remaining = interval.saturating_sub(started.elapsed());
         std::thread::sleep(cadence.min(remaining));
     }
@@ -2675,6 +3104,11 @@ struct Carry {
     /// Session-local quota transitions, pending per-recipient deliveries, and
     /// the last bounded observation available to the throttle branch.
     quota: QuotaCarry,
+    /// The peers whose fleet strip this daemon fills, and the names ae's own
+    /// records vouch for. Server-scoped like everything else here, so
+    /// [`Carry::reset`] drops it with the rest when the daemon moves servers —
+    /// an id proved on one server means nothing on another.
+    adoption: Adoption,
     /// The last look this daemon actually READ, and `None` until one answers.
     ///
     /// Carried so that a cycle whose read failed draws in the look it saw last
@@ -2694,6 +3128,7 @@ impl Carry {
             quiet: QuietCycle::new(knobs.quiet_panes_per_cycle),
             motion: MotionState::default(),
             quota: QuotaCarry::default(),
+            adoption: Adoption::default(),
             look: None,
         }
     }
@@ -3475,7 +3910,15 @@ impl Cycle<'_> {
         carry.quiet.end(index);
         self.refresh_after_limit_release(quota_refresh, &mut carry.quota, now, err)?;
         self.close(
-            carry, &counts, &by_slot, &by_agent, &by_pane, &live, now, err,
+            carry,
+            &counts,
+            &by_slot,
+            &by_agent,
+            &by_pane,
+            &live,
+            now,
+            table.as_deref(),
+            err,
         )
         .inspect(|()| schedule_automatic_upgrade())
     }
@@ -3495,6 +3938,7 @@ impl Cycle<'_> {
         by_pane: &[PaneMark],
         live: &[String],
         now_epoch: i64,
+        table: Option<&[procs::Proc]>,
         err: &mut impl Write,
     ) -> crate::Result<()> {
         // The LOOK is re-read every cycle, so flipping `@ae_icons` on a live
@@ -3534,7 +3978,8 @@ impl Cycle<'_> {
                 attention: session_mark(by_pane, &slots),
                 look: &look,
             },
-            &mut carry.motion,
+            carry,
+            table,
         );
         Ok(())
     }
@@ -3639,7 +4084,7 @@ impl Cycle<'_> {
     }
 
     /// Publish this cycle's verdicts as tmux user options.
-    fn publish(&self, published: &Published<'_>, motion: &mut MotionState) {
+    fn publish(&self, published: &Published<'_>, carry: &mut Carry, table: Option<&[procs::Proc]>) {
         let Some(session_id) = transport::observe_session_id(self.server, self.session) else {
             return;
         };
@@ -3716,19 +4161,33 @@ impl Cycle<'_> {
         // The core THIS daemon runs on. An upgrade restarts the daemon on the
         // new core, so the value moves with the install and never with a launch.
         set(theme::VERSION_OPTION, &crate::version_line());
-        self.publish_fleet(look, motion);
-        self.publish_windows(published, motion);
+        self.publish_fleet(look, carry, table);
+        self.publish_windows(published, &mut carry.motion);
     }
 
     /// The fleet strip: every ae session on THIS server, as each one's own
-    /// watchdog described itself.
-    fn publish_fleet(&self, look: &Look, motion: &mut MotionState) {
-        let Some(sessions) = transport::observe_fleet_sessions(self.server) else {
+    /// watchdog described itself — plus the strip of every same-server ae
+    /// session that has no live watchdog to describe it.
+    ///
+    /// ONE listing answers both, and the adoption scan hangs off it: this is
+    /// the read that happens every cycle whatever the ticker is doing, so it is
+    /// the only place a daemon with no targets — and therefore no tick of its
+    /// own — can ever discover its first one.
+    fn publish_fleet(&self, look: &Look, carry: &mut Carry, table: Option<&[procs::Proc]>) {
+        let Some(sessions) = transport::observe_fleet_listing(self.server) else {
             return;
         };
+        // A listing that did not answer is not evidence that a peer is gone, so
+        // the enumeration is simply not run and the adoption already held
+        // stands until the next cycle.
+        if let Some(next) =
+            enumerate_adoption(self.server, self.session, &sessions, table, &carry.adoption)
+        {
+            carry.adoption = next;
+        }
         let orchestrator_id = orchestrator_id_for(&sessions, self.session);
-        let mut next = motion.clone();
-        next.replace_fleet(&sessions, self.session);
+        let mut next = carry.motion.clone();
+        next.replace_fleet(&sessions, &carry.adoption.known, self.session);
         // ONCE per verdict cycle, from the content this cycle read: a config
         // edit reaches a running session here, and the ticker inherits it.
         next.set_fleet_order(&self.fleet_order);
@@ -3762,7 +4221,7 @@ impl Cycle<'_> {
                 // The fleet strip is independent and still gets published;
                 // restore the cache so the failed unset is retried next cycle.
                 next.published_orchestrator_strip
-                    .clone_from(&motion.published_orchestrator_strip);
+                    .clone_from(&carry.motion.published_orchestrator_strip);
             }
             let id_changed = next.push_orchestrator_id_write(&mut writes, &target, orchestrator_id);
             if id_changed
@@ -3777,11 +4236,18 @@ impl Cycle<'_> {
                 // The fleet strip is independent and still gets published;
                 // restore the cache so the failed unset is retried next cycle.
                 next.published_orchestrator_id
-                    .clone_from(&motion.published_orchestrator_id);
+                    .clone_from(&carry.motion.published_orchestrator_id);
             }
         }
+        // The adopted strips ride the SAME batch: one tmux process carries
+        // this session's own line and every line it is filling for a peer.
+        let mut adoption = carry.adoption.clone();
+        writes.extend(adoption_writes(&mut adoption, &sessions, &next.fleet_order));
         if writes.is_empty() || transport::publish_options(self.server, &writes) {
-            *motion = next;
+            carry.motion = next;
+            // Committed only on a landed batch: a write-on-change memory
+            // advanced past a write tmux refused would never retry it.
+            carry.adoption = adoption;
         }
     }
 
@@ -4380,15 +4846,17 @@ fn bar_glyph(dead: usize, stale: usize, icons: bool) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        ACTOR, Carry, Continuation, Cycle, Effect, HarnessObservation, Journal, Knobs,
-        MissingState, MotionState, MotionVerdict, Observation, OverviewReading, PaneState,
-        PendingAdvisory, QuietCycle, QuietQuery, QuotaAction, QuotaCarry, QuotaDelivery,
-        QuotaLevel, QuotaRecipient, Rebind, SendHelper, TickerMode, UNKNOWN_ALERT_CYCLES, Verdict,
-        account, adopt_server, age_secs, agents_fact, bar_glyph, continuation, deferred, entry_mut,
-        held_seats, holds_seat, idle_nudge_seconds, idle_nudge_text, idle_nudge_text_waiting,
-        is_meta_agent, last_actor_event_age, last_done_event_at, last_working_declaration_at,
-        motion_cadence, motion_failure, motion_observation_due, motion_publish_failure,
-        motion_ticker_enabled, nudge_text, observed_option, quota_delivery, quota_observation_due,
+        ACTOR, ADOPTION_TICK, Adopted, Adoption, AdoptionBackend, Carry, Continuation, Cycle,
+        DETACHED_MOTION_TICK, Effect, HarnessObservation, Journal, Knobs, MissingState,
+        MotionState, MotionVerdict, Observation, OverviewReading, PaneState, PendingAdvisory,
+        QuietCycle, QuietQuery, QuotaAction, QuotaCarry, QuotaDelivery, QuotaLevel, QuotaRecipient,
+        Rebind, SendHelper, TickerMode, UNKNOWN_ALERT_CYCLES, Verdict, WatchdogPresence, account,
+        adopt_server, adoption_due, adoption_from, adoption_writes, age_secs, agents_fact,
+        bar_glyph, continuation, deferred, entry_mut, fleet_rows, held_seats, holds_seat,
+        idle_nudge_seconds, idle_nudge_text, idle_nudge_text_waiting, is_meta_agent,
+        last_actor_event_age, last_done_event_at, last_working_declaration_at, motion_cadence,
+        motion_failure, motion_observation_due, motion_publish_failure, motion_ticker_enabled,
+        nudge_text, observed_option, proven_ownership, quota_delivery, quota_observation_due,
         quota_recipients, quota_seconds, read_events, rebind, record_nudge, restore_idle,
         session_name, slot_mark, stale_display, static_observe_cadence, sweep_effects,
         sweep_seconds, system_time_from_epoch, throttle_quota_line, ticker_mode,
@@ -6030,6 +6498,24 @@ mod tests {
         );
     }
 
+    /// A ranked listing row in the default look — the shape the ticker reads.
+    fn listed(name: &str, id: &str, rank: &str) -> crate::tmux::FleetListingRow {
+        crate::tmux::FleetListingRow {
+            name: name.to_owned(),
+            id: id.to_owned(),
+            rank: Some(rank.to_owned()),
+            look: crate::tmux::LookOptions::default(),
+        }
+    }
+
+    /// The same row for a session that published NO rank.
+    fn unranked(name: &str, id: &str) -> crate::tmux::FleetListingRow {
+        crate::tmux::FleetListingRow {
+            rank: None,
+            ..listed(name, id, "0")
+        }
+    }
+
     fn motion(pane_id: &str, agent: &str) -> crate::tmux::MotionPane {
         crate::tmux::MotionPane {
             pane_id: pane_id.to_owned(),
@@ -6234,13 +6720,9 @@ mod tests {
 
     #[test]
     fn fleet_strip_writes_only_for_changed_text_or_working_frames() {
-        let session = |rank: &str| crate::tmux::FleetSession {
-            name: "current".to_owned(),
-            id: "$7".to_owned(),
-            rank: rank.to_owned(),
-        };
+        let session = |rank: &str| listed("current", "$7", rank);
         let mut state = MotionState::default();
-        state.replace_observation(vec![motion("%1", "lead")], &[session("1")], "current");
+        state.replace_observation(vec![motion("%1", "lead")], &[session("1")], &[], "current");
 
         let first = state.step(&Look::DEFAULT);
         assert_eq!(first.len(), 1, "the first static strip is new");
@@ -6249,11 +6731,11 @@ mod tests {
             "unchanged static strip"
         );
 
-        state.replace_fleet(&[session("4")], "current");
+        state.replace_fleet(&[session("4")], &[], "current");
         assert_eq!(state.step(&Look::DEFAULT).len(), 1, "changed rank");
         assert!(state.step(&Look::DEFAULT).is_empty(), "unchanged attention");
 
-        state.replace_fleet(&[session("2")], "current");
+        state.replace_fleet(&[session("2")], &[], "current");
         let first_frame =
             crate::tmux::set_options_args(&ServerId::Ambient, &state.step(&Look::DEFAULT));
         let next_frame =
@@ -6275,13 +6757,9 @@ mod tests {
 
     #[test]
     fn motion_off_republishes_a_changed_fleet_statically_and_writes_nothing_when_still() {
-        let session = |rank: &str| crate::tmux::FleetSession {
-            name: "current".to_owned(),
-            id: "$7".to_owned(),
-            rank: rank.to_owned(),
-        };
+        let session = |rank: &str| listed("current", "$7", rank);
         let mut state = MotionState::default();
-        state.replace_observation(vec![motion("%1", "lead")], &[session("1")], "current");
+        state.replace_observation(vec![motion("%1", "lead")], &[session("1")], &[], "current");
 
         assert_eq!(state.step_static(&Look::DEFAULT).len(), 1, "first strip");
         assert!(
@@ -6289,14 +6767,14 @@ mod tests {
             "unchanged strip"
         );
 
-        state.replace_fleet(&[session("4")], "current");
+        state.replace_fleet(&[session("4")], &[], "current");
         assert_eq!(state.step_static(&Look::DEFAULT).len(), 1, "changed rank");
         assert!(
             state.step_static(&Look::DEFAULT).is_empty(),
             "unchanged attention"
         );
 
-        state.replace_fleet(&[session("2")], "current");
+        state.replace_fleet(&[session("2")], &[], "current");
         assert_eq!(
             state.step_static(&Look::DEFAULT).len(),
             1,
@@ -6312,7 +6790,7 @@ mod tests {
 
         let mut detached = motion("%1", "lead");
         detached.session_attached = 0;
-        state.replace_observation(vec![detached], &[session("4")], "current");
+        state.replace_observation(vec![detached], &[session("4")], &[], "current");
         assert!(
             state.step_static(&Look::DEFAULT).is_empty(),
             "detached: no viewer"
@@ -6337,11 +6815,7 @@ mod tests {
 
     #[test]
     fn current_orchestrator_publishes_its_segment_and_keeps_it_on_ticker() {
-        let session = |name: &str, id: &str, rank: &str| crate::tmux::FleetSession {
-            name: name.to_owned(),
-            id: id.to_owned(),
-            rank: rank.to_owned(),
-        };
+        let session = |name: &str, id: &str, rank: &str| listed(name, id, rank);
         let mut state = MotionState::default();
         state.replace_observation(
             vec![motion("%1", "lead")],
@@ -6349,6 +6823,7 @@ mod tests {
                 session("worker", "$4", "1"),
                 session("orchestrator", "$7", "0"),
             ],
+            &[],
             "orchestrator",
         );
 
@@ -6393,23 +6868,12 @@ mod tests {
     /// second. An observation refreshes WHO is on the server and nothing else.
     #[test]
     fn the_ticker_keeps_the_order_the_verdict_cycle_stored() {
-        let sessions = [
-            crate::tmux::FleetSession {
-                name: "alpha".to_owned(),
-                id: "$1".to_owned(),
-                rank: "0".to_owned(),
-            },
-            crate::tmux::FleetSession {
-                name: "beta".to_owned(),
-                id: "$2".to_owned(),
-                rank: "0".to_owned(),
-            },
-        ];
+        let sessions = [listed("alpha", "$1", "0"), listed("beta", "$2", "0")];
         let order =
             crate::theme::FleetOrder::from_validated(vec!["beta".to_owned(), "alpha".to_owned()]);
         let mut state = MotionState::default();
         // The verdict cycle: fleet AND order.
-        state.replace_fleet(&sessions, "alpha");
+        state.replace_fleet(&sessions, &[], "alpha");
         state.set_fleet_order(&order);
         let mut writes = Vec::new();
         state.push_fleet_write(&mut writes, &Look::DEFAULT, None);
@@ -6419,7 +6883,7 @@ mod tests {
             "the cycle drew the human's order: {cycle_strip}"
         );
         // A ticker observation — panes and fleet, never an order.
-        state.replace_observation(Vec::new(), &sessions, "alpha");
+        state.replace_observation(Vec::new(), &sessions, &[], "alpha");
         assert_eq!(state.fleet_order, order, "the observation left it alone");
         let mut writes = Vec::new();
         state.push_fleet_write(&mut writes, &Look::DEFAULT, None);
@@ -6432,19 +6896,11 @@ mod tests {
     #[test]
     fn verdict_cycle_current_orchestrator_publishes_segment_and_excludes_fleet_row() {
         let sessions = [
-            crate::tmux::FleetSession {
-                name: "worker".to_owned(),
-                id: "$4".to_owned(),
-                rank: "1".to_owned(),
-            },
-            crate::tmux::FleetSession {
-                name: "orchestrator".to_owned(),
-                id: "$7".to_owned(),
-                rank: "0".to_owned(),
-            },
+            listed("worker", "$4", "1"),
+            listed("orchestrator", "$7", "0"),
         ];
         let mut state = MotionState::default();
-        state.replace_fleet(&sessions, "orchestrator");
+        state.replace_fleet(&sessions, &[], "orchestrator");
         let mut writes = Vec::new();
         state.push_fleet_write(&mut writes, &Look::DEFAULT, None);
         let row = state
@@ -6483,16 +6939,8 @@ mod tests {
     #[test]
     fn orchestrator_id_targets_other_sessions_only() {
         let fleet = [
-            crate::tmux::FleetSession {
-                name: "worker".to_owned(),
-                id: "$4".to_owned(),
-                rank: "2".to_owned(),
-            },
-            crate::tmux::FleetSession {
-                name: "orchestrator".to_owned(),
-                id: "$7".to_owned(),
-                rank: "1".to_owned(),
-            },
+            listed("worker", "$4", "2"),
+            listed("orchestrator", "$7", "1"),
         ];
         assert_eq!(super::orchestrator_id_for(&fleet, "worker"), Some("$7"));
         assert_eq!(
@@ -6530,17 +6978,14 @@ mod tests {
 
     #[test]
     fn orchestrator_strip_publishes_only_when_present() {
-        let session = |name: &str, id: &str, rank: &str| crate::tmux::FleetSession {
-            name: name.to_owned(),
-            id: id.to_owned(),
-            rank: rank.to_owned(),
-        };
+        let session = |name: &str, id: &str, rank: &str| listed(name, id, rank);
         let mut with = MotionState::default();
         with.replace_fleet(
             &[
                 session("worker", "$4", "2"),
                 session("orchestrator", "$7", "3"),
             ],
+            &[],
             "worker",
         );
         let mut writes = Vec::new();
@@ -6572,7 +7017,7 @@ mod tests {
         );
 
         let mut without = MotionState::default();
-        without.replace_fleet(&[session("worker", "$4", "2")], "worker");
+        without.replace_fleet(&[session("worker", "$4", "2")], &[], "worker");
         let mut writes = Vec::new();
         assert!(without.push_orchestrator_strip_write(
             &mut writes,
@@ -6582,6 +7027,603 @@ mod tests {
             None,
         ));
         assert!(writes.is_empty(), "caller performs the one required unset");
+    }
+
+    // -----------------------------------------------------------------------
+    // ADOPTION: the fourth writer of the look, and the only one that writes
+    // into a session other than its own.
+    // -----------------------------------------------------------------------
+
+    /// A classified candidate, as the adoption scan hands it on.
+    fn candidate(name: &str, status: crate::digest::Status) -> crate::liveness::Classified {
+        crate::liveness::Classified {
+            candidate: crate::inventory::Candidate::durable(crate::inventory::DurableRecord {
+                name: name.to_owned(),
+                path: PathBuf::from("/state/sessions").join(name),
+                layout: crate::inventory::Layout::Canonical,
+                server: crate::meta::ServerSelector::Positive(crate::meta::Selector::Name(
+                    "ae".to_owned(),
+                )),
+                meta_read: crate::inventory::MetaRead::Parsed,
+                snapshot: crate::session::RecordSnapshot::default(),
+            }),
+            status,
+        }
+    }
+
+    /// PIN a: who gets adopted, and who never does.
+    ///
+    /// Every skip here is a session this daemon would otherwise be publishing a
+    /// display fact into without having proved it may.
+    #[test]
+    fn adoption_takes_running_unwatched_peers_and_nothing_else() {
+        let listing = [
+            listed("self", "$1", "2"),
+            listed("unwatched", "$2", "3"),
+            listed("watched", "$3", "2"),
+            listed("unprovable", "$4", "2"),
+            unranked("leftover", "$5"),
+            listed("stopped", "$6", "0"),
+            listed("stranger", "$9", "2"),
+        ];
+        let classified = vec![
+            // Proven ae-owned and running, but this daemon's own session.
+            candidate("self", crate::digest::Status::Running),
+            candidate("unwatched", crate::digest::Status::Running),
+            candidate("watched", crate::digest::Status::Running),
+            candidate("unprovable", crate::digest::Status::Running),
+            candidate("leftover", crate::digest::Status::Running),
+            // The classifier already refused these two: a stopped session, and
+            // one on a server this daemon could not prove is its own.
+            candidate("stopped", crate::digest::Status::Stopped),
+            candidate("elsewhere", crate::digest::Status::Unknown),
+            // Running and proven, but the server is not showing it right now.
+            candidate("vanished", crate::digest::Status::Running),
+        ];
+        let adoption = adoption_from(
+            classified,
+            "self",
+            &listing,
+            &Adoption::default(),
+            |meta_dir| match meta_dir.file_name().and_then(std::ffi::OsStr::to_str) {
+                Some("watched") => WatchdogPresence::Live,
+                Some("unprovable") => WatchdogPresence::Unknown,
+                Some("leftover") => WatchdogPresence::Absent(Some(4242)),
+                _ => WatchdogPresence::Absent(None),
+            },
+        );
+        assert_eq!(
+            adoption
+                .targets
+                .iter()
+                .map(|target| (target.name.as_str(), target.id.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("unwatched", "$2"), ("leftover", "$5")],
+            "a live watchdog, an unprovable one, a stopped or foreign session \
+             and a name the server is not showing are all skipped"
+        );
+        assert_eq!(
+            adoption.targets[1].enum_pid,
+            Some(4242),
+            "the pid seen at enumeration travels with the target"
+        );
+        // `known` is the wider set: every RUNNING peer ae's records vouch for,
+        // adopted or not, because a rankless one of them still has to be drawn.
+        assert_eq!(
+            adoption.known,
+            vec!["unwatched", "watched", "unprovable", "leftover", "vanished"],
+            "and this daemon's own session is in neither list"
+        );
+    }
+
+    /// PIN a: nothing is written into a peer that has not proved BOTH halves of
+    /// its ownership.
+    ///
+    /// The marker alone is not enough — it says "an ae session", not "an ae
+    /// session of THIS fleet" — and the name is not evidence at all. A peer that
+    /// fails either half classifies `unknown`, which is never a target.
+    #[test]
+    fn a_peer_proves_an_ae_marker_and_this_state_root_or_it_is_not_adopted() {
+        let root = Path::new("/state");
+        let owned = |marker: &str, home: &str| crate::transport::SessionOwnership {
+            marker: marker.to_owned(),
+            home: home.to_owned(),
+        };
+        assert_eq!(
+            proven_ownership(Some(&owned("1", "/state")), root),
+            Some("1".to_owned()),
+            "an ae marker and this state root"
+        );
+        assert_eq!(
+            proven_ownership(Some(&owned("", "/state")), root),
+            None,
+            "an empty marker is not an ae session"
+        );
+        assert_eq!(
+            proven_ownership(Some(&owned("1", "/other")), root),
+            None,
+            "another state root's session belongs to another fleet"
+        );
+        assert_eq!(
+            proven_ownership(None, root),
+            None,
+            "and a read that did not answer proves nothing"
+        );
+        // `positively_owned` is what the classifier then asks of the marker, so
+        // the two halves cannot drift apart into "proved here, refused there".
+        assert!(crate::liveness::positively_owned(
+            "peer",
+            proven_ownership(Some(&owned("1", "/state")), root).as_deref()
+        ));
+        assert!(!crate::liveness::positively_owned(
+            "peer",
+            proven_ownership(Some(&owned("1", "/other")), root).as_deref()
+        ));
+    }
+
+    /// PIN a: the scan's backend answers THIS server and no other.
+    ///
+    /// A candidate recorded elsewhere must come back `unknown`, never
+    /// `running`, or a session on another tmux server could be written into.
+    #[test]
+    fn the_adoption_backend_refuses_every_server_but_its_own() {
+        use crate::inventory::Discovery as _;
+
+        let sockets = crate::SocketPaths::asking(|_| None);
+        let mine = ServerId::Selected(crate::meta::Selector::Name("ae".to_owned()));
+        let proven = [crate::inventory::DiscoveredSession {
+            name: "peer".to_owned(),
+            marker: Some("1".to_owned()),
+        }];
+        let backend = AdoptionBackend {
+            server: &mine,
+            sockets: &sockets,
+            proven: &proven,
+        };
+        assert!(
+            backend.enumerate(&mine).is_ok(),
+            "the daemon's own server answers"
+        );
+        assert!(
+            backend
+                .enumerate(&ServerId::Selected(crate::meta::Selector::Name(
+                    "other".to_owned()
+                )))
+                .is_err(),
+            "an unproven spelling is a FAILED query, which is `unknown` and never a target"
+        );
+    }
+
+    /// PIN b: the adopted strip is the TARGET's, in every respect.
+    ///
+    /// Drawn in the target's look, with the target as the current row, static,
+    /// and in the fleet order every writer shares. Rendering it in the
+    /// ADOPTER's look would hand a session running the ASCII fallback a
+    /// braille glyph, and marking the adopter current would draw a map with the
+    /// "you are here" pin in the wrong place.
+    #[test]
+    fn an_adopted_strip_is_drawn_in_the_targets_look_with_the_target_current() {
+        let listing = [
+            crate::tmux::FleetListingRow {
+                look: crate::tmux::LookOptions {
+                    icons: "off".to_owned(),
+                    palette: "a".to_owned(),
+                    drawn: "on".to_owned(),
+                    motion: "on".to_owned(),
+                },
+                ..listed("peer", "$2", "2")
+            },
+            listed("adopter", "$1", "2"),
+        ];
+        let mut adoption = Adoption {
+            targets: vec![Adopted {
+                name: "peer".to_owned(),
+                id: "$2".to_owned(),
+                meta_dir: PathBuf::from("/nonexistent/peer"),
+                enum_pid: None,
+                published: None,
+            }],
+            known: vec!["peer".to_owned()],
+        };
+        let order = crate::theme::FleetOrder::from_validated(vec!["peer".to_owned()]);
+        let writes = adoption_writes(&mut adoption, &listing, &order);
+        let strip = adoption.targets[0]
+            .published
+            .clone()
+            .expect("the peer's strip was composed");
+        assert_eq!(writes.len(), 1, "one write, for the one target");
+        assert_eq!(
+            strip,
+            crate::theme::fleet_strip(
+                &Look {
+                    palette: crate::theme::Palette::NEUTRAL,
+                    icons: false,
+                    ..Look::DEFAULT
+                },
+                &[
+                    crate::theme::FleetRow {
+                        name: "peer".to_owned(),
+                        id: "$2".to_owned(),
+                        mark: Mark::Working,
+                        current: true,
+                    },
+                    crate::theme::FleetRow {
+                        name: "adopter".to_owned(),
+                        id: "$1".to_owned(),
+                        mark: Mark::Working,
+                        current: false,
+                    },
+                ],
+                None,
+                &order,
+            ),
+            "the TARGET's palette and glyph set, the TARGET current, no working frame"
+        );
+        assert!(
+            strip.contains(Mark::Working.glyph(false))
+                && !strip.contains(Mark::Working.glyph(true)),
+            "and the ASCII fallback the target asked for: {strip}"
+        );
+    }
+
+    /// PIN b (lead condition C5): `theme = off` on the TARGET still gets a
+    /// strip. ae fills `@ae_*` on an undrawn session too, so a hand-written
+    /// `status-right` keeps working — refusing here would take the fleet line
+    /// away from exactly the readers who built their own.
+    #[test]
+    fn a_target_with_the_theme_off_is_still_given_its_strip() {
+        let listing = [crate::tmux::FleetListingRow {
+            look: crate::tmux::LookOptions {
+                drawn: "off".to_owned(),
+                ..crate::tmux::LookOptions::default()
+            },
+            ..listed("peer", "$2", "2")
+        }];
+        let mut adoption = Adoption {
+            targets: vec![Adopted {
+                name: "peer".to_owned(),
+                id: "$2".to_owned(),
+                meta_dir: PathBuf::from("/nonexistent/peer"),
+                enum_pid: None,
+                published: None,
+            }],
+            known: Vec::new(),
+        };
+        assert_eq!(
+            adoption_writes(&mut adoption, &listing, &crate::theme::FleetOrder::EMPTY).len(),
+            1,
+            "an undrawn session still carries the fact"
+        );
+    }
+
+    /// PIN b: a RUNNING session with no rank is a row, on every strip this
+    /// daemon writes — its own included.
+    ///
+    /// The rank rule alone cannot admit it: a session nobody measures publishes
+    /// no rank, and dropping it is what hid a running session from every other
+    /// session's strip. Only ae's own records may vouch for one, so a rankless
+    /// session nothing vouches for stays out.
+    #[test]
+    fn a_rankless_session_ae_vouches_for_is_drawn_stale_everywhere() {
+        let listing = [
+            listed("adopter", "$1", "2"),
+            unranked("leftover", "$2"),
+            unranked("stranger", "$3"),
+        ];
+        let known = ["leftover".to_owned()];
+        let own = fleet_rows(&listing, &known, "adopter");
+        assert_eq!(
+            own.iter()
+                .map(|row| (row.name.as_str(), row.mark, row.current))
+                .collect::<Vec<_>>(),
+            vec![
+                ("adopter", Mark::Working, true),
+                ("leftover", Mark::Stale, false)
+            ],
+            "the adopter's OWN strip carries the Stale row, and no stranger"
+        );
+        let adopted = fleet_rows(&listing, &known, "leftover");
+        assert_eq!(
+            adopted
+                .iter()
+                .map(|row| (row.name.as_str(), row.mark, row.current))
+                .collect::<Vec<_>>(),
+            vec![
+                ("adopter", Mark::Working, false),
+                ("leftover", Mark::Stale, true)
+            ],
+            "and the adopted strip is the same rows with the pin moved"
+        );
+    }
+
+    /// PIN c: the fourth writer's ENTIRE licence is one option.
+    ///
+    /// A rank, a glyph, a health segment or a roster written into a peer would
+    /// be this daemon vouching for a session it is not measuring. This turns
+    /// red the moment a second option joins the adoption batch.
+    #[test]
+    fn an_adopter_writes_the_fleet_strip_into_a_peer_and_nothing_else() {
+        let listing = [listed("peer", "$2", "2"), listed("other", "$3", "4")];
+        let mut adoption = Adoption {
+            targets: vec![
+                Adopted {
+                    name: "peer".to_owned(),
+                    id: "$2".to_owned(),
+                    meta_dir: PathBuf::from("/nonexistent/peer"),
+                    enum_pid: None,
+                    published: None,
+                },
+                Adopted {
+                    name: "other".to_owned(),
+                    id: "$3".to_owned(),
+                    meta_dir: PathBuf::from("/nonexistent/other"),
+                    enum_pid: None,
+                    published: None,
+                },
+            ],
+            known: Vec::new(),
+        };
+        let order = crate::theme::FleetOrder::EMPTY;
+        let writes = adoption_writes(&mut adoption, &listing, &order);
+        assert_eq!(writes.len(), 2, "one strip each");
+        for write in &writes {
+            assert_eq!(
+                write.option_name(),
+                crate::theme::FLEET_STRIP_OPTION,
+                "the adopter may publish ONE option into a session it does not own"
+            );
+        }
+        // PIN c, second half: write-on-change, per target.
+        assert!(
+            adoption_writes(&mut adoption, &listing, &order).is_empty(),
+            "an unchanged strip is not rewritten every tick"
+        );
+        let moved = [listed("peer", "$2", "2"), listed("other", "$3", "5")];
+        let writes = adoption_writes(&mut adoption, &moved, &order);
+        assert_eq!(
+            writes.len(),
+            2,
+            "both strips changed, because both list `other`"
+        );
+        assert!(
+            adoption_writes(&mut adoption, &moved, &order).is_empty(),
+            "and settle again"
+        );
+    }
+
+    /// PIN c: a target the current listing no longer shows under the SAME id is
+    /// skipped, not written to.
+    ///
+    /// The id is the identity: tmux never reuses a `$<n>` while the server
+    /// runs, so a name that came back on a NEW id belongs to somebody else, and
+    /// a write aimed at the old one would land nowhere or, worse, on a stranger.
+    #[test]
+    fn a_target_that_is_no_longer_itself_is_skipped_rather_than_written_to() {
+        let mut adoption = Adoption {
+            targets: vec![Adopted {
+                name: "peer".to_owned(),
+                id: "$2".to_owned(),
+                meta_dir: PathBuf::from("/nonexistent/peer"),
+                enum_pid: None,
+                published: None,
+            }],
+            known: Vec::new(),
+        };
+        let order = crate::theme::FleetOrder::EMPTY;
+        assert!(
+            adoption_writes(&mut adoption, &[listed("peer", "$9", "2")], &order).is_empty(),
+            "same name, new id: not the session that was proved"
+        );
+        assert!(
+            adoption_writes(&mut adoption, &[listed("other", "$2", "2")], &order).is_empty(),
+            "same id, new name: likewise"
+        );
+        assert!(
+            adoption_writes(&mut adoption, &[], &order).is_empty(),
+            "and a session that is simply gone is left alone"
+        );
+    }
+
+    /// PIN d: adoption does NOT ride the motion ticker's own frame.
+    ///
+    /// [`MotionState::step`] draws nothing while no client is attached — and
+    /// the session being filled is exactly the one somebody IS looking at. An
+    /// adopter that rode `step` would go quiet the moment its own window lost
+    /// focus, which is the common case for a monitor session.
+    #[test]
+    fn a_detached_adopter_still_fills_its_peers_line() {
+        let listing = [listed("adopter", "$1", "2"), listed("peer", "$2", "2")];
+        let mut detached = motion("%1", "lead");
+        detached.session_attached = 0;
+        let mut state = MotionState::default();
+        state.replace_observation(vec![detached], &listing, &[], "adopter");
+        assert!(
+            state.step(&Look::DEFAULT).is_empty(),
+            "nothing of this session's OWN is drawn while nobody is attached"
+        );
+        let mut adoption = Adoption {
+            targets: vec![Adopted {
+                name: "peer".to_owned(),
+                id: "$2".to_owned(),
+                meta_dir: PathBuf::from("/nonexistent/peer"),
+                enum_pid: None,
+                published: None,
+            }],
+            known: Vec::new(),
+        };
+        assert_eq!(
+            adoption_writes(&mut adoption, &listing, &crate::theme::FleetOrder::EMPTY).len(),
+            1,
+            "and the peer's line is filled anyway"
+        );
+        // The cadence is adoption's own, and it is the DETACHED one: a tick
+        // this daemon's attachment could switch off is the bug above.
+        assert_eq!(ADOPTION_TICK, DETACHED_MOTION_TICK);
+        let mut last = None;
+        let now = std::time::Instant::now();
+        assert!(adoption_due(&mut last, now), "the first tick is always due");
+        assert!(
+            !adoption_due(&mut last, now + ADOPTION_TICK / 2),
+            "and nothing in between is"
+        );
+        assert!(adoption_due(&mut last, now + ADOPTION_TICK));
+    }
+
+    /// PIN (navigator B2): a DEAD watchdog leaves its pidfile behind, and the
+    /// pause test must not read that as an owner coming back.
+    ///
+    /// Pausing on mere presence would mean the sessions this feature exists for
+    /// — the ones whose daemon died — are the only ones it never fills.
+    #[test]
+    fn a_stale_pidfile_keeps_adopting_and_only_a_new_one_pauses() {
+        let scratch = std::env::temp_dir().join(format!("ae-adopt-{}", std::process::id()));
+        let meta_dir = scratch.join("peer");
+        assert!(
+            std::fs::create_dir_all(&meta_dir).is_ok(),
+            "a scratch meta dir"
+        );
+        let pidfile = meta_dir.join(".watchdog.pid");
+        let listing = [listed("peer", "$2", "2"), listed("adopter", "$1", "2")];
+        let order = crate::theme::FleetOrder::EMPTY;
+        let target = |enum_pid| Adoption {
+            targets: vec![Adopted {
+                name: "peer".to_owned(),
+                id: "$2".to_owned(),
+                meta_dir: meta_dir.clone(),
+                enum_pid,
+                published: None,
+            }],
+            known: Vec::new(),
+        };
+
+        // The enumeration saw a pidfile naming a process `ps` did not list.
+        assert!(
+            std::fs::write(&pidfile, "4242\n").is_ok(),
+            "the stale pidfile"
+        );
+        let mut dead = target(Some(4242));
+        assert_eq!(
+            adoption_writes(&mut dead, &listing, &order).len(),
+            1,
+            "the same pid the enumeration proved dead is a corpse, not an owner"
+        );
+
+        // A DIFFERENT pid is a daemon that started since: stop writing and let
+        // it publish over us.
+        assert!(std::fs::write(&pidfile, "4243\n").is_ok(), "a new daemon");
+        let mut replaced = target(Some(4242));
+        assert!(
+            adoption_writes(&mut replaced, &listing, &order).is_empty(),
+            "a pidfile the enumeration did not see means the owner is back"
+        );
+        let mut fresh = target(None);
+        assert!(
+            adoption_writes(&mut fresh, &listing, &order).is_empty(),
+            "and so does one appearing where there was none"
+        );
+
+        // No pidfile at all is the ordinary unwatched session.
+        assert!(std::fs::remove_file(&pidfile).is_ok(), "the pidfile goes");
+        let mut none = target(None);
+        assert_eq!(
+            adoption_writes(&mut none, &listing, &order).len(),
+            1,
+            "nothing is measuring the peer, so this daemon draws its line"
+        );
+        // The pidfile is READ, never written: another session's state dir is
+        // not this daemon's to tidy.
+        assert!(std::fs::write(&pidfile, "4242\n").is_ok(), "put it back");
+        let mut again = target(Some(4242));
+        let _ = adoption_writes(&mut again, &listing, &order);
+        assert_eq!(
+            crate::watchdog_glue::read_pid(&meta_dir),
+            Some(4242),
+            "the adopter never cleans up a peer's stale pidfile"
+        );
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    /// PIN f: the process table is the CYCLE's, taken once, and no tick takes
+    /// one at all.
+    ///
+    /// `procs::snapshot` spawns `ps`. One per peer would be a process per
+    /// session per tick; one per tick would still be a process every two
+    /// seconds on every machine running ae, for a feature whose steady state is
+    /// usually zero targets.
+    #[test]
+    fn adoption_never_spawns_a_process_snapshot_of_its_own() {
+        let source = include_str!("watchdog_daemon.rs");
+        let between = |from: &str, to: &str| {
+            source
+                .split_once(from)
+                .and_then(|(_, tail)| tail.split_once(to))
+                .map(|(body, _)| body.to_owned())
+                .expect("the bounded body")
+        };
+        for (name, body) in [
+            (
+                "enumerate_adoption",
+                between("fn enumerate_adoption(", "\nfn adoption_from("),
+            ),
+            (
+                "adoption_from",
+                between("fn adoption_from(", "\n/// The rows one strip draws"),
+            ),
+            (
+                "adoption_writes",
+                between("fn adoption_writes(", "\n/// Whether the adoption cadence"),
+            ),
+            (
+                "wait_idle_between_cycles",
+                between(
+                    "fn wait_idle_between_cycles(",
+                    "\n/// Wait for the next verdict cycle while keeping",
+                ),
+            ),
+            (
+                "wait_between_cycles",
+                between(
+                    "fn wait_between_cycles(",
+                    "\n/// Wait for the next verdict cycle with nothing",
+                ),
+            ),
+            (
+                "wait_static_between_cycles",
+                between(
+                    "fn wait_static_between_cycles(",
+                    "\n/// The branch publication",
+                ),
+            ),
+        ] {
+            assert!(
+                !body.contains("procs::snapshot"),
+                "{name} must reuse the verdict cycle's one table, never take its own"
+            );
+        }
+        // The cycle's table is PASSED, not re-taken: one `ps` per cycle for the
+        // pane verdicts and the adoption scan together.
+        assert!(
+            between("fn publish_fleet(", "\n    /// Per-window marks").contains("table,"),
+            "publish_fleet hands the cycle's own snapshot to the scan"
+        );
+    }
+
+    /// PIN f, zero-target half: a daemon that has adopted nobody does no work
+    /// and asks for no write. This is the common case on every machine.
+    #[test]
+    fn an_adopter_with_no_targets_composes_no_write_at_all() {
+        let mut none = Adoption::default();
+        assert!(
+            adoption_writes(
+                &mut none,
+                &[listed("solo", "$1", "2")],
+                &crate::theme::FleetOrder::EMPTY,
+            )
+            .is_empty(),
+            "no targets, no writes — and the caller's `writes.is_empty()` guard \
+             then makes no tmux call either"
+        );
+        assert_eq!(none, Adoption::default(), "and nothing is remembered");
     }
 
     #[test]
