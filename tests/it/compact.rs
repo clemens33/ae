@@ -536,3 +536,64 @@ fn a_legacy_compact_handover_is_found_and_withdrawn_with_its_bytes() {
         "{cancel}"
     );
 }
+
+/// The public verb's whole-store behaviour the internals cannot show: the R1
+/// run lock refuses a second run BEFORE any state is touched.
+#[test]
+fn a_held_run_lock_refuses_the_second_compact_before_any_state_is_touched() {
+    let s = Scratch::new("lock-held");
+    let dir = s.0.join("sessions").join("sess");
+    std::fs::create_dir_all(&dir).unwrap();
+    let lock = dir.join("seatcompact.lock");
+    let held = ae::store::lock(&lock, Duration::ZERO).expect("the fixture holds the run lock");
+
+    let out = core(s.0.as_path(), &["compact", "sess"]);
+
+    let expected = format!(
+        "another ae compact holds {}\n",
+        ae::seatcompact::cell(&lock.to_string_lossy())
+    );
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert_eq!(stderr(&out), expected, "the projected path, alone");
+    assert!(stdout(&out).is_empty(), "no report");
+    assert!(
+        !dir.join("events.jsonl").exists(),
+        "a refused run records nothing"
+    );
+    drop(held);
+}
+
+/// The OTHER reader of one ledger: `SessionRead::pending` is what
+/// `entry_from` turns into the `unanswered` attention
+/// (`session.rs::entry_from`), so an answered seat checkpoint must be closed
+/// here too. The view's `requests::states` is pinned beside its sensor.
+#[test]
+fn the_watchdog_ledger_reader_reads_an_answered_seat_checkpoint_as_closed() {
+    let uuid = "22222222-2222-2222-2222-222222222222";
+    let reference = "ae-20260917T090000Z-abcdef01";
+    let lines = [
+        format!(
+            "{{\"ts\":\"2026-09-17T09:00:00Z\",\"actor\":\"ae:seats:{uuid}\",\"action\":\"ask\",\"target\":\"cl:main\",\"ref\":\"{reference}\",\"actor_session\":\"sess\",\"target_slot\":\"main\",\"target_session\":\"sess\",\"summary\":\"checkpoint\"}}"
+        ),
+        format!(
+            "{{\"ts\":\"2026-09-17T09:01:00Z\",\"actor\":\"cl:main\",\"action\":\"reply\",\"target\":\"ae:seats:{uuid}\",\"ref\":\"{reference}\",\"actor_slot\":\"main\",\"actor_session\":\"sess\",\"target_session\":\"sess\",\"summary\":\"saved\"}}"
+        ),
+    ];
+    let events: Vec<ae::events::Event> = lines
+        .iter()
+        .map(|line| ae::events::Event::parse_line(line).expect("a fixture event"))
+        .collect();
+    let read = ae::session::SessionRead::from_drain(&ae::events::Drain {
+        events,
+        cursor: ae::events::Cursor::default(),
+        skipped: Vec::new(),
+        drained: true,
+    });
+    let now = ae::time::Timestamp::parse("2026-09-17T10:00:00Z").expect("a fixture clock");
+    assert!(
+        read.unanswered(now, ae::session::DEFAULT_UNANSWERED_SECS)
+            .is_empty(),
+        "still unanswered: {:?}",
+        read.pending
+    );
+}

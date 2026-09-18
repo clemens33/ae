@@ -259,13 +259,7 @@ fn run_seat(
         seat.outcome = Outcome::skipped(CHECKPOINT_TIMEOUT);
         return Ok(seat);
     };
-    let paste = match (mode, spec) {
-        (Mode::Guided, crate::tool::CompactSpec::Guided { command }) => {
-            format!("{command} checkpoint {expected} saved; compact now, then re-read `ae brief`")
-        }
-        (Mode::Bare, crate::tool::CompactSpec::Bare { command }) => command.to_owned(),
-        _ => String::new(), // The gate refused every `Unsupported` seat.
-    };
+    let paste = dispatch_text(mode, spec, &expected);
     let request = GuardedRequest {
         dir,
         server: &server,
@@ -300,6 +294,19 @@ fn run_seat(
         Err(deliver::EnterFailed) => Outcome::from_verdict(Verdict::EnterFailed, &resolved.pane),
     };
     Ok(seat)
+}
+
+/// The exact dispatch text one admitted seat receives: the R11 command leads
+/// always — the provenance rule's ONE exception, because a slash command must
+/// start with `/` — and the Guided arm adds the ref the seat just proved.
+fn dispatch_text(mode: Mode, spec: crate::tool::CompactSpec, reference: &str) -> String {
+    match (mode, spec) {
+        (Mode::Guided, crate::tool::CompactSpec::Guided { command }) => {
+            format!("{command} checkpoint {reference} saved; compact now, then re-read `ae brief`")
+        }
+        (Mode::Bare, crate::tool::CompactSpec::Bare { command }) => command.to_owned(),
+        _ => String::new(), // The gate refused every `Unsupported` seat.
+    }
 }
 
 /// Pre-lock facts for the under-lock proof (meta id carried; liveness re-taken).
@@ -784,6 +791,209 @@ mod tests {
         assert_eq!(
             judge_viewer(&other, "%1", &held),
             Err(deliver::Leg::Mismatch)
+        );
+    }
+
+    /// A scratch session directory, removed on drop.
+    struct Scratch(std::path::PathBuf);
+    impl Scratch {
+        fn new(tag: &str) -> Self {
+            let dir =
+                std::env::temp_dir().join(format!("ae-seatcompact-{}-{tag}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("scratch");
+            Self(dir)
+        }
+    }
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// (a) — every text `run_seat` hands to `deliver_guarded` leads with the
+    /// spec's own `/`-led command (the provenance rule's ONE exception).
+    #[test]
+    fn every_dispatch_paste_leads_with_its_seats_command() {
+        for spec in [
+            crate::tool::CompactSpec::Guided {
+                command: "/compact",
+            },
+            crate::tool::CompactSpec::Bare {
+                command: "/compact",
+            },
+        ] {
+            let mode = match spec {
+                crate::tool::CompactSpec::Guided { .. } => Mode::Guided,
+                _ => Mode::Bare,
+            };
+            let text = dispatch_text(mode, spec, ID);
+            assert!(text.starts_with("/compact"), "{text}");
+            assert!(text.starts_with('/'), "the slash leads: {text}");
+        }
+        // And the REAL adapter rows: every drivable command is `/`-led.
+        for kind in [
+            ToolKind::Claude,
+            ToolKind::Codex,
+            ToolKind::Gemini,
+            ToolKind::Agy,
+            ToolKind::Grok,
+            ToolKind::Muse,
+            ToolKind::OpenCode,
+        ] {
+            if let crate::tool::CompactSpec::Guided { command }
+            | crate::tool::CompactSpec::Bare { command } = kind.adapter().compact
+            {
+                assert!(command.starts_with('/'), "{kind:?}: {command}");
+            }
+        }
+    }
+
+    /// (c) — R4's select: the verb cancels ONLY its own `ae:seats:` pending
+    /// checkpoint. A foreign opener's stays pending, and the cancel carries the
+    /// exact summary and the opener's own actor bytes.
+    #[test]
+    fn only_the_verbs_own_pending_checkpoint_is_cancelled() {
+        let scratch = Scratch::new("cancel-own");
+        let dir = scratch.0.as_path();
+        let lines = [
+            r#"{"ts":"t1","actor":"ae:seats:u1","action":"ask","target":"cl:lead","ref":"ae-1","actor_session":"sess","target_slot":"main","target_session":"sess","summary":"checkpoint"}"#,
+            r#"{"ts":"t1","actor":"ext:human","action":"ask","target":"cl:lead","ref":"ae-2","actor_session":"sess","target_slot":"main","target_session":"sess","summary":"foreign"}"#,
+            r#"{"ts":"t1","actor":"ae:seats:u2","action":"ask","target":"cl:lead","ref":"ae-3","actor_session":"sess","target_slot":"main","target_session":"sess","summary":"another run"}"#,
+        ];
+        std::fs::write(dir.join("events.jsonl"), format!("{}\n", lines.join("\n"))).expect("plant");
+        let storage = store::open(dir);
+        cancel_own_pending(&storage, "ae:seats:u1", "main", "sess").expect("the cancel append");
+        let rows = crate::requests::states(&storage.container());
+        let row = |id: &[u8]| rows.iter().find(|row| row.id == id);
+        assert_eq!(
+            row(b"ae-1").map(|row| row.status),
+            Some(crate::requests::Status::Cancelled)
+        );
+        assert_eq!(
+            row(b"ae-1").map(|row| row.summary.as_slice()),
+            Some(b"withdrawn: superseded by a fresh seat-compact checkpoint".as_slice())
+        );
+        assert_eq!(
+            row(b"ae-2").map(|row| row.status),
+            Some(crate::requests::Status::Pending),
+            "a foreign opener is left alone"
+        );
+        assert_eq!(
+            row(b"ae-3").map(|row| row.status),
+            Some(crate::requests::Status::Pending),
+            "another ae:seats: run is another opener"
+        );
+        let text = String::from_utf8_lossy(&storage.container()).into_owned();
+        let cancel = text
+            .lines()
+            .find(|line| line.contains("\"action\":\"cancel\""))
+            .expect("a cancel record");
+        assert!(cancel.contains("\"actor\":\"ae:seats:u1\""), "{cancel}");
+    }
+
+    /// (d) — R2's timeout shape: a checkpoint that never closes past the bound
+    /// skips as `checkpoint timeout`, records and pastes nothing, and is left
+    /// open for the next mint's R4 cancel.
+    #[test]
+    fn a_checkpoint_that_never_closes_times_out_open() {
+        let scratch = Scratch::new("timeout");
+        let dir = scratch.0.as_path();
+        let planted = format!(
+            "{{\"ts\":\"t1\",\"actor\":\"ae:seats:u1\",\"action\":\"ask\",\"target\":\"{TO}\",\"ref\":\"{ID}\",\"actor_session\":\"s\",\"target_slot\":\"main\",\"target_session\":\"s\",\"summary\":\"checkpoint\"}}\n"
+        );
+        std::fs::write(dir.join("events.jsonl"), &planted).expect("plant");
+        let storage = store::open(dir);
+        let facts = wait_for_facts(
+            dir,
+            ID,
+            b"main",
+            b"s",
+            TO.as_bytes(),
+            storage.container().len(),
+            0,
+            Instant::now(),
+        );
+        assert!(facts.is_none(), "no reply and no memo: nothing dispatches");
+        assert_eq!(
+            String::from_utf8_lossy(&storage.container())
+                .lines()
+                .count(),
+            1,
+            "the wait pasted nothing and recorded nothing"
+        );
+        assert_eq!(
+            crate::requests::states(&storage.container())
+                .iter()
+                .find(|row| row.id == ID.as_bytes())
+                .map(|row| row.status),
+            Some(crate::requests::Status::Pending),
+            "the request stays open"
+        );
+        let outcome = Outcome::skipped(CHECKPOINT_TIMEOUT);
+        assert_eq!(outcome.word(), "skipped (checkpoint timeout)");
+        assert_eq!(outcome.reason(), Some("checkpoint timeout"));
+    }
+
+    /// (e) — the checkpoint BODY: the ref leads, then the baseline and target
+    /// lines, then `(none)` and the R15 markers for a budgeted-out goal, an
+    /// invalid ref and the over-cap ids.
+    #[test]
+    fn the_checkpoint_body_leads_with_the_ref_its_baseline_and_its_target() {
+        use crate::sanitize::{self, Field, LedgerRef};
+        let ids: Vec<String> = (0..=sanitize::MAX_REQUEST_IDS)
+            .map(|n| format!("ae-20260917T090000Z-{n:08x}"))
+            .collect();
+        let mut refs: Vec<LedgerRef<'_>> = ids
+            .iter()
+            .enumerate()
+            .map(|(position, id)| LedgerRef {
+                position,
+                bytes: id.as_bytes(),
+            })
+            .collect();
+        refs.push(LedgerRef {
+            position: 99,
+            bytes: b"bogus",
+        });
+        let goal = "g".repeat(Field::Goal.budget() + 1);
+        let prepared = sanitize::prepare_body(goal.as_bytes(), b"", "lead", &refs).expect("utf-8");
+        let triple = tracked::IdentityTriple {
+            server: "/sock".to_owned(),
+            pane: "%1".to_owned(),
+            session_uuid: UUID.to_owned(),
+        };
+        let body = compose_body(ID, &prepared, 7, &triple, Path::new("/state/sessions/sess"));
+        let first = body.lines().next().expect("a first line");
+        assert!(
+            first.starts_with(&format!("SEATS CHECKPOINT {ID}")),
+            "{first}"
+        );
+        assert!(body.contains("AE-SEATS-MEMO-BASELINE=7"), "{body}");
+        assert!(
+            body.contains(&format!("AE-SEATS-TARGET=/sock|%1|{UUID}")),
+            "{body}"
+        );
+        assert!(
+            body.contains(&format!("Goal:\n{}", sanitize::omit_marker(Field::Goal, 1))),
+            "{body}"
+        );
+        assert!(
+            body.contains("Latest decision checkpoint:\n(none)"),
+            "{body}"
+        );
+        assert!(body.contains(&format!("\n{}\n", ids[16])), "{body}");
+        assert!(
+            !body.contains(&format!("\n{}\n", ids[0])),
+            "the oldest id is over the cap: {body}"
+        );
+        assert!(
+            body.contains(&format!("\n{}\n", sanitize::invalid_marker(1))),
+            "{body}"
+        );
+        assert!(
+            body.contains(&format!("\n{}\n", sanitize::over_cap_marker(1))),
+            "{body}"
         );
     }
 }

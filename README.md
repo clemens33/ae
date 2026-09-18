@@ -161,8 +161,8 @@ one: lineage is explicit, never inferred from a name that happens to match.
 `ae reboot` is the move you actually want when an agent runs out of context: it asks the
 main agent for a handover, archives, ends, and relaunches the same name from that archive
 — one command instead of three, the middle one of which is you transcribing a UUID after
-the session is already gone. (`ae compact` will be the in-place seat compaction; it ships
-in the next release.)
+the session is already gone. (`ae compact` is the in-place seat compaction: it checkpoints
+each fixed seat's durable state, then pastes its compaction command.)
 
 Full command reference: **[docs/reference/commands.md](docs/reference/commands.md)**.
 
