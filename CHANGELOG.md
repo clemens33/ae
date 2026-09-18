@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.113] - 2026-09-18
+- Leave an unwatched session its seed and an off mark
+- Pin the unwatched row, the seed it keeps and the off mark
+- Say what a stopped watchdog leaves behind
+- Pin the stop that finds no daemon, and name the seed's writers
+
 ## [v2026.9.112] - 2026-09-18
 - Start monitor panes before gated launch-prompt deliveries (#130)
 - Pair delivery prompts with their seats by construction (#130)
