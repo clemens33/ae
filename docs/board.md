@@ -193,7 +193,12 @@ typed prompt (`"type":"slash_command"` included), `timestamp` integer millis.
 
 OpenCode reads one `opencode export <sessionID>` document per conversation —
 the current one and each recorded predecessor — and never the SQLite store.
-Human rows are `role == "user"` messages; row identity is the message id;
+The capture goes through a scratch FILE, never a pipe: `opencode export` exits
+before its stdout pipe drains (measured on 1.18.31, 2026-09-18: 131072 of
+3949726 bytes through a pipe, the whole document to a regular file), so a pipe
+capture would truncate the document and cover the whole conversation as
+unreadable. Human rows are `role == "user"` messages; row identity is the
+message id;
 `time.created` is integer milliseconds. A body is the message's `text` parts
 joined in order, trimmed, empties dropped; a message with no `text` part drops
 silently, and a message that cannot be named or stamped is counted into the

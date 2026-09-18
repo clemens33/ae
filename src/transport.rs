@@ -7,6 +7,8 @@
 //! `tmux`, waits, and hands the completed run back to be interpreted. It derives
 //! no argv of its own and interprets no bytes of its own.
 
+use std::path::Path;
+
 use crate::inventory::{DiscoveredSession, Discovery, QueryFailed, ServerId};
 use crate::meta::Selector;
 use crate::tmux;
@@ -249,7 +251,7 @@ fn spawn<A: AsRef<std::ffi::OsStr>>(
     program: &str,
     args: &[A],
     envs: &[(&str, &str)],
-    streams: Streams,
+    streams: Streams<'_>,
     feed: Option<&[u8]>,
 ) -> Option<std::process::Output> {
     let mut command = std::process::Command::new(program);
@@ -288,6 +290,34 @@ fn spawn<A: AsRef<std::ffi::OsStr>>(
             stderr: Vec::new(),
         });
     }
+    if let Streams::CapturedToFile(path) = streams {
+        // THE SCRATCH FILE IS CREATED EXCLUSIVE: a predictable name in a shared
+        // temp directory must never be followed through a pre-planted symlink.
+        // `create_new` refuses an existing path, symlink included, and the
+        // caller's counter retries the next name.
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "the scratch capture's writer: a child whose stdout must reach a regular file, not a pipe (opencode exits before its pipe drains), opened O_EXCL so the name cannot be a symlink"
+        )]
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .ok()?;
+        command.stdout(std::process::Stdio::from(file));
+        // stderr stays captured by `output()`; stdout is the file's.
+        let output = command.output().ok()?;
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "the same scratch capture read back after the child exits; the path was minted by this call, never chosen by a caller"
+        )]
+        let bytes = std::fs::read(path).ok()?;
+        return Some(std::process::Output {
+            status: output.status,
+            stdout: bytes,
+            stderr: output.stderr,
+        });
+    }
     let Some(bytes) = feed else {
         return command.output().ok();
     };
@@ -303,7 +333,7 @@ fn spawn<A: AsRef<std::ffi::OsStr>>(
 
 /// How the door wires a child's streams — and therefore what it can report.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Streams {
+enum Streams<'a> {
     /// Both captured.
     Captured,
     /// Stdout captured, stderr ae's own — the send helper, whose diagnostics
@@ -313,6 +343,12 @@ enum Streams {
     Terminal,
     /// Started and NOT waited for.
     Detached,
+    /// Stdout redirected into this scratch file and read back after the child
+    /// exits. The `opencode` legs need it: `opencode export` exits before its
+    /// stdout pipe drains (measured on 1.18.31, 2026-09-18: 131072 of 3949726
+    /// bytes through a pipe, the whole document to a regular file), so a pipe
+    /// capture truncates the JSON document while a file receives it whole.
+    CapturedToFile(&'a Path),
 }
 
 /// Run `program`, and report whether it succeeded and what it printed.
@@ -389,10 +425,34 @@ pub(crate) fn run_sysctl() -> (bool, String) {
     }
 }
 
+/// One scratch capture's name: the process id plus a per-process counter, so
+/// two captures — the board's own seats and the detached capture child — never
+/// share one name.
+static NEXT_CAPTURE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// The `opencode` leg of the one process door — the ONLY way product code runs
 /// `opencode`, the program FIXED here so a caller chooses nothing at all.
+///
+/// The capture goes through a SCRATCH FILE, never a pipe: `opencode export`
+/// exits before its stdout pipe drains (measured on 1.18.31, 2026-09-18), so a
+/// piped capture truncates the document while a regular file receives it
+/// whole. The file lives in the OS temp directory — scratch by nature, and the
+/// one place a captured child's spill belongs — and is removed after the read.
 pub(crate) fn run_opencode(argv: &crate::session_launch::capture::OpenCodeArgv) -> (bool, String) {
-    match spawn("opencode", argv.as_args(), &[], Streams::Captured, None) {
+    let path = std::env::temp_dir().join(format!(
+        "ae-opencode-{}.{}.json",
+        std::process::id(),
+        NEXT_CAPTURE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let captured = spawn(
+        "opencode",
+        argv.as_args(),
+        &[],
+        Streams::CapturedToFile(&path),
+        None,
+    );
+    let _ = std::fs::remove_file(&path);
+    match captured {
         Some(output) => (
             output.status.success(),
             String::from_utf8_lossy(&output.stdout).into_owned(),
@@ -1148,7 +1208,7 @@ pub(crate) fn spawn_detached(
 
 #[cfg(test)]
 mod tests {
-    use super::{Tmux, run};
+    use super::{Streams, Tmux, run, spawn};
     use crate::inventory::{Discovery, QueryFailed, ServerId};
     use crate::meta::Selector;
     use std::path::PathBuf;
@@ -1161,6 +1221,37 @@ mod tests {
             (true, "ok\n".to_owned()),
             "this suite needs /bin/echo to prove the exec can succeed at all"
         );
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test: mints and removes its own scratch capture file"
+    )]
+    fn a_captured_to_file_spawn_returns_the_whole_stdout_and_leaves_no_file() {
+        // The opencode capture's contract: the child's stdout reaches the
+        // scratch file whole and comes back through the same `Output` shape
+        // every other leg returns. 128 KiB is exactly the scale a pipe lost.
+        let path = std::env::temp_dir().join(format!(
+            "ae-transport-capture-test.{}.json",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let output = spawn(
+            "/bin/sh",
+            &["-c".to_owned(), "yes x | head -c 131072".to_owned()],
+            &[],
+            Streams::CapturedToFile(&path),
+            None,
+        )
+        .expect("the shell runs");
+        assert!(output.status.success());
+        assert_eq!(output.stdout.len(), 131_072, "the whole stdout came back");
+        assert!(
+            path.exists(),
+            "the door leaves the scratch file for its caller to remove"
+        );
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

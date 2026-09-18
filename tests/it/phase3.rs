@@ -1854,6 +1854,13 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
             // custody rules. Registered deliberately: a command that can start a
             // daemon holding a secret is not one to gain a quiet new read.
             "src/telegram_lifecycle.rs".to_owned(),
+            // The opencode leg's scratch capture: `opencode export` exits
+            // before its stdout pipe drains, so the child's stdout is written
+            // to an exclusive scratch file in the OS temp directory and read
+            // back from it. Registered deliberately — it is the one child
+            // capture whose bytes cannot come through the pipe every other
+            // leg uses.
+            "src/transport.rs".to_owned(),
             // `ae usage` reads only bounded, lstat-checked session metadata,
             // retire events and agent-owned transcripts selected from the
             // recorded seat identity. Price overrides use config.rs's one

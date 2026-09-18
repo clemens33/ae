@@ -2001,3 +2001,38 @@ fn the_opencode_export_cap_is_the_documented_sixteen_mib() {
         "docs/board.md names the same cap"
     );
 }
+
+#[test]
+fn an_export_larger_than_a_pipe_buffer_reads_whole_through_the_shipped_binary() {
+    // The live bug's scale: `opencode export` exits before its stdout pipe
+    // drains, so a pipe capture loses everything past ~128 KiB. The door now
+    // captures through a scratch file; this pin drives the shipped binary over
+    // a document well past a pipe buffer and demands its LAST row.
+    let root = rig("oc-large");
+    let messages: Vec<String> = (0..700)
+        .map(|n| {
+            oc_message(
+                &format!("msg_{n}"),
+                "user",
+                &(1_789_549_200_500_i64 + n).to_string(),
+                &[oc_text(&format!("turn {n}"))],
+            )
+        })
+        .collect();
+    let export = export_doc(OC_SID, &messages);
+    assert!(
+        export.len() > 64 * 1024,
+        "the fixture must exceed a pipe buffer: {} bytes",
+        export.len()
+    );
+    fake_opencode(&root, &exporting(&export));
+    plant_session(&root, "oc", &oc_roster("main", "lead", OC_SID));
+    let (code, stdout, stderr) = run_with_path(&root, &fake_bin(&root), &["board", "oc"]);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(
+        stdout.contains("  turn 699\n"),
+        "the document's end was read whole"
+    );
+    assert!(!stdout.contains("coverage incomplete"), "{stdout}");
+    let _ = std::fs::remove_dir_all(&root);
+}

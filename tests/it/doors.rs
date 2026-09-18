@@ -297,6 +297,30 @@ fn run_sysctl_has_exactly_one_product_caller() {
     );
 }
 
+/// The opencode leg captures through a SCRATCH FILE, never a pipe: the real
+/// `opencode export` exits before its stdout pipe drains (measured on 1.18.31,
+/// 2026-09-18: 131072 of 3949726 bytes arrived through a pipe, the whole
+/// document through a file), so a pipe capture truncates the JSON document and
+/// the board covers a whole conversation as unreadable. The guard is lexical on
+/// purpose: no shell fixture can reproduce a runtime that abandons queued
+/// output at exit, so the wiring itself is what is pinned.
+#[test]
+fn the_opencode_leg_captures_through_a_file_never_a_pipe() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let text = fs::read_to_string(root.join("src/transport.rs"))
+        .expect("the transport source is readable");
+    let code = strip_literals(&strip_comments(&text));
+    let body = &code[body_of(&code, "fn run_opencode")];
+    assert!(
+        body.contains("CapturedToFile"),
+        "the opencode leg lost its file capture"
+    );
+    assert!(
+        !body.contains("Streams::Captured,"),
+        "the opencode leg regressed to a pipe capture; opencode exits before its pipe drains"
+    );
+}
+
 /// R3/R4: the BOOT-TIME proof is reachable from exactly the named operations,
 /// through the one worker end and rename share — and from nowhere else.
 ///
