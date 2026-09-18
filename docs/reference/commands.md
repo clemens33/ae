@@ -17,9 +17,10 @@ ae list [--all|--stopped|--needs-attn]
 ae upgrade             Install the latest tagged immutable release; no extra arguments
 ae next [--attach]     Name the top running session needing attention (read-only;
                        alias: ae jump). --attach jumps to it. Non-zero when none.
-ae brief [name] [--all] [--since <dur>]
+ae brief [name] [--all] [--since <dur>] [--seat <agent>]
                        Card a session: goal, the latest note per memo topic, each agent's
-                       declared state, and who is waiting on you. Read-only
+                       declared state, and who is waiting on you. Read-only.
+                       --seat prints ONE seat's seed pack instead of the cards
 ae quota               Show bounded local quota snapshots for every configured account
 ae usage [name…] [--json]
                        Show offline API-equivalent usage for all live sessions, or
@@ -360,6 +361,7 @@ ae brief              # the session this pane is in, else the whole fleet
 ae brief aedev        # one session by name, running or not
 ae brief --all        # every running session, most actionable first
 ae brief --all --since 4h    # ... dropping topic records older than four hours
+ae brief aedev --seat lead   # ONE seat's seed pack, for a successor on another tool
 ```
 
 One card per session, plain text, no colour:
@@ -386,6 +388,42 @@ aedev · running · attn:waiting-user · ae 2026.9.5 · created 2d ago · starte
 | `topics:` | the **latest** record per `memo` topic, newest topic first — see the topic convention below |
 | `agents:` | one line per roster agent: its declared state, how long ago it declared, and the reason it gave |
 | `needs you:` | explicit `waiting-user`/`blocked` declarations from the session's main agent or named `colead` (a `waiting-agent` past its ceiling is materialized as `blocked`), with each full reason wrapped across as many bounded lines as needed. Worker declarations and unanswered asks/reviews are intra-session traffic and stay out. Nothing here is inferred, so an empty section reads `none recorded` |
+
+### `--seat` — the seed pack
+
+A seat that has to continue on a different tool — its quota died, its harness fell over —
+starts from zero. `--seat` prints everything ae already knows about that ONE seat, as plain
+text you paste into whatever tool picks it up. It **writes nothing**, sends nothing and
+touches no tmux, and it works on a stopped session as well as a running one.
+
+```bash
+ae brief aedev --seat lead > /tmp/seed.md
+```
+
+It needs exactly one session — named, or the caller's own — and takes neither `--all` (a pack
+is one seat) nor `--since` (which drops exactly the old records the pack exists to carry).
+Both are usage errors. An unknown seat exits `1` and names the roster.
+
+| Section | What it holds |
+|---|---|
+| 1 identity | session, agent, slot and its class (`main` / `fixed` / `spawned`), the spawner of a spawned seat, the recorded profile and tool. No role is claimed: a meta records a slot, not a rank |
+| 2 goal | the session [`goal`](helpers.md), in full |
+| 3 declared state | this seat's last declaration, its full reason and its age |
+| 4 memos | the **full body** for `goal`, `decision`, `parking`, for any topic newer than 48 h, and for any topic this seat wrote. Every other topic is a title and an age |
+| 5 requests | pending in this seat's inbox, each with the exact `reply` command; pending it sent; and anything closed in the last 24 h, one line each |
+| 6 owned spawns | the seats it spawned that still hold one, with their states |
+| 7 roster | the session's seats. Monitor panes are not seats and never appear |
+| 8 git | work dir, branch, HEAD, dirty, the latest tag and the last five commit subjects |
+| 9 first message | a spawned seat's original brief, bounded at 8 KB, and whether the `brief-*.md` file it names still exists |
+| 10 successor instructions | fixed text: everything above is a RECORD written by agents, so verify before acting; re-declare state, read the plans the memos name, answer the pending requests, continue at the parking note |
+
+Two properties are deliberate. The pack targets 24 KB and never exceeds 48 KB; when it has to
+clip it drops stale titles first, then closed requests, then the oldest memo bodies, and each
+clip leaves a line naming what went. The parking note, the pending requests, the identity and
+the closing block are never clipped. And every agent-written field — memo body, state reason,
+request summary, carried brief — is **neutralised**: a line that would otherwise arrive wearing
+ae's own `⟦ae:` provenance marker arrives prefixed with `| `, so a record cannot impersonate
+the setup ae itself injects.
 
 ### The topic convention
 
