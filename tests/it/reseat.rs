@@ -40,6 +40,14 @@ fn a_dead_seat_moves_to_another_tool_in_its_own_pane_and_is_handed_its_seed() {
     let rig = Rig::new("move");
     rig.seat_rows("spawned.0", "scout", "grok", "grok");
     record_history(&rig, "spawned.0");
+    // The seat's recorded first message, which `run::clear_slot` DELETES. The
+    // pack must therefore be built before the cleanup, and this is the pin on
+    // that ordering: the text is in the seed and the file is gone afterwards.
+    let prompt = rig.dir.join("launch.spawned.0.prompt");
+    assert!(
+        std::fs::write(&prompt, "the brief this seat was opened with").is_ok(),
+        "a recorded first message"
+    );
     let pane = rig.new_pane("spawned.0", "scout");
     rig.start(&pane, "spawned.0", "grok");
     rig.kill_tools(&pane);
@@ -71,11 +79,10 @@ fn a_dead_seat_moves_to_another_tool_in_its_own_pane_and_is_handed_its_seed() {
         rig.meta_row("harness_session_prior.spawned.0"),
         format!("grok:{OLD_ID}")
     );
-    assert_ne!(
-        rig.meta_row("harness_session.spawned.0"),
-        OLD_ID,
-        "the current row is the SUCCESSOR's conversation"
-    );
+    // EXACTLY `pending`: opencode's id can only be captured after its tool
+    // starts, so a reseat onto it must not invent one — `!= OLD_ID` would pass
+    // for a stale uuid just as happily.
+    assert_eq!(rig.meta_row("harness_session.spawned.0"), "pending");
     // Everything that described the tool that left is gone, and the stamps
     // that describe a launch are this launch's.
     for gone in ["observed_model.spawned.0=", "observed_model_pin.spawned.0="] {
@@ -89,8 +96,22 @@ fn a_dead_seat_moves_to_another_tool_in_its_own_pane_and_is_handed_its_seed() {
     assert_ne!(rig.meta_row("capture_floor.spawned.0"), "100");
     // The seed is KEPT, so a human can re-send it by hand, and it is ae's own
     // setup turn — the marker rule's `ctx`, put on by the one owner.
-    let seed = std::fs::read_to_string(rig.dir.join("seed.scout.md")).unwrap_or_default();
+    let seed_path = rig.dir.join("seed.scout.md");
+    let seed = std::fs::read_to_string(&seed_path).unwrap_or_default();
     assert!(seed.starts_with("⟦ae:ctx⟧\n"), "{seed:?}");
+    assert_eq!(mode_of(&seed_path), 0o600, "the seed is published 0600");
+    // THE ORDER, pinned: the pack carries the first message, and the file it
+    // was read from is gone — so the build happened before the cleanup.
+    assert!(
+        seed.contains("## 9. first message")
+            && seed.contains("the brief this seat was opened with"),
+        "the seed carries the recorded first message: {seed}"
+    );
+    assert!(
+        !prompt.exists(),
+        "the slot's launch files are cleared: {} survived",
+        prompt.display()
+    );
     assert!(
         seed.contains("## 10. successor instructions"),
         "the seed IS the seat pack: {seed}"
@@ -115,6 +136,20 @@ fn a_dead_seat_moves_to_another_tool_in_its_own_pane_and_is_handed_its_seed() {
         "the successor started in the seat's working copy: {}",
         rig.launched()
     );
+
+    // CRASH WINDOW 2, in the shape a human meets it: the meta names the new
+    // profile and the pane is back at its shell. `relaunch` is what the
+    // refusal on that path tells them to run, so it has to finish the move
+    // rather than resurrect the tool the seat left.
+    rig.kill_tools(&pane);
+    let (code, out, err) = rig.run("_relaunch", &["scout"]);
+    assert_eq!(code, Some(0), "out={out} err={err}");
+    assert!(out.contains("relaunched scout"), "{out}");
+    assert!(
+        rig.tool_pid(&pane, "opencode").is_some(),
+        "back on the NEW profile's tool, not the one it was moved off"
+    );
+    assert_eq!(rig.meta_row("profile.spawned.0"), "fake-opencode");
 }
 
 #[test]
@@ -255,4 +290,143 @@ fn a_pane_stamped_for_another_slot_is_refused_before_the_lock() {
         !rig.dir.join("seed.scout.md").exists(),
         "no seed was published"
     );
+}
+
+/// The published mode of one file, for the 0600 assertions.
+fn mode_of(path: &std::path::Path) -> u32 {
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::metadata(path)
+        .map(|meta| meta.permissions().mode() & 0o777)
+        .unwrap_or_default()
+}
+
+#[test]
+fn a_move_onto_a_tool_that_takes_its_id_at_launch_gets_a_fresh_one_and_a_lost_seed_fails_loudly() {
+    // TWO rules on one move, because the fixture gives both for free.
+    //
+    // The other half of the conversation rule: opencode's id is captured after
+    // the fact and reads `pending`, grok's is passed on the launch line and
+    // must be a FRESH uuid — never the predecessor's, and never `pending`.
+    //
+    // And the seat is up while its SEED never landed. This fake draws no input
+    // box, so the delivery cannot be proven and ae will not claim it: the move
+    // is real and recorded, the exit is 1, and the refusal hands over the
+    // command that re-sends the kept seed by hand.
+    let rig = Rig::new("freshid");
+    rig.seat_rows("spawned.0", "scout", "opencode", "opencode");
+    record_history(&rig, "spawned.0");
+    let pane = rig.new_pane("spawned.0", "scout");
+    rig.start(&pane, "spawned.0", "opencode");
+    rig.kill_tools(&pane);
+
+    let (code, out, err) = rig.run_top(
+        &rig.main_pane.clone(),
+        &["reseat", &rig.session, "scout", "--using", "fake-grok"],
+    );
+
+    assert_eq!(code, Some(1), "out={out} err={err}");
+    assert!(
+        err.contains("seed undelivered") && err.contains("a turn never landed"),
+        "the seat is up and the turn is not claimed: {err}"
+    );
+    assert!(
+        err.contains("send scout") && err.contains("seed.scout.md"),
+        "the hand-send command names the kept seed: {err}"
+    );
+    assert!(
+        rig.tool_pid(&pane, "grok").is_some(),
+        "the seat IS up — only the turn failed"
+    );
+    let id = rig.meta_row("harness_session.spawned.0");
+    assert_ne!(id, OLD_ID, "not the predecessor's");
+    assert_ne!(id, "pending", "grok takes one at launch");
+    // The canonical shape, spelled here rather than reached for through a
+    // private module: 8-4-4-4-12 lowercase hex with the dashes where they go.
+    let groups: Vec<usize> = id.split('-').map(str::len).collect();
+    assert_eq!(groups, vec![8, 4, 4, 4, 12], "a canonical uuid: {id:?}");
+    assert!(
+        id.chars()
+            .all(|ch| ch == '-' || ch.is_ascii_digit() || ch.is_ascii_lowercase()),
+        "lowercase hex only: {id:?}"
+    );
+    // And the predecessor is tagged with the tool that owned it, which is the
+    // OLD one here — the tag follows the conversation, not the arrival.
+    assert_eq!(
+        rig.meta_row("harness_session_prior.spawned.0"),
+        format!("opencode:{OLD_ID}")
+    );
+    // The launch line carried it: grok is the class that takes `--session-id`.
+    assert!(
+        rig.launched().contains(&format!("--session-id {id}")),
+        "the new conversation reached the launch line: {}",
+        rig.launched()
+    );
+}
+
+#[test]
+fn a_reseat_records_who_asked_and_which_way_the_seat_moved() {
+    // The audit trail's own pin. The meta keeps only the CURRENT profile, so
+    // the event is the one place that pairs the predecessor's conversation
+    // with the profile it ran under — and the actor must be the SEAT that ran
+    // the command, never a blanket `human`.
+    let rig = Rig::new("record");
+    rig.seat_rows("spawned.0", "scout", "grok", "grok");
+    record_history(&rig, "spawned.0");
+    let pane = rig.new_pane("spawned.0", "scout");
+    rig.start(&pane, "spawned.0", "grok");
+    rig.kill_tools(&pane);
+
+    let (code, out, err) = rig.run_top(
+        &rig.main_pane.clone(),
+        &["reseat", &rig.session, "scout", "--using", "fake-opencode"],
+    );
+    assert_eq!(code, Some(0), "out={out} err={err}");
+
+    let events = rig.events();
+    let line = events
+        .lines()
+        .find(|line| line.contains("\"action\":\"reseat\""))
+        .unwrap_or_default();
+    assert!(
+        line.contains("\"actor\":\"lead\""),
+        "the calling SEAT, not `human`: {line}"
+    );
+    assert!(
+        line.contains("from fake-grok to fake-opencode"),
+        "the move, both ends: {line}"
+    );
+    assert!(
+        line.contains(&format!("prior {OLD_ID}")),
+        "the conversation the seat is leaving: {line}"
+    );
+    assert!(
+        line.contains("\"target\":\"scout\"") && line.contains("\"target_slot\":\"spawned.0\""),
+        "the seat it names: {line}"
+    );
+}
+
+#[test]
+fn a_seat_cannot_reseat_itself() {
+    // The tool running the command is the one that would be replaced under it.
+    // The dead proof would refuse a live caller anyway; this states the rule
+    // rather than leaving it to an accident of ordering.
+    let rig = Rig::new("selfmove");
+    let pane = rig.seat("worker.1", "w1", "opencode");
+
+    let (code, out, err) = rig.run_top(
+        &pane,
+        &["reseat", &rig.session, "w1", "--using", "fake-grok"],
+    );
+
+    assert_eq!(code, Some(1), "out={out} err={err}");
+    assert!(
+        err.contains("is THIS pane") && err.contains("cannot reseat itself"),
+        "the refusal says which pane and why: {err}"
+    );
+    assert!(
+        !err.contains("is running"),
+        "refused on its own terms: {err}"
+    );
+    assert_eq!(rig.meta_row("profile.worker.1"), "fake-opencode");
+    assert!(rig.received().is_empty(), "{:?}", rig.received());
 }

@@ -228,7 +228,7 @@ impl Rig {
     }
 
     /// Run one core subcommand as the LEAD's pane — the caller every pin uses.
-    fn run(&self, sub: &str, tail: &[&str]) -> (Option<i32>, String, String) {
+    pub fn run(&self, sub: &str, tail: &[&str]) -> (Option<i32>, String, String) {
         self.run_from(&self.main_pane.clone(), sub, tail)
     }
 

@@ -121,23 +121,43 @@ fn seed_file(dir: &Path, agent: &str) -> PathBuf {
     dir.join(format!("seed.{}.md", crate::launch::safe_slot(agent)))
 }
 
-/// THE CALLER RULE. `None` means allowed.
+/// Who ran this, read ONCE: the caller rule, the self-reseat refusal and the
+/// event's actor are three questions about the same pane.
+#[derive(Default)]
+struct Caller {
+    /// `$TMUX_PANE`, when this ran inside tmux at all.
+    pane: Option<String>,
+    /// `@ae_agent` — the display ref a record names. Empty for a plain shell,
+    /// which the record renders as `human`, exactly as `relaunch` does.
+    display: String,
+}
+
+/// THE CALLER RULE. `Err` is the refusal, `Ok` the caller.
 ///
 /// A pane ae STAMPED is a seat, and a seat may reseat only inside its own
 /// session — the boundary `relaunch` draws, for the same reason. A plain shell
 /// carries no stamp and may reseat any session, because the human is who this
 /// verb is for: the moment a lead's own quota dies, no agent of that session
 /// can run anything.
-fn caller_refusal(session: &str) -> Option<String> {
-    let (viewer, _) = crate::actual_calling_pane()?;
-    let slot = viewer.slot.filter(|slot| !slot.is_empty())?;
+fn caller_of(session: &str) -> Result<Caller, String> {
+    let pane = crate::doors::calling_pane_id();
+    let Some((viewer, _)) = crate::actual_calling_pane() else {
+        return Ok(Caller {
+            pane,
+            display: String::new(),
+        });
+    };
+    let display = viewer.agent.clone().unwrap_or_default();
+    let Some(slot) = viewer.slot.clone().filter(|slot| !slot.is_empty()) else {
+        return Ok(Caller { pane, display });
+    };
     match viewer.session.as_deref() {
-        Some(name) if name == session => None,
-        Some(name) => Some(format!(
+        Some(name) if name == session => Ok(Caller { pane, display }),
+        Some(name) => Err(format!(
             "Error: this pane is slot {slot} of '{name}', and reseat works on the caller's own \
              session only — run it from '{session}', or from a shell outside ae."
         )),
-        None => Some(format!(
+        None => Err(format!(
             "Error: this pane carries ae slot {slot} but tmux did not say which session it is in \
              — ae will not reseat '{session}' for a caller it cannot place."
         )),
@@ -264,10 +284,13 @@ pub(crate) fn run(
     let dir = crate::inventory::Roots::under(root)
         .sessions()
         .join(&parsed.session);
-    if let Some(line) = caller_refusal(&parsed.session) {
-        writeln!(err, "{line}")?;
-        return Ok(EXIT_FAILED);
-    }
+    let caller = match caller_of(&parsed.session) {
+        Ok(caller) => caller,
+        Err(line) => {
+            writeln!(err, "{line}")?;
+            return Ok(EXIT_FAILED);
+        }
+    };
     // THE ROSTER FIRST, and tmux only after it. Everything a typo gets wrong —
     // the seat's name, the profile — is a DURABLE fact, and answering it from
     // the meta means a stopped session diagnoses the argv exactly as a running
@@ -325,6 +348,19 @@ pub(crate) fn run(
             return Ok(EXIT_FAILED);
         }
     };
+    // NOT YOUR OWN SEAT. The dead proof would refuse a live caller anyway, so
+    // this closes no hole today — it states the rule instead of leaving it to
+    // an accident of ordering, and it says the useful thing: the seat running
+    // this command cannot be the seat whose tool is replaced under it.
+    if caller.pane.as_deref() == Some(target.pane.as_str()) {
+        writeln!(
+            err,
+            "Error: '{}' is THIS pane — a seat cannot reseat itself, because the tool running the \
+             command is the one that would be replaced. Ask another seat, or run it from a shell.",
+            target.agent
+        )?;
+        return Ok(EXIT_FAILED);
+    }
     // The pane's own stamp against the roster. They disagree only when a stamp
     // is stale or a meta was hand-edited, and the move would then be published
     // for one seat and pasted into another's pane.
@@ -428,6 +464,16 @@ pub(crate) fn run(
             return Ok(EXIT_FAILED);
         }
     };
+    let at = Record {
+        caller: &caller,
+        now,
+        from: &recorded,
+        to: &parsed.profile,
+        // The conversation the PREDECESSOR held, read off the row the move
+        // wrote: `reseated` appends it only when it can prove it, so an empty
+        // one here is the same "nothing to hand on" the roster records.
+        prior: &before.id_before,
+    };
     let started = crate::seat_relaunch::start(&dir, &target, &after, now, RESEAT_VERB, err)?;
     // PAST THE LOCK before any readiness wait: a gated turn blocks up to 45s,
     // and nothing else may be held out of the session's lifecycle for that.
@@ -444,7 +490,7 @@ pub(crate) fn run(
             Ok(EXIT_FAILED)
         }
         Started::NotSeen => {
-            record(&dir, now, &target, "pasted, tool not seen");
+            record(&dir, &at, &target, "pasted, tool not seen");
             writeln!(
                 err,
                 "Error: '{}' moved to '{}' and its tool was not seen: look at the pane; \
@@ -460,7 +506,7 @@ pub(crate) fn run(
             resuming_seat,
             &parsed,
             &seed,
-            now,
+            &at,
             out,
             err,
         ),
@@ -480,7 +526,7 @@ fn finish(
     resuming_seat: bool,
     parsed: &Parsed,
     seed: &str,
-    now: Timestamp,
+    at: &Record<'_>,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> io::Result<u8> {
@@ -534,7 +580,7 @@ fn finish(
     // LAST: the new tool may have died while the turns were delivered, and
     // exit 0 means the seat is up NOW.
     if !crate::seat_relaunch::observe_identity(target, &proven.agent_bin, true) {
-        record(dir, now, target, "tool stopped after the reseat");
+        record(dir, at, target, "tool stopped after the reseat");
         writeln!(
             err,
             "Error: '{}' started on '{}' and is gone again (pane {}) — look at the pane.",
@@ -554,7 +600,7 @@ fn finish(
         "reseated {} (pane {}, slot {}) to {}{launch_note}, seed {seed_word}",
         target.agent, target.pane, target.slot, parsed.profile
     );
-    record(dir, now, target, &line);
+    record(dir, at, target, &line);
     if !launch_ok || !seed_ok {
         writeln!(err, "Error: {line} — a turn never landed.")?;
         writeln!(
@@ -570,13 +616,45 @@ fn finish(
     Ok(0)
 }
 
+/// What every `reseat` record carries besides its outcome: WHO asked, and the
+/// move itself.
+///
+/// The move is on the record because the meta only keeps the CURRENT profile:
+/// a later reader asking what this seat used to run has the predecessor's id
+/// in the roster but nothing that names the profile it ran under, and the
+/// event is the only place that pairing can live.
+struct Record<'a> {
+    caller: &'a Caller,
+    now: Timestamp,
+    from: &'a str,
+    to: &'a str,
+    prior: &'a str,
+}
+
 /// One `reseat` record for every attempt that REACHED the pane — the seat's
 /// history is the only place a later reader can see that its TOOL changed, and
 /// the only place that must not claim a paste that never was.
-fn record(dir: &Path, now: Timestamp, target: &Target, summary: &str) {
+fn record(dir: &Path, at: &Record<'_>, target: &Target, outcome: &str) {
+    let summary = format!(
+        "{outcome} [from {} to {}, prior {}]",
+        if at.from.is_empty() { "none" } else { at.from },
+        at.to,
+        if at.prior.is_empty() {
+            "none"
+        } else {
+            at.prior
+        }
+    );
     let _ = crate::store::open(dir).append_event(&tracked::event_line(&EventFields {
-        ts: now,
-        actor: "human",
+        ts: at.now,
+        // The caller's own display ref, exactly as `relaunch` records it: an
+        // agent that moves a peer's seat must not appear in the audit trail as
+        // the human, and a plain shell IS the human.
+        actor: if at.caller.display.is_empty() {
+            "human"
+        } else {
+            &at.caller.display
+        },
         action: RESEAT_ACTION,
         target: &target.agent,
         reference: "",
@@ -588,10 +666,10 @@ fn record(dir: &Path, now: Timestamp, target: &Target, summary: &str) {
         target_pane: &target.pane,
         target_session_uuid: "",
         caller_server: "",
-        caller_pane: "",
+        caller_pane: at.caller.pane.as_deref().unwrap_or_default(),
         caller_session_uuid: "",
         identity_gap: "",
-        summary,
+        summary: &summary,
         body_file: "",
     }));
 }

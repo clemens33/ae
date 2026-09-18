@@ -438,7 +438,8 @@ that would otherwise arrive wearing ae's own `⟦ae:` provenance marker arrives 
 `| `, so a record cannot impersonate the setup ae itself injects; and every control byte is
 replaced by a space, so nothing a terminal would ACT on survives. That second half is not
 cosmetic: `ae reseat` PASTES this document into a pane, where an escape sequence, a bell or
-a bracketed-paste terminator would be keystrokes rather than text.
+a bracketed-paste terminator would be keystrokes rather than text. Its one cost is
+flattening: a tab, and the leading indentation of a nested line, arrive as a single space.
 
 ### The topic convention
 
@@ -1433,15 +1434,16 @@ it pinned a profile this seat no longer runs. `--using` therefore takes a bare p
 **Who may run it.** A pane ae stamped is a seat, and a seat may reseat only inside its own
 session. A plain shell carries no stamp and may reseat any session — that caller is the
 point of the verb, because the moment a lead's own quota dies no agent of that session can
-run anything.
+run anything. A seat cannot reseat **itself**: the tool running the command is the one that
+would be replaced under it.
 
 **Refusals**, in the order they are answered. Everything durable is answered from the
 session's records, so a stopped session diagnoses a typo exactly as a running one does:
 an argv that is not `<session> <agent> --using <profile>`; a session ae cannot read; a
 caller in another session; a seat the roster does not name (the refusal lists the roster);
 a profile the seat already runs (`relaunch` is the verb for that); a profile `[profiles]`
-does not define or cannot lex; a pane whose stamp disagrees with the roster; then the
-dead proof's own ladder.
+does not define or cannot lex; the caller's own pane; a pane whose stamp disagrees with the
+roster; then the dead proof's own ladder.
 
 **If it stops half way.** Nothing before the paste needs undoing, and both windows are
 recoverable by hand. Before the meta is written the seat still records its old profile and
@@ -1449,8 +1451,12 @@ has no start marker, so `relaunch` brings it back on the tool it had. After the 
 written the pane sits at its shell, which is exactly what `relaunch` finishes — the
 refusal says so by name.
 
-Every attempt that reaches the pane is recorded as a `reseat` event, because the seat's
-history is the only place a later reader can see that its tool changed.
+Every attempt that reaches the pane is recorded as a `reseat` event, naming its caller (a
+seat by its own ref, a plain shell as the human), both profiles and the conversation being
+left behind. The seat's history is
+the only place a later reader can see that its tool changed, and the meta keeps only the
+current profile — so the pairing of a predecessor conversation with the profile it ran under
+lives on that event and nowhere else.
 
 ## `ae stop`
 

@@ -736,6 +736,55 @@ fn a_recorded_id_is_the_resume_target_for_every_tool() {
     }
 }
 
+#[test]
+fn a_recorded_id_with_no_start_marker_creates_for_every_tool() {
+    // WHAT `ae reseat` LEAVES BEHIND, asked of every harness at once: the meta
+    // names a conversation — a fresh uuid where the tool takes one at launch,
+    // `pending` where it cannot — and the start marker is GONE, because the
+    // slot's launch files were cleared. The MARKER is what decides
+    // create-versus-resume, so every tool must CREATE here. A tool that
+    // resumed on the mere presence of an id would hand the ARRIVING harness a
+    // conversation it has never seen, in a store it cannot read.
+    //
+    // The transcript is planted deliberately: the store probe PASSES, and the
+    // seat still creates. Without it the pin would only prove that a missing
+    // conversation is not resumed, which is a different rule.
+    for (tool, resume, fallback) in [
+        ("claude", &["--resume"][..], &["--continue"][..]),
+        ("codex", &["resume"][..], &[][..]),
+        ("gemini", &["--resume"][..], &["latest"][..]),
+        ("agy", &["--conversation"][..], &["--continue"][..]),
+        ("grok", &["--resume"][..], &["--continue"][..]),
+        ("muse", &["resume"][..], &[][..]),
+        ("opencode", &["--session"][..], &["--continue"][..]),
+    ] {
+        let rig = Rig::new(&format!("nomark-{tool}"));
+        rig.seat(tool, "u-9");
+        rig.transcript(tool, "u-9");
+        let argv = rig.planned_argv();
+        assert!(
+            !carries(&argv, resume),
+            "{tool} must not resume without the marker: {argv:?}"
+        );
+        assert!(
+            fallback.is_empty() || !carries(&argv, fallback),
+            "{tool} must not take its resume fallback either: {argv:?}"
+        );
+    }
+    // And the two classes that take a conversation AT LAUNCH carry the
+    // recorded one on the create form, which is what makes the id ae minted
+    // for the successor the id the successor actually runs under.
+    for tool in ["claude", "grok"] {
+        let rig = Rig::new(&format!("nomark-id-{tool}"));
+        rig.seat(tool, "u-9");
+        let argv = rig.planned_argv();
+        assert!(
+            carries(&argv, &["--session-id", "u-9"]),
+            "{tool} creates ON the recorded conversation: {argv:?}"
+        );
+    }
+}
+
 /// Muse's exact resume is a SUBCOMMAND that parses no positional argument:
 /// appending the ctx turn makes its parser fall back to TUI mode and refuse
 /// the launch (`invalid TUI options: unknown argument 'resume'`). The retained

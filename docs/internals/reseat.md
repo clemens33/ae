@@ -39,7 +39,9 @@ does, and a live seat is only reached at the dead proof.
    seat with no client override, so a profile accepted here is one `_run` can
    launch. No tool-class judgement: a reseat accepts exactly the profiles a
    launch does;
-7. the pane, and its stamp against the roster slot.
+7. the pane: not the CALLER'S own — a seat cannot reseat itself, because the
+   tool running the command is the one that would be replaced under it — and
+   its stamp must agree with the roster slot.
 
 Then, under `.lifecycle.<session>.lock`:
 
@@ -118,6 +120,26 @@ back looking for any control character but a newline.
 The seed file is KEPT after a successful move. It is what a human re-sends by
 hand when a turn did not land — the refusal prints that exact command — and it
 is the record of what the successor was actually told.
+
+## What it does not reset, and why
+
+`@ae_observed` is a pane option this verb deliberately leaves alone, although
+the seat behind it has just changed tool. Three facts make that safe, and all
+three have to hold:
+
+- the **watchdog is its one writer**, and it republishes the option every
+  cycle from that cycle's own live capture;
+- its one **reader that acts** is the same watchdog, restoring its own
+  cross-restart idle latch — so a stale value costs at most one cycle and then
+  heals itself. Every other reader DRAWS it: `ae list`, the `--json` digest,
+  the liveness snapshot that carries it onward;
+- **delivery never trusts it.** Every paste is gated by a LIVE capture through
+  `deliver::input_ready` / `wait_input_ready`, never by a recorded harness
+  state, so a stale option cannot let a turn into a pane that is not ready.
+
+If any of that changes — in particular if a reader ever ACTS on the option
+without taking its own capture — this verb owes a reset, and the note is the
+place that says so.
 
 ## What it does not do
 
