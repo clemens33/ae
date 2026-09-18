@@ -657,7 +657,7 @@ pub enum Request {
         /// Everything after the subcommand, as typed.
         tail: Vec<String>,
     },
-    /// `brief [session] [--all] [--since <dur>]` — validated by
+    /// `brief [session] [--all] [--since <dur>] [--seat <agent>]` — validated by
     /// [`crate::brief::parse`], which owns the flag grammar and its usage text.
     Brief {
         /// Everything after the subcommand, as typed.

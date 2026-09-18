@@ -236,9 +236,11 @@ Usage:
                          List sessions (running by default). 'ae list --help' has the
                          full filter set and what --json carries
   ae next [--attach]     Name the top session needing attention (--attach jumps to it)
-  ae brief [name] [--all] [--since <dur>]
+  ae brief [name] [--all] [--since <dur>] [--seat <agent>]
                          Card one session or the fleet: goal, the latest note per memo
-                         topic, each agent's declared state, and who is waiting on you
+                         topic, each agent's declared state, and who is waiting on you.
+                         --seat prints ONE seat's seed pack instead: what a successor
+                         continuing it on another tool needs
   ae board [session…] [--since <ts>] [--json] [--follow] [--lines <n>] [--assistant]
                          The filtered cross-fleet record: genuine human turns from
                          every seat's harness transcript (Claude Code, Codex, Grok,

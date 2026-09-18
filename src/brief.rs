@@ -49,11 +49,15 @@ use crate::state;
 use crate::time::Timestamp;
 
 /// What `ae brief` prints when its argv does not parse.
-pub const USAGE: &str = "Usage: ae brief [session] [--all] [--since <duration>]\n\n  \
+pub const USAGE: &str = "Usage: ae brief [session] [--all] [--since <duration>] [--seat <agent>]\n\n  \
                          session          the session to card; default is the caller's own,\n                   \
                          and --all when ae cannot name one\n  \
                          --all            every running session, most attention first\n  \
-                         --since <dur>    drop topic records older than <dur> (90s, 30m, 2h, 3d)\n";
+                         --since <dur>    drop topic records older than <dur> (90s, 30m, 2h, 3d)\n  \
+                         --seat <agent>   print that ONE seat's seed pack instead of the cards:\n                   \
+                         what a successor continuing it on another tool needs.\n                   \
+                         Needs exactly one session, by name or the caller's own,\n                   \
+                         and takes neither --all nor --since\n";
 
 /// The width a card is written to fit — a terminal half, not a full one, so two
 /// cards sit side by side in a split.
@@ -92,6 +96,8 @@ pub struct Args {
     pub target: Target,
     /// `--since`, in seconds — topic records older than this are dropped.
     pub since_secs: Option<i64>,
+    /// `--seat` — the one seat to seed-pack instead of carding the session.
+    pub seat: Option<String>,
 }
 
 /// The argv did not parse; the offending token, when there is one.
@@ -118,13 +124,19 @@ impl Usage {
 /// assert_eq!(parse(&[]), Ok(Args::default()));
 /// assert_eq!(
 ///     parse(&words(&["--all", "--since", "2h"])),
-///     Ok(Args { target: Target::All, since_secs: Some(7_200) })
+///     Ok(Args { target: Target::All, since_secs: Some(7_200), seat: None })
 /// );
 /// assert_eq!(
 ///     parse(&words(&["aedev"])),
-///     Ok(Args { target: Target::Named("aedev".to_owned()), since_secs: None })
+///     Ok(Args { target: Target::Named("aedev".to_owned()), since_secs: None, seat: None })
 /// );
 /// assert!(parse(&words(&["--frobnicate"])).is_err());
+/// // A seed pack is one seat of one session, so the fleet and window flags are
+/// // refused beside it, in either order.
+/// assert!(parse(&words(&["--seat", "lead", "--all"])).is_err());
+/// assert!(parse(&words(&["--all", "--seat", "lead"])).is_err());
+/// assert!(parse(&words(&["--seat", "lead", "--since", "2h"])).is_err());
+/// assert!(parse(&words(&["--since", "2h", "--seat", "lead"])).is_err());
 /// ```
 ///
 /// # Errors
@@ -137,14 +149,30 @@ pub fn parse(tail: &[String]) -> Result<Args, Usage> {
     while let Some(token) = tail.get(index) {
         match token.as_str() {
             "--all" => {
-                if matches!(args.target, Target::Named(_)) {
+                // A seed pack is ONE seat's, so the fleet flag contradicts it
+                // whichever order the two arrive in.
+                if matches!(args.target, Target::Named(_)) || args.seat.is_some() {
                     return Err(Usage(Some(token.clone())));
                 }
                 args.target = Target::All;
             }
             "--since" => {
+                // `--since` DROPS old topic records, and the pack's parking note
+                // is exactly the old record a successor cannot lose. The two are
+                // refused together rather than silently reconciled.
+                if args.seat.is_some() {
+                    return Err(Usage(Some(token.clone())));
+                }
                 let value = tail.get(index + 1).ok_or(Usage(Some(token.clone())))?;
                 args.since_secs = Some(duration_secs(value).ok_or(Usage(Some(value.clone())))?);
+                index += 1;
+            }
+            "--seat" => {
+                let value = tail.get(index + 1).ok_or(Usage(Some(token.clone())))?;
+                if args.target == Target::All || args.since_secs.is_some() || args.seat.is_some() {
+                    return Err(Usage(Some(token.clone())));
+                }
+                args.seat = Some(value.clone());
                 index += 1;
             }
             // A `-`/`--` token nothing above defines is a usage error, exactly
@@ -896,7 +924,8 @@ mod tests {
             parse(&words(&["aedev"])),
             Ok(Args {
                 target: Target::Named("aedev".to_owned()),
-                since_secs: None
+                since_secs: None,
+                seat: None
             })
         );
         assert!(parse(&words(&["--frobnicate"])).is_err());

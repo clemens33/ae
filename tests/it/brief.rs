@@ -588,3 +588,146 @@ fn a_bare_brief_inside_a_session_cards_that_session_and_no_other() {
     );
     assert!(!stderr.contains("inventory incomplete"), "{stderr}");
 }
+
+// ── `--seat`: ONE seat's seed pack ──────────────────────────────────────────
+//
+// The pack is what a successor continuing this seat on another tool is given,
+// so the arm below asserts the two things that make it worth pasting: the
+// parking note arrives WHOLE (the card clips it to one line, and that clip is
+// exactly what the drill measured as the costly loss), and a pending request
+// arrives with the exact command that answers it.
+
+/// Plant a second seat's memo, declaration, spawn record and open request, in
+/// the shapes the product writes them. SYNTHETIC throughout: no live session is
+/// read, and no real record is quoted.
+fn plant_seat_facts(dir: &Path, parking: &str) {
+    let ts = ago(0);
+    let spawn = format!(
+        r#"{{"ts":"{ts}","actor":"lead","action":"spawn","target":"scribe","summary":"go"}}"#
+    );
+    let ask = format!(
+        r#"{{"ts":"{ts}","actor":"scribe","action":"ask","target":"lead","ref":"ae-20260918T120000Z-0123abcd","actor_slot":"spawned.0","actor_session":"brf9","target_slot":"main","target_session":"brf9","summary":"which cap applies"}}"#
+    );
+    let existing = fs::read_to_string(dir.join("events.jsonl")).unwrap_or_default();
+    assert!(
+        fs::write(
+            dir.join("events.jsonl"),
+            format!("{existing}{spawn}\n{ask}\n")
+        )
+        .is_ok(),
+        "a planted ledger"
+    );
+    memo(dir, "parking", parking);
+}
+
+#[test]
+fn a_seat_pack_carries_the_parking_note_whole_and_the_exact_reply_command() {
+    let root = scratch("seat");
+    let work = root.join("work");
+    let dir = plant(&root, "brf9", &work);
+    // Long enough that the CARD would clip it: the pack must not.
+    let parking = "resume here: (a) land the renderer, (b) wire the flag, \
+                   (c) write the integration pins, (d) update the commands page \
+                   and only then ask the lead to merge";
+    plant_seat_facts(&dir, parking);
+    declare(&dir, "lead", "working", "driving the seed pack slice", 120);
+
+    let (code, stdout, stderr) = run(&root, &["brief", "brf9", "--seat", "lead"]);
+    assert_eq!(code, Some(0), "stderr: {stderr}");
+    assert!(
+        stdout.contains(parking),
+        "the parking body is whole: {stdout}"
+    );
+    // The command names the session's own helper dir, this seat as the replying
+    // identity, and the label the request's KIND carries.
+    let reply = format!(
+        "{}/reply --as \"lead\" \"ae-20260918T120000Z-0123abcd\" \"<your reply>\"",
+        dir.display()
+    );
+    assert!(stdout.contains(&reply), "{stdout}");
+    assert!(
+        stdout.contains("## 6. owned spawns\n  scribe"),
+        "the seat owns what it spawned: {stdout}"
+    );
+    assert!(
+        stdout.contains("state: working") && stdout.contains("driving the seed pack slice"),
+        "{stdout}"
+    );
+    // The closing block is last, and it tells the successor the rest is DATA.
+    assert!(
+        stdout.ends_with("4. Continue at the parking note in section 4.\n"),
+        "{stdout}"
+    );
+    // The card path is UNTOUCHED by the flag's existence.
+    let (code, cards, _) = run(&root, &["brief", "brf9"]);
+    assert_eq!(code, Some(0));
+    assert!(cards.starts_with("brf9 · "), "{cards}");
+    assert!(!cards.contains("# seed pack"), "{cards}");
+}
+
+#[test]
+fn a_seat_pack_refuses_the_flags_that_contradict_it_and_names_an_unknown_seat() {
+    let root = scratch("seatrefuse");
+    let work = root.join("work");
+    let dir = plant(&root, "brf10", &work);
+    plant_seat_facts(&dir, "resume here: nothing yet");
+
+    // A pack is ONE seat of ONE session, so the fleet flag and the window flag
+    // are usage errors beside it — in EITHER order, so neither is a last-wins.
+    for tail in [
+        vec!["brief", "brf10", "--seat", "lead", "--all"],
+        vec!["brief", "--all", "--seat", "lead"],
+        vec!["brief", "brf10", "--seat", "lead", "--since", "2h"],
+        vec!["brief", "brf10", "--since", "2h", "--seat", "lead"],
+        vec!["brief", "brf10", "--seat"],
+    ] {
+        let (code, stdout, stderr) = run(&root, &tail);
+        assert_eq!(code, Some(2), "{tail:?}: {stderr}");
+        assert!(stdout.is_empty(), "{tail:?}: {stdout}");
+        assert!(stderr.contains("Usage: ae brief"), "{tail:?}: {stderr}");
+    }
+
+    // A seat that is not on the roster is named, and so is the roster — a
+    // successor that mistyped a name can see what it should have typed.
+    let (code, stdout, stderr) = run(&root, &["brief", "brf10", "--seat", "nobody"]);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(stdout.is_empty(), "{stdout}");
+    assert!(
+        stderr.contains("ae brief: brf10 has no seat named nobody; its roster is lead, scribe"),
+        "{stderr}"
+    );
+
+    // No session to pack, and no fleet to fall back to: the card path widens to
+    // every running session here, and the pack path must NOT.
+    let (code, stdout, stderr) = run(&root, &["brief", "--seat", "lead"]);
+    assert_eq!(code, Some(2), "{stderr}");
+    assert!(stdout.is_empty(), "{stdout}");
+    assert!(stderr.contains("--seat needs one session"), "{stderr}");
+}
+
+#[test]
+fn a_seat_pack_reads_a_stopped_session_and_still_names_what_it_owns() {
+    // The whole point of the surface: the seat whose tool died is the one that
+    // needs a pack, and its session is often no longer running. Nothing here
+    // asks tmux anything — the planted server socket does not exist.
+    let root = scratch("seatstopped");
+    let work = root.join("work");
+    let dir = plant(&root, "brf11", &work);
+    plant_seat_facts(&dir, "resume here: the successor picks this up");
+
+    let (code, stdout, stderr) = run(&root, &["brief", "brf11", "--seat", "lead"]);
+    assert_eq!(code, Some(0), "stderr: {stderr}");
+    assert!(stdout.contains("# seed pack — brf11 / lead"), "{stdout}");
+    // Stop is not retire: a seat still owns what it spawned.
+    assert!(
+        stdout.contains("## 6. owned spawns\n  scribe"),
+        "a stopped session keeps its ownership: {stdout}"
+    );
+    assert!(
+        stdout.contains("resume here: the successor picks this up"),
+        "{stdout}"
+    );
+    // Monitor panes are not seats and never reach the roster.
+    assert!(!stdout.contains("_watchdog"), "{stdout}");
+    assert!(!stdout.contains("_events"), "{stdout}");
+}

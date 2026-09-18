@@ -89,6 +89,12 @@ enum Query<'a> {
     /// `push -u origin HEAD:refs/heads/<branch>` — the end path's push, judged
     /// by exit status.
     PushHead { branch: &'a str },
+    /// `log -n 5 --format=%s` — the seed pack's recent-commit subjects. The
+    /// count is BAKED so the shape stays fixed: a caller-chosen number would
+    /// make this the one query whose argv is not visible in this file.
+    RecentSubjects,
+    /// `describe --tags --abbrev=0` — the seed pack's latest reachable tag.
+    LatestTag,
 }
 
 /// A git argv minted ONLY by this module's [`argv`] builder.
@@ -231,6 +237,17 @@ fn argv(wdir: &OsStr, query: &Query) -> GitArgv {
             args.push("origin".into());
             args.push(format!("HEAD:refs/heads/{branch}").into());
         }
+        Query::RecentSubjects => {
+            args.push("log".into());
+            args.push("-n".into());
+            args.push(RECENT_SUBJECTS.to_string().into());
+            args.push("--format=%s".into());
+        }
+        Query::LatestTag => {
+            args.push("describe".into());
+            args.push("--tags".into());
+            args.push("--abbrev=0".into());
+        }
     }
     GitArgv(args)
 }
@@ -341,6 +358,56 @@ pub(crate) fn branch_head(wdir: &[u8]) -> Option<String> {
     } else {
         None
     }
+}
+
+/// How many commit subjects a seed pack carries.
+const RECENT_SUBJECTS: usize = 5;
+
+/// The last [`RECENT_SUBJECTS`] commit subjects at `wdir`, newest first.
+///
+/// A subject is free text a human wrote, so nothing here interprets it beyond
+/// dropping an empty line; the pack neutralises what it renders. A failed run,
+/// a path that is no work tree, and a repository with no commits all answer the
+/// same way — an empty list, which the pack prints as `none recorded`.
+pub(crate) fn recent_subjects(wdir: &[u8]) -> Vec<String> {
+    if wdir.is_empty() {
+        return Vec::new();
+    }
+    let wdir = OsStr::from_bytes(wdir);
+    if !crate::transport::run_git(&argv(wdir, &Query::IsWorkTree)).0 {
+        return Vec::new();
+    }
+    let (succeeded, out) = crate::transport::run_git(&argv(wdir, &Query::RecentSubjects));
+    if !succeeded {
+        return Vec::new();
+    }
+    out.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .take(RECENT_SUBJECTS)
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The nearest tag reachable from HEAD at `wdir`, or `None`.
+///
+/// STRICT, like every other interpreter here: a value only when the output is
+/// one non-empty token with no whitespace and no control byte. `describe`
+/// prints a `fatal:` line to stderr and nothing to stdout when no tag exists,
+/// and an unannotated-tag repository can print surprising things; neither may
+/// become a tag name the successor trusts.
+pub(crate) fn latest_tag(wdir: &[u8]) -> Option<String> {
+    if wdir.is_empty() {
+        return None;
+    }
+    let wdir = OsStr::from_bytes(wdir);
+    if !crate::transport::run_git(&argv(wdir, &Query::IsWorkTree)).0 {
+        return None;
+    }
+    let (succeeded, out) = crate::transport::run_git(&argv(wdir, &Query::LatestTag));
+    let tag = out.trim();
+    (succeeded && !tag.is_empty() && !tag.chars().any(|ch| ch.is_whitespace() || ch.is_control()))
+        .then(|| tag.to_owned())
 }
 
 /// Whether the work tree at `wdir` has TRACKED modifications — the `*` the

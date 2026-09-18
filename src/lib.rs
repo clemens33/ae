@@ -1951,6 +1951,16 @@ fn run_brief(
         brief::Target::Caller => calling_session_name()
             .filter(|name| world.sessions.iter().any(|entry| &entry.name == name)),
     };
+    // A seed pack is ONE seat of ONE session, so the caller-unknown fallback to
+    // the whole fleet is refused here rather than silently packing something
+    // else. Every other refusal below is the card path's own, reused.
+    if args.seat.is_some() && named.is_none() {
+        writeln!(
+            err,
+            "ae brief: --seat needs one session: name it, or run from a pane inside one"
+        )?;
+        return Ok(entry::EXIT_USAGE);
+    }
     let selected: Vec<&digest::SessionEntry> = if let Some(name) = &named {
         let Some(entry) = world.sessions.iter().find(|entry| &entry.name == name) else {
             // A COMPLETE enumeration proves absence; an incomplete one only
@@ -1970,12 +1980,23 @@ fn run_brief(
     } else {
         filters::Selection::running().select(&world.sessions, world.now)
     };
+    let sessions = inventory::Roots::under(&root);
+    let home = doors::home();
+    if let (Some(seat), Some(entry)) = (args.seat.as_deref(), selected.first()) {
+        return run_seat_pack(
+            entry,
+            &sessions.sessions().join(&entry.name),
+            home.as_deref(),
+            world.now,
+            seat,
+            out,
+            err,
+        );
+    }
     if selected.is_empty() {
         write!(err, "{}", brief::NOTHING)?;
         return Ok(0);
     }
-    let sessions = inventory::Roots::under(&root);
-    let home = doors::home();
     let cards = brief::ordered(
         selected
             .iter()
@@ -1998,6 +2019,173 @@ fn run_brief(
     );
     write!(out, "{}", brief::render(&cards))?;
     Ok(0)
+}
+
+/// `ae brief <session> --seat <agent>` — ONE seat's seed pack, on stdout.
+///
+/// The impure half, and the only place the pack's world is read. It writes
+/// nothing, sends nothing and touches no tmux, so it answers for a stopped
+/// session exactly as it does for a running one.
+///
+/// The record is read ONCE, through [`session::RecordSnapshot::read`], and that
+/// read's OUTCOME is what the renderer is told. This matters because
+/// [`store::Store::container`] is quiet: an unreadable journal comes back as an
+/// empty `Vec`, and a pack built off it would tell a successor that it owes
+/// nobody anything. An absent or unreadable META refuses outright — without a
+/// roster there is no seat to pack.
+fn run_seat_pack(
+    entry: &digest::SessionEntry,
+    dir: &std::path::Path,
+    home: Option<&std::path::Path>,
+    now: time::Timestamp,
+    seat: &str,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> Result<u8> {
+    let snapshot = session::RecordSnapshot::read(dir);
+    let Some(meta) = snapshot.meta else {
+        writeln!(
+            err,
+            "ae brief: {}'s meta is {}, so ae cannot say which seats it has",
+            entry.name,
+            match snapshot.meta_read {
+                session::MetaRead::Absent => "absent",
+                _ => "unreadable",
+            }
+        )?;
+        return Ok(EXIT_UNAVAILABLE);
+    };
+    let Some(row) = meta.roster().iter().find(|row| row.name == seat) else {
+        let roster: Vec<&str> = meta.roster().iter().map(|row| row.name.as_str()).collect();
+        writeln!(
+            err,
+            "ae brief: {} has no seat named {seat}; its roster is {}",
+            entry.name,
+            if roster.is_empty() {
+                "empty".to_owned()
+            } else {
+                roster.join(", ")
+            }
+        )?;
+        return Ok(EXIT_UNAVAILABLE);
+    };
+
+    let journal = if snapshot.events.is_some() {
+        seatpack::Journal::Read
+    } else {
+        seatpack::Journal::Damaged
+    };
+    let container = match journal {
+        seatpack::Journal::Read => store::open(dir).container(),
+        // Deliberately NOT read: nothing consumes it, and a distrusted read is
+        // one more chance to render damage as absence.
+        seatpack::Journal::Damaged => Vec::new(),
+    };
+    let events = snapshot.events.map(|read| read.events).unwrap_or_default();
+    let agents = match journal {
+        seatpack::Journal::Read => brief::agent_lines(entry, &container, now),
+        seatpack::Journal::Damaged => Vec::new(),
+    };
+    // A seat holds its work until it is RETIRED, not until its session stops:
+    // only a running session with a pane proven gone drops a name here.
+    let live: Vec<String> = meta
+        .roster()
+        .iter()
+        .filter(|row| {
+            !(entry.status == digest::Status::Running
+                && entry
+                    .agents
+                    .iter()
+                    .find(|agent| agent.name == row.name)
+                    .and_then(|agent| agent.alive)
+                    == Some(false))
+        })
+        .map(meta::RosterEntry::reference)
+        .collect();
+    let memo = store::open(dir).memo_bytes();
+    let work = entry.work_dir.as_deref().unwrap_or_default();
+    let inputs = seatpack::Inputs {
+        session: entry.name.clone(),
+        status: entry.status.as_str().to_owned(),
+        goal: entry.goal.clone(),
+        now,
+        helpers_dir: dir.to_path_buf(),
+        seat_name: row.name.clone(),
+        seat_slot: row.slot.clone(),
+        seat_reference: row.reference(),
+        seat_profile: row.profile.clone(),
+        seat_tool: row.binary.clone(),
+        roster: meta
+            .roster()
+            .iter()
+            .map(|row| seatpack::RosterRow {
+                name: row.name.clone(),
+                slot: row.slot.clone(),
+            })
+            .collect(),
+        agents,
+        live,
+        journal,
+        closed_ages: seatpack::closed_ages(&container, now),
+        container,
+        events,
+        topics: brief::topic_lines(memo.as_deref().unwrap_or_default(), now, None),
+        memo_readable: memo.is_ok(),
+        git: seatpack::Git {
+            work_dir: entry
+                .work_dir
+                .as_deref()
+                .map(|path| brief::short_path(path, home)),
+            branch: git::branch_head(work.as_bytes()),
+            head: git::head(work.as_bytes()),
+            dirty: git::work_tree_dirty(work.as_bytes()),
+            subjects: git::recent_subjects(work.as_bytes()),
+            tag: git::latest_tag(work.as_bytes()),
+        },
+        first_message: first_message_for(dir, &row.slot),
+    };
+    write!(out, "{}", seatpack::pack(&inputs))?;
+    Ok(0)
+}
+
+/// The seat's recorded first message, and the verdict on the brief file it
+/// names.
+///
+/// Only a SPAWNED seat has one: `spawn` is the sole publisher of a prompt file,
+/// so asking for any other slot's would invent a gap that is not there. ABSENT
+/// and UNREADABLE are kept apart, because a successor told "none recorded"
+/// about a file that exists would stop looking.
+fn first_message_for(dir: &std::path::Path, slot: &str) -> seatpack::FirstMessage {
+    if seatpack::slot_class(slot) != "spawned" {
+        return seatpack::FirstMessage::Absent;
+    }
+    let path = run::prompt_file(dir, slot);
+    let prompt_path = path.display().to_string();
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: the seat's own recorded first message, inside its own session dir"
+    )]
+    let read = std::fs::read_to_string(&path);
+    match read {
+        Ok(text) => {
+            let brief_path = seatpack::brief_path_in(&text).map(|named| {
+                #[allow(
+                    clippy::disallowed_methods,
+                    reason = "a door: whether the brief that message names is still on disk — \
+                              the one fact a successor cannot derive from the text"
+                )]
+                let exists = std::path::Path::new(&named).exists();
+                (named, exists)
+            });
+            seatpack::FirstMessage::Recorded {
+                prompt_path,
+                text,
+                brief_path,
+            }
+        }
+        Err(why) if why.kind() == std::io::ErrorKind::NotFound => seatpack::FirstMessage::Absent,
+        Err(_) => seatpack::FirstMessage::Unreadable { prompt_path },
+    }
 }
 
 /// `ae board [session…] [--since <ts>] [--json] [--follow]` — the filtered

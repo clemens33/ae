@@ -850,8 +850,8 @@ fn push_spawns(out: &mut String, inputs: &Inputs) {
         };
         owned += 1;
         let line = inputs.agents.iter().find(|agent| agent.name == name);
-        let _ = writeln!(
-            out,
+        // A row whose last column is empty must not carry the padding of one.
+        let row = format!(
             "  {}{}{}{}{}",
             pad(name, 16),
             pad(line.map_or("-", |agent| agent.profile.as_str()), 12),
@@ -859,6 +859,8 @@ fn push_spawns(out: &mut String, inputs: &Inputs) {
             pad(&crate::brief::age(line.and_then(|agent| agent.age_secs)), 5),
             line.map_or_else(String::new, |agent| neutralise(&agent.reason))
         );
+        out.push_str(row.trim_end());
+        out.push('\n');
     }
     if owned == 0 {
         out.push_str("  none recorded\n");
