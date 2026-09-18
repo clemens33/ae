@@ -21,7 +21,11 @@ use crate::tool::ToolKind;
 
 /// A whole export larger than this is refused before parsing. The measured
 /// probe session exported 0.5 MiB at 16 messages; 16 MiB matches the quota
-/// scan's own byte budget and keeps the one-document parse bounded.
+/// scan's own byte budget and keeps the one-document parse bounded. The cap
+/// bounds the PARSE and the row walk, not the child's memory: the process door
+/// buffers the whole stdout twice (the captured `Vec<u8>` plus
+/// `String::from_utf8_lossy`'s copy) before this function ever sees a byte, so
+/// an `opencode` printing gigabytes costs that memory first.
 pub(crate) const EXPORT_CAP: usize = 16 * 1024 * 1024;
 
 /// At most this many rows come out of one export; the messages left unread by
@@ -33,6 +37,13 @@ pub(crate) const ROW_CAP: usize = 4_096;
 /// Genuine human turns come back; with `assistant` the model's replies ride
 /// beside them, `text` parts only. Every refusal is a [`Coverage`] with a
 /// reason, never a silent empty board.
+///
+/// The non-UTF-8 refusal below is a UNIT- and FUZZ-only arm: the ONE product
+/// caller hands this function the existing door's
+/// `String::from_utf8_lossy` output, so a child printing invalid bytes arrives
+/// already carrying U+FFFD and prints as an ordinary row (measured 2026-09-18,
+/// reviewer). The arm stays because the pure reader must define its own
+/// behavior on bytes, and the door's lossy copy is the named residual.
 #[must_use]
 pub fn read(
     export: &[u8],
@@ -162,7 +173,7 @@ impl Sink<'_> {
             self.missing_id += 1;
             return;
         };
-        let Some(ms) = created_millis(info) else {
+        let Some(micros) = created_micros(info) else {
             self.missing_ts += 1;
             return;
         };
@@ -171,7 +182,7 @@ impl Sink<'_> {
             return;
         }
         self.rows.push(Row {
-            ts: ms,
+            ts: micros,
             actor: self.actor.to_owned(),
             role,
             body,
@@ -186,7 +197,7 @@ impl Sink<'_> {
 /// `info.time.created` in micros: the export's native integer MILLISECONDS
 /// scaled to the board's clock. A missing, non-integer or unspellable moment
 /// is damage and counts, exactly like an absent timestamp elsewhere.
-fn created_millis(info: &Value) -> Option<i64> {
+fn created_micros(info: &Value) -> Option<i64> {
     let Value::Num(ms) = info.get("time")?.get("created")? else {
         return None;
     };

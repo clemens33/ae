@@ -15,8 +15,9 @@ today; every other seat renders an explicit coverage row, never a silent subset.
 OpenCode is the one seat without a transcript file: its conversation lives in
 SQLite, which ae never opens, so the board runs the CLI's own
 `opencode export <sessionID>` through the existing process door and reads the
-one JSON document it prints on stdout. One export runs per OpenCode seat per
-board read; a failed or unusable export is a coverage row, never a silent gap.
+one JSON document it prints on stdout. One export runs per OpenCode
+conversation — the current one and each recorded predecessor — per board read;
+a failed or unusable export is a coverage row, never a silent gap.
 
 ## Scope
 

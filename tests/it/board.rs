@@ -1749,7 +1749,7 @@ fn a_refused_session_id_never_reaches_the_opencode_argv() {
 }
 
 #[test]
-fn a_slow_opencode_export_delays_only_its_own_seat() {
+fn a_slow_opencode_export_never_clips_another_seats_rows() {
     let root = rig("oc-slow");
     let store = root.join("claude");
     plant_transcript(
@@ -1784,11 +1784,11 @@ fn a_slow_opencode_export_delays_only_its_own_seat() {
     assert_eq!(code, Some(0));
     assert!(
         stdout.contains("## 08:00:00 fleet:cc\n  claude words"),
-        "the slow seat never starves another: {stdout}"
+        "a slow export delays the sequential board but never clips another seat: {stdout}"
     );
     assert!(
         stdout.contains("## 09:00:00 fleet:oc\n  oc words"),
-        "the slow export is read, not truncated by a shared clock: {stdout}"
+        "and its own rows print whole once it answers: {stdout}"
     );
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -1843,4 +1843,41 @@ fn an_opencode_predecessor_reads_through_its_own_export() {
     let (_, json, _) = run_with_path(&root, &fake_bin(&root), &["board", "oc", "--json"]);
     assert!(json.contains("\"generation\":1"), "{json}");
     let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn the_opencode_export_cap_is_the_documented_sixteen_mib() {
+    // The VALUE, not the constant: an input built as `EXPORT_CAP + 1` moves
+    // with the constant and can never see the constant move (a 16 MiB -> 4 MiB
+    // edit survives it). At exactly 16 MiB the document is inside the cap and
+    // fails to PARSE; one byte more is refused as oversize. The doc phrase is
+    // pinned beside the value so the two cannot drift apart silently.
+    let at_cap = vec![b'x'; 16 * 1024 * 1024];
+    let (_, coverage) = ae::board::opencode::read(
+        &at_cap,
+        OC_SID,
+        "fleet:oc",
+        ae::tool::ToolKind::OpenCode,
+        false,
+    );
+    assert_eq!(
+        coverage[0].reason, "export unreadable",
+        "16 MiB itself is inside the cap"
+    );
+    let over_cap = vec![b'x'; 16 * 1024 * 1024 + 1];
+    let (rows, coverage) = ae::board::opencode::read(
+        &over_cap,
+        OC_SID,
+        "fleet:oc",
+        ae::tool::ToolKind::OpenCode,
+        false,
+    );
+    assert!(rows.is_empty());
+    assert_eq!(coverage[0].reason, "export exceeds the read budget");
+    let docs = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/board.md"))
+        .expect("docs/board.md is readable");
+    assert!(
+        docs.contains("A whole export over 16 MiB is"),
+        "docs/board.md names the same cap"
+    );
 }
