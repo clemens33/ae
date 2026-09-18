@@ -1110,3 +1110,108 @@ pub fn run_retire(
     )));
     Ok(0)
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(
+        clippy::disallowed_methods,
+        clippy::unwrap_used,
+        reason = "fixtures build and inspect real directories; the capability boundary is about \
+                  what PRODUCT code may reach, which is why the inventory counts product lines"
+    )]
+
+    use super::{BriefRecovery, Undelivered, drop_launch_artifacts, record_for_retry};
+    use crate::time::Timestamp;
+
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let dir =
+            std::path::PathBuf::from(format!("/tmp/ae-spawnrec.{}.{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(std::fs::create_dir_all(&dir).is_ok(), "a scratch dir");
+        dir
+    }
+
+    fn undelivered<'a>(dir: &'a std::path::Path, actor: &'a str) -> Undelivered<'a> {
+        Undelivered {
+            dir,
+            name: "scribe",
+            slot: "spawned.1",
+            pane: "%105",
+            brief: "build the thing",
+            actor,
+            now: Timestamp::from_epoch(1_789_100_000),
+        }
+    }
+
+    /// A record is written only where a retry could ever work, and a refusal
+    /// is RETURNED whenever one was not — so the advice printed beside it can
+    /// say the true thing instead of promising a retry nobody will make.
+    #[test]
+    fn a_record_is_written_only_when_a_retry_could_work_and_says_so_when_it_is_not() {
+        let dir = scratch("trio");
+        assert!(
+            std::fs::write(dir.join("meta"), "launch_id.spawned.1=tok-1\n").is_ok(),
+            "a meta with a launch token"
+        );
+
+        // A PROVEN-DEAD seat: its pane is a shell, so no gate could ever pass.
+        assert_eq!(
+            record_for_retry(&undelivered(&dir, "lead"), BriefRecovery::Retire),
+            Some("the seat is gone".to_owned())
+        );
+        assert!(crate::brief_retry::read(&dir, "spawned.1").is_none());
+
+        // NO LAUNCH TOKEN is no incarnation key, and a record without one
+        // could be weighed against whoever holds the slot later.
+        let tokenless = scratch("trio-none");
+        assert!(std::fs::write(tokenless.join("meta"), "mode=local\n").is_ok());
+        assert_eq!(
+            record_for_retry(&undelivered(&tokenless, "lead"), BriefRecovery::Resend),
+            Some("the seat has no recorded launch token".to_owned())
+        );
+        assert!(crate::brief_retry::read(&tokenless, "spawned.1").is_none());
+
+        // A LIVE-ISH recovery gets one, and it reads back — for an agent actor
+        // and for the unverified spelling alike, since both reach a marker.
+        for actor in ["lead", crate::deliver::UNVERIFIED] {
+            let dir = scratch(&format!("trio-{actor}"));
+            assert!(std::fs::write(dir.join("meta"), "launch_id.spawned.1=tok-1\n").is_ok());
+            assert_eq!(
+                record_for_retry(&undelivered(&dir, actor), BriefRecovery::Resend),
+                None,
+                "a record should have been published"
+            );
+            let record = crate::brief_retry::read(&dir, "spawned.1")
+                .expect("a record")
+                .expect("a readable record");
+            assert_eq!(record.actor, actor);
+            assert_eq!(record.launch_id, "tok-1");
+            assert_eq!(record.attempts, 0);
+            assert_eq!(record.reference, "spawn-spawned.1");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&tokenless);
+    }
+
+    /// Retiring a seat CANCELS its undelivered brief: there is nobody left for
+    /// it to be delivered to, and a record that outlived its seat would be
+    /// weighed against whoever takes the slot next.
+    #[test]
+    fn retiring_a_seat_cancels_the_brief_it_never_received() {
+        let dir = scratch("retire");
+        assert!(std::fs::write(dir.join("meta"), "launch_id.spawned.1=tok-1\n").is_ok());
+        assert_eq!(
+            record_for_retry(&undelivered(&dir, "lead"), BriefRecovery::Resend),
+            None
+        );
+        assert!(crate::brief_retry::read(&dir, "spawned.1").is_some());
+
+        drop_launch_artifacts(&dir, "spawned.1");
+        assert!(
+            crate::brief_retry::read(&dir, "spawned.1").is_none(),
+            "a retired seat's record must be gone"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
