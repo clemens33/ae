@@ -66,6 +66,7 @@ pub mod sanitize;
 pub(crate) mod seat_relaunch;
 pub mod seatcompact;
 mod seatcompact_run;
+pub mod seatpack;
 pub mod send;
 pub mod session;
 pub mod session_launch;

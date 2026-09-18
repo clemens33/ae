@@ -543,7 +543,7 @@ pub(crate) fn wrap_text(
     lines
 }
 
-fn clean_text(text: &str) -> String {
+pub(crate) fn clean_text(text: &str) -> String {
     let mut clean = String::with_capacity(text.len());
     let mut in_run = false;
     for ch in text.chars() {
@@ -668,7 +668,7 @@ pub fn card_for(
 }
 
 /// The work dir as a card shows it: `~`-relative under `home`, else verbatim.
-fn short_path(path: &str, home: Option<&Path>) -> String {
+pub(crate) fn short_path(path: &str, home: Option<&Path>) -> String {
     let Some(home) = home.map(|home| home.to_string_lossy().into_owned()) else {
         return path.to_owned();
     };
@@ -746,7 +746,11 @@ pub fn topic_lines(container: &[u8], now: Timestamp, since_secs: Option<i64>) ->
 /// declaration that still agrees with that cell: a `Latest` naming some other
 /// value describes a superseded declaration, and its reason would be a caption
 /// on the wrong state.
-fn agent_lines(entry: &SessionEntry, container: &[u8], now: Timestamp) -> Vec<AgentLine> {
+pub(crate) fn agent_lines(
+    entry: &SessionEntry,
+    container: &[u8],
+    now: Timestamp,
+) -> Vec<AgentLine> {
     entry
         .agents
         .iter()

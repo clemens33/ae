@@ -182,6 +182,21 @@ impl<'a> Outstanding<'a> {
         }
     }
 
+    /// The open spawn records: every agent a `spawn` opened, no `retire`
+    /// closed, and that still holds a seat.
+    ///
+    /// THE one set, exposed rather than copied. [`Self::of`] counts this seat's
+    /// own rows out of it, and a reader that needs the ROWS — which agents, and
+    /// who opened each — takes the same set and the same owner-written
+    /// predicates ([`crate::watchdog::event_is_actor`] for the opener,
+    /// [`crate::watchdog::event_is_addressed_to`] for the opened) rather than
+    /// re-deriving a weaker match on display names. Two readers of one set
+    /// cannot disagree about what is open; two derivations would.
+    #[must_use]
+    pub fn spawns(&self) -> &[&'a Event] {
+        &self.spawned
+    }
+
     /// What `seat` alone is owed.
     #[must_use]
     pub fn of(&self, seat: Seat<'_>) -> OwnWork {
@@ -194,7 +209,7 @@ impl<'a> Outstanding<'a> {
                 .collect()
         };
         let requests = mine(&self.sent);
-        let spawns = mine(&self.spawned);
+        let spawns = mine(self.spawns());
         OwnWork {
             requests: requests.len(),
             spawns: spawns.len(),
