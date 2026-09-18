@@ -1036,9 +1036,9 @@ fn agents_suffix(agents: Option<&[crate::tmux::PickerAgent]>) -> String {
 /// ATTENTION still decides: this menu exists to be acted on, and a session that
 /// needs the human outranks where they filed it. Below that it defers to the
 /// fleet's one shared tail, [`crate::theme::fleet_tail_cmp`], so the picker and
-/// the status strip cannot drift on the part they share. The name tie-break is
-/// defensive: live tmux session ids are unique, but the pure model does not need
-/// to assume that to stay deterministic.
+/// the status strip cannot drift on the part they share. The final name
+/// tie-break is defensive: creation order already separates two live rows, since
+/// tmux session ids are unique — the pure model simply never assumes it.
 fn ranked_sessions<'a>(
     sessions: &'a [PickerSession],
     order: &crate::theme::FleetOrder,
