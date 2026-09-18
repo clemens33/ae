@@ -185,7 +185,7 @@ Old seat files that still carry `[profiles]`/`[roster]` are ignored for identity
 | `layout`  | `lead-pair` (lead and colead each get 50% in window 0, other workers in window 1), `lead-solo` (lead alone in window 0, workers in window 1), `vertical` (side-by-side splits), `horizontal` (stacked splits) | `lead-pair`   |
 | `copy`    | Working directory mode (see below)                   | `local`       |
 | `watchdog`    | Auto-start the watchdog (`true` / `false`)            | `true`        |
-| `quota` | Whether ae acts on vendor quota at all (`on` / `off`); absent means `on`. When `off`, agents are never told about quota, the watchdog books no quota advisory and renders no quota throttle line, and the settings menu carries no quota entry. `ae quota` works identically in both states. `off` wins over `quota_every_secs` | `on` |
+| `quota` | Whether ae acts on vendor quota at all (`on` / `off`); absent means `on`. When `off`, agents are never told about quota, the watchdog books no quota advisory, sends no checkpoint ask and renders no quota throttle line, and the settings menu carries no quota entry. While `on`, a scope entering `low` or worse asks every seat on it, once, to write a durable checkpoint before its subscription runs dry. `ae quota` works identically in both states. `off` wins over `quota_every_secs` | `on` |
 | `quota_every_secs` | Watchdog cadence in seconds for the quota observation, rounded to whole watchdog cycles (`0` disables it) | `300` |
 | `idle_nudge_secs` | Continuous positively observed empty-input time before the watchdog reminds the seat (`0` disables) | `300` |
 | `orchestrator` | Mark this session as the fleet overview seat (`true`); grants its panes the bare human-authority `relay` helper | `false`       |

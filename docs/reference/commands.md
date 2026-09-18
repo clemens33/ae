@@ -1177,7 +1177,9 @@ The watchdog also observes the same local quota caches as `ae quota` on its pers
 advisory and renders no quota throttle line. It sends state changes only to its
 own leadership seats,
 retries a refused paste once on the next quota sweep, and records cancelled retries as
-`quota-advisory-dropped`. A throttle event includes the worst current quota row only when the last
+`quota-advisory-dropped`. Entering `low` or worse also sends every seat on that client scope one
+advisory `quota-checkpoint` ask — no request, no reply expected — whose cancelled retries are
+recorded as `quota-checkpoint-dropped`. A throttle event includes the worst current quota row only when the last
 scheduled observation exactly matches that seat's recorded client source and, for Codex, rollout.
 It never performs an extra quota read for throttling.
 

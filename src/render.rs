@@ -296,6 +296,14 @@ const RULES: &str = r#" Helper scripts in ${meta_dir}/ — always invoke them by
 
 const QUOTA_GUIDANCE: &str = r" Before each delegation batch, session creation, init profile choice, or later independent spawn choice, query ${meta_dir}/quota once; query again after a worker reports throttling. One query covers one batch or creation, not each worker in a fan-out. Apply the result to every selected profile: public `--lead`, `--colead`, `--seat`, init choices, and `spawn --using`. Never knowingly choose a profile whose applicable EFFECTIVE window is exhausted or blocked. When configured defaults are unsuitable, pass an explicit override; ae never substitutes a profile for you. Treat missing, stale, ambiguous, or uncorrelated evidence as unknown: report it and prefer a known-usable alternative when one exists. Correlation is an agent inference, not product enforcement: an account-wide window applies to every profile on its client scope; a model-scoped qualifier applies only when it clearly matches the selected profile's model family. `weekly_scoped Fable` blocks a Fable profile but does not by itself block Opus on the same Claude config home; unclear correlation is unknown, neither blocks nor proves headroom. Among the profiles that fit the task and the review rules, prefer one whose buckets have headroom. Judge a bucket by its EFFECTIVE column whenever that column is filled in: a scope with POSITIVE declared manual resets or unlimited credits is not near its limit at a high raw percentage, while a `spend-cap` scope is blocked until credits or that cap change and no window reset frees it. A declared count is the operator's own claim and ae never consumes it: after a manual reset is used the row must be updated, so claimed headroom is only as true as that declaration is current. At low or critical headroom, or when a seat's spend (`${meta_dir}/usage`) is out of proportion to its task class, step DOWN before switching provider: effort xhigh → high for bounded work, sol → terra → luna for chores; xhigh stays for judgment seats only. Fanning out to a lower tier is a tuning lever on the shared quota, not a separate allowance: a lead that does its own chores spends judgment-class quota on chore-class work.";
 
+/// The quota-Low CHECKPOINT ASK, for EVERY seat rather than the lead pair.
+///
+/// `QUOTA_GUIDANCE` above tells whoever picks profiles how to spend the shared
+/// headroom; this tells whoever is spending it what the watchdog will ask for
+/// when a scope runs low, and that a checkpoint memo is the whole answer. A
+/// spawned seat gets it too, because it is a seat on the scope.
+const QUOTA_CHECKPOINT: &str = " QUOTA CHECKPOINT ASK: when your client scope enters low or critical headroom the watchdog sends you ONE advisory message asking you to checkpoint; answer it by writing the memo it names (your slice topic and parking) and carry on — it opens no request and wants no reply, and it comes once per entry into that band, so a seat that can no longer speak has still left its successor the state.";
+
 const STATE_GUIDANCE: &str = " STATE REASONS: The human decides from this text ALONE, without opening your pane. Write 2–5 sentences (80–600 chars): the decision, each option with its impact, your recommendation and why, and the path to the long form (`.local/<file>` or memo `<topic>`). A pointer such as `see pane`, `as discussed`, `elaboration given` is a violation of this rule. Shape: `<decision>: <option A and impact> | <option B and impact> (recommend A because <reason>; details: .local/<file> or memo <topic>)`. For `waiting-agent`, name the agent you wait on, what you need from them, and the long-form path. For `blocked`, state what blocks, who or what unblocks it, what you tried, and the long-form path. Good: `Which layout should we use? Vertical keeps panes readable; horizontal shows more context. Recommend vertical because readability matters; details: .local/layout.md`. Bad: `S3 elaboration given in pane`.\n";
 
 /// The `lead-pair` shared role block.
@@ -753,6 +761,12 @@ pub fn context_document(
             QUOTA_GUIDANCE,
             &[("meta_dir", dir_display.as_str())],
         ));
+    }
+    // EVERY seat, not just the pair: the ask follows the client scope, so a
+    // worker or a spawned seat can be its only recipient. Still quota-gated —
+    // when unaware no injected document may mention quota at all.
+    if aware {
+        ctx.push_str(QUOTA_CHECKPOINT);
     }
     ctx.push_str(STATE_GUIDANCE);
 
@@ -1335,6 +1349,44 @@ mod tests {
         assert!(peer.contains(selection), "{peer}");
         assert!(!ordinary.contains(selection), "{ordinary}");
         assert!(!spawned.contains(selection), "{spawned}");
+    }
+
+    #[test]
+    fn the_quota_checkpoint_ask_is_explained_to_every_seat_not_just_the_pair() {
+        // The two quota blocks answer different questions and reach different
+        // seats. Choosing a profile is leadership work; being asked to
+        // checkpoint happens to whoever sits on the scope, so an ordinary
+        // worker and a spawned seat must both be told what that message is.
+        let ask = "QUOTA CHECKPOINT ASK:";
+        let selection = "Never knowingly choose a profile whose applicable EFFECTIVE window is exhausted or blocked.";
+
+        let pair = scratch("ckpt-pair");
+        std::fs::write(
+            pair.join("meta"),
+            "mode=local\nlayout=lead-pair\nschema=2\nseat.main=lead\nseat.worker.0=colead\nseat.worker.1=builder\n",
+        )
+        .unwrap();
+        for slot in ["main", "worker.0", "worker.1", "spawned.3"] {
+            let document = context_document(&pair, "s", "/w", slot, &[]);
+            assert!(document.contains(ask), "{slot} was never told: {document}");
+        }
+        let ordinary = context_document(&pair, "s", "/w", "worker.1", &[]);
+        assert!(
+            !ordinary.contains(selection),
+            "and the leadership block did NOT widen with it: {ordinary}"
+        );
+
+        // Quota-unaware, no injected document mentions quota at all — this
+        // block included.
+        let off = scratch("ckpt-off");
+        std::fs::write(
+            off.join("meta"),
+            "mode=local\nlayout=vertical\nschema=2\nseat.main=lead\nquota=off\n",
+        )
+        .unwrap();
+        let unaware = context_document(&off, "s", "/w", "main", &[]);
+        assert!(!unaware.contains(ask), "{unaware}");
+        assert!(!unaware.to_lowercase().contains("quota"), "{unaware}");
     }
 
     #[test]

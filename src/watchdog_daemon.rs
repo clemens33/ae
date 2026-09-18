@@ -352,10 +352,44 @@ struct PendingAdvisory {
     attempts: u8,
 }
 
+/// One booked CHECKPOINT ASK, waiting for its seat.
+///
+/// Keyed by scope key AND seat slot, because the fan-out is per seat: two seats
+/// on one scope hold two of these, and each retries on its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PendingAsk {
+    key: QuotaKey,
+    /// The stamp of the HELD observation the level was decided from.
+    observed_at: i64,
+    recipient: QuotaRecipient,
+    /// Built by [`crate::quota::Observation::transition`] from the classified
+    /// reading that decided the level, so the text cannot quote another
+    /// sample's numbers.
+    advisory: crate::quota::Advisory,
+    attempts: u8,
+}
+
+/// A roster seat PROVEN to sit on one client scope, with a live pane to speak
+/// into.
+///
+/// The identity is [`crate::quota::recorded_identity`]'s — the one owner of the
+/// tool-kind-plus-canonical-config-home join, which `throttle_quota_line`
+/// already matches a seat by. Nothing here re-derives a source path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct QuotaAskCandidate {
+    recipient: QuotaRecipient,
+    identity: crate::quota::RecordedIdentity,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum QuotaAction {
     Deliver(Box<PendingAdvisory>),
-    Dropped { recipient: String, summary: String },
+    /// Deliver one advisory-only checkpoint ask to one seat on the scope.
+    Ask(Box<PendingAsk>),
+    Dropped {
+        recipient: String,
+        summary: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -370,7 +404,25 @@ struct QuotaCarry {
     sweeps_until_observe: u64,
     tracked: Vec<QuotaTracked>,
     pending: Vec<PendingAdvisory>,
+    /// Booked checkpoint asks, one per scope key and seat slot. Separate from
+    /// `pending` on purpose: the advisory recipients are the lead pair, the ask
+    /// recipients are every seat on the scope, and neither set may widen the
+    /// other.
+    asks: Vec<PendingAsk>,
     last_observation: Option<crate::quota::Observation>,
+}
+
+/// Whether this classification ENTERS the checkpoint band.
+///
+/// `before` is `None` at a window's first sight, which counts as entering: a
+/// daemon that starts with a scope already Low would otherwise stay silent
+/// until the next transition, which is exactly when the seat can no longer
+/// speak. `Low -> Critical` and `Critical -> Low` are both already inside the
+/// band and ask nothing more; the band is left, and can be entered again, only
+/// when [`crate::quota::classify`]'s own hysteresis says so.
+const fn entered_low(before: Option<QuotaLevel>, after: QuotaLevel) -> bool {
+    matches!(after, QuotaLevel::Low | QuotaLevel::Critical)
+        && matches!(before, None | Some(QuotaLevel::Headroom))
 }
 
 fn quota_samples_at(observation: &crate::quota::Observation, now: i64) -> Vec<QuotaSample<'_>> {
@@ -446,6 +498,57 @@ fn quota_recipients(roster: &[RosterEntry], lead_pair: bool) -> Vec<QuotaRecipie
         .collect()
 }
 
+/// Every roster seat the checkpoint ask may reach: one that sits on a quota
+/// scope ae can read, and has a live pane to speak into.
+///
+/// This is deliberately NOT [`quota_recipients`]. The advisory goes to the lead
+/// pair, who choose profiles; the ask goes to whoever is about to lose its
+/// voice, fixed seats and spawned seats alike.
+///
+/// Three reasons a seat is skipped, all fail-closed:
+///
+/// * [`crate::quota::recorded_identity`] answers `None` — the tool has no quota
+///   parser (muse, opencode, gemini), or the seat's recorded config home is
+///   incomplete, or a Codex seat has no recorded conversation. An unproven
+///   identity is never matched to a scope, exactly as for the throttle line.
+/// * No pane carries the seat's slot. A seat ae cannot see is a seat ae cannot
+///   prove is listening, and the delivery would fail anyway.
+/// * The pane sits at a shell. That covers the DEAD pane (a shell with the tool
+///   gone) and the pane whose tool has merely been quit; neither can read.
+///
+/// RESIDUAL, named rather than fixed: on the tools whose TUI ae does not model,
+/// the guarded send cannot see a human's half-typed draft, so an ask may land
+/// mid-input there. The modelled tools defer on that draft through the existing
+/// readiness check. Closing it needs a frame model per tool, which is a
+/// different slice.
+fn quota_ask_candidates(
+    roster: &[RosterEntry],
+    panes: &[crate::tmux::WatchPane],
+) -> Vec<QuotaAskCandidate> {
+    roster
+        .iter()
+        .filter(|entry| {
+            panes.iter().any(|pane| {
+                pane.slot.as_deref() == Some(entry.slot.as_str())
+                    && !crate::watchdog::command_is_shell(&pane.current_command)
+            })
+        })
+        .filter_map(|entry| {
+            Some(QuotaAskCandidate {
+                recipient: QuotaRecipient {
+                    slot: entry.slot.clone(),
+                    agent: entry.name.clone(),
+                    harness_session: entry.harness_session.clone(),
+                    config_home: entry.config_home.clone(),
+                    config_home_base: entry.config_home_base.clone(),
+                    binary: entry.binary.clone(),
+                },
+                identity: crate::quota::recorded_identity(entry)?,
+            })
+        })
+        .collect()
+}
+
 fn quota_sweep_count(knobs: &Knobs) -> Option<u64> {
     (knobs.quota_every_secs > 0).then(|| {
         knobs
@@ -478,6 +581,9 @@ impl QuotaCarry {
     fn clear_held(&mut self) {
         self.tracked.clear();
         self.pending.clear();
+        // An ask is held quota knowledge too: while unaware nothing may stay
+        // booked to fire the moment awareness returns.
+        self.asks.clear();
         self.last_observation = None;
     }
 
@@ -503,13 +609,98 @@ impl QuotaCarry {
         self.pending = retained;
     }
 
-    fn reconcile(
+    /// The ask's own cancellation, kept apart from the advisory's so that
+    /// neither recipient set can reach the other's bookings.
+    fn cancel_asks_where(
+        &mut self,
+        predicate: impl Fn(&PendingAsk) -> bool,
+        reason: &str,
+        meta_dir: &Path,
+        actions: &mut Vec<QuotaAction>,
+    ) {
+        let mut retained = Vec::new();
+        for ask in self.asks.drain(..) {
+            if predicate(&ask) {
+                actions.push(QuotaAction::Dropped {
+                    recipient: ask.recipient.agent,
+                    summary: format!("{reason}: {}", ask.advisory.checkpoint_ask(meta_dir)),
+                });
+            } else {
+                retained.push(ask);
+            }
+        }
+        self.asks = retained;
+    }
+
+    /// Book ONE checkpoint ask per seat on the scope this window belongs to.
+    ///
+    /// Called only from an ENTRY into the band. A seat that already holds an
+    /// undelivered ask for this key has it REPLACED rather than doubled: a band
+    /// that cleared and was entered again while the first ask was still
+    /// deferred must still produce exactly one ask, carrying the newer facts.
+    fn book_asks(
+        &mut self,
+        key: &QuotaKey,
+        held: &crate::quota::Classified,
+        advisory: &crate::quota::Advisory,
+        candidates: &[QuotaAskCandidate],
+        group: &crate::quota::Group,
+    ) {
+        for candidate in candidates.iter().filter(|candidate| {
+            candidate.identity.tool == group.tool && candidate.identity.source == key.source
+        }) {
+            self.asks
+                .retain(|ask| !(ask.key == *key && ask.recipient == candidate.recipient));
+            self.asks.push(PendingAsk {
+                key: key.clone(),
+                observed_at: held.observed_at(),
+                recipient: candidate.recipient.clone(),
+                advisory: advisory.clone(),
+                attempts: 0,
+            });
+        }
+    }
+
+    /// Drop the booked asks this pass may no longer deliver: one whose seat is
+    /// gone from the candidate set, and one whose facts have aged out.
+    ///
+    /// Deliberately NOT keyed on the level: an ask booked at an entry survives
+    /// every later move inside the band, because cancelling it there would mean
+    /// the seat is never asked at all.
+    fn cancel_stale_asks(
+        &mut self,
+        candidates: &[QuotaAskCandidate],
+        now: i64,
+        meta_dir: &Path,
+        actions: &mut Vec<QuotaAction>,
+    ) {
+        self.cancel_asks_where(
+            |ask| {
+                !candidates
+                    .iter()
+                    .any(|candidate| candidate.recipient == ask.recipient)
+            },
+            "checkpoint recipient is gone",
+            meta_dir,
+            actions,
+        );
+        self.cancel_asks_where(
+            |ask| !ask.advisory.current_at(now),
+            "checkpoint ask expired",
+            meta_dir,
+            actions,
+        );
+    }
+
+    fn reconcile_with_candidates(
         &mut self,
         observation: &crate::quota::Observation,
         recipients: &[QuotaRecipient],
+        candidates: &[QuotaAskCandidate],
         meta_dir: &Path,
     ) -> Vec<QuotaAction> {
         let mut actions = Vec::new();
+        self.cancel_stale_asks(candidates, observation.now, meta_dir, &mut actions);
         self.cancel_where(
             |pending| !recipients.contains(&pending.recipient),
             "recipient identity changed",
@@ -536,9 +727,24 @@ impl QuotaCarry {
             let Some(index) = previous else {
                 // The first sight of a window is classified and SILENT: there
                 // is no transition to report yet.
+                let classified = crate::quota::Classified::first(sample.reading);
+                // The ASK is not silent here, and that is the whole point: a
+                // daemon that starts with the scope already Low has seats which
+                // may never get another transition to be warned by. The
+                // advisory's own first-sight silence above is untouched.
+                if entered_low(None, classified.level()) {
+                    let advisory = observation.transition(sample.group, &classified);
+                    self.book_asks(
+                        &sample.key,
+                        &classified,
+                        &advisory,
+                        candidates,
+                        sample.group,
+                    );
+                }
                 self.tracked.push(QuotaTracked {
                     key: sample.key,
-                    classified: crate::quota::Classified::first(sample.reading),
+                    classified,
                 });
                 continue;
             };
@@ -572,6 +778,15 @@ impl QuotaCarry {
             // under cannot be another sample's.
             let held = self.tracked[index].classified.clone();
             let advisory = observation.transition(sample.group, &held);
+            // ENTERING the band asks every seat on the scope once. Moving
+            // around inside it does not, and neither does leaving it; only a
+            // re-entry after `classify`'s hysteresis let the window clear asks
+            // again. A declaration change re-derives the held row and reaches
+            // here the same way, so a withdrawn reset re-arms the ask exactly
+            // as it re-arms the advisory.
+            if entered_low(Some(before), after) {
+                self.book_asks(&sample.key, &held, &advisory, candidates, sample.group);
+            }
             for recipient in recipients {
                 self.pending.push(PendingAdvisory {
                     key: sample.key.clone(),
@@ -590,6 +805,13 @@ impl QuotaCarry {
                 .cloned()
                 .map(Box::new)
                 .map(QuotaAction::Deliver),
+        );
+        actions.extend(
+            self.asks
+                .iter()
+                .cloned()
+                .map(Box::new)
+                .map(QuotaAction::Ask),
         );
         self.last_observation = Some(observation.clone());
         actions
@@ -618,6 +840,12 @@ impl QuotaCarry {
             "quota observation went silent",
             meta_dir,
             now,
+            actions,
+        );
+        self.cancel_asks_where(
+            |ask| silent_keys.contains(&ask.key),
+            "quota observation went silent",
+            meta_dir,
             actions,
         );
     }
@@ -662,6 +890,52 @@ impl QuotaCarry {
             summary: format!(
                 "delivery failed twice: {}",
                 pending.advisory.render(meta_dir, now)
+            ),
+        })
+    }
+
+    /// The ask's delivery bookkeeping, mirroring [`Self::record_delivery`]: a
+    /// delivered ask is FORGOTTEN, so the deferral that got it through cannot
+    /// be followed by a duplicate; a proven pre-submit refusal is retried once;
+    /// anything ambiguous is dropped rather than risk pasting it twice.
+    fn record_ask_delivery(
+        &mut self,
+        delivered: &PendingAsk,
+        result: QuotaDelivery,
+        meta_dir: &Path,
+    ) -> Option<QuotaAction> {
+        let index = self.asks.iter().position(|ask| {
+            ask.key == delivered.key
+                && ask.observed_at == delivered.observed_at
+                && ask.recipient == delivered.recipient
+        })?;
+        match result {
+            QuotaDelivery::Delivered => {
+                self.asks.remove(index);
+                return None;
+            }
+            QuotaDelivery::Uncertain => {
+                let ask = self.asks.remove(index);
+                return Some(QuotaAction::Dropped {
+                    recipient: ask.recipient.agent,
+                    summary: format!(
+                        "delivery result uncertain; not retrying: {}",
+                        ask.advisory.checkpoint_ask(meta_dir)
+                    ),
+                });
+            }
+            QuotaDelivery::Retryable => {}
+        }
+        self.asks[index].attempts = self.asks[index].attempts.saturating_add(1);
+        if self.asks[index].attempts < 2 {
+            return None;
+        }
+        let ask = self.asks.remove(index);
+        Some(QuotaAction::Dropped {
+            recipient: ask.recipient.agent,
+            summary: format!(
+                "delivery failed twice: {}",
+                ask.advisory.checkpoint_ask(meta_dir)
             ),
         })
     }
@@ -3459,11 +3733,12 @@ impl Cycle<'_> {
         &self,
         requested: bool,
         carry: &mut QuotaCarry,
+        panes: &[crate::tmux::WatchPane],
         now: i64,
         err: &mut impl Write,
     ) -> crate::Result<()> {
         if requested && self.knobs.quota_aware {
-            self.refresh_quota(carry, now, err)?;
+            self.refresh_quota(carry, panes, now, err)?;
         }
         Ok(())
     }
@@ -3515,6 +3790,18 @@ impl Cycle<'_> {
                         self.emit("quota-advisory-dropped", &recipient, &summary, err)?;
                     }
                 }
+                QuotaAction::Ask(ask) => {
+                    // The SAME sender as the advisory — one delivery owner, so
+                    // the seat reads one marker, written by `provenance`.
+                    let text = ask.advisory.checkpoint_ask(self.meta_dir);
+                    let delivery =
+                        self.deliver(&ask.recipient.agent, &text, "quota-checkpoint", &text);
+                    if let Some(QuotaAction::Dropped { recipient, summary }) =
+                        carry.record_ask_delivery(&ask, quota_delivery(&delivery), self.meta_dir)
+                    {
+                        self.emit("quota-checkpoint-dropped", &recipient, &summary, err)?;
+                    }
+                }
             }
         }
         Ok(())
@@ -3523,13 +3810,22 @@ impl Cycle<'_> {
     fn refresh_quota(
         &self,
         carry: &mut QuotaCarry,
+        panes: &[crate::tmux::WatchPane],
         now: i64,
         err: &mut impl Write,
     ) -> crate::Result<()> {
         match self.quota_observation(now) {
             Ok(observation) => {
                 let recipients = quota_recipients(&self.roster, self.lead_pair);
-                let actions = carry.reconcile(&observation, &recipients, self.meta_dir);
+                // TWO sets, never one: the advisory's lead pair above, and
+                // every seat proven to sit on a readable scope below.
+                let candidates = quota_ask_candidates(&self.roster, panes);
+                let actions = carry.reconcile_with_candidates(
+                    &observation,
+                    &recipients,
+                    &candidates,
+                    self.meta_dir,
+                );
                 let summary = Self::observed_summary(&observation, actions.len());
                 // LAST: the trace attests a COMPLETED refresh — observation,
                 // booking, and delivery all done — so awaiting the line
@@ -3718,12 +4014,13 @@ impl Cycle<'_> {
     fn run_quota_cadence(
         &self,
         carry: &mut QuotaCarry,
+        panes: &[crate::tmux::WatchPane],
         now: i64,
         err: &mut impl Write,
     ) -> crate::Result<()> {
         if quota_observation_due(carry, &self.knobs) {
             if self.knobs.quota_aware {
-                self.refresh_quota(carry, now, err)?;
+                self.refresh_quota(carry, panes, now, err)?;
             } else {
                 Self::trace_quota("skipped");
             }
@@ -3774,7 +4071,9 @@ impl Cycle<'_> {
 
     /// The attestation one completed refresh reports to the test trace: the
     /// maximum window percentage it observed (`none` when no row stated one)
-    /// and how many advisory actions that observation booked.
+    /// and how many quota actions that observation booked — advisories,
+    /// checkpoint asks and cancellations alike. The count is a progress signal
+    /// for a test awaiting a completed pass, never a per-kind assertion.
     fn observed_summary(observation: &crate::quota::Observation, booked: usize) -> String {
         let mut max: Option<f64> = None;
         for group in &observation.groups {
@@ -3826,7 +4125,7 @@ impl Cycle<'_> {
         };
         // ONE cadence, one counter: `quota_every_secs` paces the periodic
         // quota pass, and zero disables it.
-        self.run_quota_cadence(&mut carry.quota, now, err)?;
+        self.run_quota_cadence(&mut carry.quota, &observed, now, err)?;
 
         let seats = held_seats(&observed, table.as_deref(), &|slot| self.agent_bin(slot));
         let outstanding = crate::session::Outstanding::read(&events, self.session, &seats);
@@ -3915,7 +4214,7 @@ impl Cycle<'_> {
             });
         }
         carry.quiet.end(index);
-        self.refresh_after_limit_release(quota_refresh, &mut carry.quota, now, err)?;
+        self.refresh_after_limit_release(quota_refresh, &mut carry.quota, &observed, now, err)?;
         self.close(
             carry,
             &counts,
@@ -4856,18 +5155,18 @@ mod tests {
         ACTOR, ADOPTION_TICK, Adopted, Adoption, AdoptionBackend, Carry, Continuation, Cycle,
         DETACHED_MOTION_TICK, Effect, HarnessObservation, Journal, Knobs, MissingState,
         MotionState, MotionVerdict, Observation, OverviewReading, PaneState, PendingAdvisory,
-        QuietCycle, QuietQuery, QuotaAction, QuotaCarry, QuotaDelivery, QuotaLevel, QuotaRecipient,
-        Rebind, SendHelper, TickerMode, UNKNOWN_ALERT_CYCLES, Verdict, WatchdogPresence, account,
-        adopt_server, adoption_due, adoption_from, adoption_writes, age_secs, agents_fact,
-        bar_glyph, continuation, deferred, entry_mut, fleet_rows, held_seats, holds_seat,
-        idle_nudge_seconds, idle_nudge_text, idle_nudge_text_waiting, is_meta_agent,
-        last_actor_event_age, last_done_event_at, last_working_declaration_at, motion_cadence,
-        motion_failure, motion_observation_due, motion_publish_failure, motion_ticker_enabled,
-        nudge_text, observed_option, proven_ownership, quota_delivery, quota_observation_due,
-        quota_recipients, quota_seconds, read_events, rebind, record_nudge, restore_idle,
-        session_name, slot_mark, stale_display, static_observe_cadence, sweep_effects,
-        sweep_seconds, system_time_from_epoch, throttle_quota_line, ticker_mode,
-        window_agents_line,
+        PendingAsk, QuietCycle, QuietQuery, QuotaAction, QuotaCarry, QuotaDelivery, QuotaLevel,
+        QuotaRecipient, Rebind, SendHelper, TickerMode, UNKNOWN_ALERT_CYCLES, Verdict,
+        WatchdogPresence, account, adopt_server, adoption_due, adoption_from, adoption_writes,
+        age_secs, agents_fact, bar_glyph, continuation, deferred, entry_mut, fleet_rows,
+        held_seats, holds_seat, idle_nudge_seconds, idle_nudge_text, idle_nudge_text_waiting,
+        is_meta_agent, last_actor_event_age, last_done_event_at, last_working_declaration_at,
+        motion_cadence, motion_failure, motion_observation_due, motion_publish_failure,
+        motion_ticker_enabled, nudge_text, observed_option, proven_ownership, quota_ask_candidates,
+        quota_delivery, quota_observation_due, quota_recipients, quota_seconds, read_events,
+        rebind, record_nudge, restore_idle, session_name, slot_mark, stale_display,
+        static_observe_cadence, sweep_effects, sweep_seconds, system_time_from_epoch,
+        throttle_quota_line, ticker_mode, window_agents_line,
     };
     use super::{Look, Mark, PaneMark, session_mark};
     use crate::events::Event;
@@ -4907,6 +5206,28 @@ mod tests {
             last_actor_event_age_secs: 0,
             sweep: None,
             own_work: crate::session::OwnWork::default(),
+        }
+    }
+
+    impl QuotaCarry {
+        /// Reconcile with no ask candidates — the ADVISORY path alone.
+        ///
+        /// Production always calls
+        /// [`QuotaCarry::reconcile_with_candidates`]; this shape keeps every
+        /// test that only ever cared about advisories saying exactly that, and
+        /// booking no ask.
+        ///
+        /// It lives HERE, in the test module, rather than carrying a
+        /// `#[cfg(test)]` beside its sibling: the structural pins of this file
+        /// read "production" as everything before the first `#[cfg(test)]`, so
+        /// one such attribute up there silently truncates what they inspect.
+        fn reconcile(
+            &mut self,
+            observation: &crate::quota::Observation,
+            recipients: &[QuotaRecipient],
+            meta_dir: &Path,
+        ) -> Vec<QuotaAction> {
+            self.reconcile_with_candidates(observation, recipients, &[], meta_dir)
         }
     }
 
@@ -5022,8 +5343,27 @@ mod tests {
             .iter()
             .filter_map(|action| match action {
                 QuotaAction::Deliver(pending) => Some(pending.as_ref()),
-                QuotaAction::Dropped { .. } => None,
+                QuotaAction::Ask(_) | QuotaAction::Dropped { .. } => None,
             })
+            .collect()
+    }
+
+    /// The booked CHECKPOINT ASKS of one pass, in booking order.
+    fn checkpoint_asks(actions: &[QuotaAction]) -> Vec<&PendingAsk> {
+        actions
+            .iter()
+            .filter_map(|action| match action {
+                QuotaAction::Ask(ask) => Some(ask.as_ref()),
+                QuotaAction::Deliver(_) | QuotaAction::Dropped { .. } => None,
+            })
+            .collect()
+    }
+
+    /// The agents one pass asked to checkpoint, in booking order.
+    fn asked_agents(actions: &[QuotaAction]) -> Vec<String> {
+        checkpoint_asks(actions)
+            .iter()
+            .map(|ask| ask.recipient.agent.clone())
             .collect()
     }
 
@@ -5058,6 +5398,577 @@ mod tests {
             ))
             .len(),
             1
+        );
+    }
+
+    /// A roster seat for the checkpoint fan-out. `rollout` is what makes a
+    /// Codex identity provable; a Claude seat does not need one.
+    fn ask_entry(
+        slot: &str,
+        name: &str,
+        binary: &str,
+        config_home: RecordedConfigHome,
+        config_home_base: RecordedConfigHomeBase,
+        rollout: Option<&str>,
+    ) -> RosterEntry {
+        RosterEntry {
+            slot: slot.to_owned(),
+            name: name.to_owned(),
+            profile: Some("sol".to_owned()),
+            client: RecordedClient::Missing,
+            harness_session: rollout.map(str::to_owned),
+            config_home,
+            config_home_base,
+            binary: Some(binary.to_owned()),
+        }
+    }
+
+    /// A Codex seat on `/tmp/cx`, the scope [`quota_for`] observes.
+    fn codex_seat(slot: &str, name: &str, home: &str) -> RosterEntry {
+        ask_entry(
+            slot,
+            name,
+            "codex",
+            RecordedConfigHome::Path(PathBuf::from(home)),
+            RecordedConfigHomeBase::Missing,
+            Some("018f1f70-7b2c-7000-8000-000000000001"),
+        )
+    }
+
+    /// The scope a set of Codex seats is observed on, built from the seat's own
+    /// resolved identity.
+    ///
+    /// A `Group` carries the CANONICAL source (`scope.source_key`), which is
+    /// what [`crate::quota::recorded_identity`] resolves too — so a fixture that
+    /// spelled the raw path would compare two different strings and prove
+    /// nothing. The existing throttle-line fixtures build their source the same
+    /// way.
+    fn codex_scope(on: &RosterEntry, used: &str, observed_at: i64) -> crate::quota::Observation {
+        let identity = crate::quota::recorded_identity(on).expect("a recorded Codex identity");
+        quota_observation(
+            vec![quota_group(
+                &identity.source,
+                Some("018f1f70-7b2c-7000-8000-000000000001"),
+                Some("demo:lead"),
+                vec![quota_row(
+                    "codex",
+                    Some("pro"),
+                    used,
+                    observed_at,
+                    crate::quota::Status::Fresh,
+                )],
+            )],
+            10_000,
+        )
+    }
+
+    /// A live pane carrying one seat's slot. `cmd` decides whether the seat can
+    /// be spoken to at all.
+    fn ask_pane(slot: Option<&str>, agent: &str, cmd: &str) -> crate::tmux::WatchPane {
+        crate::tmux::WatchPane {
+            pane_id: format!("%{}", agent.len()),
+            slot: slot.map(str::to_owned),
+            agent: Some(agent.to_owned()),
+            current_command: cmd.to_owned(),
+            pane_pid: Some(4242),
+            observed: String::new(),
+        }
+    }
+
+    /// Every seat of `roster` with a live pane, in roster order.
+    fn live_panes(roster: &[RosterEntry]) -> Vec<crate::tmux::WatchPane> {
+        roster
+            .iter()
+            .map(|entry| ask_pane(Some(&entry.slot), &entry.name, "node"))
+            .collect()
+    }
+
+    /// One Claude scope, whose source is the `.claude.json` under `base`.
+    fn claude_group(on: &RosterEntry, used: &str, observed_at: i64) -> crate::quota::Group {
+        let identity = crate::quota::recorded_identity(on).expect("a recorded Claude identity");
+        let mut group = quota_group(
+            &identity.source,
+            None,
+            None,
+            vec![quota_row(
+                "claude",
+                None,
+                used,
+                observed_at,
+                crate::quota::Status::Fresh,
+            )],
+        );
+        group.tool = crate::tool::ToolKind::Claude;
+        group
+    }
+
+    #[test]
+    fn entering_low_asks_once_then_stays_silent_until_it_clears_and_is_entered_again() {
+        // The invariant in one sequence: ONE ask per ENTRY into the band. Not
+        // one per cycle, not one per step inside the band, and not none after
+        // the band clears and is entered again.
+        let roster = [codex_seat("main", "lead", "/tmp/cx")];
+        let panes = live_panes(&roster);
+        let candidates = quota_ask_candidates(&roster, &panes);
+        assert_eq!(candidates.len(), 1, "the seat sits on the observed scope");
+        let recipients = [quota_recipient("main", "lead")];
+        let meta = Path::new("/m");
+        let mut carry = QuotaCarry::default();
+        let pass = |observation: crate::quota::Observation, carry: &mut QuotaCarry| {
+            let actions =
+                carry.reconcile_with_candidates(&observation, &recipients, &candidates, meta);
+            asked_agents(&actions)
+        };
+
+        assert!(
+            pass(codex_scope(&roster[0], "79", 9_900), &mut carry).is_empty(),
+            "headroom asks nobody"
+        );
+        assert_eq!(
+            pass(codex_scope(&roster[0], "80", 9_901), &mut carry),
+            vec!["lead".to_owned()],
+            "entering the band asks the seat once"
+        );
+        // Deliver it, exactly as the cycle would, so the next passes speak only
+        // about what they themselves booked.
+        let booked = carry.asks[0].clone();
+        assert!(
+            carry
+                .record_ask_delivery(&booked, QuotaDelivery::Delivered, meta)
+                .is_none(),
+            "a delivered ask is simply forgotten"
+        );
+        assert!(carry.asks.is_empty(), "nothing is left to re-deliver");
+
+        assert!(
+            pass(codex_scope(&roster[0], "96", 9_902), &mut carry).is_empty(),
+            "low to critical is still inside the band: no second ask"
+        );
+        assert_eq!(
+            carry.tracked[0].classified.level(),
+            QuotaLevel::Critical,
+            "the level did move, so silence here is the rule and not a miss"
+        );
+        assert!(
+            pass(codex_scope(&roster[0], "50", 9_903), &mut carry).is_empty(),
+            "leaving the band asks nothing"
+        );
+        assert_eq!(
+            pass(codex_scope(&roster[0], "85", 9_904), &mut carry),
+            vec!["lead".to_owned()],
+            "a band entered again asks again"
+        );
+    }
+
+    #[test]
+    fn the_ask_fans_out_to_every_seat_on_the_scope_and_no_other() {
+        // The ask follows the SCOPE, not the lead pair: fixed seats, spawned
+        // seats and a seat whose only recorded tool is its binary all qualify,
+        // while another config home and another tool do not.
+        let roster = [
+            codex_seat("main", "lead", "/tmp/cx"),
+            codex_seat("worker.0", "colead", "/tmp/cx-other"),
+            codex_seat("spawned.0", "helper", "/tmp/cx"),
+            ask_entry(
+                "worker.1",
+                "legacy",
+                "codex",
+                RecordedConfigHome::Path(PathBuf::from("/tmp/cx")),
+                RecordedConfigHomeBase::Missing,
+                Some("018f1f70-7b2c-7000-8000-000000000002"),
+            ),
+            ask_entry(
+                "worker.2",
+                "painter",
+                "claude",
+                RecordedConfigHome::Path(PathBuf::from("/tmp/cx")),
+                RecordedConfigHomeBase::Missing,
+                None,
+            ),
+        ];
+        assert_eq!(
+            roster[3].client,
+            RecordedClient::Missing,
+            "the legacy seat records no client label, so only its binary can \
+             say which scope it is on"
+        );
+        let mut panes = live_panes(&roster);
+        // A pane nobody on the roster owns must not become a recipient.
+        panes.push(ask_pane(None, "_watchdog", "ae"));
+
+        let candidates = quota_ask_candidates(&roster, &panes);
+        let mut carry = QuotaCarry::default();
+        let meta = Path::new("/m");
+        assert!(
+            carry
+                .reconcile_with_candidates(
+                    &codex_scope(&roster[0], "79", 9_900),
+                    &[quota_recipient("main", "lead")],
+                    &candidates,
+                    meta,
+                )
+                .is_empty(),
+            "the baseline books nothing"
+        );
+        let actions = carry.reconcile_with_candidates(
+            &codex_scope(&roster[0], "81", 9_901),
+            &[quota_recipient("main", "lead")],
+            &candidates,
+            meta,
+        );
+        assert_eq!(
+            asked_agents(&actions),
+            vec!["lead".to_owned(), "helper".to_owned(), "legacy".to_owned()],
+            "every seat on the scope, and only those"
+        );
+        assert_eq!(
+            transition_deliveries(&actions).len(),
+            1,
+            "the ADVISORY still goes to its own recipient set alone"
+        );
+    }
+
+    #[test]
+    fn an_implicit_config_home_matches_only_through_its_recorded_base() {
+        // An implicit home names no store of its own: the effective HOME that
+        // selected it is what identifies the Claude cache. Two seats can share
+        // the implicit path and still be on different scopes.
+        let roster = [
+            ask_entry(
+                "main",
+                "here",
+                "claude",
+                RecordedConfigHome::Implicit(PathBuf::from("/tmp/cfg")),
+                RecordedConfigHomeBase::Path(PathBuf::from("/tmp/home-a")),
+                None,
+            ),
+            ask_entry(
+                "worker.0",
+                "elsewhere",
+                "claude",
+                RecordedConfigHome::Implicit(PathBuf::from("/tmp/cfg")),
+                RecordedConfigHomeBase::Path(PathBuf::from("/tmp/home-b")),
+                None,
+            ),
+        ];
+        let panes = live_panes(&roster);
+        let candidates = quota_ask_candidates(&roster, &panes);
+        assert_eq!(candidates.len(), 2, "both seats have a provable identity");
+
+        let meta = Path::new("/m");
+        let mut carry = QuotaCarry::default();
+        let observe = |used: &str, at: i64| {
+            quota_observation(vec![claude_group(&roster[0], used, at)], 10_000)
+        };
+        assert!(
+            carry
+                .reconcile_with_candidates(&observe("70", 9_900), &[], &candidates, meta)
+                .is_empty(),
+            "the baseline books nothing"
+        );
+        assert_eq!(
+            asked_agents(&carry.reconcile_with_candidates(
+                &observe("82", 9_901),
+                &[],
+                &candidates,
+                meta
+            )),
+            vec!["here".to_owned()],
+            "only the seat whose recorded base names this cache"
+        );
+    }
+
+    #[test]
+    fn a_first_sight_at_low_asks_while_the_advisory_stays_silent() {
+        // A daemon that starts with the scope already inside the band has seats
+        // which may never see another transition. They are asked once; the
+        // advisory's own first-sight silence is untouched.
+        let roster = [codex_seat("main", "lead", "/tmp/cx")];
+        let panes = live_panes(&roster);
+        let candidates = quota_ask_candidates(&roster, &panes);
+        let mut carry = QuotaCarry::default();
+        let actions = carry.reconcile_with_candidates(
+            &codex_scope(&roster[0], "97", 9_900),
+            &[quota_recipient("main", "lead")],
+            &candidates,
+            Path::new("/m"),
+        );
+        assert_eq!(
+            asked_agents(&actions),
+            vec!["lead".to_owned()],
+            "first sight inside the band asks"
+        );
+        assert!(
+            transition_deliveries(&actions).is_empty(),
+            "and the advisory still reports no transition it never saw"
+        );
+        assert_eq!(carry.tracked[0].classified.level(), QuotaLevel::Critical);
+    }
+
+    #[test]
+    fn a_seat_without_a_live_pane_or_a_readable_scope_is_never_asked() {
+        // Three fail-closed skips, and the unaware clear beside them.
+        let roster = [
+            codex_seat("main", "lead", "/tmp/cx"),
+            codex_seat("worker.0", "quit", "/tmp/cx"),
+            codex_seat("worker.1", "gone", "/tmp/cx"),
+            ask_entry(
+                "worker.2",
+                "unparsed",
+                "muse",
+                RecordedConfigHome::Path(PathBuf::from("/tmp/cx")),
+                RecordedConfigHomeBase::Missing,
+                None,
+            ),
+            codex_seat("worker.3", "fresh", "/tmp/cx"),
+        ];
+        let panes = vec![
+            ask_pane(Some("main"), "lead", "node"),
+            // The tool was quit: the pane is back at a shell and reads nothing.
+            ask_pane(Some("worker.0"), "quit", "bash"),
+            // `worker.1` has no pane at all.
+            ask_pane(Some("worker.2"), "unparsed", "node"),
+            ask_pane(Some("worker.3"), "fresh", "node"),
+        ];
+        let mut roster = roster;
+        // A Codex seat with no recorded conversation is not a proven identity,
+        // the same rule the throttle line applies.
+        roster[4].harness_session = None;
+
+        let candidates = quota_ask_candidates(&roster, &panes);
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|candidate| candidate.recipient.agent.clone())
+                .collect::<Vec<_>>(),
+            vec!["lead".to_owned()],
+            "a shell pane, a missing pane, a tool with no quota parser and an \
+             unproven identity are all skipped"
+        );
+
+        let meta = Path::new("/m");
+        let mut carry = QuotaCarry::default();
+        let actions = carry.reconcile_with_candidates(
+            &codex_scope(&roster[0], "88", 9_900),
+            &[],
+            &candidates,
+            meta,
+        );
+        assert_eq!(asked_agents(&actions), vec!["lead".to_owned()]);
+
+        // While unaware nothing may stay booked to fire the moment awareness
+        // returns: the ask is held quota knowledge like any other.
+        assert!(!carry.asks.is_empty(), "there is something to clear");
+        carry.clear_held();
+        assert!(carry.asks.is_empty(), "an unaware cycle drops booked asks");
+    }
+
+    #[test]
+    fn a_declaration_that_clears_the_band_lets_its_withdrawal_ask_again() {
+        // A policy change carries no vendor clock: it RE-JUDGES the row already
+        // held. That reaches the entry edge exactly as a new observation does,
+        // so the ask is direction-symmetric with the advisory — declaring a
+        // reset clears the band, withdrawing it re-enters, and the seat is
+        // asked again because it is genuinely in trouble again.
+        let roster = [codex_seat("main", "lead", "/tmp/cx")];
+        let panes = live_panes(&roster);
+        let candidates = quota_ask_candidates(&roster, &panes);
+        let identity = crate::quota::recorded_identity(&roster[0]).expect("a recorded identity");
+        let observation = |used: &str, at: i64, resets: Option<u8>, now: i64| {
+            quota_observation(
+                vec![quota_scope_group(
+                    &identity.source,
+                    Some("018f1f70-7b2c-7000-8000-000000000001"),
+                    Some("demo:lead"),
+                    vec![quota_row(
+                        "codex",
+                        Some("pro"),
+                        used,
+                        at,
+                        crate::quota::Status::Fresh,
+                    )],
+                    resets,
+                    crate::quota::Account::default(),
+                )],
+                now,
+            )
+        };
+        let meta = Path::new("/m");
+        let mut carry = QuotaCarry::default();
+        let pass = |carry: &mut QuotaCarry, resets: Option<u8>, now: i64| {
+            asked_agents(&carry.reconcile_with_candidates(
+                &observation("95", 9_901, resets, now),
+                &[],
+                &candidates,
+                meta,
+            ))
+        };
+
+        // Enter the band on the observation alone, and clear the booking so the
+        // passes that follow speak only about what they themselves booked.
+        assert_eq!(
+            pass(&mut carry, None, 10_000),
+            vec!["lead".to_owned()],
+            "first sight inside the band asks"
+        );
+        let booked = carry.asks[0].clone();
+        assert!(
+            carry
+                .record_ask_delivery(&booked, QuotaDelivery::Delivered, meta)
+                .is_none()
+        );
+
+        // DECLARE a reset: the same raw row is re-judged into headroom.
+        assert!(
+            pass(&mut carry, Some(1), 10_001).is_empty(),
+            "leaving the band on a declaration asks nothing"
+        );
+        assert_eq!(
+            carry.tracked[0].classified.level(),
+            QuotaLevel::Headroom,
+            "the declaration really did clear it"
+        );
+        assert_eq!(
+            carry.tracked[0].classified.observed_at(),
+            9_901,
+            "and the raw clock did not move"
+        );
+
+        // WITHDRAW it: the same raw row is Critical again, which is an entry.
+        assert_eq!(
+            pass(&mut carry, None, 10_002),
+            vec!["lead".to_owned()],
+            "a withdrawn declaration re-arms the ask, as it re-arms the advisory"
+        );
+        assert_eq!(carry.tracked[0].classified.level(), QuotaLevel::Critical);
+    }
+
+    #[test]
+    fn a_still_deferred_ask_survives_the_band_and_is_replaced_not_doubled() {
+        // The seat has not read the ask yet — the delivery is still owed. Two
+        // things must hold while it waits. Moving deeper into the band, or out
+        // of it, must NOT cancel the booking, because cancelling would mean the
+        // seat is never asked at all. And entering the band AGAIN must replace
+        // that one booking rather than add a second, or one deferral becomes
+        // two pastes.
+        let roster = [codex_seat("main", "lead", "/tmp/cx")];
+        let panes = live_panes(&roster);
+        let candidates = quota_ask_candidates(&roster, &panes);
+        let meta = Path::new("/m");
+        let mut carry = QuotaCarry::default();
+        let pass = |carry: &mut QuotaCarry, used: &str, at: i64| {
+            asked_agents(&carry.reconcile_with_candidates(
+                &codex_scope(&roster[0], used, at),
+                &[],
+                &candidates,
+                meta,
+            ))
+        };
+
+        assert!(pass(&mut carry, "70", 9_900).is_empty(), "the baseline");
+        assert_eq!(pass(&mut carry, "85", 9_901), vec!["lead".to_owned()]);
+        assert_eq!(carry.asks.len(), 1, "one booking, still undelivered");
+        assert_eq!(carry.asks[0].observed_at, 9_901);
+
+        // DEEPER into the band. Nothing new is asked, and the owed one stands.
+        let _ = pass(&mut carry, "96", 9_902);
+        assert_eq!(carry.tracked[0].classified.level(), QuotaLevel::Critical);
+        assert_eq!(
+            carry.asks.len(),
+            1,
+            "a later transition never cancels an owed ask"
+        );
+        assert_eq!(
+            carry.asks[0].observed_at, 9_901,
+            "and never rewrites its facts"
+        );
+
+        // OUT of the band. The seat still owes the checkpoint it was asked for.
+        let _ = pass(&mut carry, "50", 9_903);
+        assert_eq!(carry.tracked[0].classified.level(), QuotaLevel::Headroom);
+        assert_eq!(carry.asks.len(), 1, "clearing does not retract it either");
+        assert_eq!(carry.asks[0].observed_at, 9_901);
+
+        // IN again, while the first is still owed: replaced, never doubled.
+        assert_eq!(pass(&mut carry, "88", 9_904), vec!["lead".to_owned()]);
+        assert_eq!(
+            carry.asks.len(),
+            1,
+            "one seat and one scope hold ONE owed ask: {:?}",
+            carry.asks
+        );
+        assert_eq!(
+            carry.asks[0].observed_at, 9_904,
+            "and it carries the newer entry"
+        );
+        let text = carry.asks[0].advisory.checkpoint_ask(meta);
+        assert!(text.contains("88"), "the facts of the new entry: {text}");
+        assert!(!text.contains("85"), "never the superseded booking: {text}");
+    }
+
+    #[test]
+    fn the_ask_text_quotes_the_held_reading_and_stays_within_its_bound() {
+        let roster = [codex_seat("main", "lead", "/tmp/cx")];
+        let panes = live_panes(&roster);
+        let candidates = quota_ask_candidates(&roster, &panes);
+        let meta = Path::new("/m");
+        let mut carry = QuotaCarry::default();
+        assert!(
+            carry
+                .reconcile_with_candidates(
+                    &codex_scope(&roster[0], "70", 9_900),
+                    &[],
+                    &candidates,
+                    meta
+                )
+                .is_empty()
+        );
+        let actions = carry.reconcile_with_candidates(
+            &codex_scope(&roster[0], "85", 9_901),
+            &[],
+            &candidates,
+            meta,
+        );
+        assert_eq!(asked_agents(&actions), vec!["lead".to_owned()]);
+
+        // An OLDER sample is refused by the raw clock, so it books nothing —
+        // and, the point of this pin, it does not reach the text of the ask
+        // already booked from the observation that DID decide the level.
+        assert!(
+            carry
+                .reconcile_with_candidates(
+                    &codex_scope(&roster[0], "99", 9_899),
+                    &[],
+                    &candidates,
+                    meta
+                )
+                .iter()
+                .filter(|action| matches!(action, QuotaAction::Dropped { .. }))
+                .count()
+                == 0,
+            "a refused sample cancels nothing"
+        );
+        assert_eq!(carry.asks.len(), 1, "and books nothing new");
+
+        let text = carry.asks[0].advisory.checkpoint_ask(meta);
+        assert!(text.contains("low"), "the level it was judged at: {text}");
+        assert!(text.contains("85"), "the judged percentage: {text}");
+        assert!(
+            !text.contains("99"),
+            "never the sample the clock refused: {text}"
+        );
+        assert!(
+            text.contains("/m/memo add --topic"),
+            "the exact command that answers it: {text}"
+        );
+        assert!(
+            text.contains("No reply needed"),
+            "it opens no request: {text}"
+        );
+        assert!(
+            text.chars().count() <= crate::quota::CHECKPOINT_ASK_MAX,
+            "one paste, {} chars: {text}",
+            text.chars().count()
         );
     }
 
@@ -5259,7 +6170,7 @@ mod tests {
             .iter()
             .filter_map(|action| match action {
                 QuotaAction::Dropped { summary, .. } => Some(summary),
-                QuotaAction::Deliver(_) => None,
+                QuotaAction::Ask(_) | QuotaAction::Deliver(_) => None,
             })
             .collect();
         assert_eq!(

@@ -53,8 +53,9 @@ pub const USAGE: &str = "Usage: send [--cross-session] <agent-name|pane-id|@sess
 /// The default action.
 pub const ACTION: &str = "send";
 
-/// Machine-readable stdout written only for a quota advisory that was proven
-/// refused before submission. The watchdog retries only this exact marker.
+/// Machine-readable stdout written only for a watchdog quota notice — the
+/// advisory or the checkpoint ask — that was proven refused before submission.
+/// The watchdog retries only this exact marker.
 pub(crate) const RETRYABLE_MARKER: &str = "ae-send: retryable-before-submit";
 
 /// What the argv said.
@@ -369,12 +370,18 @@ fn retryable_delivery(delivery: &Result<deliver::Delivered, deliver::Failure>) -
     )
 }
 
+/// The marker the watchdog's quota pass keys its ONE retry on.
+///
+/// Both watchdog-owned quota notices carry it: the advisory, and the checkpoint
+/// ask a seat gets when its scope enters the Low band. Nothing else does — an
+/// ordinary send is the caller's to repeat, and a notice ae cannot prove was
+/// refused BEFORE submit is never retried, because the paste may have landed.
 fn write_retryable_marker(
     action: &str,
     delivery: &Result<deliver::Delivered, deliver::Failure>,
     out: &mut impl Write,
 ) -> io::Result<()> {
-    if action == "quota-advisory" && retryable_delivery(delivery) {
+    if matches!(action, "quota-advisory" | "quota-checkpoint") && retryable_delivery(delivery) {
         writeln!(out, "{RETRYABLE_MARKER}")?;
     }
     Ok(())
@@ -507,6 +514,52 @@ mod tests {
             Err(crate::deliver::Failure::Abandoned);
         write_retryable_marker("send", &refused, &mut out).expect("the public send stays silent");
         assert!(out.is_empty(), "ordinary send stdout remains unchanged");
+    }
+
+    #[test]
+    fn the_checkpoint_ask_retries_on_the_same_proven_refusals_as_the_advisory() {
+        // The watchdog's two quota notices share ONE retry rule, because they
+        // share one delivery path and one failure vocabulary. Only the ACTION
+        // tells them apart, and the ask is the second name this predicate
+        // answers to — without it a busy seat loses its checkpoint ask for good.
+        for failure in [
+            crate::deliver::Failure::DeadPane,
+            crate::deliver::Failure::Lock,
+            crate::deliver::Failure::Abandoned,
+        ] {
+            let delivery: Result<crate::deliver::Delivered, crate::deliver::Failure> = Err(failure);
+            let mut out = Vec::new();
+            write_retryable_marker("quota-checkpoint", &delivery, &mut out)
+                .expect("the marker writes");
+            assert_eq!(
+                out,
+                format!("{RETRYABLE_MARKER}\n").as_bytes(),
+                "a proven pre-submit refusal of the ask is retryable"
+            );
+        }
+
+        let paste: Result<crate::deliver::Delivered, crate::deliver::Failure> =
+            Err(crate::deliver::Failure::Paste {
+                body_file: "/m/body".to_owned(),
+            });
+        let mut out = Vec::new();
+        write_retryable_marker("quota-checkpoint", &paste, &mut out)
+            .expect("the marker check writes");
+        assert!(
+            out.is_empty(),
+            "an ambiguous paste is never retried, ask or advisory"
+        );
+
+        // The predicate names exactly two actions. A neighbour that merely
+        // starts the same way is not one of them.
+        let refused: Result<crate::deliver::Delivered, crate::deliver::Failure> =
+            Err(crate::deliver::Failure::Abandoned);
+        write_retryable_marker("quota-checkpoint-dropped", &refused, &mut out)
+            .expect("an unrelated action stays silent");
+        assert!(
+            out.is_empty(),
+            "only the two notice actions carry the marker"
+        );
     }
 
     #[test]

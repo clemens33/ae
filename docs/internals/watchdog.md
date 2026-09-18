@@ -141,6 +141,28 @@ survives a watchdog restart. When the session is quota-unaware (`[workspace] quo
 due pass skips the quota observation entirely: no vendor-cache read, no advisory booking, no held
 observation for the throttle line below.
 
+The same pass sends a second, differently addressed notice: the **checkpoint ask**. When a client
+scope ENTERS `low` or worse — including the first sight of a scope a starting daemon already finds
+there — every roster seat on that scope is asked once to write a durable checkpoint, because a seat
+whose subscription runs dry can no longer be asked anything. It is advisory: it opens no request,
+wants no reply and changes no state, and it rides the same guarded delivery, the same watchdog
+marker and the same single retry as the advisory, under the action `quota-checkpoint`. Moving
+around inside the band asks nothing further; only a band that clears and is entered again asks
+again, and `classify`'s own hysteresis decides "cleared".
+
+A seat is on the scope when its recorded identity — the tool kind of `agent_bin.<slot>` plus the
+canonical `config_home.<slot>`, an `implicit:` home resolved through its recorded
+`config_home_base.<slot>` — resolves to the source the observation was read from. That is the one
+join `recorded_identity` already makes for the throttle line, so a seat matches for the ask exactly
+when it would match there. Fixed and spawned seats alike qualify, and the ADVISORY's own recipients
+are unchanged: that notice still goes to the session's main and optional colead only.
+
+Four fail-closed skips: a tool with no quota parser, a config home ae cannot resolve (including a
+Codex seat with no recorded conversation), a seat with no pane carrying its slot, and a pane sitting
+at a shell. **Residual, named not fixed:** on the tools whose TUI ae does not model, the guarded
+send cannot see a human's half-typed draft, so an ask may land mid-input there. Modelled tools
+(Claude Code, Codex, Muse) defer on that draft through the existing readiness check.
+
 Launch persists `[workspace] idle_nudge_secs` too (default 300, `0` disables).
 This clock starts when the current Claude Code or Codex frame is positively
 recognized as an empty input box. A Claude Code frame qualifies only when the

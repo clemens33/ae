@@ -785,7 +785,29 @@ pub(crate) struct Advisory {
     derivation: Option<String>,
     /// The account is spend-capped, which no window reset can free.
     spend_capped: bool,
+    /// The JUDGED percentage in its compact spelling, carrying the derivation
+    /// that made it differ from the raw window. Set in the one constructor
+    /// below from the very reading that decided the level, so the checkpoint
+    /// ask cannot quote a percentage some other observation produced.
+    judged: String,
 }
+
+/// The checkpoint ask's ONE text owner: fixed wording, two substitutions and
+/// nothing a sender may re-word. `{facts}` is the HELD reading's own scope,
+/// level and judged percentage; `{memo}` is this session's memo helper.
+const CHECKPOINT_ASK: &str = "{facts}. This seat may lose its voice. Checkpoint NOW: {memo} add \
+                              --topic <your slice>, then --topic parking; each carries next exact \
+                              command · decisions + why · dead ends · constraints VERBATIM · files \
+                              + git · owed replies (ids). No reply needed.";
+
+/// The ask rides ONE paste into a live input box, so it stays short enough to
+/// read at a glance and well inside any harness's single-turn comfort.
+///
+/// A PIN rather than a clip: the wording above is fixed and every fact rendered
+/// into it is already a bounded cell, so the length cannot drift without
+/// somebody editing that text and reading this.
+#[cfg(test)]
+pub(crate) const CHECKPOINT_ASK_MAX: usize = 600;
 
 impl Advisory {
     pub(crate) fn current_at(&self, now: i64) -> bool {
@@ -830,6 +852,33 @@ impl Advisory {
             self.state,
             meta_dir.display()
         )
+    }
+
+    /// The quota-Low CHECKPOINT ASK for one seat on this scope.
+    ///
+    /// Every fact it states — the scope, the level and the judged percentage —
+    /// comes from this advisory, which [`Observation::advisory`] built from the
+    /// one classified reading that decided the level. There is no path here for
+    /// a sample the freshness rule refused.
+    ///
+    /// Advisory only: it asks for a durable checkpoint and explicitly wants no
+    /// reply, so it opens no request and changes no state.
+    pub(crate) fn checkpoint_ask(&self, meta_dir: &Path) -> String {
+        let facts = format!(
+            "quota {} · {}{} {} {} — {} at {}",
+            self.tool.as_str(),
+            self.scope,
+            self.owner
+                .as_deref()
+                .map_or_else(String::new, |owner| format!(" · {owner}")),
+            self.bucket,
+            self.window,
+            self.state,
+            self.judged,
+        );
+        CHECKPOINT_ASK
+            .replace("{facts}", &facts)
+            .replace("{memo}", &format!("{}/memo", meta_dir.display()))
     }
 }
 
@@ -959,6 +1008,9 @@ impl Observation {
             recovered,
             derivation,
             spend_capped: reading.policy.spend_capped(),
+            // The SAME derivation the EFFECTIVE column and the settings dialog
+            // read, taken from the reading that decided `state` just above.
+            judged: reading.derived().settings_cell(),
         }
     }
 }

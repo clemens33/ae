@@ -397,6 +397,191 @@ fn a_changing_cache_emits_each_expected_quota_advisory_once() {
     );
 }
 
+/// Replace the planted send helper with one that REFUSES the first checkpoint
+/// ask before submit, exactly as a busy pane's deferral ends, and accepts
+/// everything after it.
+///
+/// The refusal is the helper's own proven pre-submit marker — the one thing
+/// that makes a watchdog notice retryable. Every call is still recorded, so the
+/// receipt shows the refused attempt and the delivery that followed it.
+fn send_helper_refusing_the_first_ask(meta_dir: &Path) {
+    let send = meta_dir.join("send");
+    // Truncating in place would write THROUGH whatever sits at that path;
+    // remove first, as everything else in this tree does.
+    let _ = fs::remove_file(&send);
+    assert!(
+        fs::write(
+            &send,
+            "#!/bin/sh\ndir=\"$(dirname \"$0\")\"\n\
+             printf '%s %s %s %s\\n' \"${AE_SENDER_OVERRIDE:-none}\" \"${_AE_EVENT_ACTION:-none}\" \"$1\" \"$2\" >> \"$dir/delivered\"\n\
+             if [ \"${_AE_EVENT_ACTION:-none}\" = \"quota-checkpoint\" ] && [ ! -f \"$dir/ask-refused\" ]; then\n\
+             \t: > \"$dir/ask-refused\"\n\
+             \techo 'ae-send: retryable-before-submit'\n\
+             \texit 1\n\
+             fi\nexit 0\n",
+        )
+        .is_ok(),
+        "the refusing send helper"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        assert!(
+            fs::set_permissions(&send, fs::Permissions::from_mode(0o755)).is_ok(),
+            "the send helper must be executable"
+        );
+    }
+}
+
+/// Every checkpoint-ask line the receipt carries, in delivery order.
+fn checkpoint_lines(delivered: &Path) -> Vec<String> {
+    fs::read_to_string(delivered)
+        .unwrap_or_default()
+        .lines()
+        .filter(|line| line.starts_with("watchdog quota-checkpoint lead "))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// A seat entering the quota-Low band is asked to checkpoint exactly once, and
+/// a deferral that refuses the ask before submit costs the seat nothing.
+///
+/// This is the whole path end to end — the real cache, the real identity join,
+/// the real delivery helper — because every other pin of this slice stops at
+/// the booking. It plants the full identity (`config_home` plus `agent_bin`)
+/// and a stamped, slotted, non-shell pane, which is exactly what the fan-out
+/// requires; a fixture missing any of those would prove nothing.
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one real fixture told once: plant, enter the band, be refused, be \
+              retried, then go deeper and stay silent"
+)]
+fn a_seat_entering_the_quota_low_band_is_asked_to_checkpoint_exactly_once() {
+    let scratch = scratch("ckpt-ask");
+    require_tmux(&scratch);
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup::new(&socket, &scratch);
+    let root = scratch.join("state");
+    let tool_home = scratch.join("tool-home");
+    assert!(fs::create_dir_all(&root).is_ok(), "a state root");
+    assert!(fs::create_dir_all(&tool_home).is_ok(), "a tool home");
+    let config = root.join("config");
+    assert!(
+        fs::write(
+            &config,
+            "[profiles]\ncl = claude\n[workspace]\nquota = on\n"
+        )
+        .is_ok(),
+        "a quota-aware config"
+    );
+    let meta_dir = plant(&root, "ckpt-ask", &socket, None);
+    send_helper_refusing_the_first_ask(&meta_dir);
+    let meta = fs::read_to_string(meta_dir.join("meta")).unwrap_or_default();
+    let canonical_home = std::fs::canonicalize(&tool_home).expect("canonical tool home");
+    assert!(
+        fs::write(
+            meta_dir.join("meta"),
+            format!(
+                "{meta}quota_every_secs=1\nquota=on\nconfig_home.main={}\n",
+                canonical_home.display()
+            )
+        )
+        .is_ok(),
+        "the cadence plus the recorded config home that makes the seat a \
+         PROVEN member of this client scope"
+    );
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &["new-session", "-d", "-s", "ckpt-ask", "cat"]
+        )
+        .0,
+        "the watched session"
+    );
+    // A slotted, named pane running something that is NOT a shell: the ask is
+    // only ever sent to a seat ae can see is listening.
+    stamp_agent(&socket, &scratch, "ckpt-ask");
+
+    let now = ae::time::Timestamp::now().epoch();
+    let cache = tool_home.join(".claude.json");
+    write_claude_quota(&cache, 70, now);
+    let trace = scratch.join("quota-trace.log");
+    let mut offset = 0;
+    let mut child = spawn_quota_daemon(&meta_dir, &tool_home, &root, &config, &scratch, &trace);
+    let pid_deadline = Instant::now() + BUDGET;
+    while Instant::now() < pid_deadline && !meta_dir.join(".watchdog.pid").is_file() {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    await_quota_trace(&trace, &mut offset, "70", false);
+    let delivered = meta_dir.join("delivered");
+    assert!(
+        checkpoint_lines(&delivered).is_empty(),
+        "headroom asks nobody: {:?}",
+        fs::read_to_string(&delivered)
+    );
+
+    // ENTER the band. The first attempt is refused before submit, so the
+    // watchdog must come back for it.
+    let low_at = next_observed_at(now);
+    write_claude_quota(&cache, 85, low_at);
+    let settle = Instant::now() + BUDGET;
+    while Instant::now() < settle && checkpoint_lines(&delivered).len() < 2 {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let after_retry = checkpoint_lines(&delivered);
+    assert_eq!(
+        after_retry.len(),
+        2,
+        "one refused attempt, then one delivery: {after_retry:?}"
+    );
+    assert!(
+        meta_dir.join("ask-refused").is_file(),
+        "the first attempt really was refused before submit"
+    );
+
+    // Move DEEPER into the band. That is not a new entry, so it asks nothing,
+    // and the delivered ask is never repeated.
+    let critical_at = next_observed_at(low_at);
+    write_claude_quota(&cache, 97, critical_at);
+    await_quota_trace(&trace, &mut offset, "97", false);
+    // Give the cadence several further passes to repeat itself if it is going
+    // to; the advisory that DOES fire here is the proof they ran.
+    let advisories = meta_dir.join("delivered");
+    wait_for_advisories(&advisories, 1);
+    std::thread::sleep(Duration::from_millis(1_500));
+
+    stop_watchdog(&mut child, &socket, &scratch, "ckpt-ask");
+    let receipt = fs::read_to_string(&delivered).unwrap_or_default();
+    let diagnostics = fs::read_to_string(scratch.join("daemon-err")).unwrap_or_default();
+    let asks = checkpoint_lines(&delivered);
+    assert_eq!(
+        asks.len(),
+        2,
+        "low to critical is no second entry, and a delivered ask never \
+         repeats\nreceipt: {receipt}\nstderr: {diagnostics}"
+    );
+    assert!(
+        asks[1].contains("85%") && asks[1].contains("low"),
+        "the ask quotes the reading that decided the level: {}",
+        asks[1]
+    );
+    assert!(
+        asks[1].contains("memo add --topic"),
+        "and names the exact command that answers it: {}",
+        asks[1]
+    );
+    // The ADVISORY recipients did not widen: the lead pair still owns that
+    // notice, and the two notices stayed separate actions throughout.
+    assert!(
+        receipt
+            .lines()
+            .any(|line| line.starts_with("watchdog quota-advisory lead ")),
+        "the advisory still fired on its own transition: {receipt}"
+    );
+}
+
 /// Spawn a production `_watchdog-run` child over `meta_dir` with hermetic
 /// `HOME`/`AE_HOME`/`CONFIG_FILE`, paced for tests: one-second verdict cycles.
 /// The daemon also gets `AE_TEST_QUOTA_TRACE`: every due pass appends one
