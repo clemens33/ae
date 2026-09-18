@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.118] - 2026-09-18
+- A watchdog fills the fleet strip of a peer that has none
+- Prove adoption against a real server, and say what it may do
+- Draw no strip for a session that draws no row of its own
+
 ## [v2026.9.117] - 2026-09-18
 - Report ae's input-map health in ae doctor
 - Judge launcher-less bindings by presence and read the launch target
