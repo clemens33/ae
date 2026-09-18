@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.128] - 2026-09-18
+- Say why the quota dialog refused on the invoking client
+- Pin the brief-retry arms for exhaustion, cross-session and lock loss
+- Detect a human-only prompt in an agy frame
+- Name a human-only prompt on the watchdog's own cycle
+- Refuse a brief retry while a human-only prompt waits
+- Keep the record-lock wait out of the test clock
+- Record the human-only prompt invariant
+- Take the composer spec from the caller, not a tool variant
+- Name when a second tool earns an adapter row
+- Treat an unreadable pane as a prompt, not as a clear one
+
 ## [v2026.9.127] - 2026-09-18
 - Give an undelivered spawn brief a durable record
 - Refuse to publish over a live brief record
