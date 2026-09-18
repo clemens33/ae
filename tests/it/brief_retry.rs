@@ -295,10 +295,16 @@ fn a_permanently_damaged_record_is_set_aside_and_named_in_the_ledger() {
         !rig.record_path("spawned.1").exists(),
         "the damaged record is gone from the name a reader would use"
     );
+    let ledger = rig.events();
     assert!(
-        rig.events().contains("brief-gave-up"),
-        "the give-up was never recorded: {}",
-        rig.events()
+        ledger.contains("brief-gave-up"),
+        "the give-up was never recorded: {ledger}"
+    );
+    // THE ACTOR IS THE WATCHDOG, not a spawner: the record could not be read,
+    // so there is no spawner to name and ae must not invent one.
+    assert!(
+        ledger.contains("\"actor\":\"watchdog\""),
+        "an unreadable record's give-up is the watchdog's own: {ledger}"
     );
     assert!(
         !rig.delivered().contains("brief-retry|"),
@@ -323,19 +329,27 @@ fn a_stuck_oldest_record_cannot_starve_the_briefs_behind_it() {
     let pane = rig.pane();
     rig.seats(
         &pane,
+        // The ROSTER order is reversed against the slot order on purpose: a
+        // stable sort alone would then put beta first, so this fixture can
+        // tell a real tiebreak from an accident of enumeration order.
         &[
-            ("spawned.1", "alpha"),
             ("spawned.2", "beta"),
+            ("spawned.1", "alpha"),
             ("spawned.3", "gamma"),
         ],
         "tok-1",
     );
     rig.recording_send();
     // ALPHA IS THE OLDEST, and is the one a by-age daemon would never leave.
+    // Alpha and beta share a created SECOND on purpose: the order has to be
+    // TOTAL, because two records that can swap places between cycles are two
+    // the rotation could step over forever — the very starvation the cursor
+    // exists to stop. The slot breaks that tie, so alpha stays ahead of beta.
+    // They are planted in reverse so no filesystem or roster accident decides.
     let base = now();
-    rig.record("spawned.1", &pane, "tok-1", 0, base - 300);
-    rig.record("spawned.2", &pane, "tok-1", 0, base - 200);
     rig.record("spawned.3", &pane, "tok-1", 0, base - 100);
+    rig.record("spawned.2", &pane, "tok-1", 0, base - 300);
+    rig.record("spawned.1", &pane, "tok-1", 0, base - 300);
 
     let all_three = rig.watch_until(|| {
         let delivered = rig.delivered();
@@ -349,7 +363,7 @@ fn a_stuck_oldest_record_cannot_starve_the_briefs_behind_it() {
          delivered: {:?}",
         rig.delivered()
     );
-    // AND THE ORDER IS STILL OLDEST-FIRST: the longest wait went first.
+    // AND THE ORDER IS STILL OLDEST-FIRST, with the slot breaking the tie.
     let first = rig
         .delivered()
         .lines()
@@ -358,7 +372,7 @@ fn a_stuck_oldest_record_cannot_starve_the_briefs_behind_it() {
         .to_owned();
     assert!(
         first.starts_with("brief-retry|alpha|"),
-        "the oldest brief must still go first: {first}"
+        "the oldest brief goes first, and the lower slot breaks a tied second: {first}"
     );
 }
 
@@ -376,23 +390,41 @@ fn damage_is_classified_outside_the_one_delivery_a_cycle_budget() {
     );
     rig.recording_send();
     let base = now();
-    // The DAMAGED one is the older, so a budget that spent itself on damage
-    // would reach the live brief only after the damaged file was gone.
+    // PERSISTENT damage, which is what makes this pin bite. Damage that is
+    // renamed away after one cycle would prove nothing: the delivery could
+    // simply be the NEXT cycle's, and a budget the damage really did consume
+    // would still pass. An unreadable file with a FRESH mtime is never
+    // destroyed — lead's dating rule — so it is there on every cycle, and the
+    // only way a delivery ever happens is if damage costs no attempt.
+    let broken = rig.record_path("spawned.1");
     assert!(
-        fs::write(rig.record_path("spawned.1"), "not a record\n").is_ok(),
-        "a damaged record"
+        fs::write(&broken, "not a record\n").is_ok(),
+        "a record file"
     );
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        assert!(
+            fs::set_permissions(&broken, fs::Permissions::from_mode(0o000)).is_ok(),
+            "an unreadable record"
+        );
+    }
     rig.record("spawned.2", &pane, "tok-1", 0, base - 100);
 
-    let both = rig.watch_until(|| {
-        rig.dir.join("brief-retry.spawned.1.rec.damaged").exists()
-            && rig.delivered().contains("brief-retry|waiting|")
-    });
+    let delivered = rig.watch_until(|| rig.delivered().contains("brief-retry|waiting|"));
     assert!(
-        both,
-        "damage and delivery did not both happen; aside={} delivered={:?}",
-        rig.dir.join("brief-retry.spawned.1.rec.damaged").exists(),
+        delivered,
+        "the live brief was never attempted, so damage ate the cycle's attempt: {:?}",
         rig.delivered()
+    );
+    // And the damage really did persist across those cycles, so the delivery
+    // above happened WITH it present rather than after it was cleared.
+    assert!(
+        broken.exists(),
+        "the fixture's damage did not persist, so this pin proved nothing"
+    );
+    assert!(
+        !rig.dir.join("brief-retry.spawned.1.rec.damaged").exists(),
+        "a young unreadable record must not be destroyed"
     );
 }
 
