@@ -13,12 +13,15 @@
 //! session it has not understood.
 //!
 //! The chain steps N -> N+1, one [`Step`] at a time, and stops at
-//! [`CURRENT`]. Today it holds NO steps: `CURRENT` is 2, every live session is
-//! already 2, and what the module does is the version CHECK. That is
-//! deliberate — the chain exists so the first real shape change is a step with
-//! a fixture beside it rather than a rewrite of every reader, and an empty
-//! chain that is already wired at every door is worth more than a full one
-//! wired nowhere.
+//! [`CURRENT`]. It was built empty on purpose, so that the first real shape
+//! change would be one step with a fixture beside it rather than a rewrite of
+//! every reader; [`tag_priors`] is that first step, and it walks a v2 meta to 3
+//! by telling every predecessor conversation which TOOL owns it.
+//!
+//! A `schema=2`-only meta is therefore no longer merely STAMPED: it is placed
+//! at 2 by [`PRE_CHAIN`] and then STEPPED, so its report reads "migrated from
+//! 2 to 3" rather than "stamped". [`Stepped::Stamped`] stays for the day
+//! `CURRENT` and `PRE_CHAIN` meet again.
 //!
 //! It runs wherever the core TOUCHES a session:
 //!
@@ -75,7 +78,7 @@ use crate::meta::{Selector, ServerSelector};
 pub const KEY: &str = "meta_version";
 
 /// The shape this core reads and writes.
-pub const CURRENT: u32 = 2;
+pub const CURRENT: u32 = 3;
 
 /// The shape a meta is at when it declares no [`KEY`] but does declare
 /// `schema=2`.
@@ -108,12 +111,53 @@ struct Step {
     apply: fn(&str) -> Result<String, String>,
 }
 
-/// The chain, in order. EMPTY today — see the module docs.
+/// The chain, in order.
 ///
 /// A new step is `Step { from: N, apply: … }` plus a fixture in
 /// `tests/it/migrate.rs` that carries a real meta at N and asserts what N+1
 /// makes of it.
-const STEPS: &[Step] = &[];
+const STEPS: &[Step] = &[Step {
+    from: 2,
+    apply: tag_priors,
+}];
+
+/// 2 -> 3: give every UNTAGGED predecessor the tool that owns it.
+///
+/// A predecessor row used to be bare conversation ids, and every reader looked
+/// one up in the store of the tool the slot names NOW. That was right while a
+/// seat could only ever have run one tool. A seat can now be moved to another
+/// one, so an id has to say whose it is, and the ids already on disk have to be
+/// given the answer before anything writes a mixed row: this step is that
+/// answer, and it is the ONE place the legacy rule — an untagged id belongs to
+/// the tool of the slot at read time — is applied rather than assumed.
+///
+/// Only the predecessor rows move. A slot that records no binary, a row that is
+/// already fully tagged and a row this reader cannot judge are all left exactly
+/// as they are: the migration adds a fact it can derive and destroys nothing.
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "a Step's apply is fallible by type; this one derives its fact or leaves the row alone"
+)]
+fn tag_priors(text: &str) -> Result<String, String> {
+    let parsed = crate::meta::Meta::parse(text);
+    let mut out = text.to_owned();
+    for entry in parsed.roster() {
+        let tool = entry.binary.as_deref().unwrap_or_default();
+        let raw = parsed.harness_session_prior(&entry.slot);
+        if let Some(row) = crate::meta::priors_tagged(&raw, tool) {
+            out = crate::meta::rewritten(
+                &out,
+                &format!(
+                    "{}{}",
+                    crate::meta::HARNESS_SESSION_PRIOR_PREFIX,
+                    entry.slot
+                ),
+                Some(&row),
+            );
+        }
+    }
+    Ok(out)
+}
 
 /// Why a meta could not be brought to [`CURRENT`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -221,7 +265,7 @@ fn version_of_row(value: &str) -> Result<u32, Refusal> {
 /// version and nothing needs writing.
 ///
 /// ```
-/// let current = ae::migrate::migrate("mode=local\nmeta_version=2\n");
+/// let current = ae::migrate::migrate("mode=local\nmeta_version=3\n");
 /// assert_eq!(current, Ok(None));
 /// assert!(ae::migrate::migrate("mode=local\n").is_err());
 /// ```
@@ -575,6 +619,8 @@ pub fn onto(root: &Path, core: &Path, version: &str) -> Result<Vec<String>, Stri
     // session on the machine takes one, and 28 identical lines say less than
     // one line with a number on it.
     let mut stamped = 0_usize;
+    // One counted group per source version, in first-seen order.
+    let mut stepped: Vec<(u32, usize)> = Vec::new();
     for name in census {
         // Pending rename names skip untouched (reported, like any
         // unplaceable session) before any lock, read, or write.
@@ -628,9 +674,16 @@ pub fn onto(root: &Path, core: &Path, version: &str) -> Result<Vec<String>, Stri
         match session(&dir) {
             Ok(None) => {}
             Ok(Some(Stepped::Stamped)) => stamped += 1,
-            Ok(Some(Stepped::From(from))) => {
-                notes.push(format!("migrated {name} from {KEY}={from} to {CURRENT}"));
-            }
+            // COUNTED, not listed. The release that adds a step meets every
+            // session on the machine at once — 28 of 28 on the one this was
+            // written for — and an operator wants one line with a number, not
+            // one line per session. The count is per SOURCE version, because
+            // two sessions stepped from different shapes did not have the same
+            // thing done to them.
+            Ok(Some(Stepped::From(from))) => match stepped.iter_mut().find(|(at, _)| *at == from) {
+                Some((_, count)) => *count += 1,
+                None => stepped.push((from, 1_usize)),
+            },
             // A directory under `sessions` with no meta is not a session: there
             // is nothing to step, nothing to repoint and no reason to fail an
             // upgrade over it.
@@ -666,6 +719,15 @@ pub fn onto(root: &Path, core: &Path, version: &str) -> Result<Vec<String>, Stri
         notes.insert(
             0,
             format!("stamped {KEY}={CURRENT} into {stamped} session(s) that carried only schema=2"),
+        );
+    }
+    // Oldest source first, so the line an operator reads first is about the
+    // oldest shape the publish found.
+    stepped.sort_unstable();
+    for (from, count) in stepped.into_iter().rev() {
+        notes.insert(
+            0,
+            format!("migrated {count} session(s) from {KEY}={from} to {CURRENT}"),
         );
     }
     Ok(notes)
@@ -1059,7 +1121,7 @@ mod tests {
     #[test]
     fn a_meta_at_the_current_version_is_already_where_the_chain_ends() {
         assert_eq!(
-            migrate("mode=local\nmeta_version=2\nwork_dir=/w\n"),
+            migrate(&format!("mode=local\n{KEY}={CURRENT}\nwork_dir=/w\n")),
             Ok(None)
         );
     }
@@ -1070,11 +1132,13 @@ mod tests {
         // chain actually looks like. Placed, never refused.
         let text = "mode=local\nschema=2\nseat.main=lead\n";
         let migrated = migrate(text).expect("placed").expect("a stamp");
-        assert_eq!(migrated.what, Stepped::Stamped);
+        // Placed at two, then STEPPED: the row is stamped in at the version the
+        // chain walked it to, and a pre-chain session is never refused.
+        assert_eq!(migrated.what, Stepped::From(PRE_CHAIN));
         assert_eq!(migrated.text, format!("{text}{KEY}={CURRENT}\n"));
         // Idempotent, and the placement rule is the one `ae list` uses.
         assert_eq!(migrate(&migrated.text), Ok(None));
-        assert_eq!(placed(None, Some("2")), Some(CURRENT));
+        assert_eq!(placed(None, Some("2")), Some(PRE_CHAIN));
         assert_eq!(placed(None, Some("3")), None);
         assert_eq!(placed(None, None), None);
         assert_eq!(placed(Some("2"), None), Some(2));
@@ -1120,9 +1184,13 @@ mod tests {
         // `Meta::parse` and as `2\r` here, so `ae list` called the session
         // current while every resume refused it as unreadable — a session no
         // command agreed about.
-        let crlf = "mode=local\r\nmeta_version=2\r\n";
-        assert_eq!(migrate(crlf), Ok(None));
-        assert_eq!(crate::meta::Meta::parse(crlf).meta_version(), Some("2"));
+        let crlf = format!("mode=local\r\n{KEY}={CURRENT}\r\n");
+        assert_eq!(migrate(&crlf), Ok(None));
+        let current = CURRENT.to_string();
+        assert_eq!(
+            crate::meta::Meta::parse(&crlf).meta_version(),
+            Some(current.as_str())
+        );
 
         // And a row the writer MEANT to give and this reader cannot take is
         // unreadable, not absent: it must not earn the fresh-start message,
@@ -1137,14 +1205,15 @@ mod tests {
 
     #[test]
     fn a_version_ahead_of_this_core_is_refused_rather_than_stepped_backwards() {
-        let refused = migrate("meta_version=3\n").expect_err("a newer writer");
-        assert_eq!(refused, Refusal::Ahead(3));
+        let ahead = CURRENT + 1;
+        let refused = migrate(&format!("{KEY}={ahead}\n")).expect_err("a newer writer");
+        assert_eq!(refused, Refusal::Ahead(ahead));
         assert!(refused.line("proj").contains("upgrade ae"));
     }
 
     #[test]
     fn a_version_the_chain_has_no_step_out_of_names_itself() {
-        // The chain is empty today, so every version below CURRENT lands here.
+        // The chain starts at 2, so every version below that lands here.
         let refused = migrate("meta_version=1\n").expect_err("no step");
         assert_eq!(refused, Refusal::NoStep(1));
         assert!(refused.line("proj").contains("meta_version=1"));

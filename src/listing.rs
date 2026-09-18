@@ -719,11 +719,12 @@ mod tests {
     fn formatter_sc_405g_degraded_unobserved_branch_omits_the_git_atom() {
         // Meta is readable in both cases, so the retained version remains
         // visible.
-        let event_loss_fixture = DigestFixture::new(
-            "subline-event-loss",
-            Some("meta_version=2\nmode=local\nae_version=0.2.1\n"),
-            Some("not an event\n"),
+        let current = format!(
+            "meta_version={}\nmode=local\nae_version=0.2.1\n",
+            crate::migrate::CURRENT
         );
+        let event_loss_fixture =
+            DigestFixture::new("subline-event-loss", Some(&current), Some("not an event\n"));
         let event_loss = entry_for(
             &event_loss_fixture.0,
             "event-loss",
@@ -733,7 +734,10 @@ mod tests {
         );
         let duplicate_goal_fixture = DigestFixture::new(
             "subline-duplicate-goal",
-            Some("meta_version=2\nmode=local\ngoal=first\ngoal=second\nae_version=0.2.1\n"),
+            Some(&format!(
+                "meta_version={}\nmode=local\ngoal=first\ngoal=second\nae_version=0.2.1\n",
+                crate::migrate::CURRENT
+            )),
             None,
         );
         let duplicate_goal = entry_for(

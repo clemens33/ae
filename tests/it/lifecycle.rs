@@ -774,6 +774,54 @@ fn the_history_purge_removes_predecessor_conversations_and_notes_unusable_ones()
     assert!(!exists(&rig.dir), "the live session state is gone");
 }
 
+/// A predecessor says which TOOL owns it, and the purge acts on that: the one
+/// its own tag matches is removed, and the one from before a reseat is REPORTED
+/// rather than hunted for in a store this meta no longer records.
+#[test]
+fn the_history_purge_acts_on_the_tool_a_predecessor_names_and_names_the_rest() {
+    let rig = Rig::new("purgetagged");
+    let mine = "0199c0de-2222-4890-abcd-ef0123456789";
+    let foreign = "0199c0de-3333-4890-abcd-ef0123456789";
+    let project = rig.home.join(".claude/projects/work");
+    std::fs::create_dir_all(&project).expect("a project store");
+    let kept = project.join(format!("{mine}.jsonl"));
+    std::fs::write(&kept, "conversation").expect("this tool's predecessor");
+    // The FOREIGN one planted in claude's store too, so the only thing that can
+    // decide its fate is its tag: a purge that read the tag as decoration would
+    // delete this file.
+    let trap = project.join(format!("{foreign}.jsonl"));
+    std::fs::write(&trap, "another tool's conversation").expect("the trap");
+    let canonical = std::fs::canonicalize(rig.home.join(".claude"))
+        .expect("the canonical store")
+        .display()
+        .to_string();
+    let prior_row = format!("codex:{foreign},claude:{mine}");
+    for (key, value) in [
+        ("agent_bin.main", "claude"),
+        ("config_home.main", canonical.as_str()),
+        ("harness_session.main", "pending"),
+        ("harness_session_prior.main", prior_row.as_str()),
+    ] {
+        ae::meta::rewrite(&rig.dir, key, Some(value)).expect("a fixture row");
+    }
+
+    let (code, out, err) = rig.run(&["_end", "-f", "--purge-history", &rig.name]);
+    assert_eq!(code, Some(0), "stdout: {out}\nstderr: {err}");
+    assert!(
+        !exists(&kept),
+        "the seat's own predecessor is purged: {out}"
+    );
+    assert!(
+        exists(&trap),
+        "a predecessor tagged for another tool was deleted from this store"
+    );
+    assert!(
+        err.contains("codex conversation file") && err.contains("predates a reseat"),
+        "the foreign predecessor is reported as a loss: {err}"
+    );
+    assert!(!exists(&rig.dir), "the live session state is gone");
+}
+
 /// The reboot that makes a STOPPED session immortal: the recorded server is
 /// gone and its socket can never answer again, while the session's own last
 /// sign of life is planted before any boot a test will claim. Returns that

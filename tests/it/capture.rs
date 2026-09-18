@@ -419,10 +419,11 @@ fn the_register_sid_handshake_is_the_id_the_capture_reports() {
         "the capture must report the handshake's id:\n{meta}"
     );
     // The replaced id is no longer the current one — and it is not lost either:
-    // the authoritative arm moves it into the seat's predecessor row.
+    // the authoritative arm moves it into the seat's predecessor row, TAGGED
+    // with the tool whose store it lives in.
     assert!(
         !meta.contains(&format!("harness_session.main={wrong}"))
-            && meta.contains(&format!("harness_session_prior.main={wrong}\n")),
+            && meta.contains(&format!("harness_session_prior.main=codex:{wrong}\n")),
         "the replaced id is a predecessor, never again the current id:\n{meta}"
     );
     assert!(
@@ -507,7 +508,12 @@ fn an_authoritative_capture_keeps_only_a_usable_replaced_id_as_a_predecessor() {
         let prior = meta
             .lines()
             .find_map(|line| line.strip_prefix("harness_session_prior.main="));
-        assert_eq!(prior, replaced.then_some(old), "{tag}: {meta}");
+        // TAGGED with the tool that owns it. A capture never crosses tools, so
+        // the tag is the slot's own recorded binary — and it is written even
+        // here, because a reader must never have to guess whether an element
+        // predates a reseat.
+        let tagged = format!("codex:{old}");
+        assert_eq!(prior, replaced.then_some(tagged.as_str()), "{tag}: {meta}");
     }
 }
 

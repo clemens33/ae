@@ -1516,22 +1516,30 @@ fn purge_conversation_files(
     let parsed = meta::Meta::parse(&text);
     let home = root.parent().map(Path::to_path_buf);
     // Every conversation this session can NAME: each seat's current id and the
-    // predecessors it abandoned — same proof, same body, same promise.
-    let mut conversations: Vec<(&meta::RosterEntry, &str)> = Vec::new();
+    // predecessors it abandoned — same proof, same body, same promise. A
+    // predecessor carries the TOOL that owns it, and that tool decides which
+    // arm below removes it: a seat reseated from codex to claude has ids in both
+    // stores, and looking either up in the other's would name a file belonging
+    // to nobody. A legacy untagged id takes the slot's current binary, which is
+    // the chain's own rule for one.
+    let mut conversations: Vec<(&meta::RosterEntry, &str, Option<&str>)> = Vec::new();
     for entry in parsed.roster() {
         let recorded = entry.harness_session.as_deref().unwrap_or_default();
         if !recorded.is_empty() && recorded != "pending" {
-            conversations.push((entry, recorded));
+            conversations.push((entry, recorded, None));
         }
         conversations.extend(
             parsed
                 .harness_session_prior(&entry.slot)
                 .into_iter()
                 .filter(|prior| !prior.is_empty() && *prior != "pending")
-                .map(|prior| (entry, prior)),
+                .map(|prior| match meta::prior_parts(prior) {
+                    Some(parsed) => (entry, parsed.id, parsed.tool),
+                    None => (entry, prior, None),
+                }),
         );
     }
-    for (entry, recorded) in conversations {
+    for (entry, recorded, tagged) in conversations {
         // A NAME, NEVER A PATH. `harness_session.<slot>` is metadata — a
         // hand-editable file, and `set-harness-session` screens only for control
         // bytes — and every arm below interpolates it into a filename that is
@@ -1554,7 +1562,21 @@ fn purge_conversation_files(
             continue;
         }
         let uuid = uuid.as_str();
-        let tool = entry.binary.as_deref().unwrap_or_default();
+        let current = entry.binary.as_deref().unwrap_or_default();
+        let tool = tagged.unwrap_or(current);
+        // The CONFIG HOME below is the slot's current one, so a predecessor
+        // that ran under a DIFFERENT tool also ran under a store this meta no
+        // longer records. That conversation is reported as left in place rather
+        // than hunted for in the wrong store: the purge names every loss and
+        // guesses at none.
+        if tagged.is_some_and(|tag| tag != current) {
+            writeln!(
+                err,
+                "  note: {tool} conversation file for slot {} left in place (it predates a reseat and its config home is not recorded)",
+                entry.slot
+            )?;
+            continue;
+        }
         match tool {
             "claude" => {
                 let Some(config_home) = purge_config_home(root, entry, "claude", err)? else {

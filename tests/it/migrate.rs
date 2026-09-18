@@ -389,9 +389,13 @@ fn a_session_that_carries_only_schema_2_is_stamped_and_otherwise_untouched() {
         "the fixture is not pre-chain"
     );
 
+    // PLACED at 2, then walked: the chain now has a step out of 2, so the row
+    // is written in at the version the walk ended on. The fixture carries no
+    // predecessor row, so that step has nothing of its own to do here and the
+    // stamp is still the whole of the change.
     assert_eq!(
         ae::migrate::session(&dir),
-        Ok(Some(ae::migrate::Stepped::Stamped))
+        Ok(Some(ae::migrate::Stepped::From(2)))
     );
     let after = meta_of(&dir);
     assert!(
@@ -409,6 +413,65 @@ fn a_session_that_carries_only_schema_2_is_stamped_and_otherwise_untouched() {
     assert_eq!(meta_of(&dir), after);
     // Nothing is reported to an operator about a no-op.
     assert_eq!(ae::migrate::session_noted(&dir, "prechain"), None);
+}
+
+#[test]
+fn the_chain_gives_every_untagged_predecessor_the_tool_that_owns_it() {
+    const OLDER: &str = "11111111-1111-4111-8111-111111111111";
+    const OLD: &str = "22222222-2222-4222-8222-222222222222";
+    // A REAL v2 meta: two conversations this seat abandoned before a
+    // predecessor could say whose it was, plus a second seat that records no
+    // binary at all. Until now every reader looked a predecessor up in the
+    // store of the tool the slot names NOW, which is only right while a seat
+    // can never move; this step writes the answer down before anything can
+    // author a row that mixes two tools.
+    let rig = Rig::new("tagpriors");
+    let dir = rig.session("tagged", "/nowhere/ae-core", Some(2));
+    let base = meta_of(&dir);
+    let text = format!(
+        "{base}agent_bin.main=codex\nharness_session_prior.main={OLDER},{OLD}\n\
+         seat.worker.0=hand\nprofile.worker.0=cl\n\
+         harness_session_prior.worker.0={OLD}\n"
+    );
+    assert!(fs::write(dir.join("meta"), &text).is_ok(), "a v2 meta");
+
+    assert_eq!(
+        ae::migrate::session(&dir),
+        Ok(Some(ae::migrate::Stepped::From(2)))
+    );
+    let after = meta_of(&dir);
+    // The slot that names a binary has its predecessors tagged in place, oldest
+    // still first.
+    assert!(
+        after.contains(&format!(
+            "harness_session_prior.main=codex:{OLDER},codex:{OLD}\n"
+        )),
+        "{after}"
+    );
+    // The slot that names NONE is left exactly as it stood: the step writes a
+    // fact it can derive and invents none.
+    assert!(
+        after.contains(&format!("harness_session_prior.worker.0={OLD}\n")),
+        "{after}"
+    );
+    assert!(
+        after.contains(&format!("{}={}\n", ae::migrate::KEY, ae::migrate::CURRENT)),
+        "{after}"
+    );
+    // IDEMPOTENT: the second touch has nothing to do, so a tag cannot grow a
+    // second tag on a later upgrade.
+    assert_eq!(ae::migrate::session(&dir), Ok(None));
+    assert_eq!(meta_of(&dir), after);
+
+    // AND THE OPERATOR IS TOLD, once, by the reporting entry — on a fixture
+    // that has not been walked yet, because the note is about the walk.
+    let fresh = rig.session("told", "/nowhere/ae-core", Some(2));
+    let noted = ae::migrate::session_noted(&fresh, "told").expect("a note");
+    assert!(
+        noted.contains(&format!("from {}=2", ae::migrate::KEY))
+            && noted.contains(&ae::migrate::CURRENT.to_string()),
+        "{noted}"
+    );
 }
 
 #[test]
@@ -711,14 +774,23 @@ fn a_publish_stamps_every_pre_chain_session_and_counts_them_in_one_line() {
             "a stamped session was not repointed: {meta}"
         );
     }
-    // ONE line, carrying the number.
-    let stamped: Vec<&str> = stdout
+    // ONE line, carrying the number. A publish that met three pre-chain
+    // sessions says so once: the walk is counted per source version, never
+    // listed per session, because 28 identical lines say less than one number.
+    let counted: Vec<&str> = stdout
         .lines()
-        .filter(|line| line.contains("stamped"))
+        .filter(|line| line.contains("session(s) from"))
         .collect();
-    assert_eq!(stamped.len(), 1, "{stdout}");
-    assert!(stamped[0].contains('3'), "the count is wrong: {stamped:?}");
-    assert!(stamped[0].contains("schema=2"), "{stamped:?}");
+    assert_eq!(counted.len(), 1, "{stdout}");
+    assert!(counted[0].contains('3'), "the count is wrong: {counted:?}");
+    assert!(
+        counted[0].contains(&format!("{}=2", ae::migrate::KEY)),
+        "{counted:?}"
+    );
+    assert!(
+        !stdout.contains("migrated one"),
+        "a session was listed rather than counted: {stdout}"
+    );
 }
 
 #[test]

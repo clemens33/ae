@@ -1340,6 +1340,96 @@ fn predecessors_read_newest_first_with_coverage_for_the_missing() {
 }
 
 #[test]
+fn a_predecessor_is_read_in_the_store_of_the_tool_its_tag_names() {
+    // THE RESEAT CASE. This seat runs muse now and ran claude before, so its
+    // predecessor lives in a store the slot no longer names. The tag is what
+    // makes that conversation readable: the locator and the reader are chosen
+    // by the ELEMENT's tool, not the slot's.
+    let root = rig("prior-tags");
+    plant_muse(&root, "2026/09/16", MUSE_ID, &[muse_user("current words")]);
+    plant_transcript(
+        &root.join(".claude"),
+        "work",
+        PRIOR_NEW_ID,
+        &[user("2026-09-15T09:00:00Z", "predecessor words")],
+    );
+    plant_session(
+        &root,
+        "tagged",
+        &format!(
+            "{}harness_session_prior.main=claude:{PRIOR_NEW_ID}\n",
+            muse_roster("main", "lead", MUSE_ID)
+        ),
+    );
+    let observation = observe(&root, &["tagged"], None);
+    assert_eq!(
+        observation.coverage,
+        [],
+        "a tagged predecessor was not located: {:?}",
+        observation.coverage
+    );
+    let read: Vec<(u8, &str)> = observation
+        .rows
+        .iter()
+        .map(|row| (row.generation, row.body.as_str()))
+        .collect();
+    assert_eq!(read, [(1, "predecessor words"), (0, "current words")]);
+
+    // THE CONTRAST, and the reason the tag exists: the same id left UNTAGGED is
+    // looked for in the store the slot names now, where it is not, and the read
+    // says so instead of inventing it.
+    plant_session(
+        &root,
+        "legacy",
+        &format!(
+            "{}harness_session_prior.main={PRIOR_NEW_ID}\n",
+            muse_roster("main", "lead", MUSE_ID)
+        ),
+    );
+    let legacy = observe(&root, &["legacy"], None);
+    assert_eq!(
+        legacy.coverage.len(),
+        1,
+        "the untagged predecessor read: {legacy:?}"
+    );
+    assert_eq!(
+        legacy.coverage[0].reason,
+        "predecessor 1: transcript not found"
+    );
+    assert_eq!(legacy.rows.len(), 1, "only the current conversation reads");
+
+    // AN UNKNOWN TAG DEGRADES, IT NEVER REFUSES. The grammar admits any
+    // basename, so a wrapper binary keeps working — and the cost of that is a
+    // tag naming a tool ae has no reader for. That one becomes a coverage row
+    // exactly as an unsupported CURRENT tool does, and the seat's own
+    // conversation still reads.
+    plant_session(
+        &root,
+        "unknown",
+        &format!(
+            "{}harness_session_prior.main=nope:{PRIOR_NEW_ID}\n",
+            muse_roster("main", "lead", MUSE_ID)
+        ),
+    );
+    let unknown = observe(&root, &["unknown"], None);
+    assert_eq!(
+        unknown.coverage.len(),
+        1,
+        "an unknown tag is one coverage row: {unknown:?}"
+    );
+    assert_eq!(
+        unknown.coverage[0].reason,
+        "predecessor 1: unknown tool: out of scope"
+    );
+    assert_eq!(
+        unknown.rows.len(),
+        1,
+        "the seat's own conversation still reads"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn the_first_follow_pass_is_the_plain_board() {
     // The loop itself sleeps on a clock and never returns, so it is not driven
     // here: the unit tests own the arms and the driver shares this exact read

@@ -52,6 +52,14 @@ const HARNESS_SESSION_PREFIX: &str = "harness_session.";
 pub const HARNESS_SESSION_PRIOR_PREFIX: &str = "harness_session_prior.";
 /// How many predecessor ids one predecessor row carries.
 pub const PRIOR_MAX: usize = 4;
+/// The longest a predecessor's tool tag may be.
+///
+/// A tag is a recorded `agent_bin` — a BASENAME, and every real one is under
+/// ten bytes. The bound exists so a hand-edited row cannot make the grammar
+/// spend a page on one element.
+const PRIOR_TOOL_MAX: usize = 64;
+/// What separates a predecessor's tool tag from its conversation id.
+const PRIOR_TAG: char = ':';
 const CONFIG_HOME_PREFIX: &str = "config_home.";
 const CONFIG_HOME_BASE_PREFIX: &str = "config_home_base.";
 /// The observed-model pair, as `key<slot>` — the model a live seat actually
@@ -999,7 +1007,8 @@ impl Meta {
     /// `harness_session_prior.<slot>` list, split on commas. The family is this
     /// parser's own: no unknown-key anomaly, never a doubt against the roster.
     /// The list is RAW — a consumer building a path must judge each element
-    /// first ([`prior_with`] does) — and a malformed element is NOT a refusal.
+    /// first ([`prior_parts`] does, and it also says which TOOL owns the
+    /// conversation) — and a malformed element is NOT a refusal.
     #[must_use]
     pub fn harness_session_prior(&self, slot: &str) -> Vec<&str> {
         let key = format!("{HARNESS_SESSION_PRIOR_PREFIX}{slot}");
@@ -1203,25 +1212,129 @@ fn is_observed_row_value(value: &str) -> bool {
     !value.is_empty() && value.len() <= 256 && !value.chars().any(char::is_control)
 }
 
-/// The predecessor list `raw` with `id` appended — oldest first, the oldest
-/// evicted once [`PRIOR_MAX`] is exceeded. Every element, `id` included, is a
-/// lowercase UUID (the grammar
-/// [`crate::session_launch::capture::is_lowercase_uuid`] owns), and a list
-/// carrying anything unusable reads as EMPTY rather than refusing: a
-/// hand-edited predecessor list must not make a session unresumable. `None`
-/// means `id` itself is unusable; nothing is recorded.
+/// One predecessor element, split into the tool that OWNS the conversation and
+/// the conversation itself.
+///
+/// The tag is what makes a predecessor readable across a reseat: a seat that
+/// moved from codex to claude records ids from BOTH stores, and a reader that
+/// looked every one of them up in the current tool's store would either miss a
+/// conversation or name a file belonging to nobody. `tool` is `None` for a
+/// LEGACY element written before tags existed; the rule for that one is the
+/// chain's, and it is the tool of the slot AT READ TIME.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Prior<'a> {
+    /// The recorded `agent_bin` this conversation belongs to, where the element
+    /// carries one.
+    pub tool: Option<&'a str>,
+    /// The conversation id — always a lowercase UUID.
+    pub id: &'a str,
+}
+
+/// Whether `tool` may be written as a predecessor's tag.
+///
+/// A BASENAME grammar, deliberately narrow: the tag is never a path component
+/// (every consumer uses it to pick a tool, and the id alone builds the
+/// filename) but a row that cannot even look like a path is one fewer thing to
+/// argue about. A recorded binary that fails this is not tagged at all — see
+/// [`prior_element`] — so the writer can never author a row its own reader
+/// drops.
 #[must_use]
-pub(crate) fn prior_with(raw: &[&str], id: &str) -> Option<String> {
-    let grammar = crate::session_launch::capture::is_lowercase_uuid;
-    if !grammar(id) {
+fn is_prior_tool(tool: &str) -> bool {
+    !tool.is_empty()
+        && tool.len() <= PRIOR_TOOL_MAX
+        && tool
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+}
+
+/// Split one raw predecessor element. `None` means the element is unusable.
+///
+/// ```ignore
+/// assert_eq!(prior_parts("codex:11111111-1111-4111-8111-111111111111")?.tool, Some("codex"));
+/// assert_eq!(prior_parts("11111111-1111-4111-8111-111111111111")?.tool, None);
+/// ```
+#[must_use]
+pub fn prior_parts(element: &str) -> Option<Prior<'_>> {
+    let uuid = crate::session_launch::capture::is_lowercase_uuid;
+    match element.split_once(PRIOR_TAG) {
+        // Split at the FIRST tag byte, and the tool grammar admits none of its
+        // own, so one element can never split two ways.
+        Some((tool, id)) => (is_prior_tool(tool) && uuid(id)).then_some(Prior {
+            tool: Some(tool),
+            id,
+        }),
+        None => uuid(element).then_some(Prior {
+            tool: None,
+            id: element,
+        }),
+    }
+}
+
+/// One element, written: `tool:id` where `tool` can be tagged, else the bare id.
+#[must_use]
+fn prior_element(tool: &str, id: &str) -> String {
+    if is_prior_tool(tool) {
+        format!("{tool}{PRIOR_TAG}{id}")
+    } else {
+        id.to_owned()
+    }
+}
+
+/// The predecessor list `raw`, every UNTAGGED element tagged with `tool`.
+///
+/// `None` means nothing to write: the list is empty, already fully tagged, or
+/// carries something this reader cannot judge. A damaged row is LEFT ALONE
+/// rather than cleared — a migration may not destroy what it does not
+/// understand, and the read already drops such a list.
+#[must_use]
+pub fn priors_tagged(raw: &[&str], tool: &str) -> Option<String> {
+    if raw.is_empty() || raw.len() > PRIOR_MAX || !is_prior_tool(tool) {
         return None;
     }
-    let mut ids = if raw.len() <= PRIOR_MAX && raw.iter().all(|element| grammar(element)) {
-        raw.to_vec()
+    let parsed: Option<Vec<Prior<'_>>> = raw.iter().copied().map(prior_parts).collect();
+    let parsed = parsed?;
+    if parsed.iter().all(|prior| prior.tool.is_some()) {
+        return None;
+    }
+    Some(
+        parsed
+            .iter()
+            .map(|prior| prior_element(prior.tool.unwrap_or(tool), prior.id))
+            .collect::<Vec<_>>()
+            .join(","),
+    )
+}
+
+/// The predecessor list `raw` with `id` appended, tagged as `tool`'s — oldest
+/// first, the oldest evicted once [`PRIOR_MAX`] is exceeded.
+///
+/// Every element is `tool:uuid` or a legacy bare UUID (the grammar
+/// [`crate::session_launch::capture::is_lowercase_uuid`] owns), and a list
+/// carrying anything unusable reads as EMPTY rather than refusing: a
+/// hand-edited predecessor list must not make a session unresumable. The kept
+/// elements are tagged on the way through, by [`priors_tagged`]'s rule, so one
+/// write settles the whole row and no reader is left guessing about a mixture.
+/// `None` means `id` itself is unusable; nothing is recorded.
+#[must_use]
+pub(crate) fn prior_with(raw: &[&str], id: &str, tool: &str) -> Option<String> {
+    if !crate::session_launch::capture::is_lowercase_uuid(id) {
+        return None;
+    }
+    let mut ids: Vec<String> = if raw.len() <= PRIOR_MAX
+        && let Some(parsed) = raw
+            .iter()
+            .copied()
+            .map(prior_parts)
+            .collect::<Option<Vec<_>>>()
+    {
+        parsed
+            .iter()
+            .map(|prior| prior_element(prior.tool.unwrap_or(tool), prior.id))
+            .collect()
     } else {
         Vec::new()
     };
-    ids.push(id);
+    ids.push(prior_element(tool, id));
     let excess = ids.len().saturating_sub(PRIOR_MAX);
     ids.drain(..excess);
     Some(ids.join(","))
@@ -1370,7 +1483,15 @@ pub(crate) fn record_abandoned_session(
 ) -> Result<(), RewriteError> {
     rewrite_under_lock(dir, |current| {
         let parsed = Meta::parse(current);
-        let prior = prior_with(&parsed.harness_session_prior(slot), abandoned);
+        // A resume fallback never crosses tools, so the conversation it
+        // abandons belongs to the slot's own recorded binary.
+        let tool = parsed
+            .roster()
+            .iter()
+            .find(|entry| entry.slot == slot)
+            .and_then(|entry| entry.binary.as_deref())
+            .unwrap_or_default();
+        let prior = prior_with(&parsed.harness_session_prior(slot), abandoned, tool);
         let mut next = current.to_owned();
         if let Some(list) = prior {
             next = rewritten(
@@ -1735,7 +1856,7 @@ mod tests {
         const FIFTH: &str = "55555555-5555-4555-8555-555555555555";
         // The 5th append evicts the OLDEST; order stays oldest first.
         assert_eq!(
-            super::prior_with(&FOUR, FIFTH).as_deref(),
+            super::prior_with(&FOUR, FIFTH, "").as_deref(),
             Some(
                 "22222222-2222-4222-8222-222222222222,33333333-3333-4333-8333-333333333333,\
                  44444444-4444-4444-8444-444444444444,55555555-5555-4555-8555-555555555555"
@@ -1749,14 +1870,125 @@ mod tests {
             "ses_abc",
             "AAAA1111-1111-4111-8111-111111111111",
         ] {
-            assert_eq!(super::prior_with(&FOUR, id), None, "{id:?}");
+            assert_eq!(super::prior_with(&FOUR, id, ""), None, "{id:?}");
         }
         assert_eq!(
-            super::prior_with(&["not-a-uuid"], FIFTH).as_deref(),
+            super::prior_with(&["not-a-uuid"], FIFTH, "").as_deref(),
             Some(FIFTH)
         );
         let over = [FOUR[0], FOUR[1], FOUR[2], FOUR[3], FIFTH];
-        assert_eq!(super::prior_with(&over, FIFTH).as_deref(), Some(FIFTH));
+        assert_eq!(super::prior_with(&over, FIFTH, "").as_deref(), Some(FIFTH));
+    }
+
+    #[test]
+    fn a_prior_element_says_which_tool_owns_the_conversation() {
+        const ID: &str = "11111111-1111-4111-8111-111111111111";
+        // TAGGED: the tool comes off the element and the conversation is what is
+        // left, so a reader picks the store by the id's OWN tool.
+        let element = format!("codex:{ID}");
+        let tagged = super::prior_parts(&element).expect("a tagged element");
+        assert_eq!((tagged.tool, tagged.id), (Some("codex"), ID));
+        // LEGACY: no tag, and the id still reads. Naming the tool is the
+        // chain's job, not this reader's.
+        let legacy = super::prior_parts(ID).expect("a legacy element");
+        assert_eq!((legacy.tool, legacy.id), (None, ID));
+        // A wrapper binary is an ordinary tag: the grammar is a BASENAME, not a
+        // list of the tools ae knows.
+        let wrapper = format!("claude-mic.1:{ID}");
+        assert_eq!(
+            super::prior_parts(&wrapper).map(|prior| prior.tool),
+            Some(Some("claude-mic.1"))
+        );
+        let over = "c".repeat(super::PRIOR_TOOL_MAX + 1);
+        // The id grammar is LOWERCASE, and this id has letters to prove it.
+        let upper = "AABBCCDD-1122-4333-8444-5566778899AA";
+        for element in [
+            String::new(),
+            "codex:".to_owned(),
+            format!(":{ID}"),
+            // A tag that wants to be a path, whole and by one byte. No consumer
+            // joins a tag onto anything, and none may become able to.
+            format!("../..:{ID}"),
+            format!("co/dex:{ID}"),
+            format!("co dex:{ID}"),
+            format!("cod\tex:{ID}"),
+            // One tag, never two.
+            format!("codex:claude:{ID}"),
+            format!("codex:{upper}"),
+            // A state is not a conversation.
+            "codex:pending".to_owned(),
+            format!("{over}:{ID}"),
+        ] {
+            assert_eq!(super::prior_parts(&element), None, "{element:?}");
+        }
+        let at_bound = "c".repeat(super::PRIOR_TOOL_MAX);
+        assert!(super::prior_parts(&format!("{at_bound}:{ID}")).is_some());
+    }
+
+    #[test]
+    fn a_prior_append_tags_the_whole_row_with_the_tool_that_owns_it() {
+        const A: &str = "11111111-1111-4111-8111-111111111111";
+        const B: &str = "22222222-2222-4222-8222-222222222222";
+        const NEW: &str = "33333333-3333-4333-8333-333333333333";
+        // ONE write settles the row: the appended id and every legacy element
+        // beside it take the tool, so no reader meets a mixture to reason about.
+        let settled = format!("codex:{A},codex:{NEW}");
+        assert_eq!(
+            super::prior_with(&[A], NEW, "codex").as_deref(),
+            Some(settled.as_str())
+        );
+        // An element that already names its tool KEEPS it — that is the whole
+        // point of the tag, and a reseat's row carries two tools at once.
+        let kept = format!("claude:{A},codex:{NEW}");
+        assert_eq!(
+            super::prior_with(&[&format!("claude:{A}")], NEW, "codex").as_deref(),
+            Some(kept.as_str())
+        );
+        // A tool that cannot BE a tag is not written as one: the row stays
+        // legacy rather than becoming one this reader would drop whole.
+        let legacy = format!("{A},{NEW}");
+        for tool in ["", "co/dex"] {
+            assert_eq!(
+                super::prior_with(&[A], NEW, tool).as_deref(),
+                Some(legacy.as_str()),
+                "{tool:?}"
+            );
+        }
+        // The cap counts ELEMENTS however they are spelled, and the oldest is
+        // still the one evicted.
+        let four = [A, B, NEW, "44444444-4444-4444-8444-444444444444"];
+        let fifth = "55555555-5555-4555-8555-555555555555";
+        let capped = format!("muse:{B},muse:{NEW},muse:{},muse:{fifth}", four[3]);
+        assert_eq!(
+            super::prior_with(&four, fifth, "muse").as_deref(),
+            Some(capped.as_str())
+        );
+    }
+
+    #[test]
+    fn tagging_an_existing_prior_row_adds_the_tool_and_destroys_nothing() {
+        const A: &str = "11111111-1111-4111-8111-111111111111";
+        const B: &str = "22222222-2222-4222-8222-222222222222";
+        // The one thing it does: a legacy element gains the slot's tool, a
+        // tagged one is left exactly as it is.
+        let tagged = format!("codex:{A},claude:{B}");
+        assert_eq!(
+            super::priors_tagged(&[A, &format!("claude:{B}")], "codex").as_deref(),
+            Some(tagged.as_str())
+        );
+        // NOTHING TO WRITE, every reason: no row, a row already fully tagged, a
+        // slot whose binary cannot be a tag, a row this reader cannot judge,
+        // and one over the cap. A damaged row is LEFT ALONE — a migration may
+        // not destroy what it does not understand.
+        let five = [A, A, A, A, A];
+        assert_eq!(super::priors_tagged(&[], "codex"), None);
+        assert_eq!(
+            super::priors_tagged(&[&format!("codex:{A}")], "codex"),
+            None
+        );
+        assert_eq!(super::priors_tagged(&[A], ""), None);
+        assert_eq!(super::priors_tagged(&["not-a-uuid"], "codex"), None);
+        assert_eq!(super::priors_tagged(&five, "codex"), None);
     }
 
     #[test]

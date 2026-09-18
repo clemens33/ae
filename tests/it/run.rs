@@ -827,6 +827,31 @@ fn a_probe_that_can_run_and_fails_still_falls_back() {
 }
 
 #[test]
+fn a_resume_fallback_tags_the_abandoned_conversation_with_its_own_tool() {
+    // The fixture above records no `agent_bin`, and that row is exactly what
+    // decides the tag — so a real meta is built here. Without it the row a
+    // fallback leaves says nothing about which store its conversation is in,
+    // and after a seat has been moved to another CLI nobody can tell.
+    let rig = Rig::new("fallback-tagged");
+    let gone = "0199c0de-5678-4890-abcd-ef0123456789";
+    rig.seat("claude", gone);
+    let meta = rig.dir.join("meta");
+    let text = std::fs::read_to_string(&meta).expect("the fixture meta");
+    assert!(
+        std::fs::write(&meta, format!("{text}agent_bin.main=claude\n")).is_ok(),
+        "a meta that records its binary"
+    );
+    rig.started();
+    let (argv, _) = rig.exec();
+    assert!(carries(&argv, &["--continue"]), "{argv:?}");
+    let settled = std::fs::read_to_string(&meta).expect("the meta");
+    assert!(
+        settled.contains(&format!("harness_session_prior.main=claude:{gone}\n")),
+        "the abandoned conversation names the store it lives in: {settled}"
+    );
+}
+
+#[test]
 fn a_resume_fallback_records_the_abandoned_id_once_and_clears_the_current_one() {
     let rig = Rig::new("fallback");
     let gone = "0199c0de-1234-4890-abcd-ef0123456789";

@@ -12,4 +12,16 @@ fuzz_target!(|data: &[u8]| {
     let _ = std::hint::black_box(ae::meta::Meta::parse(&text));
     let _ = std::hint::black_box(ae::meta::meta_agent_role(data));
     let _ = std::hint::black_box(ae::rename::parse_intent(data));
+    // The PREDECESSOR row is a second grammar on top of the meta parse: each
+    // element says which tool owns the conversation, and a hand edit or a
+    // crashed write reaches that split directly. The tool a writer would tag
+    // with comes off the same hostile document, so it is driven from it here.
+    let parsed = ae::meta::Meta::parse(&text);
+    for slot in ["main", "worker.0", "spawned.1"] {
+        let raw = parsed.harness_session_prior(slot);
+        for element in &raw {
+            let _ = std::hint::black_box(ae::meta::prior_parts(element));
+        }
+        let _ = std::hint::black_box(ae::meta::priors_tagged(&raw, &text));
+    }
 });

@@ -1,0 +1,8 @@
+mode=local
+origin=/home/c/projects/ae
+work_dir=/home/c/projects/ae
+seat.main=lead
+profile.main=claude
+agent_bin.main=claude
+harness_session.main=aabbccdd-1122-4333-8444-5566778899aa
+harness_session_prior.main=codex:11111111-1111-4111-8111-111111111111,codex:22222222-2222-4222-8222-222222222222,codex:33333333-3333-4333-8333-333333333333,claude:44444444-4444-4444-8444-444444444444,claude:55555555-5555-4555-8555-555555555555

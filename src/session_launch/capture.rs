@@ -418,8 +418,11 @@ fn commit_inner(dir: &Path, slot: &str, captured: &Captured, may_replace: bool) 
     // conversation).
     let old = entry.harness_session.as_deref().unwrap_or_default();
     let mut next = text;
+    // A capture never crosses tools: the id it replaces was recorded by the
+    // binary this slot still names, so that is the tag the whole row takes.
+    let tool = entry.binary.as_deref().unwrap_or_default();
     if old != captured.id
-        && let Some(list) = crate::meta::prior_with(&parsed.harness_session_prior(slot), old)
+        && let Some(list) = crate::meta::prior_with(&parsed.harness_session_prior(slot), old, tool)
     {
         next = crate::meta::rewritten(
             &next,

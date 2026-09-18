@@ -579,10 +579,30 @@ fn observe_seat(
 ) -> Vec<Row> {
     let mut hidden = observe_generation(session, entry, home, assistant, 0, rows, coverage, seeds);
     let mut generation: u8 = 0;
-    for id in priors.iter().rev().take(crate::meta::PRIOR_MAX) {
+    for element in priors.iter().rev().take(crate::meta::PRIOR_MAX) {
         generation += 1;
         let mut prior = entry.clone();
-        prior.harness_session = Some((*id).to_owned());
+        // THE TAG DECIDES THE TOOL. A seat that was reseated onto another CLI
+        // records predecessors from more than one store, so the locator and the
+        // reader below are chosen by the element's OWN tool and only fall back
+        // to the slot's current binary for a legacy untagged id — the chain's
+        // rule for one, applied here rather than assumed. An element this
+        // reader cannot judge is passed through as it stands, so the locator
+        // still names it in a coverage row instead of it vanishing.
+        //
+        // The KNOWN GAP: `config_home` is the slot's current one. A predecessor
+        // whose tool ALSO ran under another config home is looked for in the
+        // wrong store and reported as not found, because a reseat replaces that
+        // row and ae never recorded the old one.
+        match crate::meta::prior_parts(element) {
+            Some(parsed) => {
+                prior.harness_session = Some(parsed.id.to_owned());
+                if let Some(tool) = parsed.tool {
+                    prior.binary = Some(tool.to_owned());
+                }
+            }
+            None => prior.harness_session = Some((*element).to_owned()),
+        }
         hidden.extend(observe_generation(
             session, &prior, home, assistant, generation, rows, coverage, seeds,
         ));
