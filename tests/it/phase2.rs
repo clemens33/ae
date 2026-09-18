@@ -1244,9 +1244,14 @@ fn criterion_14_the_named_read_functions_appear_only_where_they_should() {
     );
     assert_eq!(
         sites(concat!("RecordSnapshot", "::read(")),
-        vec![("inventory.rs".to_owned(), 1), ("session.rs".to_owned(), 1),],
-        "the one reader is called from discovery, and from the convenience \
-         wrapper that exists for callers who genuinely want a fresh read"
+        vec![
+            ("inventory.rs".to_owned(), 1),
+            ("lib.rs".to_owned(), 1),
+            ("session.rs".to_owned(), 1),
+        ],
+        "the one reader is called from discovery, from the convenience wrapper \
+         that exists for callers who genuinely want a fresh read, and from the \
+         seed pack, which needs roster slots the listing digest never carries"
     );
 
     let Some((_, listing)) = product_source()
