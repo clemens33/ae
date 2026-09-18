@@ -4312,7 +4312,7 @@ impl Cycle<'_> {
         }
         carry.quiet.end(index);
         self.refresh_after_limit_release(quota_refresh, &mut carry.quota, &observed, now, err)?;
-        self.retry_briefs(&mut carry.brief_cursor, now, err)?;
+        self.retry_briefs(&mut carry.brief_cursor, &by_slot, now, err)?;
         self.close(
             carry,
             &counts,
@@ -5011,11 +5011,22 @@ impl Cycle<'_> {
     fn retry_briefs(
         &self,
         cursor: &mut Option<String>,
+        verdicts: &[(String, Verdict)],
         now: i64,
         err: &mut impl Write,
     ) -> crate::Result<()> {
         let mut ready: Vec<(i64, String, String)> = Vec::new();
         for entry in &self.roster {
+            // CHANNEL TWO of two. This cycle already judged the seat, so a
+            // latched human-only prompt costs no capture to honour here. The
+            // leg asks the pane again for itself — that is channel one, and it
+            // is what covers a trigger that never came through this daemon.
+            if verdicts
+                .iter()
+                .any(|(slot, verdict)| *slot == entry.slot && *verdict == Verdict::HumanPrompt)
+            {
+                continue;
+            }
             let Some(reading) = crate::brief_retry::read(self.meta_dir, &entry.slot) else {
                 continue;
             };
@@ -5507,19 +5518,44 @@ mod tests {
     }
 
     /// The seat is SILENT by nature — that is what a modal does — so `Stale`
-    /// must not win. The branch sits ABOVE where stale is decided; if it ever
-    /// moves below, this seat goes quiet on the bar and the feature is dead.
+    /// must not win. The carry here is a seat that WOULD read stale: same hash
+    /// as last cycle, no motion for ages, no actor event for ages. With the
+    /// branch where it belongs the seat is NAMED; move it below the harness
+    /// frames and this same seat goes quietly stale on the bar, which is the
+    /// feature failing silently.
     #[test]
     fn a_silent_seat_on_a_modal_is_named_rather_than_called_stale() {
         let knobs = Knobs::default();
+        // A reading branch 9 answers STALE for on its own — that is the whole
+        // point: the modal must be named over a verdict that would otherwise
+        // win, not merely over silence nothing decides.
+        let stale_reading = HarnessObservation {
+            human_draft: true,
+            durable_stale: true,
+            ..seen().harness
+        };
         let silent = Observation {
+            harness: stale_reading,
             last_actor_event_age_secs: knobs.stale_secs * 4,
             ..on_a_modal()
         };
-        let first = account(&PaneState::default(), &silent, &knobs);
-        let second = account(&first.next, &silent, &knobs);
-        assert_eq!(second.verdict, Verdict::HumanPrompt);
-        assert_ne!(second.verdict, Verdict::Stale);
+        // One cycle of the modal already behind it, so THIS cycle names it.
+        let prior = PaneState {
+            identity: Some(silent.identity),
+            human_prompt_streak: 1,
+            ..PaneState::default()
+        };
+        assert_eq!(
+            account(&prior, &silent, &knobs).verdict,
+            Verdict::HumanPrompt
+        );
+        // The control: the identical seat with no modal really does read stale,
+        // so the pin above is about PRECEDENCE and not about the fixture.
+        let no_modal = Observation {
+            human_prompt: None,
+            ..silent
+        };
+        assert_eq!(account(&prior, &no_modal, &knobs).verdict, Verdict::Stale);
     }
 
     /// A DECLARED quiet state outranks the modal: branch 6 returns above 8.5.

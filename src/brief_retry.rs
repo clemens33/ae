@@ -674,6 +674,10 @@ struct Facts<'a> {
     liveness: crate::deliver::PaneLiveness,
     /// Whether the input box proved idle.
     ready: bool,
+    /// Whether a prompt only the HUMAN may answer is on the pane. A brief is
+    /// never pasted over one: the keystroke belongs to a person, and the
+    /// paste would answer a question ae was never asked.
+    human_prompt: bool,
     /// Now.
     now: i64,
 }
@@ -726,6 +730,13 @@ fn decide(record: &Record, facts: &Facts<'_>) -> Decision {
     // WHERE BUSY AND HUMAN-TYPING LAND, and why they cost nothing: readiness is
     // proved BEFORE any attempt is published, so an occupied box is simply
     // looked at again next cycle.
+    // ARM 9. A human-only prompt outranks readiness because it is the more
+    // specific answer and the one worth saying: the seat is not busy, it is
+    // waiting for a person. SKIP, never give up — the brief is still good the
+    // moment the human answers.
+    if facts.human_prompt {
+        return Decision::Skip("a prompt only the human may answer is on the pane");
+    }
     if !facts.ready {
         return Decision::Skip("the input box is not a confirmed-idle state");
     }
@@ -1234,8 +1245,33 @@ mod tests {
             live_pane: Some(record.pane.as_str()),
             liveness: crate::deliver::PaneLiveness::Alive,
             ready: true,
+            human_prompt: false,
             now,
         }
+    }
+
+    /// ARM 9. A seat sitting on a prompt only a human may answer is SKIPPED,
+    /// never given up: the brief is still good the moment the human answers,
+    /// and pasting over the prompt would answer it on their behalf.
+    #[test]
+    fn a_brief_is_never_pasted_over_a_prompt_only_the_human_may_answer() {
+        let now = 1_789_200_000;
+        let record = Record {
+            created: now - 60,
+            ..record()
+        };
+        assert!(matches!(
+            decide(&record, &ready(&record, now)),
+            Decision::Deliver
+        ));
+        let waiting = Facts {
+            human_prompt: true,
+            ..ready(&record, now)
+        };
+        let Decision::Skip(why) = decide(&record, &waiting) else {
+            panic!("a human-only prompt must SKIP, never deliver or give up");
+        };
+        assert!(why.contains("only the human may answer"), "{why}");
     }
 
     /// EVERY ARM OF THE GATE, in its own order, plus both bound EDGES.

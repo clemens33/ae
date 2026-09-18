@@ -124,12 +124,22 @@ pub fn run(
             input.composed,
             RETRY_READY_POLLS,
         );
+    // CHANNEL ONE of two. The daemon knows its own latch, but that memory does
+    // not cross into this helper process, and a forged trigger does not come
+    // through the daemon at all — so the leg asks the pane itself, once, right
+    // here. FAIL CLOSED: a capture that does not answer reads as no prompt,
+    // and the readiness proof below still has to pass.
+    let human_prompt =
+        crate::transport::capture_pane(&server, &resolved.pane).is_some_and(|frame| {
+            crate::watchdog::human_prompt_class(&frame, seat.tool.adapter().name).is_some()
+        });
     let facts = Facts {
         meta_name: seat.name.as_deref(),
         meta_launch_id: seat.launch_id.as_deref(),
         live_pane: live_pane.as_deref(),
         liveness,
         ready,
+        human_prompt,
         now: now.epoch(),
     };
     let name = seat.name.as_deref().unwrap_or(target);
