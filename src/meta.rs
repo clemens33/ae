@@ -1283,9 +1283,9 @@ fn prior_element(tool: &str, id: &str) -> String {
 /// The predecessor list `raw`, every UNTAGGED element tagged with `tool`.
 ///
 /// `None` means nothing to write: the list is empty, already fully tagged, or
-/// carries something this reader cannot judge. A damaged row is LEFT ALONE
+/// carries something this writer cannot judge. A damaged row is LEFT ALONE
 /// rather than cleared — a migration may not destroy what it does not
-/// understand, and the read already drops such a list.
+/// understand, and every reader judges the row element by element anyway.
 #[must_use]
 pub fn priors_tagged(raw: &[&str], tool: &str) -> Option<String> {
     if raw.is_empty() || raw.len() > PRIOR_MAX || !is_prior_tool(tool) {
@@ -1310,10 +1310,11 @@ pub fn priors_tagged(raw: &[&str], tool: &str) -> Option<String> {
 ///
 /// Every element is `tool:uuid` or a legacy bare UUID (the grammar
 /// [`crate::session_launch::capture::is_lowercase_uuid`] owns), and a list
-/// carrying anything unusable reads as EMPTY rather than refusing: a
-/// hand-edited predecessor list must not make a session unresumable. The kept
-/// elements are tagged on the way through, by [`priors_tagged`]'s rule, so one
-/// write settles the whole row and no reader is left guessing about a mixture.
+/// carrying anything unusable is not carried forward: the row restarts from
+/// `id` alone rather than refusing, because a hand-edited predecessor list
+/// must not make a session unresumable. The kept elements are tagged on the
+/// way through, by [`priors_tagged`]'s rule, so one write settles the whole
+/// row and no reader is left guessing about a mixture.
 /// `None` means `id` itself is unusable; nothing is recorded.
 #[must_use]
 pub(crate) fn prior_with(raw: &[&str], id: &str, tool: &str) -> Option<String> {

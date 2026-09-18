@@ -272,12 +272,15 @@ Name resolution takes the exact name, `%pane-id`, or `session:agent` / `@session
   first, with the current row cleared to `pending` when a resume falls back. Each element is
   `<tool>:<uuid>`: a seat can be moved to another CLI, so an id says which STORE it lives in
   rather than being looked up in the tool the slot names now. The tag is a basename, the id a
-  lowercase UUID, and one unusable element makes the whole list read EMPTY — a hand edit must
-  not make a session unresumable. A bare uuid is the LEGACY spelling and means the tool of the
-  slot at read time; the `meta_version` 2->3 step writes the tag in, and every writer tags the
-  whole row. A predecessor whose tool is not the slot's current one is REPORTED, never guessed
-  at: only the current `config_home` is recorded, so neither the purge nor the board can name
-  that store.
+  lowercase UUID. A WRITER settles the whole row or nothing: one unusable element leaves the
+  row alone, or restarts it from the new id, because a migration may not destroy what it
+  cannot judge. A READER judges per element — a good one reads in the store its tag names, a
+  bad one becomes a coverage row or a purge note, and the others are unaffected — so a hand
+  edit costs at most the element it damaged and never makes a session unresumable. A bare
+  uuid is the LEGACY spelling and means the tool of the slot at read time; the `meta_version`
+  2->3 step writes the tag in. A predecessor whose tool is not the slot's current one is
+  REPORTED, never guessed at: only the current `config_home` is recorded, so neither the
+  purge nor the board can name that store.
   A legacy `agent.<slot>` row is refused and recorded `degraded: true`, never migrated.
 
 ## Environment doors
