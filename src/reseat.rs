@@ -111,8 +111,14 @@ fn parse(tail: &[String]) -> Result<Parsed, String> {
 /// Where this seat's seed is published — beside the meta, 0600, and KEPT after
 /// a successful move: it is what a human re-sends by hand when the turn did not
 /// land, and what tells a later reader what the successor was told.
+///
+/// The name goes through the same sanitiser a slot does, for the same reason:
+/// this is a FILENAME COMPONENT, and the agent it is built from is read back
+/// out of a pane option and a hand-editable meta rather than re-validated
+/// against the agent grammar here. ONE owner, so the path this publishes and
+/// the path a refusal tells a human to `cat` cannot disagree.
 fn seed_file(dir: &Path, agent: &str) -> PathBuf {
-    dir.join(format!("seed.{agent}.md"))
+    dir.join(format!("seed.{}.md", crate::launch::safe_slot(agent)))
 }
 
 /// THE CALLER RULE. `None` means allowed.
@@ -660,5 +666,12 @@ mod tests {
             super::seed_file(Path::new("/s/work"), "colead"),
             Path::new("/s/work/seed.colead.md")
         );
+        // A name that is not a filename component cannot escape the session
+        // directory, whatever put it in the meta or the pane option. The dot
+        // SURVIVES, because a slot is `spawned.0` and the sanitiser is shared;
+        // what cannot survive is the separator, so `..` is inert here.
+        let escaped = super::seed_file(Path::new("/s/work"), "../../etc/x");
+        assert_eq!(escaped, Path::new("/s/work/seed..._.._etc_x.md"));
+        assert_eq!(escaped.parent(), Some(Path::new("/s/work")));
     }
 }
