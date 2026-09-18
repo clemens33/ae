@@ -10,6 +10,7 @@ mod archive_publish;
 mod archive_purge;
 mod board;
 mod brief;
+mod brief_retry;
 mod callerident;
 mod capture;
 mod cli;

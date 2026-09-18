@@ -3395,6 +3395,12 @@ struct Carry {
     /// [`Carry::reset`] drops it with the rest when the daemon moves servers —
     /// an id proved on one server means nothing on another.
     adoption: Adoption,
+    /// The slot whose brief retry was tried LAST, and the whole of the
+    /// rotation that keeps one stuck record from starving the others.
+    ///
+    /// In memory on purpose: this is scheduling, not a correctness latch, so a
+    /// restart simply restarts the rotation.
+    brief_cursor: Option<String>,
     /// The last look this daemon actually READ, and `None` until one answers.
     ///
     /// Carried so that a cycle whose read failed draws in the look it saw last
@@ -3415,6 +3421,7 @@ impl Carry {
             motion: MotionState::default(),
             quota: QuotaCarry::default(),
             adoption: Adoption::default(),
+            brief_cursor: None,
             look: None,
         }
     }
@@ -4220,7 +4227,7 @@ impl Cycle<'_> {
         }
         carry.quiet.end(index);
         self.refresh_after_limit_release(quota_refresh, &mut carry.quota, &observed, now, err)?;
-        self.retry_briefs(now, err)?;
+        self.retry_briefs(&mut carry.brief_cursor, now, err)?;
         self.close(
             carry,
             &counts,
@@ -4892,8 +4899,7 @@ impl Cycle<'_> {
     }
 
     /// One brief-retry pass: set aside what is permanently damaged, then spend
-    /// this cycle's ONE delivery attempt on the oldest record that is still
-    /// deliverable.
+    /// this cycle's ONE delivery attempt on the next record in the rotation.
     ///
     /// Records are found by NAMING each roster slot's own path — never by
     /// listing the directory — so a legacy `undelivered.*.txt`, which carries
@@ -4904,34 +4910,55 @@ impl Cycle<'_> {
     /// A single unreadable record that happens to be the oldest would otherwise
     /// eat the cycle's only attempt every cycle and starve every deliverable
     /// brief behind it for the whole half hour.
-    fn retry_briefs(&self, now: i64, err: &mut impl Write) -> crate::Result<()> {
-        let mut oldest: Option<(i64, String)> = None;
+    ///
+    /// THE ROTATION, and why oldest-first alone is not enough. Oldest-created
+    /// goes first, because the brief that has waited longest should. But the
+    /// leg answers `Skip` for a seat that is not ready, and a Skip mutates
+    /// NOTHING — no attempt, no mark, no timestamp — so a stuck oldest record
+    /// would be recomputed and re-picked every cycle, and every newer
+    /// deliverable brief behind it would wait out the whole 30-minute bound.
+    /// One stuck seat in a batch spawn is enough to do it. So `cursor` holds
+    /// the SLOT tried last and the scan starts after it, wrapping: still one
+    /// delivery per cycle, and every record gets its turn within roster-size
+    /// cycles. The slot rather than an index, because the roster grows and
+    /// shrinks between cycles; a slot that is gone starts the scan at the
+    /// front.
+    fn retry_briefs(
+        &self,
+        cursor: &mut Option<String>,
+        now: i64,
+        err: &mut impl Write,
+    ) -> crate::Result<()> {
+        let mut ready: Vec<(i64, String, String)> = Vec::new();
         for entry in &self.roster {
             let Some(reading) = crate::brief_retry::read(self.meta_dir, &entry.slot) else {
                 continue;
             };
             match reading {
-                Ok(record) => {
-                    if oldest
-                        .as_ref()
-                        .is_none_or(|(created, _)| record.created < *created)
-                    {
-                        oldest = Some((record.created, entry.name.clone()));
-                    }
-                }
+                Ok(record) => ready.push((record.created, entry.slot.clone(), entry.name.clone())),
                 Err(damaged) => {
                     self.set_damaged_aside(&entry.name, &entry.slot, damaged, now, err)?;
                 }
             }
         }
-        let Some((_, name)) = oldest else {
+        // The slot breaks a tie, so the order is TOTAL: two records written in
+        // the same second must not swap places between cycles, or the rotation
+        // could step over one of them forever.
+        ready.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+        if ready.is_empty() {
             return Ok(());
-        };
+        }
+        let after = cursor
+            .as_deref()
+            .and_then(|slot| ready.iter().position(|(_, at, _)| at == slot))
+            .map_or(0, |at| at + 1);
+        let (_, slot, name) = &ready[after % ready.len()];
+        *cursor = Some(slot.clone());
         // The argv carries nothing that reaches the pane: the helper reads the
         // text AND the actor from the record. It is here only because the
         // helper's own grammar needs a message word.
         let delivery = self.deliver(
-            &name,
+            name,
             RETRY_PLACEHOLDER,
             crate::brief_retry::RETRY_ACTION,
             "",
