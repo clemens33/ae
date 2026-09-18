@@ -758,9 +758,13 @@ pub(super) fn announce_to_clients(server: &ServerId, text: &str) {
 /// Move clients watching `name` before its session is killed. The destination
 /// follows the same pinned/chosen/creation ordering the fleet strip draws,
 /// including the human's own `[workspace] fleet_order` — a handoff that landed
-/// somewhere the strip does not call "next" would teach the bar wrong.
+/// somewhere the strip does not call "next" would teach the bar wrong. When
+/// the dying session is the only ranked one, the one fleet listing that keeps
+/// rankless rows still names a destination on an ae-owned server, so a viewer
+/// is detached only when its session is the last one there.
 pub(super) fn handoff_clients_before_kill(server: &ServerId, name: &str) -> Option<String> {
-    let sessions = transport::observe_fleet_sessions(server)?;
+    let order = crate::fleet_order();
+    let sessions = transport::observe_fleet_sessions(server).unwrap_or_default();
     let rows: Vec<crate::theme::FleetRow> = sessions
         .iter()
         .map(|session| crate::theme::FleetRow {
@@ -770,7 +774,18 @@ pub(super) fn handoff_clients_before_kill(server: &ServerId, name: &str) -> Opti
             current: session.name == name,
         })
         .collect();
-    let next = crate::theme::next_fleet_session(&rows, name, &crate::fleet_order())?;
+    // The listing is read at most ONCE, and only when the ranked answer is
+    // empty on an ae-owned server: the hot path keeps today's single
+    // three-field read, byte-identical, and the ambient server is never asked
+    // for a destination ae would refuse to use.
+    let listing = if crate::theme::next_fleet_session(&rows, name, &order).is_none()
+        && matches!(server, ServerId::Selected(_))
+    {
+        transport::observe_fleet_listing(server)
+    } else {
+        None
+    };
+    let next = handoff_destination(server, name, &order, &rows, listing.as_deref())?;
     let clients = transport::observe_clients(server)?;
     let attached = clients
         .into_iter()
@@ -788,6 +803,66 @@ pub(super) fn handoff_clients_before_kill(server: &ServerId, name: &str) -> Opti
             "client handoff failed: {failed} client(s) could not switch from '{name}' to '{next}'"
         )
     })
+}
+
+/// The session a client watching `dying` is handed to before the kill, or
+/// `None` when the client is detached instead. PURE: the reads happened
+/// before, so this is the whole preference rule in one testable place.
+///
+/// (1) is today's answer — the strip's "next" among ranked rows, in the
+/// shared [`crate::theme::FleetOrder`]. (2), only when (1) is empty and only
+/// on an ae-owned server ([`ServerId::Selected`]), is the first OTHER live
+/// session of the one fleet listing that keeps rankless rows, by the same
+/// order comparator and then creation id, with the orchestrator sunk to last:
+/// it is a control seat, not a work session — the strip draws it beside the
+/// menu button rather than as a row for the same reason. On the ambient
+/// server ae never hands a client to a session it cannot call its own, and a
+/// dying session with no company detaches.
+fn handoff_destination(
+    server: &ServerId,
+    dying: &str,
+    order: &crate::theme::FleetOrder,
+    ranked: &[crate::theme::FleetRow],
+    listing: Option<&[crate::tmux::FleetListingRow]>,
+) -> Option<String> {
+    if let Some(next) = crate::theme::next_fleet_session(ranked, dying, order) {
+        return Some(next);
+    }
+    if !matches!(server, ServerId::Selected(_)) {
+        return None;
+    }
+    let mut candidates: Vec<&crate::tmux::FleetListingRow> = listing
+        .unwrap_or_default()
+        .iter()
+        .filter(|row| row.name != dying)
+        .collect();
+    candidates.sort_by(|left, right| {
+        orchestrator_sinks(&left.name)
+            .cmp(&orchestrator_sinks(&right.name))
+            .then_with(|| {
+                crate::theme::fleet_tail_cmp(
+                    order,
+                    (&left.name, handoff_created(&left.id)),
+                    (&right.name, handoff_created(&right.id)),
+                )
+            })
+    });
+    candidates.first().map(|row| row.name.clone())
+}
+
+/// Whether `name` is the control seat, which sinks below every work session
+/// as a handoff destination — valid only when nothing else is live.
+fn orchestrator_sinks(name: &str) -> bool {
+    name == crate::orchestrator::ORCHESTRATOR_SESSION
+}
+
+/// The creation order of one listing row: the number in its `$<n>` id, or
+/// last for an id that is not one — the same rule
+/// [`crate::theme::FleetRow::created`] reads.
+fn handoff_created(id: &str) -> u64 {
+    id.strip_prefix('$')
+        .and_then(|digits| digits.parse().ok())
+        .unwrap_or(u64::MAX)
 }
 
 /// The positive server record of one session.
@@ -1694,5 +1769,163 @@ mod tests {
             "an unreadable root answered {unreadable:?}"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn ranked_row(name: &str, id: &str) -> crate::theme::FleetRow {
+        crate::theme::FleetRow {
+            name: name.to_owned(),
+            id: id.to_owned(),
+            mark: crate::theme::Mark::Idle,
+            current: false,
+        }
+    }
+
+    fn listed_row(name: &str, id: &str) -> crate::tmux::FleetListingRow {
+        crate::tmux::FleetListingRow {
+            name: name.to_owned(),
+            id: id.to_owned(),
+            rank: None,
+            look: crate::tmux::LookOptions::default(),
+        }
+    }
+
+    fn owned_server() -> crate::inventory::ServerId {
+        crate::inventory::ServerId::Selected(crate::meta::Selector::Name("ae".to_owned()))
+    }
+
+    /// PIN: when the ranked rows name a "next", the listing is not even
+    /// consulted — the answer is `next_fleet_session`'s, byte for byte.
+    #[test]
+    fn handoff_keeps_the_ranked_next_answer_byte_identical() {
+        let server = owned_server();
+        let order = crate::theme::FleetOrder::EMPTY;
+        let ranked = [ranked_row("dying", "$2"), ranked_row("beta", "$3")];
+        let listing = [listed_row("dying", "$2"), listed_row("alpha", "$1")];
+        let destination =
+            super::handoff_destination(&server, "dying", &order, &ranked, Some(&listing));
+        assert_eq!(
+            destination,
+            crate::theme::next_fleet_session(&ranked, "dying", &order),
+            "today's answer, even though the listing's rankless row was created first"
+        );
+        assert_eq!(destination.as_deref(), Some("beta"));
+    }
+
+    /// PIN: the dying session is the only ranked row, so the fallback orders
+    /// the listing's other live sessions by the human's order, then creation
+    /// — rank plays no part, and the dying row itself is excluded.
+    #[test]
+    fn handoff_falls_back_to_fleet_order_then_creation() {
+        let server = owned_server();
+        let ranked = [ranked_row("dying", "$3")];
+        let listing = [
+            listed_row("dying", "$3"),
+            listed_row("svcb", "$2"),
+            listed_row("svca", "$4"),
+        ];
+        let order = crate::theme::FleetOrder::from_validated(vec!["svca".to_owned()]);
+        assert_eq!(
+            super::handoff_destination(&server, "dying", &order, &ranked, Some(&listing))
+                .as_deref(),
+            Some("svca"),
+            "the human's order beats creation"
+        );
+        assert_eq!(
+            super::handoff_destination(
+                &server,
+                "dying",
+                &crate::theme::FleetOrder::EMPTY,
+                &ranked,
+                Some(&listing)
+            )
+            .as_deref(),
+            Some("svcb"),
+            "without a named order, creation decides"
+        );
+        let mixed = [
+            listed_row("dying", "$3"),
+            listed_row("early", "$1"),
+            crate::tmux::FleetListingRow {
+                rank: Some("0".to_owned()),
+                ..listed_row("late", "$5")
+            },
+        ];
+        assert_eq!(
+            super::handoff_destination(
+                &server,
+                "dying",
+                &crate::theme::FleetOrder::EMPTY,
+                &ranked,
+                Some(&mixed)
+            )
+            .as_deref(),
+            Some("early"),
+            "a published rank buys no priority in the fallback"
+        );
+    }
+
+    /// PIN: on the ambient server ae never hands a client to a session it
+    /// cannot call its own — rankless company or not, the client detaches.
+    #[test]
+    fn handoff_on_a_stranger_server_detaches() {
+        let ranked = [ranked_row("dying", "$1")];
+        let listing = [listed_row("dying", "$1"), listed_row("stranger", "$2")];
+        assert_eq!(
+            super::handoff_destination(
+                &crate::inventory::ServerId::Ambient,
+                "dying",
+                &crate::theme::FleetOrder::EMPTY,
+                &ranked,
+                Some(&listing)
+            ),
+            None
+        );
+    }
+
+    /// PIN: the last session on its server detaches its viewers — an empty
+    /// listing and an unread one are the same absence of company.
+    #[test]
+    fn handoff_with_no_survivor_detaches() {
+        let server = owned_server();
+        let order = crate::theme::FleetOrder::EMPTY;
+        let ranked = [ranked_row("dying", "$1")];
+        let alone = [listed_row("dying", "$1")];
+        let empty: &[crate::tmux::FleetListingRow] = &[];
+        for listing in [Some(alone.as_slice()), Some(empty), None] {
+            assert_eq!(
+                super::handoff_destination(&server, "dying", &order, &ranked, listing),
+                None,
+                "no company, no destination"
+            );
+        }
+    }
+
+    /// PIN: the orchestrator is a control seat, not a work session — the
+    /// fallback takes any other live session first, and the orchestrator only
+    /// when it is the only company left.
+    #[test]
+    fn handoff_sinks_the_orchestrator_to_last_resort() {
+        let server = owned_server();
+        let order = crate::theme::FleetOrder::EMPTY;
+        let ranked = [ranked_row("dying", "$2")];
+        let both = [
+            listed_row("dying", "$2"),
+            listed_row(crate::orchestrator::ORCHESTRATOR_SESSION, "$1"),
+            listed_row("work", "$9"),
+        ];
+        assert_eq!(
+            super::handoff_destination(&server, "dying", &order, &ranked, Some(&both)).as_deref(),
+            Some("work"),
+            "a creation-last work session beats a creation-first control seat"
+        );
+        let only = [
+            listed_row("dying", "$2"),
+            listed_row(crate::orchestrator::ORCHESTRATOR_SESSION, "$1"),
+        ];
+        assert_eq!(
+            super::handoff_destination(&server, "dying", &order, &ranked, Some(&only)).as_deref(),
+            Some(crate::orchestrator::ORCHESTRATOR_SESSION),
+            "last resort is still a destination"
+        );
     }
 }

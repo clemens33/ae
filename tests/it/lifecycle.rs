@@ -947,6 +947,57 @@ fn stop_destroys_nothing() {
     assert!(err.contains("is not running"), "{err}");
 }
 
+/// Stopping the last RANKED session hands its viewer to a rankless live
+/// session on the same ae-owned server instead of detaching it. The survivor
+/// published no rank (a pre-watchdog leftover, or a crashed-watchdog corner);
+/// the dying session is the only ranked row, so the strip's "next" is empty
+/// and only the rankless-keeping listing names a destination. Smallest
+/// defeating mutation: drop the fallback branch of the handoff destination.
+#[test]
+fn stop_hands_its_viewer_to_the_rankless_survivor() {
+    let rig = Rig::new("handof");
+    let survivor = format!("{}sv", rig.name);
+    assert!(
+        rig.tmux(&["new-session", "-d", "-s", &survivor, "sh"]).0,
+        "the survivor starts"
+    );
+    assert!(
+        rig.tmux(&["set-option", "-t", &rig.name, "@ae_attn_rank", "0"])
+            .0,
+        "the dying session is the only ranked row"
+    );
+    assert!(
+        rig.tmux(&["set-option", "-t", &survivor, "@ae_attn_rank", "2"])
+            .0,
+        "the survivor first publishes a rank"
+    );
+    assert!(
+        rig.tmux(&["set-option", "-u", "-t", &survivor, "@ae_attn_rank"])
+            .0,
+        "then stops publishing it"
+    );
+    let (_controller_pane, client) = rig.attach_client();
+    // `attach_client` leaves `detach-on-destroy` off so a destroyed target
+    // keeps its client for the confirmation suites; here a detach IS the
+    // failure signal, so the default goes back on before the stop.
+    assert!(
+        rig.tmux(&["set-option", "-t", &rig.name, "detach-on-destroy", "on"])
+            .0,
+        "a viewer with nowhere to go detaches"
+    );
+    let (code, out, err) = rig.run(&["_stop", &rig.name]);
+    assert_eq!(code, Some(0), "stdout: {out}\nstderr: {err}");
+    assert!(out.contains(&format!("Stopped {}", rig.name)), "{out}");
+    assert!(!rig.session_is_live(), "the dying session is gone");
+    let (_, clients) = rig.tmux(&["list-clients", "-F", "#{client_name} | #{session_name}"]);
+    assert!(
+        clients
+            .lines()
+            .any(|line| line == format!("{client} | {survivor}")),
+        "the viewer lands on the survivor, not detached: {clients}"
+    );
+}
+
 /// The Claude frame a stop must read off a live pane: the same bounded
 /// grammar `harness_state::current_identity` proves.
 const CLAUDE_FRAME: &str = "\
