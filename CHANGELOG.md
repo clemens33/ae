@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.126] - 2026-09-18
+- Refuse composed readiness when the rounded box or ruled prompt holds a draft
+
 ## [v2026.9.125] - 2026-09-18
 - Give grok and agy measured unmodelled composed signals
 - Reword input-signal comments to state behavior
