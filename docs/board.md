@@ -10,8 +10,13 @@ brief-writing time.
 Harness transcripts, derived on read. The board opens the transcript files the
 agents' own CLIs wrote — no hooks, no writer, no board database. Each seat is
 located through the conversation identity and config home ae recorded at
-first start. Claude Code, Codex, Grok, Muse and Antigravity seats read today;
-every other seat renders an explicit coverage row, never a silent subset.
+first start. Claude Code, Codex, Grok, Muse, Antigravity and OpenCode seats read
+today; every other seat renders an explicit coverage row, never a silent subset.
+OpenCode is the one seat without a transcript file: its conversation lives in
+SQLite, which ae never opens, so the board runs the CLI's own
+`opencode export <sessionID>` through the existing process door and reads the
+one JSON document it prints on stdout. One export runs per OpenCode seat per
+board read; a failed or unusable export is a coverage row, never a silent gap.
 
 ## Scope
 
@@ -28,11 +33,17 @@ offsets for them. Every row carries its `generation` (0 = current, n = nth
 predecessor); text headers read `## HH:MM:SS <session:seat> · prior n` for
 n ≥ 1, composed with ` · assistant` as ` · prior 1 · assistant`. Turns written
 before provenance shipped (`v2026.9.79`) read as human — an accepted gap,
-never a shim.
+never a shim. Row identity is the source record (`file`, `offset`): a
+file-backed seat names `path#dev:ino` and the record's byte offset, while an
+OpenCode row names its own message (`opencode:<session id>#<message id>`,
+offset 0), because an export is regenerated per read and has no stable byte
+offsets — the message id is immutable and repeats across exports.
 
 ## What it never reads
 
-- The OpenCode `credential` table or any non-`message`/`session` table, forever
+- The OpenCode SQLite store at all — not its `credential` table, not its
+  `message`/`session` tables: the board reads only the `opencode export`
+  stdout the CLI itself prints
 - Any `auth.json` or token file
 - Live `~/.ae` session state beyond the roster (meta only)
 
@@ -47,7 +58,7 @@ Times are UTC, stated once in the divider, never on the row:
 
 ```text
 scope: current conversations plus each seat's recorded predecessors (up to 4, newest first) — nothing is inferred from time
-coverage incomplete: demo:colead — opencode: not read
+coverage incomplete: demo:colead — gemini: out of scope
 # 2026-09-16 UTC
 ## 09:00:00 demo:lead
   ship the slice today
@@ -86,7 +97,10 @@ never the `reasoning`, call or `event_msg` twins. Grok joins the
 `agent_message_chunk` deltas of one turn into a single row at the run's first
 chunk — a user chunk, a `turn_completed` or EOF ends the turn, and a message
 boundary inside one turn fuses (the store carries no separator). Muse reads
-the whole text of each `assistant_message_committed` event. Antigravity has
+the whole text of each `assistant_message_committed` event. OpenCode reads the
+`text` parts of each `role == "assistant"` message — one row per message, so a
+tool-only step drops silently — never its `reasoning` parts (which carry a
+`text` field too), its `tool` parts or its `step-*` frames. Antigravity has
 no assistant records: each agy seat prints one coverage line saying so. Under
 `--follow` a grok stream ending mid-turn holds its commit point at the open
 run's first chunk, so the next poll re-reads and joins the whole turn instead
@@ -135,6 +149,10 @@ complete line, and the mtime it last saw:
   newline and is retried next poll.
 - **hold** — nothing new: no read, no output.
 
+OpenCode does not follow: an export is one child process per seat per tick and
+carries no append or offset semantics, so the one-shot read stands and every
+poll prints ONE steady coverage line, `opencode: read once, not followed`.
+
 After the first pass, coverage prints on CHANGE only: a seat that becomes
 readable prints nothing, a seat that becomes unreadable prints its new reason
 once. Rescan lines always print. Batches are sorted internally by
@@ -143,13 +161,14 @@ prints later. Every batch prints its rows through the same renderer as the
 one-shot — same indented shape, same `--lines` clip, same divider rule: a
 batch on the printed day opens with no divider, a new day opens with one.
 Every row keeps its
-durable identity (`file` = `path#dev:ino` plus `offset`), so a consumer that
-wants dedup across generations can have it.
+durable identity (`file` = `path#dev:ino` plus `offset`, or the OpenCode
+message identity above), so a consumer that wants dedup across generations can
+have it.
 
 ## Phases
 
 1b Claude CLI · 2 codex · 3a grok · 3b muse · 4 `--follow` · 5 agy · 6 OpenCode
-(ruled out — not read) · 7a assistant rows (Claude Code, Codex) · 7b assistant
+(export reader) · 7a assistant rows (Claude Code, Codex) · 7b assistant
 rows (grok, muse, agy coverage) · 8 predecessors (done: 8a records, 8b reads).
 
 Codex reads the seat's current rollout only, and only the `response_item`
@@ -170,3 +189,17 @@ carries every agy conversation, so attribution is by the captured conversation
 id alone — a record of another conversation is skipped silently, `workspace` is
 never consulted, and a pre-field CLI record can never match. `display` is the
 typed prompt (`"type":"slash_command"` included), `timestamp` integer millis.
+
+OpenCode reads one `opencode export <sessionID>` document per conversation —
+the current one and each recorded predecessor — and never the SQLite store.
+Human rows are `role == "user"` messages; row identity is the message id;
+`time.created` is integer milliseconds. A body is the message's `text` parts
+joined in order, trimmed, empties dropped; a message with no `text` part drops
+silently, and a message that cannot be named or stamped is counted into the
+same coverage vocabulary the other seats use. A whole export over 16 MiB is
+refused and at most 4096 rows come out of one — both covered as `export
+exceeds the read budget`, the row cap naming what was left unread. A malformed
+document or one naming another session is `export unreadable` / `export names
+another session`; a failed or missing binary is `export failed`; a session id
+that fails the `ses_` + alphanumerics grammar is refused before any argv with
+`invalid or missing conversation id`.

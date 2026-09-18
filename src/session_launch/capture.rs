@@ -86,6 +86,27 @@ fn opencode_list_argv() -> OpenCodeArgv {
     ])
 }
 
+/// The session-id grammar the export leg accepts before argv: measured ids are
+/// `ses_` + 26 alphanumerics (opencode 1.18.31, 2026-09-18), and the mint below
+/// refuses everything else — a hand-edited meta can never smuggle a flag or a
+/// path into the child's command line.
+#[must_use]
+pub(crate) fn is_opencode_session_id(value: &str) -> bool {
+    value.strip_prefix("ses_").is_some_and(|rest| {
+        !rest.is_empty()
+            && rest.len() <= 64
+            && rest.bytes().all(|byte| byte.is_ascii_alphanumeric())
+    })
+}
+
+/// The SECOND fixed spelling of the `opencode` leg: `export <id>`. `None` when
+/// `id` fails [`is_opencode_session_id`], so the door can never be handed an
+/// argv built from an invalid name.
+#[must_use]
+pub(crate) fn opencode_export_argv(id: &str) -> Option<OpenCodeArgv> {
+    is_opencode_session_id(id).then(|| OpenCodeArgv(vec!["export".to_owned(), id.to_owned()]))
+}
+
 /// The argv that captures one target: `_capture-sid <dir> <slot> <pane>`.
 fn argv(dir: &Path, target: &Target) -> CaptureArgv {
     CaptureArgv(vec![
@@ -2297,5 +2318,32 @@ mod tests {
             opencode_list_argv().as_args(),
             ["session", "list", "--format", "json", "-n", "20"]
         );
+    }
+
+    #[test]
+    fn the_opencode_export_argv_is_fixed_and_the_grammar_gates_it() {
+        let id = "ses_00000000000000000000000000";
+        assert_eq!(
+            opencode_export_argv(id).map(|argv| argv.as_args().to_vec()),
+            Some(vec!["export".to_owned(), id.to_owned()])
+        );
+        for bad in [
+            "",
+            "ses_",
+            "ses_x/y",
+            "ses_x y",
+            "ses_x\ny",
+            "ses_x\"q",
+            "-ses_x",
+            "msg_00000000000000000000000000",
+            &format!("ses_{}", "a".repeat(65)),
+        ] {
+            assert!(
+                opencode_export_argv(bad).is_none(),
+                "{bad:?} must not mint an argv"
+            );
+            assert!(!is_opencode_session_id(bad), "{bad:?}");
+        }
+        assert!(is_opencode_session_id("ses_a1B2"));
     }
 }

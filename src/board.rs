@@ -15,6 +15,7 @@ pub mod codex;
 pub mod follow;
 pub mod grok;
 pub mod muse;
+pub mod opencode;
 
 use std::fmt::Write as _;
 use std::fs::File;
@@ -623,6 +624,24 @@ fn observe_generation(
             },
         });
     };
+    // OpenCode keeps its conversation in SQLite, which the board never opens:
+    // the export leg runs the CLI (`opencode export <id>`) and the pure reader
+    // takes its bytes. No file, no follow seed — D1 reads it once per board
+    // and `follow_seat` covers it after that. String dispatch, as `reader_for`
+    // does: the adapter's own name, never a `ToolKind::` arm.
+    if tool.adapter().name == "opencode" {
+        let (seat_rows, seat_coverage) = read_opencode(&actor, entry, tool, assistant);
+        let (mut seat_rows, hidden_rows): (Vec<Row>, Vec<Row>) =
+            seat_rows.into_iter().partition(|row| !hidden(row, None));
+        for row in &mut seat_rows {
+            row.generation = generation;
+        }
+        rows.append(&mut seat_rows);
+        for item in seat_coverage {
+            cover(item.reason);
+        }
+        return hidden_rows;
+    }
     let (path, metadata) = match locate_seat(entry, home) {
         Ok(located) => located,
         Err(reason) => {
@@ -657,6 +676,40 @@ fn observe_generation(
     }
     hidden_rows
 }
+
+/// One `OpenCode` generation: prove the recorded id through the ONE grammar,
+/// mint the export argv, run it through the EXISTING `opencode` leg, and hand
+/// the stdout bytes to the pure reader. The export's wall time is the child's
+/// and is charged to no shared budget — a slow `opencode` delays its own seat
+/// only, never another seat's rows (D3).
+fn read_opencode(
+    actor: &str,
+    entry: &crate::meta::RosterEntry,
+    tool: ToolKind,
+    assistant: bool,
+) -> (Vec<Row>, Vec<Coverage>) {
+    let refuse = |reason: &str| {
+        (
+            Vec::new(),
+            vec![Coverage {
+                actor: actor.to_owned(),
+                reason: reason.to_owned(),
+            }],
+        )
+    };
+    let Some(id) = entry.harness_session.as_deref() else {
+        return refuse("invalid or missing conversation id");
+    };
+    let Some(argv) = crate::session_launch::capture::opencode_export_argv(id) else {
+        return refuse("invalid or missing conversation id");
+    };
+    let (ran, exported) = crate::transport::run_opencode(&argv);
+    if !ran {
+        return refuse("export failed");
+    }
+    opencode::read(exported.as_bytes(), id, actor, tool, assistant)
+}
+
 /// One harness reader: the door's stream in, rows and coverage out.
 pub(crate) type Reader = fn(&Streamed, &str, &str, ToolKind) -> (Vec<Row>, Vec<Coverage>);
 
@@ -839,6 +892,17 @@ fn follow_seat(
     let actor = format!("{}:{}", session.name, entry.name);
     let tool = ToolKind::from_binary_name(entry.binary.as_deref().unwrap_or(""));
     let passive = passive_turn(tool, &session.path, &entry.slot);
+    // D1: an export per tick is a child process per seat per tick, and an
+    // export has no append or offset semantics to follow — the one-shot read
+    // stands, and this steady line says why no poll revisits it.
+    if tool.adapter().name == "opencode" {
+        return follow::Snapshot {
+            actor,
+            located: Err("opencode: read once, not followed".to_owned()),
+            streamed: None,
+            passive,
+        };
+    }
     let (path, metadata) = match locate_seat(entry, home) {
         Ok(located) => located,
         Err(reason) => {
@@ -922,8 +986,8 @@ fn locate_grok_updates(
 fn unsupported_reason(tool: ToolKind) -> &'static str {
     // String dispatch, never `ToolKind::` arms: production tool literals live
     // in `src/tool.rs` alone (`per_tool_branches_live_only_in_the_adapter_rows`).
+    // OpenCode is read through its export leg and never reaches this fallback.
     match tool.adapter().name {
-        "opencode" => "opencode: not read",
         "gemini" => "gemini: out of scope",
         _ => "unknown tool: out of scope",
     }
@@ -1593,6 +1657,46 @@ mod tests {
         let reasons: Vec<&str> = coverage.iter().map(|item| item.reason.as_str()).collect();
         assert_eq!(reasons, ["invalid or missing conversation id"]);
         assert!(seeds.is_empty(), "a covered read seeds nothing");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test: plants and removes its own scratch session"
+    )]
+    fn an_opencode_seat_is_read_once_and_every_follow_poll_says_so_once() {
+        let root = std::env::temp_dir().join(format!("ae-board-oc-follow-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("sessions").join("s");
+        std::fs::create_dir_all(&dir).expect("session dir");
+        std::fs::write(
+            dir.join("meta"),
+            "schema=2\nseat.main=oc\nharness_session.main=ses_00000000000000000000000000\nagent_bin.main=opencode\n",
+        )
+        .expect("meta");
+        let sessions = vec![crate::usage::SessionInput {
+            name: "s".to_owned(),
+            path: dir,
+        }];
+        let inputs = crate::board::Inputs {
+            home: Some(root.as_path()),
+            sessions: &sessions,
+            assistant: false,
+        };
+        let mut follow = super::follow::Follow::seeded(&[], &[], None);
+        let batch = super::follow_poll(&inputs, &mut follow);
+        assert!(batch.rows.is_empty(), "no export runs per tick");
+        assert_eq!(batch.coverage.len(), 1);
+        assert_eq!(
+            batch.coverage[0].reason,
+            "opencode: read once, not followed"
+        );
+        let batch = super::follow_poll(&inputs, &mut follow);
+        assert!(
+            batch.coverage.is_empty(),
+            "the steady reason prints on change only"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

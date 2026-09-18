@@ -200,12 +200,14 @@ fn non_claude_seats_name_their_phase_in_both_modes() {
     assert_eq!(
         reasons,
         [
-            // Codex, Grok, Muse and agy read now: no id, so the read is attempted and covered.
+            // Codex, Grok, Muse, agy and opencode read now: no id, so the
+            // read is attempted and covered (for opencode the export leg
+            // refuses the id before any spawn).
             "invalid or missing conversation id",
             "invalid or missing conversation id",
             "invalid or missing conversation id",
             "invalid or missing conversation id",
-            "opencode: not read",
+            "invalid or missing conversation id",
             "gemini: out of scope",
         ]
     );
@@ -1450,5 +1452,395 @@ fn dividers_mark_utc_days_and_follow_polls_carry_the_day() {
         text.contains("# 2026-09-17 UTC\n## 09:00:00 one:lead"),
         "{text}"
     );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+// ---------------------------------------------------------------------------
+// OpenCode: the export leg over the shipped binary
+// ---------------------------------------------------------------------------
+
+const OC_SID: &str = "ses_00000000000000000000000000";
+
+/// One synthetic `opencode export` document; `messages` are hand-written
+/// message records, never copied transcript text.
+fn export_doc(id: &str, messages: &[String]) -> String {
+    format!(
+        r#"{{"info":{{"id":"{id}","slug":"probe","directory":"/probe"}},"messages":[{}]}}"#,
+        messages.join(",")
+    )
+}
+
+fn oc_message(id: &str, role: &str, created: &str, parts: &[String]) -> String {
+    format!(
+        r#"{{"info":{{"id":"{id}","sessionID":"{OC_SID}","role":"{role}","time":{{"created":{created}}}}},"parts":[{}]}}"#,
+        parts.join(",")
+    )
+}
+
+fn oc_text(text: &str) -> String {
+    let escaped = text
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n");
+    format!(r#"{{"type":"text","text":"{escaped}"}}"#)
+}
+
+fn oc_reasoning(text: &str) -> String {
+    format!(r#"{{"type":"reasoning","text":"{text}","time":{{"start":1,"end":2}}}}"#)
+}
+
+fn oc_roster(slot: &str, seat: &str, id: &str) -> String {
+    format!("seat.{slot}={seat}\nharness_session.{slot}={id}\nagent_bin.{slot}=opencode\n")
+}
+
+/// Plant `<root>/bin/opencode`, executable, with this exact script body.
+fn fake_opencode(root: &Path, script: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = root.join("bin");
+    std::fs::create_dir_all(&bin).expect("fake bin dir");
+    let path = bin.join("opencode");
+    std::fs::write(&path, script).expect("fake opencode");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("exec bit");
+}
+
+/// An `opencode` that answers every import with one export document.
+fn exporting(export: &str) -> String {
+    format!("#!/bin/sh\ncat <<'JSON'\n{export}\nJSON\n")
+}
+
+/// Run the shipped binary with a deterministic `PATH`: the rig's own bin first
+/// (where the fake `opencode` may live), then the OS binaries so a fake script
+/// can still call `cat` or `sleep` — and nothing else, so neither a fake nor a
+/// real `opencode` can hide on the runner's inherited PATH.
+fn run_with_path(root: &Path, bin: &Path, tail: &[&str]) -> (Option<i32>, String, String) {
+    let out = ae()
+        .env("HOME", root)
+        .env("AE_HOME", root)
+        .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+        .env_remove("TMUX_PANE")
+        .args(tail)
+        .output()
+        .expect("the ae binary should run");
+    (
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+/// The fake bin dir of a rig whose `opencode` is planted.
+fn fake_bin(root: &Path) -> PathBuf {
+    root.join("bin")
+}
+
+/// A PATH directory with no `opencode` anywhere.
+fn empty_bin(root: &Path) -> PathBuf {
+    let bin = root.join("no-opencode");
+    std::fs::create_dir_all(&bin).expect("empty bin dir");
+    bin
+}
+
+#[test]
+fn an_opencode_seat_reads_its_export_through_the_shipped_binary() {
+    let root = rig("oc-read");
+    let export = export_doc(
+        OC_SID,
+        &[oc_message(
+            "msg_1",
+            "user",
+            "1789549200500",
+            &[oc_text("plain human words")],
+        )],
+    );
+    fake_opencode(&root, &exporting(&export));
+    plant_session(&root, "oc", &oc_roster("main", "lead", OC_SID));
+    let (code, stdout, stderr) = run_with_path(&root, &fake_bin(&root), &["board", "oc"]);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(
+        stdout.contains("# 2026-09-16 UTC\n## 09:00:00 oc:lead\n  plain human words\n"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("coverage incomplete"), "{stdout}");
+
+    let (_, json, _) = run_with_path(&root, &fake_bin(&root), &["board", "oc", "--json"]);
+    let row = json
+        .lines()
+        .find(|line| line.contains("\"kind\":\"row\""))
+        .expect("one row line");
+    let value = ae::json::parse(row).expect("the row line parses");
+    assert_eq!(value.get_str("source"), Some("opencode"));
+    assert_eq!(value.get_str("role"), Some("human"));
+    assert_eq!(value.get_str("body"), Some("plain human words"));
+    let identity = format!("opencode:{OC_SID}#msg_1");
+    assert_eq!(value.get_str("file"), Some(identity.as_str()));
+
+    // `--since` after the turn filters it out; before it, the row stands.
+    let (_, later, _) = run_with_path(
+        &root,
+        &fake_bin(&root),
+        &["board", "oc", "--since", "2026-09-16T09:00:01Z"],
+    );
+    assert!(!later.contains("plain human words"), "{later}");
+    let (_, earlier, _) = run_with_path(
+        &root,
+        &fake_bin(&root),
+        &["board", "oc", "--since", "2026-09-16T08:59:59Z"],
+    );
+    assert!(earlier.contains("plain human words"), "{earlier}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn an_opencode_reply_reads_only_with_the_flag_and_never_reasoning() {
+    let root = rig("oc-assistant");
+    let export = export_doc(
+        OC_SID,
+        &[
+            oc_message("msg_1", "user", "1789549200500", &[oc_text("human asks")]),
+            oc_message(
+                "msg_2",
+                "assistant",
+                "1789549201500",
+                &[oc_reasoning("hidden chain"), oc_text("visible reply")],
+            ),
+        ],
+    );
+    fake_opencode(&root, &exporting(&export));
+    plant_session(&root, "oc", &oc_roster("main", "lead", OC_SID));
+    let (_, off, _) = run_with_path(&root, &fake_bin(&root), &["board", "oc"]);
+    assert!(!off.contains("assistant"), "{off}");
+    assert!(
+        !off.contains("visible reply") && !off.contains("hidden chain"),
+        "{off}"
+    );
+    let (_, on, _) = run_with_path(&root, &fake_bin(&root), &["board", "oc", "--assistant"]);
+    assert!(
+        on.contains("## 09:00:01 oc:lead · assistant\n  visible reply\n"),
+        "{on}"
+    );
+    assert!(
+        !on.contains("hidden chain"),
+        "reasoning text never reaches the board: {on}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn an_ae_marked_opencode_turn_is_hidden_and_counted() {
+    let root = rig("oc-hidden");
+    let export = export_doc(
+        OC_SID,
+        &[
+            oc_message(
+                "msg_1",
+                "user",
+                "1789549200500",
+                &[oc_text("⟦ae:msg from lead⟧\ninjected words")],
+            ),
+            oc_message(
+                "msg_2",
+                "user",
+                "1789549201500",
+                &[oc_text("the human's own words")],
+            ),
+        ],
+    );
+    fake_opencode(&root, &exporting(&export));
+    plant_session(&root, "oc", &oc_roster("main", "lead", OC_SID));
+    let (_, stdout, _) = run_with_path(&root, &fake_bin(&root), &["board", "oc"]);
+    assert!(
+        stdout.contains("hidden: oc:lead — 1 ae-injected turns"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("injected words"), "{stdout}");
+    assert!(stdout.contains("the human's own words"), "{stdout}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_failed_opencode_export_covers_that_seat_and_the_others_still_print() {
+    let root = rig("oc-failed");
+    let store = root.join("claude");
+    plant_transcript(
+        &store,
+        "work",
+        CLAUDE_ID,
+        &[user("2026-09-16T09:00:00.500Z", "claude words")],
+    );
+    plant_session(
+        &root,
+        "fleet",
+        &format!(
+            "{}{}",
+            oc_roster("main", "oc", OC_SID),
+            claude_roster("spawned.0", "cc", CLAUDE_ID, &store)
+        ),
+    );
+
+    // No `opencode` on PATH at all: the spawn itself fails.
+    let (code, stdout, _) = run_with_path(&root, &empty_bin(&root), &["board", "fleet"]);
+    assert_eq!(code, Some(0));
+    assert!(
+        stdout.contains("coverage incomplete: fleet:oc — export failed"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("## 09:00:00 fleet:cc\n  claude words"),
+        "{stdout}"
+    );
+
+    // And a binary that answers nonzero is the same covered seat.
+    fake_opencode(&root, "#!/bin/sh\nexit 3\n");
+    let (_, stdout, _) = run_with_path(&root, &fake_bin(&root), &["board", "fleet"]);
+    assert!(
+        stdout.contains("coverage incomplete: fleet:oc — export failed"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("## 09:00:00 fleet:cc\n  claude words"),
+        "{stdout}"
+    );
+
+    // A success exit with no document at all is a document fault, not a
+    // process fault: the seat reads as unreadable, still without touching the
+    // other seat.
+    fake_opencode(&root, "#!/bin/sh\nexit 0\n");
+    let (_, stdout, _) = run_with_path(&root, &fake_bin(&root), &["board", "fleet"]);
+    assert!(
+        stdout.contains("coverage incomplete: fleet:oc — export unreadable"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("## 09:00:00 fleet:cc\n  claude words"),
+        "{stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_refused_session_id_never_reaches_the_opencode_argv() {
+    let root = rig("oc-grammar");
+    let marker = root.join("spawned-argv");
+    fake_opencode(
+        &root,
+        &format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > {}\nexit 1\n",
+            marker.display()
+        ),
+    );
+    // Two refusals: an id that is not the measured grammar, and no id at all.
+    plant_session(
+        &root,
+        "fleet",
+        "seat.main=oc\nharness_session.main=--continue\nagent_bin.main=opencode\nseat.spawned.0=oc2\nagent_bin.spawned.0=opencode\n",
+    );
+    let (code, stdout, _) = run_with_path(&root, &fake_bin(&root), &["board", "fleet"]);
+    assert_eq!(code, Some(0));
+    assert_eq!(
+        stdout.matches("invalid or missing conversation id").count(),
+        2,
+        "{stdout}"
+    );
+    assert!(
+        !marker.exists(),
+        "an invalid id must not mint an argv: {stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_slow_opencode_export_delays_only_its_own_seat() {
+    let root = rig("oc-slow");
+    let store = root.join("claude");
+    plant_transcript(
+        &store,
+        "work",
+        CLAUDE_ID,
+        &[user("2026-09-16T08:00:00.000Z", "claude words")],
+    );
+    let export = export_doc(
+        OC_SID,
+        &[oc_message(
+            "msg_1",
+            "user",
+            "1789549200500",
+            &[oc_text("oc words")],
+        )],
+    );
+    fake_opencode(
+        &root,
+        &format!("#!/bin/sh\nsleep 3\n{}", exporting(&export)),
+    );
+    plant_session(
+        &root,
+        "fleet",
+        &format!(
+            "{}{}",
+            oc_roster("main", "oc", OC_SID),
+            claude_roster("spawned.0", "cc", CLAUDE_ID, &store)
+        ),
+    );
+    let (code, stdout, _) = run_with_path(&root, &fake_bin(&root), &["board", "fleet"]);
+    assert_eq!(code, Some(0));
+    assert!(
+        stdout.contains("## 08:00:00 fleet:cc\n  claude words"),
+        "the slow seat never starves another: {stdout}"
+    );
+    assert!(
+        stdout.contains("## 09:00:00 fleet:oc\n  oc words"),
+        "the slow export is read, not truncated by a shared clock: {stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn an_opencode_predecessor_reads_through_its_own_export() {
+    let root = rig("oc-prior");
+    let prior_id = "ses_11111111111111111111111111";
+    let current = export_doc(
+        OC_SID,
+        &[oc_message(
+            "msg_now",
+            "user",
+            "1789549201500",
+            &[oc_text("current words")],
+        )],
+    );
+    let prior = export_doc(
+        prior_id,
+        &[oc_message(
+            "msg_old",
+            "user",
+            "1789549200500",
+            &[oc_text("prior words")],
+        )],
+    );
+    // One fake that answers each generation's own id: the export leg runs
+    // once per generation, so a prior conversation needs no special path.
+    fake_opencode(
+        &root,
+        &format!(
+            "#!/bin/sh\ncase \"$2\" in\n  {OC_SID}) cat <<'JSON'\n{current}\nJSON\n  ;;\n  {prior_id}) cat <<'JSON'\n{prior}\nJSON\n  ;;\nesac\n"
+        ),
+    );
+    plant_session(
+        &root,
+        "oc",
+        &format!(
+            "seat.main=lead\nharness_session.main={OC_SID}\nharness_session_prior.main={prior_id}\nagent_bin.main=opencode\n"
+        ),
+    );
+    let (code, stdout, stderr) = run_with_path(&root, &fake_bin(&root), &["board", "oc"]);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(
+        stdout.contains("## 09:00:00 oc:lead · prior 1\n  prior words"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("## 09:00:01 oc:lead\n  current words"),
+        "{stdout}"
+    );
+    let (_, json, _) = run_with_path(&root, &fake_bin(&root), &["board", "oc", "--json"]);
+    assert!(json.contains("\"generation\":1"), "{json}");
     let _ = std::fs::remove_dir_all(&root);
 }
