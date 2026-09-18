@@ -4,11 +4,11 @@
   longer without tiring, and runs on the cheapest profile that fits its task
   class — a lever on cost and on the shared quota, never a separate allowance:
   profiles on one client draw from one headroom, so check
-  /Users/ckriech/.ae-dev/sessions/musecapture/quota before a batch. Cut work
+  /home/u/.ae/sessions/work/quota before a batch. Cut work
   into independent slices and spawn them in PARALLEL, one worker per slice, one
   writer per file; a NEW slice gets a fresh worker, a fix round returns to the
   worker and the reviewer who hold its context. Spawn under a role NAME:
-  /Users/ckriech/.ae-dev/sessions/musecapture/spawn <name> --using <profile>
+  /home/u/.ae/sessions/work/spawn <name> --using <profile>
   [prompt] — pick from workspace.md (chores → luna, bounded builds → terra/sol;
   judgment seats keep xhigh). PREFER ae spawn over your harness's internal
 … output capped
@@ -20,4 +20,4 @@
 ── Voice input (⌥ + v to start) ────────────────────────────────────────────────
 ❯ 
 ────────────────────────────────────────────────────────────────────────────────
-  muse-spark-1.3 · max · ~/projects/clemens33/ae · YOLO
+  muse-spark-1.3 · max · ~/projects/u/ae · YOLO

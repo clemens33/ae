@@ -1,7 +1,7 @@
 
 ❯ ⟦ae:msg from watchdog⟧
   Status check: if you have more work, continue. Otherwise declare your state so
-  I stop nudging: /Users/ckriech/.ae-dev/sessions/musecapture/state
+  I stop nudging: /home/u/.ae/sessions/work/state
   <waiting-user|waiting-agent|blocked|done> "<reason>"
 
 ◆ Usage limit reached · /upgrade
@@ -10,7 +10,7 @@
 
 ❯ ⟦ae:msg from watchdog⟧
   Status check: if you have more work, continue. Otherwise declare your state so
-  I stop nudging: /Users/ckriech/.ae-dev/sessions/musecapture/state
+  I stop nudging: /home/u/.ae/sessions/work/state
   <waiting-user|waiting-agent|blocked|done> "<reason>"
 
 ◆ Usage limit reached · /upgrade

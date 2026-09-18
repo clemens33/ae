@@ -19,5 +19,5 @@
 
            ● Tip Run opencode auth list to see all configured providers
 
-  ~/projects/clemens33/ae-wt/spawnproof:spawnproof                     1.18.31
+  ~/projects/u/ae-wt/spawnproof:spawnproof                             1.18.31
 
