@@ -268,11 +268,21 @@ mouse-selectable. On the supported 3.4 floor, status clicks open on release,
 menus are keyboard-driven, session-row shortcut keys choose, keyless agent rows
 use arrows plus Enter, and `q` closes. Each session row shows bounded name,
 mark, state word, branch and goal columns; only the current session is followed
-by indented frozen mark/name/profile/state rows from the watchdog's `@ae_agents`
-snapshot. Those
+by indented frozen mark/name/model/state rows from the watchdog's `@ae_agents`
+snapshot. The model cell names the seat's client and the model its own frame
+drew, with that frame's effort while the width allows one. A seat whose model
+has not been re-proven — a turn in flight, a draft sitting in the box, or a
+harness ae does not observe at all — falls back to its DECLARED profile behind a
+`~`, so the row never guesses; that is also what a seat reads as once the
+watchdog's 30-cycle hold on its last proven identity expires. The drift mark the
+fact carries is deliberately not drawn, because durable drift compares a display
+string with a pin string today and would mark every observed seat. Those
 column widths are fitted per draw — the widest content among the drawn rows,
-floored at four cells and capped at the layout's 18/9/14/12 — and a session row
-shares its name and state columns with the agent rows under it. The tmux reader
+floored at four cells and capped at the layout's 18/28/14/12 — and a session row
+shares its name and state columns with the agent rows under it. The model column
+is chosen in a second pass, after those shared columns are final: one fidelity
+rung for the whole menu, dropping the effort before the model is clipped, and
+never the client. The tmux reader
 strips pipes and control bytes from the branch field
 without changing the raw session option, preserving the record boundary.
 Choosing a row switches to its

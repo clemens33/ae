@@ -431,6 +431,27 @@ fn stage(socket: &Path, main: &Path) -> Staged {
 /// picker expands — `None` when the client views a session this fixture does
 /// not list, so no roster expands.
 fn picker_argv(socket: &Path, staged: &Staged, opened: Option<&str>) -> Vec<String> {
+    picker_argv_with(
+        socket,
+        staged,
+        opened,
+        format!(
+            "v1;{};60;lead:fable5:working:{};builder:gpt56sol:done:{};gone:gpt56luna:dead:",
+            ae::time::Timestamp::now().epoch(),
+            staged.ids[0],
+            staged.ids[1],
+        ),
+    )
+}
+
+/// `picker_argv` with the watchdog fact spelled out, for a draw that is about
+/// what the fact's own cells render as.
+fn picker_argv_with(
+    socket: &Path,
+    staged: &Staged,
+    opened: Option<&str>,
+    agents: String,
+) -> Vec<String> {
     let sessions = [PickerSession {
         name: "hub".to_owned(),
         id: staged.hub_id.clone(),
@@ -438,12 +459,7 @@ fn picker_argv(socket: &Path, staged: &Staged, opened: Option<&str>) -> Vec<Stri
         glyph: "·".to_owned(),
         main_pane: staged.ids[0].clone(),
         branch: "menu-fix".to_owned(),
-        agents: format!(
-            "v1;{};60;lead:fable5:working:{};builder:gpt56sol:done:{};gone:gpt56luna:dead:",
-            ae::time::Timestamp::now().epoch(),
-            staged.ids[0],
-            staged.ids[1],
-        ),
+        agents,
         goal: "100% of #{everything} | don't stop".to_owned(),
     }];
     let panes = staged
@@ -848,6 +864,70 @@ fn watchdog_replaces_the_agent_fact_across_spawn_and_retire_then_unsets_it_on_st
     .expect("watchdog stop writes to buffers");
     assert_eq!(code, 0, "watchdog stop: {}", String::from_utf8_lossy(&err));
     assert!(read_fact().is_empty(), "watchdog stop unsets @ae_agents");
+}
+
+/// A v2 roster's model cells, drawn by a real tmux rather than asserted on the
+/// argv ae hands it.
+///
+/// The unit pins hold the cell's shape; this holds that tmux ACCEPTS a menu
+/// carrying it and draws those bytes — the half no argv assertion can reach.
+/// Every value here is synthetic.
+#[test]
+fn a_v2_roster_draws_its_models_in_a_real_tmux_menu() {
+    let scratch = scratch("models");
+    if !tmux_present(&scratch) {
+        let _ = fs::remove_dir_all(&scratch);
+        panic!(
+            "tmux is not runnable here, so the picker's tmux-side claims cannot be proven; \
+             install tmux or run this suite where one exists"
+        );
+    }
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let main = scratch.join("main");
+    let watcher = scratch.join("watcher");
+
+    let staged = stage(&socket, &main);
+    // One observed seat with an effort, one observed seat without, and one the
+    // watchdog never proved — which must fall back to its declared profile.
+    let fact = format!(
+        "v2;{};60;lead:fable5:working:{}:cc:Fable 5.1:xhigh:;\
+         builder:ds41:done:{}:oc:DeepSeek V4.1 Flash::;\
+         gone:gpt56luna:dead::cx:::",
+        ae::time::Timestamp::now().epoch(),
+        staged.ids[0],
+        staged.ids[1],
+    );
+    let argv = picker_argv_with(&socket, &staged, Some(&staged.hub_id), fact);
+    let drawn = std::thread::scope(|scope| {
+        let driver = scope.spawn(|| {
+            let seen = wait_for(
+                "the model cells",
+                || tmux(&socket, &watcher, &["capture-pane", "-p", "-t", "viewer"]).1,
+                |seen| picker_is_open(seen) && seen.contains("Fable"),
+            );
+            assert!(tmux(&socket, &watcher, &["send-keys", "-t", "viewer", "q"]).0);
+            seen
+        });
+        let (succeeded, _) = run_tmux(&argv, &main);
+        assert!(succeeded, "tmux refused a v2 roster menu: {argv:?}");
+        driver.join().expect("the key driver")
+    });
+    assert!(
+        drawn.contains("cc Fable 5.1 xhigh"),
+        "an observed seat draws client, model and effort: {drawn}"
+    );
+    assert!(
+        drawn.contains("oc DeepSeek V4.1 Flash"),
+        "a seat whose frame proved no effort draws no trailing one: {drawn}"
+    );
+    assert!(
+        drawn.contains("cx ~gpt56luna"),
+        "an unproven seat names its DECLARED profile: {drawn}"
+    );
 }
 
 #[test]
