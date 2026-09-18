@@ -197,6 +197,8 @@ pub struct Facts {
     pub main: Option<String>,
     /// `[workspace] workers`.
     pub workers: Option<String>,
+    /// The raw global `[workspace] fleet_order`, or `""` when the human set none.
+    pub fleet_order: String,
     /// The profile inventory, sorted by key.
     pub profiles: Vec<ProfileFacts>,
     /// When this host booted, epoch seconds — the other half of that evidence.
@@ -207,6 +209,50 @@ pub struct Facts {
     pub worktrees_dir: PathBuf,
     /// Every durable session, in name order.
     pub sessions: Vec<SessionFacts>,
+}
+
+/// The `workspace.fleet_order` row: the human's chosen strip order, and the ONE
+/// place ae says an entry of it went nowhere — the strip stays silent, because a
+/// typo there must never cost anyone their status line. Three things earn the
+/// warning: an illegal session name, a name repeated after it already placed,
+/// and a name matching no durable record, which is the typo the allowlist cannot
+/// catch (`aedve` is perfectly legal). A recorded session that is merely STOPPED
+/// is never flagged: coming back the same way across restarts is the point.
+fn fleet_order_row(facts: &Facts, out: &mut Report) {
+    if facts.fleet_order.trim().is_empty() {
+        out.push(
+            Level::Ok,
+            "workspace.fleet_order",
+            "no chosen order — the fleet strip is in creation order",
+        );
+        return;
+    }
+    let (names, mut ignored) = crate::config::fleet_order_entries(&facts.fleet_order);
+    let placed: Vec<&str> = names
+        .iter()
+        .map(String::as_str)
+        .filter(|name| {
+            let recorded = facts.sessions.iter().any(|session| session.name == *name);
+            if !recorded {
+                ignored.push((*name).to_owned());
+            }
+            recorded
+        })
+        .collect();
+    let detail = placed.join(", ");
+    if ignored.is_empty() {
+        out.push(Level::Ok, "workspace.fleet_order", &detail);
+    } else {
+        let detail = if detail.is_empty() {
+            format!(
+                "no entry named a session ae has a record of; ignored: {}",
+                ignored.join(", ")
+            )
+        } else {
+            format!("{detail} — ignored: {}", ignored.join(", "))
+        };
+        out.push(Level::Warn, "workspace.fleet_order", &detail);
+    }
 }
 
 /// The report for `facts` — pure, so every row is testable without a machine.
@@ -280,6 +326,8 @@ fn install_rows(facts: &Facts, out: &mut Report) {
             "no startup workers configured",
         ),
     }
+
+    fleet_order_row(facts, out);
 
     if facts.profiles.is_empty() {
         out.push(Level::Fail, "profiles", "no [profiles] entries found");
@@ -521,6 +569,9 @@ pub fn gather(root: &Path, global: Option<&Path>, local: Option<&Path>) -> Facts
     profiles.sort_by(|left, right| left.profile.cmp(&right.profile));
 
     let core = crate::shape::resolved_exe();
+    // GLOBAL only, like `auto_upgrade`: the same one file, never the project
+    // overlay beside it. Read before `config` is moved into the report.
+    let fleet_order = crate::config::global_fleet_order(Some(&config));
     Facts {
         version: crate::VERSION.to_owned(),
         core_writable: core.as_deref().and_then(is_writable),
@@ -547,6 +598,7 @@ pub fn gather(root: &Path, global: Option<&Path>, local: Option<&Path>) -> Facts
         local_config: local.map(Path::to_path_buf),
         main: identity.main.filter(|value| !value.is_empty()),
         workers: identity.workers.filter(|value| !value.is_empty()),
+        fleet_order,
         profiles,
         sessions_dir: roots.sessions().to_owned(),
         worktrees_dir: roots.worktrees().to_owned(),
@@ -985,6 +1037,7 @@ mod tests {
             local_config: None,
             main: Some("lead".to_owned()),
             workers: Some("colead".to_owned()),
+            fleet_order: String::new(),
             profiles: vec![ProfileFacts {
                 profile: "cl".to_owned(),
                 command: "claude --dangerously-skip-permissions".to_owned(),
@@ -1140,6 +1193,46 @@ mod tests {
                 .contains("could not determine executable from 'FOO=bar'"),
             "{}",
             report(&input).render()
+        );
+    }
+
+    /// PIN: `ae doctor` is the ONE place a dropped `fleet_order` entry is named,
+    /// and a session that is merely STOPPED is never one of them — ordering a
+    /// fleet so it returns the same way across restarts is the point of the key.
+    #[test]
+    fn doctor_names_the_dropped_fleet_order_entries_but_never_a_stopped_session() {
+        let recorded = |name: &str, live: bool| SessionFacts {
+            name: name.to_owned(),
+            live,
+            core_bin: "/c".to_owned(),
+            core_usable: true,
+            core_version: "2026.9.1".to_owned(),
+            glue_version: "2026.9.1".to_owned(),
+            last_live: crate::tmux::Evidence::Silent,
+        };
+        let mut input = facts();
+        input.sessions = vec![recorded("aedev", true), recorded("infra", false)];
+        // `aedve` is a legal session NAME and a typo all the same; `aedev`
+        // repeats; `not a name` is illegal. `infra` is stopped and legitimate.
+        // The grammar drops are named first, then the names ae has no record of.
+        input.fleet_order = "aedev, infra, aedve, aedev, not a name".to_owned();
+        let text = report(&input).render();
+        assert!(
+            text.contains("workspace.fleet_order aedev, infra — ignored: aedev, not a name, aedve"),
+            "{text}"
+        );
+        // Clean order, clean row — and a stopped session still places.
+        let mut input = facts();
+        input.sessions = vec![recorded("aedev", true), recorded("infra", false)];
+        input.fleet_order = "aedev, infra".to_owned();
+        let document = report(&input);
+        assert_eq!(document.failures(), 0);
+        assert!(
+            document
+                .render()
+                .contains("OK    workspace.fleet_order aedev, infra\n"),
+            "{}",
+            document.render()
         );
     }
 

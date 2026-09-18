@@ -724,6 +724,13 @@ fn run_orchestrator(tail: &[String], err: &mut impl Write) -> Result<u8> {
             width: client_snapshot.width,
             now_epoch: now,
         },
+        // The SAME global config file the watchdogs re-read every cycle: this
+        // path and theirs are both `doors::config_file` over the state root.
+        &fleet_order_at(
+            root.as_ref()
+                .map(|root| doors::config_file(shape::current(), root))
+                .as_deref(),
+        ),
     ) {
         Ok(menu) => menu,
         Err(refusal) => {
@@ -2486,6 +2493,23 @@ fn run_usage_helper(
 /// process's [`shape`], which is the one derivation.
 pub(crate) fn state_root() -> Option<std::path::PathBuf> {
     doors::state_root(shape::current())
+}
+
+/// The human's fleet order, read from the global config file at `global`.
+///
+/// One resolution for all three readers — the strip, the lifecycle handoff and
+/// the picker — so none grows a rule of its own. `None`, an unreadable file and
+/// a malformed entry all give the EMPTY order, which is the fleet ae drew before
+/// this key existed.
+pub(crate) fn fleet_order_at(global: Option<&std::path::Path>) -> theme::FleetOrder {
+    let (names, _ignored) = config::fleet_order_entries(&config::global_fleet_order(global));
+    theme::FleetOrder::from_validated(names)
+}
+
+/// [`fleet_order_at`] for a caller that holds no path of its own.
+pub(crate) fn fleet_order() -> theme::FleetOrder {
+    let global = state_root().map(|root| doors::config_file(shape::current(), &root));
+    fleet_order_at(global.as_deref())
 }
 
 /// The classified snapshot AND the world `ae list` shows right now — the real

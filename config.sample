@@ -82,6 +82,10 @@ watchdog = true
 # Installed ae checks for a newer release during normal use. This policy is
 # global-only: a project's .ae/config cannot enable or disable software updates.
 # auto_upgrade = on
+# The order your sessions are drawn in on the fleet strip: the ones you name come
+# first, in this order, and the rest follow in creation order. Global-only, and a
+# running session's watchdog picks up an edit within one cycle.
+# fleet_order = aedev, thinking, infra
 # The session's LOOK, applied at launch and refreshed by the watchdog. Both are
 # session-scoped: a non-ae session on the same tmux server keeps your own theme.
 # palette = darcula (the default) | a (neutral dark) | b (warmer neutrals).

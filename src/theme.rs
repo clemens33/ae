@@ -880,18 +880,75 @@ impl FleetRow {
     }
 }
 
+/// The human's chosen fleet order: `[workspace] fleet_order`, already split and
+/// validated by [`crate::config::fleet_order_entries`].
+///
+/// DUMB on purpose. `theme` holds no config grammar and reads no file: it takes
+/// a clean list of names and answers one question — where in that list is this
+/// one. An EMPTY order places every name the same, so the tie-breaks behind it
+/// decide alone and the strip comes out byte-identical to a build without the
+/// key.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FleetOrder {
+    names: Vec<String>,
+}
+
+impl FleetOrder {
+    /// The order of a human who named none: creation order, as before.
+    pub const EMPTY: Self = Self { names: Vec::new() };
+
+    /// Adopt names `config` has already validated and de-duplicated.
+    #[must_use]
+    pub const fn from_validated(names: Vec<String>) -> Self {
+        Self { names }
+    }
+
+    /// Where `name` sits in the human's list, or [`usize::MAX`] for a session
+    /// they did not name — which is what puts every unnamed session behind every
+    /// named one without a second sort key. EXACT and case-sensitive, like every
+    /// other session-name comparison ae makes.
+    #[must_use]
+    pub fn place(&self, name: &str) -> usize {
+        self.names
+            .iter()
+            .position(|named| named == name)
+            .unwrap_or(usize::MAX)
+    }
+}
+
+/// The ONE tail every fleet reader sorts on: the human's order, then the order
+/// tmux created the sessions in, then the name. Callers differ only in what they
+/// put IN FRONT of it — the strip pins the orchestrator, the picker ranks
+/// attention — so this is the shared rule and the only place it can drift from.
+#[must_use]
+pub fn fleet_tail_cmp(
+    order: &FleetOrder,
+    left: (&str, u64),
+    right: (&str, u64),
+) -> std::cmp::Ordering {
+    order
+        .place(left.0)
+        .cmp(&order.place(right.0))
+        .then_with(|| left.1.cmp(&right.1))
+        .then_with(|| left.0.cmp(right.0))
+}
+
 /// Fleet rows in the same stable order used by [`fleet_strip`] and lifecycle.
-fn ordered_fleet_rows(rows: &[FleetRow]) -> Vec<&FleetRow> {
+fn ordered_fleet_rows<'a>(rows: &'a [FleetRow], order: &FleetOrder) -> Vec<&'a FleetRow> {
     let mut ordered: Vec<&FleetRow> = rows.iter().collect();
     ordered.sort_by(|left, right| {
         // The orchestrator is the fleet's fixed point of reference: keep it
-        // first regardless of attention, and never let overflow shed it.
+        // first regardless of attention OR of the human's list, and never let
+        // overflow shed it.
         let left_pinned = left.pinned();
         let right_pinned = right.pinned();
-        right_pinned
-            .cmp(&left_pinned)
-            .then_with(|| left.created().cmp(&right.created()))
-            .then_with(|| left.name.cmp(&right.name))
+        right_pinned.cmp(&left_pinned).then_with(|| {
+            fleet_tail_cmp(
+                order,
+                (&left.name, left.created()),
+                (&right.name, right.created()),
+            )
+        })
     });
     ordered
 }
@@ -899,10 +956,12 @@ fn ordered_fleet_rows(rows: &[FleetRow]) -> Vec<&FleetRow> {
 /// The next session in fleet-strip order, excluding `dying`, with wraparound.
 ///
 /// A missing or sole row has no destination. This is pure so lifecycle code
-/// and the strip share one ordering rule without a tmux read in the decision.
+/// and the strip share one ordering rule without a tmux read in the decision —
+/// including the human's own [`FleetOrder`], so a handoff lands where the strip
+/// says the next session is.
 #[must_use]
-pub fn next_fleet_session(rows: &[FleetRow], dying: &str) -> Option<String> {
-    let ordered = ordered_fleet_rows(rows);
+pub fn next_fleet_session(rows: &[FleetRow], dying: &str, order: &FleetOrder) -> Option<String> {
+    let ordered = ordered_fleet_rows(rows, order);
     let start = ordered.iter().position(|row| row.name == dying)?;
     (1..ordered.len())
         .map(|offset| ordered[(start + offset) % ordered.len()])
@@ -910,14 +969,18 @@ pub fn next_fleet_session(rows: &[FleetRow], dying: &str) -> Option<String> {
         .map(|row| row.name.clone())
 }
 
-/// The fleet strip: `<glyph> <name>` per non-orchestrator session, in the order
-/// the sessions were CREATED, each one a click that switches this client to it.
+/// The fleet strip: `<glyph> <name>` per non-orchestrator session, in the human's
+/// own order and then the order the sessions were CREATED, each one a click that
+/// switches this client to it.
 ///
-/// Creation order, never attention order: a row's place is where the reader
+/// A CHOSEN order, never attention order: a row's place is where the reader
 /// learned to find it, like a tab, and a click that moved the thing clicked is
 /// a bar that cannot be learned. Attention is carried by the glyph and its
-/// accent, which change in place. The tmux `$<n>` id is the creation order,
-/// assigned once per server and never reused while it runs.
+/// accent, which change in place. `[workspace] fleet_order` lets the reader name
+/// that place themselves; every session they did not name falls in behind, by
+/// the tmux `$<n>` id, which is the creation order, assigned once per server and
+/// never reused while it runs. With no key set, creation order is the whole rule
+/// and the strip is byte-identical to the one ae has always drawn.
 ///
 /// The range is tmux's OWN `session` range, so ae's owned-server root binding
 /// keeps tmux's default `MouseDown1Status` action (`switch-client -t =`) for
@@ -926,10 +989,15 @@ pub fn next_fleet_session(rows: &[FleetRow], dying: &str) -> Option<String> {
 /// built from one server's own listing. `working_frame` replaces only a
 /// [`Mark::Working`] glyph; `None` draws the static vocabulary.
 #[must_use]
-pub fn fleet_strip(look: &Look, rows: &[FleetRow], working_frame: Option<&WorkingFrame>) -> String {
+pub fn fleet_strip(
+    look: &Look,
+    rows: &[FleetRow],
+    working_frame: Option<&WorkingFrame>,
+    order: &FleetOrder,
+) -> String {
     let palette = &look.palette;
     let icons = look.icons;
-    let mut ordered: Vec<&FleetRow> = ordered_fleet_rows(rows)
+    let mut ordered: Vec<&FleetRow> = ordered_fleet_rows(rows, order)
         .into_iter()
         .filter(|row| !row.pinned())
         .collect();
@@ -1662,6 +1730,7 @@ mod tests {
                     current: true,
                 }],
                 None,
+                &super::FleetOrder::EMPTY,
             ),
             orchestrator_strip(
                 &Look::DEFAULT,
@@ -1852,6 +1921,7 @@ mod tests {
                 row("gamma", "$4", Mark::Working),
             ],
             None,
+            &super::FleetOrder::EMPTY,
         );
         let at = |name: &str| strip.find(name).unwrap_or(usize::MAX);
         assert!(at("alpha") < at("beta"), "$1 before $2: {strip}");
@@ -1871,8 +1941,141 @@ mod tests {
                 row("zeta", "$3", Mark::Done),
             ],
             None,
+            &super::FleetOrder::EMPTY,
         );
         assert_eq!(strip, again);
+    }
+
+    /// PIN: the human's `fleet_order` decides the strip, and everything they
+    /// did not name falls in behind it in creation order. The orchestrator is
+    /// still pinned first — it is the fleet's fixed point of reference, so
+    /// naming it buys nothing and forgetting it costs nothing.
+    #[test]
+    fn the_fleet_strip_puts_the_named_sessions_first_in_the_order_the_human_named_them() {
+        let row = |name: &str, id: &str| FleetRow {
+            name: name.to_owned(),
+            id: id.to_owned(),
+            mark: Mark::Idle,
+            current: false,
+        };
+        let rows = [
+            row("alpha", "$1"),
+            row("beta", "$2"),
+            row("gamma", "$3"),
+            row("delta", "$4"),
+        ];
+        let order = super::FleetOrder::from_validated(vec!["gamma".to_owned(), "alpha".to_owned()]);
+        let strip = fleet_strip(&Look::DEFAULT, &rows, None, &order);
+        let at = |name: &str| strip.find(name).unwrap_or(usize::MAX);
+        assert!(
+            at("gamma") < at("alpha"),
+            "named order is the human's: {strip}"
+        );
+        assert!(at("alpha") < at("beta"), "named before unnamed: {strip}");
+        assert!(
+            at("beta") < at("delta"),
+            "unnamed keep creation order: {strip}"
+        );
+    }
+
+    /// PIN: the orchestrator is pinned ahead of the human's list too.
+    #[test]
+    fn the_orchestrator_stays_first_even_when_the_human_named_another_session() {
+        let row = |name: &str, id: &str| FleetRow {
+            name: name.to_owned(),
+            id: id.to_owned(),
+            mark: Mark::Idle,
+            current: false,
+        };
+        let rows = [
+            row("alpha", "$2"),
+            row(crate::orchestrator::ORCHESTRATOR_SESSION, "$9"),
+        ];
+        let order = super::FleetOrder::from_validated(vec!["alpha".to_owned()]);
+        let ordered = super::ordered_fleet_rows(&rows, &order);
+        assert_eq!(
+            ordered.first().map(|row| row.name.as_str()),
+            Some(crate::orchestrator::ORCHESTRATOR_SESSION),
+            "the anchor outranks the list"
+        );
+    }
+
+    /// PIN: a name the human never gave, and a session they named that is not
+    /// on this server, both cost nothing — `place` answers for what is here.
+    #[test]
+    fn a_named_session_that_is_not_running_costs_the_others_nothing() {
+        let row = |name: &str, id: &str| FleetRow {
+            name: name.to_owned(),
+            id: id.to_owned(),
+            mark: Mark::Idle,
+            current: false,
+        };
+        let rows = [row("alpha", "$1"), row("beta", "$2")];
+        let order =
+            super::FleetOrder::from_validated(vec!["stopped-one".to_owned(), "beta".to_owned()]);
+        let ordered = super::ordered_fleet_rows(&rows, &order);
+        let names: Vec<&str> = ordered.iter().map(|row| row.name.as_str()).collect();
+        assert_eq!(names, ["beta", "alpha"], "the absent name is simply no row");
+    }
+
+    /// PIN: with no key set the strip is the one ae has always drawn — the
+    /// EMPTY order places every name the same, so creation order decides alone.
+    #[test]
+    fn an_empty_fleet_order_draws_the_strip_ae_always_drew() {
+        let row = |name: &str, id: &str| FleetRow {
+            name: name.to_owned(),
+            id: id.to_owned(),
+            mark: Mark::Idle,
+            current: false,
+        };
+        let rows = [row("zeta", "$3"), row("alpha", "$1"), row("beta", "$2")];
+        let drawn = fleet_strip(&Look::DEFAULT, &rows, None, &super::FleetOrder::EMPTY);
+        let ordered = super::ordered_fleet_rows(&rows, &super::FleetOrder::EMPTY);
+        let names: Vec<&str> = ordered.iter().map(|row| row.name.as_str()).collect();
+        assert_eq!(names, ["alpha", "beta", "zeta"], "creation order alone");
+        assert!(drawn.contains("alpha"), "and it still draws: {drawn}");
+    }
+
+    /// PIN: the lifecycle handoff walks the SAME order, wraparound included, so
+    /// a client lands where the strip says the next session is.
+    #[test]
+    fn next_fleet_session_follows_the_humans_order_and_wraps() {
+        use super::next_fleet_session;
+        let row = |name: &str, id: &str| FleetRow {
+            name: name.to_owned(),
+            id: id.to_owned(),
+            mark: Mark::Idle,
+            current: false,
+        };
+        let rows = [row("alpha", "$1"), row("beta", "$2"), row("gamma", "$3")];
+        // The human reversed the fleet: gamma, beta, alpha.
+        let order = super::FleetOrder::from_validated(vec![
+            "gamma".to_owned(),
+            "beta".to_owned(),
+            "alpha".to_owned(),
+        ]);
+        assert_eq!(
+            next_fleet_session(&rows, "gamma", &order).as_deref(),
+            Some("beta"),
+            "the human's order, not $1"
+        );
+        assert_eq!(
+            next_fleet_session(&rows, "alpha", &order).as_deref(),
+            Some("gamma"),
+            "and it wraps to the front of their list"
+        );
+    }
+
+    /// PIN: `place` is the whole vocabulary — an exact, case-sensitive match,
+    /// and [`usize::MAX`] for every session the human did not name.
+    #[test]
+    fn place_matches_exactly_and_sends_the_unnamed_to_the_back() {
+        let order = super::FleetOrder::from_validated(vec!["aedev".to_owned(), "infra".to_owned()]);
+        assert_eq!(order.place("aedev"), 0);
+        assert_eq!(order.place("infra"), 1);
+        assert_eq!(order.place("AEDEV"), usize::MAX, "case-sensitive");
+        assert_eq!(order.place("thinking"), usize::MAX);
+        assert_eq!(super::FleetOrder::EMPTY.place("aedev"), usize::MAX);
     }
 
     #[test]
@@ -1886,15 +2089,21 @@ mod tests {
         };
         let rows = [row("third", "$3"), row("first", "$1"), row("second", "$2")];
         assert_eq!(
-            next_fleet_session(&rows, "first").as_deref(),
+            next_fleet_session(&rows, "first", &super::FleetOrder::EMPTY).as_deref(),
             Some("second")
         );
-        assert_eq!(next_fleet_session(&rows, "third").as_deref(), Some("first"));
         assert_eq!(
-            next_fleet_session(&rows, "second").as_deref(),
+            next_fleet_session(&rows, "third", &super::FleetOrder::EMPTY).as_deref(),
+            Some("first")
+        );
+        assert_eq!(
+            next_fleet_session(&rows, "second", &super::FleetOrder::EMPTY).as_deref(),
             Some("third")
         );
-        assert_eq!(next_fleet_session(&rows[..1], "third"), None);
+        assert_eq!(
+            next_fleet_session(&rows[..1], "third", &super::FleetOrder::EMPTY),
+            None
+        );
     }
 
     #[test]
@@ -1913,7 +2122,12 @@ mod tests {
             glyph: "FRAME",
             fg: "#ABCDEF".to_owned(),
         };
-        let strip = fleet_strip(&Look::DEFAULT, &rows, Some(&frame));
+        let strip = fleet_strip(
+            &Look::DEFAULT,
+            &rows,
+            Some(&frame),
+            &super::FleetOrder::EMPTY,
+        );
 
         assert_eq!(strip.matches("FRAME").count(), 1, "{strip}");
         for mark in [
@@ -1937,7 +2151,12 @@ mod tests {
             mark: Mark::Done,
             current,
         };
-        let current = fleet_strip(&Look::DEFAULT, &[row(true)], None);
+        let current = fleet_strip(
+            &Look::DEFAULT,
+            &[row(true)],
+            None,
+            &super::FleetOrder::EMPTY,
+        );
         assert!(current.contains("bg=#214283"), "{current}");
         assert!(current.contains("fg=#A9B7C6 bold"), "{current}");
         assert!(
@@ -1945,7 +2164,12 @@ mod tests {
             "mark keeps its accent: {current}"
         );
 
-        let other = fleet_strip(&Look::DEFAULT, &[row(false)], None);
+        let other = fleet_strip(
+            &Look::DEFAULT,
+            &[row(false)],
+            None,
+            &super::FleetOrder::EMPTY,
+        );
         assert!(!other.contains("bg=#214283"), "{other}");
         assert!(other.contains("bg=#313335"), "{other}");
     }
@@ -1972,7 +2196,14 @@ mod tests {
             mark: Mark::Done,
             current,
         };
-        let plain = |rows: &[FleetRow]| strip_tmux_styles(&fleet_strip(&Look::DEFAULT, rows, None));
+        let plain = |rows: &[FleetRow]| {
+            strip_tmux_styles(&fleet_strip(
+                &Look::DEFAULT,
+                rows,
+                None,
+                &super::FleetOrder::EMPTY,
+            ))
+        };
         let first = [row("first", true)];
         let first_other = [row("first", false)];
         assert_eq!(plain(&first), plain(&first_other));
@@ -2012,7 +2243,7 @@ mod tests {
                 current: index == super::STRIP_ROWS + 1,
             })
             .collect();
-        let strip = fleet_strip(&Look::DEFAULT, &rows, None);
+        let strip = fleet_strip(&Look::DEFAULT, &rows, None, &super::FleetOrder::EMPTY);
         let drawn: Vec<&str> = rows
             .iter()
             .map(|row| row.name.as_str())
@@ -2059,6 +2290,7 @@ mod tests {
                 current: false,
             }],
             None,
+            &super::FleetOrder::EMPTY,
         );
         assert!(strip.contains("#[range=session|$7 "), "{strip}");
         assert_eq!(strip.matches("#[range=session|").count(), 1, "{strip}");
@@ -2091,7 +2323,7 @@ mod tests {
                 current: index == 0,
             })
             .collect();
-        let strip = fleet_strip(&Look::DEFAULT, &rows, None);
+        let strip = fleet_strip(&Look::DEFAULT, &rows, None, &super::FleetOrder::EMPTY);
         assert!(
             strip.ends_with("#[range=user|ae-more]+1 #[norange]"),
             "{strip}"
@@ -2117,6 +2349,7 @@ mod tests {
                 glyph: "⠼",
                 fg: "#ABCDEF".to_owned(),
             }),
+            &super::FleetOrder::EMPTY,
         );
         assert!(
             strip.is_empty(),
@@ -2128,7 +2361,12 @@ mod tests {
             glyph: "⠼",
             fg: "#ABCDEF".to_owned(),
         };
-        let current_fleet = fleet_strip(&Look::DEFAULT, &[current_row.clone()], Some(&frame));
+        let current_fleet = fleet_strip(
+            &Look::DEFAULT,
+            &[current_row.clone()],
+            Some(&frame),
+            &super::FleetOrder::EMPTY,
+        );
         assert!(
             current_fleet.is_empty(),
             "current orchestrator stays out of fleet list: {current_fleet}"
@@ -2366,7 +2604,7 @@ mod tests {
                 current: false,
             })
             .collect();
-        let strip = fleet_strip(&Look::DEFAULT, &rows, None);
+        let strip = fleet_strip(&Look::DEFAULT, &rows, None, &super::FleetOrder::EMPTY);
         assert!(
             !strip.contains("orchestrator"),
             "orchestrator belongs beside the menu button: {strip}"

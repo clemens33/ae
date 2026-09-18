@@ -185,6 +185,10 @@ watchdog = true
 # Installed ae checks for newer releases during validated ordinary use. This
 # machine policy is global-only; a project's .ae/config cannot override it.
 # auto_upgrade = on
+# The order your sessions are drawn in on the fleet strip. The ones you name come
+# first, in this order; the rest follow in creation order. Global-only, and picked
+# up by a running session's watchdog within one cycle.
+# fleet_order = aedev, thinking, infra
 
 [prompt]
 # ae already injects the full workspace protocol into every agent — the roster, the helper

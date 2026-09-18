@@ -1736,6 +1736,12 @@ struct MotionState {
     panes: Vec<tmux::MotionPane>,
     fleet: Vec<theme::FleetRow>,
     fleet_target: Option<String>,
+    /// The human's `[workspace] fleet_order`, STORED rather than read here. The
+    /// ticker redraws the strip at motion cadence and must neither open the
+    /// config to do it nor draw a different order from the one the verdict cycle
+    /// just published — that would flap. The cycle refreshes this once per
+    /// cycle; BOTH writers read it from here.
+    fleet_order: theme::FleetOrder,
     published_fleet: Option<String>,
     /// The last orchestrator target publication, including a successful unset.
     published_orchestrator_id: PublishedOrchestrator,
@@ -1763,8 +1769,16 @@ impl MotionState {
         self.replace_fleet(sessions, session);
     }
 
+    /// Take this cycle's fleet order. Called from the VERDICT path only: the
+    /// ticker preserves whatever the last cycle left here, which is what keeps
+    /// the motion frames and the verdict write drawing one order.
+    fn set_fleet_order(&mut self, order: &theme::FleetOrder) {
+        self.fleet_order.clone_from(order);
+    }
+
     /// Replace the fleet half of an observation and remember which exact
-    /// session table owns the strip.
+    /// session table owns the strip. The stored order is deliberately untouched
+    /// — an observation says who is on the server, never how to arrange them.
     fn replace_fleet(&mut self, sessions: &[tmux::FleetSession], session: &str) {
         self.fleet_target = sessions
             .iter()
@@ -1793,7 +1807,7 @@ impl MotionState {
         let Some(target) = self.fleet_target.as_deref() else {
             return;
         };
-        let strip = theme::fleet_strip(look, &self.fleet, working_frame);
+        let strip = theme::fleet_strip(look, &self.fleet, working_frame, &self.fleet_order);
         if self.published_fleet.as_deref() == Some(&strip) {
             return;
         }
@@ -2209,9 +2223,9 @@ fn watch(
 ) -> crate::Result<u8> {
     let mut carry = Carry::new(&knobs);
     // The global config PATH is stable for this daemon's life; its CONTENT is
-    // re-read every cycle below, so a config flip reaches an unpinned session
-    // within one cycle.
-    let quota_global = crate::state_root()
+    // re-read every cycle below, so a config flip — quota awareness, or the
+    // human's fleet order — reaches an unpinned session within one cycle.
+    let global_config = crate::state_root()
         .or_else(|| {
             meta_dir
                 .parent()
@@ -2288,7 +2302,7 @@ fn watch(
                     // flip together within one cycle. Never a startup value.
                     let mut cycle_knobs = knobs;
                     cycle_knobs.quota_aware =
-                        quota_awareness(bytes, quota_global.as_deref(), local_config.as_deref());
+                        quota_awareness(bytes, global_config.as_deref(), local_config.as_deref());
                     let cycle = Cycle {
                         knobs: cycle_knobs,
                         meta_dir,
@@ -2298,6 +2312,7 @@ fn watch(
                         goal: meta.goal().map(ToOwned::to_owned),
                         local_config,
                         lead_pair: crate::lifecycle::meta_value(bytes, "layout") == "lead-pair",
+                        fleet_order: crate::fleet_order_at(global_config.as_deref()),
                         // Re-read EVERY cycle, like the goal and the roster: a
                         // session can be promoted to orchestrator, or its main
                         // replaced, while this daemon runs.
@@ -2802,6 +2817,10 @@ struct Cycle<'a> {
     roster: Vec<RosterEntry>,
     local_config: Option<std::path::PathBuf>,
     lead_pair: bool,
+    /// The human's fleet order as the GLOBAL config spells it right now. Read
+    /// per cycle beside the quota awareness, so a config edit reaches a running
+    /// session within one cycle and never needs a relaunch.
+    fleet_order: theme::FleetOrder,
     /// `meta_agent=true` — this session is the fleet orchestrator.
     meta_agent: bool,
     /// Each seat's recorded `launch_id.<slot>` — the compare-and-swap guard an
@@ -3593,6 +3612,9 @@ impl Cycle<'_> {
         let orchestrator_id = orchestrator_id_for(&sessions, self.session);
         let mut next = motion.clone();
         next.replace_fleet(&sessions, self.session);
+        // ONCE per verdict cycle, from the content this cycle read: a config
+        // edit reaches a running session here, and the ticker inherits it.
+        next.set_fleet_order(&self.fleet_order);
         let mut writes = Vec::new();
         next.push_fleet_write(&mut writes, look, None);
         if let Some(target) = next.fleet_target.clone() {
@@ -5444,6 +5466,7 @@ mod tests {
             roster: Vec::new(),
             local_config: None,
             lead_pair: false,
+            fleet_order: crate::theme::FleetOrder::EMPTY,
             meta_agent: false,
             launch_ids: Vec::new(),
         };
@@ -5508,6 +5531,7 @@ mod tests {
             roster: vec![entry.clone()],
             local_config: None,
             lead_pair: false,
+            fleet_order: crate::theme::FleetOrder::EMPTY,
             meta_agent: false,
             launch_ids: Vec::new(),
         };
@@ -6169,6 +6193,49 @@ mod tests {
         assert!(
             second.is_empty(),
             "unchanged current segment stays cached: {second:?}"
+        );
+    }
+
+    /// PIN: the ticker DRAWS the strip at motion cadence and reads no config to
+    /// do it — it reuses the order the verdict cycle stored. Without that its
+    /// frames would publish the unordered strip over the ordered one and the
+    /// fleet would flap; reading the file itself would open it ten times a
+    /// second. An observation refreshes WHO is on the server and nothing else.
+    #[test]
+    fn the_ticker_keeps_the_order_the_verdict_cycle_stored() {
+        let sessions = [
+            crate::tmux::FleetSession {
+                name: "alpha".to_owned(),
+                id: "$1".to_owned(),
+                rank: "0".to_owned(),
+            },
+            crate::tmux::FleetSession {
+                name: "beta".to_owned(),
+                id: "$2".to_owned(),
+                rank: "0".to_owned(),
+            },
+        ];
+        let order =
+            crate::theme::FleetOrder::from_validated(vec!["beta".to_owned(), "alpha".to_owned()]);
+        let mut state = MotionState::default();
+        // The verdict cycle: fleet AND order.
+        state.replace_fleet(&sessions, "alpha");
+        state.set_fleet_order(&order);
+        let mut writes = Vec::new();
+        state.push_fleet_write(&mut writes, &Look::DEFAULT, None);
+        let cycle_strip = state.published_fleet.clone().expect("a published strip");
+        assert!(
+            cycle_strip.find("beta") < cycle_strip.find("alpha"),
+            "the cycle drew the human's order: {cycle_strip}"
+        );
+        // A ticker observation — panes and fleet, never an order.
+        state.replace_observation(Vec::new(), &sessions, "alpha");
+        assert_eq!(state.fleet_order, order, "the observation left it alone");
+        let mut writes = Vec::new();
+        state.push_fleet_write(&mut writes, &Look::DEFAULT, None);
+        assert!(
+            writes.is_empty(),
+            "same order, same text, no write: {writes:?}"
         );
     }
 
@@ -7586,6 +7653,7 @@ mod tests {
             roster: Vec::new(),
             local_config: None,
             lead_pair: false,
+            fleet_order: crate::theme::FleetOrder::EMPTY,
             meta_agent: false,
             launch_ids: Vec::new(),
         };
@@ -7650,6 +7718,7 @@ mod tests {
             roster: Vec::new(),
             local_config: None,
             lead_pair: false,
+            fleet_order: crate::theme::FleetOrder::EMPTY,
             meta_agent: false,
             launch_ids: Vec::new(),
         };

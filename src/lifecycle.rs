@@ -756,7 +756,9 @@ pub(super) fn announce_to_clients(server: &ServerId, text: &str) {
 }
 
 /// Move clients watching `name` before its session is killed. The destination
-/// follows the same creation/pinned ordering the fleet strip draws.
+/// follows the same pinned/chosen/creation ordering the fleet strip draws,
+/// including the human's own `[workspace] fleet_order` — a handoff that landed
+/// somewhere the strip does not call "next" would teach the bar wrong.
 pub(super) fn handoff_clients_before_kill(server: &ServerId, name: &str) -> Option<String> {
     let sessions = transport::observe_fleet_sessions(server)?;
     let rows: Vec<crate::theme::FleetRow> = sessions
@@ -768,7 +770,7 @@ pub(super) fn handoff_clients_before_kill(server: &ServerId, name: &str) -> Opti
             current: session.name == name,
         })
         .collect();
-    let next = crate::theme::next_fleet_session(&rows, name)?;
+    let next = crate::theme::next_fleet_session(&rows, name, &crate::fleet_order())?;
     let clients = transport::observe_clients(server)?;
     let attached = clients
         .into_iter()

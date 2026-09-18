@@ -191,6 +191,7 @@ Old seat files that still carry `[profiles]`/`[roster]` are ignored for identity
 | `orchestrator` | Mark this session as the fleet overview seat (`true`); grants its panes the bare human-authority `relay` helper | `false`       |
 | `sweep` | Persist this orchestrator's changed-overview minimum spacing in seconds (`0` disables; positive values below `60` become `60`) | `AE_WATCHDOG_SWEEP_SEC`, then `120` |
 | `auto_upgrade` | Let an installed ae quietly check for and apply strictly newer releases (`on` / `off`); global config only | `on` |
+| `fleet_order` | The order your sessions are drawn in on the fleet strip, as a comma-separated list of session names; global config only | creation order |
 | `palette` | `darcula` (the JetBrains dark), `a` (neutral dark), `b` (warmer neutrals) | `darcula` |
 | `icons`   | `off` draws the ASCII fallback instead of the glyph set | `on`          |
 | `theme`   | `off` leaves your own status line, pane borders and menu styles alone | `on`  |
@@ -198,6 +199,35 @@ Old seat files that still carry `[profiles]`/`[roster]` are ignored for identity
 
 Set `orchestrator = true` only in the dedicated overview seat. It authorizes
 unenveloped `relay` delivery, whose target treats the text as human input.
+
+`fleet_order` is how you choose where a session sits on the second status
+line, instead of taking the order tmux happened to create the sessions in —
+which reshuffles every time you restart the fleet:
+
+```toml
+[workspace]
+fleet_order = aedev, thinking, infra
+```
+
+The sessions you name come first, in the order you named them; everything else
+falls in behind them in creation order, as before. The orchestrator stays
+pinned at the front either way. Naming a session that is not running right now
+costs nothing — that is the point, so the fleet comes back the same way after a
+restart. The match is exact and case-sensitive.
+
+This is machine policy like `auto_upgrade`, so ae reads it only from
+`~/.ae/config` and a project's `.ae/config` cannot reorder your fleet. Edit it
+while sessions are running: each session's watchdog re-reads the file and
+redraws its strip within one cycle, so nothing needs relaunching. An entry that
+is not a legal session name, one you listed twice, or one matching no session ae
+has a record of is skipped silently on the bar — `ae doctor` names it once on
+the `workspace.fleet_order` row. With no `fleet_order` set, the strip is exactly
+what it always was.
+
+The same order decides two more things: which session a client is handed to when
+the one it is watching is killed, and how the running rows of the fleet picker
+(`<prefix> a`) are sorted underneath attention — the picker still puts whatever
+needs you first.
 
 `auto_upgrade` is machine policy, so ae reads it only from `~/.ae/config`;
 a project's `.ae/config` cannot override it. Absence means `on`. Any explicit

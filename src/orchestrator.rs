@@ -744,6 +744,11 @@ pub fn menu_for_client_session(
             width: usize::MAX,
             now_epoch: crate::time::Timestamp::now().epoch(),
         },
+        // The UNBOUNDED convenience entry: it holds no state root, so it has no
+        // global config to read a fleet order out of. The real picker threads
+        // the human's order through `menu_for_client_session_in`; this one draws
+        // the order ae drew before the key existed.
+        &crate::theme::FleetOrder::EMPTY,
     )
 }
 
@@ -772,6 +777,7 @@ pub fn menu_for_client_session_in(
     opened_session: Option<&str>,
     resume: Option<&PickerResume<'_>>,
     bounds: PickerBounds,
+    order: &crate::theme::FleetOrder,
 ) -> Result<Menu, PickerRefusal> {
     if bounds.height < 6 || bounds.width < 8 {
         return Err(PickerRefusal::TinyClient);
@@ -786,6 +792,7 @@ pub fn menu_for_client_session_in(
         opened_session,
         resume,
         bounds,
+        order,
     ))
 }
 
@@ -815,8 +822,9 @@ fn build_menu(
     opened_session: Option<&str>,
     resume: Option<&PickerResume<'_>>,
     bounds: PickerBounds,
+    order: &crate::theme::FleetOrder,
 ) -> Menu {
-    let ranked = ranked_sessions(sessions);
+    let ranked = ranked_sessions(sessions, order);
     let need_you = ranked
         .iter()
         .filter(|session| {
@@ -1025,17 +1033,26 @@ fn agents_suffix(agents: Option<&[crate::tmux::PickerAgent]>) -> String {
 
 /// The live server's admitted sessions, most actionable first.
 ///
-/// Attention decides, then tmux creation order, then name. The id tie-break is
-/// defensive: live tmux session ids are unique, but the pure model does not
+/// ATTENTION still decides: this menu exists to be acted on, and a session that
+/// needs the human outranks where they filed it. Below that it defers to the
+/// fleet's one shared tail, [`crate::theme::fleet_tail_cmp`] — the human's
+/// `fleet_order`, then tmux creation order, then name — so the picker and the
+/// status strip cannot drift apart on the part they do share. The id tie-break
+/// is defensive: live tmux session ids are unique, but the pure model does not
 /// need to assume that in order to stay deterministic.
-fn ranked_sessions(sessions: &[PickerSession]) -> Vec<&PickerSession> {
+fn ranked_sessions<'a>(
+    sessions: &'a [PickerSession],
+    order: &crate::theme::FleetOrder,
+) -> Vec<&'a PickerSession> {
     let mut ranked: Vec<&PickerSession> = sessions.iter().collect();
     ranked.sort_by(|left, right| {
-        right
-            .rank
-            .cmp(&left.rank)
-            .then_with(|| left.created().cmp(&right.created()))
-            .then_with(|| left.name.cmp(&right.name))
+        right.rank.cmp(&left.rank).then_with(|| {
+            crate::theme::fleet_tail_cmp(
+                order,
+                (&left.name, left.created()),
+                (&right.name, right.created()),
+            )
+        })
     });
     ranked
 }
@@ -1361,6 +1378,111 @@ mod tests {
             agents: String::new(),
             goal: String::new(),
         }
+    }
+
+    /// PIN: the picker's running rows defer to the SAME shared tail the strip
+    /// sorts on — the human's `fleet_order` before tmux creation order. ATTENTION
+    /// still wins above it, so the two surfaces share the tail and not the whole
+    /// comparator; both halves are pinned here.
+    #[test]
+    fn the_picker_running_rows_take_the_humans_order_under_attention() {
+        let all = [
+            session("alpha", "$1", 0, ""),
+            session("beta", "$2", 0, ""),
+            session("gamma", "$3", 0, ""),
+        ];
+        let order =
+            crate::theme::FleetOrder::from_validated(vec!["gamma".to_owned(), "beta".to_owned()]);
+        let names: Vec<&str> = super::ranked_sessions(&all, &order)
+            .iter()
+            .map(|row| row.name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            ["gamma", "beta", "alpha"],
+            "named first in the human's order, unnamed behind by creation"
+        );
+        // Equal rank is what lets the order speak; an EMPTY order is today's.
+        let names: Vec<&str> = super::ranked_sessions(&all, &crate::theme::FleetOrder::EMPTY)
+            .iter()
+            .map(|row| row.name.as_str())
+            .collect();
+        assert_eq!(names, ["alpha", "beta", "gamma"], "creation order alone");
+    }
+
+    /// PIN: rank DOMINATES the human's order — an unnamed session that needs
+    /// the human still sorts above a named one that is idle.
+    #[test]
+    fn attention_still_outranks_the_humans_order_in_the_picker() {
+        let all = [
+            session("named-idle", "$1", 0, ""),
+            session("unnamed-loud", "$2", 9, ""),
+        ];
+        let order = crate::theme::FleetOrder::from_validated(vec!["named-idle".to_owned()]);
+        let names: Vec<&str> = super::ranked_sessions(&all, &order)
+            .iter()
+            .map(|row| row.name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            ["unnamed-loud", "named-idle"],
+            "the picker stays most-actionable-first"
+        );
+    }
+
+    /// PIN: the human's order reaches the drawn menu, and the stopped rows —
+    /// which carry their own rule and arrive already ordered — are untouched.
+    #[test]
+    fn the_drawn_picker_orders_running_rows_and_leaves_stopped_rows_alone() {
+        let all = [session("alpha", "$1", 0, ""), session("beta", "$2", 0, "")];
+        let stopped = [
+            super::PickerStopped {
+                name: "older".to_owned(),
+                goal: String::new(),
+                branch: String::new(),
+                last_live: Some(10),
+            },
+            super::PickerStopped {
+                name: "newer".to_owned(),
+                goal: String::new(),
+                branch: String::new(),
+                last_live: Some(20),
+            },
+        ];
+        // The human named beta first AND named a stopped row, which must not
+        // move: stopped rows are a second source with their own ordering.
+        let order =
+            crate::theme::FleetOrder::from_validated(vec!["beta".to_owned(), "newer".to_owned()]);
+        let drawn = super::menu_for_client_session_in(
+            &all,
+            &stopped,
+            &[],
+            true,
+            &Palette::DARCULA,
+            None,
+            None,
+            None,
+            super::PickerBounds {
+                height: 40,
+                width: 120,
+                now_epoch: 1_700_000_000,
+            },
+            &order,
+        )
+        .expect("a menu");
+        let text = drawn
+            .items
+            .iter()
+            .map(|item| item.label.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let at = |name: &str| text.find(name).unwrap_or(usize::MAX);
+        assert!(at("beta") < at("alpha"), "running rows reordered: {text}");
+        assert!(at("alpha") < at("older"), "running above stopped: {text}");
+        assert!(
+            at("older") < at("newer"),
+            "stopped rows keep their caller's order: {text}"
+        );
     }
 
     fn pane(session_id: &str, pane: &str) -> PickerPane {
@@ -1834,6 +1956,7 @@ mod tests {
                 width: 100,
                 now_epoch: 2_000,
             },
+            &crate::theme::FleetOrder::EMPTY,
         )
         .expect("room for one session and three agents");
         assert_eq!(drawn.items.len(), 4);
@@ -1891,6 +2014,7 @@ mod tests {
                     width: 100,
                     now_epoch: 2_000,
                 },
+                &crate::theme::FleetOrder::EMPTY,
             )
             .expect("room for one session and two agents");
             assert_eq!(drawn.items.len(), 3, "icons={icons}");
@@ -1947,6 +2071,7 @@ mod tests {
                     width: 100,
                     now_epoch: 2_000,
                 },
+                &crate::theme::FleetOrder::EMPTY,
             )
             .expect("room for every session row");
             assert_eq!(
@@ -1975,6 +2100,7 @@ mod tests {
                     width: 100,
                     now_epoch: 2_000,
                 },
+                &crate::theme::FleetOrder::EMPTY,
             )
             .expect("boundary is fresh")
             .items
@@ -2009,6 +2135,7 @@ mod tests {
                 width: 100,
                 now_epoch: 2_000,
             },
+            &crate::theme::FleetOrder::EMPTY,
         )
         .expect("test dimensions")
     }
@@ -2062,6 +2189,7 @@ mod tests {
                 width: 100,
                 now_epoch: NOW,
             },
+            &crate::theme::FleetOrder::EMPTY,
         )
         .expect("room for the fixture fleet");
         let argv =
@@ -2196,6 +2324,7 @@ mod tests {
                 width: 32,
                 now_epoch: 2_000,
             },
+            &crate::theme::FleetOrder::EMPTY,
         )
         .expect("32 columns");
         assert!(super::terminal_cells(&drawn.title) <= 28);
@@ -2221,6 +2350,7 @@ mod tests {
                         width,
                         now_epoch: 2_000,
                     },
+                    &crate::theme::FleetOrder::EMPTY,
                 )
                 .err(),
                 Some(super::PickerRefusal::TinyClient)
@@ -2414,6 +2544,7 @@ mod tests {
                 width: 100,
                 now_epoch: 2_000,
             },
+            &crate::theme::FleetOrder::EMPTY,
         )
         .expect("test dimensions")
     }

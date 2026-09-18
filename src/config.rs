@@ -1756,6 +1756,51 @@ pub fn read_global_workspace_key(file: &Path, key: &str) -> Result<Option<String
     found.transpose()
 }
 
+/// The raw global `[workspace] fleet_order` value, or `""` when there is none.
+///
+/// GLOBAL ONLY, through the same reader `auto_upgrade` uses: where the fleet
+/// sits on the status line is a property of this machine, not of whichever
+/// project directory a session happens to be in, so a project `.ae/config` never
+/// gets a vote. Missing, unreadable and malformed all read as absent — the strip
+/// has to draw, and a bad line is `ae doctor`'s to report.
+#[must_use]
+pub fn global_fleet_order(global: Option<&Path>) -> String {
+    global
+        .and_then(|file| {
+            read_global_workspace_key(file, "fleet_order")
+                .ok()
+                .flatten()
+        })
+        .unwrap_or_default()
+}
+
+/// Split a `fleet_order` value into the names ae will order by and the entries
+/// it threw away.
+///
+/// The list grammar is `workers`': comma-separated, whitespace-trimmed. Nothing
+/// here is an error — an illegal name, or one that repeats a name already taken,
+/// is dropped and handed back so `ae doctor` can say it once. The names are what
+/// [`crate::theme::FleetOrder`] is built from.
+#[must_use]
+pub fn fleet_order_entries(raw: &str) -> (Vec<String>, Vec<String>) {
+    let mut names: Vec<String> = Vec::new();
+    let mut ignored: Vec<String> = Vec::new();
+    for entry in raw.split(',') {
+        let entry = entry.trim();
+        if entry.is_empty() {
+            continue;
+        }
+        if !crate::session_launch::name::is_session_name(entry)
+            || names.iter().any(|taken| taken == entry)
+        {
+            ignored.push(entry.to_owned());
+            continue;
+        }
+        names.push(entry.to_owned());
+    }
+    (names, ignored)
+}
+
 /// Read `[workspace]` keys and report whether the local file carries legacy
 /// identity sections. The latter are metadata for compatibility notices only:
 /// callers that own identity globally must not parse or overlay those rows.
@@ -1905,6 +1950,66 @@ mod tests {
         assert_eq!(
             local_overlay(&absent_session, &absent_origin.display().to_string()),
             None
+        );
+    }
+
+    /// PIN: `fleet_order` reads through the list grammar `workers` already
+    /// uses — comma-separated, whitespace-trimmed — and nothing else parses.
+    #[test]
+    fn fleet_order_reads_the_workers_list_grammar() {
+        let file = NamedTemp::new(
+            "fleet-order",
+            "[workspace]\nfleet_order = aedev, thinking , infra\n",
+        );
+        let (names, ignored) = fleet_order_entries(&global_fleet_order(Some(file.path())));
+        assert_eq!(names, ["aedev", "thinking", "infra"]);
+        assert!(ignored.is_empty(), "{ignored:?}");
+    }
+
+    /// PIN: a typo costs the human their entry, never their status line. An
+    /// illegal name and a repeat are dropped and REPORTED; the rest still order.
+    #[test]
+    fn fleet_order_drops_invalid_and_duplicate_entries_and_says_which() {
+        let (names, ignored) = fleet_order_entries("aedev, not a name, aedev, , infra");
+        assert_eq!(names, ["aedev", "infra"]);
+        assert_eq!(ignored, ["not a name", "aedev"]);
+        // An empty entry is not a complaint: `a,,b` and a trailing comma are
+        // just punctuation, and the human meant the names around them.
+        let (names, ignored) = fleet_order_entries("aedev,,infra,");
+        assert_eq!(names, ["aedev", "infra"]);
+        assert!(ignored.is_empty(), "{ignored:?}");
+    }
+
+    /// PIN: absent, empty and malformed all read as no order at all — the
+    /// strip has to draw.
+    #[test]
+    fn an_absent_or_malformed_fleet_order_is_simply_no_order() {
+        assert_eq!(global_fleet_order(None), "");
+        let file = NamedTemp::new("fleet-order-absent", "[workspace]\nlayout = vertical\n");
+        assert_eq!(global_fleet_order(Some(file.path())), "");
+        let file = NamedTemp::new("fleet-order-bad", "[workspace]\nfleet_order =\n");
+        assert_eq!(global_fleet_order(Some(file.path())), "");
+        assert!(fleet_order_entries("").0.is_empty());
+    }
+
+    /// PIN: GLOBAL ONLY. A project `.ae/config` cannot reorder the fleet — the
+    /// reader takes one file, the same one `auto_upgrade` is read from, and a
+    /// project overlay is never handed to it.
+    #[test]
+    fn a_project_config_never_votes_on_the_fleet_order() {
+        let global = NamedTemp::new("fleet-order-global", "[workspace]\nfleet_order = aedev\n");
+        let local = NamedTemp::new("fleet-order-local", "[workspace]\nfleet_order = hijacked\n");
+        assert_eq!(global_fleet_order(Some(global.path())), "aedev");
+        // The overlay reader that DOES layer local over global has no
+        // `fleet_order` caller; asked for the key it still sees the project
+        // value, which is exactly why this key is not read through it.
+        let layered =
+            read_workspace_keys(Some(global.path()), Some(local.path()), &["fleet_order"]);
+        assert_eq!(layered[0].as_deref(), Some("hijacked"));
+        assert_eq!(
+            global_fleet_order(Some(global.path())),
+            "aedev",
+            "the global-only reader is unmoved"
         );
     }
 

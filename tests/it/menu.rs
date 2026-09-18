@@ -661,6 +661,7 @@ fn a_seven_line_client_draws_only_its_current_sessions_agents() {
             width,
             now_epoch: now,
         },
+        &ae::theme::FleetOrder::EMPTY,
     )
     .expect("seven rows is the accepted boundary");
     assert_eq!(menu.items.len(), 5, "five items plus two border rows");
@@ -990,6 +991,7 @@ fn stopped_rows_pin_their_columns_keys_and_resume_argv() {
             width: 100,
             now_epoch: 2_000,
         },
+        &ae::theme::FleetOrder::EMPTY,
     )
     .expect("room for one running and two stopped rows");
     assert_eq!(
