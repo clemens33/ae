@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.122] - 2026-09-18
+- Refuse a launch naming two sessions
+- Show relaunch records in the Activity dialog
+- Satisfy lint for the launch refusal
+
 ## [v2026.9.121] - 2026-09-18
 - Return one seat's launch-turn outcome from the launch delivery
 - Bring one provably dead seat back with a relaunch helper
