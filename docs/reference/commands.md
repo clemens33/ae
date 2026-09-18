@@ -776,8 +776,8 @@ today's status-only menu and floor; it never refuses once the clicker is
 proven.
 
 The `Activity` dialog lists the newest 10 records a human cares about, newest
-first: `state`, `done`, `goal`, `spawn`, `retire`, `ask`, `review` and
-`reply`, each with actor, kind, clipped text and truthful age. Watchdog
+first: `state`, `done`, `goal`, `spawn`, `retire`, `relaunch`, `ask`,
+`review` and `reply`, each with actor, kind, clipped text and truthful age. Watchdog
 ticks, quota samples, audits, delivery records, `memo`, `chat`, `focus`,
 `cancel`, `spawn-failed` and lifecycle request/result pairs are not activity
 and never render. The `Memos` dialog lists the latest record per memo topic

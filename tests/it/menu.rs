@@ -8007,10 +8007,14 @@ fn the_activity_dialog_draws_the_newest_human_records() {
         "--activity",
         "Activity",
         "{\"ts\":\"x\",\"actor\":\"l\",\"action\":\"ask\",\"target\":\"w\",\"ref\":\"r\",\"summary\":\"M1\"}\n\
+         {\"ts\":\"x\",\"actor\":\"l\",\"action\":\"relaunch\",\"target\":\"w\",\"summary\":\"M2\"}\n\
          {\"ts\":\"x\",\"actor\":\"w\",\"action\":\"nudge\",\"summary\":\"T9\"}\n",
         "",
     );
-    assert!(text.contains("M1") && text.contains("Close"), "{text}");
+    assert!(
+        text.contains("M1") && text.contains("M2") && text.contains("Close"),
+        "{text}"
+    );
     assert!(!text.contains("T9"), "a tick is not activity: {text}");
 }
 

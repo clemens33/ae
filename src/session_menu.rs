@@ -64,8 +64,8 @@ const ACTIVITY_ROWS_MAX: usize = 10;
 const MEMO_ROWS_MAX: usize = 10;
 
 /// The event kinds a human cares about; the docs name what is not.
-const ACTIVITY_KINDS: [&str; 8] = [
-    "state", "done", "goal", "spawn", "retire", "ask", "review", "reply",
+const ACTIVITY_KINDS: [&str; 9] = [
+    "state", "done", "goal", "spawn", "retire", "relaunch", "ask", "review", "reply",
 ];
 
 /// The context-menu row that starts the stop chain. ASCII, because the row is
@@ -2702,7 +2702,7 @@ mod tests {
         format!(r#"{{"ts":"{ts}","actor":"{actor}","action":"{action}"{extra}}}"#)
     }
 
-    /// The eight human kinds, newest first, at most ten; gaps named.
+    /// The nine human kinds, newest first, at most ten; gaps named.
     #[test]
     fn activity_picks_only_the_human_kinds_newest_first() {
         use crate::tmux::OptionReading;
@@ -2726,6 +2726,11 @@ mod tests {
             ("co", "done", r#","summary":"g""#),
             ("co", "goal", r#","summary":"h""#),
             ("w", "nudge", r#","summary":"T""#),
+            (
+                "lead",
+                "relaunch",
+                r#","target":"w","summary":"relaunched w (pane %3, slot spawned.0): resumed""#,
+            ),
         ];
         let container = fixture
             .iter()
@@ -2745,16 +2750,20 @@ mod tests {
         assert_eq!(
             kinds,
             [
-                "goal", "done", "state", "review", "reply", "ask", "retire", "spawn", "goal",
-                "done"
+                "relaunch", "goal", "done", "state", "review", "reply", "ask", "retire", "spawn",
+                "goal"
             ],
             "{shown:?}"
         );
         assert_eq!(
-            shown[2], "co state: b — f (4h)",
+            shown[0], "lead relaunch: w — relaunched w (pane %3, slot spawned.0): resumed (4h)",
+            "a relaunch renders as a row"
+        );
+        assert_eq!(
+            shown[3], "co state: b — f (4h)",
             "a state reads as the root row"
         );
-        assert_eq!(shown[5], "lead ask: w r1 — c (4h)");
+        assert_eq!(shown[6], "lead ask: w r1 — c (4h)");
         let wide = event(
             "2026-09-17T08:00:00Z",
             "lead",
