@@ -180,7 +180,11 @@ The strip draws, but clicking a session, the picker glyph or the gear does nothi
 The click and picker-hotkey bindings live in the tmux server's key table, and a
 `source-file ~/.tmux.conf`, an `unbind-key -a`, or another tool rewriting the root
 table removes them silently. `ae doctor` names the missing key on its `tmux.bindings`
-row; `ae <session>` or `ae upgrade` reasserts the map.
+row — one row per server, so a server recorded by name in one session and by
+socket in another is reported once. `ae <session>` or `ae upgrade` reasserts the map.
+`is bound by another ae: <word>` means a different ae (another install or a
+checkout) asserted the map last — reassert to take it back; `a foreign command`
+means no ae at all bound that key.
 
 ## Using fish or zsh
 

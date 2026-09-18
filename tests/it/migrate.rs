@@ -1843,6 +1843,70 @@ fn upgrading_a_running_session_without_an_orchestrator_rewrites_the_menu_range()
     );
 }
 
+/// PIN (bindshape): a publish into an installed home reasserts the input map
+/// with the command link the publish maintains — never the versioned core it
+/// migrates onto, which the version sweep later prunes.
+#[test]
+fn a_publish_into_an_installed_home_binds_the_command_link() {
+    let scratch = tmux_scratch("bindshape");
+    if !tmux_present(&scratch) {
+        let _ = remove(&scratch);
+        panic!(
+            "tmux is not runnable here, so the publish-bound launcher cannot be proven; install \
+             tmux or run this suite where one exists"
+        );
+    }
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    // The installed layout: `<home>/.ae` is the state root,
+    // `<home>/.local/bin/ae` the command link the publish maintains.
+    let home = scratch.join("home");
+    let root = home.join(".ae");
+    let link = home.join(".local").join("bin").join("ae");
+    let session = "bindshape";
+    let version = "2026.9.118";
+
+    let old_core = scratch.join("old-core");
+    write_exec(&old_core, FAKE_CORE);
+    // The versioned new core a publish migrates onto.
+    let new_core = root.join("versions").join(version).join("ae-core");
+    assert!(
+        fs::create_dir_all(new_core.parent().expect("a version dir")).is_ok(),
+        "a version dir"
+    );
+    write_exec(&new_core, FAKE_CORE);
+
+    let _dir = plant_running(&scratch, &socket, &root, session, &old_core);
+    // The link exists BEFORE the sweep — still naming the old core, because
+    // the repoint lands after it — exactly as during a real publish.
+    assert!(
+        fs::create_dir_all(link.parent().expect("a bin dir")).is_ok(),
+        "a bin dir"
+    );
+    assert!(
+        std::os::unix::fs::symlink(&old_core, &link).is_ok(),
+        "a command link"
+    );
+
+    ae::migrate::onto(&root, &new_core, version).expect("the sweep");
+
+    let link_text = link.display().to_string();
+    for table in ["root", "prefix"] {
+        let (_, keys) = tmux(&socket, &scratch, &["list-keys", "-T", table]);
+        assert!(
+            keys.contains(&link_text),
+            "the {table} table names the command link {link_text}: {keys}"
+        );
+        assert!(
+            !keys.contains("versions/"),
+            "no versioned core path survives the publish on {table}: {keys}"
+        );
+    }
+}
+
 #[test]
 fn a_publish_starts_a_missing_watchdog_on_the_new_core() {
     let scratch = tmux_scratch("missing-watchdog");

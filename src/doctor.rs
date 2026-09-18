@@ -145,7 +145,8 @@ pub enum BindingsStatus {
     /// Every expected key is bound to this ae, and no stale one lingers.
     Intact,
     /// One problem per broken key — `missing <table> <key>`, `<table> <key>
-    /// is bound to a foreign command`, `stale <table> <key> is still bound`.
+    /// is bound to a foreign command`, `<table> <key> is bound by another ae:
+    /// <word>`, `stale <table> <key> is still bound`.
     Broken(Vec<String>),
     /// The map could not be judged — below the floor, or `list-keys` refused.
     Unreadable {
@@ -524,7 +525,12 @@ fn compare_bindings(
         match (command, entry.absent) {
             (Some(_), true) => problems.push(format!("stale {name} is still bound")),
             (Some(command), false) if entry.names_launcher && !command.contains(launcher) => {
-                problems.push(format!("{name} is bound to a foreign command"));
+                match another_ae_word(command) {
+                    Some(word) => {
+                        problems.push(format!("{name} is bound by another ae: {word}"));
+                    }
+                    None => problems.push(format!("{name} is bound to a foreign command")),
+                }
             }
             // A present launcher-less entry (the 3.4 Down pair) is
             // presence-checked: its command names no launcher by design.
@@ -533,6 +539,22 @@ fn compare_bindings(
         }
     }
     problems
+}
+
+/// The executable word of ANOTHER ae's launcher named in `command`, if any.
+///
+/// Cheap token scan: a word whose basename is `ae` or `ae-core` beside one of
+/// ae's own subcommand words. Requiring both keeps a stray `ae` word — or a
+/// foreign command merely mentioning one — from reading as another ae.
+fn another_ae_word(command: &str) -> Option<String> {
+    if !command.contains("orchestrator") && !command.contains("_session-menu") {
+        return None;
+    }
+    command.split_whitespace().find_map(|token| {
+        let word = token.trim_matches(|ch| ch == '\'' || ch == '"');
+        let base = word.rsplit('/').next().unwrap_or_default();
+        (base == "ae" || base == "ae-core").then(|| word.to_owned())
+    })
 }
 
 /// The rows about the INPUT MAP: whether ae's status-line clicks and picker
@@ -848,6 +870,27 @@ fn bindings_servers(
     servers
 }
 
+/// One row per server: two spellings tmux proves are one socket keep the
+/// first (recorded servers precede the default, so a record keeps its own
+/// spelling). Unprovable equivalence keeps both rows — truthful. The proof is
+/// the fleet's own [`crate::SocketPaths`], no second notion.
+fn dedupe_servers(
+    servers: Vec<crate::inventory::ServerId>,
+    sockets: &mut crate::SocketPaths,
+) -> Vec<crate::inventory::ServerId> {
+    let mut distinct: Vec<crate::inventory::ServerId> = Vec::new();
+    for server in servers {
+        if distinct
+            .iter()
+            .any(|known| sockets.proven_same(known, &server))
+        {
+            continue;
+        }
+        distinct.push(server);
+    }
+    distinct
+}
+
 /// The input-map verdict for every server [`bindings_servers`] names —
 /// read-only, through the existing tmux door. Only a server that positively
 /// ANSWERED earns a row: an absent or unreachable one is skipped, never
@@ -860,6 +903,8 @@ fn bindings_facts(
 ) -> Vec<BindingsFacts> {
     let declared = crate::doors::declared_server(crate::shape::current());
     let servers = bindings_servers(sessions, crate::doors::launch_target(declared.as_ref()));
+    let mut sockets = crate::SocketPaths::asking(crate::transport::observe_socket_path);
+    let servers = dedupe_servers(servers, &mut sockets);
     let mut out = Vec::new();
     for server in &servers {
         let crate::tmux_floor::Probe::Server(found) = crate::transport::observe_tmux_floor(server)
@@ -1801,6 +1846,94 @@ mod tests {
             vec![named("sock-a")]
         );
         assert!(bindings_servers(&[], None).is_empty());
+    }
+
+    /// PIN (bindshape, b): one row per server — two spellings tmux proves are
+    /// one socket keep the first; unprovable equivalence keeps both rows.
+    #[test]
+    fn the_bindings_check_reports_one_server_once() {
+        use crate::inventory::ServerId;
+        use crate::meta::Selector;
+        fn observed(server: &ServerId) -> Option<String> {
+            match server {
+                ServerId::Selected(Selector::Name(name)) if name == "elsewhere" => None,
+                _ => Some("/private/tmp/tmux-501/ae".to_owned()),
+            }
+        }
+        let named = ServerId::Selected(Selector::Name("ae".to_owned()));
+        let socket = ServerId::Selected(Selector::Socket("/private/tmp/tmux-501/ae".into()));
+        let elsewhere = ServerId::Selected(Selector::Name("elsewhere".to_owned()));
+        let mut proven = crate::SocketPaths::asking(observed);
+        assert_eq!(
+            dedupe_servers(vec![named.clone(), socket.clone()], &mut proven),
+            vec![named.clone()]
+        );
+        let mut proven = crate::SocketPaths::asking(observed);
+        assert_eq!(
+            dedupe_servers(vec![socket.clone(), named.clone()], &mut proven),
+            vec![socket]
+        );
+        let mut unproven = crate::SocketPaths::asking(observed);
+        assert_eq!(
+            dedupe_servers(vec![named.clone(), elsewhere.clone()], &mut unproven),
+            vec![named, elsewhere]
+        );
+    }
+
+    /// PIN (bindshape, c): a key bound to another ae's launcher names that ae —
+    /// only a command naming no ae at all reads as foreign.
+    #[test]
+    fn the_input_map_compare_names_another_ae_instead_of_crying_foreign() {
+        use crate::session_tmux::ExpectedBinding;
+        use crate::tmux::KeyBinding;
+        let expected = vec![ExpectedBinding {
+            table: "root".to_owned(),
+            key: "MouseDown1Status".to_owned(),
+            absent: false,
+            names_launcher: true,
+        }];
+        let listed = |command: &str| {
+            vec![(
+                "root".to_owned(),
+                vec![KeyBinding {
+                    key: "MouseDown1Status".to_owned(),
+                    command: command.to_owned(),
+                }],
+            )]
+        };
+        // Another ae, checkout shape: not this ae's link, but an ae launcher.
+        assert_eq!(
+            compare_bindings(
+                &expected,
+                &listed(
+                    "run-shell -b 'env' 'AE_HOME=/h/.ae' \
+                     '/h/.ae/versions/2026.9.117/ae-core' 'orchestrator' '--popup'"
+                ),
+                "/h/.local/bin/ae"
+            ),
+            vec![
+                "root MouseDown1Status is bound by another ae: \
+                 /h/.ae/versions/2026.9.117/ae-core"
+            ]
+        );
+        // This ae's own launcher stays intact.
+        assert!(
+            compare_bindings(
+                &expected,
+                &listed("run-shell -b '/h/.local/bin/ae' 'orchestrator' '--popup'"),
+                "/h/.local/bin/ae"
+            )
+            .is_empty()
+        );
+        // No ae word at all stays foreign.
+        assert_eq!(
+            compare_bindings(
+                &expected,
+                &listed("select-window -t {mouse}"),
+                "/h/.local/bin/ae"
+            ),
+            vec!["root MouseDown1Status is bound to a foreign command"]
+        );
     }
 
     /// PIN (c): the `tmux.bindings` row text — intact, missing, foreign,

@@ -745,8 +745,16 @@ fn restart_daemons(
             || root.join("config"),
             |value| PathBuf::from(String::from_utf8_lossy(value).into_owned()),
         );
-    let launcher =
-        crate::session_tmux::picker_launcher(crate::shape::current(), core, root, &config, &server);
+    // The PUBLISH launcher, not the running shape's: this sweep runs as the
+    // downloaded core, so the running shape reads Checkout even for an
+    // installed home.
+    let launcher = crate::session_tmux::publish_launcher(
+        crate::shape::current(),
+        core,
+        root,
+        &config,
+        &server,
+    );
     let menu_mouse = crate::transport::observe_tmux_floor(&server).menu_mouse();
     for binding in crate::session_tmux::status_bindings_argv(&server, &launcher, menu_mouse) {
         let _ = crate::transport::run_tmux_op(&binding);

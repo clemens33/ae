@@ -591,6 +591,30 @@ pub(crate) fn picker_launcher(
     words
 }
 
+/// The launcher a PUBLISH binds: the command link the publish maintains when
+/// it is there, else today's shape-derived form.
+///
+/// A publish runs as the downloaded core from its temp extraction, so the
+/// running shape reads Checkout even for an installed home — binding that
+/// shape's form would name a versioned core the version sweep later prunes.
+/// The link exists exactly where a publish maintains one; a sandbox or
+/// checkout publish without it keeps today's form.
+pub(crate) fn publish_launcher(
+    shape: &crate::shape::Shape,
+    core: &Path,
+    root: &Path,
+    config: &Path,
+    server: &ServerId,
+) -> Vec<String> {
+    if let Some(home) = root.parent() {
+        let link = home.join(".local").join("bin").join("ae");
+        if crate::lifecycle::path_exists(&link) {
+            return vec![link.display().to_string()];
+        }
+    }
+    picker_launcher(shape, core, root, config, server)
+}
+
 /// The server-global status bindings for a positively selected, ae-owned
 /// server. Ambient means the user's own root table, which launch never writes.
 pub(crate) fn status_bindings_argv(
