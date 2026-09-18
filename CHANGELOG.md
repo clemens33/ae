@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.115] - 2026-09-18
+- Let the human choose the order of the fleet strip
+- Report a fleet_order line ae could not read
+- Say what the picker's name tie-break is defending against
+
 ## [v2026.9.114] - 2026-09-18
 - Seat pane line follows the command link across upgrades (#131)
 - Name the pane line head in run.rs docs; tighten upgrade prose
