@@ -884,11 +884,11 @@ pub fn config_home_envs() -> impl Iterator<Item = &'static str> {
 
 /// Whether `token` is a client token some adapter row declares.
 ///
-/// The picker's roster fact is hostile persisted state, so its client field is
-/// validated against THIS table rather than by shape: a closed vocabulary is
-/// its own validation, and `-` is part of it because an unclassifiable binary
-/// is a thing ae can honestly report. `UNKNOWN` is not in [`KNOWN`], so it is
-/// named beside it.
+/// The picker's roster fact lives in a tmux option anyone with the server can
+/// set, so its client field is validated against THIS table rather than by
+/// shape: a closed vocabulary is its own validation, and `-` is part of it
+/// because an unclassifiable binary is a thing ae can honestly report.
+/// `UNKNOWN` is not in [`KNOWN`], so it is named beside it.
 #[must_use]
 pub fn is_client_token(token: &str) -> bool {
     KNOWN.iter().any(|adapter| adapter.client == token) || token == UNKNOWN.client

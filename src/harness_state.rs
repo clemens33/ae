@@ -1320,7 +1320,12 @@ mod tests {
         // Grok's border IS its identity row, so the composer cannot be taken
         // away without taking the model with it. A DRAFT is the honest second
         // case: the box and the label both survive one, and `composed_ui`
-        // refuses it because a paste would merge with the human's text.
+        // refuses it because a paste would merge with the human's text. The
+        // refusal is that rule and not broken geometry — the ungated assert
+        // below proves the bottom edge and its measured slack are still
+        // exactly where `current_grok_identity` demands them, and the same
+        // capture WITHOUT the draft is pinned observed in the test beneath
+        // this one.
         let drafted_grok: String = grok
             .lines()
             .map(|line| match line.split_once('\u{276f}') {

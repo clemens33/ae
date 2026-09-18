@@ -2581,7 +2581,22 @@ pub const PICKER_AGENTS_MAX_COUNT: usize = 64;
 /// Highest watchdog cadence an `@ae_agents` fact may carry.
 pub const PICKER_AGENTS_MAX_INTERVAL_SECS: u64 = 3_600;
 
+/// Maximum bytes accepted from one entry's observed model label.
+///
+/// The label is free text scraped from a pane — the only field here whose
+/// vocabulary is the vendor's rather than ae's — so it is the one that needs a
+/// length rule at all. 32 holds every model the measured fleet draws
+/// (`DeepSeek V4.1 Flash OpenRouter` is the longest at 29) with room for a
+/// vendor rename, and stays small enough that 64 of them cannot crowd a
+/// roster out of [`PICKER_AGENTS_MAX_BYTES`] on their own.
+pub const PICKER_AGENTS_MAX_MODEL: usize = 32;
+
 /// One strictly parsed agent row from the watchdog-owned session fact.
+///
+/// The first four fields are the v1 contract and admit the row. The observed
+/// cells below them arrive only from a `v2` fact, are DISPLAY facts, and are
+/// coherent by construction: a model implies a client, and an effort or a
+/// drift mark implies a model ([`observed_cells_are_coherent`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PickerAgent {
     /// The allowlisted agent identity.
@@ -2592,6 +2607,14 @@ pub struct PickerAgent {
     pub state: String,
     /// The captured pane id, empty when that roster seat has no pane.
     pub pane: String,
+    /// The adapter-owned client token, empty on a v1 fact.
+    pub client: String,
+    /// The model the seat's own frame drew, empty when nothing was observed.
+    pub model: String,
+    /// The effort that frame drew, empty when the frame proved none.
+    pub effort: String,
+    /// Whether the observed model differs from the profile's own pin.
+    pub drift: bool,
 }
 
 impl PickerAgent {
@@ -2602,7 +2625,36 @@ impl PickerAgent {
     }
 }
 
+/// Which `@ae_agents` grammar one value announces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AgentsGrammar {
+    /// `name:profile:state:pane` — no observed cells.
+    V1,
+    /// v1's four fields plus `client:model:effort:drift`.
+    V2,
+}
+
+impl AgentsGrammar {
+    /// How many colon-separated fields one entry must have. EXACTLY: a v1
+    /// entry with a fifth field is damage, not a forward-compatible row.
+    const fn entry_fields(self) -> usize {
+        match self {
+            Self::V1 => 4,
+            Self::V2 => 8,
+        }
+    }
+}
+
 /// Parse one bounded, versioned `@ae_agents` value.
+///
+/// BOTH grammars are accepted, because versions run side by side: `ae upgrade`
+/// restarts the watchdogs it can reach, a skipped session keeps its old core,
+/// and a checkout core can share one server. A v1 fact read here simply proves
+/// no observed cells, which the picker draws as the declared profile.
+///
+/// The converse is not available and needs no shim: a v2 fact read by an OLD
+/// core fails its exact version check, yielding `None` and today's
+/// `agents: unavailable` row.
 ///
 /// Any malformed byte rejects the whole snapshot. `None` therefore means
 /// unavailable, never a partially trusted roster. A snapshot becomes stale
@@ -2618,9 +2670,11 @@ pub fn parse_picker_agents(raw: &str, now_epoch: i64) -> Option<Vec<PickerAgent>
         return None;
     }
     let mut parts = raw.split(';');
-    if parts.next() != Some("v1") {
-        return None;
-    }
+    let grammar = match parts.next() {
+        Some("v1") => AgentsGrammar::V1,
+        Some("v2") => AgentsGrammar::V2,
+        _ => return None,
+    };
     let epoch = parts
         .next()?
         .parse::<i64>()
@@ -2642,25 +2696,68 @@ pub fn parse_picker_agents(raw: &str, now_epoch: i64) -> Option<Vec<PickerAgent>
             return None;
         }
         let fields: Vec<&str> = entry.split(':').collect();
-        let [name, profile, state, pane] = fields.as_slice() else {
+        if fields.len() != grammar.entry_fields() {
             return None;
+        }
+        // Past the arity check the four v1 fields are always there, and the
+        // four observed cells are empty on a v1 row.
+        let [name, profile, state, pane] = [fields[0], fields[1], fields[2], fields[3]];
+        let [client, model, effort, drift] = match grammar {
+            AgentsGrammar::V1 => ["", "", "", ""],
+            AgentsGrammar::V2 => [fields[4], fields[5], fields[6], fields[7]],
         };
         if !crate::config::is_agent_name(name)
             || !crate::config::is_config_key(profile)
             || picker_agent_mark(state).is_none()
             || (!pane.is_empty() && !pane_id_is_valid(pane))
+            || !observed_cells_are_coherent(client, model, effort, drift)
             || agents.iter().any(|agent: &PickerAgent| agent.name == *name)
         {
             return None;
         }
         agents.push(PickerAgent {
-            name: (*name).to_owned(),
-            profile: (*profile).to_owned(),
-            state: (*state).to_owned(),
-            pane: (*pane).to_owned(),
+            name: name.to_owned(),
+            profile: profile.to_owned(),
+            state: state.to_owned(),
+            pane: pane.to_owned(),
+            client: client.to_owned(),
+            model: model.to_owned(),
+            effort: effort.to_owned(),
+            drift: drift == DRIFT_MARK,
         });
     }
     (!agents.is_empty()).then_some(agents)
+}
+
+/// The drift field's only nonempty spelling.
+///
+/// One byte, and the same one the picker draws. Note that the picker reads
+/// this fact through a tmux format that rewrites `|` and control bytes to
+/// `!`, so a `!` here is indistinguishable from a hand-written `|` — which
+/// costs nothing, because the writer emits neither and a hand-editor of the
+/// option could write the mark directly anyway.
+const DRIFT_MARK: &str = "!";
+
+/// Whether one entry's four observed cells can have come from a writer.
+///
+/// They are a UNIT: the writer publishes a model only with the client that
+/// drew it, and empties the trio together when it cannot represent one, so a
+/// model without a client — or an effort or a drift mark without a model —
+/// is damage. Rejecting it here keeps every downstream reader from having to
+/// invent a rendering for a state ae does not produce.
+fn observed_cells_are_coherent(client: &str, model: &str, effort: &str, drift: &str) -> bool {
+    if !client.is_empty() && !crate::tool::is_client_token(client) {
+        return false;
+    }
+    if model.is_empty() {
+        return effort.is_empty() && drift.is_empty();
+    }
+    !client.is_empty()
+        && model.len() <= PICKER_AGENTS_MAX_MODEL
+        && !model.starts_with(' ')
+        && !model.ends_with(' ')
+        && (effort.is_empty() || crate::harness_state::is_effort_word(effort))
+        && (drift.is_empty() || drift == DRIFT_MARK)
 }
 
 fn picker_agent_mark(state: &str) -> Option<Mark> {
@@ -4722,9 +4819,24 @@ mod tests {
         );
     }
 
+    /// One v1 row as the parser yields it: the four admitting fields, and the
+    /// four observed cells a v1 fact cannot carry.
+    fn v1_agent(name: &str, profile: &str, state: &str, pane: &str) -> super::PickerAgent {
+        super::PickerAgent {
+            name: name.to_owned(),
+            profile: profile.to_owned(),
+            state: state.to_owned(),
+            pane: pane.to_owned(),
+            client: String::new(),
+            model: String::new(),
+            effort: String::new(),
+            drift: false,
+        }
+    }
+
     #[test]
     fn picker_agents_fact_is_typed_bounded_and_all_or_nothing() {
-        use super::{PickerAgent, parse_picker_agents};
+        use super::parse_picker_agents;
 
         let now = 2_000;
         assert_eq!(
@@ -4733,28 +4845,13 @@ mod tests {
                 now,
             ),
             Some(vec![
-                PickerAgent {
-                    name: "lead".to_owned(),
-                    profile: "fable5".to_owned(),
-                    state: "working".to_owned(),
-                    pane: "%1".to_owned(),
-                },
-                PickerAgent {
-                    name: "builder".to_owned(),
-                    profile: "gpt56sol".to_owned(),
-                    state: "done".to_owned(),
-                    pane: "%2".to_owned(),
-                },
+                v1_agent("lead", "fable5", "working", "%1"),
+                v1_agent("builder", "gpt56sol", "done", "%2"),
             ])
         );
         assert_eq!(
             parse_picker_agents("v1;1880;60;lead:fable5:working:", now),
-            Some(vec![PickerAgent {
-                name: "lead".to_owned(),
-                profile: "fable5".to_owned(),
-                state: "working".to_owned(),
-                pane: String::new(),
-            }]),
+            Some(vec![v1_agent("lead", "fable5", "working", "")]),
             "exactly two intervals old is still fresh"
         );
         assert_eq!(
@@ -4826,6 +4923,133 @@ mod tests {
         );
         assert_eq!(parse_picker_agents(&too_many, now), None);
         assert_eq!(parse_picker_agents(&"x".repeat(4_097), now), None);
+    }
+
+    #[test]
+    fn a_v2_entry_carries_client_model_effort_and_drift() {
+        use super::{PickerAgent, parse_picker_agents};
+
+        let now = 2_000;
+        assert_eq!(
+            parse_picker_agents(
+                "v2;2000;60;lead:fable5:working:%1:cc:Fable 5.1:xhigh:!;\
+                 nav:spark13m:idle:%2:muse:muse-spark-1.3:max:;\
+                 gone:gpt56sol:dead:::::",
+                now,
+            ),
+            Some(vec![
+                PickerAgent {
+                    name: "lead".to_owned(),
+                    profile: "fable5".to_owned(),
+                    state: "working".to_owned(),
+                    pane: "%1".to_owned(),
+                    client: "cc".to_owned(),
+                    model: "Fable 5.1".to_owned(),
+                    effort: "xhigh".to_owned(),
+                    drift: true,
+                },
+                PickerAgent {
+                    name: "nav".to_owned(),
+                    profile: "spark13m".to_owned(),
+                    state: "idle".to_owned(),
+                    pane: "%2".to_owned(),
+                    client: "muse".to_owned(),
+                    model: "muse-spark-1.3".to_owned(),
+                    effort: "max".to_owned(),
+                    drift: false,
+                },
+                // A seat with no pane keeps its v1 shape and observes nothing:
+                // there was no frame to read.
+                v1_agent("gone", "gpt56sol", "dead", ""),
+            ]),
+            "a model may carry spaces; only the separators and the style bytes \
+             are forbidden"
+        );
+        // An unobserved seat on a v2 fact still names its client, which ae
+        // knows from the recorded binary and never guesses.
+        assert_eq!(
+            parse_picker_agents("v2;2000;60;lead:fable5:working:%1:cx:::", now)
+                .as_deref()
+                .and_then(<[PickerAgent]>::first)
+                .map(|agent| (agent.client.clone(), agent.model.clone())),
+            Some(("cx".to_owned(), String::new()))
+        );
+    }
+
+    #[test]
+    fn a_v1_fact_still_parses_and_leaves_the_new_cells_empty() {
+        use super::parse_picker_agents;
+
+        // Versions run side by side: an upgrade cannot reach every live
+        // watchdog at once, so the reader keeps the old grammar.
+        assert_eq!(
+            parse_picker_agents("v1;2000;60;lead:fable5:working:%1", 2_000),
+            Some(vec![v1_agent("lead", "fable5", "working", "%1")])
+        );
+        // The same roster in each grammar differs ONLY in the observed cells.
+        let v1 =
+            parse_picker_agents("v1;2000;60;lead:fable5:working:%1", 2_000).expect("the v1 roster");
+        let v2 = parse_picker_agents("v2;2000;60;lead:fable5:working:%1:cc:Opus 5:xhigh:", 2_000)
+            .expect("the v2 roster");
+        assert_eq!(v1[0].name, v2[0].name);
+        assert_eq!(v1[0].profile, v2[0].profile);
+        assert_eq!(v1[0].state, v2[0].state);
+        assert_eq!(v1[0].pane, v2[0].pane);
+        assert_eq!(v1[0].mark(), v2[0].mark());
+        assert_eq!((v1[0].model.as_str(), v2[0].model.as_str()), ("", "Opus 5"));
+    }
+
+    #[test]
+    fn the_v2_parser_refuses_an_over_cap_unknown_or_incoherent_cell() {
+        use super::{PICKER_AGENTS_MAX_MODEL, parse_picker_agents};
+
+        let now = 2_000;
+        let entry = |model: &str| format!("v2;2000;60;lead:fable5:working:%1:cc:{model}:xhigh:");
+        let at_cap = "M".repeat(PICKER_AGENTS_MAX_MODEL);
+        assert!(
+            parse_picker_agents(&entry(&at_cap), now).is_some(),
+            "exactly at the cap is representable"
+        );
+        assert_eq!(
+            parse_picker_agents(&entry(&"M".repeat(PICKER_AGENTS_MAX_MODEL + 1)), now),
+            None,
+            "one byte past the cap refuses the whole roster"
+        );
+        for invalid in [
+            // Arity: each grammar's entry has EXACTLY its own field count.
+            "v2;2000;60;lead:fable5:working:%1:cc:Opus 5:xhigh",
+            "v2;2000;60;lead:fable5:working:%1:cc:Opus 5:xhigh::",
+            "v1;2000;60;lead:fable5:working:%1:cc:Opus 5:xhigh:",
+            // A version ae has never written.
+            "v3;2000;60;lead:fable5:working:%1:cc:Opus 5:xhigh:",
+            // Client: a closed, adapter-owned vocabulary.
+            "v2;2000;60;lead:fable5:working:%1:claude:Opus 5:xhigh:",
+            "v2;2000;60;lead:fable5:working:%1:CC:Opus 5:xhigh:",
+            // Effort: the closed vocabulary, not a shape.
+            "v2;2000;60;lead:fable5:working:%1:cc:Opus 5:turbo:",
+            "v2;2000;60;lead:fable5:working:%1:cc:Opus 5:XHIGH:",
+            // Drift: one spelling.
+            "v2;2000;60;lead:fable5:working:%1:cc:Opus 5:xhigh:yes",
+            "v2;2000;60;lead:fable5:working:%1:cc:Opus 5:xhigh:!!",
+            // Coherence: the observed cells are a unit the writer fills or
+            // empties together.
+            "v2;2000;60;lead:fable5:working:%1::Opus 5:xhigh:",
+            "v2;2000;60;lead:fable5:working:%1:cc::xhigh:",
+            "v2;2000;60;lead:fable5:working:%1:cc:::!",
+            // A model is text, so its edges are pinned where a separator is not
+            // available to do it.
+            "v2;2000;60;lead:fable5:working:%1:cc: Opus 5:xhigh:",
+            "v2;2000;60;lead:fable5:working:%1:cc:Opus 5 :xhigh:",
+            // The v1 refusals are unchanged under the new grammar.
+            "v2;2000;60;bad name:fable5:working:%1:cc:Opus 5:xhigh:",
+            "v2;2000;60;lead:fable5:unknown:%1:cc:Opus 5:xhigh:",
+            "v2;2000;60;lead:fable5:working:pane:cc:Opus 5:xhigh:",
+            "v2;2000;60;lead:fable5:working:%1:cc:Opus|5:xhigh:",
+            "v2;2000;60;lead:fable5:working:%1:cc:Opus,5:xhigh:",
+            "v2;2000;60;lead:fable5:working:%1:cc:Opus#5:xhigh:",
+        ] {
+            assert_eq!(parse_picker_agents(invalid, now), None, "{invalid}");
+        }
     }
 
     #[test]
