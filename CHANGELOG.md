@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.123] - 2026-09-18
+- Render one seat's durable record as a seed pack
+- Print one seat's seed pack from ae brief --seat
+- Document the seed pack on the brief reference page
+- Record the seed pack in the record-reader inventory
+- Age the parking fixture so the never-clip guard is load-bearing
+- Pin the seed pack end to end and correct its ownership note
+
 ## [v2026.9.122] - 2026-09-18
 - Refuse a launch naming two sessions
 - Show relaunch records in the Activity dialog
