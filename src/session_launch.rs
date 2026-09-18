@@ -3266,7 +3266,18 @@ fn build(
     // swallowed, so no state is recreated and nothing panics. A concurrent
     // launch against this live session reattaches, never rebuilds.
     for (agent, prompt) in pending {
-        deliver_launch_prompt(&dir, &server, agent, &prompt, err)?;
+        // The outcome is DELIBERATELY dropped here: a launch answers for the
+        // whole roster and each turn already failed durably on its own. Only a
+        // single-slot caller maps it onto an exit code.
+        let _ = deliver_launch_turn(
+            &dir,
+            &server,
+            &agent.slot,
+            &agent.pane,
+            agent.tool,
+            &prompt,
+            err,
+        )?;
     }
 
     // ---- post-launch capture ----
@@ -4124,43 +4135,62 @@ pub(crate) fn launch_token(_tool: ToolKind, stored: Option<String>) -> String {
 /// re-capture that `launching_capture` deliberately schedules for exactly those
 /// pending slots would find nothing, and the seat would stay unresumable for
 /// the rest of its life.
-const fn launch_turn_is_pasted(tool: ToolKind, resuming_seat: bool) -> bool {
+pub(crate) const fn launch_turn_is_pasted(tool: ToolKind, resuming_seat: bool) -> bool {
     resuming_seat && tool.adapter().input.paste_initial_on_resume
 }
 
-/// The gated, loud, DURABLE launch-prompt delivery.
-fn deliver_launch_prompt(
+/// What one seat's launch turn DID — the fact a per-slot caller needs and the
+/// roster-wide launch deliberately ignores.
+///
+/// A launch delivers N turns and fails none of them loudly enough to stop:
+/// each failure is already durable on its own (the preserved file, the event,
+/// the stderr line). A SINGLE-slot caller answers for one seat and must map
+/// the turn onto its own exit code, so the same delivery reports what it did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TurnOutcome {
+    /// The turn was pasted and its submit PROVEN.
+    Submitted,
+    /// The turn was pasted and Enter pressed, but the submit could not be
+    /// proven either way. `send`'s own wording, and never "confirmed".
+    Unconfirmed,
+    /// The turn never landed. The text is preserved and the failure recorded.
+    Undelivered,
+}
+
+/// The gated, loud, DURABLE launch-turn delivery, for ONE seat.
+///
+/// The side effects are unchanged and unconditional: a failure preserves the
+/// text, records the event and says so on stderr. The RETURN is the addition —
+/// the launch throws it away, a single-slot caller reads it.
+fn deliver_launch_turn(
     dir: &Path,
     server: &ServerId,
-    agent: &Launching,
+    slot: &str,
+    pane: &str,
+    tool: ToolKind,
     prompt: &str,
     err: &mut impl Write,
-) -> io::Result<()> {
-    let model = agent.tool.adapter().input.model;
-    let composed = agent.tool.adapter().input.composed;
-    let reason = if deliver::wait_input_ready(
-        server,
-        &agent.pane,
-        model,
-        composed,
-        LAUNCH_READY_POLLS,
-    ) {
+) -> io::Result<TurnOutcome> {
+    let model = tool.adapter().input.model;
+    let composed = tool.adapter().input.composed;
+    let reason = if deliver::wait_input_ready(server, pane, model, composed, LAUNCH_READY_POLLS) {
         // NO select-pane: `paste-buffer -t` writes to the NAMED pane, and
         // selecting mid-send routes the human's in-flight keystrokes into the
         // target — acute under lead-pair, where two agents share window 0.
         match deliver::stage_and_paste(
             server,
-            &format!("ae-launch-{}", agent.slot),
+            &format!("ae-launch-{slot}"),
             prompt.as_bytes(),
-            &agent.pane,
+            pane,
         ) {
             // A bare Enter is not a submit: a booting TUI swallows it, and for
             // a seat resumed while its id is still `pending` this turn is the
             // ONLY thing that will ever create a rollout to capture. So the
             // press is PROVEN, and a turn left in the box falls through to the
             // durable failure below rather than passing as delivered.
-            Ok(()) => match deliver::submit_staged(server, &agent.pane, model) {
-                deliver::SubmitState::Submitted | deliver::SubmitState::Unknown(_) => return Ok(()),
+            Ok(()) => match deliver::submit_staged(server, pane, model) {
+                deliver::SubmitState::Submitted => return Ok(TurnOutcome::Submitted),
+                deliver::SubmitState::Unknown(_) => return Ok(TurnOutcome::Unconfirmed),
                 deliver::SubmitState::StillStaged => {
                     "submit UNCONFIRMED — the turn is staged unsent in the input box".to_owned()
                 }
@@ -4170,18 +4200,18 @@ fn deliver_launch_prompt(
     } else {
         "input never reached a confirmed-ready state within 45s (still initializing, busy, modal, or unreadable)".to_owned()
     };
-    let file = dir.join(format!("undelivered.launch-{}.txt", agent.slot));
+    let file = dir.join(format!("undelivered.launch-{slot}.txt"));
     let preserved = write_private(&file, prompt).is_ok();
     let _ = crate::store::open(dir).append_event(&crate::tracked::event_line(
         &crate::tracked::EventFields {
             ts: crate::time::Timestamp::now(),
             actor: "ae",
             action: LAUNCH_FAILED_ACTION,
-            target: &agent.slot,
+            target: slot,
             reference: "",
             actor_slot: "",
             actor_session: "",
-            target_slot: &agent.slot,
+            target_slot: slot,
             target_session: "",
             target_server: "",
             target_pane: "",
@@ -4191,23 +4221,20 @@ fn deliver_launch_prompt(
             caller_session_uuid: "",
             identity_gap: "",
             summary: &format!(
-                "launch prompt NOT delivered to {} ({}, pane {}): {reason}",
-                agent.slot,
-                agent.tool.as_str(),
-                agent.pane
+                "launch prompt NOT delivered to {slot} ({}, pane {pane}): {reason}",
+                tool.as_str()
             ),
             body_file: "",
         },
     ));
     writeln!(
         err,
-        "ae: LAUNCH PROMPT NOT DELIVERED to {} (pane {}): {reason}",
-        agent.slot, agent.pane
+        "ae: LAUNCH PROMPT NOT DELIVERED to {slot} (pane {pane}): {reason}"
     )?;
     if preserved {
         writeln!(err, "ae: the text is preserved at {}", file.display())?;
     }
-    Ok(())
+    Ok(TurnOutcome::Undelivered)
 }
 
 /// Wait, briefly, for the tool's process to replace the pane's shell. `launched`
