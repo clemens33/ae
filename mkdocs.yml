@@ -62,6 +62,7 @@ nav:
       - Bridge protocol: internals/bridge-protocol.md
       - Monitor window: internals/monitor.md
       - Session look: internals/theme.md
+      - Moving a seat: internals/reseat.md
   - Upgrades: upgrade.md
   - Troubleshooting: troubleshooting.md
   - Development: development.md

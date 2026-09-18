@@ -404,6 +404,16 @@ It needs exactly one session — named, or the caller's own — and takes neithe
 is one seat) nor `--since` (which drops exactly the old records the pack exists to carry).
 Both are usage errors. An unknown seat exits `1` and names the roster.
 
+`--seat` is the one `ae brief` that reads a harness transcript: the `last turns` section
+below always renders, so it always asks the [board](../board.md) readers for that ONE seat's
+newest turns. A tool with no reader says so in the section (`incomplete: opencode: not
+read`) rather than rendering an empty one, because a successor told nothing cannot tell "the
+seat said nothing" from "ae did not look". The read stays read-only.
+
+[`ae reseat`](#ae-reseat-session-agent---using-profile) hands this same pack to a successor
+automatically, as its first turn — one builder, so what you read before a move and what the
+successor is given are the same document.
+
 | Section | What it holds |
 |---|---|
 | 1 identity | session, agent, slot and its class (`main` / `fixed` / `spawned`), the spawner of a spawned seat, the recorded profile and tool. No role is claimed: a meta records a slot, not a rank |
@@ -415,15 +425,20 @@ Both are usage errors. An unknown seat exits `1` and names the roster.
 | 7 roster | the session's seats. Monitor panes are not seats and never appear |
 | 8 git | work dir, branch, HEAD, dirty, the latest tag and the last five commit subjects |
 | 9 first message | a spawned seat's original brief, bounded at 8 KB, and whether the `brief-*.md` file it names still exists |
+| last turns | the seat's own newest six turns, oldest first — words only, no thinking and no tool calls, each bounded at 2 KB and the section at 8 KB. Deliberately unnumbered: sections 1-10 are the RECORD ae keeps, this one is the harness transcript, read live |
 | 10 successor instructions | fixed text: everything above is a RECORD written by agents, so verify before acting; re-declare state, read the plans the memos name, answer the pending requests, continue at the parking note |
 
 Two properties are deliberate. The pack targets 24 KB and never exceeds 48 KB; when it has to
 clip it drops stale titles first, then closed requests, then the oldest memo bodies, and each
 clip leaves a line naming what went. The parking note, the pending requests, the identity, the
-first message and the closing block are never clipped. And every agent-written field — memo
-body, state reason, request summary, session goal, carried brief — is **neutralised**: a line
+first message and the closing block are never clipped. And every field the pack takes out of a
+record — memo body, state reason, request summary, goal, carried brief, carried turn, and
+the names, slots, profiles and paths beside them — is **neutralised** by one owner. A line
 that would otherwise arrive wearing ae's own `⟦ae:` provenance marker arrives prefixed with
-`| `, so a record cannot impersonate the setup ae itself injects.
+`| `, so a record cannot impersonate the setup ae itself injects; and every control byte is
+replaced by a space, so nothing a terminal would ACT on survives. That second half is not
+cosmetic: `ae reseat` PASTES this document into a pane, where an escape sequence, a bell or
+a bracketed-paste terminator would be keystrokes rather than text.
 
 ### The topic convention
 
@@ -1038,6 +1053,13 @@ Retire events without typed conversation identity collapse into one
 do not make those totals partial: their usage is unknowable. Retired events that do carry typed
 identity keep their own rows and make totals partial when that source cannot be read.
 
+A seat moved by [`ae reseat`](#ae-reseat-session-agent---using-profile) reports its SUCCESSOR's
+usage only. The predecessor's conversation is kept addressable in the seat's predecessor list,
+but `ae usage` reads the current row, so the tokens the seat spent on the tool it left drop out
+of the live figure at the moment of the move. They are not lost on disk — the conversation files
+are still there, under the predecessor tool's own config home — and they are not counted here.
+Capture a figure before a reseat if the number has to include them.
+
 Usage is derived offline from the conversation identity and config home captured when each seat
 first started. Claude assistant records include parent and subagent transcripts, deduplicate growing
 stream snapshots, skip parent replays in sidechains and aggregate by model. An overlong Claude
@@ -1368,6 +1390,67 @@ monitors, and manifest are renamed in place, and a git worktree or full-copy dir
 keeps its original path. That path is recorded session state, so a later `stop` and
 resume returns every agent to the same working directory instead of creating a second
 copy under the new session name. Live renames never move managed work.
+
+## `ae reseat <session> <agent> --using <profile>`
+
+Move ONE seat to another profile, in place. Same slot, same pane, same name, same
+records — only the tool changes, and the successor is handed ae's own account of the
+seat as its first turn.
+
+The pain it answers: a seat whose vendor quota dies used to be lost with its context.
+The only way on was a fresh spawn under a new name plus a handover written by hand,
+while the seat's slot, pane, ownership and history stayed bound to a tool that could no
+longer answer.
+
+```bash
+ae reseat my-feature colead --using lunam
+```
+
+**It kills nothing.** The seat's tool must already be gone. The proof is the same one
+[`relaunch`](helpers.md) makes — a pane that exists, is not dead, is not busy, carries an
+ae slot, and whose recorded tool is provably not running — so both verbs refuse for the
+same reasons in the same order, and a live seat is a refusal rather than a tool ae ends
+to make room for another. Quit the agent yourself first.
+
+The seed the successor receives is exactly the pack
+[`ae brief --seat`](#--seat--the-seed-pack) prints, delivered as ae's own setup turn
+(`⟦ae:ctx⟧`). It is also kept on disk at `~/.ae/sessions/<session>/seed.<agent>.md`, so a
+turn that did not land can be re-sent by hand — the refusal that says so prints the
+command.
+
+**What moves.** The seat's profile and recorded binary; a fresh conversation (a new UUID
+where the tool takes one at launch, `pending` where its id can only be captured after);
+a new launch token and a new capture floor. The predecessor's conversation is kept
+addressable in the seat's predecessor list, tagged with the tool that owns it — the
+successor's reader looks in a different store entirely.
+
+**What is removed**, as deliberately as what is written: the config home and its implicit
+base, which belong to the tool that is leaving; the launch time, which would date a launch
+that has not happened; the observed model and its pin, which would read as drift the
+moment the new tool answers; and any `profile@client` override a launch recorded, because
+it pinned a profile this seat no longer runs. `--using` therefore takes a bare profile.
+
+**Who may run it.** A pane ae stamped is a seat, and a seat may reseat only inside its own
+session. A plain shell carries no stamp and may reseat any session — that caller is the
+point of the verb, because the moment a lead's own quota dies no agent of that session can
+run anything.
+
+**Refusals**, in the order they are answered. Everything durable is answered from the
+session's records, so a stopped session diagnoses a typo exactly as a running one does:
+an argv that is not `<session> <agent> --using <profile>`; a session ae cannot read; a
+caller in another session; a seat the roster does not name (the refusal lists the roster);
+a profile the seat already runs (`relaunch` is the verb for that); a profile `[profiles]`
+does not define or cannot lex; a pane whose stamp disagrees with the roster; then the
+dead proof's own ladder.
+
+**If it stops half way.** Nothing before the paste needs undoing, and both windows are
+recoverable by hand. Before the meta is written the seat still records its old profile and
+has no start marker, so `relaunch` brings it back on the tool it had. After the meta is
+written the pane sits at its shell, which is exactly what `relaunch` finishes — the
+refusal says so by name.
+
+Every attempt that reaches the pane is recorded as a `reseat` event, because the seat's
+history is the only place a later reader can see that its tool changed.
 
 ## `ae stop`
 
