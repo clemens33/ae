@@ -404,3 +404,127 @@ fn record_event(
         ),
     ));
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(
+        clippy::disallowed_methods,
+        reason = "a fixture inspects the real directory the leg wrote; the capability                   boundary is about what PRODUCT code may reach, which is why the                   inventory in tests/it/phase3.rs counts product lines only"
+    )]
+
+    use super::{GAVE_UP_ACTION, give_up};
+    use crate::brief_retry::{Phase, Record, publish, render};
+
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let dir = std::path::PathBuf::from(format!("/tmp/ae-leg.{}.{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(std::fs::create_dir_all(&dir).is_ok(), "a scratch dir");
+        dir
+    }
+
+    fn record() -> Record {
+        Record {
+            slot: "spawned.1".to_owned(),
+            reference: "spawn-spawned.1".to_owned(),
+            pane: "%105".to_owned(),
+            launch_id: "tok-1".to_owned(),
+            actor: "lead".to_owned(),
+            attempts: 1,
+            created: 1_789_100_000,
+            phase: Phase::Armed,
+            body: "⟦ae:brief from lead⟧\nbuild it".to_owned(),
+        }
+    }
+
+    /// The WHOLE event line, not two fields of it: the ledger must name the
+    /// ORIGINAL spawner as the actor, the seat as the target and the spawn's
+    /// own reference — the same authority the pane's provenance line carries.
+    /// Pinning the full line is what locks the shared event builder's output,
+    /// so a change there cannot quietly reshape a brief's audit trail.
+    #[test]
+    fn a_give_up_names_the_spawner_the_seat_and_the_spawns_own_reference() {
+        let dir = scratch("gaveup");
+        let record = record();
+        let witness = render(&record);
+        assert!(publish(&dir, &record).is_ok(), "a record to give up");
+
+        let mut err = Vec::new();
+        assert!(
+            give_up(
+                &dir,
+                &record,
+                "scribe",
+                "delivery was attempted twice",
+                witness.as_bytes(),
+                crate::time::Timestamp::from_epoch(1_789_100_600),
+                &mut err,
+            )
+            .is_ok(),
+            "the give-up should write"
+        );
+
+        let line = std::fs::read_to_string(dir.join("events.jsonl")).unwrap_or_default();
+        // THE WHOLE LINE, not a field of it. The shared event builder renders
+        // this, so pinning every key and its order is what makes a change there
+        // fail HERE rather than quietly reshape a brief's audit trail. Only the
+        // clock is a substitution.
+        let expected = format!(
+            "{{\"ts\":\"2026-09-11T04:23:20Z\",\"actor\":\"lead\",\"action\":\"{GAVE_UP_ACTION}\",\"target\":\"scribe\",\"ref\":\"spawn-spawned.1\",\"target_slot\":\"spawned.1\",\"summary\":\"delivery was attempted twice (attempts 1, age 600s); the brief is preserved at undelivered.scribe.txt\"}}"
+        );
+        assert_eq!(line.trim_end(), expected, "the give-up event line");
+        // The record is gone, and nothing else was written to the ledger.
+        assert!(
+            !crate::brief_retry::path(&dir, "spawned.1").exists(),
+            "a given-up record is removed"
+        );
+        assert_eq!(line.lines().count(), 1, "exactly one event: {line}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// THE SILENCE IS DELIBERATE. When the compare-and-swap finds the record
+    /// changed, a successor owns that name — a retire plus a re-spawn during
+    /// the flight — so this flight owns nothing. It must not remove the
+    /// successor's record and must not write a give-up event about a brief
+    /// that is not the one it was carrying. It says so on stderr and stops.
+    #[test]
+    fn a_give_up_that_no_longer_owns_the_record_writes_nothing_to_the_ledger() {
+        let dir = scratch("successor");
+        let mine = record();
+        let mut successor = record();
+        successor.actor = "someone-else".to_owned();
+        successor.created = 1_789_100_500;
+        assert!(publish(&dir, &successor).is_ok(), "the successor's record");
+
+        let mut err = Vec::new();
+        assert!(
+            give_up(
+                &dir,
+                &mine,
+                "scribe",
+                "delivery was attempted twice",
+                render(&mine).as_bytes(),
+                crate::time::Timestamp::from_epoch(1_789_100_600),
+                &mut err,
+            )
+            .is_ok(),
+            "a lost race is not an error"
+        );
+
+        assert!(
+            std::fs::read_to_string(dir.join("events.jsonl")).is_err(),
+            "no event may be written about a brief this flight no longer owns"
+        );
+        // The successor is untouched, bytes for bytes.
+        assert_eq!(
+            std::fs::read_to_string(crate::brief_retry::path(&dir, "spawned.1")).ok(),
+            Some(render(&successor)),
+            "the successor's record must survive intact"
+        );
+        assert!(
+            String::from_utf8_lossy(&err).contains("was replaced before it could be given up"),
+            "the lost race is still visible: {}",
+            String::from_utf8_lossy(&err)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

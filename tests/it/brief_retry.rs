@@ -22,7 +22,7 @@
 )]
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use super::phase2::{run_tmux, tmux_present};
@@ -393,5 +393,68 @@ fn damage_is_classified_outside_the_one_delivery_a_cycle_budget() {
         "damage and delivery did not both happen; aside={} delivered={:?}",
         rig.dir.join("brief-retry.spawned.1.rec.damaged").exists(),
         rig.delivered()
+    );
+}
+
+/// THE ORDER CLAIM, pinned at its source so a reorder of `deliver` goes RED
+/// rather than silent.
+///
+/// The retry re-arms its record — giving the seat another attempt — only for
+/// the four refusals that PROVE nothing was staged. That proof is not a
+/// property of the `Failure` values; it is a property of WHERE `deliver`
+/// returns them. `DeadPane` and `Lock` are decided before anything is composed,
+/// and `Abandoned` and `NotComposed` before the first key reaches the pane. If
+/// any of those moved below the first `send_key`, re-arming would silently
+/// become a way to paste one brief twice, and nothing else in this suite would
+/// notice — the tests would all still pass, and the bug would be a duplicate
+/// brief in someone's pane weeks later.
+///
+/// So this reads the shipped source and asserts the seam itself.
+#[test]
+fn every_prestage_refusal_is_decided_before_the_first_key_reaches_the_pane() {
+    let source = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("deliver.rs"),
+    )
+    .expect("the deliver source should read");
+    let start = source
+        .find("\npub fn deliver(")
+        .expect("deliver's own definition");
+    // The body ends at the next top-level item, so nothing below `deliver`
+    // can satisfy an ordering this test is asserting about `deliver`.
+    let rest = &source[start + 1..];
+    let end = rest
+        .find("\n}\n")
+        .map_or(rest.len(), |at| at + "\n}\n".len());
+    let body = &rest[..end];
+
+    let at = |needle: &str| {
+        body.find(needle)
+            .unwrap_or_else(|| panic!("deliver must still contain {needle}; the pin is stale"))
+    };
+    // The FIRST key that reaches the pane. Everything a retry may re-arm on
+    // has to be decided above this line.
+    let first_key = at("transport::send_key(");
+    for (refusal, what) in [
+        ("Failure::DeadPane", "the dead-pane refusal"),
+        ("Failure::Lock", "the lock refusal"),
+        ("quiet_or_abandoned(", "the abandoned decision"),
+        (
+            "launch_recheck(",
+            "the composed re-check that yields NotComposed",
+        ),
+    ] {
+        assert!(
+            at(refusal) < first_key,
+            "{what} must be decided BEFORE the first key reaches the pane, or a \
+             brief-retry re-arm can paste the same brief twice"
+        );
+    }
+    // And the submit is later still, so an unconfirmed submit is never in the
+    // re-armable set.
+    assert!(
+        first_key < at("submit(request,"),
+        "the submit must follow the first key"
     );
 }

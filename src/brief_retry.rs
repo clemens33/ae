@@ -812,8 +812,8 @@ pub use leg::{DELIVERED_ACTION, GAVE_UP_ACTION, RETRY_ACTION, run};
 #[cfg(test)]
 mod tests {
     use super::{
-        Damage, LAUNCH_ID_CAP, MAX_ATTEMPTS, PANE_CAP, Phase, RECORD_CAP, Record, SLOT_CAP,
-        damaged_path, parse, path, publish, read, remove, render,
+        AGE_BOUND_SECS, Damage, Damaged, LAUNCH_ID_CAP, MAX_ATTEMPTS, PANE_CAP, Phase, RECORD_CAP,
+        Record, SLOT_CAP, damaged_path, parse, path, publish, read, remove, render, should_destroy,
     };
     use std::path::PathBuf;
 
@@ -1207,6 +1207,63 @@ mod tests {
             Some(dir.as_path()),
             "a sanitized name never leaves the session directory"
         );
+    }
+
+    /// Lead's SPLIT ruling, both halves. Bytes ae SAW and refused are
+    /// permanent whatever their age; a read that FAILED is dated by the mtime
+    /// the same stat already returned, so a young one is left for the next
+    /// cycle and only one still unreadable past the age bound is destroyed.
+    #[test]
+    fn only_a_read_failure_is_dated_and_only_an_old_one_is_destroyed() {
+        let now = 1_789_200_000;
+        let dated = |kind, modified| Damaged {
+            kind,
+            modified: Some(modified),
+        };
+
+        // A read that failed a moment ago may be a passing EMFILE.
+        assert!(
+            !should_destroy(&dated(Damage::Unreadable, now - 10), now),
+            "a young unreadable record must survive to be read next cycle"
+        );
+        // One still unreadable past the bound was never going to be read.
+        assert!(
+            should_destroy(&dated(Damage::Unreadable, now - AGE_BOUND_SECS - 1), now),
+            "an unreadable record older than the age bound is permanent"
+        );
+        // Exactly AT the bound is still young: the rule is strictly past it.
+        assert!(
+            !should_destroy(&dated(Damage::Unreadable, now - AGE_BOUND_SECS), now),
+            "the age bound is crossed, not touched"
+        );
+        // A stat that did not answer is not evidence of anything.
+        assert!(
+            !should_destroy(
+                &Damaged {
+                    kind: Damage::Unreadable,
+                    modified: None,
+                },
+                now
+            ),
+            "undated damage is never destroyed"
+        );
+        // Every other class is bytes ae SAW, so age cannot rescue it — and a
+        // node that is not a regular file never becomes one.
+        for kind in [
+            Damage::NotRegular,
+            Damage::Oversize,
+            Damage::NotUtf8,
+            Damage::Magic,
+            Damage::Header,
+            Damage::Field("slot"),
+            Damage::BodyMarker,
+            Damage::Body,
+        ] {
+            assert!(
+                should_destroy(&dated(kind, now), now),
+                "{kind} is permanent whatever its age"
+            );
+        }
     }
 
     #[test]
