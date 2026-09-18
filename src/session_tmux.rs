@@ -683,6 +683,81 @@ pub(crate) fn status_bindings_argv(
     }
 }
 
+/// One key-table entry `ae doctor` expects on an ae-owned server.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ExpectedBinding {
+    /// The key table tmux lists it under (`root`, `prefix`).
+    pub table: String,
+    /// The key name (`MouseDown1Status`, `a`).
+    pub key: String,
+    /// Whether the entry must be ABSENT — a binding the owner removes because
+    /// it belongs to the other server capability.
+    pub absent: bool,
+}
+
+/// The key-table entries `ae doctor` expects on an ae-owned server of the
+/// given capability — derived from [`status_bindings_argv`], never a second
+/// list.
+///
+/// Present entries are the `bind-key` rows the owner asserts. Absent entries
+/// are the owner's `unbind-key` rows for a key ae itself binds under the other
+/// capability — the stock-menu removals are hygiene, not ae behavior, so they
+/// expect nothing. A bind added to the owner is expected here with no second
+/// edit; `the_expected_set_tracks_the_owner` pins the coupling.
+pub(crate) fn expected_status_bindings(menu_mouse: bool) -> Vec<ExpectedBinding> {
+    // The server and launcher are dummies: key names depend on neither.
+    let server = ServerId::Selected(Selector::Name("ae".to_owned()));
+    let launcher = vec!["ae".to_owned()];
+    let here = status_bindings_argv(&server, &launcher, menu_mouse);
+    let other = status_bindings_argv(&server, &launcher, !menu_mouse);
+    let (bound_here, unbound_here) = key_entries(&here);
+    let (bound_other, _) = key_entries(&other);
+    let mut expected: Vec<ExpectedBinding> = bound_here
+        .iter()
+        .cloned()
+        .map(|(table, key)| ExpectedBinding {
+            table,
+            key,
+            absent: false,
+        })
+        .collect();
+    for (table, key) in unbound_here {
+        let stale = bound_here.contains(&(table.clone(), key.clone()))
+            || bound_other.contains(&(table.clone(), key.clone()));
+        if stale {
+            expected.push(ExpectedBinding {
+                table,
+                key,
+                absent: true,
+            });
+        }
+    }
+    expected
+}
+
+/// `(table, key)` pairs, in owner order.
+type KeyPairs = Vec<(String, String)>;
+
+/// The `(table, key)` pairs an argv set binds and unbinds, in owner order.
+fn key_entries(argv: &[TmuxArgv]) -> (KeyPairs, KeyPairs) {
+    let mut bound = Vec::new();
+    let mut unbound = Vec::new();
+    for words in argv.iter().map(TmuxArgv::as_args) {
+        for window in words.windows(4) {
+            let [verb, flag, table, key] = [&window[0], &window[1], &window[2], &window[3]];
+            if flag != "-T" {
+                continue;
+            }
+            if verb == "bind-key" {
+                bound.push((table.clone(), key.clone()));
+            } else if verb == "unbind-key" {
+                unbound.push((table.clone(), key.clone()));
+            }
+        }
+    }
+    (bound, unbound)
+}
+
 /// The `#{pane_id}` a `-P -F` run printed, or `None` when nothing usable came
 /// back.
 pub(crate) fn interpret_pane_id(succeeded: bool, stdout: &str) -> Option<String> {
@@ -1260,5 +1335,77 @@ mod tests {
         assert_eq!(interpret_pane_id(true, "%12\n").as_deref(), Some("%12"));
         assert_eq!(interpret_pane_id(true, "no server\n"), None);
         assert_eq!(interpret_pane_id(false, "%12\n"), None);
+    }
+
+    /// PIN (b): the expected set is derived from the owner, not a second list.
+    /// A bind added to [`status_bindings_argv`] is expected with no second
+    /// edit (auto-covered); a hand filter here goes RED against the naive
+    /// re-derivation below.
+    #[test]
+    fn the_expected_set_tracks_the_owner() {
+        use crate::meta::Selector;
+        let server = ServerId::Selected(Selector::Name("ae".to_owned()));
+        let launcher = vec!["ae".to_owned()];
+        // Every `bind-key -T <table> <key>` the owner emits is present, and
+        // every `unbind-key` of a key bound under either capability is absent.
+        let words = |capability: bool| {
+            status_bindings_argv(&server, &launcher, capability)
+                .iter()
+                .flat_map(|binding| binding.as_args().to_vec())
+                .collect::<Vec<_>>()
+        };
+        let pairs = |words: &[String], verb: &str| {
+            words
+                .windows(4)
+                .filter(|window| window[0] == verb && window[1] == "-T")
+                .map(|window| (window[2].clone(), window[3].clone()))
+                .collect::<Vec<_>>()
+        };
+        let entry =
+            |(table, key): (String, String), absent: bool| ExpectedBinding { table, key, absent };
+        for menu_mouse in [true, false] {
+            let here = words(menu_mouse);
+            let bound_here = pairs(&here, "bind-key");
+            let bound_other = pairs(&words(!menu_mouse), "bind-key");
+            let mut derived: Vec<ExpectedBinding> = bound_here
+                .iter()
+                .cloned()
+                .map(|pair| entry(pair, false))
+                .collect();
+            for pair in pairs(&here, "unbind-key") {
+                if bound_here.contains(&pair) || bound_other.contains(&pair) {
+                    derived.push(entry(pair, true));
+                }
+            }
+            assert_eq!(expected_status_bindings(menu_mouse), derived);
+        }
+        // Non-vacuity: today's contract, which an owner REMOVAL must review.
+        let modern = expected_status_bindings(true);
+        let has = |table: &str, key: &str, absent: bool| {
+            modern
+                .iter()
+                .any(|entry| entry.table == table && entry.key == key && entry.absent == absent)
+        };
+        for (table, key) in [
+            ("root", "MouseDown1Status"),
+            ("root", "MouseDown3Status"),
+            ("prefix", "a"),
+        ] {
+            assert!(
+                has(table, key, false),
+                "{table} {key} is expected present: {modern:?}"
+            );
+        }
+        for key in ["MouseUp1Status", "MouseUp3Status"] {
+            assert!(
+                has("root", key, true),
+                "{key} is expected absent: {modern:?}"
+            );
+        }
+        assert!(
+            expected_status_bindings(false)
+                .iter()
+                .all(|entry| !entry.absent)
+        );
     }
 }

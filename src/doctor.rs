@@ -128,6 +128,32 @@ fn render_row(row: &Row) -> String {
     )
 }
 
+/// One ae-owned server's input-map verdict, as `ae doctor` reports it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BindingsFacts {
+    /// How the server is named back (`-L ae`, `-S …`).
+    pub server: String,
+    /// The tmux that answered there.
+    pub version: String,
+    /// The verdict.
+    pub status: BindingsStatus,
+}
+
+/// What one server's key tables said about ae's input map.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BindingsStatus {
+    /// Every expected key is bound to this ae, and no stale one lingers.
+    Intact,
+    /// One problem per broken key — `missing <table> <key>`, `<table> <key>
+    /// is bound to a foreign command`, `stale <table> <key> is still bound`.
+    Broken(Vec<String>),
+    /// The map could not be judged — below the floor, or `list-keys` refused.
+    Unreadable {
+        /// Why, in the row's own words.
+        why: String,
+    },
+}
+
 /// What one session's record says about the binaries it was built against.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionFacts {
@@ -135,6 +161,9 @@ pub struct SessionFacts {
     pub name: String,
     /// Whether it is live on its OWN recorded server.
     pub live: bool,
+    /// The session's own recorded server — `Ambient` when the record names
+    /// none, which the bindings check never reads.
+    pub server: crate::inventory::ServerId,
     /// `ae_core` — the pinned core path, empty when unset.
     pub core_bin: String,
     /// Whether that path is an executable file right now.
@@ -212,6 +241,9 @@ pub struct Facts {
     pub worktrees_dir: PathBuf,
     /// Every durable session, in name order.
     pub sessions: Vec<SessionFacts>,
+    /// The input-map verdict per ae-owned server that answered — empty when
+    /// none did, which reads as one neutral row, never a warning.
+    pub bindings: Vec<BindingsFacts>,
 }
 
 /// The `workspace.fleet_order` row: the human's chosen strip order, and the ONE
@@ -270,6 +302,7 @@ pub fn report(facts: &Facts) -> Report {
     let mut out = Report::default();
     install_rows(facts, &mut out);
     session_rows(facts, &mut out);
+    bindings_rows(facts, &mut out);
     out
 }
 
@@ -467,6 +500,79 @@ fn session_rows(facts: &Facts, out: &mut Report) {
     }
 }
 
+/// Compare the expected set against `(table, entries)` pairs as `list-keys`
+/// printed them — the pure half of the check, so every verdict is testable
+/// without a server. One problem string per broken key; empty means intact.
+///
+/// "ae's" is present-and-names-the-launcher: tmux re-quotes the bound command
+/// when it prints it, so byte-equality with the owner's argv would couple this
+/// check to tmux's serializer. The launcher is the executable word — the
+/// command link for an installed ae, the core path for a checkout.
+fn compare_bindings(
+    expected: &[crate::session_tmux::ExpectedBinding],
+    listed: &[(String, Vec<crate::tmux::KeyBinding>)],
+    launcher: &str,
+) -> Vec<String> {
+    let mut problems = Vec::new();
+    for entry in expected {
+        let name = format!("{} {}", entry.table, entry.key);
+        let command = listed
+            .iter()
+            .find(|(table, _)| *table == entry.table)
+            .and_then(|(_, keys)| keys.iter().find(|listed| listed.key == entry.key))
+            .map(|listed| listed.command.as_str());
+        match (command, entry.absent) {
+            (Some(_), true) => problems.push(format!("stale {name} is still bound")),
+            (Some(command), false) if !command.contains(launcher) => {
+                problems.push(format!("{name} is bound to a foreign command"));
+            }
+            (Some(_), false) | (None, true) => {}
+            (None, false) => problems.push(format!("missing {name}")),
+        }
+    }
+    problems
+}
+
+/// The rows about the INPUT MAP: whether ae's status-line clicks and picker
+/// hotkey are still bound on every ae-owned server that answered. Report only
+/// — doctor repairs nothing. Warn, never Fail.
+fn bindings_rows(facts: &Facts, out: &mut Report) {
+    if facts.bindings.is_empty() {
+        out.push(
+            Level::Ok,
+            "tmux.bindings",
+            "no reachable ae-owned server — nothing to check",
+        );
+        return;
+    }
+    for found in &facts.bindings {
+        match &found.status {
+            BindingsStatus::Intact => out.push(
+                Level::Ok,
+                "tmux.bindings",
+                &format!(
+                    "{}: status-line clicks and the picker hotkey are bound to this ae (tmux {})",
+                    found.server, found.version
+                ),
+            ),
+            BindingsStatus::Broken(problems) => out.push(
+                Level::Warn,
+                "tmux.bindings",
+                &format!(
+                    "{}: {}; reassert with 'ae <session>' or 'ae upgrade'",
+                    found.server,
+                    problems.join("; ")
+                ),
+            ),
+            BindingsStatus::Unreadable { why } => out.push(
+                Level::Warn,
+                "tmux.bindings",
+                &format!("{}: key bindings unreadable ({why})", found.server),
+            ),
+        }
+    }
+}
+
 /// An empty recorded version reads as `-`, never as a blank column.
 fn blank(value: &str) -> &str {
     if value.is_empty() { "-" } else { value }
@@ -586,6 +692,8 @@ pub fn gather(root: &Path, global: Option<&Path>, local: Option<&Path>) -> Facts
             Ok(value) => (value.unwrap_or_default(), None),
             Err(why) => (String::new(), Some(why)),
         };
+    let sessions = session_facts(root);
+    let bindings = bindings_facts(&sessions, root, &config, core.as_deref());
     Facts {
         version: crate::VERSION.to_owned(),
         core_writable: core.as_deref().and_then(is_writable),
@@ -617,7 +725,8 @@ pub fn gather(root: &Path, global: Option<&Path>, local: Option<&Path>) -> Facts
         profiles,
         sessions_dir: roots.sessions().to_owned(),
         worktrees_dir: roots.worktrees().to_owned(),
-        sessions: session_facts(root),
+        sessions,
+        bindings,
         boot: crate::doors::boot_time(crate::shape::current()),
     }
 }
@@ -686,6 +795,7 @@ fn session_facts(root: &Path) -> Vec<SessionFacts> {
             };
             SessionFacts {
                 live: crate::transport::session_exists(&server, &name),
+                server,
                 core_usable: !core_bin.is_empty() && is_executable_file(Path::new(&core_bin)),
                 core_version: crate::lifecycle::meta_value(&bytes, "ae_core_version"),
                 glue_version: crate::lifecycle::meta_value(&bytes, "ae_version"),
@@ -710,6 +820,101 @@ fn discovered(root: &Path) -> Vec<(String, PathBuf)> {
         }
     }
     seen
+}
+
+/// The input-map verdict for every ae-owned server with a running session on
+/// it, plus the default named server — read-only, through the existing tmux
+/// door. Only a server that positively ANSWERED earns a row: an absent or
+/// unreachable one is skipped, never warned about. The ambient server — the
+/// user's own — is never read.
+fn bindings_facts(
+    sessions: &[SessionFacts],
+    root: &Path,
+    config: &Path,
+    core: Option<&Path>,
+) -> Vec<BindingsFacts> {
+    let mut servers: Vec<crate::inventory::ServerId> = Vec::new();
+    for session in sessions.iter().filter(|session| session.live) {
+        let crate::inventory::ServerId::Selected(_) = &session.server else {
+            continue;
+        };
+        if !servers.contains(&session.server) {
+            servers.push(session.server.clone());
+        }
+    }
+    let default = crate::inventory::ServerId::Selected(crate::meta::Selector::Name(
+        crate::doors::DEFAULT_SERVER_NAME.to_owned(),
+    ));
+    if !servers.contains(&default) {
+        servers.push(default);
+    }
+    let mut out = Vec::new();
+    for server in &servers {
+        let crate::tmux_floor::Probe::Server(found) = crate::transport::observe_tmux_floor(server)
+        else {
+            continue;
+        };
+        out.push(check_server_bindings(server, &found, root, config, core));
+    }
+    out
+}
+
+/// Judge one answered server's key tables against the expected set for its
+/// own capability — the same probe the launch's assert reads.
+fn check_server_bindings(
+    server: &crate::inventory::ServerId,
+    found: &str,
+    root: &Path,
+    config: &Path,
+    core: Option<&Path>,
+) -> BindingsFacts {
+    BindingsFacts {
+        server: crate::tmux_floor::server_label(server),
+        version: found.trim().to_owned(),
+        status: judge_server_bindings(server, found, root, config, core),
+    }
+}
+
+fn judge_server_bindings(
+    server: &crate::inventory::ServerId,
+    found: &str,
+    root: &Path,
+    config: &Path,
+    core: Option<&Path>,
+) -> BindingsStatus {
+    let unreadable = |why: String| BindingsStatus::Unreadable { why };
+    let probe = crate::tmux_floor::Probe::Server(found.to_owned());
+    // `verdict`, not `clears_floor`: doctor REPORTS the floor and refuses
+    // nothing, which is why the gate pin does not count this site.
+    if probe.verdict() != crate::tmux_floor::Verdict::Ok {
+        return unreadable(format!(
+            "tmux {found} is below the {} floor ae launches on",
+            crate::tmux_floor::REQUIRED
+        ));
+    }
+    let Some(core) = core else {
+        return unreadable("this binary cannot name its own path".to_owned());
+    };
+    let launcher =
+        crate::session_tmux::picker_launcher(crate::shape::current(), core, root, config, server);
+    let Some(own) = launcher.last() else {
+        return unreadable("this ae names no launcher to judge the map by".to_owned());
+    };
+    let expected = crate::session_tmux::expected_status_bindings(probe.menu_mouse());
+    let mut tables: Vec<(String, Vec<crate::tmux::KeyBinding>)> = Vec::new();
+    for entry in &expected {
+        if tables.iter().any(|(table, _)| *table == entry.table) {
+            continue;
+        }
+        let Some(keys) = crate::transport::observe_key_bindings(server, &entry.table) else {
+            return unreadable(format!("list-keys -T {} did not answer", entry.table));
+        };
+        tables.push((entry.table.clone(), keys));
+    }
+    match compare_bindings(&expected, &tables, own).as_slice() {
+        [] => BindingsStatus::Intact,
+        problems => BindingsStatus::Broken(problems.to_vec()),
+    }
 }
 
 /// What `doctor`'s argv asked for.
@@ -1064,6 +1269,7 @@ mod tests {
             sessions_dir: PathBuf::from("/home/me/.ae/sessions"),
             worktrees_dir: PathBuf::from("/home/me/.ae/worktrees"),
             sessions: Vec::new(),
+            bindings: Vec::new(),
         }
     }
 
@@ -1238,6 +1444,7 @@ mod tests {
         let recorded = |name: &str, live: bool| SessionFacts {
             name: name.to_owned(),
             live,
+            server: crate::inventory::ServerId::Ambient,
             core_bin: "/c".to_owned(),
             core_usable: true,
             core_version: "2026.9.1".to_owned(),
@@ -1276,6 +1483,7 @@ mod tests {
         input.sessions.push(SessionFacts {
             name: "left".to_owned(),
             live: false,
+            server: crate::inventory::ServerId::Ambient,
             core_bin: "/c".to_owned(),
             core_usable: true,
             core_version: "2026.9.1".to_owned(),
@@ -1298,6 +1506,7 @@ mod tests {
         input.sessions.push(SessionFacts {
             name: "unbound".to_owned(),
             live: true,
+            server: crate::inventory::ServerId::Ambient,
             core_bin: String::new(),
             core_usable: false,
             core_version: String::new(),
@@ -1315,6 +1524,7 @@ mod tests {
         input.sessions.push(SessionFacts {
             name: "old".to_owned(),
             live: true,
+            server: crate::inventory::ServerId::Ambient,
             core_bin: "/c".to_owned(),
             core_usable: true,
             core_version: "2026.8.4".to_owned(),
@@ -1417,6 +1627,136 @@ mod tests {
         assert!(
             !document.rows.iter().any(|row| row.label == "bash"),
             "ae ships no bash, so there is no bash row to fill"
+        );
+    }
+
+    /// PIN (a): the verdict half of the input-map check — intact, one key
+    /// missing, a key bound to a foreign command, a stale Up binding present.
+    #[test]
+    fn the_input_map_compare_names_what_broke_and_nothing_else() {
+        use crate::session_tmux::ExpectedBinding;
+        use crate::tmux::KeyBinding;
+        let entry = |table: &str, key: &str, absent: bool| ExpectedBinding {
+            table: table.to_owned(),
+            key: key.to_owned(),
+            absent,
+        };
+        let bound = |key: &str, command: &str| KeyBinding {
+            key: key.to_owned(),
+            command: command.to_owned(),
+        };
+        let expected = vec![
+            entry("root", "MouseDown1Status", false),
+            entry("root", "MouseUp1Status", true),
+            entry("prefix", "a", false),
+        ];
+        let ae = "run-shell '/opt/ae' 'orchestrator'";
+        let down = bound("MouseDown1Status", ae);
+        let hotkey = bound("a", ae);
+        let table = |root: Vec<KeyBinding>| {
+            vec![
+                ("root".to_owned(), root),
+                ("prefix".to_owned(), vec![hotkey.clone()]),
+            ]
+        };
+        assert!(compare_bindings(&expected, &table(vec![down.clone()]), "/opt/ae").is_empty());
+        assert_eq!(
+            compare_bindings(&expected, &table(Vec::new()), "/opt/ae"),
+            vec!["missing root MouseDown1Status"]
+        );
+        assert_eq!(
+            compare_bindings(
+                &expected,
+                &table(vec![bound("MouseDown1Status", "select-window -t {mouse}")]),
+                "/opt/ae"
+            ),
+            vec!["root MouseDown1Status is bound to a foreign command"]
+        );
+        assert_eq!(
+            compare_bindings(
+                &expected,
+                &table(vec![down, bound("MouseUp1Status", ae)]),
+                "/opt/ae"
+            ),
+            vec!["stale root MouseUp1Status is still bound"]
+        );
+    }
+
+    /// PIN (c): the `tmux.bindings` row text — intact, missing, foreign,
+    /// unreadable, and no server at all.
+    #[test]
+    fn the_bindings_row_names_the_server_the_key_and_the_repair() {
+        let row_named = |input: &Facts| {
+            report(input)
+                .rows()
+                .iter()
+                .find(|row| row.label == "tmux.bindings")
+                .cloned()
+                .unwrap_or_else(|| panic!("the report carries a tmux.bindings row"))
+        };
+        let quiet = row_named(&facts());
+        assert_eq!(quiet.level, Level::Ok);
+        assert!(
+            quiet.detail.contains("nothing to check"),
+            "{}",
+            quiet.detail
+        );
+
+        let found = |status| BindingsFacts {
+            server: "-L ae".to_owned(),
+            version: "3.7b".to_owned(),
+            status,
+        };
+        // (status, level, needle): every row names its server, and a broken
+        // one names the key and the repair — Warn, never Fail.
+        for (status, level, needle) in [
+            (BindingsStatus::Intact, Level::Ok, "bound to this ae"),
+            (
+                BindingsStatus::Broken(vec!["missing root MouseDown1Status".to_owned()]),
+                Level::Warn,
+                "missing root MouseDown1Status",
+            ),
+            (
+                BindingsStatus::Broken(vec!["prefix a is bound to a foreign command".to_owned()]),
+                Level::Warn,
+                "prefix a is bound to a foreign command",
+            ),
+            (
+                BindingsStatus::Broken(vec!["stale root MouseUp1Status is still bound".to_owned()]),
+                Level::Warn,
+                "stale root MouseUp1Status is still bound",
+            ),
+            (
+                BindingsStatus::Unreadable {
+                    why: "tmux 3.3a is below the 3.4 floor ae launches on".to_owned(),
+                },
+                Level::Warn,
+                "key bindings unreadable (tmux 3.3a",
+            ),
+        ] {
+            let mut input = facts();
+            input.bindings = vec![found(status)];
+            let row = row_named(&input);
+            assert_eq!(row.level, level, "{}", row.detail);
+            assert!(row.detail.contains("-L ae"), "{}", row.detail);
+            assert!(row.detail.contains(needle), "{}", row.detail);
+            if level == Level::Warn && !needle.contains("unreadable") {
+                assert!(row.detail.contains("reassert with"), "{}", row.detail);
+            }
+            assert_eq!(
+                report(&input).failures(),
+                0,
+                "never a failure: {}",
+                row.detail
+            );
+        }
+        let mut input = facts();
+        input.bindings = vec![found(BindingsStatus::Unreadable {
+            why: "list-keys -T root did not answer".to_owned(),
+        })];
+        assert!(
+            !row_named(&input).detail.contains("intact"),
+            "never a false intact"
         );
     }
 }

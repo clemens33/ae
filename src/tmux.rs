@@ -2122,6 +2122,64 @@ pub fn interpret_program_version(succeeded: bool, stdout: &str) -> Option<String
 }
 
 // ---------------------------------------------------------------------------
+// The key-table read: `ae doctor`'s input-map check.
+// ---------------------------------------------------------------------------
+
+/// One key-table entry, as `list-keys -T <table>` prints it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyBinding {
+    /// The key name (`MouseDown1Status`, `a`).
+    pub key: String,
+    /// The bound command, as printed.
+    pub command: String,
+}
+
+/// The full argument list for reading `server`'s `table` key bindings.
+#[must_use]
+pub fn list_keys_args(server: &ServerId, table: &str) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(["list-keys", "-T", table].map(ToOwned::to_owned));
+    args
+}
+
+/// The key-table entries a `list-keys` run printed, or `None` when it failed.
+///
+/// A line that is not a `bind-key` row is skipped, never fatal: a future
+/// spelling must degrade to "that key reads as missing", not to "the table is
+/// unreadable".
+#[must_use]
+pub fn interpret_list_keys(succeeded: bool, stdout: &str) -> Option<Vec<KeyBinding>> {
+    if !succeeded {
+        return None;
+    }
+    let mut out = Vec::new();
+    for line in stdout.lines() {
+        let mut parts = line.split_whitespace();
+        if parts.next() != Some("bind-key") {
+            continue;
+        }
+        let mut token = parts.next();
+        while matches!(token, Some("-n" | "-r" | "-nr" | "-rn")) {
+            token = parts.next();
+        }
+        if token != Some("-T") {
+            continue;
+        }
+        if parts.next().is_none() {
+            continue;
+        }
+        let Some(key) = parts.next() else {
+            continue;
+        };
+        out.push(KeyBinding {
+            key: key.to_owned(),
+            command: parts.collect::<Vec<_>>().join(" "),
+        });
+    }
+    Some(out)
+}
+
+// ---------------------------------------------------------------------------
 // The fleet strip's two reads.
 // ---------------------------------------------------------------------------
 
@@ -5801,6 +5859,42 @@ mod tests {
         assert_eq!(
             current_session_args(&ServerId::Ambient),
             vec!["display-message", "-p", "#{session_name}"]
+        );
+    }
+
+    /// PIN (a): the `list-keys` read behind `ae doctor`'s input-map check.
+    #[test]
+    fn the_key_table_read_keeps_key_and_command_and_tolerates_garbage() {
+        use super::{interpret_list_keys, list_keys_args};
+        use crate::inventory::ServerId;
+        assert_eq!(
+            list_keys_args(&ServerId::Ambient, "root"),
+            vec!["list-keys", "-T", "root"]
+        );
+        // A failed run is no table, not an empty one.
+        assert_eq!(interpret_list_keys(false, "bind-key -T root a b\n"), None);
+        let printed = "bind-key  -T root MouseDown1Status          run-shell -C -t \"{mouse}\" \"#{?x}\"\n\
+             not a bind row at all\n\
+             bind-key -T root\n\
+             bind-key -r -T prefix a run-shell -b '/opt/ae' 'orchestrator'\n";
+        let entries = interpret_list_keys(true, printed).expect("a table");
+        assert_eq!(entries.len(), 2, "garbage lines are skipped: {entries:?}");
+        assert_eq!(entries[0].key, "MouseDown1Status");
+        assert!(
+            entries[0].command.starts_with("run-shell -C"),
+            "{}",
+            entries[0].command
+        );
+        assert!(
+            entries[0].command.contains("#{?x}"),
+            "{}",
+            entries[0].command
+        );
+        assert_eq!(entries[1].key, "a");
+        assert!(
+            entries[1].command.contains("'/opt/ae'"),
+            "{}",
+            entries[1].command
         );
     }
 }

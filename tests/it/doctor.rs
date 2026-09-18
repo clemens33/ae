@@ -92,6 +92,24 @@ impl Rig {
         args.extend(tail.iter().map(|arg| (*arg).to_owned()));
         run_tmux(&args, &self.scratch)
     }
+
+    /// The bare `ae <name> --no-attach` verb: a running session is reattached,
+    /// never rebuilt — and the reattach asserts the owner's bindings.
+    fn reattach(&self, name: &str) -> (Option<i32>, String, String) {
+        let out = ae()
+            .env("AE_HOME", &self.home)
+            .env("CONFIG_FILE", &self.config)
+            .env_remove("TMUX")
+            .env_remove("TMUX_PANE")
+            .args([name, "--no-attach"])
+            .output()
+            .unwrap_or_else(|why| panic!("the ae binary should run: {why}"));
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    }
 }
 
 impl Drop for Rig {
@@ -478,4 +496,51 @@ fn the_report_names_the_state_root_it_actually_read() {
     ]);
     let sessions = rig.home.join("sessions").display().to_string();
     assert!(stdout.contains(&sessions), "{stdout}");
+}
+
+/// PIN (d): a reattach asserts the owner's bindings — doctor reads intact;
+/// unbinding one root key turns that server's row into a Warn naming it.
+#[test]
+fn doctor_reports_the_input_map_intact_then_names_an_unbound_key() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::new("bindings");
+    rig.session("clicks", "watchdog=false\n");
+    assert!(
+        rig.tmux(&["new-session", "-d", "-s", "clicks", "-n", "lead"])
+            .0,
+        "a live session to reattach"
+    );
+    let (code, stdout, stderr) = rig.reattach("clicks");
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+
+    let sock = rig.sock.display().to_string();
+    let row_for = |report: &str| {
+        report
+            .lines()
+            .find(|line| line.contains("tmux.bindings") && line.contains(&sock))
+            .map(str::to_owned)
+    };
+    let doctor = || {
+        rig.run(&[
+            ae::cli::DOCTOR,
+            "--global",
+            &rig.config.display().to_string(),
+        ])
+        .1
+    };
+    let intact = row_for(&doctor()).expect("a row for the rig server");
+    assert!(intact.starts_with("OK"), "{intact}");
+    assert!(intact.contains("bound to this ae"), "{intact}");
+
+    assert!(
+        rig.tmux(&["unbind-key", "-T", "root", "MouseDown1Status"])
+            .0,
+        "the breakage"
+    );
+    let broken = row_for(&doctor()).expect("a row for the rig server");
+    assert!(broken.starts_with("WARN"), "{broken}");
+    assert!(broken.contains("missing root MouseDown1Status"), "{broken}");
+    assert!(broken.contains("reassert with"), "{broken}");
 }

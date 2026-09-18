@@ -932,6 +932,17 @@ pub fn observe_tmux_floor(server: &ServerId) -> crate::tmux_floor::Probe {
     }
 }
 
+/// The key-table entries `server` reports for `table` (`root`, `prefix`), or
+/// `None` when it did not answer — `ae doctor`'s read-only input-map check.
+#[must_use]
+pub fn observe_key_bindings(server: &ServerId, table: &str) -> Option<Vec<tmux::KeyBinding>> {
+    if !addressable(server) {
+        return None;
+    }
+    let (succeeded, stdout) = run(PROGRAM, &tmux::list_keys_args(server, table));
+    tmux::interpret_list_keys(succeeded, &stdout)
+}
+
 /// Every session on `server` with the attention its own watchdog published, or
 /// `None` when the server did not answer.
 #[must_use]

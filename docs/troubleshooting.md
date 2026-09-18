@@ -174,6 +174,14 @@ falls back to a fresh conversation.
 
 `tmux set-option @ae_agent` failed for that pane. Refresh the session (`ae doctor --refresh <name>`) — it rewrites pane labels and tags, re-links the helpers, and re-renders `workspace.md`. If the pane is missing entirely, that's a different problem (agent CLI exited); `peek <agent>` shows what it printed on the way out.
 
+## Status-line clicks do nothing
+
+The strip draws, but clicking a session, the picker glyph or the gear does nothing.
+The click and picker-hotkey bindings live in the tmux server's key table, and a
+`source-file ~/.tmux.conf`, an `unbind-key -a`, or another tool rewriting the root
+table removes them silently. `ae doctor` names the missing key on its `tmux.bindings`
+row; `ae <session>` or `ae upgrade` reasserts the map.
+
 ## Using fish or zsh
 
 Fine. `ae` is a native Rust binary; your interactive shell does not need to be bash as
