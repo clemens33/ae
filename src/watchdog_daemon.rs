@@ -5558,6 +5558,64 @@ mod tests {
         assert_eq!(account(&prior, &no_modal, &knobs).verdict, Verdict::Stale);
     }
 
+    /// DEAD outranks it. A pane whose agent is gone may still be showing the
+    /// modal it died on; "this will never move again" is the worse news.
+    #[test]
+    fn a_dead_seat_showing_a_modal_is_reported_dead_and_not_named() {
+        let knobs = Knobs::default();
+        let dead = Observation {
+            is_dead: true,
+            ..on_a_modal()
+        };
+        let first = account(&PaneState::default(), &dead, &knobs);
+        let second = account(&first.next, &dead, &knobs);
+        assert_eq!(second.verdict, Verdict::Dead);
+        assert!(
+            !actions(&second.effects).contains(&"human-prompt"),
+            "a dead seat is not paged about a prompt: {:?}",
+            second.effects
+        );
+    }
+
+    /// The detector path NEVER sends a key — invariant 3, and the reason this
+    /// feature is safe to run against a modal at all. The types already say so
+    /// (none of these takes a server or a pane), so this reads the SOURCE: the
+    /// day one of them gains a handle, this is what fails.
+    #[test]
+    fn nothing_in_the_human_prompt_path_can_reach_a_pane() {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "a source scan in TEST code; tests/it/phase3.rs inventories \
+                      PRODUCT lines only"
+        )]
+        fn source(file: &str) -> String {
+            std::fs::read_to_string(file).unwrap_or_else(|why| panic!("{file}: {why}"))
+        }
+        let detector = source("src/watchdog.rs");
+        let daemon = source("src/watchdog_daemon.rs");
+        let region = |text: &str, from: &str, to: &str| {
+            let start = text
+                .find(from)
+                .unwrap_or_else(|| panic!("{from} should exist"));
+            let rest = &text[start..];
+            let end = rest.find(to).unwrap_or(rest.len());
+            rest[..end].to_owned()
+        };
+        let paths = [
+            region(&detector, "pub fn human_prompt_class", "\n/// "),
+            region(&daemon, "fn book_human_prompt", "\nfn book_limit"),
+            region(&daemon, "// 5c. The human-prompt latch", "// 6. A quiet"),
+        ];
+        for path in &paths {
+            for reach in ["transport::", "send_key", "capture_pane", "ServerId"] {
+                assert!(
+                    !path.contains(reach),
+                    "the human-prompt path must not reach a pane, found {reach} in:\n{path}"
+                );
+            }
+        }
+    }
+
     /// A DECLARED quiet state outranks the modal: branch 6 returns above 8.5.
     /// An agent that said `done` is not news because its pane draws a menu.
     #[test]

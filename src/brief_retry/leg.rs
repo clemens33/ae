@@ -52,6 +52,29 @@ pub fn run(
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> std::io::Result<u8> {
+    run_with_wait(
+        dir,
+        target,
+        own_session,
+        now,
+        crate::store::LOCK_WAIT,
+        out,
+        err,
+    )
+}
+
+/// [`run`], with the record-lock wait passed in. The DURATION is a constant,
+/// not a behaviour: the behaviour is that losing the lock skips and writes
+/// nothing, and a test proves that without spending the production wait.
+fn run_with_wait(
+    dir: &Path,
+    target: &str,
+    own_session: &str,
+    now: crate::time::Timestamp,
+    lock_wait: std::time::Duration,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> std::io::Result<u8> {
     use crate::state::EXIT_FAILED;
 
     // Every refusal below is the same sentence with a different clause.
@@ -84,7 +107,7 @@ pub fn run(
     // THE RECORD LOCK, held across the whole read-decide-write sequence. A
     // second helper — a restarted daemon's orphan, or a forged trigger — waits,
     // fails and skips, so two flights can never both publish a mark and paste.
-    let Ok(_held) = crate::store::lock(&path(dir, &resolved.slot), crate::store::LOCK_WAIT) else {
+    let Ok(_held) = crate::store::lock(&path(dir, &resolved.slot), lock_wait) else {
         let slot = &resolved.slot;
         return refuse(
             err,
@@ -435,7 +458,8 @@ mod tests {
     )]
 
     use super::{
-        Flight, GAVE_UP_ACTION, Outcome, give_up, outcome_of, path, read, rearm_after_prestage, run,
+        Flight, GAVE_UP_ACTION, Outcome, give_up, outcome_of, path, read, rearm_after_prestage,
+        run, run_with_wait,
     };
     use crate::brief_retry::{MAX_ATTEMPTS, Phase, Record, publish, render};
 
@@ -711,11 +735,14 @@ mod tests {
             crate::inventory::ServerId::Ambient,
         );
         let (mut out, mut err) = (Vec::new(), Vec::new());
-        let code = run(
+        // The production wait is 5s; what is under test is the ARM, not how
+        // long it waits, so the seam keeps this off every developer's clock.
+        let code = run_with_wait(
             &dir,
             "scribe",
             "mine",
             crate::time::Timestamp::from_epoch(1_789_100_060),
+            std::time::Duration::from_millis(50),
             &mut out,
             &mut err,
         );
