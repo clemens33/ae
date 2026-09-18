@@ -792,7 +792,10 @@ fn a_seat_pack_carries_the_seats_own_last_turns_and_names_a_read_it_could_not_ma
 
     let (code, stdout, stderr) = run(&root, &["brief", "brf12", "--seat", "lead"]);
     assert_eq!(code, Some(0), "stderr: {stderr}");
-    assert!(stdout.contains("turns: 3\n"), "{stdout}");
+    assert!(
+        stdout.contains("newest six turns, oldest first"),
+        "{stdout}"
+    );
     assert!(
         stdout.contains("--- human  10m\nthe first thing the human asked\n"),
         "{stdout}"
@@ -820,6 +823,21 @@ fn a_seat_pack_carries_the_seats_own_last_turns_and_names_a_read_it_could_not_ma
         "{stdout}"
     );
     assert!(!stdout.contains("none recorded\n\n## footnote"), "{stdout}");
+
+    // A seat on a tool whose reader is not built yet says which tool, in that
+    // reader's own words: the coverage reason is the board's, verbatim.
+    let meta = dir.join("meta");
+    let named = fs::read_to_string(&meta).unwrap_or_default();
+    assert!(
+        fs::write(&meta, format!("{named}agent_bin.spawned.0=opencode\n")).is_ok(),
+        "a seat on an unread tool"
+    );
+    let (code, stdout, stderr) = run(&root, &["brief", "brf12", "--seat", "scribe"]);
+    assert_eq!(code, Some(0), "stderr: {stderr}");
+    assert!(
+        stdout.contains("## last turns\nincomplete: opencode: not read\n"),
+        "{stdout}"
+    );
 }
 
 #[test]

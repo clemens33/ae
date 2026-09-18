@@ -1051,11 +1051,14 @@ fn push_last_turns(out: &mut String, inputs: &Inputs) {
         out.push('\n');
         return;
     }
+    // The window, not a count: the hard cap cuts the body's TAIL at a line
+    // boundary and this section is the last one before the footnote, so a
+    // rendered COUNT would outlive the very bodies it counted. The bodies
+    // count themselves and CLIP_TURNS names what the section budget dropped.
     out.push_str(
-        "source: this seat's own transcript, oldest first — words only, no thinking and no \
-         tool calls\n",
+        "source: this seat's own transcript, newest six turns, oldest first — words only, no \
+         thinking and no tool calls\n",
     );
-    let _ = writeln!(out, "turns: {}", blocks.len());
     for block in &blocks {
         out.push_str(block);
     }
@@ -1977,7 +1980,10 @@ mod tests {
         };
         let rendered = pack(&inputs);
         let section = turns_section(&rendered);
-        assert!(section.contains("turns: 6\n"), "{section}");
+        assert!(
+            section.contains("newest six turns, oldest first"),
+            "the section names its window rather than counting what survived a cut: {section}"
+        );
         // The two oldest are gone; the rest keep the order they were read in.
         assert!(!section.contains("turn 0"), "{section}");
         assert!(!section.contains("turn 1"), "{section}");
@@ -2095,8 +2101,9 @@ mod tests {
             section.contains("incomplete: line cap tripped\n"),
             "{section}"
         );
-        assert!(section.contains("turns: 2\n"), "{section}");
-        assert!(section.contains("turn 1"), "{section}");
+        // Both halves render; the gap sits above them, not instead of them.
+        assert!(section.contains("--- human  2m\nturn 0\n"), "{section}");
+        assert!(section.contains("--- assistant  1m\nturn 1\n"), "{section}");
     }
 
     #[test]
