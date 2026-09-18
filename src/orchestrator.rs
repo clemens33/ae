@@ -558,8 +558,34 @@ const STATE_CAP: usize = 13;
 /// The widest the branch column is ever drawn.
 const BRANCH_CAP: usize = 14;
 
-/// The widest the agent profile column is ever drawn.
-const PROFILE_CAP: usize = 12;
+/// The widest the agent model column is ever drawn.
+///
+/// `CLIENT 4 + 1 + MODEL 16 + 1 + EFFORT 6`. The effort width is the closed
+/// vocabulary's own widest word, not a guess.
+const MODEL_CELL_CAP: usize = 28;
+
+/// The two indent cells, the glyph and the three separators an agent row spends
+/// before its model cell — what the model column must be budgeted against.
+const AGENT_ROW_OVERHEAD: usize = 6;
+
+/// How much of a seat's identity one draw spends on every agent row.
+///
+/// The choice is MENU-WIDE, made once per draw, because the model cell is a
+/// COLUMN: a row that kept its effort while its neighbour dropped one is a
+/// column the reader cannot read down.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FidelityRung {
+    /// Client, model and the effort the frame drew.
+    Full,
+    /// Client and model. Effort is dropped first because it is the only cell
+    /// whose absence costs no identity — the seat is still named.
+    NoEffort,
+}
+
+impl FidelityRung {
+    /// The rungs, most informative first.
+    const LADDER: [Self; 2] = [Self::Full, Self::NoEffort];
+}
 
 /// How much of a goal survives into a row.
 const GOAL_WIDTH: usize = 36;
@@ -582,7 +608,13 @@ struct Columns {
     name: usize,
     state: usize,
     branch: usize,
-    profile: usize,
+    model: usize,
+    /// The fidelity every agent cell in this draw is rendered at.
+    ///
+    /// It rides HERE, rather than beside the widths, because `model` is the
+    /// width OF a cell at this rung: separated, the two could disagree and the
+    /// column would be padded for a cell nobody drew.
+    rung: FidelityRung,
 }
 
 impl Columns {
@@ -591,7 +623,8 @@ impl Columns {
         name: MIN_COLUMN_WIDTH,
         state: MIN_COLUMN_WIDTH,
         branch: MIN_COLUMN_WIDTH,
-        profile: MIN_COLUMN_WIDTH,
+        model: MIN_COLUMN_WIDTH,
+        rung: FidelityRung::Full,
     };
 
     /// Widen `field` to hold `text`, never past `cap`.
@@ -605,11 +638,85 @@ impl Columns {
         Self::widen(&mut self.branch, branch, BRANCH_CAP);
     }
 
-    fn hold_agent(&mut self, name: &str, profile: &str, state: &str) {
+    /// Phase A: the columns an agent row SHARES with the session rows. The
+    /// model column is not held here — its width depends on a rung that cannot
+    /// be chosen until `name` and `state` are final.
+    fn hold_agent(&mut self, name: &str, state: &str) {
         Self::widen(&mut self.name, name, NAME_CAP);
-        Self::widen(&mut self.profile, profile, PROFILE_CAP);
         Self::widen(&mut self.state, state, STATE_CAP);
     }
+
+    /// Phases B and C: pick this draw's rung, then widen the model column to it.
+    ///
+    /// The budget is what the shared columns leave over. `saturating_sub` is
+    /// required rather than tidy: a client may legally be 8 cells wide, leaving
+    /// an `inner_width` of 4, and the overhead alone exceeds that.
+    ///
+    /// The fit test compares the CAPPED width, so one long model that the cap
+    /// was going to clip anyway cannot drag the whole menu down a rung. The
+    /// budget then caps the column as well, because `pad` truncates before it
+    /// pads: without that term the row overruns `inner_width` and the row-level
+    /// clip takes the TAIL, which is the state word rather than the model.
+    fn fit_models(&mut self, agents: &[&crate::tmux::PickerAgent], inner_width: usize) {
+        let budget = inner_width.saturating_sub(AGENT_ROW_OVERHEAD + self.name + self.state);
+        for rung in FidelityRung::LADDER {
+            let widest = agents
+                .iter()
+                .map(|agent| terminal_cells(&model_cell(agent, rung)).min(MODEL_CELL_CAP))
+                .max()
+                .unwrap_or(0);
+            self.rung = rung;
+            self.model = widest.max(MIN_COLUMN_WIDTH).min(budget);
+            if widest <= budget {
+                return;
+            }
+        }
+    }
+}
+
+/// What one agent row says the seat is running.
+///
+/// The client comes ONLY from the fact's own `client` field. Nothing here
+/// resolves a profile to a tool: that would be a second, unpinned source for a
+/// cell whose whole point is that it reports rather than guesses.
+///
+/// The fallback is decided per FIELD, not per grammar version. An entry with no
+/// model names the DECLARED profile with a `~`, so a reader can tell "this is
+/// what it was asked to run" from "this is what it is running". A `v1` entry —
+/// an older watchdog, or the legacy rung of a roster too wide to spell — has no
+/// client at all and renders the bare form.
+///
+/// The drift mark the fact carries is deliberately NOT drawn. Durable drift
+/// today compares a display string with a pin string, so it fires on every
+/// observed seat (`Opus 5` against `claude-opus-5`); a mark on every row is a
+/// mark the reader learns to ignore. The field stays parsed and carried, and
+/// the day pin and display are comparable it can be drawn without a grammar
+/// change.
+fn model_cell(agent: &crate::tmux::PickerAgent, rung: FidelityRung) -> String {
+    if !agent.model.is_empty() {
+        // A model with no client is refused by the fact's own coherence check,
+        // so this arm answers only a hand-built agent — with the model alone
+        // rather than a leading blank.
+        let mut cell = if agent.client.is_empty() {
+            agent.model.clone()
+        } else {
+            format!("{} {}", agent.client, agent.model)
+        };
+        if rung == FidelityRung::Full && !agent.effort.is_empty() {
+            cell.push(' ');
+            cell.push_str(&agent.effort);
+        }
+        return cell;
+    }
+    if agent.profile.is_empty() {
+        // The writer refuses a roster whose seat has no profile, so nothing ae
+        // publishes reaches here; a row that knows nothing says so.
+        return "-".to_owned();
+    }
+    if agent.client.is_empty() {
+        return format!("~{}", agent.profile);
+    }
+    format!("{} ~{}", agent.client, agent.profile)
 }
 
 /// The terminal facts that bound one menu draw.
@@ -900,13 +1007,23 @@ fn build_menu(
         );
         if expanded_row(expansion, current, index) {
             for agent in agents[index].iter().flatten() {
-                columns.hold_agent(&agent.name, &agent.profile, &agent.state);
+                columns.hold_agent(&agent.name, &agent.state);
             }
         }
     }
     for row in stopped_visible.iter().take(displayed_stopped) {
         columns.hold_session(&clean(&row.name), STOPPED_WORD, &clean(&row.branch));
     }
+    // Phase B and C: only now are the shared columns final, so only now can the
+    // model column be budgeted and its rung chosen.
+    let drawn_agents: Vec<&crate::tmux::PickerAgent> = visible
+        .iter()
+        .take(displayed)
+        .enumerate()
+        .filter(|(index, _)| expanded_row(expansion, current, *index))
+        .flat_map(|(index, _)| agents[index].iter().flatten())
+        .collect();
+    columns.fit_models(&drawn_agents, inner_width);
     let mut session_items = Vec::with_capacity(displayed);
     for (index, session) in visible.iter().take(displayed).enumerate() {
         let expanded = expanded_row(expansion, current, index);
@@ -1172,7 +1289,7 @@ fn agent_item(
         "  {} {} {} {}",
         agent.mark().glyph(icons),
         pad(&agent.name, columns.name),
-        pad(&agent.profile, columns.profile),
+        pad(&model_cell(agent, columns.rung), columns.model),
         pad(&agent.state, columns.state),
     );
     MenuItem {
@@ -1353,8 +1470,9 @@ fn clean(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        Args, KEYS, ROW_CAP, Usage, launch_tail_is_valid, menu, menu_for_client,
-        menu_for_client_session, parse, parse_launch_tail,
+        AGENT_ROW_OVERHEAD, Args, Columns, FidelityRung, KEYS, ROW_CAP, Usage,
+        launch_tail_is_valid, menu, menu_for_client, menu_for_client_session, model_cell, pad,
+        parse, parse_launch_tail, terminal_cells,
     };
     use crate::inventory::ServerId;
     use crate::theme::Palette;
@@ -1915,17 +2033,19 @@ mod tests {
         let mut hub = session("hub", "$1", 2, "%1");
         hub.agents = format!("v1;{NOW};300;w:p:done:%1;a-much-longer-agent:gpt56sol:working:%2");
         let expanded = labels(&bounded_menu(&[hub], 8));
-        // The widest agent name is 19 cells, past the 18-cell cap; the widest
-        // profile is 8 and the widest state word 7.
+        // The widest agent name is 19 cells, past the 18-cell cap, and the
+        // widest state word is 7. This is a v1 fact, so neither seat carries a
+        // client or a model: both cells fall back to the DECLARED profile, and
+        // the `~` makes the widest of them 9 rather than 8.
         assert_eq!(
             expanded[1],
-            format!("  ✓ {:<18} {:<8} {:<7}", "w", "p", "done"),
+            format!("  ✓ {:<18} {:<9} {:<7}", "w", "~p", "done"),
         );
         assert_eq!(
             expanded[2],
             format!(
-                "  ● {:<18} {:<8} {:<7}",
-                "a-much-longer-age…", "gpt56sol", "working"
+                "  ● {:<18} {:<9} {:<7}",
+                "a-much-longer-age…", "~gpt56sol", "working"
             ),
         );
         assert!(
@@ -1933,6 +2053,158 @@ mod tests {
             "a session row and the agent rows under it share one name column: {:?}",
             expanded[0]
         );
+    }
+
+    /// One agent as the fact would have carried it, built by hand so a cell
+    /// shape can be asserted without a roster around it.
+    fn cell_agent(
+        client: &str,
+        model: &str,
+        effort: &str,
+        profile: &str,
+    ) -> crate::tmux::PickerAgent {
+        crate::tmux::PickerAgent {
+            name: "lead".to_owned(),
+            profile: profile.to_owned(),
+            state: "working".to_owned(),
+            pane: "%1".to_owned(),
+            client: client.to_owned(),
+            model: model.to_owned(),
+            effort: effort.to_owned(),
+            drift: false,
+        }
+    }
+
+    /// Every shape the cell has, including the two nothing ae publishes.
+    #[test]
+    fn the_model_cell_spells_each_fact_state() {
+        let at = |agent: &crate::tmux::PickerAgent| model_cell(agent, FidelityRung::Full);
+        assert_eq!(
+            at(&cell_agent("cc", "Fable 5.1", "xhigh", "fable5")),
+            "cc Fable 5.1 xhigh",
+            "observed: client, model and the effort the frame drew"
+        );
+        assert_eq!(
+            at(&cell_agent("oc", "DeepSeek V4.1 Flash", "", "ds41")),
+            "oc DeepSeek V4.1 Flash",
+            "an observed model with no effort carries no trailing blank"
+        );
+        assert_eq!(
+            at(&cell_agent("cx", "", "", "gpt56sol")),
+            "cx ~gpt56sol",
+            "nothing observed: the DECLARED profile, never a guess"
+        );
+        assert_eq!(
+            at(&cell_agent("", "", "", "fable5")),
+            "~fable5",
+            "a v1 entry carries no client at all, so the bare declared form"
+        );
+        assert_eq!(
+            at(&cell_agent("-", "", "", "fable5")),
+            "- ~fable5",
+            "a tool ae cannot classify still names its seat"
+        );
+        // Neither of these two is reachable through the fact: the writer
+        // refuses a profile-less roster, and the parser refuses a model with no
+        // client. They are this function's own contract.
+        assert_eq!(at(&cell_agent("cc", "", "", "")), "-");
+        assert_eq!(at(&cell_agent("", "Opus 5", "", "fable5")), "Opus 5");
+    }
+
+    /// Lead's ruling: the mark the fact carries is not drawn anywhere.
+    #[test]
+    fn a_carried_drift_mark_is_never_drawn() {
+        let mut marked = cell_agent("cc", "Opus 5", "xhigh", "fable5");
+        marked.drift = true;
+        for rung in FidelityRung::LADDER {
+            assert_eq!(
+                model_cell(&marked, rung),
+                model_cell(&cell_agent("cc", "Opus 5", "xhigh", "fable5"), rung),
+                "a drifting seat draws byte-identically to one that agrees"
+            );
+        }
+    }
+
+    /// The columns one draw would use for a single agent at `inner_width`.
+    fn fitted(agents: &[&crate::tmux::PickerAgent], inner_width: usize) -> Columns {
+        let mut columns = Columns::FLOOR;
+        for agent in agents {
+            columns.hold_agent(&agent.name, &agent.state);
+        }
+        columns.fit_models(agents, inner_width);
+        columns
+    }
+
+    /// Effort is the first thing to go, and the rung boundary is exact.
+    #[test]
+    fn the_picker_drops_effort_before_it_clips_a_model() {
+        let agent = cell_agent("cc", "Opus 5", "xhigh", "fable5");
+        let full = terminal_cells("cc Opus 5 xhigh");
+        let overhead = AGENT_ROW_OVERHEAD + terminal_cells("lead") + terminal_cells("working");
+        // Exactly enough for the full cell: equality takes the HIGHER rung.
+        let at_boundary = fitted(&[&agent], overhead + full);
+        assert_eq!(at_boundary.rung, FidelityRung::Full);
+        assert_eq!(at_boundary.model, full);
+        // One cell less, and the effort is what pays for it.
+        let below = fitted(&[&agent], overhead + full - 1);
+        assert_eq!(below.rung, FidelityRung::NoEffort);
+        assert_eq!(below.model, terminal_cells("cc Opus 5"));
+        // The rung is MENU-WIDE: one seat that cannot afford its effort takes
+        // it from every row, so the column stays readable downwards.
+        let roomy = cell_agent("cc", "M", "max", "f");
+        let shared = fitted(&[&agent, &roomy], overhead + full - 1);
+        assert_eq!(shared.rung, FidelityRung::NoEffort);
+    }
+
+    /// The model is what gets clipped — never the state word beside it.
+    #[test]
+    fn a_model_column_never_steals_the_state_column() {
+        let agent = cell_agent("cc", "a-very-long-model-label", "xhigh", "fable5");
+        let overhead = AGENT_ROW_OVERHEAD + terminal_cells("lead") + terminal_cells("working");
+        let squeezed = fitted(&[&agent], overhead + 6);
+        assert_eq!(squeezed.rung, FidelityRung::NoEffort);
+        assert_eq!(squeezed.model, 6, "the column is capped at the budget");
+        let row = format!(
+            "  {} {} {} {}",
+            "●",
+            pad("lead", squeezed.name),
+            pad(&model_cell(&agent, squeezed.rung), squeezed.model),
+            pad("working", squeezed.state),
+        );
+        assert!(
+            row.ends_with("working"),
+            "the state word survives whole: {row:?}"
+        );
+        assert!(
+            row.contains("cc…") || row.contains("cc "),
+            "and the client is still the head of the clipped cell: {row:?}"
+        );
+        // A client too narrow to budget anything at all must not panic.
+        let none = fitted(&[&agent], 0);
+        assert_eq!(none.model, 0);
+    }
+
+    /// Widths are terminal CELLS, not bytes.
+    ///
+    /// The fact's own grammars make this unreachable in production — the parser
+    /// and `model_is_writable` both refuse a non-ASCII model, `is_config_key`
+    /// refuses a wide profile — so this pin builds the agent by hand. It holds
+    /// the layer's contract rather than the pipeline's, which is what keeps a
+    /// `.len()`-for-`terminal_cells` slip killable instead of invisible.
+    #[test]
+    fn a_wide_glyph_model_is_measured_in_cells() {
+        let agent = cell_agent("cc", "模型名", "max", "fable5");
+        assert_eq!(
+            terminal_cells("cc 模型名 max"),
+            13,
+            "3 wide glyphs = 6 cells"
+        );
+        let overhead = AGENT_ROW_OVERHEAD + terminal_cells("lead") + terminal_cells("working");
+        let fits = fitted(&[&agent], overhead + 13);
+        assert_eq!(fits.rung, FidelityRung::Full);
+        assert_eq!(fits.model, 13, "measured in cells, not the 17 bytes");
+        let tight = fitted(&[&agent], overhead + 12);
+        assert_eq!(tight.rung, FidelityRung::NoEffort);
     }
 
     #[test]
@@ -1960,19 +2232,20 @@ mod tests {
         .expect("room for one session and three agents");
         assert_eq!(drawn.items.len(), 4);
         assert_eq!(drawn.items[0].key, "1");
-        // Seven cells of name, nine of profile, seven of state — the widest of
-        // each among these three rows, not the caps.
+        // Seven cells of name, ten of model, seven of state — the widest of
+        // each among these three rows, not the caps. A v1 fact proves no model,
+        // so every cell is the declared profile behind a `~`.
         assert_eq!(
             drawn.items[1].label,
-            format!("  ● {:<7} {:<9} {:<7}", "lead", "fable5", "working")
+            format!("  ● {:<7} {:<10} {:<7}", "lead", "~fable5", "working")
         );
         assert_eq!(
             drawn.items[2].label,
-            format!("  ✓ {:<7} {:<9} {:<7}", "builder", "gpt56sol", "done")
+            format!("  ✓ {:<7} {:<10} {:<7}", "builder", "~gpt56sol", "done")
         );
         assert_eq!(
             drawn.items[3].label,
-            format!("  ✖ {:<7} {:<9} {:<7}", "gone", "gpt56luna", "dead")
+            format!("  ✖ {:<7} {:<10} {:<7}", "gone", "~gpt56luna", "dead")
         );
         assert!(drawn.items[1..].iter().all(|item| item.key.is_empty()));
         let MenuAction::Run(jump) = &drawn.items[2].action else {
@@ -2210,7 +2483,7 @@ mod tests {
                 "hub  · working main ship it",
                 "1",
                 "set-option -u -t $7 @ae_menu_open ; switch-client -c '/dev/ttys002' -t $7 ; if-shell -F -t %10 '##{==:##{session_id},$7}' 'select-window -t %10 ; select-pane -t %10'",
-                "  ● lead fable5 working",
+                "  ● lead ~fable5 working",
                 "",
                 "set-option -u -t $7 @ae_menu_open ; switch-client -c '/dev/ttys002' -t $7 ; if-shell -F -t %10 '##{==:##{session_id},$7}' 'select-window -t %10 ; select-pane -t %10'",
                 "rest · idle    main · agents unavailable",
