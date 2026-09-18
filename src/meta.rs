@@ -1438,15 +1438,19 @@ pub(crate) fn publish_seat_move(
     agent: &str,
     move_to: &SeatMove<'_>,
 ) -> Result<(), RewriteError> {
-    rewrite_under_lock(dir, |current| {
-        let seated =
-            crate::lifecycle::meta_value(current.as_bytes(), &format!("{SEAT_PREFIX}{slot}"));
-        if seated != agent {
-            return None;
-        }
-        let next = reseated(current, slot, move_to);
-        (next != current).then_some(next)
-    })
+    rewrite_under_lock(dir, |current| seat_move_for(current, slot, agent, move_to))
+}
+
+/// The guarded replacement itself — PURE, so the guard is pinnable without a
+/// session on disk. `None` means WRITE NOTHING: either a different seat holds
+/// the slot now, or the move changes not one byte.
+fn seat_move_for(current: &str, slot: &str, agent: &str, move_to: &SeatMove<'_>) -> Option<String> {
+    let seated = crate::lifecycle::meta_value(current.as_bytes(), &format!("{SEAT_PREFIX}{slot}"));
+    if seated != agent {
+        return None;
+    }
+    let next = reseated(current, slot, move_to);
+    (next != current).then_some(next)
 }
 
 /// What raw session metadata says about the privileged orchestrator role.
@@ -2181,6 +2185,32 @@ mod tests {
         assert_eq!(
             crate::lifecycle::meta_value(moved.as_bytes(), "harness_session.main"),
             NEW
+        );
+    }
+
+    #[test]
+    fn the_seat_move_guard_refuses_a_slot_a_different_agent_now_holds() {
+        const NEW: &str = "22222222-2222-4222-8222-222222222222";
+        let text = seated();
+        let move_to = moving_to("lunam", "codex", NEW);
+        // The race this closes: a reseat holds the session's lifecycle lock,
+        // so no second reseat interleaves — but a `retire` plus a re-`spawn`
+        // can land a DIFFERENT seat on the slot, and that successor must not
+        // inherit a move published for the one before it.
+        assert_eq!(
+            super::seat_move_for(&text, "main", "someone-else", &move_to),
+            None
+        );
+        assert_eq!(
+            super::seat_move_for(&text, "spawned.9", "lead", &move_to),
+            None
+        );
+        // The seat the caller proved, and only that one, is written.
+        let moved = super::seat_move_for(&text, "main", "lead", &move_to)
+            .expect("the seat the caller proved");
+        assert_eq!(
+            crate::lifecycle::meta_value(moved.as_bytes(), "profile.main"),
+            "lunam"
         );
     }
 

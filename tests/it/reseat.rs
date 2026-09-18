@@ -227,3 +227,32 @@ fn a_seat_of_another_session_is_refused_for_a_caller_ae_stamped() {
         "the other session's meta is untouched"
     );
 }
+
+#[test]
+fn a_pane_stamped_for_another_slot_is_refused_before_the_lock() {
+    // The roster and the pane's own stamp are two records, and they disagree
+    // only when a stamp is stale or a meta was hand-edited. The move would
+    // then be PUBLISHED for one seat and PASTED into another's pane, so it is
+    // refused with both readings named.
+    let rig = Rig::new("slotskew");
+    rig.seat_rows("spawned.0", "scout", "grok", "grok");
+    let pane = rig.new_pane("spawned.4", "scout");
+    rig.start(&pane, "spawned.0", "grok");
+    rig.kill_tools(&pane);
+
+    let (code, out, err) = rig.run_top(
+        &rig.main_pane.clone(),
+        &["reseat", &rig.session, "scout", "--using", "fake-opencode"],
+    );
+
+    assert_eq!(code, Some(1), "out={out} err={err}");
+    assert!(
+        err.contains("spawned.4") && err.contains("spawned.0") && err.contains(&pane),
+        "the refusal names both readings and the pane: {err}"
+    );
+    assert_eq!(rig.meta_row("profile.spawned.0"), "fake-grok");
+    assert!(
+        !rig.dir.join("seed.scout.md").exists(),
+        "no seed was published"
+    );
+}
