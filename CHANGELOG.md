@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.119] - 2026-09-18
+- Bind publish input map to command link; dedupe doctor server rows; name another ae
+
 ## [v2026.9.118] - 2026-09-18
 - A watchdog fills the fleet strip of a peer that has none
 - Prove adoption against a real server, and say what it may do
