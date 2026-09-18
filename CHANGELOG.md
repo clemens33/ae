@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.130] - 2026-09-18
+- Gate a shown harness identity on the tool's own live composer
+- Accept a v2 agent roster fact carrying observed cells
+- Publish each seat's observed model in the roster fact
+- Restore the profile guard on the durable drift row
+- Document the v2 agents fact, its rungs and the old-core degrade
+- Scope the agents-fact doc claims to what the code refuses
+
 ## [v2026.9.129] - 2026-09-18
 - Read model and effort from four more harness panes
 - Scrub the derived identity fixtures
