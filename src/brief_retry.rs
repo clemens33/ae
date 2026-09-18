@@ -490,14 +490,39 @@ pub fn read(dir: &Path, slot: &str) -> Option<Result<Record, Damage>> {
     Some(parse(&bytes))
 }
 
-/// Publish `record` durably, at `0600`, for a slot that has none yet.
+/// Publish `record` durably, at `0600`, for a slot that has NONE yet.
+///
+/// # This function does not serialize itself
+///
+/// It is one of the mutations of a slot's record, and every one of them —
+/// this, [`remove`], and the compare-and-swap re-arm the delivery leg makes —
+/// must be performed under that slot's RECORD LOCK. Nothing here takes it,
+/// because the lock has to span a caller's whole read-modify-write, not one
+/// write inside it. A caller that mutates a record without holding it is the
+/// defect this sentence exists to prevent.
+///
+/// # An occupied name is refused, loudly
+///
+/// A rename would replace an existing record in silence, which would reset its
+/// attempt count and destroy a `pasting` mark — the crash-window proof — with
+/// no sound at all. No caller has a reason to publish over a live record: a
+/// spawn clears a stale one first, and a re-arm goes through the
+/// compare-and-swap, never through here. So an occupied name is a wiring
+/// defect, and it is reported rather than absorbed. The check is sound because
+/// of the lock contract above, not on its own.
+///
+/// # Durability
 ///
 /// Temp, `fsync`, rename — the shape [`crate::store::SessionStore::stamp_launch_attempt`]
-/// uses, and for the same reason: what follows cannot be taken back, and a
-/// record still sitting in a page cache when the machine stops is a record that
-/// was never written. The mode is set ON the create, not after it, because the
-/// body is the brief and a window where it is world-readable is a window too
-/// many.
+/// uses. The file's own bytes are synced, so a record survives THIS PROCESS
+/// dying; the containing directory is not, so a machine that stops may still
+/// lose the rename. Stated rather than overclaimed: the residual is the same
+/// one the stamp carries, and the delivery leg fails closed over it, because a
+/// record that vanished is a brief nobody retries rather than one delivered
+/// twice. The mode is set ON the create, not after it, because the body is the
+/// brief and a window where it is world-readable is a window too many. A temp
+/// carries this process's pid, so a crash between the create and the rename
+/// leaves a file that blocks only a later process reusing that pid.
 ///
 /// The writer PROVES the reader will accept what it wrote: the rendered bytes
 /// are parsed back before they are published, and a record that would not parse
@@ -505,8 +530,8 @@ pub fn read(dir: &Path, slot: &str) -> Option<Result<Record, Damage>> {
 ///
 /// # Errors
 ///
-/// The refusal, named: too large, unreadable by its own parser, or the write,
-/// `fsync` or rename that failed.
+/// The refusal, named: too large, unreadable by its own parser, a name already
+/// occupied, or the write, `fsync` or rename that failed.
 pub fn publish(dir: &Path, record: &Record) -> Result<(), String> {
     use std::os::unix::fs::OpenOptionsExt as _;
 
@@ -521,6 +546,17 @@ pub fn publish(dir: &Path, record: &Record) -> Result<(), String> {
         return Err(format!("the record would not read back: {damage}"));
     }
     let dest = path(dir, &record.slot);
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: the occupied-name refusal classifies the destination WITHOUT following a link to it — see the durability note"
+    )]
+    let occupied = std::fs::symlink_metadata(&dest);
+    if occupied.is_ok() {
+        return Err(format!(
+            "{} already holds a record — nothing was overwritten; a live record is never published over",
+            dest.display()
+        ));
+    }
     let temp = {
         let mut name = dest.clone().into_os_string();
         name.push(format!(".tmp.{}", std::process::id()));
@@ -556,6 +592,10 @@ pub fn publish(dir: &Path, record: &Record) -> Result<(), String> {
 
 /// Drop the record for `slot`, if any. Absent is success: a deletion that
 /// finds nothing has already happened.
+///
+/// Like [`publish`], this does not serialize itself: it is a mutation of the
+/// slot's record and belongs under that slot's record lock, held across the
+/// caller's whole sequence.
 pub fn remove(dir: &Path, slot: &str) {
     let _ = std::fs::remove_file(path(dir, slot));
 }
@@ -563,8 +603,8 @@ pub fn remove(dir: &Path, slot: &str) {
 #[cfg(test)]
 mod tests {
     use super::{
-        Damage, MAX_ATTEMPTS, Phase, RECORD_CAP, Record, damaged_path, parse, path, publish, read,
-        remove, render,
+        Damage, LAUNCH_ID_CAP, MAX_ATTEMPTS, PANE_CAP, Phase, RECORD_CAP, Record, SLOT_CAP,
+        damaged_path, parse, path, publish, read, remove, render,
     };
     use std::path::PathBuf;
 
@@ -811,11 +851,12 @@ mod tests {
         let original = record();
         assert_eq!(publish(&dir, &original), Ok(()));
         assert_eq!(read(&dir, &original.slot), Some(Ok(original.clone())));
-        let mode = std::fs::metadata(path(&dir, &original.slot))
-            .expect("the record is there")
-            .permissions()
-            .mode()
-            & 0o777;
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "a test inspecting the mode it just asserted about; the boundary is over what PRODUCT code may reach"
+        )]
+        let observed = std::fs::metadata(path(&dir, &original.slot));
+        let mode = observed.expect("the record is there").permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "the body is the brief: owner-only, always");
         remove(&dir, &original.slot);
         assert_eq!(read(&dir, &original.slot), None, "a removed record is gone");
@@ -845,6 +886,86 @@ mod tests {
             "and nothing was written"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_live_record_is_never_published_over_in_silence() {
+        // A rename would reset the attempt count and destroy a `pasting`
+        // mark — the crash-window proof — without a sound. No caller has a
+        // reason to do it, so an occupied name is a wiring defect and says so.
+        let dir = scratch("occupied");
+        let first = record();
+        assert_eq!(publish(&dir, &first), Ok(()));
+        let mut second = record();
+        second.attempts = 2;
+        second.phase = Phase::Pasting;
+        second.body = "a different brief entirely".to_owned();
+        let refused = publish(&dir, &second).expect_err("an occupied name is refused");
+        assert!(refused.contains("already holds a record"), "{refused}");
+        assert_eq!(
+            read(&dir, &first.slot),
+            Some(Ok(first)),
+            "and the record that was there is untouched"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_symlink_planted_at_the_record_name_is_refused_rather_than_followed() {
+        // The headline claim of the read: a link planted at a predictable name
+        // in state a human edits must never make the watchdog read — and then
+        // PASTE — a file from somewhere else entirely.
+        let dir = scratch("symlink");
+        let elsewhere = dir.join("elsewhere");
+        std::fs::write(&elsewhere, render(&record())).expect("the link target");
+        std::os::unix::fs::symlink(&elsewhere, path(&dir, "spawned.1")).expect("the planted link");
+        assert_eq!(
+            read(&dir, "spawned.1"),
+            Some(Err(Damage::Unreadable)),
+            "a symlink is not a regular file, and is refused before any open"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn every_bounded_field_is_pinned_at_its_own_edge() {
+        // Each bound is pinned on BOTH sides, because a bound tested only from
+        // the inside survives being widened.
+        let at_cap = "s".repeat(SLOT_CAP);
+        let over_cap = "s".repeat(SLOT_CAP + 1);
+        for (slot, ok) in [(at_cap.as_str(), true), (over_cap.as_str(), false)] {
+            let text = render(&Record {
+                slot: slot.to_owned(),
+                reference: format!("spawn-{slot}"),
+                ..record()
+            });
+            assert_eq!(
+                parse(text.as_bytes()).is_ok(),
+                ok,
+                "slot of {} bytes",
+                slot.len()
+            );
+        }
+        let launch_at = "l".repeat(LAUNCH_ID_CAP);
+        let launch_over = "l".repeat(LAUNCH_ID_CAP + 1);
+        assert!(parse(with("launch_id", &launch_at).as_bytes()).is_ok());
+        assert_eq!(
+            parse(with("launch_id", &launch_over).as_bytes()),
+            Err(Damage::LaunchId)
+        );
+        // A pane id at the cap and one byte past it.
+        let pane_at = format!("%{}", "9".repeat(PANE_CAP - 1));
+        let pane_over = format!("%{}", "9".repeat(PANE_CAP));
+        assert!(parse(with("pane", &pane_at).as_bytes()).is_ok());
+        assert_eq!(
+            parse(with("pane", &pane_over).as_bytes()),
+            Err(Damage::Pane)
+        );
+        // Past u32 the attempt count is not a count ae could have written.
+        assert_eq!(
+            parse(with("attempts", "4294967296").as_bytes()),
+            Err(Damage::Attempts)
+        );
     }
 
     #[test]
