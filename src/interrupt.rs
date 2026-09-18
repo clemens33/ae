@@ -143,7 +143,7 @@ pub fn run(
         body: &parsed.message,
         shape: Shape::Interrupt,
         defer: deliver::DEFAULT_DEFER,
-        composed: &[],
+        composed: crate::tool::Composed::NONE,
     };
     let delivered = match deliver::deliver(&request, err)? {
         Ok(delivered) => delivered,

@@ -1563,7 +1563,7 @@ pub fn run(
         body: &message,
         shape: crate::deliver::Shape::Send,
         defer,
-        composed: &[],
+        composed: crate::tool::Composed::NONE,
     };
     let meta_dir = target_meta_dir(dir, &resolved.session, own_session);
     let (delivery, outcome) = across_cut(&server, &resolved.pane, &meta_dir, || {

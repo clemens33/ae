@@ -26,7 +26,7 @@ use std::time::Duration;
 use ae::deliver;
 use ae::inventory::ServerId;
 use ae::meta::Selector;
-use ae::tool::InputModel;
+use ae::tool::{Composed, InputModel};
 
 use super::cli::ae;
 use super::phase2::run_tmux;
@@ -1107,17 +1107,17 @@ fn every_path_into_the_paste_sink_carries_its_declared_guards() {
 
     // Interrupt takes the busy-less lane and leaves the fake in its QUEUED
     // state, which is a busy box for the two shapes that ARE quiet-gated.
-    assert!(send(Shape::Interrupt, &[], short).is_ok());
+    assert!(send(Shape::Interrupt, Composed::NONE, short).is_ok());
     assert!(matches!(
-        send(Shape::Send, &[], short),
+        send(Shape::Send, Composed::NONE, short),
         Err(Failure::Abandoned)
     ));
     assert!(matches!(
-        send(Shape::Relay, &[], short),
+        send(Shape::Relay, Composed::NONE, short),
         Err(Failure::Abandoned)
     ));
     assert!(
-        send(Shape::Launch, &[], short).is_ok(),
+        send(Shape::Launch, Composed::NONE, short).is_ok(),
         "Launch skips the quiet gate"
     );
 
@@ -1125,12 +1125,12 @@ fn every_path_into_the_paste_sink_carries_its_declared_guards() {
     // meta row is the classifier's first answer, exactly as in a real seat.
     rewrite_meta("gemini");
     assert!(matches!(
-        send(Shape::Launch, &[], short),
+        send(Shape::Launch, Composed::NONE, short),
         Err(Failure::NotComposed { .. })
     ));
     rewrite_meta("claude");
     assert!(
-        send(Shape::Launch, &[], short).is_ok(),
+        send(Shape::Launch, Composed::NONE, short).is_ok(),
         "a modelled Launch never runs the composed recheck"
     );
 
@@ -1144,13 +1144,16 @@ fn every_path_into_the_paste_sink_carries_its_declared_guards() {
     );
     for shape in [Shape::Send, Shape::Relay, Shape::Interrupt, Shape::Launch] {
         assert!(
-            matches!(send(shape, &[], short), Err(Failure::DeadPane)),
+            matches!(send(shape, Composed::NONE, short), Err(Failure::DeadPane)),
             "{shape:?} must refuse a dead pane"
         );
     }
     rewrite_meta("claude");
     assert!(
-        matches!(send(Shape::Send, &[], short), Err(Failure::DeadPane)),
+        matches!(
+            send(Shape::Send, Composed::NONE, short),
+            Err(Failure::DeadPane)
+        ),
         "and the same guard holds for a modelled row"
     );
 }

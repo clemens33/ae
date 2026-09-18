@@ -7,7 +7,7 @@
 //! it takes a capture and answers a question about it, so the whole model is
 //! unit-testable against recorded frames.
 
-use crate::tool::InputModel;
+use crate::tool::{Composed, ComposerAnchor, InputModel};
 
 /// The foreground a captured run is painted in, when the capture names one.
 /// Only IDENTITY matters: a run is compared against the colour the box paints
@@ -452,27 +452,25 @@ fn is_staged_chip(text: &str) -> bool {
     !count.is_empty() && count.chars().all(|ch| ch.is_ascii_digit())
 }
 
-/// Does `capture` show a COMPOSED input box carrying one of `markers`?
+/// Does `capture` show a COMPOSED input carrying one of the bundled markers?
 ///
-/// The BOTTOM-MOST box owns the answer — a transcript echo or a modal higher
-/// on the screen is not the input, the same bottom-most-owner rule
-/// [`composer_row`] enforces for the modelled tools. The box is recognised by
-/// the measured `opencode` 1.18.31 geometry: rows whose first non-blank cell
-/// is the `┃` rail, closed by an edge row starting `╹▀`. A marker counts only
-/// INSIDE those rows, so a marker in a transcript echo, in scrollback or in a
-/// modal without a drawn box is never readiness. An empty marker list answers
-/// false: a tool with no usable composed signal is refused, not guessed.
-///
-/// The geometry is one tool's measured shape; a future unmodelled tool whose
-/// box is drawn differently needs its own detector, not this one's markers.
+/// The BOTTOM-MOST structure owns the answer — a transcript echo or a modal
+/// higher on the screen is not the input, the same bottom-most-owner rule
+/// [`composer_row`] enforces for the modelled tools. The structure is the
+/// spec's [`ComposerAnchor`]: a `┃`-rail box, a `│`-rail rounded box, or a
+/// rule-fenced `>` prompt. A marker counts only INSIDE those rows, so a
+/// marker in a transcript echo, in scrollback or in a modal without the drawn
+/// structure is never readiness. An empty marker list answers false: a tool
+/// with no usable composed signal is refused, not guessed — the anchor is
+/// unread then.
 #[must_use]
-pub fn composed_ui(capture: &str, markers: &[&str]) -> bool {
-    if markers.is_empty() {
+pub fn composed_ui(capture: &str, spec: Composed) -> bool {
+    if spec.is_empty() {
         return false;
     }
     // A capture may be plain or SGR-styled: join each row's segments first, so
-    // the box geometry and the markers are read from TEXT, never from the
-    // escape bytes a styled capture interleaves.
+    // the geometry and the markers are read from TEXT, never from the escape
+    // bytes a styled capture interleaves.
     let segments = parse(capture);
     let mut rows: Vec<String> = Vec::new();
     for seg in &segments {
@@ -483,29 +481,141 @@ pub fn composed_ui(capture: &str, markers: &[&str]) -> bool {
             row.push_str(&seg.text);
         }
     }
-    let Some(edge) = rows.iter().rposition(|row| is_composer_edge(row)) else {
+    match spec.anchor {
+        ComposerAnchor::HeavyRail => rail_box(&rows, spec.markers, BoxTable::HEAVY, None, true),
+        ComposerAnchor::RoundedBox => {
+            rail_box(&rows, spec.markers, BoxTable::ROUNDED, Some(2), false)
+        }
+        ComposerAnchor::RuledPrompt => ruled_prompt(&rows, spec.markers),
+    }
+}
+
+/// One rail-box composer geometry: the glyphs that draw its rails and edge.
+///
+/// opencode and grok draw the same SHAPE — contiguous rail rows closed by a
+/// bottom edge — in different glyphs, so one detector reads both and the
+/// table only swaps the ink. A `╭` top edge is deliberately NOT required:
+/// the bottom-most edge plus the marker inside already own the answer, and a
+/// top edge would add a drift point, not discrimination.
+#[derive(Debug, Clone, Copy)]
+struct BoxTable {
+    /// The box's left rail: the row's first non-blank cell.
+    rail: char,
+    /// The bottom edge's first two cells: corner, then underline run start.
+    edge: (char, char),
+}
+
+impl BoxTable {
+    /// opencode 1.18.31's measured box: `┃` rails, `╹▀` edge.
+    const HEAVY: Self = Self {
+        rail: '┃',
+        edge: ('╹', '▀'),
+    };
+    /// grok 1.0.34's measured box: `│` rails, `╰─` edge.
+    const ROUNDED: Self = Self {
+        rail: '│',
+        edge: ('╰', '─'),
+    };
+}
+
+/// Does the bottom-most [`BoxTable`] box carry a marker?
+///
+/// `bottom_slack` pins the edge row to that many rows above the last
+/// non-blank row (`None` = unanchored); `literal_on_edge` lets the marker sit
+/// on the edge row itself, else it must sit on a rail row.
+fn rail_box(
+    rows: &[String],
+    markers: &[&str],
+    table: BoxTable,
+    bottom_slack: Option<usize>,
+    literal_on_edge: bool,
+) -> bool {
+    let Some(edge) = rows.iter().rposition(|row| is_box_edge(row, table)) else {
         return false;
     };
+    if let Some(slack) = bottom_slack {
+        // The composer ends a fixed distance above the screen's last ink, at
+        // every measured size — a same-shaped box stranded in scrollback with
+        // rows beneath it is output, not the input.
+        let Some(last) = rows.iter().rposition(|row| !is_blank(row)) else {
+            return false;
+        };
+        if edge + slack != last {
+            return false;
+        }
+    }
     // The box: its edge plus the contiguous rail rows directly above it.
     let top = (0..edge)
         .rev()
-        .find(|&at| !is_composer_rail(&rows[at]))
+        .find(|&at| !is_box_rail(&rows[at], table))
         .map_or(0, |at| at + 1);
-    rows[top..=edge]
+    let end = if literal_on_edge { edge + 1 } else { edge };
+    rows[top..end]
         .iter()
         .any(|row| markers.iter().any(|marker| row.contains(marker)))
 }
 
-/// A composer box's left rail: the row's first non-blank cell is `┃`.
-fn is_composer_rail(row: &str) -> bool {
-    row.trim_start_matches(is_space).starts_with('┃')
+/// A composer box's left rail: the row's first non-blank cell is the table's.
+fn is_box_rail(row: &str, table: BoxTable) -> bool {
+    row.trim_start_matches(is_space).starts_with(table.rail)
 }
 
-/// A composer box's bottom edge: the row's first non-blank cell is the `╹`
-/// corner, directly followed by the `▀` underline run.
-fn is_composer_edge(row: &str) -> bool {
+/// A composer box's bottom edge: the row's first non-blank cells are the
+/// table's corner and underline run start.
+fn is_box_edge(row: &str, table: BoxTable) -> bool {
     let mut cells = row.trim_start_matches(is_space).chars();
-    cells.next() == Some('╹') && cells.next() == Some('▀')
+    cells.next() == Some(table.edge.0) && cells.next() == Some(table.edge.1)
+}
+
+/// Does the bottom-most rule-fenced `>` prompt carry a marker?
+///
+/// MEASURED shape (agy 1.2.6, 2026-09-18, 80x24 and 200x50): a full-width `─`
+/// rule, a `>` prompt row, a second `─` rule, then the footer row carrying
+/// `? for shortcuts` — the footer IS the last non-blank row, so the bottom
+/// rule sits exactly one row above it. The folder-trust modal has a `>`
+/// cursor row but no rules, and any rule pair higher on the screen fails the
+/// bottom anchor; both refuse.
+fn ruled_prompt(rows: &[String], markers: &[&str]) -> bool {
+    let Some(last) = rows.iter().rposition(|row| !is_blank(row)) else {
+        return false;
+    };
+    let mut bottom = None;
+    for (at, row) in rows.iter().enumerate() {
+        if is_rule(row)
+            && rows.get(at + 1).is_some_and(|next| is_prompt_row(next))
+            && rows.get(at + 2).is_some_and(|next| is_rule(next))
+        {
+            bottom = Some(at);
+        }
+    }
+    let Some(top) = bottom else {
+        return false;
+    };
+    if top + 2 + 1 != last {
+        return false;
+    }
+    // The fenced rows, or at most two rows under the bottom rule.
+    (top..=top + 4).any(|at| {
+        rows.get(at)
+            .is_some_and(|row| markers.iter().any(|marker| row.contains(marker)))
+    })
+}
+
+/// A full-width `─` rule: column zero to the run's end, nothing but rules.
+fn is_rule(row: &str) -> bool {
+    let trimmed = row.trim_end_matches(is_space);
+    trimmed.starts_with('─')
+        && trimmed.chars().all(|cell| cell == '─')
+        && trimmed.chars().count() >= RULE_MIN_WIDTH
+}
+
+/// The narrowest rule still worth fencing on: a floor for small panes, not a
+/// width proof — the marker plus the bottom anchor discriminate, not this.
+const RULE_MIN_WIDTH: usize = 10;
+
+/// Agy's prompt row: the first non-blank cell is `>`.
+fn is_prompt_row(row: &str) -> bool {
+    row.trim_start_matches(is_space).starts_with('>')
 }
 
 /// Does Claude's live prompt say it accepted a message into its turn queue?
@@ -639,7 +749,7 @@ mod tests {
         Fg, Occupancy, Segment, composed_ui, initializing, occupancy, parse, prompt,
         queued_submission, staged_paste,
     };
-    use crate::tool::InputModel;
+    use crate::tool::{Composed, ComposerAnchor, InputModel, ToolKind};
 
     /// The REAL stuck composer — muse-spark-1.3 via the muse CLI, captured
     /// 2026-09-14. The harness REFUSED the pasted turn and its composer still
@@ -664,7 +774,25 @@ mod tests {
         include_str!("../../tests/fixtures/opencode-composer/opencode-composed-frame.esc");
     const OPENCODE_BOOT: &str =
         include_str!("../../tests/fixtures/opencode-composer/opencode-boot-frame.esc");
-    const OPENCODE_MARKERS: &[&str] = &["Ask anything…"];
+    const OPENCODE: Composed = ToolKind::OpenCode.adapter().input.composed;
+    const GROK: Composed = ToolKind::Grok.adapter().input.composed;
+    const AGY: Composed = ToolKind::Agy.adapter().input.composed;
+    /// The REAL grok frames (provenance beside them): blank boot, composed
+    /// welcome at both sizes.
+    const GROK_COMPOSED: &str =
+        include_str!("../../tests/fixtures/grok-composer/grok-composed-frame.txt");
+    const GROK_COMPOSED_NARROW: &str =
+        include_str!("../../tests/fixtures/grok-composer/grok-composed-frame-80x24.txt");
+    const GROK_BOOT: &str = include_str!("../../tests/fixtures/grok-composer/grok-boot-frame.txt");
+    /// The REAL agy frames: spinner boot, composed welcome at both sizes,
+    /// and the folder-trust modal that must NEVER read as composed.
+    const AGY_COMPOSED: &str =
+        include_str!("../../tests/fixtures/agy-composer/agy-composed-frame.txt");
+    const AGY_COMPOSED_NARROW: &str =
+        include_str!("../../tests/fixtures/agy-composer/agy-composed-frame-80x24.txt");
+    const AGY_BOOT: &str = include_str!("../../tests/fixtures/agy-composer/agy-boot-frame.txt");
+    const AGY_MODAL: &str =
+        include_str!("../../tests/fixtures/agy-composer/agy-trust-modal-frame.txt");
 
     /// A row as `capture-pane -e` renders it: the styling matters, and it is
     /// spelled the way tmux legally spells it rather than one canonical way.
@@ -1116,26 +1244,90 @@ mod tests {
     fn a_composed_marker_counts_only_inside_the_bottom_composer_box() {
         // The real frames: the marker lives inside the drawn box, and the
         // blank boot frame has no box at all.
-        assert!(composed_ui(OPENCODE_COMPOSED, OPENCODE_MARKERS));
+        assert!(composed_ui(OPENCODE_COMPOSED, OPENCODE));
         assert!(
-            composed_ui(OPENCODE_COMPOSED, &["Build", "ctrl+p commands"]),
+            composed_ui(
+                OPENCODE_COMPOSED,
+                Composed {
+                    anchor: ComposerAnchor::HeavyRail,
+                    markers: &["Build", "ctrl+p commands"],
+                },
+            ),
             "any marker inside the box answers; the box is the anchor"
         );
-        assert!(!composed_ui(OPENCODE_BOOT, OPENCODE_MARKERS));
+        assert!(!composed_ui(OPENCODE_BOOT, OPENCODE));
 
         // A transcript echo carrying the marker with NO composer drawn is not
         // readiness — the whole-capture `contains` this replaces said it was.
         let echoed = "❯ Ask anything… quoted from an earlier turn\nplain transcript\n";
-        assert!(!composed_ui(echoed, OPENCODE_MARKERS));
+        assert!(!composed_ui(echoed, OPENCODE));
 
         // A marker visible ABOVE a drawn box that does not carry it: the box
         // owns the answer, so the echo above it must not grant readiness. The
         // same box does compose for a marker inside it.
         let boxed = "❯ Ask anything… quoted from an earlier turn\n\n   ┃\n   ┃  write here\n   ╹▀▀▀▀▀\n   tab agents\n";
-        assert!(!composed_ui(boxed, OPENCODE_MARKERS));
-        assert!(composed_ui(boxed, &["write here"]));
+        assert!(!composed_ui(boxed, OPENCODE));
+        assert!(composed_ui(
+            boxed,
+            Composed {
+                anchor: ComposerAnchor::HeavyRail,
+                markers: &["write here"],
+            }
+        ));
 
         // A tool with no usable composed signal never composes anything.
-        assert!(!composed_ui(OPENCODE_COMPOSED, &[]));
+        assert!(!composed_ui(OPENCODE_COMPOSED, Composed::NONE));
+    }
+
+    #[test]
+    fn a_rounded_box_composes_only_with_its_marker_on_a_rail_row() {
+        assert!(GROK_COMPOSED.contains('╰'), "the edge is load-bearing");
+        assert!(GROK_COMPOSED.contains("❯"), "the marker is load-bearing");
+        assert!(composed_ui(GROK_COMPOSED, GROK));
+        assert!(composed_ui(GROK_COMPOSED_NARROW, GROK), "narrow too");
+        assert!(!composed_ui(GROK_BOOT, GROK));
+        // Marker in scrollback above a marker-less box: the box owns it.
+        let boxed = "❯ echo\n\n  ╭─╮\n  │ hi │\n  ╰─╯\n\nv\n";
+        assert!(!composed_ui(boxed, GROK));
+        assert!(composed_ui(&boxed.replace("hi", "❯"), GROK));
+        // Marker on the EDGE row only: the ruling says rail rows.
+        let edged = "  ╭─╮\n  │   │\n  ╰─❯─╯\n\nv\n";
+        assert!(!composed_ui(edged, GROK));
+    }
+
+    #[test]
+    fn a_rounded_box_in_output_is_not_the_composer() {
+        // Same-shaped box WITH the marker, stranded above later rows.
+        let output = "  ╭─╮\n  │ ❯ │\n  ╰─╯\ntranscript\nmore\nstill more\n";
+        assert!(!composed_ui(output, GROK), "the bottom anchor refuses it");
+    }
+
+    #[test]
+    fn a_ruled_prompt_composes_only_fenced_and_footed() {
+        assert!(
+            AGY_COMPOSED.contains("? for shortcuts"),
+            "marker load-bearing"
+        );
+        assert!(composed_ui(AGY_COMPOSED, AGY));
+        assert!(composed_ui(AGY_COMPOSED_NARROW, AGY), "narrow too");
+        assert!(!composed_ui(AGY_BOOT, AGY));
+        // The trust modal: stable, carries the model label and a `>` cursor,
+        // but no rules and no footer — never composed.
+        assert!(AGY_MODAL.contains("Do you trust"), "modal load-bearing");
+        assert!(
+            AGY_MODAL.contains("Gemini 3.8 Flash · high"),
+            "label trap load-bearing"
+        );
+        assert!(!composed_ui(AGY_MODAL, AGY));
+        assert!(!composed_ui("? for shortcuts quoted above\nplain\n", AGY));
+    }
+
+    #[test]
+    fn rules_in_output_above_a_modal_are_not_the_composer() {
+        let rules = "─".repeat(40);
+        let output = format!(
+            "{rules}\n> quoted ? for shortcuts\n{rules}\nDo you trust this folder?\n> Yes\n  No, exit\n"
+        );
+        assert!(!composed_ui(&output, AGY), "the bottom anchor refuses it");
     }
 }

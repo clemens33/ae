@@ -198,20 +198,66 @@ impl InputModel {
     }
 }
 
+/// Which drawn composer geometry an unmodelled readiness check looks for.
+///
+/// The CHOICE lives here, beside the markers it pairs with; the GEOMETRY
+/// lives in [`crate::deliver::region`], the one dispatcher. A modelled tool
+/// never reads this: its composer answers through [`InputModel`] instead.
+///
+/// Public delivery probes accept this bundled with its markers directly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComposerAnchor {
+    /// A `┃`-rail box closed by a `╹▀` edge (opencode's measured shape).
+    HeavyRail,
+    /// A `│`-rail `╭`/`╰╯` box (grok's measured shape).
+    RoundedBox,
+    /// A `>` prompt row fenced by two full-width `─` rules (agy's shape).
+    RuledPrompt,
+}
+
+/// The whole unmodelled composed signal: the markers AND the geometry that
+/// owns them. One value so the two can never be mismatched at a call site.
+///
+/// Public delivery probes accept this behaviour directly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Composed {
+    /// Which drawn structure the markers must sit inside.
+    pub anchor: ComposerAnchor,
+    /// Literals that prove the UI has COMPOSED, tested INSIDE the anchor.
+    pub markers: &'static [&'static str],
+}
+
+impl Composed {
+    /// No usable composed signal: readiness REFUSES visibly rather than
+    /// pasting into a frame ae cannot read. The anchor is unread when the
+    /// markers are empty.
+    pub const NONE: Self = Self {
+        anchor: ComposerAnchor::HeavyRail,
+        markers: &[],
+    };
+
+    /// Whether this carries no usable composed signal.
+    #[must_use]
+    pub fn is_empty(self) -> bool {
+        self.markers.is_empty()
+    }
+}
+
 /// Input-readiness and first-turn behaviour for one harness.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct InputSpec {
     /// The grammar used to observe the input box.
     pub(crate) model: InputModel,
-    /// Literals that prove an UNMODELLED tool's UI has COMPOSED: each is
-    /// tested INSIDE the bottom-most composer box, whose own drawn geometry
-    /// ([`crate::deliver::region::composed_ui`]) is the structural anchor, so
-    /// a stray occurrence in a transcript or a modal never counts. An empty
-    /// list is a tool with no usable composed signal: its readiness REFUSES
-    /// visibly rather than pasting into a frame ae cannot read. Read only by
-    /// the unmodelled readiness arm; a modelled composer answers through
-    /// [`InputModel`] instead.
-    pub(crate) composed: &'static [&'static str],
+    /// The whole unmodelled composed signal: the markers AND the drawn
+    /// geometry that owns them ([`Composed`]). Each marker is tested INSIDE
+    /// the bottom-most composer structure
+    /// ([`crate::deliver::region::composed_ui`]), so a stray occurrence in a
+    /// transcript or a modal never counts. [`Composed::NONE`] is a tool with
+    /// no usable composed signal: its readiness REFUSES visibly rather than
+    /// pasting into a frame ae cannot read. Read only by the unmodelled
+    /// readiness arm; a modelled composer answers through [`InputModel`]
+    /// instead.
+    pub(crate) composed: Composed,
     /// Whether launch waits for the harness process to replace the pane shell.
     pub(crate) wait_for_process: bool,
     /// Whether a resumed seat receives its initial turn through a paste.
@@ -391,7 +437,7 @@ const CLAUDE: ToolAdapter = ToolAdapter {
     capture: CaptureSpec::None,
     input: InputSpec {
         model: InputModel::BorderDelimited,
-        composed: &[],
+        composed: Composed::NONE,
         wait_for_process: true,
         paste_initial_on_resume: false,
     },
@@ -435,7 +481,7 @@ const CODEX: ToolAdapter = ToolAdapter {
     capture: CaptureSpec::HandshakeRolloutOrTui,
     input: InputSpec {
         model: InputModel::StyleDelimited,
-        composed: &[],
+        composed: Composed::NONE,
         wait_for_process: true,
         paste_initial_on_resume: true,
     },
@@ -479,7 +525,7 @@ const GEMINI: ToolAdapter = ToolAdapter {
     capture: CaptureSpec::ChatHistory,
     input: InputSpec {
         model: InputModel::Unmodelled,
-        composed: &[],
+        composed: Composed::NONE,
         wait_for_process: false,
         paste_initial_on_resume: false,
     },
@@ -524,7 +570,19 @@ const AGY: ToolAdapter = ToolAdapter {
     capture: CaptureSpec::ConversationDatabaseOrLog,
     input: InputSpec {
         model: InputModel::Unmodelled,
-        composed: &[],
+        // MEASURED on agy 1.2.6 (2026-09-18, private probe panes, 80x24 and
+        // 200x50): the boot frame is BLANK for ~0.5 s, then a "Signing in..."
+        // spinner until ~+3 s, and the composer settles at ~+5 s (the account
+        // row gains its plan suffix late). The structural anchor is the
+        // rule-fenced `>` prompt row plus the footer row beneath it, owned by
+        // `region::composed_ui`; this literal is the affordance that must sit
+        // in those rows. The model label (`Gemini 3.8 Flash · high`) is NOT a
+        // marker: the folder-trust modal carries it too, with no composer.
+        // One version's UI text, same inherited drift hazard as opencode's.
+        composed: Composed {
+            anchor: ComposerAnchor::RuledPrompt,
+            markers: &["? for shortcuts"],
+        },
         wait_for_process: false,
         paste_initial_on_resume: false,
     },
@@ -573,7 +631,20 @@ const GROK: ToolAdapter = ToolAdapter {
     capture: CaptureSpec::None,
     input: InputSpec {
         model: InputModel::Unmodelled,
-        composed: &[],
+        // MEASURED on grok 1.0.34 (2026-09-18, private probe panes, 80x24 and
+        // 200x50): the boot frame is BLANK until ~+1 s and the composer is
+        // drawn and stable from ~+2 s. The structural anchor is the rounded
+        // `╭`/`│`/`╰╯` box, owned by `region::composed_ui`; this literal is
+        // the input affordance that must sit on one of its rail rows. The
+        // bottom-edge footer (`Weekly limit left: ...`, model, flags) is NOT
+        // a marker: quota text is account state, not layout. The "Help
+        // improve Grok" banner coexists WITH the composer; no composer-less
+        // banner state was observed. One version's UI text, same inherited
+        // drift hazard as opencode's.
+        composed: Composed {
+            anchor: ComposerAnchor::RoundedBox,
+            markers: &["❯"],
+        },
         wait_for_process: false,
         paste_initial_on_resume: false,
     },
@@ -625,7 +696,7 @@ const MUSE: ToolAdapter = ToolAdapter {
         // full-width rule. Proven against real captures — stuck, occupied,
         // accepted, idle — in `tests/fixtures/muse-composer/`.
         model: InputModel::BorderDelimited,
-        composed: &[],
+        composed: Composed::NONE,
         wait_for_process: false,
         paste_initial_on_resume: false,
     },
@@ -676,7 +747,10 @@ const OPENCODE: ToolAdapter = ToolAdapter {
         // `region::composed_ui`; this literal is the affordance that must sit
         // INSIDE that box. It is UI text of ONE observed version and an
         // inherited version-drift hazard: a renamed composer REFUSES visibly.
-        composed: &["Ask anything…"],
+        composed: Composed {
+            anchor: ComposerAnchor::HeavyRail,
+            markers: &["Ask anything…"],
+        },
         wait_for_process: true,
         paste_initial_on_resume: false,
     },
@@ -717,7 +791,7 @@ const UNKNOWN: ToolAdapter = ToolAdapter {
     capture: CaptureSpec::None,
     input: InputSpec {
         model: InputModel::Unmodelled,
-        composed: &[],
+        composed: Composed::NONE,
         wait_for_process: false,
         paste_initial_on_resume: false,
     },
@@ -959,7 +1033,7 @@ mod tests {
                     capture: CaptureSpec::None,
                     input: InputSpec {
                         model: InputModel::BorderDelimited,
-                        composed: &[],
+                        composed: Composed::NONE,
                         wait_for_process: true,
                         paste_initial_on_resume: false,
                     },
@@ -1002,7 +1076,7 @@ mod tests {
                     capture: CaptureSpec::HandshakeRolloutOrTui,
                     input: InputSpec {
                         model: InputModel::StyleDelimited,
-                        composed: &[],
+                        composed: Composed::NONE,
                         wait_for_process: true,
                         paste_initial_on_resume: true,
                     },
@@ -1045,7 +1119,7 @@ mod tests {
                     capture: CaptureSpec::ChatHistory,
                     input: InputSpec {
                         model: InputModel::Unmodelled,
-                        composed: &[],
+                        composed: Composed::NONE,
                         wait_for_process: false,
                         paste_initial_on_resume: false,
                     },
@@ -1089,7 +1163,10 @@ mod tests {
                     capture: CaptureSpec::ConversationDatabaseOrLog,
                     input: InputSpec {
                         model: InputModel::Unmodelled,
-                        composed: &[],
+                        composed: Composed {
+                            anchor: ComposerAnchor::RuledPrompt,
+                            markers: &["? for shortcuts"],
+                        },
                         wait_for_process: false,
                         paste_initial_on_resume: false,
                     },
@@ -1136,7 +1213,10 @@ mod tests {
                     capture: CaptureSpec::None,
                     input: InputSpec {
                         model: InputModel::Unmodelled,
-                        composed: &[],
+                        composed: Composed {
+                            anchor: ComposerAnchor::RoundedBox,
+                            markers: &["❯"],
+                        },
                         wait_for_process: false,
                         paste_initial_on_resume: false,
                     },
@@ -1179,7 +1259,7 @@ mod tests {
                     capture: CaptureSpec::MuseDatedSessions,
                     input: InputSpec {
                         model: InputModel::BorderDelimited,
-                        composed: &[],
+                        composed: Composed::NONE,
                         wait_for_process: false,
                         paste_initial_on_resume: false,
                     },
@@ -1222,7 +1302,10 @@ mod tests {
                     capture: CaptureSpec::SessionList,
                     input: InputSpec {
                         model: InputModel::Unmodelled,
-                        composed: &["Ask anything…"],
+                        composed: Composed {
+                            anchor: ComposerAnchor::HeavyRail,
+                            markers: &["Ask anything…"],
+                        },
                         wait_for_process: true,
                         paste_initial_on_resume: false,
                     },
@@ -1270,7 +1353,7 @@ mod tests {
                 capture: CaptureSpec::None,
                 input: InputSpec {
                     model: InputModel::Unmodelled,
-                    composed: &[],
+                    composed: Composed::NONE,
                     wait_for_process: false,
                     paste_initial_on_resume: false,
                 },

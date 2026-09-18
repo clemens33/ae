@@ -14,7 +14,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use crate::inventory::ServerId;
 use crate::tmux::{Key, Styling};
-use crate::tool::{InputModel, ToolKind};
+use crate::tool::{Composed, InputModel, ToolKind};
 use crate::transport;
 use region::Occupancy;
 
@@ -102,11 +102,11 @@ pub struct Request<'a> {
     pub shape: Shape,
     /// How long to wait for a busy target.
     pub defer: Duration,
-    /// The COMPOSED-UI markers of the tool this delivery expects, read only by
+    /// The COMPOSED-UI signal of the tool this delivery expects, read only by
     /// the Launch recheck under the target lock of an UNMODELLED pane.
-    /// Callers of every other shape pass `&[]`; a modelled pane answers
-    /// through its [`InputModel`] instead.
-    pub composed: &'static [&'static str],
+    /// Callers of every other shape pass [`Composed::NONE`]; a modelled pane
+    /// answers through its [`InputModel`] instead.
+    pub composed: Composed,
 }
 
 /// A delivery that landed.
@@ -791,7 +791,7 @@ pub fn wait_input_ready(
     server: &ServerId,
     pane: &str,
     model: InputModel,
-    composed: &[&str],
+    composed: Composed,
     polls: u32,
 ) -> bool {
     if !model.is_modelled() {
@@ -817,12 +817,14 @@ pub fn wait_input_ready(
 /// byte-identical AND the seeded capture carries one of the tool's composed
 /// markers ([`unmodelled_ready`]).
 ///
-/// A tool with NO markers (`composed` empty) can never be ready here — the
-/// wait runs out and the caller refuses visibly. That is the standing
-/// behaviour for gemini, agy, grok and unknown: they are unmodelled and carry
-/// no usable composed signal. This slice did not give them one.
+/// A tool with NO signal ([`Composed::NONE`]) can never be ready here —
+/// the wait refuses at once and the caller refuses visibly. That is the
+/// standing behaviour for gemini and unknown: they are unmodelled and carry
+/// no usable composed signal. agy and grok carry one since the input-signal
+/// slice measured their composers; the wait grants readiness only on their
+/// drawn structure, stable over two captures.
 #[must_use]
-fn wait_until_settled(server: &ServerId, pane: &str, composed: &[&str], polls: u32) -> bool {
+fn wait_until_settled(server: &ServerId, pane: &str, composed: Composed, polls: u32) -> bool {
     if composed.is_empty() {
         // No composed signal can ever pass here: refuse NOW rather than burn
         // the whole budget on an answer that is already known.
@@ -845,7 +847,7 @@ fn wait_until_settled(server: &ServerId, pane: &str, composed: &[&str], polls: u
 /// non-empty ([`pane_settled`]). Pure, so both halves are pinnable without
 /// tmux — and the composed half is the one `e737b6b3` dropped, which let a
 /// blank boot frame pass as ready.
-fn unmodelled_ready(before: Option<&str>, after: Option<&str>, composed: &[&str]) -> bool {
+fn unmodelled_ready(before: Option<&str>, after: Option<&str>, composed: Composed) -> bool {
     before.is_some_and(|capture| region::composed_ui(capture, composed))
         && pane_settled(before, after)
 }
@@ -856,7 +858,7 @@ fn unmodelled_ready(before: Option<&str>, after: Option<&str>, composed: &[&str]
 /// composer DRAWN above the returning shell prompt and still matches, so it
 /// is never the only guard — [`launch_recheck`] runs the pane-level liveness
 /// owner ([`pane_liveness_at`]) first, exactly as the pre-lock path does.
-fn reconfirm_composed(server: &ServerId, pane: &str, composed: &[&str]) -> bool {
+fn reconfirm_composed(server: &ServerId, pane: &str, composed: Composed) -> bool {
     transport::capture_screen(server, pane, Styling::Plain)
         .is_some_and(|capture| region::composed_ui(&capture, composed))
 }
@@ -1234,7 +1236,7 @@ pub fn deliver_guarded(
         body: "",
         shape: Shape::Send,
         defer: request.defer,
-        composed: &[],
+        composed: Composed::NONE,
     };
     // (1a) The `deliver()`-identical dead-pane refusal — the meta+`ps` owner —
     // BEFORE any lock, so a dead pane refuses fast and lock-free.
@@ -1524,7 +1526,7 @@ mod tests {
         under_lock_refusal, unmodelled_ready,
     };
     use crate::inventory::ServerId;
-    use crate::tool::{InputModel, ToolKind};
+    use crate::tool::{Composed, InputModel, ToolKind};
     use std::time::Duration;
 
     /// The REAL opencode boot frame: blank, stable for ~2.7 s. This is the
@@ -1534,6 +1536,16 @@ mod tests {
     /// The REAL opencode composed frame: the welcome screen with its composer.
     const OPENCODE_COMPOSED: &str =
         include_str!("../tests/fixtures/opencode-composer/opencode-composed-frame.esc");
+    /// The REAL grok boot/composed frames and the REAL agy boot/composed/
+    /// trust-modal frames (provenance beside them).
+    const GROK_COMPOSED: &str =
+        include_str!("../tests/fixtures/grok-composer/grok-composed-frame.txt");
+    const GROK_BOOT: &str = include_str!("../tests/fixtures/grok-composer/grok-boot-frame.txt");
+    const AGY_COMPOSED: &str =
+        include_str!("../tests/fixtures/agy-composer/agy-composed-frame.txt");
+    const AGY_BOOT: &str = include_str!("../tests/fixtures/agy-composer/agy-boot-frame.txt");
+    const AGY_MODAL: &str =
+        include_str!("../tests/fixtures/agy-composer/agy-trust-modal-frame.txt");
 
     fn request<'a>(actor: &'a str, body: &'a str, shape: Shape) -> Request<'a> {
         Request {
@@ -1550,7 +1562,7 @@ mod tests {
             body,
             shape,
             defer: super::DEFAULT_DEFER,
-            composed: &[],
+            composed: Composed::NONE,
         }
     }
 
@@ -1785,9 +1797,18 @@ mod tests {
         );
     }
 
-    /// The markers as the tool table hands them to `wait_input_ready`.
-    fn opencode_markers() -> &'static [&'static str] {
+    /// The signal as the tool table hands it to `wait_input_ready`.
+    fn opencode_markers() -> Composed {
         ToolKind::OpenCode.adapter().input.composed
+    }
+
+    /// The grok/agy signals as the tool table hands them over.
+    fn grok_markers() -> Composed {
+        ToolKind::Grok.adapter().input.composed
+    }
+
+    fn agy_markers() -> Composed {
+        ToolKind::Agy.adapter().input.composed
     }
 
     #[test]
@@ -1839,6 +1860,83 @@ mod tests {
             ),
             "and a frame that keeps changing is not, however composed its seed"
         );
+    }
+
+    #[test]
+    fn a_grok_boot_frame_is_stable_but_never_ready() {
+        assert!(
+            pane_settled(Some(GROK_BOOT), Some(GROK_BOOT)),
+            "the boot frame IS settled: stability alone would call it ready"
+        );
+        assert!(!super::region::composed_ui(GROK_BOOT, grok_markers()));
+        assert!(!unmodelled_ready(
+            Some(GROK_BOOT),
+            Some(GROK_BOOT),
+            grok_markers()
+        ));
+    }
+
+    #[test]
+    fn a_grok_composed_frame_is_composed_and_ready() {
+        assert!(unmodelled_ready(
+            Some(GROK_COMPOSED),
+            Some(GROK_COMPOSED),
+            grok_markers()
+        ));
+        assert!(
+            !unmodelled_ready(Some(GROK_COMPOSED), Some(GROK_BOOT), grok_markers()),
+            "a frame that keeps changing is not, however composed its seed"
+        );
+    }
+
+    #[test]
+    fn an_agy_composed_frame_is_composed_and_ready() {
+        assert!(unmodelled_ready(
+            Some(AGY_COMPOSED),
+            Some(AGY_COMPOSED),
+            agy_markers()
+        ));
+        assert!(
+            !unmodelled_ready(Some(AGY_COMPOSED), Some(AGY_BOOT), agy_markers()),
+            "a frame that keeps changing is not, however composed its seed"
+        );
+    }
+
+    #[test]
+    fn an_agy_trust_modal_is_stable_but_never_ready() {
+        assert!(
+            pane_settled(Some(AGY_MODAL), Some(AGY_MODAL)),
+            "the modal IS settled: stability alone would call it ready"
+        );
+        assert!(!super::region::composed_ui(AGY_MODAL, agy_markers()));
+        assert!(!unmodelled_ready(
+            Some(AGY_MODAL),
+            Some(AGY_MODAL),
+            agy_markers()
+        ));
+    }
+
+    #[test]
+    fn an_agy_boot_frame_is_never_ready() {
+        assert!(!unmodelled_ready(
+            Some(AGY_BOOT),
+            Some(AGY_BOOT),
+            agy_markers()
+        ));
+    }
+
+    #[test]
+    fn tools_without_a_composed_signal_refuse_even_a_composed_frame() {
+        for kind in [ToolKind::Gemini, ToolKind::Unknown] {
+            let spec = kind.adapter().input.composed;
+            assert!(spec.is_empty());
+            assert!(
+                !unmodelled_ready(Some(GROK_COMPOSED), Some(GROK_COMPOSED), spec),
+                "no signal refuses at once, whatever the frame"
+            );
+        }
+        assert!(!grok_markers().is_empty());
+        assert!(!agy_markers().is_empty());
     }
 
     #[test]
@@ -1908,13 +2006,13 @@ mod tests {
 
     #[test]
     fn a_tool_with_no_composed_signal_is_never_ready_however_settled() {
-        // gemini, agy, grok and the unknown fallback carry NO composed
-        // markers: for them readiness can only refuse, visibly, exactly as it
-        // did before the settle arm was introduced.
+        // gemini and the unknown fallback carry NO composed signal: for
+        // them readiness can only refuse, visibly, exactly as it did before
+        // the settle arm was introduced.
         let stable = "a settled frame of some tool\n";
         assert!(pane_settled(Some(stable), Some(stable)));
         assert!(
-            !unmodelled_ready(Some(stable), Some(stable), &[]),
+            !unmodelled_ready(Some(stable), Some(stable), Composed::NONE),
             "an empty marker list is a refusal, not a fallback to settled-only"
         );
     }

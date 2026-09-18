@@ -429,7 +429,7 @@ pub fn run(
         body: &message,
         shape: crate::deliver::Shape::Send,
         defer,
-        composed: &[],
+        composed: crate::tool::Composed::NONE,
     };
     fields.target = &target_name;
     let (delivery, outcome) =

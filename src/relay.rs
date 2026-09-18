@@ -166,7 +166,7 @@ pub fn run(
         body: &parsed.text,
         shape: deliver::Shape::Relay,
         defer,
-        composed: &[],
+        composed: crate::tool::Composed::NONE,
     };
     let delivery = deliver::deliver(&request, err)?;
     match delivery {
