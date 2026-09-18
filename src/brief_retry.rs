@@ -2,37 +2,35 @@
 //! delivered, and the grammar that record is written and read in.
 //!
 //! A brief that misses its readiness window used to be dumped raw to
-//! `undelivered.<name>.txt` and forgotten: the spawner had to notice, and its
-//! hand re-send arrived as a PEER message, so the brief marker — the task
-//! contract's authority (rule 8b) — was lost. This record is what lets the
-//! session's own watchdog deliver that brief LATER, byte-identical to what
-//! `spawn` would have pasted, or give it up LOUDLY.
+//! `undelivered.<name>.txt` and forgotten, and the spawner's hand re-send
+//! arrived as a PEER message, losing the brief marker — the task contract's
+//! authority (rule 8b). This record lets the session's own watchdog deliver
+//! that brief LATER, byte-identical to what `spawn` would have pasted, or give
+//! it up LOUDLY.
 //!
-//! THE ONE WRITER is `spawn` on its undelivered path. Nothing else creates a
-//! record, and no glob ever qualifies a file: a reader names
-//! `brief-retry.<slot>.rec` from a roster slot it already holds, so a legacy
-//! `undelivered.*.txt` — which carries no record — stays inert forever, and a
+//! THE ONE WRITER is `spawn` on its undelivered path, and no glob ever
+//! qualifies a file: a reader names `brief-retry.<slot>.rec` from a roster slot
+//! it already holds, so a legacy `undelivered.*.txt` stays inert forever and a
 //! file planted at any other name is never read.
 //!
 //! # What the two bounds mean
 //!
-//! `attempts` is the number of times ae ENTERED [`crate::deliver::deliver`]
-//! for this brief. Readiness, busy and human-typing are seen BEFORE anything is
-//! published, and they skip the cycle with `attempts` untouched; only the
-//! narrow race where a pane goes busy between the readiness proof and the
-//! target lock burns one. `created` carries the wall bound instead: a record
-//! older than 30 minutes is given up whatever its attempts say.
+//! `attempts` is the number of times ae ENTERED [`crate::deliver::deliver`] for
+//! this brief. Readiness, busy and human-typing are seen BEFORE anything is
+//! published and skip the cycle with `attempts` untouched; only the narrow race
+//! where a pane goes busy between the readiness proof and the target lock burns
+//! one. `created` carries the wall bound instead: past 30 minutes a record is
+//! given up whatever its attempts say.
 //!
 //! # Trust
 //!
-//! A record file is trusted exactly as far as the meta store is: `0600` stops
-//! other uids, not this one, so a same-uid shell can rewrite one and the
-//! watchdog will paste it with the full authority of `brief(<actor>)`. That is
-//! the same boundary every other piece of session state sits behind. What the
-//! record DOES buy is the process boundary: the delivery leg takes its text and
-//! its actor from here and never from argv, the environment or the caller, so
-//! forging the trigger can at most re-fire a brief the spawner already
-//! authorized.
+//! A record is trusted exactly as far as the meta store is: `0600` stops other
+//! uids, not this one, so a same-uid shell can rewrite one and the watchdog
+//! will paste it with the full authority of `brief(<actor>)` — the boundary
+//! every other piece of session state sits behind. What the record DOES buy is
+//! the process boundary: the delivery leg takes its text and its actor from
+//! here and never from argv, the environment or the caller, so forging the
+//! trigger can at most re-fire a brief the spawner already authorized.
 //!
 //! # The grammar
 //!
@@ -55,15 +53,15 @@
 //!
 //! The eight headers are in FIXED order, which is what makes a duplicate, an
 //! unknown key and a reordering all one refusal instead of three. A value is
-//! everything after the FIRST `=`, so a value may itself contain one. The body
-//! is everything after the `body` line, byte for byte — a brief carries
-//! newlines, and nothing may normalize them.
+//! everything after the FIRST `=`, so it may contain one. The body is
+//! everything after the `body` line, byte for byte — a brief carries newlines,
+//! and nothing may normalize them.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-/// The first line of every record, version included. A record that does not
-/// begin with exactly this is not one.
+/// The first line of every record. One that does not begin with exactly this
+/// is not a record.
 const MAGIC: &str = "brief-retry 1";
 
 /// The line that ends the headers and begins the body.
@@ -81,9 +79,9 @@ const KEYS: [&str; 8] = [
     "phase",
 ];
 
-/// The most a record may be. A brief is a paragraph and a path; anything past
-/// this is either damage or a brief that was never retryable, and reading it
-/// would let whoever planted it size an allocation on the watchdog's path.
+/// The most a record may be: past this it is damage or a brief that was never
+/// retryable, and reading it would let whoever planted it size an allocation
+/// on the watchdog's path.
 pub const RECORD_CAP: u64 = 65_536;
 
 /// How many times ae may enter a delivery for one brief before it is given up.
@@ -98,12 +96,11 @@ const PANE_CAP: usize = 16;
 /// The longest a launch token may be.
 const LAUNCH_ID_CAP: usize = 128;
 
-/// Where this brief's flight stands, and the whole of the crash-window proof.
-///
+/// Where this brief's flight stands, and the whole of the crash-window proof:
 /// [`Phase::Pasting`] is published DURABLY before the paste, so a record found
 /// in that phase is one whose outcome nobody recorded. It is never pasted
-/// again — it is given up — which is what makes a crash between the paste and
-/// the delete unable to deliver a brief twice.
+/// again — only given up — which is what stops a crash between the paste and
+/// the delete from delivering a brief twice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
     /// No flight is in progress; this record may be taken.
@@ -138,14 +135,12 @@ impl Phase {
 pub enum Damage {
     /// Past [`RECORD_CAP`].
     Oversize,
-    /// The node at the name is not a regular file — a directory, a symlink, a
-    /// device. TAMPERING, and permanent: nothing transient turns a record into
-    /// a directory.
+    /// The node at the name is not a regular file. TAMPERING, and permanent:
+    /// nothing transient turns a record into a directory.
     NotRegular,
     /// The file is THERE and the open or the read FAILED, so ae never saw the
-    /// bytes. Distinct from every grammar arm on purpose, and from
-    /// [`Damage::NotRegular`] too: this one may be a passing `EMFILE` or `EIO`,
-    /// so it is never destroyed on sight.
+    /// bytes. Distinct from every other arm because it may be a passing
+    /// `EMFILE` or `EIO`, so it is never destroyed on sight.
     Unreadable,
     /// Not UTF-8. A brief is pasted into a terminal; bytes that are not text
     /// were never one.
@@ -155,23 +150,11 @@ pub enum Damage {
     /// A header line is missing, out of order, duplicated, unknown, or carries
     /// no `=`.
     Header,
-    /// The slot is not a slot.
-    Slot,
-    /// The reference does not name this record's own slot.
-    Reference,
-    /// The pane id is not `%<digits>`.
-    Pane,
-    /// The launch token is empty, oversize, or not printable.
-    LaunchId,
-    /// The actor is neither an agent name nor the unverified spelling — and it
-    /// reaches a provenance first line, so it is an allowlist.
-    Actor,
-    /// The attempt count is not a canonical decimal within the bound.
-    Attempts,
-    /// The creation moment is not a canonical, strictly positive epoch.
-    Created,
-    /// The phase word is neither `armed` nor `pasting`.
-    PhaseWord,
+    /// A header's VALUE fails its own grammar, named by the exact key in
+    /// [`KEYS`] whose line carried it. One arm rather than eight, because no
+    /// caller ever distinguished them: the sweep sets a damaged record aside
+    /// whichever field was wrong, and the key is what triage needs.
+    Field(&'static str),
     /// The `body` marker line is missing.
     BodyMarker,
     /// The body is absent, blank, or carries a control byte no terminal paste
@@ -179,42 +162,30 @@ pub enum Damage {
     Body,
 }
 
-impl Damage {
-    /// The reason a give-up names, in one clause.
-    #[must_use]
-    pub const fn reason(self) -> &'static str {
-        match self {
+impl std::fmt::Display for Damage {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let clause = match *self {
             Self::Oversize => "record is larger than the 64 KiB bound",
             Self::NotRegular => "the name holds something that is not a regular file",
             Self::Unreadable => "record could not be read at all",
             Self::NotUtf8 => "record is not UTF-8",
             Self::Magic => "record does not begin with its version line",
             Self::Header => "a header line is missing, duplicated, unknown or out of order",
-            Self::Slot => "the slot is not a slot",
-            Self::Reference => "the reference does not name the record's own slot",
-            Self::Pane => "the pane id is not %<digits>",
-            Self::LaunchId => "the launch token is empty, oversize or unprintable",
-            Self::Actor => "the actor is neither an agent name nor the unverified spelling",
-            Self::Attempts => "the attempt count is not a canonical decimal within the bound",
-            Self::Created => "the creation moment is not a canonical positive epoch",
-            Self::PhaseWord => "the phase is neither armed nor pasting",
+            Self::Field(key) => {
+                return write!(formatter, "the {key} field does not match its grammar");
+            }
             Self::BodyMarker => "the body marker line is missing",
             Self::Body => "the body is absent, blank or carries a control byte",
-        }
-    }
-}
-
-impl std::fmt::Display for Damage {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(self.reason())
+        };
+        formatter.write_str(clause)
     }
 }
 
 /// A record that is not one, and when the file was last written.
 ///
 /// The moment comes from the stat the read ALREADY made, never from a second
-/// look at the world: it is what lets a read failure be told apart from a
-/// permanent one without holding any state between cycles.
+/// look at the world: it is what lets a read failure be dated — and so told
+/// apart from permanent damage — without holding any state between cycles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Damaged {
     /// What is wrong.
@@ -223,54 +194,26 @@ pub struct Damaged {
     pub modified: Option<i64>,
 }
 
-impl Damaged {
-    /// What is wrong, for a caller that does not care when.
-    #[must_use]
-    pub const fn kind(self) -> Damage {
-        self.kind
-    }
-
-    /// Damage observed without a moment to date it.
-    const fn undated(kind: Damage) -> Self {
-        Self {
-            kind,
-            modified: None,
-        }
-    }
-}
-
-/// Whether damage is worth destroying the record over.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Permanence {
-    /// The record will never become readable: ae saw the bytes and they are
-    /// wrong, or the node is not a file at all.
-    Permanent,
-    /// ae never saw the bytes, and a next cycle may. Destroying this would
-    /// throw away a brief that was fine.
-    Transient,
-}
-
 /// How long a brief may wait for delivery before it is given up.
 pub const AGE_BOUND_SECS: i64 = 1_800;
 
-/// Whether `damaged` should be destroyed, or left for a later cycle.
+/// Whether `damaged` is worth destroying the record over, or should be left
+/// for a later cycle.
 ///
 /// Bytes ae SAW and refused are permanent, and so is a node that is not a
-/// regular file — nothing transient turns a record into a directory. A read
-/// that FAILED is the only ambiguous one, and it is dated rather than guessed:
-/// a file still unreadable past the age bound was never going to be read, while
-/// a younger one may be a passing `EMFILE`. Undated damage stays transient,
-/// because a stat that did not answer is not evidence of anything.
+/// regular file. A read that FAILED is the only ambiguous one, and it is DATED
+/// rather than guessed: a file still unreadable past the age bound was never
+/// going to be read, while a younger one may be a passing `EMFILE`. Undated
+/// damage is never destroyed, because a stat that did not answer is not
+/// evidence of anything.
 #[must_use]
-pub const fn permanence(damaged: &Damaged, now: i64) -> Permanence {
+pub const fn should_destroy(damaged: &Damaged, now: i64) -> bool {
     match damaged.kind {
         Damage::Unreadable => match damaged.modified {
-            Some(modified) if now.saturating_sub(modified) > AGE_BOUND_SECS => {
-                Permanence::Permanent
-            }
-            _ => Permanence::Transient,
+            Some(modified) => now.saturating_sub(modified) > AGE_BOUND_SECS,
+            None => false,
         },
-        _ => Permanence::Permanent,
+        _ => true,
     }
 }
 
@@ -283,11 +226,10 @@ pub struct Record {
     pub reference: String,
     /// The pane the seat was launched into.
     pub pane: String,
-    /// `launch_id.<slot>` as it stood when the brief was composed: the
-    /// incarnation guard.
+    /// `launch_id.<slot>` when the brief was composed: the incarnation guard.
     pub launch_id: String,
-    /// The ORIGINAL spawner, which is the actor the brief marker names — never
-    /// the watchdog that carries it.
+    /// The ORIGINAL spawner — the actor the brief marker names, never the
+    /// watchdog that carries it.
     pub actor: String,
     /// How many times ae has entered delivery for this brief.
     pub attempts: u32,
@@ -299,10 +241,9 @@ pub struct Record {
     pub body: String,
 }
 
-/// The record file for `slot` under `dir`.
-///
-/// Named from a slot the caller already holds — never from a directory
-/// listing, so no glob can qualify a file into a brief.
+/// The record file for `slot` under `dir`, named from a slot the caller already
+/// holds — never from a directory listing, so no glob can qualify a file into a
+/// brief.
 #[must_use]
 pub fn path(dir: &Path, slot: &str) -> PathBuf {
     dir.join(format!(
@@ -346,11 +287,9 @@ pub fn render(record: &Record) -> String {
     text
 }
 
-/// Take one line off `rest`, advancing past its newline.
-///
-/// `None` once `rest` is empty. A final line with no newline is returned whole,
-/// which is what makes a truncated record miss its body marker rather than
-/// silently borrow the next field.
+/// Take one line off `rest`, advancing past its newline; `None` once empty. A
+/// final line with no newline is returned whole, which is what makes a
+/// truncated record miss its body marker rather than borrow the next field.
 fn take_line<'a>(rest: &mut &'a str) -> Option<&'a str> {
     if rest.is_empty() {
         return None;
@@ -365,9 +304,9 @@ fn take_line<'a>(rest: &mut &'a str) -> Option<&'a str> {
     Some(line)
 }
 
-/// A canonical unsigned decimal: digits only, and no leading zero unless the
-/// value IS zero. `01`, `+1` and a space-padded count are damage, because two
-/// spellings of one number are two records that compare unequal.
+/// A canonical unsigned decimal: digits only, no leading zero unless the value
+/// IS zero. `01`, `+1` and a padded count are damage, because two spellings of
+/// one number are two records that compare unequal.
 fn canonical_decimal(value: &str) -> Option<u64> {
     if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
         return None;
@@ -379,8 +318,8 @@ fn canonical_decimal(value: &str) -> Option<u64> {
 }
 
 /// A slot: alphanumeric first, then the characters a file name may carry. `.`
-/// and `..` are refused by the first-character rule, so a slot can never walk
-/// out of its own directory.
+/// and `..` die on the first-character rule, so a slot cannot walk out of its
+/// own directory.
 fn is_slot(slot: &str) -> bool {
     let mut bytes = slot.bytes();
     match bytes.next() {
@@ -399,8 +338,8 @@ fn is_pane(pane: &str) -> bool {
     !digits.is_empty() && pane.len() <= PANE_CAP && digits.bytes().all(|byte| byte.is_ascii_digit())
 }
 
-/// A body ae may paste: present, not blank, and carrying no control byte
-/// beyond the tab and newline a brief legitimately has.
+/// A body ae may paste: present, not blank, no control byte beyond the tab and
+/// newline a brief legitimately has.
 fn is_body(body: &str) -> bool {
     !body.is_empty()
         && body.chars().any(|ch| !ch.is_whitespace())
@@ -410,10 +349,8 @@ fn is_body(body: &str) -> bool {
 }
 
 /// What a record's BYTES say — the pure half, and the one the fuzz lane drives.
-///
 /// Bounded before it allocates, and clock-free on purpose: whether a record has
-/// EXPIRED is a question about now, and it belongs to the caller that holds a
-/// clock, not to the grammar.
+/// EXPIRED is a question about now, and belongs to the caller holding a clock.
 ///
 /// # Errors
 ///
@@ -429,21 +366,22 @@ pub fn parse(bytes: &[u8]) -> Result<Record, Damage> {
     if take_line(&mut rest) != Some(MAGIC) {
         return Err(Damage::Magic);
     }
-    let mut values: Vec<&str> = Vec::with_capacity(KEYS.len());
-    for key in KEYS {
+    // A fixed array, not a vec: the destructure below is then irrefutable, and
+    // there is no unreachable "wrong number of headers" arm to reason about.
+    let mut values = [""; KEYS.len()];
+    for (found_value, key) in values.iter_mut().zip(KEYS) {
         let Some(line) = take_line(&mut rest) else {
             return Err(Damage::Header);
         };
-        // The FIRST `=` only: a launch token or a brief reference may carry one
-        // of its own, and splitting on the last would hand the value's tail to
-        // the key.
+        // The FIRST `=` only: a launch token may carry one of its own, and
+        // splitting on the last would hand the value's tail to the key.
         let Some((found, value)) = line.split_once('=') else {
             return Err(Damage::Header);
         };
         if found != key {
             return Err(Damage::Header);
         }
-        values.push(value);
+        *found_value = value;
     }
     let [
         slot,
@@ -454,44 +392,41 @@ pub fn parse(bytes: &[u8]) -> Result<Record, Damage> {
         attempts,
         created,
         phase,
-    ] = values[..]
-    else {
-        return Err(Damage::Header);
-    };
+    ] = values;
     if take_line(&mut rest) != Some(BODY_MARKER) {
         return Err(Damage::BodyMarker);
     }
     if !is_slot(slot) {
-        return Err(Damage::Slot);
+        return Err(Damage::Field("slot"));
     }
     if reference != format!("spawn-{slot}") {
-        return Err(Damage::Reference);
+        return Err(Damage::Field("reference"));
     }
     if !is_pane(pane) {
-        return Err(Damage::Pane);
+        return Err(Damage::Field("pane"));
     }
     if launch_id.is_empty()
         || launch_id.len() > LAUNCH_ID_CAP
         || !launch_id.bytes().all(|byte| byte.is_ascii_graphic())
     {
-        return Err(Damage::LaunchId);
+        return Err(Damage::Field("launch_id"));
     }
     if !crate::config::is_agent_name(actor) && actor != crate::deliver::UNVERIFIED {
-        return Err(Damage::Actor);
+        return Err(Damage::Field("actor"));
     }
     let Some(attempts) = canonical_decimal(attempts).and_then(|count| u32::try_from(count).ok())
     else {
-        return Err(Damage::Attempts);
+        return Err(Damage::Field("attempts"));
     };
     if attempts > MAX_ATTEMPTS {
-        return Err(Damage::Attempts);
+        return Err(Damage::Field("attempts"));
     }
     let created = match canonical_decimal(created).and_then(|epoch| i64::try_from(epoch).ok()) {
         Some(epoch) if epoch > 0 => epoch,
-        _ => return Err(Damage::Created),
+        _ => return Err(Damage::Field("created")),
     };
     let Some(phase) = Phase::from_word(phase) else {
-        return Err(Damage::PhaseWord);
+        return Err(Damage::Field("phase"));
     };
     if !is_body(rest) {
         return Err(Damage::Body);
@@ -510,17 +445,15 @@ pub fn parse(bytes: &[u8]) -> Result<Record, Damage> {
 }
 
 /// The bytes at `slot`'s record name, with the moment the stat observed.
+/// `Ok(None)` is no record — the ordinary case for every seat whose brief
+/// landed. The node is classified WITHOUT following a link and refused unless
+/// it is a regular file, and the cap binds twice: on the observed length, and
+/// again on the read that allocates.
 ///
-/// `Ok(None)` is no record at all — the ordinary case for every seat whose
-/// brief landed. The node is classified WITHOUT following a link and refused
-/// unless it is a regular file, so a symlink planted at the name is never
-/// opened, and the cap binds twice: on the observed length, and again on the
-/// read that allocates.
-///
-/// The residual is the same one [`crate::store::read_source`] carries and is
-/// stated rather than papered over: a replacement between the observation and
-/// the open is not atomic, so the claim is "an observed non-regular node is
-/// refused before the open", never atomicity.
+/// RESIDUAL, the same one [`crate::store::read_source`] carries and stated
+/// rather than papered over: a replacement between the observation and the open
+/// is not atomic, so the claim is "an observed non-regular node is refused
+/// before the open", never atomicity.
 struct Slurped {
     bytes: Vec<u8>,
     modified: Option<i64>,
@@ -538,7 +471,12 @@ fn slurp(dir: &Path, slot: &str) -> Result<Option<Slurped>, Damaged> {
     let meta = match probe {
         Ok(meta) => meta,
         Err(why) if why.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(_) => return Err(Damaged::undated(Damage::Unreadable)),
+        Err(_) => {
+            return Err(Damaged {
+                kind: Damage::Unreadable,
+                modified: None,
+            });
+        }
     };
     // The SAME stat answers both questions: what the node is, and when it was
     // last written. Dating a read failure needs no second look at the world.
@@ -571,11 +509,9 @@ fn slurp(dir: &Path, slot: &str) -> Result<Option<Slurped>, Damaged> {
     Ok(Some(Slurped { bytes, modified }))
 }
 
-/// Read the record for `slot`, if there is one.
-///
-/// `None` means no record — which is the ordinary case for every seat whose
-/// brief landed. `Some(Err(..))` is a file that is there and is not a record,
-/// carrying the moment [`permanence`] dates it by.
+/// Read the record for `slot`, if there is one. `None` is no record;
+/// `Some(Err(..))` is a file that is there and is not one, carrying the moment
+/// [`should_destroy`] dates it by.
 #[must_use]
 pub fn read(dir: &Path, slot: &str) -> Option<Result<Record, Damaged>> {
     match slurp(dir, slot) {
@@ -590,41 +526,29 @@ pub fn read(dir: &Path, slot: &str) -> Option<Result<Record, Damaged>> {
 
 /// Publish `record` durably, at `0600`, for a slot that has NONE yet.
 ///
-/// # This function does not serialize itself
+/// IT DOES NOT SERIALIZE ITSELF. Every mutation of a slot's record — this,
+/// [`remove`] and [`swap_if_unchanged`] — must be made under that slot's RECORD
+/// LOCK, because the lock has to span a caller's whole read-modify-write, not
+/// one write inside it. A caller that mutates a record without holding it is
+/// the defect this sentence exists to prevent.
 ///
-/// It is one of the mutations of a slot's record, and every one of them —
-/// this, [`remove`], and the compare-and-swap re-arm the delivery leg makes —
-/// must be performed under that slot's RECORD LOCK. Nothing here takes it,
-/// because the lock has to span a caller's whole read-modify-write, not one
-/// write inside it. A caller that mutates a record without holding it is the
-/// defect this sentence exists to prevent.
+/// AN OCCUPIED NAME IS REFUSED, loudly, and the check is sound only because of
+/// that lock contract. A silent replace would reset an attempt count and
+/// destroy a `pasting` mark — the crash-window proof — with no sound at all,
+/// and no caller has a reason to publish over a live record: a spawn clears a
+/// stale one first, and a re-arm goes through the compare-and-swap.
 ///
-/// # An occupied name is refused, loudly
-///
-/// A rename would replace an existing record in silence, which would reset its
-/// attempt count and destroy a `pasting` mark — the crash-window proof — with
-/// no sound at all. No caller has a reason to publish over a live record: a
-/// spawn clears a stale one first, and a re-arm goes through the
-/// compare-and-swap, never through here. So an occupied name is a wiring
-/// defect, and it is reported rather than absorbed. The check is sound because
-/// of the lock contract above, not on its own.
-///
-/// # Durability
-///
-/// Temp, `fsync`, rename — the shape [`crate::store::SessionStore::stamp_launch_attempt`]
-/// uses. The file's own bytes are synced, so a record survives THIS PROCESS
-/// dying; the containing directory is not, so a machine that stops may still
-/// lose the rename. Stated rather than overclaimed: the residual is the same
-/// one the stamp carries, and the delivery leg fails closed over it, because a
-/// record that vanished is a brief nobody retries rather than one delivered
-/// twice. The mode is set ON the create, not after it, because the body is the
-/// brief and a window where it is world-readable is a window too many. A temp
-/// carries this process's pid, so a crash between the create and the rename
-/// leaves a file that blocks only a later process reusing that pid.
-///
-/// The writer PROVES the reader will accept what it wrote: the rendered bytes
-/// are parsed back before they are published, and a record that would not parse
-/// is refused loudly instead of being born inert.
+/// DURABILITY is temp, `fsync`, rename — the shape
+/// [`crate::store::SessionStore::stamp_launch_attempt`] uses. The file's bytes
+/// are synced, so a record survives THIS PROCESS dying; the directory is not,
+/// so a machine that stops may still lose the rename. That residual is the
+/// stamp's own, and the delivery leg fails closed over it: a record that
+/// vanished is a brief nobody retries, never one delivered twice. The mode is
+/// set ON the create because the body is the brief, and the temp carries this
+/// pid so a crash between create and rename blocks only a later process
+/// reusing it. The writer PROVES the reader will accept what it wrote: the
+/// rendered bytes are parsed back first, and a record that would not parse is
+/// refused rather than born inert.
 ///
 /// # Errors
 ///
@@ -639,7 +563,7 @@ pub fn publish(dir: &Path, record: &Record) -> Result<(), String> {
 enum Occupied {
     /// Report it: no caller publishes over a live record.
     Refuse,
-    /// Replace it: the caller proved, under the record lock, that what is there
+    /// Replace it: the caller proved under the record lock that what is there
     /// is the very record this flight wrote.
     Replace,
 }
@@ -676,7 +600,7 @@ fn write_record(dir: &Path, record: &Record, occupied: Occupied) -> Result<(), S
     };
     // EXCLUSIVE and 0600 at once: the name is predictable and sits in state a
     // human edits, so a plain create would FOLLOW a link planted there, and a
-    // mode set after the write would expose the brief in between.
+    // mode set afterwards would expose the brief in between.
     let created = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -703,12 +627,12 @@ fn write_record(dir: &Path, record: &Record, occupied: Occupied) -> Result<(), S
 }
 
 /// How far in the future a record may claim to have been created before that
-/// claim is itself the fault. A host whose clock steps backwards is plausible;
-/// half an hour of it is not.
+/// claim is itself the fault. A clock that steps back is plausible; half an
+/// hour of it is not.
 pub const FUTURE_SKEW_SECS: i64 = 300;
 
-/// What a cycle should do with one record. The ONE gate, and the only place
-/// the bounds, the incarnation and the readiness are weighed together.
+/// What a cycle should do with one record — the ONE place the bounds, the
+/// incarnation and the readiness are weighed together.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Decision {
     /// Take the record: publish the flight mark and enter delivery.
@@ -719,21 +643,18 @@ pub(crate) enum Decision {
     Skip(&'static str),
 }
 
-/// What a cycle knows about the seat a record names.
-///
-/// Each field names the store it came from, because they are different stores
-/// and a reader that forgets which is which is how an incarnation check starts
-/// trusting the wrong one: the name and the launch token are META, the live
-/// pane is THIS CYCLE'S tmux read, and liveness and readiness are the delivery
-/// module's own owners.
+/// What a cycle knows about the seat a record names. Each field names the store
+/// it came from, because a reader that forgets which is which is how an
+/// incarnation check starts trusting the wrong one: the name and the launch
+/// token are META, the live pane is THIS CYCLE'S tmux read, and liveness and
+/// readiness belong to the delivery module.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Facts<'a> {
-    /// The roster name meta gives this slot, or `None` if meta did not answer.
+    /// The roster name meta gives this slot; `None` if meta did not answer.
     pub meta_name: Option<&'a str>,
-    /// `launch_id.<slot>` as meta spells it now, or `None` if meta did not
-    /// answer.
+    /// `launch_id.<slot>` as meta spells it now; `None` if meta did not answer.
     pub meta_launch_id: Option<&'a str>,
-    /// The pane this cycle saw carrying the slot, or `None` if none did.
+    /// The pane this cycle saw carrying the slot, if any.
     pub live_pane: Option<&'a str>,
     /// What the one liveness owner says about that pane.
     pub liveness: crate::deliver::PaneLiveness,
@@ -746,18 +667,17 @@ pub(crate) struct Facts<'a> {
 /// Weigh one record against what the cycle knows. FAIL CLOSED: every answer
 /// that is not positive proof is [`Decision::Skip`], which changes nothing.
 ///
-/// The order is the contract. A record mid-flight is decided before anything
-/// else, because its outcome is unknown and no later fact can make pasting it
-/// again safe. An incarnation is refused only on POSITIVE proof — meta ANSWERED
-/// and named a different seat — so a meta that could not be read skips rather
-/// than destroying a brief, the same shape [`crate::tmux::classify_absence`]
-/// uses for a session. Busy and human-typing land on the readiness arm, which
-/// is what keeps them free: they skip the cycle and spend no attempt.
+/// THE ORDER IS THE CONTRACT. A record mid-flight is decided first, because its
+/// outcome is unknown and no later fact makes pasting it again safe. An
+/// incarnation is refused only on POSITIVE proof — meta ANSWERED and named a
+/// different seat — so an unreadable meta skips rather than destroying a brief,
+/// the shape [`crate::tmux::classify_absence`] uses for a session. Busy and
+/// human-typing land on the readiness arm, which is what keeps them free: they
+/// skip the cycle and spend no attempt.
 pub(crate) fn decide(record: &Record, facts: &Facts<'_>) -> Decision {
     // THE CRASH WINDOW. A flight published this before entering delivery and
     // never recorded an outcome, so ae cannot know whether the paste landed.
-    // Pasting again could deliver the brief twice; this is the arm that makes
-    // that impossible.
+    // This is the arm that makes delivering it twice impossible.
     if record.phase == Phase::Pasting {
         return Decision::GiveUp("paste outcome unknown");
     }
@@ -790,8 +710,8 @@ pub(crate) fn decide(record: &Record, facts: &Facts<'_>) -> Decision {
         return Decision::Skip("the pane is not a proven live agent");
     }
     // WHERE BUSY AND HUMAN-TYPING LAND, and why they cost nothing: readiness is
-    // proved BEFORE any attempt is published, so a seat whose box is occupied
-    // is simply looked at again next cycle.
+    // proved BEFORE any attempt is published, so an occupied box is simply
+    // looked at again next cycle.
     if !facts.ready {
         return Decision::Skip("the input box is not a confirmed-idle state");
     }
@@ -801,18 +721,14 @@ pub(crate) fn decide(record: &Record, facts: &Facts<'_>) -> Decision {
 }
 
 /// Move a damaged record aside so it can never be read as one again, keeping
-/// whatever was moved aside FIRST.
-///
-/// The plain name is tried before the dated one because a single damaged record
-/// is the ordinary case and its file should be easy to find. A collision never
-/// overwrites: the first forensics are the ones worth keeping, and a second
-/// damaged record at the same slot is a rarer event than losing the evidence of
-/// the first.
+/// whatever was moved aside FIRST: the plain name is tried before the dated
+/// one, and a collision never overwrites, because the first forensics are the
+/// ones worth keeping.
 ///
 /// # Errors
 ///
-/// Both names taken, or the rename itself failed — the caller reports and
-/// skips, and never loops on it.
+/// Both names taken, or the rename failed — the caller reports and skips, and
+/// never loops on it.
 pub(crate) fn mark_damaged(dir: &Path, slot: &str, now: i64) -> Result<PathBuf, String> {
     let from = path(dir, slot);
     let plain = damaged_path(dir, slot);
@@ -841,57 +757,48 @@ pub(crate) fn mark_damaged(dir: &Path, slot: &str, now: i64) -> Result<PathBuf, 
     ))
 }
 
-/// Replace the record at `slot` ONLY while its bytes are still `witness`.
+/// Write `next` over `slot`'s record, or DELETE it when `next` is `None`, only
+/// while its bytes are still `witness`.
 ///
-/// The compare-and-swap that keeps a finished flight from resurrecting a record
-/// that someone else replaced: a `retire` plus a re-spawn during the flight
-/// leaves a SUCCESSOR record at the same slot, and writing this flight's
-/// outcome over it would hand the successor a stranger's attempt count.
+/// The one compare-and-swap every mutation a flight makes goes through — the
+/// re-arm, the delivered delete and the given-up delete alike. It exists for
+/// the successor: a `retire` plus a re-spawn DURING a flight leaves a different
+/// record at the same slot, and this flight writing its outcome over it would
+/// hand a stranger's brief this one's attempt count, or delete it outright.
 ///
 /// `Ok(false)` is that mismatch — the record changed or vanished under the
-/// flight — and it is not an error: it means this flight no longer owns
-/// anything and must write nothing.
+/// flight — and it is not an error: it means this flight owns nothing and must
+/// write nothing.
 ///
 /// # Errors
 ///
-/// The write that failed, named. The caller gives up loudly rather than
-/// leaving a flight mark behind.
-pub(crate) fn rearm_if_unchanged(
+/// The write that failed, named. The caller gives up loudly rather than leaving
+/// a flight mark behind. A delete never errors.
+pub(crate) fn swap_if_unchanged(
     dir: &Path,
+    slot: &str,
     witness: &[u8],
-    next: &Record,
+    next: Option<&Record>,
 ) -> Result<bool, String> {
-    match slurp(dir, &next.slot) {
+    match slurp(dir, slot) {
         Ok(Some(found)) if found.bytes == witness => {
-            write_record(dir, next, Occupied::Replace).map(|()| true)
+            if let Some(next) = next {
+                write_record(dir, next, Occupied::Replace).map(|()| true)
+            } else {
+                remove(dir, slot);
+                Ok(true)
+            }
         }
         _ => Ok(false),
     }
 }
 
-/// Drop the record at `slot` ONLY while its bytes are still `witness`.
+/// Drop the record for `slot`, if any, WITHOUT a witness. Absent is success.
 ///
-/// The same guard as [`rearm_if_unchanged`], for the two arms that finish a
-/// flight: a delivered brief and a given-up one both delete, and neither may
-/// delete a SUCCESSOR record that a re-spawn wrote while the flight was in the
-/// air. `false` means this flight no longer owns the record and removed
-/// nothing.
-pub(crate) fn remove_if_unchanged(dir: &Path, slot: &str, witness: &[u8]) -> bool {
-    match slurp(dir, slot) {
-        Ok(Some(found)) if found.bytes == witness => {
-            remove(dir, slot);
-            true
-        }
-        _ => false,
-    }
-}
-
-/// Drop the record for `slot`, if any. Absent is success: a deletion that
-/// finds nothing has already happened.
-///
-/// Like [`publish`], this does not serialize itself: it is a mutation of the
-/// slot's record and belongs under that slot's record lock, held across the
-/// caller's whole sequence.
+/// The unconditional delete, for a caller that owns the slot outright — a
+/// `spawn` claiming it, a `retire` releasing it. A flight uses
+/// [`swap_if_unchanged`] instead. Like [`publish`], it does not serialize
+/// itself: it belongs under that slot's record lock.
 pub fn remove(dir: &Path, slot: &str) {
     let _ = std::fs::remove_file(path(dir, slot));
 }
@@ -900,9 +807,8 @@ pub fn remove(dir: &Path, slot: &str) {
 // The delivery leg.
 
 /// The action a caller names to reach this leg. It selects the leg and NOTHING
-/// else: the text and the actor come from the record, so the worst a forged
-/// trigger can do is re-fire a brief the spawner already authorized, sooner
-/// than the watchdog would have.
+/// else — the text and the actor come from the record — so the worst a forged
+/// trigger can do is re-fire a brief the spawner already authorized.
 pub const RETRY_ACTION: &str = "brief-retry";
 
 /// The event a landed retry writes.
@@ -912,19 +818,17 @@ pub const DELIVERED_ACTION: &str = "brief-delivered";
 pub const GAVE_UP_ACTION: &str = "brief-gave-up";
 
 /// The action the body store names the recovery file after — the SAME one the
-/// original spawn used, because this is that spawn's brief and not a new
-/// message.
+/// original spawn used, because this is that spawn's brief, not a new message.
 const SPAWN_ACTION: &str = "spawn";
 
 /// How many readiness polls a retry spends. Short on purpose: a cycle that
 /// finds the box busy simply looks again next cycle, and spends no attempt.
 const RETRY_READY_POLLS: u32 = 4;
 
-/// Deliver the brief `slot`'s record holds, or say why it did not.
-///
-/// The argv named only WHICH seat. Everything that reaches the pane —- the
-/// text, and the actor its provenance line names -— is read from the record,
-/// so no caller can put words in a brief's mouth.
+/// Deliver the brief `slot`'s record holds, or say why it did not. The argv
+/// named only WHICH seat: everything that reaches the pane — the text, and the
+/// actor its provenance line names — is read from the record, so no caller can
+/// put words in a brief's mouth.
 ///
 /// # Errors
 ///
@@ -939,6 +843,11 @@ pub fn run(
 ) -> std::io::Result<u8> {
     use crate::state::EXIT_FAILED;
 
+    // Every refusal below is the same sentence with a different clause.
+    let refuse = |err: &mut dyn Write, clause: &str| -> std::io::Result<u8> {
+        writeln!(err, "ae: {RETRY_ACTION} {clause}")?;
+        Ok(EXIT_FAILED)
+    };
     let (resolved, server) = match crate::tracked::resolve_on(target, own_session, dir) {
         Ok(resolved) => resolved,
         Err(why) => {
@@ -946,52 +855,47 @@ pub fn run(
             return Ok(EXIT_FAILED);
         }
     };
-    // OWN SESSION ONLY, outright. The record is named from this session's own
-    // directory, so a target in another one could only ever be a mistake or an
-    // attempt to aim someone else's brief.
+    // OWN SESSION ONLY. The record is named from this session's own directory,
+    // so another session's target is a mistake or an attempt to aim someone
+    // else's brief.
     if !resolved.session.is_empty() && resolved.session != own_session {
-        writeln!(
+        return refuse(
             err,
-            "ae: {RETRY_ACTION} refused — {target} is in session '{}', and a brief is retried only into its own",
-            resolved.session
-        )?;
-        return Ok(EXIT_FAILED);
+            &format!(
+                "refused — {target} is in session '{}', and a brief is retried only into its own",
+                resolved.session
+            ),
+        );
     }
     if resolved.slot.is_empty() {
-        writeln!(err, "ae: {RETRY_ACTION} refused — {target} carries no slot")?;
-        return Ok(EXIT_FAILED);
+        return refuse(err, &format!("refused — {target} carries no slot"));
     }
     // THE RECORD LOCK, held across the whole read-decide-write sequence. A
-    // second helper — an orphan of a restarted daemon, or a forged trigger —
-    // waits, fails, and skips, so two flights can never both publish a flight
-    // mark and both paste.
+    // second helper — a restarted daemon's orphan, or a forged trigger — waits,
+    // fails and skips, so two flights can never both publish a mark and paste.
     let Ok(_held) = crate::store::lock(&path(dir, &resolved.slot), crate::store::LOCK_WAIT) else {
-        writeln!(
+        let slot = &resolved.slot;
+        return refuse(
             err,
-            "ae: {RETRY_ACTION} skipped — another flight holds {}'s record",
-            resolved.slot
-        )?;
-        return Ok(EXIT_FAILED);
+            &format!("skipped — another flight holds {slot}'s record"),
+        );
     };
     let Some(reading) = read(dir, &resolved.slot) else {
-        writeln!(
+        return refuse(
             err,
-            "ae: {RETRY_ACTION} refused — {target} has no undelivered brief on record"
-        )?;
-        return Ok(EXIT_FAILED);
+            &format!("refused — {target} has no undelivered brief on record"),
+        );
     };
     let record = match reading {
         Ok(record) => record,
         // Damage is the sweep's to classify and set aside; a delivery leg that
         // acted on it would be deciding with bytes it could not read.
         Err(damaged) => {
-            writeln!(
+            let (slot, kind) = (&resolved.slot, damaged.kind);
+            return refuse(
                 err,
-                "ae: {RETRY_ACTION} refused — {}'s record is damaged: {}",
-                resolved.slot,
-                damaged.kind()
-            )?;
-            return Ok(EXIT_FAILED);
+                &format!("refused — {slot}'s record is damaged: {kind}"),
+            );
         }
     };
     let seat = seat_facts(dir, &resolved.slot);
@@ -1019,10 +923,7 @@ pub fn run(
     };
     let name = seat.name.as_deref().unwrap_or(target);
     match decide(&record, &facts) {
-        Decision::Skip(why) => {
-            writeln!(err, "ae: {RETRY_ACTION} skipped for {name} — {why}")?;
-            Ok(EXIT_FAILED)
-        }
+        Decision::Skip(why) => refuse(err, &format!("skipped for {name} — {why}")),
         Decision::GiveUp(why) => {
             let witness = render(&record);
             give_up(dir, &record, name, why, witness.as_bytes(), now, err)?;
@@ -1046,17 +947,18 @@ pub fn run(
     }
 }
 
-/// What meta says about the seat a slot holds right now.
+/// What meta says about the seat a slot holds right now. `None` on either
+/// field means meta did not answer, which the gate skips on rather than acts.
 struct Seat {
-    /// The roster name, or `None` when meta did not answer for this slot.
     name: Option<String>,
-    /// `launch_id.<slot>`, or `None` when meta did not answer.
     launch_id: Option<String>,
     /// The seat's tool, for the input grammar readiness is proved against.
     tool: crate::tool::ToolKind,
 }
 
-/// Read the seat's own facts, ONCE, from the meta document.
+/// Read the seat's facts from ONE read of the meta document. The roster and
+/// `launch_id.<slot>` are two lookups over those same bytes, because the
+/// roster entry does not carry the launch token.
 fn seat_facts(dir: &Path, slot: &str) -> Seat {
     let bytes = crate::meta::read_bytes(dir).unwrap_or_default();
     let text = String::from_utf8_lossy(&bytes);
@@ -1065,9 +967,8 @@ fn seat_facts(dir: &Path, slot: &str) -> Seat {
     Seat {
         name: entry.map(|entry| entry.name.clone()),
         launch_id: crate::meta::sole_value(&bytes, &format!("launch_id.{slot}"))
-            .map(String::from_utf8_lossy)
-            .filter(|value| !value.is_empty())
-            .map(std::borrow::Cow::into_owned),
+            .map(|value| String::from_utf8_lossy(value).into_owned())
+            .filter(|value| !value.is_empty()),
         tool: crate::tool::ToolKind::from_binary_name(
             entry
                 .and_then(|entry| entry.binary.as_deref())
@@ -1076,7 +977,8 @@ fn seat_facts(dir: &Path, slot: &str) -> Seat {
     }
 }
 
-/// Everything one flight needs, so the call that takes off stays one statement.
+/// Everything one flight needs, kept as a struct because inlining it buys a
+/// `too_many_arguments` allow and nothing else.
 struct Flight<'a> {
     dir: &'a Path,
     server: &'a crate::inventory::ServerId,
@@ -1090,10 +992,10 @@ struct Flight<'a> {
 
 /// Publish the flight mark, deliver, and record what happened.
 ///
-/// THE ORDER IS THE PROOF. The bumped attempt and the `pasting` mark are made
-/// durable BEFORE the paste, so a crash anywhere after this point leaves a
-/// record the next cycle refuses to paste again. Nothing about the outcome can
-/// undo that: only a failure that proves NOTHING was staged re-arms it.
+/// THE ORDER IS THE PROOF: the bumped attempt and the `pasting` mark are made
+/// durable BEFORE the paste, so a crash anywhere past this point leaves a
+/// record the next cycle refuses to paste again. Only a failure that proves
+/// NOTHING was staged re-arms it.
 fn fly(flight: &Flight<'_>, out: &mut impl Write, err: &mut impl Write) -> std::io::Result<u8> {
     use crate::state::EXIT_FAILED;
 
@@ -1102,7 +1004,12 @@ fn fly(flight: &Flight<'_>, out: &mut impl Write, err: &mut impl Write) -> std::
     taking_off.attempts = taking_off.attempts.saturating_add(1);
     taking_off.phase = Phase::Pasting;
     let mark = render(&taking_off);
-    if let Err(why) = rearm_if_unchanged(flight.dir, witness.as_bytes(), &taking_off) {
+    if let Err(why) = swap_if_unchanged(
+        flight.dir,
+        &taking_off.slot,
+        witness.as_bytes(),
+        Some(&taking_off),
+    ) {
         writeln!(
             err,
             "ae: brief for {} not attempted — its flight mark could not be published: {why}",
@@ -1130,7 +1037,8 @@ fn fly(flight: &Flight<'_>, out: &mut impl Write, err: &mut impl Write) -> std::
     let age = flight.now.epoch().saturating_sub(flight.record.created);
     match outcome {
         Ok(delivered) => {
-            if remove_if_unchanged(flight.dir, &flight.record.slot, mark.as_bytes()) {
+            if swap_if_unchanged(flight.dir, &flight.record.slot, mark.as_bytes(), None) == Ok(true)
+            {
                 let _ = std::fs::remove_file(
                     flight.dir.join(format!("undelivered.{}.txt", flight.name)),
                 );
@@ -1183,14 +1091,11 @@ fn fly(flight: &Flight<'_>, out: &mut impl Write, err: &mut impl Write) -> std::
     }
 }
 
-/// Put a record back after a refusal that PROVED nothing was staged.
-///
-/// The attempt is already spent — ae entered delivery, which is what the count
+/// Put a record back after a refusal that PROVED nothing was staged. The
+/// attempt is already spent — ae entered delivery, which is what the count
 /// means — so the record goes back armed with the higher count, and the seat
-/// gets whatever attempts remain. The write is compare-and-swapped: a retire
-/// and a re-spawn during the flight leave a SUCCESSOR record at this slot, and
-/// handing it this flight's attempt count would charge a new brief for an old
-/// one's failures.
+/// keeps whatever attempts remain. Compare-and-swapped for the successor case
+/// [`swap_if_unchanged`] names.
 fn rearm_after_prestage(
     flight: &Flight<'_>,
     taking_off: &Record,
@@ -1211,30 +1116,23 @@ fn rearm_after_prestage(
     }
     let mut armed = taking_off.clone();
     armed.phase = Phase::Armed;
-    match rearm_if_unchanged(flight.dir, mark.as_bytes(), &armed) {
-        Ok(true) => writeln!(
-            err,
-            "ae: brief for {} refused before anything was pasted ({failure:?}) — it stays on record",
-            flight.name
+    let clause = match swap_if_unchanged(flight.dir, &armed.slot, mark.as_bytes(), Some(&armed)) {
+        Ok(true) => {
+            format!("refused before anything was pasted ({failure:?}) — it stays on record")
+        }
+        Ok(false) => {
+            "was replaced while its delivery was in the air — nothing was written back".to_owned()
+        }
+        Err(why) => format!(
+            "could not be re-armed ({why}) — its flight mark stands, so it will be given up rather than pasted twice"
         ),
-        Ok(false) => writeln!(
-            err,
-            "ae: brief for {} was replaced while its delivery was in the air — nothing was written back",
-            flight.name
-        ),
-        Err(why) => writeln!(
-            err,
-            "ae: brief for {} could not be re-armed ({why}) — its flight mark stands, so it will be given up rather than pasted twice",
-            flight.name
-        ),
-    }
+    };
+    writeln!(err, "ae: brief for {} {clause}", flight.name)
 }
 
 /// End a record: drop it if this flight still owns it, KEEP the preserved
-/// `.txt`, and say so in the ledger.
-///
-/// The file stays on purpose. A given-up brief is one a human now has to hand
-/// over, and the event is the signal to do it.
+/// `.txt`, and say so in the ledger. The file stays on purpose — a given-up
+/// brief is one a human now has to hand over, and the event says so.
 fn give_up(
     dir: &Path,
     record: &Record,
@@ -1244,7 +1142,7 @@ fn give_up(
     now: crate::time::Timestamp,
     err: &mut impl Write,
 ) -> std::io::Result<()> {
-    if !remove_if_unchanged(dir, &record.slot, witness) {
+    if swap_if_unchanged(dir, &record.slot, witness, None) != Ok(true) {
         writeln!(
             err,
             "ae: brief for {name} was replaced before it could be given up — nothing was removed"
@@ -1267,11 +1165,9 @@ fn give_up(
     Ok(())
 }
 
-/// Append one brief event, named by the ORIGINAL spawner.
-///
-/// Never the watchdog and never ae: the authority this brief carries is the
-/// one that spawned the seat, and the ledger says the same thing the pane's
-/// provenance line does.
+/// Append one brief event, named by the ORIGINAL spawner — never the watchdog
+/// and never ae. The authority this brief carries is the one that spawned the
+/// seat, and the ledger says what the pane's provenance line does.
 fn record_event(
     dir: &Path,
     action: &str,
@@ -1282,34 +1178,27 @@ fn record_event(
     now: crate::time::Timestamp,
 ) {
     let _ = crate::store::open(dir).append_event(&crate::tracked::event_line(
-        &crate::tracked::EventFields {
-            ts: now,
-            actor: &record.actor,
+        &crate::tracked::EventFields::new(
+            now,
+            &record.actor,
             action,
-            target: name,
-            reference: &record.reference,
-            actor_slot: "",
-            actor_session: "",
-            target_slot: &record.slot,
-            target_session: "",
-            target_server: "",
-            target_pane: "",
-            target_session_uuid: "",
-            caller_server: "",
-            caller_pane: "",
-            caller_session_uuid: "",
-            identity_gap: "",
+            name,
+            &record.reference,
+            "",
+            "",
+            &record.slot,
+            "",
             summary,
             body_file,
-        },
+        ),
     ));
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        Damage, Damaged, LAUNCH_ID_CAP, MAX_ATTEMPTS, PANE_CAP, Phase, RECORD_CAP, Record,
-        SLOT_CAP, damaged_path, parse, path, publish, read, remove, render,
+        Damage, LAUNCH_ID_CAP, MAX_ATTEMPTS, PANE_CAP, Phase, RECORD_CAP, Record, SLOT_CAP,
+        damaged_path, parse, path, publish, read, remove, render,
     };
     use std::path::PathBuf;
 
@@ -1425,7 +1314,7 @@ mod tests {
             let text = with("slot", hostile);
             assert_eq!(
                 parse(text.as_bytes()),
-                Err(Damage::Slot),
+                Err(Damage::Field("slot")),
                 "a slot of {hostile:?} must be damage"
             );
         }
@@ -1435,11 +1324,11 @@ mod tests {
     fn the_reference_must_name_the_records_own_slot() {
         assert_eq!(
             parse(with("reference", "spawn-other").as_bytes()),
-            Err(Damage::Reference)
+            Err(Damage::Field("reference"))
         );
         assert_eq!(
             parse(with("reference", "spawned.1").as_bytes()),
-            Err(Damage::Reference)
+            Err(Damage::Field("reference"))
         );
     }
 
@@ -1448,7 +1337,7 @@ mod tests {
         for hostile in ["105", "%", "%1a", "%-1", "%99999999999999999999"] {
             assert_eq!(
                 parse(with("pane", hostile).as_bytes()),
-                Err(Damage::Pane),
+                Err(Damage::Field("pane")),
                 "a pane of {hostile:?} must be damage"
             );
         }
@@ -1461,12 +1350,15 @@ mod tests {
         // can attribute.
         assert_eq!(
             parse(with("actor", "bad actor").as_bytes()),
-            Err(Damage::Actor)
+            Err(Damage::Field("actor"))
         );
-        assert_eq!(parse(with("actor", "").as_bytes()), Err(Damage::Actor));
+        assert_eq!(
+            parse(with("actor", "").as_bytes()),
+            Err(Damage::Field("actor"))
+        );
         assert_eq!(
             parse(with("actor", "-leading").as_bytes()),
-            Err(Damage::Actor)
+            Err(Damage::Field("actor"))
         );
         let human = with("actor", crate::deliver::UNVERIFIED);
         assert_eq!(
@@ -1481,7 +1373,7 @@ mod tests {
         for hostile in ["01", "+1", " 1", "1 ", "", "-1", "3"] {
             assert_eq!(
                 parse(with("attempts", hostile).as_bytes()),
-                Err(Damage::Attempts),
+                Err(Damage::Field("attempts")),
                 "an attempts of {hostile:?} must be damage"
             );
         }
@@ -1499,7 +1391,7 @@ mod tests {
         for hostile in ["0", "-1", "01", "+1", "", "nine"] {
             assert_eq!(
                 parse(with("created", hostile).as_bytes()),
-                Err(Damage::Created),
+                Err(Damage::Field("created")),
                 "a created of {hostile:?} must be damage"
             );
         }
@@ -1512,16 +1404,19 @@ mod tests {
         );
         // Past i64 it is not a moment at all.
         let past = with("created", "9223372036854775808");
-        assert_eq!(parse(past.as_bytes()), Err(Damage::Created));
+        assert_eq!(parse(past.as_bytes()), Err(Damage::Field("created")));
     }
 
     #[test]
     fn a_phase_is_one_of_exactly_two_words() {
         assert_eq!(
             parse(with("phase", "halfway").as_bytes()),
-            Err(Damage::PhaseWord)
+            Err(Damage::Field("phase"))
         );
-        assert_eq!(parse(with("phase", "").as_bytes()), Err(Damage::PhaseWord));
+        assert_eq!(
+            parse(with("phase", "").as_bytes()),
+            Err(Damage::Field("phase"))
+        );
         let pasting = with("phase", "pasting");
         assert_eq!(
             parse(pasting.as_bytes()).map(|record| record.phase),
@@ -1625,7 +1520,7 @@ mod tests {
         std::fs::write(&elsewhere, render(&record())).expect("the link target");
         std::os::unix::fs::symlink(&elsewhere, path(&dir, "spawned.1")).expect("the planted link");
         assert_eq!(
-            read(&dir, "spawned.1").map(|reading| reading.map_err(Damaged::kind)),
+            read(&dir, "spawned.1").map(|reading| reading.map_err(|damaged| damaged.kind)),
             Some(Err(Damage::NotRegular)),
             "a symlink is not a regular file, and is refused before any open"
         );
@@ -1656,7 +1551,7 @@ mod tests {
         assert!(parse(with("launch_id", &launch_at).as_bytes()).is_ok());
         assert_eq!(
             parse(with("launch_id", &launch_over).as_bytes()),
-            Err(Damage::LaunchId)
+            Err(Damage::Field("launch_id"))
         );
         // A pane id at the cap and one byte past it.
         let pane_at = format!("%{}", "9".repeat(PANE_CAP - 1));
@@ -1664,12 +1559,12 @@ mod tests {
         assert!(parse(with("pane", &pane_at).as_bytes()).is_ok());
         assert_eq!(
             parse(with("pane", &pane_over).as_bytes()),
-            Err(Damage::Pane)
+            Err(Damage::Field("pane"))
         );
         // Past u32 the attempt count is not a count ae could have written.
         assert_eq!(
             parse(with("attempts", "4294967296").as_bytes()),
-            Err(Damage::Attempts)
+            Err(Damage::Field("attempts"))
         );
     }
 
@@ -1704,7 +1599,7 @@ mod tests {
         let dir = scratch("damaged");
         std::fs::write(path(&dir, "spawned.1"), "not a record at all\n").expect("the planted file");
         assert_eq!(
-            read(&dir, "spawned.1").map(|reading| reading.map_err(Damaged::kind)),
+            read(&dir, "spawned.1").map(|reading| reading.map_err(|damaged| damaged.kind)),
             Some(Err(Damage::Magic))
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -1715,7 +1610,7 @@ mod tests {
         let dir = scratch("nonregular");
         std::fs::create_dir_all(path(&dir, "spawned.1")).expect("the planted directory");
         assert_eq!(
-            read(&dir, "spawned.1").map(|reading| reading.map_err(Damaged::kind)),
+            read(&dir, "spawned.1").map(|reading| reading.map_err(|damaged| damaged.kind)),
             Some(Err(Damage::NotRegular))
         );
         let _ = std::fs::remove_dir_all(&dir);

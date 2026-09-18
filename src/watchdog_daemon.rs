@@ -4961,13 +4961,11 @@ impl Cycle<'_> {
         now: i64,
         err: &mut impl Write,
     ) -> crate::Result<()> {
-        if crate::brief_retry::permanence(&damaged, now)
-            == crate::brief_retry::Permanence::Transient
-        {
+        if !crate::brief_retry::should_destroy(&damaged, now) {
             writeln!(
                 err,
                 "ae: watchdog: {name}'s brief record could not be read ({}) — left alone, it may read next cycle",
-                damaged.kind()
+                damaged.kind
             )?;
             return Ok(());
         }
@@ -4978,7 +4976,7 @@ impl Cycle<'_> {
                     name,
                     &format!(
                         "brief record damaged ({}) — set aside at {}; the brief is preserved at undelivered.{name}.txt",
-                        damaged.kind(),
+                        damaged.kind,
                         moved.display()
                     ),
                     err,
