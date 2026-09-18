@@ -4,6 +4,24 @@
 //! helper prints ([`render`]). ONE sensor, because two copies of this logic
 //! drift — one checking both ends of a reply, the other only the actor end — so
 //! the sensor is a public function here, not a private detail of the table.
+//!
+//! A reply and a cancel are both strict mirrors, and each carries ONE ruled arm
+//! for the record ae's own verbs write:
+//!
+//! * **RULED (operational lead, 2026-08-27)** — a cancel carrying no routing
+//!   member at all withdraws by the opener's display. The rule is
+//!   [`crate::events::withdraws`], and it is what lets `ae compact
+//!   --digest-only` withdraw its own handover ([`Opening::withdrawn_by`]).
+//! * **RULED (operational lead, 2026-09-17)** — a reply closes a request whose
+//!   EXTERNAL slotless asker ([`crate::tracked::is_external`]: the two chat
+//!   bridges and ae's own `ae:` verbs) names no routing key, when the reply's
+//!   target DISPLAY byte-equals the asker's display. `ae compact` and
+//!   `ae reboot` open their checkpoint asks as `ae:seats:<uuid>` /
+//!   `ae:reboot:<uuid>` with a session and no slot, which that same identity
+//!   rule leaves matching nothing, and their own target's reply is the only
+//!   record that can close them ([`Opening::answered_by`]). The rule lives in
+//!   [`crate::events::answers_external_asker`], so this sensor and the
+//!   watchdog's ledger reader cannot drift.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -591,9 +609,14 @@ impl Opening {
     /// **Strict** — the full mirror: the reply's actor is this request's TARGET
     /// and the reply's target is this request's SENDER, with both comparisons
     /// made by [`Identity::matches`].
+    ///
+    /// **RULED (operational lead, 2026-09-17)** — see the module docs: beside
+    /// the mirror, a reply whose target DISPLAY byte-equals an external
+    /// slotless asker's display answers it, on the strict actor end unchanged.
     fn answered_by(&self, reply: &Closing) -> bool {
         self.askee().matches(reply.actor_identity())
-            && self.asker().matches(reply.target_identity())
+            && (self.asker().matches(reply.target_identity())
+                || crate::events::answers_external_asker(self.asker(), &self.from, &reply.target))
     }
 
     /// **RULED (operational lead, 2026-08-27)** — see the module docs.
@@ -1680,5 +1703,70 @@ mod tests {
         assert_eq!(recorded.server, "/tmp/aut");
         assert_eq!(recorded.pane, "%9");
         assert_eq!(recorded.session_uuid, uuid);
+    }
+
+    /// `ae compact`'s R13 actor as `tracked::run` writes it from a pane: the
+    /// reserved actor, the pane's session, and NO actor slot.
+    const SEATS_ASK: &str = r#"{"ts":"t1","actor":"ae:seats:u1","action":"ask","target":"a:lead","ref":"r1","actor_session":"s","target_slot":"main","target_session":"s","summary":"checkpoint"}"#;
+    /// The same shape names the `ae reboot` handover actor.
+    const REBOOT_ASK: &str = r#"{"ts":"t1","actor":"ae:reboot:u1","action":"ask","target":"a:lead","ref":"r1","actor_session":"s","target_slot":"main","target_session":"s","summary":"handover"}"#;
+
+    /// The seat's `reply` as the helper writes it for a slotless asker: the
+    /// asker's own session rides as `target_session`, the TARGET is the ae
+    /// display, and the actor is the seat's routing key.
+    fn seat_reply(slot: &str, target: &str) -> String {
+        format!(
+            r#"{{"ts":"t2","actor":"a:lead","action":"reply","target":"{target}","ref":"r1","actor_slot":"{slot}","actor_session":"s","target_session":"s","summary":"the answer"}}"#
+        )
+    }
+
+    /// **RULED (operational lead, 2026-09-17)** — an external slotless asker
+    /// closes on its target's reply to the asker's DISPLAY: the live
+    /// `ae:seats:`/`ae:reboot:` writers and the legacy `ae:compact:` opener.
+    #[test]
+    fn an_external_slotless_asker_reads_replied_on_its_own_target_s_reply() {
+        for (opening, actor) in [
+            (SEATS_ASK, "ae:seats:u1"),
+            (REBOOT_ASK, "ae:reboot:u1"),
+            (HALFKEY_ASK, "ae:compact:u1"),
+        ] {
+            let rows = states(&container(&[opening, &seat_reply("main", actor)]));
+            assert_eq!(rows[0].status, Status::Replied, "{actor}");
+            assert_eq!(rows[0].summary, b"the answer", "{actor}");
+        }
+    }
+
+    /// The ruled arm loosens NOTHING else: the actor end stays the strict
+    /// mirror's, and the target display is byte-exact.
+    #[test]
+    fn the_external_asker_arm_keeps_the_actor_end_strict_and_the_display_exact() {
+        // Another slot's reply never reaches the arm.
+        assert_eq!(
+            states(&container(&[
+                SEATS_ASK,
+                &seat_reply("worker.0", "ae:seats:u1")
+            ]))[0]
+                .status,
+            Status::Pending,
+            "the actor end is unchanged"
+        );
+        // A reply naming another display never closes it.
+        assert_eq!(
+            states(&container(&[SEATS_ASK, &seat_reply("main", "ae:seats:u2")]))[0].status,
+            Status::Pending,
+            "another target display is another asker"
+        );
+    }
+
+    /// **DROP THE `is_external` GUARD AND THIS PIN FLIPS**: an ordinary
+    /// unassociated display still closes nothing.
+    #[test]
+    fn an_ordinary_unassociated_asker_still_closes_nothing_by_display() {
+        let ordinary_ask = r#"{"ts":"t1","actor":"a:lead","action":"ask","target":"a:worker","ref":"r1","actor_session":"s","target_slot":"worker.0","target_session":"s","summary":"q"}"#;
+        let rows = states(&container(&[
+            ordinary_ask,
+            &seat_reply("worker.0", "a:lead"),
+        ]));
+        assert_eq!(rows[0].status, Status::Pending, "{:?}", rows[0]);
     }
 }

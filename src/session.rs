@@ -1231,6 +1231,13 @@ fn withdrawn(request: &Event, cancel: &Event, cancel_ref: &str) -> bool {
 }
 
 /// Whether `reply` closes `request` — the mirror match, in full.
+///
+/// Beside the mirror sits the ONE ruled arm for an EXTERNAL slotless asker:
+/// the chat bridges and ae's own verbs (`ae:seats:`, `ae:reboot:`) open with a
+/// session and no slot, so the asker is [`Identity::Unassociated`] and the
+/// mirror leaves the request pending. A reply naming that asker by display
+/// answers it. The rule is [`crate::events::answers_external_asker`], shared
+/// with the view's sensor, so the two readers of one ledger cannot disagree.
 fn closes(request: &Event, reply: &Event, reply_ref: &str) -> bool {
     if request.reference.as_deref() != Some(reply_ref) {
         return false;
@@ -1241,7 +1248,12 @@ fn closes(request: &Event, reply: &Event, reply_ref: &str) -> bool {
     let to_the_asker = reply
         .target_identity()
         .is_some_and(|target| target.matches(request.actor_identity()));
-    from_the_target && to_the_asker
+    let named_external_asker = crate::events::answers_external_asker(
+        request.actor_identity(),
+        request.actor.as_bytes(),
+        reply.target.as_deref().unwrap_or_default().as_bytes(),
+    );
+    from_the_target && (to_the_asker || named_external_asker)
 }
 
 #[cfg(test)]

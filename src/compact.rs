@@ -1716,6 +1716,7 @@ mod tests {
             std::fs::write(body(&dir), "COMPACT HANDOVER but no baseline marker\n").unwrap();
             append_reply(&dir);
             std::fs::write(dir.join("memo.tsv"), old_memo).unwrap();
+            let before = store::open(&dir).container();
             let mut err = Vec::new();
             let code = wait_step(&dir, REF, 0, &mut err).unwrap();
             let msg = String::from_utf8_lossy(&err);
@@ -1724,8 +1725,17 @@ mod tests {
                 msg.contains("cannot establish the handover memo baseline"),
                 "{msg}"
             );
-            // Fail-closed writes nothing to the ledger — the request stays reusable.
-            assert_eq!(status_of(&dir), requests::Status::Pending);
+            // Fail-closed writes NOTHING to the ledger.
+            assert_eq!(
+                store::open(&dir).container(),
+                before,
+                "fail-closed appended nothing"
+            );
+            assert_eq!(
+                status_of(&dir),
+                requests::Status::Replied,
+                "the appended reply closed it (slotless ae-asker arm); fail-closed itself wrote nothing"
+            );
         }
 
         // (b) body MISSING entirely — the same old memo + reply still fails closed.
@@ -1747,6 +1757,37 @@ mod tests {
         }
         // The legitimate-zero control (a real `AE-COMPACT-MEMO-BASELINE=0` proceeds) is
         // `wait_succeeds_when_both_facts_are_present`, which seeds baseline 0 and succeeds.
+    }
+
+    /// The resume path's own view of the same two facts: a memo-only handover
+    /// stays outstanding, and the target's reply closes it (the slotless
+    /// ae-asker arm), so a re-run opens a FRESH request instead of resuming.
+    #[test]
+    fn find_outstanding_keeps_a_memo_only_handover_and_drops_an_answered_one() {
+        let s = Scratch::new("find-answered");
+        let dir = handover_dir(&s);
+        std::fs::write(dir.join("meta"), format!("session_id={UUID}\nmode=local\n")).unwrap();
+        seed_handover(&dir, 0);
+        std::fs::write(
+            dir.join("memo.tsv"),
+            "2026-08-29T00:01:00Z\tcl:main\thandover\tpicking up\n",
+        )
+        .unwrap();
+        let mut out = Vec::new();
+        find_outstanding_step(&dir, &mut out).unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&out),
+            REF,
+            "memo-only and no reply: still outstanding"
+        );
+        append_reply(&dir);
+        let mut out = Vec::new();
+        find_outstanding_step(&dir, &mut out).unwrap();
+        assert!(
+            out.is_empty(),
+            "answered: {:?}",
+            String::from_utf8_lossy(&out)
+        );
     }
 
     // ---- cancel_step (--digest-only withdrawal), pinned in the request VIEW ----

@@ -268,6 +268,35 @@ pub(crate) fn withdraws(asker: &Asker<'_>, cancel: &Withdrawal<'_>) -> bool {
     }
 }
 
+/// Whether a reply's TARGET names an EXTERNAL slotless asker — the ONE arm
+/// that closes a request the strict mirror leaves pending.
+///
+/// **RULED (operational lead, 2026-09-17).** `ae compact` opens its seat
+/// checkpoints and `ae reboot` its handover as `ae:seats:<uuid>` /
+/// `ae:reboot:<uuid>` with a session and no slot: `Identity::Unassociated` by
+/// the same routing-key rule [`withdraws`] answers WHO for. The strict mirror
+/// leaves such a request PENDING, because its own target's reply carries no
+/// routing key the asker could match — and this arm closes it. The seat's
+/// reply names that sender by DISPLAY, and the arm accepts exactly that: the
+/// asker unassociated AND displayed in an external namespace
+/// ([`crate::tracked::is_external`] — the two chat bridges and ae's own `ae:`
+/// verbs), with `reply_target` byte-equal to the asker's display.
+///
+/// Everything else is the strict mirror's: an ordinary unassociated display
+/// closes nothing, and a reply that names another display never closes this
+/// request. ONE owner, because two readers (the view's sensor and the
+/// watchdog's ledger pass) judge the same ledger.
+#[must_use]
+pub(crate) fn answers_external_asker(
+    asker: Identity<'_>,
+    asker_display: &[u8],
+    reply_target: &[u8],
+) -> bool {
+    matches!(asker, Identity::Unassociated)
+        && std::str::from_utf8(asker_display).is_ok_and(crate::tracked::is_external)
+        && reply_target == asker_display
+}
+
 /// Why a line is not an event.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EventError {
