@@ -433,6 +433,10 @@ pub fn run_spawn(
     // Everything a launch command is made of — the context injection, the
     // session id, the create-vs-resume decision — is composed by `_run` IN the
     // pane, from this session's own state.
+    // A slot being claimed again takes nothing from the seat that had it: a
+    // retry record left by a PREVIOUS occupant would otherwise outlive it and
+    // be weighed against this new seat's incarnation.
+    crate::brief_retry::remove(dir, &slot);
     if let Err(why) = crate::run::clear_slot(dir, &slot) {
         rollback(dir, &facts, &slot, &pane, &parsed.name, err)?;
         writeln!(
@@ -524,7 +528,19 @@ pub fn run_spawn(
         None
     };
     if let Some(refusal) = failure {
-        report_undelivered(dir, &parsed.name, &pane, &brief, &refusal, err)?;
+        report_undelivered(
+            &Undelivered {
+                dir,
+                name: &parsed.name,
+                slot: &slot,
+                pane: &pane,
+                brief: &brief,
+                actor,
+                now,
+            },
+            &refusal,
+            err,
+        )?;
         record_spawn(dir, now, caller, &parsed.name, &parsed.prompt);
         let _ = store::open(dir).append_event(&tracked::event_line(&EventFields {
             ts: now,
@@ -783,20 +799,68 @@ fn deliver_brief(
     Ok(None)
 }
 
-/// Say what happened, where the brief is, and how to hand it over by hand.
+/// One undelivered brief, and everything its record would need.
+struct Undelivered<'a> {
+    dir: &'a Path,
+    name: &'a str,
+    slot: &'a str,
+    pane: &'a str,
+    brief: &'a str,
+    actor: &'a str,
+    now: Timestamp,
+}
+
+/// Record the brief for a later retry, when a retry could ever work.
+///
+/// A PROVEN-DEAD seat gets none: its pane is a shell, so the retry's liveness
+/// gate could never pass, and a record there would buy nothing but a give-up
+/// half an hour later. The two live-ish recoveries get one, because the gate
+/// decides fail-closed at delivery time and an unproven pane may well be fine.
+///
+/// Returns the refusal when a record was NOT written, so the advice can say the
+/// true thing in every case rather than promising a retry nobody will make.
+fn record_for_retry(undelivered: &Undelivered<'_>, recovery: BriefRecovery) -> Option<String> {
+    if recovery == BriefRecovery::Retire {
+        return Some("the seat is gone".to_owned());
+    }
+    let launch_id = crate::meta::read_bytes(undelivered.dir)
+        .ok()
+        .and_then(|bytes| {
+            crate::meta::sole_value(&bytes, &format!("launch_id.{}", undelivered.slot))
+                .map(|value| String::from_utf8_lossy(value).into_owned())
+        })
+        .filter(|value| !value.is_empty());
+    let Some(launch_id) = launch_id else {
+        return Some("the seat has no recorded launch token".to_owned());
+    };
+    let record = crate::brief_retry::Record {
+        slot: undelivered.slot.to_owned(),
+        reference: format!("spawn-{}", undelivered.slot),
+        pane: undelivered.pane.to_owned(),
+        launch_id,
+        actor: undelivered.actor.to_owned(),
+        attempts: 0,
+        created: undelivered.now.epoch(),
+        phase: crate::brief_retry::Phase::Armed,
+        body: undelivered.brief.to_owned(),
+    };
+    crate::brief_retry::publish(undelivered.dir, &record).err()
+}
+
+/// Say what happened, where the brief is, and who will hand it over.
 fn report_undelivered(
-    dir: &Path,
-    name: &str,
-    pane: &str,
-    brief: &str,
+    undelivered: &Undelivered<'_>,
     refusal: &BriefRefusal,
     err: &mut impl Write,
 ) -> io::Result<()> {
+    let name = undelivered.name;
+    let dir = undelivered.dir;
     let file = dir.join(format!("undelivered.{name}.txt"));
-    let preserved = write_private(&file, brief).is_ok();
+    let preserved = write_private(&file, undelivered.brief).is_ok();
     writeln!(
         err,
-        "ae: SPAWN INCOMPLETE — {name} exists in pane {pane}, brief NOT delivered"
+        "ae: SPAWN INCOMPLETE — {name} exists in pane {}, brief NOT delivered",
+        undelivered.pane
     )?;
     writeln!(err, "ae: reason: {}", refusal.reason)?;
     // Every recovery must be able to find the brief: name the fallback file
@@ -810,6 +874,7 @@ fn report_undelivered(
             file.display()
         )?;
     }
+    let refused_record = record_for_retry(undelivered, refusal.recovery);
     match refusal.recovery {
         // The pane is a SHELL: a `send` would be refused by the dead-pane
         // guard, so the only recovery is retiring the dead seat and spawning
@@ -831,28 +896,56 @@ fn report_undelivered(
                 "ae: the pane was NOT proven live or dead (a shell may hold a stale frame) — do NOT send; inspect the seat, then retire or re-spawn:"
             )?;
             writeln!(err, "ae:   {}/peek {name}", dir.display())?;
-            return Ok(());
         }
         BriefRecovery::Resend => {}
     }
+    // THE RETRY NOTICE, and it must not promise what is not on record. When a
+    // record was written, a hand re-send would deliver the brief TWICE, so the
+    // advice is the opposite of what it used to be. When the record was
+    // refused, nothing will retry it and the old advice is exactly right.
+    if let Some(why) = refused_record {
+        writeln!(
+            err,
+            "ae: this brief will NOT be retried automatically ({why})."
+        )?;
+        if refusal.recovery == BriefRecovery::Resend {
+            writeln!(
+                err,
+                "ae: do NOT respawn (the pane is live) — send to the existing agent:"
+            )?;
+            if preserved {
+                writeln!(
+                    err,
+                    "ae:   {}/send {name} \"$(cat {})\"",
+                    dir.display(),
+                    file.display()
+                )?;
+            } else {
+                writeln!(
+                    err,
+                    "ae:   {}/send {name} '<re-send your brief>'",
+                    dir.display()
+                )?;
+            }
+        }
+        return Ok(());
+    }
     writeln!(
         err,
-        "ae: do NOT respawn (the pane is live) — send to the existing agent:"
+        "ae: ae has RECORDED this brief and will retry it itself — at most twice, within 30 minutes, and only into this same seat."
     )?;
-    if preserved {
-        writeln!(
-            err,
-            "ae:   {}/send {name} \"$(cat {})\"",
-            dir.display(),
-            file.display()
-        )
-    } else {
-        writeln!(
-            err,
-            "ae:   {}/send {name} '<re-send your brief>'",
-            dir.display()
-        )
-    }
+    writeln!(
+        err,
+        "ae: do NOT re-send it by hand: the retry and your send would both land, and the agent would get the brief twice."
+    )?;
+    writeln!(
+        err,
+        "ae: the retry is the session's watchdog, so if none is running for this session nothing will retry it."
+    )?;
+    writeln!(
+        err,
+        "ae: a brief-gave-up event is the signal to hand it over yourself; retiring the seat cancels the retry."
+    )
 }
 
 /// Write `text` at 0600 — the same material as the pane content.
@@ -887,6 +980,10 @@ fn rollback(
 /// The slot's start marker and recorded first message — dead weight once the
 /// pane is gone, and a hazard once the slot number is handed to someone else.
 fn drop_launch_artifacts(dir: &Path, slot: &str) {
+    // Retiring a seat CANCELS its undelivered brief: there is no longer anyone
+    // for it to be delivered to, and a record that outlived its seat would be
+    // weighed against whoever takes the slot next.
+    crate::brief_retry::remove(dir, slot);
     let _ = crate::run::clear_slot(dir, slot);
 }
 

@@ -1822,6 +1822,11 @@ pub const NO_EVENT_AGE: u64 = 999_999;
 /// The generated helper a nudge is delivered through.
 const HELPER_NAME: &str = "send";
 
+/// The message word the brief-retry exec carries. It reaches nothing: the
+/// helper takes the brief's text and its actor from the durable record, and
+/// this exists only because the helper's argv grammar needs a word.
+const RETRY_PLACEHOLDER: &str = "brief-retry";
+
 /// The orchestrator watchdog's checkpoint and heartbeat, at the FIXED name
 /// `<meta-dir>/meta-agent-state.json`.
 pub(crate) const HEARTBEAT_NAME: &str = "meta-agent-state.json";
@@ -4215,6 +4220,7 @@ impl Cycle<'_> {
         }
         carry.quiet.end(index);
         self.refresh_after_limit_release(quota_refresh, &mut carry.quota, &observed, now, err)?;
+        self.retry_briefs(now, err)?;
         self.close(
             carry,
             &counts,
@@ -4883,6 +4889,105 @@ impl Cycle<'_> {
                 ("_AE_EVENT_SUMMARY", summary),
             ],
         )
+    }
+
+    /// One brief-retry pass: set aside what is permanently damaged, then spend
+    /// this cycle's ONE delivery attempt on the oldest record that is still
+    /// deliverable.
+    ///
+    /// Records are found by NAMING each roster slot's own path — never by
+    /// listing the directory — so a legacy `undelivered.*.txt`, which carries
+    /// no record, stays inert forever, and a file planted at any other name is
+    /// never read.
+    ///
+    /// Damage classification is deliberately OUTSIDE the one-per-cycle budget.
+    /// A single unreadable record that happens to be the oldest would otherwise
+    /// eat the cycle's only attempt every cycle and starve every deliverable
+    /// brief behind it for the whole half hour.
+    fn retry_briefs(&self, now: i64, err: &mut impl Write) -> crate::Result<()> {
+        let mut oldest: Option<(i64, String)> = None;
+        for entry in &self.roster {
+            let Some(reading) = crate::brief_retry::read(self.meta_dir, &entry.slot) else {
+                continue;
+            };
+            match reading {
+                Ok(record) => {
+                    if oldest
+                        .as_ref()
+                        .is_none_or(|(created, _)| record.created < *created)
+                    {
+                        oldest = Some((record.created, entry.name.clone()));
+                    }
+                }
+                Err(damaged) => {
+                    self.set_damaged_aside(&entry.name, &entry.slot, damaged, now, err)?;
+                }
+            }
+        }
+        let Some((_, name)) = oldest else {
+            return Ok(());
+        };
+        // The argv carries nothing that reaches the pane: the helper reads the
+        // text AND the actor from the record. It is here only because the
+        // helper's own grammar needs a message word.
+        let delivery = self.deliver(
+            &name,
+            RETRY_PLACEHOLDER,
+            crate::brief_retry::RETRY_ACTION,
+            "",
+        );
+        if delivery.code != Some(0) {
+            // Every outcome the helper acts on, it has already recorded and
+            // said out loud. A non-zero exit is the ordinary skip.
+            writeln!(
+                err,
+                "ae: watchdog: brief retry for {name} did not deliver this cycle"
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Move a record ae will never read aside, once, and say so in the ledger.
+    ///
+    /// Only PERMANENT damage is destroyed. A read that merely failed may be a
+    /// passing `EMFILE`, and the next cycle may read it perfectly well, so it
+    /// is left exactly where it is until its own mtime proves it was never
+    /// going to be read.
+    fn set_damaged_aside(
+        &self,
+        name: &str,
+        slot: &str,
+        damaged: crate::brief_retry::Damaged,
+        now: i64,
+        err: &mut impl Write,
+    ) -> crate::Result<()> {
+        if crate::brief_retry::permanence(&damaged, now)
+            == crate::brief_retry::Permanence::Transient
+        {
+            writeln!(
+                err,
+                "ae: watchdog: {name}'s brief record could not be read ({}) — left alone, it may read next cycle",
+                damaged.kind()
+            )?;
+            return Ok(());
+        }
+        match crate::brief_retry::mark_damaged(self.meta_dir, slot, now) {
+            Ok(moved) => {
+                self.emit(
+                    crate::brief_retry::GAVE_UP_ACTION,
+                    name,
+                    &format!(
+                        "brief record damaged ({}) — set aside at {}; the brief is preserved at undelivered.{name}.txt",
+                        damaged.kind(),
+                        moved.display()
+                    ),
+                    err,
+                )?;
+            }
+            // Never a loop: it says so once per cycle and changes nothing.
+            Err(why) => writeln!(err, "ae: watchdog: {why}")?,
+        }
+        Ok(())
     }
 
     /// Append one watchdog event for `agent`.

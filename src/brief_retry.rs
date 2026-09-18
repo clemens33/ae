@@ -59,7 +59,7 @@
 //! is everything after the `body` line, byte for byte — a brief carries
 //! newlines, and nothing may normalize them.
 
-use std::io::Write as _;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 /// The first line of every record, version included. A record that does not
@@ -138,9 +138,14 @@ impl Phase {
 pub enum Damage {
     /// Past [`RECORD_CAP`].
     Oversize,
-    /// The file is THERE and could not be read as bytes at all — not a regular
-    /// file, or the open or the read failed. Distinct from every grammar arm
-    /// on purpose: ae did not decide the bytes were wrong, it never saw them.
+    /// The node at the name is not a regular file — a directory, a symlink, a
+    /// device. TAMPERING, and permanent: nothing transient turns a record into
+    /// a directory.
+    NotRegular,
+    /// The file is THERE and the open or the read FAILED, so ae never saw the
+    /// bytes. Distinct from every grammar arm on purpose, and from
+    /// [`Damage::NotRegular`] too: this one may be a passing `EMFILE` or `EIO`,
+    /// so it is never destroyed on sight.
     Unreadable,
     /// Not UTF-8. A brief is pasted into a terminal; bytes that are not text
     /// were never one.
@@ -180,6 +185,7 @@ impl Damage {
     pub const fn reason(self) -> &'static str {
         match self {
             Self::Oversize => "record is larger than the 64 KiB bound",
+            Self::NotRegular => "the name holds something that is not a regular file",
             Self::Unreadable => "record could not be read at all",
             Self::NotUtf8 => "record is not UTF-8",
             Self::Magic => "record does not begin with its version line",
@@ -201,6 +207,70 @@ impl Damage {
 impl std::fmt::Display for Damage {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(self.reason())
+    }
+}
+
+/// A record that is not one, and when the file was last written.
+///
+/// The moment comes from the stat the read ALREADY made, never from a second
+/// look at the world: it is what lets a read failure be told apart from a
+/// permanent one without holding any state between cycles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Damaged {
+    /// What is wrong.
+    pub kind: Damage,
+    /// The file's mtime as an epoch, when the stat that found it succeeded.
+    pub modified: Option<i64>,
+}
+
+impl Damaged {
+    /// What is wrong, for a caller that does not care when.
+    #[must_use]
+    pub const fn kind(self) -> Damage {
+        self.kind
+    }
+
+    /// Damage observed without a moment to date it.
+    const fn undated(kind: Damage) -> Self {
+        Self {
+            kind,
+            modified: None,
+        }
+    }
+}
+
+/// Whether damage is worth destroying the record over.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Permanence {
+    /// The record will never become readable: ae saw the bytes and they are
+    /// wrong, or the node is not a file at all.
+    Permanent,
+    /// ae never saw the bytes, and a next cycle may. Destroying this would
+    /// throw away a brief that was fine.
+    Transient,
+}
+
+/// How long a brief may wait for delivery before it is given up.
+pub const AGE_BOUND_SECS: i64 = 1_800;
+
+/// Whether `damaged` should be destroyed, or left for a later cycle.
+///
+/// Bytes ae SAW and refused are permanent, and so is a node that is not a
+/// regular file — nothing transient turns a record into a directory. A read
+/// that FAILED is the only ambiguous one, and it is dated rather than guessed:
+/// a file still unreadable past the age bound was never going to be read, while
+/// a younger one may be a passing `EMFILE`. Undated damage stays transient,
+/// because a stat that did not answer is not evidence of anything.
+#[must_use]
+pub const fn permanence(damaged: &Damaged, now: i64) -> Permanence {
+    match damaged.kind {
+        Damage::Unreadable => match damaged.modified {
+            Some(modified) if now.saturating_sub(modified) > AGE_BOUND_SECS => {
+                Permanence::Permanent
+            }
+            _ => Permanence::Transient,
+        },
+        _ => Permanence::Permanent,
     }
 }
 
@@ -439,20 +509,24 @@ pub fn parse(bytes: &[u8]) -> Result<Record, Damage> {
     })
 }
 
-/// Read the record for `slot`, if there is one.
+/// The bytes at `slot`'s record name, with the moment the stat observed.
 ///
-/// `None` means no record — which is the ordinary case for every seat whose
-/// brief landed. `Some(Err(..))` is a file that is there and is not a record.
+/// `Ok(None)` is no record at all — the ordinary case for every seat whose
+/// brief landed. The node is classified WITHOUT following a link and refused
+/// unless it is a regular file, so a symlink planted at the name is never
+/// opened, and the cap binds twice: on the observed length, and again on the
+/// read that allocates.
 ///
-/// The node is classified WITHOUT following a link and refused unless it is a
-/// regular file, so a symlink planted at the name is never opened, and the cap
-/// binds twice — on the observed length and again on the read that allocates.
 /// The residual is the same one [`crate::store::read_source`] carries and is
 /// stated rather than papered over: a replacement between the observation and
 /// the open is not atomic, so the claim is "an observed non-regular node is
 /// refused before the open", never atomicity.
-#[must_use]
-pub fn read(dir: &Path, slot: &str) -> Option<Result<Record, Damage>> {
+struct Slurped {
+    bytes: Vec<u8>,
+    modified: Option<i64>,
+}
+
+fn slurp(dir: &Path, slot: &str) -> Result<Option<Slurped>, Damaged> {
     use std::io::Read as _;
 
     let path = path(dir, slot);
@@ -463,15 +537,22 @@ pub fn read(dir: &Path, slot: &str) -> Option<Result<Record, Damage>> {
     let probe = std::fs::symlink_metadata(&path);
     let meta = match probe {
         Ok(meta) => meta,
-        // The ordinary case by far: almost every seat's brief landed.
-        Err(why) if why.kind() == std::io::ErrorKind::NotFound => return None,
-        Err(_) => return Some(Err(Damage::Unreadable)),
+        Err(why) if why.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(Damaged::undated(Damage::Unreadable)),
     };
+    // The SAME stat answers both questions: what the node is, and when it was
+    // last written. Dating a read failure needs no second look at the world.
+    let modified = meta
+        .modified()
+        .ok()
+        .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
+        .and_then(|since| i64::try_from(since.as_secs()).ok());
+    let dated = |kind| Damaged { kind, modified };
     if !meta.is_file() {
-        return Some(Err(Damage::Unreadable));
+        return Err(dated(Damage::NotRegular));
     }
     if meta.len() > RECORD_CAP {
-        return Some(Err(Damage::Oversize));
+        return Err(dated(Damage::Oversize));
     }
     #[allow(
         clippy::disallowed_methods,
@@ -479,15 +560,32 @@ pub fn read(dir: &Path, slot: &str) -> Option<Result<Record, Damage>> {
     )]
     let opened = std::fs::File::open(&path);
     let Ok(file) = opened else {
-        return Some(Err(Damage::Unreadable));
+        return Err(dated(Damage::Unreadable));
     };
     let mut bytes = Vec::new();
     // The cap AGAIN, on the read itself: the size above was a different moment,
     // and this one is what actually allocates.
     if file.take(RECORD_CAP + 1).read_to_end(&mut bytes).is_err() {
-        return Some(Err(Damage::Unreadable));
+        return Err(dated(Damage::Unreadable));
     }
-    Some(parse(&bytes))
+    Ok(Some(Slurped { bytes, modified }))
+}
+
+/// Read the record for `slot`, if there is one.
+///
+/// `None` means no record — which is the ordinary case for every seat whose
+/// brief landed. `Some(Err(..))` is a file that is there and is not a record,
+/// carrying the moment [`permanence`] dates it by.
+#[must_use]
+pub fn read(dir: &Path, slot: &str) -> Option<Result<Record, Damaged>> {
+    match slurp(dir, slot) {
+        Ok(None) => None,
+        Ok(Some(found)) => Some(parse(&found.bytes).map_err(|kind| Damaged {
+            kind,
+            modified: found.modified,
+        })),
+        Err(damaged) => Some(Err(damaged)),
+    }
 }
 
 /// Publish `record` durably, at `0600`, for a slot that has NONE yet.
@@ -533,6 +631,20 @@ pub fn read(dir: &Path, slot: &str) -> Option<Result<Record, Damage>> {
 /// The refusal, named: too large, unreadable by its own parser, a name already
 /// occupied, or the write, `fsync` or rename that failed.
 pub fn publish(dir: &Path, record: &Record) -> Result<(), String> {
+    write_record(dir, record, Occupied::Refuse)
+}
+
+/// What a write does when the destination name is already taken.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Occupied {
+    /// Report it: no caller publishes over a live record.
+    Refuse,
+    /// Replace it: the caller proved, under the record lock, that what is there
+    /// is the very record this flight wrote.
+    Replace,
+}
+
+fn write_record(dir: &Path, record: &Record, occupied: Occupied) -> Result<(), String> {
     use std::os::unix::fs::OpenOptionsExt as _;
 
     let text = render(record);
@@ -550,8 +662,8 @@ pub fn publish(dir: &Path, record: &Record) -> Result<(), String> {
         clippy::disallowed_methods,
         reason = "a door: the occupied-name refusal classifies the destination WITHOUT following a link to it — see the durability note"
     )]
-    let occupied = std::fs::symlink_metadata(&dest);
-    if occupied.is_ok() {
+    let taken = std::fs::symlink_metadata(&dest);
+    if occupied == Occupied::Refuse && taken.is_ok() {
         return Err(format!(
             "{} already holds a record — nothing was overwritten; a live record is never published over",
             dest.display()
@@ -590,6 +702,190 @@ pub fn publish(dir: &Path, record: &Record) -> Result<(), String> {
     Ok(())
 }
 
+/// How far in the future a record may claim to have been created before that
+/// claim is itself the fault. A host whose clock steps backwards is plausible;
+/// half an hour of it is not.
+pub const FUTURE_SKEW_SECS: i64 = 300;
+
+/// What a cycle should do with one record. The ONE gate, and the only place
+/// the bounds, the incarnation and the readiness are weighed together.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Decision {
+    /// Take the record: publish the flight mark and enter delivery.
+    Deliver,
+    /// Destroy it, loudly, for this reason.
+    GiveUp(&'static str),
+    /// Leave it exactly as it is and look again next cycle.
+    Skip(&'static str),
+}
+
+/// What a cycle knows about the seat a record names.
+///
+/// Each field names the store it came from, because they are different stores
+/// and a reader that forgets which is which is how an incarnation check starts
+/// trusting the wrong one: the name and the launch token are META, the live
+/// pane is THIS CYCLE'S tmux read, and liveness and readiness are the delivery
+/// module's own owners.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Facts<'a> {
+    /// The roster name meta gives this slot, or `None` if meta did not answer.
+    pub meta_name: Option<&'a str>,
+    /// `launch_id.<slot>` as meta spells it now, or `None` if meta did not
+    /// answer.
+    pub meta_launch_id: Option<&'a str>,
+    /// The pane this cycle saw carrying the slot, or `None` if none did.
+    pub live_pane: Option<&'a str>,
+    /// What the one liveness owner says about that pane.
+    pub liveness: crate::deliver::PaneLiveness,
+    /// Whether the input box proved idle.
+    pub ready: bool,
+    /// Now.
+    pub now: i64,
+}
+
+/// Weigh one record against what the cycle knows. FAIL CLOSED: every answer
+/// that is not positive proof is [`Decision::Skip`], which changes nothing.
+///
+/// The order is the contract. A record mid-flight is decided before anything
+/// else, because its outcome is unknown and no later fact can make pasting it
+/// again safe. An incarnation is refused only on POSITIVE proof — meta ANSWERED
+/// and named a different seat — so a meta that could not be read skips rather
+/// than destroying a brief, the same shape [`crate::tmux::classify_absence`]
+/// uses for a session. Busy and human-typing land on the readiness arm, which
+/// is what keeps them free: they skip the cycle and spend no attempt.
+pub(crate) fn decide(record: &Record, facts: &Facts<'_>) -> Decision {
+    // THE CRASH WINDOW. A flight published this before entering delivery and
+    // never recorded an outcome, so ae cannot know whether the paste landed.
+    // Pasting again could deliver the brief twice; this is the arm that makes
+    // that impossible.
+    if record.phase == Phase::Pasting {
+        return Decision::GiveUp("paste outcome unknown");
+    }
+    let (Some(_name), Some(launch_id)) = (facts.meta_name, facts.meta_launch_id) else {
+        return Decision::Skip("the session meta did not answer for this slot");
+    };
+    // POSITIVE PROOF of a new incarnation: meta answered, and it names someone
+    // else's seat. Delivering here would paste one agent's brief into another.
+    if launch_id != record.launch_id {
+        return Decision::GiveUp("the seat was relaunched under a new launch token");
+    }
+    if let Some(pane) = facts.live_pane
+        && pane != record.pane
+    {
+        return Decision::GiveUp("the slot moved to a different pane");
+    }
+    if record.created.saturating_sub(facts.now) > FUTURE_SKEW_SECS {
+        return Decision::GiveUp("the record is dated in the future");
+    }
+    if facts.now.saturating_sub(record.created) > AGE_BOUND_SECS {
+        return Decision::GiveUp("the brief went undelivered for 30 minutes");
+    }
+    if record.attempts >= MAX_ATTEMPTS {
+        return Decision::GiveUp("delivery was attempted twice");
+    }
+    if facts.live_pane.is_none() {
+        return Decision::Skip("no live pane carries the slot this cycle");
+    }
+    if facts.liveness != crate::deliver::PaneLiveness::Alive {
+        return Decision::Skip("the pane is not a proven live agent");
+    }
+    // WHERE BUSY AND HUMAN-TYPING LAND, and why they cost nothing: readiness is
+    // proved BEFORE any attempt is published, so a seat whose box is occupied
+    // is simply looked at again next cycle.
+    if !facts.ready {
+        return Decision::Skip("the input box is not a confirmed-idle state");
+    }
+    // Package 2 inserts its human-prompt latch HERE, as one more Skip arm, so
+    // it never has to reinterpret anything above it.
+    Decision::Deliver
+}
+
+/// Move a damaged record aside so it can never be read as one again, keeping
+/// whatever was moved aside FIRST.
+///
+/// The plain name is tried before the dated one because a single damaged record
+/// is the ordinary case and its file should be easy to find. A collision never
+/// overwrites: the first forensics are the ones worth keeping, and a second
+/// damaged record at the same slot is a rarer event than losing the evidence of
+/// the first.
+///
+/// # Errors
+///
+/// Both names taken, or the rename itself failed — the caller reports and
+/// skips, and never loops on it.
+pub(crate) fn mark_damaged(dir: &Path, slot: &str, now: i64) -> Result<PathBuf, String> {
+    let from = path(dir, slot);
+    let plain = damaged_path(dir, slot);
+    let dated = {
+        let mut name = plain.clone().into_os_string();
+        name.push(format!(".{now}"));
+        PathBuf::from(name)
+    };
+    for candidate in [plain, dated] {
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "a door: the keep-first check classifies the destination WITHOUT following a link to it — see `mark_damaged`"
+        )]
+        let taken = std::fs::symlink_metadata(&candidate).is_ok();
+        if taken {
+            continue;
+        }
+        return match std::fs::rename(&from, &candidate) {
+            Ok(()) => Ok(candidate),
+            Err(why) => Err(format!("could not set {} aside: {why}", from.display())),
+        };
+    }
+    Err(format!(
+        "{} is damaged and both set-aside names are taken; it was left alone",
+        from.display()
+    ))
+}
+
+/// Replace the record at `slot` ONLY while its bytes are still `witness`.
+///
+/// The compare-and-swap that keeps a finished flight from resurrecting a record
+/// that someone else replaced: a `retire` plus a re-spawn during the flight
+/// leaves a SUCCESSOR record at the same slot, and writing this flight's
+/// outcome over it would hand the successor a stranger's attempt count.
+///
+/// `Ok(false)` is that mismatch — the record changed or vanished under the
+/// flight — and it is not an error: it means this flight no longer owns
+/// anything and must write nothing.
+///
+/// # Errors
+///
+/// The write that failed, named. The caller gives up loudly rather than
+/// leaving a flight mark behind.
+pub(crate) fn rearm_if_unchanged(
+    dir: &Path,
+    witness: &[u8],
+    next: &Record,
+) -> Result<bool, String> {
+    match slurp(dir, &next.slot) {
+        Ok(Some(found)) if found.bytes == witness => {
+            write_record(dir, next, Occupied::Replace).map(|()| true)
+        }
+        _ => Ok(false),
+    }
+}
+
+/// Drop the record at `slot` ONLY while its bytes are still `witness`.
+///
+/// The same guard as [`rearm_if_unchanged`], for the two arms that finish a
+/// flight: a delivered brief and a given-up one both delete, and neither may
+/// delete a SUCCESSOR record that a re-spawn wrote while the flight was in the
+/// air. `false` means this flight no longer owns the record and removed
+/// nothing.
+pub(crate) fn remove_if_unchanged(dir: &Path, slot: &str, witness: &[u8]) -> bool {
+    match slurp(dir, slot) {
+        Ok(Some(found)) if found.bytes == witness => {
+            remove(dir, slot);
+            true
+        }
+        _ => false,
+    }
+}
+
 /// Drop the record for `slot`, if any. Absent is success: a deletion that
 /// finds nothing has already happened.
 ///
@@ -600,11 +896,420 @@ pub fn remove(dir: &Path, slot: &str) {
     let _ = std::fs::remove_file(path(dir, slot));
 }
 
+// ---------------------------------------------------------------------------
+// The delivery leg.
+
+/// The action a caller names to reach this leg. It selects the leg and NOTHING
+/// else: the text and the actor come from the record, so the worst a forged
+/// trigger can do is re-fire a brief the spawner already authorized, sooner
+/// than the watchdog would have.
+pub const RETRY_ACTION: &str = "brief-retry";
+
+/// The event a landed retry writes.
+pub const DELIVERED_ACTION: &str = "brief-delivered";
+
+/// The event a record's end writes, whatever ended it.
+pub const GAVE_UP_ACTION: &str = "brief-gave-up";
+
+/// The action the body store names the recovery file after — the SAME one the
+/// original spawn used, because this is that spawn's brief and not a new
+/// message.
+const SPAWN_ACTION: &str = "spawn";
+
+/// How many readiness polls a retry spends. Short on purpose: a cycle that
+/// finds the box busy simply looks again next cycle, and spends no attempt.
+const RETRY_READY_POLLS: u32 = 4;
+
+/// Deliver the brief `slot`'s record holds, or say why it did not.
+///
+/// The argv named only WHICH seat. Everything that reaches the pane —- the
+/// text, and the actor its provenance line names -— is read from the record,
+/// so no caller can put words in a brief's mouth.
+///
+/// # Errors
+///
+/// Only a failure to write `out` or `err`.
+pub fn run(
+    dir: &Path,
+    target: &str,
+    own_session: &str,
+    now: crate::time::Timestamp,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> std::io::Result<u8> {
+    use crate::state::EXIT_FAILED;
+
+    let (resolved, server) = match crate::tracked::resolve_on(target, own_session, dir) {
+        Ok(resolved) => resolved,
+        Err(why) => {
+            writeln!(err, "{}", why.message())?;
+            return Ok(EXIT_FAILED);
+        }
+    };
+    // OWN SESSION ONLY, outright. The record is named from this session's own
+    // directory, so a target in another one could only ever be a mistake or an
+    // attempt to aim someone else's brief.
+    if !resolved.session.is_empty() && resolved.session != own_session {
+        writeln!(
+            err,
+            "ae: {RETRY_ACTION} refused — {target} is in session '{}', and a brief is retried only into its own",
+            resolved.session
+        )?;
+        return Ok(EXIT_FAILED);
+    }
+    if resolved.slot.is_empty() {
+        writeln!(err, "ae: {RETRY_ACTION} refused — {target} carries no slot")?;
+        return Ok(EXIT_FAILED);
+    }
+    // THE RECORD LOCK, held across the whole read-decide-write sequence. A
+    // second helper — an orphan of a restarted daemon, or a forged trigger —
+    // waits, fails, and skips, so two flights can never both publish a flight
+    // mark and both paste.
+    let Ok(_held) = crate::store::lock(&path(dir, &resolved.slot), crate::store::LOCK_WAIT) else {
+        writeln!(
+            err,
+            "ae: {RETRY_ACTION} skipped — another flight holds {}'s record",
+            resolved.slot
+        )?;
+        return Ok(EXIT_FAILED);
+    };
+    let Some(reading) = read(dir, &resolved.slot) else {
+        writeln!(
+            err,
+            "ae: {RETRY_ACTION} refused — {target} has no undelivered brief on record"
+        )?;
+        return Ok(EXIT_FAILED);
+    };
+    let record = match reading {
+        Ok(record) => record,
+        // Damage is the sweep's to classify and set aside; a delivery leg that
+        // acted on it would be deciding with bytes it could not read.
+        Err(damaged) => {
+            writeln!(
+                err,
+                "ae: {RETRY_ACTION} refused — {}'s record is damaged: {}",
+                resolved.slot,
+                damaged.kind()
+            )?;
+            return Ok(EXIT_FAILED);
+        }
+    };
+    let seat = seat_facts(dir, &resolved.slot);
+    let input = seat.tool.adapter().input;
+    // The pane the NAME resolves to now. If the slot moved, this is a different
+    // pane than the record names, and the gate refuses on that.
+    let live_pane = (resolved.slot == record.slot).then(|| resolved.pane.clone());
+    let liveness =
+        crate::deliver::observe_pane_liveness(&server, dir, &resolved.pane, &resolved.slot);
+    let ready = liveness == crate::deliver::PaneLiveness::Alive
+        && crate::deliver::wait_input_ready(
+            &server,
+            &resolved.pane,
+            input.model,
+            input.composed,
+            RETRY_READY_POLLS,
+        );
+    let facts = Facts {
+        meta_name: seat.name.as_deref(),
+        meta_launch_id: seat.launch_id.as_deref(),
+        live_pane: live_pane.as_deref(),
+        liveness,
+        ready,
+        now: now.epoch(),
+    };
+    let name = seat.name.as_deref().unwrap_or(target);
+    match decide(&record, &facts) {
+        Decision::Skip(why) => {
+            writeln!(err, "ae: {RETRY_ACTION} skipped for {name} — {why}")?;
+            Ok(EXIT_FAILED)
+        }
+        Decision::GiveUp(why) => {
+            let witness = render(&record);
+            give_up(dir, &record, name, why, witness.as_bytes(), now, err)?;
+            writeln!(err, "ae: brief for {name} given up — {why}")?;
+            Ok(EXIT_FAILED)
+        }
+        Decision::Deliver => fly(
+            &Flight {
+                dir,
+                server: &server,
+                pane: &resolved.pane,
+                own_session,
+                name,
+                record: &record,
+                composed: input.composed,
+                now,
+            },
+            out,
+            err,
+        ),
+    }
+}
+
+/// What meta says about the seat a slot holds right now.
+struct Seat {
+    /// The roster name, or `None` when meta did not answer for this slot.
+    name: Option<String>,
+    /// `launch_id.<slot>`, or `None` when meta did not answer.
+    launch_id: Option<String>,
+    /// The seat's tool, for the input grammar readiness is proved against.
+    tool: crate::tool::ToolKind,
+}
+
+/// Read the seat's own facts, ONCE, from the meta document.
+fn seat_facts(dir: &Path, slot: &str) -> Seat {
+    let bytes = crate::meta::read_bytes(dir).unwrap_or_default();
+    let text = String::from_utf8_lossy(&bytes);
+    let meta = crate::meta::Meta::parse(&text);
+    let entry = meta.roster().iter().find(|entry| entry.slot == slot);
+    Seat {
+        name: entry.map(|entry| entry.name.clone()),
+        launch_id: crate::meta::sole_value(&bytes, &format!("launch_id.{slot}"))
+            .map(String::from_utf8_lossy)
+            .filter(|value| !value.is_empty())
+            .map(std::borrow::Cow::into_owned),
+        tool: crate::tool::ToolKind::from_binary_name(
+            entry
+                .and_then(|entry| entry.binary.as_deref())
+                .unwrap_or(""),
+        ),
+    }
+}
+
+/// Everything one flight needs, so the call that takes off stays one statement.
+struct Flight<'a> {
+    dir: &'a Path,
+    server: &'a crate::inventory::ServerId,
+    pane: &'a str,
+    own_session: &'a str,
+    name: &'a str,
+    record: &'a Record,
+    composed: crate::tool::Composed,
+    now: crate::time::Timestamp,
+}
+
+/// Publish the flight mark, deliver, and record what happened.
+///
+/// THE ORDER IS THE PROOF. The bumped attempt and the `pasting` mark are made
+/// durable BEFORE the paste, so a crash anywhere after this point leaves a
+/// record the next cycle refuses to paste again. Nothing about the outcome can
+/// undo that: only a failure that proves NOTHING was staged re-arms it.
+fn fly(flight: &Flight<'_>, out: &mut impl Write, err: &mut impl Write) -> std::io::Result<u8> {
+    use crate::state::EXIT_FAILED;
+
+    let witness = render(flight.record);
+    let mut taking_off = flight.record.clone();
+    taking_off.attempts = taking_off.attempts.saturating_add(1);
+    taking_off.phase = Phase::Pasting;
+    let mark = render(&taking_off);
+    if let Err(why) = rearm_if_unchanged(flight.dir, witness.as_bytes(), &taking_off) {
+        writeln!(
+            err,
+            "ae: brief for {} not attempted — its flight mark could not be published: {why}",
+            flight.name
+        )?;
+        return Ok(EXIT_FAILED);
+    }
+    let request = crate::deliver::Request {
+        dir: flight.dir,
+        server: flight.server,
+        pane: flight.pane,
+        logged_target: flight.name,
+        target_session: flight.own_session,
+        pane_slot: &flight.record.slot,
+        own_session: flight.own_session,
+        action: SPAWN_ACTION,
+        reference: &flight.record.reference,
+        actor: &flight.record.actor,
+        body: &flight.record.body,
+        shape: crate::deliver::Shape::Launch,
+        defer: crate::deliver::DEFAULT_DEFER,
+        composed: flight.composed,
+    };
+    let outcome = crate::deliver::deliver(&request, err)?;
+    let age = flight.now.epoch().saturating_sub(flight.record.created);
+    match outcome {
+        Ok(delivered) => {
+            if remove_if_unchanged(flight.dir, &flight.record.slot, mark.as_bytes()) {
+                let _ = std::fs::remove_file(
+                    flight.dir.join(format!("undelivered.{}.txt", flight.name)),
+                );
+            }
+            record_event(
+                flight.dir,
+                DELIVERED_ACTION,
+                flight.record,
+                flight.name,
+                &format!(
+                    "brief delivered on attempt {} after {age}s",
+                    taking_off.attempts
+                ),
+                &delivered.body_file,
+                flight.now,
+            );
+            writeln!(out, "Delivered the undelivered brief to {}", flight.name)?;
+            Ok(0)
+        }
+        // PROVEN pre-stage: deliver refuses these before the first key reaches
+        // the pane, so nothing was staged and the record may be armed again.
+        Err(
+            failure @ (crate::deliver::Failure::DeadPane
+            | crate::deliver::Failure::Lock
+            | crate::deliver::Failure::Abandoned
+            | crate::deliver::Failure::NotComposed { .. }),
+        ) => {
+            rearm_after_prestage(flight, &taking_off, &mark, &failure, err)?;
+            Ok(EXIT_FAILED)
+        }
+        // Everything else may have staged something. The brief is given up
+        // rather than risked twice — the file is kept, so nothing is lost.
+        Err(failure) => {
+            let why = if matches!(failure, crate::deliver::Failure::Unconfirmed { .. }) {
+                "submit unconfirmed; the brief may be staged unsent"
+            } else {
+                "delivery failed in a way that proves nothing about what was pasted"
+            };
+            give_up(
+                flight.dir,
+                &taking_off,
+                flight.name,
+                why,
+                mark.as_bytes(),
+                flight.now,
+                err,
+            )?;
+            Ok(EXIT_FAILED)
+        }
+    }
+}
+
+/// Put a record back after a refusal that PROVED nothing was staged.
+///
+/// The attempt is already spent — ae entered delivery, which is what the count
+/// means — so the record goes back armed with the higher count, and the seat
+/// gets whatever attempts remain. The write is compare-and-swapped: a retire
+/// and a re-spawn during the flight leave a SUCCESSOR record at this slot, and
+/// handing it this flight's attempt count would charge a new brief for an old
+/// one's failures.
+fn rearm_after_prestage(
+    flight: &Flight<'_>,
+    taking_off: &Record,
+    mark: &str,
+    failure: &crate::deliver::Failure,
+    err: &mut impl Write,
+) -> std::io::Result<()> {
+    if taking_off.attempts >= MAX_ATTEMPTS {
+        return give_up(
+            flight.dir,
+            taking_off,
+            flight.name,
+            "delivery was attempted twice",
+            mark.as_bytes(),
+            flight.now,
+            err,
+        );
+    }
+    let mut armed = taking_off.clone();
+    armed.phase = Phase::Armed;
+    match rearm_if_unchanged(flight.dir, mark.as_bytes(), &armed) {
+        Ok(true) => writeln!(
+            err,
+            "ae: brief for {} refused before anything was pasted ({failure:?}) — it stays on record",
+            flight.name
+        ),
+        Ok(false) => writeln!(
+            err,
+            "ae: brief for {} was replaced while its delivery was in the air — nothing was written back",
+            flight.name
+        ),
+        Err(why) => writeln!(
+            err,
+            "ae: brief for {} could not be re-armed ({why}) — its flight mark stands, so it will be given up rather than pasted twice",
+            flight.name
+        ),
+    }
+}
+
+/// End a record: drop it if this flight still owns it, KEEP the preserved
+/// `.txt`, and say so in the ledger.
+///
+/// The file stays on purpose. A given-up brief is one a human now has to hand
+/// over, and the event is the signal to do it.
+fn give_up(
+    dir: &Path,
+    record: &Record,
+    name: &str,
+    why: &str,
+    witness: &[u8],
+    now: crate::time::Timestamp,
+    err: &mut impl Write,
+) -> std::io::Result<()> {
+    if !remove_if_unchanged(dir, &record.slot, witness) {
+        writeln!(
+            err,
+            "ae: brief for {name} was replaced before it could be given up — nothing was removed"
+        )?;
+        return Ok(());
+    }
+    let age = now.epoch().saturating_sub(record.created);
+    record_event(
+        dir,
+        GAVE_UP_ACTION,
+        record,
+        name,
+        &format!(
+            "{why} (attempts {}, age {age}s); the brief is preserved at undelivered.{name}.txt",
+            record.attempts
+        ),
+        "",
+        now,
+    );
+    Ok(())
+}
+
+/// Append one brief event, named by the ORIGINAL spawner.
+///
+/// Never the watchdog and never ae: the authority this brief carries is the
+/// one that spawned the seat, and the ledger says the same thing the pane's
+/// provenance line does.
+fn record_event(
+    dir: &Path,
+    action: &str,
+    record: &Record,
+    name: &str,
+    summary: &str,
+    body_file: &str,
+    now: crate::time::Timestamp,
+) {
+    let _ = crate::store::open(dir).append_event(&crate::tracked::event_line(
+        &crate::tracked::EventFields {
+            ts: now,
+            actor: &record.actor,
+            action,
+            target: name,
+            reference: &record.reference,
+            actor_slot: "",
+            actor_session: "",
+            target_slot: &record.slot,
+            target_session: "",
+            target_server: "",
+            target_pane: "",
+            target_session_uuid: "",
+            caller_server: "",
+            caller_pane: "",
+            caller_session_uuid: "",
+            identity_gap: "",
+            summary,
+            body_file,
+        },
+    ));
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        Damage, LAUNCH_ID_CAP, MAX_ATTEMPTS, PANE_CAP, Phase, RECORD_CAP, Record, SLOT_CAP,
-        damaged_path, parse, path, publish, read, remove, render,
+        Damage, Damaged, LAUNCH_ID_CAP, MAX_ATTEMPTS, PANE_CAP, Phase, RECORD_CAP, Record,
+        SLOT_CAP, damaged_path, parse, path, publish, read, remove, render,
     };
     use std::path::PathBuf;
 
@@ -920,8 +1625,8 @@ mod tests {
         std::fs::write(&elsewhere, render(&record())).expect("the link target");
         std::os::unix::fs::symlink(&elsewhere, path(&dir, "spawned.1")).expect("the planted link");
         assert_eq!(
-            read(&dir, "spawned.1"),
-            Some(Err(Damage::Unreadable)),
+            read(&dir, "spawned.1").map(|reading| reading.map_err(Damaged::kind)),
+            Some(Err(Damage::NotRegular)),
             "a symlink is not a regular file, and is refused before any open"
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -998,7 +1703,10 @@ mod tests {
     fn a_damaged_record_is_read_as_damage_and_never_as_a_brief() {
         let dir = scratch("damaged");
         std::fs::write(path(&dir, "spawned.1"), "not a record at all\n").expect("the planted file");
-        assert_eq!(read(&dir, "spawned.1"), Some(Err(Damage::Magic)));
+        assert_eq!(
+            read(&dir, "spawned.1").map(|reading| reading.map_err(Damaged::kind)),
+            Some(Err(Damage::Magic))
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1006,7 +1714,10 @@ mod tests {
     fn a_directory_planted_at_the_record_name_is_refused_rather_than_opened() {
         let dir = scratch("nonregular");
         std::fs::create_dir_all(path(&dir, "spawned.1")).expect("the planted directory");
-        assert_eq!(read(&dir, "spawned.1"), Some(Err(Damage::Unreadable)));
+        assert_eq!(
+            read(&dir, "spawned.1").map(|reading| reading.map_err(Damaged::kind)),
+            Some(Err(Damage::NotRegular))
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -240,6 +240,17 @@ pub fn delivery_env<'a>(
     pairs
 }
 
+/// Whether this call is the brief-retry leg rather than a send.
+///
+/// It is answered BEFORE the blank refusal and before anything is resolved,
+/// because the leg ignores this argv's message entirely: the brief's text and
+/// the actor its provenance names are read from the seat's durable record
+/// ([`crate::brief_retry`]). So the action selects the leg and nothing else,
+/// and forging it can at most re-fire a brief the spawner already authorized.
+fn is_brief_retry(env: &Env) -> bool {
+    env.action.as_deref() == Some(crate::brief_retry::RETRY_ACTION)
+}
+
 /// Send end to end.
 ///
 /// # Errors
@@ -248,6 +259,10 @@ pub fn delivery_env<'a>(
 #[allow(
     clippy::too_many_arguments,
     reason = "the frozen helper's inputs, spelled out rather than bundled"
+)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the helper's straight-line order, one step per paragraph; the brief-retry leg is a single branch at its head"
 )]
 pub fn run(
     dir: &Path,
@@ -265,6 +280,9 @@ pub fn run(
         write!(err, "{USAGE}")?;
         return Ok(EXIT_USAGE);
     };
+    if is_brief_retry(env) {
+        return crate::brief_retry::run(dir, &parsed.target, own_session, now, out, err);
+    }
     if tracked::is_blank(&parsed.message) {
         write!(err, "{}", tracked::refusal(ACTION))?;
         return Ok(EXIT_FAILED);
