@@ -2,7 +2,7 @@
 
 use std::borrow::Cow;
 
-use crate::tool::{InputModel, ToolKind};
+use crate::tool::{IdentitySpec, InputModel, ToolKind};
 
 /// What the current, positively recognized harness frame says.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -159,10 +159,16 @@ pub fn has_human_draft(capture: &str, tool: ToolKind) -> bool {
 /// frame. This never searches transcript text or historical rows.
 #[must_use]
 pub fn current_identity(capture: &str, tool: ToolKind) -> HarnessIdentity {
-    match tool.input_model() {
-        InputModel::BorderDelimited => current_claude_identity(capture),
-        InputModel::StyleDelimited => current_codex_identity(capture),
-        InputModel::Unmodelled => HarnessIdentity::default(),
+    match tool.adapter().identity {
+        IdentitySpec::BorderComposer => current_claude_identity(capture),
+        IdentitySpec::StyleFooter => current_codex_identity(capture),
+        IdentitySpec::RuleFooter => current_muse_identity(capture),
+        IdentitySpec::RailStatus => current_opencode_identity(capture),
+        IdentitySpec::BorderText => current_grok_identity(capture),
+        IdentitySpec::TrailingLabel => current_agy_identity(capture),
+        // Gemini CLI has no measured frame, and no other tool's frame
+        // grammar is modelled: unknown, never a guess.
+        IdentitySpec::Unmodelled => HarnessIdentity::default(),
     }
 }
 
@@ -359,6 +365,121 @@ fn parse_codex_identity(line: &str) -> HarnessIdentity {
     .then(|| model_token.to_owned());
     let effort = valid_effort(effort_token).then(|| effort_token.to_owned());
     HarnessIdentity { model, effort }
+}
+
+/// Muse's composer footer: `model · effort · path · mode`, drawn directly
+/// under the composer's closing rule. The rule is the anchor: a footer-shaped
+/// transcript row above it is never the current frame.
+fn current_muse_identity(capture: &str) -> HarnessIdentity {
+    let lines = clean_lines(capture);
+    let Some((footer, before)) = lines.split_last() else {
+        return HarnessIdentity::default();
+    };
+    if !before.last().is_some_and(|line| claude_border(line)) {
+        return HarnessIdentity::default();
+    }
+    let fields: Vec<&str> = footer.split(" · ").collect();
+    let [model, effort, _path, mode] = fields.as_slice() else {
+        return HarnessIdentity::default();
+    };
+    if model.is_empty() || mode.is_empty() || !valid_effort(effort) {
+        return HarnessIdentity::default();
+    }
+    HarnessIdentity {
+        model: Some((*model).to_owned()),
+        effort: Some((*effort).to_owned()),
+    }
+}
+
+/// opencode's composer status row `mode · model · effort`, drawn directly
+/// above the `╹` bottom edge of its composer box. The edge is the anchor.
+fn current_opencode_identity(capture: &str) -> HarnessIdentity {
+    let lines = clean_lines(capture);
+    let Some(edge) = lines.iter().rposition(|line| line.starts_with('╹')) else {
+        return HarnessIdentity::default();
+    };
+    let Some(status) = edge.checked_sub(1).and_then(|index| lines.get(index)) else {
+        return HarnessIdentity::default();
+    };
+    let Some(rest) = status.strip_prefix('┃') else {
+        return HarnessIdentity::default();
+    };
+    let fields: Vec<&str> = rest.trim().split(" · ").collect();
+    let [mode, model, effort] = fields.as_slice() else {
+        return HarnessIdentity::default();
+    };
+    if mode.is_empty() || model.is_empty() || !valid_effort(effort) {
+        return HarnessIdentity::default();
+    }
+    HarnessIdentity {
+        model: Some((*model).to_owned()),
+        effort: Some((*effort).to_owned()),
+    }
+}
+
+/// Grok's composer bottom border carries the status text
+/// `… · model (effort) · …`. The border is the anchor: a model name quoted in
+/// the transcript proves nothing.
+fn current_grok_identity(capture: &str) -> HarnessIdentity {
+    let lines = clean_lines(capture);
+    let Some(border) = lines
+        .iter()
+        .rev()
+        .find(|line| line.starts_with('╰') && line.ends_with('╯'))
+    else {
+        return HarnessIdentity::default();
+    };
+    let inner = border.trim_start_matches('╰').trim_end_matches('╯');
+    let mut found: Option<(&str, &str)> = None;
+    for segment in inner.split(" · ") {
+        let Some((model, effort)) = segment.rsplit_once(" (") else {
+            continue;
+        };
+        let Some(effort) = effort.strip_suffix(')') else {
+            continue;
+        };
+        if model.is_empty() || !valid_effort(effort) {
+            continue;
+        }
+        if found.is_some() {
+            // Two parenthesized efforts on one border: ambiguous, unobserved.
+            return HarnessIdentity::default();
+        }
+        found = Some((model, effort));
+    }
+    found.map_or_else(HarnessIdentity::default, |(model, effort)| {
+        HarnessIdentity {
+            model: Some(model.to_owned()),
+            effort: Some(effort.to_owned()),
+        }
+    })
+}
+
+/// Agy's model label: the last non-empty row's trailing `model · effort`,
+/// set apart from a hint on its left by a run of spaces. The trust modal
+/// draws the same label without a composer, so it is read the same way.
+fn current_agy_identity(capture: &str) -> HarnessIdentity {
+    let lines = clean_lines(capture);
+    let Some(last) = lines.last() else {
+        return HarnessIdentity::default();
+    };
+    let Some((left, effort)) = last.rsplit_once(" · ") else {
+        return HarnessIdentity::default();
+    };
+    if !valid_effort(effort) {
+        return HarnessIdentity::default();
+    }
+    let model = left
+        .rsplit_once("  ")
+        .map_or(left, |(_, model)| model)
+        .trim();
+    if model.is_empty() {
+        return HarnessIdentity::default();
+    }
+    HarnessIdentity {
+        model: Some(model.to_owned()),
+        effort: Some(effort.to_owned()),
+    }
 }
 
 fn valid_effort(value: &str) -> bool {
@@ -704,6 +825,197 @@ mod tests {
             current_identity(
                 include_str!("../tests/fixtures/harness-state/codex-idle-112x40.txt"),
                 ToolKind::Grok
+            ),
+            HarnessIdentity::default()
+        );
+    }
+
+    #[test]
+    fn a_muse_composer_footer_proves_model_and_effort() {
+        let expected = HarnessIdentity {
+            model: Some("muse-spark-1.3".to_owned()),
+            effort: Some("max".to_owned()),
+        };
+        assert_eq!(
+            current_identity(
+                include_str!("../tests/fixtures/runtime-identity/muse-idle-plain-80x24.txt"),
+                ToolKind::Muse
+            ),
+            expected
+        );
+        // A staged turn keeps the same footer, with a hint after the mode.
+        assert_eq!(
+            current_identity(
+                include_str!("../tests/fixtures/runtime-identity/muse-occupied-plain-80x24.txt"),
+                ToolKind::Muse
+            ),
+            expected
+        );
+    }
+
+    #[test]
+    fn a_muse_footer_without_its_composer_rule_is_unobserved() {
+        assert_eq!(
+            current_identity(
+                include_str!("../tests/fixtures/runtime-identity/muse-transcript-only.txt"),
+                ToolKind::Muse
+            ),
+            HarnessIdentity::default()
+        );
+    }
+
+    #[test]
+    fn a_blank_muse_frame_is_unobserved() {
+        assert_eq!(
+            current_identity("", ToolKind::Muse),
+            HarnessIdentity::default()
+        );
+        assert_eq!(
+            current_identity("\n \n", ToolKind::Muse),
+            HarnessIdentity::default()
+        );
+    }
+
+    #[test]
+    fn an_opencode_composer_status_row_proves_model_and_effort() {
+        assert_eq!(
+            current_identity(
+                include_str!(
+                    "../tests/fixtures/runtime-identity/opencode-composed-plain-80x24.txt"
+                ),
+                ToolKind::OpenCode
+            ),
+            HarnessIdentity {
+                model: Some("DeepSeek V4.1 Flash OpenRouter".to_owned()),
+                effort: Some("max".to_owned()),
+            }
+        );
+    }
+
+    #[test]
+    fn an_opencode_status_row_without_the_composer_edge_is_unobserved() {
+        assert_eq!(
+            current_identity(
+                include_str!("../tests/fixtures/runtime-identity/opencode-transcript-only.txt"),
+                ToolKind::OpenCode
+            ),
+            HarnessIdentity::default()
+        );
+    }
+
+    #[test]
+    fn a_blank_opencode_frame_is_unobserved() {
+        assert_eq!(
+            current_identity("", ToolKind::OpenCode),
+            HarnessIdentity::default()
+        );
+        assert_eq!(
+            current_identity("\n\n", ToolKind::OpenCode),
+            HarnessIdentity::default()
+        );
+    }
+
+    #[test]
+    fn a_grok_composer_border_proves_model_and_effort() {
+        let expected = HarnessIdentity {
+            model: Some("Grok 4.6".to_owned()),
+            effort: Some("high".to_owned()),
+        };
+        assert_eq!(
+            current_identity(
+                include_str!("../tests/fixtures/grok-composer/grok-composed-frame-80x24.txt"),
+                ToolKind::Grok
+            ),
+            expected
+        );
+        assert_eq!(
+            current_identity(
+                include_str!("../tests/fixtures/grok-composer/grok-composed-frame.txt"),
+                ToolKind::Grok
+            ),
+            expected
+        );
+    }
+
+    #[test]
+    fn a_grok_border_echo_in_the_transcript_is_unobserved() {
+        assert_eq!(
+            current_identity(
+                include_str!("../tests/fixtures/runtime-identity/grok-transcript-only.txt"),
+                ToolKind::Grok
+            ),
+            HarnessIdentity::default()
+        );
+    }
+
+    #[test]
+    fn a_blank_grok_frame_is_unobserved() {
+        assert_eq!(
+            current_identity(
+                include_str!("../tests/fixtures/grok-composer/grok-boot-frame.txt"),
+                ToolKind::Grok
+            ),
+            HarnessIdentity::default()
+        );
+        assert_eq!(
+            current_identity("", ToolKind::Grok),
+            HarnessIdentity::default()
+        );
+    }
+
+    #[test]
+    fn an_agy_model_label_proves_model_and_effort() {
+        let expected = HarnessIdentity {
+            model: Some("Gemini 3.8 Flash".to_owned()),
+            effort: Some("high".to_owned()),
+        };
+        assert_eq!(
+            current_identity(
+                include_str!("../tests/fixtures/agy-composer/agy-composed-frame.txt"),
+                ToolKind::Agy
+            ),
+            expected
+        );
+        assert_eq!(
+            current_identity(
+                include_str!("../tests/fixtures/agy-composer/agy-draft-frame-80x24.txt"),
+                ToolKind::Agy
+            ),
+            expected
+        );
+    }
+
+    #[test]
+    fn an_agy_trust_modal_still_carries_the_model_label() {
+        assert_eq!(
+            current_identity(
+                include_str!("../tests/fixtures/agy-composer/agy-trust-modal-frame.txt"),
+                ToolKind::Agy
+            ),
+            HarnessIdentity {
+                model: Some("Gemini 3.8 Flash".to_owned()),
+                effort: Some("high".to_owned()),
+            }
+        );
+    }
+
+    #[test]
+    fn an_agy_label_echo_without_a_footer_row_is_unobserved() {
+        assert_eq!(
+            current_identity(
+                include_str!("../tests/fixtures/runtime-identity/agy-transcript-only.txt"),
+                ToolKind::Agy
+            ),
+            HarnessIdentity::default()
+        );
+    }
+
+    #[test]
+    fn a_boot_agy_frame_is_unobserved() {
+        assert_eq!(
+            current_identity(
+                include_str!("../tests/fixtures/agy-composer/agy-boot-frame.txt"),
+                ToolKind::Agy
             ),
             HarnessIdentity::default()
         );

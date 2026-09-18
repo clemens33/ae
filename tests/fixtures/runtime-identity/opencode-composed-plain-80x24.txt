@@ -1,0 +1,23 @@
+
+
+
+
+                                                      ▄     
+                     █▀▀█ █▀▀█ █▀▀█ █▀▀▄ █▀▀▀ █▀▀█ █▀▀█ █▀▀█
+                     █  █ █  █ █▀▀▀ █  █ █    █  █ █  █ █▀▀▀
+                     ▀▀▀▀ █▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀
+
+
+   ┃                                                                          
+   ┃  Ask anything… "Fix broken tests"                                        
+   ┃                                                                          
+   ┃  Build · DeepSeek V4.1 Flash OpenRouter · max                            
+   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+                                                   tab agents  ctrl+p commands
+
+
+
+           ● Tip Run opencode auth list to see all configured providers
+
+  ~/projects/clemens33/ae-wt/spawnproof:spawnproof                     1.18.31
+

@@ -345,6 +345,28 @@ impl ModelSpec {
     }
 }
 
+/// Which pane grammar proves a live model-and-effort identity for one harness.
+///
+/// Data only — the identity reader matches this enum, never the tool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IdentitySpec {
+    /// The identity row inside a border-delimited composer (Claude's `🧠` row).
+    BorderComposer,
+    /// The `model effort · path` footer under a style-delimited composer.
+    StyleFooter,
+    /// The `model · effort · path · mode` footer under the composer's closing
+    /// rule.
+    RuleFooter,
+    /// The `mode · model · effort` status row above a heavy-rail bottom edge.
+    RailStatus,
+    /// The `model (effort)` text inside a rounded composer's bottom border.
+    BorderText,
+    /// The trailing `model · effort` label on the last drawn row.
+    TrailingLabel,
+    /// No grammar is modelled: a pane proves no identity.
+    Unmodelled,
+}
+
 /// In-place compaction capability: which `/compact`-shaped command ae may
 /// drive in this harness, if any (R11). Data only — the call site matches
 /// this enum, never the tool.
@@ -395,6 +417,8 @@ pub(crate) struct ToolAdapter {
     pub(crate) capture: CaptureSpec,
     /// Input observation and first-turn delivery behaviour.
     pub(crate) input: InputSpec,
+    /// Which pane grammar proves this harness's live identity, if any.
+    pub(crate) identity: IdentitySpec,
     /// In-place compaction capability (R11).
     pub(crate) compact: CompactSpec,
     /// How ae reads this harness's live model and whether an observation may
@@ -445,6 +469,7 @@ const CLAUDE: ToolAdapter = ToolAdapter {
         wait_for_process: true,
         paste_initial_on_resume: false,
     },
+    identity: IdentitySpec::BorderComposer,
     model: ModelSpec::ReportOnly(&["--model"]),
     quota: QuotaSpec {
         source: QuotaSource::ClaudeCache,
@@ -489,6 +514,7 @@ const CODEX: ToolAdapter = ToolAdapter {
         wait_for_process: true,
         paste_initial_on_resume: true,
     },
+    identity: IdentitySpec::StyleFooter,
     model: ModelSpec::Replayable(&["-m", "--model"]),
     quota: QuotaSpec {
         source: QuotaSource::CodexRollouts,
@@ -533,6 +559,7 @@ const GEMINI: ToolAdapter = ToolAdapter {
         wait_for_process: false,
         paste_initial_on_resume: false,
     },
+    identity: IdentitySpec::Unmodelled,
     model: ModelSpec::Unobserved,
     quota: QuotaSpec {
         source: QuotaSource::Unsupported,
@@ -594,6 +621,7 @@ const AGY: ToolAdapter = ToolAdapter {
         wait_for_process: false,
         paste_initial_on_resume: false,
     },
+    identity: IdentitySpec::TrailingLabel,
     model: ModelSpec::Unobserved,
     quota: QuotaSpec {
         source: QuotaSource::Unsupported,
@@ -660,6 +688,7 @@ const GROK: ToolAdapter = ToolAdapter {
         wait_for_process: false,
         paste_initial_on_resume: false,
     },
+    identity: IdentitySpec::BorderText,
     model: ModelSpec::Unobserved,
     quota: QuotaSpec {
         source: QuotaSource::Unsupported,
@@ -712,6 +741,7 @@ const MUSE: ToolAdapter = ToolAdapter {
         wait_for_process: false,
         paste_initial_on_resume: false,
     },
+    identity: IdentitySpec::RuleFooter,
     model: ModelSpec::Unobserved,
     quota: QuotaSpec {
         source: QuotaSource::Unsupported,
@@ -766,6 +796,7 @@ const OPENCODE: ToolAdapter = ToolAdapter {
         wait_for_process: true,
         paste_initial_on_resume: false,
     },
+    identity: IdentitySpec::RailStatus,
     model: ModelSpec::Unobserved,
     quota: QuotaSpec {
         source: QuotaSource::Unsupported,
@@ -807,6 +838,7 @@ const UNKNOWN: ToolAdapter = ToolAdapter {
         wait_for_process: false,
         paste_initial_on_resume: false,
     },
+    identity: IdentitySpec::Unmodelled,
     model: ModelSpec::Unobserved,
     quota: QuotaSpec {
         source: QuotaSource::Unsupported,
@@ -1049,6 +1081,7 @@ mod tests {
                         wait_for_process: true,
                         paste_initial_on_resume: false,
                     },
+                    identity: IdentitySpec::BorderComposer,
                     model: ModelSpec::ReportOnly(&["--model"]),
                     quota: QuotaSpec {
                         source: QuotaSource::ClaudeCache,
@@ -1092,6 +1125,7 @@ mod tests {
                         wait_for_process: true,
                         paste_initial_on_resume: true,
                     },
+                    identity: IdentitySpec::StyleFooter,
                     model: ModelSpec::Replayable(&["-m", "--model"]),
                     quota: QuotaSpec {
                         source: QuotaSource::CodexRollouts,
@@ -1135,6 +1169,7 @@ mod tests {
                         wait_for_process: false,
                         paste_initial_on_resume: false,
                     },
+                    identity: IdentitySpec::Unmodelled,
                     model: ModelSpec::Unobserved,
                     quota: QuotaSpec {
                         source: QuotaSource::Unsupported,
@@ -1182,6 +1217,7 @@ mod tests {
                         wait_for_process: false,
                         paste_initial_on_resume: false,
                     },
+                    identity: IdentitySpec::TrailingLabel,
                     model: ModelSpec::Unobserved,
                     quota: QuotaSpec {
                         source: QuotaSource::Unsupported,
@@ -1232,6 +1268,7 @@ mod tests {
                         wait_for_process: false,
                         paste_initial_on_resume: false,
                     },
+                    identity: IdentitySpec::BorderText,
                     model: ModelSpec::Unobserved,
                     quota: QuotaSpec {
                         source: QuotaSource::Unsupported,
@@ -1275,6 +1312,7 @@ mod tests {
                         wait_for_process: false,
                         paste_initial_on_resume: false,
                     },
+                    identity: IdentitySpec::RuleFooter,
                     model: ModelSpec::Unobserved,
                     quota: QuotaSpec {
                         source: QuotaSource::Unsupported,
@@ -1321,6 +1359,7 @@ mod tests {
                         wait_for_process: true,
                         paste_initial_on_resume: false,
                     },
+                    identity: IdentitySpec::RailStatus,
                     model: ModelSpec::Unobserved,
                     quota: QuotaSpec {
                         source: QuotaSource::Unsupported,
@@ -1369,6 +1408,7 @@ mod tests {
                     wait_for_process: false,
                     paste_initial_on_resume: false,
                 },
+                identity: IdentitySpec::Unmodelled,
                 model: ModelSpec::Unobserved,
                 quota: QuotaSpec {
                     source: QuotaSource::Unsupported,

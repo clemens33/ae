@@ -1,0 +1,23 @@
+
+❯ ⟦ae:msg from watchdog⟧
+  Status check: if you have more work, continue. Otherwise declare your state so
+  I stop nudging: /Users/ckriech/.ae-dev/sessions/musecapture/state
+  <waiting-user|waiting-agent|blocked|done> "<reason>"
+
+◆ Usage limit reached · /upgrade
+  (https://accountscenter.meta.com/muse_code/?ep=xgrade) for increased limits,
+  or wait for usage to reset at Sep 15 at 12:56 AM
+
+❯ ⟦ae:msg from watchdog⟧
+  Status check: if you have more work, continue. Otherwise declare your state so
+  I stop nudging: /Users/ckriech/.ae-dev/sessions/musecapture/state
+  <waiting-user|waiting-agent|blocked|done> "<reason>"
+
+◆ Usage limit reached · /upgrade
+  (https://accountscenter.meta.com/muse_code/?ep=xgrade) for increased limits,
+  or wait for usage to reset at Sep 15 at 12:56 AM
+
+── Voice input (⌥ + v to start) ────────────────────────────────────────────────
+❯ [Pasted Content 1766 chars]
+────────────────────────────────────────────────────────────────────────────────
+  muse-spark-1.3 · max · …/ae · YOLO           Paste again to expand for editing
