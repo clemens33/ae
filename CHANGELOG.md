@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.116] - 2026-09-18
+- Keep the fleet strip fresh when motion is off
+
 ## [v2026.9.115] - 2026-09-18
 - Let the human choose the order of the fleet strip
 - Report a fleet_order line ae could not read
