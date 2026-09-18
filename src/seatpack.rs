@@ -105,6 +105,10 @@ const CLIP_TURN: &str = "[clip: turn cut at 2 KB]";
 /// What the turns section says when its own budget dropped the oldest of them.
 const CLIP_TURNS: &str = "[clip: oldest turns dropped to fit the 8 KB turns budget]";
 
+/// What the requests section says when it left a row out: see
+/// [`minted_requests`] for why a row goes rather than being repaired.
+const UNMINTED_REQUESTS: &str = "[dropped: request id not minted by ae]";
+
 /// What a section says when the journal could not be read. NOT "none recorded":
 /// an unreadable file supports no claim about what is in it.
 const JOURNAL_DAMAGED: &str =
@@ -569,13 +573,33 @@ fn viewer(inputs: &Inputs) -> Viewer {
 /// record closed the row. That fallback is why a long-open request retired
 /// minutes ago is absent here: a `retire` closes by seat and carries no `ref`,
 /// so nothing supplies a closing moment and the row keeps its opening age.
+/// The ledger as the pack may QUOTE it, with the count of what it would not.
+///
+/// A ledger line is agent-written, and ae mints every request id it owns
+/// ([`crate::tracked::is_request_id`]), so an id failing that grammar is one ae
+/// cannot vouch for. Its row is dropped WHOLE — never repaired, because a
+/// repaired id would name a request that does not exist — and counted, because
+/// a silent drop reads as a shorter ledger. What makes it a gate and not
+/// hygiene: the reply command below quotes an id without escaping it, and this
+/// document is PASTED, so a paste terminator in one turns the rest into keys.
+fn minted_requests(inputs: &Inputs) -> (Vec<crate::requests::Request>, usize) {
+    let read = crate::requests::states_in(&inputs.container, &inputs.session);
+    let before = read.len();
+    let kept: Vec<crate::requests::Request> = read
+        .into_iter()
+        .filter(|request| crate::tracked::is_request_id(&text(&request.id)))
+        .collect();
+    let dropped = before - kept.len();
+    (kept, dropped)
+}
+
 fn closed_rows(inputs: &Inputs) -> Vec<String> {
     if inputs.journal == Journal::Damaged {
         return Vec::new();
     }
     let viewer = viewer(inputs);
     let mut rows: Vec<(i64, String)> = Vec::new();
-    for request in crate::requests::states_in(&inputs.container, &inputs.session) {
+    for request in minted_requests(inputs).0 {
         if request.status == RequestStatus::Pending {
             continue;
         }
@@ -792,7 +816,7 @@ fn push_requests(
         return;
     }
     let viewer = viewer(inputs);
-    let open = crate::requests::states_in(&inputs.container, &inputs.session);
+    let (open, unminted) = minted_requests(inputs);
     let age_of = |at: &[u8]| {
         crate::brief::age(Timestamp::parse(&text(at)).map(|sent| sent.seconds_until(inputs.now)))
     };
@@ -816,6 +840,10 @@ fn push_requests(
         );
         match kind_of(&request.kind) {
             Some(kind) => {
+                // ONLY a grammar-proven id reaches this — `minted_requests`
+                // dropped the rest before the section began — which is what
+                // lets `reply_command`, shared with every ask envelope, keep
+                // no quoting rules of its own.
                 let _ = writeln!(
                     out,
                     "    reply: {}",
@@ -870,6 +898,9 @@ fn push_requests(
     }
     if clipped.closed > 0 {
         let _ = writeln!(out, "{CLIP_CLOSED} ({})", clipped.closed);
+    }
+    if unminted > 0 {
+        let _ = writeln!(out, "{UNMINTED_REQUESTS} ({unminted})");
     }
     out.push('\n');
 }
@@ -1106,7 +1137,8 @@ mod tests {
         CLIP_BODIES, CLIP_CLOSED, CLIP_FIRST_MESSAGE, CLIP_HARD, CLIP_STALE, CLIP_TURN, CLIP_TURNS,
         FIRST_MESSAGE_BYTES, FirstMessage, Git, HARD_CAP_BYTES, Inputs, JOURNAL_DAMAGED,
         JOURNAL_DAMAGED_STATE, Journal, LastTurns, OWNERSHIP_FRAGILITY, RosterRow, SUCCESSOR_BLOCK,
-        TURN_BYTES, TURNS_BYTES, Turn, brief_path_in, closed_ages, neutralise, pack, slot_class,
+        TURN_BYTES, TURNS_BYTES, Turn, UNMINTED_REQUESTS, brief_path_in, closed_ages, neutralise,
+        pack, slot_class,
     };
     use crate::brief::{AgentLine, TopicLine};
     use crate::events::Event;
@@ -1985,6 +2017,39 @@ mod tests {
     /// erase-display sequence, a bell, a NUL, the bracketed-paste TERMINATOR,
     /// a C1 control as its own codepoint, DEL, and a tab.
     const HOSTILE: &str = "a\u{1b}[2Jb\u{7}c\u{0}d\u{1b}[201~e\u{9b}f\u{7f}g\thi";
+
+    #[test]
+    fn a_request_id_ae_never_minted_is_dropped_whole_and_counted() {
+        // The id is the one record field that reaches a printed COMMAND, and a
+        // ledger line is agent-written: its `ref` can carry the paste
+        // terminator, a quote and a substitution — into a document that is
+        // PASTED.
+        // The escapes are the LEDGER's: what the reader decodes is a real ESC.
+        let hostile = r#"ae-20260918T120000Z-0123abcd\u001b[201~\"$(touch /tmp/pwned)"#;
+        let line = format!(
+            r#"{{"ts":"{}","actor":"scribe","action":"ask","target":"lead","ref":"{hostile}","actor_slot":"spawned.0","actor_session":"s1","target_slot":"main","target_session":"s1","summary":"innocent"}}"#,
+            ago(600)
+        );
+        let (container, events) = ledger(&[line]);
+        let rendered = pack(&Inputs {
+            container,
+            events,
+            ..base()
+        });
+
+        assert!(
+            !rendered.contains("$(touch /tmp/pwned)") && !rendered.contains("\u{1b}[201~"),
+            "the row reached the pack: {rendered}"
+        );
+        assert!(
+            !rendered.contains("innocent"),
+            "the row is dropped WHOLE, not repaired: {rendered}"
+        );
+        assert!(
+            rendered.contains(&format!("{UNMINTED_REQUESTS} (1)")),
+            "a dropped row is counted, never silent: {rendered}"
+        );
+    }
 
     #[test]
     fn nothing_a_terminal_would_act_on_survives_into_a_pack_that_is_pasted() {

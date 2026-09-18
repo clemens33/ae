@@ -117,6 +117,17 @@ a quoted turn would be KEYSTROKES in the successor's pane. The pin that keeps
 that honest poisons every input field and reads the whole rendered document
 back looking for any control character but a newline.
 
+ONE field is proven rather than cleaned: a request id, which the pack also
+prints into a `reply` command, so a cleaned one would name a request that does
+not exist. `seatpack::minted_requests` drops a row failing
+`tracked::is_request_id` whole and counts it.
+
+A predecessor list is where a record is lost QUIETLY: `meta::prior_with` restarts
+from the new id alone when the row is damaged or over cap, so a row the 2->3
+migration preserved byte-for-byte goes on the next reseat or capture, reported on
+no surface — no event, no coverage line, no refusal. Per-element salvage would
+match the reader; the writer does not.
+
 The seed file is KEPT after a successful move. It is what a human re-sends by
 hand when a turn did not land — the refusal prints that exact command — and it
 is the record of what the successor was actually told.

@@ -440,6 +440,8 @@ replaced by a space, so nothing a terminal would ACT on survives. That second ha
 cosmetic: `ae reseat` PASTES this document into a pane, where an escape sequence, a bell or
 a bracketed-paste terminator would be keystrokes rather than text. Its one cost is
 flattening: a tab, and the leading indentation of a nested line, arrive as a single space.
+A request id is PROVEN instead: the pack prints it into a `reply` command, so a row whose id
+ae did not mint is dropped whole and counted (`[dropped: request id not minted by ae] (N)`).
 
 ### The topic convention
 
