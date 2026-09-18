@@ -56,6 +56,18 @@ while (1) { sleep 1; }
 const IDLE_CONFIG: &str = "[profiles]\nidle = \"sleep 600\"\n\n[roster]\nlead = idle\n\n\
      [workspace]\nmain = lead\nlayout = vertical\nwatchdog = false\n";
 
+/// A fake agent that never draws: input readiness never arrives, so a resume
+/// of its seat blocks the full 45 s delivery wait. Named for the tool it
+/// classifies as, like [`FAKE_AGENT`].
+const SILENT_AGENT: &str = r#"#!/usr/bin/perl
+use strict;
+use warnings;
+open(my $log, '>>', "__LAUNCHED__") or die;
+print $log join(" ", @ARGV), "\n";
+close($log);
+while (1) { sleep 1; }
+"#;
+
 const SOLO_OVERRIDE_CONFIG: &str = "[profiles]\nidle = \"sleep 600\"\nsolx = \"tail -f /dev/null\"\n\n\
      [roster]\nlead = idle\ncolead = idle\nbuilder = idle\n\n\
      [workspace]\nmain = lead\nworkers = colead, builder\nlayout = lead-pair\nwatchdog = false\n";
@@ -7326,4 +7338,67 @@ fn the_window_half_of_the_look_is_stamped_per_window_and_never_globally() {
             "ae does not theme the global table: {name} = {global}"
         );
     }
+}
+
+#[test]
+fn the_watchdog_pane_starts_before_a_blocked_launch_delivery_ends() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::new("wdfirst", &["codex"], None);
+    // The seat never draws: its resume delivery blocks the full 45 s wait.
+    let silent = SILENT_AGENT.replace("__LAUNCHED__", &rig.launched.display().to_string());
+    assert!(
+        std::fs::write(rig.bin.join("codex"), silent).is_ok(),
+        "a silent codex"
+    );
+    // The rig disables the watchdog; the pin needs the watchdog pane, which
+    // is on by default.
+    let config = format!(
+        "[profiles]\ncodex = \"{}\"\n\n[roster]\nlead = codex\n\n[workspace]\nmain = lead\nlayout = vertical\n",
+        rig.bin.join("codex").display()
+    );
+    assert!(
+        std::fs::write(&rig.config, config).is_ok(),
+        "a watchdog-on config"
+    );
+
+    let (code, stdout, stderr) = rig.launch(&["--local", "lnwdfirst"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(!rig.launch_argv().is_empty(), "the first agent started");
+    assert!(
+        rig.tmux(&["kill-session", "-t", "=lnwdfirst"]).0,
+        "the session stops"
+    );
+
+    // The resume blocks up to 45 s in the seat's readiness wait; the pin
+    // watches for the watchdog pane well inside that wait, then kills the
+    // child rather than serving the full 45 s. Capture starts only after
+    // the deliveries, so the killed child leaks no detached `_capture-sid`.
+    let mut child = rig.launch_child(&["--local", "lnwdfirst"]);
+    let deadline = std::time::Instant::now() + Duration::from_secs(25);
+    let mut seen = false;
+    let mut alive_at_see = false;
+    while std::time::Instant::now() < deadline {
+        if !matches!(child.try_wait(), Ok(None)) {
+            break;
+        }
+        let (_, panes) = rig.tmux(&["list-panes", "-s", "-F", "#{pane_id} #{@ae_agent}"]);
+        if panes.lines().any(|line| line.ends_with(" _watchdog")) {
+            seen = true;
+            alive_at_see = matches!(child.try_wait(), Ok(None));
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    assert!(
+        seen,
+        "the watchdog pane starts while the resume is still blocked in the delivery wait"
+    );
+    assert!(
+        alive_at_see,
+        "the launch was still inside the delivery wait when the watchdog pane appeared"
+    );
+    drop(child);
+    let _ = rig.tmux(&["kill-session", "-t", "=lnwdfirst"]);
 }

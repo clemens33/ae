@@ -3216,33 +3216,69 @@ fn build(
     std::thread::sleep(SHELL_SETTLE);
 
     // ---- launch scripts, and the paste into each pane's shell ----
+    //
+    // Phase 1 is the EXEC half only: each seat's tool is started and its
+    // launch turn, if any, is CARRIED, never delivered. The deliveries wait
+    // below the monitors, because a gated prompt delivery blocks up to 45 s
+    // per seat on the tool's input readiness and the monitor panes must not
+    // wait on any seat. The gate is evaluated here, at exec time: `_run`
+    // publishes the start marker pre-exec on Create, so a later re-read of
+    // `resuming_seat` would wrongly paste a fresh seat.
+    let mut pending: Vec<Option<String>> = Vec::with_capacity(launching.len());
     for agent in &launching {
         // A seat with no pane is a preserved roster row, not an agent to start.
         if agent.pane.is_empty() {
+            pending.push(None);
             continue;
         }
-        if let Err(why) = start_agent(shape, &dir, &core, agent, &server, err)? {
-            return rollback_launch(shape, &dir, &server, &format!("Error: {why}"), err);
+        match start_agent(shape, &dir, &core, agent, &server, err)? {
+            Err(why) => {
+                return rollback_launch(shape, &dir, &server, &format!("Error: {why}"), err);
+            }
+            Ok(prompt) => pending.push(prompt),
         }
     }
 
     // The session is fully on disk; `ae end` may safely delete it, and the
-    // capture threads below must not inherit the hold.
+    // capture children below are spawned detached past the hold.
     drop(lifecycle);
 
-    // ---- post-launch capture, and the deferred codex prompt ----
-    capture::start(&dir, &launching_capture(&launching, shape.resuming));
-
     // ---- the monitor panes ----
+    // BEFORE the phase-2 deliveries: every fleet-line value is
+    // watchdog-published, so a launch blocked in a readiness wait must still
+    // show a live status line. Rollback is unreachable past phase 1, so these
+    // panes cannot orphan.
     let events_pane = ensure_events_pane(&server, &shape.name, &dir);
     if let Some(anchor) = &events_pane {
         start_watchdog_pane(shape, &dir, &server, anchor);
     }
 
     // ---- the per-window half of the look ----
-    // LAST, so every window a layout, a seat or a monitor created is stamped.
-    // The watchdog restamps whatever appears after this.
+    // Every window a layout, a seat or a monitor created is stamped; the
+    // phase-2 deliveries create no window, so stamping ahead of them keeps
+    // the contract and the look off the readiness wait. The watchdog
+    // restamps whatever appears after this.
     stamp_windows(&server, &shape.name, &shape.look);
+
+    // ---- phase 2: the gated launch-prompt deliveries ----
+    // Past the monitors and past the lock: a vanished directory or pane takes
+    // the durable failure inside `deliver_launch_prompt`, whose errors are
+    // swallowed, so no state is recreated and nothing panics. A concurrent
+    // launch against this live session reattaches, never rebuilds.
+    for (agent, prompt) in launching.iter().zip(pending.iter()) {
+        if agent.pane.is_empty() {
+            continue;
+        }
+        if let Some(prompt) = prompt {
+            deliver_launch_prompt(&dir, &server, agent, prompt, err)?;
+        }
+    }
+
+    // ---- post-launch capture ----
+    // AFTER the deliveries, as before: the capture children poll the tools'
+    // stores for a bounded 30 s, so the rollout the turn creates must already
+    // be on disk when they start looking.
+    capture::start(&dir, &launching_capture(&launching, shape.resuming));
 
     // ---- the Telegram bridge ----
     //
@@ -4008,6 +4044,13 @@ pub fn publish_meta_and_seed_uuid(
 
 /// Hand one agent's pane the command that BECOMES its agent, and wait for the
 /// tool to take the pane over.
+/// Phase 1 of a seat launch: the EXEC half.
+///
+/// Pastes the pane command, waits for the tool's process, and stamps
+/// `launch_time`. The gated launch turn is NOT delivered here — it is
+/// returned, so the caller delivers it after the monitors start. The paste
+/// gate is evaluated at this exec-time moment for the reason the caller
+/// states.
 fn start_agent(
     shape: &Session,
     dir: &Path,
@@ -4015,7 +4058,7 @@ fn start_agent(
     agent: &Launching,
     server: &ServerId,
     err: &mut impl Write,
-) -> io::Result<Result<(), String>> {
+) -> io::Result<Result<Option<String>, String>> {
     // THE MARKER IS THE CREATE-VS-RESUME DISCRIMINATOR, so a fresh seat must
     // not inherit one.
     if !shape.resuming
@@ -4050,10 +4093,10 @@ fn start_agent(
         );
     }
     let prompt = launch::initial_prompt_for(agent.tool, dir, &agent.slot);
-    if !prompt.is_empty() && launch_turn_is_pasted(agent.tool, resuming_seat) {
-        deliver_launch_prompt(dir, server, agent, &prompt, err)?;
+    if prompt.is_empty() || !launch_turn_is_pasted(agent.tool, resuming_seat) {
+        return Ok(Ok(None));
     }
-    Ok(Ok(()))
+    Ok(Ok(Some(prompt)))
 }
 
 /// The launch ID this seat launches with: the one it already has, else a fresh
