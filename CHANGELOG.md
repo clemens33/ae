@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.125] - 2026-09-18
+- Give grok and agy measured unmodelled composed signals
+- Reword input-signal comments to state behavior
+
 ## [v2026.9.124] - 2026-09-18
 - Ask every seat on a quota scope to checkpoint when it enters the Low band
 - Name the quota reconcile owner production actually has
