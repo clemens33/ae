@@ -370,12 +370,16 @@ beside it, which is how a session upgraded in place gets one without being
 relaunched.
 
 `@ae_agents` is one atomic, watchdog-owned verdict snapshot:
-`v1;<epoch>;<interval_secs>;<name>:<profile>:<state>:<pane>;…`. Entries follow
-recorded roster order, include missing seats as `dead` with an empty pane, and
-exclude monitor panes. The writer and hostile-state parser cap it at 4 KiB and
-64 agents; the parser also requires the exact version and field count, a
-1–3600-second interval, allowlisted identities and states, printable ASCII
-without tmux style/format bytes, and a valid `%pane` or empty hint. A fact older
+`v2;<epoch>;<interval_secs>;<name>:<profile>:<state>:<pane>:<client>:<model>:<effort>:<drift>;…`.
+Entries follow recorded roster order, include missing seats as `dead` with an
+empty pane, and exclude monitor panes. The last four cells carry what the seat's
+own frame proved, and a roster that will not fit empties them in fleet-wide
+rungs down to today's `v1` bytes before it publishes nothing
+([watchdog.md](watchdog.md)). The writer and hostile-state parser cap it at
+4 KiB and 64 agents; the parser also requires a known version word with its own
+field count, a 1–3600-second interval, allowlisted identities and states,
+printable ASCII without tmux style/format bytes, and a valid `%pane` or empty
+hint. A fact older
 than twice its own interval or ahead by more than one interval is unavailable.
 The snapshot is a verdict fact, not a look fact, so it does not change
 `@ae_look_stamp` or `FORMAT_VERSION`.
