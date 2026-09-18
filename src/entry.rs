@@ -294,7 +294,8 @@ When inside an ae session, stop/end/reboot work without specifying the name.
 
 Config: ~/.ae/config (per-project override: .ae/config in project dir)
 Session helpers, in every session dir: send, relay, ask, review, reply, requests, state,
-  mark-done, goal, memo, say, peek (peak), agents, quota, usage, focus, interrupt, spawn, retire.
+  mark-done, goal, memo, say, peek (peak), agents, quota, usage, focus, interrupt, spawn, retire,
+  relaunch.
 Run 'ae doctor' after install or agent CLI upgrades.
 Run 'ae doctor --refresh' after updating ae to regenerate existing session helpers.
 ";

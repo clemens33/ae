@@ -1088,6 +1088,17 @@ pub fn delete_buffer(server: &ServerId, buffer: &str) -> bool {
     write_run(server, &tmux::delete_buffer_args(server, buffer))
 }
 
+/// Whether `pane` is a dead pane tmux is holding on screen, or `None` when
+/// that could not be read — see [`tmux::interpret_pane_dead`].
+#[must_use]
+pub fn observe_pane_dead(server: &ServerId, pane: &str) -> Option<bool> {
+    if !addressable(server) {
+        return None;
+    }
+    let (succeeded, stdout) = run(PROGRAM, &tmux::pane_dead_args(server, pane));
+    tmux::interpret_pane_dead(succeeded, &stdout)
+}
+
 /// Send one key to `pane` WITHOUT selecting it.
 #[must_use]
 pub fn send_key(server: &ServerId, pane: &str, key: tmux::Key) -> bool {

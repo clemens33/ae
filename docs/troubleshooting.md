@@ -97,8 +97,10 @@ the orphan sweep.
 
 A seat's tool exited, and the shell-history line from before the upgrade names a `versions/<V>/ae-core` the publish has since pruned.
 (Other shells word it differently — `No such file or directory` on bash — for the same missing file.)
-In the dead pane, run `~/.local/bin/ae _run <session dir> <slot>` through the
-command link instead, with the same session directory and slot the old line carried.
+From another seat of the same session, `<session dir>/relaunch <agent>` does this for you:
+it proves the seat dead, restores its recorded working directory and pastes a line that names
+the command link. In the dead pane itself, run `~/.local/bin/ae _run <session dir> <slot>`
+through the command link instead, with the same session directory and slot the old line carried.
 Sessions launched after this fix need no repair: their lines name the link already.
 
 ## Session feels stuck
@@ -113,7 +115,7 @@ ae end -f <name>                                    # nuclear option
 
 `send` (and `ask` / `review` / `reply` / `interrupt`) report loudly rather than dropping a message. The stderr line names the guard that fired:
 
-- **`send to <target> REFUSED — target pane is a shell, not a running agent`** — the target agent has exited and its pane fell back to a shell. Nothing was pasted (a stray Enter would run your message as a shell command). Re-launch the agent, then re-send.
+- **`send to <target> REFUSED — target pane is a shell, not a running agent`** — the target agent has exited and its pane fell back to a shell. Nothing was pasted (a stray Enter would run your message as a shell command). Relaunch the agent (`relaunch <target>`, from another seat of the same session), then re-send.
 - **`send to <target> ABANDONED — target has unsent/human input or is busy`** — the target's input box stayed non-empty for ~2s (a human is typing, or it's mid-generation). Nothing was pasted, to avoid clipping that input. Wait, then re-send.
 - **`send to <target> UNCONFIRMED — submit not verified`** (or `submit UNCONFIRMED to pane …`) — the message was pasted but ae couldn't confirm it left the input box after retrying Enter. It may or may not have sent; re-send. ae keeps no outbox — the loud failure is your cue.
 
@@ -172,7 +174,7 @@ falls back to a fresh conversation.
 
 ## Pane shows `(null)` agent label
 
-`tmux set-option @ae_agent` failed for that pane. Refresh the session (`ae doctor --refresh <name>`) — it rewrites pane labels and tags, re-links the helpers, and re-renders `workspace.md`. If the pane is missing entirely, that's a different problem (agent CLI exited); `peek <agent>` shows what it printed on the way out.
+`tmux set-option @ae_agent` failed for that pane. Refresh the session (`ae doctor --refresh <name>`) — it rewrites pane labels and tags, re-links the helpers, and re-renders `workspace.md`. If the pane is still there but its agent exited, `relaunch <agent>` brings that one seat back in place. If the pane is missing entirely, that's a different problem; `peek <agent>` shows what it printed on the way out, and only `ae stop` plus a resume rebuilds a pane.
 
 ## Status-line clicks do nothing
 

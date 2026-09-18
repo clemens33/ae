@@ -3262,7 +3262,7 @@ fn build(
 
     // ---- phase 2: the gated launch-prompt deliveries ----
     // Past the monitors and past the lock: a vanished directory or pane takes
-    // the durable failure inside `deliver_launch_prompt`, whose errors are
+    // the durable failure inside `deliver_launch_turn`, whose errors are
     // swallowed, so no state is recreated and nothing panics. A concurrent
     // launch against this live session reattaches, never rebuilds.
     for (agent, prompt) in pending {
@@ -4162,7 +4162,7 @@ pub(crate) enum TurnOutcome {
 /// The side effects are unchanged and unconditional: a failure preserves the
 /// text, records the event and says so on stderr. The RETURN is the addition —
 /// the launch throws it away, a single-slot caller reads it.
-fn deliver_launch_turn(
+pub(crate) fn deliver_launch_turn(
     dir: &Path,
     server: &ServerId,
     slot: &str,

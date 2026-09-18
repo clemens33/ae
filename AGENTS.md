@@ -204,7 +204,7 @@ Pins, not channels. CI, laptop and agent sandbox must resolve to the same compil
 
 ## Session helpers
 
-The core LINKS 24 names into `~/.ae/sessions/<name>/`. Every one is a **symlink to the core
+The core LINKS 25 names into `~/.ae/sessions/<name>/`. Every one is a **symlink to the core
 binary**; the core dispatches on `argv[0]`'s basename and derives the session from its
 dirname. Names and argv are the compatibility contract.
 
@@ -227,6 +227,7 @@ dirname. Names and argv are the compatibility contract.
 | `interrupt [--cross-session] <agent> [msg]` | Cancel in the same session; another session needs `--cross-session` |
 | `spawn <name> --using <profile> [prompt]` | Add an agent to the workspace |
 | `retire <name>` \| `retire %pane` | Remove a spawned agent. Exact name only; `main`/`worker` refuse |
+| `relaunch <agent>` | Bring a PROVABLY DEAD seat of the caller's own session back — same slot, same pane, same name, same conversation when the tool still has it. Under the lifecycle lock it proves the pane sits at an IDLE shell with the recorded tool gone (the ONE liveness owner), clears the line, pastes the seat's `_run` line with its recorded `work_dir` restored, then requires the SEAT'S OWN TOOL to be observed running — `_run` in the foreground is not a start. Exit 0 only then, and only when the launch turn is not `undelivered`. Every other case REFUSES by name with the next step: running, liveness unknown (saying which gap), pane not found, pane dead, pane busy, no recorded tool, unusable `work_dir`, lock timeout, tool changed. Nothing is rolled back; a second relaunch refuses `running` if the seat came up after all. No cross-session target |
 | `_register-sid` | codex's own session-id handshake. The one helper no human types |
 | `watchdog`, `events-tail`, `loop` | The two monitor panes' whole command (`loop` = deprecated alias) |
 
@@ -255,7 +256,7 @@ Name resolution takes the exact name, `%pane-id`, or `session:agent` / `@session
 | **Exact resume** | `--resume UUID` | `resume UUID` (subcommand) | `--resume UUID` | `--conversation UUID` | `--resume UUID` | `resume UUID` (subcommand; no positional context turn) | `--session ID` |
 | **Resume fallback** | `--continue` | fresh start | `--resume latest` | `--continue` | `--continue` | fresh start | `--continue` |
 | **TUI modelled for delivery** | yes | yes | no | no | no | yes | no |
-| **`_run` re-run** | exact resume when the recorded id passes the tool's store probe (or the tool has no probe); a gone conversation takes the fallback above; the installed pane line names the command link, so the re-run survives `ae upgrade` | same | same | same | same | same | same |
+| **`_run` re-run** | exact resume when the recorded id passes the tool's store probe (or the tool has no probe); a gone conversation takes the fallback above; the installed pane line names the command link, so the re-run survives `ae upgrade`. The `relaunch` helper is that re-run performed FOR a proven-dead seat, under the lifecycle lock | same | same | same | same | same | same |
 
 - A drawn input box is not an initialized tool. Paste-driven delivery is gated by
   `src/deliver.rs::input_ready` / `wait_input_ready`; a timeout is a loud, durable failure.

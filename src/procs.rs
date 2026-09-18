@@ -134,6 +134,24 @@ pub fn has_descendant_named(procs: &[Proc], pane_pid: u32, agent_bin: &str) -> b
     false
 }
 
+/// Whether ANY process at all runs beneath `pane_pid` — the question "is this
+/// pane's shell busy", which [`has_descendant_named`] cannot answer because it
+/// asks about ONE name.
+///
+/// A descendant at any depth implies a direct CHILD, so this is one pass over
+/// the table rather than a second tree walk.
+///
+/// `None` for the pid is FALSE, never "busy": a pane whose pid could not be
+/// read is a gap in the liveness proof, and the liveness owner refuses it as
+/// unproven. Answering "busy" here would spend that gap on the wrong refusal.
+#[must_use]
+pub(crate) fn has_any_descendant(procs: &[Proc], pane_pid: Option<u32>) -> bool {
+    let Some(pane_pid) = pane_pid else {
+        return false;
+    };
+    procs.iter().any(|proc| proc.ppid == pane_pid)
+}
+
 /// Compose a snapshot into a [`Descendancy`]: `None` (no usable snapshot) is
 /// `Unknown`; a good snapshot is `Present`/`Absent` by the descendant walk.
 #[must_use]
@@ -150,8 +168,11 @@ pub fn descendancy(table: Option<&[Proc]>, pane_pid: u32, agent_bin: &str) -> De
     }
 }
 
-/// Basename compare tolerant of a trailing `.exe` on either operand.
-fn name_matches(comm: &str, agent_bin: &str) -> bool {
+/// Basename compare tolerant of a trailing `.exe` on either operand — the ONE
+/// name equality, shared by the descendant walk and by every caller that
+/// compares a foreground command with a recorded binary.
+#[must_use]
+pub(crate) fn name_matches(comm: &str, agent_bin: &str) -> bool {
     let base = comm.rsplit('/').next().unwrap_or(comm);
     strip_exe(base) == strip_exe(agent_bin)
 }
@@ -190,6 +211,40 @@ pub fn own_tty() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{Descendancy, Proc, PsArgv, descendancy, has_descendant_named, parse_table};
+
+    #[test]
+    fn any_descendant_answers_busy_and_a_pidless_pane_is_never_busy() {
+        let procs = vec![
+            Proc {
+                pid: 10,
+                ppid: 1,
+                comm: "bash".to_owned(),
+            },
+            Proc {
+                pid: 11,
+                ppid: 10,
+                comm: "vim".to_owned(),
+            },
+            Proc {
+                pid: 20,
+                ppid: 1,
+                comm: "sh".to_owned(),
+            },
+        ];
+        assert!(
+            super::has_any_descendant(&procs, Some(10)),
+            "a child of the pane's shell is the pane being busy, whatever it is named"
+        );
+        assert!(
+            !super::has_any_descendant(&procs, Some(20)),
+            "a shell with no child is an IDLE shell"
+        );
+        // THE GAP THIS PIN GUARDS: a pane whose pid could not be read is not
+        // busy, so the liveness owner still gets to refuse it as unproven and
+        // say which gap. Answering "busy" would spend the gap on the wrong line.
+        assert!(!super::has_any_descendant(&procs, None));
+        assert!(!super::has_any_descendant(&[], Some(10)));
+    }
 
     #[test]
     fn parses_macos_full_paths_keeping_the_command_intact() {

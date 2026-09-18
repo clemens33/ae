@@ -493,7 +493,7 @@ fn choose_input(recorded: &str, command: &str) -> TargetInput {
 }
 
 /// `agent_bin.<slot>` out of the meta in `dir`, or empty.
-fn recorded_binary(dir: &Path, slot: &str) -> String {
+pub(crate) fn recorded_binary(dir: &Path, slot: &str) -> String {
     if slot.is_empty() {
         return String::new();
     }
@@ -550,7 +550,7 @@ enum LivenessRefusal {
 /// NAMED pid lets a non-shell foreground count as Alive. A shell foreground is
 /// then proven only by a usable recorded binary and a process walk that is not
 /// Unknown.
-const fn observed_liveness(
+pub(crate) const fn observed_liveness(
     shell_in_foreground: bool,
     binary_known: bool,
     pid: Option<u32>,

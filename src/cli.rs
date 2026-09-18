@@ -126,6 +126,9 @@ pub const SPAWN: &str = "_spawn";
 /// The retire operation: `_retire <meta-dir> <name|%pane>`.
 pub const RETIRE: &str = "_retire";
 
+/// The seat relaunch: `_relaunch <meta-dir> <agent>`.
+pub const RELAUNCH: &str = "_relaunch";
+
 /// The whole `end` operation: `_end [-f] [--purge-history|--keep-history]
 /// [--assume-stopped] <session-name|all>`.
 pub const END: &str = "_end";
@@ -470,6 +473,14 @@ pub enum Request {
     /// `_spawn <dir> <name> --using <profile> [--] [prompt]` — validated by
     /// [`crate::spawn::parse`].
     Spawn {
+        /// The session meta directory.
+        dir: PathBuf,
+        /// Everything after it, as typed.
+        tail: Vec<String>,
+    },
+    /// `_relaunch <dir> <agent>` — validated by
+    /// [`crate::seat_relaunch::run`].
+    Relaunch {
         /// The session meta directory.
         dir: PathBuf,
         /// Everything after it, as typed.
@@ -1220,6 +1231,13 @@ impl Request {
                     tail: tail.to_vec(),
                 },
             },
+            Some(RELAUNCH) => match &args[1..] {
+                [] => Self::MissingOperand(RELAUNCH),
+                [dir, tail @ ..] => Self::Relaunch {
+                    dir: dir.into(),
+                    tail: tail.to_vec(),
+                },
+            },
             Some(RETIRE) => match &args[1..] {
                 [] => Self::MissingOperand(RETIRE),
                 [dir, tail @ ..] => Self::Retire {
@@ -1403,6 +1421,7 @@ impl Request {
             | Self::MetaInit { .. }
             | Self::Roster { .. }
             | Self::Spawn { .. }
+            | Self::Relaunch { .. }
             | Self::Retire { .. }
             | Self::End { .. }
             | Self::Stop { .. }

@@ -191,6 +191,20 @@ Always give spawned agents a descriptive role NAME — it is their identity, add
 
 Available profiles: ${available_aliases} (from ~/.ae/config [profiles])
 
+## Relaunch
+
+Bring a seat whose tool EXITED back in its own pane — same slot, same name, same
+conversation when the tool still has it:
+```bash
+${sessions_dir}/relaunch <agent_name>
+```
+
+Use it when an agent's pane has fallen back to its shell. It refuses, naming the reason,
+whenever the seat is not provably dead — a running seat, a busy pane, a pane that is gone.
+It never kills anything, so a wedged-but-alive agent is `interrupt`'s job, not this one. A
+spawned seat that comes back on a fresh conversation has NOT been re-handed its brief: its
+spawner re-sends it.
+
 ## Delegation
 
 **STRONG DEV:** build slices with `gpt56sol` xhigh or `opus5` xhigh.

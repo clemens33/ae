@@ -63,6 +63,7 @@ pub mod requests;
 pub mod roster;
 pub mod run;
 pub mod sanitize;
+pub(crate) mod seat_relaunch;
 pub mod seatcompact;
 mod seatcompact_run;
 pub mod send;
@@ -2765,6 +2766,23 @@ pub fn run_with(
             let mut stdin = String::new();
             std::io::Read::read_to_string(&mut std::io::stdin(), &mut stdin)?;
             identity::meta_init(dir, tail, &stdin, out, err)?
+        }
+        cli::Request::Relaunch { dir, tail } => {
+            if let Some(root) = state_root() {
+                seat_relaunch::run(
+                    &root,
+                    dir,
+                    tail,
+                    &calling_viewer(dir).display,
+                    &own_session(dir),
+                    time::Timestamp::now(),
+                    out,
+                    err,
+                )?
+            } else {
+                writeln!(err, "ae: {NO_STATE_ROOT}")?;
+                EXIT_UNAVAILABLE
+            }
         }
         cli::Request::Spawn { dir, tail } => spawn::run_spawn(
             dir,

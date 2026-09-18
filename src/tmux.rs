@@ -3345,6 +3345,36 @@ pub fn interpret_pane_probe(succeeded: bool, stdout: &str) -> Option<ObservedPan
     })
 }
 
+/// Whether a pane is a DEAD pane tmux is keeping on screen (`remain-on-exit`).
+///
+/// Its own read rather than a field on [`PANE_PROBE_FORMAT`]: every existing
+/// probe caller asks what a LIVE pane is running, and only the seat relaunch
+/// has to tell "the shell is idle" from "the shell is gone and tmux is holding
+/// the corpse". One field, so no separator.
+pub const PANE_DEAD_FORMAT: &str = "#{pane_dead}";
+
+/// The full argument list for reading whether `pane` is a dead pane.
+#[must_use]
+pub fn pane_dead_args(server: &ServerId, pane: &str) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(["display-message", "-p", "-t", pane, PANE_DEAD_FORMAT].map(ToOwned::to_owned));
+    args
+}
+
+/// What a completed [`pane_dead_args`] run means — `None` when the server did
+/// not answer or the field was not a readable `0`/`1`.
+#[must_use]
+pub fn interpret_pane_dead(succeeded: bool, stdout: &str) -> Option<bool> {
+    if !succeeded {
+        return None;
+    }
+    match stdout.lines().next()?.trim() {
+        "0" => Some(false),
+        "1" => Some(true),
+        _ => None,
+    }
+}
+
 /// Whether a capture keeps the pane's styling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Styling {
@@ -3406,6 +3436,10 @@ pub enum Key {
     /// `Escape` — the interrupt's second cancel, for a TUI with no copy mode
     /// to leave.
     Escape,
+    /// `C-e` — move to the END of the line, so the `C-u` that follows clears
+    /// ALL of it. `C-u` alone kills only to the line start, which leaves
+    /// whatever sits right of a mid-line cursor to be executed by the paste.
+    LineEnd,
     /// `C-u` — clear the input line, the notice path's one measurable retry.
     ClearLine,
     /// `-X cancel` — leave copy mode.
@@ -3420,6 +3454,7 @@ pub fn send_keys_args(server: &ServerId, pane: &str, key: Key) -> Vec<String> {
     match key {
         Key::Enter => args.push("Enter".to_owned()),
         Key::Escape => args.push("Escape".to_owned()),
+        Key::LineEnd => args.push("C-e".to_owned()),
         Key::ClearLine => args.push("C-u".to_owned()),
         Key::CancelCopyMode => {
             args.push("-X".to_owned());

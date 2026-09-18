@@ -1147,12 +1147,16 @@ fn apply_config_home(
 }
 
 /// One seat, read back out of the session's own state.
-struct Seat {
+pub(crate) struct Seat {
     session: String,
     work_dir: String,
     config_files: Vec<PathBuf>,
-    command: crate::config::ResolvedCommand,
-    tool: ToolKind,
+    /// The resolved command, carried to `_run` as its `--command-snapshot` by
+    /// a caller that resolves the seat once and pastes the line itself.
+    pub(crate) command: crate::config::ResolvedCommand,
+    /// The tool class the command resolves to — what decides capture, the
+    /// launch turn and the identity to observe.
+    pub(crate) tool: ToolKind,
     harness_session: String,
     launch_id: String,
     config_home: crate::meta::RecordedConfigHome,
@@ -1213,7 +1217,11 @@ fn read_seat_command(
     }
 }
 
-fn read_seat(dir: &Path, slot: &str, command_snapshot: Option<&str>) -> Result<Seat, String> {
+pub(crate) fn read_seat(
+    dir: &Path,
+    slot: &str,
+    command_snapshot: Option<&str>,
+) -> Result<Seat, String> {
     if !crate::lifecycle::dir_exists(dir) {
         return Err(format!("no session state at {}", dir.display()));
     }
