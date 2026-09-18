@@ -121,6 +121,33 @@ pub(crate) fn unproven_gap(pid: Option<u32>, agent_bin: &str, table_read: bool) 
 
 // ---- the operation --------------------------------------------------------
 
+/// WHICH verb a refusal names.
+///
+/// The dead proof and the paste are ONE owner serving two commands: `relaunch`
+/// brings a seat back on its own profile, `reseat` moves it to another. Their
+/// refusals are the same refusals and must stay so — what differs is the word
+/// a human is told to re-run, so the word is a parameter and not a second copy
+/// of the ladder.
+#[derive(Clone, Copy)]
+pub(crate) struct Verb {
+    /// The imperative, as a human types it: `relaunch`, `reseat`.
+    imperative: &'static str,
+    /// Its past participle, for a sentence about what did not happen.
+    past: &'static str,
+}
+
+/// `relaunch`'s own word.
+pub(crate) const RELAUNCH_VERB: Verb = Verb {
+    imperative: "relaunch",
+    past: "relaunched",
+};
+
+/// `reseat`'s.
+pub(crate) const RESEAT_VERB: Verb = Verb {
+    imperative: "reseat",
+    past: "reseated",
+};
+
 /// Who asked and when — the two facts every record carries, together so the
 /// operation's own signatures stay about the SEAT.
 #[derive(Clone, Copy)]
@@ -130,11 +157,11 @@ struct Actor<'a> {
 }
 
 /// The facts one relaunch works from, gathered before the lock.
-struct Target {
-    agent: String,
-    slot: String,
-    pane: String,
-    server: ServerId,
+pub(crate) struct Target {
+    pub(crate) agent: String,
+    pub(crate) slot: String,
+    pub(crate) pane: String,
+    pub(crate) server: ServerId,
 }
 
 /// `_relaunch <meta-dir> <agent>`.
@@ -180,10 +207,10 @@ pub(crate) fn run(
         )?;
         return Ok(EXIT_FAILED);
     };
-    let Some(seat) = prove_dead(dir, &target, err)? else {
+    let Some(seat) = prove_dead(dir, &target, RELAUNCH_VERB, err)? else {
         return Ok(EXIT_FAILED);
     };
-    let outcome = start(dir, &target, &seat, now, err)?;
+    let outcome = start(dir, &target, &seat, now, RELAUNCH_VERB, err)?;
     // PAST THE LOCK before any readiness wait: a gated turn blocks up to 45s,
     // and nothing else may be held out of the session's lifecycle for that.
     drop(lifecycle);
@@ -233,11 +260,11 @@ fn resolve(dir: &Path, name: &str, own_session: &str) -> Result<Target, String> 
 }
 
 /// What the dead proof yields when it passes: everything the paste needs.
-struct Proven {
-    seat: crate::run::Seat,
-    agent_bin: String,
-    work_dir: String,
-    id_before: String,
+pub(crate) struct Proven {
+    pub(crate) seat: crate::run::Seat,
+    pub(crate) agent_bin: String,
+    pub(crate) work_dir: String,
+    pub(crate) id_before: String,
 }
 
 /// THE PROOF, under the lock. `Ok(None)` means a refusal was printed.
@@ -245,7 +272,12 @@ struct Proven {
     clippy::too_many_lines,
     reason = "the refusal ladder, kept in one place"
 )]
-fn prove_dead(dir: &Path, target: &Target, err: &mut impl Write) -> io::Result<Option<Proven>> {
+pub(crate) fn prove_dead(
+    dir: &Path,
+    target: &Target,
+    verb: Verb,
+    err: &mut impl Write,
+) -> io::Result<Option<Proven>> {
     // DOES THE PANE EXIST? This read answers that and nothing else answers it:
     // measured 2026-09-18, `display-message -p -t %<missing>` EXITS 0 and
     // renders every field EMPTY, so the pane probe below cannot tell a pane
@@ -273,8 +305,8 @@ fn prove_dead(dir: &Path, target: &Target, err: &mut impl Write) -> io::Result<O
     let Some(probe) = transport::observe_pane_probe(&target.server, &target.pane) else {
         writeln!(
             err,
-            "Error: pane {} of '{}' could not be read. Nothing was relaunched.",
-            target.pane, target.agent
+            "Error: pane {} of '{}' could not be read. Nothing was {}.",
+            target.pane, target.agent, verb.past
         )?;
         return Ok(None);
     };
@@ -318,7 +350,7 @@ fn prove_dead(dir: &Path, target: &Target, err: &mut impl Write) -> io::Result<O
     let seat = match crate::run::read_seat(dir, &target.slot, None) {
         Ok(seat) => seat,
         Err(why) => {
-            writeln!(err, "Error: {why}. Nothing was relaunched.")?;
+            writeln!(err, "Error: {why}. Nothing was {}.", verb.past)?;
             return Ok(None);
         }
     };
@@ -330,12 +362,12 @@ fn prove_dead(dir: &Path, target: &Target, err: &mut impl Write) -> io::Result<O
     if identity_proven(&probe.command, &agent_bin, walk) {
         writeln!(
             err,
-            "Error: '{}' is running (pane {}) — nothing to relaunch.",
-            target.agent, target.pane
+            "Error: '{}' is running (pane {}) — nothing to {}.",
+            target.agent, target.pane, verb.imperative
         )?;
         return Ok(None);
     }
-    if let Some(line) = busy_refusal(&probe, table.as_deref(), &target.agent, &target.pane) {
+    if let Some(line) = busy_refusal(&probe, table.as_deref(), target, verb) {
         writeln!(err, "{line}")?;
         return Ok(None);
     }
@@ -347,10 +379,11 @@ fn prove_dead(dir: &Path, target: &Target, err: &mut impl Write) -> io::Result<O
     {
         writeln!(
             err,
-            "Error: cannot prove '{}' dead (pane {}): {}. Nothing was relaunched.",
+            "Error: cannot prove '{}' dead (pane {}): {}. Nothing was {}.",
             target.agent,
             target.pane,
-            unproven_gap(probe.pid, &agent_bin, table.is_some())
+            unproven_gap(probe.pid, &agent_bin, table.is_some()),
+            verb.past
         )?;
         return Ok(None);
     }
@@ -370,25 +403,27 @@ fn prove_dead(dir: &Path, target: &Target, err: &mut impl Write) -> io::Result<O
 fn busy_refusal(
     probe: &ObservedPaneProbe,
     table: Option<&[procs::Proc]>,
-    agent: &str,
-    pane: &str,
+    target: &Target,
+    verb: Verb,
 ) -> Option<String> {
+    let (agent, pane) = (&target.agent, &target.pane);
+    let word = verb.imperative;
     if !crate::watchdog::command_is_shell(&probe.command) {
         return Some(format!(
-            "Error: pane {pane} of '{agent}' is BUSY — '{}' holds its foreground, not a shell. Let it finish, then relaunch.",
+            "Error: pane {pane} of '{agent}' is BUSY — '{}' holds its foreground, not a shell. Let it finish, then {word}.",
             probe.command
         ));
     }
     if table.is_some_and(|table| procs::has_any_descendant(table, probe.pid)) {
         return Some(format!(
-            "Error: pane {pane} of '{agent}' is BUSY — a process runs under its shell. Let it finish, then relaunch."
+            "Error: pane {pane} of '{agent}' is BUSY — a process runs under its shell. Let it finish, then {word}."
         ));
     }
     None
 }
 
 /// What the paste-and-observe half concluded.
-enum Started {
+pub(crate) enum Started {
     /// The seat's own tool is running. `resuming_seat` was read BEFORE the
     /// paste, because `_run` publishes the start marker pre-exec on a create
     /// and a later read would call a fresh seat a resumed one.
@@ -402,11 +437,12 @@ enum Started {
 
 /// Clear the shell's input line, paste the launch line, and watch for the
 /// seat's own tool. Runs UNDER the lock.
-fn start(
+pub(crate) fn start(
     dir: &Path,
     target: &Target,
     proven: &Proven,
     now: Timestamp,
+    verb: Verb,
     err: &mut impl Write,
 ) -> io::Result<Started> {
     // The launch-attempt stamp, before the write it is about, exactly as a
@@ -415,8 +451,8 @@ fn start(
     if let Err(why) = crate::store::open(dir).stamp_launch_attempt(now.epoch()) {
         writeln!(
             err,
-            "Error: '{}' launch attempt could not be recorded ({why}) — nothing was relaunched.",
-            target.agent
+            "Error: '{}' launch attempt could not be recorded ({why}) — nothing was {}.",
+            target.agent, verb.past
         )?;
         return Ok(Started::NotPasted);
     }
@@ -454,7 +490,8 @@ fn start(
     let Some(core) = crate::shape::resolved_exe() else {
         writeln!(
             err,
-            "Error: the core could not name its own binary — nothing was relaunched."
+            "Error: the core could not name its own binary — nothing was {}.",
+            verb.past
         )?;
         return Ok(Started::NotPasted);
     };
@@ -492,7 +529,7 @@ fn start(
 
 /// One identity observation: the pane's foreground always, the process walk
 /// only when the caller is spending a snapshot on this round.
-fn observe_identity(target: &Target, agent_bin: &str, walk_now: bool) -> bool {
+pub(crate) fn observe_identity(target: &Target, agent_bin: &str, walk_now: bool) -> bool {
     let Some(probe) = transport::observe_pane_probe(&target.server, &target.pane) else {
         return false;
     };

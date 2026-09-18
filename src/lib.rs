@@ -61,6 +61,7 @@ pub mod rename;
 pub mod render;
 pub mod reply;
 pub mod requests;
+mod reseat;
 pub mod roster;
 pub mod run;
 pub mod sanitize;
@@ -510,8 +511,10 @@ fn run_dispatch(args: &[String], out: &mut impl Write, err: &mut impl Write) -> 
 /// Whether a parsed request needs the durable world behind `ae list`.
 fn request_needs_world(request: &cli::Request) -> bool {
     match request {
-        // The sweep reads the same world `list` renders — that IS its input.
-        cli::Request::List(_) | cli::Request::Monitor { .. } => true,
+        // The sweep reads the same world `list` renders — that IS its input,
+        // and a reseat seeds its successor with the pack `brief --seat` builds
+        // from the same world.
+        cli::Request::List(_) | cli::Request::Monitor { .. } | cli::Request::Reseat { .. } => true,
         cli::Request::Next { tail } => next::parse(tail).is_ok(),
         // A brief is a reading of the same world, so a refused argv must not pay
         // for the scan either.
@@ -2029,6 +2032,32 @@ fn run_brief(
 }
 
 /// `ae brief <session> --seat <agent>` — ONE seat's seed pack, on stdout.
+fn run_seat_pack(
+    entry: &digest::SessionEntry,
+    dir: &std::path::Path,
+    home: Option<&std::path::Path>,
+    now: time::Timestamp,
+    seat: &str,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> Result<u8> {
+    match seat_pack(entry, dir, home, now, seat) {
+        Ok(pack) => {
+            write!(out, "{pack}")?;
+            Ok(0)
+        }
+        Err(why) => {
+            writeln!(err, "ae brief: {why}")?;
+            Ok(EXIT_UNAVAILABLE)
+        }
+    }
+}
+
+/// The pack itself, rendered rather than printed.
+///
+/// `ae brief --seat` prints it; `ae reseat` hands it to a successor as that
+/// seat's first turn. ONE builder, so what a human reads before a move and what
+/// the successor is given are the same document.
 ///
 /// The impure half, and the only place the pack's world is read. It writes
 /// nothing, sends nothing and touches no tmux, so it answers for a stopped
@@ -2040,41 +2069,39 @@ fn run_brief(
 /// empty `Vec`, and a pack built off it would tell a successor that it owes
 /// nobody anything. An absent or unreadable META refuses outright — without a
 /// roster there is no seat to pack.
-fn run_seat_pack(
+///
+/// # Errors
+///
+/// The refusal text, with no command prefix: a caller wears its own.
+pub(crate) fn seat_pack(
     entry: &digest::SessionEntry,
     dir: &std::path::Path,
     home: Option<&std::path::Path>,
     now: time::Timestamp,
     seat: &str,
-    out: &mut impl Write,
-    err: &mut impl Write,
-) -> Result<u8> {
+) -> std::result::Result<String, String> {
     let snapshot = session::RecordSnapshot::read(dir);
     let Some(meta) = snapshot.meta else {
-        writeln!(
-            err,
-            "ae brief: {}'s meta is {}, so ae cannot say which seats it has",
+        return Err(format!(
+            "{}'s meta is {}, so ae cannot say which seats it has",
             entry.name,
             match snapshot.meta_read {
                 session::MetaRead::Absent => "absent",
                 _ => "unreadable",
             }
-        )?;
-        return Ok(EXIT_UNAVAILABLE);
+        ));
     };
     let Some(row) = meta.roster().iter().find(|row| row.name == seat) else {
         let roster: Vec<&str> = meta.roster().iter().map(|row| row.name.as_str()).collect();
-        writeln!(
-            err,
-            "ae brief: {} has no seat named {seat}; its roster is {}",
+        return Err(format!(
+            "{} has no seat named {seat}; its roster is {}",
             entry.name,
             if roster.is_empty() {
                 "empty".to_owned()
             } else {
                 roster.join(", ")
             }
-        )?;
-        return Ok(EXIT_UNAVAILABLE);
+        ));
     };
 
     let journal = if snapshot.events.is_some() {
@@ -2152,8 +2179,7 @@ fn run_seat_pack(
         first_message: first_message_for(dir, &row.slot),
         last_turns: last_turns_for(entry, dir, row, home, now),
     };
-    write!(out, "{}", seatpack::pack(&inputs))?;
-    Ok(0)
+    Ok(seatpack::pack(&inputs))
 }
 
 /// The seat's own last turns, read live from its harness transcript.
@@ -3014,6 +3040,14 @@ pub fn run_with(
                     out,
                     err,
                 )?
+            } else {
+                writeln!(err, "ae: {NO_STATE_ROOT}")?;
+                EXIT_UNAVAILABLE
+            }
+        }
+        cli::Request::Reseat { tail } => {
+            if let Some(root) = state_root() {
+                reseat::run(&root, world, tail, time::Timestamp::now(), out, err)?
             } else {
                 writeln!(err, "ae: {NO_STATE_ROOT}")?;
                 EXIT_UNAVAILABLE

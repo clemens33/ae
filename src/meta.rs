@@ -1341,6 +1341,114 @@ pub(crate) fn prior_with(raw: &[&str], id: &str, tool: &str) -> Option<String> {
     Some(ids.join(","))
 }
 
+/// Everything ONE seat's move to another profile writes, every value resolved
+/// by the caller before the meta is opened.
+pub(crate) struct SeatMove<'a> {
+    /// The `[profiles]` name the seat moves to.
+    pub profile: &'a str,
+    /// The binary that profile lexes to — the seat's new identity.
+    pub binary: &'a str,
+    /// The conversation the new tool starts on: a fresh UUID where the tool
+    /// takes one at launch, `pending` where its id can only be captured after.
+    pub harness_session: &'a str,
+    /// The token that guards this seat's observed-model writes from now on.
+    pub launch_id: &'a str,
+    /// The floor every store scan for the new conversation starts at.
+    pub capture_floor: i64,
+}
+
+/// The seat's rows after that move — PURE, so every one of them is pinnable
+/// without a session on disk.
+///
+/// WRITES the profile, the tool, the conversation the new tool
+/// starts on, its launch token and its capture floor, and appends the OLD
+/// conversation to the predecessor list tagged with the tool that owns it
+/// ([`prior_with`]) — the whole point of the tag, since the successor's tool
+/// reads a different store.
+///
+/// REMOVES as deliberately as it writes: the config home and its implicit base,
+/// which belong to the tool that is LEAVING (`_run` records the new tool's own
+/// at its first start, and a stale row would point the successor's reader at
+/// the predecessor's store); the launch time, which would date a launch that
+/// has not happened; the observed model with its pin, which would read as
+/// drift the moment the new tool answers; and the recorded CLIENT override,
+/// which a launch's `profile@client` put there for a profile this seat no
+/// longer runs. The row is removed rather than emptied, because an empty
+/// override is not the same fact as no override.
+pub(crate) fn reseated(text: &str, slot: &str, move_to: &SeatMove<'_>) -> String {
+    let value = |key: &str| crate::lifecycle::meta_value(text.as_bytes(), key);
+    let old_id = value(&format!("{HARNESS_SESSION_PREFIX}{slot}"));
+    let old_binary = value(&format!("{ROSTER_BIN_PREFIX}{slot}"));
+    let parsed = Meta::parse(text);
+    let priors = parsed.harness_session_prior(slot);
+    let mut rows: Vec<(String, Option<String>)> = vec![
+        (
+            format!("{PROFILE_PREFIX}{slot}"),
+            Some(move_to.profile.to_owned()),
+        ),
+        (
+            format!("{ROSTER_BIN_PREFIX}{slot}"),
+            Some(move_to.binary.to_owned()),
+        ),
+        (format!("{CLIENT_PREFIX}{slot}"), None),
+        (format!("{CONFIG_HOME_PREFIX}{slot}"), None),
+        (format!("{CONFIG_HOME_BASE_PREFIX}{slot}"), None),
+        (
+            format!("{HARNESS_SESSION_PREFIX}{slot}"),
+            Some(move_to.harness_session.to_owned()),
+        ),
+        (
+            format!("launch_id.{slot}"),
+            Some(move_to.launch_id.to_owned()),
+        ),
+        (
+            format!("capture_floor.{slot}"),
+            Some(move_to.capture_floor.to_string()),
+        ),
+        (format!("{LAUNCH_TIME_PREFIX}{slot}"), None),
+        (format!("{OBSERVED_MODEL_PREFIX}{slot}"), None),
+        (format!("{OBSERVED_MODEL_PIN_PREFIX}{slot}"), None),
+    ];
+    // A predecessor row is written only when there is a conversation to keep:
+    // a seat whose id never resolved has nothing to hand on, and `prior_with`
+    // refuses an id it cannot judge rather than recording a guess.
+    if let Some(row) = prior_with(&priors, &old_id, &old_binary) {
+        rows.push((format!("{HARNESS_SESSION_PRIOR_PREFIX}{slot}"), Some(row)));
+    }
+    rows.iter().fold(text.to_owned(), |document, (key, value)| {
+        rewritten(&document, key, value.as_deref())
+    })
+}
+
+/// Publish [`reseated`] as ONE guarded replacement: the seat must still be the
+/// one the caller proved, or nothing is written.
+///
+/// The guard is the shape `record_observed_model` uses. A reseat holds the
+/// session's lifecycle lock across its whole sequence, so this cannot race a
+/// second reseat; what it CAN race is a `retire` plus a re-`spawn` landing a
+/// different seat on the slot, and that successor must not inherit the move.
+///
+/// # Errors
+///
+/// [`RewriteError::NotWritten`] when the guard does not hold, or the lock,
+/// read, write, sync or rename failed.
+pub(crate) fn publish_seat_move(
+    dir: &Path,
+    slot: &str,
+    agent: &str,
+    move_to: &SeatMove<'_>,
+) -> Result<(), RewriteError> {
+    rewrite_under_lock(dir, |current| {
+        let seated =
+            crate::lifecycle::meta_value(current.as_bytes(), &format!("{SEAT_PREFIX}{slot}"));
+        if seated != agent {
+            return None;
+        }
+        let next = reseated(current, slot, move_to);
+        (next != current).then_some(next)
+    })
+}
+
 /// What raw session metadata says about the privileged orchestrator role.
 ///
 /// This is deliberately byte-exact. `meta_agent=true\r` is not the authority
@@ -1990,6 +2098,107 @@ mod tests {
         assert_eq!(super::priors_tagged(&[A], ""), None);
         assert_eq!(super::priors_tagged(&["not-a-uuid"], "codex"), None);
         assert_eq!(super::priors_tagged(&five, "codex"), None);
+    }
+
+    /// The document a reseat moves: one fully-recorded seat beside a second
+    /// the move must not touch.
+    fn seated() -> String {
+        "session=work\nseat.main=lead\nseat.spawned.0=scout\n\
+         profile.main=fable5\nagent_bin.main=claude\nclient.main=cc-mic\n\
+         harness_session.main=11111111-1111-4111-8111-111111111111\n\
+         launch_id.main=L-OLD\ncapture_floor.main=1000\nlaunch_time.main=1200\n\
+         config_home.main=/home/x/.claude\nconfig_home_base.main=/home/x\n\
+         observed_model.main=Opus 5\nobserved_model_pin.main=fable\n\
+         profile.spawned.0=lunam\nagent_bin.spawned.0=codex\n\
+         harness_session.spawned.0=99999999-9999-4999-8999-999999999999\n"
+            .to_owned()
+    }
+
+    fn moving_to<'a>(profile: &'a str, binary: &'a str, id: &'a str) -> super::SeatMove<'a> {
+        super::SeatMove {
+            profile,
+            binary,
+            harness_session: id,
+            launch_id: "L-NEW",
+            capture_floor: 5000,
+        }
+    }
+
+    #[test]
+    fn a_seat_move_writes_the_new_tool_and_keeps_the_old_conversation_tagged() {
+        const NEW: &str = "22222222-2222-4222-8222-222222222222";
+        let moved = super::reseated(&seated(), "main", &moving_to("lunam", "codex", NEW));
+        let value = |key: &str| crate::lifecycle::meta_value(moved.as_bytes(), key);
+        assert_eq!(value("profile.main"), "lunam");
+        assert_eq!(value("agent_bin.main"), "codex");
+        assert_eq!(value("harness_session.main"), NEW);
+        assert_eq!(value("launch_id.main"), "L-NEW");
+        assert_eq!(value("capture_floor.main"), "5000");
+        // The predecessor carries the tool that OWNS it, not the one arriving:
+        // the successor's reader looks in a different store entirely.
+        assert_eq!(
+            value("harness_session_prior.main"),
+            "claude:11111111-1111-4111-8111-111111111111"
+        );
+        // The seat beside it is untouched, every row.
+        assert_eq!(value("profile.spawned.0"), "lunam");
+        assert_eq!(value("agent_bin.spawned.0"), "codex");
+        assert_eq!(
+            value("harness_session.spawned.0"),
+            "99999999-9999-4999-8999-999999999999"
+        );
+        assert_eq!(value("seat.main"), "lead");
+        assert_eq!(value("session"), "work");
+    }
+
+    #[test]
+    fn a_seat_move_removes_every_row_that_belonged_to_the_tool_that_left() {
+        const NEW: &str = "22222222-2222-4222-8222-222222222222";
+        let moved = super::reseated(&seated(), "main", &moving_to("lunam", "codex", NEW));
+        for gone in [
+            "config_home.main",
+            "config_home_base.main",
+            "launch_time.main",
+            "observed_model.main",
+            "observed_model_pin.main",
+            "client.main",
+        ] {
+            assert!(!moved.contains(&format!("{gone}=")), "{gone} survived");
+        }
+    }
+
+    #[test]
+    fn a_seat_move_hands_on_no_conversation_it_cannot_prove() {
+        const NEW: &str = "22222222-2222-4222-8222-222222222222";
+        // `pending` is a claim about a capture that never completed, and the
+        // predecessor list is addresses only.
+        let pending = seated().replace(
+            "harness_session.main=11111111-1111-4111-8111-111111111111",
+            "harness_session.main=pending",
+        );
+        let moved = super::reseated(&pending, "main", &moving_to("lunam", "codex", NEW));
+        assert!(!moved.contains("harness_session_prior.main="));
+        assert_eq!(
+            crate::lifecycle::meta_value(moved.as_bytes(), "harness_session.main"),
+            NEW
+        );
+    }
+
+    #[test]
+    fn a_seat_move_that_writes_nothing_new_is_still_the_same_document() {
+        // Idempotence is what makes the publication's "changed?" guard safe: a
+        // second move to the SAME profile must not keep appending priors.
+        const NEW: &str = "22222222-2222-4222-8222-222222222222";
+        let once = super::reseated(&seated(), "main", &moving_to("lunam", "codex", NEW));
+        let twice = super::reseated(&once, "main", &moving_to("lunam", "codex", NEW));
+        assert_ne!(
+            once, twice,
+            "the second move retires the first conversation"
+        );
+        assert_eq!(
+            crate::lifecycle::meta_value(twice.as_bytes(), "harness_session_prior.main"),
+            format!("claude:11111111-1111-4111-8111-111111111111,codex:{NEW}")
+        );
     }
 
     #[test]

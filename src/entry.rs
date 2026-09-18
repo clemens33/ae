@@ -372,6 +372,7 @@ pub const ROUTED_VERBS: &[&str] = &[
     "quota",
     "reboot",
     "rename",
+    "reseat",
     "rm",
     "status",
     "stop",
@@ -589,6 +590,7 @@ pub fn route(preamble: &Preamble, argv: &[String], pane: Option<&str>) -> Route 
         Some("init") => Route::Core(with_head(crate::cli::INIT, &tail())),
         Some("stop") => Route::Core(with_head(crate::cli::STOP, &with_pane(&tail(), pane))),
         Some("rename") => Route::Core(with_head(crate::cli::RENAME, &tail())),
+        Some("reseat") => Route::Core(with_head(crate::cli::RESEAT, &tail())),
         // `loop` is the deprecated spelling of the renamed feature, kept as an
         // alias for sessions created before it.
         Some("watchdog" | "loop") => {
@@ -700,7 +702,7 @@ mod tests {
         for verb in ROUTED_VERBS.iter().filter(|verb| **verb != seat) {
             assert!(name_is_routed_verb(verb), "{verb}");
         }
-        for name in ["my-feature", "", "listing", "List", "reseat"] {
+        for name in ["my-feature", "", "listing", "List", "reseated"] {
             assert!(!name_is_routed_verb(name), "{name}");
         }
     }

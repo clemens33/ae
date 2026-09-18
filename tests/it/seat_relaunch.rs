@@ -132,16 +132,16 @@ fn fakes(scratch: &Path, tools: &Path) -> String {
 
 /// One isolated server with a live session, a v2 meta, and a `[profiles]` that
 /// names a fake for each tool class the pins need.
-struct Rig {
-    scratch: PathBuf,
-    sock: PathBuf,
-    dir: PathBuf,
-    session: String,
-    main_pane: String,
+pub struct Rig {
+    pub scratch: PathBuf,
+    pub sock: PathBuf,
+    pub dir: PathBuf,
+    pub session: String,
+    pub main_pane: String,
 }
 
 impl Rig {
-    fn new(tag: &str) -> Self {
+    pub fn new(tag: &str) -> Self {
         let scratch = PathBuf::from(format!("/tmp/aerl.{}.{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&scratch);
         assert!(std::fs::create_dir_all(&scratch).is_ok(), "a scratch dir");
@@ -219,7 +219,7 @@ impl Rig {
         rig
     }
 
-    fn tmux(&self, tail: &[&str]) -> (bool, String) {
+    pub fn tmux(&self, tail: &[&str]) -> (bool, String) {
         let mut args = ae::tmux::server_args(&ae::inventory::ServerId::Selected(
             ae::meta::Selector::Socket(self.sock.clone()),
         ));
@@ -250,16 +250,36 @@ impl Rig {
         )
     }
 
+    /// Run one TOP-LEVEL command — argv exactly as a human types it, with no
+    /// session directory operand. `reseat` takes a session NAME and reads the
+    /// durable world, so it is entered here rather than through the helper
+    /// form above.
+    pub fn run_top(&self, pane: &str, args: &[&str]) -> (Option<i32>, String, String) {
+        let out = ae()
+            .env("TMUX", format!("{},0,0", self.sock.display()))
+            .env("TMUX_PANE", pane)
+            .env("AE_HOME", &self.scratch)
+            .env_remove("AE_SENDER_OVERRIDE")
+            .args(args)
+            .output()
+            .unwrap_or_else(|why| panic!("the ae binary should run: {why}"));
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    }
+
     /// Add a seat: its meta rows, a stamped pane, and its tool STARTED the way
     /// a launch starts one — by pasting the seat's own `_run` line.
-    fn seat(&self, slot: &str, name: &str, tool: &str) -> String {
+    pub fn seat(&self, slot: &str, name: &str, tool: &str) -> String {
         self.seat_rows(slot, name, tool, tool);
         let pane = self.new_pane(slot, name);
         self.start(&pane, slot, tool);
         pane
     }
 
-    fn seat_rows(&self, slot: &str, name: &str, profile_tool: &str, agent_bin: &str) {
+    pub fn seat_rows(&self, slot: &str, name: &str, profile_tool: &str, agent_bin: &str) {
         let meta = self.dir.join("meta");
         let mut text = std::fs::read_to_string(&meta).unwrap_or_default();
         let _ = writeln!(
@@ -269,7 +289,7 @@ impl Rig {
         assert!(std::fs::write(&meta, text).is_ok(), "the seat's rows");
     }
 
-    fn new_pane(&self, slot: &str, name: &str) -> String {
+    pub fn new_pane(&self, slot: &str, name: &str) -> String {
         let (ok, pane) = self.tmux(&[
             "new-window",
             "-d",
@@ -297,7 +317,7 @@ impl Rig {
     /// pane runs ae's own binary before it runs the tool, so `_run` itself
     /// holds the foreground for a moment. A fixture that started measuring
     /// there would hand the product a pane whose agent has not been exec'd yet.
-    fn start(&self, pane: &str, slot: &str, tool: &str) {
+    pub fn start(&self, pane: &str, slot: &str, tool: &str) {
         let line = format!(
             "{} _run {} {slot}",
             env!("CARGO_BIN_EXE_ae"),
@@ -318,7 +338,7 @@ impl Rig {
 
     /// Make every fake exit, and wait for the pane to fall back to its shell —
     /// the field case this whole verb exists for.
-    fn kill_tools(&self, pane: &str) {
+    pub fn kill_tools(&self, pane: &str) {
         assert!(std::fs::write(self.scratch.join("__EXIT__"), "").is_ok());
         assert!(
             self.wait_until(pane, is_shell),
@@ -351,30 +371,30 @@ impl Rig {
         false
     }
 
-    fn meta(&self) -> String {
+    pub fn meta(&self) -> String {
         std::fs::read_to_string(self.dir.join("meta")).unwrap_or_default()
     }
 
-    fn meta_row(&self, key: &str) -> String {
+    pub fn meta_row(&self, key: &str) -> String {
         self.meta()
             .lines()
             .find_map(|line| line.strip_prefix(&format!("{key}=")).map(ToOwned::to_owned))
             .unwrap_or_default()
     }
 
-    fn events(&self) -> String {
+    pub fn events(&self) -> String {
         std::fs::read_to_string(self.dir.join("events.jsonl")).unwrap_or_default()
     }
 
-    fn received(&self) -> String {
+    pub fn received(&self) -> String {
         std::fs::read_to_string(self.scratch.join("received")).unwrap_or_default()
     }
 
-    fn launched(&self) -> String {
+    pub fn launched(&self) -> String {
         std::fs::read_to_string(self.scratch.join("launched")).unwrap_or_default()
     }
 
-    fn tool_pid(&self, pane: &str, name: &str) -> Option<u32> {
+    pub fn tool_pid(&self, pane: &str, name: &str) -> Option<u32> {
         let pid: u32 = self
             .tmux(&["display-message", "-p", "-t", pane, "#{pane_pid}"])
             .1

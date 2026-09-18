@@ -623,7 +623,8 @@ fn render_body(
 ) -> String {
     let mut out = format!(
         "# seed pack — {} / {}\n\n",
-        inputs.session, inputs.seat_name
+        neutralise(&inputs.session),
+        neutralise(&inputs.seat_name)
     );
     push_identity(&mut out, inputs);
     push_goal(&mut out, inputs);
@@ -649,7 +650,11 @@ fn push_identity(out: &mut String, inputs: &Inputs) {
     let _ = writeln!(
         out,
         "session: {} ({})\nagent: {}\nslot: {} ({})",
-        inputs.session, inputs.status, inputs.seat_name, inputs.seat_slot, class
+        neutralise(&inputs.session),
+        neutralise(&inputs.status),
+        neutralise(&inputs.seat_name),
+        neutralise(&inputs.seat_slot),
+        class
     );
     if class == "spawned" {
         let _ = writeln!(out, "spawner: {}", spawner_of(inputs));
@@ -657,8 +662,8 @@ fn push_identity(out: &mut String, inputs: &Inputs) {
     let _ = write!(
         out,
         "profile: {}\ntool: {}\n\n",
-        inputs.seat_profile.as_deref().unwrap_or("none recorded"),
-        inputs.seat_tool.as_deref().unwrap_or("none recorded")
+        neutralise(inputs.seat_profile.as_deref().unwrap_or("none recorded")),
+        neutralise(inputs.seat_tool.as_deref().unwrap_or("none recorded"))
     );
 }
 
@@ -718,7 +723,7 @@ fn push_state(out: &mut String, inputs: &Inputs) {
             let _ = write!(
                 out,
                 "state: {}  ({})\nreason: {}\n\n",
-                agent.state,
+                neutralise(&agent.state),
                 crate::brief::age(agent.age_secs),
                 if agent.reason.is_empty() {
                     "no reason recorded".to_owned()
@@ -898,9 +903,15 @@ fn push_spawns(out: &mut String, inputs: &Inputs) {
         // A row whose last column is empty must not carry the padding of one.
         let row = format!(
             "  {}{}{}{}{}",
-            pad(name, 16),
-            pad(line.map_or("-", |agent| agent.profile.as_str()), 12),
-            pad(line.map_or("-", |agent| agent.state.as_str()), 14),
+            pad(&neutralise(name), 16),
+            pad(
+                &neutralise(line.map_or("-", |agent| agent.profile.as_str())),
+                12
+            ),
+            pad(
+                &neutralise(line.map_or("-", |agent| agent.state.as_str())),
+                14
+            ),
             pad(&crate::brief::age(line.and_then(|agent| agent.age_secs)), 5),
             line.map_or_else(String::new, |agent| neutralise(&agent.reason))
         );
@@ -926,14 +937,14 @@ fn push_roster(out: &mut String, inputs: &Inputs) {
             // with their states withheld rather than dropped from the pack.
             (Journal::Damaged, _) | (_, None) => ("unknown".to_owned(), "-".to_owned()),
             (Journal::Read, Some(agent)) => {
-                (agent.state.clone(), crate::brief::age(agent.age_secs))
+                (neutralise(&agent.state), crate::brief::age(agent.age_secs))
             }
         };
         let _ = writeln!(
             out,
             "  {}{}{}{}",
-            pad(&row.name, 16),
-            pad(&row.slot, 12),
+            pad(&neutralise(&row.name), 16),
+            pad(&neutralise(&row.slot), 12),
             pad(&state, 14),
             age
         );
@@ -951,11 +962,11 @@ fn push_git(out: &mut String, inputs: &Inputs) {
     let _ = writeln!(
         out,
         "work dir: {}\nbranch: {}\nHEAD: {}\ndirty: {}\nlatest tag: {}",
-        git.work_dir.as_deref().unwrap_or("none recorded"),
-        git.branch.as_deref().unwrap_or("-"),
-        git.head,
+        neutralise(git.work_dir.as_deref().unwrap_or("none recorded")),
+        neutralise(git.branch.as_deref().unwrap_or("-")),
+        neutralise(&git.head),
         if git.dirty { "yes" } else { "no" },
-        git.tag.as_deref().unwrap_or("none")
+        neutralise(git.tag.as_deref().unwrap_or("none"))
     );
     out.push_str("recent commits:\n");
     if git.subjects.is_empty() {
@@ -976,7 +987,8 @@ fn push_first_message(out: &mut String, inputs: &Inputs) {
             out.push_str("## 9. first message\n");
             let _ = write!(
                 out,
-                "recorded at: {prompt_path}\nfirst message: unreadable\nbrief file: unknown\n\n"
+                "recorded at: {}\nfirst message: unreadable\nbrief file: unknown\n\n",
+                neutralise(prompt_path)
             );
         }
         FirstMessage::Recorded {
@@ -985,13 +997,13 @@ fn push_first_message(out: &mut String, inputs: &Inputs) {
             brief_path,
         } => {
             out.push_str("## 9. first message\n");
-            let _ = writeln!(out, "recorded at: {prompt_path}");
+            let _ = writeln!(out, "recorded at: {}", neutralise(prompt_path));
             match brief_path {
                 Some((path, true)) => {
-                    let _ = writeln!(out, "brief file: {path} (present)");
+                    let _ = writeln!(out, "brief file: {} (present)", neutralise(path));
                 }
                 Some((path, false)) => {
-                    let _ = writeln!(out, "brief file: {path} (gone)");
+                    let _ = writeln!(out, "brief file: {} (gone)", neutralise(path));
                 }
                 None => out.push_str("brief file: none named\n"),
             }
@@ -1967,6 +1979,86 @@ mod tests {
             .and_then(|(_, rest)| rest.split_once("## footnote"))
             .map(|(section, _)| section)
             .unwrap_or_default()
+    }
+
+    /// One hostile body carrying every class of byte a terminal ACTS on: an
+    /// erase-display sequence, a bell, a NUL, the bracketed-paste TERMINATOR,
+    /// a C1 control as its own codepoint, DEL, and a tab.
+    const HOSTILE: &str = "a\u{1b}[2Jb\u{7}c\u{0}d\u{1b}[201~e\u{9b}f\u{7f}g\thi";
+
+    #[test]
+    fn nothing_a_terminal_would_act_on_survives_into_a_pack_that_is_pasted() {
+        // THE reason this pin exists: the pack is not only PRINTED any more —
+        // `ae reseat` pastes it into a pane as the successor's first turn, so
+        // a control byte in any record it quotes is a KEYSTROKE. One owner
+        // answers for that, [`neutralise`], and this is the proof that every
+        // field reaches it: poison them all and read the whole document back.
+        let mut inputs = base();
+        inputs.session = HOSTILE.to_owned();
+        inputs.status = HOSTILE.to_owned();
+        inputs.goal = Some(HOSTILE.to_owned());
+        inputs.seat_name = HOSTILE.to_owned();
+        inputs.seat_slot = HOSTILE.to_owned();
+        inputs.seat_reference = HOSTILE.to_owned();
+        inputs.seat_profile = Some(HOSTILE.to_owned());
+        inputs.seat_tool = Some(HOSTILE.to_owned());
+        inputs.roster = vec![RosterRow {
+            name: HOSTILE.to_owned(),
+            slot: HOSTILE.to_owned(),
+        }];
+        inputs.agents = vec![agent(HOSTILE, HOSTILE, HOSTILE, 60, HOSTILE)];
+        inputs.live = vec![HOSTILE.to_owned()];
+        inputs.topics = vec![topic("parking", 60, HOSTILE, HOSTILE)];
+        inputs.git = Git {
+            work_dir: Some(HOSTILE.to_owned()),
+            branch: Some(HOSTILE.to_owned()),
+            head: HOSTILE.to_owned(),
+            dirty: true,
+            subjects: vec![HOSTILE.to_owned()],
+            tag: Some(HOSTILE.to_owned()),
+        };
+        inputs.first_message = FirstMessage::Recorded {
+            prompt_path: HOSTILE.to_owned(),
+            text: HOSTILE.to_owned(),
+            brief_path: Some((HOSTILE.to_owned(), true)),
+        };
+        inputs.last_turns = LastTurns {
+            turns: vec![Turn {
+                human: true,
+                age_secs: 60,
+                body: HOSTILE.to_owned(),
+            }],
+            gap: Some(HOSTILE.to_owned()),
+        };
+
+        let rendered = pack(&inputs);
+
+        // The WHOLE document, not the turns section: a field that forgets the
+        // owner fails here, which is what makes this a single-owner check
+        // rather than a list of the sites someone remembered.
+        let stray: Vec<char> = rendered
+            .chars()
+            .filter(|ch| ch.is_control() && *ch != '\n')
+            .collect();
+        assert!(stray.is_empty(), "control bytes survived: {stray:?}");
+        // Named explicitly, because an "is_control" predicate that later grew
+        // an exemption would still pass the line above.
+        for acted_on in [
+            "\u{1b}[2J",
+            "\u{1b}[201~",
+            "\u{7}",
+            "\u{0}",
+            "\u{9b}",
+            "\u{7f}",
+        ] {
+            assert!(!rendered.contains(acted_on), "{acted_on:?} survived");
+        }
+        // The body IS still carried — this neutralises, it does not drop the
+        // record. Both ends of the hostile string survive as text.
+        assert!(
+            rendered.contains("[2Jb") && rendered.contains("g hi"),
+            "{rendered}"
+        );
     }
 
     #[test]

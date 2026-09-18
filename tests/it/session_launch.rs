@@ -1187,14 +1187,17 @@ fn a_local_launch_builds_the_whole_session() {
         "seat.main=lead",
         "profile.main=claude",
         "tmux_server_kind=socket",
-        // THE SHAPE ROW, asserted on a meta a real launch published. A unit
-        // test over the chain's own parser cannot see this: delete the row's
-        // emission and every such test stays green while every new session
-        // becomes unresumable, because a missing row IS the refusal.
-        "meta_version=2",
     ] {
         assert!(meta.contains(row), "meta is missing {row}:\n{meta}");
     }
+    // THE SHAPE ROW, asserted on a meta a real launch published. A unit test
+    // over the chain's own parser cannot see this: delete the row's emission
+    // and every such test stays green while every new session becomes
+    // unresumable, because a missing row IS the refusal. Written against the
+    // chain's OWN current version, so a bump moves this pin with it instead of
+    // leaving a literal behind that pins the shape ae no longer writes.
+    let shape = format!("{}={}", ae::migrate::KEY, ae::migrate::CURRENT);
+    assert!(meta.contains(&shape), "meta is missing {shape}:\n{meta}");
     assert!(
         meta.contains(&format!("work_dir={}", rig.project.display())),
         "local mode works in the caller's own directory:\n{meta}"
