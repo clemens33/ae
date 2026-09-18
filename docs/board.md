@@ -198,13 +198,15 @@ before its stdout pipe drains (measured on 1.18.31, 2026-09-18: 131072 of
 3949726 bytes through a pipe, the whole document to a regular file), so a pipe
 capture would truncate the document and cover the whole conversation as
 unreadable. Human rows are `role == "user"` messages; row identity is the
-message id;
-`time.created` is integer milliseconds. A body is the message's `text` parts
-joined in order, trimmed, empties dropped; a message with no `text` part drops
-silently, and a message that cannot be named or stamped is counted into the
-same coverage vocabulary the other seats use. A whole export over 16 MiB is
-refused and at most 4096 rows come out of one — both covered as `export
-exceeds the read budget`, the row cap naming what was left unread. A malformed
+message id; `time.created` is integer milliseconds. A body is the message's
+`text` parts joined in order, trimmed, empties dropped; a message with no
+`text` part drops silently, and a message that cannot be named or stamped is
+counted into the same coverage vocabulary the other seats use. A whole export
+over 16 MiB is refused, and at most 4096 rows come out of one — both covered
+as `export exceeds the read budget`, the row cap naming what was left unread.
+The door hands the reader at most one byte more than that cap; the child's
+disk spill into the scratch file is unbounded by nature, so a runaway
+`opencode` fills the temp filesystem before any cap is consulted. A malformed
 document or one naming another session is `export unreadable` / `export names
 another session`; a failed or missing binary is `export failed`; a session id
 that fails the `ses_` + alphanumerics grammar is refused before any argv with

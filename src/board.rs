@@ -761,7 +761,11 @@ fn read_opencode(
     let Some(argv) = crate::session_launch::capture::opencode_export_argv(id) else {
         return refuse("invalid or missing conversation id");
     };
-    let (ran, exported) = crate::transport::run_opencode(&argv);
+    // The caller's byte ceiling: the door returns at most EXPORT_CAP + 1
+    // bytes, and the reader below refuses anything past its own cap with the
+    // one budget reason.
+    let (ran, exported) =
+        crate::transport::run_opencode(&argv, crate::board::opencode::EXPORT_CAP as u64);
     if !ran {
         return refuse("export failed");
     }

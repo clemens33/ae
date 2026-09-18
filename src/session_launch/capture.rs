@@ -41,6 +41,11 @@ const CODEX_UNKNOWN_FLOOR_DAYS: i64 = 30;
 /// How many sessions `opencode session list` is asked for.
 const OPENCODE_LIST_LIMIT: &str = "20";
 
+/// How many bytes of that answer ae will read. The argv caps the list at 20
+/// entries — measured 5,852 bytes on 2026-09-18 — so this ceiling sits far
+/// above any real answer and still bounds a runaway child.
+const OPENCODE_LIST_CAP: u64 = 1024 * 1024;
+
 /// One agent whose id must be captured after it starts.
 #[derive(Debug, Clone)]
 pub(crate) struct Target {
@@ -1227,7 +1232,7 @@ fn scan_opencode(facts: &Facts) -> Option<String> {
     let since = facts.capture_floor.saturating_mul(1000);
     // A failed run is "no answer", never an empty one: opencode may not be
     // installed at all.
-    let (ran, listed) = crate::transport::run_opencode(&opencode_list_argv());
+    let (ran, listed) = crate::transport::run_opencode(&opencode_list_argv(), OPENCODE_LIST_CAP);
     if !ran {
         return None;
     }

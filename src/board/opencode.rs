@@ -22,10 +22,11 @@ use crate::tool::ToolKind;
 /// A whole export larger than this is refused before parsing. The measured
 /// probe session exported 0.5 MiB at 16 messages; 16 MiB matches the quota
 /// scan's own byte budget and keeps the one-document parse bounded. The cap
-/// bounds the PARSE and the row walk, not the child's memory: the process door
-/// buffers the whole stdout twice (the captured `Vec<u8>` plus
-/// `String::from_utf8_lossy`'s copy) before this function ever sees a byte, so
-/// an `opencode` printing gigabytes costs that memory first.
+/// bounds the PARSE, the row walk and the door's read back (it hands the door
+/// this ceiling and the door returns at most one byte more). The DISK spill is
+/// unbounded by nature: the child writes its whole stdout into the scratch
+/// file before any cap is consulted, so an `opencode` printing gigabytes fills
+/// that filesystem first — no rlimit exists without unsafe or a dependency.
 pub(crate) const EXPORT_CAP: usize = 16 * 1024 * 1024;
 
 /// At most this many rows come out of one export; the messages left unread by

@@ -7,7 +7,8 @@
 //! `tmux`, waits, and hands the completed run back to be interpreted. It derives
 //! no argv of its own and interprets no bytes of its own.
 
-use std::path::Path;
+use std::os::unix::fs::OpenOptionsExt as _;
+use std::path::PathBuf;
 
 use crate::inventory::{DiscoveredSession, Discovery, QueryFailed, ServerId};
 use crate::meta::Selector;
@@ -259,10 +260,10 @@ fn spawn<A: AsRef<std::ffi::OsStr>>(
     command.envs(envs.iter().copied());
     // `AE_VERSION` is the TARGET PIN of `ae upgrade` and nothing else's input.
     command.env_remove("AE_VERSION");
-    if streams == Streams::InheritStderr {
+    if matches!(streams, Streams::InheritStderr) {
         command.stderr(std::process::Stdio::inherit());
     }
-    if streams == Streams::Detached {
+    if matches!(streams, Streams::Detached) {
         command.stdin(std::process::Stdio::null());
         command.stdout(std::process::Stdio::null());
         command.stderr(std::process::Stdio::null());
@@ -280,7 +281,7 @@ fn spawn<A: AsRef<std::ffi::OsStr>>(
             stderr: Vec::new(),
         });
     }
-    if streams == Streams::Terminal {
+    if matches!(streams, Streams::Terminal) {
         // Nothing is captured, so there is nothing to return but the status —
         // and an `Output` carrying it keeps every caller of this door reading
         // one shape.
@@ -290,28 +291,28 @@ fn spawn<A: AsRef<std::ffi::OsStr>>(
             stderr: Vec::new(),
         });
     }
-    if let Streams::CapturedToFile(path) = streams {
-        // THE SCRATCH FILE IS CREATED EXCLUSIVE: a predictable name in a shared
-        // temp directory must never be followed through a pre-planted symlink.
-        // `create_new` refuses an existing path, symlink included, and the
-        // caller's counter retries the next name.
-        #[allow(
-            clippy::disallowed_methods,
-            reason = "the scratch capture's writer: a child whose stdout must reach a regular file, not a pipe (opencode exits before its pipe drains), opened O_EXCL so the name cannot be a symlink"
-        )]
-        let file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(path)
-            .ok()?;
-        command.stdout(std::process::Stdio::from(file));
-        // stderr stays captured by `output()`; stdout is the file's.
+    if let Streams::CapturedToFile { file, cap } = streams {
+        // A body and a stdout file cannot both own the child's streams.
+        if feed.is_some() {
+            return None;
+        }
+        let handle = file.try_clone().ok()?;
+        command.stdout(std::process::Stdio::from(handle));
+        // stderr stays captured by `output()`; stdout is the scratch file's.
         let output = command.output().ok()?;
-        #[allow(
-            clippy::disallowed_methods,
-            reason = "the same scratch capture read back after the child exits; the path was minted by this call, never chosen by a caller"
-        )]
-        let bytes = std::fs::read(path).ok()?;
+        // The child wrote through a dup of this handle, so the offset is shared
+        // and sits at the end: rewind, then read AT MOST `cap + 1` bytes. A
+        // child past its ceiling is refused by the caller's reader without its
+        // whole output ever being allocated.
+        let mut cursor = file;
+        if std::io::Seek::seek(&mut cursor, std::io::SeekFrom::Start(0)).is_err() {
+            return None;
+        }
+        let mut limited = std::io::Read::take(cursor, cap.saturating_add(1));
+        let mut bytes = Vec::new();
+        if std::io::Read::read_to_end(&mut limited, &mut bytes).is_err() {
+            return None;
+        }
         return Some(std::process::Output {
             status: output.status,
             stdout: bytes,
@@ -332,7 +333,7 @@ fn spawn<A: AsRef<std::ffi::OsStr>>(
 }
 
 /// How the door wires a child's streams — and therefore what it can report.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy)]
 enum Streams<'a> {
     /// Both captured.
     Captured,
@@ -343,12 +344,59 @@ enum Streams<'a> {
     Terminal,
     /// Started and NOT waited for.
     Detached,
-    /// Stdout redirected into this scratch file and read back after the child
-    /// exits. The `opencode` legs need it: `opencode export` exits before its
-    /// stdout pipe drains (measured on 1.18.31, 2026-09-18: 131072 of 3949726
-    /// bytes through a pipe, the whole document to a regular file), so a pipe
-    /// capture truncates the JSON document while a file receives it whole.
-    CapturedToFile(&'a Path),
+    /// Stdout redirected into this scratch handle — its owner created it
+    /// exclusively at 0600 — and read back after the child exits, at most
+    /// `cap + 1` bytes. The `opencode` legs need it: `opencode export` exits
+    /// before its stdout pipe drains (measured on 1.18.31, 2026-09-18: 131072
+    /// of 3949726 bytes through a pipe, the whole document to a regular file),
+    /// so a pipe capture truncates the JSON document while a file receives it
+    /// whole. Passing a `feed` body together with this variant is a caller
+    /// error, and the door refuses it.
+    CapturedToFile { file: &'a std::fs::File, cap: u64 },
+}
+
+/// One captured child's scratch file: created exclusively at 0600 and removed
+/// when this guard drops, so no early return — nor a future caller — can leave
+/// a conversation transcript in the temp directory.
+struct CaptureScratch {
+    file: std::fs::File,
+    path: PathBuf,
+}
+
+impl CaptureScratch {
+    /// Mint one under the OS temp directory. The pid and an attempt counter
+    /// name it; `create_new` refuses a pre-planted node — a symlink included —
+    /// and a collision retries the next name, the house loop
+    /// `upgrade::Scratch` runs.
+    fn new() -> Option<Self> {
+        let base = std::env::temp_dir();
+        for attempt in 0..64_u32 {
+            let path = base.join(format!("ae-opencode.{}.{attempt}.json", std::process::id()));
+            let opened = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&path);
+            match opened {
+                Ok(file) => return Some(Self { file, path }),
+                Err(why) if why.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(_) => return None,
+            }
+        }
+        None
+    }
+
+    /// The handle the door clones for the child's stdout and reads back.
+    fn file(&self) -> &std::fs::File {
+        &self.file
+    }
+}
+
+impl Drop for CaptureScratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
 }
 
 /// Run `program`, and report whether it succeeded and what it printed.
@@ -425,33 +473,33 @@ pub(crate) fn run_sysctl() -> (bool, String) {
     }
 }
 
-/// One scratch capture's name: the process id plus a per-process counter, so
-/// two captures — the board's own seats and the detached capture child — never
-/// share one name.
-static NEXT_CAPTURE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
 /// The `opencode` leg of the one process door — the ONLY way product code runs
 /// `opencode`, the program FIXED here so a caller chooses nothing at all.
 ///
 /// The capture goes through a SCRATCH FILE, never a pipe: `opencode export`
 /// exits before its stdout pipe drains (measured on 1.18.31, 2026-09-18), so a
 /// piped capture truncates the document while a regular file receives it
-/// whole. The file lives in the OS temp directory — scratch by nature, and the
-/// one place a captured child's spill belongs — and is removed after the read.
-pub(crate) fn run_opencode(argv: &crate::session_launch::capture::OpenCodeArgv) -> (bool, String) {
-    let path = std::env::temp_dir().join(format!(
-        "ae-opencode-{}.{}.json",
-        std::process::id(),
-        NEXT_CAPTURE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    ));
+/// whole. The file lives in the OS temp directory, is created 0600, and its
+/// guard removes it on every path. `cap` is the caller's byte ceiling: the door
+/// returns at most `cap + 1` bytes, and the caller's own reader refuses
+/// anything past its cap with its own reason.
+pub(crate) fn run_opencode(
+    argv: &crate::session_launch::capture::OpenCodeArgv,
+    cap: u64,
+) -> (bool, String) {
+    let Some(scratch) = CaptureScratch::new() else {
+        return (false, String::new());
+    };
     let captured = spawn(
         "opencode",
         argv.as_args(),
         &[],
-        Streams::CapturedToFile(&path),
+        Streams::CapturedToFile {
+            file: scratch.file(),
+            cap,
+        },
         None,
     );
-    let _ = std::fs::remove_file(&path);
     match captured {
         Some(output) => (
             output.status.success(),
@@ -1208,7 +1256,7 @@ pub(crate) fn spawn_detached(
 
 #[cfg(test)]
 mod tests {
-    use super::{Streams, Tmux, run, spawn};
+    use super::{CaptureScratch, Streams, Tmux, run, spawn};
     use crate::inventory::{Discovery, QueryFailed, ServerId};
     use crate::meta::Selector;
     use std::path::PathBuf;
@@ -1226,22 +1274,22 @@ mod tests {
     #[test]
     #[allow(
         clippy::disallowed_methods,
-        reason = "a test: mints and removes its own scratch capture file"
+        reason = "a test: creates, stats and removes its own scratch capture files"
     )]
-    fn a_captured_to_file_spawn_returns_the_whole_stdout_and_leaves_no_file() {
+    fn a_captured_to_file_spawn_returns_the_whole_stdout_and_its_guard_removes_it() {
         // The opencode capture's contract: the child's stdout reaches the
         // scratch file whole and comes back through the same `Output` shape
         // every other leg returns. 128 KiB is exactly the scale a pipe lost.
-        let path = std::env::temp_dir().join(format!(
-            "ae-transport-capture-test.{}.json",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_file(&path);
+        let scratch = CaptureScratch::new().expect("a scratch file");
+        let path = scratch.path.clone();
         let output = spawn(
             "/bin/sh",
             &["-c".to_owned(), "yes x | head -c 131072".to_owned()],
             &[],
-            Streams::CapturedToFile(&path),
+            Streams::CapturedToFile {
+                file: scratch.file(),
+                cap: u64::MAX,
+            },
             None,
         )
         .expect("the shell runs");
@@ -1249,9 +1297,87 @@ mod tests {
         assert_eq!(output.stdout.len(), 131_072, "the whole stdout came back");
         assert!(
             path.exists(),
-            "the door leaves the scratch file for its caller to remove"
+            "the guard still owns the file while it lives"
         );
-        let _ = std::fs::remove_file(&path);
+        drop(scratch);
+        assert!(!path.exists(), "the guard removed the scratch file");
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test: stats its own scratch capture file"
+    )]
+    fn the_capture_scratch_is_created_owner_only() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let scratch = CaptureScratch::new().expect("a scratch file");
+        let mode = std::fs::metadata(&scratch.path)
+            .expect("the scratch file")
+            .permissions()
+            .mode();
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "the whole conversation transcript is owner-only"
+        );
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test: pre-plants and removes its own scratch capture name"
+    )]
+    fn a_pre_planted_first_name_still_yields_a_capture() {
+        let first = std::env::temp_dir().join(format!("ae-opencode.{}.0.json", std::process::id()));
+        let _ = std::fs::remove_file(&first);
+        std::fs::write(&first, b"planted").expect("the plant");
+        let scratch = CaptureScratch::new().expect("a capture despite the plant");
+        assert_ne!(
+            scratch.path, first,
+            "the collision was skipped, not refused"
+        );
+        drop(scratch);
+        let _ = std::fs::remove_file(&first);
+    }
+
+    #[test]
+    fn a_captured_to_file_spawn_returns_at_most_cap_plus_one_bytes() {
+        let scratch = CaptureScratch::new().expect("a scratch file");
+        let output = spawn(
+            "/bin/sh",
+            &["-c".to_owned(), "yes x | head -c 200000".to_owned()],
+            &[],
+            Streams::CapturedToFile {
+                file: scratch.file(),
+                cap: 1000,
+            },
+            None,
+        )
+        .expect("the shell runs");
+        assert_eq!(
+            output.stdout.len(),
+            1001,
+            "the door reads at most cap + 1 bytes"
+        );
+    }
+
+    #[test]
+    fn a_capture_with_a_feed_body_is_refused() {
+        let scratch = CaptureScratch::new().expect("a scratch file");
+        assert!(
+            spawn::<&str>(
+                "/bin/cat",
+                &[],
+                &[],
+                Streams::CapturedToFile {
+                    file: scratch.file(),
+                    cap: 1000,
+                },
+                Some(b"body"),
+            )
+            .is_none(),
+            "a body and a stdout file cannot both own the child's streams"
+        );
     }
 
     #[test]

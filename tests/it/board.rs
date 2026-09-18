@@ -1996,18 +1996,23 @@ fn the_opencode_export_cap_is_the_documented_sixteen_mib() {
     assert_eq!(coverage[0].reason, "export exceeds the read budget");
     let docs = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/board.md"))
         .expect("docs/board.md is readable");
+    // Wrap-proof: the sentence is compared over normalized whitespace, so a
+    // rewrap cannot silently disconnect the doc from the value.
+    let flat = docs.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(
-        docs.contains("A whole export over 16 MiB is"),
+        flat.contains("A whole export over 16 MiB is refused"),
         "docs/board.md names the same cap"
     );
 }
 
 #[test]
 fn an_export_larger_than_a_pipe_buffer_reads_whole_through_the_shipped_binary() {
-    // The live bug's scale: `opencode export` exits before its stdout pipe
-    // drains, so a pipe capture loses everything past ~128 KiB. The door now
-    // captures through a scratch file; this pin drives the shipped binary over
-    // a document well past a pipe buffer and demands its LAST row.
+    // This pin claims only what it can see: a document well past a pipe buffer
+    // is read end to end (its LAST row prints) and the ROW_CAP walk stays
+    // intact. It is NOT the truncation regression pin — a shell fake drains
+    // its pipe normally, so it passes with or without the file capture. The
+    // doors lexical guard `the_opencode_leg_captures_through_a_file_never_a_pipe`
+    // is that pin.
     let root = rig("oc-large");
     let messages: Vec<String> = (0..700)
         .map(|n| {
