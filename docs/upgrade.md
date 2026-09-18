@@ -27,7 +27,9 @@ session whether the chain can place it, and only then writes. Every placeable se
 chain, the core rows rewritten as one locked document, all helper links re-rendered, and for a
 running session a live watchdog restarted on the new core, while a missing enabled watchdog is
 started there. An explicitly disabled watchdog stays absent. The Telegram bridge is restarted
-once per server. Agent panes are never touched — they run the agent tool, not ae.
+once per server. Agent panes are never touched — they run the agent tool, not ae. Their launch
+lines survive too: on an installed machine a seat's pane line names the command
+link, so a re-run after the prune lands on the new core.
 
 Nothing is written until every session has been asked. A stopped session the chain cannot place
 has no live helpers to protect, so the publish reports it and skips its directory untouched. An

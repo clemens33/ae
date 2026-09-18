@@ -122,29 +122,76 @@ pub fn publish_prompt(dir: &Path, slot: &str, text: &str) -> Result<(), String> 
     launch::publish_data(&prompt_file(dir, slot), text.as_bytes())
 }
 
+/// The head of the line a pane runs: the command link when installed and
+/// present, else the resolved core. ONE decider for both builders and wait.
+///
+/// A publish migrates, repoints and relinks every placeable session BEFORE it
+/// moves the command link, so a re-run lands on a core that reads that meta.
+/// Helpers keep the immutable core; a missing link fails closed to the core.
+/// `Displaced` takes the link as shape arithmetic; the gate refuses it first.
+fn pane_head_for(shape: &crate::shape::Shape, core: &Path) -> PathBuf {
+    if let Some(link) = shape.command_link()
+        && crate::lifecycle::path_exists(&link)
+    {
+        return link;
+    }
+    core.to_path_buf()
+}
+
+/// [`pane_head_for`] for this process's own shape.
+pub(crate) fn pane_head(core: &Path) -> PathBuf {
+    pane_head_for(crate::shape::current(), core)
+}
+
+/// The line a pane runs, on an already-chosen head: the head, this entry, the
+/// session and the seat, each quoted for the shell that reads it.
+pub(crate) fn pane_line(head: &Path, dir: &Path, slot: &str, snapshot: Option<&str>) -> String {
+    let head = launch::shell_quote(&head.display().to_string());
+    let dir = launch::shell_quote(&dir.display().to_string());
+    let slot = launch::shell_quote(slot);
+    match snapshot {
+        None => format!("{head} {} {dir} {slot}", crate::cli::RUN),
+        Some(command) => format!(
+            "{head} {} --command-snapshot {} {dir} {slot}",
+            crate::cli::RUN,
+            launch::shell_quote(command)
+        ),
+    }
+}
+
 /// The line a pane runs — the core, this entry, the session and the seat.
 #[must_use]
 pub fn pane_command(core: &Path, dir: &Path, slot: &str) -> String {
-    format!(
-        "{} {} {} {}",
-        launch::shell_quote(&core.display().to_string()),
-        crate::cli::RUN,
-        launch::shell_quote(&dir.display().to_string()),
-        launch::shell_quote(slot)
-    )
+    pane_line(&pane_head(core), dir, slot, None)
 }
 
 /// The line a re-paired pane runs, carrying the command preflight validated.
 #[must_use]
 pub fn pane_command_with_snapshot(core: &Path, dir: &Path, slot: &str, command: &str) -> String {
-    format!(
-        "{} {} --command-snapshot {} {} {}",
-        launch::shell_quote(&core.display().to_string()),
-        crate::cli::RUN,
-        launch::shell_quote(command),
-        launch::shell_quote(&dir.display().to_string()),
-        launch::shell_quote(slot)
-    )
+    pane_line(&pane_head(core), dir, slot, Some(command))
+}
+
+/// [`pane_command`] under a fabricated shape — the pin seam; call sites take no shape.
+#[must_use]
+pub fn pane_command_for(
+    shape: &crate::shape::Shape,
+    core: &Path,
+    dir: &Path,
+    slot: &str,
+) -> String {
+    pane_line(&pane_head_for(shape, core), dir, slot, None)
+}
+
+/// [`pane_command_with_snapshot`] under a fabricated shape — the pin seam.
+#[must_use]
+pub fn pane_command_with_snapshot_for(
+    shape: &crate::shape::Shape,
+    core: &Path,
+    dir: &Path,
+    slot: &str,
+    command: &str,
+) -> String {
+    pane_line(&pane_head_for(shape, core), dir, slot, Some(command))
 }
 
 /// The exit code for a `_run` that could not build or start its agent.
@@ -1845,5 +1892,64 @@ mod tests {
             "a healthy override seat says nothing"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // ---- the pane line's head (#131) ---------------------------------------
+
+    #[test]
+    fn pane_head_names_the_link_only_when_installed_and_present() {
+        use crate::shape::Shape;
+        // A FILE stands in for the link: presence is the property (`path_exists` follows links).
+        let root = |tag: &str, with_link: bool| {
+            let root = std::env::temp_dir().join(format!("ae-head-{tag}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&root);
+            if with_link {
+                let link = root.join(".local/bin/ae");
+                std::fs::create_dir_all(link.parent().expect("parent")).expect("bin");
+                std::fs::write(&link, "link").expect("link");
+            }
+            root
+        };
+        let r0 = root("plain", true);
+        let r1 = root("nolink", false);
+        let r2 = root("a b", true);
+        let installed = |r: &Path| Shape::Installed {
+            home: r.join(".ae"),
+            version_dir: r.join(".ae/versions/2026.9.100"),
+            version: "2026.9.100".to_owned(),
+        };
+        let core = |r: &Path| r.join(".ae/versions/2026.9.100/ae-core");
+        let link = |r: &Path| r.join(".local/bin/ae");
+        let dir = Path::new("/s/tg1");
+        // (shape, core, head): the link when installed AND present, else the core;
+        // `Displaced` is shape arithmetic, the spaced HOME proves quoting.
+        let displaced = Shape::Displaced {
+            home: r0.join(".ae"),
+            declared: "/elsewhere".into(),
+        };
+        for (shape, core, head) in [
+            (installed(&r0), core(&r0), link(&r0)),
+            (installed(&r1), core(&r1), core(&r1)),
+            (Shape::Checkout, core(&r1), core(&r1)),
+            (displaced, core(&r0), link(&r0)),
+            (installed(&r2), core(&r2), link(&r2)),
+        ] {
+            let got = pane_command_for(&shape, &core, dir, "spawned.0");
+            let want = format!("'{}' _run '/s/tg1' 'spawned.0'", head.display());
+            assert_eq!(got, want);
+        }
+        // The snapshot carries the same head: one owner serves both variants.
+        let s0 = installed(&r0);
+        let c0 = core(&r0);
+        let head0 = format!("'{}' _run ", link(&r0).display());
+        let snap = pane_command_with_snapshot_for(&s0, &c0, dir, "spawned.0", "x");
+        assert!(snap.starts_with(&head0), "{snap}");
+        // The installed name the launch wait compares against. (A real checkout
+        // launches as `ae` too, so the checkout wait is unchanged.)
+        let launched = pane_head_for(&s0, &c0);
+        assert_eq!(launched.file_name(), Some(std::ffi::OsStr::new("ae")));
+        for r in [&r0, &r1, &r2] {
+            let _ = std::fs::remove_dir_all(r);
+        }
     }
 }

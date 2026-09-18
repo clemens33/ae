@@ -1616,6 +1616,86 @@ fn pane_commands_quote_their_operands_and_an_optional_snapshot() {
     );
 }
 
+#[test]
+fn a_pane_line_survives_the_upgrade_that_prunes_the_core_it_was_launched_from() {
+    // Field #131: post-upgrade re-runs failed with `Unknown command:
+    // ~/.ae/versions/<V>/ae-core`. Installed lines head the command link.
+    let rig = Rig::new("paneline");
+    rig.seat("claude", "u-9");
+    rig.transcript("claude", "u-9");
+    rig.started();
+    // HOME doubles as install root; the session outside `HOME/.ae/sessions`
+    // stands in for a MIGRATED session no longer naming vA — else no prune.
+    let home = &rig.home;
+    let ae_home = home.join(".ae");
+    let v_a = ae_home.join("versions/2026.9.100");
+    let core_a = v_a.join("ae-core");
+    std::fs::create_dir_all(&v_a).expect("a vA version dir");
+    std::fs::write(&core_a, "never executed").expect("a vA core");
+    let link = home.join(".local/bin/ae");
+    std::fs::create_dir_all(link.parent().expect("parent")).expect("a bin");
+    std::os::unix::fs::symlink(&core_a, &link).expect("the link at vA");
+    let shape_a = ae::shape::Shape::Installed {
+        home: ae_home.clone(),
+        version_dir: v_a.clone(),
+        version: "2026.9.100".to_owned(),
+    };
+    let head = format!("'{}' _run ", link.display());
+    let rerun = ae::run::pane_command_for(&shape_a, &core_a, &rig.dir, "main");
+    assert!(rerun.starts_with(&head), "the link heads the line: {rerun}");
+    let snapshot =
+        ae::run::pane_command_with_snapshot_for(&shape_a, &core_a, &rig.dir, "main", "x");
+    assert!(snapshot.starts_with(&head), "same head: {snapshot}");
+    // vB the way the installer would: a COMPLETE version dir (the structural
+    // gate refuses a re-run through anything less), then repoint, then prune.
+    let v_b = ae_home.join("versions").join(ae::VERSION);
+    let core_b = v_b.join("ae-core");
+    std::fs::create_dir_all(&v_b).expect("a vB version dir");
+    std::fs::copy(env!("CARGO_BIN_EXE_ae"), &core_b).expect("a runnable vB core");
+    std::fs::write(v_b.join("install"), "not executed").expect("install");
+    let manifest = format!("{s}  ae-core\n{s}  install\n", s = "0".repeat(64));
+    std::fs::write(v_b.join("SHA256SUMS"), manifest).expect("a manifest");
+    std::fs::remove_file(&link).expect("the old link");
+    std::os::unix::fs::symlink(&core_b, &link).expect("the repoint");
+    std::fs::create_dir_all(ae_home.join("sessions")).expect("a census");
+    let notes = ae::migrate::prune_versions(&ae_home, &link, ae::VERSION);
+    assert!(!v_a.exists(), "the prune took vA: {notes:?}");
+    assert!(notes.join(" ").contains("removed"), "{notes:?}");
+    // The captured line, re-run after the prune: exact resume through the link.
+    let _ = std::fs::remove_file(&rig.out);
+    let out = helper(Path::new("/bin/sh"))
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
+        .env_remove("CLAUDE_CONFIG_DIR")
+        .env_remove("CODEX_HOME")
+        .env("HOME", home)
+        .current_dir(&rig.project)
+        .arg("-c")
+        .arg(&rerun)
+        .output()
+        .expect("the shell runs the line");
+    let err = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(out.status.success(), "the re-run lands: {err}");
+    assert!(err.contains(ae::run::RESUMING), "a resume: {err}");
+    let dumped = std::fs::read_to_string(&rig.out).expect("the tool argv");
+    let reported: Vec<String> = dumped
+        .split(RS)
+        .filter(|w| !w.is_empty())
+        .map(str::to_owned)
+        .collect();
+    assert!(carries(&reported, &["--resume", "u-9"]), "{reported:?}");
+    // RED on today's spelling: the baked core is gone — the field failure, pinned.
+    let old = ae::run::pane_command_for(&ae::shape::Shape::Checkout, &core_a, &rig.dir, "main");
+    let red = helper(Path::new("/bin/sh"))
+        .env("HOME", home)
+        .current_dir(&rig.project)
+        .arg("-c")
+        .arg(&old)
+        .output()
+        .expect("the shell runs the old line");
+    assert_eq!(red.status.code(), Some(127), "today's spelling, post-prune");
+}
+
 // ---- the environment prefix (colead Z2 BLOCKER-1) --------------------------
 
 #[test]

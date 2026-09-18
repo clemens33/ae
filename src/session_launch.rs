@@ -4069,14 +4069,19 @@ fn start_agent(
         crate::lifecycle::path_exists(&crate::run::started_marker(dir, &agent.slot));
     // Fire and forget: the reader here IS a shell, and an unconfirmed submit
     // must not abort a launch that may well have taken.
-    let command = agent.command_snapshot.as_ref().map_or_else(
-        || crate::run::pane_command(core, dir, &agent.slot),
-        |snapshot| {
-            crate::run::pane_command_with_snapshot(core, dir, &agent.slot, snapshot.as_str())
-        },
-    );
+    // One head for line and wait: a link moving between two reads cannot disagree.
+    let head = crate::run::pane_head(core);
+    let snapshot = agent
+        .command_snapshot
+        .as_ref()
+        .map(config::ResolvedCommand::as_str);
+    let command = crate::run::pane_line(&head, dir, &agent.slot, snapshot);
     let _ = deliver::submit_shell_text(server, &agent.pane, &command);
-    wait_for_agent_start(server, &agent.pane, agent.tool);
+    let launched = head
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    wait_for_agent_start(server, &agent.pane, agent.tool, &launched);
     if agent.tool.adapter().capture.is_needed() {
         // Kept as the legacy/lifecycle launch stamp. Capture safety uses the
         // separate `capture_floor` already published before this exec.
@@ -4205,20 +4210,15 @@ fn deliver_launch_prompt(
     Ok(())
 }
 
-/// Wait, briefly, for the tool's process to replace the pane's shell.
-fn wait_for_agent_start(server: &ServerId, pane: &str, tool: ToolKind) {
+/// Wait, briefly, for the tool's process to replace the pane's shell. `launched`
+/// is the file name the pasted line launched under, from the same owner.
+fn wait_for_agent_start(server: &ServerId, pane: &str, tool: ToolKind, launched: &str) {
     if !tool.adapter().input.wait_for_process {
         return;
     }
-    // The pane runs the CORE before it runs the tool: `_run` composes the
-    // command and `exec`s it, so for a moment `pane_current_command` is ae's
-    // own binary.
-    let core = crate::shape::resolved_exe()
-        .and_then(|path| {
-            path.file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-        })
-        .unwrap_or_default();
+    // The pane runs ae's own binary before it runs the tool: `_run` composes
+    // the command and `exec`s it, so for a moment `pane_current_command` is
+    // the launched name rather than the tool.
     for _ in 0..START_POLLS {
         let current = transport::observe_pane_probe(server, pane)
             .map(|probe| probe.command)
@@ -4227,7 +4227,9 @@ fn wait_for_agent_start(server: &ServerId, pane: &str, tool: ToolKind) {
         if current.strip_suffix(".exe").unwrap_or(&current) == tool.as_str() {
             return;
         }
-        if !crate::watchdog::command_is_shell(&current) && (core.is_empty() || current != core) {
+        if !crate::watchdog::command_is_shell(&current)
+            && (launched.is_empty() || current != launched)
+        {
             return;
         }
         std::thread::sleep(START_POLL);
