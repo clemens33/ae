@@ -32,9 +32,11 @@ only — nothing there reaches the meta, which keeps its own drift observer.
 `agy`, `grok`, `muse`, `oc`, or `-` when ae cannot classify it) and is known
 without a pane. `model` is the label the tool drew, `effort` its effort word,
 and `drift` a bare `!` when that model disagrees with the profile's own pin. A
-model ae cannot spell EXACTLY — over 32 bytes, or carrying one of the grammar's
-own separators — empties that entry's trio rather than being escaped or clipped,
-and empty cells are not a guess: the reader falls back to the declared profile.
+model ae cannot spell EXACTLY empties that entry's trio rather than being
+escaped or clipped — over 32 bytes, or carrying anything the fact's own grammar
+reserves or cannot hold, including a separator, an edge space, a tmux style
+byte and any non-printable. Empty cells are not a guess: the reader falls back
+to the declared profile.
 
 An identity counts only when the tool's own composer is drawn in the SAME
 capture, so a frame mid-turn proves nothing. The last proven answer is then HELD
@@ -46,8 +48,8 @@ A roster that will not fit the 4 KiB bound degrades in fleet-wide RUNGS, because
 the model cell is a column and one dropped for some rows and not others cannot
 be read down: `v2` full, `v2` with the effort and drift mark emptied, `v2` with
 only the client kept, then `v1` — byte-identical to what ae wrote before these
-cells existed — and only then nothing. The client is the cheapest cell on the
-row and the one that never drops. The `v1` rung exists because `v2` costs four
+cells existed — and only then nothing. Within `v2` the client is the cheapest
+cell on the row and the last to go; the `v1` rung carries no client at all. The `v1` rung exists because `v2` costs four
 more separators per entry: without it a roster that fits today could vanish
 BECAUSE model cells were added, and a fact ae cannot publish is a roster the
 picker reports as unavailable.
