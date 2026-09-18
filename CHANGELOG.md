@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.121] - 2026-09-18
+- Return one seat's launch-turn outcome from the launch delivery
+- Bring one provably dead seat back with a relaunch helper
+- Keep a pre-paste relaunch refusal from claiming a paste
+
 ## [v2026.9.120] - 2026-09-18
 - Hand stop/end viewers to a rankless live session before detach
 
