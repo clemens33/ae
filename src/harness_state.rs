@@ -1,4 +1,11 @@
 //! Pure classification of the current harness frame already captured by the watchdog.
+//!
+//! Shared residual, accepted for all four bottom-anchored identity grammars
+//! together: a QUOTED frame that ends exactly at the tool's live geometry —
+//! the same bottom rows in the same order — while the tool's own composer is
+//! absent reads as observed, because a plain capture carries no provenance.
+//! The obligation is on the wiring slice: an identity read from a capture
+//! whose tool-composed signal is false must not be trusted.
 
 use std::borrow::Cow;
 
@@ -444,10 +451,11 @@ fn current_muse_identity(capture: &str) -> HarnessIdentity {
 
 /// opencode's composer status row `mode · model · effort`, drawn directly
 /// above the bottom-most `╹▀` heavy edge, which must itself sit within the
-/// measured slack of the screen's last ink. A status row quoted with its edge
-/// in scrollback — ae panes routinely carry peek output of other panes — has
-/// more rows below it than the live composer ever does, so it reads as
-/// unobserved.
+/// measured slack of the screen's last ink. The ceiling alone is not the
+/// protection: a quoted status+edge pair reads as observed at any slack from
+/// one up to the measured ceiling, and only a pair stranded further than the
+/// ceiling is refused. What protects the live frame is that the edge must be
+/// the BOTTOM-MOST one and sit at that position, not the bound itself.
 fn current_opencode_identity(capture: &str) -> HarnessIdentity {
     let rows = raw_lines(capture);
     let Some(edge) = rows.iter().rposition(|row| is_box_edge(row, HEAVY_EDGE)) else {
@@ -481,8 +489,10 @@ fn current_opencode_identity(capture: &str) -> HarnessIdentity {
 /// Grok's composer bottom border carries the status text
 /// `… · model (effort) · …`. The border is the anchor and it must be the
 /// bottom-most `╰─` edge at exactly the measured slack from the last ink: the
-/// same bordered row quoted in the transcript above a live frame, or stranded
-/// with other rows below it, proves nothing.
+/// same bordered row quoted above a live frame proves nothing, and a border
+/// stranded with MORE than the measured slack of rows below it proves
+/// nothing. At exactly the measured slack it is indistinguishable from the
+/// live frame and is read.
 fn current_grok_identity(capture: &str) -> HarnessIdentity {
     let rows = raw_lines(capture);
     let Some(border) = rows.iter().rposition(|row| is_box_edge(row, ROUNDED_EDGE)) else {
@@ -524,8 +534,12 @@ fn current_grok_identity(capture: &str) -> HarnessIdentity {
 /// apart from a hint on its left by a run of spaces, with the composer's own
 /// full-width rule within the three rows above it. The folder-trust modal
 /// draws the same label without any rule and is unobserved, never the live
-/// frame. A model still carrying the dot separator — a transcript sentence
-/// that happens to end in ` · <effort>` — is refused.
+/// frame. Only an INTERIOR dot separator is refused — a sentence with a
+/// separator before its trailing ` · <effort>`; a sentence that merely ENDS
+/// in ` · <effort>` with no interior separator still reads as observed. A
+/// wrapped label continuation cannot arrive as its own row: the watchdog
+/// captures with `capture-pane -p -J`, which joins wrapped rows
+/// (tmux.rs:993), so the grammar is never handed one.
 fn current_agy_identity(capture: &str) -> HarnessIdentity {
     let rows = raw_lines(capture);
     let Some(last) = last_ink(&rows) else {
@@ -1090,6 +1104,12 @@ mod tests {
             .join("\n");
         assert_eq!(
             current_identity(&without_hint, ToolKind::Agy),
+            HarnessIdentity::default()
+        );
+        // A lone label as the LAST row with no rule above it is not the live
+        // composer: the rule proximity is the anchor that refuses it.
+        assert_eq!(
+            current_identity("Gemini 3.8 Flash · high\n", ToolKind::Agy),
             HarnessIdentity::default()
         );
         // A sentence that happens to end in ` · high` is not a label.
