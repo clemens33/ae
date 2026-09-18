@@ -1145,6 +1145,71 @@ fn the_branch_pair_is_published_on_the_session_the_daemon_watches() {
     let _ = fs::remove_dir_all(&scratch);
 }
 
+/// A daemon that starts takes the health segment back from a stop.
+///
+/// The stop before it writes an "off" segment onto the session, so this is the
+/// half that makes `watchdog start` need no repair step of its own: the daemon
+/// publishes over that value on its own way up, and nothing has to remember to
+/// clear it first.
+#[test]
+fn a_starting_daemon_replaces_the_off_segment_a_stop_left_behind() {
+    let scratch = scratch("wdon");
+    require_tmux(&scratch);
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup::new(&socket, &scratch);
+    let root = scratch.join("home");
+    let meta_dir = plant(&root, "wdon", &socket, None);
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &["new-session", "-d", "-s", "wdon", "cat"]
+        )
+        .0,
+        "the watched session"
+    );
+
+    // Exactly what a stop leaves behind.
+    let health = ae::tmux::WATCHDOG_STATUS_OPTION;
+    let off = ae::theme::watchdog_off_segment(&ae::theme::Look::DEFAULT);
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &["set-option", "-t", "wdon", health, &off]
+        )
+        .0,
+        "the off segment a stop writes"
+    );
+
+    // The reading is taken INSIDE the wait: `watch_until` stops the daemon by
+    // killing the session, and a killed session has no options left to show.
+    let seen = std::cell::RefCell::new(String::new());
+    let reached = watch_until(&meta_dir, &socket, &scratch, "wdon", || {
+        let now = tmux(
+            &socket,
+            &scratch,
+            &["show-options", "-v", "-t", "wdon", health],
+        )
+        .1
+        .trim()
+        .to_owned();
+        if now.is_empty() || now == off {
+            return false;
+        }
+        *seen.borrow_mut() = now;
+        true
+    });
+    let published = seen.into_inner();
+    kill_server(&socket, &scratch);
+    assert!(
+        reached,
+        "a started daemon must publish over the off segment, on its own"
+    );
+    assert_ne!(published, off, "and what it published is its own health");
+    let _ = fs::remove_dir_all(&scratch);
+}
+
 #[test]
 fn the_legacy_reap_refuses_a_pane_that_belongs_to_someone_else() {
     // A pane id is server-local and REUSED, so the reap may not act on an id

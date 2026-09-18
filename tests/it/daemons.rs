@@ -230,6 +230,140 @@ fn a_watchdog_starts_once_reports_its_pid_and_stops_with_its_pane() {
     assert_eq!((code, out.trim()), (0, "Watchdog is not running."));
 }
 
+/// The `wdseed` session as a LAUNCH and a live daemon would have left it.
+///
+/// The ownership pair the seed is proven against, the look the seed is rendered
+/// in, and the published facts a stop has to take back — including an attention
+/// verdict that is NOT the seed, so a stop that merely left the last one
+/// standing fails the arm too.
+fn plant_watched_session(socket: &Path, scratch: &Path, root: &Path, look: &ae::theme::Look) {
+    let set = |flag: &str, name: &str, value: &str| {
+        assert!(
+            tmux(socket, scratch, &[flag, "-t", "wdseed", name, value]).0,
+            "{name} must be plantable"
+        );
+    };
+    set("set-environment", "AE_SESSION", "1");
+    set("set-environment", "AE_HOME", &root.display().to_string());
+    for (option, value) in ae::theme::fact_options(look, "/work") {
+        set("set-option", &option, &value);
+    }
+    let needs_you = ae::theme::Mark::NeedsYou;
+    for (option, value) in [
+        (
+            ae::theme::ATTENTION_RANK_OPTION,
+            needs_you.rank().to_string(),
+        ),
+        (
+            ae::theme::ATTENTION_GLYPH_OPTION,
+            needs_you.glyph(true).to_owned(),
+        ),
+        (ae::theme::ATTENTION_STYLE_OPTION, "fg=red".to_owned()),
+        (
+            ae::theme::AGENTS_OPTION,
+            "v1;2000;60;lead:cl:working:%1".to_owned(),
+        ),
+        (ae::theme::FLEET_STRIP_OPTION, "strip".to_owned()),
+        (ae::theme::GOAL_OPTION, "ship".to_owned()),
+        (ae::theme::VERSION_OPTION, "ae 2026.9.111".to_owned()),
+        (
+            ae::tmux::WATCHDOG_STATUS_OPTION,
+            "#[fg=green]watching".to_owned(),
+        ),
+    ] {
+        set("set-option", option, &value);
+    }
+}
+
+/// A STOPPED watchdog leaves its session listed, and says why.
+///
+/// The regression: the retraction unset the attention rank along with
+/// everything else, and every fleet reader drops a rankless row — so a session
+/// that was still running vanished from every other session's strip and from
+/// the picker while `ae list` went on calling it running, with nothing on its
+/// own bar to say what had happened.
+#[test]
+fn a_stopped_watchdog_leaves_the_running_session_seeded_and_listed() {
+    let scratch = scratch("wdseed");
+    require_tmux(&scratch);
+    let socket = socket_of(&scratch);
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let root = scratch.join("home");
+    let _meta_dir = plant_session(&root, "wdseed", &socket);
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &["new-session", "-d", "-s", "wdseed", "sleep", "60"]
+        )
+        .0,
+        "the session the watchdog watches"
+    );
+
+    let look = ae::theme::Look::DEFAULT;
+    plant_watched_session(&socket, &scratch, &root, &look);
+
+    let (code, _, err) = watchdog(&root, &["start", "wdseed"]);
+    assert_eq!(code, 0, "the start failed: {err}");
+    let (code, out, err) = watchdog(&root, &["stop", "wdseed"]);
+    assert_eq!(code, 0, "the stop failed: {err}");
+    assert_eq!(out.trim(), "Watchdog stopped.");
+
+    let read = |name: &str| {
+        tmux(
+            &socket,
+            &scratch,
+            &["show-options", "-v", "-t", "wdseed", name],
+        )
+        .1
+        .trim()
+        .to_owned()
+    };
+    // THE SEED, exactly — the same three values a launch writes.
+    for (option, value) in ae::theme::seed_options(&look) {
+        assert_eq!(
+            read(&option),
+            value,
+            "{option} must be the launch seed once nothing is measuring the session"
+        );
+    }
+    // And nothing a live daemon vouched for survives it.
+    for option in [
+        ae::theme::AGENTS_OPTION,
+        ae::theme::FLEET_STRIP_OPTION,
+        ae::theme::GOAL_OPTION,
+        ae::theme::VERSION_OPTION,
+    ] {
+        assert!(
+            read(option).is_empty(),
+            "{option} outlived the daemon that published it"
+        );
+    }
+    // The session's own bar says why it is not being measured.
+    assert_eq!(
+        read(ae::tmux::WATCHDOG_STATUS_OPTION),
+        ae::theme::watchdog_off_segment(&look),
+        "a stopped watchdog leaves a truthful health segment, not a stale one"
+    );
+
+    // THE POINT: a peer reading the server still finds the row.
+    let (listed, listing) = tmux(
+        &socket,
+        &scratch,
+        &["list-sessions", "-F", ae::tmux::FLEET_SESSION_FORMAT],
+    );
+    let rows = ae::tmux::interpret_fleet_sessions(listed, &listing).unwrap_or_default();
+    assert!(
+        rows.iter().any(
+            |row| row.name == "wdseed" && row.rank == ae::theme::Mark::Stale.rank().to_string()
+        ),
+        "a running session whose watchdog stopped must stay on every peer's strip: {rows:?}"
+    );
+}
+
 #[test]
 fn the_watchdog_entry_refuses_a_session_it_cannot_name_or_find() {
     let scratch = scratch("wdref");

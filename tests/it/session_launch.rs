@@ -7113,6 +7113,44 @@ fn a_session_with_the_theme_off_keeps_the_users_own_look() {
     assert_ae_status_bindings(&rig);
 }
 
+/// A launch that starts NO watchdog says so where the health segment goes.
+///
+/// `watchdog = false` used to leave that cell blank forever, which reads like a
+/// bar still filling in rather than a deliberate setting — the session looked
+/// broken and nothing on it said why.
+#[test]
+fn a_launch_with_no_watchdog_says_nothing_is_watching_the_session() {
+    if skip() {
+        return;
+    }
+    // `IDLE_CONFIG` carries `watchdog = false`, which is the case under test.
+    let rig = Rig::idle("wdoff");
+    let (code, stdout, stderr) = rig.launch(&["--local", "wdoff"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+
+    let session = |name: &str| {
+        rig.tmux(&["show-options", "-v", "-t", "wdoff", name])
+            .1
+            .trim()
+            .to_owned()
+    };
+    let look = ae::theme::Look::DEFAULT;
+    assert_eq!(
+        session(ae::tmux::WATCHDOG_STATUS_OPTION),
+        ae::theme::watchdog_off_segment(&look),
+        "the cell a health segment would fill says nothing is measuring this session"
+    );
+    // And the launch seed is on it, so the session is a row on every strip from
+    // the moment it exists — there is no daemon coming to write one.
+    for (option, value) in ae::theme::seed_options(&look) {
+        assert_eq!(
+            session(&option),
+            value,
+            "{option} must carry the launch seed"
+        );
+    }
+}
+
 #[test]
 fn an_agent_named_ae_monitor_keeps_its_window_while_the_plumbing_window_stays_hidden() {
     if skip() {

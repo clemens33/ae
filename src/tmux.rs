@@ -4295,6 +4295,63 @@ mod tests {
         );
     }
 
+    /// The row a session nobody measures publishes is still a row.
+    ///
+    /// A watchdog that stops takes back everything it vouched for and puts the
+    /// launch seed over the three attention options, so both readers then see a
+    /// Stale rank beside the empty display fields only a live daemon fills.
+    /// Dropping that row is what used to hide a RUNNING session from every
+    /// other session's strip and from the picker while `ae list` still called
+    /// it running.
+    #[test]
+    fn an_unwatched_session_keeps_its_row_in_both_fleet_readers() {
+        use super::{
+            FIELD_SEPARATOR, FleetSession, PickerSession, interpret_fleet_sessions,
+            interpret_picker_sessions,
+        };
+        use crate::theme::Mark;
+
+        let rank = Mark::Stale.rank();
+        let glyph = Mark::Stale.glyph(true);
+        assert_eq!(
+            interpret_fleet_sessions(true, &format!("unwatched | $3 | {rank}\n")),
+            Some(vec![FleetSession {
+                name: "unwatched".to_owned(),
+                id: "$3".to_owned(),
+                rank: rank.to_string(),
+            }]),
+            "a session nobody is measuring still belongs on every strip"
+        );
+
+        // The post-stop shape exactly: seeded rank and glyph, and the branch,
+        // roster and goal the retraction cleared.
+        let row = [
+            "unwatched",
+            "$3",
+            &rank.to_string(),
+            glyph,
+            "%4",
+            "",
+            "",
+            "",
+        ]
+        .join(FIELD_SEPARATOR);
+        assert_eq!(
+            interpret_picker_sessions(true, &format!("{row}\n")),
+            Some(vec![PickerSession {
+                name: "unwatched".to_owned(),
+                id: "$3".to_owned(),
+                rank,
+                glyph: glyph.to_owned(),
+                main_pane: "%4".to_owned(),
+                branch: String::new(),
+                agents: String::new(),
+                goal: String::new(),
+            }]),
+            "and it stays selectable in the picker"
+        );
+    }
+
     #[test]
     fn picker_agents_fact_is_typed_bounded_and_all_or_nothing() {
         use super::{PickerAgent, parse_picker_agents};
