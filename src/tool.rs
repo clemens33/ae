@@ -204,7 +204,8 @@ impl InputModel {
 /// lives in [`crate::deliver::region`], the one dispatcher. A modelled tool
 /// never reads this: its composer answers through [`InputModel`] instead.
 ///
-/// Public delivery probes accept this bundled with its markers directly.
+/// Pub because [`Composed`] exposes it, and the public `wait_input_ready`
+/// probe takes that.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ComposerAnchor {
     /// A `┃`-rail box closed by a `╹▀` edge (opencode's measured shape).
@@ -218,7 +219,7 @@ pub enum ComposerAnchor {
 /// The whole unmodelled composed signal: the markers AND the geometry that
 /// owns them. One value so the two can never be mismatched at a call site.
 ///
-/// Public delivery probes accept this behaviour directly.
+/// Pub because the public `wait_input_ready` probe takes it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Composed {
     /// Which drawn structure the markers must sit inside.

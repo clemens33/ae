@@ -820,9 +820,9 @@ pub fn wait_input_ready(
 /// A tool with NO signal ([`Composed::NONE`]) can never be ready here —
 /// the wait refuses at once and the caller refuses visibly. That is the
 /// standing behaviour for gemini and unknown: they are unmodelled and carry
-/// no usable composed signal. agy and grok carry one since the input-signal
-/// slice measured their composers; the wait grants readiness only on their
-/// drawn structure, stable over two captures.
+/// no usable composed signal. agy and grok carry a measured signal
+/// (see the `Composed` rows in `src/tool.rs`); the wait grants readiness
+/// only on their drawn structure, stable over two captures.
 #[must_use]
 fn wait_until_settled(server: &ServerId, pane: &str, composed: Composed, polls: u32) -> bool {
     if composed.is_empty() {
