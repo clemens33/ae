@@ -265,7 +265,9 @@ fn plant_watched_session(socket: &Path, scratch: &Path, root: &Path, look: &ae::
         ),
         (ae::theme::FLEET_STRIP_OPTION, "strip".to_owned()),
         (ae::theme::GOAL_OPTION, "ship".to_owned()),
-        (ae::theme::VERSION_OPTION, "ae 2026.9.111".to_owned()),
+        // A DUMMY version, deliberately not a CalVer this repo will ever carry:
+        // the arm asserts the option is cleared, never what it held.
+        (ae::theme::VERSION_OPTION, "ae 0.0.0-dummy".to_owned()),
         (
             ae::tmux::WATCHDOG_STATUS_OPTION,
             "#[fg=green]watching".to_owned(),
@@ -361,6 +363,35 @@ fn a_stopped_watchdog_leaves_the_running_session_seeded_and_listed() {
             |row| row.name == "wdseed" && row.rank == ae::theme::Mark::Stale.rank().to_string()
         ),
         "a running session whose watchdog stopped must stay on every peer's strip: {rows:?}"
+    );
+
+    // A watchdog that had ALREADY died leaves the same truthful bar. Clobber
+    // the seed with a frozen verdict, as a dead daemon's last cycle would have,
+    // and stop again: this stop finds nothing to kill, so a seed scoped to the
+    // arm that kills one would leave the lie standing.
+    let set = |name: &str, value: &str| {
+        assert!(
+            tmux(
+                &socket,
+                &scratch,
+                &["set-option", "-t", "wdseed", name, value]
+            )
+            .0
+        );
+    };
+    set(ae::theme::ATTENTION_RANK_OPTION, "4");
+    set(ae::tmux::WATCHDOG_STATUS_OPTION, "#[fg=green]watching");
+    let (code, out, err) = watchdog(&root, &["stop", "wdseed"]);
+    assert_eq!((code, out.trim()), (0, "Watchdog is not running."), "{err}");
+    assert_eq!(
+        read(ae::theme::ATTENTION_RANK_OPTION),
+        ae::theme::Mark::Stale.rank().to_string(),
+        "a stop that finds no daemon still hands a frozen verdict back to the seed"
+    );
+    assert_eq!(
+        read(ae::tmux::WATCHDOG_STATUS_OPTION),
+        ae::theme::watchdog_off_segment(&look),
+        "and still says nothing is measuring the session"
     );
 }
 
