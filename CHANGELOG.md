@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.112] - 2026-09-18
+- Start monitor panes before gated launch-prompt deliveries (#130)
+- Pair delivery prompts with their seats by construction (#130)
+- Close an external slotless asker on its target's reply
+- Pin the seat-compact paste, lock, R4 select and timeout shape
+
 ## [v2026.9.111] - 2026-09-18
 - Pin the guarded count relation over any Sent verdict
 - Judge the guarded count on freed, steady-quiet
