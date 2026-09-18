@@ -99,9 +99,15 @@ const HUMAN_PROMPT_KEYS: &[&str] = &["enter Confirm", "↑/↓ Navigate"];
 /// inside a window at the BOTTOM of the frame: a question row, a selected
 /// option row with at least one sibling, a key-hint row after them, and NO
 /// composer — that last read by the composer's own owner rather than a second
-/// copy of its fence, so the two cannot drift apart.
+/// copy of its fence, so the two cannot drift apart. That spec is handed IN
+/// rather than looked up here: naming a tool variant outside `src/tool.rs` is
+/// a per-tool decision in the wrong half, which `tests/it/doors.rs` refuses.
 #[must_use]
-pub fn human_prompt_class(buf: &str, agent_bin: &str) -> Option<HumanPrompt> {
+pub fn human_prompt_class(
+    buf: &str,
+    agent_bin: &str,
+    composed: crate::tool::Composed,
+) -> Option<HumanPrompt> {
     if agent_bin != "agy" || buf.is_empty() {
         return None;
     }
@@ -111,10 +117,7 @@ pub fn human_prompt_class(buf: &str, agent_bin: &str) -> Option<HumanPrompt> {
     // Scoped to the WINDOW, not the buffer: a modal drawn BELOW a composer is
     // the case this must still catch. The inverse — a draft whose own text is
     // shaped like a modal, with the fence above the window — is accepted.
-    if crate::deliver::region::composed_ui(
-        &window.join("\n"),
-        crate::tool::ToolKind::Agy.adapter().input.composed,
-    ) {
+    if crate::deliver::region::composed_ui(&window.join("\n"), composed) {
         return None;
     }
     // EVERY question row is tried, top-down, and the first COMPLETE shape wins.
@@ -2908,6 +2911,16 @@ tail line
         "Gemini 3.8 Flash · high",
     ];
 
+    /// The detector, with agy's own composed spec — the caller supplies it in
+    /// production too, so the tests bind the same pairing.
+    fn classify(buf: &str, agent_bin: &str) -> Option<super::HumanPrompt> {
+        super::human_prompt_class(
+            buf,
+            agent_bin,
+            crate::tool::ToolKind::Agy.adapter().input.composed,
+        )
+    }
+
     fn buffer(rows: &[&str]) -> String {
         rows.join("\n")
     }
@@ -2916,7 +2929,7 @@ tail line
     /// press, so the returned rows are the product, not a side effect.
     #[test]
     fn the_real_agy_trust_modal_is_named_with_the_question_and_the_keys_to_press() {
-        let found = super::human_prompt_class(&fixture("agy-trust-modal-frame"), "agy");
+        let found = classify(&fixture("agy-trust-modal-frame"), "agy");
         let found = found.expect("the frozen trust modal should classify");
         assert_eq!(found.question, "Do you trust the contents of this project?");
         assert_eq!(found.keys, "↑/↓ Navigate · enter Confirm");
@@ -2934,7 +2947,7 @@ tail line
             "agy-boot-frame",
         ] {
             assert_eq!(
-                super::human_prompt_class(&fixture(name), "agy"),
+                classify(&fixture(name), "agy"),
                 None,
                 "{name} must never read as a human-only prompt"
             );
@@ -2945,13 +2958,10 @@ tail line
     #[test]
     fn the_same_modal_under_another_binary_is_not_a_human_only_prompt() {
         let modal = fixture("agy-trust-modal-frame");
-        assert!(
-            super::human_prompt_class(&modal, "agy").is_some(),
-            "agy does"
-        );
+        assert!(classify(&modal, "agy").is_some(), "agy does");
         for other in ["claude", "codex", "gemini", "opencode", "grok", ""] {
             assert_eq!(
-                super::human_prompt_class(&modal, other),
+                classify(&modal, other),
                 None,
                 "{other} must not classify the identical buffer"
             );
@@ -2969,9 +2979,9 @@ tail line
             "and then the agent explained what the modal had said";
             HUMAN_PROMPT_WINDOW
         ]);
-        assert_eq!(super::human_prompt_class(&buffer(&rows), "agy"), None);
+        assert_eq!(classify(&buffer(&rows), "agy"), None);
         // Same rows, same order — only the DISTANCE from the bottom differs.
-        assert!(super::human_prompt_class(&buffer(MODAL), "agy").is_some());
+        assert!(classify(&buffer(MODAL), "agy").is_some());
     }
 
     /// The window's exact edge, in both directions, so its value is a fact and
@@ -2986,11 +2996,11 @@ tail line
             buffer(&rows)
         };
         assert!(
-            super::human_prompt_class(&pad(0), "agy").is_some(),
+            classify(&pad(0), "agy").is_some(),
             "a question on the window's first row still counts"
         );
         assert_eq!(
-            super::human_prompt_class(&pad(1), "agy"),
+            classify(&pad(1), "agy"),
             None,
             "one row further up it is out of the window"
         );
@@ -3012,7 +3022,7 @@ tail line
             &fence,
             "? for shortcuts                       Gemini 3.8 Flash · high",
         ];
-        assert_eq!(super::human_prompt_class(&buffer(&rows), "agy"), None);
+        assert_eq!(classify(&buffer(&rows), "agy"), None);
     }
 
     /// The SHAPE, one part removed at a time: each is required, none is
@@ -3021,7 +3031,7 @@ tail line
     fn a_prompt_missing_any_one_of_its_parts_is_not_classified() {
         let without = |drop: &str| {
             let rows: Vec<&str> = MODAL.iter().copied().filter(|row| *row != drop).collect();
-            super::human_prompt_class(&buffer(&rows), "agy")
+            classify(&buffer(&rows), "agy")
         };
         assert_eq!(without("Do you trust the contents of this project?"), None);
         assert_eq!(without("  ↑/↓ Navigate · enter Confirm"), None);
@@ -3048,7 +3058,7 @@ tail line
                 other => other,
             })
             .collect();
-        let found = super::human_prompt_class(&buffer(&moved), "agy");
+        let found = classify(&buffer(&moved), "agy");
         assert!(found.is_some(), "selection on the last option still counts");
         assert_eq!(
             found.map(|prompt| prompt.keys).unwrap_or_default(),
@@ -3070,7 +3080,7 @@ tail line
             "it said to press ↑/↓ Navigate · enter Confirm at the modal",
         ];
         rows.extend_from_slice(MODAL);
-        let found = super::human_prompt_class(&buffer(&rows), "agy");
+        let found = classify(&buffer(&rows), "agy");
         let found = found.expect("the modal below the chatter still classifies");
         assert_eq!(found.keys, "↑/↓ Navigate · enter Confirm");
     }

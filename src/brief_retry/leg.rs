@@ -154,7 +154,8 @@ fn run_with_wait(
     // and the readiness proof below still has to pass.
     let human_prompt =
         crate::transport::capture_pane(&server, &resolved.pane).is_some_and(|frame| {
-            crate::watchdog::human_prompt_class(&frame, seat.tool.adapter().name).is_some()
+            crate::watchdog::human_prompt_class(&frame, seat.tool.adapter().name, input.composed)
+                .is_some()
         });
     let facts = Facts {
         meta_name: seat.name.as_deref(),
