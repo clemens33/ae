@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.132] - 2026-09-18
+- Tell every predecessor conversation which tool owns it
+- Say that a writer settles a predecessor row and a reader judges its elements
+- Carry the seat's own last turns in its seed pack
+- Name the turns window instead of counting what survived a cut
+- Refuse a session name the entry already answers as a command
+- Assert a refused rename prints nothing on stdout
+- Add the reseat verb to move one seat to another profile
+- Pin the seat-move guard and the stamp-versus-roster refusal
+- Document the reseat verb
+- Build the seed file name through the filename sanitiser
+- Record who asked for a reseat and refuse a seat that asks for itself
+- Pin the reader an element's tag picks, not just its store
+- Say none for a conversation that never resolved
+- Drop a request row whose id ae did not mint
+- Pin both readers of the ledger, and the command line itself
+
 ## [v2026.9.131] - 2026-09-18
 - Draw each seat's client and model in the picker agent row
 - Prove a v2 roster draws its models in a real tmux menu
