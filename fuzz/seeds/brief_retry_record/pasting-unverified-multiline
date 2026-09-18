@@ -1,0 +1,12 @@
+brief-retry 1
+slot=spawned.1
+reference=spawn-spawned.1
+pane=%105
+launch_id=claude-1789105855
+actor=unverified
+attempts=2
+created=1789105855
+phase=pasting
+body
+multi
+line	brief

@@ -1,0 +1,11 @@
+brief-retry 1
+slot=spawned.1
+reference=spawn-spawned.1
+pane=%105
+launch_id=claude-1789105855
+actor=lead
+attempts=0
+created=1789105855
+phase=armed
+body
+Read the brief at /tmp/brief.md

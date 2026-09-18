@@ -74,6 +74,7 @@ A crash writes its input under `artifacts/<target>/`; reproduce it with
 | `board_grok` | `board::Splitter` (chunked feeds) + `board::grok::read_stream` + `board::collect` | first byte sizes the chunks 1..=256, second byte is the `--assistant` flag (`& 1`), the rest one Grok updates JSONL stream (synthetic records in the real shape; content is hand-written, never copied) |
 | `board_muse` | `board::Splitter` (chunked feeds) + `board::muse::read_stream` + `board::collect` | first byte sizes the chunks 1..=256, second byte is the `--assistant` flag (`& 1`), the rest one Muse session JSONL stream (synthetic records in the real shape; content is hand-written, never copied) |
 | `board_agy` | `board::Splitter` (chunked feeds) + `board::agy::read_stream` at a fixed seat id + `board::collect` | first byte sizes the chunks 1..=256, second byte is the `--assistant` flag (`& 1`), the rest one Antigravity history JSONL stream (synthetic records in the real shape; content is hand-written, never copied) |
+| `brief_retry_record` | `brief_retry::parse`, plus `render` on whatever parsed | one seat's undelivered-brief retry record; a parse that succeeds must render back to bytes that parse identically |
 
 NOTE — production also emits `chat`, `focus`, `refused`, `delivery-failed` and `telegram_autostart_refused`, which carry no seeds: `from_json` never branches on `action`, so they add zero coverage to THIS target — but a future target driving `ref_meaning` or `alert_meaning` would need them.
 

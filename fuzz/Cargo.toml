@@ -166,3 +166,10 @@ path = "fuzz_targets/board_agy.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "brief_retry_record"
+path = "fuzz_targets/brief_retry_record.rs"
+test = false
+doc = false
+bench = false

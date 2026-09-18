@@ -1,0 +1,11 @@
+brief-retry 1
+slot=spawned.1
+reference=spawn-spawned.1
+pane=%105
+launch_id=x
+actor=lead
+attempts=3
+created=1
+phase=armed
+body
+x

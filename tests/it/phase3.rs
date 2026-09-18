@@ -1737,6 +1737,9 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
             // length not shrunk) and streams it line by line under the
             // board-wide 1 MiB per-line cap. Every later reader reuses it.
             "src/board.rs".to_owned(),
+            // the bounded, non-following read of a seat's undelivered-brief
+            // retry record — the one source a retried brief is built from.
+            "src/brief_retry.rs".to_owned(),
             // Compact's own door: the stored request body a handover reply
             // names, read after its regular-file gate. An arbitrary path, not a
             // session file, which is why it is compact's and not the store's.

@@ -14,6 +14,7 @@ pub mod attention;
 pub mod autoupgrade;
 pub mod board;
 pub mod brief;
+pub mod brief_retry;
 pub mod cli;
 mod compact;
 pub mod config;
