@@ -523,9 +523,11 @@ fn compare_bindings(
             .map(|listed| listed.command.as_str());
         match (command, entry.absent) {
             (Some(_), true) => problems.push(format!("stale {name} is still bound")),
-            (Some(command), false) if !command.contains(launcher) => {
+            (Some(command), false) if entry.names_launcher && !command.contains(launcher) => {
                 problems.push(format!("{name} is bound to a foreign command"));
             }
+            // A present launcher-less entry (the 3.4 Down pair) is
+            // presence-checked: its command names no launcher by design.
             (Some(_), false) | (None, true) => {}
             (None, false) => problems.push(format!("missing {name}")),
         }
@@ -822,17 +824,13 @@ fn discovered(root: &Path) -> Vec<(String, PathBuf)> {
     seen
 }
 
-/// The input-map verdict for every ae-owned server with a running session on
-/// it, plus the default named server — read-only, through the existing tmux
-/// door. Only a server that positively ANSWERED earns a row: an absent or
-/// unreachable one is skipped, never warned about. The ambient server — the
-/// user's own — is never read.
-fn bindings_facts(
+/// The servers the input-map check reads: the running sessions' recorded
+/// servers plus this invocation's launch target — the ambient server never.
+/// A `None` target (an ambiguous declared pair) contributes nothing.
+fn bindings_servers(
     sessions: &[SessionFacts],
-    root: &Path,
-    config: &Path,
-    core: Option<&Path>,
-) -> Vec<BindingsFacts> {
+    default: Option<crate::inventory::ServerId>,
+) -> Vec<crate::inventory::ServerId> {
     let mut servers: Vec<crate::inventory::ServerId> = Vec::new();
     for session in sessions.iter().filter(|session| session.live) {
         let crate::inventory::ServerId::Selected(_) = &session.server else {
@@ -842,12 +840,26 @@ fn bindings_facts(
             servers.push(session.server.clone());
         }
     }
-    let default = crate::inventory::ServerId::Selected(crate::meta::Selector::Name(
-        crate::doors::DEFAULT_SERVER_NAME.to_owned(),
-    ));
-    if !servers.contains(&default) {
+    if let Some(default) = default
+        && !servers.contains(&default)
+    {
         servers.push(default);
     }
+    servers
+}
+
+/// The input-map verdict for every server [`bindings_servers`] names —
+/// read-only, through the existing tmux door. Only a server that positively
+/// ANSWERED earns a row: an absent or unreachable one is skipped, never
+/// warned about.
+fn bindings_facts(
+    sessions: &[SessionFacts],
+    root: &Path,
+    config: &Path,
+    core: Option<&Path>,
+) -> Vec<BindingsFacts> {
+    let declared = crate::doors::declared_server(crate::shape::current());
+    let servers = bindings_servers(sessions, crate::doors::launch_target(declared.as_ref()));
     let mut out = Vec::new();
     for server in &servers {
         let crate::tmux_floor::Probe::Server(found) = crate::transport::observe_tmux_floor(server)
@@ -1636,19 +1648,20 @@ mod tests {
     fn the_input_map_compare_names_what_broke_and_nothing_else() {
         use crate::session_tmux::ExpectedBinding;
         use crate::tmux::KeyBinding;
-        let entry = |table: &str, key: &str, absent: bool| ExpectedBinding {
+        let entry = |table: &str, key: &str, absent: bool, names_launcher: bool| ExpectedBinding {
             table: table.to_owned(),
             key: key.to_owned(),
             absent,
+            names_launcher,
         };
         let bound = |key: &str, command: &str| KeyBinding {
             key: key.to_owned(),
             command: command.to_owned(),
         };
         let expected = vec![
-            entry("root", "MouseDown1Status", false),
-            entry("root", "MouseUp1Status", true),
-            entry("prefix", "a", false),
+            entry("root", "MouseDown1Status", false, true),
+            entry("root", "MouseUp1Status", true, false),
+            entry("prefix", "a", false, true),
         ];
         let ae = "run-shell '/opt/ae' 'orchestrator'";
         let down = bound("MouseDown1Status", ae);
@@ -1680,6 +1693,114 @@ mod tests {
             ),
             vec!["stale root MouseUp1Status is still bound"]
         );
+        // Presence-only: a launcher-less entry (the 3.4 Down pair) never reads
+        // as foreign, whatever its command is.
+        let legacy = vec![entry("root", "MouseDown1Status", false, false)];
+        assert!(
+            compare_bindings(
+                &legacy,
+                &table(vec![bound("MouseDown1Status", "select-window -t {mouse}")]),
+                "/opt/ae"
+            )
+            .is_empty()
+        );
+    }
+
+    /// PIN (a2): the owner's own argv round-trips clean on BOTH capabilities —
+    /// the 3.4 Down pair carries no launcher and must not read as foreign —
+    /// and a foreign command on a launcher-naming key still warns per row.
+    #[test]
+    fn the_owner_round_trips_clean_on_both_capabilities() {
+        use crate::session_tmux::{expected_status_bindings, status_bindings_argv};
+        use crate::tmux::KeyBinding;
+        let server =
+            crate::inventory::ServerId::Selected(crate::meta::Selector::Name("ae".to_owned()));
+        let launcher = vec!["/opt/ae".to_owned()];
+        for menu_mouse in [true, false] {
+            let mut tables: Vec<(String, Vec<KeyBinding>)> = vec![
+                ("root".to_owned(), Vec::new()),
+                ("prefix".to_owned(), Vec::new()),
+            ];
+            for binding in status_bindings_argv(&server, &launcher, menu_mouse) {
+                let words = binding.as_args();
+                let Some(at) = words.iter().position(|word| word == "bind-key") else {
+                    continue;
+                };
+                let (Some(table), Some(key)) = (words.get(at + 2), words.get(at + 3)) else {
+                    continue;
+                };
+                tables
+                    .iter_mut()
+                    .find(|(name, _)| name == table)
+                    .expect("the owner binds root and prefix only")
+                    .1
+                    .push(KeyBinding {
+                        key: key.clone(),
+                        command: words[(at + 4)..].join(" "),
+                    });
+            }
+            let expected = expected_status_bindings(menu_mouse);
+            assert!(
+                compare_bindings(&expected, &tables, "/opt/ae").is_empty(),
+                "menu_mouse={menu_mouse}"
+            );
+            let foreign_key = if menu_mouse {
+                "MouseDown1Status"
+            } else {
+                "MouseUp1Status"
+            };
+            let mut dirty = tables.clone();
+            dirty
+                .iter_mut()
+                .find(|(name, _)| name == "root")
+                .expect("a root table")
+                .1
+                .iter_mut()
+                .find(|listed| listed.key == foreign_key)
+                .expect("the launcher-naming key")
+                .command = "select-window -t {mouse}".to_owned();
+            assert_eq!(
+                compare_bindings(&expected, &dirty, "/opt/ae"),
+                vec![format!("root {foreign_key} is bound to a foreign command")],
+                "menu_mouse={menu_mouse}"
+            );
+        }
+    }
+
+    /// PIN: the check reads running recorded servers plus this invocation's
+    /// launch target — stopped sessions, ambient records and an ambiguous
+    /// target contribute nothing.
+    #[test]
+    fn the_bindings_check_reads_running_servers_and_the_launch_target() {
+        use crate::inventory::ServerId;
+        use crate::meta::Selector;
+        let named = |name: &str| ServerId::Selected(Selector::Name(name.to_owned()));
+        let recorded = |name: &str, live: bool, server: ServerId| SessionFacts {
+            name: name.to_owned(),
+            live,
+            server,
+            core_bin: "/c".to_owned(),
+            core_usable: true,
+            core_version: "2026.9.1".to_owned(),
+            glue_version: "2026.9.1".to_owned(),
+            last_live: crate::tmux::Evidence::Silent,
+        };
+        let sessions = vec![
+            recorded("one", true, named("sock-a")),
+            recorded("two", true, named("sock-a")),
+            recorded("parked", false, named("sock-b")),
+            recorded("loose", true, ServerId::Ambient),
+        ];
+        assert_eq!(
+            bindings_servers(&sessions, Some(named("ae"))),
+            vec![named("sock-a"), named("ae")]
+        );
+        assert_eq!(bindings_servers(&sessions, None), vec![named("sock-a")]);
+        assert_eq!(
+            bindings_servers(&sessions, Some(named("sock-a"))),
+            vec![named("sock-a")]
+        );
+        assert!(bindings_servers(&[], None).is_empty());
     }
 
     /// PIN (c): the `tmux.bindings` row text — intact, missing, foreign,

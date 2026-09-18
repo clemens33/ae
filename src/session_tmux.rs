@@ -693,42 +693,50 @@ pub(crate) struct ExpectedBinding {
     /// Whether the entry must be ABSENT — a binding the owner removes because
     /// it belongs to the other server capability.
     pub absent: bool,
+    /// Whether the owner's command for this entry names the launcher. A
+    /// launcher-less entry (the 3.4 Down pair, navigation only) is
+    /// presence-checked; only a launcher-naming one can read as foreign.
+    pub names_launcher: bool,
 }
+
+/// The launcher word the expected-set derivation binds with. Distinctive on
+/// purpose: the owner's commands also carry the `ae`/`ae-more`/`ae-settings`
+/// range names, so a short word like `ae` would read as "names the launcher"
+/// on every binding — including the launcher-less 3.4 Down pair.
+const SENTINEL_LAUNCHER: &str = "/sentinel/ae-doctor-launcher";
 
 /// The key-table entries `ae doctor` expects on an ae-owned server of the
 /// given capability — derived from [`status_bindings_argv`], never a second
 /// list.
 ///
-/// Present entries are the `bind-key` rows the owner asserts. Absent entries
-/// are the owner's `unbind-key` rows for a key ae itself binds under the other
-/// capability — the stock-menu removals are hygiene, not ae behavior, so they
-/// expect nothing. A bind added to the owner is expected here with no second
-/// edit; `the_expected_set_tracks_the_owner` pins the coupling.
+/// Present entries are the `bind-key` rows the owner asserts, each carrying
+/// whether its command names the launcher. Absent entries are the owner's
+/// `unbind-key` rows for a key ae itself binds under the other capability —
+/// the stock-menu removals are hygiene, not ae behavior, so they expect
+/// nothing. A bind added to the owner is expected here with no second edit;
+/// `the_expected_set_tracks_the_owner` pins the per-capability contract, so
+/// the change still lands as a review.
 pub(crate) fn expected_status_bindings(menu_mouse: bool) -> Vec<ExpectedBinding> {
-    // The server and launcher are dummies: key names depend on neither.
+    // The server is a dummy and the launcher a sentinel: key names depend on
+    // neither, and the sentinel says per binding whether the owner's command
+    // names the launcher at all (a 3.4 Down bind carries navigation only).
     let server = ServerId::Selected(Selector::Name("ae".to_owned()));
-    let launcher = vec!["ae".to_owned()];
+    let launcher = vec![SENTINEL_LAUNCHER.to_owned()];
     let here = status_bindings_argv(&server, &launcher, menu_mouse);
     let other = status_bindings_argv(&server, &launcher, !menu_mouse);
-    let (bound_here, unbound_here) = key_entries(&here);
+    let (mut expected, unbound_here) = key_entries(&here);
     let (bound_other, _) = key_entries(&other);
-    let mut expected: Vec<ExpectedBinding> = bound_here
-        .iter()
-        .cloned()
-        .map(|(table, key)| ExpectedBinding {
-            table,
-            key,
-            absent: false,
-        })
-        .collect();
     for (table, key) in unbound_here {
-        let stale = bound_here.contains(&(table.clone(), key.clone()))
-            || bound_other.contains(&(table.clone(), key.clone()));
+        let stale = expected
+            .iter()
+            .chain(bound_other.iter())
+            .any(|entry| entry.table == table && entry.key == key);
         if stale {
             expected.push(ExpectedBinding {
                 table,
                 key,
                 absent: true,
+                names_launcher: false,
             });
         }
     }
@@ -738,18 +746,28 @@ pub(crate) fn expected_status_bindings(menu_mouse: bool) -> Vec<ExpectedBinding>
 /// `(table, key)` pairs, in owner order.
 type KeyPairs = Vec<(String, String)>;
 
-/// The `(table, key)` pairs an argv set binds and unbinds, in owner order.
-fn key_entries(argv: &[TmuxArgv]) -> (KeyPairs, KeyPairs) {
+/// The entries an argv set binds — each with whether its command names the
+/// launcher — and the `(table, key)` pairs it unbinds, in owner order.
+fn key_entries(argv: &[TmuxArgv]) -> (Vec<ExpectedBinding>, KeyPairs) {
     let mut bound = Vec::new();
     let mut unbound = Vec::new();
     for words in argv.iter().map(TmuxArgv::as_args) {
-        for window in words.windows(4) {
+        for (at, window) in words.windows(4).enumerate() {
             let [verb, flag, table, key] = [&window[0], &window[1], &window[2], &window[3]];
             if flag != "-T" {
                 continue;
             }
             if verb == "bind-key" {
-                bound.push((table.clone(), key.clone()));
+                let names_launcher = words
+                    .iter()
+                    .skip(at + 4)
+                    .any(|word| word.contains(SENTINEL_LAUNCHER));
+                bound.push(ExpectedBinding {
+                    table: table.clone(),
+                    key: key.clone(),
+                    absent: false,
+                    names_launcher,
+                });
             } else if verb == "unbind-key" {
                 unbound.push((table.clone(), key.clone()));
             }
@@ -1337,75 +1355,37 @@ mod tests {
         assert_eq!(interpret_pane_id(false, "%12\n"), None);
     }
 
-    /// PIN (b): the expected set is derived from the owner, not a second list.
-    /// A bind added to [`status_bindings_argv`] is expected with no second
-    /// edit (auto-covered); a hand filter here goes RED against the naive
-    /// re-derivation below.
+    /// PIN (b): the expected set per capability — keys, tables, absent flags,
+    /// and whether the owner's command names the launcher. The 3.4 Down pair
+    /// carries navigation only, so it is presence-checked. An owner change
+    /// goes RED here for review.
     #[test]
     fn the_expected_set_tracks_the_owner() {
-        use crate::meta::Selector;
-        let server = ServerId::Selected(Selector::Name("ae".to_owned()));
-        let launcher = vec!["ae".to_owned()];
-        // Every `bind-key -T <table> <key>` the owner emits is present, and
-        // every `unbind-key` of a key bound under either capability is absent.
-        let words = |capability: bool| {
-            status_bindings_argv(&server, &launcher, capability)
-                .iter()
-                .flat_map(|binding| binding.as_args().to_vec())
-                .collect::<Vec<_>>()
+        let entry = |table: &str, key: &str, absent: bool, names_launcher: bool| ExpectedBinding {
+            table: table.to_owned(),
+            key: key.to_owned(),
+            absent,
+            names_launcher,
         };
-        let pairs = |words: &[String], verb: &str| {
-            words
-                .windows(4)
-                .filter(|window| window[0] == verb && window[1] == "-T")
-                .map(|window| (window[2].clone(), window[3].clone()))
-                .collect::<Vec<_>>()
-        };
-        let entry =
-            |(table, key): (String, String), absent: bool| ExpectedBinding { table, key, absent };
-        for menu_mouse in [true, false] {
-            let here = words(menu_mouse);
-            let bound_here = pairs(&here, "bind-key");
-            let bound_other = pairs(&words(!menu_mouse), "bind-key");
-            let mut derived: Vec<ExpectedBinding> = bound_here
-                .iter()
-                .cloned()
-                .map(|pair| entry(pair, false))
-                .collect();
-            for pair in pairs(&here, "unbind-key") {
-                if bound_here.contains(&pair) || bound_other.contains(&pair) {
-                    derived.push(entry(pair, true));
-                }
-            }
-            assert_eq!(expected_status_bindings(menu_mouse), derived);
-        }
-        // Non-vacuity: today's contract, which an owner REMOVAL must review.
-        let modern = expected_status_bindings(true);
-        let has = |table: &str, key: &str, absent: bool| {
-            modern
-                .iter()
-                .any(|entry| entry.table == table && entry.key == key && entry.absent == absent)
-        };
-        for (table, key) in [
-            ("root", "MouseDown1Status"),
-            ("root", "MouseDown3Status"),
-            ("prefix", "a"),
-        ] {
-            assert!(
-                has(table, key, false),
-                "{table} {key} is expected present: {modern:?}"
-            );
-        }
-        for key in ["MouseUp1Status", "MouseUp3Status"] {
-            assert!(
-                has("root", key, true),
-                "{key} is expected absent: {modern:?}"
-            );
-        }
-        assert!(
-            expected_status_bindings(false)
-                .iter()
-                .all(|entry| !entry.absent)
+        assert_eq!(
+            expected_status_bindings(true),
+            vec![
+                entry("root", "MouseDown1Status", false, true),
+                entry("root", "MouseDown3Status", false, true),
+                entry("prefix", "a", false, true),
+                entry("root", "MouseUp1Status", true, false),
+                entry("root", "MouseUp3Status", true, false),
+            ]
+        );
+        assert_eq!(
+            expected_status_bindings(false),
+            vec![
+                entry("root", "MouseDown1Status", false, false),
+                entry("root", "MouseDown3Status", false, false),
+                entry("root", "MouseUp1Status", false, true),
+                entry("root", "MouseUp3Status", false, true),
+                entry("prefix", "a", false, true),
+            ]
         );
     }
 }
