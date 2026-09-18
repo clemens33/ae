@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.111] - 2026-09-18
+- Pin the guarded count relation over any Sent verdict
+- Judge the guarded count on freed, steady-quiet
+
 ## [v2026.9.110] - 2026-09-17
 - Wire the in-place ae compact verb over the guarded deliver operation
 - Document the in-place ae compact verb
