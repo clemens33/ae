@@ -7383,7 +7383,14 @@ fn the_watchdog_pane_starts_before_a_blocked_launch_delivery_ends() {
         if !matches!(child.try_wait(), Ok(None)) {
             break;
         }
-        let (_, panes) = rig.tmux(&["list-panes", "-s", "-F", "#{pane_id} #{@ae_agent}"]);
+        let (_, panes) = rig.tmux(&[
+            "list-panes",
+            "-s",
+            "-t",
+            "=lnwdfirst",
+            "-F",
+            "#{pane_id} #{@ae_agent}",
+        ]);
         if panes.lines().any(|line| line.ends_with(" _watchdog")) {
             seen = true;
             alive_at_see = matches!(child.try_wait(), Ok(None));

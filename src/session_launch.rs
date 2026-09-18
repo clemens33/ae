@@ -3224,18 +3224,18 @@ fn build(
     // wait on any seat. The gate is evaluated here, at exec time: `_run`
     // publishes the start marker pre-exec on Create, so a later re-read of
     // `resuming_seat` would wrongly paste a fresh seat.
-    let mut pending: Vec<Option<String>> = Vec::with_capacity(launching.len());
+    let mut pending: Vec<(&Launching, String)> = Vec::with_capacity(launching.len());
     for agent in &launching {
         // A seat with no pane is a preserved roster row, not an agent to start.
         if agent.pane.is_empty() {
-            pending.push(None);
             continue;
         }
         match start_agent(shape, &dir, &core, agent, &server, err)? {
             Err(why) => {
                 return rollback_launch(shape, &dir, &server, &format!("Error: {why}"), err);
             }
-            Ok(prompt) => pending.push(prompt),
+            Ok(Some(prompt)) => pending.push((agent, prompt)),
+            Ok(None) => {}
         }
     }
 
@@ -3265,13 +3265,8 @@ fn build(
     // the durable failure inside `deliver_launch_prompt`, whose errors are
     // swallowed, so no state is recreated and nothing panics. A concurrent
     // launch against this live session reattaches, never rebuilds.
-    for (agent, prompt) in launching.iter().zip(pending.iter()) {
-        if agent.pane.is_empty() {
-            continue;
-        }
-        if let Some(prompt) = prompt {
-            deliver_launch_prompt(&dir, &server, agent, prompt, err)?;
-        }
+    for (agent, prompt) in pending {
+        deliver_launch_prompt(&dir, &server, agent, &prompt, err)?;
     }
 
     // ---- post-launch capture ----
@@ -4042,9 +4037,8 @@ pub fn publish_meta_and_seed_uuid(
     Ok(seed_session_uuid(server, expected_identity, &uuid))
 }
 
-/// Hand one agent's pane the command that BECOMES its agent, and wait for the
-/// tool to take the pane over.
-/// Phase 1 of a seat launch: the EXEC half.
+/// Phase 1 of a seat launch: hand one agent's pane the command that BECOMES
+/// its agent, and wait for the tool to take the pane over.
 ///
 /// Pastes the pane command, waits for the tool's process, and stamps
 /// `launch_time`. The gated launch turn is NOT delivered here — it is
