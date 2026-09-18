@@ -1439,24 +1439,29 @@ fn the_critical_section_bills_two_calls_per_enter() {
     });
     assert!(matches!(done, Ok(deliver::Outcome::Sent(_))), "{done:?}");
     // Five calls are fixed; every Enter bills exactly one send plus one
-    // submit capture — the relation holds whatever the load retried.
-    let enters = rig.enter_count();
-    assert!((1..=3).contains(&enters), "{enters}");
+    // submit capture — judged on `freed` itself; the TUI receipt may lag.
     let mut freed = 0;
+    let mut steady = 0;
     for _ in 0..600 {
         let bytes = std::fs::read(&log).expect("the log reads");
-        freed = String::from_utf8_lossy(&bytes[mark.get()..])
+        let now = String::from_utf8_lossy(&bytes[mark.get()..])
             .matches("free client")
             .count();
-        if freed == 5 + 2 * enters {
+        steady = if now == freed { steady + 1 } else { 0 };
+        freed = now;
+        if matches!(freed, 7 | 9 | 11) && steady >= 5 {
             break;
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    assert_eq!(
-        freed,
-        5 + 2 * enters,
-        "five fixed, then send + capture per Enter"
+    let enters = rig.enter_count();
+    assert!(
+        matches!(freed, 7 | 9 | 11),
+        "five fixed, then send + capture per Enter: freed={freed} enters={enters}"
+    );
+    assert!(
+        (1..=(freed - 5) / 2).contains(&enters),
+        "TUI receipt lags, never exceeds: freed={freed} enters={enters}"
     );
     let free_send = lock_is_free(&rig.send_lock_path());
     let free_life = lock_is_free(&rig.lifecycle_lock_path());
