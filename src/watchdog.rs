@@ -102,6 +102,9 @@ const HUMAN_PROMPT_KEYS: &[&str] = &["enter Confirm", "↑/↓ Navigate"];
 /// copy of its fence, so the two cannot drift apart. That spec is handed IN
 /// rather than looked up here: naming a tool variant outside `src/tool.rs` is
 /// a per-tool decision in the wrong half, which `tests/it/doors.rs` refuses.
+/// The gate and the phrases stay HERE while agy is the only tool with a
+/// human-only prompt; the day a SECOND one grows one, they earn a row in the
+/// adapter table instead of a second branch in this function.
 #[must_use]
 pub fn human_prompt_class(
     buf: &str,
