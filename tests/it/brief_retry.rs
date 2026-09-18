@@ -490,3 +490,91 @@ fn every_prestage_refusal_is_decided_before_the_first_key_reaches_the_pane() {
         "the submit must follow the first key"
     );
 }
+
+/// THE INVARIANT ITSELF, through the REAL leg into a REAL pane.
+///
+/// Every other arm here drives the daemon with a scripted `send`, which can
+/// prove that a delivery was ATTEMPTED and nothing more. The slice's claim is
+/// stronger than that: the brief arrives byte-identical to what `spawn` would
+/// have pasted, with `provenance::brief(<original spawner>)` as its first line.
+/// Only a real tool pane can answer what was actually received, so this arm
+/// runs the shipped helper against one and reads the bytes back out.
+///
+/// It carries four pins on one fixture, because they are four faces of the
+/// same delivery: the BYTES, the authority line, the cleanup, and the ledger.
+/// And it carries the forgery bound through the real path — a caller who names
+/// the retry action supplies text on argv and an actor in the environment, and
+/// NEITHER may reach the pane.
+#[test]
+fn the_real_leg_pastes_the_record_verbatim_under_the_spawners_own_authority() {
+    let rig = super::deliver::Rig::new("briefleg", "claude", 0);
+    let body = "do the thing\n\nand reply when it is done";
+    let marker = ae::provenance::brief("lead");
+    // The record names the rig's own pane and the launch token its meta
+    // carries, so the gate's incarnation check passes on facts, not fixture.
+    //
+    // The body carries NO marker, exactly as `spawn` stores it: the first line
+    // is stamped by the one provenance owner inside `deliver`, from the actor
+    // the record names. That is what makes the marker impossible to forge
+    // through the record — and it is asserted below, on what the pane got.
+    let record = format!(
+        "brief-retry 1\nslot=main\nreference=spawn-main\npane={}\nlaunch_id=tok-rig\n\
+         actor=lead\nattempts=0\ncreated={}\nphase=armed\nbody\n{body}",
+        rig.pane,
+        now() - 30,
+    );
+    assert!(
+        fs::write(rig.dir.join("brief-retry.main.rec"), &record).is_ok(),
+        "a planted record"
+    );
+    assert!(
+        fs::write(rig.dir.join("undelivered.tui.txt"), body).is_ok(),
+        "the preserved brief spawn left behind"
+    );
+
+    // THE FORGERY ATTEMPT rides the very call that triggers the retry: a
+    // message on argv, and an actor in the environment.
+    let (code, stderr) = rig.run(
+        ae::cli::SEND,
+        &["tui", "INJECTED-BY-THE-CALLER"],
+        &[
+            ("_AE_EVENT_ACTION", "brief-retry"),
+            ("AE_SENDER_OVERRIDE", "impostor"),
+        ],
+    );
+    assert_eq!(code, Some(0), "the retry should deliver: {stderr}");
+
+    // 1. THE BYTES: exactly the marker line and the record's body.
+    let received = rig.submitted();
+    assert_eq!(
+        received.trim_end(),
+        format!("{marker}\n{body}"),
+        "the pane must receive the record verbatim"
+    );
+    // 2. THE FORGERY BOUND, proven where it matters — at the pane.
+    assert!(
+        !received.contains("INJECTED-BY-THE-CALLER") && !received.contains("impostor"),
+        "no caller-supplied text or actor may reach the pane: {received}"
+    );
+    // 3. THE CLEANUP: a delivered brief leaves neither record nor preserved
+    // file, so nothing invites a second, manual send.
+    assert!(
+        !rig.dir.join("brief-retry.main.rec").exists(),
+        "a delivered record is removed"
+    );
+    assert!(
+        !rig.dir.join("undelivered.tui.txt").exists(),
+        "a delivered brief's preserved file is removed"
+    );
+    // 4. THE LEDGER names the SPAWNER, never the watchdog and never the
+    // caller who triggered the retry.
+    let events = rig.events();
+    assert!(
+        events.contains("\"action\":\"brief-delivered\"") && events.contains("\"actor\":\"lead\""),
+        "the delivery is recorded under the spawner's own name: {events}"
+    );
+    assert!(
+        !events.contains("impostor"),
+        "the forged actor must not reach the ledger either: {events}"
+    );
+}

@@ -139,18 +139,22 @@ while (1) {
 
 /// One isolated server, one stamped pane running [`FAKE_TUI`], and a session
 /// directory whose meta names the tool.
-struct Rig {
+///
+/// Shared with `super::brief_retry`, which needs the one thing only a real
+/// pane can answer: what a tool actually RECEIVED. A scripted helper can prove
+/// that a delivery was attempted; only this can prove the bytes.
+pub(crate) struct Rig {
     scratch: PathBuf,
     sock: PathBuf,
-    dir: PathBuf,
+    pub(crate) dir: PathBuf,
     session: String,
-    pane: String,
+    pub(crate) pane: String,
     received: PathBuf,
     enters: PathBuf,
 }
 
 impl Rig {
-    fn new(tag: &str, tool: &str, marker_secs: u32) -> Self {
+    pub(crate) fn new(tag: &str, tool: &str, marker_secs: u32) -> Self {
         Self::with_mode(tag, tool, marker_secs, "")
     }
 
@@ -224,7 +228,7 @@ impl Rig {
             std::fs::write(
                 rig.dir.join("meta"),
                 format!(
-                    "session={session}\ntmux_server_kind=socket\ntmux_server={}\nseat.main=tui\nagent_bin.main={tool}\n",
+                    "session={session}\ntmux_server_kind=socket\ntmux_server={}\nseat.main=tui\nagent_bin.main={tool}\nlaunch_id.main=tok-rig\n",
                     rig.sock.display()
                 ),
             )
@@ -261,7 +265,12 @@ impl Rig {
     }
 
     /// Run one core subcommand from this pane.
-    fn run(&self, sub: &str, tail: &[&str], envs: &[(&str, &str)]) -> (Option<i32>, String) {
+    pub(crate) fn run(
+        &self,
+        sub: &str,
+        tail: &[&str],
+        envs: &[(&str, &str)],
+    ) -> (Option<i32>, String) {
         let mut command = ae();
         command
             .env("TMUX", format!("{},0,0", self.sock.display()))
@@ -283,7 +292,7 @@ impl Rig {
     }
 
     /// Everything the TUI has SUBMITTED, waiting briefly for it.
-    fn submitted(&self) -> String {
+    pub(crate) fn submitted(&self) -> String {
         for _ in 0..120 {
             let seen = std::fs::read_to_string(&self.received).unwrap_or_default();
             if !seen.is_empty() {
@@ -301,7 +310,7 @@ impl Rig {
             .count()
     }
 
-    fn events(&self) -> String {
+    pub(crate) fn events(&self) -> String {
         std::fs::read_to_string(self.dir.join("events.jsonl")).unwrap_or_default()
     }
 }
