@@ -95,9 +95,8 @@ the orphan sweep.
 
 ## A dead pane's launch line fails after upgrading (`Unknown command: ... ae-core`)
 
-A seat's tool exited, and the shell-history line from before the upgrade names
-a `versions/<V>/ae-core` the publish has since pruned. (Other shells word it
-differently — `No such file or directory` on bash — for the same missing file.)
+A seat's tool exited, and the shell-history line from before the upgrade names a `versions/<V>/ae-core` the publish has since pruned.
+(Other shells word it differently — `No such file or directory` on bash — for the same missing file.)
 In the dead pane, run `~/.local/bin/ae _run <session dir> <slot>` through the
 command link instead, with the same session directory and slot the old line carried.
 Sessions launched after this fix need no repair: their lines name the link already.

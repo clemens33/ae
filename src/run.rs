@@ -1,6 +1,6 @@
 //! `_run <session-dir> <slot>` — what a pane runs, and the whole of it.
 //!
-//! The pane's command is `<core> _run <session-dir> <slot>`: read the seat,
+//! The pane's command is `<head> _run <session-dir> <slot>`: read the seat,
 //! build the tool command with the SAME builders the launch uses, decide
 //! create-vs-resume, then `exec` the tool.
 
@@ -159,7 +159,7 @@ pub(crate) fn pane_line(head: &Path, dir: &Path, slot: &str, snapshot: Option<&s
     }
 }
 
-/// The line a pane runs — the core, this entry, the session and the seat.
+/// The line a pane runs — the head, this entry, the session and the seat.
 #[must_use]
 pub fn pane_command(core: &Path, dir: &Path, slot: &str) -> String {
     pane_line(&pane_head(core), dir, slot, None)

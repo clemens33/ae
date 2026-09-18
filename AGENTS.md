@@ -79,8 +79,7 @@ freeze protocol and every hard rule remain mandatory.
 
 An upgrade is not a binary swap: it migrates, repoints and relinks every placeable session
 before it moves the command link, reports and skips stopped unplaceable sessions, then prunes
-unreferenced versions. A seat's pane launch line names the command link on an installed machine,
-so it stays runnable across the upgrade that prunes the core it was launched from.
+unreferenced versions. A seat's pane line names the command link when installed and stays runnable across the upgrade.
 A publish is `$HOME`-pinned, so a checkout run whose state root differs
 REFUSES `ae upgrade` before downloading anything.
 Live upgrade probes therefore go in a sandboxed `$HOME`, never `ae-dev`. Why:
