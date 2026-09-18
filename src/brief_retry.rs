@@ -740,8 +740,6 @@ fn decide(record: &Record, facts: &Facts<'_>) -> Decision {
     if !facts.ready {
         return Decision::Skip("the input box is not a confirmed-idle state");
     }
-    // Package 2 inserts its human-prompt latch HERE, as one more Skip arm, so
-    // it never has to reinterpret anything above it.
     Decision::Deliver
 }
 

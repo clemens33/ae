@@ -3048,6 +3048,31 @@ tail line
         );
     }
 
+    /// ONE option is not a choice. Every MODAL fixture carries a description
+    /// row that counts as a sibling, so without this the sibling check could be
+    /// deleted and every other pin would stay green — the check is the only
+    /// thing standing between a question-plus-one-line and a named seat.
+    #[test]
+    fn a_question_with_a_single_option_row_and_no_sibling_is_not_a_prompt() {
+        let rows = [
+            "Do you trust the contents of this project?",
+            "> Yes, I trust this folder",
+            "  ↑/↓ Navigate · enter Confirm",
+            "Gemini 3.8 Flash · high",
+        ];
+        assert_eq!(classify(&buffer(&rows), "agy"), None);
+        // The SAME frame with one sibling restored is a choice, so the pin is
+        // about the sibling and not about the rest of the shape.
+        let with_sibling = [
+            "Do you trust the contents of this project?",
+            "> Yes, I trust this folder",
+            "  No, exit",
+            "  ↑/↓ Navigate · enter Confirm",
+            "Gemini 3.8 Flash · high",
+        ];
+        assert!(classify(&buffer(&with_sibling), "agy").is_some());
+    }
+
     /// The selection TRAVELS: a human pressing ↓ puts `>` on the last option,
     /// where there is no row beneath it. Reading the sibling on one side only
     /// would lose the modal exactly when someone is working through it.

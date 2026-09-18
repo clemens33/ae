@@ -150,10 +150,12 @@ fn run_with_wait(
     // CHANNEL ONE of two. The daemon knows its own latch, but that memory does
     // not cross into this helper process, and a forged trigger does not come
     // through the daemon at all — so the leg asks the pane itself, once, right
-    // here. FAIL CLOSED: a capture that does not answer reads as no prompt,
-    // and the readiness proof below still has to pass.
+    // here. FAIL CLOSED, and it has to be THIS side of the question: a capture
+    // that does not answer counts AS a prompt. The readiness proof above is no
+    // backstop — it was taken from an EARLIER frame and `decide` only reads the
+    // bool — so a pane ae cannot see right now is one it must not paste into.
     let human_prompt =
-        crate::transport::capture_pane(&server, &resolved.pane).is_some_and(|frame| {
+        crate::transport::capture_pane(&server, &resolved.pane).is_none_or(|frame| {
             crate::watchdog::human_prompt_class(&frame, seat.tool.adapter().name, input.composed)
                 .is_some()
         });

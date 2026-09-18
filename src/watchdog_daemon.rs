@@ -1127,11 +1127,24 @@ fn book_throttle(
 
 /// The usage-limit branch: throttling's nudge suppression, plus ONE durable
 /// `limit` event per episode — the word `ae list` reads.
+/// Whether THIS cycle judged `slot` to be waiting on a human-only prompt —
+/// channel two of the retry's two, and pure so it can be pinned without a pane.
+/// A slot the cycle did not judge at all is not latched: absence of a verdict
+/// is not a verdict, and channel one still asks the pane for itself.
+fn slot_latched(verdicts: &[(String, Verdict)], slot: &str) -> bool {
+    verdicts
+        .iter()
+        .any(|(at, verdict)| at == slot && *verdict == Verdict::HumanPrompt)
+}
+
 /// Count a human-only prompt, and NAME it once it has held. `None` means the
 /// pane shows none this cycle and the branch does not apply.
 ///
 /// The stability count is the whole false-positive bound: a menu a human is
 /// scrolling through redraws, and one cycle of it is not a seat that is stuck.
+/// It also absorbs the detector's one known miss: a modal painted before its
+/// selection lands carries no `>` row and classifies as nothing, which costs a
+/// cycle and never a false name.
 /// The event and the Notify line name WHICH seat and WHAT to press, because a
 /// verdict nobody can act on is not news. ae NEVER sends the key.
 fn book_human_prompt(
@@ -5022,10 +5035,7 @@ impl Cycle<'_> {
             // latched human-only prompt costs no capture to honour here. The
             // leg asks the pane again for itself — that is channel one, and it
             // is what covers a trigger that never came through this daemon.
-            if verdicts
-                .iter()
-                .any(|(slot, verdict)| *slot == entry.slot && *verdict == Verdict::HumanPrompt)
-            {
+            if slot_latched(verdicts, &entry.slot) {
                 continue;
             }
             let Some(reading) = crate::brief_retry::read(self.meta_dir, &entry.slot) else {
@@ -5391,7 +5401,7 @@ mod tests {
         motion_cadence, motion_failure, motion_observation_due, motion_publish_failure,
         motion_ticker_enabled, nudge_text, observed_option, proven_ownership, quota_ask_candidates,
         quota_delivery, quota_observation_due, quota_recipients, quota_seconds, read_events,
-        rebind, record_nudge, restore_idle, session_name, slot_mark, stale_display,
+        rebind, record_nudge, restore_idle, session_name, slot_latched, slot_mark, stale_display,
         static_observe_cadence, sweep_effects, sweep_seconds, system_time_from_epoch,
         throttle_quota_line, ticker_mode, window_agents_line,
     };
@@ -5557,6 +5567,33 @@ mod tests {
             ..silent
         };
         assert_eq!(account(&prior, &no_modal, &knobs).verdict, Verdict::Stale);
+    }
+
+    /// CHANNEL TWO, pinned without a pane. The daemon must not spend its one
+    /// delivery a cycle on a seat it has just judged to be waiting on a human,
+    /// and a slot it did not judge at all is NOT latched — absence of a verdict
+    /// is not a verdict, and channel one still asks the pane for itself.
+    #[test]
+    fn the_retry_skips_exactly_the_slots_this_cycle_judged_to_be_on_a_prompt() {
+        let judged = [
+            ("spawned.1".to_owned(), Verdict::HumanPrompt),
+            ("spawned.2".to_owned(), Verdict::Idle),
+            ("worker.0".to_owned(), Verdict::Dead),
+        ];
+        assert!(slot_latched(&judged, "spawned.1"));
+        assert!(
+            !slot_latched(&judged, "spawned.2"),
+            "an idle seat is retried"
+        );
+        assert!(
+            !slot_latched(&judged, "worker.0"),
+            "a dead seat is not this"
+        );
+        assert!(
+            !slot_latched(&judged, "main"),
+            "an unjudged slot is not latched"
+        );
+        assert!(!slot_latched(&[], "spawned.1"), "no verdicts, no latch");
     }
 
     /// DEAD outranks it. A pane whose agent is gone may still be showing the
