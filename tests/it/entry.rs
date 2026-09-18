@@ -491,6 +491,99 @@ fn a_preamble_flag_is_no_longer_a_flag_ae_answers_to() {
     assert!(!rig.sessions().exists(), "a refused argv built state");
 }
 
+/// A WORD THE ROUTE ANSWERS MAY NOT BECOME A SESSION NAME — the class, not the
+/// word that happened to be added last.
+///
+/// A flag-first argv is the one shape that can carry such a name PAST the
+/// route (`ae list` is the command; `ae --local list` is a launch naming it),
+/// and a rename is the other place a name is created. Both refuse before
+/// anything is written, because the session they would make is one `ae <word>`
+/// could never reach again.
+#[test]
+fn a_word_the_route_answers_is_refused_as_a_session_name() {
+    let rig = Rig::new("verbname");
+    for verb in ["list", "brief", "rename", "watchdog"] {
+        let (code, stdout, stderr) = rig.run(&["--local", verb]);
+        assert_eq!(code, Some(2), "{verb}: stdout: {stdout}\nstderr: {stderr}");
+        assert!(
+            stderr.contains(&format!("'{verb}' is an ae command")),
+            "{stderr}"
+        );
+        assert!(
+            stdout.is_empty(),
+            "a refusal must not reach stdout: {stdout}"
+        );
+
+        let (code, stdout, stderr) = rig.run(&["rename", "whatever", verb]);
+        assert_eq!(code, Some(2), "{verb}: stdout: {stdout}\nstderr: {stderr}");
+        assert!(
+            stderr.contains(&format!("'{verb}' is an ae command")),
+            "{stderr}"
+        );
+    }
+    assert!(!rig.sessions().exists(), "a refused name built state");
+    // The canonical orchestrator is the one routed word a session IS named,
+    // and `a_bare_orchestrator_word_launches_the_canonical_seat` below drives
+    // that launch end to end; the exemption itself is pinned in `src/entry.rs`.
+}
+
+/// THE REFUSED SET IS THE ROUTE'S OWN ARMS, read from the router's source.
+///
+/// The unit beside `route` proves every listed word is answered; only the
+/// source proves the other direction — that a NEW arm did not appear without
+/// joining the set, which is the drift that would quietly re-open the hole.
+#[test]
+fn the_refused_name_set_is_every_word_the_route_answers() {
+    let source = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("entry.rs"),
+    )
+    .expect("the router's own source");
+    let body = source
+        .split_once("pub fn route(")
+        .and_then(|(_, rest)| rest.split_once("\n}\n"))
+        .map(|(body, _)| body.to_owned())
+        .expect("route's body");
+    // The TOP-LEVEL arms alone: they are the ones indented by eight, while a
+    // nested match's arms (`archive preview`) sit deeper and match no first
+    // word. A literal `Some(_)` catch-all carries no word.
+    let mut answered: Vec<String> = Vec::new();
+    for line in body.lines() {
+        let Some(arm) = line.strip_prefix("        Some(") else {
+            continue;
+        };
+        let Some((head, _)) = arm.split_once(") =>") else {
+            continue;
+        };
+        for word in head.split('|') {
+            let word = word.trim().trim_matches('"');
+            // Only a name a session could carry: the flag spellings and the
+            // catch-all arm are refused by the name grammar long before this
+            // set is consulted.
+            if word != "_" && !word.starts_with('-') {
+                answered.push(word.to_owned());
+            }
+        }
+    }
+    answered.sort();
+    answered.dedup();
+    assert!(
+        answered.len() > 5,
+        "the source scan found {} arms; a guard that scans nothing passes forever",
+        answered.len()
+    );
+    let mut refused: Vec<String> = ae::entry::ROUTED_VERBS
+        .iter()
+        .map(|verb| (*verb).to_owned())
+        .collect();
+    refused.sort();
+    assert_eq!(
+        answered, refused,
+        "every word the route answers must be refused as a session name"
+    );
+}
+
 /// NOTHING CHANGES FOR AN INTERNAL ENTRY CALLED BARE.
 #[test]
 fn an_internal_entry_keeps_its_own_grammar_and_pays_for_no_door() {

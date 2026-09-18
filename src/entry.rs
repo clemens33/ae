@@ -343,6 +343,65 @@ pub const EXIT_USAGE: u8 = 2;
 /// The exit code an operation that could not be carried out takes.
 pub const EXIT_FAILED: u8 = 1;
 
+/// Every word [`route`] answers ITSELF that is also a legal session name.
+///
+/// A name in this set can never be reached by `ae <name>` again: the route
+/// takes the word before any state is read. The set is refused at the two
+/// places a session name is CREATED — an explicit launch and a rename — so
+/// adding a verb closes the whole class rather than the one word that slice
+/// happened to add. Sorted, and pinned against [`route`]'s own arms.
+///
+/// The flag spellings (`-h`, `--help`, `--version`, `-V`) are deliberately
+/// absent: the name grammar refuses a leading `-` already.
+pub const ROUTED_VERBS: &[&str] = &[
+    "archive",
+    "board",
+    "brief",
+    "compact",
+    "doctor",
+    "end",
+    "help",
+    "hub",
+    "init",
+    "jump",
+    "list",
+    "loop",
+    "ls",
+    "next",
+    "orchestrator",
+    "quota",
+    "reboot",
+    "rename",
+    "rm",
+    "status",
+    "stop",
+    "telegram",
+    "transfer",
+    "usage",
+    "version",
+    "watchdog",
+];
+
+/// Whether a session may never be NAMED `name` — the ONE owner of that
+/// question, for the launch and the rename alike.
+///
+/// `orchestrator` is the single exemption, and it is not a hole: ae's own
+/// canonical seat IS the session of that name, so the word reaches its session
+/// instead of stealing it. Every other verb would leave a session nothing can
+/// address.
+#[must_use]
+pub fn name_is_routed_verb(name: &str) -> bool {
+    name != crate::orchestrator::ORCHESTRATOR_SESSION && ROUTED_VERBS.contains(&name)
+}
+
+/// What the launch and the rename print when they refuse such a name.
+#[must_use]
+pub fn routed_verb_refusal(name: &str) -> String {
+    format!(
+        "Error: '{name}' is an ae command, so `ae {name}` would never reach a session of that name. Pick another name."
+    )
+}
+
 /// The ambient facts an invocation carries — every one of them resolved from a
 /// door in [`crate::doors`], and none of them readable from the argv.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -606,7 +665,62 @@ pub fn is_direct_child_name(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{DEFAULT_CONFIG, HELP, LIST_HELP, Preamble, Route, is_direct_child_name, route};
+
+    #[test]
+    fn every_refused_name_is_a_word_the_route_answers_itself() {
+        let seat = crate::orchestrator::ORCHESTRATOR_SESSION;
+        for verb in ROUTED_VERBS.iter().filter(|verb| **verb != seat) {
+            assert!(
+                !matches!(route(&preamble(), &argv(&[verb]), None), Route::Launch(_)),
+                "a name is refused for '{verb}' only because the route takes that word"
+            );
+            assert!(
+                crate::session_launch::name::is_session_name(verb),
+                "'{verb}' could never be a session name anyway, so it does not belong here"
+            );
+        }
+        // The seat's own word is the exception that proves the rule: it takes
+        // the Launch route, because the session it launches IS ae's own seat.
+        assert!(matches!(
+            route(&preamble(), &argv(&[seat]), None),
+            Route::Launch(_)
+        ));
+        let mut sorted = ROUTED_VERBS.to_vec();
+        sorted.sort_unstable();
+        assert_eq!(sorted, ROUTED_VERBS.to_vec(), "the set is sorted");
+    }
+
+    #[test]
+    fn the_canonical_orchestrator_is_the_one_routed_word_a_session_may_be_named() {
+        let seat = crate::orchestrator::ORCHESTRATOR_SESSION;
+        assert!(ROUTED_VERBS.contains(&seat), "the route answers it");
+        // ...and yet a session IS named that: `ae orchestrator` reaches its own
+        // seat rather than stealing the word.
+        assert!(!name_is_routed_verb(seat));
+        for verb in ROUTED_VERBS.iter().filter(|verb| **verb != seat) {
+            assert!(name_is_routed_verb(verb), "{verb}");
+        }
+        for name in ["my-feature", "", "listing", "List", "reseat"] {
+            assert!(!name_is_routed_verb(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn the_refusal_names_the_word_and_what_it_costs() {
+        let text = routed_verb_refusal("brief");
+        assert!(
+            text.starts_with("Error: 'brief' is an ae command"),
+            "{text}"
+        );
+        assert!(
+            text.contains("`ae brief` would never reach a session"),
+            "{text}"
+        );
+    }
+    use super::{
+        DEFAULT_CONFIG, HELP, LIST_HELP, Preamble, ROUTED_VERBS, Route, is_direct_child_name,
+        name_is_routed_verb, route, routed_verb_refusal,
+    };
 
     fn argv(words: &[&str]) -> Vec<String> {
         words.iter().map(|word| (*word).to_owned()).collect()

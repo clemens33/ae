@@ -336,7 +336,7 @@ Each is one rule with one owner. Change the owner, not a copy.
 | Invariant | Owner |
 |---|---|
 | Quota-aware leadership profile selection is guidance only: query once per batch or creation for every selected `--lead`/`--colead`/`--seat`, init, or `spawn --using` profile; do not knowingly pick a known-exhausted applicable window; unclear correlation is unknown; `quota = off` injects none; ae never substitutes | `src/render.rs::QUOTA_GUIDANCE` |
-| Session name `^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`, checked before any side effect | `src/session_launch/name.rs::is_session_name` |
+| Session name `^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`, checked before any side effect. A word the entry ROUTES is refused on top of that grammar, at the two places a name is CREATED — an explicit launch and a rename — so the class closes rather than the word a slice happened to add; the picker's own resume is exempt because it addresses a session that already exists, and the canonical orchestrator is exempt because that seat IS the session of its word | `src/session_launch/name.rs::is_session_name` is the grammar; `src/entry.rs::ROUTED_VERBS` is the set and `::name_is_routed_verb` the one predicate both sites ask |
 | Agent name `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`; it reaches a system prompt, so it is an allowlist | `src/config.rs::is_agent_name` |
 | That name is re-validated at the interpolation site, fail-quiet | `src/render.rs::context_document` |
 | Dispatch is on `argv[0]`'s basename; no `/` means exit 2, never a guess | `src/shim.rs` |

@@ -1802,6 +1802,15 @@ fn launch(
         )?;
         return Ok(EXIT_FAILED);
     }
+
+    // A word the entry routes ITSELF may not become a name: `ae <word>` would
+    // answer the command and never reach the session. The picker's own resume
+    // is exempt, because it addresses a session that already EXISTS and a
+    // legacy one may still carry such a name.
+    if expected_launch.is_none() && crate::entry::name_is_routed_verb(&session) {
+        writeln!(err, "{}", crate::entry::routed_verb_refusal(&session))?;
+        return Ok(EXIT_USAGE);
+    }
     let dir = sessions.join(&session);
     let work_root = worktrees.join(&session);
 

@@ -142,6 +142,14 @@ pub fn run(
         )?;
         return Ok(EXIT_FAILED);
     }
+
+    // The same class the launch refuses, at the other place a session name is
+    // CREATED: a rename onto a routed word would leave a session `ae <word>`
+    // can never reach again.
+    if crate::entry::name_is_routed_verb(&new) {
+        writeln!(err, "{}", crate::entry::routed_verb_refusal(&new))?;
+        return Ok(EXIT_USAGE);
+    }
     if !crate::lifecycle::name_is_usable(root, &old) {
         writeln!(
             err,
