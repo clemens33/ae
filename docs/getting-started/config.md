@@ -227,7 +227,8 @@ what it always was.
 The same order decides two more things: which session a client is handed to when
 the one it is watching is killed, and how the running rows of the fleet picker
 (`<prefix> a`) are sorted underneath attention — the picker still puts whatever
-needs you first.
+needs you first, and an orchestrator you named there is simply first among rows
+of equal attention rather than pinned as it is on the strip.
 
 `auto_upgrade` is machine policy, so ae reads it only from `~/.ae/config`;
 a project's `.ae/config` cannot override it. Absence means `on`. Any explicit

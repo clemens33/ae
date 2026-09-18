@@ -1737,10 +1737,9 @@ struct MotionState {
     fleet: Vec<theme::FleetRow>,
     fleet_target: Option<String>,
     /// The human's `[workspace] fleet_order`, STORED rather than read here. The
-    /// ticker redraws the strip at motion cadence and must neither open the
-    /// config to do it nor draw a different order from the one the verdict cycle
-    /// just published — that would flap. The cycle refreshes this once per
-    /// cycle; BOTH writers read it from here.
+    /// ticker redraws at motion cadence and must neither open the config nor draw
+    /// a different order from the one the cycle just published — that would flap.
+    /// The cycle refreshes this once per cycle; BOTH writers read it from here.
     fleet_order: theme::FleetOrder,
     published_fleet: Option<String>,
     /// The last orchestrator target publication, including a successful unset.

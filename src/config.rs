@@ -1778,9 +1778,8 @@ pub fn global_fleet_order(global: Option<&Path>) -> String {
 /// it threw away.
 ///
 /// The list grammar is `workers`': comma-separated, whitespace-trimmed. Nothing
-/// here is an error — an illegal name, or one that repeats a name already taken,
-/// is dropped and handed back so `ae doctor` can say it once. The names are what
-/// [`crate::theme::FleetOrder`] is built from.
+/// here is an error — an illegal name, or one repeating a name already taken, is
+/// dropped and handed back so `ae doctor` can say it once.
 #[must_use]
 pub fn fleet_order_entries(raw: &str) -> (Vec<String>, Vec<String>) {
     let mut names: Vec<String> = Vec::new();

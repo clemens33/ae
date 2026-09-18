@@ -199,6 +199,9 @@ pub struct Facts {
     pub workers: Option<String>,
     /// The raw global `[workspace] fleet_order`, or `""` when the human set none.
     pub fleet_order: String,
+    /// Why that line could not be read at all, when it could not — a BROKEN LINE
+    /// loses the whole key, and silence reads like choosing no order.
+    pub fleet_order_error: Option<String>,
     /// The profile inventory, sorted by key.
     pub profiles: Vec<ProfileFacts>,
     /// When this host booted, epoch seconds — the other half of that evidence.
@@ -219,6 +222,12 @@ pub struct Facts {
 /// catch (`aedve` is perfectly legal). A recorded session that is merely STOPPED
 /// is never flagged: coming back the same way across restarts is the point.
 fn fleet_order_row(facts: &Facts, out: &mut Report) {
+    // A BROKEN LINE outranks everything below: the key is gone, and "no chosen
+    // order" would describe a choice the human never made.
+    if let Some(why) = &facts.fleet_order_error {
+        out.push(Level::Warn, "workspace.fleet_order", why);
+        return;
+    }
     if facts.fleet_order.trim().is_empty() {
         out.push(
             Level::Ok,
@@ -569,9 +578,14 @@ pub fn gather(root: &Path, global: Option<&Path>, local: Option<&Path>) -> Facts
     profiles.sort_by(|left, right| left.profile.cmp(&right.profile));
 
     let core = crate::shape::resolved_exe();
-    // GLOBAL only, like `auto_upgrade`: the same one file, never the project
-    // overlay beside it. Read before `config` is moved into the report.
-    let fleet_order = crate::config::global_fleet_order(Some(&config));
+    // GLOBAL only, like `auto_upgrade`, and read before `config` is moved. The
+    // RAW reader, not `global_fleet_order`, which folds a broken line into "no
+    // order" — correct for the bar, useless for a report.
+    let (fleet_order, fleet_order_error) =
+        match crate::config::read_global_workspace_key(&config, "fleet_order") {
+            Ok(value) => (value.unwrap_or_default(), None),
+            Err(why) => (String::new(), Some(why)),
+        };
     Facts {
         version: crate::VERSION.to_owned(),
         core_writable: core.as_deref().and_then(is_writable),
@@ -599,6 +613,7 @@ pub fn gather(root: &Path, global: Option<&Path>, local: Option<&Path>) -> Facts
         main: identity.main.filter(|value| !value.is_empty()),
         workers: identity.workers.filter(|value| !value.is_empty()),
         fleet_order,
+        fleet_order_error,
         profiles,
         sessions_dir: roots.sessions().to_owned(),
         worktrees_dir: roots.worktrees().to_owned(),
@@ -1038,6 +1053,7 @@ mod tests {
             main: Some("lead".to_owned()),
             workers: Some("colead".to_owned()),
             fleet_order: String::new(),
+            fleet_order_error: None,
             profiles: vec![ProfileFacts {
                 profile: "cl".to_owned(),
                 command: "claude --dangerously-skip-permissions".to_owned(),
@@ -1193,6 +1209,24 @@ mod tests {
                 .contains("could not determine executable from 'FOO=bar'"),
             "{}",
             report(&input).render()
+        );
+    }
+
+    /// PIN: a BROKEN `fleet_order` line is reported, not folded into "no order".
+    /// The bar stays silent by design, so doctor is the only place that can say
+    /// the key was LOST rather than never written.
+    #[test]
+    fn doctor_reports_a_fleet_order_line_it_could_not_read_at_all() {
+        let mut input = facts();
+        input.fleet_order_error = Some("fleet_order is malformed".to_owned());
+        let text = report(&input).render();
+        assert!(
+            text.contains("WARN  workspace.fleet_order fleet_order is malformed\n"),
+            "{text}"
+        );
+        assert!(
+            !text.contains("no chosen order"),
+            "a lost key must not read as a deliberate one: {text}"
         );
     }
 

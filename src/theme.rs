@@ -883,11 +883,9 @@ impl FleetRow {
 /// The human's chosen fleet order: `[workspace] fleet_order`, already split and
 /// validated by [`crate::config::fleet_order_entries`].
 ///
-/// DUMB on purpose. `theme` holds no config grammar and reads no file: it takes
-/// a clean list of names and answers one question — where in that list is this
-/// one. An EMPTY order places every name the same, so the tie-breaks behind it
-/// decide alone and the strip comes out byte-identical to a build without the
-/// key.
+/// DUMB on purpose — `theme` holds no config grammar and reads no file. An EMPTY
+/// order places every name the same, so the tie-breaks behind it decide alone
+/// and the strip comes out byte-identical to a build without the key.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FleetOrder {
     names: Vec<String>,

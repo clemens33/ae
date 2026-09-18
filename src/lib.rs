@@ -2499,8 +2499,7 @@ pub(crate) fn state_root() -> Option<std::path::PathBuf> {
 ///
 /// One resolution for all three readers — the strip, the lifecycle handoff and
 /// the picker — so none grows a rule of its own. `None`, an unreadable file and
-/// a malformed entry all give the EMPTY order, which is the fleet ae drew before
-/// this key existed.
+/// a malformed entry all give the EMPTY order ae drew before this key existed.
 pub(crate) fn fleet_order_at(global: Option<&std::path::Path>) -> theme::FleetOrder {
     let (names, _ignored) = config::fleet_order_entries(&config::global_fleet_order(global));
     theme::FleetOrder::from_validated(names)
