@@ -557,6 +557,44 @@ pub fn observe(inputs: &Inputs<'_>, since_micros: Option<i64>) -> Observation {
     }
 }
 
+/// ONE seat's own conversation, oldest first: the turns a seed pack carries.
+///
+/// Generation 0 ONLY. A predecessor's words belong to a conversation this seat
+/// has already left behind, and what a successor takes over is the one running
+/// now; [`observe_seat`] is where the whole chain is read instead.
+///
+/// The model's replies are always read, because half an exchange tells a
+/// successor less than a short one — and [`Role::Assistant`] is text parts
+/// alone, so no thinking and no tool call can reach a pack through here.
+///
+/// READ-ONLY and seedless: nothing follows this read, so the generation-0
+/// follow seed is dropped rather than offered to a caller with no poll to feed.
+/// Coverage comes back rather than being swallowed: a seat whose tool has no
+/// reader must SAY so in the pack, or a successor reads "no turns" as "nothing
+/// was said".
+pub(crate) fn observe_seat_turns(
+    session: &crate::usage::SessionInput,
+    entry: &crate::meta::RosterEntry,
+    home: Option<&Path>,
+) -> (Vec<Row>, Vec<Coverage>) {
+    let mut rows = Vec::new();
+    let mut coverage = Vec::new();
+    let mut seeds = Vec::new();
+    // The hidden rows are already OUT of `rows`; the returned vec is the count
+    // the board reports per seat, and a pack reports no such number.
+    let _hidden = observe_generation(
+        session,
+        entry,
+        home,
+        true,
+        0,
+        &mut rows,
+        &mut coverage,
+        &mut seeds,
+    );
+    (collect(rows), coverage)
+}
+
 /// Read one roster seat: its current conversation, then — nearest first, at
 /// most [`crate::meta::PRIOR_MAX`] — its recorded predecessors. Every
 /// generation runs through the ONE read below; the current seat's id may be

@@ -2150,9 +2150,48 @@ fn run_seat_pack(
             tag: git::latest_tag(work.as_bytes()),
         },
         first_message: first_message_for(dir, &row.slot),
+        last_turns: last_turns_for(entry, dir, row, home, now),
     };
     write!(out, "{}", seatpack::pack(&inputs))?;
     Ok(0)
+}
+
+/// The seat's own last turns, read live from its harness transcript.
+///
+/// THE one wiring between a pure pack and the board that owns every transcript
+/// read — read-only, one generation, one seat. Coverage is carried INTO the
+/// pack rather than swallowed here: a seat whose tool has no reader must say
+/// so, or a successor reads an empty section as a silent predecessor.
+///
+/// A board row's stamp is epoch MICROS in its store's own precision; the pack
+/// renders ages, so the conversion belongs on this side of the seam and the
+/// renderer never reads a clock.
+fn last_turns_for(
+    entry: &digest::SessionEntry,
+    dir: &std::path::Path,
+    row: &meta::RosterEntry,
+    home: Option<&std::path::Path>,
+    now: time::Timestamp,
+) -> seatpack::LastTurns {
+    let session = usage::SessionInput {
+        name: entry.name.clone(),
+        path: dir.to_path_buf(),
+    };
+    let (rows, coverage) = board::observe_seat_turns(&session, row, home);
+    seatpack::LastTurns {
+        turns: rows
+            .iter()
+            .map(|row| seatpack::Turn {
+                human: row.role == board::Role::Human,
+                age_secs: time::Timestamp::from_epoch(row.ts.div_euclid(1_000_000))
+                    .seconds_until(now),
+                body: row.body.clone(),
+            })
+            .collect(),
+        // The FIRST reason only: one seat's read refuses once, and a pack that
+        // listed every generation's would be reporting a chain it did not read.
+        gap: coverage.first().map(|item| item.reason.clone()),
+    }
 }
 
 /// The seat's recorded first message, and the verdict on the brief file it

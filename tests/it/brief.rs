@@ -732,6 +732,96 @@ fn a_seat_pack_reads_a_stopped_session_and_still_names_what_it_owns() {
     assert!(!stdout.contains("_events"), "{stdout}");
 }
 
+/// One synthetic Claude user turn. Plain fixture prose; nothing is copied out
+/// of a real transcript.
+fn user_turn(ts: &str, body: &str) -> String {
+    format!(
+        r#"{{"type":"user","timestamp":"{ts}","message":{{"role":"user","content":"{body}"}}}}"#
+    )
+}
+
+/// One synthetic Claude assistant turn, carrying a thinking part and a tool
+/// call BESIDE its text: the pack may never carry either.
+fn assistant_turn(ts: &str, text: &str) -> String {
+    format!(
+        r#"{{"type":"assistant","timestamp":"{ts}","message":{{"role":"assistant","content":[{{"type":"thinking","thinking":"never carried"}},{{"type":"tool_use","name":"Bash","input":{{"command":"never carried either"}}}},{{"type":"text","text":"{text}"}}]}}}}"#
+    )
+}
+
+#[test]
+fn a_seat_pack_carries_the_seats_own_last_turns_and_names_a_read_it_could_not_make() {
+    // THE wiring pin: the one place the pack's turns section meets a real
+    // reader. SYNTHETIC records throughout — hand-written shapes, never a line
+    // copied out of anyone's transcript.
+    let root = scratch("seatturns");
+    let work = root.join("work");
+    let dir = plant(&root, "brf12", &work);
+    let store = root.join("claude");
+    let id = "0199c0de-1234-4890-abcd-ef0123456789";
+    let project = store.join("projects").join("work");
+    assert!(fs::create_dir_all(&project).is_ok(), "a project dir");
+    let lines = [
+        user_turn(&ago(600), "the first thing the human asked"),
+        assistant_turn(&ago(540), "what the seat answered"),
+        user_turn(&ago(480), "⟦ae:msg from lead⟧ ae wrote this one"),
+        user_turn(&ago(300), "the last thing the human asked"),
+    ];
+    assert!(
+        fs::write(
+            project.join(format!("{id}.jsonl")),
+            format!("{}\n", lines.join("\n"))
+        )
+        .is_ok(),
+        "a synthetic transcript"
+    );
+    // The three roster rows the board locator reads, appended to the meta
+    // `plant` wrote: without them the seat records no tool at all.
+    let meta = dir.join("meta");
+    let planted = fs::read_to_string(&meta).unwrap_or_default();
+    assert!(
+        fs::write(
+            &meta,
+            format!(
+                "{planted}harness_session.main={id}\nagent_bin.main=claude\nconfig_home.main={}\n",
+                store.display()
+            )
+        )
+        .is_ok(),
+        "the seat's own store"
+    );
+
+    let (code, stdout, stderr) = run(&root, &["brief", "brf12", "--seat", "lead"]);
+    assert_eq!(code, Some(0), "stderr: {stderr}");
+    assert!(stdout.contains("turns: 3\n"), "{stdout}");
+    assert!(
+        stdout.contains("--- human  10m\nthe first thing the human asked\n"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("--- assistant  9m\nwhat the seat answered\n"),
+        "both halves of the exchange: {stdout}"
+    );
+    assert!(
+        stdout.contains("--- human  5m\nthe last thing the human asked\n"),
+        "oldest first: {stdout}"
+    );
+    // ae's own injected turn is not the seat's own words.
+    assert!(!stdout.contains("ae wrote this one"), "{stdout}");
+    // Words only: the reader never reads a thinking block or a tool call, so
+    // neither can reach a successor through the pack.
+    assert!(!stdout.contains("never carried"), "{stdout}");
+
+    // The OTHER seat of the same session records no tool, so its pack says WHY
+    // it carries nothing rather than reading as a seat that said nothing.
+    let (code, stdout, stderr) = run(&root, &["brief", "brf12", "--seat", "scribe"]);
+    assert_eq!(code, Some(0), "stderr: {stderr}");
+    assert!(
+        stdout.contains("## last turns\nincomplete: unknown tool: out of scope\n"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("none recorded\n\n## footnote"), "{stdout}");
+}
+
 #[test]
 fn a_spawned_seat_pack_names_its_spawner_and_carries_the_message_it_was_launched_with() {
     // The seat that most needs a pack is a spawned one, and nothing else in
