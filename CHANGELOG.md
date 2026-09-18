@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.124] - 2026-09-18
+- Ask every seat on a quota scope to checkpoint when it enters the Low band
+- Name the quota reconcile owner production actually has
+
 ## [v2026.9.123] - 2026-09-18
 - Render one seat's durable record as a seed pack
 - Print one seat's seed pack from ae brief --seat
