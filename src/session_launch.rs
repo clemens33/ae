@@ -399,19 +399,19 @@ pub(crate) fn parse_plan_with_attach(args: &[String], allow_attach: bool) -> Res
 /// a mistyped helper call must fail closed, not open a session named after
 /// the last word.
 fn second_positional_refusal(first: &str, second: &str) -> String {
-    let mut line = format!(
-        "Error: a launch takes exactly one session name, not two ('{first}' and '{second}')."
-    );
-    if let Some(helper) = [first, second]
+    let helper = [first, second]
         .into_iter()
-        .find(|word| crate::shim::lookup(word).is_some())
-    {
-        line.push_str(&format!(
-            " '{helper}' is a session helper — run it by its full path \
+        .find(|word| crate::shim::lookup(word).is_some());
+    match helper {
+        Some(helper) => format!(
+            "Error: a launch takes exactly one session name, not two ('{first}' and '{second}'). \
+             '{helper}' is a session helper — run it by its full path \
              (<state-root>/sessions/<session>/{helper} …)."
-        ));
+        ),
+        None => format!(
+            "Error: a launch takes exactly one session name, not two ('{first}' and '{second}')."
+        ),
     }
-    line
 }
 
 /// The facts the glue hands in — everything the core would otherwise have to
@@ -5448,6 +5448,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one table pinning every accepted launch spelling to its plan"
+    )]
     fn every_existing_launch_spelling_still_parses_to_the_same_plan() {
         let name = |session: &str| Plan {
             name: Some(session.to_owned()),
