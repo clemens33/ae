@@ -812,8 +812,9 @@ pub use leg::{DELIVERED_ACTION, GAVE_UP_ACTION, RETRY_ACTION, run};
 #[cfg(test)]
 mod tests {
     use super::{
-        AGE_BOUND_SECS, Damage, Damaged, LAUNCH_ID_CAP, MAX_ATTEMPTS, PANE_CAP, Phase, RECORD_CAP,
-        Record, SLOT_CAP, damaged_path, parse, path, publish, read, remove, render, should_destroy,
+        AGE_BOUND_SECS, Damage, Damaged, Decision, FUTURE_SKEW_SECS, Facts, LAUNCH_ID_CAP,
+        MAX_ATTEMPTS, PANE_CAP, Phase, RECORD_CAP, Record, SLOT_CAP, damaged_path, decide, parse,
+        path, publish, read, remove, render, should_destroy,
     };
     use std::path::PathBuf;
 
@@ -1207,6 +1208,152 @@ mod tests {
             Some(dir.as_path()),
             "a sanitized name never leaves the session directory"
         );
+    }
+
+    /// A seat that is present, alive and idle, so every gate arm asserted
+    /// against it fails for the reason it names and never because the seat was
+    /// wrong.
+    fn ready(record: &Record, now: i64) -> Facts<'_> {
+        Facts {
+            meta_name: Some("scribe"),
+            meta_launch_id: Some(record.launch_id.as_str()),
+            live_pane: Some(record.pane.as_str()),
+            liveness: crate::deliver::PaneLiveness::Alive,
+            ready: true,
+            now,
+        }
+    }
+
+    /// EVERY ARM OF THE GATE, in its own order, plus both bound EDGES.
+    ///
+    /// The gate is where this slice decides whether a brief may be pasted at
+    /// all, and every arm of it is a refusal that exists because pasting anyway
+    /// would be wrong in a specific way — a stranger's brief into a recycled
+    /// seat, a second copy of one already staged, a half-hour-stale instruction
+    /// arriving after the work moved on. A weakened arm is silent: the code
+    /// still compiles, the helper still runs, and the damage shows up as one
+    /// duplicated or misdirected brief in somebody's pane. So each arm is
+    /// asserted here on its own, and the two bounds are asserted AT their edge,
+    /// because off-by-one is the way a bound actually breaks.
+    #[test]
+    fn the_gate_refuses_on_every_arm_it_names_and_at_both_of_its_edges() {
+        let now = 1_789_200_000;
+        let armed = || Record {
+            created: now - 60,
+            ..record()
+        };
+        assert_eq!(decide(&armed(), &ready(&armed(), now)), Decision::Deliver);
+
+        // 1. MID-FLIGHT outranks everything: its outcome is unknown.
+        let pasting = Record {
+            phase: Phase::Pasting,
+            ..armed()
+        };
+        assert_eq!(
+            decide(&pasting, &ready(&pasting, now)),
+            Decision::GiveUp("paste outcome unknown")
+        );
+
+        // 2. A meta that did not answer proves nothing, so it SKIPS — the
+        // record is not destroyed on a read that failed.
+        for facts in [
+            Facts {
+                meta_name: None,
+                ..ready(&armed(), now)
+            },
+            Facts {
+                meta_launch_id: None,
+                ..ready(&armed(), now)
+            },
+        ] {
+            assert!(matches!(decide(&armed(), &facts), Decision::Skip(_)));
+        }
+
+        // 3. POSITIVE proof of another incarnation destroys the brief rather
+        // than pasting it into whoever holds the slot now.
+        assert_eq!(
+            decide(
+                &armed(),
+                &Facts {
+                    meta_launch_id: Some("tok-2"),
+                    ..ready(&armed(), now)
+                }
+            ),
+            Decision::GiveUp("the seat was relaunched under a new launch token")
+        );
+        assert_eq!(
+            decide(
+                &armed(),
+                &Facts {
+                    live_pane: Some("%999"),
+                    ..ready(&armed(), now)
+                }
+            ),
+            Decision::GiveUp("the slot moved to a different pane")
+        );
+
+        // 4/5. THE WALL BOUNDS, at their edges. Exactly at the age bound is
+        // still deliverable; one second past it is not.
+        let edge = Record {
+            created: now - AGE_BOUND_SECS,
+            ..record()
+        };
+        assert_eq!(decide(&edge, &ready(&edge, now)), Decision::Deliver);
+        let stale = Record {
+            created: now - AGE_BOUND_SECS - 1,
+            ..record()
+        };
+        assert_eq!(
+            decide(&stale, &ready(&stale, now)),
+            Decision::GiveUp("the brief went undelivered for 30 minutes")
+        );
+        let ahead = Record {
+            created: now + FUTURE_SKEW_SECS + 1,
+            ..record()
+        };
+        assert_eq!(
+            decide(&ahead, &ready(&ahead, now)),
+            Decision::GiveUp("the record is dated in the future")
+        );
+
+        // 6. THE ATTEMPT BOUND, at its edge: one short is still deliverable,
+        // AT the bound is spent. `>=`, never `>`.
+        let last = Record {
+            attempts: MAX_ATTEMPTS - 1,
+            ..armed()
+        };
+        assert_eq!(decide(&last, &ready(&last, now)), Decision::Deliver);
+        let spent = Record {
+            attempts: MAX_ATTEMPTS,
+            ..armed()
+        };
+        assert_eq!(
+            decide(&spent, &ready(&spent, now)),
+            Decision::GiveUp("delivery was attempted twice")
+        );
+
+        // 7/8/9. EVERY SEAT-STATE ARM SKIPS, spending nothing: a seat that is
+        // merely absent, dead or busy gets its brief on a later cycle.
+        for facts in [
+            Facts {
+                live_pane: None,
+                ..ready(&armed(), now)
+            },
+            Facts {
+                liveness: crate::deliver::PaneLiveness::Dead,
+                ..ready(&armed(), now)
+            },
+            Facts {
+                liveness: crate::deliver::PaneLiveness::Unproven,
+                ..ready(&armed(), now)
+            },
+            Facts {
+                ready: false,
+                ..ready(&armed(), now)
+            },
+        ] {
+            assert!(matches!(decide(&armed(), &facts), Decision::Skip(_)));
+        }
     }
 
     /// Lead's SPLIT ruling, both halves. Bytes ae SAW and refused are
