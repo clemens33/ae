@@ -111,10 +111,8 @@ impl Default for Knobs {
 
 /// What one seat's own frame proved about the model it is running.
 ///
-/// DISPLAY only. The durable drift rows keep their own observer
-/// ([`crate::model_drift`]), which asks a different question of the same
-/// capture — what the frame says, rather than what it currently is — and
-/// nothing here reaches the meta.
+/// DISPLAY only: nothing here reaches the meta. The durable drift rows keep
+/// their own observer, [`crate::model_drift`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SeatIdentity {
     /// The model label the frame drew.
@@ -128,11 +126,8 @@ pub struct SeatIdentity {
 
 /// What one live pane contributed to this cycle's roster fact.
 struct AgentObservation {
-    /// The roster slot behind the pane.
     slot: String,
-    /// The pane id, which the picker uses as its navigation hint.
     pane: String,
-    /// This cycle's verdict for it.
     verdict: Verdict,
     /// What its own frame proved about the model it is running.
     identity: SeatIdentity,
@@ -141,23 +136,19 @@ struct AgentObservation {
 /// One pane's inputs to [`Cycle::resolve_identity`], gathered so the call
 /// stays one question.
 struct ResolveIdentity<'a> {
-    /// This cycle's capture of the pane.
     capture: &'a str,
-    /// The harness behind it.
     tool: crate::tool::ToolKind,
-    /// The roster slot it holds.
     slot: &'a str,
     /// The profile's model pin, from [`Cycle::seat_pin`].
     pin: Option<&'a str>,
-    /// This cycle's verdict for the pane.
     verdict: Verdict,
 }
 
 /// The newest identity a pane proved, carried while its frame is unreadable.
 ///
 /// A turn in flight, a human's draft and a failed capture all hide the
-/// composer, and without this the picker's model cell would flap between the
-/// model and the declared profile every time a seat got busy.
+/// composer; without this the model cell would flap to the declared profile
+/// and back every time a seat got busy.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IdentityHold {
     /// The `launch_id.<slot>` current when this was observed. A retire plus a
@@ -173,11 +164,10 @@ pub struct IdentityHold {
 /// How many cycles an identity may be shown after the last frame that proved
 /// it.
 ///
-/// At the default 60-second cadence this is half an hour — long enough to
-/// cover a long turn or a draft left sitting in the box, short enough that a
-/// label nobody can re-confirm stops being asserted. Counted in CYCLES rather
-/// than seconds because the cadence is the daemon's own knob and the fact
-/// already carries it.
+/// At the default 60-second cadence, half an hour: long enough to cover a long
+/// turn or a draft left sitting in the box, short enough that a label nobody
+/// can re-confirm stops being asserted. Counted in CYCLES because the cadence
+/// is the daemon's own knob.
 const HOLD_MAX_CYCLES: u32 = 30;
 
 /// What one pane carries from cycle to cycle, gathered into one value.
@@ -4148,10 +4138,8 @@ impl Cycle<'_> {
     /// the next cycle's problem, never this cycle's.
     ///
     /// `pin` is [`Self::seat_pin`]'s answer for THIS cycle, read fresh there
-    /// and handed to both consumers so one config read serves both: an
-    /// operator edit while the session runs is visible on the next cycle, and
-    /// a pin that moved after the observation is what makes the resume RETIRE
-    /// the row rather than apply it.
+    /// and handed to both consumers so one config read serves both; an
+    /// operator edit while the session runs is visible on the next cycle.
     fn note_model(
         &self,
         capture: &str,
@@ -4165,6 +4153,12 @@ impl Cycle<'_> {
         let Some(entry) = self.roster.iter().find(|entry| entry.slot == slot) else {
             return;
         };
+        // A seat with no profile has no pin to disagree with, and the durable
+        // row is about that disagreement: it writes nothing here, as it never
+        // has. `pin` cannot stand in — it is `None` for an unpinned profile too.
+        if entry.profile.is_none() {
+            return;
+        }
         let Some((_, launch_id)) = self.launch_ids.iter().find(|(seat, _)| seat == slot) else {
             return;
         };
@@ -4183,8 +4177,7 @@ impl Cycle<'_> {
     /// live model is not one ae observes at all.
     ///
     /// Read ONCE per pane per cycle: the durable drift row and the picker's
-    /// drift mark are two questions about the same pin, and reading it twice
-    /// would double the config IO for no second fact.
+    /// drift mark are two questions about the same pin.
     fn seat_pin(&self, slot: &str, tool: crate::tool::ToolKind) -> Option<String> {
         if !tool.adapter().model.observes() {
             return None;
@@ -4203,13 +4196,10 @@ impl Cycle<'_> {
     ///
     /// The read is the GATED one: a picker cell is a claim about what the seat
     /// is running now, so a frame whose composer is absent proves nothing here
-    /// even when its grammar would parse. The hold then covers the gaps that
-    /// are ordinary rather than suspicious — a turn in flight, a draft in the
-    /// box, one failed capture — bounded by [`HOLD_MAX_CYCLES`] and by the
-    /// seat's own launch id.
-    ///
-    /// A DEAD seat clears the hold outright: whatever it was running, it is
-    /// not running it now.
+    /// even when its grammar would parse. The hold then covers the ordinary
+    /// gaps — a turn in flight, a draft in the box, one failed capture —
+    /// bounded by [`HOLD_MAX_CYCLES`] and by the seat's own launch id. A DEAD
+    /// seat clears it outright: whatever it was running, it is not now.
     fn resolve_identity(
         &self,
         carried: &mut PaneState,
@@ -4262,8 +4252,7 @@ impl Cycle<'_> {
     }
 
     /// The client token this seat's recorded binary classifies to, `-` when ae
-    /// cannot classify it. Known without a pane, because it comes from the
-    /// meta rather than from a frame.
+    /// cannot classify it. Known without a pane: it comes from the meta.
     fn seat_client(&self, slot: &str) -> &'static str {
         crate::tool::ToolKind::from_binary_name(self.agent_bin(slot).as_deref().unwrap_or_default())
             .client_token()
@@ -5450,24 +5439,24 @@ fn slot_mark(
 /// How much of an entry's observed cells one attempt at the fact writes.
 ///
 /// A roster that will not fit is degraded in RUNGS, and every rung is
-/// fleet-wide: the model cell is a COLUMN, and a column dropped for some rows
-/// and not others is one the human cannot read down. The order spends the
-/// least useful fact first.
+/// fleet-wide: the model cell is a COLUMN, and one dropped for some rows and
+/// not others is one the human cannot read down. The order spends the least
+/// useful fact first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FactRung {
     /// Everything this cycle observed.
     Full,
     /// Models and clients, without the effort or the drift mark.
     NoEffort,
-    /// The four v1 fields and the client, with nothing observed.
+    /// The four v1 fields and the client, with nothing observed. The client
+    /// is the cheapest cell on the row and the one that never drops.
     ClientOnly,
     /// Exactly today's v1 bytes.
     ///
     /// The LAST rung before nothing, and the reason it exists: v2 costs four
-    /// more separators per entry than v1, so without it a roster that fits
-    /// today could vanish BECAUSE model cells were added. A fact ae cannot
-    /// publish is a roster the picker reports as unavailable, and that must
-    /// never be what the model column costs.
+    /// more separators per entry, so without it a roster that fits today could
+    /// vanish BECAUSE model cells were added — and a fact ae cannot publish is
+    /// a roster the picker reports as unavailable.
     Legacy,
 }
 
@@ -5492,9 +5481,9 @@ impl FactRung {
 /// publishing a partial roster the picker could mistake for complete.
 ///
 /// A seat's observed cells are its own: a model ae cannot represent — over
-/// cap, or carrying a byte the fact's grammar forbids — empties that ENTRY's
-/// trio and nothing else ([`observed_cells`]). Only a whole fact that will not
-/// fit walks the [`FactRung`] ladder.
+/// cap, or carrying a byte the grammar forbids — empties that ENTRY's trio and
+/// nothing else ([`observed_cells`]). Only a whole fact that will not fit
+/// walks the [`FactRung`] ladder.
 fn agents_fact(
     roster: &[RosterEntry],
     by_slot: &[AgentObservation],
@@ -5618,10 +5607,10 @@ fn observed_cells(identity: Option<&SeatIdentity>, rung: FactRung) -> (&str, &st
 /// Whether a model label can be spelled in the fact EXACTLY as observed.
 ///
 /// The separators and the tmux style bytes are the fact's own grammar, and a
-/// vendor label is free text that has never been promised to avoid them. A
-/// label carrying one is dropped rather than escaped: an escape would be a
-/// second grammar for the picker to get wrong, and the parser's arity check
-/// would refuse the whole roster over one vendor's punctuation.
+/// vendor label is free text never promised to avoid them. A label carrying
+/// one is dropped rather than escaped: an escape would be a second grammar for
+/// the picker to get wrong, and the parser's arity check would refuse the
+/// whole roster over one vendor's punctuation.
 fn model_is_writable(model: &str) -> bool {
     !model.is_empty()
         && model.len() <= tmux::PICKER_AGENTS_MAX_MODEL
@@ -11471,6 +11460,41 @@ mod tests {
         );
     }
 
+    /// A full 64-seat roster whose name and profile are each `width` wide.
+    ///
+    /// One seat's entry costs `name + profile + 13` at v1 (state `working`,
+    /// pane `%1`, four separators), `+ 6` for the client cell, `+ 6` more for
+    /// the model, and `+ 6` more for the effort and drift mark. Against the
+    /// 4096-byte bound that width alone decides which rung is first to fit.
+    fn roster_of(width: usize) -> Vec<RosterEntry> {
+        (0..64)
+            .map(|index| {
+                let tail = "x".repeat(width - 3);
+                entry(
+                    &format!("s{index:02}"),
+                    &format!("p{index:02}{tail}"),
+                    &format!("a{index:02}{tail}"),
+                )
+            })
+            .collect()
+    }
+
+    /// Every seat of `roster` observed with a model, an effort and a drift mark.
+    fn observed_of(roster: &[RosterEntry]) -> Vec<AgentObservation> {
+        roster
+            .iter()
+            .map(|entry| seen_running(&entry.slot, "%1", "Opus 5", Some("xhigh"), true))
+            .collect()
+    }
+
+    /// Every seat of `roster` on one client.
+    fn clients_of(roster: &[RosterEntry]) -> Vec<(&str, &'static str)> {
+        roster
+            .iter()
+            .map(|entry| (entry.slot.as_str(), "cc"))
+            .collect()
+    }
+
     /// The ladder, at the 64-seat limit, rung by rung.
     ///
     /// The property is one sentence: model cells must never be the reason a
@@ -11478,29 +11502,6 @@ mod tests {
     /// first that fits, and the last rung before nothing is today's v1 bytes.
     #[test]
     fn a_roster_that_cannot_fit_its_model_cells_degrades_before_it_vanishes() {
-        // One seat's entry costs `name + profile + 13` at v1 (state `working`,
-        // pane `%1`, four separators), `+ 6` for the client cell, `+ 6` more
-        // for the model, and `+ 6` more for the effort and drift mark. With 64
-        // seats and a 4096-byte bound, the width of name plus profile decides
-        // which rung is the first to fit.
-        let roster_of = |width: usize| -> Vec<RosterEntry> {
-            (0..64)
-                .map(|index| {
-                    let tail = "x".repeat(width - 3);
-                    entry(
-                        &format!("s{index:02}"),
-                        &format!("p{index:02}{tail}"),
-                        &format!("a{index:02}{tail}"),
-                    )
-                })
-                .collect()
-        };
-        let observed_of = |roster: &[RosterEntry]| -> Vec<AgentObservation> {
-            roster
-                .iter()
-                .map(|entry| seen_running(&entry.slot, "%1", "Opus 5", Some("xhigh"), true))
-                .collect()
-        };
         for (width, expected, why) in [
             (8_usize, "v2", "everything fits"),
             (18, "v2", "the effort and the drift mark go first"),
@@ -11508,10 +11509,7 @@ mod tests {
             (24, "v1", "then the whole v2 shape, back to today's bytes"),
         ] {
             let roster = roster_of(width);
-            let clients: Vec<(&str, &'static str)> = roster
-                .iter()
-                .map(|entry| (entry.slot.as_str(), "cc"))
-                .collect();
+            let clients = clients_of(&roster);
             let fact = agents_fact(&roster, &observed_of(&roster), &clients, 2_000, 60)
                 .unwrap_or_else(|| panic!("width {width}: {why}"));
             assert!(
@@ -11531,10 +11529,7 @@ mod tests {
         }
         // Rung by rung, the first that fits is the one taken.
         let roster = roster_of(18);
-        let clients: Vec<(&str, &'static str)> = roster
-            .iter()
-            .map(|entry| (entry.slot.as_str(), "cc"))
-            .collect();
+        let clients = clients_of(&roster);
         let observed = observed_of(&roster);
         let at = |rung| fact_at(&roster, &observed, &clients, 2_000, 60, rung);
         assert_eq!(at(FactRung::Full), None, "the full fact does not fit here");
@@ -11564,13 +11559,31 @@ mod tests {
         // Past every rung there is still nothing to publish, exactly as
         // before: 64 seats this wide cannot be spelled at all.
         let enormous = roster_of(26);
-        let clients: Vec<(&str, &'static str)> = enormous
-            .iter()
-            .map(|entry| (entry.slot.as_str(), "cc"))
-            .collect();
+        let clients = clients_of(&enormous);
         assert_eq!(
             agents_fact(&enormous, &observed_of(&enormous), &clients, 2_000, 60),
             None
+        );
+    }
+
+    /// The rung-3 to rung-4 edge, and what tips it.
+    ///
+    /// At width 24 the client-only rung is over the bound while the legacy
+    /// rung is under it, and the whole difference between them is the six
+    /// bytes an entry spends on `:<client>:::`. A roster that fits v1 lands on
+    /// v1, never on nothing.
+    #[test]
+    fn the_client_cell_is_what_tips_the_last_v2_rung_onto_the_legacy_one() {
+        let roster = roster_of(24);
+        let clients = clients_of(&roster);
+        let observed = observed_of(&roster);
+        let at = |rung| fact_at(&roster, &observed, &clients, 2_000, 60, rung);
+        let legacy = at(FactRung::Legacy).expect("v1 fits at the tipping width");
+        assert_eq!(at(FactRung::ClientOnly), None, "the client cell tips it");
+        assert!(legacy.len() <= crate::tmux::PICKER_AGENTS_MAX_BYTES);
+        assert!(
+            legacy.len() + 64 * ":cc:::".len() > crate::tmux::PICKER_AGENTS_MAX_BYTES,
+            "and those six bytes an entry are the whole of the difference"
         );
     }
 

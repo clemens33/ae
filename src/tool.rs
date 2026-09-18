@@ -403,12 +403,12 @@ pub(crate) struct ToolAdapter {
     /// The client token a roster row draws beside an observed model, at most
     /// four terminal cells.
     ///
-    /// A NAME, not an abbreviation rule: the picker's agent row has room for
-    /// the model or for the client, not for both spelled out, and the human
-    /// reading it already knows their fleet. Unknown is `-`, which says ae
-    /// could not classify the binary rather than naming a tool it did not
-    /// see. Short enough that the client never has to drop out of a narrow
-    /// row — the model clips instead.
+    /// A NAME, not an abbreviation rule: an agent row has room for the model
+    /// or for the client spelled out, not both, and the human reading it
+    /// already knows their fleet. Short enough that the client never has to
+    /// drop out of a narrow row — the model clips instead. Unknown is `-`,
+    /// which says ae could not classify the binary rather than naming a tool
+    /// it did not see.
     pub(crate) client: &'static str,
     /// Prefix shared by launch-marker writers and tool-store readers.
     pub(crate) launch_marker: Option<&'static str>,
@@ -886,9 +886,9 @@ pub fn config_home_envs() -> impl Iterator<Item = &'static str> {
 ///
 /// The picker's roster fact lives in a tmux option anyone with the server can
 /// set, so its client field is validated against THIS table rather than by
-/// shape: a closed vocabulary is its own validation, and `-` is part of it
-/// because an unclassifiable binary is a thing ae can honestly report.
-/// `UNKNOWN` is not in [`KNOWN`], so it is named beside it.
+/// shape. `-` is part of the vocabulary because an unclassifiable binary is a
+/// thing ae can honestly report; `UNKNOWN` is not in [`KNOWN`], so it is
+/// named beside it.
 #[must_use]
 pub fn is_client_token(token: &str) -> bool {
     KNOWN.iter().any(|adapter| adapter.client == token) || token == UNKNOWN.client

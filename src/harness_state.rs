@@ -180,14 +180,11 @@ pub fn current_identity(capture: &str, tool: ToolKind) -> HarnessIdentity {
 }
 
 /// The identity this capture proves, gated on the tool's own live-composer
-/// signal in the SAME capture.
+/// signal in the SAME capture — the module doc's WIRING OBLIGATION.
 ///
-/// This discharges the module doc's WIRING OBLIGATION: [`current_identity`]
-/// reads a grammar, and a grammar alone cannot tell a live frame from a
-/// quoted one that happens to end at the same geometry. A caller that will
-/// SHOW the answer takes this; the drift observer keeps the ungated read,
-/// because those are different questions — what the frame says, versus what
-/// this frame currently is.
+/// A caller that will SHOW the answer takes this; the drift observer keeps
+/// the ungated [`current_identity`], because those are different questions:
+/// what the frame says, versus what this frame currently is.
 #[must_use]
 pub fn observed_identity(capture: &str, tool: ToolKind) -> HarnessIdentity {
     if composer_present(capture, tool) {
@@ -201,28 +198,23 @@ pub fn observed_identity(capture: &str, tool: ToolKind) -> HarnessIdentity {
 ///
 /// Per identity class, because the classes differ in what they already prove:
 ///
-/// - claude and codex need NOTHING added. Their grammars already require the
-///   live input box in the same capture — claude a bare `❯` inside
-///   [`claude_input_frame`], codex its exact empty prompt row above the
-///   footer with no modal over it. Asking [`crate::deliver::region`] again
-///   would also be wrong for codex: its `StyleDelimited` composer is found by
-///   SGR weight, and the watchdog captures PLAIN (`capture-pane -p -J`), so
-///   the read would answer `Unreadable` on every live frame.
-/// - muse draws a modelled `BorderDelimited` box but carries no composed
-///   marker set ([`crate::tool::Composed::NONE`]), so `composed_ui` can never
-///   pass for it. Its own input box is the signal instead, read
-///   STRUCTURALLY — `live_only = false`, ornaments `❯ > ▌` — which is exactly
+/// - claude and codex need NOTHING added: their grammars already require the
+///   live input box in the same capture. Asking [`crate::deliver::region`]
+///   again would also be WRONG for codex, whose `StyleDelimited` composer is
+///   found by SGR weight — the watchdog captures PLAIN, so that read answers
+///   `Unreadable` on every live frame.
+/// - muse draws a modelled box but carries no composed markers
+///   ([`crate::tool::Composed::NONE`]), so `composed_ui` can never pass for
+///   it. Its own input box is the signal instead, read STRUCTURALLY, which is
 ///   what survives a plain capture.
 /// - opencode, grok and agy are unmodelled composers with measured markers,
-///   which is what [`crate::deliver::region::composed_ui`] answers for. The
-///   spec is DATA off the adapter row, never a per-tool branch here.
+///   which is what [`crate::deliver::region::composed_ui`] answers for, from
+///   the adapter row as DATA rather than a per-tool branch here.
 ///
-/// Named residual, not fixed: for muse the ornament row this finds may sit
-/// ABOVE a quoted footer. The gate proves the tool's composer is drawn on
-/// this frame, not that the footer belongs to it — strictly more than the
-/// grammar proved alone, and honestly less than provenance would.
-///
-/// Fails CLOSED: an identity class with no composer signal proves nothing.
+/// Named residual: for muse the ornament row this finds may sit ABOVE a
+/// quoted footer, so the gate proves the composer is drawn on this frame, not
+/// that the footer belongs to it. Fails CLOSED — an identity class with no
+/// composer signal proves nothing.
 fn composer_present(capture: &str, tool: ToolKind) -> bool {
     match tool.adapter().identity {
         IdentitySpec::BorderComposer | IdentitySpec::StyleFooter => true,
@@ -239,9 +231,9 @@ fn composer_present(capture: &str, tool: ToolKind) -> bool {
 
 /// Whether `value` is one of the efforts a harness frame may prove.
 ///
-/// Published so the picker's roster fact validates an effort field against
-/// THIS list rather than a second copy of it: the vocabulary is closed, so it
-/// is the validation, and a byte cap is only its width.
+/// Published so the picker's roster fact validates against THIS list rather
+/// than a second copy: the vocabulary is closed, so it IS the validation, and
+/// a byte cap is only its width.
 #[must_use]
 pub fn is_effort_word(value: &str) -> bool {
     valid_effort(value)

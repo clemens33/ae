@@ -2584,11 +2584,11 @@ pub const PICKER_AGENTS_MAX_INTERVAL_SECS: u64 = 3_600;
 /// Maximum bytes accepted from one entry's observed model label.
 ///
 /// The label is free text scraped from a pane — the only field here whose
-/// vocabulary is the vendor's rather than ae's — so it is the one that needs a
-/// length rule at all. 32 holds every model the measured fleet draws
+/// vocabulary is the vendor's rather than ae's — so it is the one that needs
+/// a length rule at all. 32 holds every model the measured fleet draws
 /// (`DeepSeek V4.1 Flash OpenRouter` is the longest at 30) with room for a
-/// vendor rename, and stays small enough that 64 of them cannot crowd a
-/// roster out of [`PICKER_AGENTS_MAX_BYTES`] on their own.
+/// rename, and keeps 64 of them from crowding a roster out of
+/// [`PICKER_AGENTS_MAX_BYTES`] on their own.
 pub const PICKER_AGENTS_MAX_MODEL: usize = 32;
 
 /// One strictly parsed agent row from the watchdog-owned session fact.
@@ -2650,9 +2650,7 @@ impl AgentsGrammar {
 /// BOTH grammars are accepted, because versions run side by side: `ae upgrade`
 /// restarts the watchdogs it can reach, a skipped session keeps its old core,
 /// and a checkout core can share one server. A v1 fact read here simply proves
-/// no observed cells, which the picker draws as the declared profile.
-///
-/// The converse is not available and needs no shim: a v2 fact read by an OLD
+/// no observed cells. The converse needs no shim: a v2 fact read by an OLD
 /// core fails its exact version check, yielding `None` and today's
 /// `agents: unavailable` row.
 ///
@@ -2729,13 +2727,12 @@ pub fn parse_picker_agents(raw: &str, now_epoch: i64) -> Option<Vec<PickerAgent>
     (!agents.is_empty()).then_some(agents)
 }
 
-/// The drift field's only nonempty spelling.
+/// The drift field's only nonempty spelling, and the byte the picker draws.
 ///
-/// One byte, and the same one the picker draws. Note that the picker reads
-/// this fact through a tmux format that rewrites `|` and control bytes to
-/// `!`, so a `!` here is indistinguishable from a hand-written `|` — which
-/// costs nothing, because the writer emits neither and a hand-editor of the
-/// option could write the mark directly anyway.
+/// The picker reads this fact through a tmux format that rewrites `|` and
+/// control bytes to `!`, so a `!` here is indistinguishable from a
+/// hand-written `|`. That costs nothing: the writer emits neither, and anyone
+/// who can edit the option could write the mark directly anyway.
 const DRIFT_MARK: &str = "!";
 
 /// Whether one entry's four observed cells can have come from a writer.
@@ -2743,8 +2740,8 @@ const DRIFT_MARK: &str = "!";
 /// They are a UNIT: the writer publishes a model only with the client that
 /// drew it, and empties the trio together when it cannot represent one, so a
 /// model without a client — or an effort or a drift mark without a model —
-/// is damage. Rejecting it here keeps every downstream reader from having to
-/// invent a rendering for a state ae does not produce.
+/// is damage. Rejecting it here spares every reader a rendering for a state
+/// ae does not produce.
 fn observed_cells_are_coherent(client: &str, model: &str, effort: &str, drift: &str) -> bool {
     if !client.is_empty() && !crate::tool::is_client_token(client) {
         return false;
