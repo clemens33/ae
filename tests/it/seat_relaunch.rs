@@ -678,6 +678,51 @@ fn a_seat_whose_profile_is_gone_is_refused_before_anything_is_pasted() {
 }
 
 #[test]
+fn a_refusal_before_the_paste_says_so_once_and_records_no_relaunch() {
+    // The launch-attempt stamp is written BEFORE the paste and is CHECKED, so
+    // its failure must read as what it is. A pre-paste refusal that fell into
+    // the post-paste arm would print a second, contradicting line and leave an
+    // event claiming the seat was touched.
+    let rig = Rig::new("nostamp");
+    let pane = rig.seat("worker.1", "w1", "opencode");
+    rig.kill_tools(&pane);
+    let before = rig.events();
+    // `create_new` on the stamp's temp file cannot make it into a session
+    // directory nothing may write to.
+    assert!(set_mode(&rig.dir, 0o555).is_ok());
+
+    let (code, _, err) = rig.run("_relaunch", &["w1"]);
+
+    assert!(set_mode(&rig.dir, 0o755).is_ok());
+    assert_eq!(code, Some(1), "{err}");
+    assert!(
+        err.contains("launch attempt could not be recorded")
+            && err.contains("nothing was relaunched"),
+        "the stamp failure is the ONLY reason printed: {err}"
+    );
+    assert!(
+        !err.contains("line pasted"),
+        "nothing was pasted, so nothing may say it was: {err}"
+    );
+    assert_eq!(
+        rig.events(),
+        before,
+        "an attempt that never reached the pane records no relaunch"
+    );
+    assert!(
+        rig.wait_until(&pane, is_shell),
+        "the pane was left at its shell"
+    );
+}
+
+/// The one permission write these pins need, kept off `Rig` because nothing
+/// else in the module changes a mode.
+fn set_mode(dir: &std::path::Path, mode: u32) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(mode))
+}
+
+#[test]
 fn a_seat_whose_tool_changed_under_it_is_refused_by_the_run_it_pasted() {
     // The helper resolves the command and hands `_run` the snapshot, so `_run`
     // applies its OWN mismatch check in the pane. Exit 0 needs the seat's tool

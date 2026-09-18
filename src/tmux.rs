@@ -3615,6 +3615,11 @@ mod tests {
             vec!["send-keys", "-t", "%3", "C-u"]
         );
         assert_eq!(
+            send_keys_args(&ServerId::Ambient, "%3", Key::LineEnd),
+            vec!["send-keys", "-t", "%3", "C-e"],
+            "`C-u` kills only to the line start: the cursor goes to the END first"
+        );
+        assert_eq!(
             send_keys_args(&ServerId::Ambient, "%3", Key::Escape),
             vec!["send-keys", "-t", "%3", "Escape"]
         );
@@ -4359,6 +4364,35 @@ mod tests {
         assert!(interpret_window_panes(false, listing).is_none());
     }
 
+    /// The pane-dead read is the PANE-EXISTENCE proof, so its `None` has to
+    /// mean "no such pane" and nothing else. Measured on a private socket,
+    /// 2026-09-18: `display-message -p -t %<missing>` EXITS 0 and renders the
+    /// format EMPTY, which is why a pane that exists must render `0` or `1`
+    /// and every other reading is `None`.
+    #[test]
+    fn a_pane_dead_read_answers_only_for_a_pane_that_exists() {
+        use super::interpret_pane_dead;
+
+        assert_eq!(interpret_pane_dead(true, "0\n"), Some(false));
+        assert_eq!(interpret_pane_dead(true, "1\n"), Some(true));
+        assert_eq!(
+            interpret_pane_dead(true, "\n"),
+            None,
+            "tmux exits 0 and renders nothing for a pane that does not exist"
+        );
+        assert_eq!(interpret_pane_dead(true, ""), None);
+        assert_eq!(
+            interpret_pane_dead(true, "#{pane_dead}\n"),
+            None,
+            "an unexpanded format is not a verdict"
+        );
+        assert_eq!(
+            interpret_pane_dead(false, "0\n"),
+            None,
+            "a failed command decides nothing, whatever it printed"
+        );
+    }
+
     /// Every format this module hands tmux is read back by splitting on the
     /// bytes it asked for, and tmux 3.4 does not hand control characters back
     /// unchanged: measured on tmux 3.4 and tmux 3.7b, `\x1f` returns as the
@@ -4368,10 +4402,10 @@ mod tests {
         use super::{
             AGENTS_FORMAT, CLIENT_FORMAT, FLEET_PANE_FORMAT, MOTION_PANE_FORMAT,
             MOUSE_DOWN_STATUS_MENU_ACTION, MOUSE_STATUS_PICKER, MOUSE_STATUS_SESSION,
-            MOUSE_STATUS_SETTINGS, MOUSE_STATUS_WINDOW, PANE_FORMAT, PANE_ID_FORMAT,
-            PANE_PROBE_FORMAT, PANE_TTY_FORMAT, SESSION_ID_FORMAT, SESSION_IDENTITY_FORMAT,
-            SESSION_NAME_FORMAT, SLOTS_FORMAT, VERSION_FORMAT, VIEWER_FORMAT, WATCH_PANE_FORMAT,
-            WINDOW_PANE_FORMAT,
+            MOUSE_STATUS_SETTINGS, MOUSE_STATUS_WINDOW, PANE_DEAD_FORMAT, PANE_FORMAT,
+            PANE_ID_FORMAT, PANE_PROBE_FORMAT, PANE_TTY_FORMAT, SESSION_ID_FORMAT,
+            SESSION_IDENTITY_FORMAT, SESSION_NAME_FORMAT, SLOTS_FORMAT, VERSION_FORMAT,
+            VIEWER_FORMAT, WATCH_PANE_FORMAT, WINDOW_PANE_FORMAT,
         };
 
         for format in [
@@ -4379,6 +4413,7 @@ mod tests {
             CLIENT_FORMAT,
             FLEET_PANE_FORMAT,
             MOTION_PANE_FORMAT,
+            PANE_DEAD_FORMAT,
             PANE_FORMAT,
             PANE_ID_FORMAT,
             PANE_PROBE_FORMAT,

@@ -188,6 +188,10 @@ pub(crate) fn run(
     // and nothing else may be held out of the session's lifecycle for that.
     drop(lifecycle);
     match outcome {
+        // Nothing reached the pane and the refusing site already printed its
+        // reason: no second line contradicting it, and no event claiming a
+        // paste. A record here would tell a later reader the seat was touched.
+        Started::NotPasted => Ok(EXIT_FAILED),
         Started::NotSeen => {
             record(dir, actor, &target, "pasted, tool not seen");
             writeln!(
@@ -391,6 +395,9 @@ enum Started {
     Running { resuming_seat: bool },
     /// The line went in and the tool never appeared within the bound.
     NotSeen,
+    /// Refused BEFORE the paste. The pane was never written to, the refusing
+    /// site has already said why, and nothing past here may claim otherwise.
+    NotPasted,
 }
 
 /// Clear the shell's input line, paste the launch line, and watch for the
@@ -411,7 +418,7 @@ fn start(
             "Error: '{}' launch attempt could not be recorded ({why}) — nothing was relaunched.",
             target.agent
         )?;
-        return Ok(Started::NotSeen);
+        return Ok(Started::NotPasted);
     }
     // THE CAPTURE FLOOR, by the same rule the launch's meta document applies:
     // a retained exact conversation keeps the floor it was born under, and a
@@ -438,7 +445,7 @@ fn start(
                 "Error: could not clear the shell input line of pane {} — nothing was pasted.",
                 target.pane
             )?;
-            return Ok(Started::NotSeen);
+            return Ok(Started::NotPasted);
         }
     }
     // `pane_line`'s directory is the STATE dir and `_run` never chdirs, so the
@@ -449,7 +456,7 @@ fn start(
             err,
             "Error: the core could not name its own binary — nothing was relaunched."
         )?;
-        return Ok(Started::NotSeen);
+        return Ok(Started::NotPasted);
     };
     let line = format!(
         "cd {} && {}",
@@ -582,8 +589,9 @@ fn finish(
     Ok(0)
 }
 
-/// One `relaunch` record, whatever the outcome — the seat's history is the
-/// only place a later reader can see that its conversation was restarted.
+/// One `relaunch` record for every attempt that REACHED the pane — the seat's
+/// history is the only place a later reader can see that its conversation was
+/// restarted, and the only place that must not claim a paste that never was.
 fn record(dir: &Path, actor: Actor<'_>, target: &Target, summary: &str) {
     let _ = crate::store::open(dir).append_event(&tracked::event_line(&EventFields {
         ts: actor.now,
