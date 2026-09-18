@@ -68,6 +68,80 @@ const CODEX_LIMIT: &[&str] = &[
     "Quota exceeded. Check your plan",
 ];
 
+/// A prompt only the HUMAN may answer, and what it takes to answer it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HumanPrompt {
+    /// The question row, trimmed — WHAT is being asked.
+    pub question: String,
+    /// The key-hint row, trimmed — WHAT the human must press. This is the whole
+    /// point of naming the prompt: a seat nobody can act on is not news.
+    pub keys: String,
+}
+
+/// How far up from the last non-blank row a human-only prompt must sit, in
+/// ROWS. A fixed window, not a trailing run of non-blank rows: agy's modal
+/// carries blank rows between its parts and ends on a status line, so a
+/// contiguous run degenerates to that one line. Height-independent, and it
+/// covers the fresh-pane modal and a mid-session one the same way.
+const HUMAN_PROMPT_WINDOW: usize = 15;
+
+/// Literals that mark an agy modal's KEY-HINT row, MEASURED from the frozen
+/// frame (`tests/fixtures/agy-composer/agy-trust-modal-frame.txt`). One
+/// version's UI text, the same inherited drift hazard as its composer markers.
+const HUMAN_PROMPT_KEYS: &[&str] = &["enter Confirm", "↑/↓ Navigate"];
+
+/// Whether `buf` shows a prompt only the HUMAN may answer, for `agent_bin` —
+/// the ONE detector, pure, and it NEVER sends a key.
+///
+/// The gate is an exact binary name, like [`throttle_class`]: a renamed agy
+/// binary reads as no prompt, which degrades SAFE (no notify, and readiness
+/// still refuses an unmodelled tool). Everything else must hold together,
+/// inside a window at the BOTTOM of the frame: a question row, a selected
+/// option row with at least one sibling, a key-hint row after them, and NO
+/// composer — that last read by the composer's own owner rather than a second
+/// copy of its fence, so the two cannot drift apart.
+#[must_use]
+pub fn human_prompt_class(buf: &str, agent_bin: &str) -> Option<HumanPrompt> {
+    if agent_bin != "agy" || buf.is_empty() {
+        return None;
+    }
+    let rows: Vec<&str> = buf.lines().collect();
+    let last = rows.iter().rposition(|row| !row.trim().is_empty())?;
+    let window = &rows[last.saturating_sub(HUMAN_PROMPT_WINDOW - 1)..=last];
+    // Scoped to the WINDOW, not the buffer: a modal drawn BELOW a composer is
+    // the case this must still catch. The inverse — a draft whose own text is
+    // shaped like a modal, with the fence above the window — is accepted.
+    if crate::deliver::region::composed_ui(
+        &window.join("\n"),
+        crate::tool::ToolKind::Agy.adapter().input.composed,
+    ) {
+        return None;
+    }
+    let question = window
+        .iter()
+        .position(|row| row.trim_end().ends_with('?'))?;
+    let after = &window[question + 1..];
+    let keys = after
+        .iter()
+        .position(|row| HUMAN_PROMPT_KEYS.iter().any(|key| row.contains(key)))?;
+    // TWO option rows at least, and one of them SELECTED: a lone paragraph
+    // between a question and a hint is prose, not a choice.
+    let options = &after[..keys];
+    let selected = options
+        .iter()
+        .position(|row| row.trim_start().starts_with('>'))?;
+    if !options[selected + 1..]
+        .iter()
+        .any(|row| !row.trim().is_empty())
+    {
+        return None;
+    }
+    Some(HumanPrompt {
+        question: window[question].trim().to_owned(),
+        keys: after[keys].trim().to_owned(),
+    })
+}
+
 /// Which class of upstream trouble `buf` shows for `agent_bin`, if any — the
 /// ONE classifier, of which [`shows_throttle`] is the union answer. A
 /// `LimitReached` phrase wins: the usage limit outlives the cycle.
@@ -1094,13 +1168,14 @@ mod tests {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use super::{
-        DEFAULT_IDLE_NUDGE_SECS, OVERVIEW_HOLD_WHILE_WORKING_SECS, OWN_WORK_AGE_CAP, QuietCycle,
-        QuietKind, QuietPane, SweepAlert, SweepEffect, SweepKnobs, SweepObservation, SweepState,
-        SweepVerdict, Throttle, WedgeDetail, classify_dead, command_is_shell, declaration_key,
-        indented, is_echo, is_sweep_target, latest_relevant_event, quiet_cursor_advance,
-        quiet_filter, quiet_hash, quiet_pane_decision, quiet_reason, quiet_stabilize,
-        quiet_stabilize_allowed, raw_nudge, record_sweep, shows_throttle, stale_composite,
-        submit_hdr, sweep_step, throttle_class, waiting_agent_cap_secs, waiting_agent_escalated,
+        DEFAULT_IDLE_NUDGE_SECS, HUMAN_PROMPT_WINDOW, OVERVIEW_HOLD_WHILE_WORKING_SECS,
+        OWN_WORK_AGE_CAP, QuietCycle, QuietKind, QuietPane, SweepAlert, SweepEffect, SweepKnobs,
+        SweepObservation, SweepState, SweepVerdict, Throttle, WedgeDetail, classify_dead,
+        command_is_shell, declaration_key, indented, is_echo, is_sweep_target,
+        latest_relevant_event, quiet_cursor_advance, quiet_filter, quiet_hash, quiet_pane_decision,
+        quiet_reason, quiet_stabilize, quiet_stabilize_allowed, raw_nudge, record_sweep,
+        shows_throttle, stale_composite, submit_hdr, sweep_step, throttle_class,
+        waiting_agent_cap_secs, waiting_agent_escalated,
     };
     use crate::events::Event;
     use crate::procs::Descendancy;
@@ -2793,5 +2868,152 @@ tail line
             let acc = sweep_step(&prior, &seen(now, done, &k), &k).expect("enabled");
             assert_eq!(acc.verdict, want, "done={done:?} now={now}");
         }
+    }
+
+    /// The frozen agy frames, read from the repository so a pin cannot drift
+    /// from the UI it claims to describe.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "a fixture read in TEST code; the capability boundary in \
+                  tests/it/phase3.rs inventories PRODUCT lines only"
+    )]
+    fn fixture(name: &str) -> String {
+        std::fs::read_to_string(format!("tests/fixtures/agy-composer/{name}.txt"))
+            .unwrap_or_else(|why| panic!("the {name} fixture should be readable: {why}"))
+    }
+
+    /// The modal rows, as the frozen frame draws them TOP TO BOTTOM: question,
+    /// then the options, then the key hint.
+    const MODAL: &[&str] = &[
+        "Do you trust the contents of this project?",
+        "",
+        "Antigravity CLI requires permission to read, edit, and execute files here.",
+        "",
+        "> Yes, I trust this folder",
+        "  No, exit",
+        "",
+        "  ↑/↓ Navigate · enter Confirm",
+        "Gemini 3.8 Flash · high",
+    ];
+
+    fn buffer(rows: &[&str]) -> String {
+        rows.join("\n")
+    }
+
+    /// The REAL frame, and the text the seat's human needs. Notify says what to
+    /// press, so the returned rows are the product, not a side effect.
+    #[test]
+    fn the_real_agy_trust_modal_is_named_with_the_question_and_the_keys_to_press() {
+        let found = super::human_prompt_class(&fixture("agy-trust-modal-frame"), "agy");
+        let found = found.expect("the frozen trust modal should classify");
+        assert_eq!(found.question, "Do you trust the contents of this project?");
+        assert_eq!(found.keys, "↑/↓ Navigate · enter Confirm");
+    }
+
+    /// EVERY other frozen agy frame, including the two DRAFT frames where a
+    /// human has already typed. A composer is not a prompt ae may not answer.
+    #[test]
+    fn no_composed_or_booting_agy_frame_is_ever_read_as_a_human_only_prompt() {
+        for name in [
+            "agy-composed-frame",
+            "agy-composed-frame-80x24",
+            "agy-draft-frame-80x24",
+            "agy-wrapped-draft-frame-80x24",
+            "agy-boot-frame",
+        ] {
+            assert_eq!(
+                super::human_prompt_class(&fixture(name), "agy"),
+                None,
+                "{name} must never read as a human-only prompt"
+            );
+        }
+    }
+
+    /// The TOOL GATE, on the byte-identical buffer: only the binary differs.
+    #[test]
+    fn the_same_modal_under_another_binary_is_not_a_human_only_prompt() {
+        let modal = fixture("agy-trust-modal-frame");
+        assert!(
+            super::human_prompt_class(&modal, "agy").is_some(),
+            "agy does"
+        );
+        for other in ["claude", "codex", "gemini", "opencode", "grok", ""] {
+            assert_eq!(
+                super::human_prompt_class(&modal, other),
+                None,
+                "{other} must not classify the identical buffer"
+            );
+        }
+    }
+
+    /// The ANCHOR, and why it is the load-bearing half. The whole shape sits in
+    /// SCROLLBACK — a transcript that DISCUSSES the modal — with ordinary rows
+    /// trailing it. Without the window this classifies, so the pin is what
+    /// makes dropping the anchor fail.
+    #[test]
+    fn the_whole_shape_in_scrollback_under_ordinary_rows_is_not_a_prompt() {
+        let mut rows: Vec<&str> = MODAL.to_vec();
+        rows.extend(vec![
+            "and then the agent explained what the modal had said";
+            HUMAN_PROMPT_WINDOW
+        ]);
+        assert_eq!(super::human_prompt_class(&buffer(&rows), "agy"), None);
+        // Same rows, same order — only the DISTANCE from the bottom differs.
+        assert!(super::human_prompt_class(&buffer(MODAL), "agy").is_some());
+    }
+
+    /// The window's exact edge, in both directions, so its value is a fact and
+    /// not a spare margin.
+    #[test]
+    fn a_modal_at_the_window_edge_latches_and_one_row_past_it_does_not() {
+        let pad = |extra: usize| {
+            let mut rows: Vec<&str> = MODAL.to_vec();
+            while rows.len() < HUMAN_PROMPT_WINDOW + extra {
+                rows.push("status row");
+            }
+            buffer(&rows)
+        };
+        assert!(
+            super::human_prompt_class(&pad(0), "agy").is_some(),
+            "a question on the window's first row still counts"
+        );
+        assert_eq!(
+            super::human_prompt_class(&pad(1), "agy"),
+            None,
+            "one row further up it is out of the window"
+        );
+    }
+
+    /// The FENCE guard, scoped to the window. The modal shape is drawn INSIDE a
+    /// composer here, which no frozen frame does — so this is the pin that
+    /// makes removing the composer check fail rather than pass by luck.
+    #[test]
+    fn the_modal_shape_drawn_inside_a_live_composer_is_not_a_human_only_prompt() {
+        let fence = "─".repeat(80);
+        let rows = vec![
+            "Do you trust the contents of this project?",
+            "> Yes, I trust this folder",
+            "  No, exit",
+            "  ↑/↓ Navigate · enter Confirm",
+            &fence,
+            ">",
+            &fence,
+            "? for shortcuts                       Gemini 3.8 Flash · high",
+        ];
+        assert_eq!(super::human_prompt_class(&buffer(&rows), "agy"), None);
+    }
+
+    /// The SHAPE, one part removed at a time: each is required, none is
+    /// decorative.
+    #[test]
+    fn a_prompt_missing_any_one_of_its_parts_is_not_classified() {
+        let without = |drop: &str| {
+            let rows: Vec<&str> = MODAL.iter().copied().filter(|row| *row != drop).collect();
+            super::human_prompt_class(&buffer(&rows), "agy")
+        };
+        assert_eq!(without("Do you trust the contents of this project?"), None);
+        assert_eq!(without("  ↑/↓ Navigate · enter Confirm"), None);
+        assert_eq!(without("> Yes, I trust this folder"), None, "none selected");
+        assert_eq!(without("  No, exit"), None, "one option is not a choice");
     }
 }
