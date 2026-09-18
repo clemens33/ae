@@ -1426,6 +1426,36 @@ fn a_predecessor_is_read_in_the_store_of_the_tool_its_tag_names() {
         1,
         "the seat's own conversation still reads"
     );
+
+    // THE TAG PICKS THE READER, NOT JUST THE STORE. OpenCode is read through
+    // its export leg rather than a file, so an opencode-tagged element must
+    // reach THAT reader — proved here by the claude transcript planted above
+    // sitting untouched at this very id: a dispatch on the slot's tool would
+    // read it, and this one refuses in the export leg's own words instead. It
+    // never shells out, because that id is not an opencode name.
+    plant_session(
+        &root,
+        "exported",
+        &format!(
+            "{}harness_session_prior.main=opencode:{PRIOR_NEW_ID}\n",
+            muse_roster("main", "lead", MUSE_ID)
+        ),
+    );
+    let exported = observe(&root, &["exported"], None);
+    assert_eq!(
+        exported.coverage.len(),
+        1,
+        "the export leg covers its own refusal: {exported:?}"
+    );
+    assert_eq!(
+        exported.coverage[0].reason,
+        "predecessor 1: invalid or missing conversation id"
+    );
+    assert_eq!(
+        exported.rows.len(),
+        1,
+        "the planted claude transcript was read through the wrong tool: {exported:?}"
+    );
     let _ = std::fs::remove_dir_all(&root);
 }
 

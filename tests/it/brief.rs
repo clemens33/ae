@@ -824,18 +824,20 @@ fn a_seat_pack_carries_the_seats_own_last_turns_and_names_a_read_it_could_not_ma
     );
     assert!(!stdout.contains("none recorded\n\n## footnote"), "{stdout}");
 
-    // A seat on a tool whose reader is not built yet says which tool, in that
-    // reader's own words: the coverage reason is the board's, verbatim.
+    // A seat whose reader REFUSES says so in that reader's own words: the
+    // coverage reason is the board's, verbatim. OpenCode's is the export leg,
+    // and this seat records no conversation at all — which is also why the
+    // pin runs no CLI: the id is answered before the leg would shell out.
     let meta = dir.join("meta");
     let named = fs::read_to_string(&meta).unwrap_or_default();
     assert!(
         fs::write(&meta, format!("{named}agent_bin.spawned.0=opencode\n")).is_ok(),
-        "a seat on an unread tool"
+        "a seat whose tool is read through an export"
     );
     let (code, stdout, stderr) = run(&root, &["brief", "brf12", "--seat", "scribe"]);
     assert_eq!(code, Some(0), "stderr: {stderr}");
     assert!(
-        stdout.contains("## last turns\nincomplete: opencode: not read\n"),
+        stdout.contains("## last turns\nincomplete: invalid or missing conversation id\n"),
         "{stdout}"
     );
 }
