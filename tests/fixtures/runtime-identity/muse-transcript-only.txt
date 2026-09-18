@@ -1,3 +1,4 @@
   a transcript row quoting earlier work
-  ❯ 
+  ────────────────────────────────
   muse-spark-1.3 · max · ~/projects/u/ae · YOLO
+  ◆ Working (0s · esc to interrupt)

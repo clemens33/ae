@@ -1,2 +1,5 @@
-  earlier the footer read: Weekly limit left: 8% · Grok 4.6 (high) · always-approve
-  ❯ 
+  earlier the border read:
+  ╰─────────────── Weekly limit left: 8% · Grok 4.6 (high) · always-approve ─╯
+  plain transcript
+  more transcript
+  ❯

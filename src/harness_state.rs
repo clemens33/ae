@@ -172,22 +172,37 @@ pub fn current_identity(capture: &str, tool: ToolKind) -> HarnessIdentity {
     }
 }
 
-/// Normalize matching input: a U+00A0 anywhere in the line becomes a plain
-/// space, then ASCII/NBSP whitespace is trimmed from the edges. Only a line
-/// carrying an interior NBSP allocates; every other line stays borrowed.
+/// Normalize one drawn row: a U+00A0 anywhere becomes a plain space, then
+/// ASCII/NBSP whitespace is trimmed from the edges. Only a row carrying an
+/// interior NBSP allocates; every other row stays borrowed.
+fn normalized_row(line: &str) -> Cow<'_, str> {
+    let trimmed = line.trim_matches([' ', '\t', '\r', '\u{a0}']);
+    if trimmed.contains('\u{a0}') {
+        Cow::Owned(trimmed.replace('\u{a0}', " "))
+    } else {
+        Cow::Borrowed(trimmed)
+    }
+}
+
+/// Normalize matching input, dropping blank rows.
 fn clean_lines(capture: &str) -> Vec<Cow<'_, str>> {
     capture
         .lines()
-        .map(|line| {
-            let trimmed = line.trim_matches([' ', '\t', '\r', '\u{a0}']);
-            if trimmed.contains('\u{a0}') {
-                Cow::Owned(trimmed.replace('\u{a0}', " "))
-            } else {
-                Cow::Borrowed(trimmed)
-            }
-        })
+        .map(normalized_row)
         .filter(|line| !line.is_empty())
         .collect()
+}
+
+/// Every drawn row with blank rows KEPT, for the grammars that anchor on a
+/// measured slack to the screen's last ink. `region::rail_box` measures that
+/// distance the same way; dropping blanks would renumber it silently.
+fn raw_lines(capture: &str) -> Vec<Cow<'_, str>> {
+    capture.lines().map(normalized_row).collect()
+}
+
+/// The index of the last row carrying ink.
+fn last_ink(rows: &[Cow<'_, str>]) -> Option<usize> {
+    rows.iter().rposition(|row| !row.is_empty())
 }
 
 fn classify_codex(capture: &str) -> HarnessState {
@@ -367,15 +382,51 @@ fn parse_codex_identity(line: &str) -> HarnessIdentity {
     HarnessIdentity { model, effort }
 }
 
+/// A full-width drawn rule: only `─` cells, at least ten of them, the shape
+/// `crate::deliver::region::ruled_prompt` fences agy's composer with. The
+/// region helper is private, so this mirrors its measured shape.
+fn full_rule(row: &str) -> bool {
+    row.starts_with('─') && row.chars().all(|cell| cell == '─') && row.chars().count() >= 10
+}
+
+/// A rail composer box's bottom edge: the row's first two cells are the
+/// corner and underline start of `crate::deliver::region::BoxTable`'s measured
+/// tables — opencode's `╹▀`, grok's `╰─`.
+fn is_box_edge(row: &str, edge: (char, char)) -> bool {
+    let mut cells = row.chars();
+    cells.next() == Some(edge.0) && cells.next() == Some(edge.1)
+}
+
+/// opencode's measured box: `┃` rails, `╹▀` edge.
+const HEAVY_EDGE: (char, char) = ('╹', '▀');
+
+/// grok's measured box: `│` rails, `╰─` edge.
+const ROUNDED_EDGE: (char, char) = ('╰', '─');
+
+/// Grok's measured bottom slack: the rounded box's bottom edge sits exactly
+/// two rows above the last ink at every captured size, the same `Some(2)`
+/// `crate::deliver::region::composed_ui` passes for readiness.
+const GROK_BOTTOM_SLACK: usize = 2;
+
+/// opencode's measured upper bound: at the tracked specimen the heavy edge
+/// sits seven rows above the last ink (hint, tip and path rows below it).
+/// Readiness leaves the heavy rail unanchored because its markers vary;
+/// identity reads the same geometry with the measured gap as a ceiling, so a
+/// box quoted in scrollback with more rows below it is output, not input.
+const OPENCODE_MAX_BOTTOM_SLACK: usize = 7;
+
 /// Muse's composer footer: `model · effort · path · mode`, drawn directly
-/// under the composer's closing rule. The rule is the anchor: a footer-shaped
-/// transcript row above it is never the current frame.
+/// under the composer's closing rule. The rule above the LAST drawn row is
+/// the anchor: a footer-shaped transcript row above it is never the current
+/// frame. A capture whose composer is absent is out of scope for this
+/// grammar — the footer is read only from the bottom pair, so such a capture
+/// reads as unobserved rather than as a quoted footer.
 fn current_muse_identity(capture: &str) -> HarnessIdentity {
     let lines = clean_lines(capture);
     let Some((footer, before)) = lines.split_last() else {
         return HarnessIdentity::default();
     };
-    if !before.last().is_some_and(|line| claude_border(line)) {
+    if !before.last().is_some_and(|line| full_rule(line)) {
         return HarnessIdentity::default();
     }
     let fields: Vec<&str> = footer.split(" · ").collect();
@@ -392,13 +443,23 @@ fn current_muse_identity(capture: &str) -> HarnessIdentity {
 }
 
 /// opencode's composer status row `mode · model · effort`, drawn directly
-/// above the `╹` bottom edge of its composer box. The edge is the anchor.
+/// above the bottom-most `╹▀` heavy edge, which must itself sit within the
+/// measured slack of the screen's last ink. A status row quoted with its edge
+/// in scrollback — ae panes routinely carry peek output of other panes — has
+/// more rows below it than the live composer ever does, so it reads as
+/// unobserved.
 fn current_opencode_identity(capture: &str) -> HarnessIdentity {
-    let lines = clean_lines(capture);
-    let Some(edge) = lines.iter().rposition(|line| line.starts_with('╹')) else {
+    let rows = raw_lines(capture);
+    let Some(edge) = rows.iter().rposition(|row| is_box_edge(row, HEAVY_EDGE)) else {
         return HarnessIdentity::default();
     };
-    let Some(status) = edge.checked_sub(1).and_then(|index| lines.get(index)) else {
+    let Some(last) = last_ink(&rows) else {
+        return HarnessIdentity::default();
+    };
+    if last.saturating_sub(edge) > OPENCODE_MAX_BOTTOM_SLACK {
+        return HarnessIdentity::default();
+    }
+    let Some(status) = edge.checked_sub(1).and_then(|index| rows.get(index)) else {
         return HarnessIdentity::default();
     };
     let Some(rest) = status.strip_prefix('┃') else {
@@ -418,18 +479,22 @@ fn current_opencode_identity(capture: &str) -> HarnessIdentity {
 }
 
 /// Grok's composer bottom border carries the status text
-/// `… · model (effort) · …`. The border is the anchor: a model name quoted in
-/// the transcript proves nothing.
+/// `… · model (effort) · …`. The border is the anchor and it must be the
+/// bottom-most `╰─` edge at exactly the measured slack from the last ink: the
+/// same bordered row quoted in the transcript above a live frame, or stranded
+/// with other rows below it, proves nothing.
 fn current_grok_identity(capture: &str) -> HarnessIdentity {
-    let lines = clean_lines(capture);
-    let Some(border) = lines
-        .iter()
-        .rev()
-        .find(|line| line.starts_with('╰') && line.ends_with('╯'))
-    else {
+    let rows = raw_lines(capture);
+    let Some(border) = rows.iter().rposition(|row| is_box_edge(row, ROUNDED_EDGE)) else {
         return HarnessIdentity::default();
     };
-    let inner = border.trim_start_matches('╰').trim_end_matches('╯');
+    let Some(last) = last_ink(&rows) else {
+        return HarnessIdentity::default();
+    };
+    if border + GROK_BOTTOM_SLACK != last {
+        return HarnessIdentity::default();
+    }
+    let inner = rows[border].trim_start_matches('╰').trim_end_matches('╯');
     let mut found: Option<(&str, &str)> = None;
     for segment in inner.split(" · ") {
         let Some((model, effort)) = segment.rsplit_once(" (") else {
@@ -455,25 +520,36 @@ fn current_grok_identity(capture: &str) -> HarnessIdentity {
     })
 }
 
-/// Agy's model label: the last non-empty row's trailing `model · effort`,
-/// set apart from a hint on its left by a run of spaces. The trust modal
-/// draws the same label without a composer, so it is read the same way.
+/// Agy's model label: the LAST drawn row's trailing `model · effort`, set
+/// apart from a hint on its left by a run of spaces, with the composer's own
+/// full-width rule within the three rows above it. The folder-trust modal
+/// draws the same label without any rule and is unobserved, never the live
+/// frame. A model still carrying the dot separator — a transcript sentence
+/// that happens to end in ` · <effort>` — is refused.
 fn current_agy_identity(capture: &str) -> HarnessIdentity {
-    let lines = clean_lines(capture);
-    let Some(last) = lines.last() else {
+    let rows = raw_lines(capture);
+    let Some(last) = last_ink(&rows) else {
         return HarnessIdentity::default();
     };
-    let Some((left, effort)) = last.rsplit_once(" · ") else {
+    if !rows[last.saturating_sub(3)..last]
+        .iter()
+        .any(|row| full_rule(row))
+    {
+        return HarnessIdentity::default();
+    }
+    let Some((left, effort)) = rows[last].rsplit_once(" · ") else {
         return HarnessIdentity::default();
     };
     if !valid_effort(effort) {
         return HarnessIdentity::default();
     }
+    // The hint on the left is separated by a run of spaces; a label-only row
+    // has none. Either way the separator must not survive into the model.
     let model = left
         .rsplit_once("  ")
         .map_or(left, |(_, model)| model)
         .trim();
-    if model.is_empty() {
+    if model.is_empty() || model.contains(" · ") {
         return HarnessIdentity::default();
     }
     HarnessIdentity {
@@ -938,7 +1014,7 @@ mod tests {
     }
 
     #[test]
-    fn a_grok_border_echo_in_the_transcript_is_unobserved() {
+    fn a_grok_border_echo_above_the_live_frame_is_unobserved() {
         assert_eq!(
             current_identity(
                 include_str!("../tests/fixtures/runtime-identity/grok-transcript-only.txt"),
@@ -986,26 +1062,40 @@ mod tests {
     }
 
     #[test]
-    fn an_agy_trust_modal_still_carries_the_model_label() {
+    fn an_agy_trust_modal_is_not_the_live_composer() {
+        // The modal carries the label with no rule anywhere; the composer's
+        // rule proximity is the anchor, so the modal is unobserved.
         assert_eq!(
             current_identity(
                 include_str!("../tests/fixtures/agy-composer/agy-trust-modal-frame.txt"),
                 ToolKind::Agy
             ),
-            HarnessIdentity {
-                model: Some("Gemini 3.8 Flash".to_owned()),
-                effort: Some("high".to_owned()),
-            }
+            HarnessIdentity::default()
         );
     }
 
     #[test]
-    fn an_agy_label_echo_without_a_footer_row_is_unobserved() {
+    fn an_agy_label_echo_without_a_live_footer_is_unobserved() {
+        let echoed = include_str!("../tests/fixtures/runtime-identity/agy-transcript-only.txt");
         assert_eq!(
-            current_identity(
-                include_str!("../tests/fixtures/runtime-identity/agy-transcript-only.txt"),
-                ToolKind::Agy
-            ),
+            current_identity(echoed, ToolKind::Agy),
+            HarnessIdentity::default()
+        );
+        // The anchor is the rule above the LAST row, not the row order: with
+        // the hint row deleted the label is not last and still unobserved.
+        let without_hint = echoed
+            .lines()
+            .filter(|line| !line.contains("? for shortcuts"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(
+            current_identity(&without_hint, ToolKind::Agy),
+            HarnessIdentity::default()
+        );
+        // A sentence that happens to end in ` · high` is not a label.
+        let sentence = format!("{}\nbudget · plan · quota is · high\n", "─".repeat(40));
+        assert_eq!(
+            current_identity(&sentence, ToolKind::Agy),
             HarnessIdentity::default()
         );
     }

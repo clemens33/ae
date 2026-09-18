@@ -22,8 +22,10 @@ specimens are `-e` ANSI captures. `muse-idle-plain-80x24.txt` and
 `tests/fixtures/opencode-composer/opencode-composed-frame.esc` (source sha256
 `581d6b2cdb67565946fb0b9c1f35e49ed6c65d7fa8db4aaa0b9fb8320d54de82`). The
 sha256s name the SOURCE specimens, not the derived files. Each strip was then
-scrubbed: the home path becomes `/home/u` and the ae-dev session path becomes
-`/home/u/.ae/sessions/work`. No other edit; row shapes and widths are kept,
+scrubbed: the home path becomes `/home/u`, the ae-dev session path becomes
+`/home/u/.ae/sessions/work`, and `~/projects/<org>` becomes `~/projects/u`.
+The opencode bottom row was re-padded with spaces so its version column stays
+at the measured right edge. No other edit; row shapes and widths are kept,
 and the transcript text above each composer stays as the anchor-negative
 evidence the parsers are pinned against.
 
