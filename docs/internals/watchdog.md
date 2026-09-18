@@ -43,6 +43,54 @@ exactly one server. It does NOT when the session is proven gone, and not on the
 server a daemon is LEAVING after a rebind: neither is a session this state root
 still owns, and a rank left on a stranger would put it on every ae strip.
 
+## Adopting a watchdog-less peer's fleet strip
+
+Every value the fleet line carries has one publisher: the session's own watchdog. So a session
+whose watchdog is off — `watchdog = false`, a `watchdog stop`, or a daemon that died — kept a row
+on every OTHER session's strip and had nothing at all on its own. The reader who most needs the
+fleet map, somebody sitting in an unwatched session, could not see or click a single other ae
+session from there.
+
+A running watchdog therefore also writes `@ae_fleet_strip` — and ONLY that option — into every
+same-server ae session with no live watchdog of its own. It is the fourth writer of the look and
+has the narrowest licence of the four: a rank, a glyph, a health segment or an agents roster
+written into a peer would be this daemon vouching for a session it is not measuring. The peer's
+own facts keep saying `unknown`, and its bar keeps saying `watchdog off`.
+
+- **Who is adopted.** The durable inventory, through the one `liveness::classify`, with a backend
+  that answers only servers `SocketPaths` proves equivalent to this daemon's own. A candidate is
+  admitted on the ownership proof `seed_unwatched` makes — an `AE_SESSION` marker plus an
+  `AE_HOME` naming this state root — so a same-name stranger is never written to. It is a target
+  only while its own watchdog is not live, read from its pidfile plus the verdict cycle's own
+  process table. Unknown liveness is never adopted: the peer's daemon may be starting. An
+  incomplete scan adopts the known and skips the unknown rather than refusing.
+- **What is drawn.** The TARGET's look, never the adopter's, so a peer running the ASCII fallback
+  is not handed a braille glyph; the TARGET as the current row, because a strip that cannot show
+  you where you are is not a map; static, with no working frame. N adopters therefore compose
+  byte-identical text and converge without electing a leader.
+- **Rankless rows.** A running session ae's own records vouch for is a row even when it publishes
+  no rank, drawn with the Stale mark, on every strip the daemon writes — its own included. The
+  rank rule alone cannot admit one: a session nobody measures publishes no rank, and a rank is a
+  tmux option a stranger could set too.
+- **What it costs.** One `list-sessions` per tick carries both the ranks and every session's look,
+  so there is no query per peer. Enumeration runs once per verdict cycle and reuses the table that
+  cycle already took for its pane verdicts, so no tick spawns `ps`. A daemon with no targets — the
+  common case — adds no tmux process and no `ps` to any tick, and with `theme = off` it still
+  sleeps the whole interval. Adoption runs on its own 2 s cadence in all three ticker modes,
+  attached or not: the motion ticker draws nothing while no client is attached, and the session
+  being filled is exactly the one somebody IS looking at.
+- **Un-adoption.** When the target's own watchdog comes back, the adopter stops writing and the
+  owner publishes over it. The pause is decided by the pidfile naming a pid the enumeration did
+  not see — presence alone would lock out the dead-watchdog sessions this exists for, because a
+  dead daemon leaves its pidfile behind. A peer's pidfile is only ever read; the adopter never
+  tidies another session's state directory.
+- **Accepted limits.** A LONE watchdog-less session has no adopter, so its own line stays empty
+  and the `watchdog off` mark is what says why. A stopping adopter does NOT retract the strips it
+  wrote: a cross-session retraction is a race between daemons, and a strip one cycle out of date
+  is a better map than none. The owner starting mid-adoption can show one static frame where an
+  animated one was due. A recycled pid can make a dead watchdog read as live until the pidfile is
+  cleaned up.
+
 The `_watchdog` pane runs the core directly: its command is the session's `watchdog` link,
 which is a symlink to the core binary under another name, dispatching to `_watchdog-run`.
 There is no generated script or shell process between tmux and the core.

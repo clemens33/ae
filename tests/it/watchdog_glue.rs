@@ -2026,3 +2026,217 @@ fn the_running_watchdog_backfills_the_drawn_agent_names() {
     );
     let _ = fs::remove_dir_all(&scratch);
 }
+
+/// THE POINT of adoption, against a real server: a session whose watchdog is
+/// not running gets its fleet strip from a peer's — and gets NOTHING else.
+///
+/// Two ae sessions on one private socket. Only `adoptera` runs a daemon, so
+/// `adoptedb` is exactly the session the human reported: alive, listed by `ae
+/// list`, and with an empty second status line nobody was filling. The arm
+/// proves all three halves of the rule — the strip arrives, it lists both
+/// sessions, and the WHOLE of the rest of B's option table is untouched — and
+/// then that the owner coming back takes the line straight back.
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one real two-session fixture: the arm IS the sequence, and splitting it \
+              would hide which assertion the daemon's timing belongs to"
+)]
+fn a_running_watchdog_fills_a_watchdogless_peers_fleet_strip_and_writes_nothing_else() {
+    let scratch = scratch("adopt");
+    require_tmux(&scratch);
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup::new(&socket, &scratch);
+    let root = scratch.join("state");
+    let tool_home = scratch.join("tool-home");
+    let config = root.join("config");
+    assert!(fs::create_dir_all(&root).is_ok(), "a state root");
+    assert!(fs::create_dir_all(&tool_home).is_ok(), "a tool home");
+    assert!(
+        fs::write(&config, "[profiles]\ncl = claude\n").is_ok(),
+        "a config the daemon can read"
+    );
+    let adopter = plant(&root, "adoptera", &socket, None);
+    let peer = plant(&root, "adoptedb", &socket, None);
+
+    // Both sessions carry the ownership pair a launch stamps: the marker that
+    // says "an ae session" and the home that says WHICH ae owns it. Without
+    // both, the adopter must refuse to write — which is the rest of this arm.
+    for session in ["adoptera", "adoptedb"] {
+        assert!(
+            tmux(&socket, &scratch, &["new-session", "-d", "-s", session]).0,
+            "a real session for {session}"
+        );
+        for (name, value) in [
+            (ae::tmux::OWNERSHIP_VARIABLE, "1"),
+            (ae::tmux::HOME_VARIABLE, &root.display().to_string()),
+        ] {
+            assert!(
+                tmux(
+                    &socket,
+                    &scratch,
+                    &["set-environment", "-t", session, name, value],
+                )
+                .0,
+                "{session} declares {name}"
+            );
+        }
+    }
+
+    let option = |session: &str, name: &str| {
+        tmux(
+            &socket,
+            &scratch,
+            &[
+                "display-message",
+                "-p",
+                "-t",
+                session,
+                &format!("#{{{name}}}"),
+            ],
+        )
+        .1
+        .trim()
+        .to_owned()
+    };
+    // Every option B carries, as one block: the diff at the end is taken over
+    // this, so a second option arriving on B fails the arm whatever it is.
+    let table = |session: &str| {
+        let mut rows: Vec<String> = tmux(&socket, &scratch, &["show-options", "-t", session])
+            .1
+            .lines()
+            .filter(|line| !line.starts_with(ae::theme::FLEET_STRIP_OPTION))
+            .map(ToOwned::to_owned)
+            .collect();
+        rows.sort();
+        rows
+    };
+
+    // The stopped proof FIRST, before the snapshot: B has no watchdog, so
+    // whatever lands on it from here is the adopter's doing.
+    assert_eq!(
+        ae::watchdog_glue::read_pid(&peer),
+        None,
+        "the peer must start with no watchdog of its own"
+    );
+    assert!(
+        option("adoptedb", ae::theme::FLEET_STRIP_OPTION).is_empty(),
+        "and with the empty second line the human reported"
+    );
+    let before = table("adoptedb");
+
+    let daemon_out = scratch.join("daemon-out");
+    let daemon_err = scratch.join("daemon-err");
+    let mut child = super::cli::ae()
+        .arg("_watchdog-run")
+        .arg(&adopter)
+        .args([
+            "--interval",
+            "1",
+            "--quiet-beat-ms",
+            "10",
+            "--tg-supervise-secs",
+            "0",
+        ])
+        .env("HOME", &tool_home)
+        .env("AE_HOME", &root)
+        .env("CONFIG_FILE", &config)
+        .stdout(fs::File::create(&daemon_out).expect("a stdout sink"))
+        .stderr(fs::File::create(&daemon_err).expect("a stderr sink"))
+        .spawn()
+        .expect("the ae binary should spawn");
+
+    let deadline = Instant::now() + BUDGET;
+    let mut filled = String::new();
+    while Instant::now() < deadline {
+        filled = option("adoptedb", ae::theme::FLEET_STRIP_OPTION);
+        if filled.contains("adoptera") && filled.contains("adoptedb") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let diagnostics = fs::read_to_string(&daemon_err).unwrap_or_default();
+    assert!(
+        filled.contains("adoptera") && filled.contains("adoptedb"),
+        "the peer's own line must list the whole fleet: {filled:?}\nstderr: {diagnostics}"
+    );
+    assert!(
+        filled.contains("range=session|"),
+        "and every row must still be a click target: {filled:?}"
+    );
+    // B publishes no rank — nothing has ever measured it — so it is on its own
+    // strip only because ae's records vouch for it. That is the rankless half.
+    assert!(
+        option("adoptedb", ae::theme::ATTENTION_RANK_OPTION).is_empty(),
+        "the adopter publishes no rank into a session it is not measuring"
+    );
+    assert_eq!(
+        table("adoptedb"),
+        before,
+        "the fleet strip is the ONLY thing an adopter may write into a peer"
+    );
+
+    // The owner comes back. A pidfile naming a process that really is running
+    // is the one thing that pauses adoption, so B's line freezes where it is
+    // while the adopter's own keeps moving.
+    assert!(
+        fs::write(
+            peer.join(".watchdog.pid"),
+            format!("{}\n", std::process::id())
+        )
+        .is_ok(),
+        "a live watchdog registration for the peer"
+    );
+    assert!(
+        tmux(&socket, &scratch, &["new-session", "-d", "-s", "adoptedc"]).0,
+        "a third session for the fleet to grow by"
+    );
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &[
+                "set-option",
+                "-t",
+                "adoptedc",
+                ae::theme::ATTENTION_RANK_OPTION,
+                "0",
+            ],
+        )
+        .0,
+        "which publishes a rank, so every strip should gain it"
+    );
+    let frozen = option("adoptedb", ae::theme::FLEET_STRIP_OPTION);
+    let deadline = Instant::now() + BUDGET;
+    let mut own = String::new();
+    while Instant::now() < deadline {
+        own = option("adoptera", ae::theme::FLEET_STRIP_OPTION);
+        if own.contains("adoptedc") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(
+        own.contains("adoptedc"),
+        "the adopter's OWN strip still follows the fleet: {own:?}"
+    );
+    assert_eq!(
+        option("adoptedb", ae::theme::FLEET_STRIP_OPTION),
+        frozen,
+        "but the peer's is its own daemon's again the moment one is running"
+    );
+
+    for session in ["adoptera", "adoptedb", "adoptedc"] {
+        let _ = tmux(&socket, &scratch, &["kill-session", "-t", session]);
+    }
+    let stop = Instant::now() + BUDGET;
+    while Instant::now() < stop {
+        if matches!(child.try_wait(), Ok(Some(_))) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    kill_server(&socket, &scratch);
+}
