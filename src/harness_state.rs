@@ -453,7 +453,7 @@ fn current_muse_identity(capture: &str) -> HarnessIdentity {
 /// above the bottom-most `╹▀` heavy edge, which must itself sit within the
 /// measured slack of the screen's last ink. The ceiling alone is not the
 /// protection: a quoted status+edge pair reads as observed at any slack from
-/// one up to the measured ceiling, and only a pair stranded further than the
+/// zero up to the measured ceiling, and only a pair stranded further than the
 /// ceiling is refused. What protects the live frame is that the edge must be
 /// the BOTTOM-MOST one and sit at that position, not the bound itself.
 fn current_opencode_identity(capture: &str) -> HarnessIdentity {
@@ -534,9 +534,9 @@ fn current_grok_identity(capture: &str) -> HarnessIdentity {
 /// apart from a hint on its left by a run of spaces, with the composer's own
 /// full-width rule within the three rows above it. The folder-trust modal
 /// draws the same label without any rule and is unobserved, never the live
-/// frame. Only an INTERIOR dot separator is refused — a sentence with a
-/// separator before its trailing ` · <effort>`; a sentence that merely ENDS
-/// in ` · <effort>` with no interior separator still reads as observed. A
+/// frame. Refused is only an interior separator in the model (after the
+/// two-space split); a sentence that merely ENDS in ` · <effort>` with no such
+/// separator still reads as observed. A
 /// wrapped label continuation cannot arrive as its own row: the watchdog
 /// captures with `capture-pane -p -J`, which joins wrapped rows
 /// (tmux.rs:993), so the grammar is never handed one.
