@@ -1670,6 +1670,48 @@ fn a_name_the_grammar_refuses_is_the_launchs_refusal_not_the_paths() {
     assert!(stderr.contains("invalid session name"), "{stderr}");
 }
 
+/// A second positional is a usage error that creates nothing: the
+/// mistyped-helper spelling fails closed instead of opening a session named
+/// after its last word.
+#[test]
+fn a_second_positional_refuses_without_creating_state_or_tmux() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::new("second-positional");
+    let sock = rig.sock.clone();
+    let (code, _, stderr) = rig.run_on(Some(&sock), &["aedevx", "send", "colead", "msg"]);
+    assert_eq!(code, Some(2), "{stderr}");
+    assert!(
+        stderr.contains("'aedevx'") && stderr.contains("'send'"),
+        "the refusal names both words: {stderr}"
+    );
+    assert!(
+        stderr.contains("session helper"),
+        "the helper hint: {stderr}"
+    );
+    for name in ["aedevx", "msg"] {
+        assert!(
+            !rig.sessions().join(name).exists(),
+            "no session dir for '{name}'"
+        );
+    }
+    if let Ok(entries) = std::fs::read_dir(rig.sessions()) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            assert!(
+                !name.starts_with(".lifecycle"),
+                "no lifecycle lock written: {name}"
+            );
+        }
+    }
+    let (listed, sessions) = rig.tmux(&["list-sessions", "-F", "#{session_name}"]);
+    assert!(
+        !listed || !sessions.lines().any(|line| line.trim_end() == "msg"),
+        "a refused launch left a tmux session behind: {sessions}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // the translated words
 // ---------------------------------------------------------------------------

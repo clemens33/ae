@@ -90,7 +90,7 @@ picker, or plain `tmux switch-client`/`attach` — lands on that session's lead 
 
 Three commands were cut rather than ported to the Rust core. Two keep a **refusing arm** in
 the core instead of being deleted, because anything the core does not match falls through to
-a launch and a launch takes the last positional as a session name — a bare `ae status` would
+a launch and a launch takes its single positional as a session name — a bare `ae status` would
 otherwise create a session called `status`.
 
 | Word | What now |

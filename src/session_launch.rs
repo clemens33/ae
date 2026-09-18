@@ -376,8 +376,14 @@ pub(crate) fn parse_plan_with_attach(args: &[String], allow_attach: bool) -> Res
                     "Error: unknown flag '{word}'. Use --worktree, --copy, --local, --dir <path>, --no-attach, --solo, --from <archive-uuid>, --seat <agent>=<profile>, --lead <profile>, or --colead <profile>."
                 ));
             }
-            // Last positional wins.
-            _ => plan.name = Some(word.clone()),
+            // A launch takes exactly one session name: a second positional is
+            // a usage error, never a rename of the first.
+            _ => {
+                if let Some(first) = plan.name.as_deref() {
+                    return Err(second_positional_refusal(first, word));
+                }
+                plan.name = Some(word.clone());
+            }
         }
     }
     if colead_override && plan.workers.as_deref() == Some("") {
@@ -386,6 +392,26 @@ pub(crate) fn parse_plan_with_attach(args: &[String], allow_attach: bool) -> Res
         );
     }
     Ok(plan)
+}
+
+/// The refusal for a launch argv naming two sessions: it names both words,
+/// and when one of them is a session helper it says how a helper is called —
+/// a mistyped helper call must fail closed, not open a session named after
+/// the last word.
+fn second_positional_refusal(first: &str, second: &str) -> String {
+    let mut line = format!(
+        "Error: a launch takes exactly one session name, not two ('{first}' and '{second}')."
+    );
+    if let Some(helper) = [first, second]
+        .into_iter()
+        .find(|word| crate::shim::lookup(word).is_some())
+    {
+        line.push_str(&format!(
+            " '{helper}' is a session helper — run it by its full path \
+             (<state-root>/sessions/<session>/{helper} …)."
+        ));
+    }
+    line
 }
 
 /// The facts the glue hands in — everything the core would otherwise have to
@@ -5085,10 +5111,10 @@ fn from_preflight(root: &Path, raw_uuid: &str) -> Result<FromProof, String> {
 )]
 mod tests {
     use super::{
-        AttachAction, EVENTS_KEEP, ExpectedLaunch, ExpectedState, ToolKind, attach_action,
-        expected_launch_argv, launch_token, launch_turn_is_pasted, layout_argvs,
-        lead_pair_policy_argvs, parse_plan, replace_watchdog_registration, server_attach_hint,
-        trim_events,
+        AttachAction, EVENTS_KEEP, ExpectedLaunch, ExpectedState, Mode, Plan, ToolKind,
+        attach_action, expected_launch_argv, launch_token, launch_turn_is_pasted, layout_argvs,
+        lead_pair_policy_argvs, parse_plan, parse_plan_with_attach, replace_watchdog_registration,
+        server_attach_hint, trim_events,
     };
     use crate::inventory::ServerId;
     use std::fmt::Write as _;
@@ -5384,6 +5410,185 @@ mod tests {
                 )
             );
         }
+    }
+
+    #[test]
+    fn a_second_positional_is_a_usage_error_naming_both_words() {
+        let err =
+            parse_plan(&["aedevx".to_owned(), "msg".to_owned()]).expect_err("two names refuse");
+        assert!(
+            err.contains("'aedevx'") && err.contains("'msg'"),
+            "both words named: {err}"
+        );
+        assert!(
+            !err.contains("session helper"),
+            "no helper named, no hint: {err}"
+        );
+    }
+
+    #[test]
+    fn a_helper_shaped_second_positional_names_the_helper_call() {
+        let err = parse_plan(&["aedevx", "send", "colead", "msg"].map(str::to_owned))
+            .expect_err("a mistyped helper call refuses");
+        assert!(
+            err.contains("'aedevx'") && err.contains("'send'"),
+            "first and second named: {err}"
+        );
+        assert!(
+            err.contains("'send' is a session helper")
+                && err.contains("<state-root>/sessions/<session>/send"),
+            "the helper hint: {err}"
+        );
+        let err = parse_plan(&["@", "send", "x", "y"].map(str::to_owned))
+            .expect_err("no name survives '@ send x y'");
+        assert!(
+            err.contains("'@'") && err.contains("'send'"),
+            "both words named: {err}"
+        );
+    }
+
+    #[test]
+    fn every_existing_launch_spelling_still_parses_to_the_same_plan() {
+        let name = |session: &str| Plan {
+            name: Some(session.to_owned()),
+            ..Plan::default()
+        };
+        let uuid = "0199c0de-1234-4890-abcd-ef0123456789";
+        let cases: &[(&[&str], Plan)] = &[
+            (&["demo"], name("demo")),
+            (
+                &["demo", "use", "colead"],
+                Plan {
+                    main: Some("colead".to_owned()),
+                    ..name("demo")
+                },
+            ),
+            (
+                &["--dir", "/repo", "demo"],
+                Plan {
+                    dir: Some("/repo".to_owned()),
+                    ..name("demo")
+                },
+            ),
+            (
+                &["--dir=/repo", "demo"],
+                Plan {
+                    dir: Some("/repo".to_owned()),
+                    ..name("demo")
+                },
+            ),
+            (
+                &["--from", uuid, "demo"],
+                Plan {
+                    from: Some(uuid.to_owned()),
+                    ..name("demo")
+                },
+            ),
+            (
+                &["--from=0199c0de-1234-4890-abcd-ef0123456789", "demo"],
+                Plan {
+                    from: Some(uuid.to_owned()),
+                    ..name("demo")
+                },
+            ),
+            (
+                &["--lead", "solx", "demo"],
+                Plan {
+                    seat_profiles: vec![("lead".to_owned(), "solx".to_owned())],
+                    ..name("demo")
+                },
+            ),
+            (
+                &["--lead=solx", "demo"],
+                Plan {
+                    seat_profiles: vec![("lead".to_owned(), "solx".to_owned())],
+                    ..name("demo")
+                },
+            ),
+            (
+                &["--colead", "astrax", "demo"],
+                Plan {
+                    seat_profiles: vec![("colead".to_owned(), "astrax".to_owned())],
+                    ..name("demo")
+                },
+            ),
+            (
+                &["--colead=astrax", "demo"],
+                Plan {
+                    seat_profiles: vec![("colead".to_owned(), "astrax".to_owned())],
+                    ..name("demo")
+                },
+            ),
+            (
+                &["--seat", "builder=terrax", "demo"],
+                Plan {
+                    seat_profiles: vec![("builder".to_owned(), "terrax".to_owned())],
+                    ..name("demo")
+                },
+            ),
+            (
+                &["--seat=builder=terrax", "demo"],
+                Plan {
+                    seat_profiles: vec![("builder".to_owned(), "terrax".to_owned())],
+                    ..name("demo")
+                },
+            ),
+            (
+                &["demo", "--solo"],
+                Plan {
+                    workers: Some(String::new()),
+                    ..name("demo")
+                },
+            ),
+            (
+                &["demo", "--no-attach"],
+                Plan {
+                    attach: Some(false),
+                    ..name("demo")
+                },
+            ),
+            (
+                &["--local", "demo"],
+                Plan {
+                    mode: Some(Mode::Local),
+                    ..name("demo")
+                },
+            ),
+            (
+                &["--copy", "demo"],
+                Plan {
+                    mode: Some(Mode::Full),
+                    ..name("demo")
+                },
+            ),
+            (
+                &["--worktree", "demo"],
+                Plan {
+                    mode: Some(Mode::Git),
+                    ..name("demo")
+                },
+            ),
+        ];
+        for (argv, expected) in cases {
+            let words: Vec<String> = argv.iter().map(|word| (*word).to_owned()).collect();
+            assert_eq!(parse_plan(&words), Ok(expected.clone()), "{argv:?}");
+        }
+        // The attach path's own spellings: `--attach` parses, and a seat tail
+        // with a name still parses (the orchestrator rejects the name itself).
+        assert_eq!(
+            parse_plan_with_attach(&["--attach".to_owned()], true),
+            Ok(Plan {
+                attach: Some(true),
+                ..Plan::default()
+            })
+        );
+        assert_eq!(
+            parse_plan_with_attach(&["demo".to_owned(), "--attach".to_owned()], true)
+                .expect("a name with --attach parses")
+                .name
+                .as_deref(),
+            Some("demo")
+        );
     }
 
     #[test]
