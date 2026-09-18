@@ -152,9 +152,10 @@ starts animating from the next cycle.
 
 The pulse is subordinate to the state: it stands in for the working glyph and
 nothing else, so done, needs-you, dead, stale, waiting-agent and idle panes stay still.
-`[workspace] icons = off` selects the ASCII column. `motion = off` or
-`theme = off` disables the ticker. The watchdog re-reads the look every cycle, so
-flipping either knob on a live session takes effect on the next one.
+`[workspace] icons = off` selects the ASCII column. `theme = off` disables the ticker; `motion = off`
+freezes the pulse but the ticker keeps re-observing the fleet at the observation cadence (0.5 s attached, 2 s
+detached) and republishes the strip on change. The watchdog re-reads the look every cycle, so flipping either
+knob on a live session takes effect on the next one.
 
 ## What goes when the bar runs out of room
 

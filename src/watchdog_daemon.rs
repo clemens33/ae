@@ -1959,6 +1959,29 @@ impl MotionState {
         }
         writes
     }
+
+    /// The static half of `step` for `motion = off`: fleet and orchestrator
+    /// publications without animation frames. Same attached gate and
+    /// write-on-change caching as `step`; F6's unset lands here too.
+    fn step_static(&mut self, look: &Look) -> Vec<tmux::OptionWrite> {
+        if !self.panes.iter().any(|pane| pane.session_attached > 0) {
+            return Vec::new();
+        }
+        let mut writes = Vec::new();
+        self.push_fleet_write(&mut writes, look, None);
+        if let Some(target) = self.fleet_target.clone() {
+            let orchestrator = self
+                .fleet
+                .iter()
+                .find(|row| row.name == crate::orchestrator::ORCHESTRATOR_SESSION)
+                .cloned();
+            if let Some(row) = orchestrator.as_ref() {
+                let _ =
+                    self.push_orchestrator_strip_write(&mut writes, look, &target, Some(row), None);
+            }
+        }
+        writes
+    }
 }
 
 /// The fleet target the orchestrator segment may jump to: absent for this session
@@ -1982,6 +2005,37 @@ const fn motion_observation_due(ticks_since_observation: u8) -> bool {
 /// Whether this look permits periodic redraws at all.
 const fn motion_ticker_enabled(look: &Look) -> bool {
     look.drawn && look.motion
+}
+
+/// Which wait a verdict interval gets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TickerMode {
+    /// `theme = off`, or no look ever read: the cycle owns `@ae_*`.
+    Idle,
+    /// `motion = off`: re-observation without animation frames.
+    Static,
+    /// Drawn and animated: the full motion ticker.
+    Animated,
+}
+
+/// Motion gates ANIMATION FRAMES only: drawn-but-still keeps its fleet
+/// strip fresh, and only `theme = off` sleeps the whole interval.
+const fn ticker_mode(look: Option<&Look>) -> TickerMode {
+    match look {
+        Some(look) if motion_ticker_enabled(look) => TickerMode::Animated,
+        Some(look) if look.drawn => TickerMode::Static,
+        _ => TickerMode::Idle,
+    }
+}
+
+/// The observation cadence when motion is off: the SAME cadence the
+/// animated ticker observes at — every fifth attached tick, every detached.
+fn static_observe_cadence(panes: &[tmux::MotionPane]) -> Duration {
+    if panes.iter().any(|pane| pane.session_attached > 0) {
+        ATTACHED_MOTION_TICK.saturating_mul(u32::from(MOTION_OBSERVATION_TICKS))
+    } else {
+        DETACHED_MOTION_TICK
+    }
 }
 
 /// The next observation cadence from the current attachment reading.
@@ -2357,10 +2411,21 @@ fn wait_between_cycles(
     interval_secs: u64,
 ) {
     let interval = Duration::from_secs(interval_secs);
-    let Some(look) = carry.look.filter(motion_ticker_enabled) else {
+    let Some(look) = carry.look else {
         std::thread::sleep(interval);
         return;
     };
+    match ticker_mode(carry.look.as_ref()) {
+        TickerMode::Idle => {
+            std::thread::sleep(interval);
+            return;
+        }
+        TickerMode::Static => {
+            wait_static_between_cycles(server, session, carry, &look, interval);
+            return;
+        }
+        TickerMode::Animated => {}
+    }
     let started = Instant::now();
     let mut cadence = ATTACHED_MOTION_TICK;
     let mut ticks_since_observation = MOTION_OBSERVATION_TICKS;
@@ -2411,6 +2476,59 @@ fn wait_between_cycles(
         } else {
             ticks_since_observation.saturating_add(1)
         };
+        let remaining = interval.saturating_sub(started.elapsed());
+        std::thread::sleep(cadence.min(remaining));
+    }
+}
+
+/// Wait for the next verdict cycle while keeping the fleet strip fresh at
+/// the observation cadence, without animation frames. Same three-failure
+/// rule as the animated ticker.
+fn wait_static_between_cycles(
+    server: &crate::inventory::ServerId,
+    session: &str,
+    carry: &mut Carry,
+    look: &Look,
+    interval: Duration,
+) {
+    let started = Instant::now();
+    let mut cadence = static_observe_cadence(&carry.motion.panes);
+    let mut failures = 0_u8;
+    loop {
+        let remaining = interval.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            break;
+        }
+        let mut next = carry.motion.clone();
+        let reading = transport::observe_motion_panes(server, session);
+        let fleet = transport::observe_fleet_sessions(server);
+        let (Some(reading), Some(fleet)) = (reading, fleet) else {
+            let failed = motion_failure(failures);
+            failures = failed.0;
+            let remaining = interval.saturating_sub(started.elapsed());
+            if failed.1 {
+                std::thread::sleep(remaining);
+                break;
+            }
+            std::thread::sleep(cadence.min(remaining));
+            continue;
+        };
+        cadence = static_observe_cadence(&reading);
+        next.replace_observation(reading, &fleet, session);
+        let writes = next.step_static(look);
+        if !writes.is_empty() && !transport::publish_options(server, &writes) {
+            let failed = motion_publish_failure(failures, true);
+            failures = failed.0;
+            let remaining = interval.saturating_sub(started.elapsed());
+            if failed.1 {
+                std::thread::sleep(remaining);
+                break;
+            }
+            std::thread::sleep(cadence.min(remaining));
+            continue;
+        }
+        failures = 0;
+        carry.motion = next;
         let remaining = interval.saturating_sub(started.elapsed());
         std::thread::sleep(cadence.min(remaining));
     }
@@ -4265,15 +4383,16 @@ mod tests {
         ACTOR, Carry, Continuation, Cycle, Effect, HarnessObservation, Journal, Knobs,
         MissingState, MotionState, MotionVerdict, Observation, OverviewReading, PaneState,
         PendingAdvisory, QuietCycle, QuietQuery, QuotaAction, QuotaCarry, QuotaDelivery,
-        QuotaLevel, QuotaRecipient, Rebind, SendHelper, UNKNOWN_ALERT_CYCLES, Verdict, account,
-        adopt_server, age_secs, agents_fact, bar_glyph, continuation, deferred, entry_mut,
+        QuotaLevel, QuotaRecipient, Rebind, SendHelper, TickerMode, UNKNOWN_ALERT_CYCLES, Verdict,
+        account, adopt_server, age_secs, agents_fact, bar_glyph, continuation, deferred, entry_mut,
         held_seats, holds_seat, idle_nudge_seconds, idle_nudge_text, idle_nudge_text_waiting,
         is_meta_agent, last_actor_event_age, last_done_event_at, last_working_declaration_at,
         motion_cadence, motion_failure, motion_observation_due, motion_publish_failure,
         motion_ticker_enabled, nudge_text, observed_option, quota_delivery, quota_observation_due,
         quota_recipients, quota_seconds, read_events, rebind, record_nudge, restore_idle,
-        session_name, slot_mark, stale_display, sweep_effects, sweep_seconds,
-        system_time_from_epoch, throttle_quota_line, window_agents_line,
+        session_name, slot_mark, stale_display, static_observe_cadence, sweep_effects,
+        sweep_seconds, system_time_from_epoch, throttle_quota_line, ticker_mode,
+        window_agents_line,
     };
     use super::{Look, Mark, PaneMark, session_mark};
     use crate::events::Event;
@@ -6142,6 +6261,78 @@ mod tests {
         assert!(first_frame.iter().any(|word| word.contains('●')));
         assert!(next_frame.iter().any(|word| word.contains('●')));
         assert_ne!(first_frame, next_frame, "pulse colour changes each tick");
+    }
+
+    #[test]
+    fn motion_off_takes_the_static_observer_not_the_whole_sleep() {
+        let still = Look::read("", "", "", "off");
+        let undrawn = Look::read("", "", "off", "");
+        assert_eq!(ticker_mode(Some(&Look::DEFAULT)), TickerMode::Animated);
+        assert_eq!(ticker_mode(Some(&still)), TickerMode::Static);
+        assert_eq!(ticker_mode(Some(&undrawn)), TickerMode::Idle);
+        assert_eq!(ticker_mode(None), TickerMode::Idle);
+    }
+
+    #[test]
+    fn motion_off_republishes_a_changed_fleet_statically_and_writes_nothing_when_still() {
+        let session = |rank: &str| crate::tmux::FleetSession {
+            name: "current".to_owned(),
+            id: "$7".to_owned(),
+            rank: rank.to_owned(),
+        };
+        let mut state = MotionState::default();
+        state.replace_observation(vec![motion("%1", "lead")], &[session("1")], "current");
+
+        assert_eq!(state.step_static(&Look::DEFAULT).len(), 1, "first strip");
+        assert!(
+            state.step_static(&Look::DEFAULT).is_empty(),
+            "unchanged strip"
+        );
+
+        state.replace_fleet(&[session("4")], "current");
+        assert_eq!(state.step_static(&Look::DEFAULT).len(), 1, "changed rank");
+        assert!(
+            state.step_static(&Look::DEFAULT).is_empty(),
+            "unchanged attention"
+        );
+
+        state.replace_fleet(&[session("2")], "current");
+        assert_eq!(
+            state.step_static(&Look::DEFAULT).len(),
+            1,
+            "working row, once"
+        );
+        assert!(
+            state.step_static(&Look::DEFAULT).is_empty(),
+            "no per-tick frame"
+        );
+        let expected =
+            crate::theme::fleet_strip(&Look::DEFAULT, &state.fleet, None, &state.fleet_order);
+        assert_eq!(state.published_fleet.as_deref(), Some(expected.as_str()));
+
+        let mut detached = motion("%1", "lead");
+        detached.session_attached = 0;
+        state.replace_observation(vec![detached], &[session("4")], "current");
+        assert!(
+            state.step_static(&Look::DEFAULT).is_empty(),
+            "detached: no viewer"
+        );
+    }
+
+    #[test]
+    fn motion_off_never_ticks_faster_than_the_observation_cadence() {
+        let attached = [motion("%1", "lead")];
+        assert_eq!(
+            static_observe_cadence(&attached),
+            super::ATTACHED_MOTION_TICK.saturating_mul(u32::from(super::MOTION_OBSERVATION_TICKS)),
+        );
+        let mut pane = motion("%1", "lead");
+        pane.session_attached = 0;
+        let detached = [pane];
+        assert_eq!(
+            static_observe_cadence(&detached),
+            super::DETACHED_MOTION_TICK
+        );
     }
 
     #[test]
