@@ -520,6 +520,10 @@ fn a_word_the_route_answers_is_refused_as_a_session_name() {
             stderr.contains(&format!("'{verb}' is an ae command")),
             "{stderr}"
         );
+        assert!(
+            stdout.is_empty(),
+            "a refusal must not reach stdout: {stdout}"
+        );
     }
     assert!(!rig.sessions().exists(), "a refused name built state");
     // The canonical orchestrator is the one routed word a session IS named,
