@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.117] - 2026-09-18
+- Report ae's input-map health in ae doctor
+- Judge launcher-less bindings by presence and read the launch target
+
 ## [v2026.9.116] - 2026-09-18
 - Keep the fleet strip fresh when motion is off
 
