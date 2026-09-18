@@ -1087,11 +1087,17 @@ fn run_quota_dialog(
     let look = picker_look(server, Some(&client.session_id));
     let menu = settings_menu::quota_dialog_menu(&rows, &look.palette);
     // PROOF round, immediately before the draw: the scan above cannot
-    // interleave a replacement past this point.
+    // interleave a replacement past this point. A refusal reports through the
+    // same owner as every other dialog failure, so the invoking client reads
+    // why nothing drew instead of a bare exit code: the menu row runs
+    // backgrounded, where stderr never reaches a human. The texts name no
+    // session and no quota fact, so telling a switched client is not a leak;
+    // a vanished or replaced clicker still hears nothing, because there is no
+    // proven occupant left to tell.
     let live = match prove_quota_dialog_clicker(server, &captured) {
         Ok(live) => live,
         Err(why) => {
-            let _ = writeln!(err, "ae quota: {why}");
+            report(&why, err);
             return EXIT_UNAVAILABLE;
         }
     };

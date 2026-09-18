@@ -4052,6 +4052,95 @@ fn quota_dialog_reproves_client_server_and_session_before_drawing() {
 }
 
 #[test]
+fn quota_dialog_switched_session_refusal_says_why_on_the_invoking_client() {
+    let scratch = scratch("quota-dialog-audible");
+    if !tmux_present(&scratch) {
+        let _ = fs::remove_dir_all(&scratch);
+        panic!("tmux is not runnable here, so the audible refusal cannot be proven");
+    }
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    // Quota-aware by default (no pin, no knob): the refusal below is the
+    // session reproof's, never the awareness gate's.
+    let root = scratch.join("state");
+    let config = scratch.join("config");
+    assert!(
+        fs::write(
+            &config,
+            "[profiles]\nidle = \"sleep 600\"\n\n[roster]\nlead = idle\norchestrator = idle\n\n[workspace]\nmain = lead\nlayout = vertical\nwatchdog = false\n",
+        )
+        .is_ok()
+    );
+    assert!(fs::create_dir_all(root.join("sessions")).is_ok());
+    for session in ["forrest", "second"] {
+        assert!(
+            tmux(
+                &socket,
+                &scratch,
+                &["new-session", "-d", "-s", session, "sleep 600"],
+            )
+            .0
+        );
+    }
+    let client = nested_client(&socket, &scratch, "forrest", "audible-viewer");
+    let caller_pane = tmux(
+        &socket,
+        &scratch,
+        &["display-message", "-p", "-c", &client, "#{pane_id}"],
+    )
+    .1
+    .trim()
+    .to_owned();
+    // Capture on `forrest`, then switch: the continuation's proof round meets
+    // a live same-pid client on another session — the human's click-away shape.
+    let captured = dialog_identity(&socket, &scratch, "forrest", &client);
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &["switch-client", "-c", &client, "-t", "second"]
+        )
+        .0,
+        "the client switches session after the capture"
+    );
+    let output =
+        quota_dialog_invocation_command(&socket, &scratch, &root, &config, &caller_pane, &captured)
+            .output()
+            .expect("the switched-session invocation runs");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "the refusal keeps its exit code: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        error.contains("switched session"),
+        "stderr names the switch: {error}"
+    );
+    // The message is sent before ae exits, so one synchronous capture past the
+    // reaped invocation proves it reached the invoking client — no polling.
+    let viewer = tmux(
+        &socket,
+        &scratch,
+        &["capture-pane", "-p", "-t", "audible-viewer"],
+    )
+    .1;
+    assert!(
+        viewer.contains("switched session"),
+        "the invoking client reads why nothing drew: {viewer:?}"
+    );
+    assert!(
+        !viewer.contains("Client quotas"),
+        "no refusal drew a dialog: {viewer:?}"
+    );
+}
+
+#[test]
 fn competing_menu_markers_never_leave_both_options_set() {
     let scratch = scratch("menu-marker-race");
     if !tmux_present(&scratch) {
