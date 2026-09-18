@@ -1291,12 +1291,16 @@ pub fn fact_options(look: &Look, paths: &str) -> Vec<(String, String)> {
     ]
 }
 
-/// The attention SEED: what a session says before its watchdog's first cycle.
+/// The attention SEED: what a session says when nobody is measuring it.
 ///
-/// A LAUNCH writes it and nothing else may. These three are the watchdog's to
-/// publish, and every other session on the server sorts its fleet strip on
-/// them, so re-seeding a live session would make it claim to be stale — on its
-/// own bar and on everyone else's — until the next cycle corrected it.
+/// A LAUNCH writes it, and a watchdog WITHDRAWING from a session that is still
+/// running writes it back. Nothing else may. These three are the watchdog's to
+/// publish while one runs, and every other session on the server sorts its
+/// fleet strip on them, so re-seeding a WATCHED session would make it claim to
+/// be stale — on its own bar and on everyone else's — until the next cycle
+/// corrected it. Unset is not an option: a session with no rank is dropped by
+/// every fleet reader, so a running session would vanish from the strip and
+/// the picker while `ae list` still called it running.
 #[must_use]
 pub fn seed_options(look: &Look) -> Vec<(String, String)> {
     vec![
@@ -1313,6 +1317,29 @@ pub fn seed_options(look: &Look) -> Vec<(String, String)> {
             attention_style(&look.palette, Mark::Stale),
         ),
     ]
+}
+
+/// The health segment of a session NOBODY is measuring.
+///
+/// The watchdog publishes this on its way out, and a launch that starts no
+/// watchdog writes it instead of leaving the cell blank: a blank cell reads
+/// like a bar that has not filled in yet. The ONE owner of that wording, so a
+/// stop and a launch cannot drift into saying it differently. Drawn in `dim` on
+/// `base`, the pair a healthy watch segment already uses, so it adds no
+/// foreground to the contrast bar.
+///
+/// ```
+/// use ae::theme::{Look, watchdog_off_segment};
+/// assert!(watchdog_off_segment(&Look::DEFAULT).ends_with("\u{25cc} watchdog off"));
+/// assert!(watchdog_off_segment(&Look::read("off", "", "", "")).ends_with("? watchdog off"));
+/// ```
+#[must_use]
+pub fn watchdog_off_segment(look: &Look) -> String {
+    format!(
+        "#[fg={}]{} watchdog off",
+        look.palette.dim,
+        Mark::Stale.glyph(look.icons)
+    )
 }
 
 /// How much of the work path the bar carries.

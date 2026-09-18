@@ -4420,6 +4420,17 @@ fn mark_plumbing_window(server: &ServerId, pane: &str) {
 /// watchdog-on-top / events-below.
 fn start_watchdog_pane(shape: &Session, dir: &Path, server: &ServerId, anchor: &str) {
     if !watchdog_enabled_for_session(dir) {
+        // Nothing will measure this session, so the cell a health segment would
+        // fill says that instead of staying blank — a blank one reads like a
+        // bar still filling in. The attention seed is already on the session
+        // from the look, so the row is there; only the reason was missing.
+        let _ = transport::publish_option(
+            server,
+            tmux::OptionScope::Session,
+            &shape.name,
+            tmux::WATCHDOG_STATUS_OPTION,
+            &crate::theme::watchdog_off_segment(&shape.look),
+        );
         return;
     }
     if monitor_pane(server, &shape.name, "_watchdog").is_some() {

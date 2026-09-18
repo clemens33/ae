@@ -2244,6 +2244,14 @@ fn watch(
                 // Retract what we published, on the server we published it to,
                 // then stop exactly as startup would have.
                 let _ = clear_published(&server, session);
+                // The RECORD stopped naming one server; the session did not
+                // stop. It is about to have no watchdog at all, so it says so
+                // and keeps the rank that makes it a row — under the ownership
+                // proof, because the name alone cannot tell this session from a
+                // stranger that took it over.
+                if let Some(root) = meta_dir.parent().and_then(Path::parent) {
+                    let _ = seed_unwatched(&server, session, root);
+                }
                 writeln!(
                     err,
                     "ae: watchdog: the recorded tmux server stopped naming exactly one \
@@ -2628,9 +2636,12 @@ pub(crate) fn clear_published(server: &crate::inventory::ServerId, session: &str
     // `&=`, NEVER `&&` and never an early return: every option must still be
     // attempted after one of them fails.
     let mut ok = true;
-    // EVERY session-scoped value this daemon publishes. A fleet strip or an
-    // attention rank left behind would keep asserting a session nobody is
-    // watching — and every OTHER session on the server reads those two.
+    // EVERY session-scoped value this daemon publishes, the three attention
+    // options included: only a live daemon can vouch for any of them, and every
+    // OTHER session on the server reads the rank and the strip. A caller whose
+    // session is still RUNNING puts the launch seed back over the three,
+    // immediately after the retraction — see `seed_unwatched` below for why an
+    // unwatched session says Stale rather than nothing.
     for name in [
         tmux::WATCHDOG_STATUS_OPTION,
         theme::ATTENTION_GLYPH_OPTION,
@@ -2676,6 +2687,63 @@ pub(crate) fn clear_published(server: &crate::inventory::ServerId, session: &str
             ok &= transport::clear_option(server, OptionScope::Pane, &pane.pane_id, name);
         }
     }
+    ok
+}
+
+/// Hand a session that is still RUNNING back to its launch SEED.
+///
+/// The counterpart of the retraction above, for the paths where the watchdog
+/// goes away and the session does not: the three attention options go back to
+/// exactly what a launch writes, and the health segment says nothing is
+/// watching. Unset is never the answer — every fleet reader drops a session
+/// that publishes no rank, so an unwatched one would vanish from every other
+/// session's strip and from the picker while `ae list` still called it running.
+/// A frozen last verdict is not the answer either: Stale is already what
+/// "nobody is measuring this" means everywhere else in the bar.
+///
+/// `root` is the state root whose launch created the session, because the seed
+/// is an ae fact: a name is not an identity, and a same-name session belonging
+/// to somebody else must never be handed an ae rank that puts it on every strip.
+///
+/// Reports whether every write landed, `false` included when there was nothing
+/// addressable to write to.
+pub(crate) fn seed_unwatched(
+    server: &crate::inventory::ServerId,
+    session: &str,
+    root: &Path,
+) -> bool {
+    let Some(session_id) = transport::observe_session_id(server, session) else {
+        return false;
+    };
+    // OWNERSHIP, read the way the UUID backfill reads it: the marker proves an
+    // ae session, and the home names the state root whose launch created it.
+    let owned = transport::observe_session_ownership(server, session).is_some_and(|ownership| {
+        !ownership.marker.is_empty() && Path::new(&ownership.home) == root
+    });
+    if !owned {
+        return false;
+    }
+    // The session's OWN look, never a frozen one: a session running the ASCII
+    // fallback would otherwise be handed a braille glyph. A look that did not
+    // answer writes nothing, exactly as the start announcement decides — a
+    // server that cannot be read cannot be written either.
+    let Some(read) = transport::observe_look(server, session) else {
+        return false;
+    };
+    let look = Look::read(&read.icons, &read.palette, &read.drawn, &read.motion);
+    // `&=`, NEVER `&&`: one refused option must not skip the rest of the seed,
+    // and a rank without its glyph draws a row nobody can read.
+    let mut ok = true;
+    for (name, value) in theme::seed_options(&look) {
+        ok &= transport::publish_option(server, OptionScope::Session, &session_id, &name, &value);
+    }
+    ok &= transport::publish_option(
+        server,
+        OptionScope::Session,
+        &session_id,
+        tmux::WATCHDOG_STATUS_OPTION,
+        &theme::watchdog_off_segment(&look),
+    );
     ok
 }
 

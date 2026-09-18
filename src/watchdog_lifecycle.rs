@@ -161,7 +161,7 @@ pub fn run(
     match action {
         Action::Status => status(&server, &target, &meta_dir, out),
         Action::Start => start(&server, &target, &meta_dir, &knobs, out, err),
-        Action::Stop => stop(&server, &target, &meta_dir, out, err),
+        Action::Stop => stop(root, &server, &target, &meta_dir, out, err),
     }
 }
 
@@ -298,6 +298,7 @@ pub(crate) fn await_running(server: &ServerId, session: &str, meta_dir: &Path) -
 
 /// `watchdog stop` — reap, kill the pane, retract the registration and the bar.
 fn stop(
+    root: &Path,
     server: &ServerId,
     session: &str,
     meta_dir: &Path,
@@ -328,6 +329,14 @@ fn stop(
         }
         Presence::Stopped => {}
     }
+    // Past the match, so it covers BOTH arms that get here: the daemon this
+    // stop killed, and one that had already died and left its last verdict
+    // standing. Either way nothing measures this session now, and the session
+    // itself is still running — it keeps the launch seed's Stale rank so every
+    // fleet strip and the picker still list it, and its own bar says why. The
+    // unanswerable server returns above rather than reaching this: a watchdog
+    // that may still be running must not be described as absent.
+    let _ = watchdog_daemon::seed_unwatched(server, session, root);
     if stopped || !legacy.is_empty() {
         writeln!(out, "Watchdog stopped.")?;
     } else {
