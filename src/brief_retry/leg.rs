@@ -424,8 +424,10 @@ mod tests {
         reason = "a fixture inspects the real directory the leg wrote; the capability                   boundary is about what PRODUCT code may reach, which is why the                   inventory in tests/it/phase3.rs counts product lines only"
     )]
 
-    use super::{GAVE_UP_ACTION, Outcome, give_up, outcome_of};
-    use crate::brief_retry::{Phase, Record, publish, render};
+    use super::{
+        Flight, GAVE_UP_ACTION, Outcome, give_up, outcome_of, path, read, rearm_after_prestage, run,
+    };
+    use crate::brief_retry::{MAX_ATTEMPTS, Phase, Record, publish, render};
 
     fn scratch(tag: &str) -> std::path::PathBuf {
         let dir = std::path::PathBuf::from(format!("/tmp/ae-leg.{}.{tag}", std::process::id()));
@@ -444,7 +446,22 @@ mod tests {
             attempts: 1,
             created: 1_789_100_000,
             phase: Phase::Armed,
-            body: "⟦ae:brief from lead⟧\nbuild it".to_owned(),
+            // NO marker: `deliver` stamps it from `actor`. A fixture that
+            // carries one here is the bug that pasted a brief's marker twice.
+            body: "build it".to_owned(),
+        }
+    }
+
+    fn flight<'a>(dir: &'a std::path::Path, record: &'a Record) -> Flight<'a> {
+        Flight {
+            dir,
+            server: &crate::inventory::ServerId::Ambient,
+            pane: &record.pane,
+            own_session: "mine",
+            name: "scribe",
+            record,
+            composed: crate::tool::Composed::NONE,
+            now: crate::time::Timestamp::from_epoch(1_789_100_600),
         }
     }
 
@@ -572,5 +589,139 @@ mod tests {
             outcome_of(&Failure::NoticeRefused { body_file: file() }),
             Outcome::GiveUp("delivery failed in a way that proves nothing about what was pasted")
         );
+    }
+
+    /// GAP (a). The exhausted arm of the re-arm path. A refusal that PROVED
+    /// nothing was staged still has to END a record with no attempt left, or
+    /// the bound is advisory: a seat that refuses every cycle would be retried
+    /// forever. The age bound backstops it, but only half an hour later.
+    #[test]
+    fn a_prestage_refusal_with_no_attempt_left_ends_the_record_rather_than_arming_it() {
+        let dir = scratch("exhausted");
+        let spent = Record {
+            attempts: MAX_ATTEMPTS,
+            ..record()
+        };
+        let witness = render(&spent);
+        assert!(
+            publish(&dir, &spent).is_ok(),
+            "a record with no attempt left"
+        );
+
+        let mut err = Vec::new();
+        assert!(
+            rearm_after_prestage(
+                &flight(&dir, &spent),
+                &spent,
+                &witness,
+                &crate::deliver::Failure::Lock,
+                &mut err,
+            )
+            .is_ok(),
+            "the exhausted arm should write"
+        );
+
+        assert!(
+            read(&dir, &spent.slot).is_none(),
+            "the record is ended, never armed again"
+        );
+        let ledger = std::fs::read_to_string(dir.join("events.jsonl")).unwrap_or_default();
+        assert!(
+            ledger.contains(GAVE_UP_ACTION) && ledger.contains("delivery was attempted twice"),
+            "the give-up names the bound it hit: {ledger}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// GAP (c). A brief is retried only into its OWN session. The record is
+    /// named from this session's directory, so another session's target is a
+    /// mistake or an attempt to aim someone else's brief — and it is refused
+    /// BEFORE the record is read, let alone pasted.
+    #[test]
+    fn a_target_in_another_session_is_refused_with_the_record_untouched() {
+        let dir = scratch("crosssession");
+        let record = record();
+        let witness = render(&record);
+        assert!(publish(&dir, &record).is_ok(), "a record to aim at");
+
+        crate::tracked::set_test_resolve(
+            crate::tracked::Resolved {
+                pane: record.pane.clone(),
+                agent: "@other:scribe".to_owned(),
+                slot: record.slot.clone(),
+                session: "other".to_owned(),
+            },
+            crate::inventory::ServerId::Ambient,
+        );
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = run(
+            &dir,
+            "@other:scribe",
+            "mine",
+            crate::time::Timestamp::from_epoch(1_789_100_060),
+            &mut out,
+            &mut err,
+        );
+
+        assert_eq!(code.ok(), Some(crate::state::EXIT_FAILED), "it refuses");
+        let said = String::from_utf8_lossy(&err);
+        assert!(
+            said.contains("in session 'other'") && said.contains("retried only into its own"),
+            "the refusal names the foreign session: {said}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(path(&dir, &record.slot)).unwrap_or_default(),
+            witness,
+            "the record is byte-identical — nothing was read, armed or spent"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// GAP (f). A record another flight holds is SKIPPED, not delivered and not
+    /// given up. Losing the lock proves nothing about the brief, so the only
+    /// safe answer is to leave it exactly as it was and look again next cycle;
+    /// the arm that says so is one `else`, and deleting it would deliver twice.
+    #[test]
+    fn a_record_another_flight_already_holds_is_skipped_and_left_alone() {
+        let dir = scratch("locked");
+        let record = record();
+        let witness = render(&record);
+        assert!(publish(&dir, &record).is_ok(), "a record to contend for");
+
+        let held = crate::store::lock(&path(&dir, &record.slot), std::time::Duration::ZERO);
+        assert!(held.is_ok(), "the other flight takes the record lock first");
+
+        crate::tracked::set_test_resolve(
+            crate::tracked::Resolved {
+                pane: record.pane.clone(),
+                agent: "scribe".to_owned(),
+                slot: record.slot.clone(),
+                session: "mine".to_owned(),
+            },
+            crate::inventory::ServerId::Ambient,
+        );
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = run(
+            &dir,
+            "scribe",
+            "mine",
+            crate::time::Timestamp::from_epoch(1_789_100_060),
+            &mut out,
+            &mut err,
+        );
+
+        assert_eq!(code.ok(), Some(crate::state::EXIT_FAILED), "it skips");
+        let said = String::from_utf8_lossy(&err);
+        assert!(
+            said.contains("skipped") && said.contains("holds"),
+            "the skip says who has it: {said}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(path(&dir, &record.slot)).unwrap_or_default(),
+            witness,
+            "the record is byte-identical — a lost lock spends no attempt"
+        );
+        drop(held);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
