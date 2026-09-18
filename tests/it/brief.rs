@@ -731,3 +731,116 @@ fn a_seat_pack_reads_a_stopped_session_and_still_names_what_it_owns() {
     assert!(!stdout.contains("_watchdog"), "{stdout}");
     assert!(!stdout.contains("_events"), "{stdout}");
 }
+
+#[test]
+fn a_spawned_seat_pack_names_its_spawner_and_carries_the_message_it_was_launched_with() {
+    // The seat that most needs a pack is a spawned one, and nothing else in
+    // this arm packs one: the spawner derivation, section 9 and the spawned
+    // slot class are all wired only here.
+    let root = scratch("seatspawned");
+    let work = root.join("work");
+    let dir = plant(&root, "brf12", &work);
+    plant_seat_facts(&dir, "resume here: the spawned seat picks this up");
+    let brief = root.join("brief-scribe.md");
+    assert!(
+        fs::write(&brief, "the contract\n").is_ok(),
+        "a brief the message can name"
+    );
+    assert!(
+        fs::write(
+            dir.join("launch.spawned.0.prompt"),
+            format!(
+                "⟦ae:brief from lead⟧\nYou are agent scribe. Task contract = file\n{}\n",
+                brief.display()
+            ),
+        )
+        .is_ok(),
+        "the recorded first message"
+    );
+
+    let (code, stdout, stderr) = run(&root, &["brief", "brf12", "--seat", "scribe"]);
+    assert_eq!(code, Some(0), "stderr: {stderr}");
+    assert!(stdout.contains("slot: spawned.0 (spawned)"), "{stdout}");
+    // The spawner comes off the same ledger leg the owned spawns use.
+    assert!(stdout.contains("spawner: lead"), "{stdout}");
+    assert!(
+        stdout.contains(&format!("brief file: {} (present)", brief.display())),
+        "the named brief is checked on disk: {stdout}"
+    );
+    // A carried message is DATA: the marker it opens with must arrive quoted.
+    assert!(
+        stdout.contains("| ⟦ae:brief from lead⟧"),
+        "the first message is neutralised: {stdout}"
+    );
+
+    assert!(fs::remove_file(&brief).is_ok(), "the brief goes away");
+    let (code, stdout, _) = run(&root, &["brief", "brf12", "--seat", "scribe"]);
+    assert_eq!(code, Some(0));
+    assert!(
+        stdout.contains(&format!("brief file: {} (gone)", brief.display())),
+        "and a brief that is gone says so: {stdout}"
+    );
+}
+
+#[test]
+fn a_seat_pack_over_an_unreadable_journal_claims_no_absence_and_still_names_the_seats() {
+    // A journal that will not read is not an empty one. Every section whose
+    // facts come from it must say so rather than render "none recorded", which
+    // a successor would read as "nobody is waiting on you".
+    let root = scratch("seatdamaged");
+    let work = root.join("work");
+    let dir = plant(&root, "brf13", &work);
+    plant_seat_facts(
+        &dir,
+        "resume here: unreachable while the journal is damaged",
+    );
+    // A directory at the container's path: it exists, and it will not read.
+    assert!(fs::remove_file(dir.join("events.jsonl")).is_ok(), "the log");
+    assert!(
+        fs::create_dir(dir.join("events.jsonl")).is_ok(),
+        "a node no reader can drain"
+    );
+
+    let (code, stdout, stderr) = run(&root, &["brief", "brf13", "--seat", "lead"]);
+    assert_eq!(code, Some(0), "stderr: {stderr}");
+    assert_eq!(
+        stdout
+            .matches("the session journal could not be read")
+            .count(),
+        3,
+        "the state, the requests and the owned spawns each refuse: {stdout}"
+    );
+    assert!(
+        stdout.contains("This is NOT a claim that there are none."),
+        "{stdout}"
+    );
+    // The roster is a META fact, so the seats are still named — with their
+    // declarations withheld rather than the section dropped.
+    assert!(stdout.contains("## 7. roster\n  lead"), "{stdout}");
+    assert!(stdout.contains("scribe"), "{stdout}");
+    assert_eq!(stdout.matches("unknown        -").count(), 2, "{stdout}");
+    // The memos live in their own container and are unaffected.
+    assert!(
+        stdout.contains("resume here: unreachable while the journal is damaged"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn a_seat_pack_refuses_a_session_whose_meta_it_cannot_read_and_names_the_cause() {
+    // Without a meta there is no roster, so ae cannot know the seat exists at
+    // all. That is a refusal with a reason, never a pack built from guesses.
+    let root = scratch("seatnometa");
+    let work = root.join("work");
+    let dir = plant(&root, "brf14", &work);
+    plant_seat_facts(&dir, "resume here: never reached");
+    assert!(fs::remove_file(dir.join("meta")).is_ok(), "the meta goes");
+
+    let (code, stdout, stderr) = run(&root, &["brief", "brf14", "--seat", "lead"]);
+    assert_eq!(code, Some(1), "a refusal, not a pack: {stdout}");
+    assert!(stdout.is_empty(), "nothing is printed: {stdout}");
+    assert!(
+        stderr.contains("meta is absent") && stderr.contains("which seats it has"),
+        "the cause is named: {stderr}"
+    );
+}

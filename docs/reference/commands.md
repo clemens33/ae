@@ -419,11 +419,11 @@ Both are usage errors. An unknown seat exits `1` and names the roster.
 
 Two properties are deliberate. The pack targets 24 KB and never exceeds 48 KB; when it has to
 clip it drops stale titles first, then closed requests, then the oldest memo bodies, and each
-clip leaves a line naming what went. The parking note, the pending requests, the identity and
-the closing block are never clipped. And every agent-written field — memo body, state reason,
-request summary, carried brief — is **neutralised**: a line that would otherwise arrive wearing
-ae's own `⟦ae:` provenance marker arrives prefixed with `| `, so a record cannot impersonate
-the setup ae itself injects.
+clip leaves a line naming what went. The parking note, the pending requests, the identity, the
+first message and the closing block are never clipped. And every agent-written field — memo
+body, state reason, request summary, session goal, carried brief — is **neutralised**: a line
+that would otherwise arrive wearing ae's own `⟦ae:` provenance marker arrives prefixed with
+`| `, so a record cannot impersonate the setup ae itself injects.
 
 ### The topic convention
 
