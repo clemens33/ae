@@ -1670,9 +1670,13 @@ mod tests {
     #[test]
     fn the_clip_runs_in_order_and_never_takes_the_parking_body() {
         let filler = "x".repeat(2_000);
+        // Parking is the OLDEST body on purpose. Step 3 takes bodies oldest
+        // first, so this is the one arrangement where only the never-clip guard
+        // stands between the successor and a lost next action: drop the guard
+        // and parking is the FIRST body the budget takes.
         let mut topics = vec![topic(
             "parking",
-            60,
+            9 * 86_400,
             "lead",
             "resume here: the one next action",
         )];
