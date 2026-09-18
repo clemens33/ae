@@ -109,11 +109,88 @@ impl Default for Knobs {
     }
 }
 
+/// What one seat's own frame proved about the model it is running.
+///
+/// DISPLAY only. The durable drift rows keep their own observer
+/// ([`crate::model_drift`]), which asks a different question of the same
+/// capture — what the frame says, rather than what it currently is — and
+/// nothing here reaches the meta.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SeatIdentity {
+    /// The model label the frame drew.
+    pub model: Option<String>,
+    /// The effort that frame drew, which no other surface records.
+    pub effort: Option<String>,
+    /// Whether that model differs from the profile's own pin. Only ever true
+    /// for a tool whose live model ae observes today.
+    pub drift: bool,
+}
+
+/// What one live pane contributed to this cycle's roster fact.
+struct AgentObservation {
+    /// The roster slot behind the pane.
+    slot: String,
+    /// The pane id, which the picker uses as its navigation hint.
+    pane: String,
+    /// This cycle's verdict for it.
+    verdict: Verdict,
+    /// What its own frame proved about the model it is running.
+    identity: SeatIdentity,
+}
+
+/// One pane's inputs to [`Cycle::resolve_identity`], gathered so the call
+/// stays one question.
+struct ResolveIdentity<'a> {
+    /// This cycle's capture of the pane.
+    capture: &'a str,
+    /// The harness behind it.
+    tool: crate::tool::ToolKind,
+    /// The roster slot it holds.
+    slot: &'a str,
+    /// The profile's model pin, from [`Cycle::seat_pin`].
+    pin: Option<&'a str>,
+    /// This cycle's verdict for the pane.
+    verdict: Verdict,
+}
+
+/// The newest identity a pane proved, carried while its frame is unreadable.
+///
+/// A turn in flight, a human's draft and a failed capture all hide the
+/// composer, and without this the picker's model cell would flap between the
+/// model and the declared profile every time a seat got busy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IdentityHold {
+    /// The `launch_id.<slot>` current when this was observed. A retire plus a
+    /// respawn can reuse both slot and agent name, so the pane-identity reset
+    /// is not on its own enough to prove the conversation is the same one.
+    pub launch: String,
+    /// Cycles since the observation: `0` on the cycle that made it.
+    pub age: u32,
+    /// What that frame proved.
+    pub identity: SeatIdentity,
+}
+
+/// How many cycles an identity may be shown after the last frame that proved
+/// it.
+///
+/// At the default 60-second cadence this is half an hour — long enough to
+/// cover a long turn or a draft left sitting in the box, short enough that a
+/// label nobody can re-confirm stops being asserted. Counted in CYCLES rather
+/// than seconds because the cadence is the daemon's own knob and the fact
+/// already carries it.
+const HOLD_MAX_CYCLES: u32 = 30;
+
 /// What one pane carries from cycle to cycle, gathered into one value.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PaneState {
     /// The slot+agent generation this carry belongs to.
     pub identity: Option<u64>,
+    /// The newest identity this pane proved, while it is still worth showing.
+    ///
+    /// Memory only, like every other field here: a restart simply observes
+    /// again. `account`'s own identity reset drops it with the rest of the
+    /// carry when the seat changes underneath a reused pane id.
+    pub held_identity: Option<IdentityHold>,
     /// Dead is LATCHED once alerted, and the latch ends exactly once: on a
     /// POSITIVE process reading that shows the seat's harness back under the
     /// pane (a re-run in place), which alerts nothing further and clears it
@@ -4070,23 +4147,27 @@ impl Cycle<'_> {
     /// readable. Best-effort: a refused write (a stale guard, a failed read) is
     /// the next cycle's problem, never this cycle's.
     ///
-    /// The pin is read fresh here: an operator edit while the session runs is
-    /// then visible on the next cycle, and a pin that moved after the
-    /// observation is what makes the resume RETIRE the row, not apply it.
-    fn note_model(&self, capture: &str, tool: crate::tool::ToolKind, slot: &str) {
+    /// `pin` is [`Self::seat_pin`]'s answer for THIS cycle, read fresh there
+    /// and handed to both consumers so one config read serves both: an
+    /// operator edit while the session runs is visible on the next cycle, and
+    /// a pin that moved after the observation is what makes the resume RETIRE
+    /// the row rather than apply it.
+    fn note_model(
+        &self,
+        capture: &str,
+        tool: crate::tool::ToolKind,
+        slot: &str,
+        pin: Option<&str>,
+    ) {
         if !tool.adapter().model.observes() {
             return;
         }
         let Some(entry) = self.roster.iter().find(|entry| entry.slot == slot) else {
             return;
         };
-        let Some(profile) = entry.profile.as_deref() else {
-            return;
-        };
         let Some((_, launch_id)) = self.launch_ids.iter().find(|(seat, _)| seat == slot) else {
             return;
         };
-        let pin = self.profile_model_pin(profile, tool);
         let _ = crate::model_drift::observe(
             self.meta_dir,
             slot,
@@ -4094,8 +4175,98 @@ impl Cycle<'_> {
             tool,
             capture,
             launch_id,
-            pin.as_deref(),
+            pin,
         );
+    }
+
+    /// This seat's profile model pin for this cycle, or `None` when the tool's
+    /// live model is not one ae observes at all.
+    ///
+    /// Read ONCE per pane per cycle: the durable drift row and the picker's
+    /// drift mark are two questions about the same pin, and reading it twice
+    /// would double the config IO for no second fact.
+    fn seat_pin(&self, slot: &str, tool: crate::tool::ToolKind) -> Option<String> {
+        if !tool.adapter().model.observes() {
+            return None;
+        }
+        let profile = self
+            .roster
+            .iter()
+            .find(|entry| entry.slot == slot)?
+            .profile
+            .as_deref()?;
+        self.profile_model_pin(profile, tool)
+    }
+
+    /// What this cycle will SHOW for one seat's model, holding the last proven
+    /// answer while the frame cannot be read.
+    ///
+    /// The read is the GATED one: a picker cell is a claim about what the seat
+    /// is running now, so a frame whose composer is absent proves nothing here
+    /// even when its grammar would parse. The hold then covers the gaps that
+    /// are ordinary rather than suspicious — a turn in flight, a draft in the
+    /// box, one failed capture — bounded by [`HOLD_MAX_CYCLES`] and by the
+    /// seat's own launch id.
+    ///
+    /// A DEAD seat clears the hold outright: whatever it was running, it is
+    /// not running it now.
+    fn resolve_identity(
+        &self,
+        carried: &mut PaneState,
+        seen: &ResolveIdentity<'_>,
+    ) -> SeatIdentity {
+        if seen.verdict == Verdict::Dead {
+            carried.held_identity = None;
+            return SeatIdentity::default();
+        }
+        let launch = self
+            .launch_ids
+            .iter()
+            .find(|(seat, _)| seat == seen.slot)
+            .map(|(_, launch)| launch.clone());
+        let observed = crate::harness_state::observed_identity(seen.capture, seen.tool);
+        if let Some(model) = observed.model {
+            let identity = SeatIdentity {
+                drift: matches!(
+                    crate::model_drift::decide(
+                        &crate::harness_state::HarnessIdentity {
+                            model: Some(model.clone()),
+                            effort: None,
+                        },
+                        seen.pin,
+                    ),
+                    // A profile that pins NO model has nothing to drift from;
+                    // that is a report, not a disagreement.
+                    crate::model_drift::Decision::Record { pin: Some(_), .. }
+                ),
+                model: Some(model),
+                effort: observed.effort,
+            };
+            carried.held_identity = launch.map(|launch| IdentityHold {
+                launch,
+                age: 0,
+                identity: identity.clone(),
+            });
+            return identity;
+        }
+        match (&mut carried.held_identity, launch) {
+            (Some(hold), Some(launch)) if hold.launch == launch && hold.age < HOLD_MAX_CYCLES => {
+                hold.age = hold.age.saturating_add(1);
+                hold.identity.clone()
+            }
+            (held, _) => {
+                *held = None;
+                SeatIdentity::default()
+            }
+        }
+    }
+
+    /// The client token this seat's recorded binary classifies to, `-` when ae
+    /// cannot classify it. Known without a pane, because it comes from the
+    /// meta rather than from a frame.
+    fn seat_client(&self, slot: &str) -> &'static str {
+        crate::tool::ToolKind::from_binary_name(self.agent_bin(slot).as_deref().unwrap_or_default())
+            .client_token()
     }
 
     /// The profile's model flag value, from the same config files `_run`
@@ -4241,7 +4412,7 @@ impl Cycle<'_> {
         let mut live: Vec<String> = Vec::new();
         let mut counts = Counts::default();
         let mut by_slot: Vec<(String, Verdict)> = Vec::new();
-        let mut by_agent: Vec<(String, String, Verdict)> = Vec::new();
+        let mut by_agent: Vec<AgentObservation> = Vec::new();
         let mut by_pane: Vec<PaneMark> = Vec::new();
         // Cycle-wide: any seat leaving the limit this sweep requests ONE pass.
         let mut quota_refresh = false;
@@ -4262,8 +4433,11 @@ impl Cycle<'_> {
 
             let (capture, capture_ok) = capture_pane(self.server, &pane.pane_id);
             let hash = quiet_hash(&capture);
-            // Model drift rides the SAME capture, under the seat's launch guard.
-            self.note_model(&capture, tool, &slot);
+            // Model drift rides the SAME capture, under the seat's launch
+            // guard, and shares this cycle's one reading of the profile pin
+            // with the picker's own drift mark.
+            let pin = self.seat_pin(&slot, tool);
+            self.note_model(&capture, tool, &slot, pin.as_deref());
             let throttle = throttle_class(&capture, agent_bin.as_deref().unwrap_or_default());
             let throttle_quota = self.throttle_quota(&carry.quota, &slot, now, throttle.is_some());
             // ONE process-tree reading: the dead verdict and the unknown-snapshot
@@ -4316,8 +4490,25 @@ impl Cycle<'_> {
             *carried = booked.next;
             self.apply_booked(&booked.effects, &acting, carried, &mut quota_refresh, err)?;
             counts.record(booked.verdict);
+            // AFTER the accounting, so the identity reset and the dead verdict
+            // this cycle just decided are the ones the hold answers to.
+            let seat_identity = self.resolve_identity(
+                carried,
+                &ResolveIdentity {
+                    capture: &capture,
+                    tool,
+                    slot: &slot,
+                    pin: pin.as_deref(),
+                    verdict: booked.verdict,
+                },
+            );
             by_slot.push((slot.clone(), booked.verdict));
-            by_agent.push((slot, pane.pane_id.clone(), booked.verdict));
+            by_agent.push(AgentObservation {
+                slot,
+                pane: pane.pane_id.clone(),
+                verdict: booked.verdict,
+                identity: seat_identity,
+            });
             by_pane.push(PaneMark {
                 pane: pane.pane_id.clone(),
                 verdict: booked.verdict,
@@ -4352,7 +4543,7 @@ impl Cycle<'_> {
         carry: &mut Carry,
         counts: &Counts,
         by_slot: &[(String, Verdict)],
-        by_agent: &[(String, String, Verdict)],
+        by_agent: &[AgentObservation],
         by_pane: &[PaneMark],
         live: &[String],
         now_epoch: i64,
@@ -4385,7 +4576,20 @@ impl Cycle<'_> {
             .map(|entry| slot_mark(entry, by_slot, &carry.missing))
             .collect();
         self.sweep_missing(live, &mut carry.missing, err)?;
-        let agents = agents_fact(&self.roster, by_agent, now_epoch, self.knobs.interval_secs);
+        // The client is a RECORDED fact, not an observed one, so every roster
+        // seat has it — including one whose pane is gone this cycle.
+        let clients: Vec<(&str, &'static str)> = self
+            .roster
+            .iter()
+            .map(|entry| (entry.slot.as_str(), self.seat_client(&entry.slot)))
+            .collect();
+        let agents = agents_fact(
+            &self.roster,
+            by_agent,
+            &clients,
+            now_epoch,
+            self.knobs.interval_secs,
+        );
         self.publish(
             &Published {
                 bar: bar_glyph(counts.dead, counts.stale, look.icons),
@@ -5243,15 +5447,58 @@ fn slot_mark(
     )
 }
 
+/// How much of an entry's observed cells one attempt at the fact writes.
+///
+/// A roster that will not fit is degraded in RUNGS, and every rung is
+/// fleet-wide: the model cell is a COLUMN, and a column dropped for some rows
+/// and not others is one the human cannot read down. The order spends the
+/// least useful fact first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FactRung {
+    /// Everything this cycle observed.
+    Full,
+    /// Models and clients, without the effort or the drift mark.
+    NoEffort,
+    /// The four v1 fields and the client, with nothing observed.
+    ClientOnly,
+    /// Exactly today's v1 bytes.
+    ///
+    /// The LAST rung before nothing, and the reason it exists: v2 costs four
+    /// more separators per entry than v1, so without it a roster that fits
+    /// today could vanish BECAUSE model cells were added. A fact ae cannot
+    /// publish is a roster the picker reports as unavailable, and that must
+    /// never be what the model column costs.
+    Legacy,
+}
+
+impl FactRung {
+    /// The rungs, most informative first.
+    const LADDER: [Self; 4] = [Self::Full, Self::NoEffort, Self::ClientOnly, Self::Legacy];
+
+    /// The version word this rung announces.
+    const fn version(self) -> &'static str {
+        match self {
+            Self::Full | Self::NoEffort | Self::ClientOnly => "v2",
+            Self::Legacy => "v1",
+        }
+    }
+}
+
 /// The watchdog-owned agent fact in recorded roster order.
 ///
 /// Present panes carry the verdict this cycle already computed. A roster seat
 /// with no pane remains visible as `dead` with an empty navigation hint. Any
 /// unrepresentable recorded identity rejects the whole value rather than
 /// publishing a partial roster the picker could mistake for complete.
+///
+/// A seat's observed cells are its own: a model ae cannot represent — over
+/// cap, or carrying a byte the fact's grammar forbids — empties that ENTRY's
+/// trio and nothing else ([`observed_cells`]). Only a whole fact that will not
+/// fit walks the [`FactRung`] ladder.
 fn agents_fact(
     roster: &[RosterEntry],
-    by_slot: &[(String, String, Verdict)],
+    by_slot: &[AgentObservation],
+    clients: &[(&str, &'static str)],
     now_epoch: i64,
     interval_secs: u64,
 ) -> Option<String> {
@@ -5262,7 +5509,29 @@ fn agents_fact(
     {
         return None;
     }
-    let mut value = format!("v1;{now_epoch};{interval_secs}");
+    FactRung::LADDER
+        .into_iter()
+        .find_map(|rung| fact_at(roster, by_slot, clients, now_epoch, interval_secs, rung))
+}
+
+/// One attempt at the fact, at exactly `rung`'s fidelity.
+///
+/// `None` means either a roster this writer must never publish at all — a
+/// recorded identity it cannot spell — or simply one that does not fit at this
+/// rung, which the ladder above answers by trying a plainer one.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one composition of the cycle's already-derived roster slices"
+)]
+fn fact_at(
+    roster: &[RosterEntry],
+    by_slot: &[AgentObservation],
+    clients: &[(&str, &'static str)],
+    now_epoch: i64,
+    interval_secs: u64,
+    rung: FactRung,
+) -> Option<String> {
+    let mut value = format!("{};{now_epoch};{interval_secs}", rung.version());
     let mut names: Vec<&str> = Vec::new();
     for entry in roster {
         let profile = entry.profile.as_deref()?;
@@ -5273,9 +5542,9 @@ fn agents_fact(
             return None;
         }
         names.push(&entry.name);
-        let found = by_slot.iter().find(|(slot, _, _)| *slot == entry.slot);
-        let (state, pane) = found.map_or(("dead", ""), |(_, pane, verdict)| {
-            (verdict.reason(), pane.as_str())
+        let found = by_slot.iter().find(|seen| seen.slot == entry.slot);
+        let (state, pane) = found.map_or(("dead", ""), |seen| {
+            (seen.verdict.reason(), seen.pane.as_str())
         });
         if !pane.is_empty() && !tmux::pane_id_is_valid(pane) {
             return None;
@@ -5288,11 +5557,79 @@ fn agents_fact(
         value.push_str(state);
         value.push(':');
         value.push_str(pane);
+        if rung != FactRung::Legacy {
+            let client = clients
+                .iter()
+                .find(|(slot, _)| *slot == entry.slot)
+                .map_or("-", |(_, client)| *client);
+            let (model, effort, drift) = observed_cells(found.map(|seen| &seen.identity), rung);
+            value.push(':');
+            value.push_str(client);
+            value.push(':');
+            value.push_str(model);
+            value.push(':');
+            value.push_str(effort);
+            value.push(':');
+            value.push_str(drift);
+        }
         if value.len() > tmux::PICKER_AGENTS_MAX_BYTES {
             return None;
         }
     }
     Some(value)
+}
+
+/// One seat's three observed cells at `rung`, empty where nothing may be said.
+///
+/// The trio is a UNIT. A model this fact cannot carry takes the effort and the
+/// drift mark with it, because an effort beside a profile alias would read as
+/// that profile's effort, and a drift mark with no model names no
+/// disagreement. Nothing is escaped or truncated: a label ae cannot spell
+/// EXACTLY is one it does not show.
+fn observed_cells(identity: Option<&SeatIdentity>, rung: FactRung) -> (&str, &str, &'static str) {
+    let empty = ("", "", "");
+    if rung == FactRung::ClientOnly {
+        return empty;
+    }
+    let Some(identity) = identity else {
+        return empty;
+    };
+    let Some(model) = identity
+        .model
+        .as_deref()
+        .filter(|model| model_is_writable(model))
+    else {
+        return empty;
+    };
+    if rung == FactRung::NoEffort {
+        return (model, "", "");
+    }
+    (
+        model,
+        identity
+            .effort
+            .as_deref()
+            .filter(|effort| crate::harness_state::is_effort_word(effort))
+            .unwrap_or_default(),
+        if identity.drift { "!" } else { "" },
+    )
+}
+
+/// Whether a model label can be spelled in the fact EXACTLY as observed.
+///
+/// The separators and the tmux style bytes are the fact's own grammar, and a
+/// vendor label is free text that has never been promised to avoid them. A
+/// label carrying one is dropped rather than escaped: an escape would be a
+/// second grammar for the picker to get wrong, and the parser's arity check
+/// would refuse the whole roster over one vendor's punctuation.
+fn model_is_writable(model: &str) -> bool {
+    !model.is_empty()
+        && model.len() <= tmux::PICKER_AGENTS_MAX_MODEL
+        && !model.starts_with(' ')
+        && !model.ends_with(' ')
+        && model.bytes().all(|byte| {
+            (b' '..=b'~').contains(&byte) && !matches!(byte, b'|' | b',' | b'#' | b':' | b';')
+        })
 }
 
 /// The carried state for `key`, created on first sight.
@@ -5389,13 +5726,14 @@ fn bar_glyph(dead: usize, stale: usize, icons: bool) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        ACTOR, ADOPTION_TICK, Adopted, Adoption, AdoptionBackend, Carry, Continuation, Cycle,
-        DETACHED_MOTION_TICK, Effect, HarnessObservation, Journal, Knobs, MissingState,
-        MotionState, MotionVerdict, Observation, OverviewReading, PaneState, PendingAdvisory,
-        PendingAsk, QuietCycle, QuietQuery, QuotaAction, QuotaCarry, QuotaDelivery, QuotaLevel,
-        QuotaRecipient, Rebind, SendHelper, TickerMode, UNKNOWN_ALERT_CYCLES, Verdict,
+        ACTOR, ADOPTION_TICK, Adopted, Adoption, AdoptionBackend, AgentObservation, Carry,
+        Continuation, Cycle, DETACHED_MOTION_TICK, Effect, FactRung, HOLD_MAX_CYCLES,
+        HarnessObservation, Journal, Knobs, MissingState, MotionState, MotionVerdict, Observation,
+        OverviewReading, PaneState, PendingAdvisory, PendingAsk, QuietCycle, QuietQuery,
+        QuotaAction, QuotaCarry, QuotaDelivery, QuotaLevel, QuotaRecipient, Rebind,
+        ResolveIdentity, SeatIdentity, SendHelper, TickerMode, UNKNOWN_ALERT_CYCLES, Verdict,
         WatchdogPresence, account, adopt_server, adoption_due, adoption_from, adoption_writes,
-        age_secs, agents_fact, bar_glyph, continuation, deferred, entry_mut, fleet_rows,
+        age_secs, agents_fact, bar_glyph, continuation, deferred, entry_mut, fact_at, fleet_rows,
         held_seats, holds_seat, idle_nudge_seconds, idle_nudge_text, idle_nudge_text_waiting,
         is_meta_agent, last_actor_event_age, last_done_event_at, last_working_declaration_at,
         motion_cadence, motion_failure, motion_observation_due, motion_publish_failure,
@@ -10995,22 +11333,25 @@ mod tests {
             entry("spawned.0", "gpt56luna", "tests"),
         ];
         let observed = vec![
-            (
-                "worker.0".to_owned(),
-                "%8".to_owned(),
-                Verdict::Quiet(QuietKind::Done),
-            ),
-            ("main".to_owned(), "%3".to_owned(), Verdict::Active),
+            live_seat("worker.0", "%8", Verdict::Quiet(QuietKind::Done)),
+            live_seat("main", "%3", Verdict::Active),
         ];
+        let clients = [("main", "cc"), ("worker.0", "cx"), ("spawned.0", "cx")];
         assert_eq!(
-            agents_fact(&roster, &observed, 2_000, 60),
+            agents_fact(&roster, &observed, &clients, 2_000, 60),
             Some(
-                "v1;2000;60;lead:fable5:working:%3;builder:gpt56sol:done:%8;tests:gpt56luna:dead:"
+                "v2;2000;60;lead:fable5:working:%3:cc:::;builder:gpt56sol:done:%8:cx:::;\
+                 tests:gpt56luna:dead::cx:::"
                     .to_owned()
-            )
+            ),
+            "a seat ae observed nothing about still names the client it is \
+             recorded as running"
         );
-        assert_eq!(agents_fact(&roster, &observed, 2_000, 0), None);
-        assert_eq!(agents_fact(&roster, &observed, 2_000, 3_601), None);
+        assert_eq!(agents_fact(&roster, &observed, &clients, 2_000, 0), None);
+        assert_eq!(
+            agents_fact(&roster, &observed, &clients, 2_000, 3_601),
+            None
+        );
         assert_eq!(
             crate::theme::AGENTS_OPTION,
             "@ae_agents",
@@ -11024,8 +11365,415 @@ mod tests {
     #[test]
     fn agents_fact_refuses_a_profile_at_spelling() {
         let roster = [entry("main", "fablex@cc-mic", "lead")];
-        let observed = vec![("main".to_owned(), "%3".to_owned(), Verdict::Active)];
-        assert_eq!(agents_fact(&roster, &observed, 2_000, 60), None);
+        let observed = vec![live_seat("main", "%3", Verdict::Active)];
+        assert_eq!(
+            agents_fact(&roster, &observed, &[("main", "cc")], 2_000, 60),
+            None
+        );
+    }
+
+    /// One live pane's contribution, with nothing observed about its model.
+    fn live_seat(slot: &str, pane: &str, verdict: Verdict) -> AgentObservation {
+        AgentObservation {
+            slot: slot.to_owned(),
+            pane: pane.to_owned(),
+            verdict,
+            identity: SeatIdentity::default(),
+        }
+    }
+
+    /// The same, carrying what that pane's frame proved.
+    fn seen_running(
+        slot: &str,
+        pane: &str,
+        model: &str,
+        effort: Option<&str>,
+        drift: bool,
+    ) -> AgentObservation {
+        AgentObservation {
+            slot: slot.to_owned(),
+            pane: pane.to_owned(),
+            verdict: Verdict::Active,
+            identity: SeatIdentity {
+                model: Some(model.to_owned()),
+                effort: effort.map(str::to_owned),
+                drift,
+            },
+        }
+    }
+
+    #[test]
+    fn the_agents_fact_emits_v2_and_empties_an_unrepresentable_model() {
+        let roster = [
+            entry("main", "fable5", "lead"),
+            entry("worker.0", "spark13m", "nav"),
+            entry("spawned.0", "ocds", "runner"),
+        ];
+        let observed = vec![
+            seen_running("main", "%3", "Fable 5.1", Some("xhigh"), true),
+            seen_running("worker.0", "%8", "muse-spark-1.3", Some("max"), false),
+            // A vendor label carrying the fact's OWN separator. Nothing here
+            // may escape it: the entry loses its whole observed trio and keeps
+            // everything ae actually recorded.
+            seen_running("spawned.0", "%9", "weird:model", Some("high"), false),
+        ];
+        let clients = [("main", "cc"), ("worker.0", "muse"), ("spawned.0", "oc")];
+        let fact = agents_fact(&roster, &observed, &clients, 2_000, 60).expect("a v2 fact");
+        assert_eq!(
+            fact,
+            "v2;2000;60;lead:fable5:working:%3:cc:Fable 5.1:xhigh:!;\
+             nav:spark13m:working:%8:muse:muse-spark-1.3:max:;\
+             runner:ocds:working:%9:oc:::"
+        );
+        // The writer and the reader are one contract: whatever this publishes
+        // must survive the strict parser that reads it back.
+        let parsed = crate::tmux::parse_picker_agents(&fact, 2_000).expect("its own reader");
+        assert_eq!(parsed.len(), 3);
+        assert_eq!(parsed[0].model, "Fable 5.1");
+        assert!(parsed[0].drift);
+        assert_eq!(parsed[2].client, "oc", "the client survives the drop");
+        assert_eq!(
+            (
+                parsed[2].model.as_str(),
+                parsed[2].effort.as_str(),
+                parsed[2].drift
+            ),
+            ("", "", false),
+            "a model ae cannot spell takes its effort and drift mark with it"
+        );
+        // Every other unrepresentable model is dropped the same way, and none
+        // of them refuses the roster.
+        for hostile in [
+            "semi;colon",
+            "pipe|bar",
+            "comma,model",
+            "style#[fg=red]",
+            " leading",
+            "trailing ",
+            "",
+            &"M".repeat(crate::tmux::PICKER_AGENTS_MAX_MODEL + 1),
+        ] {
+            let one = [entry("main", "fable5", "lead")];
+            let observation = vec![seen_running("main", "%3", hostile, Some("max"), false)];
+            assert_eq!(
+                agents_fact(&one, &observation, &[("main", "cc")], 2_000, 60),
+                Some("v2;2000;60;lead:fable5:working:%3:cc:::".to_owned()),
+                "{hostile:?}"
+            );
+        }
+        // At the cap exactly, it is published.
+        let at_cap = "M".repeat(crate::tmux::PICKER_AGENTS_MAX_MODEL);
+        let one = [entry("main", "fable5", "lead")];
+        let observation = vec![seen_running("main", "%3", &at_cap, None, false)];
+        assert_eq!(
+            agents_fact(&one, &observation, &[("main", "cc")], 2_000, 60),
+            Some(format!("v2;2000;60;lead:fable5:working:%3:cc:{at_cap}::"))
+        );
+    }
+
+    /// The ladder, at the 64-seat limit, rung by rung.
+    ///
+    /// The property is one sentence: model cells must never be the reason a
+    /// roster vanishes. Each width below is chosen so exactly one rung is the
+    /// first that fits, and the last rung before nothing is today's v1 bytes.
+    #[test]
+    fn a_roster_that_cannot_fit_its_model_cells_degrades_before_it_vanishes() {
+        // One seat's entry costs `name + profile + 13` at v1 (state `working`,
+        // pane `%1`, four separators), `+ 6` for the client cell, `+ 6` more
+        // for the model, and `+ 6` more for the effort and drift mark. With 64
+        // seats and a 4096-byte bound, the width of name plus profile decides
+        // which rung is the first to fit.
+        let roster_of = |width: usize| -> Vec<RosterEntry> {
+            (0..64)
+                .map(|index| {
+                    let tail = "x".repeat(width - 3);
+                    entry(
+                        &format!("s{index:02}"),
+                        &format!("p{index:02}{tail}"),
+                        &format!("a{index:02}{tail}"),
+                    )
+                })
+                .collect()
+        };
+        let observed_of = |roster: &[RosterEntry]| -> Vec<AgentObservation> {
+            roster
+                .iter()
+                .map(|entry| seen_running(&entry.slot, "%1", "Opus 5", Some("xhigh"), true))
+                .collect()
+        };
+        for (width, expected, why) in [
+            (8_usize, "v2", "everything fits"),
+            (18, "v2", "the effort and the drift mark go first"),
+            (21, "v2", "then the models"),
+            (24, "v1", "then the whole v2 shape, back to today's bytes"),
+        ] {
+            let roster = roster_of(width);
+            let clients: Vec<(&str, &'static str)> = roster
+                .iter()
+                .map(|entry| (entry.slot.as_str(), "cc"))
+                .collect();
+            let fact = agents_fact(&roster, &observed_of(&roster), &clients, 2_000, 60)
+                .unwrap_or_else(|| panic!("width {width}: {why}"));
+            assert!(
+                fact.starts_with(&format!("{expected};")),
+                "width {width} ({why}): {}",
+                &fact[..fact.len().min(40)]
+            );
+            assert!(
+                fact.len() <= crate::tmux::PICKER_AGENTS_MAX_BYTES,
+                "width {width}"
+            );
+            assert_eq!(
+                crate::tmux::parse_picker_agents(&fact, 2_000).map(|agents| agents.len()),
+                Some(64),
+                "width {width}: every rung publishes the WHOLE roster"
+            );
+        }
+        // Rung by rung, the first that fits is the one taken.
+        let roster = roster_of(18);
+        let clients: Vec<(&str, &'static str)> = roster
+            .iter()
+            .map(|entry| (entry.slot.as_str(), "cc"))
+            .collect();
+        let observed = observed_of(&roster);
+        let at = |rung| fact_at(&roster, &observed, &clients, 2_000, 60, rung);
+        assert_eq!(at(FactRung::Full), None, "the full fact does not fit here");
+        assert!(at(FactRung::NoEffort).is_some());
+        assert_eq!(
+            agents_fact(&roster, &observed, &clients, 2_000, 60),
+            at(FactRung::NoEffort),
+            "the ladder takes the first rung that fits, not a plainer one"
+        );
+        // The legacy rung is EXACTLY today's writer: no client cell, no
+        // observed cells, no extra separators.
+        let legacy = fact_at(&roster, &observed, &clients, 2_000, 60, FactRung::Legacy)
+            .expect("the legacy rung");
+        let expected = format!(
+            "v1;2000;60;{}",
+            roster
+                .iter()
+                .map(|entry| format!(
+                    "{}:{}:working:%1",
+                    entry.name,
+                    entry.profile.as_deref().unwrap_or_default()
+                ))
+                .collect::<Vec<_>>()
+                .join(";")
+        );
+        assert_eq!(legacy, expected, "the last rung is today's bytes");
+        // Past every rung there is still nothing to publish, exactly as
+        // before: 64 seats this wide cannot be spelled at all.
+        let enormous = roster_of(26);
+        let clients: Vec<(&str, &'static str)> = enormous
+            .iter()
+            .map(|entry| (entry.slot.as_str(), "cc"))
+            .collect();
+        assert_eq!(
+            agents_fact(&enormous, &observed_of(&enormous), &clients, 2_000, 60),
+            None
+        );
+    }
+
+    /// A cycle whose only argument is the capture, so the hold and the gate
+    /// can be driven one frame at a time.
+    fn identity_cycle<'a>(
+        scratch: &'a Scratch,
+        helper: &'a SendHelper,
+        server: &'a ServerId,
+        launch: &str,
+    ) -> Cycle<'a> {
+        Cycle {
+            knobs: Knobs::default(),
+            meta_dir: &scratch.0,
+            helper,
+            server,
+            session: "demo",
+            goal: None,
+            roster: vec![entry("main", "fable5", "lead")],
+            local_config: None,
+            lead_pair: false,
+            fleet_order: crate::theme::FleetOrder::EMPTY,
+            meta_agent: false,
+            launch_ids: vec![("main".to_owned(), launch.to_owned())],
+        }
+    }
+
+    /// One resolve, spelled once so the tests below read as frames.
+    fn resolve(
+        cycle: &Cycle<'_>,
+        carried: &mut PaneState,
+        capture: &str,
+        pin: Option<&str>,
+        verdict: Verdict,
+    ) -> SeatIdentity {
+        cycle.resolve_identity(
+            carried,
+            &ResolveIdentity {
+                capture,
+                tool: crate::tool::ToolKind::Claude,
+                slot: "main",
+                pin,
+                verdict,
+            },
+        )
+    }
+
+    #[test]
+    fn a_held_identity_survives_an_unreadable_frame_and_expires_by_age_incarnation_or_death() {
+        let live = include_str!("../tests/fixtures/harness-state/claude-idle-167x40.txt");
+        let scratch = Scratch::new("identity-hold");
+        let helper = SendHelper::for_session(&scratch.0);
+        let server = ServerId::Ambient;
+        let cycle = identity_cycle(&scratch, &helper, &server, "L1");
+
+        let mut carried = PaneState::default();
+        let proven = resolve(&cycle, &mut carried, live, None, Verdict::Active);
+        assert!(proven.model.is_some(), "the live fixture proves a model");
+        assert_eq!(
+            carried.held_identity.as_ref().map(|hold| hold.age),
+            Some(0),
+            "the cycle that observed it holds it at age zero"
+        );
+
+        // An unreadable frame is the ORDINARY case — a turn in flight, a draft
+        // in the box, one failed capture — and must not flap the cell.
+        for cycles in 1..=HOLD_MAX_CYCLES {
+            assert_eq!(
+                resolve(&cycle, &mut carried, "", None, Verdict::Active),
+                proven,
+                "unreadable cycle {cycles} still shows what the seat proved"
+            );
+            assert_eq!(
+                carried.held_identity.as_ref().map(|hold| hold.age),
+                Some(cycles)
+            );
+        }
+        // One cycle past the bound, ae stops asserting a label nobody can
+        // re-confirm.
+        assert_eq!(
+            resolve(&cycle, &mut carried, "", None, Verdict::Active),
+            SeatIdentity::default(),
+            "the {HOLD_MAX_CYCLES}th unreadable cycle is the last one held"
+        );
+        assert!(carried.held_identity.is_none());
+
+        // A seat that came back under a NEW conversation inherits nothing: a
+        // retire plus a respawn can reuse the slot, the agent name and the
+        // pane id, so only the launch id separates the two.
+        let mut carried = PaneState::default();
+        let proven = resolve(&cycle, &mut carried, live, None, Verdict::Active);
+        let respawned = identity_cycle(&scratch, &helper, &server, "L2");
+        assert_eq!(
+            resolve(&respawned, &mut carried, "", None, Verdict::Active),
+            SeatIdentity::default(),
+            "a new incarnation starts from nothing"
+        );
+        assert!(carried.held_identity.is_none());
+
+        // Whatever a dead seat was running, it is not running it now.
+        let mut carried = PaneState::default();
+        assert_eq!(
+            resolve(&cycle, &mut carried, live, None, Verdict::Active),
+            proven
+        );
+        assert_eq!(
+            resolve(&cycle, &mut carried, live, None, Verdict::Dead),
+            SeatIdentity::default(),
+            "a dead verdict clears the hold even on a readable frame"
+        );
+        assert!(carried.held_identity.is_none());
+
+        // A seat with NO recorded launch id is shown what this cycle proves
+        // and nothing longer: there is no incarnation to guard a hold with.
+        let unguarded = identity_cycle(&scratch, &helper, &server, "");
+        let mut carried = PaneState::default();
+        let mut unguarded_cycle = unguarded;
+        unguarded_cycle.launch_ids = Vec::new();
+        assert_eq!(
+            resolve(&unguarded_cycle, &mut carried, live, None, Verdict::Active),
+            proven
+        );
+        assert!(carried.held_identity.is_none(), "nothing to hold it under");
+        assert_eq!(
+            resolve(&unguarded_cycle, &mut carried, "", None, Verdict::Active),
+            SeatIdentity::default()
+        );
+    }
+
+    #[test]
+    fn the_drift_mark_needs_a_pin_to_disagree_with() {
+        let live = include_str!("../tests/fixtures/harness-state/claude-idle-167x40.txt");
+        let scratch = Scratch::new("identity-drift");
+        let helper = SendHelper::for_session(&scratch.0);
+        let server = ServerId::Ambient;
+        let cycle = identity_cycle(&scratch, &helper, &server, "L1");
+        let mut carried = PaneState::default();
+        let proven = resolve(&cycle, &mut carried, live, None, Verdict::Active);
+        let model = proven.model.clone().expect("the fixture's model");
+
+        // No pin: the profile has no model flag to disagree with, so this is a
+        // report, not a drift.
+        assert!(!proven.drift);
+        let mut carried = PaneState::default();
+        assert!(
+            !resolve(&cycle, &mut carried, live, Some(&model), Verdict::Active).drift,
+            "the pin and the frame agree"
+        );
+        let mut carried = PaneState::default();
+        assert!(
+            resolve(
+                &cycle,
+                &mut carried,
+                live,
+                Some("Opus 4.8"),
+                Verdict::Active
+            )
+            .drift,
+            "the seat is running something its profile does not pin"
+        );
+        // The mark is held with the rest of the identity, so a busy seat does
+        // not lose its drift warning mid-turn.
+        assert!(resolve(&cycle, &mut carried, "", Some("Opus 4.8"), Verdict::Active).drift);
+    }
+
+    /// The gate is the CYCLE's, not just the classifier's: a mutant that
+    /// swapped this call site back to the ungated read would publish a model
+    /// from a frame whose composer is gone.
+    #[test]
+    fn the_cycle_resolves_a_quoted_frame_as_unobserved() {
+        let muse = include_str!("../tests/fixtures/runtime-identity/muse-idle-plain-80x24.txt");
+        let quoted: String = muse
+            .lines()
+            .filter(|line| !line.trim_start().starts_with('\u{276f}'))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            crate::harness_state::current_identity(&quoted, crate::tool::ToolKind::Muse)
+                .model
+                .is_some(),
+            "the ungated grammar still reads this frame, which is the whole \
+             point: only the gate refuses it"
+        );
+        let scratch = Scratch::new("identity-quoted");
+        let helper = SendHelper::for_session(&scratch.0);
+        let server = ServerId::Ambient;
+        let cycle = identity_cycle(&scratch, &helper, &server, "L1");
+        let mut carried = PaneState::default();
+        let resolved = cycle.resolve_identity(
+            &mut carried,
+            &ResolveIdentity {
+                capture: &quoted,
+                tool: crate::tool::ToolKind::Muse,
+                slot: "main",
+                pin: None,
+                verdict: Verdict::Active,
+            },
+        );
+        assert_eq!(resolved, SeatIdentity::default());
+        assert!(
+            carried.held_identity.is_none(),
+            "a frame ae will not trust never becomes one it holds"
+        );
     }
 
     #[test]

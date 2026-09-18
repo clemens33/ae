@@ -2586,7 +2586,7 @@ pub const PICKER_AGENTS_MAX_INTERVAL_SECS: u64 = 3_600;
 /// The label is free text scraped from a pane — the only field here whose
 /// vocabulary is the vendor's rather than ae's — so it is the one that needs a
 /// length rule at all. 32 holds every model the measured fleet draws
-/// (`DeepSeek V4.1 Flash OpenRouter` is the longest at 29) with room for a
+/// (`DeepSeek V4.1 Flash OpenRouter` is the longest at 30) with room for a
 /// vendor rename, and stays small enough that 64 of them cannot crowd a
 /// roster out of [`PICKER_AGENTS_MAX_BYTES`] on their own.
 pub const PICKER_AGENTS_MAX_MODEL: usize = 32;
@@ -5110,6 +5110,60 @@ mod tests {
                 .is_some_and(|agents| agents[0].state == "limit" && agents[0].pane == "%1"),
             "the usage-limit verdict word reaches its parser path"
         );
+    }
+
+    /// The v2 corpus, which must land WITH the writer that first emits v2:
+    /// the grammar is hostile persisted state and the lane is the evidence
+    /// that its new fields cannot crash the parser.
+    #[test]
+    fn v2_picker_agents_fuzz_seeds_reach_their_named_parser_paths() {
+        let valid = include_str!("../fuzz/seeds/picker_agents/v2-valid");
+        let unobserved = include_str!("../fuzz/seeds/picker_agents/v2-unobserved");
+        let over_cap = include_str!("../fuzz/seeds/picker_agents/v2-over-cap-model");
+        let separator = include_str!("../fuzz/seeds/picker_agents/v2-separator-in-model");
+        let limit = include_str!("../fuzz/seeds/picker_agents/v2-limit");
+        for seed in [valid, unobserved, over_cap, separator, limit] {
+            assert!(
+                seed.bytes().all(|byte| (b' '..=b'~').contains(&byte)),
+                "seed must reach its named parser branch"
+            );
+            assert!(seed.starts_with("v2;"), "{seed}");
+        }
+        // Two observed seats, one with a drift mark and one without.
+        let agents = super::parse_picker_agents(valid, 2_000_000_000).expect("the v2 corpus seed");
+        assert_eq!(agents.len(), 2);
+        assert_eq!(
+            (
+                agents[0].client.as_str(),
+                agents[0].model.as_str(),
+                agents[0].drift
+            ),
+            ("cc", "Fable 5.1", true)
+        );
+        assert_eq!(agents[1].effort, "max");
+        // A seat whose frame proved nothing still names its client.
+        assert!(
+            super::parse_picker_agents(unobserved, 2_000_000_000)
+                .is_some_and(|agents| agents[0].client == "cc" && agents[0].model.is_empty())
+        );
+        // One byte past the cap, and a model carrying the field separator:
+        // both reach the refusal, neither is escaped into something valid.
+        assert_eq!(
+            over_cap
+                .rsplit(':')
+                .nth(2)
+                .map(str::len)
+                .expect("the seed's model field"),
+            super::PICKER_AGENTS_MAX_MODEL + 1
+        );
+        assert_eq!(super::parse_picker_agents(over_cap, 2_000_000_000), None);
+        assert_eq!(super::parse_picker_agents(separator, 2_000_000_000), None);
+        // The 64-seat bound, spelled in the widest grammar.
+        assert!(
+            super::parse_picker_agents(limit, 2_000_000_000)
+                .is_some_and(|agents| agents.len() == super::PICKER_AGENTS_MAX_COUNT)
+        );
+        assert!(limit.len() <= super::PICKER_AGENTS_MAX_BYTES);
     }
 
     #[test]
