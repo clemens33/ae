@@ -849,7 +849,10 @@ fn push_requests(
                     "    reply: {}",
                     crate::tracked::reply_command(
                         &inputs.helpers_dir,
-                        &inputs.seat_name,
+                        // The id is proven above; the NAME is not minted by
+                        // anything, so it takes the one neutraliser like every
+                        // other rendered field — identity on a legal name.
+                        &neutralise(&inputs.seat_name),
                         &text(&request.id),
                         kind.reply_label(),
                     )
@@ -2019,18 +2022,55 @@ mod tests {
     const HOSTILE: &str = "a\u{1b}[2Jb\u{7}c\u{0}d\u{1b}[201~e\u{9b}f\u{7f}g\thi";
 
     #[test]
+    fn the_printed_reply_command_carries_nothing_a_terminal_would_act_on() {
+        // The reply line is the one place the pack prints a COMMAND, and the
+        // seat name rides inside its double quotes. Only the name is hostile
+        // here, so the row still matches this viewer by slot and the line is
+        // actually rendered — which is what the broad pin cannot do, having no
+        // ledger row to render one from.
+        let mut inputs = base();
+        inputs.seat_name = HOSTILE.to_owned();
+        let id = "ae-20260918T120000Z-0123abcd";
+        let (container, events) = ledger(&[closing(id, 600).replace("\"reply\"", "\"ask\"")]);
+        inputs.container = container;
+        inputs.events = events;
+
+        let rendered = pack(&inputs);
+        assert!(
+            rendered.contains("/reply --as \"") && rendered.contains(id),
+            "the command line renders at all: {rendered}"
+        );
+        let stray: Vec<char> = rendered
+            .chars()
+            .filter(|ch| ch.is_control() && *ch != '\n')
+            .collect();
+        assert!(stray.is_empty(), "control bytes survived: {stray:?}");
+    }
+
+    #[test]
     fn a_request_id_ae_never_minted_is_dropped_whole_and_counted() {
         // The id is the one record field that reaches a printed COMMAND, and a
         // ledger line is agent-written: its `ref` can carry the paste
         // terminator, a quote and a substitution — into a document that is
-        // PASTED.
-        // The escapes are the LEDGER's: what the reader decodes is a real ESC.
-        let hostile = r#"ae-20260918T120000Z-0123abcd\u001b[201~\"$(touch /tmp/pwned)"#;
-        let line = format!(
-            r#"{{"ts":"{}","actor":"scribe","action":"ask","target":"lead","ref":"{hostile}","actor_slot":"spawned.0","actor_session":"s1","target_slot":"main","target_session":"s1","summary":"innocent"}}"#,
+        // PASTED. The `ref` is taken from the line FLAT, so no `\uXXXX` is
+        // decoded on the way: the terminator below is a RAW ESC byte, which is
+        // what an attacker would write, and the quote is the ledger's own
+        // escape because an unescaped one would end the field early.
+        let esc = '\u{1b}';
+        let pending = format!("ae-20260918T120000Z-0123abcd{esc}[201~\\\"$(touch /tmp/pwned)");
+        let closed = format!("review-20260918T120000Z-99998888{esc}[201~\\\"$(rm -rf /tmp/x)");
+        let inbox = format!(
+            r#"{{"ts":"{}","actor":"scribe","action":"ask","target":"lead","ref":"{pending}","actor_slot":"spawned.0","actor_session":"s1","target_slot":"main","target_session":"s1","summary":"innocent"}}"#,
             ago(600)
         );
-        let (container, events) = ledger(&[line]);
+        // BOTH readers, because they are two loops over one ledger: the second
+        // row is CLOSED, and `closed_rows` skips a pending one — so without it
+        // a mutant that drops the filter from that reader alone stays green.
+        let (container, events) = ledger(&[
+            inbox,
+            opening("ask", &closed, 7_200),
+            closing(&closed, 3_600),
+        ]);
         let rendered = pack(&Inputs {
             container,
             events,
@@ -2038,16 +2078,18 @@ mod tests {
         });
 
         assert!(
-            !rendered.contains("$(touch /tmp/pwned)") && !rendered.contains("\u{1b}[201~"),
-            "the row reached the pack: {rendered}"
+            !rendered.contains("$(touch /tmp/pwned)")
+                && !rendered.contains("$(rm -rf /tmp/x)")
+                && !rendered.contains(&format!("{esc}[201~")),
+            "a row reached the pack: {rendered}"
         );
         assert!(
-            !rendered.contains("innocent"),
-            "the row is dropped WHOLE, not repaired: {rendered}"
+            !rendered.contains("innocent") && !rendered.contains("answered"),
+            "a row is dropped WHOLE, not repaired: {rendered}"
         );
         assert!(
-            rendered.contains(&format!("{UNMINTED_REQUESTS} (1)")),
-            "a dropped row is counted, never silent: {rendered}"
+            rendered.contains(&format!("{UNMINTED_REQUESTS} (2)")),
+            "every dropped row is counted, never silent: {rendered}"
         );
     }
 
