@@ -4470,7 +4470,8 @@ mod tests {
             overranked | $6 | 99 | on | a | on | on\n\
             wordrank | $7 | four | on | a | on | on\n\
             evil#[bg=red] | $8 | 4 | on | a | on | on\n\
-            badid | @9 | 4 | on | a | on | on\n";
+            badid | @9 | 4 | on | a | on | on\n\
+            un|spaced | $10 | 4 | on | a | on | on\n";
         let read = interpret_fleet_listing(true, listing).unwrap_or_default();
         assert_eq!(
             read,

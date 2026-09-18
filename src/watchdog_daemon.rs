@@ -1789,11 +1789,15 @@ impl MotionState {
         known: &[String],
         session: &str,
     ) {
-        self.fleet_target = sessions
-            .iter()
-            .find(|entry| entry.name == session)
-            .map(|entry| entry.id.clone());
         self.fleet = fleet_rows(sessions, known, session);
+        // The target comes off the DRAWN rows, never the raw listing: a session
+        // that draws no row of its own — rankless and not vouched for — has no
+        // strip to own, exactly as when the reader dropped rankless rows for it.
+        self.fleet_target = self
+            .fleet
+            .iter()
+            .find(|row| row.current)
+            .map(|row| row.id.clone());
     }
 
     /// Add the fleet strip when its text has changed. A working frame makes
@@ -2141,11 +2145,14 @@ fn enumerate_adoption(
         }
     }
     // The OWNERSHIP proof, made once per name this server is actually showing.
-    // A record whose session is not on this server costs nothing.
+    // A record whose session is not on this server costs nothing, and neither
+    // does this daemon's own: it is never a target and never vouched for, so
+    // probing it would buy two tmux spawns a cycle and no answer anyone reads.
     let proven: Vec<crate::inventory::DiscoveredSession> = scan
         .records
         .iter()
         .map(|record| record.name.clone())
+        .filter(|name| name != session)
         .filter(|name| listing.iter().any(|row| &row.name == name))
         .map(|name| crate::inventory::DiscoveredSession {
             marker: proven_ownership(
@@ -6743,6 +6750,24 @@ mod tests {
         assert!(first_frame.iter().any(|word| word.contains('●')));
         assert!(next_frame.iter().any(|word| word.contains('●')));
         assert_ne!(first_frame, next_frame, "pulse colour changes each tick");
+    }
+
+    #[test]
+    fn a_session_with_no_row_of_its_own_still_owns_no_strip() {
+        let rows = [unranked("current", "$7"), listed("peer", "$8", "1")];
+        let mut state = MotionState::default();
+        state.replace_observation(vec![motion("%1", "lead")], &rows, &[], "current");
+        assert!(
+            state.step(&Look::DEFAULT).is_empty(),
+            "a rankless session ae cannot vouch for draws no row, so it owns no strip"
+        );
+
+        state.replace_fleet(&rows, &["current".to_owned()], "current");
+        assert_eq!(
+            state.step(&Look::DEFAULT).len(),
+            1,
+            "vouched for, it draws itself Stale and owns the strip again"
+        );
     }
 
     #[test]

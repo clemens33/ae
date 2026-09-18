@@ -88,7 +88,8 @@ own facts keep saying `unknown`, and its bar keeps saying `watchdog off`.
   and the `watchdog off` mark is what says why. A stopping adopter does NOT retract the strips it
   wrote: a cross-session retraction is a race between daemons, and a strip one cycle out of date
   is a better map than none. The owner starting mid-adoption can show one static frame where an
-  animated one was due. A recycled pid can make a dead watchdog read as live until the pidfile is
+  animated one was due: the adopter pauses within one 2 s tick of the new pidfile appearing, so
+  the transient is one strip wide and the owner's own publication ends it. A recycled pid can make a dead watchdog read as live until the pidfile is
   cleaned up.
 
 The `_watchdog` pane runs the core directly: its command is the session's `watchdog` link,
