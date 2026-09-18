@@ -634,17 +634,27 @@ struct Record<'a> {
 /// One `reseat` record for every attempt that REACHED the pane — the seat's
 /// history is the only place a later reader can see that its TOOL changed, and
 /// the only place that must not claim a paste that never was.
-fn record(dir: &Path, at: &Record<'_>, target: &Target, outcome: &str) {
-    let summary = format!(
-        "{outcome} [from {} to {}, prior {}]",
-        if at.from.is_empty() { "none" } else { at.from },
-        at.to,
-        if at.prior.is_empty() {
-            "none"
+/// The event's own sentence. A row ae cannot prove reads `none`, and that
+/// includes [`crate::launch::PENDING`]: it is the word for a conversation that
+/// never resolved, `reseated` hands on no prior row for it, and an audit line
+/// must not read as if one were being left behind.
+fn summary(outcome: &str, from: &str, to: &str, prior: &str) -> String {
+    let named = |value: &str| {
+        if value.is_empty() || value == crate::launch::PENDING {
+            "none".to_owned()
         } else {
-            at.prior
+            value.to_owned()
         }
-    );
+    };
+    format!(
+        "{outcome} [from {} to {to}, prior {}]",
+        named(from),
+        named(prior)
+    )
+}
+
+fn record(dir: &Path, at: &Record<'_>, target: &Target, outcome: &str) {
+    let summary = summary(outcome, at.from, at.to, at.prior);
     let _ = crate::store::open(dir).append_event(&tracked::event_line(&EventFields {
         ts: at.now,
         // The caller's own display ref, exactly as `relaunch` records it: an
@@ -684,6 +694,21 @@ mod tests {
 
     fn parsed(words: &[&str]) -> Result<(String, String, String), String> {
         super::parse(&argv(words)).map(|parsed| (parsed.session, parsed.agent, parsed.profile))
+    }
+
+    #[test]
+    fn a_conversation_that_never_resolved_is_nothing_to_hand_on() {
+        // The seat moved, and what it leaves behind is a word rather than an
+        // id. The meta is already right — `reseated` writes no prior row it
+        // cannot prove — and the audit line has to say the same thing.
+        assert_eq!(
+            super::summary("reseated", "a", "b", crate::launch::PENDING),
+            "reseated [from a to b, prior none]"
+        );
+        assert_eq!(
+            super::summary("reseated", "", "b", "11111111-1111-4111-8111-111111111111"),
+            "reseated [from none to b, prior 11111111-1111-4111-8111-111111111111]"
+        );
     }
 
     #[test]
