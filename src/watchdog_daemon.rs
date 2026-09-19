@@ -5484,22 +5484,21 @@ impl FactRung {
 /// recorded binary name, then today's short code. Every rung allowlists and
 /// falls through; the answer is always emittable.
 fn seat_client_label(entry: &RosterEntry, cfg: Option<&crate::config::IdentityConfig>) -> String {
-    if let RecordedClient::Label(label) = &entry.client {
-        if crate::config::is_client_label(label) {
-            return label.clone();
-        }
+    if let RecordedClient::Label(label) = &entry.client
+        && crate::config::is_client_label(label)
+    {
+        return label.clone();
     }
-    if let (Some(cfg), Some(profile)) = (cfg, entry.profile.as_deref()) {
-        if let Some(label) = cfg.profile_client_label(profile) {
-            if crate::config::is_client_label(&label) {
-                return label;
-            }
-        }
+    if let (Some(cfg), Some(profile)) = (cfg, entry.profile.as_deref())
+        && let Some(label) = cfg.profile_client_label(profile)
+        && crate::config::is_client_label(&label)
+    {
+        return label;
     }
-    if let Some(binary) = entry.binary.as_deref() {
-        if crate::config::is_client_label(binary) {
-            return binary.to_owned();
-        }
+    if let Some(binary) = entry.binary.as_deref()
+        && crate::config::is_client_label(binary)
+    {
+        return binary.to_owned();
     }
     crate::tool::ToolKind::from_binary_name(entry.binary.as_deref().unwrap_or_default())
         .client_token()
