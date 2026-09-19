@@ -71,8 +71,10 @@ pub fn read_stream(
     }
     // The store carries prompts only: with `--assistant` the seat says so,
     // once per read — unless the caller already produced assistant rows
-    // from the transcript leg. Silent (documented) with the flag off.
-    if streamed.assistant && !streamed.assistant_rows_found {
+    // from the transcript leg, or this poll's replies were read once. The
+    // once-read wins: the two lines together would contradict each other.
+    // Silent (documented) with the flag off.
+    if streamed.assistant && !streamed.assistant_rows_found && !streamed.assistant_read_once {
         sink.cover("agy: no assistant records (history carries prompts only)");
     }
     // A follow poll's tail: the first pass read the replies once and the
@@ -263,14 +265,18 @@ mod tests {
             assert_eq!(rows.len(), 1);
             assert!(coverage.is_empty(), "flag off: nothing");
         }
-        // A follow poll with a store behind it: the read-once line, only it.
-        let (rows, coverage) = read_lines_with(&[line.as_str()], true, true, true);
-        assert_eq!(rows.len(), 1);
-        assert_eq!(coverage.len(), 1);
-        assert_eq!(
-            coverage[0].reason.as_str(),
-            "agy: assistant replies read once, not followed"
-        );
+        // A follow poll with a store behind it: the read-once line, only
+        // it — even with no rows found, the once-read wins and the pair
+        // never prints together.
+        for found in [false, true] {
+            let (rows, coverage) = read_lines_with(&[line.as_str()], true, found, true);
+            assert_eq!(rows.len(), 1);
+            assert_eq!(coverage.len(), 1);
+            assert_eq!(
+                coverage[0].reason.as_str(),
+                "agy: assistant replies read once, not followed"
+            );
+        }
     }
 
     #[test]
