@@ -1,0 +1,50 @@
+                                                                                                                                                                                                        
+  ┃                                                                                                                                                             ok                                      
+  ┃  reply with the single word ok                                                                                                                                                                      
+  ┃                                                                                                                                                             Context                                 
+                                                                                                                                                                40,826 tokens                           
+     ok                                                                                                                                                         4% used                                 
+                                                                                                                                                                $0.01 spent                             
+     ▣  Build · DeepSeek V4.1 Flash · 3.0s                                                                                                                                                              
+                                                                                                                                                                ▼ MCP                                   
+                                                                                                                                                                • chrome-devtools Connected             
+                                                                                                                                                                • context7 Connected                    
+                                                                                                                                                                • open-design Connected                 
+                                                                                                                                                                • serena Connected                      
+                                                                                                                                                                                                        
+                                                                                                                                                                LSP                                     
+                                                                                                                                                                LSPs are disabled                       
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+  ┃                                                                                                                                                                                                     
+  ┃                                                                                                                                                             /home/                
+  ┃                                                                                                                                                             u/   
+  ┃  Build · DeepSeek V4.1 Flash OpenRouter · max                                                                                                               ocprobe                              
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀                                            
+   /home/ocprobe                                               40.8K (4%) · $0.01  ctrl+p commands    • OpenCode 1.18.31                      
+                                                                                                                                                                                                        

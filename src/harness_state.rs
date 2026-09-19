@@ -530,7 +530,17 @@ fn current_opencode_identity(capture: &str) -> HarnessIdentity {
     let Some(status) = edge.checked_sub(1).and_then(|index| rows.get(index)) else {
         return HarnessIdentity::default();
     };
-    let Some(rest) = status.strip_prefix('┃') else {
+    // The sidebar shares the status row past the box's own width (measured
+    // opencode 1.18.31, width 125 and above with history), so the row is
+    // clipped to the edge run BEFORE the split, or the path tail joins the
+    // effort field. The run is counted the way `region` clips its interior.
+    let run = rows[edge]
+        .chars()
+        .skip(1)
+        .take_while(|&cell| cell == '▀')
+        .count();
+    let clipped: String = status.chars().take(1 + run).collect();
+    let Some(rest) = clipped.strip_prefix('┃') else {
         return HarnessIdentity::default();
     };
     let fields: Vec<&str> = rest.trim().split(" · ").collect();
@@ -1040,6 +1050,34 @@ mod tests {
                 model: Some("DeepSeek V4.1 Flash OpenRouter".to_owned()),
                 effort: Some("max".to_owned()),
             }
+        );
+    }
+
+    #[test]
+    fn an_opencode_seat_with_history_observes_its_model_at_both_widths() {
+        const HISTORY_EMPTY: &str =
+            include_str!("../tests/fixtures/opencode-composer/opencode-history-empty-80x24.txt");
+        const HISTORY_EMPTY_WIDE: &str =
+            include_str!("../tests/fixtures/opencode-composer/opencode-history-empty-200x50.txt");
+        const HISTORY_DRAFT: &str =
+            include_str!("../tests/fixtures/opencode-composer/opencode-history-draft-80x24.txt");
+        let observed = HarnessIdentity {
+            model: Some("DeepSeek V4.1 Flash OpenRouter".to_owned()),
+            effort: Some("max".to_owned()),
+        };
+        assert_eq!(
+            observed_identity(HISTORY_EMPTY, ToolKind::OpenCode),
+            observed
+        );
+        assert_eq!(
+            observed_identity(HISTORY_EMPTY_WIDE, ToolKind::OpenCode),
+            observed,
+            "the sidebar tail past the edge run never reaches the split"
+        );
+        assert_eq!(
+            observed_identity(HISTORY_DRAFT, ToolKind::OpenCode),
+            HarnessIdentity::default(),
+            "a draft refuses the gate, so the status row is not read"
         );
     }
 

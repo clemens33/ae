@@ -228,7 +228,50 @@ pub struct Composed {
     /// [`ComposerAnchor::RoundedBox`] and [`ComposerAnchor::RuledPrompt`] the
     /// composer must also hold no draft: the box, the fence and the marker
     /// outlive a human's unsent text, so the marker alone would paste into it.
+    /// For [`ComposerAnchor::HeavyRail`] the composer must hold no draft
+    /// either, but NO marker presence is required: a seat with history draws
+    /// the same box with an empty interior and no placeholder, so the markers
+    /// here only name the placeholder PREFIX an empty interior may carry.
     pub markers: &'static [&'static str],
+    /// The modal dialogs that steal keystrokes from this composer: a dialog
+    /// open anywhere above the box refuses readiness even when the box itself
+    /// is drawn and empty.
+    pub dialog: DialogSig,
+}
+
+/// One tool's modal-dialog refusal signal: the dialogs whose open state
+/// refuses readiness although the composer is drawn and empty.
+///
+/// Pub because [`Composed`] exposes it, and the public `wait_input_ready`
+/// probe takes that.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DialogSig {
+    /// Dialog titles that steal keystrokes, matched on the dialog's header
+    /// row beside [`DialogSig::dismiss`].
+    pub titles: &'static [&'static str],
+    /// The dismiss affordance the header row carries beside the title.
+    pub dismiss: &'static str,
+    /// The body row that must follow a matched header within [`DialogSig::gap`]
+    /// rows, so a transcript mention of a title alone never refuses.
+    pub body: &'static str,
+    /// How many rows below the header the body may sit.
+    pub gap: usize,
+}
+
+impl DialogSig {
+    /// No measured dialog: nothing is ever refused on its account.
+    pub const NONE: Self = Self {
+        titles: &[],
+        dismiss: "",
+        body: "",
+        gap: 0,
+    };
+
+    /// Whether this carries no dialog signal.
+    #[must_use]
+    pub fn is_empty(self) -> bool {
+        self.titles.is_empty()
+    }
 }
 
 impl Composed {
@@ -238,6 +281,7 @@ impl Composed {
     pub const NONE: Self = Self {
         anchor: ComposerAnchor::HeavyRail,
         markers: &[],
+        dialog: DialogSig::NONE,
     };
 
     /// Whether this carries no usable composed signal.
@@ -631,6 +675,7 @@ const AGY: ToolAdapter = ToolAdapter {
         composed: Composed {
             anchor: ComposerAnchor::RuledPrompt,
             markers: &["? for shortcuts"],
+            dialog: DialogSig::NONE,
         },
         wait_for_process: false,
         paste_initial_on_resume: false,
@@ -699,6 +744,7 @@ const GROK: ToolAdapter = ToolAdapter {
         composed: Composed {
             anchor: ComposerAnchor::RoundedBox,
             markers: &["❯"],
+            dialog: DialogSig::NONE,
         },
         wait_for_process: false,
         paste_initial_on_resume: false,
@@ -799,16 +845,28 @@ const OPENCODE: ToolAdapter = ToolAdapter {
     capture: CaptureSpec::SessionList,
     input: InputSpec {
         model: InputModel::Unmodelled,
-        // MEASURED on opencode 1.18.31 (2026-09-15, ae-dev panes, 80x24):
-        // the boot frame is BLANK for the first ~2.7 s — stable but not
-        // composed — while the composer appears at ~+3.0 s. The structural
-        // anchor is the box's own `┃` rails and `╹▀` bottom edge, owned by
-        // `region::composed_ui`; this literal is the affordance that must sit
-        // INSIDE that box. It is UI text of ONE observed version and an
-        // inherited version-drift hazard: a renamed composer REFUSES visibly.
+        // MEASURED on opencode 1.18.31 (2026-09-15, ae-dev panes, 80x24;
+        // 2026-09-19, private probes, 60x15 to 200x50): the boot frame is
+        // BLANK for the first ~2.7 s — stable but not composed — while the
+        // composer appears at ~+3.0 s. The structural anchor is the box's own
+        // `┃` rails and `╹▀` bottom edge, owned by `region::composed_ui`;
+        // this literal is the placeholder PREFIX an empty interior may carry
+        // (the suggestion after it rotates per launch, and a seat with
+        // history draws no placeholder at all). The status row inside the box
+        // is excluded by POSITION, never matched. The dialogs below steal
+        // keystrokes while the box stays drawn and empty — a paste would land
+        // in the dialog's Search field — so either one open refuses. All UI
+        // text of ONE observed version, an inherited version-drift hazard: a
+        // renamed composer REFUSES visibly.
         composed: Composed {
             anchor: ComposerAnchor::HeavyRail,
             markers: &["Ask anything…"],
+            dialog: DialogSig {
+                titles: &["Commands", "Sessions"],
+                dismiss: "esc",
+                body: "Search",
+                gap: 3,
+            },
         },
         wait_for_process: true,
         paste_initial_on_resume: false,
@@ -1287,6 +1345,7 @@ mod tests {
                         composed: Composed {
                             anchor: ComposerAnchor::RuledPrompt,
                             markers: &["? for shortcuts"],
+                            dialog: DialogSig::NONE,
                         },
                         wait_for_process: false,
                         paste_initial_on_resume: false,
@@ -1339,6 +1398,7 @@ mod tests {
                         composed: Composed {
                             anchor: ComposerAnchor::RoundedBox,
                             markers: &["❯"],
+                            dialog: DialogSig::NONE,
                         },
                         wait_for_process: false,
                         paste_initial_on_resume: false,
@@ -1432,6 +1492,12 @@ mod tests {
                         composed: Composed {
                             anchor: ComposerAnchor::HeavyRail,
                             markers: &["Ask anything…"],
+                            dialog: DialogSig {
+                                titles: &["Commands", "Sessions"],
+                                dismiss: "esc",
+                                body: "Search",
+                                gap: 3,
+                            },
                         },
                         wait_for_process: true,
                         paste_initial_on_resume: false,

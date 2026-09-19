@@ -7,7 +7,7 @@
 //! it takes a capture and answers a question about it, so the whole model is
 //! unit-testable against recorded frames.
 
-use crate::tool::{Composed, ComposerAnchor, InputModel};
+use crate::tool::{Composed, ComposerAnchor, DialogSig, InputModel};
 
 /// The foreground a captured run is painted in, when the capture names one.
 /// Only IDENTITY matters: a run is compared against the colour the box paints
@@ -463,7 +463,10 @@ fn is_staged_chip(text: &str) -> bool {
 /// structure is never readiness. For the rounded box and the ruled prompt the
 /// marker is not the whole answer: their composer row must also hold NO draft,
 /// because the drawn structure and the marker both survive a human's unsent
-/// text and a paste into that row would merge with it. An empty marker list
+/// text and a paste into that row would merge with it. The heavy rail goes
+/// one step further and never requires marker presence at all: a seat with
+/// history draws the same box with an empty interior and no placeholder, so
+/// the box plus the empty interior IS the answer there. An empty marker list
 /// answers false: a tool with no usable composed signal is refused, not
 /// guessed — the anchor is unread then.
 #[must_use]
@@ -485,9 +488,7 @@ pub fn composed_ui(capture: &str, spec: Composed) -> bool {
         }
     }
     match spec.anchor {
-        ComposerAnchor::HeavyRail => {
-            rail_box(&rows, spec.markers, BoxTable::HEAVY, None, true, false)
-        }
+        ComposerAnchor::HeavyRail => heavy_rail_composer(&rows, spec),
         ComposerAnchor::RoundedBox => {
             rail_box(&rows, spec.markers, BoxTable::ROUNDED, Some(2), false, true)
         }
@@ -594,6 +595,140 @@ fn is_box_rail(row: &str, table: BoxTable) -> bool {
 fn is_box_edge(row: &str, table: BoxTable) -> bool {
     let mut cells = row.trim_start_matches(is_space).chars();
     cells.next() == Some(table.edge.0) && cells.next() == Some(table.edge.1)
+}
+
+/// Does the bottom-most heavy-rail box prove an EMPTY live composer?
+///
+/// MEASURED shape (opencode 1.18.31, 2026-09-19, 60x15 to 200x50): four `┃`
+/// rail rows closed by a `╹▀` edge, with NO right rail ever. A fresh seat
+/// carries `Ask anything… "<rotating suggestion>"` on the second rail row; a
+/// seat with history draws the same box with a blank interior and no
+/// placeholder at all — so marker PRESENCE is never required, and the markers
+/// only name the placeholder prefix an empty interior may carry. The status
+/// row (`Build · <model> · <effort>`) always sits directly above the edge and
+/// is excluded BY POSITION, never matched. At width 125 and above a session
+/// with history also draws a right sidebar whose text shares the box rows
+/// beyond the edge run, so every interior is clipped to the edge-run width
+/// before it is judged. A modal dialog (command palette, session list) leaves
+/// the box drawn and empty while stealing keystrokes, so an open one refuses.
+/// A mid-turn BUSY frame keeps the empty box drawn and reads TRUE here: that
+/// is the accepted residual, and delivery's busy handling owns the refusal of
+/// a mid-turn paste, not this rule.
+fn heavy_rail_composer(rows: &[String], spec: Composed) -> bool {
+    let table = BoxTable::HEAVY;
+    let Some(edge) = rows.iter().rposition(|row| is_box_edge(row, table)) else {
+        return false;
+    };
+    // The box: its edge plus the contiguous rail rows directly above it. Two
+    // is the floor — the status row plus one interior row — against four
+    // measured at every probed size.
+    let top = (0..edge)
+        .rev()
+        .find(|&at| !is_box_rail(&rows[at], table))
+        .map_or(0, |at| at + 1);
+    if edge - top < 2 {
+        return false;
+    }
+    let Some(width) = edge_run_width(&rows[edge]) else {
+        return false;
+    };
+    // Every rail row except the status row (directly above the edge) must be
+    // blank or carry the placeholder; any other text is a human draft ae
+    // must not paste into.
+    let status = edge - 1;
+    if !rows[top..status].iter().all(|row| {
+        let interior = clipped_interior(row, width);
+        trim_posix(&interior).is_empty() || starts_with_marker(&interior, spec.markers)
+    }) {
+        return false;
+    }
+    !dialog_open(&rows[..edge], &spec.dialog)
+}
+
+/// The `▀`-run length of a heavy-rail bottom edge: the box's own width, which
+/// the sidebar never reaches. `None` when the row is no edge at all.
+fn edge_run_width(edge: &str) -> Option<usize> {
+    let rest = edge
+        .trim_start_matches(is_space)
+        .strip_prefix(BoxTable::HEAVY.edge.0)?;
+    let run = rest
+        .chars()
+        .take_while(|&cell| cell == BoxTable::HEAVY.edge.1)
+        .count();
+    if run == 0 { None } else { Some(run) }
+}
+
+/// What a heavy-rail row holds inside the box: past the left rail, clipped to
+/// the edge-run width so a wide sidebar never reads as box content. A wide
+/// (CJK) draft cell can pull one sidebar cell inside the clip — fail-closed.
+fn clipped_interior(row: &str, width: usize) -> String {
+    row.trim_start_matches(is_space)
+        .strip_prefix(BoxTable::HEAVY.rail)
+        .unwrap_or("")
+        .chars()
+        .take(width)
+        .collect()
+}
+
+/// Whether the interior opens with one of the placeholder markers. Prefix,
+/// not equality: the suggestion after opencode's placeholder rotates per
+/// launch, and a seat with history draws no placeholder at all.
+fn starts_with_marker(interior: &str, markers: &[&str]) -> bool {
+    let trimmed = interior.trim_start_matches(is_space);
+    markers.iter().any(|marker| trimmed.starts_with(marker))
+}
+
+/// Whether a measured modal dialog sits open above the composer: a header row
+/// carrying a dialog title and the dismiss word, with the body row within
+/// `gap` rows below it. Both halves are required, so a transcript mention of
+/// a title alone never refuses.
+fn dialog_open(rows: &[String], dialog: &DialogSig) -> bool {
+    if dialog.is_empty() {
+        return false;
+    }
+    rows.iter().enumerate().any(|(at, row)| {
+        dialog
+            .titles
+            .iter()
+            .any(|title| dialog_header(row, title, dialog.dismiss))
+            && ((at + 1)..=(at + dialog.gap)).any(|next| {
+                rows.get(next)
+                    .is_some_and(|body| dialog_body(body, dialog.body))
+            })
+    })
+}
+
+/// Whether `row` opens with the dialog `body` as a bounded word. Prefix, not
+/// equality: on a wide session the sidebar shares the body's row past the
+/// dialog's own columns.
+fn dialog_body(row: &str, body: &str) -> bool {
+    trim_posix(row).strip_prefix(body).is_some_and(|rest| {
+        rest.chars()
+            .next()
+            .is_none_or(|cell| !cell.is_alphanumeric())
+    })
+}
+
+/// Whether `row` carries the dialog `title` with the `dismiss` word after it
+/// as a bounded word — a substring inside a longer word (`describe`) is not
+/// the dismiss affordance.
+fn dialog_header(row: &str, title: &str, dismiss: &str) -> bool {
+    let Some(title_at) = row.find(title) else {
+        return false;
+    };
+    let mut from = title_at + title.len();
+    while let Some(relative) = row[from..].find(dismiss) {
+        let at = from + relative;
+        let left = row[..at].chars().last();
+        let right = row[at + dismiss.len()..].chars().next();
+        if left.is_none_or(|cell| !cell.is_alphanumeric())
+            && right.is_none_or(|cell| !cell.is_alphanumeric())
+        {
+            return true;
+        }
+        from = at + dismiss.len();
+    }
+    false
 }
 
 /// Does the bottom-most rule-fenced `>` prompt carry a marker on an EMPTY
@@ -792,7 +927,7 @@ mod tests {
         Fg, Occupancy, Segment, composed_ui, initializing, occupancy, parse, prompt,
         queued_submission, staged_paste,
     };
-    use crate::tool::{Composed, ComposerAnchor, InputModel, ToolKind};
+    use crate::tool::{Composed, ComposerAnchor, DialogSig, InputModel, ToolKind};
 
     /// The REAL stuck composer — muse-spark-1.3 via the muse CLI, captured
     /// 2026-09-14. The harness REFUSED the pasted turn and its composer still
@@ -817,6 +952,21 @@ mod tests {
         include_str!("../../tests/fixtures/opencode-composer/opencode-composed-frame.esc");
     const OPENCODE_BOOT: &str =
         include_str!("../../tests/fixtures/opencode-composer/opencode-boot-frame.esc");
+    /// A seat WITH history: same box, blank interior, no placeholder. The wide
+    /// frame also carries the right sidebar past the edge run.
+    const OPENCODE_HISTORY_EMPTY: &str =
+        include_str!("../../tests/fixtures/opencode-composer/opencode-history-empty-80x24.txt");
+    const OPENCODE_HISTORY_EMPTY_WIDE: &str =
+        include_str!("../../tests/fixtures/opencode-composer/opencode-history-empty-200x50.txt");
+    /// The same seat holding a human draft (a wide draft: synthetic below).
+    const OPENCODE_HISTORY_DRAFT: &str =
+        include_str!("../../tests/fixtures/opencode-composer/opencode-history-draft-80x24.txt");
+    /// Palette over a drawn box (narrow, overlaying its top), session list
+    /// over a clean wide box: keystrokes land in Search, not the box.
+    const OPENCODE_PALETTE: &str =
+        include_str!("../../tests/fixtures/opencode-composer/opencode-palette-80x24.txt");
+    const OPENCODE_SESSLIST_WIDE: &str =
+        include_str!("../../tests/fixtures/opencode-composer/opencode-sesslist-200x50.txt");
     const OPENCODE: Composed = ToolKind::OpenCode.adapter().input.composed;
     const GROK: Composed = ToolKind::Grok.adapter().input.composed;
     const AGY: Composed = ToolKind::Agy.adapter().input.composed;
@@ -1299,38 +1449,50 @@ mod tests {
 
     #[test]
     fn a_composed_marker_counts_only_inside_the_bottom_composer_box() {
-        // The real frames: the marker lives inside the drawn box, and the
+        // The real frames: the fresh box carries the placeholder, and the
         // blank boot frame has no box at all.
         assert!(composed_ui(OPENCODE_COMPOSED, OPENCODE));
-        assert!(
-            composed_ui(
-                OPENCODE_COMPOSED,
-                Composed {
-                    anchor: ComposerAnchor::HeavyRail,
-                    markers: &["Build", "ctrl+p commands"],
-                },
-            ),
-            "any marker inside the box answers; the box is the anchor"
-        );
         assert!(!composed_ui(OPENCODE_BOOT, OPENCODE));
 
         // A transcript echo carrying the marker with NO composer drawn is not
         // readiness — the whole-capture `contains` this replaces said it was.
         let echoed = "❯ Ask anything… quoted from an earlier turn\nplain transcript\n";
         assert!(!composed_ui(echoed, OPENCODE));
+        // Transcript rails WITHOUT an edge are not the composer either.
+        let quoted = "  ┃\n  ┃  reply with the single word ok\n  ┃\nplain transcript\n";
+        assert!(!composed_ui(quoted, OPENCODE));
 
-        // A marker visible ABOVE a drawn box that does not carry it: the box
-        // owns the answer, so the echo above it must not grant readiness. The
-        // same box does compose for a marker inside it.
-        let boxed = "❯ Ask anything… quoted from an earlier turn\n\n   ┃\n   ┃  write here\n   ╹▀▀▀▀▀\n   tab agents\n";
+        // A marker visible ABOVE a drawn box does not grant readiness, and a
+        // marker NAMING the box's own draft text does not either: the empty
+        // interior owns the answer now, not marker presence. (`write here`
+        // sits above the status row, so it is interior, not structure.)
+        let boxed = "❯ Ask anything… quoted from an earlier turn\n\n   ┃\n   ┃  write here\n   ┃  Build · m · max\n   ╹▀▀▀▀▀\n   tab agents\n";
         assert!(!composed_ui(boxed, OPENCODE));
-        assert!(composed_ui(
-            boxed,
-            Composed {
-                anchor: ComposerAnchor::HeavyRail,
-                markers: &["write here"],
-            }
-        ));
+        assert!(
+            !composed_ui(
+                boxed,
+                Composed {
+                    anchor: ComposerAnchor::HeavyRail,
+                    markers: &["write here"],
+                    dialog: DialogSig::NONE,
+                }
+            ),
+            "a draft is a draft whatever the markers name"
+        );
+
+        // Markers that do not cover the placeholder read it as a draft: the
+        // fresh box refuses under foreign markers, fail-closed.
+        assert!(
+            !composed_ui(
+                OPENCODE_COMPOSED,
+                Composed {
+                    anchor: ComposerAnchor::HeavyRail,
+                    markers: &["Build", "ctrl+p commands"],
+                    dialog: DialogSig::NONE,
+                },
+            ),
+            "the placeholder is content to markers that do not name it"
+        );
 
         // A tool with no usable composed signal never composes anything.
         assert!(!composed_ui(OPENCODE_COMPOSED, Composed::NONE));
@@ -1416,5 +1578,112 @@ mod tests {
             "{rules}\n> quoted ? for shortcuts\n{rules}\nDo you trust this folder?\n> Yes\n  No, exit\n"
         );
         assert!(!composed_ui(&output, AGY), "the bottom anchor refuses it");
+    }
+
+    #[test]
+    fn an_opencode_seat_with_history_composes_on_an_empty_box_at_both_sizes() {
+        for frame in [OPENCODE_HISTORY_EMPTY, OPENCODE_HISTORY_EMPTY_WIDE] {
+            assert!(
+                !frame.contains("Ask anything"),
+                "the missing placeholder is load-bearing"
+            );
+            assert!(frame.contains('╹'), "the edge is load-bearing");
+            assert!(composed_ui(frame, OPENCODE));
+        }
+    }
+
+    #[test]
+    fn an_opencode_draft_in_a_box_with_history_refuses() {
+        assert!(
+            OPENCODE_HISTORY_DRAFT.contains("half a draft here"),
+            "the draft is load-bearing"
+        );
+        assert!(!composed_ui(OPENCODE_HISTORY_DRAFT, OPENCODE));
+    }
+
+    #[test]
+    fn a_wide_sidebar_beyond_the_edge_run_is_not_box_content() {
+        // A 20-wide box; the sidebar starts past the run end.
+        let edge = format!("  ╹{}", "▀".repeat(20));
+        let sidebar = format!("  ┃{} /sb/path", " ".repeat(22));
+        let clean = format!("  ┃\n{sidebar}\n  ┃  Build · m · max\n{edge}\n");
+        assert!(composed_ui(&clean, OPENCODE));
+        // The same tail with a draft INSIDE the run still refuses.
+        let drafted = format!(
+            "  ┃\n  ┃  half a draft{} /sb/path\n  ┃  Build · m · max\n{edge}\n",
+            " ".repeat(9)
+        );
+        assert!(!composed_ui(&drafted, OPENCODE));
+    }
+
+    #[test]
+    fn an_open_dialog_refuses_despite_a_drawn_and_empty_box() {
+        assert!(
+            OPENCODE_PALETTE.contains("Commands"),
+            "the palette is load-bearing"
+        );
+        assert!(!composed_ui(OPENCODE_PALETTE, OPENCODE));
+        assert!(
+            OPENCODE_SESSLIST_WIDE.contains("Sessions"),
+            "the session list is load-bearing"
+        );
+        assert!(!composed_ui(OPENCODE_SESSLIST_WIDE, OPENCODE));
+    }
+
+    #[test]
+    fn a_dialog_refusal_needs_the_header_and_the_body_together() {
+        // One drawn, empty box; the dialog rows above it vary.
+        let frame = |dialog: &str| {
+            format!("{dialog}  ┃\n  ┃\n  ┃  Build · m · max\n  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n")
+        };
+        let header = "     Commands                                         esc\n";
+        assert!(
+            composed_ui(&frame(header), OPENCODE),
+            "a header without its body is transcript mention, not a dialog"
+        );
+        assert!(
+            composed_ui(&frame("     Search\n"), OPENCODE),
+            "a body without its header is just a word"
+        );
+        assert!(
+            composed_ui(&frame(&format!("{header}\n\n\n     Search\n")), OPENCODE),
+            "a body past the gap is not this dialog"
+        );
+        assert!(
+            composed_ui(
+                &frame("     Commands describe the workflow\n\n     Search\n"),
+                OPENCODE
+            ),
+            "the dismiss word inside a longer word is not the affordance"
+        );
+        assert!(
+            !composed_ui(&frame(&format!("{header}\n     Search\n")), OPENCODE),
+            "header plus body within the gap refuses"
+        );
+    }
+
+    #[test]
+    fn a_busy_frame_keeps_the_empty_box_and_reads_composed() {
+        // The `esc interrupt` row below the edge; the box itself is empty.
+        // Accepted residual: delivery's busy handling owns the refusal of a
+        // mid-turn paste, not this rule.
+        let busy =
+            "  ┃\n  ┃\n  ┃  Build · m · max\n  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n  ⬝⬝⬝⬝⬝⬝⬝⬝  esc interrupt\n";
+        assert!(composed_ui(busy, OPENCODE));
+    }
+
+    #[test]
+    fn a_wrapped_draft_adding_rail_rows_refuses() {
+        // The placeholder survives on its own row; the continuation row is
+        // still a draft ae must not paste into.
+        let wrapped = "  ┃\n  ┃  Ask anything… \"sugg\"\n  ┃  wrapped continuation\n  ┃  Build · m · max\n  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n";
+        assert!(!composed_ui(wrapped, OPENCODE));
+    }
+
+    #[test]
+    fn the_placeholder_prefix_with_a_rotating_suggestion_is_empty() {
+        // Prefix, not equality: the suggestion rotates per launch.
+        let other = "  ┃\n  ┃  Ask anything… \"Another task\"\n  ┃\n  ┃  Build · m · max\n  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n";
+        assert!(composed_ui(other, OPENCODE));
     }
 }

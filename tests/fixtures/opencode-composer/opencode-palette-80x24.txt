@@ -1,0 +1,24 @@
+                                                                                
+  ┃                                                                             
+  ┃  reply with the single word ok                                              
+  ┃                                                                             
+                                                                                
+     ok                                                                         
+                                                                                
+     ▣  Bu    Commands                                         esc              
+                                                                                
+              Search                                                            
+                                                                                
+              Suggested                                                         
+              Switch session                              ctrl+x l              
+              New session                                 ctrl+x n              
+              Switch model                                ctrl+x m              
+                                                                                
+  ┃           Session                                                           
+  ┃                                                                             
+  ┃                                                                             
+  ┃  Build · DeepSeek V4.1 Flash OpenRouter · max                               
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀  
+   /home/                          40.8K (4%) ·  ctrl+p       
+   u/ocprobe                 commands     
+                                                                                
