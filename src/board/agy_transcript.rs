@@ -592,6 +592,21 @@ mod tests {
         let missing_stamp = include_str!("../../fuzz/seeds/board_agy/transcript-missing-stamp");
         let truncated = include_str!("../../fuzz/seeds/board_agy/transcript-truncated");
         let hostile = include_str!("../../fuzz/seeds/board_agy/transcript-hostile-trunc");
+        // The pin replicates the target's flag decode, so it also pins the
+        // decode itself: a changed mask breaks here, not silently in a lane
+        // outside the product graph.
+        let target = include_str!("../../fuzz/fuzz_targets/board_agy.rs");
+        for mask in [
+            "flag & 2 == 0",
+            "flag & 4 == 4",
+            "flag & 8 == 8",
+            "flag & 16 == 16",
+        ] {
+            assert!(
+                target.contains(mask),
+                "the pin decodes what the target decodes"
+            );
+        }
         // Every transcript seed selects the transcript entry; only the one
         // named truncated claims the truncated leg.
         for (name, seed) in [
