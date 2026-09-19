@@ -260,6 +260,17 @@ pub fn run(args: &[String], out: &mut impl Write, err: &mut impl Write) -> Resul
     if let Some(code) = install_gate(err)? {
         return Ok(code);
     }
+    // THE SHORT FORM, `ae @<session> <helper> …` — a second spelling of that
+    // session's own helper link, and never a launch. It sits HERE, directly
+    // under the gate, because that is the whole observational shape a helper
+    // has: the gate, the state root, the target directory, and the helper. The
+    // ignored-doors notice and the launch preamble below would put a public
+    // command's noise on an agent's stderr and ask tmux a question no helper
+    // needs. It is also above every fall-through, so a marked word can never
+    // create, resume or rename a session.
+    if let Some(code) = short_helper(args, out, err)? {
+        return Ok(code);
+    }
     // The core's OWN namespace.
     if let Some(word) = args.first().map(String::as_str)
         && word.starts_with('_')
@@ -1771,6 +1782,64 @@ fn session_path_is_safe(preamble: &entry::Preamble, name: &str) -> bool {
         None | Some(PathKind::Directory) => true,
         Some(PathKind::Symlink | PathKind::Other) => false,
     }
+}
+
+/// `ae @<session> <helper> <args…>`: the short spelling of a session helper.
+///
+/// `Ok(None)` means the argv carried no marker and the ordinary route still
+/// owns it. Everything else is this route's own answer, and the ORDER is the
+/// contract: the words are judged first, so a malformed call is an exit-2 usage
+/// error that reads no state at all; only then is the state root derived and
+/// the target directory classified; only then does the helper run.
+///
+/// What is NOT here is as much of the point as what is. No pane, no server, no
+/// caller identity: the typed session picks the directory a helper acts on and
+/// supplies no authority whatsoever, so an identity-bearing helper observes the
+/// real caller exactly as it does through the link.
+fn short_helper(args: &[String], out: &mut impl Write, err: &mut impl Write) -> Result<Option<u8>> {
+    let (session, helper, tail) = match shim::short_form(args) {
+        shim::Short::Absent => return Ok(None),
+        shim::Short::Usage(refusal) => {
+            write!(err, "{refusal}")?;
+            err.flush()?;
+            return Ok(Some(entry::EXIT_USAGE));
+        }
+        shim::Short::Call {
+            session,
+            helper,
+            tail,
+        } => (session, helper, tail),
+    };
+    let Some(root) = doors::state_root(shape::current()) else {
+        writeln!(err, "ae: {NO_STATE_ROOT}")?;
+        err.flush()?;
+        return Ok(Some(EXIT_UNAVAILABLE));
+    };
+    let sessions = root.join("sessions");
+    let dir = sessions.join(session);
+    // The SAME lstat the launch path guard asks, for the same reason: a symlink
+    // of any kind — dangling included — is an escape wearing a valid name, and
+    // a helper that followed one would act on another directory entirely.
+    match lstat_kind(&dir) {
+        Some(PathKind::Directory) => {}
+        None => {
+            writeln!(
+                err,
+                "ae: no session '{session}' under {}.",
+                sessions.display()
+            )?;
+            err.flush()?;
+            return Ok(Some(EXIT_UNAVAILABLE));
+        }
+        Some(PathKind::Symlink | PathKind::Other) => {
+            write_unsafe_path(&dir, err)?;
+            err.flush()?;
+            return Ok(Some(EXIT_UNAVAILABLE));
+        }
+    }
+    // The CURRENT core runs it, through the one translation a link uses — not
+    // the target's symlink, which would be a second binary to trust.
+    run_dispatch(&shim::translate(helper, &dir, tail), out, err).map(Some)
 }
 
 /// What an lstat says a path IS — `None` for a path that is not there.

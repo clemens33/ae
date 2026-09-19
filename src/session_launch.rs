@@ -406,7 +406,7 @@ fn second_positional_refusal(first: &str, second: &str) -> String {
         Some(helper) => format!(
             "Error: a launch takes exactly one session name, not two ('{first}' and '{second}'). \
              '{helper}' is a session helper — run it by its full path \
-             (<state-root>/sessions/<session>/{helper} …)."
+             (<state-root>/sessions/<session>/{helper} …) or as 'ae @<session> {helper} …'."
         ),
         None => format!(
             "Error: a launch takes exactly one session name, not two ('{first}' and '{second}')."

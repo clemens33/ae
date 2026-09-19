@@ -208,6 +208,12 @@ The core LINKS 25 names into `~/.ae/sessions/<name>/`. Every one is a **symlink 
 binary**; the core dispatches on `argv[0]`'s basename and derives the session from its
 dirname. Names and argv are the compatibility contract.
 
+A helper has TWO accepted spellings and `src/shim.rs` owns both, because a second helper
+table is a second set of names to drift: the LINK
+(`<state-root>/sessions/<session>/send lead 'hi'`) and the SHORT FORM
+(`ae @<session> send lead 'hi'`). Both end at the same `shim::Helper`, the same
+`shim::translate` and the same dispatch, run by the core the caller invoked.
+
 | Helper | Purpose |
 |---|---|
 | `send [--cross-session] <agent> <msg>` | Deliver to the same session; another session needs `--cross-session`. Refuses a dead pane, defers on busy/human input, verifies the submit |
@@ -242,8 +248,16 @@ in every session but works only when the caller pane belongs to the orchestrator
 (`meta_agent=true`), and every attempt is audited in that caller session. It is for verbatim,
 explicit human instructions only, never inferred or judgment work.
 
-**Call a helper by its FULL PATH.** No `/` in `argv[0]` means no session to derive, and the
-core exits 2 rather than guessing. That is why they are not on `PATH`.
+**Call a helper by its FULL PATH, or as `ae @<session> <helper> …`.** A BARE name is
+refused: no `/` in `argv[0]` and no marker means no session to derive, and the core exits 2
+rather than guessing. That is why they are not on `PATH`. The `@` is attached to the session;
+`ae <helper> …` is NOT the short form and keeps its launch/usage semantics, which is why no
+helper name goes into `entry::ROUTED_VERBS`. The marker is parsed above every fall-through, so
+`@…` can never create, resume or rename a session; it refuses exit 2 on a bad name, a missing
+helper or an unknown helper before reading any state, and exit 1 on a session with no
+directory, or one whose entry is a file, a socket or a symlink of any kind, which it never
+follows. The typed session selects the SCOPE, never the CALLER: identity stays whatever the
+live pane proves, ae synthesizes none of it, and `--cross-session` still binds.
 Name resolution takes the exact name, `%pane-id`, or `session:agent` / `@session:agent`.
 
 ## Agent tool capabilities

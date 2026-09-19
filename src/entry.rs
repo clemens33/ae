@@ -298,6 +298,11 @@ Config: ~/.ae/config (per-project override: .ae/config in project dir)
 Session helpers, in every session dir: send, relay, ask, review, reply, requests, state,
   mark-done, goal, memo, say, peek (peak), agents, quota, usage, focus, interrupt, spawn, retire,
   relaunch.
+  ae @<session> <helper> [args...]
+                         Run one of those helpers against a session, the short way
+                         (e.g. ae @demo send lead 'ready'). The session dir's own link
+                         stays valid; a bare helper name is still refused. The typed
+                         session picks the session, never who you are.
 Run 'ae doctor' after install or agent CLI upgrades.
 Run 'ae doctor --refresh' after updating ae to regenerate existing session helpers.
 ";

@@ -1157,6 +1157,25 @@ generations if it wants to.
 
 ## Session helpers
 
+Every helper in `~/.ae/sessions/<name>/` has two accepted spellings, and they
+run the same helper from the same core:
+
+```bash
+ae @my-feature send lead "review ready"          # short form
+~/.ae/sessions/my-feature/send lead "review ready"   # the link
+```
+
+`@` is attached to the session. A missing or malformed session, a missing
+helper and an unknown helper are usage errors (exit 2) that read no state; a
+session with no directory under the state root, or one whose entry is a file, a
+socket or a symlink of any kind, refuses with exit 1 and is never followed.
+`ae <helper> …` is not the short form, and a helper reached by bare name is
+still refused — see [helpers.md](helpers.md).
+
+The typed session selects the session a helper acts on, never who is calling
+it: identity stays pane-derived, so a writer that needs a caller refuses from a
+plain shell either way, and `--cross-session` still applies.
+
 Session delivery helpers stay inside their own ae session by default:
 
 ```text

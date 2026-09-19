@@ -1,19 +1,56 @@
 # Session helpers
 
-Every ae session has a directory at `~/.ae/sessions/<name>/` filled with helpers. Agents call them by absolute path; humans can too. All of them are re-linked from the running ae binary on every start, resume, and `ae doctor --refresh`.
+Every ae session has a directory at `~/.ae/sessions/<name>/` filled with helpers. Call one by its absolute path, or by the short form `ae @<session> <helper> …`. All of them are re-linked from the running ae binary on every start, resume, and `ae doctor --refresh`.
 
-Each one is a **symlink to the ae core binary**. There is no script and no wrapper in front of it: the core reads the name it was invoked under to pick the entry, and the directory it was invoked from to find the session. The names and the argv are the contract — every agent in a live workspace calls them by name — and everything behind them is Rust.
+Each one is a **symlink to the ae core binary**. There is no script and no wrapper in front of it: the core reads the name it was invoked under to pick the entry, and the directory it was invoked from to find the session — or, in the short form below, the marked first word. The names and the argv are the contract — every agent in a live workspace calls them by name — and everything behind them is Rust.
 
-**Call them by full path.** The session directory is the dirname of the path you invoked, so a helper reached by bare name — put on `PATH`, or copied elsewhere — has no session to act on and says so:
+## Two spellings, one helper
+
+A helper has two accepted spellings. The short one names the session:
+
+```bash
+ae @my-feature send lead "review ready"
+```
+
+The link names its directory, and stays valid everywhere:
+
+```bash
+~/.ae/sessions/my-feature/send lead "review ready"
+```
+
+Both run the same helper, from the same `ae` core you invoked, against the same
+session. `@` is attached to the session name — `ae @ send` is not the short
+form, and neither is `ae send`, which is still a word for the ordinary route.
+The short form refuses, exit 2, before it reads anything, when the marker names
+no session, names one outside the session-name grammar, names no helper, or
+names a word that is not one; and it refuses, exit 1, when that session has no
+directory under the state root, or when what is there is a file, a socket, or a
+symlink of any kind — dangling included. It never follows one and it never
+creates anything.
+
+**A bare helper name is still refused.** The session directory is the dirname of
+the path you invoked, so a helper reached by name alone — put on `PATH`, or
+copied elsewhere — has neither a path nor a marker to derive a session from:
 
 ```
 $ send lead "hi"
-ae: 'send' is a session helper — run it by its full path (<session-dir>/send); invoked by name it has no session directory to derive.
+ae: 'send' is a session helper — run it by its full path (<session-dir>/send) or as 'ae @<session> send …'; invoked by name it has no session directory to derive.
 $ echo $?
 2
 ```
 
 It refuses rather than guessing. A helper that picked a session for you would eventually deliver one workspace's message into another.
+
+**The typed session is not an identity.** `@<session>` selects the session a
+helper acts *on*. Who you *are* is still the pane you are typing in, exactly as
+it is through the link: a writer that needs a caller — `state`, `mark-done`,
+`relay` — refuses from a shell with no pane whichever spelling you use, a
+foreign pane stays foreign, and `--cross-session` still binds every delivery
+helper. Naming a session buys no authority in it.
+
+When another agent hands you an exact `reply` or `send` command, run it
+**verbatim**. Those carry full paths and are meant to be pasted, not rewritten
+into the short form.
 
 **Never write through a helper path.** `>`, `>>`, `chmod`, `cp` and `sed -i` follow a symlink, so `> ~/.ae/sessions/<name>/send` truncates the ae core binary rather than replacing a helper — and every session on the machine is bound to it. Reading through one is fine. If you need to replace a helper, delete it first, or just run `ae doctor --refresh <name>` and let ae re-link the set.
 
@@ -182,6 +219,12 @@ Prefix any target with `@<session>:` to reach an agent in a different ae session
 ```
 
 The receiving agent gets the message exactly as if it came from a same-session sender. The orchestrator's `relay` instead accepts `other-feature` or `other-feature:lead` and deliberately delivers bare text.
+
+Two `@` notations, two positions, and they compose. As the FIRST word of an `ae`
+invocation it picks which session's helper runs; as a TARGET it picks which
+session the recipient is in. `ae @mine send --cross-session @other:lead "hi"` is
+`mine`'s `send` helper delivering into `other`, and the flag is still required
+because the short form grants no authority of its own.
 
 ## Reply contract
 

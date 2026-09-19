@@ -569,6 +569,55 @@ fn a_session_helper_pays_the_install_gate_too() {
     );
 }
 
+/// **B1, the third half.** `ae @<session> <helper>` is a second spelling of a
+/// helper link, so it pays exactly what a link pays: the gate, and nothing
+/// more.
+#[test]
+fn the_short_helper_form_pays_the_install_gate_too() {
+    let rig = Install::plant("shortgate");
+    rig.write_manifest("nonsense\n");
+    let session = rig.home.join(".ae").join("sessions").join("demo");
+    assert!(std::fs::create_dir_all(&session).is_ok(), "a session dir");
+
+    let (code, stdout, stderr) = rig.run(&[], &["@demo", "memo", "read"]);
+    assert_eq!(code, Some(2), "{stdout}{stderr}");
+    assert!(
+        stderr.contains("SHA256SUMS"),
+        "the short form must refuse for the SAME reason the link does: {stderr}"
+    );
+    // And a malformed one is refused by the gate too, not by the parser: the
+    // gate is ABOVE the route, so a broken install never reaches the words.
+    let (code, _, stderr) = rig.run(&[], &["@", "memo"]);
+    assert_eq!(code, Some(2), "{stderr}");
+    assert!(stderr.contains("SHA256SUMS"), "{stderr}");
+}
+
+/// The short form keeps a HELPER's observational shape: an installed run that
+/// inherits a door it will ignore says so on the PUBLIC path, and must not say
+/// it into an agent's pane.
+#[test]
+fn the_short_helper_form_carries_no_public_preamble_noise() {
+    let rig = Install::plant("shortnoise");
+    let session = rig.home.join(".ae").join("sessions").join("demo");
+    assert!(std::fs::create_dir_all(&session).is_ok(), "a session dir");
+    let inherited = [("AE_TMUX_SERVER", "/nowhere/tmux.sock")];
+
+    // The public word says it.
+    let (_, _, stderr) = rig.run(&inherited, &["list"]);
+    assert!(
+        stderr.contains("ignoring inherited AE_TMUX_SERVER"),
+        "the public path is where the notice belongs: {stderr}"
+    );
+    // The short form does not — and it still runs.
+    let (code, stdout, stderr) = rig.run(&inherited, &["@demo", "memo", "read"]);
+    assert_eq!(code, Some(0), "{stdout}{stderr}");
+    assert!(
+        !stderr.contains("ignoring inherited"),
+        "a helper's stderr is the agent's pane: {stderr}"
+    );
+    assert_eq!(stderr, "", "the short form is silent on success: {stderr}");
+}
+
 #[test]
 fn a_suppressed_installed_list_has_zero_automatic_upgrade_effects() {
     let rig = Install::plant("autoupgrade-suppressed");

@@ -1580,6 +1580,9 @@ fn help_is_the_command_set_and_names_no_retired_word() {
         "  ae end|rm [",
         "  ae version",
         "  ae help",
+        // The short helper spelling is taught ONCE, and here is where it is
+        // taught: a route nobody can read about is a route nobody uses.
+        "  ae @<session> <helper> [args...]",
     ] {
         assert!(ae::entry::HELP.contains(row), "help is missing {row}");
     }

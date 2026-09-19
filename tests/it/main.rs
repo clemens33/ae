@@ -40,6 +40,7 @@ mod sanitize;
 mod seat_relaunch;
 mod session_launch;
 mod shape;
+mod shorthelper;
 mod spawn;
 mod teardown;
 mod telegram;
