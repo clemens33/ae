@@ -44,6 +44,74 @@ Just talk to your main agent. It already knows how to spawn others and coordinat
 
 Agents pick descriptive names, show up in own tmux windows, and talk to each other through generated shell helpers — no manual wiring.
 
+Under the hood, a complete first round trip looks like this:
+
+### Human terminal
+
+You need installed `ae`, tmux, git, and at least one logged-in agent CLI on `PATH`. Run `ae init` and accept or edit its proposed `[profiles]` and `[roster]`; those profile names are local configuration, not universal names. `ae init` discovers executables but does not authenticate or check model access.
+
+```bash
+cd ~/projects/my-app
+ae init
+ae doctor
+ae my-app
+```
+
+`ae my-app` starts or reattaches the named session. Detach with `Ctrl+b d`; run it again later to return. The default launch mode is local; a `--worktree` launch additionally needs a Git repository.
+
+### Lead and worker panes
+
+These panes run AI TUIs, not shell prompts. Ask the lead agent to execute the commands below; the worker executes its generated reply footer. You need only run the Human terminal block. Seeing the result arrive in the lead session is proof of life.
+
+Ask the lead agent to execute a harmless read-only spawn. Replace the quoted `PROFILE` placeholder with a bare profile listed in this session's `workspace.md` before pasting:
+
+```bash
+~/.ae/sessions/my-app/spawn fact-check --using "PROFILE" -- \
+  'Read README.md; report its first heading; edit nothing.'
+```
+
+`spawn --using` rejects `profile@client`, and `spawn` has no `--dir`: it inherits the session's recorded `work_dir`. Choose directory and mode when starting the session (`ae my-app --dir ... [--copy|--worktree]`); omit both flags for local mode.
+
+Use the full helper paths shown here, or the short form `ae @my-app <helper> ...`. A bare helper name, or `ae <helper> ...`, has no session and refuses with exit 2.
+
+Ask the lead agent to execute this tracked request:
+
+```bash
+~/.ae/sessions/my-app/ask fact-check "What heading did you find? Reply in one line."
+```
+
+The worker receives a generated request id and exact reply footer. The live footer already contains the real request id: copy it verbatim and replace only its message text. The illustrative form below uses `REQUEST_ID` for that already-filled id; replace `REPLACE_WITH_OBSERVED_HEADING` with the exact heading observed, never a canned heading:
+
+```bash
+~/.ae/sessions/my-app/reply --as "fact-check" "REQUEST_ID" \
+  'Observed first heading: REPLACE_WITH_OBSERVED_HEADING'
+```
+
+The example uses a single-quoted message body so observed text stays one argument. If it contains a single quote, have the agent serialize or escape the helper argument rather than hand-edit shell quotes.
+
+`reply` validates the request id against the replying slot and session, then routes the answer to the asker. `--as` is advisory for the name, is recorded as the replier in the durable reply event, and is the identity fallback when pane detection fails; it cannot override slot or session checks.
+
+The worker declares its pane finished:
+
+```bash
+~/.ae/sessions/my-app/state done "Read-only check complete; no files changed."
+```
+
+After the lead accepts the answer, ask the lead agent to preserve the accepted observed result before cleanup:
+
+```bash
+~/.ae/sessions/my-app/memo add --topic fact-check \
+  'Accepted observed result: REPLACE_WITH_OBSERVED_HEADING; no files changed.'
+```
+
+Replace the memo placeholder with the same observed heading before running it; use the same safe quoting rule. Then ask the lead agent to retire the worker only after acceptance and memo preservation:
+
+```bash
+~/.ae/sessions/my-app/retire fact-check
+```
+
+Retiring removes the spawned pane and seat metadata. Workers do not self-retire; the lead owns cleanup. Retiring also closes requests involving that worker, so preserve the accepted result first. In this walkthrough's local mode, `ae end my-app` archives memory and removes ae state but does not commit, push, or own a worktree. Commit/push and managed copy/worktree cleanup belong to `--copy` and `--worktree` sessions. `ae stop my-app` preserves state for resume.
+
 ## Check on agents without attaching
 
 ```bash
