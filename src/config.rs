@@ -66,6 +66,14 @@ pub(crate) fn local_overlay(meta_dir: &Path, origin: &str) -> Option<PathBuf> {
     crate::lifecycle::path_exists(&local).then_some(local)
 }
 
+/// The config files a context render reads, in layering order: the recorded
+/// session config, then the resolved local overlay. ONE owner for `_run` and
+/// for `spawn`'s fold measure, which must render byte-identical context.
+#[must_use]
+pub(crate) fn ctx_config_files(global: Option<&Path>, local: Option<&Path>) -> Vec<PathBuf> {
+    global.into_iter().chain(local).map(Path::to_path_buf).collect()
+}
+
 /// The `[workspace]` values compact resolves.
 #[derive(Debug)]
 pub(crate) struct Workspace {

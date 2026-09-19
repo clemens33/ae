@@ -679,6 +679,139 @@ fn codex_gets_a_marked_passive_inline_first_turn() {
 }
 
 #[test]
+fn a_recorded_first_message_folds_into_the_user_turn_as_one_positional() {
+    for tool in ["muse", "grok", "agy", "gemini"] {
+        let rig = Rig::new(&format!("fold{tool}"));
+        rig.seat(tool, "");
+        let header = ae::provenance::brief("lead");
+        let framed = format!("{header}\ndo the fold");
+        assert!(
+            std::fs::write(ae::run::prompt_file(&rig.dir, "main"), &framed).is_ok(),
+            "{tool}: the recorded first message"
+        );
+        let argv = rig.planned_argv();
+        // Exactly one positional carries the whole turn: binary, the
+        // fixture's --flag, the -i flag where the channel has one, the turn.
+        let width = if tool == "agy" || tool == "gemini" { 4 } else { 3 };
+        assert_eq!(argv.len(), width, "{tool}: {argv:?}");
+        // The double-send guard: the brief occurs EXACTLY ONCE in the whole
+        // composed line — folded, never also a second positional.
+        let joined = argv.join("\n");
+        assert_eq!(joined.matches(&header).count(), 1, "{tool}: {joined}");
+        assert_eq!(joined.matches("do the fold").count(), 1, "{tool}: {joined}");
+        let turn = argv.last().unwrap_or_else(|| panic!("{tool} has a turn"));
+        let ctx = ae::provenance::ctx();
+        assert_eq!(turn.lines().next(), Some(ctx.as_str()), "{tool}: {turn}");
+        assert!(turn.contains("do the fold"), "{tool}: {turn}");
+        assert!(!turn.contains("This is context only"), "{tool}: {turn}");
+        assert!(turn.contains("START NOW"), "{tool}: {turn}");
+    }
+}
+
+#[test]
+fn a_recorded_first_message_stays_a_second_positional_for_codex() {
+    let rig = Rig::new("foldcodex");
+    rig.seat("codex", "");
+    let header = ae::provenance::brief("lead");
+    let turn = format!("{header}\nRun /tmp/x/_register-sid main once, then do the codex task");
+    assert!(
+        std::fs::write(ae::run::prompt_file(&rig.dir, "main"), &turn).is_ok(),
+        "the recorded first message"
+    );
+    let argv = rig.planned_argv();
+    assert_eq!(argv.len(), 5, "{argv:?}");
+    assert!(argv[3].starts_with("developer_instructions="), "{}", argv[3]);
+    assert!(
+        !argv[3].contains("do the codex task"),
+        "the brief stays out of the instructions: {}",
+        argv[3]
+    );
+    assert_eq!(argv[4], turn, "the second positional is byte-identical");
+}
+
+#[test]
+fn no_recorded_first_message_leaves_the_user_turn_byte_identical() {
+    for (tag, plant) in [("foldnone", false), ("foldempty", true)] {
+        let rig = Rig::new(tag);
+        rig.seat("muse", "");
+        if plant {
+            assert!(
+                std::fs::write(ae::run::prompt_file(&rig.dir, "main"), "").is_ok(),
+                "an empty prompt file"
+            );
+        }
+        let argv = rig.planned_argv();
+        assert_eq!(argv.len(), 3, "{tag}: {argv:?}");
+        let turn = argv.last().unwrap_or_else(|| panic!("{tag} has a turn"));
+        assert!(turn.contains("This is context only"), "{tag}: {turn}");
+        assert!(!turn.contains("START NOW"), "{tag}: {turn}");
+    }
+}
+
+#[test]
+fn a_resume_sends_no_recorded_first_message() {
+    // A fallback resume starts a fresh conversation AND re-renders the
+    // context turn — but the turn carries no brief.
+    let rig = Rig::new("foldfallback");
+    rig.seat("muse", "");
+    rig.started();
+    assert!(
+        std::fs::write(
+            ae::run::prompt_file(&rig.dir, "main"),
+            format!("{}\ndo the fold", ae::provenance::brief("lead")),
+        )
+        .is_ok(),
+        "the recorded first message"
+    );
+    let joined = rig.planned_argv().join("\n");
+    assert!(!joined.contains("do the fold"), "{joined}");
+    assert!(joined.contains("This is context only"), "{joined}");
+    // An exact resume carries no turn at all.
+    let rig = Rig::new("foldexact");
+    rig.seat("muse", "01a09b51-c88a-7fc0-8f71-200ea396c8a7");
+    rig.started();
+    assert!(
+        std::fs::write(
+            ae::run::prompt_file(&rig.dir, "main"),
+            format!("{}\ndo the fold", ae::provenance::brief("lead")),
+        )
+        .is_ok(),
+        "the recorded first message"
+    );
+    let argv = rig.planned_argv();
+    assert_eq!(
+        argv,
+        [
+            rig.tool("muse"),
+            "--flag".to_owned(),
+            "resume".to_owned(),
+            "01a09b51-c88a-7fc0-8f71-200ea396c8a7".to_owned()
+        ],
+        "{argv:?}"
+    );
+}
+
+#[test]
+fn a_nul_in_the_recorded_first_message_refuses_loud_before_any_marker() {
+    let rig = Rig::new("foldnul");
+    rig.seat("muse", "");
+    let prompt = ae::run::prompt_file(&rig.dir, "main");
+    assert!(
+        std::fs::write(&prompt, "do the\0fold").is_ok(),
+        "a hand-edited prompt file"
+    );
+    let out = rig.plan_raw();
+    assert!(!out.status.success(), "the launch refuses");
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(stderr.contains("NUL"), "{stderr}");
+    assert!(prompt.is_file(), "the prompt file is kept, the pane re-runnable");
+    assert!(
+        !rig.dir.join("launch.main.started").exists(),
+        "no start marker: a re-run retries the Create"
+    );
+}
+
+#[test]
 fn a_recorded_id_is_the_resume_target_for_every_tool() {
     // The resume form each tool's capability row promises, and the fallback it
     // offers when there is no id to resume BY. codex's fallback is its plain

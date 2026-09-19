@@ -12,7 +12,8 @@
 //! 3. `workspace.md` is regenerated from the live panes;
 //! 4. the slot's start marker is claimed and the pane command is pasted into
 //!    the pane's shell, where the core composes the agent and becomes it;
-//! 5. the BRIEF is delivered only after the TUI proves it will accept input.
+//! 5. the BRIEF rides the launch turn on the UserTurn channel, else is
+//!    delivered only after the TUI proves it will accept input.
 //!
 //! A failure before the pane can launch ROLLS BACK: the seat goes, the launch
 //! artifacts go, and the pane is killed through the ownership guard. A brief
@@ -479,6 +480,73 @@ pub fn run_spawn(
             return Ok(EXIT_FAILED);
         }
     }
+    // A spawn brief rides the LAUNCH TURN on the UserTurn channel — the same
+    // single positional that already carries the context — so no paste can
+    // land mid-turn. Gate on the RAW prompt: `brief` is never empty, it
+    // carries a default text when no prompt was given, and a no-prompt spawn
+    // keeps today's paste path byte-identical.
+    let brief_rides_argv = if !parsed.prompt.is_empty()
+        && matches!(
+            tool.adapter().launch.context,
+            crate::tool::ContextChannel::UserTurn { .. }
+        ) {
+        // Render the SAME context `_run` will compose with: the seat rows are
+        // claimed, so both renders are byte-identical short of a concurrent
+        // config edit, whose drift the bound's floor absorbs.
+        let local = crate::config::local_overlay(dir, &facts.origin);
+        let config_files =
+            crate::config::ctx_config_files(facts.global.as_deref(), local.as_deref());
+        let ctx = crate::render::context_document(
+            dir,
+            &facts.session,
+            &facts.work_dir,
+            &slot,
+            &config_files,
+        );
+        // Read back what was recorded, exactly as `_run` reads it — a failed
+        // record means an empty marker in both processes, not a skew.
+        let launch_id = crate::meta::read_bytes(dir)
+            .ok()
+            .and_then(|bytes| {
+                crate::meta::sole_value(&bytes, &format!("launch_id.{slot}"))
+                    .map(|value| String::from_utf8_lossy(value).into_owned())
+            })
+            .unwrap_or_default();
+        let framed = crate::provenance::first_line(&crate::provenance::brief(actor), &brief);
+        let full = launch::user_turn_text(
+            &ctx,
+            tool.adapter().launch_marker,
+            &launch_id,
+            &slot,
+            Some(&framed),
+        );
+        if launch::folded_turn_fits(&full) {
+            let stored =
+                deliver::store_body(dir, &format!("spawn-{slot}"), SPAWN_ACTION, &framed)
+                    .and_then(|_| crate::run::publish_prompt(dir, &slot, &framed));
+            if let Err(why) = stored {
+                rollback(dir, &facts, &slot, &pane, &parsed.name, err)?;
+                writeln!(
+                    err,
+                    "Error: '{}' task body could not be stored ({why}) — spawn rolled back.",
+                    parsed.name
+                )?;
+                return Ok(EXIT_FAILED);
+            }
+            true
+        } else {
+            writeln!(
+                err,
+                "ae: spawn '{}': folded launch turn {} bytes exceeds {} — briefing by paste instead.",
+                parsed.name,
+                launch::quoted_turn_len(&full),
+                launch::MAX_FOLDED_TURN_BYTES
+            )?;
+            false
+        }
+    } else {
+        false
+    };
     // RESOLVED, never raw.
     let Some(core) = crate::shape::resolved_exe() else {
         rollback(dir, &facts, &slot, &pane, &parsed.name, err)?;
@@ -516,8 +584,11 @@ pub fn run_spawn(
         );
     }
 
-    // BRIEF-DELIVERED, tracked apart from pane-created.
-    let failure = if initial.is_empty() {
+    // BRIEF-DELIVERED, tracked apart from pane-created. The codex turn and
+    // the folded turn are mutually exclusive: `initial` is non-empty only for
+    // `RegisterSessionId`, which only codex declares, and codex is not a
+    // UserTurn tool.
+    let failure = if initial.is_empty() && !brief_rides_argv {
         deliver_brief(
             dir,
             &facts,

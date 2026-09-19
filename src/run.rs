@@ -461,7 +461,8 @@ fn build_with_snapshot(
                 identity.current.shown()
             )
         });
-    let (composed, abandoned_session) = compose(dir, slot, &seat, &ctx, mode, &identity.effective);
+    let (composed, abandoned_session) =
+        compose(dir, slot, &seat, &ctx, mode, &identity.effective)?;
     let words = crate::words::split_words(&composed, &env_lookup)?;
     let (mut prefix, mut argv) = peel_env(words)?;
     if let Some((mut inner, binary_at)) = nested_env_prefix(&argv) {
@@ -726,7 +727,7 @@ fn compose(
     ctx: &str,
     mode: Mode,
     config_home: &crate::launch_cmd::Resolved,
-) -> (String, Option<String>) {
+) -> Result<(String, Option<String>), String> {
     if mode == Mode::Resume {
         let (resume_form, fallback_form) =
             resume_forms(seat.command.as_str(), seat.tool, &seat.harness_session);
@@ -742,13 +743,45 @@ fn compose(
             .then(|| seat.harness_session.clone());
         // A resume carries no inline first message: codex's is delivered once
         // its UI returns, and no other tool has one.
-        return (launch::build_launch_command(&cmd, ""), abandoned);
+        return Ok((launch::build_launch_command(&cmd, ""), abandoned));
     }
     let pre = launch::inject_session_id(seat.command.as_str(), &seat.harness_session);
-    let injected = launch::inject_ae_context(&pre, dir, slot, ctx, &seat.launch_id);
-    let prompt =
-        read_prompt(dir, slot).unwrap_or_else(|| launch::initial_prompt_for(seat.tool, dir, slot));
-    (launch::build_launch_command(&injected.cmd, &prompt), None)
+    let prompt = read_prompt(dir, slot);
+    // A recorded first message folds into the SAME turn on the UserTurn
+    // channel; everywhere else it rides the second positional as before.
+    let folded = prompt.is_some()
+        && matches!(
+            seat.tool.adapter().launch.context,
+            ContextChannel::UserTurn { .. }
+        );
+    if folded && let Some(framed) = prompt.as_deref() && framed.contains('\0') {
+        // A NUL cannot ride exec argv. Spawn's own briefs never carry one
+        // (argv is NUL-terminated), so this is a hand-edited prompt file:
+        // REFUSE, loud and before the start marker, the file kept and the
+        // pane re-runnable. No paste fallback exists here — `spawn` is gone.
+        return Err(format!(
+            "seat {slot}: the recorded first message contains a NUL byte, which cannot ride the launch turn — refusing to launch (prompt file kept, pane re-runnable)"
+        ));
+    }
+    let injected = if folded {
+        launch::inject_ae_context_with_brief(
+            &pre,
+            dir,
+            slot,
+            ctx,
+            &seat.launch_id,
+            prompt.as_deref(),
+        )
+    } else {
+        launch::inject_ae_context(&pre, dir, slot, ctx, &seat.launch_id)
+    };
+    let prompt_text = if folded {
+        // Folded: no second positional, or the brief ships twice.
+        String::new()
+    } else {
+        prompt.unwrap_or_else(|| launch::initial_prompt_for(seat.tool, dir, slot))
+    };
+    Ok((launch::build_launch_command(&injected.cmd, &prompt_text), None))
 }
 
 /// Whether an EXACT resume may keep the inline context turn.
@@ -1251,15 +1284,12 @@ pub(crate) fn read_seat(
         return Err(format!("seat '{slot}' has no profile recorded"));
     }
     let origin = value("origin");
-    let mut config_files: Vec<PathBuf> = Vec::new();
     let global = value("config");
-    if !global.is_empty() {
-        config_files.push(PathBuf::from(&global));
-    }
     let local = crate::config::local_overlay(dir, &origin);
-    if let Some(local) = &local {
-        config_files.push(local.clone());
-    }
+    let config_files = crate::config::ctx_config_files(
+        (!global.is_empty()).then(|| Path::new(&global)),
+        local.as_deref(),
+    );
     let orchestrator_seat = local.as_deref().is_some_and(|path| {
         dir.parent()
             .and_then(Path::parent)
@@ -1381,6 +1411,27 @@ mod tests {
                 "a future occupant could inherit {name}"
             );
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the test plants a prompt through the product publish path, then reads it back"
+    )]
+    fn a_cleared_slot_reads_no_first_message_for_its_successor() {
+        let dir = std::env::temp_dir().join(format!("ae-clear-prompt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a fixture dir");
+        publish_prompt(&dir, "spawned.3", "framed brief").expect("the publish");
+        assert!(read_prompt(&dir, "spawned.3").is_some(), "the plant reads");
+
+        clear_slot(&dir, "spawned.3").expect("the slot clears");
+
+        assert!(
+            read_prompt(&dir, "spawned.3").is_none(),
+            "no stale brief folds into the successor's launch turn"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
