@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.143] - 2026-09-19
+- Add the short helper spelling `ae @<session> <helper> …`
+- Sweep the full-path-only claims and qualify the short helper spelling
+
 ## [v2026.9.142] - 2026-09-19
 - Fit the quota dialog to short clients and tell every refusal
 - Satisfy the lint lane on the quota dialog fit
