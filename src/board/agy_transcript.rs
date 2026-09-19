@@ -26,7 +26,9 @@
 //! the two sibling files carry the same steps at different lengths. A second
 //! record repeating a step is damage, not a row — it is skipped and counted,
 //! because two rows sharing one identity would silently delete a reply in
-//! [`collect`](super::collect). Stamps parse through the one
+//! [`collect`](super::collect); only emitted rows take an identity, so a
+//! record that yields no row never consumes its step. Stamps parse through
+//! the one
 //! [`Timestamp`](crate::time::Timestamp) spelling; an unparseable one counts.
 //!
 //! Measured 2026-09-19 over the local store (shapes and counts only): 41
@@ -67,6 +69,7 @@ pub fn read_stream(
         rows: Vec::new(),
         coverage: Vec::new(),
         seen: HashSet::new(),
+        not_records: 0,
         missing_step: 0,
         dup_step: 0,
         missing_ts: 0,
@@ -78,8 +81,15 @@ pub fn read_stream(
             sink.push_line(bytes);
         }
     }
-    // The reader's own verdicts first, in check order, then the door's —
-    // record damage before stream damage.
+    // The reader's own verdicts first — doc garbage, then record damage
+    // in check order — then the door's.
+    if sink.not_records > 0 {
+        sink.cover(&counted(
+            sink.not_records,
+            "line is not a record",
+            "lines are not records",
+        ));
+    }
     if sink.missing_step > 0 {
         sink.cover(&counted(
             sink.missing_step,
@@ -151,6 +161,7 @@ struct Sink<'a> {
     rows: Vec<Row>,
     coverage: Vec<Coverage>,
     seen: HashSet<u64>,
+    not_records: u64,
     missing_step: u64,
     dup_step: u64,
     missing_ts: u64,
@@ -167,20 +178,21 @@ impl Sink<'_> {
     }
 
     /// Attempt one newline-terminated `Full` line: classify silently, count
-    /// damage, emit only the whitelisted planner reply. Check order is the
-    /// coverage order — classification, then damage, then the body gate.
+    /// damage, emit only the whitelisted planner reply. The step identity is
+    /// taken last, for an emitted row only — never for damage or a blank.
     fn push_line(&mut self, line: &[u8]) {
-        // Not UTF-8 or not JSON is not a record — unnameable, counted.
+        // Not UTF-8, not JSON or not an object is not a record at all —
+        // doc-level garbage, never per-record damage.
         let Ok(text) = str::from_utf8(line) else {
-            self.missing_step += 1;
+            self.not_records += 1;
             return;
         };
         let Ok(value) = crate::json::parse(text) else {
-            self.missing_step += 1;
+            self.not_records += 1;
             return;
         };
         if !matches!(value, crate::json::Value::Obj(_)) {
-            self.missing_step += 1;
+            self.not_records += 1;
             return;
         }
         if value.get_str("source") != Some("MODEL") {
@@ -200,12 +212,8 @@ impl Sink<'_> {
             self.missing_step += 1;
             return;
         };
-        // A negative, float or oversized literal already counted above; only
-        // a genuine `u64` reaches here, so no wrap and no saturating fold.
-        if !self.seen.insert(step) {
-            self.dup_step += 1;
-            return;
-        }
+        // A negative, float or oversized literal already counted above;
+        // only a genuine `u64` reaches here, so no wrap, no saturating fold.
         let Some(ts) = value
             .get_str("created_at")
             .and_then(crate::time::Timestamp::parse_micros)
@@ -220,6 +228,13 @@ impl Sink<'_> {
         else {
             return;
         };
+        // Only emitted rows take an identity: a record that yields no row
+        // must not consume its step, or the real reply at that step would
+        // count as a duplicate and drop.
+        if !self.seen.insert(step) {
+            self.dup_step += 1;
+            return;
+        }
         if self.truncated && content_is_clipped(&value) {
             self.clipped += 1;
         }
@@ -386,6 +401,8 @@ mod tests {
     #[test]
     fn per_record_damage_is_counted_and_the_rest_still_reads() {
         let no_step = r#"{"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-09-16T09:00:00Z","content":"lost"}"#.to_owned();
+        let contentless_running =
+            rec("11", "MODEL", "PLANNER_RESPONSE", "RUNNING", STAMP, "").to_owned();
         let owned: Vec<String> = [
             "{ not json".to_owned(),
             "[1,2]".to_owned(),
@@ -399,23 +416,48 @@ mod tests {
             pr_stamp("5", "yesterday", "lost"),
             pr_status("6", "RUNNING", "lost"),
             pr_status("7", "INVALID", "lost"),
+            contentless_running,
             pr("8", "kept"),
+            pr("9", "   "),
+            pr("9", "second chance"),
+            pr_stamp("10", "yesterday", "lost"),
+            pr("10", "stamp second chance"),
         ]
         .to_vec();
         let refs: Vec<&str> = owned.iter().map(String::as_str).collect();
         let (rows, coverage) = read_lines(&refs, true, false);
-        assert_eq!(rows.len(), 2);
+        assert_eq!(rows.len(), 4);
         assert_eq!(rows[0].body, "first");
         assert_eq!(rows[1].body, "kept");
+        assert_eq!(rows[2].body, "second chance");
+        assert_eq!(rows[3].body, "stamp second chance");
         assert_eq!(
             reasons(&coverage),
             [
-                "6 records lack a step index",
+                "2 lines are not records",
+                "4 records lack a step index",
                 "1 record repeats a step index",
-                "2 records without a timestamp",
-                "2 replies skipped (not final)",
+                "3 records without a timestamp",
+                "3 replies skipped (not final)",
             ]
         );
+        // Non-UTF8 bytes ride below `&str`: one hostile line plus a good
+        // one, fed as bytes, counts the garbage and keeps the row.
+        let mut hostile = b"\xff\xfe\n".to_vec();
+        hostile.extend_from_slice(pr("12", "kept").as_bytes());
+        hostile.push(b'\n');
+        let mut splitter = Splitter::new();
+        splitter.feed(&hostile);
+        let (rows, coverage) = read_stream(
+            &splitter.finish().for_seat(SEAT).with_assistant(true),
+            ACTOR,
+            FILE,
+            crate::tool::ToolKind::Agy,
+            false,
+        );
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].body, "kept");
+        assert_eq!(reasons(&coverage), ["1 line is not a record"]);
         // I3: each hostile step shape counts on its own, never wraps into a
         // colliding offset.
         for bad in ["-1", "1.5", "9223372036854775808"] {
