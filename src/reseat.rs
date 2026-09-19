@@ -961,18 +961,24 @@ pub(crate) fn run(
         // the marker was there; a seat that never started must not be handed
         // one it never had.
         let stranded = planned && crate::launch::publish_data(&marker, b"").is_err();
-        writeln!(
-            err,
-            "Error: the launch files of slot {} could not be cleared ({why}) — nothing else was \
-             touched and '{}' still records {was}.{}",
-            target.slot,
-            target.agent,
-            if stranded {
+        let note = match (stranded, carried == Carried::Yes) {
+            (true, _) => {
                 " Its start marker could not be put back either, so its next start would open a \
                  NEW conversation beside the one it records."
-            } else {
-                ""
             }
+            // SAID, because a carry has already written in the other account
+            // and "nothing was touched" would not be true of it.
+            (false, true) => {
+                " Its start marker is back; the copy already in the other account is inert, since \
+                 no record names it."
+            }
+            (false, false) => "",
+        };
+        writeln!(
+            err,
+            "Error: the launch files of slot {} could not be cleared ({why}) — the seat was not \
+             moved and '{}' still records {was}.{note}",
+            target.slot, target.agent
         )?;
         return Ok(EXIT_FAILED);
     }
