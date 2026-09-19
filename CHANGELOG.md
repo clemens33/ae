@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.137] - 2026-09-19
+- Bind the agy transcript verdicts on the history stream
+- Let the agy read-once line win over the missing-replies line
+- Read agy assistant replies from the per-conversation transcript
+- Read the agy transcript leg before the history read
+- Take agy transcript identities only for emitted rows
+- Drop a redundant clone in the agy damage pin
+- Keep agy transcript rows when the history door fails
+- Pin the agy transcript leg behind the flag end to end
+- Pin agy transcript refusal arms and the seed pack handoff
+- Extend board_agy fuzzing to the transcript entry and document it
+- Pin the fuzz flag decode beside the seeds that use it
+- Pin the agy follow read-once bit behind a truth table
+- Judge claude model pins by family and version, not string equality
+
 ## [v2026.9.136] - 2026-09-19
 - Escape DEL and C1 controls in every JSON string
 
