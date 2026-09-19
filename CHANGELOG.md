@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.151] - 2026-09-19
+- Add first-session onboarding walkthrough
+- Durable per-seat worker cwd, P1 record only
+
 ## [v2026.9.150] - 2026-09-19
 - Extract the menu-text cutter behind both projectors
 - Pin the mouse row-pick flash as an upstream tmux limit
