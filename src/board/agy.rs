@@ -10,8 +10,11 @@
 //! A record is one prompt the human typed: `display` is its text, `timestamp`
 //! is integer MILLIS native (→ micros ×1000), and a `"type":"slash_command"`
 //! record is KEPT — the human typed it. No assistant text lives in this store:
-//! with `--assistant` the reader covers that fact once per read, silent
-//! (documented) with the flag off.
+//! with `--assistant` the reader covers that fact once per read, unless the
+//! caller already produced assistant rows from the transcript leg (the
+//! `assistant_rows_found` bit), and silent (documented) with the flag off.
+//! A follow poll whose first pass read the replies covers that once-read
+//! instead (the `assistant_read_once` bit, bound by the agy follow arm).
 //! ae's context rides `-i` as a USER turn, so the ctx turn IS a history record:
 //! line 1 carries the ae marker → `is_ae_turn` drops it.
 //!
@@ -67,9 +70,15 @@ pub fn read_stream(
         }
     }
     // The store carries prompts only: with `--assistant` the seat says so,
-    // once per read. Silent (documented) with the flag off.
-    if streamed.assistant {
+    // once per read — unless the caller already produced assistant rows
+    // from the transcript leg. Silent (documented) with the flag off.
+    if streamed.assistant && !streamed.assistant_rows_found {
         sink.cover("agy: no assistant records (history carries prompts only)");
+    }
+    // A follow poll's tail: the first pass read the replies once and the
+    // polls do not re-read them. Only the agy follow arm binds the bit.
+    if streamed.assistant && streamed.assistant_read_once {
+        sink.cover("agy: assistant replies read once, not followed");
     }
     if let Some(overlong) = super::overlong_coverage(streamed, actor) {
         sink.coverage.push(overlong);
@@ -185,18 +194,26 @@ mod tests {
         read(&bytes, ACTOR, FILE, crate::tool::ToolKind::Agy, SEAT)
     }
 
-    /// Read these lines through the flag: the one-shot `read` stays the
-    /// off-path, so the coverage test binds [`super::read_stream`] directly.
+    /// Read these lines through the flag and the two caller-bound bits:
+    /// the one-shot `read` stays the off-path, so the coverage tests bind
+    /// [`super::read_stream`] directly.
     fn read_lines_with(
         lines: &[&str],
         assistant: bool,
+        rows_found: bool,
+        read_once: bool,
     ) -> (Vec<crate::board::Row>, Vec<crate::board::Coverage>) {
         let mut bytes = lines.join("\n").into_bytes();
         bytes.push(b'\n');
         let mut splitter = super::Splitter::new();
         splitter.feed(&bytes);
         super::read_stream(
-            &splitter.finish().for_seat(SEAT).with_assistant(assistant),
+            &splitter
+                .finish()
+                .for_seat(SEAT)
+                .with_assistant(assistant)
+                .with_assistant_rows_found(rows_found)
+                .with_assistant_read_once(read_once),
             ACTOR,
             FILE,
             crate::tool::ToolKind::Agy,
@@ -223,9 +240,10 @@ mod tests {
     }
 
     #[test]
-    fn the_flag_on_covers_the_missing_replies_once_off_stays_silent() {
+    fn the_flag_on_covers_missing_replies_unless_rows_were_found() {
         let line = rec(Some(SEAT), "plain human words", &MILLIS.to_string());
-        let (rows, coverage) = read_lines_with(&[line.as_str()], true);
+        // No rows found: the verbatim line, once.
+        let (rows, coverage) = read_lines_with(&[line.as_str()], true, false, false);
         assert_eq!(rows.len(), 1);
         assert_eq!(coverage.len(), 1);
         assert_eq!(
@@ -235,9 +253,24 @@ mod tests {
                 "agy: no assistant records (history carries prompts only)"
             )
         );
-        let (rows, coverage) = read_lines_with(&[line.as_str()], false);
+        // Rows found: silent.
+        let (rows, coverage) = read_lines_with(&[line.as_str()], true, true, false);
         assert_eq!(rows.len(), 1);
-        assert!(coverage.is_empty(), "flag off: nothing");
+        assert!(coverage.is_empty(), "rows found: nothing");
+        // Flag off: silent whatever the store said.
+        for (found, once) in [(false, false), (true, false), (true, true)] {
+            let (rows, coverage) = read_lines_with(&[line.as_str()], false, found, once);
+            assert_eq!(rows.len(), 1);
+            assert!(coverage.is_empty(), "flag off: nothing");
+        }
+        // A follow poll with a store behind it: the read-once line, only it.
+        let (rows, coverage) = read_lines_with(&[line.as_str()], true, true, true);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(coverage.len(), 1);
+        assert_eq!(
+            coverage[0].reason.as_str(),
+            "agy: assistant replies read once, not followed"
+        );
     }
 
     #[test]

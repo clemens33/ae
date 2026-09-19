@@ -259,6 +259,10 @@ pub enum LineBody {
 
 /// One transcript, streamed: its lines plus whether the tail was torn.
 #[derive(Debug)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "torn is splitter state; assistant and the two agy context bits are independent caller-bound defaults, and a state machine would couple every reader's construction to agy's two arms"
+)]
 pub struct Streamed {
     /// Every newline-terminated line, in file order with its byte offset.
     pub(crate) lines: Vec<Line>,
@@ -275,6 +279,15 @@ pub struct Streamed {
     /// until the caller binds it, so a reader with the flag off takes exactly
     /// the human-only path it took before the flag existed.
     pub(crate) assistant: bool,
+    /// The caller already produced assistant rows for this read (agy's
+    /// transcript leg runs first and reports back). False until bound, so
+    /// the history reader covers the missing replies exactly when none
+    /// were found — the line prints when it is true, never otherwise.
+    pub(crate) assistant_rows_found: bool,
+    /// This stream is a follow poll's tail, and the seat's assistant rows
+    /// were read once on the first pass and are not followed. False until
+    /// the caller binds it; only the agy follow arm ever does.
+    pub(crate) assistant_read_once: bool,
 }
 
 impl Streamed {
@@ -292,6 +305,22 @@ impl Streamed {
     #[must_use]
     pub fn with_assistant(mut self, assistant: bool) -> Self {
         self.assistant = assistant;
+        self
+    }
+
+    /// Bind whether the caller already produced assistant rows for this
+    /// read: the history reader's missing-replies line answers to it.
+    #[must_use]
+    pub fn with_assistant_rows_found(mut self, found: bool) -> Self {
+        self.assistant_rows_found = found;
+        self
+    }
+
+    /// Bind that this stream is a follow poll's tail whose assistant rows
+    /// were read once and are not followed.
+    #[must_use]
+    pub fn with_assistant_read_once(mut self, once: bool) -> Self {
+        self.assistant_read_once = once;
         self
     }
 }
@@ -356,6 +385,8 @@ impl Splitter {
             committed: self.start,
             seat_id: String::new(),
             assistant: false,
+            assistant_rows_found: false,
+            assistant_read_once: false,
         }
     }
 
