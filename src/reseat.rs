@@ -860,7 +860,27 @@ pub(crate) fn run(
     // DOES THE CONVERSATION TRAVEL? Asked here, past the dead proof and before
     // anything is removed, so a refusal costs only the reading. Every arm that
     // does not carry leaves the rest of this function exactly as it was.
-    let carried = match carry_plan(&locked, &target.slot, &moving, &prior, &before.work_dir) {
+    let plan = carry_plan(&locked, &target.slot, &moving, &prior, &before.work_dir);
+    let marker = crate::run::started_marker(&dir, &target.slot);
+    // THE RESUME MARKER, PROVEN WRITABLE BEFORE ANYTHING MOVES. `clear_slot`
+    // below removes it and a carried seat has to have it back, or `_run` would
+    // open a NEW conversation beside the store this is about to copy. The two
+    // files cannot be one write, so the failure is taken HERE instead: nothing
+    // has been removed, nothing copied, and the seat is exactly what it was.
+    // Past this point only a crash can separate the removal from the rewrite,
+    // and re-running the same reseat converges — the source store is untouched
+    // and the seat still records the conversation.
+    if plan.is_some()
+        && let Err(why) = crate::launch::publish_data(&marker, b"")
+    {
+        writeln!(
+            err,
+            "Error: {why} — nothing was reseated and '{}' still records {was}.",
+            target.agent
+        )?;
+        return Ok(EXIT_FAILED);
+    }
+    let carried = match plan {
         None => Carried::No,
         Some(plan) => {
             let (from, to) = plan.homes();
@@ -945,20 +965,31 @@ pub(crate) fn run(
     // slot's launch files, and `_run` reads exactly that file to decide between
     // creating a conversation and resuming one: without this the store would be
     // copied and the successor would then open a BRAND NEW conversation beside
-    // it, which is the whole failure this slice exists to prevent. Refusing
-    // here is safe — the meta has not moved, so the seat still records its old
-    // profile and `relaunch` brings it back on that.
-    if carried == Carried::Yes
-        && let Err(why) =
-            crate::launch::publish_data(&crate::run::started_marker(&dir, &target.slot), b"")
-    {
-        writeln!(
-            err,
-            "Error: {why} — the conversation was copied but slot {} could not be marked as \
-             resuming, so nothing was moved and '{}' still records {was}.",
-            target.slot, target.agent
-        )?;
-        return Ok(EXIT_FAILED);
+    // it, which is the whole failure this slice exists to prevent. The write was
+    // already proven possible before anything moved, so a failure here is a
+    // transient one and is tried once more; a second failure REFUSES with the
+    // meta unmoved, which is the seat's old self — it still records its old
+    // profile, both stores are untouched, and re-running the same reseat puts
+    // the marker back and carries again.
+    if carried == Carried::Yes {
+        let mut back = crate::launch::publish_data(&marker, b"");
+        if back.is_err() {
+            back = crate::launch::publish_data(&marker, b"");
+        }
+        if let Err(why) = back {
+            writeln!(
+                err,
+                "Error: {why} — the conversation was copied but slot {} could not be marked as \
+                 resuming, so nothing was moved and '{}' still records {was}. Re-run the same \
+                 reseat once {} can be written; until then relaunching '{}' would start a NEW \
+                 conversation on its old account, while the carried one is untouched in both.",
+                target.slot,
+                target.agent,
+                marker.display(),
+                target.agent
+            )?;
+            return Ok(EXIT_FAILED);
+        }
     }
     let conversation = if crate::launch::takes_launch_session_id(moving.tool) {
         crate::launch::generate_uuid()

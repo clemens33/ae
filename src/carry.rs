@@ -11,6 +11,18 @@
 //! fails leaves the predecessor's account exactly as it found it, and the move
 //! falls back to the seed path it always took.
 //!
+//! THE THREAT MODEL, because a guard that oversells itself is the defect it
+//! exists to prevent: BOTH config homes belong to the SAME OS user, and
+//! someone who can write into them already owns the account. The bar this
+//! module holds is therefore NO SILENT CLOBBER, NO FOLLOWED LINK and NO SILENT
+//! SKIP — a target file is never replaced, a link is never traversed, and a
+//! node ae cannot read is never quietly left out of a carry it then reports
+//! complete. It is NOT a guarantee against a hostile writer sharing the
+//! account: the residual window between a classification and the read or write
+//! that follows it needs `openat`/`O_NOFOLLOW`, which has no safe-Rust
+//! spelling without a libc dependency this crate forbids, so it is NAMED here
+//! rather than closed.
+//!
 //! Four rules hold the whole module up:
 //!
 //! 1. **Bytes, never structure.** Nothing here parses a transcript, a task file
@@ -59,6 +71,11 @@ const MAX_NODES: usize = 4096;
 /// optional: a conversation that never wrote a checkpoint has no
 /// `file-history/<uuid>/`.
 const SIDECAR_ROOTS: [&str; 3] = ["file-history", "session-env", "tasks"];
+
+/// The per-project directory a working copy's memory lives in. Not uuid-keyed,
+/// so it is the one part of the copy set that belongs to the account rather
+/// than to the conversation.
+const MEMORY: &str = "memory";
 
 /// A move whose conversation can travel, with both ends resolved.
 pub(crate) struct Plan {
@@ -173,73 +190,104 @@ pub fn project_key(work_dir: &Path) -> String {
 /// COPY the conversation. `Err` is the loud fallback: the seat still moves, on
 /// a fresh conversation with the seed pack, and the reason is what ae prints.
 pub(crate) fn run(plan: &Plan) -> Result<Crossing, String> {
-    let source = plan.from.join("projects").join(&plan.key);
-    let target = plan.to.join("projects").join(&plan.key);
     let name = format!("{}.jsonl", plan.id);
+    let project: [&str; 2] = ["projects", &plan.key];
     // THE CONVERSATION ITSELF, read before anything is written: a carry that
     // cannot read the thing it exists to move has nothing to do.
-    let bytes = read_regular(&source.join(&name))?;
-    // THE TARGET PROJECT DIRECTORY, before anything is put in it. A link here
-    // would file another account's conversation somewhere neither home names.
-    for directory in [plan.to.join("projects"), target.clone()] {
-        if matches!(classify(&directory), Node::Link | Node::File) {
-            return Err(format!("{} is not a directory", directory.display()));
-        }
-    }
+    let (source_file, node) = under(&plan.from, &[project[0], project[1], &name])?;
+    let bytes = read_regular(&source_file, node)?;
+    // THE TARGET PROJECT DIRECTORY, before anything is put in it. `under`
+    // refuses a link at every level, so this also proves the two components
+    // above it.
+    let (target, _) = under(&plan.to, &project)?;
     // ...and whether the conversation is already there, decided BEFORE the
     // sidecars are copied, so a target holding a different conversation costs
     // nothing but the reading.
-    let committed = match classify(&target.join(&name)) {
+    let (target_file, node) = under(&plan.to, &[project[0], project[1], &name])?;
+    let committed = match node {
         Node::Missing => false,
-        // AE'S OWN INTERRUPTED ATTEMPT — or a carry that already finished. The
-        // bytes are proven identical, so nothing is written and nothing is
-        // touched, mtime included.
-        Node::File if read_regular(&target.join(&name)).as_deref() == Ok(bytes.as_slice()) => true,
-        _ => {
+        // AE'S OWN INTERRUPTED ATTEMPT — or a carry that already finished.
+        Node::File if read_regular(&target_file, node)? == bytes => true,
+        Node::File => {
             return Err(format!(
                 "{} already holds a different conversation file",
-                target.join(&name).display()
+                target_file.display()
             ));
         }
+        other => return Err(format!("{} {}", target_file.display(), other.word())),
     };
 
     let mut budget = MAX_NODES;
     // SIDECARS FIRST. Each is optional in the source and binding once present.
-    copy_tree(&source.join(&plan.id), &target.join(&plan.id), &mut budget)?;
+    copy_tree(plan, &[project[0], project[1], &plan.id], &mut budget)?;
     for root in SIDECAR_ROOTS {
-        copy_tree(
-            &plan.from.join(root).join(&plan.id),
-            &plan.to.join(root).join(&plan.id),
-            &mut budget,
-        )?;
+        copy_tree(plan, &[root, &plan.id], &mut budget)?;
     }
     // PROJECT MEMORY is not uuid-keyed: it belongs to the working copy and is
     // shared by every conversation in that account. ae copies it only into an
     // account that has none, and NEVER merges two — the human's ruling, and the
-    // only safe one, since a merge cannot be undone by hand.
-    let memory_kept = classify(&target.join("memory")) != Node::Missing;
+    // only safe one, since a merge cannot be undone by hand. Only a real
+    // directory is that account's own memory; anything else there is a target
+    // ae cannot explain, and it says which.
+    let (target_memory, node) = under(&plan.to, &[project[0], project[1], MEMORY])?;
+    let memory_kept = match node {
+        Node::Missing => false,
+        Node::Dir => true,
+        other => return Err(format!("{} {}", target_memory.display(), other.word())),
+    };
     if !memory_kept {
-        copy_tree(&source.join("memory"), &target.join("memory"), &mut budget)?;
+        copy_tree(plan, &[project[0], project[1], MEMORY], &mut budget)?;
     }
     // THE COMMIT. Last, so everything above is already in place when the
     // conversation becomes findable.
-    if !committed {
+    if committed {
+        // PROVEN AGAIN, at the boundary. The reading above happened before the
+        // sidecars were copied; this one is what the caller's `Ok` rests on,
+        // because the target account is not under ae's lifecycle lock and the
+        // successor is about to resume exactly these bytes.
+        let (_, node) = under(&plan.to, &[project[0], project[1], &name])?;
+        still_holds(&target_file, node, &bytes)?;
+    } else {
         make_dir(&target)?;
-        publish(&target.join(&name), &bytes)?;
+        publish(&target_file, &bytes)?;
     }
     Ok(Crossing { memory_kept })
 }
 
-/// Copy one optional directory tree. A source that is not there is `Ok`;
-/// anything present is binding.
-fn copy_tree(source: &Path, target: &Path, budget: &mut usize) -> Result<(), String> {
-    match classify(source) {
+/// Prove the target STILL holds exactly the bytes ae carried.
+///
+/// The early reading in [`run`] is what lets a target holding another
+/// conversation cost nothing but one read; THIS one is what an `Ok` rests on.
+/// The target account is not under ae's lifecycle lock — only the session is —
+/// so a conversation ae decided was already there is proven again at the
+/// boundary where the successor is about to resume it.
+fn still_holds(path: &Path, node: Node, bytes: &[u8]) -> Result<(), String> {
+    if node != Node::File || read_regular(path, node)? != bytes {
+        return Err(format!("{} changed while ae was copying", path.display()));
+    }
+    Ok(())
+}
+
+/// Copy one optional tree, named by its components under each account root. A
+/// source that is not there is `Ok`; anything present is binding.
+fn copy_tree(plan: &Plan, parts: &[&str], budget: &mut usize) -> Result<(), String> {
+    let (source, node) = under(&plan.from, parts)?;
+    match node {
         Node::Missing => Ok(()),
-        Node::Dir => copy_dir(source, target, MAX_DEPTH, budget),
-        Node::Link | Node::File => Err(format!("{} is not a directory", source.display())),
+        Node::Dir => {
+            let (target, node) = under(&plan.to, parts)?;
+            match node {
+                Node::Missing | Node::Dir => copy_dir(&source, &target, MAX_DEPTH, budget),
+                other => Err(format!("{} {}", target.display(), other.word())),
+            }
+        }
+        other => Err(format!("{} {}", source.display(), other.word())),
     }
 }
 
+/// Copy one CLASSIFIED source directory into a target ae has classified too.
+/// Every child is classified before it is read, written or descended, so the
+/// no-link walk [`under`] makes over the roots holds all the way down.
 fn copy_dir(source: &Path, target: &Path, depth: usize, budget: &mut usize) -> Result<(), String> {
     if depth == 0 {
         return Err(format!(
@@ -260,12 +308,13 @@ fn copy_dir(source: &Path, target: &Path, depth: usize, budget: &mut usize) -> R
             return Err(format!("{} has no name", entry.display()));
         };
         let into = target.join(name);
-        match classify(&entry) {
+        match classify(&entry)? {
             Node::Dir => copy_dir(&entry, &into, depth - 1, budget)?,
             Node::File => copy_file(&entry, &into)?,
-            Node::Link => return Err(format!("{} is a symbolic link", entry.display())),
-            // Raced away between the listing and the classification.
-            Node::Missing => {}
+            // A LISTED ENTRY THAT IS GONE is a source ae cannot promise it
+            // copied, exactly like one it cannot read. The copy set is binding,
+            // so this abandons the carry rather than delivering it short.
+            other => return Err(format!("{} {}", entry.display(), other.word())),
         }
     }
     Ok(())
@@ -273,10 +322,10 @@ fn copy_dir(source: &Path, target: &Path, depth: usize, budget: &mut usize) -> R
 
 /// One file into a target that must not already hold a different one.
 fn copy_file(source: &Path, target: &Path) -> Result<(), String> {
-    let bytes = read_regular(source)?;
-    match classify(target) {
+    let bytes = read_regular(source, Node::File)?;
+    match classify(target)? {
         Node::Missing => publish(target, &bytes),
-        Node::File if read_regular(target).as_deref() == Ok(bytes.as_slice()) => Ok(()),
+        Node::File if read_regular(target, Node::File)? == bytes => Ok(()),
         _ => Err(format!("{} already exists", target.display())),
     }
 }
@@ -288,37 +337,99 @@ enum Node {
     Link,
     Dir,
     File,
+    /// A socket, a device or a fifo: not something to copy, and reading one
+    /// could block forever. It earns a link's refusal and its OWN word, so the
+    /// loud reason never calls a device a symbolic link.
+    NonRegular,
 }
 
-fn classify(path: &Path) -> Node {
+impl Node {
+    /// How a refusal names this node.
+    fn word(self) -> &'static str {
+        match self {
+            Node::Missing => "is not there",
+            Node::Link => "is a symbolic link",
+            Node::Dir => "is a directory",
+            Node::File => "is a file",
+            Node::NonRegular => "is not a regular file",
+        }
+    }
+}
+
+/// Classify `root` joined with `parts`, walking EVERY component from the
+/// account root down and refusing a link at any level.
+///
+/// The leaf lstat alone is not enough: a read, a listing or a write re-opens
+/// the WHOLE pathname, so an ancestor link would redirect the copy out of the
+/// account the plan names. Each component is proven to be a plain file name
+/// too, which is what makes the joined path unable to climb out of `root` — a
+/// cheaper and more honest proof than canonicalizing, which would itself
+/// follow the links this refuses. An ancestor that is simply absent makes the
+/// leaf absent; anything else there is an error.
+///
+/// RESIDUAL, named rather than closed: between this walk and the read or write
+/// that follows it, a component could be replaced. Closing that needs
+/// `openat`/`O_NOFOLLOW`, which has no safe-Rust spelling without a libc
+/// dependency this crate forbids. Both accounts belong to the same OS user, so
+/// the bar here is no silent clobber, no followed link and no silent skip — not
+/// a guarantee against someone who already owns the account.
+fn under(root: &Path, parts: &[&str]) -> Result<(PathBuf, Node), String> {
+    let mut full = root.to_path_buf();
+    for part in parts {
+        let mut components = Path::new(part).components();
+        if !matches!(components.next(), Some(std::path::Component::Normal(_)))
+            || components.next().is_some()
+        {
+            return Err(format!("'{part}' is not a plain file name"));
+        }
+        full.push(part);
+    }
+    let mut walk = root.to_path_buf();
+    let mut node = classify(&walk)?;
+    for part in parts {
+        match node {
+            Node::Dir => {}
+            Node::Missing => return Ok((full, Node::Missing)),
+            other => return Err(format!("{} {}", walk.display(), other.word())),
+        }
+        walk.push(part);
+        node = classify(&walk)?;
+    }
+    Ok((full, node))
+}
+
+/// What `path` is, without following it. `Missing` is a PROVEN absence and
+/// nothing else: a node ae cannot even stat is a node it cannot promise it
+/// copied, so every other failure is an error and the carry is abandoned
+/// loudly rather than reported complete without it.
+fn classify(path: &Path) -> Result<Node, String> {
     #[allow(
         clippy::disallowed_methods,
         reason = "a door: the carry classifies every store node without following it, so a link can never redirect a copy out of the account it names"
     )]
     let meta = std::fs::symlink_metadata(path);
-    let Ok(meta) = meta else {
-        return Node::Missing;
+    let meta = match meta {
+        Ok(meta) => meta,
+        Err(why) if why.kind() == std::io::ErrorKind::NotFound => return Ok(Node::Missing),
+        Err(why) => return Err(format!("could not read {} ({why})", path.display())),
     };
     let kind = meta.file_type();
-    if kind.is_symlink() {
+    Ok(if kind.is_symlink() {
         Node::Link
     } else if kind.is_dir() {
         Node::Dir
     } else if kind.is_file() {
         Node::File
     } else {
-        // A socket or a device in a conversation store is not something to
-        // copy, and reading one could block forever. Classified as a link
-        // because the refusal it earns is the same one.
-        Node::Link
-    }
+        Node::NonRegular
+    })
 }
 
-/// The bytes of `path`, but only when it is a REGULAR FILE — the lstat first,
-/// so a link is never opened.
-fn read_regular(path: &Path) -> Result<Vec<u8>, String> {
-    if classify(path) != Node::File {
-        return Err(format!("{} is not a readable file", path.display()));
+/// The bytes of `path`, which the caller has already classified as a REGULAR
+/// FILE — so a link is never opened.
+fn read_regular(path: &Path, node: Node) -> Result<Vec<u8>, String> {
+    if node != Node::File {
+        return Err(format!("{} {}", path.display(), node.word()));
     }
     #[allow(
         clippy::disallowed_methods,
@@ -351,10 +462,10 @@ fn children(path: &Path) -> Result<Vec<PathBuf>, String> {
 fn make_dir(path: &Path) -> Result<(), String> {
     use std::os::unix::fs::DirBuilderExt as _;
 
-    match classify(path) {
+    match classify(path)? {
         Node::Dir => return Ok(()),
         Node::Missing => {}
-        Node::Link | Node::File => return Err(format!("{} is not a directory", path.display())),
+        other => return Err(format!("{} {}", path.display(), other.word())),
     }
     if let Some(parent) = path.parent() {
         make_dir(parent)?;
@@ -365,12 +476,17 @@ fn make_dir(path: &Path) -> Result<(), String> {
         .map_err(|why| format!("could not create {} ({why})", path.display()))
 }
 
-/// Publish `bytes` at `path`, `0600`, ATOMICALLY: a temp beside it, created
-/// with `create_new` so it can never be an existing file, then one rename.
+/// Publish `bytes` at `path`, `0600`, WITHOUT EVER REPLACING ANYTHING: a temp
+/// beside it, created with `create_new` so it can never be an existing file,
+/// then one `hard_link` onto the final name.
 ///
-/// The rename is what makes a crash survivable — a reader sees the whole file
-/// or none of it, never a prefix — and the caller has already proven `path` is
-/// absent, under the session's lifecycle lock.
+/// NOT a rename. `rename` REPLACES a destination that appeared between the
+/// caller's classification and this write, and the target account is not under
+/// ae's lifecycle lock — only the session is. `hard_link` fails
+/// `AlreadyExists` in the same syscall that would have created the name, so no
+/// clobber is possible however the two races interleave, and the failure is
+/// the loud fallback like any other. The temp sits beside the final name, so
+/// the same-volume requirement is satisfied by construction.
 fn publish(path: &Path, bytes: &[u8]) -> Result<(), String> {
     use std::io::Write as _;
     use std::os::unix::fs::OpenOptionsExt as _;
@@ -393,11 +509,9 @@ fn publish(path: &Path, bytes: &[u8]) -> Result<(), String> {
         let _ = std::fs::remove_file(&temp);
         return Err(format!("could not write {} ({why})", temp.display()));
     }
-    if let Err(why) = std::fs::rename(&temp, path) {
-        let _ = std::fs::remove_file(&temp);
-        return Err(format!("could not publish {} ({why})", path.display()));
-    }
-    Ok(())
+    let linked = std::fs::hard_link(&temp, path);
+    let _ = std::fs::remove_file(&temp);
+    linked.map_err(|why| format!("could not publish {} ({why})", path.display()))
 }
 
 #[cfg(test)]
@@ -500,5 +614,61 @@ mod tests {
             moving.tool = tool;
             assert!(super::plan(&moving).is_none(), "{tool:?}");
         }
+    }
+
+    /// A scratch directory of this test's own, under the system temp dir.
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("aecarry.{}.{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(std::fs::create_dir_all(&dir).is_ok(), "a scratch dir");
+        dir
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture reads its own scratch dir; the boundary is about what PRODUCT code may reach, and tests/it/phase3.rs cuts at the test module"
+    )]
+    fn a_publication_never_replaces_a_file_that_is_already_there() {
+        // NOT a rename: the target account is outside ae's lifecycle lock, so
+        // the destination can appear between the caller's classification and
+        // this write, and a rename would silently take another conversation's
+        // place.
+        let dir = scratch("clobber");
+        let path = dir.join("held.jsonl");
+        assert!(std::fs::write(&path, b"someone else's\n").is_ok());
+
+        let refused = super::publish(&path, b"ae's own\n");
+
+        assert!(refused.is_err(), "an existing name is never replaced");
+        assert_eq!(
+            std::fs::read(&path).ok(),
+            Some(b"someone else's\n".to_vec()),
+            "and the bytes that were there are still there"
+        );
+        // The temp the attempt wrote is not left in the account either.
+        let left: Vec<_> = std::fs::read_dir(&dir)
+            .map(|entries| entries.filter_map(Result::ok).map(|e| e.path()).collect())
+            .unwrap_or_default();
+        assert_eq!(left, vec![path], "no scratch file is left behind");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_conversation_that_changed_under_a_finished_carry_is_not_reported_carried() {
+        let dir = scratch("changed");
+        let path = dir.join("held.jsonl");
+        assert!(std::fs::write(&path, b"first\n").is_ok());
+
+        assert!(
+            super::still_holds(&path, super::Node::File, b"first\n").is_ok(),
+            "the bytes ae copied are the bytes that are there"
+        );
+        let changed = super::still_holds(&path, super::Node::File, b"second\n");
+        assert!(
+            changed.is_err_and(|why| why.contains("changed while ae was copying")),
+            "a target that moved under the carry is a loud fallback, not an Ok"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

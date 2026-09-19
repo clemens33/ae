@@ -1516,7 +1516,8 @@ seed path, because portability there is unmeasured.
 - **the copy set is the transcript and its sidecars** — tool results, checkpoints, tasks,
   session environment. Whatever the source has, the target gets.
 - **project memory is copied only into an account that has none.** If the target already
-  has one for that working copy, it is KEPT and ae says so. Two accounts' memories are
+  has one for that working copy, it is KEPT and ae says so; anything else under that name
+  is a target ae will not explain away, and the carry stops. Two accounts' memories are
   never merged: that could not be undone by hand.
 - **nothing in the target is overwritten.** A file already there is either byte-identical —
   an earlier attempt, so it is left exactly as it is — or it belongs to something else, and

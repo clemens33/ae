@@ -440,3 +440,162 @@ fn a_move_to_another_tool_is_never_a_carry() {
         "the conversation it left is a predecessor, as it always was"
     );
 }
+
+#[test]
+fn a_store_reached_through_a_linked_ancestor_is_refused_rather_than_followed() {
+    // The LEAF lstat is not the whole rule: a read or a listing re-opens the
+    // entire pathname, so a sidecar ROOT that is a link would file another
+    // directory's bytes under this conversation's name in the other account.
+    let rig = Rig::new("ances");
+    dead_seat(&rig);
+    let (from, to) = (account(&rig, "a"), account(&rig, "b"));
+    let key = ae::carry::project_key(&work_dir(&rig));
+    let decoy = canonical_scratch(&rig).join("decoy");
+    write(&decoy.join(ID).join("h@v1"), b"elsewhere");
+    let root = from.join("file-history");
+    assert!(std::fs::remove_dir_all(&root).is_ok(), "the real root goes");
+    assert!(
+        std::os::unix::fs::symlink(&decoy, &root).is_ok(),
+        "and a link takes its place"
+    );
+
+    let (code, out, err) = reseat(&rig, "fake-claude-b");
+
+    assert_eq!(code, Some(0), "the seat still moves: out={out} err={err}");
+    assert!(
+        err.contains("could not carry") && err.contains("is a symbolic link"),
+        "the fallback is loud and says what it refused: {err}"
+    );
+    assert!(
+        !to.join("file-history").join(ID).exists(),
+        "nothing was read through the link"
+    );
+    assert!(
+        !to.join("projects")
+            .join(&key)
+            .join(format!("{ID}.jsonl"))
+            .exists(),
+        "and the conversation never became findable"
+    );
+    assert!(
+        rig.dir.join("seed.scout.md").exists(),
+        "today's path, in full"
+    );
+}
+
+#[test]
+fn a_sidecar_ae_cannot_even_stat_is_never_silently_left_behind() {
+    // The copy set is BINDING. An `lstat` that fails for any reason but absence
+    // is a node ae cannot promise it copied, so it abandons the carry instead
+    // of reporting one that is quietly short. (Run as root this fails loudly
+    // rather than passing: the mode below stops being a refusal.)
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let rig = Rig::new("eacces");
+    dead_seat(&rig);
+    let to = account(&rig, "b");
+    let key = ae::carry::project_key(&work_dir(&rig));
+    let closed = account(&rig, "a").join("tasks");
+    assert!(
+        std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(0o000)).is_ok(),
+        "the sidecar root closes"
+    );
+
+    let (code, out, err) = reseat(&rig, "fake-claude-b");
+
+    let _ = std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(0o700));
+    assert_eq!(code, Some(0), "the seat still moves: out={out} err={err}");
+    assert!(
+        err.contains("could not carry"),
+        "the fallback is loud: {err}"
+    );
+    assert!(
+        !to.join("tasks").join(ID).exists()
+            && !to
+                .join("projects")
+                .join(&key)
+                .join(format!("{ID}.jsonl"))
+                .exists(),
+        "a carry that cannot read its whole set delivers none of it"
+    );
+    assert!(
+        rig.dir.join("seed.scout.md").exists(),
+        "today's path, in full"
+    );
+}
+
+#[test]
+fn a_target_project_memory_that_is_not_a_directory_is_never_called_kept() {
+    // Only a real directory is the target account's own memory. Anything else
+    // there is a target ae cannot explain — and calling it "kept" would tell a
+    // human their successor is reading a memory that does not exist.
+    let rig = Rig::new("memfil");
+    dead_seat(&rig);
+    let to = account(&rig, "b");
+    let key = ae::carry::project_key(&work_dir(&rig));
+    let memory = to.join("projects").join(&key).join("memory");
+    write(&memory, b"not a directory\n");
+
+    let (code, out, err) = reseat(&rig, "fake-claude-b");
+
+    assert_eq!(code, Some(0), "the seat still moves: out={out} err={err}");
+    assert!(
+        err.contains("could not carry") && err.contains("memory"),
+        "the fallback names what it found: {err}"
+    );
+    assert!(
+        !out.contains("kept, never merged"),
+        "a file is not another account's memory: {out}"
+    );
+    assert_eq!(
+        std::fs::read(&memory).ok(),
+        Some(b"not a directory\n".to_vec()),
+        "and it was not written through"
+    );
+    assert!(
+        rig.dir.join("seed.scout.md").exists(),
+        "today's path, in full"
+    );
+}
+
+#[test]
+fn a_seat_whose_resume_marker_cannot_be_written_moves_nothing_at_all() {
+    // `clear_slot` removes the marker `_run` reads to choose resume over
+    // create, and a carried seat has to have it back. The two files cannot be
+    // one write, so the failure is taken BEFORE anything moves: the alternative
+    // is a copied store beside a successor that starts a new conversation.
+    let rig = Rig::new("marker");
+    dead_seat(&rig);
+    let to = account(&rig, "b");
+    let key = ae::carry::project_key(&work_dir(&rig));
+    let marker = rig.dir.join("launch.spawned.0.started");
+    assert!(
+        std::fs::remove_file(&marker).is_ok(),
+        "the seat was started, so the marker was there"
+    );
+    assert!(
+        std::fs::create_dir(&marker).is_ok(),
+        "and a directory takes its name"
+    );
+
+    let (code, out, err) = reseat(&rig, "fake-claude-b");
+
+    assert_ne!(code, Some(0), "the move refuses: out={out} err={err}");
+    assert!(
+        !to.join("projects")
+            .join(&key)
+            .join(format!("{ID}.jsonl"))
+            .exists(),
+        "and nothing was copied: the refusal comes before the move"
+    );
+    assert_eq!(
+        rig.meta_row("harness_session.spawned.0"),
+        ID,
+        "the seat is exactly what it was"
+    );
+    assert_eq!(
+        rig.meta_row("config_home.spawned.0"),
+        account(&rig, "a").display().to_string(),
+        "on the account it was on"
+    );
+}

@@ -259,8 +259,11 @@ The ladder, all of it under the lifecycle lock the verb already holds:
 3. sidecars, then project memory, then — LAST — the transcript, which is the
    COMMIT MARKER: a crash before it leaves the target with nothing findable, so
    the next attempt re-copies, finds its own files identical and commits;
-4. back in `reseat`: no seed pack, the start marker PUT BACK, and one guarded
-   meta replacement that keeps the conversation and rewrites the store rows.
+4. back in `reseat`: no seed pack, the start marker PUT BACK — proven writable
+   BEFORE step 2, because `clear_slot` removing it and the carry rewriting it
+   cannot be one write and the state between them is the one that would open a
+   new conversation beside the copied store — and one guarded meta replacement
+   that keeps the conversation and rewrites the store rows.
 
 Two decisions worth the ink. The target account is resolved with a CONTROLLED
 lookup — `HOME` and nothing else — because `reseat` runs in the caller's process
@@ -272,6 +275,17 @@ which is what makes the result resumable: `project_key` matches AE'S OWN PROBE
 links first. When the two disagree — a working copy reached through a link — the
 transcript is not at this key and the carry refuses, which is honest: that seat
 could not be exact-resumed in its OLD account either.
+
+THE BAR, stated because a guard that oversells itself is the defect it exists
+to prevent: both homes belong to the SAME OS user, so this is no silent
+clobber, no followed link and no silent skip — not a guarantee against someone
+who can already write in the account. A target name is claimed with `hard_link`
+rather than a rename, which is the only publication that refuses atomically;
+every component from the account root down is classified before it is used; and
+an `lstat` that fails for any reason but absence is a failure, never an
+absence. What is NOT closed is the window between a classification and the read
+or write that follows it: that needs `openat`/`O_NOFOLLOW`, which has no
+safe-Rust spelling without a libc dependency this crate forbids.
 
 RESIDUAL: `run::resumable` still spells the project key inline, so
 `carry::project_key` is the owner in fact but not yet by construction. Pointing
