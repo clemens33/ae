@@ -833,7 +833,7 @@ proven.
 
 The `Activity` dialog lists the newest 10 records a human cares about, newest
 first: `state`, `done`, `goal`, `spawn`, `retire`, `relaunch`, `ask`,
-`review`, `reply`, `watchdog-start` and `watchdog-stop`, each with actor,
+`review`, `reply`, `watchdog-start` and `watchdog-stop` (the watchdog rows draw only for non-`ae:` actors, so ae-driven restarts never flood the dialog), each with actor,
 kind, clipped text and truthful age. Watchdog
 ticks, quota samples, other audits, delivery records, `memo`, `chat`, `focus`,
 `cancel`, `spawn-failed` and lifecycle request/result pairs are not activity

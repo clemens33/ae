@@ -790,6 +790,11 @@ fn sub_ready<'a>(
     }
 }
 
+/// An ae housekeeping actor: the dialog is for humans and agents, not restarts.
+fn is_housekeeping_actor(actor: &[u8]) -> bool {
+    actor.starts_with(b"ae:")
+}
+
 /// The newest [`ACTIVITY_ROWS_MAX`] [`ACTIVITY_KINDS`] records, newest first.
 #[must_use]
 pub fn activity_rows(
@@ -821,6 +826,11 @@ pub fn activity_rows(
         let f = |key| crate::event_text::extract(line, key);
         let (actor, target, reference, summary, ts) =
             (f("actor"), f("target"), f("ref"), f("summary"), f("ts"));
+        if matches!(*kind, "watchdog-start" | "watchdog-stop")
+            && is_housekeeping_actor(actor.as_slice())
+        {
+            continue;
+        }
         rows.push(RootRow::Declaration(activity_label(
             kind, &actor, &target, &reference, &summary, &ts, now,
         )));
@@ -2837,6 +2847,34 @@ mod tests {
                 "lead watchdog-stop: stopped (4h)"
             ]
         );
+    }
+
+    /// ae-driven restarts never flood Activity; human and agent toggles draw.
+    #[test]
+    fn activity_hides_ae_driven_watchdog_restarts() {
+        use crate::tmux::OptionReading;
+        let mut fixture = vec![
+            ("lead", "watchdog-stop", r#","summary":"stopped""#),
+            ("human", "watchdog-start", r#","summary":"started""#),
+        ];
+        let flood = ("ae:upgrade", "watchdog-stop", r#","summary":"x""#);
+        fixture.extend([flood; 12]);
+        fixture.push(("co", "state", r#","ref":"b","summary":"f""#));
+        fixture.push(("co", "done", r#","summary":"g""#));
+        fixture.push(("lead", "state", r#","ref":"c","summary":"h""#));
+        let container = fixture
+            .iter()
+            .map(|r| event("2026-09-17T08:00:00Z", r.0, r.1, r.2))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        let now = crate::time::Timestamp::parse("2026-09-17T12:00:00Z").expect("now parses");
+        let meta = parsed_meta(UUID_A, &["lead"]);
+        let set = OptionReading::Set(UUID_A.to_owned());
+        let rows = super::activity_rows(&set, &meta, &events(&container), now);
+        let shown = declaration_rows(&rows);
+        assert_eq!(shown.len(), 5, "{shown:?}");
+        assert!(shown.iter().all(|row| !row.starts_with("ae:")));
     }
 
     /// Brief's latest-per-topic: superseded stays out, ten kept.
