@@ -918,11 +918,11 @@ fn a_v2_roster_draws_its_models_in_a_real_tmux_menu() {
         driver.join().expect("the key driver")
     });
     assert!(
-        drawn.contains("cc Fable 5.1 xhigh"),
-        "an observed seat draws client, model and effort: {drawn}"
+        drawn.contains("cc Fable 5.1        xhigh"),
+        "an observed seat draws client, model and effort in shared columns: {drawn}"
     );
     assert!(
-        drawn.contains("oc DeepSeek V4.1 Flash!"),
+        drawn.contains("oc DeepSeek V4.1 …!"),
         "a drifting seat draws the mark glued to its model: {drawn}"
     );
     assert!(

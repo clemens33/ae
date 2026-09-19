@@ -558,19 +558,37 @@ const STATE_CAP: usize = 13;
 /// The widest the branch column is ever drawn.
 const BRANCH_CAP: usize = 14;
 
-/// The widest the agent model column is ever drawn.
+/// The widest the model block's client sub-column is ever drawn.
 ///
-/// `CLIENT 12 + 1 + MODEL 16 + 1 + EFFORT 6 + DRIFT 1`. The client is the
-/// operator's `[clients]` label fully written — 12 covers the longest label
-/// in the operator's own config (`opencode`, 8) with room for suffixed kin,
-/// while a label to the 32-cell fact cap still rides and clips at the column
-/// with the client at the head. The effort width is the closed vocabulary's
-/// own widest word, not a guess; the drift cell is the one `!` a carried mark
-/// draws.
-const MODEL_CELL_CAP: usize = 37;
+/// The operator's `[clients]` label fully written — 12 covers the longest
+/// label in the operator's own config (`opencode`, 8) with room for suffixed
+/// kin, while a label to the 32-cell fact cap still rides and clips at the
+/// column with the client at the head.
+const MODEL_CLIENT_CAP: usize = 12;
+
+/// The widest the model sub-column is ever drawn, drift mark included.
+///
+/// A model that will carry the mark is clipped to one cell less first, so the
+/// cap clips a long model and never the disagreement.
+const MODEL_WORD_CAP: usize = 16;
+
+/// The widest an effort word is ever drawn, before its drift mark.
+///
+/// The effort width is the closed vocabulary's own widest word, not a guess;
+/// the column itself runs one wider, because the mark glues to the effort at
+/// full fidelity and the ladder budgets it before any clip.
+const EFFORT_WORD_CAP: usize = 6;
+
+/// The widest the agent model block is ever drawn.
+///
+/// `CLIENT 12 + 1 + MODEL 16 + 1 + EFFORT 6 + DRIFT 1`. The block was one
+/// padded cell; it is now three sub-columns sharing that same total.
+const MODEL_CELL_CAP: usize = MODEL_CLIENT_CAP + 1 + MODEL_WORD_CAP + 1 + EFFORT_WORD_CAP + 1;
 
 /// The two indent cells, the glyph and the three separators an agent row spends
-/// before its model cell — what the model column must be budgeted against.
+/// around its model block with ONE sub-column drawn — what the block is
+/// budgeted against. Each further drawn sub-column adds its own separator
+/// inside the block's own width.
 const AGENT_ROW_OVERHEAD: usize = 6;
 
 /// How much of a seat's identity one draw spends on every agent row.
@@ -616,12 +634,19 @@ struct Columns {
     name: usize,
     state: usize,
     branch: usize,
+    /// The model block's three sub-columns: each the widest part DRAWN in this
+    /// menu at this rung — client, model, effort — capped per column. A
+    /// sub-column empty across every drawn row takes no width at all, so no
+    /// double gap is ever drawn; the effort is always empty at
+    /// [`FidelityRung::NoEffort`], which is how that rung drops the column.
+    client: usize,
     model: usize,
-    /// The fidelity every agent cell in this draw is rendered at.
+    effort: usize,
+    /// The fidelity every agent block in this draw is rendered at.
     ///
-    /// It rides HERE, rather than beside the widths, because `model` is the
-    /// width OF a cell at this rung: separated, the two could disagree and the
-    /// column would be padded for a cell nobody drew.
+    /// It rides HERE, rather than beside the widths, because the widths are
+    /// the widths OF a block at this rung: separated, they could disagree and
+    /// a column would be padded for parts nobody drew.
     rung: FidelityRung,
 }
 
@@ -631,7 +656,9 @@ impl Columns {
         name: MIN_COLUMN_WIDTH,
         state: MIN_COLUMN_WIDTH,
         branch: MIN_COLUMN_WIDTH,
-        model: MIN_COLUMN_WIDTH,
+        client: 0,
+        model: 0,
+        effort: 0,
         rung: FidelityRung::Full,
     };
 
@@ -654,82 +681,173 @@ impl Columns {
         Self::widen(&mut self.state, state, STATE_CAP);
     }
 
-    /// Phases B and C: pick this draw's rung, then widen the model column to it.
+    /// Phases B and C: pick this draw's rung, then fit the model block to it.
     ///
     /// The budget is what the shared columns leave over. `saturating_sub` is
     /// required rather than tidy: a client may legally be 8 cells wide, leaving
     /// an `inner_width` of 4, and the overhead alone exceeds that.
     ///
-    /// The fit test compares the CAPPED width, so one long model that the cap
-    /// was going to clip anyway cannot drag the whole menu down a rung. The
-    /// budget then caps the column as well, because `pad` truncates before it
-    /// pads: without that term the row overruns `inner_width` and the row-level
-    /// clip takes the TAIL, which is the state word rather than the model.
+    /// The fit test compares the CAPPED widths, so one long model that the cap
+    /// was going to clip anyway cannot drag the whole menu down a rung. Past
+    /// the last rung the budget squeezes the block instead, because `pad`
+    /// truncates before it pads: without that term the row overruns
+    /// `inner_width` and the row-level clip takes the TAIL, which is the state
+    /// word rather than the model.
     fn fit_models(&mut self, agents: &[&crate::tmux::PickerAgent], inner_width: usize) {
         let budget = inner_width.saturating_sub(AGENT_ROW_OVERHEAD + self.name + self.state);
         for rung in FidelityRung::LADDER {
-            let widest = agents
-                .iter()
-                .map(|agent| terminal_cells(&model_cell(agent, rung)).min(MODEL_CELL_CAP))
-                .max()
-                .unwrap_or(0);
+            let natural = natural_widths(agents, rung);
+            debug_assert!(
+                block_cells(natural) <= MODEL_CELL_CAP,
+                "the per-column caps share the block total: {natural:?}"
+            );
             self.rung = rung;
-            self.model = widest.max(MIN_COLUMN_WIDTH).min(budget);
-            if widest <= budget {
+            if block_cells(natural) <= budget {
+                (self.client, self.model, self.effort) = natural;
                 return;
             }
+            (self.client, self.model, self.effort) = squeeze_widths(natural, budget);
         }
     }
 }
 
-/// What one agent row says the seat is running.
+/// One draw's model-block widths: the client, model and effort sub-columns.
+type ModelWidths = (usize, usize, usize);
+
+/// The capped per-column widths `agents` want at `rung`: each sub-column the
+/// widest part drawn, capped before it is measured.
+fn natural_widths(agents: &[&crate::tmux::PickerAgent], rung: FidelityRung) -> ModelWidths {
+    let mut widths: ModelWidths = (0, 0, 0);
+    for agent in agents {
+        let parts = model_parts(agent, rung);
+        widths = (
+            widths.0.max(terminal_cells(&parts.client).min(MODEL_CLIENT_CAP)),
+            widths.1.max(terminal_cells(&parts.model).min(MODEL_WORD_CAP)),
+            widths.2.max(terminal_cells(&parts.effort).min(EFFORT_WORD_CAP + 1)),
+        );
+    }
+    widths
+}
+
+/// What a block at `widths` costs on the row: the sub-columns plus the single
+/// blanks between the DRAWN ones. The blank before the state word is spent by
+/// [`AGENT_ROW_OVERHEAD`], not here.
+fn block_cells(widths: ModelWidths) -> usize {
+    let drawn = usize::from(widths.0 > 0) + usize::from(widths.1 > 0) + usize::from(widths.2 > 0);
+    widths.0 + widths.1 + widths.2 + drawn.saturating_sub(1)
+}
+
+/// Shrink `widths` into `budget`, rightmost first, so the client — the cheapest
+/// cell and the last to go — is what survives a squeeze. The gap count is the
+/// pre-squeeze one: a column squeezed to zero drops its gap at draw, so the
+/// drawn row only ever comes out shorter than this budgets.
+fn squeeze_widths(widths: ModelWidths, budget: usize) -> ModelWidths {
+    let mut out = [widths.0, widths.1, widths.2];
+    let mut excess = block_cells(widths).saturating_sub(budget);
+    for width in out.iter_mut().rev() {
+        if excess == 0 {
+            break;
+        }
+        let take = (*width).min(excess);
+        *width -= take;
+        excess -= take;
+    }
+    (out[0], out[1], out[2])
+}
+
+/// The three parts one agent row draws in its model block: the seat's client,
+/// the model its frame drew (or the declared fallback), and that frame's
+/// effort. Each is padded to its SHARED sub-column at draw; an empty part
+/// draws blanks while its column is shared, and the column itself vanishes
+/// when it is empty across every drawn row.
+struct ModelParts {
+    client: String,
+    model: String,
+    effort: String,
+}
+
+/// What one agent row says the seat is running, as its three block parts.
 ///
 /// The client comes ONLY from the fact's own `client` field. Nothing here
-/// resolves a profile to a tool: that would be a second, unpinned source for a
-/// cell whose whole point is that it reports rather than guesses.
+/// resolves a profile to a tool: that would be a second, unpinned source for
+/// parts whose whole point is that they report rather than guess.
 ///
 /// The fallback is decided per FIELD, not per grammar version. An entry with no
-/// model names the DECLARED profile with a `~`, so a reader can tell "this is
-/// what it was asked to run" from "this is what it is running". A `v1` entry —
-/// an older watchdog, or the legacy rung of a roster too wide to spell — has no
-/// client at all and renders the bare form.
+/// model names the DECLARED profile with a `~` in the MODEL part, so a reader
+/// can tell "this is what it was asked to run" from "this is what it is
+/// running". A `v1` entry — an older watchdog, or the legacy rung of a roster
+/// too wide to spell — has no client at all and leaves the client part empty.
 ///
-/// A carried drift mark is drawn glued to the last drawn cell: after the
+/// A carried drift mark is drawn glued to the last drawn part: after the
 /// effort at [`FidelityRung::Full`], after the model at
 /// [`FidelityRung::NoEffort`] or when the frame proved no effort. The mark
 /// fires only on a real disagreement now that pin and display are comparable,
 /// so it is signal rather than noise. It is drawn ONLY in the observed-model
 /// arm below: a declared fallback (`~profile`) or `-` names no observed model
 /// for the mark to disagree with, and the writer already empties it there —
-/// the reader stays fail-quiet too.
-fn model_cell(agent: &crate::tmux::PickerAgent, rung: FidelityRung) -> String {
+/// the reader stays fail-quiet too. The word a mark glues to yields its cell
+/// first, so the column cap clips a long word and never the disagreement.
+fn model_parts(agent: &crate::tmux::PickerAgent, rung: FidelityRung) -> ModelParts {
     if !agent.model.is_empty() {
         // A model with no client is refused by the fact's own coherence check,
-        // so this arm answers only a hand-built agent — with the model alone
-        // rather than a leading blank.
-        let mut cell = if agent.client.is_empty() {
-            agent.model.clone()
+        // so an empty client part answers only a hand-built agent — and still
+        // aligns under the shared column rather than shifting the row's head.
+        let effort = if rung == FidelityRung::Full {
+            agent.effort.clone()
         } else {
-            format!("{} {}", agent.client, agent.model)
+            String::new()
         };
-        if rung == FidelityRung::Full && !agent.effort.is_empty() {
-            cell.push(' ');
-            cell.push_str(&agent.effort);
-        }
         if agent.drift {
-            cell.push('!');
+            let (model, effort) = if effort.is_empty() {
+                let word = clip_cells(&agent.model, MODEL_WORD_CAP - 1);
+                (format!("{word}!"), String::new())
+            } else {
+                let word = clip_cells(&effort, EFFORT_WORD_CAP);
+                (agent.model.clone(), format!("{word}!"))
+            };
+            return ModelParts {
+                client: agent.client.clone(),
+                model,
+                effort,
+            };
         }
-        return cell;
+        return ModelParts {
+            client: agent.client.clone(),
+            model: agent.model.clone(),
+            effort,
+        };
     }
     if agent.profile.is_empty() {
         // The writer refuses a roster whose seat has no profile, so nothing ae
-        // publishes reaches here; a row that knows nothing says so.
-        return "-".to_owned();
+        // publishes reaches here; a row that knows nothing says so, in the
+        // model part.
+        return ModelParts {
+            client: String::new(),
+            model: "-".to_owned(),
+            effort: String::new(),
+        };
     }
-    if agent.client.is_empty() {
-        return format!("~{}", agent.profile);
+    ModelParts {
+        client: agent.client.clone(),
+        model: format!("~{}", agent.profile),
+        effort: String::new(),
     }
-    format!("{} ~{}", agent.client, agent.profile)
+}
+
+/// The drawn model block: each part padded to its shared sub-column, joined by
+/// the row's single-blank gap spelling. A zero-width sub-column draws nothing
+/// — never a blank — so an empty column leaves no double gap.
+fn model_block(parts: &ModelParts, columns: Columns) -> String {
+    [
+        (&parts.client, columns.client),
+        (&parts.model, columns.model),
+        (&parts.effort, columns.effort),
+    ]
+    .iter()
+    .filter(|(_, width)| *width > 0)
+    .map(|(text, width)| pad(text, *width))
+    .collect::<Vec<_>>()
+    .join(" ")
 }
 
 /// The terminal facts that bound one menu draw.
@@ -1298,13 +1416,23 @@ fn agent_item(
     opened_session: Option<&str>,
     max_width: usize,
 ) -> MenuItem {
-    let label = format!(
-        "  {} {} {} {}",
-        agent.mark().glyph(icons),
-        pad(&agent.name, columns.name),
-        pad(&model_cell(agent, columns.rung), columns.model),
-        pad(&agent.state, columns.state),
-    );
+    let block = model_block(&model_parts(agent, columns.rung), columns);
+    let label = if block.is_empty() {
+        format!(
+            "  {} {} {}",
+            agent.mark().glyph(icons),
+            pad(&agent.name, columns.name),
+            pad(&agent.state, columns.state),
+        )
+    } else {
+        format!(
+            "  {} {} {} {}",
+            agent.mark().glyph(icons),
+            pad(&agent.name, columns.name),
+            block,
+            pad(&agent.state, columns.state),
+        )
+    };
     MenuItem {
         label: clip_cells(&label, max_width),
         key: String::new(),
@@ -1484,8 +1612,8 @@ fn clean(text: &str) -> String {
 mod tests {
     use super::{
         AGENT_ROW_OVERHEAD, Args, Columns, FidelityRung, KEYS, MODEL_CELL_CAP, ROW_CAP, Usage,
-        launch_tail_is_valid, menu, menu_for_client, menu_for_client_session, model_cell, pad,
-        parse, parse_launch_tail, terminal_cells,
+        block_cells, launch_tail_is_valid, menu, menu_for_client, menu_for_client_session,
+        model_block, model_parts, pad, parse, parse_launch_tail, terminal_cells,
     };
     use crate::inventory::ServerId;
     use crate::theme::Palette;
@@ -2088,76 +2216,111 @@ mod tests {
         }
     }
 
-    /// Every shape the cell has, including the two nothing ae publishes.
+    /// The three block parts as one comparable triple.
+    fn triple(parts: &super::ModelParts) -> (&str, &str, &str) {
+        (
+            parts.client.as_str(),
+            parts.model.as_str(),
+            parts.effort.as_str(),
+        )
+    }
+
+    /// Every shape the parts have, including the two nothing ae publishes.
     #[test]
     fn the_model_cell_spells_each_fact_state() {
-        let at = |agent: &crate::tmux::PickerAgent| model_cell(agent, FidelityRung::Full);
-        assert_eq!(
-            at(&cell_agent("cc", "Fable 5.1", "xhigh", "fable5")),
-            "cc Fable 5.1 xhigh",
-            "observed: client, model and the effort the frame drew"
-        );
-        assert_eq!(
-            at(&cell_agent("oc", "DeepSeek V4.1 Flash", "", "ds41")),
-            "oc DeepSeek V4.1 Flash",
-            "an observed model with no effort carries no trailing blank"
-        );
-        // The plainer rung is asserted as TEXT, not only through the width it
-        // produces: a cell that ignored its rung would otherwise be caught only
+        // Each case spells the (client, model, effort) triple: the plainer
+        // rung is asserted as TEXT, not only through the width it produces,
+        // because parts that ignored their rung would otherwise be caught only
         // by a column arithmetic pin, one indirection away from the claim.
+        let full = FidelityRung::Full;
+        for (client, model, effort, profile, expected, why) in [
+            (
+                "cc",
+                "Fable 5.1",
+                "xhigh",
+                "fable5",
+                ("cc", "Fable 5.1", "xhigh"),
+                "observed trio",
+            ),
+            (
+                "oc",
+                "DeepSeek V4.1 Flash",
+                "",
+                "ds41",
+                ("oc", "DeepSeek V4.1 Flash", ""),
+                "no effort proved",
+            ),
+            (
+                "cx",
+                "",
+                "",
+                "gpt56sol",
+                ("cx", "~gpt56sol", ""),
+                "declared fallback, never a guess",
+            ),
+            ("", "", "", "fable5", ("", "~fable5", ""), "v1 bare form"),
+            (
+                "-",
+                "",
+                "",
+                "fable5",
+                ("-", "~fable5", ""),
+                "unclassified tool",
+            ),
+        ] {
+            assert_eq!(
+                triple(&model_parts(
+                    &cell_agent(client, model, effort, profile),
+                    full
+                )),
+                expected,
+                "{why}"
+            );
+        }
         assert_eq!(
-            model_cell(
+            triple(&model_parts(
                 &cell_agent("cc", "Fable 5.1", "xhigh", "fable5"),
                 FidelityRung::NoEffort
-            ),
-            "cc Fable 5.1",
+            )),
+            ("cc", "Fable 5.1", ""),
             "the plainer rung drops the effort and nothing else"
-        );
-        assert_eq!(
-            at(&cell_agent("cx", "", "", "gpt56sol")),
-            "cx ~gpt56sol",
-            "nothing observed: the DECLARED profile, never a guess"
-        );
-        assert_eq!(
-            at(&cell_agent("", "", "", "fable5")),
-            "~fable5",
-            "a v1 entry carries no client at all, so the bare declared form"
-        );
-        assert_eq!(
-            at(&cell_agent("-", "", "", "fable5")),
-            "- ~fable5",
-            "a tool ae cannot classify still names its seat"
         );
         // Neither of these two is reachable through the fact: the writer
         // refuses a profile-less roster, and the parser refuses a model with no
         // client. They are this function's own contract.
-        assert_eq!(at(&cell_agent("cc", "", "", "")), "-");
-        assert_eq!(at(&cell_agent("", "Opus 5", "", "fable5")), "Opus 5");
+        assert_eq!(
+            triple(&model_parts(&cell_agent("cc", "", "", ""), full)),
+            ("", "-", "")
+        );
+        assert_eq!(
+            triple(&model_parts(&cell_agent("", "Opus 5", "", "fable5"), full)),
+            ("", "Opus 5", "")
+        );
     }
 
-    /// A carried mark is drawn glued to the last drawn cell — after the
+    /// A carried mark is drawn glued to the last drawn part — after the
     /// effort at Full, after the model at `NoEffort` — and never on a
-    /// fallback cell, where no observed model names a disagreement.
+    /// fallback part, where no observed model names a disagreement.
     #[test]
     fn a_carried_drift_mark_is_drawn_glued_to_the_last_drawn_cell() {
         let mut marked = cell_agent("cc", "Opus 5", "xhigh", "fable5");
         marked.drift = true;
         assert_eq!(
-            model_cell(&marked, FidelityRung::Full),
-            "cc Opus 5 xhigh!",
+            triple(&model_parts(&marked, FidelityRung::Full)),
+            ("cc", "Opus 5", "xhigh!"),
             "Full: the mark glues to the effort"
         );
         assert_eq!(
-            model_cell(&marked, FidelityRung::NoEffort),
-            "cc Opus 5!",
+            triple(&model_parts(&marked, FidelityRung::NoEffort)),
+            ("cc", "Opus 5!", ""),
             "NoEffort: the mark survives the effort drop"
         );
         let mut effortless = cell_agent("oc", "DeepSeek V4.1 Flash", "", "ds41");
         effortless.drift = true;
         assert_eq!(
-            model_cell(&effortless, FidelityRung::Full),
-            "oc DeepSeek V4.1 Flash!",
-            "no effort proved: the mark glues to the model"
+            triple(&model_parts(&effortless, FidelityRung::Full)),
+            ("oc", "DeepSeek V4.1 …!", ""),
+            "no effort proved: the mark glues to the model, which yields one cell"
         );
         // Every fallback shape with a carried mark draws exactly as it would
         // without one. The parser already refuses these states; this is the
@@ -2166,13 +2329,17 @@ mod tests {
             let mut fallback = cell_agent(client, "", "", profile);
             fallback.drift = true;
             for rung in FidelityRung::LADDER {
+                let with = model_parts(&fallback, rung);
+                let without = model_parts(&cell_agent(client, "", "", profile), rung);
                 assert_eq!(
-                    model_cell(&fallback, rung),
-                    model_cell(&cell_agent(client, "", "", profile), rung),
+                    triple(&with),
+                    triple(&without),
                     "no observed model, no mark: {client:?}/{profile:?} at {rung:?}"
                 );
                 assert!(
-                    !model_cell(&fallback, rung).contains('!'),
+                    !with.client.contains('!')
+                        && !with.model.contains('!')
+                        && !with.effort.contains('!'),
                     "no observed model, no mark: {client:?}/{profile:?} at {rung:?}"
                 );
             }
@@ -2180,8 +2347,8 @@ mod tests {
         let mut profileless = cell_agent("cc", "", "", "");
         profileless.drift = true;
         assert_eq!(
-            model_cell(&profileless, FidelityRung::Full),
-            "-",
+            triple(&model_parts(&profileless, FidelityRung::Full)),
+            ("", "-", ""),
             "a row that knows nothing says so, mark or not"
         );
     }
@@ -2202,21 +2369,28 @@ mod tests {
         // The VALUE, not just the name: every width below derives from this
         // constant, so a test that only spelled it would move with the product
         // and prove nothing. An agent row is two indent cells, one glyph and
-        // the three blanks between its four fields.
+        // the three blanks around a one-column model block.
         assert_eq!(AGENT_ROW_OVERHEAD, 2 + 1 + 3);
         let agent = cell_agent("cc", "Opus 5", "xhigh", "fable5");
-        let full = terminal_cells("cc Opus 5 xhigh");
+        let full = 2 + 6 + 5 + 2;
         let overhead = AGENT_ROW_OVERHEAD + terminal_cells("lead") + terminal_cells("working");
-        // Exactly enough for the full cell: equality takes the HIGHER rung.
+        // Exactly enough for the full block: equality takes the HIGHER rung.
         let at_boundary = fitted(&[&agent], overhead + full);
         assert_eq!(at_boundary.rung, FidelityRung::Full);
-        assert_eq!(at_boundary.model, full);
-        // One cell less, and the effort is what pays for it.
+        assert_eq!(
+            (at_boundary.client, at_boundary.model, at_boundary.effort),
+            (2, 6, 5)
+        );
+        // One cell less, and the effort column is what pays for it.
         let below = fitted(&[&agent], overhead + full - 1);
         assert_eq!(below.rung, FidelityRung::NoEffort);
-        assert_eq!(below.model, terminal_cells("cc Opus 5"));
+        assert_eq!(
+            (below.client, below.model, below.effort),
+            (2, 6, 0),
+            "the effort column vanishes, the others stand"
+        );
         // The rung is MENU-WIDE: one seat that cannot afford its effort takes
-        // it from every row, so the column stays readable downwards.
+        // it from every row, so the columns stay readable downwards.
         let roomy = cell_agent("cc", "M", "max", "f");
         let shared = fitted(&[&agent, &roomy], overhead + full - 1);
         assert_eq!(shared.rung, FidelityRung::NoEffort);
@@ -2224,51 +2398,60 @@ mod tests {
 
     /// The rung ladder budgets the mark before the column clip can eat it.
     ///
-    /// The rule: the fit test measures the cell WITH its `!` at every rung,
+    /// The rule: the fit test measures the parts WITH their `!` at every rung,
     /// so the ladder drops the effort while the mark is still inside the
-    /// budget, and the whole-label clip takes the mark only when the
-    /// `NoEffort` cell itself still exceeds it — rightmost-first, like any
-    /// other tail.
+    /// budget, and the squeeze takes the mark only with the model column —
+    /// rightmost-first, like any other tail.
     #[test]
     fn the_ladder_budgets_the_drift_mark_before_the_clip() {
         // The VALUE, not just the name: the arithmetic below derives from
         // this constant, so a test that only spelled it would move with the
         // product and prove nothing.
         assert_eq!(MODEL_CELL_CAP, 12 + 1 + 16 + 1 + 6 + 1);
-        assert_eq!(terminal_cells("abcdefghijklmnopqrstuvw"), 23);
-        let mut agent = cell_agent("cc-mic", "abcdefghijklmnopqrstuvw", "xhigh", "fable5");
+        assert_eq!(block_cells((12, 16, 7)), MODEL_CELL_CAP);
+        let mut agent = cell_agent("cccccccccccc", "mmmmmmmmmmmmmmmm", "medium", "fable5");
         agent.drift = true;
-        let full = model_cell(&agent, FidelityRung::Full);
-        assert_eq!(full, "cc-mic abcdefghijklmnopqrstuvw xhigh!");
-        assert_eq!(terminal_cells(&full), MODEL_CELL_CAP);
+        let full = model_parts(&agent, FidelityRung::Full);
+        assert_eq!(
+            triple(&full),
+            ("cccccccccccc", "mmmmmmmmmmmmmmmm", "medium!"),
+            "the marked Full block spends the total exactly"
+        );
         let overhead = AGENT_ROW_OVERHEAD + terminal_cells("lead") + terminal_cells("working");
-        // Exactly enough for the marked Full cell: equality takes the HIGHER
-        // rung and the mark survives the column.
+        // Exactly enough for the marked Full block: equality takes the HIGHER
+        // rung and the mark survives the columns.
         let at_cap = fitted(&[&agent], overhead + MODEL_CELL_CAP);
         assert_eq!(at_cap.rung, FidelityRung::Full);
-        assert_eq!(at_cap.model, MODEL_CELL_CAP);
+        assert_eq!((at_cap.client, at_cap.model, at_cap.effort), (12, 16, 7));
         assert!(
-            pad(&full, at_cap.model).ends_with('!'),
-            "a Full cell at exactly the cap keeps its mark"
+            model_block(&full, at_cap).ends_with('!'),
+            "a Full block at exactly the cap keeps its mark"
         );
         // One cell less, and the effort is what pays for it — the mark stays
-        // inside the budget.
+        // inside the budget, glued to the model.
         let below = fitted(&[&agent], overhead + MODEL_CELL_CAP - 1);
         assert_eq!(below.rung, FidelityRung::NoEffort);
-        let plain = model_cell(&agent, FidelityRung::NoEffort);
-        assert_eq!(plain, "cc-mic abcdefghijklmnopqrstuvw!");
-        assert_eq!(below.model, terminal_cells(&plain));
+        let plain = model_parts(&agent, FidelityRung::NoEffort);
+        assert_eq!(
+            triple(&plain),
+            ("cccccccccccc", "mmmmmmmmmmmmmm…!", ""),
+            "the model yields one cell so the cap keeps the mark"
+        );
+        assert_eq!((below.client, below.model, below.effort), (12, 16, 0));
         assert!(
-            pad(&plain, below.model).ends_with('!'),
+            model_block(&plain, below).ends_with('!'),
             "the ladder drops the effort before the clip eats the mark"
         );
-        // Squeezed past the plain cell, the clip takes the tail first.
+        // Squeezed past the plain block, the model column goes first.
         let squeezed = fitted(&[&agent], overhead + 6);
         assert_eq!(squeezed.rung, FidelityRung::NoEffort);
-        assert_eq!(squeezed.model, 6);
+        assert_eq!(
+            (squeezed.client, squeezed.model, squeezed.effort),
+            (5, 0, 0)
+        );
         assert!(
-            !pad(&plain, squeezed.model).contains('!'),
-            "a clip narrower than the plain cell takes the mark with the tail"
+            !model_block(&plain, squeezed).contains('!'),
+            "a clip narrower than the plain block takes the mark with the model"
         );
     }
 
@@ -2278,22 +2461,26 @@ mod tests {
     fn a_full_label_keeps_the_rung_order_and_clips_client_first() {
         let agent = cell_agent("cc-mic", "Opus 5", "xhigh", "fable5");
         let overhead = AGENT_ROW_OVERHEAD + terminal_cells("lead") + terminal_cells("working");
-        let full = terminal_cells(&model_cell(&agent, FidelityRung::Full));
-        assert_eq!(full, 6 + 1 + 6 + 1 + 5, "under the cap: the ladder decides");
+        let full = 6 + 6 + 5 + 2;
+        assert_eq!(full, 19, "under the cap: the ladder decides");
         let below = fitted(&[&agent], overhead + full - 1);
         assert_eq!(below.rung, FidelityRung::NoEffort);
-        assert_eq!(below.model, terminal_cells("cc-mic Opus 5"));
+        assert_eq!((below.client, below.model, below.effort), (6, 6, 0));
         let wide = cell_agent(&"l".repeat(32), "Opus 5", "xhigh", "fable5");
         let squeezed = fitted(&[&wide], overhead + 10);
         assert_eq!(squeezed.rung, FidelityRung::NoEffort);
-        assert_eq!(squeezed.model, 10);
-        let cell = pad(&model_cell(&wide, squeezed.rung), squeezed.model);
-        assert!(cell.starts_with('l') && cell.ends_with('…'), "{cell:?}");
+        assert_eq!(
+            (squeezed.client, squeezed.model, squeezed.effort),
+            (9, 0, 0),
+            "the squeeze takes the model column before the client"
+        );
+        let block = model_block(&model_parts(&wide, squeezed.rung), squeezed);
+        assert!(block.starts_with('l') && block.ends_with('…'), "{block:?}");
         let row = format!(
             "  {} {} {} {}",
             "●",
             pad("lead", squeezed.name),
-            cell,
+            block,
             pad("working", squeezed.state)
         );
         assert!(row.ends_with("working"), "{row:?}");
@@ -2306,12 +2493,16 @@ mod tests {
         let overhead = AGENT_ROW_OVERHEAD + terminal_cells("lead") + terminal_cells("working");
         let squeezed = fitted(&[&agent], overhead + 6);
         assert_eq!(squeezed.rung, FidelityRung::NoEffort);
-        assert_eq!(squeezed.model, 6, "the column is capped at the budget");
+        assert_eq!(
+            (squeezed.client, squeezed.model, squeezed.effort),
+            (2, 3, 0),
+            "the block is squeezed into the budget"
+        );
         let row = format!(
             "  {} {} {} {}",
             "●",
             pad("lead", squeezed.name),
-            pad(&model_cell(&agent, squeezed.rung), squeezed.model),
+            model_block(&model_parts(&agent, squeezed.rung), squeezed),
             pad("working", squeezed.state),
         );
         assert!(
@@ -2320,14 +2511,14 @@ mod tests {
         );
         assert!(
             row.contains("cc…") || row.contains("cc "),
-            "and the client is still the head of the clipped cell: {row:?}"
+            "and the client is still the head of the clipped block: {row:?}"
         );
         // A client too narrow to budget anything at all must not panic. The
-        // ladder sets its rung and width on EVERY pass and returns on the first
-        // that fits, so a roster that fits at no rung falls out of the loop
-        // already holding the plainest one — there is no arm after it.
+        // ladder sets its rung and widths on EVERY pass and returns on the
+        // first that fits, so a roster that fits at no rung falls out of the
+        // loop already holding the plainest one — there is no arm after it.
         let none = fitted(&[&agent], 0);
-        assert_eq!(none.model, 0);
+        assert_eq!((none.client, none.model, none.effort), (0, 0, 0));
         assert_eq!(none.rung, FidelityRung::NoEffort);
     }
 
@@ -2349,9 +2540,218 @@ mod tests {
         let overhead = AGENT_ROW_OVERHEAD + terminal_cells("lead") + terminal_cells("working");
         let fits = fitted(&[&agent], overhead + 13);
         assert_eq!(fits.rung, FidelityRung::Full);
-        assert_eq!(fits.model, 13, "measured in cells, not the 16 bytes");
+        assert_eq!(
+            (fits.client, fits.model, fits.effort),
+            (2, 6, 3),
+            "measured in cells, not the 16 bytes"
+        );
         let tight = fitted(&[&agent], overhead + 12);
         assert_eq!(tight.rung, FidelityRung::NoEffort);
+    }
+
+    /// The fitted block never exceeds its budget: the per-column caps hold
+    /// their values, and the drawn row fits at every rung boundary.
+    #[test]
+    fn the_fitted_block_never_exceeds_its_budget() {
+        assert_eq!(super::MODEL_CLIENT_CAP, 12);
+        assert_eq!(super::MODEL_WORD_CAP, 16);
+        assert_eq!(super::EFFORT_WORD_CAP, 6);
+        // Sub-columns 6/6/6: the Full block costs 20, the plainer one 13.
+        let agent = cell_agent("cc-mic", "Opus 5", "medium", "fable5");
+        let overhead = AGENT_ROW_OVERHEAD + terminal_cells("lead") + terminal_cells("working");
+        let plain = FidelityRung::NoEffort;
+        let sweep = [(20, FidelityRung::Full), (19, plain), (13, plain), (12, plain), (6, plain)];
+        for (extra, rung) in sweep {
+            let inner = overhead + extra;
+            let columns = fitted(&[&agent], inner);
+            assert_eq!(columns.rung, rung, "rung at budget {extra}");
+            let widths = (columns.client, columns.model, columns.effort);
+            assert!(
+                block_cells(widths) <= extra,
+                "block over budget at {extra}: {widths:?}"
+            );
+            let block = model_block(&model_parts(&agent, columns.rung), columns);
+            let row = format!(
+                "  {} {} {} {}",
+                "●",
+                pad("lead", columns.name),
+                block,
+                pad("working", columns.state),
+            );
+            assert!(
+                terminal_cells(&row) <= inner,
+                "row over budget at {extra}: {row:?}"
+            );
+        }
+        let none = fitted(&[&agent], 0);
+        assert_eq!((none.client, none.model, none.effort), (0, 0, 0));
+        // A padded wide model aligns by CELLS: the narrow row's effort starts
+        // where the wide row's does, and an over-cap wide model clips mid-row
+        // to a whole glyph plus `…`.
+        let narrow = cell_agent("cc", "模型", "max", "fable5");
+        let wide = cell_agent("cc", "Opus 5", "max", "fable5");
+        let columns = fitted(&[&narrow, &wide], overhead + 2 + 6 + 3 + 2);
+        assert_eq!(columns.rung, FidelityRung::Full);
+        let narrow_block = model_block(&model_parts(&narrow, columns.rung), columns);
+        let wide_block = model_block(&model_parts(&wide, columns.rung), columns);
+        assert_eq!(narrow_block, "cc 模型   max");
+        assert_eq!(wide_block, "cc Opus 5 max");
+        assert_eq!(col_of(&narrow_block, "max"), col_of(&wide_block, "max"));
+        let clipped = model_parts(
+            &cell_agent("cc", "模型模型模型模型模型模型模", "max", "fable5"),
+            FidelityRung::Full,
+        );
+        assert_eq!(
+            pad(&clipped.model, super::MODEL_WORD_CAP),
+            "模型模型模型模… "
+        );
+    }
+
+    /// One expanded v2 roster at `width` through the real menu rig.
+    fn drawn_v2_roster(fact: &str, panes: &[PickerPane], width: usize) -> Menu {
+        let mut hub = session("hub", "$7", 2, "%10");
+        hub.agents = fact.to_owned();
+        super::menu_for_client_session_in(
+            &[hub],
+            &[],
+            panes,
+            true,
+            &Palette::DARCULA,
+            Some("client"),
+            Some("$7"),
+            None,
+            super::PickerBounds {
+                height: 12,
+                width,
+                now_epoch: NOW,
+            },
+            &crate::theme::FleetOrder::EMPTY,
+        )
+        .expect("room for the roster")
+    }
+
+    /// The terminal-cell column a needle starts at in a drawn row.
+    fn col_of(row: &str, needle: &str) -> usize {
+        row.find(needle)
+            .map_or(usize::MAX, |at| terminal_cells(&row[..at]))
+    }
+
+    /// The agent rows share three sub-columns — client, model, effort — so
+    /// mixed label lengths still read down. Column starts are asserted by
+    /// CELL index, not by eyeballing the goldens.
+    #[test]
+    fn agent_rows_share_client_model_effort_sub_columns() {
+        let panes = [pane("$7", "%10"), pane("$7", "%11"), pane("$7", "%12"), pane("$7", "%13")];
+        let drawn = drawn_v2_roster(
+            "v2;2000;60;lead:fable5:working:%10:claude:Fable 5.1:xhigh:;\
+             colead:astram:idle:%11:codex:gpt-6-astra:medium:;\
+             acctmove:op5x:working:%12:cc-mic:Opus 5:xhigh:!;\
+             senddefer:spark13cm:working:%13:muse:muse-spark-1.3-contributor:max:",
+            &panes,
+            100,
+        );
+        assert_eq!(drawn.items.len(), 5);
+        for (index, (glyph, name, client, model, effort, state)) in [
+            ("●", "lead", "claude", "Fable 5.1", "xhigh", "working"),
+            ("·", "colead", "codex", "gpt-6-astra", "medium", "idle"),
+            ("●", "acctmove", "cc-mic", "Opus 5", "xhigh!", "working"),
+            (
+                "●",
+                "senddefer",
+                "muse",
+                "muse-spark-1.3-…",
+                "max",
+                "working",
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let row = drawn.items[index + 1].label.as_str();
+            assert_eq!(
+                row,
+                format!("  {glyph} {name:<9} {client:<6} {model:<16} {effort:<6} {state:<7}"),
+                "row {index} golden"
+            );
+            assert_eq!(col_of(row, model), 21, "model starts together: {row:?}");
+            assert_eq!(col_of(row, effort), 38, "effort starts together: {row:?}");
+            assert_eq!(col_of(row, state), 45, "state starts together: {row:?}");
+        }
+    }
+
+    /// At the plainer rung the effort column VANISHES for every row — no ragged
+    /// blanks — the drift mark glues to the model, and a `~profile` fallback
+    /// aligns in the model column.
+    #[test]
+    fn the_no_effort_rung_drops_the_effort_column_for_all_rows() {
+        let panes = [pane("$7", "%10"), pane("$7", "%11")];
+        let drawn = drawn_v2_roster(
+            "v2;2000;60;lead:fable5:working:%10:cc:Fable 5.1:xhigh:;\
+             acct:op5x:working:%11:cc-mic:Opus 5::!;\
+             new:astram:idle::cx:::",
+            &panes,
+            42,
+        );
+        assert_eq!(drawn.items.len(), 4);
+        for (index, (glyph, name, client, model, state)) in [
+            ("●", "lead", "cc", "Fable 5.1", "working"),
+            ("●", "acct", "cc-mic", "Opus 5!", "working"),
+            ("·", "new", "cx", "~astram", "idle"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let row = drawn.items[index + 1].label.as_str();
+            assert_eq!(
+                row,
+                format!("  {glyph} {name:<4} {client:<6} {model:<9} {state:<7}"),
+                "row {index} golden"
+            );
+            assert!(
+                !row.contains("xhigh"),
+                "no effort anywhere at this rung: {row:?}"
+            );
+            assert_eq!(col_of(row, model), 16, "model starts together: {row:?}");
+            assert_eq!(
+                col_of(row, state),
+                26,
+                "no kept effort column leaves blanks: {row:?}"
+            );
+        }
+    }
+
+    /// An over-cap model clips with `…` inside its own column while the effort
+    /// column stays aligned — the clip never eats a neighbour.
+    #[test]
+    fn an_over_cap_model_clips_inside_its_column() {
+        let panes = [pane("$7", "%10"), pane("$7", "%11")];
+        let drawn = drawn_v2_roster(
+            "v2;2000;60;a:spark13cm:working:%10:muse:muse-spark-1.3-contributor:max:;\
+             b:fable5:done:%11:cc:M:xhigh:",
+            &panes,
+            100,
+        );
+        assert_eq!(drawn.items.len(), 3);
+        let mut effort_at = Vec::new();
+        for (index, (glyph, name, client, model, effort, state)) in [
+            ("●", "a", "muse", "muse-spark-1.3-…", "max", "working"),
+            ("✓", "b", "cc", "M", "xhigh", "done"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let row = drawn.items[index + 1].label.as_str();
+            assert_eq!(
+                row,
+                format!("  {glyph} {name:<4} {client:<4} {model:<16} {effort:<5} {state:<7}"),
+                "row {index} golden"
+            );
+            effort_at.push(col_of(row, effort));
+        }
+        assert_eq!(
+            effort_at[0], effort_at[1],
+            "the clip moves no column: {effort_at:?}"
+        );
     }
 
     #[test]
