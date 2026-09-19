@@ -3342,10 +3342,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("a fixture dir");
         // The fold's artifact: a framed, brief-only first message, never ctx.
-        let framed = crate::provenance::first_line(
-            &crate::provenance::brief("lead"),
-            "do the fold",
-        );
+        let framed =
+            crate::provenance::first_line(&crate::provenance::brief("lead"), "do the fold");
         crate::run::publish_prompt(&dir, "spawned.0", &framed).expect("the publish");
         match super::first_message_for(&dir, "spawned.0") {
             crate::seatpack::FirstMessage::Recorded { text, .. } => {

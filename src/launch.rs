@@ -836,7 +836,8 @@ mod tests {
     fn a_folded_brief_keeps_line_one_and_the_token_and_carries_the_section_verbatim() {
         let dir = scratch("fold");
         let ctx = "WORKSPACE ctx";
-        let body = "do the thing\nsecond line — When done, reply back via: /tmp/x/send \"lead\" \"<r>\"";
+        let body =
+            "do the thing\nsecond line — When done, reply back via: /tmp/x/send \"lead\" \"<r>\"";
         let framed = crate::provenance::first_line(&crate::provenance::brief("lead"), body);
         for tool in ["muse", "grok", "agy", "gemini"] {
             let cmd =
@@ -900,14 +901,16 @@ mod tests {
         let framed = crate::provenance::first_line(&crate::provenance::brief("lead"), body);
         for tool in ["muse", "grok", "agy", "gemini"] {
             let cmd =
-                inject_ae_context_with_brief(tool, &dir, "spawned.0", "CTX", "", Some(&framed))
-                    .cmd;
+                inject_ae_context_with_brief(tool, &dir, "spawned.0", "CTX", "", Some(&framed)).cmd;
             // No shell anywhere on this path: the single-quoted word lexes
             // back to the composed turn byte-for-byte.
             let words = crate::words::split_words(&cmd, &|_: &str| None);
             let words = words.unwrap_or_else(|why| panic!("{tool} lexes: {why}"));
             let turn = words.last().unwrap_or_else(|| panic!("{tool} has a turn"));
-            assert!(!turn.assignment, "{tool}: the turn is data, never an assignment");
+            assert!(
+                !turn.assignment,
+                "{tool}: the turn is data, never an assignment"
+            );
             let prefix = crate::tool::ToolKind::from_cmd(tool)
                 .adapter()
                 .launch_marker;

@@ -461,8 +461,7 @@ fn build_with_snapshot(
                 identity.current.shown()
             )
         });
-    let (composed, abandoned_session) =
-        compose(dir, slot, &seat, &ctx, mode, &identity.effective)?;
+    let (composed, abandoned_session) = compose(dir, slot, &seat, &ctx, mode, &identity.effective)?;
     let words = crate::words::split_words(&composed, &env_lookup)?;
     let (mut prefix, mut argv) = peel_env(words)?;
     if let Some((mut inner, binary_at)) = nested_env_prefix(&argv) {
@@ -754,7 +753,10 @@ fn compose(
             seat.tool.adapter().launch.context,
             ContextChannel::UserTurn { .. }
         );
-    if folded && let Some(framed) = prompt.as_deref() && framed.contains('\0') {
+    if folded
+        && let Some(framed) = prompt.as_deref()
+        && framed.contains('\0')
+    {
         // A NUL cannot ride exec argv. Spawn's own briefs never carry one
         // (argv is NUL-terminated), so this is a hand-edited prompt file:
         // REFUSE, loud and before the start marker, the file kept and the
@@ -781,7 +783,10 @@ fn compose(
     } else {
         prompt.unwrap_or_else(|| launch::initial_prompt_for(seat.tool, dir, slot))
     };
-    Ok((launch::build_launch_command(&injected.cmd, &prompt_text), None))
+    Ok((
+        launch::build_launch_command(&injected.cmd, &prompt_text),
+        None,
+    ))
 }
 
 /// Whether an EXACT resume may keep the inline context turn.

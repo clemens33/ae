@@ -521,9 +521,8 @@ pub fn run_spawn(
             Some(&framed),
         );
         if launch::folded_turn_fits(&full) {
-            let stored =
-                deliver::store_body(dir, &format!("spawn-{slot}"), SPAWN_ACTION, &framed)
-                    .and_then(|_| crate::run::publish_prompt(dir, &slot, &framed));
+            let stored = deliver::store_body(dir, &format!("spawn-{slot}"), SPAWN_ACTION, &framed)
+                .and_then(|_| crate::run::publish_prompt(dir, &slot, &framed));
             if let Err(why) = stored {
                 rollback(dir, &facts, &slot, &pane, &parsed.name, err)?;
                 writeln!(

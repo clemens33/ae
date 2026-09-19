@@ -71,7 +71,11 @@ pub(crate) fn local_overlay(meta_dir: &Path, origin: &str) -> Option<PathBuf> {
 /// for `spawn`'s fold measure, which must render byte-identical context.
 #[must_use]
 pub(crate) fn ctx_config_files(global: Option<&Path>, local: Option<&Path>) -> Vec<PathBuf> {
-    global.into_iter().chain(local).map(Path::to_path_buf).collect()
+    global
+        .into_iter()
+        .chain(local)
+        .map(Path::to_path_buf)
+        .collect()
 }
 
 /// The `[workspace]` values compact resolves.

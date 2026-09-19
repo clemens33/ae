@@ -783,7 +783,10 @@ fn a_spawned_muse_agent_receives_positional_context_and_its_brief() {
 
     // NOTHING pasted: the seat's stdin stays empty past the spawn.
     let received = std::fs::read_to_string(&rig.received).unwrap_or_default();
-    assert!(received.is_empty(), "no paste on the fold path: {received:?}");
+    assert!(
+        received.is_empty(),
+        "no paste on the fold path: {received:?}"
+    );
 
     // The recorded first message is the BRIEF ONLY, never the context.
     let prompt =
@@ -885,8 +888,7 @@ fn a_spawn_without_a_prompt_briefs_by_paste_on_the_user_turn_channel() {
     }
     let rig = Rig::new("noprompt");
     rig.enable_muse_profile();
-    let (code, stdout, stderr) =
-        rig.run(ae::cli::SPAWN, &["musepoke", "--using", "musefake"]);
+    let (code, stdout, stderr) = rig.run(ae::cli::SPAWN, &["musepoke", "--using", "musefake"]);
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
 
     let submitted = rig.submitted();

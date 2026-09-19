@@ -692,7 +692,11 @@ fn a_recorded_first_message_folds_into_the_user_turn_as_one_positional() {
         let argv = rig.planned_argv();
         // Exactly one positional carries the whole turn: binary, the
         // fixture's --flag, the -i flag where the channel has one, the turn.
-        let width = if tool == "agy" || tool == "gemini" { 4 } else { 3 };
+        let width = if tool == "agy" || tool == "gemini" {
+            4
+        } else {
+            3
+        };
         assert_eq!(argv.len(), width, "{tool}: {argv:?}");
         // The double-send guard: the brief occurs EXACTLY ONCE in the whole
         // composed line — folded, never also a second positional.
@@ -720,7 +724,11 @@ fn a_recorded_first_message_stays_a_second_positional_for_codex() {
     );
     let argv = rig.planned_argv();
     assert_eq!(argv.len(), 5, "{argv:?}");
-    assert!(argv[3].starts_with("developer_instructions="), "{}", argv[3]);
+    assert!(
+        argv[3].starts_with("developer_instructions="),
+        "{}",
+        argv[3]
+    );
     assert!(
         !argv[3].contains("do the codex task"),
         "the brief stays out of the instructions: {}",
@@ -804,7 +812,10 @@ fn a_nul_in_the_recorded_first_message_refuses_loud_before_any_marker() {
     assert!(!out.status.success(), "the launch refuses");
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     assert!(stderr.contains("NUL"), "{stderr}");
-    assert!(prompt.is_file(), "the prompt file is kept, the pane re-runnable");
+    assert!(
+        prompt.is_file(),
+        "the prompt file is kept, the pane re-runnable"
+    );
     assert!(
         !rig.dir.join("launch.main.started").exists(),
         "no start marker: a re-run retries the Create"
