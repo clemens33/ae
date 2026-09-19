@@ -560,10 +560,14 @@ const BRANCH_CAP: usize = 14;
 
 /// The widest the agent model column is ever drawn.
 ///
-/// `CLIENT 4 + 1 + MODEL 16 + 1 + EFFORT 6 + DRIFT 1`. The effort width is
-/// the closed vocabulary's own widest word, not a guess; the drift cell is
-/// the one `!` a carried mark draws.
-const MODEL_CELL_CAP: usize = 29;
+/// `CLIENT 12 + 1 + MODEL 16 + 1 + EFFORT 6 + DRIFT 1`. The client is the
+/// operator's `[clients]` label fully written — 12 covers the longest label
+/// in the operator's own config (`opencode`, 8) with room for suffixed kin,
+/// while a label to the 32-cell fact cap still rides and clips at the column
+/// with the client at the head. The effort width is the closed vocabulary's
+/// own widest word, not a guess; the drift cell is the one `!` a carried mark
+/// draws.
+const MODEL_CELL_CAP: usize = 37;
 
 /// The two indent cells, the glyph and the three separators an agent row spends
 /// before its model cell — what the model column must be budgeted against.
@@ -2230,12 +2234,12 @@ mod tests {
         // The VALUE, not just the name: the arithmetic below derives from
         // this constant, so a test that only spelled it would move with the
         // product and prove nothing.
-        assert_eq!(MODEL_CELL_CAP, 4 + 1 + 16 + 1 + 6 + 1);
-        assert_eq!(terminal_cells("abcdefghijklmnopqrs"), 19);
-        let mut agent = cell_agent("cc", "abcdefghijklmnopqrs", "xhigh", "fable5");
+        assert_eq!(MODEL_CELL_CAP, 12 + 1 + 16 + 1 + 6 + 1);
+        assert_eq!(terminal_cells("abcdefghijklmnopqrstuvw"), 23);
+        let mut agent = cell_agent("cc-mic", "abcdefghijklmnopqrstuvw", "xhigh", "fable5");
         agent.drift = true;
         let full = model_cell(&agent, FidelityRung::Full);
-        assert_eq!(full, "cc abcdefghijklmnopqrs xhigh!");
+        assert_eq!(full, "cc-mic abcdefghijklmnopqrstuvw xhigh!");
         assert_eq!(terminal_cells(&full), MODEL_CELL_CAP);
         let overhead = AGENT_ROW_OVERHEAD + terminal_cells("lead") + terminal_cells("working");
         // Exactly enough for the marked Full cell: equality takes the HIGHER
@@ -2252,7 +2256,7 @@ mod tests {
         let below = fitted(&[&agent], overhead + MODEL_CELL_CAP - 1);
         assert_eq!(below.rung, FidelityRung::NoEffort);
         let plain = model_cell(&agent, FidelityRung::NoEffort);
-        assert_eq!(plain, "cc abcdefghijklmnopqrs!");
+        assert_eq!(plain, "cc-mic abcdefghijklmnopqrstuvw!");
         assert_eq!(below.model, terminal_cells(&plain));
         assert!(
             pad(&plain, below.model).ends_with('!'),
@@ -2266,6 +2270,33 @@ mod tests {
             !pad(&plain, squeezed.model).contains('!'),
             "a clip narrower than the plain cell takes the mark with the tail"
         );
+    }
+
+    /// A full label keeps the rung order, and a 32-cell one clips with the
+    /// client at the head — the cheapest cell and the last to go.
+    #[test]
+    fn a_full_label_keeps_the_rung_order_and_clips_client_first() {
+        let agent = cell_agent("cc-mic", "Opus 5", "xhigh", "fable5");
+        let overhead = AGENT_ROW_OVERHEAD + terminal_cells("lead") + terminal_cells("working");
+        let full = terminal_cells(&model_cell(&agent, FidelityRung::Full));
+        assert_eq!(full, 6 + 1 + 6 + 1 + 5, "under the cap: the ladder decides");
+        let below = fitted(&[&agent], overhead + full - 1);
+        assert_eq!(below.rung, FidelityRung::NoEffort);
+        assert_eq!(below.model, terminal_cells("cc-mic Opus 5"));
+        let wide = cell_agent(&"l".repeat(32), "Opus 5", "xhigh", "fable5");
+        let squeezed = fitted(&[&wide], overhead + 10);
+        assert_eq!(squeezed.rung, FidelityRung::NoEffort);
+        assert_eq!(squeezed.model, 10);
+        let cell = pad(&model_cell(&wide, squeezed.rung), squeezed.model);
+        assert!(cell.starts_with('l') && cell.ends_with('…'), "{cell:?}");
+        let row = format!(
+            "  {} {} {} {}",
+            "●",
+            pad("lead", squeezed.name),
+            cell,
+            pad("working", squeezed.state)
+        );
+        assert!(row.ends_with("working"), "{row:?}");
     }
 
     /// The model is what gets clipped — never the state word beside it.

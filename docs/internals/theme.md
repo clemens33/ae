@@ -386,7 +386,8 @@ relaunched.
 `v2;<epoch>;<interval_secs>;<name>:<profile>:<state>:<pane>:<client>:<model>:<effort>:<drift>;…`.
 Entries follow recorded roster order, include missing seats as `dead` with an
 empty pane, and exclude monitor panes. The last four cells carry what the seat's
-own frame proved, and a roster that will not fit empties them in fleet-wide
+own frame proved — `client` is its `[clients]` label fully written — and a roster
+that will not fit empties them in fleet-wide
 rungs down to today's `v1` bytes before it publishes nothing
 ([watchdog.md](watchdog.md)). The writer and hostile-state parser cap it at
 4 KiB and 64 agents; the parser also requires a known version word with its own

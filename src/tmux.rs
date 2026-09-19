@@ -2607,7 +2607,8 @@ pub struct PickerAgent {
     pub state: String,
     /// The captured pane id, empty when that roster seat has no pane.
     pub pane: String,
-    /// The adapter-owned client token, empty on a v1 fact.
+    /// The seat's client cell — the operator's `[clients]` label fully
+    /// written, or a legacy adapter token — empty on a v1 fact.
     pub client: String,
     /// The model the seat's own frame drew, empty when nothing was observed.
     pub model: String,
@@ -2743,7 +2744,13 @@ const DRIFT_MARK: &str = "!";
 /// is damage. Rejecting it here spares every reader a rendering for a state
 /// ae does not produce.
 fn observed_cells_are_coherent(client: &str, model: &str, effort: &str, drift: &str) -> bool {
-    if !client.is_empty() && !crate::tool::is_client_token(client) {
+    // The full `[clients]` label, or a legacy adapter token — same `v2`
+    // grammar, so an old core fails into `agents: unavailable`, never a
+    // misrender, and a new core still reads an old watchdog's rows.
+    if !client.is_empty()
+        && !crate::tool::is_client_token(client)
+        && !crate::config::is_client_label(client)
+    {
         return false;
     }
     if model.is_empty() {
@@ -4974,6 +4981,38 @@ mod tests {
     }
 
     #[test]
+    fn a_v2_client_cell_carries_a_full_label_or_a_legacy_token() {
+        use super::parse_picker_agents;
+
+        let now = 2_000;
+        let fact = |client: &str| format!("v2;2000;60;lead:p:working:%1:{client}:M::");
+        let client_of = |fact: &str| {
+            parse_picker_agents(fact, now)
+                .and_then(|agents| agents.into_iter().next().map(|agent| agent.client))
+        };
+        // Full labels ride, 32 cells included; legacy tokens still parse, so
+        // a mixed-version fleet renders old rows rather than dropping them.
+        for client in ["cc-mic", "claude", &"l".repeat(32)] {
+            assert_eq!(
+                client_of(&fact(client)),
+                Some(client.to_owned()),
+                "{client:?}"
+            );
+        }
+        for token in ["cc", "cx", "gem", "agy", "grok", "muse", "oc", "-"] {
+            assert_eq!(client_of(&fact(token)), Some(token.to_owned()), "{token:?}");
+        }
+        for invalid in [
+            fact(&"l".repeat(33)),
+            fact("cc mic"),
+            fact("-x"),
+            fact("_x"),
+        ] {
+            assert_eq!(parse_picker_agents(&invalid, now), None, "{invalid}");
+        }
+    }
+
+    #[test]
     fn a_v1_fact_still_parses_and_leaves_the_new_cells_empty() {
         use super::parse_picker_agents;
 
@@ -5019,9 +5058,11 @@ mod tests {
             "v1;2000;60;lead:fable5:working:%1:cc:Opus 5:xhigh:",
             // A version ae has never written.
             "v3;2000;60;lead:fable5:working:%1:cc:Opus 5:xhigh:",
-            // Client: a closed, adapter-owned vocabulary.
-            "v2;2000;60;lead:fable5:working:%1:claude:Opus 5:xhigh:",
-            "v2;2000;60;lead:fable5:working:%1:CC:Opus 5:xhigh:",
+            // Client: a legacy adapter token or an agent-shaped label of at
+            // most 32 cells — anything else refuses the whole snapshot.
+            "v2;2000;60;lead:fable5:working:%1:cc mic:Opus 5:xhigh:",
+            "v2;2000;60;lead:fable5:working:%1:-x:Opus 5:xhigh:",
+            "v2;2000;60;lead:fable5:working:%1:_x:Opus 5:xhigh:",
             // Effort: the closed vocabulary, not a shape.
             "v2;2000;60;lead:fable5:working:%1:cc:Opus 5:turbo:",
             "v2;2000;60;lead:fable5:working:%1:cc:Opus 5:XHIGH:",
@@ -5119,7 +5160,11 @@ mod tests {
         let over_cap = include_str!("../fuzz/seeds/picker_agents/v2-over-cap-model");
         let separator = include_str!("../fuzz/seeds/picker_agents/v2-separator-in-model");
         let limit = include_str!("../fuzz/seeds/picker_agents/v2-limit");
-        for seed in [valid, unobserved, over_cap, separator, limit] {
+        let label = include_str!("../fuzz/seeds/picker_agents/v2-label");
+        let bad_label = include_str!("../fuzz/seeds/picker_agents/v2-bad-label");
+        for seed in [
+            valid, unobserved, over_cap, separator, limit, label, bad_label,
+        ] {
             assert!(
                 seed.bytes().all(|byte| (b' '..=b'~').contains(&byte)),
                 "seed must reach its named parser branch"
@@ -5161,6 +5206,14 @@ mod tests {
                 .is_some_and(|agents| agents.len() == super::PICKER_AGENTS_MAX_COUNT)
         );
         assert!(limit.len() <= super::PICKER_AGENTS_MAX_BYTES);
+        // The full-label client and the legacy `-` beside it; a label with a
+        // space reaches the shape refusal instead.
+        let labeled = super::parse_picker_agents(label, 2_000_000_000).expect("label seed");
+        assert_eq!(
+            (labeled[0].client.as_str(), labeled[1].client.as_str()),
+            ("cc-mic", "-")
+        );
+        assert_eq!(super::parse_picker_agents(bad_label, 2_000_000_000), None);
     }
 
     #[test]

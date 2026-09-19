@@ -8,7 +8,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crate::digest::Status;
 use crate::events::Event;
 use crate::harness_state::HarnessState;
-use crate::meta::{Meta, RosterEntry, ServerSelector};
+use crate::meta::{Meta, RecordedClient, RosterEntry, ServerSelector};
 use crate::procs::{self, Descendancy};
 use crate::quota::QuotaLevel;
 use crate::session::Seat;
@@ -4252,13 +4252,6 @@ impl Cycle<'_> {
         }
     }
 
-    /// The client token this seat's recorded binary classifies to, `-` when ae
-    /// cannot classify it. Known without a pane: it comes from the meta.
-    fn seat_client(&self, slot: &str) -> &'static str {
-        crate::tool::ToolKind::from_binary_name(self.agent_bin(slot).as_deref().unwrap_or_default())
-            .client_token()
-    }
-
     /// The profile's model flag value, from the same config files `_run`
     /// reads. An unreadable config is `None`, never a guess.
     fn profile_model_pin(&self, profile: &str, tool: crate::tool::ToolKind) -> Option<String> {
@@ -4566,12 +4559,19 @@ impl Cycle<'_> {
             .map(|entry| slot_mark(entry, by_slot, &carry.missing))
             .collect();
         self.sweep_missing(live, &mut carry.missing, err)?;
-        // The client is a RECORDED fact, not an observed one, so every roster
-        // seat has it — including one whose pane is gone this cycle.
-        let clients: Vec<(&str, &'static str)> = self
+        // The client is RECORDED, so every seat has it — including one whose
+        // pane is gone. One config read per cycle serves all seats; `None`
+        // falls every seat back to its binary name, never a guess.
+        let root = crate::state_root();
+        let global = root
+            .as_deref()
+            .map(|root| crate::doors::config_file(crate::shape::current(), root));
+        let cfg =
+            crate::config::read_identity(global.as_deref(), self.local_config.as_deref()).ok();
+        let clients: Vec<(&str, String)> = self
             .roster
             .iter()
-            .map(|entry| (entry.slot.as_str(), self.seat_client(&entry.slot)))
+            .map(|entry| (entry.slot.as_str(), seat_client_label(entry, cfg.as_ref())))
             .collect();
         let agents = agents_fact(
             &self.roster,
@@ -5474,6 +5474,38 @@ impl FactRung {
     }
 }
 
+/// What one roster seat's client cell shows: the operator's own `[clients]`
+/// label, fully written.
+///
+/// Recorded truth first, current config second, nothing written to the meta:
+/// the recorded `client.<slot>` override (the precedence `run::read_seat`
+/// honors — the seat RUNS that client even when its row left the config, so
+/// no lookup gates it), then the profile's `[clients]` row today, then the
+/// recorded binary name, then today's short code. Every rung allowlists and
+/// falls through; the answer is always emittable.
+fn seat_client_label(entry: &RosterEntry, cfg: Option<&crate::config::IdentityConfig>) -> String {
+    if let RecordedClient::Label(label) = &entry.client {
+        if crate::config::is_client_label(label) {
+            return label.clone();
+        }
+    }
+    if let (Some(cfg), Some(profile)) = (cfg, entry.profile.as_deref()) {
+        if let Some(label) = cfg.profile_client_label(profile) {
+            if crate::config::is_client_label(&label) {
+                return label;
+            }
+        }
+    }
+    if let Some(binary) = entry.binary.as_deref() {
+        if crate::config::is_client_label(binary) {
+            return binary.to_owned();
+        }
+    }
+    crate::tool::ToolKind::from_binary_name(entry.binary.as_deref().unwrap_or_default())
+        .client_token()
+        .to_owned()
+}
+
 /// The watchdog-owned agent fact in recorded roster order.
 ///
 /// Present panes carry the verdict this cycle already computed. A roster seat
@@ -5488,7 +5520,7 @@ impl FactRung {
 fn agents_fact(
     roster: &[RosterEntry],
     by_slot: &[AgentObservation],
-    clients: &[(&str, &'static str)],
+    clients: &[(&str, String)],
     now_epoch: i64,
     interval_secs: u64,
 ) -> Option<String> {
@@ -5516,7 +5548,7 @@ fn agents_fact(
 fn fact_at(
     roster: &[RosterEntry],
     by_slot: &[AgentObservation],
-    clients: &[(&str, &'static str)],
+    clients: &[(&str, String)],
     now_epoch: i64,
     interval_secs: u64,
     rung: FactRung,
@@ -5551,7 +5583,7 @@ fn fact_at(
             let client = clients
                 .iter()
                 .find(|(slot, _)| *slot == entry.slot)
-                .map_or("-", |(_, client)| *client);
+                .map_or("-", |(_, client)| client.as_str());
             let (model, effort, drift) = observed_cells(found.map(|seen| &seen.identity), rung);
             value.push(':');
             value.push_str(client);
@@ -11326,7 +11358,11 @@ mod tests {
             live_seat("worker.0", "%8", Verdict::Quiet(QuietKind::Done)),
             live_seat("main", "%3", Verdict::Active),
         ];
-        let clients = [("main", "cc"), ("worker.0", "cx"), ("spawned.0", "cx")];
+        let clients = [
+            ("main", "cc".to_owned()),
+            ("worker.0", "cx".to_owned()),
+            ("spawned.0", "cx".to_owned()),
+        ];
         assert_eq!(
             agents_fact(&roster, &observed, &clients, 2_000, 60),
             Some(
@@ -11349,6 +11385,127 @@ mod tests {
         );
     }
 
+    /// One roster seat with a recorded client override and binary, for the
+    /// client-cell resolver. The name derives from the slot.
+    fn label_entry(
+        slot: &str,
+        profile: Option<&str>,
+        client: RecordedClient,
+        binary: Option<&str>,
+    ) -> RosterEntry {
+        RosterEntry {
+            slot: slot.to_owned(),
+            name: format!("{}-agent", slot.replace('.', "-")),
+            profile: profile.map(str::to_owned),
+            client,
+            harness_session: None,
+            config_home: crate::meta::RecordedConfigHome::Missing,
+            config_home_base: crate::meta::RecordedConfigHomeBase::Missing,
+            binary: binary.map(str::to_owned),
+        }
+    }
+
+    /// The client cell shows the operator's own `[clients]` label — recorded
+    /// override first (the precedence `run::read_seat` honors), then the
+    /// profile's row, then the recorded binary name, then today's short code.
+    /// Display-only: no rung writes the meta, and every rung that cannot spell
+    /// its answer falls to the next rather than refusing the seat.
+    #[test]
+    fn seat_client_label_honors_override_profile_binary_and_token_in_order() {
+        let long = "l".repeat(40);
+        let cfg = crate::config::parse_identity(&format!(
+            "[clients]\nclaude = claude\ncc-mic = claude config_home=$HOME/.claude-mic\n\
+             codex = codex\n{long} = codex\n[profiles]\np1 = claude --model fable\n\
+             p2 = cc-mic --model fable\np3 = /usr/bin/Muse --model fable\n\
+             p4 = nosuchclient --x\np5 = {long} --full-auto\n"
+        ))
+        .expect("the fixture parses");
+        let some = Some(&cfg);
+        let missing = || RecordedClient::Missing;
+        let label = |text: &str| RecordedClient::Label(text.to_owned());
+        let at = |profile, client: RecordedClient, binary: Option<&str>| {
+            super::seat_client_label(&label_entry("main", profile, client, binary), some)
+        };
+        // Headline: one binary, two config homes, two different labels.
+        assert_eq!(at(Some("p1"), missing(), Some("claude")), "claude");
+        assert_eq!(at(Some("p2"), missing(), Some("claude")), "cc-mic");
+        for (profile, client, binary, expected, why) in [
+            (
+                Some("p1"),
+                label("cc-mic"),
+                Some("claude"),
+                "cc-mic",
+                "override",
+            ),
+            (
+                Some("p1"),
+                label("bad label"),
+                Some("claude"),
+                "claude",
+                "hostile",
+            ),
+            (
+                Some("p1"),
+                RecordedClient::Invalid,
+                Some("claude"),
+                "claude",
+                "bad row",
+            ),
+            (
+                Some("deleted"),
+                missing(),
+                Some("claude"),
+                "claude",
+                "dead profile",
+            ),
+            (
+                Some("p3"),
+                missing(),
+                Some("claude"),
+                "claude",
+                "path profile",
+            ),
+            (
+                Some("p4"),
+                missing(),
+                Some("codex"),
+                "codex",
+                "unknown word",
+            ),
+            (
+                Some("p5"),
+                missing(),
+                Some("codex"),
+                "codex",
+                "40-cell label",
+            ),
+            (None, missing(), Some("codex"), "codex", "no profile"),
+            (Some("deleted"), missing(), None, "-", "nothing recorded"),
+            (
+                Some("deleted"),
+                missing(),
+                Some("weird binary!"),
+                "-",
+                "hostile bin",
+            ),
+            (
+                Some("p1"),
+                label("retired"),
+                Some("claude"),
+                "retired",
+                "no live row",
+            ),
+        ] {
+            let answered = at(profile, client, binary);
+            assert_eq!(answered, expected, "{why}");
+            let token = crate::tool::is_client_token(&answered);
+            assert!(token || crate::config::is_client_label(&answered), "{why}");
+        }
+        // No config at all still names the recorded binary, never a guess.
+        let entry = label_entry("main", Some("p1"), missing(), Some("claude"));
+        assert_eq!(super::seat_client_label(&entry, None), "claude");
+    }
+
     /// A roster profile carrying a `profile@client` spelling publishes no
     /// fact at all: the grammar admits no `@`, and a fact the picker would
     /// misread is worse than none.
@@ -11357,7 +11514,7 @@ mod tests {
         let roster = [entry("main", "fablex@cc-mic", "lead")];
         let observed = vec![live_seat("main", "%3", Verdict::Active)];
         assert_eq!(
-            agents_fact(&roster, &observed, &[("main", "cc")], 2_000, 60),
+            agents_fact(&roster, &observed, &[("main", "cc".to_owned())], 2_000, 60),
             None
         );
     }
@@ -11407,11 +11564,15 @@ mod tests {
             // everything ae actually recorded.
             seen_running("spawned.0", "%9", "weird:model", Some("high"), false),
         ];
-        let clients = [("main", "cc"), ("worker.0", "muse"), ("spawned.0", "oc")];
+        let clients = [
+            ("main", "cc-mic".to_owned()),
+            ("worker.0", "muse".to_owned()),
+            ("spawned.0", "oc".to_owned()),
+        ];
         let fact = agents_fact(&roster, &observed, &clients, 2_000, 60).expect("a v2 fact");
         assert_eq!(
             fact,
-            "v2;2000;60;lead:fable5:working:%3:cc:Fable 5.1:xhigh:!;\
+            "v2;2000;60;lead:fable5:working:%3:cc-mic:Fable 5.1:xhigh:!;\
              nav:spark13m:working:%8:muse:muse-spark-1.3:max:;\
              runner:ocds:working:%9:oc:::"
         );
@@ -11419,6 +11580,7 @@ mod tests {
         // must survive the strict parser that reads it back.
         let parsed = crate::tmux::parse_picker_agents(&fact, 2_000).expect("its own reader");
         assert_eq!(parsed.len(), 3);
+        assert_eq!(parsed[0].client, "cc-mic");
         assert_eq!(parsed[0].model, "Fable 5.1");
         assert!(parsed[0].drift);
         assert_eq!(parsed[2].client, "oc", "the client survives the drop");
@@ -11446,7 +11608,7 @@ mod tests {
             let one = [entry("main", "fable5", "lead")];
             let observation = vec![seen_running("main", "%3", hostile, Some("max"), false)];
             assert_eq!(
-                agents_fact(&one, &observation, &[("main", "cc")], 2_000, 60),
+                agents_fact(&one, &observation, &[("main", "cc".to_owned())], 2_000, 60),
                 Some("v2;2000;60;lead:fable5:working:%3:cc:::".to_owned()),
                 "{hostile:?}"
             );
@@ -11456,7 +11618,7 @@ mod tests {
         let one = [entry("main", "fable5", "lead")];
         let observation = vec![seen_running("main", "%3", &at_cap, None, false)];
         assert_eq!(
-            agents_fact(&one, &observation, &[("main", "cc")], 2_000, 60),
+            agents_fact(&one, &observation, &[("main", "cc".to_owned())], 2_000, 60),
             Some(format!("v2;2000;60;lead:fable5:working:%3:cc:{at_cap}::"))
         );
     }
@@ -11489,10 +11651,10 @@ mod tests {
     }
 
     /// Every seat of `roster` on one client.
-    fn clients_of(roster: &[RosterEntry]) -> Vec<(&str, &'static str)> {
+    fn clients_of(roster: &[RosterEntry]) -> Vec<(&str, String)> {
         roster
             .iter()
-            .map(|entry| (entry.slot.as_str(), "cc"))
+            .map(|entry| (entry.slot.as_str(), "cc".to_owned()))
             .collect()
     }
 

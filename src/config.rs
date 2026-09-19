@@ -344,6 +344,23 @@ pub fn is_agent_name(name: &str) -> bool {
     name.len() <= 64 && bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
+/// Whether `label` may ride the `@ae_agents` client cell: a letter or digit,
+/// then up to 31 of letters, digits, `_` or `-`.
+///
+/// Agent-shaped like the `[clients]` labels it carries, but capped at 32
+/// cells: a roster fact is 4 KiB for 64 seats, so a longer operator label
+/// falls back to the seat's binary name. The legacy adapter tokens stay
+/// accepted beside this at both ends, never here.
+#[must_use]
+pub fn is_client_label(label: &str) -> bool {
+    let mut bytes = label.bytes();
+    match bytes.next() {
+        Some(b) if b.is_ascii_alphanumeric() => {}
+        _ => return false,
+    }
+    label.len() <= 32 && bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
 /// Whether quota awareness is ON for a raw `[workspace] quota` value.
 ///
 /// Absent (empty) means ON — exactly today's behaviour. Same on/off grammar
@@ -540,6 +557,22 @@ impl IdentityConfig {
             text: command,
             client_label: Some(client_label),
         }))
+    }
+
+    /// Which `[clients]` row `profile`'s launch word names, without expanding it.
+    ///
+    /// Display-only: the roster's client cell needs the LABEL, never the
+    /// expansion, so unlike [`Self::command`] this asks for no home and fails
+    /// on nothing. It mirrors `command`'s lookup half, pinned to agreement
+    /// beside it wherever the expansion succeeds.
+    pub(crate) fn profile_client_label(&self, profile: &str) -> Option<String> {
+        let raw = self.profile(profile)?;
+        let parsed = crate::launch_cmd::lex_simple_command(raw).ok()?;
+        let binary = crate::launch_cmd::launch_binary(&parsed);
+        if binary.word.contains('/') {
+            return None;
+        }
+        self.client(binary.word).map(|_| binary.word.to_owned())
     }
 
     /// Resolve a `[clients]` row on its own, for the case where NO profile
@@ -3293,6 +3326,86 @@ mod tests {
             "off", "OFF", " Off ", "false", "FALSE", "no", "0", "none", "ascii",
         ] {
             assert!(!super::quota_aware(off), "{off:?} must mean unaware");
+        }
+    }
+
+    /// The `@ae_agents` client cell carries the operator's `[clients]` label —
+    /// agent-shaped, capped at 32 cells so 64 of them cannot crowd a roster
+    /// out of its 4 KiB on their own. The writer and the reader both ask this
+    /// one predicate; the legacy short codes and `-` stay accepted beside it
+    /// at the read site, never here.
+    #[test]
+    fn the_roster_client_label_is_agent_shaped_capped_at_32() {
+        // `CC` is no legacy token (those are lowercase) but IS a label the
+        // config parser accepts, so the cell takes it.
+        for label in ["claude", "cc-mic", "codex", "muse", "CC", "a", "0x"] {
+            assert!(super::is_client_label(label), "{label:?} rides");
+        }
+        assert!(super::is_client_label(&"l".repeat(32)), "32 rides");
+        let over = "l".repeat(33);
+        let far = "l".repeat(200);
+        for hostile in [
+            "",
+            "-",
+            "cc mic",
+            "cc#x",
+            "cc:x",
+            "cc;x",
+            "-l",
+            "_l",
+            "cc-mic!",
+            over.as_str(),
+            far.as_str(),
+        ] {
+            assert!(!super::is_client_label(hostile), "{hostile:?} falls back");
+        }
+        assert!(!super::is_client_label("cc\0mic"), "NUL falls back");
+        assert!(!super::is_client_label("cc\x7fmic"), "DEL falls back");
+    }
+
+    /// The display-only label lookup behind the roster's client cell: which
+    /// `[clients]` row a profile's launch word names, WITHOUT expanding it.
+    /// An expansion failure (`$HOME` unavailable, a refused client home) must
+    /// never cost the label — the seat is running that client either way.
+    #[test]
+    fn profile_client_label_names_the_clients_row_without_expanding() {
+        let (_f, cfg) = v2(
+            "[clients]\nclaude = claude\ncc-mic = claude config_home=$HOME/.claude-mic\n\
+             codex = codex\n[profiles]\np1 = claude --model fable\np2 = cc-mic --model fable\n\
+             p3 = codex --full-auto\np4 = /usr/bin/Muse --model fable\n\
+             p5 = nosuchclient --x\np6 = \"unclosed quote\n[roster]\nlead = p1\n\
+             [workspace]\nmain = lead\n",
+        );
+        for (profile, label) in [
+            ("p1", Some("claude")),
+            ("p2", Some("cc-mic")),
+            ("p3", Some("codex")),
+            ("p4", None),
+            ("p5", None),
+            ("p6", None),
+            ("missing", None),
+        ] {
+            assert_eq!(
+                cfg.profile_client_label(profile).as_deref(),
+                label,
+                "{profile}"
+            );
+        }
+        // The label survives what the expansion cannot: no home, no loss.
+        assert!(cfg.command("p2", None).is_err(), "expansion needs a home");
+        assert_eq!(cfg.profile_client_label("p2").as_deref(), Some("cc-mic"));
+        // Where the expansion succeeds the two agree — one rule, not two.
+        let home = Path::new("/Users/a");
+        for profile in ["p1", "p2", "p3", "p4", "p5", "p6"] {
+            let expanded = cfg
+                .command(profile, Some(home))
+                .expect("expands")
+                .expect("exists");
+            assert_eq!(
+                cfg.profile_client_label(profile).as_deref(),
+                expanded.client_label(),
+                "{profile}"
+            );
         }
     }
 

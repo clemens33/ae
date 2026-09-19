@@ -28,9 +28,10 @@ so a stopped daemon cannot leave the picker claiming a live roster snapshot.
 
 The last four cells are what the seat's OWN frame proved this cycle, for display
 only — nothing there reaches the meta, which keeps its own drift observer.
-`client` is the short token for the seat's recorded binary (`cc`, `cx`, `gem`,
-`agy`, `grok`, `muse`, `oc`, or `-` when ae cannot classify it) and is known
-without a pane. `model` is the label the tool drew, `effort` its effort word,
+`client` is the seat's `[clients]` label fully written (recorded override,
+then the profile's row, then the binary name, then the legacy short token)
+and is known without a pane. `model` is the label the tool drew, `effort` its
+effort word,
 and `drift` a bare `!` when that model disagrees with the profile's own pin. A
 model ae cannot spell EXACTLY empties that entry's trio rather than being
 escaped or clipped — over 32 bytes, or carrying anything the fact's own grammar
