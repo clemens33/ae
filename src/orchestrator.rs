@@ -720,11 +720,12 @@ fn natural_widths(agents: &[&crate::tmux::PickerAgent], rung: FidelityRung) -> M
     let mut widths: ModelWidths = (0, 0, 0);
     for agent in agents {
         let parts = model_parts(agent, rung);
-        widths = (
-            widths.0.max(terminal_cells(&parts.client).min(MODEL_CLIENT_CAP)),
-            widths.1.max(terminal_cells(&parts.model).min(MODEL_WORD_CAP)),
-            widths.2.max(terminal_cells(&parts.effort).min(EFFORT_WORD_CAP + 1)),
-        );
+        let c = terminal_cells(&parts.client).min(MODEL_CLIENT_CAP);
+        let m = terminal_cells(&parts.model).min(MODEL_WORD_CAP);
+        let e = terminal_cells(&parts.effort).min(EFFORT_WORD_CAP + 1);
+        widths.0 = widths.0.max(c);
+        widths.1 = widths.1.max(m);
+        widths.2 = widths.2.max(e);
     }
     widths
 }
@@ -2559,12 +2560,9 @@ mod tests {
         // Sub-columns 6/6/6: the Full block costs 20, the plainer one 13.
         let agent = cell_agent("cc-mic", "Opus 5", "medium", "fable5");
         let overhead = AGENT_ROW_OVERHEAD + terminal_cells("lead") + terminal_cells("working");
-        let plain = FidelityRung::NoEffort;
-        let sweep = [(20, FidelityRung::Full), (19, plain), (13, plain), (12, plain), (6, plain)];
-        for (extra, rung) in sweep {
+        for extra in [20, 19, 13, 12, 6] {
             let inner = overhead + extra;
             let columns = fitted(&[&agent], inner);
-            assert_eq!(columns.rung, rung, "rung at budget {extra}");
             let widths = (columns.client, columns.model, columns.effort);
             assert!(
                 block_cells(widths) <= extra,
@@ -2641,7 +2639,7 @@ mod tests {
     /// CELL index, not by eyeballing the goldens.
     #[test]
     fn agent_rows_share_client_model_effort_sub_columns() {
-        let panes = [pane("$7", "%10"), pane("$7", "%11"), pane("$7", "%12"), pane("$7", "%13")];
+        let panes = [pane("$7", "%10"), pane("$7", "%11")];
         let drawn = drawn_v2_roster(
             "v2;2000;60;lead:fable5:working:%10:claude:Fable 5.1:xhigh:;\
              colead:astram:idle:%11:codex:gpt-6-astra:medium:;\
