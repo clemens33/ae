@@ -1589,6 +1589,13 @@ pub(crate) fn record_config_home(
 /// `pending`, in one locked replacement — no reader sees the cleared row
 /// without the predecessor that explains it. Cleared even when `abandoned` is
 /// unusable, and idempotent: a row already `pending` writes nothing.
+///
+/// A capture tool's fallback also republishes `capture_floor.<slot>` with the
+/// fallback moment, in that SAME replacement: the fresh conversation is born
+/// after it, and the stale floor would still admit the abandoned one's
+/// neighbours. Transition-only — an already-`pending` row keeps its floor —
+/// and only where the slot's own recorded binary says a capture is needed, so
+/// a claude or grok fallback stays byte-identical.
 pub(crate) fn record_abandoned_session(
     dir: &Path,
     slot: &str,
@@ -1613,11 +1620,22 @@ pub(crate) fn record_abandoned_session(
                 Some(&list),
             );
         }
-        let next = rewritten(
-            &next,
-            &format!("{HARNESS_SESSION_PREFIX}{slot}"),
-            Some(crate::launch::PENDING),
-        );
+        let session_key = format!("{HARNESS_SESSION_PREFIX}{slot}");
+        let transitioned = first_value(current.as_bytes(), &session_key)
+            != Some(crate::launch::PENDING.as_bytes());
+        next = rewritten(&next, &session_key, Some(crate::launch::PENDING));
+        if transitioned
+            && crate::tool::ToolKind::from_binary_name(tool)
+                .adapter()
+                .capture
+                .is_needed()
+        {
+            next = rewritten(
+                &next,
+                &format!("capture_floor.{slot}"),
+                Some(&crate::time::Timestamp::now().epoch().to_string()),
+            );
+        }
         (next != current).then_some(next)
     })
 }
@@ -2332,6 +2350,132 @@ mod tests {
         .expect("clear");
         let text = std::fs::read_to_string(dir.join("meta")).unwrap();
         assert!(!text.contains("observed_model"), "{text}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_fallback_on_a_capture_tool_republishes_a_fresh_capture_floor() {
+        let dir = std::env::temp_dir().join(format!("ae-meta-capfloor-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch");
+        let gone = "0199c0de-1234-4890-abcd-ef0123456789";
+        std::fs::write(
+            dir.join("meta"),
+            format!(
+                "schema=2\nseat.main=lead\nprofile.main=codex\nagent_bin.main=codex\n\
+                 harness_session.main={gone}\ncapture_floor.main=1700000000\n"
+            ),
+        )
+        .expect("meta");
+        let before = crate::time::Timestamp::now().epoch();
+        super::record_abandoned_session(&dir, "main", gone).expect("record");
+        let text = std::fs::read_to_string(dir.join("meta")).unwrap();
+        assert!(
+            text.contains(&format!("harness_session_prior.main=codex:{gone}\n")),
+            "{text}"
+        );
+        assert!(text.contains("harness_session.main=pending\n"), "{text}");
+        let floor: i64 = text
+            .lines()
+            .find_map(|line| {
+                line.strip_prefix("capture_floor.main=")
+                    .and_then(|value| value.parse().ok())
+            })
+            .expect("a capture floor row");
+        assert!(
+            floor >= before && floor > 1_700_000_000,
+            "the floor is the fallback moment, not the planted one: {text}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_fallback_on_a_tool_that_needs_no_capture_leaves_the_floor_alone() {
+        for (tag, binary, prior) in [
+            ("claude", "agent_bin.main=claude\n", "claude:"),
+            ("unknown", "", ""),
+        ] {
+            let dir =
+                std::env::temp_dir().join(format!("ae-meta-capfloor-{tag}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("scratch");
+            let gone = "0199c0de-1234-4890-abcd-ef0123456789";
+            std::fs::write(
+                dir.join("meta"),
+                format!(
+                    "schema=2\nseat.main=lead\nprofile.main=custom\n{binary}\
+                     harness_session.main={gone}\ncapture_floor.main=1000\n"
+                ),
+            )
+            .expect("meta");
+            super::record_abandoned_session(&dir, "main", gone).expect("record");
+            let text = std::fs::read_to_string(dir.join("meta")).unwrap();
+            assert!(
+                text.contains(&format!("harness_session_prior.main={prior}{gone}\n")),
+                "{tag}: {text}"
+            );
+            assert!(
+                text.contains("harness_session.main=pending\n"),
+                "{tag}: {text}"
+            );
+            assert!(
+                text.contains("capture_floor.main=1000\n"),
+                "{tag}: the planted floor is untouched: {text}"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn a_second_fallback_call_on_an_already_cleared_slot_writes_nothing() {
+        // An unusable id records no predecessor, so both calls take the same
+        // path and the second must be a byte-identical no-op — the floor
+        // included. (A usable id never reaches a second call: `_run` passes
+        // no abandoned id for a pending seat.)
+        let dir =
+            std::env::temp_dir().join(format!("ae-meta-capfloor-noop-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch");
+        std::fs::write(
+            dir.join("meta"),
+            "schema=2\nseat.main=lead\nprofile.main=codex\nagent_bin.main=codex\n\
+             harness_session.main=u-9\ncapture_floor.main=1700000000\n",
+        )
+        .expect("meta");
+        super::record_abandoned_session(&dir, "main", "u-9").expect("record");
+        let settled = std::fs::read_to_string(dir.join("meta")).unwrap();
+        assert!(
+            settled.contains("harness_session.main=pending\n"),
+            "{settled}"
+        );
+        assert!(
+            !settled.contains("harness_session_prior"),
+            "an unusable id records no predecessor: {settled}"
+        );
+        let floor: i64 = settled
+            .lines()
+            .find_map(|line| {
+                line.strip_prefix("capture_floor.main=")
+                    .and_then(|value| value.parse().ok())
+            })
+            .expect("a capture floor row");
+        assert!(floor > 1_700_000_000, "{settled}");
+        // Age the floor by hand: a second call on the cleared slot must still
+        // write nothing — the stale floor included — rather than refresh it.
+        // (Without the re-age both calls could land in one clock second and a
+        // rewrite would be invisible.)
+        let aged = settled.replace(
+            &format!("capture_floor.main={floor}\n"),
+            "capture_floor.main=1700000000\n",
+        );
+        assert!(
+            aged.contains("capture_floor.main=1700000000\n"),
+            "{settled}"
+        );
+        std::fs::write(dir.join("meta"), &aged).expect("age the floor");
+        super::record_abandoned_session(&dir, "main", "u-9").expect("no-op");
+        let again = std::fs::read_to_string(dir.join("meta")).unwrap();
+        assert_eq!(again, aged, "the cleared slot writes nothing more");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

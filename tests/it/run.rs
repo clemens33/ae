@@ -1079,6 +1079,86 @@ fn a_resume_fallback_records_the_abandoned_id_once_and_clears_the_current_one() 
 }
 
 #[test]
+fn a_resume_fallback_on_a_capture_tool_publishes_a_fresh_capture_floor() {
+    let rig = Rig::new("fallback-floor");
+    let gone = "0199c0de-aaaa-4890-abcd-ef0123456789";
+    rig.seat("codex", gone);
+    let meta = rig.dir.join("meta");
+    let text = std::fs::read_to_string(&meta).expect("the fixture meta");
+    assert!(
+        std::fs::write(
+            &meta,
+            format!("{text}agent_bin.main=codex\ncapture_floor.main=1700000000\n")
+        )
+        .is_ok(),
+        "a meta that records its binary and an old floor"
+    );
+    rig.started();
+    // No rollout planted: codex's probe misses and the run falls back.
+    let (argv, _) = rig.exec();
+    assert!(
+        !argv.iter().any(|word| word == "resume"),
+        "codex starts fresh rather than resuming a missing log: {argv:?}"
+    );
+    let settled = std::fs::read_to_string(&meta).expect("the meta");
+    assert!(
+        settled.contains(&format!("harness_session_prior.main=codex:{gone}\n")),
+        "the passed-over conversation is recorded: {settled}"
+    );
+    assert!(
+        settled.contains("harness_session.main=pending\n"),
+        "the dead id is cleared to the honest unknown: {settled}"
+    );
+    let floor: i64 = settled
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix("capture_floor.main=")
+                .and_then(|value| value.parse().ok())
+        })
+        .expect("a capture floor row");
+    assert!(
+        floor > 1_700_000_000,
+        "the fallback republishes the floor: {settled}"
+    );
+
+    // A re-run with a pending id is a no-op, byte for byte — the floor
+    // included.
+    let (argv, _) = rig.exec();
+    assert!(
+        !argv.iter().any(|word| word == "resume"),
+        "still a fresh start: {argv:?}"
+    );
+    let again = std::fs::read_to_string(&meta).expect("the meta");
+    assert_eq!(again, settled, "a re-run with a pending id is a no-op");
+}
+
+#[test]
+fn a_resume_fallback_on_a_tool_that_needs_no_capture_writes_no_floor() {
+    let rig = Rig::new("fallback-nofloor");
+    let gone = "0199c0de-bbbb-4890-abcd-ef0123456789";
+    rig.seat("claude", gone);
+    let meta = rig.dir.join("meta");
+    let text = std::fs::read_to_string(&meta).expect("the fixture meta");
+    assert!(
+        std::fs::write(&meta, format!("{text}agent_bin.main=claude\n")).is_ok(),
+        "a meta that records its binary"
+    );
+    rig.started();
+    // No transcript for the id: claude's probe misses and the run falls back.
+    let (argv, _) = rig.exec();
+    assert!(carries(&argv, &["--continue"]), "{argv:?}");
+    let settled = std::fs::read_to_string(&meta).expect("the meta");
+    assert!(
+        settled.contains("harness_session.main=pending\n"),
+        "the dead id is cleared: {settled}"
+    );
+    assert!(
+        !settled.contains("capture_floor"),
+        "no floor row for a tool that needs no capture: {settled}"
+    );
+}
+
+#[test]
 fn a_first_run_creates_a_second_resumes_and_the_marker_is_the_difference() {
     let rig = Rig::new("twice");
     rig.seat("claude", "u-3");

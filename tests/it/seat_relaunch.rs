@@ -847,12 +847,17 @@ fn a_seat_with_no_usable_conversation_gets_a_fresh_floor_before_its_tool_starts(
 }
 
 #[test]
-fn a_conversation_that_dies_inside_run_keeps_its_floor_and_leaves_the_slot_pending() {
+fn a_conversation_that_dies_inside_run_moves_its_floor_forward_and_leaves_the_slot_pending() {
     // CASE 3, the one a pre-exec decision alone would get wrong: the id looked
     // probeable, so NO fresh floor was written — and then `_run`'s own store
-    // probe failed and the seat took the fallback. The floor stays retained
-    // (it can only be too early, never too late) and the slot reads `pending`,
-    // which is exactly what makes the post-start re-read schedule the capture.
+    // probe failed and the seat took the fallback. The fallback itself
+    // republishes the floor with that moment, still BEFORE the tool is exec'd
+    // — the same pre-exec seat CASE 2's fresh floors already publish from, so
+    // it cannot be too late by the same argument that makes CASE 2 safe. The
+    // stale floor is the real hazard instead: many seats share one working
+    // directory, so a tokenless scan from a predecessor-era floor could take a
+    // NEIGHBOUR seat's conversation. The slot reads `pending`, which is
+    // exactly what makes the post-start re-read schedule the capture.
     let rig = Rig::new("floorfall");
     rig.seat_rows("worker.1", "w1", "agy", "agy");
     let meta = rig.dir.join("meta");
@@ -870,10 +875,17 @@ fn a_conversation_that_dies_inside_run_keeps_its_floor_and_leaves_the_slot_pendi
         out.contains("fresh"),
         "the recorded conversation did not survive its probe: {out}"
     );
-    assert_eq!(
-        rig.meta_row("capture_floor.worker.1"),
-        "111",
-        "the floor is RETAINED across the fallback, never moved forward"
+    let floor: i64 = rig
+        .meta_row("capture_floor.worker.1")
+        .parse()
+        .expect("the fallback republishes the floor as an epoch");
+    assert!(
+        floor > 111,
+        "the floor moves forward past the abandoned era: {floor}"
+    );
+    assert!(
+        floor <= ae::time::Timestamp::now().epoch(),
+        "the floor is the fallback moment, never the future: {floor}"
     );
     assert_eq!(
         rig.meta_row("harness_session.worker.1"),
