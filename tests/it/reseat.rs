@@ -153,23 +153,117 @@ fn a_dead_seat_moves_to_another_tool_in_its_own_pane_and_is_handed_its_seed() {
 }
 
 #[test]
-fn a_live_seat_is_refused_and_nothing_about_it_moves() {
-    // reseat KILLS NOTHING. A seat whose tool still answers is a refusal, not
-    // a tool ae ends to make room for another.
-    let rig = Rig::new("livemove");
-    let pane = rig.seat("worker.1", "w1", "opencode");
+fn a_running_seat_is_stopped_in_place_and_moved() {
+    // THE FULL ROUND. The seat's tool is running and its frame is provably
+    // idle, so `reseat` stops it where it stands and moves the seat on. What
+    // the stop must not cost: the pane, its ae stamps, its directory.
+    let rig = Rig::new("fullround");
+    rig.seat_rows("spawned.0", "scout", "claude", "claude");
+    record_history(&rig, "spawned.0");
+    let pane = rig.new_pane("spawned.0", "scout");
+    rig.start(&pane, "spawned.0", "claude");
+    let work_dir = rig.meta_row("work_dir");
 
     let (code, out, err) = rig.run_top(
         &rig.main_pane.clone(),
-        &["reseat", &rig.session, "w1", "--using", "fake-grok"],
+        &["reseat", &rig.session, "scout", "--using", "fake-opencode"],
+    );
+
+    assert_eq!(
+        code,
+        Some(0),
+        "out={out} err={err}\nframe was:\n{}",
+        rig.capture(&pane)
+    );
+    assert!(out.contains("reseated scout"), "{out}");
+    assert!(
+        rig.tool_pid(&pane, "claude").is_none(),
+        "the old tool is gone"
+    );
+    assert!(
+        rig.tool_pid(&pane, "opencode").is_some(),
+        "the successor holds the SAME pane"
+    );
+    assert_eq!(rig.meta_row("profile.spawned.0"), "fake-opencode");
+    // The predecessor is handed on TAGGED with the tool that owns its store,
+    // which is the one that was just stopped.
+    assert_eq!(
+        rig.meta_row("harness_session_prior.spawned.0"),
+        format!("claude:{OLD_ID}")
+    );
+    // The pane is the same pane, and it is still the seat's: a stop that lost
+    // the stamps would leave a pane ae can no longer place.
+    assert_eq!(rig.pane_fact(&pane, "#{pane_id}"), pane);
+    assert_eq!(rig.pane_fact(&pane, "#{@ae_agent}"), "scout");
+    assert_eq!(rig.pane_fact(&pane, "#{@ae_slot}"), "spawned.0");
+    // Canonicalised on both sides: macOS answers `/private/tmp` where the
+    // record says `/tmp`, and the claim is that they are the SAME directory.
+    let canonical = |path: &str| {
+        std::fs::canonicalize(path)
+            .map_or_else(|_| path.to_owned(), |path| path.display().to_string())
+    };
+    assert_eq!(
+        canonical(&rig.pane_fact(&pane, "#{pane_current_path}")),
+        canonical(&work_dir)
+    );
+    // TWO records: ae stopped the tool, then moved the seat. The stop names
+    // the binary it stopped, because the meta keeps only the current one.
+    let events = rig.events();
+    assert!(events.contains("stopped claude in place"), "{events}");
+    assert!(events.contains("reseated scout"), "{events}");
+}
+
+#[test]
+fn a_busy_seat_is_refused_and_the_flag_does_not_lift_it() {
+    // NEVER A SILENT MID-TURN KILL. The frame says a turn is running, and no
+    // flag makes that a reason to stop: `--stop-unknown` lifts an UNREADABLE
+    // frame, never a read one.
+    let rig = Rig::new("busymove");
+    rig.seat_rows("worker.1", "w1", "claude", "claude");
+    let pane = rig.new_pane("worker.1", "w1");
+    rig.start(&pane, "worker.1", "claude");
+    rig.mark_busy(&pane);
+
+    for tail in [
+        &["w1", "--using", "fake-grok"][..],
+        &["w1", "--using", "fake-grok", "--stop-unknown"][..],
+    ] {
+        let mut args = vec!["reseat", &rig.session];
+        args.extend(tail);
+        let (code, out, err) = rig.run_top(&rig.main_pane.clone(), &args);
+        assert_eq!(code, Some(1), "{tail:?} out={out} err={err}");
+        assert!(
+            err.contains("is BUSY") && err.contains(&pane) && err.contains("interrupt w1"),
+            "{tail:?}: the refusal names the state, the pane and the next step: {err}"
+        );
+        assert!(
+            rig.tool_pid(&pane, "claude").is_some(),
+            "{tail:?}: the busy tool is still running"
+        );
+        assert_eq!(rig.meta_row("profile.worker.1"), "fake-claude");
+        assert!(!rig.dir.join("seed.w1.md").exists(), "{tail:?}: no seed");
+    }
+}
+
+#[test]
+fn a_frame_ae_cannot_read_is_refused_until_the_flag_says_otherwise() {
+    // An UNMODELLED harness has no grammar ae can read a running turn from.
+    // That is not permission to kill it — it is a refusal that names the flag.
+    let rig = Rig::new("blindmove");
+    let pane = rig.seat("worker.1", "w1", "grok");
+
+    let (code, out, err) = rig.run_top(
+        &rig.main_pane.clone(),
+        &["reseat", &rig.session, "w1", "--using", "fake-opencode"],
     );
 
     assert_eq!(code, Some(1), "out={out} err={err}");
     assert!(
-        err.contains("is running") && err.contains(&pane) && err.contains("nothing to reseat"),
-        "the refusal names the state, the pane and this verb: {err}"
+        err.contains("cannot read") && err.contains(&pane) && err.contains("--stop-unknown"),
+        "the refusal names the gap, the pane and the way past it: {err}"
     );
-    assert_eq!(rig.meta_row("profile.worker.1"), "fake-opencode");
+    assert_eq!(rig.meta_row("profile.worker.1"), "fake-grok");
+    assert!(rig.tool_pid(&pane, "grok").is_some(), "still running");
     // PANE BYTES ARE NOT EVIDENCE: the fake logs everything it is sent, so an
     // EMPTY receipt is the proof that nothing was typed at the live agent.
     assert!(
@@ -181,6 +275,23 @@ fn a_live_seat_is_refused_and_nothing_about_it_moves() {
         !rig.dir.join("seed.w1.md").exists(),
         "no seed was published"
     );
+
+    // With the flag, the same seat stops and moves — same pane, new tool.
+    let (code, out, err) = rig.run_top(
+        &rig.main_pane.clone(),
+        &[
+            "reseat",
+            &rig.session,
+            "w1",
+            "--using",
+            "fake-opencode",
+            "--stop-unknown",
+        ],
+    );
+    assert_eq!(code, Some(0), "out={out} err={err}");
+    assert!(rig.tool_pid(&pane, "opencode").is_some(), "moved in place");
+    assert_eq!(rig.meta_row("profile.worker.1"), "fake-opencode");
+    assert!(rig.events().contains("stopped grok in place"), "audited");
 }
 
 #[test]
@@ -189,7 +300,7 @@ fn the_argv_and_the_roster_are_answered_before_any_pane_is_read() {
     // The seat is deliberately LIVE: a ladder that read the pane first would
     // answer every one of them with "is running" instead.
     let rig = Rig::new("ladder");
-    rig.seat("worker.1", "w1", "opencode");
+    let pane = rig.seat("worker.1", "w1", "opencode");
 
     for (tail, want) in [
         (
@@ -220,6 +331,9 @@ fn the_argv_and_the_roster_are_answered_before_any_pane_is_read() {
     assert!(err.contains("lead") && err.contains("w1"), "{err}");
     assert!(rig.received().is_empty(), "{:?}", rig.received());
     assert_eq!(rig.meta_row("profile.worker.1"), "fake-opencode");
+    // THE ORDER PROOF, now that this verb can end a tool: a typo must never
+    // reach the stop, so the seat's tool is still the one that was running.
+    assert!(rig.tool_pid(&pane, "opencode").is_some(), "never stopped");
 }
 
 #[test]
@@ -428,5 +542,8 @@ fn a_seat_cannot_reseat_itself() {
         "refused on its own terms: {err}"
     );
     assert_eq!(rig.meta_row("profile.worker.1"), "fake-opencode");
+    // The refusal is decided BEFORE the lock and before any write, so the
+    // caller's own tool — the one that would have been ended — is untouched.
+    assert!(rig.tool_pid(&pane, "opencode").is_some(), "still running");
     assert!(rig.received().is_empty(), "{:?}", rig.received());
 }

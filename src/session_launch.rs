@@ -4380,6 +4380,7 @@ pub(crate) fn rebind_monitor_panes(
             server,
             &Op::RespawnPane {
                 pane: &events,
+                work_dir: "",
                 command: &events_command,
             },
         ));
@@ -4400,6 +4401,7 @@ pub(crate) fn rebind_monitor_panes(
                 server,
                 &Op::RespawnPane {
                     pane: &watchdog,
+                    work_dir: "",
                     command: &command,
                 },
             ))

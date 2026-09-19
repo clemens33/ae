@@ -35,6 +35,12 @@ use super::phase2::run_tmux;
 /// `__COMPOSED__` decides whether it draws an input box a delivery can prove
 /// ready. A fake that never draws one is how the undelivered launch turn is
 /// pinned without faking a submit.
+///
+/// `__FRAME__` decides whether it draws claude's MEASURED harness frame — the
+/// one `harness_state::classify` reads — so a running seat can be presented to
+/// `reseat`'s stop as provably IDLE, or, when the `__BUSY__` file appears, as
+/// provably mid-turn. Every other fake draws a frame that grammar does not
+/// own, which is how the UNKNOWN arm is pinned.
 const FAKE: &str = r#"#!/usr/bin/perl
 use strict;
 use warnings;
@@ -53,14 +59,37 @@ binmode(STDIN, ':raw');
 binmode(STDOUT, ':raw');
 $| = 1;
 my $composed = __COMPOSED__;
+my $frame = __FRAME__;
+my $busyfile = "__BUSY__";
 my $rail = "\xe2\x94\x83";
 my $corner = "\xe2\x95\xb9";
 my $block = "\xe2\x96\x80";
 my $ellipsis = "\xe2\x80\xa6";
 my $dot = "\xc2\xb7";
+my $bar = "\xe2\x94\x80" x 60;
+my $caret = "\xe2\x9d\xaf";
+my $brain = "\xf0\x9f\xa7\xa0";
+my $chev = "\xe2\x8f\xb5";
+my $spin = "\xe2\x9c\xb3";
+my $done = "\xe2\x9c\xbb";
+sub busy_now { return (-e $busyfile) ? 1 : 0; }
 sub draw {
+    my $busy = shift;
     print "\e[H\e[2J";
-    if ($composed) {
+    if ($frame) {
+        # The row directly above the box is what says whether a turn is
+        # running: claude draws its spinner there while it works and a
+        # `done` summary when it is finished, and the classifier reads the
+        # last such row in the pane's recent history.
+        print $busy
+            ? "$spin Thinking$ellipsis (3s $dot esc to interrupt)\r\n"
+            : "$done Fake $dot done (0s)\r\n";
+        print "$bar\r\n";
+        print "$caret \r\n";
+        print "$bar\r\n";
+        print "$brain Opus 5 $dot fake\r\n";
+        print "$chev$chev accept edits on\r\n";
+    } elsif ($composed) {
         print "opencode\r\n";
         print "$rail\r\n";
         print "$rail  Ask anything$ellipsis \"Fix broken tests\"\r\n";
@@ -72,9 +101,14 @@ sub draw {
         print "fake agent is starting\r\n";
     }
 }
-draw();
+my $shown = busy_now();
+draw($shown);
 while (1) {
     bye() if -e $exit;
+    if ($frame) {
+        my $now = busy_now();
+        if ($now != $shown) { draw($now); $shown = $now; }
+    }
     my $ready = '';
     vec($ready, fileno(STDIN), 1) = 1;
     if (select($ready, undef, undef, 0.05) > 0) {
@@ -92,11 +126,13 @@ while (1) {
 fn fakes(scratch: &Path, tools: &Path) -> String {
     use std::os::unix::fs::PermissionsExt;
     let mut profiles = String::from("[profiles]\n");
-    for (tool, composed) in [
-        ("opencode", "1"),
-        ("grok", "0"),
-        ("codex", "0"),
-        ("agy", "0"),
+    for (tool, composed, frame) in [
+        ("opencode", "1", "0"),
+        ("grok", "0", "0"),
+        ("codex", "0", "0"),
+        ("agy", "0", "0"),
+        // The ONE fake that draws a frame `harness_state::classify` owns.
+        ("claude", "0", "1"),
     ] {
         let bin = tools.join(tool);
         assert!(
@@ -118,7 +154,9 @@ fn fakes(scratch: &Path, tools: &Path) -> String {
                 "__RECEIVED__",
                 &scratch.join("received").display().to_string(),
             )
-            .replace("__COMPOSED__", composed);
+            .replace("__COMPOSED__", composed)
+            .replace("__FRAME__", frame)
+            .replace("__BUSY__", &scratch.join("__BUSY__").display().to_string());
         assert!(std::fs::write(&script, body).is_ok(), "the fake body");
         let _ = writeln!(
             profiles,
@@ -346,6 +384,40 @@ impl Rig {
             self.pane_cmd(pane)
         );
         assert!(std::fs::remove_file(self.scratch.join("__EXIT__")).is_ok());
+    }
+
+    /// Put the frame-drawing fake into its BUSY frame, and wait until the
+    /// pane actually shows it — the fake redraws on its own poll, so a test
+    /// that ran straight on would race its own setup.
+    pub fn mark_busy(&self, pane: &str) {
+        assert!(std::fs::write(self.scratch.join("__BUSY__"), "").is_ok());
+        assert!(
+            self.wait_capture(pane, "esc to interrupt"),
+            "the fake should draw its busy frame, saw:\n{}",
+            self.capture(pane)
+        );
+    }
+
+    /// One `display-message` field of a pane, for the facts a stop must keep.
+    pub fn pane_fact(&self, pane: &str, format: &str) -> String {
+        self.tmux(&["display-message", "-p", "-t", pane, format])
+            .1
+            .trim()
+            .to_owned()
+    }
+
+    pub fn capture(&self, pane: &str) -> String {
+        self.tmux(&["capture-pane", "-p", "-t", pane]).1
+    }
+
+    fn wait_capture(&self, pane: &str, needle: &str) -> bool {
+        for _ in 0..200 {
+            if self.capture(pane).contains(needle) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        false
     }
 
     fn pane_cmd(&self, pane: &str) -> String {

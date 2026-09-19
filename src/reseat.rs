@@ -11,17 +11,24 @@
 //! — the seed pack `ae brief --seat` renders, the predecessor's last turns
 //! included — as its first turn.
 //!
-//! IT KILLS NOTHING. The seat's tool must already be gone, and the proof is
+//! IT DOES THE FULL ROUND. A seat whose tool is still running is STOPPED IN
+//! PLACE first — same pane id, same pane options, same scrollback, the shell
+//! left idle in the session's recorded working copy — and only then moved. A
+//! seat that is already gone takes exactly the path it took before.
+//!
+//! The stop is never silent and never guessed: [`stop_running_tool`] owns its
+//! rule. Past it the seat must still pass
 //! [`crate::seat_relaunch::prove_dead`] — the same owner, asked with this
 //! verb's word, so the two commands refuse for the same reasons in the same
-//! order. Ending a live harness is a later slice.
+//! order.
 //!
-//! The order is the contract, and everything before the paste is undone by
+//! The order is the contract, and everything before the stop is undone by
 //! doing nothing:
 //!
 //! 1. the argv, the session, the caller, the seat and the profile resolve —
 //!    no state is written;
-//! 2. under the session's lifecycle lock, the seat is proven dead;
+//! 2. under the session's lifecycle lock, a running tool is stopped and the
+//!    stop is recorded; then the seat is proven dead;
 //! 3. the seed pack is built (it reads the seat's recorded first message,
 //!    which step 4 removes) and published as `seed.<agent>.md`;
 //! 4. every per-slot launch file goes, so the successor's `_run` has no stale
@@ -30,33 +37,65 @@
 //! 6. the pane line is pasted and the new tool observed;
 //! 7. past the lock: the tool's own launch turn, then the seed.
 //!
-//! Two crash windows, both named and both recoverable by hand: between 4 and 5
-//! the meta still names the OLD profile with no start marker, so `relaunch`
-//! brings the seat back on the tool it had; between 5 and 6 the meta names the
+//! Three crash windows, all named and all recoverable by hand: between the
+//! stop and 4 the seat still records the OLD profile and its pane is at a
+//! shell, so `relaunch` brings it back on the tool it had; between 4 and 5 the
+//! same is true with the launch files gone; between 5 and 6 the meta names the
 //! NEW profile and the pane sits at its shell, which is exactly what
 //! `relaunch` finishes.
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
+use crate::harness_state::HarnessState;
 use crate::inventory::ServerId;
+use crate::procs::{self, Descendancy};
 use crate::seat_relaunch::{Proven, RESEAT_VERB, Started, Target};
+use crate::session_tmux::Op;
 use crate::state::{EXIT_FAILED, EXIT_USAGE};
 use crate::time::Timestamp;
+use crate::tmux::ObservedPaneProbe;
 use crate::tool::ToolKind;
 use crate::tracked::{self, EventFields};
+use crate::transport;
 
 /// The usage line.
-pub const RESEAT_USAGE: &str = "Usage: ae reseat <session> <agent> --using <profile>";
+pub const RESEAT_USAGE: &str =
+    "Usage: ae reseat <session> <agent> --using <profile> [--stop-unknown]";
 
 /// The event action a reseat records, whatever its outcome.
 const RESEAT_ACTION: &str = "reseat";
+
+/// How long the stop waits for the pane to come back to an idle shell.
+const STOP_POLLS: u32 = 50;
+
+/// The pause between those polls — 50 x 200ms is the 10s bound the docs state.
+const STOP_POLL: Duration = Duration::from_millis(200);
+
+/// The gap between the two frame readings the stop takes.
+///
+/// ONE reading is not enough: between a tool receiving Enter and drawing its
+/// spinner the box is empty and no turn is drawn yet, and a single frame in
+/// that gap reads IDLE for a seat that has just been given work.
+const FRAME_GAP: Duration = Duration::from_secs(1);
+
+/// How long the stop waits for the pane's send-lock.
+///
+/// Short, and its own refusal, because this is asked while the session's
+/// lifecycle lock is already held: a delivery in flight is a reason to come
+/// back, never a reason to hold a session out of its own lifecycle.
+const SEND_LOCK_WAIT: Duration = Duration::from_secs(5);
 
 /// The argv, validated.
 struct Parsed {
     session: String,
     agent: String,
     profile: String,
+    /// `--stop-unknown`: stop a tool whose frame ae cannot read. It lifts the
+    /// UNKNOWN refusal and nothing else — a frame that reads BUSY is refused
+    /// with or without it.
+    stop_unknown: bool,
 }
 
 /// Parse `<session> <agent> --using <profile>`.
@@ -67,9 +106,12 @@ struct Parsed {
 fn parse(tail: &[String]) -> Result<Parsed, String> {
     let mut names: Vec<&str> = Vec::new();
     let mut profile = String::new();
+    let mut stop_unknown = false;
     let mut words = tail.iter();
     while let Some(word) = words.next() {
         match word.as_str() {
+            // Anywhere, like `--using`, because that is where a hand puts it.
+            "--stop-unknown" => stop_unknown = true,
             "--using" => {
                 let Some(value) = words.next() else {
                     return Err("Error: --using needs a profile name.".to_owned());
@@ -105,6 +147,7 @@ fn parse(tail: &[String]) -> Result<Parsed, String> {
         session: (*session).to_owned(),
         agent: (*agent).to_owned(),
         profile,
+        stop_unknown,
     })
 }
 
@@ -238,6 +281,249 @@ fn resolve_profile(dir: &Path, bytes: &[u8], profile: &str, agent: &str) -> Resu
 struct Moving {
     tool: ToolKind,
     binary: String,
+}
+
+/// What the stop step concluded.
+enum Stop {
+    /// The seat's tool was not running. NOTHING was read beyond the pane, and
+    /// every refusal a dead or unreadable seat deserves belongs to
+    /// [`crate::seat_relaunch::prove_dead`], which runs next — this arm is how
+    /// an already-dead seat stays byte-identical to what it was before the
+    /// stop existed.
+    NotRunning,
+    /// The tool was stopped and the pane is back at an idle shell, carrying
+    /// the binary that was stopped for the record.
+    Stopped(String),
+    /// A refusal was printed. Nothing was killed: every arm that reaches this
+    /// is decided BEFORE the respawn, except the bounded wait, which says so.
+    Refused,
+}
+
+/// Where the caller stands relative to the seat whose tool is about to be
+/// ended — PURE, from the readings the stop already took.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CallerStanding {
+    /// The caller's process tree does not place it under the seat's pane.
+    Clear,
+    /// The caller runs BENEATH that pane: ending the tool would kill it.
+    Under,
+    /// A reading is missing, so the two cannot be told apart.
+    Unprovable,
+}
+
+/// FAIL-CLOSED BY CONSTRUCTION: a pane with no readable pid, or a process
+/// table ae could not take, is [`CallerStanding::Unprovable`] and never
+/// permission to kill. `Clear` is the only answer the stop may act on.
+fn caller_standing(
+    pane_pid: Option<u32>,
+    table: Option<&[procs::Proc]>,
+    me: u32,
+) -> CallerStanding {
+    let (Some(pane_pid), Some(rows)) = (pane_pid, table) else {
+        return CallerStanding::Unprovable;
+    };
+    if procs::is_descendant_of(rows, pane_pid, me) {
+        CallerStanding::Under
+    } else {
+        CallerStanding::Clear
+    }
+}
+
+/// PURE: is `probe` a pane back at an IDLE shell?
+///
+/// The same two questions [`crate::seat_relaunch::prove_dead`] asks, asked of
+/// the readings the wait already has — a shell in the foreground and nothing
+/// running under it. An unreadable pid or an unusable process table is FALSE,
+/// so the wait keeps waiting and then refuses rather than declaring a pane
+/// idle it could not read.
+fn pane_back_at_shell(probe: &ObservedPaneProbe, table: Option<&[procs::Proc]>) -> bool {
+    probe.pid.is_some()
+        && crate::watchdog::command_is_shell(&probe.command)
+        && table.is_some_and(|table| !procs::has_any_descendant(table, probe.pid))
+}
+
+/// The seat's current harness frame, fail-closed.
+///
+/// A capture ae could not take is [`HarnessState::Unknown`], never idle: the
+/// absence of a reading is not evidence that a turn is not running.
+fn frame(target: &Target, tool: ToolKind) -> HarnessState {
+    transport::capture_pane(&target.server, &target.pane).map_or(HarnessState::Unknown, |capture| {
+        crate::harness_state::classify(&capture, tool)
+    })
+}
+
+/// STOP THE SEAT'S TOOL, in place. Runs UNDER the lifecycle lock, BEFORE the
+/// dead proof and before anything durable is written.
+///
+/// The mechanism is `respawn-pane -k`, the same tmux verb ae already uses to
+/// replace a monitor process: measured on tmux 3.7b it keeps the pane id, the
+/// pane's `@ae_*` options, its index and its scrollback, kills the pane's
+/// process tree, and leaves tmux's default shell in the directory `-c` names.
+/// No new process door, and no signal ae would need `unsafe` to send.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the stop ladder, kept in one place beside the order it enforces"
+)]
+fn stop_running_tool(
+    dir: &Path,
+    target: &Target,
+    bytes: &[u8],
+    stop_unknown: bool,
+    err: &mut impl Write,
+) -> io::Result<Stop> {
+    let agent_bin = crate::deliver::recorded_binary(dir, &target.slot);
+    // IS IT RUNNING? Read the way the dead proof reads it, from ONE probe and
+    // ONE process-table snapshot. A seat with no recorded tool, or a pane that
+    // will not answer, is not something this step may kill: the dead proof
+    // names both, in its own words, a moment from now.
+    let Some(probe) = transport::observe_pane_probe(&target.server, &target.pane) else {
+        return Ok(Stop::NotRunning);
+    };
+    let table = procs::snapshot();
+    let walk = probe.pid.map_or(Descendancy::Unknown, |pid| {
+        procs::descendancy(table.as_deref(), pid, &agent_bin)
+    });
+    if !crate::seat_relaunch::identity_proven(&probe.command, &agent_bin, walk) {
+        return Ok(Stop::NotRunning);
+    }
+
+    // FROM HERE THE TOOL IS RUNNING, and every arm below refuses before the
+    // first write. The working copy first, because it is a DURABLE fact the
+    // records already carry and the shell is respawned into it: refusing on it
+    // after the kill would be the worst order this verb could take.
+    let work_dir = match crate::seat_relaunch::usable_work_dir(bytes) {
+        Ok(work_dir) => work_dir,
+        Err(line) => {
+            writeln!(err, "{line}")?;
+            return Ok(Stop::Refused);
+        }
+    };
+    // NOT FROM UNDER THE SEAT ITSELF. The pane check upstream catches a caller
+    // ae stamped; this catches the other half — a process the target's own
+    // tool started, which carries no `$TMUX_PANE` of its own to compare. Both
+    // halves need the pid and the table, so a gap in either REFUSES: ae will
+    // not kill a tool it cannot prove is not its own parent.
+    match caller_standing(probe.pid, table.as_deref(), std::process::id()) {
+        CallerStanding::Clear => {}
+        CallerStanding::Under => {
+            writeln!(
+                err,
+                "Error: this command runs UNDER '{}' (pane {}) — stopping that tool would kill \
+                 the process asking for the reseat. Run it from another seat, or from a plain \
+                 shell.",
+                target.agent, target.pane
+            )?;
+            return Ok(Stop::Refused);
+        }
+        CallerStanding::Unprovable => {
+            writeln!(
+                err,
+                "Error: '{}' is running in pane {} and ae cannot prove this command is not \
+                 running under it ({}) — nothing was stopped.",
+                target.agent,
+                target.pane,
+                crate::seat_relaunch::unproven_gap(probe.pid, &agent_bin, table.is_some())
+            )?;
+            return Ok(Stop::Refused);
+        }
+    }
+    // THE PANE'S SEND-LOCK, so no delivery can land a turn between the frame
+    // ae reads and the kill it decides from. Held across the reading, the
+    // respawn and the wait, and dropped with this scope — the seed turn later
+    // takes no such lock and cannot deadlock against it.
+    let Some(_send_lock) = crate::deliver::lock_target(dir, &target.pane, SEND_LOCK_WAIT) else {
+        writeln!(
+            err,
+            "Error: a delivery holds pane {} of '{}' — nothing was stopped. Try again once it \
+             finishes.",
+            target.pane, target.agent
+        )?;
+        return Ok(Stop::Refused);
+    };
+    // THE FRAME. Only a POSITIVELY proven idle box may be stopped, and it is
+    // proven TWICE: `Busy` short-circuits on the first reading, and a seat
+    // that was handed work between the two readings is caught by the second.
+    let tool = ToolKind::from_binary_name(&agent_bin);
+    let busy = |err: &mut dyn Write| -> io::Result<()> {
+        writeln!(
+            err,
+            "Error: '{}' is BUSY — a turn is running in pane {}. Wait for it, or \
+             `{}/interrupt {}` first, then re-run the reseat.",
+            target.agent,
+            target.pane,
+            dir.display(),
+            target.agent
+        )
+    };
+    let first = frame(target, tool);
+    if first == HarnessState::Busy {
+        busy(err)?;
+        return Ok(Stop::Refused);
+    }
+    std::thread::sleep(FRAME_GAP);
+    let second = frame(target, tool);
+    if second == HarnessState::Busy {
+        busy(err)?;
+        return Ok(Stop::Refused);
+    }
+    let proven_idle = first == HarnessState::Idle && second == HarnessState::Idle;
+    if !proven_idle && !stop_unknown {
+        writeln!(
+            err,
+            "Error: ae cannot read '{}'s frame in pane {} of '{}', so it cannot tell a running \
+             turn from an idle box — pass --stop-unknown to stop it anyway. Nothing was reseated.",
+            agent_bin, target.pane, target.agent
+        )?;
+        return Ok(Stop::Refused);
+    }
+
+    // THE ONLY WRITE. A tmux that refuses the argv leaves the tool running,
+    // and says so in its own words rather than the timeout's.
+    let (respawned, _) = transport::run_tmux_op(&crate::session_tmux::argv(
+        &target.server,
+        &Op::RespawnPane {
+            pane: &target.pane,
+            work_dir: &work_dir,
+            command: &[],
+        },
+    ));
+    if !respawned {
+        writeln!(
+            err,
+            "Error: tmux would not respawn pane {} of '{}' — the tool is still running and \
+             nothing was reseated.",
+            target.pane, target.agent
+        )?;
+        return Ok(Stop::Refused);
+    }
+    for _ in 0..STOP_POLLS {
+        std::thread::sleep(STOP_POLL);
+        let Some(probe) = transport::observe_pane_probe(&target.server, &target.pane) else {
+            continue;
+        };
+        if pane_back_at_shell(&probe, procs::snapshot().as_deref()) {
+            return Ok(Stop::Stopped(agent_bin));
+        }
+    }
+    // PAST THE KILL and still not idle: say what holds the pane, because this
+    // is the one refusal where the seat's tool has already been stopped. The
+    // meta is untouched, so `relaunch` brings the seat back on the profile it
+    // still records, and a second reseat is free to try again.
+    let holding = transport::observe_pane_probe(&target.server, &target.pane).map_or_else(
+        || "it stopped answering".to_owned(),
+        |probe| format!("'{}' holds its foreground", probe.command),
+    );
+    writeln!(
+        err,
+        "Error: '{}' was stopped but pane {} is not back at an idle shell after {}s — {holding}. \
+         Nothing was moved: '{}' still records its old profile, so look at the pane and re-run \
+         the reseat.",
+        target.agent,
+        target.pane,
+        STOP_POLLS * 200 / 1000,
+        target.agent
+    )?;
+    Ok(Stop::Refused)
 }
 
 /// `ae reseat <session> <agent> --using <profile>`.
@@ -386,6 +672,31 @@ pub(crate) fn run(
         )?;
         return Ok(EXIT_FAILED);
     };
+    // What the records say NOW, under the lock: the stop reads the working copy
+    // from it, and the audit line reads the conversation the predecessor holds.
+    let locked = crate::meta::read_bytes(&dir).unwrap_or_default();
+    let prior = crate::lifecycle::meta_value(&locked, &format!("harness_session.{}", target.slot));
+    let at = Record {
+        caller: &caller,
+        now,
+        from: &recorded,
+        to: &parsed.profile,
+        prior: &prior,
+    };
+    // THE STOP, before the dead proof and before anything durable is written.
+    match stop_running_tool(&dir, &target, &locked, parsed.stop_unknown, err)? {
+        Stop::Refused => return Ok(EXIT_FAILED),
+        // The record goes in only once the pane is PROVEN back at its shell:
+        // an audit line claiming a stop that did not finish would outlive
+        // every refusal above it.
+        Stop::Stopped(binary) => record(
+            &dir,
+            &at,
+            &target,
+            &format!("stopped {binary} in place (pane {})", target.pane),
+        ),
+        Stop::NotRunning => {}
+    }
     let Some(before) = crate::seat_relaunch::prove_dead(&dir, &target, RESEAT_VERB, err)? else {
         return Ok(EXIT_FAILED);
     };
@@ -463,16 +774,6 @@ pub(crate) fn run(
             )?;
             return Ok(EXIT_FAILED);
         }
-    };
-    let at = Record {
-        caller: &caller,
-        now,
-        from: &recorded,
-        to: &parsed.profile,
-        // The conversation the PREDECESSOR held, read off the row the move
-        // wrote: `reseated` appends it only when it can prove it, so an empty
-        // one here is the same "nothing to hand on" the roster records.
-        prior: &before.id_before,
     };
     let started = crate::seat_relaunch::start(&dir, &target, &after, now, RESEAT_VERB, err)?;
     // PAST THE LOCK before any readiness wait: a gated turn blocks up to 45s,
@@ -694,6 +995,118 @@ mod tests {
 
     fn parsed(words: &[&str]) -> Result<(String, String, String), String> {
         super::parse(&argv(words)).map(|parsed| (parsed.session, parsed.agent, parsed.profile))
+    }
+
+    #[test]
+    fn the_stop_flag_sits_anywhere_and_is_off_unless_it_is_typed() {
+        // `--using`'s own rule, for the same reason: this is where a hand puts
+        // a flag, and a seat must never be stopped by a spelling accident.
+        for words in [
+            &["work", "lead", "--using", "lunam", "--stop-unknown"][..],
+            &["work", "--stop-unknown", "lead", "--using", "lunam"][..],
+            &["--stop-unknown", "work", "lead", "--using", "lunam"][..],
+        ] {
+            let parsed = super::parse(&argv(words)).expect("a valid argv");
+            assert!(parsed.stop_unknown, "{words:?}");
+            assert_eq!(parsed.agent, "lead", "{words:?}");
+        }
+        let plain = super::parse(&argv(&["work", "lead", "--using", "lunam"])).expect("valid");
+        assert!(!plain.stop_unknown, "the flag is opt-in");
+        // And it is not a name: a seat called `--stop-unknown` cannot exist,
+        // and the ladder must not swallow the word as one.
+        assert_eq!(
+            super::parse(&argv(&["work", "--stop-unknown", "--using", "lunam"]))
+                .err()
+                .as_deref(),
+            Some(super::RESEAT_USAGE)
+        );
+    }
+
+    #[test]
+    fn a_caller_the_stop_cannot_place_is_never_cleared_to_kill() {
+        use super::CallerStanding;
+        use crate::procs::Proc;
+        // Parentage is the whole question, so one helper builds the rows.
+        let row = |pid, ppid| Proc {
+            pid,
+            ppid,
+            comm: "x".to_owned(),
+        };
+        let rows = vec![row(10, 1), row(20, 10), row(30, 20), row(40, 1)];
+        // The command runs under the seat's own tool: ending it would kill the
+        // process asking.
+        assert_eq!(
+            super::caller_standing(Some(10), Some(&rows), 30),
+            CallerStanding::Under
+        );
+        assert_eq!(
+            super::caller_standing(Some(10), Some(&rows), 40),
+            CallerStanding::Clear
+        );
+        // Either gap answers the same way, because ae may not end a tool it
+        // cannot prove is not its own parent.
+        assert_eq!(
+            super::caller_standing(None, Some(&rows), 40),
+            CallerStanding::Unprovable
+        );
+        assert_eq!(
+            super::caller_standing(Some(10), None, 40),
+            CallerStanding::Unprovable
+        );
+    }
+
+    #[test]
+    fn a_pane_is_back_at_a_shell_only_when_both_readings_prove_it() {
+        use crate::procs::Proc;
+        use crate::tmux::ObservedPaneProbe;
+        let shell = |pid| ObservedPaneProbe {
+            command: "zsh".to_owned(),
+            pid,
+        };
+        let empty: Vec<Proc> = Vec::new();
+        assert!(super::pane_back_at_shell(&shell(Some(10)), Some(&empty)));
+        // A process under the shell is not an idle shell: the seat's tool may
+        // be dying, or a human may have started something.
+        let busy = vec![Proc {
+            pid: 20,
+            ppid: 10,
+            comm: "vim".to_owned(),
+        }];
+        assert!(!super::pane_back_at_shell(&shell(Some(10)), Some(&busy)));
+        // The tool still holds the foreground.
+        assert!(!super::pane_back_at_shell(
+            &ObservedPaneProbe {
+                command: "codex".to_owned(),
+                pid: Some(10),
+            },
+            Some(&empty)
+        ));
+        // EVERY gap is false, so the bounded wait times out and refuses rather
+        // than calling a pane it could not read idle.
+        assert!(!super::pane_back_at_shell(&shell(None), Some(&empty)));
+        assert!(!super::pane_back_at_shell(&shell(Some(10)), None));
+    }
+
+    #[test]
+    fn a_frame_grammar_the_classifier_does_not_own_is_never_read_as_idle() {
+        use crate::harness_state::{HarnessState, classify};
+        use crate::tool::ToolKind;
+        // Muse's adapter declares the BorderDelimited input model, which
+        // routes it to CLAUDE's frame grammar — a grammar muse does not draw.
+        // The stop therefore may never take a muse frame for an idle claude
+        // one. Measured muse capture, plain, 80x24, its composer genuinely
+        // idle: the row above the prompt is muse's own `── Voice input …`
+        // rule, which is not a claude border, so the frame fails closed.
+        let idle_muse =
+            include_str!("../tests/fixtures/runtime-identity/muse-idle-plain-80x24.txt");
+        assert_eq!(classify(idle_muse, ToolKind::Muse), HarnessState::Unknown);
+        // An unmodelled tool has no grammar at all, and an empty capture is
+        // the shape a failed read takes.
+        assert_eq!(
+            classify(idle_muse, ToolKind::OpenCode),
+            HarnessState::Unknown
+        );
+        assert_eq!(classify("", ToolKind::Claude), HarnessState::Unknown);
     }
 
     #[test]

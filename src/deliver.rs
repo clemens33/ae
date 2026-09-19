@@ -309,7 +309,7 @@ pub fn deliver(
             return Ok(Err(Failure::Storage));
         }
     };
-    let Some(_held) = lock_target(request.dir, request.pane) else {
+    let Some(_held) = lock_target(request.dir, request.pane, LOCK_WAIT) else {
         writeln!(
             err,
             "ae: {} to {} ABANDONED — another delivery held the target lock for {}s. Re-send.",
@@ -1250,7 +1250,7 @@ pub fn deliver_guarded(
     }
     // (1b) The pane's send-lock. Declared BEFORE the lifecycle guard so every
     // exit — explicit or by scope — releases the lifecycle lock first.
-    let Some(send_lock) = lock_target(request.dir, request.pane) else {
+    let Some(send_lock) = lock_target(request.dir, request.pane, LOCK_WAIT) else {
         return Ok(Outcome::Skipped(Leg::TargetLocked));
     };
     // (1c) The full busy/human-input deferral — the `wait_for_quiet` owner,
@@ -1507,14 +1507,19 @@ fn unique_suffix() -> u64 {
 }
 
 /// Take the per-target lock — `ae_lock_target`.
-fn lock_target(dir: &Path, pane: &str) -> Option<std::fs::File> {
+///
+/// `wait` is the CALLER'S policy, not this function's: an ordinary delivery
+/// may wait [`LOCK_WAIT`] because it holds nothing, while `reseat` already
+/// holds the session's lifecycle lock when it asks and must not hold a session
+/// out of its own lifecycle for two minutes to find out a send is in flight.
+pub(crate) fn lock_target(dir: &Path, pane: &str, wait: Duration) -> Option<std::fs::File> {
     let root = dir.parent()?.join(".locks");
     std::fs::create_dir_all(&root).ok()?;
     let sanitized: String = pane
         .chars()
         .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
         .collect();
-    crate::store::lock(&root.join(format!("send-lock-{sanitized}")), LOCK_WAIT).ok()
+    crate::store::lock(&root.join(format!("send-lock-{sanitized}")), wait).ok()
 }
 
 #[cfg(test)]

@@ -13,6 +13,8 @@ that answer and lends it out:
 | Borrowed | What it decides |
 |---|---|
 | `prove_dead` | the whole dead-proof ladder: the pane exists, is not dead, carries a slot, records a tool, has a usable work dir, resolves a seat command, is not running that tool, is not busy, and reads `Dead` to the one liveness owner |
+| `usable_work_dir` | the session's recorded working copy, or the one refusal that names it gone — shared because the stop needs the same answer BEFORE it kills anything |
+| `identity_proven` | whether the seat's own tool holds the pane, which is how the stop decides there is anything to stop |
 | `start` | the launch-attempt stamp, the capture floor, the input-line clear, the `cd` + `_run` paste, and the tool-identity poll |
 | `observe_identity` | one reading: the pane's foreground always, the process walk when the caller is spending a snapshot |
 | `turn_verdict` | what a turn outcome means for the exit code |
@@ -28,8 +30,8 @@ Everything durable is answered from the session's records, before tmux is
 consulted at all — a stopped session diagnoses a typo exactly as a running one
 does, and a live seat is only reached at the dead proof.
 
-1. the argv: `<session> <agent> --using <profile>`, the flag anywhere, a
-   `profile@client` override refused as launch-only;
+1. the argv: `<session> <agent> --using <profile> [--stop-unknown]`, either
+   flag anywhere, a `profile@client` override refused as launch-only;
 2. the session, in the world the caller already enumerated;
 3. the caller rule: a pane ae STAMPED may reseat only its own session; an
    unstamped shell may reseat any;
@@ -45,27 +47,62 @@ does, and a live seat is only reached at the dead proof.
 
 Then, under `.lifecycle.<session>.lock`:
 
-8. `prove_dead`;
-9. the seed pack is BUILT — before anything is removed, because it reads the
-   seat's recorded first message and step 10 deletes that file;
-10. the seed is published as `seed.<agent>.md` (0600), then `run::clear_slot`
+8. the STOP (`stop_running_tool`), for a seat whose tool is still running. A
+   seat already gone returns straight to step 9 having read nothing but the
+   pane, and every arm here refuses BEFORE the respawn, which is the one
+   write: the working copy (a durable fact the records already carry, and
+   refusing on it after a kill would be the worst order this verb could
+   take); the caller proven not to be running UNDER the target, because the
+   pane check at step 7 is only half that rule — a process the target's own
+   tool started carries no `$TMUX_PANE` to compare, so `procs::is_descendant_of`
+   walks the tree, and a missing pid or unusable table REFUSES; the pane's
+   SEND-LOCK, asked with a short wait of its own because the lifecycle lock is
+   already held; then the FRAME.
+
+   `harness_state::classify` is the whole frame rule, read TWICE `FRAME_GAP`
+   apart. `Busy` refuses always; anything not `Idle` on both readings refuses
+   unless `--stop-unknown`; a capture ae could not take is `Unknown`, never
+   idle. `deliver`'s busy reading is deliberately not used — it answers
+   whether the input box holds text, which is FALSE mid-turn. Only claude's
+   and codex's grammars are owned: muse declares claude's input model and
+   draws its own frame, so it reads `Unknown` and fails closed (pinned on a
+   measured muse capture), every unmodelled composer is `Unknown` always, and
+   even claude proves `Idle` from the pane's recent output, so a seat that has
+   not finished a turn since it started needs the flag.
+
+   Then `respawn-pane -k -c <work_dir>` through `session_tmux::Op::RespawnPane`
+   — the op the monitor panes already use, on the existing tmux door. Measured
+   on tmux 3.7b: the pane id, its `@ae_*` options, its index and its scrollback
+   survive; its process tree does not; tmux's default shell comes back in the
+   `-c` directory. A tmux that refuses the argv leaves the tool running and
+   says so in its own words. A BOUNDED 10 s wait for `pane_back_at_shell`
+   follows — a shell in the foreground with nothing under it, every gap false
+   so it times out rather than call a pane it could not read idle — and on
+   timeout the refusal names what holds the pane with the meta untouched.
+   Last, the stop's own event, written once the pane is PROVEN back at its
+   shell and never before, naming the binary ended because the meta keeps only
+   the current one.
+9. `prove_dead`;
+10. the seed pack is BUILT — before anything is removed, because it reads the
+    seat's recorded first message and step 11 deletes that file;
+11. the seed is published as `seed.<agent>.md` (0600), then `run::clear_slot`
     removes the start marker, the prompt file, the launch script and the
     per-tool id files, so the successor's `_run` has no stale first message
     and no resume decision to make;
-11. ONE guarded meta replacement (`meta::publish_seat_move`);
-12. `read_seat` again — the command, the tool and the conversation are the new
+12. ONE guarded meta replacement (`meta::publish_seat_move`);
+13. `read_seat` again — the command, the tool and the conversation are the new
     profile's now — then `start`.
 
 The lock is DROPPED before any readiness wait, because a gated turn blocks up
 to 45 s and no session may be held out of its own lifecycle for that. Past it:
 
-13. the tool's OWN launch turn where its adapter has one (codex's rollout does
+14. the tool's OWN launch turn where its adapter has one (codex's rollout does
     not exist until a user turn, and that registration handshake must not sit
     under a 24 KB seed);
-14. the seed, as `⟦ae:ctx⟧` — `provenance` puts the marker on, because
+15. the seed, as `⟦ae:ctx⟧` — `provenance` puts the marker on, because
     `deliver_launch_turn` pastes its text verbatim;
-15. the post-launch capture for a slot that still reads `pending`;
-16. a LAST identity reading, because exit 0 means the seat is up NOW.
+16. the post-launch capture for a slot that still reads `pending`;
+17. a LAST identity reading, because exit 0 means the seat is up NOW.
 
 ## The meta move
 
@@ -94,15 +131,30 @@ A conversation the tagger cannot prove is not handed on: `prior_with` refuses
 an id it cannot judge rather than recording a guess, so a seat whose capture
 never completed leaves no predecessor row.
 
-## The two crash windows
+## The three crash windows
 
-Neither is atomic and neither needs to be — both are finished by hand with a
-verb that already exists, and nothing before the paste needs undoing.
+None is atomic and none needs to be — all are finished by hand with a verb
+that already exists, and nothing before the stop needs undoing.
 
 | Interrupted | What is on disk | The way forward |
 |---|---|---|
+| between the stop and the slot cleanup | old profile recorded, launch files intact, pane at its shell | `relaunch <agent>` — the seat comes back on the tool it had |
 | between the slot cleanup and the meta write | old profile recorded, no start marker, no launch files | `relaunch <agent>` — the seat comes back on the tool it had |
 | between the meta write and the tool starting | new profile recorded, pane at its shell | `relaunch <agent>` — the refusal says so by name |
+
+A stop with no record is the shape ae prefers to a record with no stop: the
+first is recovered from the meta, the second would mislead every later reader.
+
+## What the stop does NOT cover
+
+The watchdog's dead verdict has no grace and no launch awareness
+(`watchdog::classify_dead`), so a session with a live watchdog can book one
+`agent process dead — dropped to shell` alert, and its Telegram notice, inside
+the ~1–20 s the pane sits at its shell. This is not new — `spawn` and
+`relaunch` leave the same window — it is non-destructive, and the latch clears
+with one `dead-cleared` on the next cycle that sees the successor. Closing it
+means a grace in the daemon's verdict ladder keyed on the `.launch-attempt`
+stamp the stop already writes, which is that owner's change to make.
 
 ## The seed
 

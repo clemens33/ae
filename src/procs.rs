@@ -134,6 +134,30 @@ pub fn has_descendant_named(procs: &[Proc], pane_pid: u32, agent_bin: &str) -> b
     false
 }
 
+/// Whether `pid` runs BENEATH `ancestor` — the walk [`has_descendant_named`]
+/// makes downwards, made UPWARDS from one known pid.
+///
+/// A seat cannot reseat itself, and the pane id is only half of that rule: a
+/// caller the target's own tool started may carry no `$TMUX_PANE` to compare,
+/// and the process tree is the other half. Walks up with a visited set,
+/// because a damaged table can name a cycle and this may not hang.
+#[must_use]
+pub(crate) fn is_descendant_of(procs: &[Proc], ancestor: u32, pid: u32) -> bool {
+    let parents: HashMap<u32, u32> = procs.iter().map(|proc| (proc.pid, proc.ppid)).collect();
+    let mut visited: HashSet<u32> = HashSet::new();
+    let mut current = pid;
+    while visited.insert(current) {
+        let Some(&parent) = parents.get(&current) else {
+            return false;
+        };
+        if parent == ancestor {
+            return true;
+        }
+        current = parent;
+    }
+    false
+}
+
 /// Whether ANY process at all runs beneath `pane_pid` — the question "is this
 /// pane's shell busy", which [`has_descendant_named`] cannot answer because it
 /// asks about ONE name.
@@ -434,5 +458,36 @@ mod tests {
             descendancy(Some(&procs), 100, "claude"),
             Descendancy::Absent
         );
+    }
+
+    #[test]
+    fn a_caller_under_the_target_tool_is_found_and_a_cycle_does_not_hang() {
+        // Only the edges matter here, so the rows are built by one helper:
+        // the walk asks about parentage and never about a command name.
+        let row = |pid, ppid| Proc {
+            pid,
+            ppid,
+            comm: "x".to_owned(),
+        };
+        // The pane's shell, the seat's tool, and a process the TOOL started —
+        // which is what a `reseat` run from inside the seat would be.
+        let procs = vec![row(100, 1), row(200, 100), row(300, 200), row(400, 1)];
+        assert!(super::is_descendant_of(&procs, 100, 300), "under the pane");
+        assert!(super::is_descendant_of(&procs, 200, 300), "under the tool");
+        assert!(
+            !super::is_descendant_of(&procs, 100, 400),
+            "a sibling shell"
+        );
+        assert!(
+            !super::is_descendant_of(&procs, 100, 100),
+            "not its own ancestor"
+        );
+        // A pid the table does not name cannot be placed: fail closed to false
+        // rather than walk off the end of a damaged snapshot.
+        assert!(!super::is_descendant_of(&procs, 100, 999));
+        // A hand-edited or damaged table can name a cycle. The visited set is
+        // what makes this terminate at all.
+        let cycle = vec![row(10, 11), row(11, 10)];
+        assert!(!super::is_descendant_of(&cycle, 99, 10));
     }
 }

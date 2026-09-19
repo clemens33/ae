@@ -123,10 +123,15 @@ pub(crate) enum Op<'a> {
         /// The command the new pane runs, or empty for a shell.
         command: &'a [String],
     },
-    /// `respawn-pane -k -t <pane> <command…>` — replace a monitor process in
-    /// place, preserving its pane id and the monitor window's layout.
+    /// `respawn-pane -k [-c <dir>] -t <pane> <command…>` — replace a pane's
+    /// process in place, preserving its pane id, its pane options and its
+    /// window's layout. Used for the monitor panes, and by `reseat` to stop a
+    /// seat's tool and leave the pane at a shell in the session's work dir.
     RespawnPane {
         pane: &'a str,
+        /// The directory the replacement starts in, or empty to inherit.
+        work_dir: &'a str,
+        /// The command the new process runs, or empty for a shell.
         command: &'a [String],
     },
     /// `select-layout -t <target> <layout>`.
@@ -269,8 +274,16 @@ pub(crate) fn argv(server: &ServerId, op: &Op<'_>) -> TmuxArgv {
             args.extend(["-P", "-F", PANE_ID_FORMAT].map(ToOwned::to_owned));
             args.extend(command.iter().cloned());
         }
-        Op::RespawnPane { pane, command } => {
-            args.extend(["respawn-pane", "-k", "-t", pane].map(ToOwned::to_owned));
+        Op::RespawnPane {
+            pane,
+            work_dir,
+            command,
+        } => {
+            args.extend(["respawn-pane", "-k"].map(ToOwned::to_owned));
+            if !work_dir.is_empty() {
+                args.extend(["-c", work_dir].map(ToOwned::to_owned));
+            }
+            args.extend(["-t", pane].map(ToOwned::to_owned));
             args.extend(command.iter().cloned());
         }
         Op::SelectLayout { target, layout } => {
@@ -869,9 +882,25 @@ mod tests {
         assert_eq!(
             words(&Op::RespawnPane {
                 pane: "%9",
+                work_dir: "",
                 command: &cmd,
             }),
             vec!["respawn-pane", "-k", "-t", "%9", "/m/events-tail"]
+        );
+    }
+
+    #[test]
+    fn a_seat_respawn_names_its_directory_and_runs_the_default_shell() {
+        // `reseat`'s stop: no command, so tmux starts the pane's default
+        // shell, and `-c` is what leaves that shell in the session's own
+        // working copy rather than wherever the dead tool had wandered.
+        assert_eq!(
+            words(&Op::RespawnPane {
+                pane: "%3",
+                work_dir: "/w/repo",
+                command: &[],
+            }),
+            vec!["respawn-pane", "-k", "-c", "/w/repo", "-t", "%3"]
         );
     }
 

@@ -1421,7 +1421,7 @@ keeps its original path. That path is recorded session state, so a later `stop` 
 resume returns every agent to the same working directory instead of creating a second
 copy under the new session name. Live renames never move managed work.
 
-## `ae reseat <session> <agent> --using <profile>`
+## `ae reseat <session> <agent> --using <profile> [--stop-unknown]`
 
 Move ONE seat to another profile, in place. Same slot, same pane, same name, same
 records — only the tool changes, and the successor is handed ae's own account of the
@@ -1436,11 +1436,44 @@ longer answer.
 ae reseat my-feature colead --using lunam
 ```
 
-**It kills nothing.** The seat's tool must already be gone. The proof is the same one
+**It does the full round.** A seat whose tool is still running is stopped where it
+stands and then moved: same pane id, same pane stamps, same scrollback, the shell left
+idle in the session's recorded working copy. A seat whose tool is already gone takes
+exactly the path it always took. Either way the seat must then pass the same dead proof
 [`relaunch`](helpers.md) makes — a pane that exists, is not dead, is not busy, carries an
 ae slot, and whose recorded tool is provably not running — so both verbs refuse for the
-same reasons in the same order, and a live seat is a refusal rather than a tool ae ends
-to make room for another. Quit the agent yourself first.
+same reasons in the same order.
+
+**The stop is never silent.** ae reads the seat's harness frame before it ends anything,
+through the same classifier the watchdog uses, and only a frame positively proven IDLE
+may be stopped:
+
+- a frame that says a turn is running is **refused**, and the refusal names
+  `interrupt <agent>` as the next step. No flag lifts this;
+- a frame ae cannot read is **refused** unless you pass `--stop-unknown`. The flag says
+  "stop it anyway"; it does not make an unreadable frame idle;
+- the frame is read **twice**, a second apart, because between a tool receiving Enter and
+  drawing its spinner the box is briefly empty and one reading would call that idle.
+
+Which frames ae can read is a property of the tool, not of this verb:
+
+| tool | frame ae can prove idle |
+|---|---|
+| `claude`, `codex` | yes — these are the two grammars the classifier owns |
+| `muse` | no in practice: it declares claude's input model but draws its own frame, so it reads *unknown* and fails closed |
+| `gemini`, `agy`, `grok`, `opencode`, anything unrecognised | no — unmodelled composer, always *unknown* |
+
+Even for claude, IDLE is proven from the pane's recent output, so the row above the input
+box has to be claude's own `done` summary: a seat that has not finished a turn since it
+started reads *unknown* and needs the flag. When in doubt, quit the agent yourself first —
+a seat that is already gone never reaches any of this.
+
+The stop happens under the session's lifecycle lock and under the pane's own send-lock, so
+no delivery can land a turn between the frame ae read and the tool it ends; a delivery
+already in flight is a refusal, not a wait. It happens **after** every refusal the records
+can answer, so a typo never kills a seat. Once the tool is gone ae waits up to 10 seconds
+for the pane to come back to an idle shell, and refuses by name if it does not — with the
+meta untouched, so the seat still records its old profile and `relaunch` brings it back.
 
 The seed the successor receives is exactly the pack
 [`ae brief --seat`](#--seat--the-seed-pack) prints, delivered as ae's own setup turn
@@ -1472,17 +1505,21 @@ an argv that is not `<session> <agent> --using <profile>`; a session ae cannot r
 caller in another session; a seat the roster does not name (the refusal lists the roster);
 a profile the seat already runs (`relaunch` is the verb for that); a profile `[profiles]`
 does not define or cannot lex; the caller's own pane; a pane whose stamp disagrees with the
-roster; then the dead proof's own ladder.
+roster; then, only for a seat whose tool is still running, the working copy, a caller
+running *underneath* that tool, a delivery holding the pane, a busy frame and an
+unreadable frame; then the dead proof's own ladder.
 
-**If it stops half way.** Nothing before the paste needs undoing, and both windows are
+**If it stops half way.** Nothing before the stop needs undoing, and every window is
 recoverable by hand. Before the meta is written the seat still records its old profile and
-has no start marker, so `relaunch` brings it back on the tool it had. After the meta is
-written the pane sits at its shell, which is exactly what `relaunch` finishes — the
-refusal says so by name.
+has no start marker, so `relaunch` brings it back on the tool it had — whether the stop
+had already happened or not. After the meta is written the pane sits at its shell, which
+is exactly what `relaunch` finishes — the refusal says so by name.
 
 Every attempt that reaches the pane is recorded as a `reseat` event, naming its caller (a
 seat by its own ref, a plain shell as the human), both profiles and the conversation being
-left behind. The seat's history is
+left behind. A stop gets its own record, written once the pane is proven back at its shell
+and never before — it names the binary that was ended, because the meta keeps only the
+current one. The seat's history is
 the only place a later reader can see that its tool changed, and the meta keeps only the
 current profile — so the pairing of a predecessor conversation with the profile it ran under
 lives on that event and nowhere else.

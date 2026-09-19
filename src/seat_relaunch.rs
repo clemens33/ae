@@ -330,20 +330,13 @@ pub(crate) fn prove_dead(
         return Ok(None);
     }
     let bytes = crate::meta::read_bytes(dir).unwrap_or_default();
-    let work_dir = crate::lifecycle::meta_value(&bytes, "work_dir");
-    if work_dir.is_empty() || !crate::lifecycle::dir_exists(Path::new(&work_dir)) {
-        writeln!(
-            err,
-            "Error: '{}' records its working copy at {} but it is gone — restore it, or end the session.",
-            crate::lifecycle::meta_value(&bytes, "session"),
-            if work_dir.is_empty() {
-                "nothing"
-            } else {
-                &work_dir
-            }
-        )?;
-        return Ok(None);
-    }
+    let work_dir = match usable_work_dir(&bytes) {
+        Ok(work_dir) => work_dir,
+        Err(line) => {
+            writeln!(err, "{line}")?;
+            return Ok(None);
+        }
+    };
     // The ONE seat-command resolution, so `_run` is handed the same command the
     // launch would have composed and its own snapshot check can refuse a tool
     // that changed underneath the seat.
@@ -395,6 +388,28 @@ pub(crate) fn prove_dead(
         work_dir,
         id_before,
     }))
+}
+
+/// The session's recorded working copy, or the ONE refusal that names it gone.
+///
+/// Shared with `reseat`'s stop, which needs the same answer BEFORE it kills
+/// anything: the directory is what the respawned shell is started in, and
+/// killing a tool only to refuse on a durable fact the records already carried
+/// would be the worst order this verb could take.
+pub(crate) fn usable_work_dir(bytes: &[u8]) -> Result<String, String> {
+    let work_dir = crate::lifecycle::meta_value(bytes, "work_dir");
+    if work_dir.is_empty() || !crate::lifecycle::dir_exists(Path::new(&work_dir)) {
+        return Err(format!(
+            "Error: '{}' records its working copy at {} but it is gone — restore it, or end the session.",
+            crate::lifecycle::meta_value(bytes, "session"),
+            if work_dir.is_empty() {
+                "nothing"
+            } else {
+                &work_dir
+            }
+        ));
+    }
+    Ok(work_dir)
 }
 
 /// The BUSY refusals — a pane whose shell is not idle, in the two shapes that
