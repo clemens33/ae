@@ -4224,6 +4224,7 @@ impl Cycle<'_> {
                             effort: None,
                         },
                         seen.pin,
+                        seen.tool.adapter().pin_match,
                     ),
                     // A profile that pins NO model has nothing to drift from;
                     // that is a report, not a disagreement.
@@ -11747,6 +11748,28 @@ mod tests {
         // The mark is held with the rest of the identity, so a busy seat does
         // not lose its drift warning mid-turn.
         assert!(resolve(&cycle, &mut carried, "", Some("Opus 4.8"), Verdict::Active).drift);
+    }
+
+    #[test]
+    fn the_drift_mark_reads_a_claude_pin_through_family_version() {
+        let idle = include_str!("../tests/fixtures/harness-state/claude-idle-167x40.txt");
+        let busy = include_str!("../tests/fixtures/harness-state/claude-busy-nbsp-tip-101x41.txt");
+        let scratch = Scratch::new("identity-drift-family");
+        let helper = SendHelper::for_session(&scratch.0);
+        let server = ServerId::Ambient;
+        let cycle = identity_cycle(&scratch, &helper, &server, "L1");
+
+        // The idle frame draws `Fable 5.1`: a `fable` pin satisfies it.
+        let mut carried = PaneState::default();
+        let proven = resolve(&cycle, &mut carried, idle, Some("fable"), Verdict::Active);
+        assert_eq!(proven.model.as_deref(), Some("Fable 5.1"));
+        assert!(!proven.drift);
+
+        // The busy frame draws `Opus 5 (1M context)`: a `fable` pin does not.
+        let mut carried = PaneState::default();
+        let proven = resolve(&cycle, &mut carried, busy, Some("fable"), Verdict::Active);
+        assert_eq!(proven.model.as_deref(), Some("Opus 5 (1M context)"));
+        assert!(proven.drift);
     }
 
     /// The gate is the CYCLE's, not just the classifier's: a mutant that

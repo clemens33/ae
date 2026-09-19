@@ -13,7 +13,7 @@
 use std::path::Path;
 
 use crate::harness_state::{HarnessIdentity, current_identity};
-use crate::tool::ToolKind;
+use crate::tool::{PinMatch, ToolKind};
 
 /// The `ae list` drift cell for one seat.
 ///
@@ -38,9 +38,10 @@ pub enum Decision {
     /// No model was proved: write nothing. A failed capture must never erase a
     /// retained observation.
     Silent,
-    /// The frame's model equals the current pin: any retained row is retired.
+    /// The frame's model satisfies the current pin under the tool's rule: any
+    /// retained row is retired.
     Retire,
-    /// The frame's model differs from the pin, or the profile pins none:
+    /// The frame's model does not satisfy the pin, or the profile pins none:
     /// record it. Recording is not injection — whether an observation may be
     /// replayed into the flag on resume is the adapter's own capability
     /// ([`crate::tool::ModelSpec`]). A `None` pin is report-only, because the
@@ -53,19 +54,107 @@ pub enum Decision {
     },
 }
 
-/// Decide from one frame identity and the profile's model flag value.
+/// Decide from one frame identity, the profile's model flag value, and the
+/// tool's pin-match rule.
 #[must_use]
-pub fn decide(identity: &HarnessIdentity, pin: Option<&str>) -> Decision {
+pub fn decide(identity: &HarnessIdentity, pin: Option<&str>, pin_match: PinMatch) -> Decision {
     let Some(model) = identity.model.as_deref() else {
         return Decision::Silent;
     };
     match pin {
-        Some(pin) if pin == model => Decision::Retire,
+        Some(pin) if satisfies(pin, model, pin_match) => Decision::Retire,
         pin => Decision::Record {
             model: model.to_owned(),
             pin: pin.map(str::to_owned),
         },
     }
+}
+
+/// Whether a drawn model name satisfies a pin under the adapter's rule.
+fn satisfies(pin: &str, model: &str, pin_match: PinMatch) -> bool {
+    match pin_match {
+        PinMatch::Exact => pin == model,
+        PinMatch::FamilyVersion => family_version_equivalent(pin, model),
+    }
+}
+
+/// One model name split into family words and version numbers, in order.
+struct FamilyVersion {
+    family: Vec<String>,
+    version: Vec<String>,
+}
+
+/// Sort one token into its list: the vendor token and date stamps are not
+/// evidence of anything.
+fn push_token(token: &str, family: &mut Vec<String>, version: &mut Vec<String>) {
+    if token.is_empty() || token == "claude" {
+        return;
+    }
+    let digits = token.bytes().all(|byte| byte.is_ascii_digit());
+    if digits && token.len() == 8 {
+        return;
+    }
+    if digits {
+        version.push(token.to_owned());
+    } else {
+        family.push(token.to_owned());
+    }
+}
+
+/// Tokenise one model name for the family/version rule: lowercase, drop a
+/// trailing parenthesised suffix (decoration on both sides), split on every
+/// non-alphanumeric char and on each letter/digit boundary, drop the vendor
+/// token `claude` and any all-digit token of length 8 (a date stamp).
+fn tokenise(text: &str) -> FamilyVersion {
+    let lowered = text.to_lowercase();
+    let bare = match lowered.rfind('(') {
+        Some(open) if lowered.ends_with(')') => &lowered[..open],
+        _ => lowered.as_str(),
+    };
+    let mut family = Vec::new();
+    let mut version = Vec::new();
+    let mut token = String::new();
+    let mut token_is_digit = false;
+    let mut open = false;
+    for ch in bare.chars() {
+        if !ch.is_alphanumeric() {
+            if open {
+                push_token(&token, &mut family, &mut version);
+                token.clear();
+                open = false;
+            }
+            continue;
+        }
+        let digit = ch.is_ascii_digit();
+        if open && digit != token_is_digit {
+            push_token(&token, &mut family, &mut version);
+            token.clear();
+        }
+        token_is_digit = digit;
+        open = true;
+        token.push(ch);
+    }
+    if open {
+        push_token(&token, &mut family, &mut version);
+    }
+    FamilyVersion { family, version }
+}
+
+/// Whether a drawn model name satisfies a pin under the family/version rule.
+///
+/// The families must agree exactly; a pin with no version numbers accepts any
+/// drawn version of that family, otherwise the versions must agree too. An
+/// empty family on either side never satisfies — that fails toward Record.
+fn family_version_equivalent(pin: &str, model: &str) -> bool {
+    let pin = tokenise(pin);
+    let model = tokenise(model);
+    if pin.family.is_empty() || model.family.is_empty() {
+        return false;
+    }
+    if pin.family != model.family {
+        return false;
+    }
+    pin.version.is_empty() || pin.version == model.version
 }
 
 /// Observe one captured pane and publish what it proves.
@@ -87,7 +176,11 @@ pub(crate) fn observe(
     launch_id: &str,
     pin: Option<&str>,
 ) -> Result<(), String> {
-    match decide(&current_identity(capture, tool), pin) {
+    match decide(
+        &current_identity(capture, tool),
+        pin,
+        tool.adapter().pin_match,
+    ) {
         Decision::Silent => Ok(()),
         Decision::Retire => {
             crate::meta::record_observed_model(dir, slot, agent, tool, launch_id, None)
@@ -107,8 +200,14 @@ pub(crate) fn observe(
 
 #[cfg(test)]
 mod tests {
-    use super::{Decision, decide};
+    #![allow(
+        clippy::disallowed_methods,
+        reason = "fixtures build and inspect real directories; the boundary is about \
+                  what PRODUCT code may reach"
+    )]
+    use super::{Decision, decide, family_version_equivalent};
     use crate::harness_state::HarnessIdentity;
+    use crate::tool::PinMatch;
 
     fn frame(model: &str) -> HarnessIdentity {
         HarnessIdentity {
@@ -120,27 +219,133 @@ mod tests {
     #[test]
     fn a_missing_model_is_silent_never_a_retirement() {
         assert_eq!(
-            decide(&HarnessIdentity::default(), Some("fable")),
+            decide(&HarnessIdentity::default(), Some("fable"), PinMatch::Exact),
             Decision::Silent
         );
     }
 
     #[test]
     fn a_frame_equal_to_the_pin_retires_and_anything_else_records() {
-        assert_eq!(decide(&frame("fable"), Some("fable")), Decision::Retire);
         assert_eq!(
-            decide(&frame("opus"), Some("fable")),
+            decide(&frame("fable"), Some("fable"), PinMatch::Exact),
+            Decision::Retire
+        );
+        assert_eq!(
+            decide(&frame("opus"), Some("fable"), PinMatch::Exact),
             Decision::Record {
                 model: "opus".to_owned(),
                 pin: Some("fable".to_owned())
             }
         );
         assert_eq!(
-            decide(&frame("opus"), None),
+            decide(&frame("opus"), None, PinMatch::Exact),
             Decision::Record {
                 model: "opus".to_owned(),
                 pin: None
             }
         );
+    }
+
+    #[test]
+    fn family_version_matches_pins_to_display_labels() {
+        for (pin, drawn) in [
+            ("fable", "Fable 5.1"),
+            ("claude-opus-5", "Opus 5"),
+            ("claude-opus-5", "Opus 5 (1M context)"),
+            ("opus", "Opus 5"),
+            ("claude-haiku-4-5-20251001", "Haiku 4.5"),
+        ] {
+            assert!(family_version_equivalent(pin, drawn), "{pin} vs {drawn}");
+        }
+        for (pin, drawn) in [
+            ("claude-opus-5", "Opus 5.1"),
+            ("fable", "Opus 5 (1M context)"),
+            ("claude-opus-5", "Sonnet 5"),
+            // Families compare exactly, never by prefix, in either direction.
+            ("opus", "Opus X 5"),
+            ("opus-x", "Opus 5"),
+            ("", "Fable 5.1"),
+            ("fable", ""),
+            ("5", "Opus 5"),
+            ("Opus 5", "5"),
+        ] {
+            assert!(!family_version_equivalent(pin, drawn), "{pin} vs {drawn}");
+        }
+    }
+
+    #[test]
+    fn family_version_direction_follows_the_pin() {
+        // A versioned pin is symmetric: both sides name the same version.
+        assert!(family_version_equivalent("Opus 5", "claude-opus-5"));
+        assert!(family_version_equivalent(
+            "Haiku 4.5",
+            "claude-haiku-4-5-20251001"
+        ));
+        // A bare pin accepts any drawn version — but as the DRAWN side it
+        // proves no version, so the reverse does not hold.
+        assert!(family_version_equivalent("fable", "Fable 5.1"));
+        assert!(!family_version_equivalent("Fable 5.1", "fable"));
+        assert!(family_version_equivalent("opus", "Opus 5"));
+        assert!(!family_version_equivalent("Opus 5", "opus"));
+    }
+
+    #[test]
+    fn decide_retires_a_claude_pin_its_own_label_satisfies() {
+        assert_eq!(
+            decide(&frame("Fable 5.1"), Some("fable"), PinMatch::FamilyVersion),
+            Decision::Retire
+        );
+        assert_eq!(
+            decide(
+                &frame("Opus 5 (1M context)"),
+                Some("fable"),
+                PinMatch::FamilyVersion
+            ),
+            Decision::Record {
+                model: "Opus 5 (1M context)".to_owned(),
+                pin: Some("fable".to_owned())
+            }
+        );
+    }
+
+    #[test]
+    fn decide_with_exact_keeps_byte_equality_for_drawn_flag_values() {
+        assert_eq!(
+            decide(&frame("gpt-5.6-sol"), Some("gpt-5.6-sol"), PinMatch::Exact),
+            Decision::Retire
+        );
+        assert_eq!(
+            decide(&frame("gpt-6-astra"), Some("gpt-5.6-sol"), PinMatch::Exact),
+            Decision::Record {
+                model: "gpt-6-astra".to_owned(),
+                pin: Some("gpt-5.6-sol".to_owned())
+            }
+        );
+    }
+
+    #[test]
+    fn a_stale_false_row_self_heals_on_the_next_observation() {
+        let live = include_str!("../tests/fixtures/harness-state/claude-idle-167x40.txt");
+        let dir = std::env::temp_dir().join(format!("ae-drift-heal-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch");
+        std::fs::write(
+            dir.join("meta"),
+            "schema=2\nseat.main=lead\nprofile.main=fable5\nagent_bin.main=claude\nlaunch_id.main=L1\nobserved_model.main=Fable 5.1\nobserved_model_pin.main=fable\n",
+        )
+        .expect("meta");
+        super::observe(
+            &dir,
+            "main",
+            "lead",
+            crate::tool::ToolKind::Claude,
+            live,
+            "L1",
+            Some("fable"),
+        )
+        .expect("observe");
+        let text = std::fs::read_to_string(dir.join("meta")).expect("read");
+        assert!(!text.contains("observed_model"), "{text}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

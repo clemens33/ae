@@ -388,6 +388,21 @@ impl ModelSpec {
     }
 }
 
+/// How one drawn model name is judged against the profile's pin.
+///
+/// Data on the adapter row, next to [`ModelSpec`]: the drift decision matches
+/// this value, never the tool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PinMatch {
+    /// Byte equality: the drawn name satisfies the pin only when it is the
+    /// same string (every tool whose frame draws the flag's own vocabulary).
+    Exact,
+    /// Family/version equivalence (claude): the frame draws a display label
+    /// (`Fable 5.1`) while the flag pins a harness id (`fable`), so the
+    /// decision compares tokenised families and versions instead.
+    FamilyVersion,
+}
+
 /// Which pane grammar proves a live model-and-effort identity for one harness.
 ///
 /// Data only — the identity reader matches this enum, never the tool.
@@ -484,6 +499,8 @@ pub(crate) struct ToolAdapter {
     /// its own capability ([`ModelSpec`]). An unobserved tool is never told a
     /// model by ae and is reported drift-unknown.
     pub(crate) model: ModelSpec,
+    /// How a drawn model name is judged against the profile's pin.
+    pub(crate) pin_match: PinMatch,
     /// Local quota discovery behaviour.
     pub(crate) quota: QuotaSpec,
     /// Local usage discovery behaviour.
@@ -525,6 +542,7 @@ const CLAUDE: ToolAdapter = ToolAdapter {
     },
     identity: IdentitySpec::BorderComposer,
     model: ModelSpec::ReportOnly(&["--model"]),
+    pin_match: PinMatch::FamilyVersion,
     quota: QuotaSpec {
         source: QuotaSource::ClaudeCache,
         config_home_env: Some("CLAUDE_CONFIG_DIR"),
@@ -571,6 +589,7 @@ const CODEX: ToolAdapter = ToolAdapter {
     },
     identity: IdentitySpec::StyleFooter,
     model: ModelSpec::Replayable(&["-m", "--model"]),
+    pin_match: PinMatch::Exact,
     quota: QuotaSpec {
         source: QuotaSource::CodexRollouts,
         config_home_env: Some("CODEX_HOME"),
@@ -617,6 +636,7 @@ const GEMINI: ToolAdapter = ToolAdapter {
     },
     identity: IdentitySpec::Unmodelled,
     model: ModelSpec::Unobserved,
+    pin_match: PinMatch::Exact,
     quota: QuotaSpec {
         source: QuotaSource::Unsupported,
         config_home_env: None,
@@ -681,6 +701,7 @@ const AGY: ToolAdapter = ToolAdapter {
     },
     identity: IdentitySpec::TrailingLabel,
     model: ModelSpec::Unobserved,
+    pin_match: PinMatch::Exact,
     quota: QuotaSpec {
         source: QuotaSource::Unsupported,
         config_home_env: None,
@@ -750,6 +771,7 @@ const GROK: ToolAdapter = ToolAdapter {
     },
     identity: IdentitySpec::BorderText,
     model: ModelSpec::Unobserved,
+    pin_match: PinMatch::Exact,
     quota: QuotaSpec {
         source: QuotaSource::Unsupported,
         config_home_env: None,
@@ -804,6 +826,7 @@ const MUSE: ToolAdapter = ToolAdapter {
     },
     identity: IdentitySpec::RuleFooter,
     model: ModelSpec::Unobserved,
+    pin_match: PinMatch::Exact,
     quota: QuotaSpec {
         source: QuotaSource::Unsupported,
         config_home_env: None,
@@ -881,6 +904,7 @@ const OPENCODE: ToolAdapter = ToolAdapter {
     },
     identity: IdentitySpec::RailStatus,
     model: ModelSpec::Unobserved,
+    pin_match: PinMatch::Exact,
     quota: QuotaSpec {
         source: QuotaSource::Unsupported,
         config_home_env: None,
@@ -924,6 +948,7 @@ const UNKNOWN: ToolAdapter = ToolAdapter {
     },
     identity: IdentitySpec::Unmodelled,
     model: ModelSpec::Unobserved,
+    pin_match: PinMatch::Exact,
     quota: QuotaSpec {
         source: QuotaSource::Unsupported,
         config_home_env: None,
@@ -1147,6 +1172,28 @@ mod tests {
     }
 
     #[test]
+    fn only_claude_judges_a_pin_by_family_version() {
+        // Claude's frame draws a display label (`Fable 5.1`) while its flag
+        // pins a harness id (`fable`); every other tool draws the flag's own
+        // vocabulary, so byte equality is the rule there.
+        assert_eq!(
+            ToolKind::Claude.adapter().pin_match,
+            PinMatch::FamilyVersion
+        );
+        for tool in [
+            ToolKind::Codex,
+            ToolKind::Gemini,
+            ToolKind::Agy,
+            ToolKind::Grok,
+            ToolKind::Muse,
+            ToolKind::OpenCode,
+            ToolKind::Unknown,
+        ] {
+            assert_eq!(tool.adapter().pin_match, PinMatch::Exact, "{tool:?}");
+        }
+    }
+
+    #[test]
     fn only_the_cwd_keyed_probe_can_break_on_a_directory_move() {
         // The rename's explicit-home preflight shares this owner: adding a
         // cwd-keyed probe to another tool must flip its row here.
@@ -1220,6 +1267,7 @@ mod tests {
                     },
                     identity: IdentitySpec::BorderComposer,
                     model: ModelSpec::ReportOnly(&["--model"]),
+                    pin_match: PinMatch::FamilyVersion,
                     quota: QuotaSpec {
                         source: QuotaSource::ClaudeCache,
                         config_home_env: Some("CLAUDE_CONFIG_DIR"),
@@ -1265,6 +1313,7 @@ mod tests {
                     },
                     identity: IdentitySpec::StyleFooter,
                     model: ModelSpec::Replayable(&["-m", "--model"]),
+                    pin_match: PinMatch::Exact,
                     quota: QuotaSpec {
                         source: QuotaSource::CodexRollouts,
                         config_home_env: Some("CODEX_HOME"),
@@ -1310,6 +1359,7 @@ mod tests {
                     },
                     identity: IdentitySpec::Unmodelled,
                     model: ModelSpec::Unobserved,
+                    pin_match: PinMatch::Exact,
                     quota: QuotaSpec {
                         source: QuotaSource::Unsupported,
                         config_home_env: None,
@@ -1360,6 +1410,7 @@ mod tests {
                     },
                     identity: IdentitySpec::TrailingLabel,
                     model: ModelSpec::Unobserved,
+                    pin_match: PinMatch::Exact,
                     quota: QuotaSpec {
                         source: QuotaSource::Unsupported,
                         config_home_env: None,
@@ -1413,6 +1464,7 @@ mod tests {
                     },
                     identity: IdentitySpec::BorderText,
                     model: ModelSpec::Unobserved,
+                    pin_match: PinMatch::Exact,
                     quota: QuotaSpec {
                         source: QuotaSource::Unsupported,
                         config_home_env: None,
@@ -1458,6 +1510,7 @@ mod tests {
                     },
                     identity: IdentitySpec::RuleFooter,
                     model: ModelSpec::Unobserved,
+                    pin_match: PinMatch::Exact,
                     quota: QuotaSpec {
                         source: QuotaSource::Unsupported,
                         config_home_env: None,
@@ -1511,6 +1564,7 @@ mod tests {
                     },
                     identity: IdentitySpec::RailStatus,
                     model: ModelSpec::Unobserved,
+                    pin_match: PinMatch::Exact,
                     quota: QuotaSpec {
                         source: QuotaSource::Unsupported,
                         config_home_env: None,
@@ -1561,6 +1615,7 @@ mod tests {
                 },
                 identity: IdentitySpec::Unmodelled,
                 model: ModelSpec::Unobserved,
+                pin_match: PinMatch::Exact,
                 quota: QuotaSpec {
                     source: QuotaSource::Unsupported,
                     config_home_env: None,

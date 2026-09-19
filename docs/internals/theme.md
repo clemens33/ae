@@ -275,8 +275,7 @@ has not been re-proven — a turn in flight, a draft sitting in the box, or a
 harness ae does not observe at all — falls back to its DECLARED profile behind a
 `~`, so the row never guesses; that is also what a seat reads as once the
 watchdog's 30-cycle hold on its last proven identity expires. The drift mark the
-fact carries is deliberately not drawn, because durable drift compares a display
-string with a pin string today and would mark every observed seat. Those
+fact carries is deliberately not drawn; drawing it is a later slice. Those
 column widths are fitted per draw — the widest content among the drawn rows,
 floored at four cells and capped at the layout's name 18, state 13, branch 14
 and model 28 — and a session row
