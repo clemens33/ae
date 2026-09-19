@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.149] - 2026-09-19
+- Carry a seat's conversation between two accounts of one tool
+- Trim the carry prose to what the code does not say
+- Refuse a carry that cannot prove what it copied
+- Publish a carried file through the one exclusive creation
+- Say what a failed clear left behind
+- Correct two comments about what a failed carry left
+- Record the carry as a caller of the exclusive writer
+- Say publication, not config publication, in the boundary text
+- Name a carried conversation by what happened to it
+- Say nothing of a conversation in a stop record
+- Scope the record wording to the record that carries it
+
 ## [v2026.9.148] - 2026-09-19
 - Align fleet menu agent rows into client/model/effort columns
 - Fit the menualign tables to the format width
