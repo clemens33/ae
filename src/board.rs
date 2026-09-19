@@ -1073,6 +1073,15 @@ pub fn follow_poll(inputs: &Inputs<'_>, follow: &mut follow::Follow) -> Observat
     follow.step(snapshots)
 }
 
+/// The follow read-once bit: only an `--assistant` follow of an agy seat
+/// whose transcript store exists reads replies once. The probe is lazy — a
+/// flag-off or non-agy follow never stats the transcript path — and the
+/// truth table lives in its own test, because two of the three `false` arms
+/// are silent through the follow output and no poll observes the bit itself.
+fn agy_read_once(assistant: bool, is_agy: bool, store_present: impl FnOnce() -> bool) -> bool {
+    assistant && is_agy && store_present()
+}
+
 /// One seat's polled snapshot: locate, then read exactly the tail the held
 /// offset asks for. A refusal is carried as the reason, never as a silent skip.
 /// The passive launch-turn body rides along: the batch's [`hidden`] filter
@@ -1113,16 +1122,16 @@ fn follow_seat(
     // polls tail history only. Store EXISTENCE (not a row count — the poll
     // reads nothing) decides the steady line; the reader's wins-rule keeps
     // it singular, and an empty store's first pass already said "no records".
-    let read_once = assistant
-        && tool.adapter().name == "agy"
-        && matches!(
+    let read_once = agy_read_once(assistant, tool.adapter().name == "agy", || {
+        matches!(
             locate_agy_transcript(
                 tool,
                 home,
                 entry.harness_session.as_deref().unwrap_or_default()
             ),
             Ok(Some(_))
-        );
+        )
+    });
     let observed = follow::Located::of(&metadata);
     let streamed = match follow.plan(&actor, &observed) {
         follow::Plan::Hold => None,
@@ -2050,6 +2059,78 @@ mod tests {
         let batch = super::follow_poll(&off, &mut follow);
         assert_eq!(batch.rows.len(), 1);
         assert!(batch.coverage.is_empty(), "flag off: no once-read line");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn agy_read_once_pins_every_arm_and_probes_only_agy_assistant_follows() {
+        assert!(super::agy_read_once(true, true, || true));
+        assert!(!super::agy_read_once(false, true, || true));
+        assert!(!super::agy_read_once(true, false, || true));
+        assert!(!super::agy_read_once(true, true, || false));
+        for (assistant, is_agy) in [(false, false), (false, true), (true, false)] {
+            let mut probed = false;
+            assert!(!super::agy_read_once(assistant, is_agy, || {
+                probed = true;
+                true
+            }));
+            assert!(
+                !probed,
+                "assistant={assistant} is_agy={is_agy} must not probe"
+            );
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test: plants and removes its own scratch session"
+    )]
+    fn an_agy_follow_without_a_transcript_store_says_no_records_not_read_once() {
+        let id = "0199c0de-ffff-4890-abcd-ef0123456789";
+        let root = std::env::temp_dir().join(format!(
+            "ae-board-agy-follow-nostore-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("sessions").join("s");
+        std::fs::create_dir_all(&dir).expect("session dir");
+        std::fs::write(
+            dir.join("meta"),
+            format!("schema=2\nseat.main=lead\nharness_session.main={id}\nagent_bin.main=agy\n"),
+        )
+        .expect("meta");
+        let store = root.join(".gemini/antigravity-cli");
+        std::fs::create_dir_all(&store).expect("agy dir");
+        std::fs::write(
+            store.join("history.jsonl"),
+            format!(
+                "{{\"display\":\"synthetic human words\",\"timestamp\":1789549200500,\"conversationId\":\"{id}\",\"workspace\":\"/work\"}}\n"
+            ),
+        )
+        .expect("history");
+        // No brain/<id>/ store: the replies were never read, so the poll
+        // must say so rather than claim a once-read.
+        let sessions = vec![crate::usage::SessionInput {
+            name: "s".to_owned(),
+            path: dir,
+        }];
+        let inputs = crate::board::Inputs {
+            home: Some(root.as_path()),
+            sessions: &sessions,
+            assistant: true,
+        };
+        let mut follow = super::follow::Follow::seeded(&[], &[], None);
+        let batch = super::follow_poll(&inputs, &mut follow);
+        assert_eq!(batch.rows.len(), 1, "the human row streams");
+        assert_eq!(
+            batch
+                .coverage
+                .iter()
+                .map(|item| item.reason.as_str())
+                .collect::<Vec<_>>(),
+            ["agy: no assistant records (history carries prompts only)"]
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
