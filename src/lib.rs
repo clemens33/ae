@@ -1007,6 +1007,33 @@ fn prove_quota_dialog_clicker(
     Ok(live)
 }
 
+/// Best-effort tell for a quota-dialog invocation the strict grammar refused.
+/// Only an addressable `--client` value resolving to an attached client hears
+/// a STATIC text — the hostile tail is never echoed into tmux's format
+/// expander. A hand-run's stderr keeps the exact reason.
+fn tell_quota_dialog_parse_refusal(
+    server: &inventory::ServerId,
+    tail: &[String],
+    err: &mut impl Write,
+    why: &str,
+) {
+    let mut values = tail
+        .windows(2)
+        .filter(|pair| pair[0] == "--client")
+        .map(|pair| pair[1].as_str());
+    let single = values.next().filter(|_| values.next().is_none());
+    if let Some(client) = single.filter(|client| settings_menu::is_client_name(client))
+        && transport::observe_menu_client(server, client).is_some()
+    {
+        let _ = transport::display_client_message(
+            server,
+            client,
+            "the quota dialog invocation was refused; nothing was drawn",
+        );
+    }
+    let _ = writeln!(err, "ae quota: {why}.");
+}
+
 /// `ae orchestrator --quota-dialog --client … --client-pid … --server-pid … --server-start … --session-id …`
 /// — one centred observational dialog listing every quota window per client scope.
 ///
@@ -1025,7 +1052,7 @@ fn run_quota_dialog(
     let captured = match settings_menu::parse_quota_dialog(tail) {
         Ok(captured) => captured,
         Err(why) => {
-            let _ = writeln!(err, "ae quota: {why}.");
+            tell_quota_dialog_parse_refusal(server, tail, err, &why);
             return entry::EXIT_USAGE;
         }
     };
@@ -1104,24 +1131,30 @@ fn run_quota_dialog(
             return EXIT_UNAVAILABLE;
         }
     };
-    // Prove the fit against the LIVE dimensions from the proof round, not the
-    // build round a resize may have invalidated — otherwise tmux trims the
-    // dialog into a partial quota list that admits it is partial nowhere. The
-    // report quotes the size the terminal actually has. A residual race
-    // remains: the dimensions can change between this final observation and
-    // the separate display-menu call, so a trim there is still possible and no
-    // sentence here promises otherwise.
-    let (columns, lines) = session_menu::menu_budget(&menu);
-    if live.width < columns || live.height < lines {
-        report(
-            &format!(
-                "this terminal is {}x{}; quota needs {columns}x{lines}",
-                live.width, live.height
-            ),
-            err,
-        );
-        return EXIT_UNAVAILABLE;
-    }
+    // Fit against the LIVE dimensions from the proof round, degrading before
+    // refusing; what still refuses — too narrow, or below the floor — reports
+    // through the same owner, quoting the FULL menu's budget. The refusal
+    // keeps its exit code after the tell, as every menu continuation does: a
+    // hand-run is indistinguishable from the menu row and reads the same code.
+    let menu = match settings_menu::quota_dialog_menu_fitted(
+        &rows,
+        &look.palette,
+        live.width,
+        live.height,
+    ) {
+        Some(menu) => menu,
+        None => {
+            let (columns, lines) = session_menu::menu_budget(&menu);
+            report(
+                &format!(
+                    "this terminal is {}x{}; quota needs {columns}x{lines}",
+                    live.width, live.height
+                ),
+                err,
+            );
+            return EXIT_UNAVAILABLE;
+        }
+    };
     if !transport::display_menu_centred(server, &client_name, &live.session_id, &menu, menu_mouse) {
         report(
             "tmux refused to draw quota (the client may have vanished)",

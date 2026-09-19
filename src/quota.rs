@@ -726,6 +726,18 @@ pub(crate) struct Observation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DialogRow {
     pub(crate) label: String,
+    pub(crate) kind: DialogRowKind,
+}
+
+/// What a quota-dialog row is, for the short-client drop order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DialogRowKind {
+    /// A scope header: drops only after its last window went.
+    Header,
+    /// A headroom window, or one with nothing usable to judge: drops first.
+    Calm,
+    /// A window the ONE classifier judged Low-or-worse: drops last.
+    LowOrWorse,
 }
 
 const SETTINGS_SCOPE_MAX: usize = 36;
@@ -1064,6 +1076,7 @@ impl SettingsScope {
                 ),
                 SETTINGS_SCOPE_MAX,
             ),
+            kind: DialogRowKind::Header,
         }];
         let incomplete = self
             .statuses
@@ -1090,7 +1103,10 @@ impl SettingsScope {
                 let _ = write!(label, " | {hint}");
             }
             debug_assert!(label.len() <= SETTINGS_ROW_MAX);
-            rows.push(DialogRow { label });
+            rows.push(DialogRow {
+                label,
+                kind: DialogRowKind::Calm,
+            });
             return rows;
         }
         let mut readings: Vec<&SettingsReading> = self.readings.iter().collect();
@@ -1126,7 +1142,20 @@ impl SettingsScope {
             let label =
                 format!("  {where_} | {used} | window resets {reset} | seen {seen} | {status}");
             debug_assert!(label.len() <= SETTINGS_ROW_MAX);
-            rows.push(DialogRow { label });
+            // The drop order's ONLY judgement: the one classifier, fresh — the
+            // dialog holds no hysteresis state.
+            let low_or_worse = matches!(
+                Classified::first(reading.reading.clone()).level(),
+                QuotaLevel::Low | QuotaLevel::Critical
+            );
+            rows.push(DialogRow {
+                label,
+                kind: if low_or_worse {
+                    DialogRowKind::LowOrWorse
+                } else {
+                    DialogRowKind::Calm
+                },
+            });
         }
         rows
     }
@@ -1458,6 +1487,7 @@ pub(crate) fn quota_dialog_rows(inputs: &Inputs<'_>) -> Vec<DialogRow> {
         |_| {
             vec![DialogRow {
                 label: "quota: unavailable".to_owned(),
+                kind: DialogRowKind::Header,
             }]
         },
         |observation| observation.quota_dialog_rows(),

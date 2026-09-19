@@ -3964,6 +3964,16 @@ fn quota_dialog_reproves_client_server_and_session_before_drawing() {
         "malformed pid: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+    let told = tmux(
+        &socket,
+        &scratch,
+        &["capture-pane", "-p", "-t", "identity-viewer"],
+    )
+    .1;
+    assert!(
+        told.contains("invocation was refused"),
+        "the parse refusal reaches the client: {told:?}"
+    );
     // A replaced server that kept its pid but not its start time is still a
     // replacement: the start comparison is load-bearing, not decorative.
     let restarted = forged("--server-start", format!("{}0", value("--server-start")));
@@ -4036,6 +4046,16 @@ fn quota_dialog_reproves_client_server_and_session_before_drawing() {
             .output()
             .expect("the vanished-client invocation runs");
     assert_eq!(output.status.code(), Some(1));
+    let silent = tmux(
+        &socket,
+        &scratch,
+        &["capture-pane", "-p", "-t", "identity-viewer"],
+    )
+    .1;
+    assert!(
+        !silent.contains("vanished"),
+        "a vanished clicker hears nothing: {silent:?}"
+    );
     // The fit proof reads the LIVE dimensions from the proof round: shrink the
     // client's own terminal after every capture so far, then re-capture. (The
     // client follows the attach terminal's window, not the viewed session's.)
@@ -4129,6 +4149,10 @@ fn quota_dialog_reproves_client_server_and_session_before_drawing() {
     assert!(
         !viewer.contains("Client quotas"),
         "no refusal drew a dialog: {viewer}"
+    );
+    assert!(
+        viewer.contains("this terminal is 40x8"),
+        "the size refusal reaches the client: {viewer:?}"
     );
 }
 

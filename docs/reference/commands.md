@@ -901,7 +901,9 @@ render as separate rows, each stating its own refusal. A tool with no local quot
 retained Codex rollout whose recorded config home did not resolve: two seats that failed for the
 same reason are two failures that read alike, not one account, so each keeps its own row and its own
 rollout. The settings quota dialog groups by the same rule, so the two surfaces never disagree about
-whether something is one account.
+whether something is one account. On a short client the dialog drops calm rows first, burning rows
+last, and admits the dropped count in one inert row; only a client narrower than the dialog, or
+below one row plus that admission, refuses — and every refusal is told on the invoking client.
 
 A `manual_resets` declaration belongs to its `[clients]` label, so only that label's OWN scope may
 spend it, and only when that scope proved a source. A profile that reaches the same label under a
