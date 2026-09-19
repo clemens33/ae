@@ -822,12 +822,12 @@ The root shows three blocks, then the actions:
 - The declared states: newest per roster actor, at most three, with truthful
   age. States render only when the live session uuid matches the meta's
   `session_id`; anything else is a named gap, never another incarnation.
-- Two keyed rows between the states and Flip: `Activity…` (`a`) and `Memos…`
-  (`m`), opening read-only dialogs (see below).
+- Three keyed rows between the states and Flip: `Activity…` (`a`), `Memos…`
+  (`m`) and `Board…` (`b`), opening read-only dialogs (see below).
 
 `Flip` (`f`) returns to the previous session; `Stop session...` (`s`) starts
 the guarded stop chain. On a short client the root degrades in order — facts
-first, then the two dialog rows, then all but the first state — down to
+first, then the three dialog rows, then all but the first state — down to
 today's status-only menu and floor; it never refuses once the clicker is
 proven.
 
@@ -838,20 +838,34 @@ kind, clipped text and truthful age in aligned columns. Watchdog
 ticks, quota samples, other audits, delivery records, `memo`, `chat`, `focus`,
 `cancel`, `spawn-failed` and lifecycle request/result pairs are not activity
 and never render. The `Memos` dialog lists the latest record per memo topic
-exactly as `ae brief` computes it, newest first, at most 30. A short client
-drops each dialog's oldest rows until title, rows, separator and Close fit.
+exactly as `ae brief` computes it, newest first, at most 30. The `Board`
+dialog lists the clicked session's newest 30 human turns, newest first, one
+row per turn — `age · seat · preview` — read through the same `ae board`
+filter, sort and coverage, so predecessors render with a `prior n` label and
+a partial board names its gaps instead of looking whole. A preview is the
+body's first line: a body with more lines carries the board's own
+`… +k lines` marker, and a first line clipped for width carries its own
+trailing mark instead — never `+0 lines`. Preview text transits the tmux
+child's argv, as every menu item does; the viewer creates no new durable
+artifact carrying turn text — nothing into `events.jsonl`, a memo, a log, an
+archive, an option value or a pane title. A short client
+drops each dialog's oldest rows until title, rows, separator and Close fit;
+the Board ladder drops turn rows before coverage rows, and where coverage
+alone cannot fit, an explicit summary with its count survives. Every
+dialog's text column takes at most 160 cells — a readability bound, not a
+tmux limit; the client's own room still binds narrower windows.
 
 Dialog rows are informational and keyless; `Close` (`c`) dismisses and writes
 nothing. There is no Back row — dismiss and right-click again. Like the
 settings quota dialog, a row starting with `-` would read as a tmux separator;
 dialog rows begin with the age column — truthful age, or a `-` padded so the
 age never starts the label.
-Mouse-clicking `Activity…` / `Memos…` dismisses the fresh child in the measured
+Mouse-clicking `Activity…` / `Memos…` / `Board…` dismisses the fresh child in the measured
 case: with `-M -O` the click's trailing release lands inside it and closes it,
 while a short child the release lands outside of may survive that geometry.
 Without `-O` menus die on mouse motion and Disabled breaks keyboard picks,
 so no flag combination fixes the click path. This is a tmux `display-menu`
-limit, not an ae bug (see issue #139); the `a` / `m` keys are unaffected.
+limit, not an ae bug (see issue #139); the `a` / `m` / `b` keys are unaffected.
 
 ## `ae doctor`
 

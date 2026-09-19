@@ -52,17 +52,20 @@ reported and exits nonzero. The root it draws is a facts block
 age and a reason clipped by the one `event_text::display_cell` projection — and
 a correlation gap is named rather than filled: `state: unavailable (…)` for a
 missing, invalid or mismatched identity and `state: unreadable (events: …)` for
-a container that exists and cannot be read. Between the states and Flip sit two
-keyed rows, `Activity…` and `Memos…`, each re-invoking the same `show` path
-with one new word (`--activity` / `--memos`): same seven facts, same final
+a container that exists and cannot be read. Between the states and Flip sit three
+keyed rows, `Activity…`, `Memos…` and `Board…`, each re-invoking the same `show` path
+with one new word (`--activity` / `--memos` / `--board`): same seven facts, same final
 proof, no new binding. Each opens a read-only dialog shaped like the settings
 quota dialog — keyless informational rows, one blank separator, `Close` — with
 the newest 30 activity records (`state`, `done`, `goal`, `spawn`, `retire`,
-`relaunch`, `ask`, `review`, `reply`, `watchdog-start`, `watchdog-stop`) or
-the latest memo per topic exactly as `ae brief` computes it, at most 30 rows
+`relaunch`, `ask`, `review`, `reply`, `watchdog-start`, `watchdog-stop`),
+the latest memo per topic exactly as `ae brief` computes it, or the clicked
+session's newest 30 human turns newest first through the board's own
+filter/sort/coverage, at most 30 rows
 each; columns share one width per dialog and every cell is clipped by the one
 `event_text::clip_to_width` cutter, so rows align. A short client drops the
-oldest rows until the dialog fits.
+oldest rows until the dialog fits; the Board ladder drops turns before
+coverage and summarizes coverage with its count when the gaps alone overflow.
 Correlation is the session-scoped
 `@ae_session_uuid` read through argv-only `show-options` and the `session_id`
 of the clicked session's `meta`, from one read: a same-name recreation gets a

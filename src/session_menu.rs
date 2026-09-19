@@ -6,7 +6,7 @@
 //!
 //! 1. `show` reads the clicked session's records read-only, then takes ONE
 //!    final clicker proof, then draws the centred root menu — or, with
-//!    `--activity` / `--memos`, one read-only dialog — against the dimensions
+//!    `--activity` / `--memos` / `--board`, one read-only dialog — against the dimensions
 //!    that proof returned; with no launcher the status binding keeps tmux's
 //!    own native draw instead.
 //! 2. `confirm` proves the captured facts still describe the live world, then
@@ -74,8 +74,24 @@ const ACTIVITY_KIND_CELLS: usize = 14;
 /// The most cells the Memos dialog's topic column keeps.
 const MEMO_TOPIC_CELLS: usize = 16;
 
-/// The most cells a dialog's text column takes, whatever the client offers.
-const DIALOG_TEXT_CELLS_MAX: usize = 100;
+/// How many turns the Board dialog keeps, newest first; a short client
+/// drops the oldest until the dialog fits.
+pub const BOARD_ROWS_MAX: usize = 30;
+
+/// The most cells the Board dialog's seat column keeps: `colead prior 12`
+/// fits, so a curated seat with any plausible generation never clips.
+const BOARD_SEAT_CELLS: usize = 16;
+
+/// The most cells a Board coverage gap keeps of its actor and its reason:
+/// gaps render as-is, so both arrive bounded.
+const BOARD_GAP_ACTOR_CELLS: usize = 40;
+const BOARD_GAP_REASON_CELLS: usize = 100;
+
+/// The most cells a dialog's text column takes, whatever the client offers:
+/// a READABILITY bound, not a technical or tmux limit — uncapped, a wide
+/// client would draw wall-wide rows that are harder to scan. The client's
+/// own room still binds narrower windows through `text_cells`.
+const DIALOG_TEXT_CELLS_MAX: usize = 160;
 
 /// The separator between aligned dialog columns.
 const DIALOG_COLUMN_SEP: &str = " · ";
@@ -86,6 +102,10 @@ const ACTIVITY_FIXED_CAPS: &[usize] = &[usize::MAX, ACTIVITY_ACTOR_CELLS, ACTIVI
 
 /// Memos' fixed columns: age, topic.
 const MEMO_FIXED_CAPS: &[usize] = &[usize::MAX, MEMO_TOPIC_CELLS];
+
+/// Board's fixed columns: age, seat. The preview composes at render time,
+/// with its marker room reserved through the final width.
+const BOARD_FIXED_CAPS: &[usize] = &[usize::MAX, BOARD_SEAT_CELLS];
 
 /// One dialog row BEFORE alignment: raw cells, or a named gap. Gaps render
 /// as-is; cells align over the rows actually drawn, never over dropped ones.
@@ -123,7 +143,7 @@ pub const STOP_ROW_LABEL: &str = "Stop session...";
 pub const CONFIRM_WINDOW_SECS: i64 = 120;
 
 /// The usage line, for an argv this module cannot read.
-pub const USAGE: &str = "Usage: _session-menu <show|confirm|apply> --client <name> --client-pid <pid> --session <name> --session-id <$id> --pane <%id> --server-pid <pid> --server-start <epoch> [show takes only --activity or --memos; confirm takes --action <stop|pause-orchestrator>; apply takes --action, --uuid <uuid> and --deadline <epoch>]";
+pub const USAGE: &str = "Usage: _session-menu <show|confirm|apply> --client <name> --client-pid <pid> --session <name> --session-id <$id> --pane <%id> --server-pid <pid> --server-start <epoch> [show takes only --activity, --memos or --board; confirm takes --action <stop|pause-orchestrator>; apply takes --action, --uuid <uuid> and --deadline <epoch>]";
 
 /// What one `show` draws: the root or one read-only dialog.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,6 +151,7 @@ pub enum ShowView {
     Root,
     Activity,
     Memos,
+    Board,
 }
 
 /// The facts one click captured, proven against this crate's grammars.
@@ -269,7 +290,7 @@ pub fn parse(tail: &[String]) -> Result<(Step, Captured), Refusal> {
     while index < rest.len() {
         let flag = rest[index].as_str();
         // The dialog words are valueless, take no slot, and belong to show.
-        if flag == "--activity" || flag == "--memos" {
+        if flag == "--activity" || flag == "--memos" || flag == "--board" {
             if !matches!(step, Step::Show(ShowView::Root)) {
                 return Err(Refusal::Usage(
                     "a dialog word opens one dialog, once, on show alone".to_owned(),
@@ -277,8 +298,10 @@ pub fn parse(tail: &[String]) -> Result<(Step, Captured), Refusal> {
             }
             step = Step::Show(if flag == "--activity" {
                 ShowView::Activity
-            } else {
+            } else if flag == "--memos" {
                 ShowView::Memos
+            } else {
+                ShowView::Board
             });
             index += 1;
             continue;
@@ -947,6 +970,125 @@ pub fn memo_cells(
     rows
 }
 
+/// One Board dialog's rows: turns as raw cells — the dropped-lines marker
+/// stays its own cell so the renderer can reserve its room through the
+/// FINAL width — plus the coverage gaps above them and the summary that
+/// replaces the gaps when they alone overflow.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct BoardRows {
+    /// One turn each, newest first: age, seat (`name`, or `name prior n`
+    /// for a predecessor generation), the sanitized first line, and the
+    /// dropped-lines marker or empty.
+    pub turns: Vec<Vec<String>>,
+    /// Coverage and hidden notes in board order, drawn above the turns.
+    pub gaps: Vec<String>,
+    /// The summary replacing `gaps` when they alone overflow: `Some` only
+    /// when the gaps are droppable coverage notes, never for `board: none`
+    /// or an unavailable board.
+    pub summary: Option<String>,
+}
+
+/// The clicked session's newest [`BOARD_ROWS_MAX`] human turns, newest
+/// first, through the board's own read: `observe` applies `hidden` and
+/// `collect`, so this function never filters and never sorts — the `.rev()`
+/// is a direction, not a second order. Proven correlation only, like every
+/// record-derived surface; the read is pure and writes nothing anywhere.
+#[must_use]
+pub fn board_cells(
+    session: &str,
+    dir: &Path,
+    home: Option<&Path>,
+    option: &crate::tmux::OptionReading,
+    meta: &MetaSource,
+    now: crate::time::Timestamp,
+) -> BoardRows {
+    if let Some(reason) = correlation_gap(option, meta) {
+        return BoardRows {
+            turns: Vec::new(),
+            gaps: vec![format!("board: unavailable ({reason})")],
+            summary: None,
+        };
+    }
+    let input = crate::usage::SessionInput {
+        name: session.to_owned(),
+        path: dir.to_owned(),
+    };
+    let inputs = crate::board::Inputs {
+        home,
+        sessions: &[input],
+        assistant: false,
+    };
+    let observation = crate::board::observe(&inputs, None);
+    let mut turns = Vec::new();
+    for row in observation.rows.iter().rev().take(BOARD_ROWS_MAX) {
+        turns.push(board_turn_cells(session, row, now));
+    }
+    let mut gaps: Vec<String> = observation
+        .coverage
+        .iter()
+        .map(|item| {
+            format!(
+                "coverage incomplete: {} - {}",
+                crate::event_text::display_cell(&item.actor, BOARD_GAP_ACTOR_CELLS),
+                crate::event_text::display_cell(&item.reason, BOARD_GAP_REASON_CELLS)
+            )
+        })
+        .collect();
+    gaps.extend(observation.hidden.iter().map(|item| {
+        format!(
+            "hidden: {} - {} ae-injected turns",
+            crate::event_text::display_cell(&item.actor, BOARD_GAP_ACTOR_CELLS),
+            item.count
+        )
+    }));
+    if turns.is_empty() && gaps.is_empty() {
+        return BoardRows {
+            turns,
+            gaps: vec!["board: none".to_owned()],
+            summary: None,
+        };
+    }
+    let summary =
+        (!gaps.is_empty()).then(|| format!("coverage: +{} notes (partial board)", gaps.len()));
+    BoardRows {
+        turns,
+        gaps,
+        summary,
+    }
+}
+
+/// One board turn's raw cells: age, seat, sanitized first line, marker. The
+/// seat drops the `session:` prefix the board's actor carries — this dialog
+/// reads one session, so the prefix is noise — and a predecessor generation
+/// shows as `seat prior n`, ASCII throughout: a fixed column may not carry
+/// multibyte the byte budget never counted.
+fn board_turn_cells(
+    session: &str,
+    row: &crate::board::Row,
+    now: crate::time::Timestamp,
+) -> Vec<String> {
+    let age = crate::brief::age(Some(
+        crate::time::Timestamp::from_epoch(row.ts.div_euclid(1_000_000)).seconds_until(now),
+    ));
+    let prefix = format!("{session}:");
+    let seat = row.actor.strip_prefix(&prefix).unwrap_or(&row.actor);
+    let seat = crate::event_text::sanitize_menu_text(seat);
+    let seat = if row.generation > 0 {
+        format!("{seat} prior {}", row.generation)
+    } else {
+        seat
+    };
+    let mut lines = row.body.lines();
+    let first = crate::event_text::sanitize_menu_text(lines.next().unwrap_or_default());
+    let dropped = lines.count();
+    let marker = if dropped > 0 {
+        format!("… +{dropped} lines")
+    } else {
+        String::new()
+    };
+    vec![age, seat, first, marker]
+}
+
 /// Pad `text` to `width` terminal cells; `right` pads on the left (the age
 /// column), otherwise on the right. Clipping happened before this.
 fn pad_column(text: &str, width: usize, right: bool) -> String {
@@ -1009,7 +1151,7 @@ fn fixed_bytes(cells: &[&Vec<String>], fixed: &[usize]) -> Vec<usize> {
 /// client width minus 4, and tmux's trim keeps the TAIL — an over-wide label
 /// loses its age first and gains a `>`. Cells alone cannot budget this: the
 /// text carries the product's own multibyte joiners (`—`) and the cutter's
-/// `…`, and the 100-cap can clip an otherwise fitting value — so the width
+/// `…`, and the text cap can clip an otherwise fitting value — so the width
 /// shrinks from the drawn head until the actual clipped bytes of EVERY row,
 /// padding included, fit the room. Below 4 bytes even a lone `…` is noise,
 /// so the column drops out of the join by the empty rule instead of
@@ -1050,6 +1192,43 @@ fn padded_text_bytes(text: &str, width: usize) -> usize {
     clipped.len() + width.saturating_sub(crate::orchestrator::terminal_cells(&clipped))
 }
 
+/// The shared fixed widths of the drawn rows' fixed columns at `fixed_caps`:
+/// the widest drawn value per column capped, age held at 2 cells (a lone
+/// `-` would read as tmux's dim marker, not text), then whole columns
+/// omitted age-first while the fixed part alone overflows tmux's byte
+/// budget. Both aligned renderers share this: one omission order, never two.
+fn resolve_fixed_widths(
+    cells: &[&Vec<String>],
+    fixed_caps: &[usize],
+    client_width: usize,
+) -> Vec<usize> {
+    let mut fixed = fixed_widths(cells, fixed_caps);
+    // The age column never narrows below 2: a lone `-` (unknown age) would
+    // start the label and tmux would take it for its dim marker, not text.
+    if let Some(age) = fixed.first_mut() {
+        *age = (*age).max(2);
+    }
+    // Omit whole fixed columns, age first, while the fixed part alone
+    // overflows tmux's byte budget: a complete age or none at all, never a
+    // truncated number.
+    let allow = client_width.saturating_sub(4);
+    let mut omit = Vec::new();
+    if !fixed.is_empty() {
+        omit.push(0);
+        omit.extend((1..fixed.len()).rev());
+    }
+    for index in omit {
+        let bytes = fixed_bytes(cells, &fixed);
+        let kept = bytes.iter().filter(|bytes| **bytes > 0).count();
+        let total = bytes.iter().sum::<usize>() + DIALOG_COLUMN_SEP.len() * kept.saturating_sub(1);
+        if total <= allow {
+            break;
+        }
+        fixed[index] = 0;
+    }
+    fixed
+}
+
 /// Aligned labels for the survivors: fixed columns clipped to their shared
 /// widths through the one cutter, text to its client budget, gaps as-is,
 /// present columns joined with [`DIALOG_COLUMN_SEP`].
@@ -1066,30 +1245,7 @@ fn render_survivors(
             CellRow::Gap(_) => None,
         })
         .collect();
-    let mut fixed = fixed_widths(&cells, fixed_caps);
-    // The age column never narrows below 2: a lone `-` (unknown age) would
-    // start the label and tmux would take it for its dim marker, not text.
-    if let Some(age) = fixed.first_mut() {
-        *age = (*age).max(2);
-    }
-    // Omit whole fixed columns, age first, while the fixed part alone
-    // overflows tmux's byte budget: a complete age or none at all, never a
-    // truncated number.
-    let allow = client_width.saturating_sub(4);
-    let mut omit = Vec::new();
-    if !fixed.is_empty() {
-        omit.push(0);
-        omit.extend((1..fixed.len()).rev());
-    }
-    for index in omit {
-        let bytes = fixed_bytes(&cells, &fixed);
-        let kept = bytes.iter().filter(|bytes| **bytes > 0).count();
-        let total = bytes.iter().sum::<usize>() + DIALOG_COLUMN_SEP.len() * kept.saturating_sub(1);
-        if total <= allow {
-            break;
-        }
-        fixed[index] = 0;
-    }
+    let fixed = resolve_fixed_widths(&cells, fixed_caps, client_width);
     let bytes = fixed_bytes(&cells, &fixed);
     let texts: Vec<&str> = cells
         .iter()
@@ -1201,10 +1357,10 @@ fn root_stop_item(stop: &str) -> crate::tmux::MenuItem {
 /// The full root: every status row, then the action floor.
 #[must_use]
 pub fn root_menu(session: &str, rows: &[RootRow], stop: Option<&str>) -> crate::tmux::Menu {
-    root_menu_full(session, &[], rows, None, None, stop)
+    root_menu_full(session, &[], rows, None, None, None, stop)
 }
 
-/// The full root: facts, states, the two dialog rows, then the action floor.
+/// The full root: facts, states, the three dialog rows, then the action floor.
 #[must_use]
 pub fn root_menu_full(
     session: &str,
@@ -1212,6 +1368,7 @@ pub fn root_menu_full(
     rows: &[RootRow],
     activity: Option<&str>,
     memos: Option<&str>,
+    board: Option<&str>,
     stop: Option<&str>,
 ) -> crate::tmux::Menu {
     let mut items: Vec<crate::tmux::MenuItem> = Vec::new();
@@ -1225,7 +1382,11 @@ pub fn root_menu_full(
     }
     items.extend(rows.iter().map(root_row_item));
     items.push(root_separator());
-    for (label, key, command) in [("Activity…", "a", activity), ("Memos…", "m", memos)] {
+    for (label, key, command) in [
+        ("Activity…", "a", activity),
+        ("Memos…", "m", memos),
+        ("Board…", "b", board),
+    ] {
         if let Some(command) = command {
             items.push(crate::tmux::MenuItem {
                 label: label.to_owned(),
@@ -1234,7 +1395,7 @@ pub fn root_menu_full(
             });
         }
     }
-    if activity.is_some() || memos.is_some() {
+    if activity.is_some() || memos.is_some() || board.is_some() {
         items.push(root_separator());
     }
     items.push(root_flip_item());
@@ -1368,21 +1529,26 @@ pub fn select_aligned_dialog(
 
 /// Reselect the root against the FINAL live client dimensions: full, then
 /// facts-dropped, then rows-dropped, then status-only, then today's floor.
-/// Facts go FIRST, then the two dialog rows. A build-dimension fit proves
+/// Facts go FIRST, then the three dialog rows. A build-dimension fit proves
 /// nothing about the client the draw reaches.
 #[must_use]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the root reselect signature: facts, rows, three dialog commands, stop, dims — threaded whole, never partial"
+)]
 pub fn select_root(
     session: &str,
     facts: &[String],
     rows: &[RootRow],
     activity: Option<&str>,
     memos: Option<&str>,
+    board: Option<&str>,
     stop: Option<&str>,
     dims: (usize, usize),
 ) -> crate::tmux::Menu {
     for menu in [
-        root_menu_full(session, facts, rows, activity, memos, stop),
-        root_menu_full(session, &[], rows, activity, memos, stop),
+        root_menu_full(session, facts, rows, activity, memos, board, stop),
+        root_menu_full(session, &[], rows, activity, memos, board, stop),
         // Rows-dropped IS today's full root, byte for byte.
         root_menu(session, rows, stop),
     ] {
@@ -1399,6 +1565,187 @@ pub fn select_root(
         }
     }
     floor_menu(session, stop)
+}
+
+/// One preview at its FINAL width: the first line plus the dropped-lines
+/// marker, the marker's room RESERVED before the head is cut through the
+/// one cutter — never composed and then clipped away. The head always ends
+/// in the ONE `…`: a fitting head gains it explicitly, a clipped head
+/// carries the cutter's own — so the count reads `… +k lines` either way
+/// and exactly one multibyte mark ever enters the byte budget. A
+/// width-clipped one-liner ends in the cutter's `…` alone and never claims
+/// dropped lines. When even the marker and its space do not fit, the count
+/// survives and the head yields.
+fn compose_preview(first: &str, marker: &str, width: usize) -> String {
+    use crate::event_text::{Cut, clip_to_width};
+    if marker.is_empty() {
+        return clip_to_width(first, width, Cut::TrailingEllipsis);
+    }
+    let tail = marker.strip_prefix('…').unwrap_or(marker);
+    let tail_cells = crate::orchestrator::terminal_cells(tail);
+    if tail_cells + 1 >= width {
+        return clip_to_width(marker, width, Cut::TrailingEllipsis);
+    }
+    let room = width - tail_cells - 1;
+    let mut head = clip_to_width(first, room + 1, Cut::TrailingEllipsis);
+    if !head.ends_with('…') {
+        // No mark yet: a full head trades its last cell for the one the
+        // count needs, a short head simply gains it.
+        if crate::orchestrator::terminal_cells(&head) > room {
+            head.pop();
+        }
+        head.push('…');
+    }
+    format!("{head}{tail}")
+}
+
+/// Aligned labels for one Board build: gaps as-is above, turns with fixed
+/// columns clipped to their shared widths and the preview composed at the
+/// client's text budget with its marker room reserved. The budget measures
+/// the joined first-plus-marker text, so the marker's own multibyte mark is
+/// already inside the bytes the fit allows.
+fn render_board_labels(
+    turns: &[Vec<String>],
+    gaps: &[String],
+    fixed_caps: &[usize],
+    client_width: usize,
+) -> Vec<String> {
+    let cells: Vec<&Vec<String>> = turns.iter().collect();
+    let fixed = resolve_fixed_widths(&cells, fixed_caps, client_width);
+    let bytes = fixed_bytes(&cells, &fixed);
+    let joined: Vec<String> = turns
+        .iter()
+        .map(|turn| {
+            let first = turn.get(2).map(String::as_str).unwrap_or_default();
+            let marker = turn.get(3).map(String::as_str).unwrap_or_default();
+            if marker.is_empty() {
+                first.to_owned()
+            } else {
+                format!("{first} {marker}")
+            }
+        })
+        .collect();
+    let texts: Vec<&str> = joined.iter().map(String::as_str).collect();
+    let text_drawn = text_cells(client_width, &bytes, &texts);
+    let mut labels: Vec<String> = gaps.to_vec();
+    labels.extend(turns.iter().map(|turn| {
+        let mut parts: Vec<String> = turn
+            .iter()
+            .take(fixed_caps.len())
+            .enumerate()
+            .filter_map(|(index, cell)| {
+                let width = fixed.get(index).copied().unwrap_or(0);
+                if width == 0 {
+                    return None;
+                }
+                let clipped = crate::event_text::clip_to_width(
+                    cell,
+                    width,
+                    crate::event_text::Cut::TrailingEllipsis,
+                );
+                Some(pad_column(&clipped, width, index == 0))
+            })
+            .collect();
+        if text_drawn > 0 {
+            let first = turn.get(2).map(String::as_str).unwrap_or_default();
+            let marker = turn.get(3).map(String::as_str).unwrap_or_default();
+            parts.push(pad_column(
+                &compose_preview(first, marker, text_drawn),
+                text_drawn,
+                false,
+            ));
+        }
+        parts.join(DIALOG_COLUMN_SEP)
+    }));
+    labels
+}
+
+/// One Board build: gap rows dim, turn rows selectable no-ops, then the
+/// separator and Close.
+fn board_menu(
+    title: &str,
+    turns: &[Vec<String>],
+    gaps: &[String],
+    fixed_caps: &[usize],
+    client_width: usize,
+) -> crate::tmux::Menu {
+    let labels = render_board_labels(turns, gaps, fixed_caps, client_width);
+    let mut items: Vec<crate::tmux::MenuItem> = labels
+        .iter()
+        .enumerate()
+        .map(|(index, label)| crate::tmux::MenuItem {
+            label: label.clone(),
+            key: String::new(),
+            action: if index < gaps.len() {
+                crate::tmux::MenuAction::Disabled
+            } else {
+                crate::tmux::MenuAction::Run(String::new())
+            },
+        })
+        .collect();
+    items.push(root_separator());
+    items.push(close_item());
+    crate::tmux::Menu {
+        title: title.to_owned(),
+        title_style: String::new(),
+        items,
+    }
+}
+
+/// One Board dialog against the final live dimensions: coverage gaps first,
+/// then turns newest first; the ladder drops the OLDEST turns until it fits,
+/// and only when the gaps alone overflow do they yield to the summary with
+/// its count — the drawn menu never implies completeness. A turn-less
+/// dialog keeps its gaps; a gap-less one keeps its newest turn. Never
+/// refuses: below every fit the floor still draws and tmux trims as it
+/// always has.
+#[must_use]
+pub fn select_board_dialog(
+    title: &str,
+    board: &BoardRows,
+    fixed_caps: &[usize],
+    client_width: usize,
+    client_height: usize,
+) -> crate::tmux::Menu {
+    let fits = |menu: &crate::tmux::Menu| {
+        let (columns, lines) = menu_budget(menu);
+        client_width >= columns && client_height >= lines
+    };
+    let n_turns = board.turns.len();
+    let floor_kept = usize::from(board.gaps.is_empty());
+    for kept in (floor_kept..=n_turns).rev() {
+        let menu = board_menu(
+            title,
+            &board.turns[..kept],
+            &board.gaps,
+            fixed_caps,
+            client_width,
+        );
+        if fits(&menu) {
+            return menu;
+        }
+    }
+    if let Some(summary) = board.summary.as_ref() {
+        let gaps = std::slice::from_ref(summary);
+        for kept in (0..=n_turns).rev() {
+            let menu = board_menu(title, &board.turns[..kept], gaps, fixed_caps, client_width);
+            if fits(&menu) {
+                return menu;
+            }
+        }
+        return board_menu(title, &[], gaps, fixed_caps, client_width);
+    }
+    if board.gaps.is_empty() {
+        let kept = usize::from(!board.turns.is_empty());
+        return board_menu(
+            title,
+            &board.turns[..kept],
+            &board.gaps,
+            fixed_caps,
+            client_width,
+        );
+    }
+    board_menu(title, &[], &board.gaps, fixed_caps, client_width)
 }
 
 /// One row's re-exec argv: the launcher, the step words, the same seven
@@ -1433,9 +1780,11 @@ struct ShowSources {
     facts: Vec<String>,
     rows: Vec<RootRow>,
     dialog: Vec<CellRow>,
+    board: BoardRows,
     stop: Option<String>,
     activity: Option<String>,
     memos: Option<String>,
+    board_cmd: Option<String>,
     menu_mouse: bool,
 }
 
@@ -1487,9 +1836,23 @@ fn read_sources(
     let rows = root_rows(&option, &meta, &events, now);
     let facts = fact_rows(&option, &meta);
     let dialog = match view {
-        ShowView::Root => Vec::new(),
+        ShowView::Root | ShowView::Board => Vec::new(),
         ShowView::Activity => activity_cells(&option, &meta, &events, now),
         ShowView::Memos => memo_cells(&option, &meta, &crate::store::open(&dir).memo_source(), now),
+    };
+    // The transcript read runs ONLY for its own view: no other draw pays
+    // for a scan it never shows.
+    let home = crate::doors::home();
+    let board = match view {
+        ShowView::Board => board_cells(
+            &captured.session,
+            &dir,
+            home.as_deref(),
+            &option,
+            &meta,
+            now,
+        ),
+        ShowView::Root | ShowView::Activity | ShowView::Memos => BoardRows::default(),
     };
     let config = crate::doors::config_file(crate::shape::current(), root);
     let launcher = crate::session_tmux::picker_launcher(
@@ -1503,6 +1866,7 @@ fn read_sources(
     let stop = (!launcher.is_empty()).then(|| row(&[CONFIRM, "--action", STOP]));
     let activity = (!launcher.is_empty()).then(|| row(&[SHOW, "--activity"]));
     let memos = (!launcher.is_empty()).then(|| row(&[SHOW, "--memos"]));
+    let board_cmd = (!launcher.is_empty()).then(|| row(&[SHOW, "--board"]));
     let menu_mouse = match crate::transport::probe_tmux_version(&server) {
         crate::tmux::VersionProbe::Answered(found) => {
             crate::tmux_floor::Probe::Server(found).menu_mouse()
@@ -1514,9 +1878,11 @@ fn read_sources(
         facts,
         rows,
         dialog,
+        board,
         stop,
         activity,
         memos,
+        board_cmd,
         menu_mouse,
     })
 }
@@ -1541,6 +1907,7 @@ fn run_show(root: &Path, captured: &Captured, view: ShowView, err: &mut impl Wri
             &sources.rows,
             sources.activity.as_deref(),
             sources.memos.as_deref(),
+            sources.board_cmd.as_deref(),
             sources.stop.as_deref(),
             (width, height),
         ),
@@ -1553,6 +1920,9 @@ fn run_show(root: &Path, captured: &Captured, view: ShowView, err: &mut impl Wri
         ),
         ShowView::Memos => {
             select_aligned_dialog("Memos", &sources.dialog, MEMO_FIXED_CAPS, width, height)
+        }
+        ShowView::Board => {
+            select_board_dialog("Board", &sources.board, BOARD_FIXED_CAPS, width, height)
         }
     };
     if !crate::transport::display_menu_centred(
@@ -2288,7 +2658,7 @@ mod tests {
         // Built for a 200x50 client, drawn for a live 80x8 one: the LIVE
         // dimensions decide, and the full three-declaration menu no longer
         // fits while the action floor must survive.
-        let live = super::select_root("aedev", &[], &rows, None, None, Some(stop), (80, 8));
+        let live = super::select_root("aedev", &[], &rows, None, None, None, Some(stop), (80, 8));
         let (live_columns, live_rows) = menu_budget(&live);
         assert!(
             live_columns <= 80 && live_rows <= 8,
@@ -2311,7 +2681,7 @@ mod tests {
         );
 
         // Below every variant, today's trim behaviour: a menu is still drawn.
-        let tiny = super::select_root("aedev", &[], &rows, None, None, Some(stop), (4, 2));
+        let tiny = super::select_root("aedev", &[], &rows, None, None, None, Some(stop), (4, 2));
         let labels: Vec<&str> = tiny.items.iter().map(|item| item.label.as_str()).collect();
         assert_eq!(labels, vec![super::FLIP_ROW_LABEL, STOP_ROW_LABEL]);
         assert!(
@@ -2332,11 +2702,21 @@ mod tests {
             RootRow::Declaration("t (4s)".to_owned()),
         ];
         let (s, a, m) = ("run-shell -b 's'", "run-shell -b 'a'", "run-shell -b 'm'");
-        let sel =
-            |w, h| super::select_root("aedev", &facts, &rows, Some(a), Some(m), Some(s), (w, h));
-        let full = super::root_menu_full("aedev", &facts, &rows, Some(a), Some(m), Some(s));
+        let sel = |w, h| {
+            super::select_root(
+                "aedev",
+                &facts,
+                &rows,
+                Some(a),
+                Some(m),
+                None,
+                Some(s),
+                (w, h),
+            )
+        };
+        let full = super::root_menu_full("aedev", &facts, &rows, Some(a), Some(m), None, Some(s));
         let bare = super::root_menu("aedev", &rows, Some(s));
-        let second = super::root_menu_full("aedev", &[], &rows, Some(a), Some(m), Some(s));
+        let second = super::root_menu_full("aedev", &[], &rows, Some(a), Some(m), None, Some(s));
         let status_only = super::status_only_menu("aedev", &rows[0], Some(s));
         let (_, full_rows) = menu_budget(&full);
         let (_, second_rows) = menu_budget(&second);
@@ -2393,8 +2773,16 @@ mod tests {
             (columns, rows - 1),
             (columns - 1, rows - 1),
         ] {
-            let menu =
-                super::select_root("aedev", &[], &[], None, None, Some(stop), (width, height));
+            let menu = super::select_root(
+                "aedev",
+                &[],
+                &[],
+                None,
+                None,
+                None,
+                Some(stop),
+                (width, height),
+            );
             assert_eq!(menu.items.len(), floor.items.len(), "{width}x{height}");
         }
     }
@@ -2404,8 +2792,15 @@ mod tests {
     fn the_slice_2b_root_offers_activity_and_memos() {
         let rows = vec![RootRow::Declaration("s (3m)".to_owned())];
         let (a, m, s) = ("run-shell -b 'a'", "run-shell -b 'm'", "run-shell -b 's'");
-        let menu =
-            super::root_menu_full("aedev", &["f".to_owned()], &rows, Some(a), Some(m), Some(s));
+        let menu = super::root_menu_full(
+            "aedev",
+            &["f".to_owned()],
+            &rows,
+            Some(a),
+            Some(m),
+            None,
+            Some(s),
+        );
         let labels: Vec<&str> = menu.items.iter().map(|item| item.label.as_str()).collect();
         assert_eq!(
             labels,
@@ -2637,6 +3032,7 @@ mod tests {
                 &rows,
                 None,
                 None,
+                None,
                 Some("run-shell -b 'stop'"),
                 (200, 60),
             );
@@ -2719,6 +3115,7 @@ mod tests {
             "aedev",
             &[],
             &rows,
+            None,
             None,
             None,
             Some("run-shell -b 'stop'"),
@@ -3085,7 +3482,7 @@ mod tests {
         assert_eq!(drawn.len(), 1);
         let text = drawn[0].rsplit('·').next().expect("text column").trim();
         assert!(
-            text.ends_with('…') && crate::orchestrator::terminal_cells(text) <= 100,
+            text.ends_with('…') && crate::orchestrator::terminal_cells(text) <= 160,
             "{drawn:?}"
         );
         let bad = super::activity_cells(
@@ -3408,9 +3805,9 @@ mod tests {
         );
     }
 
-    /// The 100-cell cap must not mint bytes it never reserved: a 99-cell text
+    /// The text-column cap must not mint bytes it never reserved: a 99-cell text
     /// carrying one product `—` (101 bytes) in a 99-byte room, and the pure
-    /// ASCII 101-in-101 case beside it — both shrink past the ellipsis cost
+    /// ASCII 200-in-101 case beside it — both shrink past the ellipsis cost
     /// instead of drawing 2 bytes over.
     #[test]
     fn text_cap_boundary_reserves_ellipsis_bytes() {
@@ -3451,15 +3848,15 @@ mod tests {
         assert!(text.starts_with("t — "), "head kept: {drawn:?}");
         assert!(text.ends_with("…"), "clipped, not whole: {drawn:?}");
         assert_eq!(crate::orchestrator::terminal_cells(text), 95, "{drawn:?}");
-        // Pure ASCII: 101 cells in a 101-byte room (width 125) clips to 99
-        // cells + `…` = 101 bytes, not 100 cells + `…` = 102.
+        // Pure ASCII: 200 cells in a 101-byte room (width 125) clips to 98
+        // cells + `…` = 101 bytes, not 99 cells + `…` = 102.
         let container = format!(
             "{}\n",
             event(
                 "2026-09-17T11:58:00Z",
                 "al",
                 "done",
-                &format!(r#","summary":"{}""#, "x".repeat(101)),
+                &format!(r#","summary":"{}""#, "x".repeat(200)),
             ),
         );
         let drawn = render(&container, 125);
@@ -3662,7 +4059,7 @@ mod tests {
         );
         let drawn = aligned(&rows, super::ACTIVITY_FIXED_CAPS, 296);
         let text = drawn[0].rsplit('·').next().expect("text column").trim();
-        assert_eq!(crate::orchestrator::terminal_cells(text), 100, "{drawn:?}");
+        assert_eq!(crate::orchestrator::terminal_cells(text), 160, "{drawn:?}");
         let menu =
             super::select_aligned_dialog("Activity", &rows, super::ACTIVITY_FIXED_CAPS, 40, 60);
         let labels: Vec<&str> = menu.items.iter().map(|item| item.label.as_str()).collect();
@@ -3786,5 +4183,577 @@ mod tests {
         );
         let drawn = aligned(&rows, super::ACTIVITY_FIXED_CAPS, 120);
         assert!(drawn[0].starts_with(" - · "), "{drawn:?}");
+    }
+
+    // ── the Board dialog ─────────────────────────────────────────────────
+
+    /// Synthetic transcript ids, invented here: never a real store.
+    const BOARD_CURRENT: &str = "0199c0de-aaaa-4890-abcd-ef0123456789";
+    const BOARD_PRIOR: &str = "0199c0de-bbbb-4890-abcd-ef0123456789";
+
+    /// One planted board session: a meta naming a claude store, plus the
+    /// store. The caller removes the scratch root.
+    struct BoardRig {
+        root: std::path::PathBuf,
+        dir: std::path::PathBuf,
+        store: std::path::PathBuf,
+    }
+
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test: plants its own scratch session and store"
+    )]
+    fn board_rig(tag: &str, session: &str) -> BoardRig {
+        let root = std::env::temp_dir().join(format!("ae-menuboard-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("sessions").join(session);
+        let store = root.join("store");
+        std::fs::create_dir_all(store.join("projects").join("work")).expect("store dir");
+        std::fs::create_dir_all(&dir).expect("session dir");
+        std::fs::write(
+            dir.join("meta"),
+            format!(
+                "schema=2\nsession_id={UUID_A}\nseat.main=lead\n\
+                 harness_session.main={BOARD_CURRENT}\nagent_bin.main=claude\n\
+                 config_home.main={}\n",
+                store.display()
+            ),
+        )
+        .expect("meta");
+        BoardRig { root, dir, store }
+    }
+
+    /// One synthetic claude user record appended to `id`'s transcript.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test: appends to its own scratch transcript"
+    )]
+    fn plant_turn(rig: &BoardRig, id: &str, ts: &str, content: &str) {
+        use std::io::Write as _;
+        let path = rig
+            .store
+            .join("projects")
+            .join("work")
+            .join(format!("{id}.jsonl"));
+        let escaped = content
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('\n', "\\n");
+        let line = format!(
+            "{{\"type\":\"user\",\"timestamp\":\"{ts}\",\"message\":{{\"role\":\"user\",\"content\":\"{escaped}\"}}}}\n"
+        );
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .expect("transcript");
+        file.write_all(line.as_bytes()).expect("turn");
+    }
+
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test: removes its own scratch dir"
+    )]
+    fn remove_rig(rig: &BoardRig) {
+        let _ = std::fs::remove_dir_all(&rig.root);
+    }
+
+    fn board_now() -> crate::time::Timestamp {
+        crate::time::Timestamp::parse("2026-09-17T12:00:00Z").expect("now parses")
+    }
+
+    fn board_rows(rig: &BoardRig, session: &str) -> super::BoardRows {
+        use crate::tmux::OptionReading;
+        super::board_cells(
+            session,
+            &rig.dir,
+            None,
+            &OptionReading::Set(UUID_A.to_owned()),
+            &parsed_meta(UUID_A, &["lead"]),
+            board_now(),
+        )
+    }
+
+    /// A clipped body always carries its marker; a body that fits carries
+    /// none; a width-clipped one-liner carries the horizontal mark and never
+    /// claims dropped lines.
+    #[test]
+    fn board_preview_marks_dropped_lines_and_never_bare() {
+        assert_eq!(super::compose_preview("short", "", 30), "short");
+        assert_eq!(
+            super::compose_preview("head", "… +3 lines", 30),
+            "head… +3 lines"
+        );
+        let one_line = super::compose_preview(&"w".repeat(50), "", 30);
+        assert!(one_line.ends_with('…'), "{one_line:?}");
+        assert!(!one_line.contains("lines"), "{one_line:?}");
+        let both = super::compose_preview(&"w".repeat(50), "… +3 lines", 30);
+        assert!(both.ends_with("… +3 lines"), "{both:?}");
+        assert!(both.starts_with('w'), "{both:?}");
+    }
+
+    /// The marker's room is reserved through the FINAL fit: at the boundary
+    /// the composed cell lands exactly on the width, the count survives, and
+    /// the multibyte mark costs its two extra bytes and no more.
+    #[test]
+    fn board_preview_reserves_marker_room_at_a_multibyte_boundary() {
+        let cells = crate::orchestrator::terminal_cells;
+        // Tail ` +12 lines` is 10 cells; room 9 at width 20, so the head clips.
+        let composed = super::compose_preview(&"w".repeat(40), "… +12 lines", 20);
+        assert_eq!(cells(&composed), 20, "{composed:?}");
+        assert!(composed.ends_with("… +12 lines"), "{composed:?}");
+        assert_eq!(composed.len(), 22, "20 cells plus the mark's 2 bytes");
+        // A fitting head keeps every cell and still carries the count.
+        let composed = super::compose_preview("ok", "… +2 lines", 30);
+        assert_eq!(composed, "ok… +2 lines");
+        assert_eq!(cells(&composed), 12, "{composed:?}");
+    }
+
+    /// Newest first, newest thirty, through `collect` alone: 33 planted turns
+    /// draw 30 with the oldest three gone and timestamp order intact.
+    #[test]
+    fn board_cells_list_the_newest_thirty_turns_newest_first() {
+        let rig = board_rig("order", "s");
+        for n in 0..33_u32 {
+            plant_turn(
+                &rig,
+                BOARD_CURRENT,
+                &format!("2026-09-17T{:02}:00:00Z", n / 3),
+                &format!("turn {n:02}"),
+            );
+        }
+        let board = board_rows(&rig, "s");
+        assert!(board.gaps.is_empty(), "{:?}", board.gaps);
+        assert_eq!(board.turns.len(), 30);
+        let firsts: Vec<&str> = board.turns.iter().map(|turn| turn[2].as_str()).collect();
+        assert_eq!(firsts[0], "turn 32");
+        assert_eq!(firsts[29], "turn 03");
+        assert!(
+            !firsts
+                .iter()
+                .any(|first| ["turn 00", "turn 01", "turn 02"].contains(first)),
+            "{firsts:?}"
+        );
+        remove_rig(&rig);
+    }
+
+    /// Predecessors render with a visible generation label; the current
+    /// conversation carries none.
+    #[test]
+    fn board_cells_label_predecessor_generations() {
+        use std::io::Write as _;
+        let rig = board_rig("prior", "s");
+        plant_turn(&rig, BOARD_CURRENT, "2026-09-17T09:00:00Z", "present words");
+        plant_turn(&rig, BOARD_PRIOR, "2026-09-16T09:00:00Z", "earlier words");
+        let mut meta = std::fs::OpenOptions::new()
+            .append(true)
+            .open(rig.dir.join("meta"))
+            .expect("meta");
+        writeln!(meta, "harness_session_prior.main={BOARD_PRIOR}").expect("prior row");
+        let board = board_rows(&rig, "s");
+        let seats: Vec<(&str, &str)> = board
+            .turns
+            .iter()
+            .map(|turn| (turn[1].as_str(), turn[2].as_str()))
+            .collect();
+        assert!(seats.contains(&("lead", "present words")), "{seats:?}");
+        assert!(
+            seats.contains(&("lead prior 1", "earlier words")),
+            "{seats:?}"
+        );
+        remove_rig(&rig);
+    }
+
+    /// The clicked session only: a second session's turns never render.
+    #[test]
+    fn board_cells_render_only_the_clicked_session() {
+        let rig = board_rig("clicked", "s");
+        let other = board_rig("other", "o");
+        plant_turn(
+            &rig,
+            BOARD_CURRENT,
+            "2026-09-17T09:00:00Z",
+            "clicked words here",
+        );
+        plant_turn(
+            &other,
+            BOARD_CURRENT,
+            "2026-09-17T09:30:00Z",
+            "foreign words here",
+        );
+        let board = board_rows(&rig, "s");
+        let joined = board
+            .turns
+            .iter()
+            .map(|turn| turn.join(" "))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(joined.contains("clicked words here"), "{joined:?}");
+        assert!(!joined.contains("foreign words here"), "{joined:?}");
+        remove_rig(&rig);
+        remove_rig(&other);
+    }
+
+    /// A uuid mismatch floors with the named gap and renders no turn.
+    #[test]
+    fn board_uuid_mismatch_floors_with_the_named_gap() {
+        use crate::tmux::OptionReading;
+        let rig = board_rig("mismatch", "s");
+        plant_turn(&rig, BOARD_CURRENT, "2026-09-17T09:00:00Z", "hidden words");
+        let board = super::board_cells(
+            "s",
+            &rig.dir,
+            None,
+            &OptionReading::Set("2b4e28ba-2fa1-11d2-883f-0016d3cc4322".to_owned()),
+            &parsed_meta(UUID_A, &["lead"]),
+            board_now(),
+        );
+        assert!(board.turns.is_empty());
+        assert_eq!(
+            board.gaps,
+            ["board: unavailable (meta: identity mismatch)".to_owned()]
+        );
+        remove_rig(&rig);
+    }
+
+    /// The ladder drops turn rows before coverage rows: a short client loses
+    /// the oldest turns while every gap survives.
+    #[test]
+    fn board_ladder_drops_turns_before_coverage() {
+        use std::io::Write as _;
+        let rig = board_rig("ladder", "s");
+        for n in 0..10_u32 {
+            plant_turn(
+                &rig,
+                BOARD_CURRENT,
+                &format!("2026-09-17T08:{n:02}:00Z"),
+                &format!("ladder {n:02}"),
+            );
+        }
+        // A prior with no transcript: one coverage gap beside the turns.
+        let mut meta = std::fs::OpenOptions::new()
+            .append(true)
+            .open(rig.dir.join("meta"))
+            .expect("meta");
+        writeln!(meta, "harness_session_prior.main={BOARD_PRIOR}").expect("prior row");
+        let board = board_rows(&rig, "s");
+        assert_eq!(board.gaps.len(), 1);
+        let full = super::select_board_dialog("Board", &board, super::BOARD_FIXED_CAPS, 200, 60);
+        let (_, full_rows) = menu_budget(&full);
+        let short = super::select_board_dialog(
+            "Board",
+            &board,
+            super::BOARD_FIXED_CAPS,
+            200,
+            full_rows - 4,
+        );
+        let labels: Vec<&str> = short.items.iter().map(|item| item.label.as_str()).collect();
+        assert!(
+            labels.iter().any(|label| label.contains("predecessor 1")),
+            "coverage survives: {labels:?}"
+        );
+        assert!(
+            labels.iter().any(|label| label.contains("ladder 09")),
+            "newest turn survives: {labels:?}"
+        );
+        assert!(
+            !labels.iter().any(|label| label.contains("ladder 00")),
+            "oldest turns drop first: {labels:?}"
+        );
+        remove_rig(&rig);
+    }
+
+    /// Where coverage alone cannot fit, an explicit summary with its count
+    /// survives in place of the individual gap rows.
+    #[test]
+    fn board_ladder_summarizes_coverage_when_gaps_alone_overflow() {
+        use std::io::Write as _;
+        let rig = board_rig("summary", "s");
+        plant_turn(&rig, BOARD_CURRENT, "2026-09-17T09:00:00Z", "kept words");
+        let mut meta = std::fs::OpenOptions::new()
+            .append(true)
+            .open(rig.dir.join("meta"))
+            .expect("meta");
+        writeln!(
+            meta,
+            "harness_session_prior.main={BOARD_PRIOR},0199c0de-cccc-4890-abcd-ef0123456789"
+        )
+        .expect("prior rows");
+        let board = board_rows(&rig, "s");
+        assert_eq!(board.gaps.len(), 2, "{:?}", board.gaps);
+        let menu = super::select_board_dialog("Board", &board, super::BOARD_FIXED_CAPS, 200, 5);
+        let labels: Vec<&str> = menu.items.iter().map(|item| item.label.as_str()).collect();
+        assert!(
+            labels
+                .iter()
+                .any(|label| label.contains("coverage: +2 notes (partial board)")),
+            "summary with its count: {labels:?}"
+        );
+        assert!(
+            !labels
+                .iter()
+                .any(|label| label.contains("transcript not found")),
+            "individual gaps yield to the summary: {labels:?}"
+        );
+        remove_rig(&rig);
+    }
+
+    /// The ladder ends in a drawable menu at the floor client: Close draws,
+    /// nothing panics, tmux gets a menu it accepts.
+    #[test]
+    fn board_ladder_still_draws_at_the_floor_client() {
+        let rig = board_rig("floor", "s");
+        plant_turn(
+            &rig,
+            BOARD_CURRENT,
+            "2026-09-17T09:00:00Z",
+            "floor words here",
+        );
+        let board = board_rows(&rig, "s");
+        let menu = super::select_board_dialog("Board", &board, super::BOARD_FIXED_CAPS, 8, 4);
+        let labels: Vec<&str> = menu.items.iter().map(|item| item.label.as_str()).collect();
+        assert_eq!(labels.last(), Some(&"Close"), "{labels:?}");
+        remove_rig(&rig);
+    }
+
+    /// The viewer writes no turn text anywhere: the events file is byte-equal
+    /// after the build and no file appears beside it.
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test: snapshots its own scratch events file and dir listing"
+    )]
+    fn board_build_writes_no_turn_text() {
+        let rig = board_rig("nowrite", "s");
+        plant_turn(
+            &rig,
+            BOARD_CURRENT,
+            "2026-09-17T09:00:00Z",
+            "sealed turn words stay put",
+        );
+        let events_path = rig.dir.join("events.jsonl");
+        std::fs::write(&events_path, "{\"ts\":\"x\"}\n").expect("events");
+        let before = std::fs::read(&events_path).expect("snapshot");
+        let mut names_before: Vec<_> = std::fs::read_dir(&rig.dir)
+            .expect("list")
+            .map(|entry| entry.expect("entry").file_name())
+            .collect();
+        names_before.sort();
+        let board = board_rows(&rig, "s");
+        let _menu = super::select_board_dialog("Board", &board, super::BOARD_FIXED_CAPS, 200, 60);
+        assert!(
+            board
+                .turns
+                .iter()
+                .any(|turn| turn[2].contains("sealed turn words stay put")),
+            "the fixture really renders, so the write check is not vacuous"
+        );
+        assert_eq!(std::fs::read(&events_path).expect("reread"), before);
+        let mut names_after: Vec<_> = std::fs::read_dir(&rig.dir)
+            .expect("list")
+            .map(|entry| entry.expect("entry").file_name())
+            .collect();
+        names_after.sort();
+        assert_eq!(names_after, names_before);
+        remove_rig(&rig);
+    }
+
+    /// Multibyte bodies keep alignment in cells: sanitized previews pad to
+    /// the same separator column as ASCII ones.
+    #[test]
+    fn board_multibyte_bodies_keep_cells_aligned() {
+        let rig = board_rig("cells", "s");
+        plant_turn(
+            &rig,
+            BOARD_CURRENT,
+            "2026-09-17T09:00:00Z",
+            "plain ascii words",
+        );
+        plant_turn(
+            &rig,
+            BOARD_CURRENT,
+            "2026-09-17T09:30:00Z",
+            "grüße aus wien 日本",
+        );
+        let board = board_rows(&rig, "s");
+        let menu = super::select_board_dialog("Board", &board, super::BOARD_FIXED_CAPS, 200, 60);
+        let labels: Vec<&str> = menu.items.iter().map(|item| item.label.as_str()).collect();
+        // Every turn's text starts at the same cell column, whatever the
+        // body carried before sanitizing.
+        let starts: Vec<usize> = labels[..2]
+            .iter()
+            .map(|label| {
+                let mut parts = label.split(super::DIALOG_COLUMN_SEP);
+                let head = format!(
+                    "{}{}{}",
+                    parts.next().expect("age"),
+                    super::DIALOG_COLUMN_SEP,
+                    parts.next().expect("seat")
+                );
+                crate::orchestrator::terminal_cells(&head)
+            })
+            .collect();
+        assert_eq!(starts[0], starts[1], "{labels:?}");
+        assert!(
+            labels
+                .iter()
+                .any(|label| label.contains("gr??e aus wien ??")),
+            "sanitized, never raw: {labels:?}"
+        );
+        remove_rig(&rig);
+    }
+
+    /// `show --board` parses to the Board view; any other step refuses it.
+    #[test]
+    fn show_parses_the_board_dialog_word() {
+        let (step, captured) = parse(&show_argv(&["--board"])).expect("the board grammar");
+        assert_eq!(step, Step::Show(super::ShowView::Board));
+        assert_eq!(captured.session, "aedev");
+        assert!(matches!(
+            parse(&show_argv(&["--board", "--activity"])),
+            Err(Refusal::Usage(_))
+        ));
+        assert!(matches!(
+            parse(&argv("confirm", &["--board"])),
+            Err(Refusal::Usage(_))
+        ));
+    }
+
+    /// The root offers `Board…` on `b` between Memos and Flip; without a
+    /// command the row stays out.
+    #[test]
+    fn the_root_offers_board_keyed_b() {
+        let rows = vec![RootRow::Declaration("s (3m)".to_owned())];
+        let (a, m, board_cmd, s) = (
+            "run-shell -b 'a'",
+            "run-shell -b 'm'",
+            "run-shell -b 'b'",
+            "run-shell -b 's'",
+        );
+        let menu = super::root_menu_full(
+            "aedev",
+            &["f".to_owned()],
+            &rows,
+            Some(a),
+            Some(m),
+            Some(board_cmd),
+            Some(s),
+        );
+        let labels: Vec<&str> = menu.items.iter().map(|item| item.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            [
+                "f",
+                "",
+                "s (3m)",
+                "",
+                "Activity…",
+                "Memos…",
+                "Board…",
+                "",
+                super::FLIP_ROW_LABEL,
+                STOP_ROW_LABEL
+            ]
+        );
+        let row = menu
+            .items
+            .iter()
+            .find(|item| item.label == "Board…")
+            .expect("Board row");
+        assert_eq!(row.key, "b");
+        assert!(matches!(&row.action, crate::tmux::MenuAction::Run(c) if c == board_cmd));
+        let menu = super::root_menu_full(
+            "aedev",
+            &["f".to_owned()],
+            &rows,
+            Some(a),
+            Some(m),
+            None,
+            Some(s),
+        );
+        assert!(
+            menu.items.iter().all(|item| item.label != "Board…"),
+            "no command, no row"
+        );
+    }
+
+    /// A wide client gives every dialog its 160 text cells; a narrow one
+    /// still clips harder and draws Close.
+    #[test]
+    fn wide_client_gives_all_three_dialogs_160_text_cells() {
+        use crate::tmux::OptionReading;
+        let now = board_now();
+        let meta = parsed_meta(UUID_A, &["lead"]);
+        let summary = "z".repeat(300);
+        let container = event(
+            "2026-09-17T08:00:00Z",
+            "lead",
+            "done",
+            &format!(r#","summary":"{summary}"#),
+        ) + "\n";
+        let rows = super::activity_cells(
+            &OptionReading::Set(UUID_A.to_owned()),
+            &meta,
+            &events(&container),
+            now,
+        );
+        let drawn = aligned(&rows, super::ACTIVITY_FIXED_CAPS, 296);
+        let text = drawn[0].rsplit('·').next().expect("text column").trim();
+        assert_eq!(crate::orchestrator::terminal_cells(text), 160, "{drawn:?}");
+        let file = format!("2026-09-17T07:00:00Z\tcl:lead\tgoal\t{summary}\n");
+        let rows = super::memo_cells(
+            &OptionReading::Set(UUID_A.to_owned()),
+            &meta,
+            &events(&file),
+            now,
+        );
+        let drawn = aligned(&rows, super::MEMO_FIXED_CAPS, 296);
+        let text = drawn[0].rsplit('·').next().expect("text column").trim();
+        assert_eq!(crate::orchestrator::terminal_cells(text), 160, "{drawn:?}");
+        let rig = board_rig("wide", "s");
+        plant_turn(
+            &rig,
+            BOARD_CURRENT,
+            "2026-09-17T09:00:00Z",
+            &"z".repeat(300),
+        );
+        let board = board_rows(&rig, "s");
+        let menu = super::select_board_dialog("Board", &board, super::BOARD_FIXED_CAPS, 296, 60);
+        let label = menu.items[0].label.clone();
+        let text = label.rsplit('·').next().expect("text column").trim();
+        assert_eq!(crate::orchestrator::terminal_cells(text), 160, "{label:?}");
+        let menu = super::select_board_dialog("Board", &board, super::BOARD_FIXED_CAPS, 40, 60);
+        let labels: Vec<&str> = menu.items.iter().map(|item| item.label.as_str()).collect();
+        assert_eq!(labels.last(), Some(&"Close"), "{labels:?}");
+        let text = labels[0].rsplit('·').next().expect("text column").trim();
+        assert!(
+            crate::orchestrator::terminal_cells(text) < 100,
+            "narrow client clips harder: {labels:?}"
+        );
+        remove_rig(&rig);
+    }
+
+    /// No turns and no gaps is `board: none`, never an empty dialog.
+    #[test]
+    fn board_with_no_seats_reports_none() {
+        use crate::tmux::OptionReading;
+        let rig = board_rig("empty", "s");
+        std::fs::write(
+            rig.dir.join("meta"),
+            format!("schema=2\nsession_id={UUID_A}\n"),
+        )
+        .expect("bare meta");
+        let board = super::board_cells(
+            "s",
+            &rig.dir,
+            None,
+            &OptionReading::Set(UUID_A.to_owned()),
+            &parsed_meta(UUID_A, &[]),
+            board_now(),
+        );
+        assert!(board.turns.is_empty());
+        assert_eq!(board.gaps, ["board: none".to_owned()]);
+        assert!(board.summary.is_none());
+        remove_rig(&rig);
     }
 }

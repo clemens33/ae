@@ -8241,6 +8241,153 @@ fn the_memos_dialog_draws_brief_latest_per_topic() {
     assert!(!text.contains("OLDM"), "superseded stays out: {text}");
 }
 
+/// `show --board` against a launched session with a synthetic claude store:
+/// returns the drawn text plus the events bytes after the draw, so the
+/// no-write promise is proven end to end.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "a test: reads back the launched meta and events it planted"
+)]
+fn board_dialog_text(
+    tag: &str,
+    turns: &[(&str, &str)],
+    priors: &[&str],
+    events: &str,
+    width: usize,
+    height: usize,
+) -> (String, String) {
+    let scratch = scratch(tag);
+    assert!(tmux_present(&scratch), "tmux runs here");
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let root = scratch.join("state");
+    let project = scratch.join("project");
+    let config = scratch.join("config");
+    write_state_fixture_config(&project, &config);
+    launch_ae_session(&socket, &scratch, &root, &project, &config, tag);
+    let dir = root.join("sessions").join(tag);
+    fs::write(dir.join("events.jsonl"), events).unwrap_or_else(|error| panic!("plant: {error}"));
+    // A synthetic transcript store, invented here: the launched meta gains
+    // the harness rows pointing at it.
+    let store = scratch.join("board-store");
+    let work = store.join("projects").join("work");
+    assert!(fs::create_dir_all(&work).is_ok());
+    let current = "0199c0de-dddd-4890-abcd-ef0123456789";
+    let mut transcript = String::new();
+    for (ts, content) in turns {
+        let escaped = content
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('\n', "\\n");
+        let _ = writeln!(
+            transcript,
+            "{{\"type\":\"user\",\"timestamp\":\"{ts}\",\"message\":{{\"role\":\"user\",\"content\":\"{escaped}\"}}}}"
+        );
+    }
+    fs::write(work.join(format!("{current}.jsonl")), transcript)
+        .unwrap_or_else(|error| panic!("transcript: {error}"));
+    let meta_path = dir.join("meta");
+    let meta = fs::read_to_string(&meta_path).unwrap_or_else(|error| panic!("meta: {error}"));
+    let seat = meta
+        .lines()
+        .find_map(|line| line.strip_prefix("seat."))
+        .unwrap_or_else(|| panic!("no seat row in launched meta: {meta}"));
+    let slot = seat
+        .split_once('=')
+        .unwrap_or_else(|| panic!("seat row shape: {seat}"))
+        .0
+        .to_owned();
+    // Drop any harness rows the launch wrote for this slot: the plant below
+    // is the only claim on it, never a duplicate.
+    let mut meta = meta
+        .lines()
+        .filter(|line| {
+            !line.starts_with(&format!("harness_session.{slot}="))
+                && !line.starts_with(&format!("agent_bin.{slot}="))
+                && !line.starts_with(&format!("config_home.{slot}="))
+                && !line.starts_with(&format!("harness_session_prior.{slot}="))
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    meta.push('\n');
+    let _ = writeln!(
+        meta,
+        "harness_session.{slot}={current}\nagent_bin.{slot}=claude\nconfig_home.{slot}={}",
+        store.display()
+    );
+    if !priors.is_empty() {
+        let _ = writeln!(meta, "harness_session_prior.{slot}={}", priors.join(","));
+    }
+    fs::write(&meta_path, meta).unwrap_or_else(|error| panic!("meta rows: {error}"));
+    let record = scratch.join("dialog.terminal");
+    let (client, _terminal) = direct_terminal_client(
+        &socket, &scratch, &root, &config, tag, width, height, &record,
+    );
+    let facts = gather_show_facts(&socket, &scratch, tag, &client);
+    let mut child = show_child(&socket, &scratch, &root, &config, &facts, Some("--board"));
+    let (_, raw) = wait_for_direct_menu_geometry(&record, "Board")
+        .unwrap_or_else(|_| panic!("{tag} drew no Board dialog"));
+    let _ = child.kill();
+    let _ = child.wait();
+    let after = fs::read_to_string(dir.join("events.jsonl"))
+        .unwrap_or_else(|error| panic!("reread: {error}"));
+    (String::from_utf8_lossy(&raw).into_owned(), after)
+}
+
+/// `show --board` draws the newest human previews plus Close, and leaves the
+/// events file byte-equal.
+#[test]
+fn the_board_dialog_draws_newest_human_turns_end_to_end() {
+    let events = "{\"ts\":\"2026-09-17T08:00:00Z\",\"actor\":\"lead\",\"action\":\"state\",\"ref\":\"working\",\"summary\":\"e1\"}\n";
+    let (text, after) = board_dialog_text(
+        "dlg-board",
+        &[
+            ("2026-09-17T08:00:00Z", "first sketch of the plan"),
+            ("2026-09-17T09:00:00Z", "revised sketch\nwith a second line"),
+        ],
+        &[],
+        events,
+        120,
+        30,
+    );
+    assert!(
+        text.contains("first sketch of the plan") && text.contains("revised sketch"),
+        "{text}"
+    );
+    assert!(text.contains("+1 lines"), "dropped line named: {text}");
+    assert!(text.contains("Close"), "{text}");
+    assert_eq!(after, events, "opening the dialog writes nothing");
+}
+
+/// A tiny client still gets a drawable Board: the coverage summary with its
+/// count, and Close.
+#[test]
+fn the_board_dialog_summarizes_coverage_at_a_small_client() {
+    let (text, _) = board_dialog_text(
+        "dlg-board-small",
+        &[
+            ("2026-09-17T08:00:00Z", "alpha words"),
+            ("2026-09-17T08:10:00Z", "beta words"),
+            ("2026-09-17T08:20:00Z", "gamma words"),
+        ],
+        &[
+            "0199c0de-eeee-4890-abcd-ef0123456789",
+            "0199c0de-ffff-4890-abcd-ef0123456789",
+        ],
+        "",
+        60,
+        6,
+    );
+    assert!(
+        text.contains("coverage: +2 notes (partial board)"),
+        "{text}"
+    );
+    assert!(text.contains("Close"), "{text}");
+}
+
 /// Wide planted rows for the row-pick test: the child must cover the row
 /// point, as a human's long reasons do — a narrow centred child would dodge
 /// the release and the test would pass vacuously.
