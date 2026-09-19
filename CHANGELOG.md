@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.135] - 2026-09-19
+- Prove an empty opencode composer on seats with history
+- Prove the opencode status row and key dialogs on chrome alone
+- Decouple opencode delivery from the effort vocabulary
+- Name the separator-draft residual on the status position
+
 ## [v2026.9.134] - 2026-09-19
 - Neutralise control bytes in the board's text output
 
