@@ -152,9 +152,11 @@ The watchdog's dead verdict has no grace and no launch awareness
 `agent process dead — dropped to shell` alert, and its Telegram notice, inside
 the ~1–20 s the pane sits at its shell. This is not new — `spawn` and
 `relaunch` leave the same window — it is non-destructive, and the latch clears
-with one `dead-cleared` on the next cycle that sees the successor. Closing it
-means a grace in the daemon's verdict ladder keyed on the `.launch-attempt`
-stamp the stop already writes, which is that owner's change to make.
+with one `dead-cleared` on the next cycle that sees the successor. The stop itself writes no
+stamp a grace could key on — `.launch-attempt` is written by
+`seat_relaunch::start`, pre-paste, which is AFTER this window opens — so
+closing it would mean the daemon learning a stop-time fact it is not told
+today. That is that owner's change to make, not this verb's.
 
 ## The seed
 
@@ -206,6 +208,10 @@ place that says so.
 
 ## What it does not do
 
-It kills nothing. Ending a live harness to make room for another is a
-different operation with a different blast radius, and this verb refuses a
-running seat instead of guessing that you meant it.
+It does not end a harness ae cannot read. The blast radius of stopping a tool
+mid-turn is the turn's work, so a frame that is not positively IDLE is a
+refusal and `--stop-unknown` is the caller saying they meant it — there is no
+`-f`, and a frame that reads BUSY refuses whatever is passed.
+
+It does not recreate a pane, and it does not touch anything in the session but
+the seat named on the argv.

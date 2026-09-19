@@ -1,5 +1,5 @@
-//! `ae reseat <session> <agent> --using <profile>`: move ONE seat to another
-//! profile, in place.
+//! `ae reseat <session> <agent> --using <profile> [--stop-unknown]`: move ONE
+//! seat to another profile, in place.
 //!
 //! The pain, measured across this fleet: a seat whose vendor quota dies is lost
 //! WITH ITS CONTEXT. The only way on was a fresh spawn under a new name plus a
@@ -342,6 +342,34 @@ fn pane_back_at_shell(probe: &ObservedPaneProbe, table: Option<&[procs::Proc]>) 
         && table.is_some_and(|table| !procs::has_any_descendant(table, probe.pid))
 }
 
+/// What a timed-out stop SAYS, from the last reading it could take.
+///
+/// The two cases need different advice and conflating them wastes a human's
+/// time. A SHELL in the foreground means the respawn took and something runs
+/// under it, which usually finishes — re-running the reseat is the right next
+/// step. A NON-shell foreground means the pane came back running something
+/// else, which for an ae seat pane cannot happen and for a pane made by hand
+/// means the respawn restarted that pane's own start command: no number of
+/// retries changes it, so the advice is to look rather than try again.
+fn stop_timeout_advice(probe: Option<&ObservedPaneProbe>) -> (String, &'static str) {
+    let Some(probe) = probe else {
+        return (
+            "the pane stopped answering".to_owned(),
+            "look at the pane before trying again.",
+        );
+    };
+    if crate::watchdog::command_is_shell(&probe.command) {
+        return (
+            "its shell is back but something still runs under it".to_owned(),
+            "re-run the reseat once that finishes.",
+        );
+    }
+    (
+        format!("'{}' holds its foreground", probe.command),
+        "look at the pane: the respawn did not leave a shell, so re-running will not help.",
+    )
+}
+
 /// The seat's current harness frame, fail-closed.
 ///
 /// A capture ae could not take is [`HarnessState::Unknown`], never idle: the
@@ -509,24 +537,21 @@ fn stop_running_tool(
     // is the one refusal where the seat's tool has already been stopped. The
     // meta is untouched, so `relaunch` brings the seat back on the profile it
     // still records, and a second reseat is free to try again.
-    let holding = transport::observe_pane_probe(&target.server, &target.pane).map_or_else(
-        || "it stopped answering".to_owned(),
-        |probe| format!("'{}' holds its foreground", probe.command),
-    );
+    let (holding, next) =
+        stop_timeout_advice(transport::observe_pane_probe(&target.server, &target.pane).as_ref());
     writeln!(
         err,
         "Error: '{}' was stopped but pane {} is not back at an idle shell after {}s — {holding}. \
-         Nothing was moved: '{}' still records its old profile, so look at the pane and re-run \
-         the reseat.",
+         Nothing was moved: '{}' still records its old profile, so {next}",
         target.agent,
         target.pane,
-        STOP_POLLS * 200 / 1000,
+        (STOP_POLL * STOP_POLLS).as_secs(),
         target.agent
     )?;
     Ok(Stop::Refused)
 }
 
-/// `ae reseat <session> <agent> --using <profile>`.
+/// `ae reseat <session> <agent> --using <profile> [--stop-unknown]`.
 ///
 /// # Errors
 ///
@@ -1053,6 +1078,27 @@ mod tests {
             super::caller_standing(Some(10), None, 40),
             CallerStanding::Unprovable
         );
+    }
+
+    #[test]
+    fn a_timed_out_stop_tells_a_human_which_of_the_two_states_the_pane_is_in() {
+        use crate::tmux::ObservedPaneProbe;
+        let probe = |command: &str| ObservedPaneProbe {
+            command: command.to_owned(),
+            pid: Some(10),
+        };
+        // The respawn took and the shell is busy: waiting is what helps.
+        let (holding, next) = super::stop_timeout_advice(Some(&probe("zsh")));
+        assert!(holding.contains("under it"), "{holding}");
+        assert!(next.contains("re-run"), "{next}");
+        // Something else came back in the pane. Re-running cannot change that,
+        // so the advice must not send a human round the same loop.
+        let (holding, next) = super::stop_timeout_advice(Some(&probe("sleep")));
+        assert!(holding.contains("'sleep'"), "{holding}");
+        assert!(next.contains("will not help"), "{next}");
+        let (holding, next) = super::stop_timeout_advice(None);
+        assert!(holding.contains("stopped answering"), "{holding}");
+        assert!(next.contains("look at the pane"), "{next}");
     }
 
     #[test]

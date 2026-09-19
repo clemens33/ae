@@ -1995,7 +1995,12 @@ mod tests {
         // the agent as TARGET, and it is what PRECEDES an alert — so a reader
         // that let it carry a verdict would answer from the question instead of
         // from the answer.
-        for action in ["state", "send", "nudge", "ask", "reply", "memo", "recover"] {
+        // `reseat` and `relaunch` join that list: both name an agent as TARGET
+        // and both record an outcome in prose, so a reader that classified
+        // summaries by action would read a seat move as a verdict about it.
+        for action in [
+            "state", "send", "nudge", "ask", "reply", "memo", "recover", "reseat", "relaunch",
+        ] {
             assert_eq!(
                 event(action, Some("agent process dead — dropped to shell")).alert_meaning(),
                 AlertMeaning::Undefined,

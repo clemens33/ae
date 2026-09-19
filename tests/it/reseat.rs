@@ -242,6 +242,12 @@ fn a_busy_seat_is_refused_and_the_flag_does_not_lift_it() {
         );
         assert_eq!(rig.meta_row("profile.worker.1"), "fake-claude");
         assert!(!rig.dir.join("seed.w1.md").exists(), "{tail:?}: no seed");
+        // NOTHING WAS WRITTEN, and the audit is where that would show first.
+        assert!(
+            !rig.events().contains("stopped"),
+            "{tail:?}: a refusal recorded a stop: {}",
+            rig.events()
+        );
     }
 }
 
@@ -264,6 +270,11 @@ fn a_frame_ae_cannot_read_is_refused_until_the_flag_says_otherwise() {
     );
     assert_eq!(rig.meta_row("profile.worker.1"), "fake-grok");
     assert!(rig.tool_pid(&pane, "grok").is_some(), "still running");
+    assert!(
+        !rig.events().contains("stopped"),
+        "a refusal recorded a stop: {}",
+        rig.events()
+    );
     // PANE BYTES ARE NOT EVIDENCE: the fake logs everything it is sent, so an
     // EMPTY receipt is the proof that nothing was typed at the live agent.
     assert!(

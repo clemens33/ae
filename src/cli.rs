@@ -212,7 +212,7 @@ pub const INIT: &str = "init";
 /// The rename: `rename [old] <new>`.
 pub const RENAME: &str = "rename";
 
-/// `ae reseat <session> <agent> --using <profile>` — move ONE seat to another
+/// `ae reseat <session> <agent> --using <profile> [--stop-unknown]` — move ONE seat to another
 /// profile in place. Validated by [`crate::reseat`].
 pub const RESEAT: &str = "reseat";
 
@@ -688,7 +688,7 @@ pub enum Request {
         /// Everything after the subcommand, as typed.
         tail: Vec<String>,
     },
-    /// `reseat <session> <agent> --using <profile>` — validated by
+    /// `reseat <session> <agent> --using <profile> [--stop-unknown]` — validated by
     /// [`crate::reseat`].
     Reseat {
         /// Everything after the subcommand, as typed.
