@@ -1,0 +1,3 @@
+{#{"step_index":11,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-09-16T09:00:00Z","content":"seed whole one","truncated_fields":"content"}
+{"step_index":12,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-09-16T09:00:00Z","content":"seed whole two","truncated_fields":[1,2]}
+{"step_index":13,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-09-16T09:00:00Z","content":"seed whole three","truncated_fields":[["content"]]}

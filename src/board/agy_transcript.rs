@@ -341,6 +341,45 @@ mod tests {
         coverage.iter().map(|item| item.reason.as_str()).collect()
     }
 
+    /// Drive one `board_agy` seed exactly the way the fuzz target decodes
+    /// it: chunk size, flag word, then the stream through the ONE splitter
+    /// into the flagged entry.
+    fn drive_seed(seed: &str) -> (Vec<crate::board::Row>, Vec<crate::board::Coverage>) {
+        let bytes = seed.as_bytes();
+        let (&size, rest) = bytes.split_first().expect("chunk byte");
+        let (&flag, stream) = rest.split_first().expect("flag byte");
+        let mut splitter = Splitter::new();
+        for piece in stream.chunks(usize::from(size) % 256 + 1) {
+            splitter.feed(piece);
+        }
+        let streamed = splitter
+            .finish()
+            .for_seat(SEAT)
+            .with_assistant(flag & 1 == 1)
+            .with_assistant_rows_found(flag & 8 == 8)
+            .with_assistant_read_once(flag & 16 == 16);
+        if flag & 2 == 0 {
+            crate::board::agy::read_stream(
+                &streamed,
+                ACTOR,
+                "fuzz.jsonl",
+                crate::tool::ToolKind::Agy,
+            )
+        } else {
+            read_stream(
+                &streamed,
+                ACTOR,
+                FILE,
+                crate::tool::ToolKind::Agy,
+                flag & 4 == 4,
+            )
+        }
+    }
+
+    fn flag_of(seed: &str) -> u8 {
+        seed.as_bytes().get(1).copied().expect("flag byte")
+    }
+
     #[test]
     fn the_planner_reply_renders_with_step_identity_and_second_micros() {
         let line = pr("7", "synthetic reply");
@@ -543,6 +582,51 @@ mod tests {
         assert_eq!(merged.len(), 2, "same steps collapse across a rewrite");
         assert_eq!(merged[0].body, "first");
         assert_eq!(merged[1].body, "second");
+    }
+
+    #[test]
+    fn board_agy_fuzz_seeds_reach_their_named_transcript_paths() {
+        let basic = include_str!("../../fuzz/seeds/board_agy/transcript-pr-basic");
+        let non_done = include_str!("../../fuzz/seeds/board_agy/transcript-non-done");
+        let bad_steps = include_str!("../../fuzz/seeds/board_agy/transcript-bad-steps");
+        let missing_stamp = include_str!("../../fuzz/seeds/board_agy/transcript-missing-stamp");
+        let truncated = include_str!("../../fuzz/seeds/board_agy/transcript-truncated");
+        let hostile = include_str!("../../fuzz/seeds/board_agy/transcript-hostile-trunc");
+        // Every transcript seed selects the transcript entry; only the one
+        // named truncated claims the truncated leg.
+        for (name, seed) in [
+            ("basic", basic),
+            ("non-done", non_done),
+            ("bad-steps", bad_steps),
+            ("missing-stamp", missing_stamp),
+            ("hostile-trunc", hostile),
+        ] {
+            assert_eq!(flag_of(seed), b'#', "{name} drives the transcript entry");
+        }
+        assert_eq!(
+            flag_of(truncated),
+            b'\'',
+            "truncated claims the clipped leg"
+        );
+        let (rows, coverage) = drive_seed(basic);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].body, "seed narration beside a call");
+        assert!(coverage.is_empty());
+        let (rows, coverage) = drive_seed(non_done);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(reasons(&coverage), ["1 reply skipped (not final)"]);
+        let (rows, coverage) = drive_seed(bad_steps);
+        assert!(rows.is_empty());
+        assert_eq!(reasons(&coverage), ["3 records lack a step index"]);
+        let (rows, coverage) = drive_seed(missing_stamp);
+        assert!(rows.is_empty());
+        assert_eq!(reasons(&coverage), ["1 record without a timestamp"]);
+        let (rows, coverage) = drive_seed(truncated);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(reasons(&coverage), ["1 reply clipped by the agy store"]);
+        let (rows, coverage) = drive_seed(hostile);
+        assert_eq!(rows.len(), 3, "hostile truncation shapes still render");
+        assert!(coverage.is_empty(), "and never count");
     }
 
     #[test]

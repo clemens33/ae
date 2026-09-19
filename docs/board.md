@@ -104,8 +104,11 @@ boundary inside one turn fuses (the store carries no separator). Muse reads
 the whole text of each `assistant_message_committed` event. OpenCode reads the
 `text` parts of each `role == "assistant"` message — one row per message, so a
 tool-only step drops silently — never its `reasoning` parts (which carry a
-`text` field too), its `tool` parts or its `step-*` frames. Antigravity has
-no assistant records: each agy seat prints one coverage line saying so. Under
+`text` field too), its `tool` parts or its `step-*` frames. Antigravity reads
+each `MODEL`/`PLANNER_RESPONSE`/`DONE` record's `content` field from the seat's
+own transcript — `GENERIC` is the untyped tool-result record and drops with
+every tool type, and `thinking`/`tool_calls` never reach a body. A seat with no
+transcript store prints one coverage line saying so. Under
 `--follow` a grok stream ending mid-turn holds its commit point at the open
 run's first chunk, so the next poll re-reads and joins the whole turn instead
 of printing a fragment. The first pass still prints an open run as-is, and the
@@ -157,6 +160,11 @@ OpenCode does not follow: an export is one child process per seat per tick and
 carries no append or offset semantics, so the one-shot read stands and every
 poll prints ONE steady coverage line, `opencode: read once, not followed`.
 
+Antigravity follows its human rows from `history.jsonl` and reads its replies
+once: the transcript leg runs on the first pass only, so whenever the store
+exists every poll prints ONE steady coverage line, `agy: assistant replies
+read once, not followed`.
+
 After the first pass, coverage prints on CHANGE only: a seat that becomes
 readable prints nothing, a seat that becomes unreadable prints its new reason
 once. Rescan lines always print. Batches are sorted internally by
@@ -194,6 +202,14 @@ id alone — a record of another conversation is skipped silently, `workspace` i
 never consulted, and a pre-field CLI record can never match. `display` is the
 typed prompt (`"type":"slash_command"` included), `timestamp` integer millis.
 
+Antigravity assistant rows come from the seat's own
+`brain/<id>/.system_generated/logs/transcript_full.jsonl`, falling back to
+`transcript.jsonl` — never both, never the `chunks/` mirror. Identity is the
+conversation id plus the record's `step_index`, so a rewrite that reorders
+records keeps every row's name; `created_at` is second-precision UTC. The
+truncated sibling clips `content` past ~4 K chars and names it in
+`truncated_fields`; a clipped reply renders and counts once per seat.
+
 OpenCode reads one `opencode export <sessionID>` document per conversation —
 the current one and each recorded predecessor — and never the SQLite store.
 The capture goes through a scratch FILE, never a pipe: `opencode export` exits
@@ -214,3 +230,10 @@ document or one naming another session is `export unreadable` / `export names
 another session`; a failed or missing binary is `export failed`; a session id
 that fails the `ses_` + alphanumerics grammar is refused before any argv with
 `invalid or missing conversation id`.
+
+## Non-goals
+
+- A two-file follow. An agy seat's replies read once on the first pass while
+  its human rows stream from `history.jsonl`; following the transcript file
+  too would key a second held offset per actor in `follow::Follow`, which is
+  a separate slice, not a part of this one.

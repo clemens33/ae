@@ -1,0 +1,1 @@
+{#{"step_index":9,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-09-16T09:00:00Z","content":"seed narration beside a call","thinking":"seed private reasoning","tool_calls":[{"name":"run_command","args":{}}]}

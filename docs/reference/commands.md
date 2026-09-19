@@ -1132,8 +1132,10 @@ never read; `isApiErrorMessage == true` records excluded); Codex reads its
 `response_item`/`message`/`role=="assistant"` record and its `output_text`
 parts only — never the `reasoning`, call or `event_msg` twins. Grok joins one
 turn's `agent_message_chunk` deltas into a single row, Muse reads each
-`assistant_message_committed` event whole, and Antigravity seats print one
-coverage line (no assistant records exist). Empty bodies drop
+`assistant_message_committed` event whole, and Antigravity seats read each
+DONE planner reply's `content` from the seat's own transcript (tool-result
+records never render), printing one coverage line only when the store is
+absent. Empty bodies drop
 silently, an unstamped record counts into the missing-timestamp coverage, and
 without the flag the stream is byte-identical to the human-only board.
 
