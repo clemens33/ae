@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.144] - 2026-09-19
+- Stop a running seat in place before reseating it
+- Answer the reseat stop review
+- Pin the reseat stop's wait for a shell that is slow to return
+- Pin the reseat stop's bounded wait on a pane that never returns a shell
+- Assert the profile row the rig actually records
+- Bound how many reseat seat tests run at once
+
 ## [v2026.9.143] - 2026-09-19
 - Add the short helper spelling `ae @<session> <helper> …`
 - Sweep the full-path-only claims and qualify the short helper spelling
