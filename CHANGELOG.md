@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.134] - 2026-09-19
+- Neutralise control bytes in the board's text output
+
 ## [v2026.9.133] - 2026-09-19
 - Capture opencode's export through a scratch file
 - Keep the opencode capture owner-only and bounded
