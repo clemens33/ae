@@ -833,7 +833,7 @@ today's status-only menu and floor; it never refuses once the clicker is
 proven.
 
 The `Activity` dialog lists the newest 30 records a human cares about, newest
-first: `state`, `done`, `goal`, `spawn`, `retire`, `relaunch`, `ask`,
+first: `state`, `done`, `goal`, `spawn`, `retire`, `relaunch`, `reseat`, `ask`,
 `review`, `reply`, `watchdog-start` and `watchdog-stop` (the watchdog rows draw only for non-`ae:` actors, so ae-driven restarts never flood the dialog), each with actor,
 kind, clipped text and truthful age in aligned columns. Watchdog
 ticks, quota samples, other audits, delivery records, `memo`, `chat`, `focus`,

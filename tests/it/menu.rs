@@ -8224,6 +8224,25 @@ fn the_activity_dialog_draws_the_newest_human_records() {
     assert!(!text.contains("T9"), "a tick is not activity: {text}");
 }
 
+/// `show --activity` draws a reseat record: the seat move reaches a human eye.
+#[test]
+fn the_activity_dialog_draws_a_reseat() {
+    let text = dialog_text(
+        "dlg-activity-reseat",
+        "--activity",
+        "Activity",
+        "{\"ts\":\"x\",\"actor\":\"human\",\"action\":\"reseat\",\"target\":\"w\",\
+         \"summary\":\"M3\"}\n",
+        "",
+        120,
+        30,
+    );
+    assert!(
+        text.contains("M3") && text.contains("reseat") && text.contains("Close"),
+        "{text}"
+    );
+}
+
 /// `show --memos` draws the latest record per topic; superseded stays out.
 #[test]
 fn the_memos_dialog_draws_brief_latest_per_topic() {

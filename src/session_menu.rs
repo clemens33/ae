@@ -116,13 +116,14 @@ pub enum CellRow {
 }
 
 /// The event kinds a human cares about; the docs name what is not.
-const ACTIVITY_KINDS: [&str; 11] = [
+const ACTIVITY_KINDS: [&str; 12] = [
     "state",
     "done",
     "goal",
     "spawn",
     "retire",
     "relaunch",
+    "reseat",
     "ask",
     "review",
     "reply",
@@ -3448,7 +3449,7 @@ mod tests {
         format!(r#"{{"ts":"{ts}","actor":"{actor}","action":"{action}"{extra}}}"#)
     }
 
-    /// The nine human kinds, newest first, at most thirty; gaps named.
+    /// The curated human kinds, newest first, at most thirty; gaps named.
     #[test]
     fn activity_picks_only_the_human_kinds_newest_first() {
         use crate::tmux::OptionReading;
@@ -3546,6 +3547,40 @@ mod tests {
         );
         let rows = super::activity_cells(&set, &meta, &crate::store::SourceRead::Absent, now);
         assert_eq!(cell_gaps(&rows), vec!["activity: none"]);
+    }
+
+    /// A seat move renders beside its sibling relaunch; the kind never clips.
+    #[test]
+    fn activity_shows_a_reseat() {
+        use crate::tmux::OptionReading;
+        let fixture = [
+            ("lead", "relaunch", r#","target":"w","summary":"resumed""#),
+            (
+                "human",
+                "reseat",
+                r#","target":"w","summary":"reseated [from lunam to solx]""#,
+            ),
+        ];
+        let container = fixture
+            .iter()
+            .map(|r| event("2026-09-17T08:00:00Z", r.0, r.1, r.2))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        let now = crate::time::Timestamp::parse("2026-09-17T12:00:00Z").expect("now parses");
+        let meta = parsed_meta(UUID_A, &["lead"]);
+        let set = OptionReading::Set(UUID_A.to_owned());
+        let rows = super::activity_cells(&set, &meta, &events(&container), now);
+        let shown = cell_rows(&rows);
+        assert_eq!(shown.len(), 2, "{shown:?}");
+        assert_eq!(
+            cells_str(shown[0]),
+            ["4h", "human", "reseat", "w — reseated [from lunam to solx]"]
+        );
+        assert!(
+            crate::orchestrator::terminal_cells("reseat") <= super::ACTIVITY_KIND_CELLS,
+            "the kind column never clips a curated kind"
+        );
     }
 
     /// The watchdog lifecycle audit renders beside the human kinds.

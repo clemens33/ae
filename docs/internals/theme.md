@@ -58,7 +58,7 @@ with one new word (`--activity` / `--memos` / `--board`): same seven facts, same
 proof, no new binding. Each opens a read-only dialog shaped like the settings
 quota dialog — keyless informational rows, one blank separator, `Close` — with
 the newest 30 activity records (`state`, `done`, `goal`, `spawn`, `retire`,
-`relaunch`, `ask`, `review`, `reply`, `watchdog-start`, `watchdog-stop`),
+`relaunch`, `reseat`, `ask`, `review`, `reply`, `watchdog-start`, `watchdog-stop`),
 the latest memo per topic exactly as `ae brief` computes it, or the clicked
 session's newest 30 human turns newest first through the board's own
 filter/sort/coverage, at most 30 rows
