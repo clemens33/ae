@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.141] - 2026-09-19
+- Audit watchdog start and stop to events.jsonl
+- Attribute watchdog audits to ae-driven restarts and qualify cross-session callers
+- Hide ae-driven watchdog restarts from the Activity dialog
+
 ## [v2026.9.140] - 2026-09-19
 - Republish the capture floor on a resume fallback
 
