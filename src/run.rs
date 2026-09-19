@@ -510,23 +510,26 @@ fn build_with_snapshot(
 /// config-home notice goes. `None` means nothing to say.
 fn apply_observed_model(dir: &Path, slot: &str, seat: &mut Seat) -> Option<String> {
     let observed = seat.observed_model.clone()?;
-    // TOOL PROVENANCE, before anything else. A recorded observation says WHAT
-    // ran, never which harness ran it, and a meta rebuild rewrites `agent_bin`
-    // from the new profile — so a profile edited from one tool to another passes
-    // every later gate holding the PREDECESSOR tool's model. The VALUE cannot
-    // settle it: a replayable id is a bare word in both vocabularies, so
-    // `gpt-6-astra` would clear the bare-id guard on its way into another
-    // adapter's flag. The recorded binary can. This is the comparison
-    // `read_seat` already makes for a command snapshot, made for the
-    // observation instead, and it fails CLOSED — a binary ae cannot classify
-    // reads as the same `Unknown` on both sides, so only a real disagreement
-    // retires the pair, and a disagreement never launches from it.
+    // TOOL PROVENANCE, before anything else. An observation says WHAT ran, never
+    // which harness ran it, so a profile edited from one tool to another passes
+    // every later gate holding the PREDECESSOR's model. The VALUE cannot settle
+    // it — a replayable id is a bare word in both vocabularies, so `gpt-6-astra`
+    // clears the bare-id guard on its way into another adapter's flag — but the
+    // recorded binary can: the comparison `read_seat` already makes for a command
+    // snapshot, made for the observation. It fails CLOSED, since a binary ae
+    // cannot classify reads as the same `Unknown` on both sides.
+    //
+    // The retirement must name the tool the META records, because
+    // `meta::record_observed_model` reads `agent_bin` to prove the slot has not
+    // moved to another seat and would otherwise REFUSE the write while the notice
+    // below claimed a removal. The two are equal in the vocabulary arm, so one
+    // spelling serves both.
     let retire_foreign = |under: &str| {
         let _ = crate::meta::record_observed_model(
             dir,
             slot,
             &seat.agent,
-            seat.tool,
+            seat.recorded_tool,
             &seat.launch_id,
             None,
         );
@@ -539,17 +542,14 @@ fn apply_observed_model(dir: &Path, slot: &str, seat: &mut Seat) -> Option<Strin
         return retire_foreign(seat.recorded_tool.as_str());
     }
     // VOCABULARY — the same question asked of the one thing a rebuild cannot
-    // erase. The comparison above reads `agent_bin`, and the meta rebuild behind
-    // `ae start` rewrites that row from the NEW profile while carrying the
-    // observation, so a flip can reach `_run` with both sides already agreeing.
-    // The recorded VALUE still names the harness that drew it, and the ADAPTER
-    // says which vocabulary that is rather than a tool name: one that REPLAYS its
-    // model was observed in its own flag's spelling, and one that does not was
-    // observed as a display label — a CLOSED list, so a value that is not on it
-    // was never read from such a pane. An adapter ae does not observe at all is
-    // held to the same bar and so retires whatever it is carrying. Neither
-    // direction depends on a label happening to contain a character an argv word
-    // would not.
+    // erase. The meta rebuild behind `ae start` rewrites `agent_bin` from the NEW
+    // profile while CARRYING the observation, so a flip reaches `_run` with both
+    // sides already agreeing. The VALUE still names the harness that drew it, and
+    // the ADAPTER says which vocabulary that is rather than a tool name: one that
+    // REPLAYS was observed in its own flag's spelling, one that does not as a
+    // display label from a CLOSED list. An adapter ae does not observe at all is
+    // held to the same bar. Neither direction depends on a label happening to
+    // carry a character an argv word would not.
     if crate::harness_state::is_claude_model_label(&observed) == seat.tool.adapter().model.replays()
     {
         return retire_foreign("another harness");
@@ -1286,9 +1286,8 @@ pub(crate) struct Seat {
     observed_model_pin: Option<String>,
     /// The EXACT config pair this read handed [`crate::config::read_identity`],
     /// so the FOLLOW lookup asks the one config owner the same question this
-    /// seat's own command was resolved by. Not `config_files`, which carries
-    /// the context document's list and keeps the orchestrator-seat overlay
-    /// that [`identity_config_pair`] drops.
+    /// seat's own command was resolved by. Not `config_files`, which keeps the
+    /// orchestrator-seat overlay [`identity_config_pair`] drops.
     identity_global: Option<PathBuf>,
     identity_local: Option<PathBuf>,
     /// The tool class the RECORDED `agent_bin.<slot>` names — the observation's
@@ -2021,13 +2020,50 @@ mod tests {
         );
     }
 
-    /// The rebuild behind `ae start` rewrites `agent_bin` from the NEW profile
-    /// while carrying the observation, so the recorded-binary comparison can be
-    /// SATISFIED by the time `_run` reads it — both sides say claude. What the
-    /// rebuild cannot rewrite is the value, and `claude-opus-5` is a pin
-    /// spelling, never a label claude's footer draws. A configured profile pins
-    /// exactly that value, so the lookup would succeed and the bare-id guard
-    /// would wave it through: the vocabulary is the only thing left to refuse on.
+    /// "was retired" is a claim about the meta, so it is pinned against one: the
+    /// rows must be GONE. A retirement naming the wrong tool is refused by the
+    /// guarded writer, and no nonexistent-directory fixture can see that.
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture builds the meta the guarded writer proves itself against"
+    )]
+    fn a_retired_pair_is_actually_removed_from_the_meta() {
+        let dir = std::env::temp_dir().join(format!("ae-run-model-retire-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a fixture dir");
+        std::fs::write(
+            dir.join("meta"),
+            "meta_version=3\nseat.main=lead\nagent_bin.main=codex\nlaunch_id.main=L1\n\
+             observed_model.main=gpt-6-astra\nobserved_model_pin.main=fable\n",
+        )
+        .expect("a meta");
+        // The profile was edited codex -> claude and kept its pin, so the flip arm
+        // fires while `agent_bin` still names codex.
+        let mut seat = Seat {
+            recorded_tool: ToolKind::Codex,
+            ..model_seat(
+                "claude --model fable",
+                ToolKind::Claude,
+                Some("gpt-6-astra"),
+                Some("fable"),
+            )
+        };
+        let notice = apply_observed_model(&dir, "main", &mut seat).expect("a notice");
+        assert!(notice.contains("was retired"), "{notice}");
+        let after = std::fs::read_to_string(dir.join("meta")).expect("the meta");
+        assert!(
+            !after.contains("observed_model"),
+            "the notice claimed a retirement the meta did not get: {after}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The rebuild behind `ae start` can leave the recorded-binary comparison
+    /// SATISFIED — both sides say claude — while the value is still the flipped
+    /// tool's. `claude-opus-5` is a pin spelling, never a label claude's footer
+    /// draws, and a configured profile pins exactly it, so the lookup would
+    /// succeed and the bare-id guard would wave it through.
     #[test]
     fn a_rebuild_that_erases_the_recorded_flip_cannot_smuggle_the_value_through() {
         let dir = std::env::temp_dir().join(format!("ae-run-model-erased-{}", std::process::id()));

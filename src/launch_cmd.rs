@@ -341,9 +341,8 @@ pub(crate) fn profile_model_pin(
 ///
 /// Every arm keeps today's behaviour byte-identical — the seat resumes on its
 /// own pin — and every arm is SAID on the resume notice, because a silent
-/// refusal reads as preservation. The `ae list` cell that would say the same
-/// thing before a restart is the deferred `modelfollow-list` slice; until it
-/// lands, the notice printed at resume is the only surface.
+/// refusal reads as preservation. That notice is the only surface until the
+/// deferred `modelfollow-list` slice adds the pre-restart `ae list` cell.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FollowRefusal {
     /// This tool has no model flag ae reads.
@@ -1811,9 +1810,8 @@ mod tests {
                 "{seat:?} / {observed:?}"
             );
         }
-        // The label cap is a BOUNDARY, so it is pinned as one: AT the cap the
-        // value is usable and merely unmatched, one byte PAST it, it is not a
-        // label at all. A table row on one side only cannot tell the two apart.
+        // The label cap is a BOUNDARY, so it is pinned as one: a row on one side
+        // only cannot tell `>` from `>=`.
         for (len, want) in [
             (super::FOLLOW_LABEL_MAX, FollowRefusal::NoCandidate),
             (super::FOLLOW_LABEL_MAX + 1, FollowRefusal::Unusable),
