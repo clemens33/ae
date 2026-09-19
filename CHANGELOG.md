@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.150] - 2026-09-19
+- Extract the menu-text cutter behind both projectors
+- Pin the mouse row-pick flash as an upstream tmux limit
+- Grow Activity/Memos dialogs to thirty aligned rows
+- Fit dialog labels to tmux byte budget, keep age whole
+- Clip dialog text to the byte budget it actually draws
+
 ## [v2026.9.149] - 2026-09-19
 - Carry a seat's conversation between two accounts of one tool
 - Trim the carry prose to what the code does not say
