@@ -495,13 +495,11 @@ fn build_with_snapshot(
 ///   profile edit, so the model flag is REWRITTEN to the observed value.
 /// - recorded pin == the profile's model now, but the adapter is report-only:
 ///   the scraped text is a display name, not a value drawn from the flag's own
-///   vocabulary, so the LABEL is never replayed. ae FOLLOWS it instead, through
-///   the operator's own `[profiles]` block: the configured pin that label
+///   vocabulary, so the LABEL is never replayed. ae FOLLOWS it instead through
+///   the operator's own `[profiles]` block — the configured pin that label
 ///   satisfies is a value the operator already wrote, and
-///   [`crate::launch_cmd::followed_pin`] applies THAT. No candidate, several,
-///   or a config it cannot read leaves today's behaviour exactly as it was —
-///   the row is retained for the report, the seat resumes on the profile pin,
-///   and the notice says which refusal it was.
+///   [`crate::launch_cmd::followed_pin`] applies THAT. Every refusal leaves the
+///   resume byte-identical to what it was and says which refusal it was.
 /// - recorded pin differs (including "the profile pins no model now"): the
 ///   profile edit is newer. Both rows are retired and the profile wins.
 /// - no recorded pin: the profile pins no model. Nothing is rewritten (ae never
@@ -512,6 +510,50 @@ fn build_with_snapshot(
 /// config-home notice goes. `None` means nothing to say.
 fn apply_observed_model(dir: &Path, slot: &str, seat: &mut Seat) -> Option<String> {
     let observed = seat.observed_model.clone()?;
+    // TOOL PROVENANCE, before anything else. A recorded observation says WHAT
+    // ran, never which harness ran it, and a meta rebuild rewrites `agent_bin`
+    // from the new profile — so a profile edited from one tool to another passes
+    // every later gate holding the PREDECESSOR tool's model. The VALUE cannot
+    // settle it: a replayable id is a bare word in both vocabularies, so
+    // `gpt-6-astra` would clear the bare-id guard on its way into another
+    // adapter's flag. The recorded binary can. This is the comparison
+    // `read_seat` already makes for a command snapshot, made for the
+    // observation instead, and it fails CLOSED — a binary ae cannot classify
+    // reads as the same `Unknown` on both sides, so only a real disagreement
+    // retires the pair, and a disagreement never launches from it.
+    let retire_foreign = |under: &str| {
+        let _ = crate::meta::record_observed_model(
+            dir,
+            slot,
+            &seat.agent,
+            seat.tool,
+            &seat.launch_id,
+            None,
+        );
+        Some(format!(
+            "ae: seat {slot}: observed model {observed} was retired — it was observed under {under}, and the profile now launches {}. Resuming on the profile.",
+            seat.tool.as_str()
+        ))
+    };
+    if seat.recorded_tool != seat.tool {
+        return retire_foreign(seat.recorded_tool.as_str());
+    }
+    // VOCABULARY — the same question asked of the one thing a rebuild cannot
+    // erase. The comparison above reads `agent_bin`, and the meta rebuild behind
+    // `ae start` rewrites that row from the NEW profile while carrying the
+    // observation, so a flip can reach `_run` with both sides already agreeing.
+    // The recorded VALUE still names the harness that drew it, and the ADAPTER
+    // says which vocabulary that is rather than a tool name: one that REPLAYS its
+    // model was observed in its own flag's spelling, and one that does not was
+    // observed as a display label — a CLOSED list, so a value that is not on it
+    // was never read from such a pane. An adapter ae does not observe at all is
+    // held to the same bar and so retires whatever it is carrying. Neither
+    // direction depends on a label happening to contain a character an argv word
+    // would not.
+    if crate::harness_state::is_claude_model_label(&observed) == seat.tool.adapter().model.replays()
+    {
+        return retire_foreign("another harness");
+    }
     let Some(recorded_pin) = seat.observed_model_pin.clone() else {
         return Some(format!(
             "ae: seat {slot}: observed model {observed} is REPORT ONLY — the profile pins no model, so ae will not add one; the manual choice is not applied."
@@ -562,6 +604,17 @@ fn apply_observed_model(dir: &Path, slot: &str, seat: &mut Seat) -> Option<Strin
             ));
         }
     };
+    // A replayed value must be a bare harness id. An observation carries NO tool
+    // provenance and the meta rebuild rewrites `agent_bin` from the new profile,
+    // so a profile edited from one tool to another that keeps the same pin passes
+    // the recency gate with the PREDECESSOR tool's label in hand — and a display
+    // label must never reach an argv word, whichever adapter receives it.
+    if !crate::launch_cmd::is_bare_flag_value(&value) {
+        return Some(format!(
+            "ae: seat {slot}: observed model {observed} is REPORT ONLY — {} — so ae will not apply it; resuming on the profile pin {recorded_pin}.",
+            crate::launch_cmd::FollowRefusal::NotAFlagValue.why(&observed)
+        ));
+    }
     match crate::launch_cmd::replace_model_flag(seat.command.as_str(), seat.tool, &value) {
         Ok(rewritten) => {
             seat.command = seat.command.with_text(rewritten);
@@ -1234,10 +1287,14 @@ pub(crate) struct Seat {
     /// The EXACT config pair this read handed [`crate::config::read_identity`],
     /// so the FOLLOW lookup asks the one config owner the same question this
     /// seat's own command was resolved by. Not `config_files`, which carries
-    /// the context document's list and ignores the orchestrator-seat overlay
-    /// exclusion below.
+    /// the context document's list and keeps the orchestrator-seat overlay
+    /// that [`identity_config_pair`] drops.
     identity_global: Option<PathBuf>,
     identity_local: Option<PathBuf>,
+    /// The tool class the RECORDED `agent_bin.<slot>` names — the observation's
+    /// only provenance, because a recorded model says what ran and never which
+    /// harness ran it.
+    recorded_tool: ToolKind,
 }
 
 /// Read the seat `slot` names, refusing anything that is not launchable.
@@ -1287,6 +1344,41 @@ fn read_seat_command(
     }
 }
 
+/// The config pair a seat's profiles resolve against: the global file the record
+/// names, plus the local overlay UNLESS this session is the dedicated
+/// orchestrator, whose seat overlay carries legacy identity rows a launch must
+/// not read.
+///
+/// ONE owner with ONE caller today (`read_seat`), extracted because the rule is
+/// what a REPORTING surface must ask too: the deferred `modelfollow-list` slice
+/// renders the follow before a restart, and a reader that included the overlay
+/// would promise one the next start refuses. Deliberately NOT `config_files`,
+/// which is the context document's list and keeps the overlay on purpose.
+///
+/// The overlay is taken ALREADY RESOLVED rather than resolved here: its caller
+/// needs the same path for `config_files`, and a second `local_overlay` read
+/// would let the context document and the launch disagree about a file that
+/// changed between the two reads.
+pub(crate) fn identity_config_pair(
+    dir: &Path,
+    local: Option<&Path>,
+    global: &str,
+) -> (Option<PathBuf>, Option<PathBuf>) {
+    let orchestrator_seat = local.is_some_and(|path| {
+        dir.parent()
+            .and_then(Path::parent)
+            .is_some_and(|home| crate::orchestrator::is_seat_overlay(path, home))
+    });
+    (
+        (!global.is_empty()).then(|| PathBuf::from(global)),
+        if orchestrator_seat {
+            None
+        } else {
+            local.map(Path::to_path_buf)
+        },
+    )
+}
+
 pub(crate) fn read_seat(
     dir: &Path,
     slot: &str,
@@ -1327,19 +1419,13 @@ pub(crate) fn read_seat(
         (!global.is_empty()).then(|| Path::new(&global)),
         local.as_deref(),
     );
-    let orchestrator_seat = local.as_deref().is_some_and(|path| {
-        dir.parent()
-            .and_then(Path::parent)
-            .is_some_and(|home| crate::orchestrator::is_seat_overlay(path, home))
-    });
+    let (identity_global, identity_local) = identity_config_pair(dir, local.as_deref(), &global);
     let command = if let Some(command) = command_snapshot {
         crate::config::IdentityConfig::resolved_snapshot(command)
     } else {
-        let cfg = crate::config::read_identity(
-            (!global.is_empty()).then(|| Path::new(&global)),
-            (!orchestrator_seat).then_some(local.as_deref()).flatten(),
-        )
-        .map_err(|why| why.to_string())?;
+        let cfg =
+            crate::config::read_identity(identity_global.as_deref(), identity_local.as_deref())
+                .map_err(|why| why.to_string())?;
         let home = crate::doors::home();
         read_seat_command(
             &cfg,
@@ -1359,15 +1445,13 @@ pub(crate) fn read_seat(
         )
     })?;
     let tool = parsed.tool();
-    if command_snapshot.is_some() {
-        let recorded = ToolKind::from_binary_name(&value(&format!("agent_bin.{slot}")));
-        if tool != recorded {
-            return Err(format!(
-                "profile '{profile}' command snapshot changed tool kind from {} to {} — '{name}' cannot be launched",
-                recorded.as_str(),
-                tool.as_str()
-            ));
-        }
+    let recorded_tool = ToolKind::from_binary_name(&value(&format!("agent_bin.{slot}")));
+    if command_snapshot.is_some() && tool != recorded_tool {
+        return Err(format!(
+            "profile '{profile}' command snapshot changed tool kind from {} to {} — '{name}' cannot be launched",
+            recorded_tool.as_str(),
+            tool.as_str()
+        ));
     }
     Ok(Seat {
         session: value("session"),
@@ -1382,8 +1466,9 @@ pub(crate) fn read_seat(
         agent: name,
         observed_model: parsed_meta.observed_model(slot).map(str::to_owned),
         observed_model_pin: parsed_meta.observed_model_pin(slot).map(str::to_owned),
-        identity_global: (!global.is_empty()).then(|| PathBuf::from(&global)),
-        identity_local: if orchestrator_seat { None } else { local },
+        identity_global,
+        identity_local,
+        recorded_tool,
     })
 }
 
@@ -1821,6 +1906,7 @@ mod tests {
             observed_model_pin: pin.map(str::to_owned),
             identity_global: None,
             identity_local: None,
+            recorded_tool: tool,
         }
     }
 
@@ -1836,6 +1922,47 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         std::fs::write(&path, text).expect("a config fixture");
         path
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture builds the state root shape the exclusion is decided from"
+    )]
+    fn the_identity_pair_is_what_read_seat_always_computed() {
+        // The ONE owner must answer exactly what read_seat's own inline
+        // computation answered: the global file only when the row is non-empty,
+        // and the local overlay dropped ONLY for the dedicated orchestrator's
+        // seat overlay. A reporting surface asks this same function, so it
+        // cannot promise a follow from a file the next start will not read.
+        let root = std::env::temp_dir().join(format!("ae-idpair-{}", std::process::id()));
+        let dir = root.join("sessions").join("s");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&dir).expect("a fixture dir");
+        let overlay = root.join("orchestrator.config");
+        let ordinary = root.join("workspace.config");
+        for (local_row, keeps) in [(&overlay, false), (&ordinary, true)] {
+            std::fs::write(
+                dir.join("meta"),
+                format!("schema=2\nlocal_config={}\n", local_row.display()),
+            )
+            .expect("meta");
+            let resolved = crate::config::local_overlay(&dir, "");
+            let (global, local) = identity_config_pair(&dir, resolved.as_deref(), "/etc/ae.config");
+            assert_eq!(global.as_deref(), Some(Path::new("/etc/ae.config")));
+            assert_eq!(
+                local.is_some(),
+                keeps,
+                "{}: the orchestrator seat overlay is the ONE exclusion",
+                local_row.display()
+            );
+        }
+        let (global, _) = identity_config_pair(&dir, None, "");
+        assert_eq!(
+            global, None,
+            "an empty config row is no file, never a guess"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     const FOLLOW_SEAT: &str =
@@ -1894,6 +2021,34 @@ mod tests {
         );
     }
 
+    /// The rebuild behind `ae start` rewrites `agent_bin` from the NEW profile
+    /// while carrying the observation, so the recorded-binary comparison can be
+    /// SATISFIED by the time `_run` reads it — both sides say claude. What the
+    /// rebuild cannot rewrite is the value, and `claude-opus-5` is a pin
+    /// spelling, never a label claude's footer draws. A configured profile pins
+    /// exactly that value, so the lookup would succeed and the bare-id guard
+    /// would wave it through: the vocabulary is the only thing left to refuse on.
+    #[test]
+    fn a_rebuild_that_erases_the_recorded_flip_cannot_smuggle_the_value_through() {
+        let dir = std::env::temp_dir().join(format!("ae-run-model-erased-{}", std::process::id()));
+        let mut seat = following_seat("erased", FOLLOW_ONE, "claude-opus-5");
+        assert_eq!(
+            seat.recorded_tool, seat.tool,
+            "the rebuild left them agreeing"
+        );
+        let notice = apply_observed_model(&dir, "main", &mut seat).expect("a notice");
+        assert!(notice.contains("was retired"), "{notice}");
+        assert!(
+            notice.contains("observed under another harness"),
+            "{notice}"
+        );
+        assert_eq!(
+            seat.command.as_str(),
+            FOLLOW_SEAT,
+            "a value from another harness never reaches this one's argv"
+        );
+    }
+
     #[test]
     fn a_claude_label_no_profile_pins_stays_report_only_and_says_which_refusal() {
         // EXPECTATION UPDATE of the old
@@ -1916,6 +2071,74 @@ mod tests {
                 "a refusal leaves the resume byte-identical to what it always was"
             );
         }
+    }
+
+    /// The recorded observation is stale and its provenance still names the
+    /// PREDECESSOR tool: the pair is retired and the profile wins. This is the
+    /// structural half of the tool-flip guard — the value is a bare id that no
+    /// vocabulary check could reject, so only `agent_bin` can settle it.
+    #[test]
+    fn a_replayable_observation_never_crosses_a_tool_flip() {
+        let dir = std::env::temp_dir().join(format!("ae-run-model-prov-{}", std::process::id()));
+        // The navigator's case: codex -> grok keeping the pin. `gpt-6-astra` is a
+        // bare word, so the value guard cannot see it; grok's empty flag set is a
+        // SECOND independent refusal, which is why provenance is pinned here
+        // rather than left to the adapter table that happens to stop it today.
+        let mut seat = Seat {
+            recorded_tool: ToolKind::Codex,
+            ..model_seat(
+                "grok --model grok-4.6",
+                ToolKind::Grok,
+                Some("gpt-6-astra"),
+                Some("grok-4.6"),
+            )
+        };
+        let notice = apply_observed_model(&dir, "main", &mut seat).expect("a notice");
+        assert!(notice.contains("was retired"), "{notice}");
+        assert!(notice.contains("observed under codex"), "{notice}");
+        assert!(notice.contains("now launches grok"), "{notice}");
+        assert_eq!(seat.command.as_str(), "grok --model grok-4.6");
+        // And the flip INTO a replayable adapter, where the recency gate passes
+        // and the injection would otherwise happen.
+        let mut seat = Seat {
+            recorded_tool: ToolKind::Claude,
+            ..model_seat(
+                "codex --yolo -m fable",
+                ToolKind::Codex,
+                Some("fable-5-1"),
+                Some("fable"),
+            )
+        };
+        let notice = apply_observed_model(&dir, "main", &mut seat).expect("a notice");
+        assert!(notice.contains("was retired"), "{notice}");
+        assert_eq!(
+            seat.command.as_str(),
+            "codex --yolo -m fable",
+            "a model observed under another harness is never replayed into this one"
+        );
+    }
+
+    #[test]
+    fn a_value_no_adapter_could_take_is_refused_even_when_no_guard_can_place_it() {
+        // The LAST backstop. A value that is neither one of claude's closed
+        // labels nor a bare harness id cannot be attributed to any harness, so
+        // neither provenance nor vocabulary can retire it — and it must still
+        // never be quoted into an argv word.
+        let dir = std::env::temp_dir().join(format!("ae-run-model-opaque-{}", std::process::id()));
+        let mut seat = model_seat(
+            "codex --yolo -m fable",
+            ToolKind::Codex,
+            Some("Sonnet 9 (preview)"),
+            Some("fable"),
+        );
+        let notice = apply_observed_model(&dir, "main", &mut seat).expect("a notice");
+        assert!(notice.contains("REPORT ONLY"), "{notice}");
+        assert!(notice.contains("display label"), "{notice}");
+        assert_eq!(
+            seat.command.as_str(),
+            "codex --yolo -m fable",
+            "no adapter takes a value its own flag could not spell"
+        );
     }
 
     #[test]

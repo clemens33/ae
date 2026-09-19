@@ -412,7 +412,21 @@ fn parse_claude_identity(line: &str) -> HarnessIdentity {
     }
 }
 
+/// The display labels claude's own footer draws. A CLOSED list, so a label that
+/// is not here proves NO model: the seat's drift row is never written and the
+/// manual choice is never followed. STANDING OBLIGATION, like a toolchain pin —
+/// add the label when a new claude model ships, or it stays silently
+/// unfollowable.
 const CLAUDE_MODELS: [&str; 4] = ["Fable 5.1", "Opus 4.8", "Opus 5 (1M context)", "Opus 5"];
+
+/// Is this the spelling a display-label harness's own footer draws? Because the
+/// list above is CLOSED, a `false` here PROVES the value was not read from such
+/// a pane — which is how a follow tells a stale observation carried over from
+/// another harness from one of its own.
+#[must_use]
+pub(crate) fn is_claude_model_label(value: &str) -> bool {
+    CLAUDE_MODELS.contains(&value)
+}
 
 fn current_codex_identity(capture: &str) -> HarnessIdentity {
     let lines = clean_lines(capture);

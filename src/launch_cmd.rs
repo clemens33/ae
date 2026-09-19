@@ -340,31 +340,33 @@ pub(crate) fn profile_model_pin(
 /// Why a seat's observed model cannot be FOLLOWED into a configured pin value.
 ///
 /// Every arm keeps today's behaviour byte-identical — the seat resumes on its
-/// own pin — and every arm is SAID, on the resume notice and in `ae list`,
-/// because a silent refusal reads as preservation.
+/// own pin — and every arm is SAID on the resume notice, because a silent
+/// refusal reads as preservation. The `ae list` cell that would say the same
+/// thing before a restart is the deferred `modelfollow-list` slice; until it
+/// lands, the notice printed at resume is the only surface.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FollowRefusal {
-    /// This tool has no model flag ae reads, so there is nothing to follow.
+    /// This tool has no model flag ae reads.
     Unsupported,
-    /// The observed label is not a value ae will judge: empty, over-long, or
-    /// carrying a control byte.
+    /// The label is empty, over-long, or carries a control byte.
     Unusable,
-    /// The seat's own command pins no single usable model flag. ae never
-    /// APPENDS one, so there is no value to replace.
+    /// The seat's command pins no single usable flag, and ae never APPENDS one.
     Pinless,
     /// No configured profile pins a model this label satisfies.
     NoCandidate,
     /// Several distinct pin values do, and none is the more specific.
     Ambiguous(Vec<String>),
-    /// The label already satisfies the seat's own pin — nothing to change.
+    /// The label already satisfies the seat's own pin.
     AlreadyPinned,
+    /// The value is not a bare harness id, so no adapter's model flag takes it.
+    NotAFlagValue,
     /// The identity config could not be read on this machine.
     Unreadable,
 }
 
 impl FollowRefusal {
-    /// The ONE clause every surface prints, so the resume notice and the
-    /// `ae list` cell cannot drift apart.
+    /// The ONE clause a refusal is said with, so the resume notice and the
+    /// `ae list` cell the deferred slice adds cannot drift apart.
     #[must_use]
     pub fn why(&self, observed: &str) -> String {
         match self {
@@ -374,6 +376,9 @@ impl FollowRefusal {
             Self::NoCandidate => format!("no profile for {observed}"),
             Self::Ambiguous(values) => format!("ambiguous ({})", values.join(", ")),
             Self::AlreadyPinned => format!("{observed} already satisfies the pin"),
+            Self::NotAFlagValue => {
+                format!("{observed} is a display label, not a value a model flag takes")
+            }
             Self::Unreadable => "the identity config could not be read".to_owned(),
         }
     }
@@ -383,14 +388,12 @@ impl FollowRefusal {
 /// `usage::is_model_id` already bounds a model name by.
 const FOLLOW_LABEL_MAX: usize = 256;
 
-/// One command reduced to everything BUT its model flag's VALUE, plus that
-/// value.
+/// One command reduced to everything BUT its model flag's VALUE, plus that value.
 ///
-/// The leading assignments are part of the skeleton, because they carry the
-/// ACCOUNT the tool runs against: a `CLAUDE_CONFIG_DIR=` prefix is the
-/// difference between two logins, and a candidate that changed it would move
-/// the seat's conversation and its quota window to another scope. Both flag
-/// forms reduce to the flag NAME, so `--model=x` and `--model x` compare equal.
+/// The leading assignments are PART of the skeleton, because they carry the
+/// ACCOUNT the tool runs against: a `CLAUDE_CONFIG_DIR=` prefix is the difference
+/// between two logins, and a candidate that changed it would move the seat's
+/// conversation and its quota window. Both flag forms reduce to the flag NAME.
 fn model_skeleton(cmd: &str, tool: ToolKind) -> Option<(Vec<String>, String)> {
     let command = lex_simple_command(cmd).ok()?;
     let flag = sole_model_flag(&command, tool).ok()?;
@@ -477,9 +480,9 @@ pub(crate) fn followed_pin_in(
     Err(FollowRefusal::Ambiguous(values))
 }
 
-/// [`followed_pin_in`] for a caller holding the seat's RESOLVED command,
-/// reading the identity config through the one owner exactly as
-/// [`profile_model_pin`] does.
+/// [`followed_pin_in`] for a caller holding PATHS and the seat's already
+/// resolved command, reading the identity config through the one owner exactly
+/// as [`profile_model_pin`] does.
 pub(crate) fn followed_pin(
     global: Option<&Path>,
     local: Option<&Path>,
@@ -528,11 +531,23 @@ pub(crate) fn replace_model_flag(cmd: &str, tool: ToolKind, model: &str) -> Resu
 }
 
 /// Quote a model value for one argv word: bare when it cannot need quoting.
+/// Whether a value is a bare harness id — one argv word needing no quoting.
+///
+/// Every adapter whose frame draws the flag's own vocabulary draws a single
+/// token (`gpt-6-astra`, `grok-4.6`, `muse-spark-1.3`). A DISPLAY label does not
+/// (`Opus 5 (1M context)`), so this is what keeps one adapter's label out of
+/// another adapter's argv when a profile is edited from one tool to the other
+/// and happens to keep the same pin: the observation carries no tool provenance,
+/// and this refuses in the only direction that is safe.
+pub(crate) fn is_bare_flag_value(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || "-_.+/[]:@".contains(ch))
+}
+
 fn quote_model(value: &str) -> String {
-    let bare = value
-        .chars()
-        .all(|ch| ch.is_ascii_alphanumeric() || "-_.+/[]:@".contains(ch));
-    if bare {
+    if is_bare_flag_value(value) {
         value.to_owned()
     } else {
         format!("'{}'", value.replace('\'', "'\\''"))
@@ -1686,10 +1701,9 @@ mod tests {
     }
 
     #[test]
-    fn alias_profiles_collapse_because_the_tie_break_is_over_pin_values() {
-        // `opus5x` and `opus5` are byte-identical rows, as are `fablex` and
-        // `fable5`. Counted by LABEL this reads ambiguous; they carry ONE pin
-        // value, so the labels are immaterial and adding one changes nothing.
+    fn the_tie_break_is_over_pin_values_and_prefers_the_versioned_one() {
+        // Counted by LABEL the alias pairs read ambiguous; they carry ONE pin
+        // value, so adding a byte-identical row cannot change the answer.
         assert_eq!(
             follow(
                 &[FABLEX, FABLE5, OPUS5X, OPUS5],
@@ -1699,10 +1713,8 @@ mod tests {
             ),
             follow(&[FABLEX, OPUS5X], CLAUDE_SEAT, ToolKind::Claude, "Opus 5"),
         );
-    }
-
-    #[test]
-    fn a_bare_family_pin_loses_to_the_versioned_one() {
+        // Two DISTINCT values: the one naming a version is the more specific
+        // answer, and two versioned spellings are refused rather than chosen.
         assert_eq!(
             follow(
                 &[FABLEX, OPUSBARE, OPUS5X],
@@ -1710,13 +1722,8 @@ mod tests {
                 ToolKind::Claude,
                 "Opus 5"
             ),
-            Ok("claude-opus-5".to_owned()),
-            "a pin naming the version is the more specific answer"
+            Ok("claude-opus-5".to_owned())
         );
-    }
-
-    #[test]
-    fn two_versioned_pin_values_refuse_rather_than_guess() {
         assert_eq!(
             follow(
                 &[FABLEX, OPUS5X, OPUSALT],
@@ -1727,8 +1734,7 @@ mod tests {
             Err(FollowRefusal::Ambiguous(vec![
                 "claude-opus-5".to_owned(),
                 "opus-5".to_owned()
-            ])),
-            "two spellings, sorted, and no choice made"
+            ]))
         );
     }
 
@@ -1803,6 +1809,21 @@ mod tests {
                 follow(&[FABLEX, OPUS5X], seat, tool, observed),
                 Err(want),
                 "{seat:?} / {observed:?}"
+            );
+        }
+        // The label cap is a BOUNDARY, so it is pinned as one: AT the cap the
+        // value is usable and merely unmatched, one byte PAST it, it is not a
+        // label at all. A table row on one side only cannot tell the two apart.
+        for (len, want) in [
+            (super::FOLLOW_LABEL_MAX, FollowRefusal::NoCandidate),
+            (super::FOLLOW_LABEL_MAX + 1, FollowRefusal::Unusable),
+        ] {
+            let observed = "m".repeat(len);
+            assert_eq!(
+                follow(&[FABLEX, OPUS5X], CLAUDE_SEAT, ToolKind::Claude, &observed),
+                Err(want),
+                "a label of {len} bytes against a cap of {}",
+                super::FOLLOW_LABEL_MAX
             );
         }
     }
