@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "ae"
-version = "2026.9.146"
+version = "2026.9.147"
 dependencies = [
  "ring",
  "rustls",

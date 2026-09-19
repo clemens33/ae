@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.147] - 2026-09-19
+- Name which half of the quiet gate held an abandoned delivery
+
 ## [v2026.9.146] - 2026-09-19
 - Show the full client label in fleet menu agent rows
 - Collapse resolver guards into let-chains for clippy
