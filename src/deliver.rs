@@ -195,8 +195,13 @@ pub enum Failure {
         /// The published recovery body, still readable.
         body_file: String,
     },
-    /// The target stayed busy for the whole deferral.
-    Abandoned,
+    /// The target stayed busy for the whole deferral. WHICH half held is
+    /// carried, so the operator line and the audit event name it instead of
+    /// guessing.
+    Abandoned {
+        /// What the quiet gate observed at timeout.
+        held: DeferHeld,
+    },
     /// The paste itself failed.
     Paste {
         /// The published recovery body, still readable.
@@ -237,7 +242,10 @@ impl fmt::Debug for Failure {
                 .debug_struct("NoticeRefused")
                 .field("body_file", body_file)
                 .finish(),
-            Self::Abandoned => formatter.write_str("Abandoned"),
+            Self::Abandoned { held } => formatter
+                .debug_struct("Abandoned")
+                .field("held", held)
+                .finish(),
             Self::Paste { body_file } => formatter
                 .debug_struct("Paste")
                 .field("body_file", body_file)
@@ -262,7 +270,7 @@ impl Failure {
     #[must_use]
     pub fn body_file(&self) -> &str {
         match self {
-            Self::DeadPane | Self::Storage | Self::Lock | Self::Abandoned => "",
+            Self::DeadPane | Self::Storage | Self::Lock | Self::Abandoned { .. } => "",
             Self::NoticeRefused { body_file }
             | Self::Paste { body_file }
             | Self::NotComposed { body_file }
@@ -624,29 +632,124 @@ const fn under_lock_refusal(liveness: PaneLiveness) -> Option<LivenessRefusal> {
     }
 }
 
+/// Which half of the quiet gate held a delivery past its deferral — the
+/// reason the wait observed instead of discarding.
+///
+/// Both halves true at once is a real state (a draft under an attached
+/// client's eye), so it has its own variants rather than a forced choice.
+/// An unreadable capture is NOT an occupied composer: it fails closed like
+/// one, but the operator's next step differs — check the pane, not the draft.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeferHeld {
+    /// The composer positively read occupied.
+    ComposerOccupied,
+    /// No readable capture, so the box could not be proven safe.
+    ComposerUnreadable,
+    /// The composer read Idle, but an attached client sat on the pane with
+    /// recent input.
+    Viewed,
+    /// An occupied composer under an attached client's eye.
+    OccupiedAndViewed,
+    /// An unreadable composer under an attached client's eye.
+    UnreadableAndViewed,
+}
+
+impl DeferHeld {
+    /// The gate's verdict over one snapshot: `None` is quiet (an Idle
+    /// composer with no recent attention); everything else names what held.
+    #[must_use]
+    pub const fn of(occupancy: Occupancy, viewed: bool) -> Option<Self> {
+        match (occupancy, viewed) {
+            (Occupancy::Idle, false) => None,
+            (Occupancy::Idle, true) => Some(Self::Viewed),
+            (Occupancy::Occupied, false) => Some(Self::ComposerOccupied),
+            (Occupancy::Occupied, true) => Some(Self::OccupiedAndViewed),
+            (Occupancy::Unreadable, false) => Some(Self::ComposerUnreadable),
+            (Occupancy::Unreadable, true) => Some(Self::UnreadableAndViewed),
+        }
+    }
+
+    /// The composer half held — the staged-chip flush's question.
+    #[must_use]
+    pub const fn composer_held(self) -> bool {
+        match self {
+            Self::ComposerOccupied
+            | Self::ComposerUnreadable
+            | Self::OccupiedAndViewed
+            | Self::UnreadableAndViewed => true,
+            Self::Viewed => false,
+        }
+    }
+
+    /// The attention half held.
+    #[must_use]
+    pub const fn viewed(self) -> bool {
+        match self {
+            Self::Viewed | Self::OccupiedAndViewed | Self::UnreadableAndViewed => true,
+            Self::ComposerOccupied | Self::ComposerUnreadable => false,
+        }
+    }
+
+    /// The held halves as one clause — the atom every surface composes.
+    #[must_use]
+    pub const fn halves(self) -> &'static str {
+        match self {
+            Self::ComposerOccupied => "composer occupied",
+            Self::ComposerUnreadable => "composer unreadable",
+            Self::Viewed => "human input or attention on the pane",
+            Self::OccupiedAndViewed => "composer occupied and human input or attention on the pane",
+            Self::UnreadableAndViewed => {
+                "composer unreadable and human input or attention on the pane"
+            }
+        }
+    }
+
+    /// The operator/audit clause: what held, under the standing head.
+    #[must_use]
+    pub fn describe(self) -> String {
+        format!("target stayed busy ({})", self.halves())
+    }
+}
+
 /// Wait until the target's input box is safe to paste into, or give up.
 ///
 /// A box busy ONLY because of an ae-staged paste chip is not a human draft:
 /// once, and bounded, the wait drains it ([`flush_staged_chip`]) instead of
 /// deferring the whole budget; a chip plus other text still defers.
-fn wait_for_quiet(request: &Request<'_>, model: InputModel) -> bool {
+///
+/// Returns what held at timeout — `None` cleared the gate. The report names
+/// the observed halves so the operator can pick a workaround: a draft wants
+/// waiting, while the attention half holds only while a client keeps the
+/// pane active within its grace window.
+fn wait_for_quiet(request: &Request<'_>, model: InputModel) -> Option<DeferHeld> {
     let started = Instant::now();
     let mut flushed = false;
     loop {
-        let busy = input_busy(request.server, request.pane, model);
-        if !busy && !recently_viewed(request.server, request.pane) {
-            return true;
-        }
-        if busy && !flushed && !recently_viewed(request.server, request.pane) {
+        let held = quiet_held(request.server, request.pane, model)?;
+        if held.composer_held() && !flushed && !held.viewed() {
             flushed = true;
             let budget = request.defer.saturating_sub(started.elapsed());
             let _ = flush_staged_chip(request.server, request.pane, model, budget);
         }
         if started.elapsed() >= request.defer {
-            return false;
+            return Some(held);
         }
         std::thread::sleep(DEFER_POLL);
     }
+}
+
+/// One quiet-gate snapshot: the composer's occupancy plus the attention half,
+/// answered together so a both-halves state is one observation rather than
+/// two reads that can disagree. `None` is quiet. An unmodelled tool has no
+/// grammar to read, so its composer half never holds — exactly as
+/// [`input_busy`] answers for it.
+fn quiet_held(server: &ServerId, pane: &str, model: InputModel) -> Option<DeferHeld> {
+    let occupancy = if model.is_modelled() {
+        read_occupancy(server, pane, model)
+    } else {
+        Occupancy::Idle
+    };
+    DeferHeld::of(occupancy, recently_viewed(server, pane))
 }
 
 /// Is the composer holding NOTHING but a staged paste chip ae can own?
@@ -865,23 +968,30 @@ fn reconfirm_composed(server: &ServerId, pane: &str, composed: Composed) -> bool
 
 /// The Send/Relay quiet gate: a busy target (or a human's attention on it)
 /// abandons after the deferral, with nothing pasted. Every other shape
-/// proceeds — and so does an unmodelled target, whose `input_busy` is false.
+/// proceeds — and so does an unmodelled target, whose composer half never
+/// holds. The line names WHICH half held: a draft wants waiting, while the
+/// attention half holds only while a client keeps the pane active within
+/// its grace window.
 fn quiet_or_abandoned(
     request: &Request<'_>,
     model: InputModel,
     err: &mut impl Write,
 ) -> io::Result<Result<(), Failure>> {
-    if !matches!(request.shape, Shape::Send | Shape::Relay) || wait_for_quiet(request, model) {
+    if !matches!(request.shape, Shape::Send | Shape::Relay) {
         return Ok(Ok(()));
     }
-    writeln!(
-        err,
-        "ae: {} to {} ABANDONED — target stayed busy / human input or attention (not clear within {}s; AE_SEND_DEFER_SEC overrides). Re-send.",
-        request.action,
-        request.logged_target,
-        request.defer.as_secs()
-    )?;
-    Ok(Err(Failure::Abandoned))
+    if let Some(held) = wait_for_quiet(request, model) {
+        writeln!(
+            err,
+            "ae: {} to {} ABANDONED — {}; not clear within {}s (AE_SEND_DEFER_SEC overrides). Re-send.",
+            request.action,
+            request.logged_target,
+            held.describe(),
+            request.defer.as_secs()
+        )?;
+        return Ok(Err(Failure::Abandoned { held }));
+    }
+    Ok(Ok(()))
 }
 
 /// The under-lock unproven refusal: an absent probe, a pid-less probe, an
@@ -1155,8 +1265,13 @@ pub enum Leg {
     /// and an unreadable probe fails closed to this same leg. Nothing typed.
     Dead,
     /// The target stayed busy, or human attention stayed on it: the full
-    /// deferral pre-lock, one snapshot under it. Nothing typed.
-    Busy,
+    /// deferral pre-lock, one snapshot under it. WHICH half held is carried.
+    /// Nothing typed.
+    Busy {
+        /// What the gate observed — at timeout pre-lock, at the snapshot
+        /// under it.
+        held: DeferHeld,
+    },
     /// Another delivery held the pane's send-lock for the whole wait.
     TargetLocked,
     /// The lifecycle lock could not be taken — returned by the caller's
@@ -1255,8 +1370,8 @@ pub fn deliver_guarded(
     };
     // (1c) The full busy/human-input deferral — the `wait_for_quiet` owner,
     // OUTSIDE the lifecycle lock.
-    if !wait_for_quiet(&view, request.model) {
-        return Ok(Outcome::Skipped(Leg::Busy));
+    if let Some(held) = wait_for_quiet(&view, request.model) {
+        return Ok(Outcome::Skipped(Leg::Busy { held }));
     }
     // (2) The caller's proof: the lifecycle lock, then identity. A leg skips
     // with the send-lock released by the scope.
@@ -1285,11 +1400,10 @@ fn under_lock(request: &GuardedRequest<'_>) -> Result<Outcome, EnterFailed> {
     if !alive {
         return Ok(Outcome::Skipped(Leg::Dead));
     }
-    // (3) One busy snapshot, no loop.
-    if input_busy(request.server, request.pane, request.model)
-        || recently_viewed(request.server, request.pane)
-    {
-        return Ok(Outcome::Skipped(Leg::Busy));
+    // (3) One busy snapshot, no loop — the same `quiet_held` owner as the
+    // pre-lock wait, so the reported halves are one observation.
+    if let Some(held) = quiet_held(request.server, request.pane, request.model) {
+        return Ok(Outcome::Skipped(Leg::Busy { held }));
     }
     // (4) The paste, then the bounded submit under the same lock.
     if stage_and_paste(
@@ -1525,8 +1639,8 @@ pub(crate) fn lock_target(dir: &Path, pane: &str, wait: Duration) -> Option<std:
 #[cfg(test)]
 mod tests {
     use super::{
-        Failure, LivenessRefusal, PaneLiveness, Request, Shape, TargetInput, UNVERIFIED,
-        VERIFY_POLL, buffer_name, choose_input, frame, instant_alive, is_name_safe,
+        DeferHeld, Failure, LivenessRefusal, Occupancy, PaneLiveness, Request, Shape, TargetInput,
+        UNVERIFIED, VERIFY_POLL, buffer_name, choose_input, frame, instant_alive, is_name_safe,
         observed_liveness, pane_settled, refuses_as_dead, settle_for, store_body,
         under_lock_refusal, unmodelled_ready,
     };
@@ -1638,7 +1752,13 @@ mod tests {
         assert_eq!(Failure::DeadPane.body_file(), "");
         assert_eq!(Failure::Storage.body_file(), "");
         assert_eq!(Failure::Lock.body_file(), "");
-        assert_eq!(Failure::Abandoned.body_file(), "");
+        assert_eq!(
+            Failure::Abandoned {
+                held: DeferHeld::ComposerOccupied
+            }
+            .body_file(),
+            ""
+        );
         assert_eq!(
             Failure::Unconfirmed {
                 body_file: "/m/x.txt".into(),
@@ -1673,6 +1793,65 @@ mod tests {
             }
             .body_file(),
             "/m/z.txt"
+        );
+    }
+
+    #[test]
+    fn the_deferral_names_which_half_held_at_timeout() {
+        // The full mapping: quiet is None, everything else names its halves.
+        // Both-halves-true is its own state, never a forced choice — and an
+        // unreadable capture is never reported as an occupied composer.
+        assert_eq!(DeferHeld::of(Occupancy::Idle, false), None);
+        assert_eq!(
+            DeferHeld::of(Occupancy::Idle, true),
+            Some(DeferHeld::Viewed)
+        );
+        assert_eq!(
+            DeferHeld::of(Occupancy::Occupied, false),
+            Some(DeferHeld::ComposerOccupied)
+        );
+        assert_eq!(
+            DeferHeld::of(Occupancy::Occupied, true),
+            Some(DeferHeld::OccupiedAndViewed)
+        );
+        assert_eq!(
+            DeferHeld::of(Occupancy::Unreadable, false),
+            Some(DeferHeld::ComposerUnreadable)
+        );
+        assert_eq!(
+            DeferHeld::of(Occupancy::Unreadable, true),
+            Some(DeferHeld::UnreadableAndViewed)
+        );
+        // The flush question and the attention question read off the same value.
+        assert!(DeferHeld::OccupiedAndViewed.composer_held());
+        assert!(DeferHeld::OccupiedAndViewed.viewed());
+        assert!(!DeferHeld::Viewed.composer_held());
+        assert!(!DeferHeld::ComposerOccupied.viewed());
+    }
+
+    #[test]
+    fn the_held_halves_render_for_the_operator_and_the_audit() {
+        // The operator line and the relay audit share the clause; the compact
+        // skip composes the atom under its own head.
+        assert_eq!(
+            DeferHeld::ComposerOccupied.describe(),
+            "target stayed busy (composer occupied)"
+        );
+        assert_eq!(
+            DeferHeld::ComposerUnreadable.describe(),
+            "target stayed busy (composer unreadable)"
+        );
+        assert_eq!(
+            DeferHeld::Viewed.describe(),
+            "target stayed busy (human input or attention on the pane)"
+        );
+        assert_eq!(
+            DeferHeld::OccupiedAndViewed.halves(),
+            "composer occupied and human input or attention on the pane"
+        );
+        assert_eq!(
+            DeferHeld::UnreadableAndViewed.halves(),
+            "composer unreadable and human input or attention on the pane"
         );
     }
 

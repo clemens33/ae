@@ -400,6 +400,31 @@ impl RelayCaller {
         self.run_from(&self.dir, target, text)
     }
 
+    fn run_with_env(
+        &self,
+        target: &str,
+        text: &str,
+        envs: &[(&str, &str)],
+    ) -> (Option<i32>, String) {
+        let mut command = ae();
+        command
+            .env("TMUX", format!("{},0,0", self.sock.display()))
+            .env("TMUX_PANE", &self.pane)
+            .arg(ae::cli::RELAY)
+            .arg(&self.dir)
+            .args([target, text]);
+        for (key, value) in envs {
+            command.env(key, value);
+        }
+        let out = command
+            .output()
+            .unwrap_or_else(|why| panic!("the ae binary should run: {why}"));
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    }
+
     fn run_from(&self, helper_dir: &Path, target: &str, text: &str) -> (Option<i32>, String) {
         let out = ae()
             .env("TMUX", format!("{},0,0", self.sock.display()))
@@ -677,7 +702,8 @@ fn an_unmodelled_submission_lands_with_a_success_caveat_not_a_failure() {
 }
 
 /// A send DEFERS while the target's input box holds unsent content, and
-/// abandons LOUDLY at the bound rather than clobbering it.
+/// abandons LOUDLY at the bound rather than clobbering it — naming which
+/// half held on the operator line and in the journalled diagnostic.
 #[test]
 fn a_send_defers_while_the_input_box_holds_a_draft_and_abandons_loudly() {
     let rig = Rig::new("busy", "claude", 0);
@@ -703,13 +729,21 @@ fn a_send_defers_while_the_input_box_holds_a_draft_and_abandons_loudly() {
     assert_eq!(code, Some(1), "{stderr}");
     assert_eq!(
         stderr,
-        "ae: send to tui ABANDONED — target stayed busy / human input or attention (not clear within 1s; AE_SEND_DEFER_SEC overrides). Re-send.\n"
+        "ae: send to tui ABANDONED — target stayed busy (composer occupied); not clear within 1s (AE_SEND_DEFER_SEC overrides). Re-send.\n"
     );
     assert!(
         rig.submitted().is_empty(),
         "nothing was submitted over the draft"
     );
-    assert!(rig.events().is_empty(), "an abandoned send records nothing");
+    let events = rig.events();
+    assert!(
+        events.contains("\"action\":\"delivery-abandoned\""),
+        "an abandoned send journals its diagnostic: {events}"
+    );
+    assert!(
+        events.contains("refused: target stayed busy (composer occupied); overwrite me"),
+        "the journal names which half held: {events}"
+    );
     // The draft is still there, untouched — which is the whole point.
     let (_, screen) = rig.tmux(&["capture-pane", "-p", "-t", &rig.pane]);
     assert!(screen.contains("half a question"), "{screen}");
@@ -770,6 +804,166 @@ fn a_chip_the_harness_never_drains_is_submitted_once_and_abandons_loudly() {
     );
     let (_, screen) = rig.tmux(&["capture-pane", "-p", "-t", &rig.pane]);
     assert!(screen.contains("[Pasted Content 42 chars]"), "{screen}");
+}
+
+/// A pane that shows text but no live prompt is UNREADABLE, never occupied:
+/// the deferral fails closed and both surfaces say which.
+#[test]
+fn a_promptless_pane_abandons_as_unreadable_never_occupied() {
+    let rig = Rig::new("unreadable", "claude", 0);
+    assert!(
+        rig.tmux(&[
+            "respawn-pane",
+            "-k",
+            "-t",
+            &rig.pane,
+            "exec perl -e 'print \"still working...\\n\"; sleep 300'",
+        ])
+        .0,
+        "the pane drops its prompt but keeps a process"
+    );
+    let (code, stderr) = rig.run(
+        ae::cli::SEND,
+        &["tui", "hello"],
+        &[("AE_SEND_DEFER_SEC", "1")],
+    );
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(
+        stderr.contains("ABANDONED — target stayed busy (composer unreadable);"),
+        "{stderr}"
+    );
+    let events = rig.events();
+    assert!(
+        events.contains("\"action\":\"delivery-abandoned\""),
+        "the diagnostic is journalled: {events}"
+    );
+    assert!(
+        events.contains("refused: target stayed busy (composer unreadable); hello"),
+        "the journal keeps the unreadable verdict: {events}"
+    );
+}
+
+/// An attached client watching an IDLE composer holds the attention half:
+/// the deferral names it, and the journal keeps the clause.
+#[test]
+fn a_watched_idle_composer_abandons_on_the_attention_half() {
+    let rig = Rig::new("watched", "claude", 0);
+    let _watcher = super::cli::tmux_attached_client(&rig.sock, &rig.session)
+        .expect("a control-mode client attaches");
+    // The client must be LISTED on the pane before the send is asked to.
+    let watched = (0..100).any(|_| {
+        rig.tmux(&["list-clients", "-F", "#{pane_id}"])
+            .1
+            .contains(&rig.pane)
+            || {
+                std::thread::sleep(Duration::from_millis(50));
+                false
+            }
+    });
+    assert!(watched, "the watcher is listed on the pane");
+    let (code, stderr) = rig.run(
+        ae::cli::SEND,
+        &["tui", "hello"],
+        &[("AE_SEND_DEFER_SEC", "1")],
+    );
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(
+        stderr.contains("ABANDONED — target stayed busy (human input or attention on the pane);"),
+        "{stderr}"
+    );
+    let events = rig.events();
+    assert!(
+        events.contains("\"action\":\"delivery-abandoned\""),
+        "the diagnostic is journalled: {events}"
+    );
+    assert!(
+        events.contains("human input or attention on the pane"),
+        "the journal keeps the attention clause: {events}"
+    );
+}
+
+/// Both halves true at once is its own state: a draft under a watcher's eye
+/// names both, in the one observation.
+#[test]
+fn a_draft_under_a_watchers_eye_names_both_halves() {
+    let rig = Rig::new("bothhalves", "claude", 0);
+    assert!(
+        rig.tmux(&["send-keys", "-t", &rig.pane, "-l", "half a question"])
+            .0
+    );
+    let seen = (0..100).any(|_| {
+        deliver::input_busy(&rig.server(), &rig.pane, InputModel::BorderDelimited) || {
+            std::thread::sleep(Duration::from_millis(50));
+            false
+        }
+    });
+    assert!(seen, "a draft in the box reads OCCUPIED");
+    let _watcher = super::cli::tmux_attached_client(&rig.sock, &rig.session)
+        .expect("a control-mode client attaches");
+    let watched = (0..100).any(|_| {
+        rig.tmux(&["list-clients", "-F", "#{pane_id}"])
+            .1
+            .contains(&rig.pane)
+            || {
+                std::thread::sleep(Duration::from_millis(50));
+                false
+            }
+    });
+    assert!(watched, "the watcher is listed on the pane");
+    let (code, stderr) = rig.run(
+        ae::cli::SEND,
+        &["tui", "hello"],
+        &[("AE_SEND_DEFER_SEC", "1")],
+    );
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(
+        stderr.contains("composer occupied and human input or attention on the pane"),
+        "{stderr}"
+    );
+    let events = rig.events();
+    assert!(
+        events.contains("\"action\":\"delivery-abandoned\""),
+        "the diagnostic is journalled: {events}"
+    );
+    assert!(
+        events.contains("composer occupied and human input or attention on the pane"),
+        "the journal keeps both halves: {events}"
+    );
+}
+
+/// An orchestrator relay to a busy target abandons with the named half, and
+/// the caller audit carries the same clause — the target stays untouched.
+#[test]
+fn an_orchestrator_relay_to_a_busy_target_audits_which_half_held() {
+    let target = Rig::new("relaybusy", "claude", 0);
+    assert!(
+        target
+            .tmux(&["send-keys", "-t", &target.pane, "-l", "half a question"])
+            .0
+    );
+    let seen = (0..100).any(|_| {
+        deliver::input_busy(&target.server(), &target.pane, InputModel::BorderDelimited) || {
+            std::thread::sleep(Duration::from_millis(50));
+            false
+        }
+    });
+    assert!(seen, "a draft in the box reads OCCUPIED");
+    let caller = RelayCaller::new(&target, "busy", true);
+    let named = format!("{}:tui", target.session);
+    let (code, stderr) = caller.run_with_env(&named, "human words", &[("AE_SEND_DEFER_SEC", "1")]);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(
+        stderr.contains("ABANDONED — target stayed busy (composer occupied);"),
+        "{stderr}"
+    );
+    assert!(target.submitted().is_empty());
+    assert!(target.events().is_empty(), "target ledger stays untouched");
+    let events = caller.events();
+    assert!(events.contains("\"action\":\"relay\""), "{events}");
+    assert!(
+        events.contains("refused: target stayed busy (composer occupied); human words"),
+        "the caller audit carries the holding half: {events}"
+    );
 }
 
 /// A body over the notice limit is NOT pasted: a pointer to the sender-owned
@@ -1119,11 +1313,15 @@ fn every_path_into_the_paste_sink_carries_its_declared_guards() {
     assert!(send(Shape::Interrupt, Composed::NONE, short).is_ok());
     assert!(matches!(
         send(Shape::Send, Composed::NONE, short),
-        Err(Failure::Abandoned)
+        Err(Failure::Abandoned {
+            held: deliver::DeferHeld::ComposerOccupied
+        })
     ));
     assert!(matches!(
         send(Shape::Relay, Composed::NONE, short),
-        Err(Failure::Abandoned)
+        Err(Failure::Abandoned {
+            held: deliver::DeferHeld::ComposerOccupied
+        })
     ));
     assert!(
         send(Shape::Launch, Composed::NONE, short).is_ok(),
@@ -1308,7 +1506,12 @@ fn a_composer_busy_between_step_1_and_3_skips_at_once() {
         prove_lock(&rig.lifecycle_lock_path(), Duration::ZERO)
     });
     assert!(
-        matches!(done, Ok(deliver::Outcome::Skipped(deliver::Leg::Busy))),
+        matches!(
+            done,
+            Ok(deliver::Outcome::Skipped(deliver::Leg::Busy {
+                held: deliver::DeferHeld::ComposerOccupied
+            }))
+        ),
         "{done:?}"
     );
     assert!(
@@ -1521,12 +1724,15 @@ fn the_guarded_operation_is_pinned_against_its_own_source() {
     for owner in [
         "fn pane_liveness_at(",
         "fn wait_for_quiet(",
+        "fn quiet_held(",
         "fn recently_viewed(",
         "fn input_busy(",
     ] {
         assert_eq!(product.match_indices(owner).count(), 1, "{owner}");
     }
     // The operation calls those owners, and its submit maps — never `?`.
+    // The under-lock snapshot reads through the one `quiet_held` owner, which
+    // is where `input_busy`'s occupancy read and `recently_viewed` meet.
     let op = product
         .find("pub fn deliver_guarded(")
         .expect("the operation");
@@ -1535,9 +1741,8 @@ fn the_guarded_operation_is_pinned_against_its_own_source() {
     for call in [
         "pane_liveness_at(",
         "wait_for_quiet(",
+        "quiet_held(",
         "observe_pane_probe(",
-        "input_busy(",
-        "recently_viewed(",
         "stage_and_paste(",
         "submit_bounded(",
         ".map(Outcome::Sent)",

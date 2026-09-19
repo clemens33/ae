@@ -145,7 +145,7 @@ Other rules of the loop:
 - No `unwrap()` / `expect()` in production code. `-D warnings` makes it fail the gate.
 - No `std::process::Command` outside the enumerated doors. The PRODUCT has five sites over
   four files — `src/transport.rs`, `src/run.rs`, `src/upgrade.rs` (TWICE: `tar`, and the
-  downloaded core's own `_install`), `src/install.rs` — and the suite has fourteen, across
+  downloaded core's own `_install`), `src/install.rs` — and the suite has fifteen, across
   `tests/it/`'s `cli.rs`, `install.rs`, `migrate.rs`, `shape.rs`, `parity.rs` and `doors.rs`.
   `tests/it/doors.rs` pins the exact per-file counts, so a new door is a review, not a diff.
   Same for the world-reading methods in `clippy.toml`'s `disallowed-methods`: each lives at a

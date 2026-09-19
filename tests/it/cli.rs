@@ -647,6 +647,35 @@ pub(crate) fn mkfifo(path: &std::path::Path) {
     );
 }
 
+/// Hold an attached tmux client on `session` for watched-pane tests: a
+/// control-mode attach whose current pane and fresh activity are what the
+/// attention half of the quiet gate reads. Killed on drop. Piped stdin stays
+/// open so the attach never sees EOF; output is discarded, so it never
+/// blocks on a full pipe either.
+#[allow(
+    clippy::disallowed_types,
+    reason = "the black-box tests' sixth door: an attached client must be a real process to be listed; see clippy.toml"
+)]
+pub(crate) fn tmux_attached_client(
+    sock: &std::path::Path,
+    session: &str,
+) -> std::io::Result<OwnedChild> {
+    let mut runner = Runner::new(Command::new("tmux"), None);
+    runner
+        .arg("-S")
+        .arg(sock)
+        .arg("-C")
+        .arg("attach-session")
+        .arg("-t")
+        .arg(session)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE");
+    runner.spawn()
+}
+
 /// Run `git` with `args` in `repo` for TEST FIXTURE SETUP — a repo the git it-
 /// tests build to exercise the preview's git facts.
 #[allow(

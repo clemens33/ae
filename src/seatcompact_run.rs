@@ -379,7 +379,9 @@ fn observe_leg(gap: tracked::CorrelationGap) -> GapLeg {
 fn skipped_leg(leg: deliver::Leg) -> Outcome {
     match leg {
         deliver::Leg::Dead => Outcome::skipped(seatcompact::DEAD),
-        deliver::Leg::Busy => Outcome::skipped(seatcompact::BUSY),
+        deliver::Leg::Busy { held } => {
+            Outcome::skipped(&format!("{}: {}", seatcompact::BUSY, held.halves()))
+        }
         deliver::Leg::TargetLocked => Outcome::skipped(seatcompact::TARGET_LOCKED),
         deliver::Leg::LifecycleLocked => Outcome::skipped(seatcompact::LIFECYCLE_LOCKED),
         deliver::Leg::PasteFailed => Outcome::skipped(seatcompact::PASTE_FAILED),

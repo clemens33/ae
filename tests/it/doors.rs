@@ -536,7 +536,7 @@ fn the_lint_relaxations_this_counter_can_see_are_the_expected_ones() {
         }
     }
 
-    // Nineteen relaxations over ten files, each for a job no library call can
+    // Twenty relaxations over ten files, each for a job no library call can
     // do. The PRODUCT's five: `src/transport.rs`, because a tmux multiplexer
     // that cannot run tmux answers `unknown` about everything; `src/run.rs`,
     // the pane's own `exec` of its tool; `src/upgrade.rs` TWICE — `tar`, to
@@ -546,12 +546,14 @@ fn the_lint_relaxations_this_counter_can_see_are_the_expected_ones() {
     // `src/install.rs`, which runs the digest-verified bundle core once to ask
     // which version it is, because the directory is named for that answer.
     //
-    // The suite's fourteen: the parity harness's one, which must never judge a
-    // lane; `cli.rs`'s five, which drive the PRODUCT binary (`ae`), make the
+    // The suite's fifteen: the parity harness's one, which must never judge a
+    // lane; `cli.rs`'s six, which drive the PRODUCT binary (`ae`), make the
     // one special file safe std cannot (`mkfifo`, and an ungated open on it is
     // what the `-f` gates exist to refuse), start a helper AS its own name
     // (`helper_by_name`, since a helper's identity IS `argv[0]`), build a real
-    // repo (`git_in`), and run a written shim BY PATH (`helper`);
+    // repo (`git_in`), run a written shim BY PATH (`helper`), and hold an
+    // attached tmux client a watched-pane test can be refused by
+    // (`tmux_attached_client`, since only a real process is listed);
     // `install.rs`'s four: an install being what a real process does to a real
     // `$HOME`, a SECOND publisher started while the first still runs, an
     // `upgrade` refusal being a real process's exit status, and the bootstrap,
@@ -572,7 +574,7 @@ fn the_lint_relaxations_this_counter_can_see_are_the_expected_ones() {
             ("src/run.rs".to_owned(), 1),
             ("src/transport.rs".to_owned(), 1),
             ("src/upgrade.rs".to_owned(), 2),
-            ("tests/it/cli.rs".to_owned(), 5),
+            ("tests/it/cli.rs".to_owned(), 6),
             ("tests/it/doors.rs".to_owned(), 1),
             ("tests/it/install.rs".to_owned(), 4),
             ("tests/it/migrate.rs".to_owned(), 1),

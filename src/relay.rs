@@ -326,16 +326,16 @@ fn audit_delivery_failure(
     failure: &deliver::Failure,
     err: &mut impl Write,
 ) -> io::Result<u8> {
-    let reason = match failure {
-        deliver::Failure::DeadPane => "target pane is not a running agent",
-        deliver::Failure::Storage => "recovery body could not be stored",
-        deliver::Failure::Lock => "target delivery lock was not acquired",
-        deliver::Failure::NoticeRefused { .. } => "verbatim relay limit was exceeded",
-        deliver::Failure::Abandoned => "target stayed busy",
-        deliver::Failure::Paste { .. } => "paste failed",
-        deliver::Failure::NotComposed { .. } => "the pane was not composed",
-        deliver::Failure::Unproven { .. } => "the pane could not be proven a live agent",
-        deliver::Failure::Unconfirmed { .. } => "submit was not confirmed",
+    let reason: String = match failure {
+        deliver::Failure::DeadPane => "target pane is not a running agent".to_owned(),
+        deliver::Failure::Storage => "recovery body could not be stored".to_owned(),
+        deliver::Failure::Lock => "target delivery lock was not acquired".to_owned(),
+        deliver::Failure::NoticeRefused { .. } => "verbatim relay limit was exceeded".to_owned(),
+        deliver::Failure::Abandoned { held } => held.describe(),
+        deliver::Failure::Paste { .. } => "paste failed".to_owned(),
+        deliver::Failure::NotComposed { .. } => "the pane was not composed".to_owned(),
+        deliver::Failure::Unproven { .. } => "the pane could not be proven a live agent".to_owned(),
+        deliver::Failure::Unconfirmed { .. } => "submit was not confirmed".to_owned(),
     };
     let summary = format!("refused: {reason}; {}", fields.summary);
     let line = tracked::event_line(&EventFields {

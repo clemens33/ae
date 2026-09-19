@@ -31,8 +31,10 @@
 //! Any other target is resolved and delivered by [`crate::deliver`] —
 //! dead-pane guard, provenance envelope (which takes the same
 //! `AE_SENDER_OVERRIDE` when it is set), body store, per-target lock, busy
-//! deferral, submit verification — which prints every loud line itself and
-//! records nothing for a delivery refused before paste. A confirmed delivery
+//! deferral, submit verification — which prints every loud line itself. An
+//! abandonment, the one pre-paste refusal with a deferral behind it, records
+//! a diagnostic [`crate::tracked::ABANDONED_ACTION`] event naming which half
+//! held; every other pre-paste refusal records nothing. A confirmed delivery
 //! is followed by the ONE event under
 //! [`crate::store::SessionStore::append_event`]'s locked, synced transaction;
 //! an unconfirmed delivery records the same event with its uncertainty marked.
@@ -384,7 +386,9 @@ pub fn run(
 fn retryable_delivery(delivery: &Result<deliver::Delivered, deliver::Failure>) -> bool {
     matches!(
         delivery,
-        Err(deliver::Failure::DeadPane | deliver::Failure::Lock | deliver::Failure::Abandoned)
+        Err(deliver::Failure::DeadPane
+            | deliver::Failure::Lock
+            | deliver::Failure::Abandoned { .. },)
     )
 }
 
@@ -435,6 +439,11 @@ fn record_send_delivery(
             deliver::DeliveryVerification::Verified,
             true,
         ),
+        Err(deliver::Failure::Abandoned { held }) => {
+            // The one pre-paste refusal with a deferral behind it: it records
+            // the diagnostic, naming which half held.
+            return tracked::record_abandoned_delivery(dir, event, held, err);
+        }
         Err(_) => {
             // Every other refused delivery has already said what happened and
             // where the body is; nothing is recorded for one.
@@ -499,6 +508,7 @@ mod tests {
         envelope_sender, extract_req_id, fields, parse, record_send_delivery,
         write_retryable_marker,
     };
+    use crate::deliver::DeferHeld;
     use crate::time::Timestamp;
 
     fn words(items: &[&str]) -> Vec<String> {
@@ -510,7 +520,9 @@ mod tests {
         for failure in [
             crate::deliver::Failure::DeadPane,
             crate::deliver::Failure::Lock,
-            crate::deliver::Failure::Abandoned,
+            crate::deliver::Failure::Abandoned {
+                held: DeferHeld::ComposerOccupied,
+            },
         ] {
             let delivery: Result<crate::deliver::Delivered, crate::deliver::Failure> = Err(failure);
             let mut out = Vec::new();
@@ -529,7 +541,9 @@ mod tests {
         assert!(out.is_empty(), "transport ambiguity is never retried");
 
         let refused: Result<crate::deliver::Delivered, crate::deliver::Failure> =
-            Err(crate::deliver::Failure::Abandoned);
+            Err(crate::deliver::Failure::Abandoned {
+                held: DeferHeld::ComposerOccupied,
+            });
         write_retryable_marker("send", &refused, &mut out).expect("the public send stays silent");
         assert!(out.is_empty(), "ordinary send stdout remains unchanged");
     }
@@ -543,7 +557,9 @@ mod tests {
         for failure in [
             crate::deliver::Failure::DeadPane,
             crate::deliver::Failure::Lock,
-            crate::deliver::Failure::Abandoned,
+            crate::deliver::Failure::Abandoned {
+                held: DeferHeld::ComposerOccupied,
+            },
         ] {
             let delivery: Result<crate::deliver::Delivered, crate::deliver::Failure> = Err(failure);
             let mut out = Vec::new();
@@ -571,7 +587,9 @@ mod tests {
         // The predicate names exactly two actions. A neighbour that merely
         // starts the same way is not one of them.
         let refused: Result<crate::deliver::Delivered, crate::deliver::Failure> =
-            Err(crate::deliver::Failure::Abandoned);
+            Err(crate::deliver::Failure::Abandoned {
+                held: DeferHeld::ComposerOccupied,
+            });
         write_retryable_marker("quota-checkpoint-dropped", &refused, &mut out)
             .expect("an unrelated action stays silent");
         assert!(
@@ -799,50 +817,104 @@ mod tests {
         clippy::disallowed_methods,
         reason = "the test writes and reads its isolated event ledger"
     )]
-    fn a_notice_or_refused_send_remains_failed_and_unrecorded() {
-        for (name, failure) in [
-            (
-                "notice",
-                crate::deliver::Failure::Unconfirmed {
-                    body_file: "/m/notice.txt".to_owned(),
-                    framed: "framed".to_owned(),
-                    notice: true,
-                },
-            ),
-            ("refused", crate::deliver::Failure::Abandoned),
-        ] {
-            let dir = std::env::temp_dir().join(format!("ae-send-{name}-{}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&dir);
-            std::fs::create_dir_all(&dir).expect("the isolated state directory");
-            let event = EventFields {
-                ts: Timestamp::parse("2026-08-27T07:11:12Z").expect("the timestamp parses"),
-                actor: "lead",
-                action: "send",
-                target: "worker",
-                reference: "",
-                actor_slot: "main",
-                actor_session: "session",
-                target_slot: "worker.0",
-                target_session: "session",
-                target_server: "",
-                target_pane: "",
-                target_session_uuid: "",
-                caller_server: "",
-                caller_pane: "",
-                caller_session_uuid: "",
-                identity_gap: "",
-                summary: "hello",
-                body_file: "",
-            };
-            let mut err = Vec::new();
-            let code =
-                record_send_delivery(&dir, &event, Err(failure), &Env::default(), None, &mut err)
-                    .expect("the refusal is handled");
-            assert_eq!(code, crate::state::EXIT_FAILED);
-            assert!(!dir.join("events.jsonl").exists());
-            assert!(err.is_empty());
-            let _ = std::fs::remove_dir_all(&dir);
-        }
+    fn a_notice_send_remains_failed_and_unrecorded() {
+        let dir = std::env::temp_dir().join(format!("ae-send-notice-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("the isolated state directory");
+        let event = EventFields {
+            ts: Timestamp::parse("2026-08-27T07:11:12Z").expect("the timestamp parses"),
+            actor: "lead",
+            action: "send",
+            target: "worker",
+            reference: "",
+            actor_slot: "main",
+            actor_session: "session",
+            target_slot: "worker.0",
+            target_session: "session",
+            target_server: "",
+            target_pane: "",
+            target_session_uuid: "",
+            caller_server: "",
+            caller_pane: "",
+            caller_session_uuid: "",
+            identity_gap: "",
+            summary: "hello",
+            body_file: "",
+        };
+        let mut err = Vec::new();
+        let code = record_send_delivery(
+            &dir,
+            &event,
+            Err(crate::deliver::Failure::Unconfirmed {
+                body_file: "/m/notice.txt".to_owned(),
+                framed: "framed".to_owned(),
+                notice: true,
+            }),
+            &Env::default(),
+            None,
+            &mut err,
+        )
+        .expect("the refusal is handled");
+        assert_eq!(code, crate::state::EXIT_FAILED);
+        assert!(!dir.join("events.jsonl").exists());
+        assert!(err.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the test writes and reads its isolated event ledger"
+    )]
+    fn an_abandoned_send_records_the_diagnostic_and_stays_failed() {
+        let dir = std::env::temp_dir().join(format!("ae-send-refused-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("the isolated state directory");
+        let event = EventFields {
+            ts: Timestamp::parse("2026-08-27T07:11:12Z").expect("the timestamp parses"),
+            actor: "lead",
+            action: "send",
+            target: "worker",
+            reference: "",
+            actor_slot: "main",
+            actor_session: "session",
+            target_slot: "worker.0",
+            target_session: "session",
+            target_server: "",
+            target_pane: "",
+            target_session_uuid: "",
+            caller_server: "",
+            caller_pane: "",
+            caller_session_uuid: "",
+            identity_gap: "",
+            summary: "hello",
+            body_file: "",
+        };
+        let mut err = Vec::new();
+        let code = record_send_delivery(
+            &dir,
+            &event,
+            Err(crate::deliver::Failure::Abandoned {
+                held: DeferHeld::ComposerOccupied,
+            }),
+            &Env::default(),
+            None,
+            &mut err,
+        )
+        .expect("the refusal is handled");
+        assert_eq!(code, crate::state::EXIT_FAILED);
+        assert!(err.is_empty());
+        let journal =
+            std::fs::read_to_string(dir.join("events.jsonl")).expect("the refusal is journaled");
+        assert!(
+            journal.contains("\"action\":\"delivery-abandoned\""),
+            "a distinct action, never the success one: {journal}"
+        );
+        assert!(
+            journal.contains("refused: target stayed busy (composer occupied); hello"),
+            "the operator line's clause, verbatim: {journal}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

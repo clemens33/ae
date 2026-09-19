@@ -341,7 +341,7 @@ const fn outcome_of(failure: &crate::deliver::Failure) -> Outcome {
     match *failure {
         crate::deliver::Failure::DeadPane
         | crate::deliver::Failure::Lock
-        | crate::deliver::Failure::Abandoned
+        | crate::deliver::Failure::Abandoned { .. }
         | crate::deliver::Failure::NotComposed { .. } => Outcome::Rearm,
         crate::deliver::Failure::Unconfirmed { .. } => {
             Outcome::GiveUp("submit unconfirmed; the brief may be staged unsent")
@@ -600,13 +600,15 @@ mod tests {
     /// retry a live seat was owed. Nothing else fails when it moves.
     #[test]
     fn only_the_refusals_that_prove_nothing_was_staged_may_re_arm_a_record() {
-        use crate::deliver::Failure;
+        use crate::deliver::{DeferHeld, Failure};
         let file = || "body-file".to_owned();
         // The four PROVEN pre-stage refusals, and nothing else, re-arm.
         for failure in [
             Failure::DeadPane,
             Failure::Lock,
-            Failure::Abandoned,
+            Failure::Abandoned {
+                held: DeferHeld::ComposerOccupied,
+            },
             Failure::NotComposed { body_file: file() },
         ] {
             assert_eq!(outcome_of(&failure), Outcome::Rearm, "{failure:?}");

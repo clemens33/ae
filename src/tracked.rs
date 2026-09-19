@@ -1618,6 +1618,11 @@ pub(crate) fn record_tracked_delivery(
             crate::deliver::DeliveryVerification::Verified,
             true,
         ),
+        Err(crate::deliver::Failure::Abandoned { held }) => {
+            // The one pre-paste refusal with a deferral behind it: it records
+            // the diagnostic, naming which half held.
+            return record_abandoned_delivery(dir, fields, held, err);
+        }
         Err(_) => {
             // Every other refused delivery has already said what happened and
             // where the body is; nothing is recorded for one.
@@ -1658,6 +1663,38 @@ pub(crate) fn record_tracked_delivery(
     Ok(0)
 }
 
+/// The diagnostic action an abandoned delivery records. The deferral names
+/// WHICH half held, so the journal carries what the operator line said.
+/// Never a success action: `requests`, the pending scan and `ref_meaning`
+/// all ignore it, so no request opens, closes, or is withdrawn by it — even
+/// though the record carries the attempt's own reference.
+pub const ABANDONED_ACTION: &str = "delivery-abandoned";
+
+/// Record the diagnostic refusal for an abandoned delivery: caller ledger
+/// only (like the relay audit), the failed exit preserved, request state
+/// untouched. The ONE writer both record paths share.
+pub(crate) fn record_abandoned_delivery(
+    dir: &Path,
+    fields: &EventFields<'_>,
+    held: crate::deliver::DeferHeld,
+    err: &mut impl Write,
+) -> io::Result<u8> {
+    let summary = format!("refused: {}; {}", held.describe(), fields.summary);
+    let line = event_line(&EventFields {
+        action: ABANDONED_ACTION,
+        summary: &summary,
+        ..*fields
+    });
+    if let Err(why) = store::open(dir).append_event(&line) {
+        writeln!(
+            err,
+            "ae: {} to {} abandoned but its refusal event was not emitted: {why}",
+            fields.action, fields.target,
+        )?;
+    }
+    Ok(EXIT_FAILED)
+}
+
 /// The exit code a `send` run hands back: its own, verbatim; a helper that
 /// could not run at all is said so, at [`EXIT_FAILED`].
 pub(crate) fn delivery_code(
@@ -1687,6 +1724,7 @@ mod tests {
         record_tracked_delivery, refusal, reply_command, request_id, retain_correlation, run,
         triple_from_viewer,
     };
+    use crate::deliver::DeferHeld;
     use crate::inventory::ServerId;
     use crate::meta::Selector;
     use crate::time::Timestamp;
@@ -2043,7 +2081,7 @@ mod tests {
         clippy::disallowed_methods,
         reason = "the test writes and reads its isolated event ledger"
     )]
-    fn a_non_unconfirmed_delivery_remains_unrecorded() {
+    fn an_abandoned_ask_records_the_diagnostic_and_opens_no_request() {
         let dir = std::env::temp_dir().join(format!("ae-tracked-refused-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("the isolated state directory");
@@ -2071,14 +2109,104 @@ mod tests {
         let code = record_tracked_delivery(
             &dir,
             &fields,
-            Err(crate::deliver::Failure::Abandoned),
+            Err(crate::deliver::Failure::Abandoned {
+                held: DeferHeld::ComposerOccupied,
+            }),
             None,
             &mut err,
         )
         .expect("the refused delivery is handled");
         assert_eq!(code, crate::state::EXIT_FAILED);
-        assert!(!dir.join("events.jsonl").exists());
         assert!(err.is_empty());
+        let journal =
+            std::fs::read_to_string(dir.join("events.jsonl")).expect("the refusal is journaled");
+        assert!(
+            journal.contains("\"action\":\"delivery-abandoned\""),
+            "a distinct action, never the success one: {journal}"
+        );
+        assert!(
+            journal.contains("\"ref\":\"ae-20260827T071112Z-00000003\""),
+            "the attempt's own reference, for correlation: {journal}"
+        );
+        assert!(
+            journal.contains("refused: target stayed busy (composer occupied); the question"),
+            "the operator line's clause, verbatim: {journal}"
+        );
+        assert!(
+            crate::requests::states(journal.as_bytes()).is_empty(),
+            "no request opens for a message that never landed"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the test writes and reads its isolated event ledger"
+    )]
+    fn an_abandoned_reply_records_the_diagnostic_and_closes_nothing() {
+        let dir =
+            std::env::temp_dir().join(format!("ae-tracked-refused-reply-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("the isolated state directory");
+        // A live opening the reply would have closed, had it landed.
+        std::fs::write(
+            dir.join("events.jsonl"),
+            "{\"ts\":\"2026-08-27T07:11:12Z\",\"actor\":\"lead\",\"action\":\"ask\",\"target\":\"worker\",\"ref\":\"r9\",\"actor_slot\":\"main\",\"actor_session\":\"session\",\"target_slot\":\"worker.0\",\"target_session\":\"session\",\"summary\":\"the question\"}\n",
+        )
+        .expect("the seeded opening");
+        let fields = EventFields {
+            ts: Timestamp::parse("2026-08-27T07:12:12Z").expect("the timestamp parses"),
+            actor: "worker",
+            action: "reply",
+            target: "lead",
+            reference: "r9",
+            actor_slot: "worker.0",
+            actor_session: "session",
+            target_slot: "main",
+            target_session: "session",
+            target_server: "",
+            target_pane: "",
+            target_session_uuid: "",
+            caller_server: "",
+            caller_pane: "",
+            caller_session_uuid: "",
+            identity_gap: "",
+            summary: "the answer",
+            body_file: "",
+        };
+        let mut err = Vec::new();
+        let code = record_tracked_delivery(
+            &dir,
+            &fields,
+            Err(crate::deliver::Failure::Abandoned {
+                held: DeferHeld::Viewed,
+            }),
+            None,
+            &mut err,
+        )
+        .expect("the refused delivery is handled");
+        assert_eq!(code, crate::state::EXIT_FAILED);
+        assert!(err.is_empty());
+        let journal =
+            std::fs::read_to_string(dir.join("events.jsonl")).expect("the refusal is journaled");
+        assert!(
+            journal.contains("\"action\":\"delivery-abandoned\""),
+            "a distinct action, never the success one: {journal}"
+        );
+        assert!(
+            journal.contains("human input or attention on the pane"),
+            "the attention half reaches the journal: {journal}"
+        );
+        let rows = crate::requests::states_in(journal.as_bytes(), "session");
+        assert_eq!(rows.len(), 1, "the opening and nothing else: {journal}");
+        assert_eq!(rows[0].id, b"r9");
+        assert_eq!(
+            rows[0].status,
+            crate::requests::Status::Pending,
+            "a reply that never landed closes nothing"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
