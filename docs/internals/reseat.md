@@ -300,3 +300,12 @@ crossing; project `memory/` is copied only into an account that has none and is
 NEVER merged; a copy that fails falls back LOUDLY to the seed path and the move
 still happens; and there is no model-availability pre-check, because the
 existing post-launch identity reading is the check.
+
+THE RECORD SPELLS THE CONVERSATION BY WHAT HAPPENED TO IT. Every other arm
+names what the move left behind — `prior <id>` — but a CARRIED conversation is
+not left behind, it is the same one continuing in the other account, so the
+carry arm reads `conversation <id>, carried`. `Carried::field` is the one place
+that decides, beside `::word`, because a record that called a live conversation
+prior would send a later reader after it believing it dead. A seeded fallback
+really did abandon one, so it keeps `prior`, and a move that was never a carry
+question writes what a tool change always wrote, byte for byte.

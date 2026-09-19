@@ -218,10 +218,19 @@ fn a_move_between_two_accounts_of_one_tool_carries_the_whole_conversation() {
         out.contains("carried") && !out.contains("seed ok"),
         "the closing line says what happened instead of a seed verdict: {out}"
     );
-    // THE AUDIT: one word, on the reseat record.
+    // THE AUDIT: one word, on the reseat record — and the id filed under what
+    // it IS. A carried conversation continues in the other account, so a record
+    // calling it `prior` would send a later reader after a live conversation
+    // believing it dead.
     assert!(
-        rig.events().contains(", carried]"),
-        "the record says the conversation was carried:\n{}",
+        rig.events()
+            .contains(&format!("conversation {ID}, carried]")),
+        "the record names the conversation it carried, not one left behind:\n{}",
+        rig.events()
+    );
+    assert!(
+        !rig.events().contains(&format!("prior {ID}")),
+        "nothing calls the carried conversation prior:\n{}",
         rig.events()
     );
     assert!(rig.tool_pid(&pane, "claude").is_some(), "the seat is up");
@@ -296,8 +305,9 @@ fn a_target_account_already_holding_another_conversation_falls_back_loudly() {
     );
     assert!(rig.dir.join("seed.scout.md").exists(), "the seed is back");
     assert!(
-        rig.events().contains(", seeded ("),
-        "the record says the carry was tried and why it did not happen:\n{}",
+        rig.events().contains(&format!("prior {ID}, seeded (")),
+        "the record says the carry was tried, why it did not happen, and that \
+         this conversation really was left behind:\n{}",
         rig.events()
     );
 }

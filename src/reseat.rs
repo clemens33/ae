@@ -175,6 +175,17 @@ impl Carried {
             Self::Seeded(why) => format!("seeded ({why})"),
         }
     }
+
+    /// The word the record files the old account's conversation id under. A
+    /// CARRIED conversation is not left behind — it is the SAME one, continuing
+    /// in the other account — so calling it `prior` would make a durable record
+    /// say the opposite of what happened. Every other arm really did leave one.
+    fn field(&self) -> &'static str {
+        match self {
+            Self::Yes => "conversation",
+            Self::No | Self::Seeded(_) => "prior",
+        }
+    }
 }
 
 /// Does this move's conversation travel? `None` is every silent arm.
@@ -838,7 +849,7 @@ pub(crate) fn run(
         // Filled in once the carry question is answered, below. The STOP record
         // is written before that and carries no word, which is right: a stop
         // says nothing about where the conversation went.
-        carry: String::new(),
+        carry: Carried::No,
     };
     // THE STOP, before the dead proof and before anything durable is written.
     match stop_running_tool(&dir, &target, &locked, parsed.stop_unknown, err)? {
@@ -926,7 +937,7 @@ pub(crate) fn run(
             }
         }
     };
-    at.carry = carried.word();
+    at.carry = carried.clone();
     // BUILT FIRST, because the pack reads the seat's recorded first message and
     // the cleanup below removes that file. A CARRIED seat gets neither: the
     // conversation itself travelled, so there is nothing for ae to tell the
@@ -1248,11 +1259,13 @@ struct Record<'a> {
     from: &'a str,
     to: &'a str,
     prior: &'a str,
-    /// What became of the conversation — EMPTY when the move was never a carry
-    /// question, so every record a tool change writes stays byte-identical to
-    /// what it wrote before this existed. OWNED, because the verdict is only
-    /// reached after the stop has already written its own record through this.
-    carry: String,
+    /// What became of the conversation. The FACT, not a rendered word: it
+    /// decides both what the record says happened AND what it calls the id it
+    /// names, and two fields that had to agree would be a way for them not to.
+    /// [`Carried::No`] writes what a tool change always wrote, byte for byte.
+    /// OWNED, because the verdict is only reached after the stop has already
+    /// written its own record through this.
+    carry: Carried,
 }
 
 /// One `reseat` record for every attempt that REACHED the pane — the seat's
@@ -1262,7 +1275,11 @@ struct Record<'a> {
 /// includes [`crate::launch::PENDING`]: it is the word for a conversation that
 /// never resolved, `reseated` hands on no prior row for it, and an audit line
 /// must not read as if one were being left behind.
-fn summary(outcome: &str, from: &str, to: &str, prior: &str, carry: &str) -> String {
+///
+/// The conversation id is filed under [`Carried::field`], which is the whole of
+/// the difference: a carried conversation was not left behind, so calling it
+/// `prior` in a durable record would be the opposite of what happened.
+fn summary(outcome: &str, from: &str, to: &str, prior: &str, carry: &Carried) -> String {
     let named = |value: &str| {
         if value.is_empty() || value == crate::launch::PENDING {
             "none".to_owned()
@@ -1270,14 +1287,16 @@ fn summary(outcome: &str, from: &str, to: &str, prior: &str, carry: &str) -> Str
             value.to_owned()
         }
     };
+    let word = carry.word();
     format!(
-        "{outcome} [from {} to {to}, prior {}{}]",
+        "{outcome} [from {} to {to}, {} {}{}]",
         named(from),
+        carry.field(),
         named(prior),
-        if carry.is_empty() {
+        if word.is_empty() {
             String::new()
         } else {
-            format!(", {carry}")
+            format!(", {word}")
         }
     )
 }
@@ -1464,7 +1483,13 @@ mod tests {
         // id. The meta is already right — `reseated` writes no prior row it
         // cannot prove — and the audit line has to say the same thing.
         assert_eq!(
-            super::summary("reseated", "a", "b", crate::launch::PENDING, ""),
+            super::summary(
+                "reseated",
+                "a",
+                "b",
+                crate::launch::PENDING,
+                &super::Carried::No
+            ),
             "reseated [from a to b, prior none]"
         );
         assert_eq!(
@@ -1473,22 +1498,47 @@ mod tests {
                 "",
                 "b",
                 "11111111-1111-4111-8111-111111111111",
-                ""
+                &super::Carried::No
             ),
             "reseated [from none to b, prior 11111111-1111-4111-8111-111111111111]"
-        );
-        // The carry word is the ONLY thing that changes, and only when the move
-        // was a carry question at all: every tool change records what it always
-        // recorded, byte for byte.
-        assert_eq!(
-            super::summary("reseated", "a", "b", crate::launch::PENDING, "carried"),
-            "reseated [from a to b, prior none, carried]"
         );
         assert_eq!(
             super::Carried::Seeded("no transcript".to_owned()).word(),
             "seeded (no transcript)"
         );
         assert!(super::Carried::No.word().is_empty());
+    }
+
+    #[test]
+    fn a_carried_conversation_is_never_recorded_as_the_one_left_behind() {
+        const ID: &str = "11111111-1111-4111-8111-111111111111";
+        // THE CARRY ARM. The id names the conversation that CONTINUES in the
+        // other account, so the record must not file it under the word for what
+        // a move abandoned. A reader scanning records for a dead conversation
+        // would otherwise find a live one and act on it.
+        assert_eq!(
+            super::summary("reseated", "a", "b", ID, &super::Carried::Yes),
+            format!("reseated [from a to b, conversation {ID}, carried]")
+        );
+        // THE OTHER ARM of the same question. A seeded move really did leave
+        // that conversation behind — a fresh one and a seed pack took its
+        // place — so `prior` is the truth there and stays.
+        assert_eq!(
+            super::summary(
+                "reseated",
+                "a",
+                "b",
+                ID,
+                &super::Carried::Seeded("no transcript".to_owned())
+            ),
+            format!("reseated [from a to b, prior {ID}, seeded (no transcript)]")
+        );
+        // A move that was never a carry question at all records what a tool
+        // change has always recorded, byte for byte.
+        assert_eq!(
+            super::summary("reseated", "a", "b", ID, &super::Carried::No),
+            format!("reseated [from a to b, prior {ID}]")
+        );
     }
 
     #[test]

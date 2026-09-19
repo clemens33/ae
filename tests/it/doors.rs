@@ -875,17 +875,45 @@ fn direct_session_mutation(code: &str) -> Option<&str> {
     })
 }
 
+/// `src/init.rs` owns ae's ONE exclusive publication — a temp under a nonce
+/// only that call opened, fsynced, then hard-linked onto a name that must not
+/// already exist — and every other product caller of it is NAMED here. The
+/// caller list is ONE table: a file reaches the boundary only by appearing in
+/// it with the exact spelling it must use, so the deny below and the per-caller
+/// proof above can never drift apart into a silent exemption.
 #[test]
-fn init_owns_exclusive_config_creation_and_first_launch_routes_through_it() {
+fn init_owns_exclusive_publication_and_every_caller_of_it_is_named() {
+    /// Each product file that may call the boundary, and the exact call it must
+    /// make. The mode is part of the spelling: it is the published file's, and
+    /// a caller that changed it would be publishing into someone else's store
+    /// at the wrong permissions.
+    const CALLERS: [(&str, &str, &str); 2] = [
+        (
+            "src/lib.rs",
+            "crate::init::create_exclusive(path, contents.as_bytes(), 0o666)",
+            "first-launch seeding must race through init's same exclusive writer and retain its umask-derived mode",
+        ),
+        // THE SECOND LEGITIMATE CALLER, and the reason it is not a second copy:
+        // an account carry publishes a conversation file into a store ae does
+        // not hold a lock on, so it needs exactly this operation — a temp under
+        // a nonce that call opened, then a link that refuses an existing name —
+        // and a duplicate of it would be a second no-clobber publication to get
+        // wrong. Its mode is the store's, not the config's.
+        (
+            "src/carry.rs",
+            "crate::init::create_exclusive(path, bytes, 0o600)",
+            "the carry's publication must be init's exclusive writer at the store's own mode",
+        ),
+    ];
+
     let halves = product_halves();
-    let init = halves
-        .iter()
-        .find(|(name, _)| name == "src/init.rs")
-        .map_or_else(|| panic!("src/init.rs was not scanned"), |(_, code)| code);
-    let lib = halves
-        .iter()
-        .find(|(name, _)| name == "src/lib.rs")
-        .map_or_else(|| panic!("src/lib.rs was not scanned"), |(_, code)| code);
+    let half = |wanted: &str| {
+        halves
+            .iter()
+            .find(|(name, _)| name == wanted)
+            .map_or_else(|| panic!("{wanted} was not scanned"), |(_, code)| code)
+    };
+    let init = half("src/init.rs");
     assert!(
         init.contains(".create_new(true)"),
         "init's staging writer must retain O_EXCL"
@@ -900,26 +928,11 @@ fn init_owns_exclusive_config_creation_and_first_launch_routes_through_it() {
         init.contains("fs::rename(&temp, path)"),
         "forced config replacement must stay atomic rename"
     );
-    assert!(
-        lib.contains("crate::init::create_exclusive(path, contents.as_bytes(), 0o666)"),
-        "first-launch seeding must race through init's same exclusive writer and retain its umask-derived mode"
-    );
-    let carry = halves
-        .iter()
-        .find(|(name, _)| name == "src/carry.rs")
-        .map_or_else(|| panic!("src/carry.rs was not scanned"), |(_, code)| code);
-    // THE SECOND LEGITIMATE CALLER, and the reason it is not a second copy:
-    // an account carry publishes a conversation file into a store ae does not
-    // hold a lock on, so it needs exactly this operation — a temp under a
-    // nonce that call opened, then a link that refuses an existing name — and
-    // a duplicate of it would be a second no-clobber publication to get wrong.
-    // Its mode is the store's, not the config's.
-    assert!(
-        carry.contains("crate::init::create_exclusive(path, bytes, 0o600)"),
-        "the carry's publication must be init's exclusive writer at the store's own mode"
-    );
+    for (name, call, why) in CALLERS {
+        assert!(half(name).contains(call), "{why}");
+    }
     for (name, code) in &halves {
-        if name == "src/init.rs" || name == "src/lib.rs" || name == "src/carry.rs" {
+        if name == "src/init.rs" || CALLERS.iter().any(|(caller, _, _)| caller == name) {
             continue;
         }
         assert!(
