@@ -340,6 +340,19 @@ impl Rig {
         std::fs::read_to_string(&self.launched).unwrap_or_default()
     }
 
+    /// The fake's argv report, waiting briefly for the tool to exec. A fold
+    /// spawn returns without any delivery wait, so the exec lands after it.
+    fn launch_argv_wait(&self) -> String {
+        for _ in 0..200 {
+            let seen = std::fs::read_to_string(&self.launched).unwrap_or_default();
+            if !seen.is_empty() {
+                return seen;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        std::fs::read_to_string(&self.launched).unwrap_or_default()
+    }
+
     fn launch_id(&self, slot: &str) -> String {
         self.meta()
             .lines()
@@ -703,8 +716,8 @@ fn a_spawn_seats_stamps_launches_and_briefs_its_agent() {
     );
 }
 
-/// Muse has no system-instruction channel. Its ae context must be the
-/// positional first user turn, while the spawn brief is delivered afterward.
+/// Muse has no system-instruction channel. Its ae context is the positional
+/// first user turn, and a spawn brief rides that SAME turn — nothing pasted.
 #[test]
 fn a_spawned_muse_agent_receives_positional_context_and_its_brief() {
     let probe = PathBuf::from(format!("/tmp/aesp-probe-muse.{}", std::process::id()));
@@ -740,7 +753,7 @@ fn a_spawned_muse_agent_receives_positional_context_and_its_brief() {
         "Muse prepares its token capture before launch: {meta}"
     );
 
-    let argv = rig.launch_argv();
+    let argv = rig.launch_argv_wait();
     assert!(
         argv.contains("AE_MUSE_LAUNCH_ID="),
         "the positional context carries the unique capture token: {argv}"
@@ -754,19 +767,60 @@ fn a_spawned_muse_agent_receives_positional_context_and_its_brief() {
         "Muse has no per-seat system-instruction channel: {argv}"
     );
 
-    let submitted = rig.submitted();
-    assert_eq!(
-        submitted.lines().next(),
-        Some(ae::provenance::brief("lead").as_str()),
-        "{submitted}"
+    // The BRIEF rides the same turn: header, body, start sentence on the argv.
+    let header = ae::provenance::brief("lead");
+    assert!(argv.contains(&header), "{argv}");
+    assert!(
+        argv.contains("read the Muse brief — When done, reply back via:"),
+        "{argv}"
+    );
+    assert!(argv.contains("/send \"lead\""), "{argv}");
+    assert!(argv.contains("START NOW"), "{argv}");
+    assert!(
+        !argv.contains("This is context only"),
+        "no passive tail on a tasked turn: {argv}"
+    );
+
+    // NOTHING pasted: the seat's stdin stays empty past the spawn.
+    let received = std::fs::read_to_string(&rig.received).unwrap_or_default();
+    assert!(received.is_empty(), "no paste on the fold path: {received:?}");
+
+    // The recorded first message is the BRIEF ONLY, never the context.
+    let prompt =
+        std::fs::read_to_string(rig.dir.join("launch.spawned.0.prompt")).unwrap_or_default();
+    let framed = format!(
+        "{header}\nread the Muse brief — When done, reply back via: {}/send \"lead\" \"<your reply>\"",
+        rig.dir.display()
+    );
+    assert_eq!(prompt, framed, "brief only, byte-exact");
+    assert!(
+        !prompt.contains(&ae::provenance::ctx()),
+        "no context in the prompt file: {prompt}"
+    );
+
+    // No retry record, no failure event: the fold arms nothing.
+    assert!(
+        !ae::brief_retry::path(&rig.dir, "spawned.0").exists(),
+        "the fold path arms no retry record"
+    );
+    let events = rig.events();
+    assert!(events.contains("\"action\":\"spawn\""), "{events}");
+    assert!(
+        !events.contains("spawn-failed"),
+        "a folded brief records no failure: {events}"
+    );
+
+    // The caller-visible surface is identical on both paths.
+    assert!(
+        stdout.starts_with("Spawned museworker in pane %"),
+        "the frozen success line: {stdout}"
     );
     assert!(
-        submitted.contains("\nread the Muse brief — When done, reply back via:"),
-        "{submitted}"
+        events.contains("\"summary\":\"read the Muse brief\""),
+        "the spawn event carries the RAW prompt: {events}"
     );
-    assert!(submitted.contains("/send \"lead\""), "{submitted}");
 
-    let mut received = submitted.len();
+    let mut received = 0;
     for (helper, body) in [
         (ae::cli::SEND, "Muse direct message"),
         (ae::cli::ASK, "Muse ask message"),
@@ -788,6 +842,10 @@ fn a_spawned_muse_agent_receives_positional_context_and_its_brief() {
     let (code, plan, stderr) = rig.run(ae::cli::RUN, &["--print", "spawned.0"]);
     assert_eq!(code, Some(0), "plan: {plan}\nstderr: {stderr}");
     assert!(plan.contains(r#""mode":"resume""#), "{plan}");
+    assert!(
+        !plan.contains("read the Muse brief"),
+        "a resume re-sends no brief: {plan}"
+    );
     assert!(
         plan.contains(&format!(
             r#""argv":["{}","{}\nYou are in an ae multi-agent workspace."#,
@@ -812,6 +870,108 @@ fn a_spawned_muse_agent_receives_positional_context_and_its_brief() {
         )),
         "a captured Muse id resumes through Muse's subcommand: {plan}"
     );
+}
+
+/// A spawn with NO prompt keeps today's paste path on the UserTurn channel:
+/// the default brief is pasted after launch, and no prompt file is recorded.
+#[test]
+fn a_spawn_without_a_prompt_briefs_by_paste_on_the_user_turn_channel() {
+    let probe = PathBuf::from(format!("/tmp/aesp-probe-noprompt.{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&probe);
+    let present = tmux_present(&probe);
+    let _ = std::fs::remove_dir_all(&probe);
+    if !present {
+        return;
+    }
+    let rig = Rig::new("noprompt");
+    rig.enable_muse_profile();
+    let (code, stdout, stderr) =
+        rig.run(ae::cli::SPAWN, &["musepoke", "--using", "musefake"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+
+    let submitted = rig.submitted();
+    assert_eq!(
+        submitted.lines().next(),
+        Some(ae::provenance::brief("lead").as_str()),
+        "{submitted}"
+    );
+    assert!(
+        submitted.contains("You were spawned into an ae workspace."),
+        "{submitted}"
+    );
+    assert!(
+        !rig.dir.join("launch.spawned.0.prompt").exists(),
+        "no prompt file on the paste path"
+    );
+    let argv = rig.launch_argv();
+    assert!(
+        argv.contains("This is context only"),
+        "the launch turn keeps its passive tail: {argv}"
+    );
+}
+
+/// Past the fold bound a spawn briefs by paste instead: one stderr line, the
+/// body pasted exactly as today, and no prompt file for `_run` to fold.
+#[test]
+fn an_oversized_brief_falls_back_to_paste_with_one_stderr_line() {
+    let probe = PathBuf::from(format!("/tmp/aesp-probe-huge.{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&probe);
+    let present = tmux_present(&probe);
+    let _ = std::fs::remove_dir_all(&probe);
+    if !present {
+        return;
+    }
+    let rig = Rig::new("huge");
+    rig.enable_muse_profile();
+    let big = "x".repeat(120_000);
+    let (code, stdout, stderr) = rig.run(
+        ae::cli::SPAWN,
+        &["musebig", "--using", "musefake", "--", &big],
+    );
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        stderr.contains("briefing by paste instead"),
+        "the one fallback line: {stderr}"
+    );
+    assert!(
+        !rig.dir.join("launch.spawned.0.prompt").exists(),
+        "no prompt file on the fallback path"
+    );
+    // Past the 8 KB notice limit today's path pastes a POINTER, not the
+    // body — the fallback must show that same behavior, not a new one.
+    let submitted = rig.submitted();
+    assert!(
+        submitted
+            .lines()
+            .next()
+            .is_some_and(|line| line.starts_with(&ae::provenance::brief("lead"))),
+        "{submitted}"
+    );
+    assert!(submitted.contains("LONG BODY"), "{submitted}");
+    let mut bodies = 0;
+    let messages = std::fs::read_dir(rig.dir.join("messages")).unwrap_or_else(|_| {
+        panic!(
+            "the fallback stores its body under messages/: {}",
+            rig.dir.display()
+        )
+    });
+    for entry in messages.flatten() {
+        let path = entry.path();
+        if path
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().starts_with("spawn-spawned.0"))
+        {
+            bodies += 1;
+            assert!(
+                std::fs::read_to_string(&path)
+                    .unwrap_or_default()
+                    .contains(&big),
+                "nothing lost on the fallback path: {}",
+                path.display()
+            );
+        }
+    }
+    assert_eq!(bodies, 1, "exactly one stored fallback body");
 }
 
 /// A failure after the seat exists ROLLS BACK: no seat, no pane, no launch

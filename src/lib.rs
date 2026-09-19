@@ -3333,6 +3333,39 @@ mod tests {
     use std::io::{self, Write};
 
     #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the test plants a prompt file through the product publish path, then reads it back"
+    )]
+    fn a_folded_user_turn_seat_reports_its_recorded_first_message() {
+        let dir = std::env::temp_dir().join(format!("ae-fold-first-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a fixture dir");
+        // The fold's artifact: a framed, brief-only first message, never ctx.
+        let framed = crate::provenance::first_line(
+            &crate::provenance::brief("lead"),
+            "do the fold",
+        );
+        crate::run::publish_prompt(&dir, "spawned.0", &framed).expect("the publish");
+        match super::first_message_for(&dir, "spawned.0") {
+            crate::seatpack::FirstMessage::Recorded { text, .. } => {
+                assert_eq!(text, framed, "section 9 carries the fold's message");
+            }
+            crate::seatpack::FirstMessage::Absent => {
+                panic!("a folded seat reports Recorded, not Absent")
+            }
+            crate::seatpack::FirstMessage::Unreadable { .. } => {
+                panic!("a folded seat reports Recorded, not Unreadable")
+            }
+        }
+        match super::first_message_for(&dir, "spawned.1") {
+            crate::seatpack::FirstMessage::Absent => {}
+            _ => panic!("no prompt file still reports Absent"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_marked_menu_retracts_its_own_marker_only_when_the_draw_fails() {
         let clears = std::cell::Cell::new(0);
         assert!(!super::draw_marked_menu(
