@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.152] - 2026-09-19
+- Add Board dialog to session menu
+- Pin Board ladder priority at one row over budget
+- Read the Board from its correlated snapshot
+- Box the supplied Meta and take it by reference
+
 ## [v2026.9.151] - 2026-09-19
 - Add first-session onboarding walkthrough
 - Durable per-seat worker cwd, P1 record only
