@@ -332,6 +332,13 @@ leg of the EXISTING process door (`sysctl -n kern.boottime`, no argument a calle
 the `std::process::Command` inventory is unchanged. `tests/it/doors.rs` pins its one product
 caller beside `run_git`'s and `run_ps`'s.
 
+`doors::canonical_strict_dir` / `canonical_optional_ae` are the strict directory classifier with
+no variable of its own: lstat, canonicalize and metadata proving a recorded worker target or root
+is a directory, fail-closed — on the OptionalRoot branch a dangling link refuses as present-invalid
+rather than reading as absent (Required reports dangling as Absent, still refused). Zero `Command`,
+so the process inventory is unchanged; `src/doors.rs` was already vectored, so the
+`tests/it/phase3.rs` world-read inventory is unchanged too.
+
 In the core `AE_VERSION` is scoped to `upgrade` alone; `install` reads it too, as the CalVer
 target. `AE_CORE_BIN` and `AE_NEXT_HOME` are dead in both shapes.
 

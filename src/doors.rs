@@ -116,6 +116,138 @@ pub fn local_config(cwd: &Path) -> Option<PathBuf> {
     probe.is_ok_and(|meta| meta.is_file()).then_some(path)
 }
 
+/// How a strict directory read treats a path that is not there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StrictPresence {
+    /// Worker targets and the state root: absence refuses, always.
+    Required,
+    /// The legacy origin `.ae` dir only: `NotFound` is `Ok(None)`.
+    OptionalRoot,
+}
+
+/// Why a strict directory read failed. Absence, unreadability and
+/// not-a-directory stay distinct so the refusal names the true defect.
+/// Only the `OptionalRoot` branch lstats first: there a dangling link is
+/// present-invalid, never absence. Required reports dangling as Absent —
+/// misnamed, still refused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StrictDirError {
+    /// A required path is not there.
+    Absent {
+        /// The path as the caller spelled it.
+        path: PathBuf,
+    },
+    /// The path could not be read: permission, I/O, or a node that vanished
+    /// between the lstat and the read.
+    Unreadable {
+        /// The path as the caller spelled it.
+        path: PathBuf,
+        /// The I/O failure, kept so the refusal can name it.
+        kind: std::io::ErrorKind,
+    },
+    /// The path resolves but is not a directory.
+    NotDirectory {
+        /// The path as the caller spelled it.
+        path: PathBuf,
+    },
+}
+
+/// Canonicalize `path` and prove the RESOLVED node is a directory —
+/// fail-closed: any failure is `Err`, there is no fallback text.
+///
+/// The record/use contract: RECORD follows one alias and STORES the
+/// canonical path; USE re-canonicalizes the STORED path and equality refuses
+/// a changed destination. Strict means `Err` with no fallback, not no-follow —
+/// a retargeted original alias cannot move a recorded seat, because the alias
+/// is never stored. Residual, named: the canonicalize→metadata gap can still
+/// swap, so every use re-runs this whole door.
+///
+/// # Errors
+///
+/// [`StrictDirError`] on a missing, unreadable, or non-directory path.
+pub fn canonical_strict_dir(path: &Path) -> Result<PathBuf, StrictDirError> {
+    match strict_dir_core(path, StrictPresence::Required)? {
+        Some(canonical) => Ok(canonical),
+        // Required never answers `None`; a `None` here fails closed rather
+        // than smuggling the caller's spelling back as a proven place.
+        None => Err(StrictDirError::Absent {
+            path: path.to_path_buf(),
+        }),
+    }
+}
+
+/// The legacy origin `.ae` dir: missing is `Ok(None)` — no protected
+/// subtree — while a present root must pass the strict proof.
+///
+/// # Errors
+///
+/// [`StrictDirError`] on an unreadable or non-directory present root.
+pub fn canonical_optional_ae(path: &Path) -> Result<Option<PathBuf>, StrictDirError> {
+    strict_dir_core(path, StrictPresence::OptionalRoot)
+}
+
+/// The ONE strict directory classifier: lstat, canonicalize and metadata in
+/// one place, under the one allow site, so the review counts exactly three
+/// world-read calls, one site, zero `Command`.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "a door: the strict worker-dir classifier — lstat, canonicalize and metadata together prove a recorded target or root is a directory, fail-closed, with a dangling optional origin .ae refusing as present-invalid rather than reading as absent"
+)]
+fn strict_dir_core(
+    path: &Path,
+    presence: StrictPresence,
+) -> Result<Option<PathBuf>, StrictDirError> {
+    if presence == StrictPresence::OptionalRoot {
+        // Lstat FIRST, on this branch only: only `NotFound` is absence. A
+        // dangling link or an unreadable node is PRESENT-but-invalid and
+        // refuses — `canonicalize` maps both to `ENOENT`, so it cannot make
+        // this distinction and must never be asked to. (Required skips the
+        // lstat: a dangling required path reports `Absent`, which misnames
+        // the symptom but refuses all the same.)
+        match std::fs::symlink_metadata(path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => {
+                return Err(StrictDirError::Unreadable {
+                    path: path.to_path_buf(),
+                    kind: error.kind(),
+                });
+            }
+            Ok(_) => {}
+        }
+    }
+    let canonical = match std::fs::canonicalize(path) {
+        Ok(canonical) => canonical,
+        Err(error)
+            if presence == StrictPresence::Required
+                && error.kind() == std::io::ErrorKind::NotFound =>
+        {
+            return Err(StrictDirError::Absent {
+                path: path.to_path_buf(),
+            });
+        }
+        // A present root that vanished after the lstat refuses rather
+        // than degrading to absence: it was there a moment ago.
+        Err(error) => {
+            return Err(StrictDirError::Unreadable {
+                path: path.to_path_buf(),
+                kind: error.kind(),
+            });
+        }
+    };
+    // `Path::is_dir` swallows the error it meets; the metadata result
+    // keeps unreadable distinct from not-a-directory.
+    match std::fs::metadata(&canonical) {
+        Ok(meta) if meta.is_dir() => Ok(Some(canonical)),
+        Ok(_) => Err(StrictDirError::NotDirectory {
+            path: path.to_path_buf(),
+        }),
+        Err(error) => Err(StrictDirError::Unreadable {
+            path: path.to_path_buf(),
+            kind: error.kind(),
+        }),
+    }
+}
+
 /// `AE_NO_AUTOSTART=1`: start NEITHER companion.
 #[must_use]
 pub fn no_autostart() -> bool {
@@ -657,5 +789,114 @@ mod tests {
             notice(&["AE_HOME=/x".to_owned(), "AE_TMUX_SERVER=".to_owned()]),
             Some("ae: ignoring inherited AE_HOME=/x AE_TMUX_SERVER=".to_owned())
         );
+    }
+
+    /// A scratch root, removed on drop.
+    struct Scratch(PathBuf);
+    impl Scratch {
+        fn new(tag: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("ae-doors-{tag}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("scratch");
+            Self(dir)
+        }
+    }
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn the_strict_door_proves_a_directory_and_names_the_defect() {
+        let scratch = Scratch::new("strict");
+        let target = scratch.0.join("target");
+        std::fs::create_dir(&target).unwrap();
+        let canonical = canonical_strict_dir(&target).unwrap();
+        assert!(canonical.is_absolute());
+        // A file is not a directory, however it is spelled.
+        let file = scratch.0.join("file");
+        std::fs::write(&file, "x").unwrap();
+        assert!(matches!(
+            canonical_strict_dir(&file),
+            Err(StrictDirError::NotDirectory { .. })
+        ));
+        // A symlink to a file resolves to a file and refuses the same way.
+        std::os::unix::fs::symlink(&file, scratch.0.join("link-to-file")).unwrap();
+        assert!(matches!(
+            canonical_strict_dir(&scratch.0.join("link-to-file")),
+            Err(StrictDirError::NotDirectory { .. })
+        ));
+        // A symlink to a directory proves the DESTINATION, not the spelling.
+        std::os::unix::fs::symlink(&target, scratch.0.join("link-to-dir")).unwrap();
+        assert_eq!(
+            canonical_strict_dir(&scratch.0.join("link-to-dir")).unwrap(),
+            canonical
+        );
+        // Absence is its own error, never a fallback and never silence.
+        assert!(matches!(
+            canonical_strict_dir(&scratch.0.join("missing")),
+            Err(StrictDirError::Absent { .. })
+        ));
+    }
+
+    #[test]
+    fn the_optional_root_reads_only_not_found_as_absence() {
+        let scratch = Scratch::new("optional");
+        // Missing: no protected subtree.
+        assert_eq!(canonical_optional_ae(&scratch.0.join("nope")), Ok(None));
+        // Present: strictly proven.
+        let ae = scratch.0.join(".ae");
+        std::fs::create_dir(&ae).unwrap();
+        assert!(canonical_optional_ae(&ae).unwrap().is_some());
+        // Dangling: present-but-invalid, never absence.
+        std::os::unix::fs::symlink(scratch.0.join("gone"), scratch.0.join("dangling")).unwrap();
+        assert!(matches!(
+            canonical_optional_ae(&scratch.0.join("dangling")),
+            Err(StrictDirError::Unreadable { .. })
+        ));
+        // Present-but-a-file: strictly refused.
+        let file = scratch.0.join("file-ae");
+        std::fs::write(&file, "x").unwrap();
+        assert!(matches!(
+            canonical_optional_ae(&file),
+            Err(StrictDirError::NotDirectory { .. })
+        ));
+    }
+
+    #[test]
+    fn the_strict_door_refuses_what_it_cannot_read() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let scratch = Scratch::new("unreadable");
+        let locked = scratch.0.join("locked");
+        std::fs::create_dir(&locked).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        // Premise, three ways: PermissionDenied exercises the pin; a
+        // root/capability process sees NotFound instead and skips; ANY other
+        // outcome fails loudly rather than silently testing nothing.
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "a door: this test's own premise check — that `locked` really is unreadable for this process — see clippy.toml"
+        )]
+        let probe = std::fs::metadata(locked.join("x"));
+        let restore = || std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755));
+        match probe {
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+                restore().unwrap();
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                restore().unwrap();
+                return;
+            }
+            Err(error) => panic!("unreadable-premise probe failed unexpectedly: {error:?}"),
+            Ok(_) => {
+                restore().unwrap();
+                return;
+            }
+        }
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let outcome = canonical_strict_dir(&locked.join("child"));
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(matches!(outcome, Err(StrictDirError::Unreadable { .. })));
     }
 }

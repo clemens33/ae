@@ -1261,15 +1261,310 @@ fn seat_work_dir_refusal(slot: &str, detail: &str) -> String {
 /// The shared refusal when the slot's row is present but unusable, or the
 /// slot names no recorded seat at all.
 pub fn resolve_seat_dir(meta: &Meta, slot: &str) -> Result<String, String> {
-    let Some(entry) = meta.roster().iter().find(|entry| entry.slot == slot) else {
-        return Err(format!(
-            "no seat is recorded for slot '{slot}' — refusing a directory for an unknown seat."
-        ));
-    };
+    let entry = seat_entry(meta, slot)?;
     match &entry.work_dir {
         RecordedWorkDir::Missing => Ok(meta.work_dir().unwrap_or(".").to_owned()),
         RecordedWorkDir::Path(path) => Ok(path.display().to_string()),
         RecordedWorkDir::Invalid(detail) => Err(seat_work_dir_refusal(slot, detail)),
+    }
+}
+
+/// The roster row a seat-dir judgment reads — one finder, one unknown-slot
+/// wording, shared by the string and the typed resolvers.
+fn seat_entry<'a>(meta: &'a Meta, slot: &str) -> Result<&'a RosterEntry, String> {
+    meta.roster()
+        .iter()
+        .find(|entry| entry.slot == slot)
+        .ok_or_else(|| {
+            format!(
+                "no seat is recorded for slot '{slot}' — refusing a directory for an unknown seat."
+            )
+        })
+}
+
+/// Whether a seat's working directory was recorded or inherited — the fact
+/// the context render needs, since an explicit path textually equal to the
+/// session default still omits `TREE_LOCAL`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeatProvenance {
+    /// No row recorded: the session directory, inherited.
+    Inherited,
+    /// A `work_dir.<slot>` row named this place.
+    Explicit,
+}
+
+/// A seat's working directory as a checked place, not a spelling.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SeatTarget {
+    /// The canonical directory, proven by the strict door.
+    pub canonical: PathBuf,
+    /// Recorded or inherited — provenance, never value comparison, decides
+    /// the context a seat is told it sits in.
+    pub provenance: SeatProvenance,
+}
+
+/// Pure selection: a recorded canonical path wins with [`SeatProvenance::Explicit`];
+/// absence inherits the session canonical with [`SeatProvenance::Inherited`].
+/// No filesystem touch — the caller strict-checks both inputs through the
+/// door, and the fuzz lane drives this against synthetic roots.
+#[must_use]
+pub fn select_seat_target(
+    recorded_canonical: Option<PathBuf>,
+    session_canonical: PathBuf,
+) -> SeatTarget {
+    match recorded_canonical {
+        Some(canonical) => SeatTarget {
+            canonical,
+            provenance: SeatProvenance::Explicit,
+        },
+        None => SeatTarget {
+            canonical: session_canonical,
+            provenance: SeatProvenance::Inherited,
+        },
+    }
+}
+
+/// Pure containment: is `target` at-or-under `root`, by path COMPONENTS of
+/// canonical forms — never string prefix, so `…/ae2` never matches `…/ae` and
+/// no `..` survives to climb out. Both inputs must already be canonical; the
+/// door proves that, this proves the nesting. No filesystem touch.
+#[must_use]
+pub fn contained_in(canonical_target: &Path, canonical_root: &Path) -> bool {
+    let target: Vec<_> = canonical_target.components().collect();
+    let root: Vec<_> = canonical_root.components().collect();
+    target.len() >= root.len() && target[..root.len()] == root[..]
+}
+
+/// Typed resolve: the [`SeatTarget`] a seat starts from — recorded canonical
+/// with `Explicit`, caller-supplied session canonical with `Inherited`. Pure
+/// over the parse; the unknown-slot and unusable-row refusals are the shared
+/// [`resolve_seat_dir`] wordings, and the strict door owns every filesystem
+/// proof underneath, at record and again at each use.
+///
+/// # Errors
+///
+/// The shared refusal when the slot names no recorded seat or its row is
+/// present but unusable.
+pub fn resolve_seat_target(
+    meta: &Meta,
+    slot: &str,
+    session_canonical: PathBuf,
+) -> Result<SeatTarget, String> {
+    let entry = seat_entry(meta, slot)?;
+    match &entry.work_dir {
+        RecordedWorkDir::Missing => Ok(select_seat_target(None, session_canonical)),
+        RecordedWorkDir::Path(path) => {
+            Ok(select_seat_target(Some(path.clone()), session_canonical))
+        }
+        RecordedWorkDir::Invalid(detail) => Err(seat_work_dir_refusal(slot, detail)),
+    }
+}
+
+/// Validate an EXPLICIT seat target for recording: local mode, no legacy
+/// `agent.<slot>` rows, strict directory proof, control-root containment.
+/// Returns the canonical row value to store. Refuses before any write —
+/// callers publish only on `Ok`, so a refusal leaves the meta byte-identical.
+///
+/// A relative dir joins the invoker cwd (the namer, not the session) and is
+/// then proven like any other spelling. Containment binds explicit targets
+/// only: inherited session dirs were proven by their own launch.
+///
+/// # Errors
+///
+/// The refusal naming the defect: non-local mode, legacy roster rows, an
+/// unprovable target, or a target at-or-under ae state or the origin `.ae`.
+pub fn record_seat_target(
+    meta: &Meta,
+    slot: &str,
+    dir: &str,
+    state_root: &Path,
+    invoker_cwd: &Path,
+) -> Result<String, String> {
+    match meta.mode() {
+        Some("local") => {}
+        Some(mode) => {
+            return Err(format!(
+                "explicit seat targets record on local sessions only — this session's mode is '{mode}'."
+            ));
+        }
+        None => {
+            return Err(
+                "explicit seat targets record on local sessions only — this session records no mode."
+                    .to_owned(),
+            );
+        }
+    }
+    if meta
+        .anomalies()
+        .iter()
+        .any(|anomaly| matches!(anomaly, Anomaly::LegacyRoster { .. }))
+    {
+        return Err(
+            "a legacy agent.<slot> row is recorded — seat targets need a v2 roster; start a fresh session."
+                .to_owned(),
+        );
+    }
+    // Empty input refuses before the join and every door read: joining it
+    // would silently accept the caller cwd as a target nobody named.
+    if dir.is_empty() {
+        return Err(seat_work_dir_refusal(slot, SEAT_WORK_DIR_EMPTY));
+    }
+    let spelled = PathBuf::from(dir);
+    let joined = if spelled.is_absolute() {
+        spelled
+    } else {
+        invoker_cwd.join(spelled)
+    };
+    let canonical = crate::doors::canonical_strict_dir(&joined)
+        .map_err(|error| strict_refusal(dir, &error, "restore it or choose another target"))?;
+    let canonical_root = crate::doors::canonical_strict_dir(state_root).map_err(|error| {
+        strict_refusal(
+            &state_root.display().to_string(),
+            &error,
+            "ae state itself is unreadable",
+        )
+    })?;
+    if contained_in(&canonical, &canonical_root) {
+        return Err(format!(
+            "the target '{}' is at-or-under the ae state root '{}' — worker targets must live outside ae state.",
+            canonical.display(),
+            canonical_root.display()
+        ));
+    }
+    if let Some(origin) = meta.origin().filter(|origin| !origin.is_empty()) {
+        let ae = Path::new(origin).join(crate::inventory::WORKTREE_STATE_DIR);
+        if let Some(ae_root) = crate::doors::canonical_optional_ae(&ae).map_err(|error| {
+            strict_refusal(
+                &ae.display().to_string(),
+                &error,
+                "the origin .ae dir is present but unusable",
+            )
+        })? && contained_in(&canonical, &ae_root)
+        {
+            return Err(format!(
+                "the target '{}' is at-or-under the origin .ae dir '{}' — worker targets must live outside ae state.",
+                canonical.display(),
+                ae_root.display()
+            ));
+        }
+    }
+    canonical_row_value(slot, &canonical)
+}
+
+/// The row value for a proven canonical destination: UTF-8 text or refusal.
+/// Pure over the path — the record helper proves the place first, this
+/// proves the spelling is row-safe. A non-UTF8 destination refuses with the
+/// shared detail rather than letting `display()` lossily rewrite it into a
+/// DIFFERENT persisted path.
+fn canonical_row_value(slot: &str, canonical: &Path) -> Result<String, String> {
+    match canonical.to_str() {
+        Some(text) => checked_seat_work_dir(slot, text),
+        None => Err(seat_work_dir_refusal(slot, SEAT_WORK_DIR_NON_UTF8)),
+    }
+}
+
+/// Re-prove a recorded target immediately before use: re-canonicalize the
+/// STORED path and require equality — a retargeted alias or a swapped node
+/// refuses with the shared row wording instead of following into a surprise
+/// destination.
+///
+/// # Errors
+///
+/// The shared `work_dir.<slot>` refusal when the target moved, vanished, or
+/// stopped being a directory.
+pub fn check_seat_target_use(slot: &str, target: &SeatTarget) -> Result<(), String> {
+    let proven = crate::doors::canonical_strict_dir(&target.canonical).map_err(|error| {
+        let detail = match error {
+            crate::doors::StrictDirError::Absent { .. } => "recorded target gone",
+            crate::doors::StrictDirError::Unreadable { .. } => "recorded target unreadable",
+            crate::doors::StrictDirError::NotDirectory { .. } => {
+                "recorded target is no longer a directory"
+            }
+        };
+        seat_work_dir_refusal(slot, detail)
+    })?;
+    if proven == target.canonical {
+        Ok(())
+    } else {
+        Err(seat_work_dir_refusal(
+            slot,
+            "recorded target destination changed",
+        ))
+    }
+}
+
+/// The directory a spawn's pane starts in: the seat's checked target when its
+/// row resolves, else the session spelling verbatim. Both provenances take
+/// the same equality invariant — the ACTUAL RETURNED SPELLING is
+/// strict-checked immediately before return against the held canonical —
+/// but failure is provenance-correct: explicit rows refuse with the shared
+/// row wording, while an inherited session dir names itself as gone,
+/// unreadable, not-a-directory, or moved, with a restore-the-session-dir
+/// remedy (no row, no retire). Typed helper, exercised by tests; consumer
+/// wiring lands with the B2 cutover.
+///
+/// # Errors
+///
+/// The shared `work_dir.<slot>` refusal for explicit rows; the inherited
+/// session-dir refusal for inherited ones; the unknown-seat refusal when
+/// the slot names no recorded seat at all.
+pub fn checked_pane_start_dir(
+    meta: &Meta,
+    slot: &str,
+    session_dir: &str,
+    session_canonical: PathBuf,
+) -> Result<String, String> {
+    let target = resolve_seat_target(meta, slot, session_canonical)?;
+    match target.provenance {
+        SeatProvenance::Explicit => {
+            check_seat_target_use(slot, &target)?;
+            Ok(target.canonical.display().to_string())
+        }
+        // Inherited takes the same equality invariant, but the failure is
+        // provenance-correct: no row is recorded, so the refusal names the
+        // session directory and its remedy — never "present", never
+        // "recorded target", never "retire the seat".
+        SeatProvenance::Inherited => {
+            // Strict-check the ACTUAL RETURNED SPELLING, not just the held
+            // canonical: an alias retargeted after the baseline would pass a
+            // held-canonical check while the spelling resolves elsewhere.
+            let proven = crate::doors::canonical_strict_dir(Path::new(session_dir))
+                .map_err(|error| inherited_dir_refusal(session_dir, &error))?;
+            if proven == target.canonical {
+                Ok(session_dir.to_owned())
+            } else {
+                Err(format!(
+                    "the session directory '{session_dir}' no longer resolves to its recorded place — restore it before resuming this seat."
+                ))
+            }
+        }
+    }
+}
+
+/// An inherited session dir that fails its use check, worded for what it
+/// is: no row, no retire — restore the session dir.
+fn inherited_dir_refusal(session_dir: &str, error: &crate::doors::StrictDirError) -> String {
+    use crate::doors::StrictDirError::{Absent, NotDirectory, Unreadable};
+    let remedy = "restore it before resuming this seat";
+    match error {
+        Absent { .. } => format!("the session directory '{session_dir}' is gone — {remedy}."),
+        Unreadable { kind, .. } => {
+            format!("the session directory '{session_dir}' cannot be read ({kind:?}) — {remedy}.")
+        }
+        NotDirectory { .. } => {
+            format!("the session directory '{session_dir}' is not a directory — {remedy}.")
+        }
+    }
+}
+
+/// A strict-door failure worded for the path it refused, with the remedy the
+/// caller names.
+fn strict_refusal(spelled: &str, error: &crate::doors::StrictDirError, remedy: &str) -> String {
+    use crate::doors::StrictDirError::{Absent, NotDirectory, Unreadable};
+    match error {
+        Absent { .. } => format!("'{spelled}' is not there — {remedy}."),
+        Unreadable { kind, .. } => format!("'{spelled}' cannot be read ({kind:?}) — {remedy}."),
+        NotDirectory { .. } => format!("'{spelled}' is not a directory — {remedy}."),
     }
 }
 
@@ -4030,5 +4325,517 @@ agent_bin.main=claude
                 "{bytes:?}"
             );
         }
+    }
+
+    /// A scratch root, removed on drop.
+    struct Scratch(std::path::PathBuf);
+    impl Scratch {
+        fn new(tag: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("ae-meta-{tag}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("scratch");
+            Self(dir)
+        }
+    }
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn provenance_follows_the_row_never_the_value() {
+        use super::{SeatProvenance, select_seat_target};
+        let session = std::path::PathBuf::from("/session");
+        // Absence inherits.
+        let inherited = select_seat_target(None, session.clone());
+        assert_eq!(inherited.provenance, SeatProvenance::Inherited);
+        assert_eq!(inherited.canonical, session);
+        // A recorded path is explicit — even textually equal to the default.
+        let explicit =
+            select_seat_target(Some(std::path::PathBuf::from("/session")), session.clone());
+        assert_eq!(explicit.provenance, SeatProvenance::Explicit);
+        assert_eq!(explicit.canonical, session);
+    }
+
+    #[test]
+    fn containment_compares_components_never_spellings() {
+        use super::contained_in;
+        use std::path::Path;
+        // At the root and under it.
+        assert!(contained_in(Path::new("/ae"), Path::new("/ae")));
+        assert!(contained_in(Path::new("/ae/sessions/x"), Path::new("/ae")));
+        // Siblings, parents and suffix collisions are outside.
+        assert!(!contained_in(Path::new("/ae2"), Path::new("/ae")));
+        assert!(!contained_in(Path::new("/ae"), Path::new("/ae/sessions")));
+        assert!(!contained_in(Path::new("/other"), Path::new("/ae")));
+    }
+
+    #[test]
+    fn the_typed_resolver_shares_the_string_wordings() {
+        use super::{Meta, SeatProvenance, resolve_seat_target};
+        let session = std::path::PathBuf::from("/session");
+        // Unknown slot: the one unknown-seat wording.
+        let meta = Meta::parse("seat.main=lead\n");
+        assert_eq!(
+            resolve_seat_target(&meta, "worker.9", session.clone()),
+            Err("no seat is recorded for slot 'worker.9' — refusing a directory for an unknown seat."
+                .to_owned())
+        );
+        // Missing row inherits with the Inherited tag.
+        let target = resolve_seat_target(&meta, "main", session.clone()).unwrap();
+        assert_eq!(target.provenance, SeatProvenance::Inherited);
+        assert_eq!(target.canonical, session);
+        // Recorded row carries through with the Explicit tag.
+        let meta = Meta::parse("seat.main=lead\nwork_dir.main=/w/target\n");
+        let target = resolve_seat_target(&meta, "main", session).unwrap();
+        assert_eq!(target.provenance, SeatProvenance::Explicit);
+        assert_eq!(target.canonical, std::path::PathBuf::from("/w/target"));
+        // Unusable row refuses with the shared row wording.
+        let meta = Meta::parse("seat.main=lead\nwork_dir.main=\n");
+        assert!(
+            resolve_seat_target(&meta, "main", std::path::PathBuf::from("/s"))
+                .unwrap_err()
+                .starts_with("work_dir.main is present but unusable")
+        );
+    }
+
+    #[test]
+    fn record_refuses_non_local_legacy_and_unprovable_before_any_write() {
+        use super::{Meta, record_seat_target};
+        let scratch = Scratch::new("record");
+        let state = scratch.0.join("state");
+        std::fs::create_dir(&state).unwrap();
+        let target = scratch.0.join("target");
+        std::fs::create_dir(&target).unwrap();
+        // Managed mode refuses.
+        let meta = Meta::parse("mode=git\nseat.spawned.0=scout\n");
+        assert_eq!(
+            record_seat_target(&meta, "spawned.0", "/x", &state, &scratch.0),
+            Err("explicit seat targets record on local sessions only — this session's mode is 'git'."
+                .to_owned())
+        );
+        // Missing mode refuses.
+        let meta = Meta::parse("seat.spawned.0=scout\n");
+        assert!(
+            record_seat_target(&meta, "spawned.0", "/x", &state, &scratch.0)
+                .unwrap_err()
+                .contains("records no mode")
+        );
+        // Legacy v1 rows refuse.
+        let meta = Meta::parse("mode=local\nagent.main=fable5:lead\nseat.spawned.0=scout\n");
+        assert!(
+            record_seat_target(
+                &meta,
+                "spawned.0",
+                target.to_str().unwrap(),
+                &state,
+                &scratch.0
+            )
+            .unwrap_err()
+            .contains("legacy agent.<slot> row")
+        );
+        // A file is not a target.
+        let file = scratch.0.join("file");
+        std::fs::write(&file, "x").unwrap();
+        let meta = Meta::parse("mode=local\nseat.spawned.0=scout\n");
+        assert!(
+            record_seat_target(
+                &meta,
+                "spawned.0",
+                file.to_str().unwrap(),
+                &state,
+                &scratch.0
+            )
+            .unwrap_err()
+            .contains("is not a directory")
+        );
+        // A missing target refuses as absent.
+        assert!(
+            record_seat_target(
+                &meta,
+                "spawned.0",
+                scratch.0.join("missing").to_str().unwrap(),
+                &state,
+                &scratch.0
+            )
+            .unwrap_err()
+            .contains("is not there")
+        );
+        // A good target records its canonical spelling.
+        let stored = record_seat_target(
+            &meta,
+            "spawned.0",
+            target.to_str().unwrap(),
+            &state,
+            &scratch.0,
+        )
+        .unwrap();
+        assert!(std::path::Path::new(&stored).is_absolute(), "{stored}");
+        // A relative dir joins the INVOKER cwd, not the session.
+        let stored = record_seat_target(&meta, "spawned.0", "target", &state, &scratch.0).unwrap();
+        assert!(stored.ends_with("target"), "{stored}");
+    }
+
+    #[test]
+    fn record_containment_binds_explicit_targets_to_outside_ae_state() {
+        use super::{Meta, record_seat_target};
+        let scratch = Scratch::new("contain");
+        let state = scratch.0.join("state");
+        std::fs::create_dir_all(state.join("sessions")).unwrap();
+        let meta = Meta::parse("mode=local\nseat.spawned.0=scout\n");
+        // At the root and under it refuse.
+        for target in [state.clone(), state.join("sessions")] {
+            assert!(
+                record_seat_target(
+                    &meta,
+                    "spawned.0",
+                    target.to_str().unwrap(),
+                    &state,
+                    &scratch.0
+                )
+                .unwrap_err()
+                .contains("outside ae state"),
+                "{target:?}"
+            );
+        }
+        // A suffix collision is outside and passes.
+        let outside = scratch.0.join("state2");
+        std::fs::create_dir(&outside).unwrap();
+        assert!(
+            record_seat_target(
+                &meta,
+                "spawned.0",
+                outside.to_str().unwrap(),
+                &state,
+                &scratch.0
+            )
+            .is_ok()
+        );
+        // Absent origin .ae: no legacy subtree, ordinary targets pass.
+        let origin = scratch.0.join("origin");
+        std::fs::create_dir(&origin).unwrap();
+        let meta = Meta::parse(&format!(
+            "mode=local\norigin={}\nseat.spawned.0=scout\n",
+            origin.display()
+        ));
+        assert!(
+            record_seat_target(
+                &meta,
+                "spawned.0",
+                outside.to_str().unwrap(),
+                &state,
+                &scratch.0
+            )
+            .is_ok()
+        );
+        // Present origin .ae contains.
+        let ae = origin.join(".ae");
+        std::fs::create_dir(&ae).unwrap();
+        assert!(
+            record_seat_target(&meta, "spawned.0", ae.to_str().unwrap(), &state, &scratch.0)
+                .unwrap_err()
+                .contains("origin .ae dir")
+        );
+        // Dangling origin .ae refuses as present-invalid, never absence.
+        let origin2 = scratch.0.join("origin2");
+        std::fs::create_dir(&origin2).unwrap();
+        std::os::unix::fs::symlink(origin2.join("gone"), origin2.join(".ae")).unwrap();
+        let meta = Meta::parse(&format!(
+            "mode=local\norigin={}\nseat.spawned.0=scout\n",
+            origin2.display()
+        ));
+        assert!(
+            record_seat_target(
+                &meta,
+                "spawned.0",
+                outside.to_str().unwrap(),
+                &state,
+                &scratch.0
+            )
+            .unwrap_err()
+            .contains("present but unusable")
+        );
+    }
+
+    #[test]
+    fn a_non_utf8_canonical_is_no_row_value() {
+        use super::canonical_row_value;
+        use std::os::unix::ffi::OsStrExt as _;
+        // Pure over the path: no filesystem, so this runs on every platform
+        // even where no such name can exist on disk.
+        let weird = std::path::Path::new(std::ffi::OsStr::from_bytes(b"/w/we\xffird"));
+        assert_eq!(
+            canonical_row_value("main", weird),
+            Err("work_dir.main is present but unusable (not UTF-8) — \
+                 restore the recorded path or retire the seat."
+                .to_owned())
+        );
+        assert_eq!(
+            canonical_row_value("main", std::path::Path::new("/w/ok")),
+            Ok("/w/ok".to_owned())
+        );
+    }
+
+    #[test]
+    fn record_containment_follows_a_symlinked_origin_ae() {
+        use super::{Meta, record_seat_target};
+        let scratch = Scratch::new("symae");
+        let state = scratch.0.join("state");
+        std::fs::create_dir(&state).unwrap();
+        let origin = scratch.0.join("origin");
+        std::fs::create_dir(&origin).unwrap();
+        let real_ae = scratch.0.join("real-ae");
+        std::fs::create_dir(&real_ae).unwrap();
+        std::os::unix::fs::symlink(&real_ae, origin.join(".ae")).unwrap();
+        let meta = Meta::parse(&format!(
+            "mode=local\norigin={}\nseat.spawned.0=scout\n",
+            origin.display()
+        ));
+        let record = |target: &std::path::Path| {
+            record_seat_target(
+                &meta,
+                "spawned.0",
+                target.to_str().unwrap(),
+                &state,
+                &scratch.0,
+            )
+        };
+        // Under the RESOLVED root: refuses as origin .ae.
+        let under = real_ae.join("sub");
+        std::fs::create_dir(&under).unwrap();
+        assert!(record(&under).unwrap_err().contains("origin .ae dir"));
+        // The symlinked spelling itself is contained too.
+        assert!(
+            record(&origin.join(".ae"))
+                .unwrap_err()
+                .contains("origin .ae dir")
+        );
+        // Elsewhere passes.
+        let outside = scratch.0.join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        assert!(record(&outside).is_ok());
+    }
+
+    #[test]
+    fn record_refuses_empty_input_before_any_filesystem_read() {
+        use super::{Meta, record_seat_target};
+        // A bad state root would refuse first if empty were not checked
+        // before every door read; the empty wording winning proves the
+        // boundary. Pure over the meta: nothing is written, ever.
+        let meta = Meta::parse("mode=local\nseat.spawned.0=scout\n");
+        let text = "mode=local\nseat.spawned.0=scout\n";
+        assert_eq!(
+            record_seat_target(
+                &meta,
+                "spawned.0",
+                "",
+                std::path::Path::new("/no/such/state"),
+                std::path::Path::new("/no/such/cwd"),
+            ),
+            Err(
+                "work_dir.spawned.0 is present but unusable (empty value) — \
+                 restore the recorded path or retire the seat."
+                    .to_owned()
+            )
+        );
+        assert_eq!(Meta::parse(text).anomalies(), meta.anomalies());
+    }
+
+    #[test]
+    fn record_refuses_a_proven_but_non_utf8_destination_before_conversion() {
+        use super::{Meta, record_seat_target};
+        use std::os::unix::ffi::OsStrExt as _;
+        let scratch = Scratch::new("nonutf8");
+        let state = scratch.0.join("state");
+        std::fs::create_dir(&state).unwrap();
+        // UTF-8 spelling resolving to a non-UTF8 directory: the door proves
+        // the place, but no row value may be produced from it.
+        let weird = scratch.0.join(std::ffi::OsStr::from_bytes(b"we\xffird"));
+        match std::fs::create_dir(&weird) {
+            Ok(()) => {}
+            #[cfg(target_os = "macos")]
+            Err(error) if error.raw_os_error() == Some(92) => {
+                // APFS cannot name a non-UTF8 directory (EILSEQ 92): no
+                // record path can meet one here. The pure pin above carries
+                // the policy; Linux CI covers this wiring.
+                return;
+            }
+            Err(error) => panic!("non-UTF8 fixture failed unexpectedly: {error:?}"),
+        }
+        let link = scratch.0.join("link");
+        std::os::unix::fs::symlink(&weird, &link).unwrap();
+        let meta = Meta::parse("mode=local\nseat.spawned.0=scout\n");
+        assert_eq!(
+            record_seat_target(
+                &meta,
+                "spawned.0",
+                link.to_str().unwrap(),
+                &state,
+                &scratch.0
+            ),
+            Err("work_dir.spawned.0 is present but unusable (not UTF-8) — \
+                 restore the recorded path or retire the seat."
+                .to_owned())
+        );
+    }
+
+    #[test]
+    fn use_re_proves_the_stored_path_and_refuses_a_moved_destination() {
+        use super::{SeatProvenance, SeatTarget, check_seat_target_use};
+        let scratch = Scratch::new("use");
+        let real = scratch.0.join("real");
+        std::fs::create_dir(&real).unwrap();
+        let canonical = crate::doors::canonical_strict_dir(&real).unwrap();
+        let target = SeatTarget {
+            canonical: canonical.clone(),
+            provenance: SeatProvenance::Explicit,
+        };
+        // Unmoved: passes.
+        assert_eq!(check_seat_target_use("main", &target), Ok(()));
+        // Deleted: gone.
+        std::fs::remove_dir(&real).unwrap();
+        assert!(
+            check_seat_target_use("main", &target)
+                .unwrap_err()
+                .contains("recorded target gone")
+        );
+        // Replaced by a file at the same path: no longer a directory.
+        std::fs::write(&real, "x").unwrap();
+        assert!(
+            check_seat_target_use("main", &target)
+                .unwrap_err()
+                .contains("no longer a directory")
+        );
+        // Stored path swapped to another destination: the re-resolved
+        // canonical no longer equals the stored one, so use refuses rather
+        // than following into the surprise target.
+        std::fs::remove_file(&real).unwrap();
+        let elsewhere = scratch.0.join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &real).unwrap();
+        assert!(
+            check_seat_target_use("main", &target)
+                .unwrap_err()
+                .contains("destination changed")
+        );
+    }
+
+    #[test]
+    fn pane_start_inherits_verbatim_and_proves_explicit_rows() {
+        use super::{Meta, checked_pane_start_dir};
+        let scratch = Scratch::new("pane");
+        let target = scratch.0.join("target");
+        std::fs::create_dir(&target).unwrap();
+        let canonical = crate::doors::canonical_strict_dir(&target).unwrap();
+        let session = scratch.0.join("session");
+        std::fs::create_dir(&session).unwrap();
+        let session_canonical = crate::doors::canonical_strict_dir(&session).unwrap();
+        // Missing row: the proven session spelling passes through
+        // byte-identical — same text back, not the canonical form.
+        let meta = Meta::parse("seat.main=lead\nwork_dir=/session\n");
+        let spelling = session.to_str().unwrap().to_owned();
+        assert_eq!(
+            checked_pane_start_dir(&meta, "main", &spelling, session_canonical.clone()),
+            Ok(spelling)
+        );
+        // Explicit row: proven and returned canonical. The row carries the
+        // canonical spelling, as the record helper stores it.
+        let meta = Meta::parse(&format!(
+            "seat.main=lead\nwork_dir.main={}\n",
+            canonical.display()
+        ));
+        assert_eq!(
+            checked_pane_start_dir(&meta, "main", "/session", session_canonical.clone()),
+            Ok(canonical.display().to_string())
+        );
+        // Unusable row: the shared wording.
+        let meta = Meta::parse("seat.main=lead\nwork_dir.main=\n");
+        assert!(
+            checked_pane_start_dir(&meta, "main", "/session", session_canonical)
+                .unwrap_err()
+                .starts_with("work_dir.main is present but unusable")
+        );
+        // Unknown slot refuses.
+        let meta = Meta::parse("seat.main=lead\n");
+        assert!(
+            checked_pane_start_dir(
+                &meta,
+                "worker.9",
+                "/session",
+                std::path::PathBuf::from("/s")
+            )
+            .unwrap_err()
+            .contains("unknown seat")
+        );
+    }
+
+    #[test]
+    fn pane_start_re_proves_an_inherited_session_dir_with_its_own_wording() {
+        use super::{Meta, checked_pane_start_dir};
+        let scratch = Scratch::new("inherit");
+        let meta = Meta::parse("seat.main=lead\nwork_dir=/session\n");
+        // Gone: names the session dir and its remedy — no row, no retire.
+        let gone = scratch.0.join("gone");
+        let err = checked_pane_start_dir(
+            &meta,
+            "main",
+            gone.to_str().unwrap(),
+            std::path::PathBuf::from("/held"),
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("session directory") && err.contains("is gone"),
+            "{err}"
+        );
+        assert!(!err.contains("retire the seat"), "{err}");
+        // Replaced by a file: same provenance-correct shape.
+        let file = scratch.0.join("file");
+        std::fs::write(&file, "x").unwrap();
+        let held = crate::doors::canonical_strict_dir(&scratch.0).unwrap();
+        let err = checked_pane_start_dir(&meta, "main", file.to_str().unwrap(), held).unwrap_err();
+        assert!(
+            err.contains("session directory") && err.contains("is not a directory"),
+            "{err}"
+        );
+        // Same path, other directory: a DIRECT path replaced by a symlink
+        // elsewhere — no alias in the baseline, so this is distinct from
+        // the alias-retarget pin below.
+        let swap = scratch.0.join("swap");
+        std::fs::create_dir(&swap).unwrap();
+        let held = crate::doors::canonical_strict_dir(&swap).unwrap();
+        let elsewhere = scratch.0.join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        std::fs::remove_dir(&swap).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &swap).unwrap();
+        let err = checked_pane_start_dir(&meta, "main", swap.to_str().unwrap(), held).unwrap_err();
+        assert!(
+            err.contains("no longer resolves to its recorded place"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn pane_start_checks_the_returned_spelling_not_just_the_baseline() {
+        use super::{Meta, checked_pane_start_dir};
+        // Alias A→real1 is the baseline; retargeting A→real2 while real1
+        // lives must refuse: checking the held canonical alone would pass
+        // while the pane entered real2.
+        let scratch = Scratch::new("aliascheck");
+        let real1 = scratch.0.join("real1");
+        let real2 = scratch.0.join("real2");
+        std::fs::create_dir(&real1).unwrap();
+        std::fs::create_dir(&real2).unwrap();
+        let alias = scratch.0.join("a");
+        std::os::unix::fs::symlink(&real1, &alias).unwrap();
+        let held = crate::doors::canonical_strict_dir(&alias).unwrap();
+        std::fs::remove_file(&alias).unwrap();
+        std::os::unix::fs::symlink(&real2, &alias).unwrap();
+        let meta = Meta::parse("seat.main=lead\nwork_dir=/session\n");
+        let err = checked_pane_start_dir(&meta, "main", alias.to_str().unwrap(), held).unwrap_err();
+        assert!(
+            err.contains("no longer resolves to its recorded place"),
+            "{err}"
+        );
     }
 }

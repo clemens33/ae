@@ -15,7 +15,9 @@ use crate::meta::{Selector, ServerSelector};
 use crate::session::RecordSnapshot;
 
 /// The nested state directory inside a worktree — the older layout.
-const WORKTREE_STATE_DIR: &str = ".ae";
+/// The single `.ae` owner: seat-target control-root checks read this rather
+/// than spelling the literal a second time.
+pub(crate) const WORKTREE_STATE_DIR: &str = ".ae";
 
 /// The ae state roots for one invocation, derived from `AE_HOME`.
 #[derive(Debug, Clone, PartialEq, Eq)]

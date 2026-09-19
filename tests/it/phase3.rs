@@ -1759,6 +1759,9 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
             // THE ENTRY'S ENVIRONMENT DOORS: `HOME`, `PWD`,
             // `AE_HOME`, `CONFIG_FILE`, the `AE_TMUX_SERVER` pair,
             // `AE_NO_AUTOSTART`, `TMUX`, `TMUX_PANE`, the `<cwd>/.ae/config`
+            // read, and the strict worker-dir classifier (lstat +
+            // canonicalize + metadata proving a recorded target or root is
+            // a directory, fail-closed, under one allow site).
             "src/doors.rs".to_owned(),
             "src/events.rs".to_owned(),
             // `ae init` classifies the selected config with lstat and reads a

@@ -30,4 +30,24 @@ fuzz_target!(|data: &[u8]| {
     for slot in ["main", "worker.0", "spawned.1"] {
         let _ = std::hint::black_box(ae::meta::raw_seat_work_dir(data, slot));
     }
+    // The seat-dir resolvers and the selection/containment policy run over the
+    // PARSED document: the string resolve, the typed resolve against a FIXED
+    // synthetic session canonical, and containment of any resolved place
+    // against FIXED synthetic roots. Pure entrypoints only — no filesystem
+    // call here, and never a fuzz-selected host path.
+    let roots = [
+        std::path::PathBuf::from("/state"),
+        std::path::PathBuf::from("/origin/.ae"),
+    ];
+    for slot in ["main", "worker.0", "spawned.1"] {
+        let _ = std::hint::black_box(ae::meta::resolve_seat_dir(&parsed, slot));
+        let typed =
+            ae::meta::resolve_seat_target(&parsed, slot, std::path::PathBuf::from("/session"));
+        let _ = std::hint::black_box(&typed);
+        if let Ok(target) = typed {
+            for root in &roots {
+                let _ = std::hint::black_box(ae::meta::contained_in(&target.canonical, root));
+            }
+        }
+    }
 });
