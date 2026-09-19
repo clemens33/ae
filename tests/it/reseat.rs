@@ -214,6 +214,44 @@ fn a_running_seat_is_stopped_in_place_and_moved() {
 }
 
 #[test]
+fn a_shell_that_is_slow_to_come_back_is_waited_for_not_handed_to_the_dead_proof() {
+    // THE BOUNDED WAIT, PINNED. `respawn-pane` returns as soon as tmux has
+    // STARTED the pane's command, not when that command is a shell a human
+    // could type into: a `default-command` that sleeps first leaves a non-shell
+    // in the foreground for seconds. Without the wait the stop hands that pane
+    // straight to the dead proof, which refuses it and moves nothing — so this
+    // seat arrives on its new profile only because the stop waited for it.
+    let rig = Rig::new("slowshell");
+    rig.seat_rows("spawned.0", "scout", "claude", "claude");
+    record_history(&rig, "spawned.0");
+    let pane = rig.new_pane("spawned.0", "scout");
+    rig.start(&pane, "spawned.0", "claude");
+    assert!(
+        rig.tmux(&[
+            "set-option",
+            "-t",
+            &rig.session,
+            "default-command",
+            "sleep 3; exec /bin/sh",
+        ])
+        .0,
+        "the respawned pane is not a shell for three seconds"
+    );
+
+    let (code, out, err) = rig.run_top(
+        &rig.main_pane.clone(),
+        &["reseat", &rig.session, "scout", "--using", "fake-opencode"],
+    );
+
+    assert_eq!(code, Some(0), "out={out} err={err}");
+    assert!(
+        rig.tool_pid(&pane, "opencode").is_some(),
+        "the successor holds the same pane"
+    );
+    assert_eq!(rig.meta_row("profile.spawned.0"), "fake-opencode");
+}
+
+#[test]
 fn a_busy_seat_is_refused_and_the_flag_does_not_lift_it() {
     // NEVER A SILENT MID-TURN KILL. The frame says a turn is running, and no
     // flag makes that a reason to stop: `--stop-unknown` lifts an UNREADABLE
