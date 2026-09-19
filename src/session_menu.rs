@@ -57,11 +57,43 @@ const STATE_REASON_CELLS: usize = 60;
 /// The most cells one fact value keeps in a root row.
 const FACT_VALUE_CELLS: usize = 60;
 
-/// How many records the Activity dialog keeps, newest first.
-const ACTIVITY_ROWS_MAX: usize = 10;
+/// How many records the Activity dialog keeps, newest first; a short client
+/// drops the oldest until the dialog fits.
+const ACTIVITY_ROWS_MAX: usize = 30;
 
-/// How many topics the Memos dialog keeps, newest first.
-const MEMO_ROWS_MAX: usize = 10;
+/// How many topics the Memos dialog keeps, newest first; same degrade.
+const MEMO_ROWS_MAX: usize = 30;
+
+/// The most cells the Activity dialog's actor column keeps.
+const ACTIVITY_ACTOR_CELLS: usize = 16;
+
+/// The most cells the Activity dialog's kind column keeps: `watchdog-start`
+/// fits exactly, so no curated kind ever clips.
+const ACTIVITY_KIND_CELLS: usize = 14;
+
+/// The most cells the Memos dialog's topic column keeps.
+const MEMO_TOPIC_CELLS: usize = 16;
+
+/// The most cells a dialog's text column takes, whatever the client offers.
+const DIALOG_TEXT_CELLS_MAX: usize = 100;
+
+/// The separator between aligned dialog columns.
+const DIALOG_COLUMN_SEP: &str = " · ";
+
+/// Activity's fixed columns: age (uncapped — the age grammar peaks at three
+/// cells), actor, kind. The last column is always text on a client budget.
+const ACTIVITY_FIXED_CAPS: &[usize] = &[usize::MAX, ACTIVITY_ACTOR_CELLS, ACTIVITY_KIND_CELLS];
+
+/// Memos' fixed columns: age, topic.
+const MEMO_FIXED_CAPS: &[usize] = &[usize::MAX, MEMO_TOPIC_CELLS];
+
+/// One dialog row BEFORE alignment: raw cells, or a named gap. Gaps render
+/// as-is; cells align over the rows actually drawn, never over dropped ones.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CellRow {
+    Cells(Vec<String>),
+    Gap(String),
+}
 
 /// The event kinds a human cares about; the docs name what is not.
 const ACTIVITY_KINDS: [&str; 11] = [
@@ -775,17 +807,17 @@ fn sub_ready<'a>(
     option: &crate::tmux::OptionReading,
     meta: &MetaSource,
     read: &'a crate::store::SourceRead,
-) -> Result<&'a [u8], RootRow> {
+) -> Result<&'a [u8], String> {
     if let Some(reason) = correlation_gap(option, meta) {
-        return Err(RootRow::Gap(format!("{word}: unavailable ({reason})")));
+        return Err(format!("{word}: unavailable ({reason})"));
     }
     match read {
         crate::store::SourceRead::Invalid(reason)
-        | crate::store::SourceRead::Unreadable(reason) => Err(RootRow::Gap(format!(
+        | crate::store::SourceRead::Unreadable(reason) => Err(format!(
             "{word}: unreadable ({source}: {})",
             crate::event_text::display_cell(reason, STATE_REASON_CELLS)
-        ))),
-        crate::store::SourceRead::Absent => Err(RootRow::Gap(format!("{word}: none"))),
+        )),
+        crate::store::SourceRead::Absent => Err(format!("{word}: none")),
         crate::store::SourceRead::Ready(bytes) => Ok(bytes),
     }
 }
@@ -795,20 +827,21 @@ fn is_housekeeping_actor(actor: &[u8]) -> bool {
     actor.starts_with(b"ae:")
 }
 
-/// The newest [`ACTIVITY_ROWS_MAX`] [`ACTIVITY_KINDS`] records, newest first.
+/// The newest [`ACTIVITY_ROWS_MAX`] [`ACTIVITY_KINDS`] records as raw cells —
+/// age, actor, kind, text — newest first.
 #[must_use]
-pub fn activity_rows(
+pub fn activity_cells(
     option: &crate::tmux::OptionReading,
     meta: &MetaSource,
     events: &crate::store::SourceRead,
     now: crate::time::Timestamp,
-) -> Vec<RootRow> {
+) -> Vec<CellRow> {
     let bytes = match sub_ready("activity", "events", option, meta, events) {
         Ok(bytes) => bytes,
-        Err(gap) => return vec![gap],
+        Err(gap) => return vec![CellRow::Gap(gap)],
     };
     let stream = crate::event_text::reversed(bytes);
-    let mut rows: Vec<RootRow> = Vec::new();
+    let mut rows: Vec<CellRow> = Vec::new();
     for line in crate::event_text::read_lines(&stream) {
         if rows.len() >= ACTIVITY_ROWS_MAX {
             break;
@@ -831,19 +864,19 @@ pub fn activity_rows(
         {
             continue;
         }
-        rows.push(RootRow::Declaration(activity_label(
+        rows.push(CellRow::Cells(activity_cells_for(
             kind, &actor, &target, &reference, &summary, &ts, now,
         )));
     }
     if rows.is_empty() {
-        rows.push(RootRow::Gap("activity: none".to_owned()));
+        rows.push(CellRow::Gap("activity: none".to_owned()));
     }
     rows
 }
 
-/// Actor + kind + clipped text + truthful age; the kind is the matched
-/// static, and `state` reads exactly as the root's declaration row.
-fn activity_label(
+/// One activity row's cells: age, actor, kind, text. Parts sanitize first and
+/// join after, so the dialog's own `—` joiner survives the projection.
+fn activity_cells_for(
     kind: &str,
     actor: &[u8],
     target: &[u8],
@@ -851,75 +884,174 @@ fn activity_label(
     summary: &[u8],
     ts: &[u8],
     now: crate::time::Timestamp,
-) -> String {
+) -> Vec<String> {
+    let sanitize =
+        |bytes: &[u8]| crate::event_text::sanitize_menu_text(&String::from_utf8_lossy(bytes));
+    let age = crate::brief::age(
+        crate::time::Timestamp::parse(&String::from_utf8_lossy(ts))
+            .map(|stamp| stamp.seconds_until(now)),
+    );
+    let actor = sanitize(actor);
     if kind == "state" {
-        return declaration_label(
-            &String::from_utf8_lossy(actor),
-            &crate::state::Latest {
-                value: reference.to_vec(),
-                reason: summary.to_vec(),
-                ts: ts.to_vec(),
-            },
-            now,
-        );
+        let mut text = sanitize(reference);
+        let reason = sanitize(summary);
+        if !reason.is_empty() {
+            text.push_str(" — ");
+            text.push_str(&reason);
+        }
+        return vec![age, actor, kind.to_owned(), text];
     }
-    let cell = |bytes: &[u8], max: usize| {
-        crate::event_text::display_cell(&String::from_utf8_lossy(bytes), max)
-    };
-    let actor = cell(actor, STATE_ACTOR_CELLS);
     let mut detail = [target, reference]
         .iter()
         .filter(|part| !part.is_empty())
-        .map(|part| cell(part, STATE_ACTOR_CELLS))
+        .map(|part| sanitize(part))
         .collect::<Vec<_>>()
         .join(" ");
     if !summary.is_empty() {
         if !detail.is_empty() {
             detail.push_str(" — ");
         }
-        detail.push_str(&cell(summary, STATE_REASON_CELLS));
+        detail.push_str(&sanitize(summary));
     }
-    let age = crate::brief::age(
-        crate::time::Timestamp::parse(&String::from_utf8_lossy(ts))
-            .map(|stamp| stamp.seconds_until(now)),
-    );
-    let head = if detail.is_empty() {
-        String::new()
-    } else {
-        format!(": {detail}")
-    };
-    format!("{actor} {kind}{head} ({age})")
+    vec![age, actor, kind.to_owned(), detail]
 }
 
 /// Brief's latest record per topic — [`crate::brief::topic_lines`] owns that
-/// rule — newest first, at most [`MEMO_ROWS_MAX`].
+/// rule — as raw cells (age, topic, text), newest first, at most
+/// [`MEMO_ROWS_MAX`].
 #[must_use]
-pub fn memo_rows(
+pub fn memo_cells(
     option: &crate::tmux::OptionReading,
     meta: &MetaSource,
     memo: &crate::store::SourceRead,
     now: crate::time::Timestamp,
-) -> Vec<RootRow> {
+) -> Vec<CellRow> {
     let bytes = match sub_ready("memos", "memo", option, meta, memo) {
         Ok(bytes) => bytes,
-        Err(gap) => return vec![gap],
+        Err(gap) => return vec![CellRow::Gap(gap)],
     };
-    let rows: Vec<RootRow> = crate::brief::topic_lines(bytes, now, None)
+    let rows: Vec<CellRow> = crate::brief::topic_lines(bytes, now, None)
         .iter()
         .take(MEMO_ROWS_MAX)
         .map(|line| {
-            let topic = crate::event_text::display_cell(&line.topic, STATE_ACTOR_CELLS);
-            let text = crate::event_text::display_cell(&line.text, STATE_REASON_CELLS);
-            RootRow::Declaration(format!(
-                "{topic}: {text} ({})",
-                crate::brief::age(line.age_secs)
-            ))
+            CellRow::Cells(vec![
+                crate::brief::age(line.age_secs),
+                crate::event_text::sanitize_menu_text(&line.topic),
+                crate::event_text::sanitize_menu_text(&line.text),
+            ])
         })
         .collect();
     if rows.is_empty() {
-        return vec![RootRow::Gap("memos: none".to_owned())];
+        return vec![CellRow::Gap("memos: none".to_owned())];
     }
     rows
+}
+
+/// Pad `text` to `width` terminal cells; `right` pads on the left (the age
+/// column), otherwise on the right. Clipping happened before this.
+fn pad_column(text: &str, width: usize, right: bool) -> String {
+    let mut out = text.to_owned();
+    while crate::orchestrator::terminal_cells(&out) < width {
+        if right {
+            out.insert(0, ' ');
+        } else {
+            out.push(' ');
+        }
+    }
+    out
+}
+
+/// The shared widths of the survivors' fixed columns: the widest drawn value
+/// in cells, capped — `fixed_caps` covers every column but the last, which is
+/// text on a budget. A column empty in every row reads 0 and the join skips
+/// it, so it takes no width and no separator.
+fn fixed_widths(rows: &[&Vec<String>], fixed_caps: &[usize]) -> Vec<usize> {
+    fixed_caps
+        .iter()
+        .enumerate()
+        .map(|(index, cap)| {
+            let drawn = rows
+                .iter()
+                .map(|row| {
+                    row.get(index)
+                        .map_or(0, |cell| crate::orchestrator::terminal_cells(cell))
+                })
+                .max()
+                .unwrap_or(0);
+            drawn.min(*cap)
+        })
+        .collect()
+}
+
+/// The text column's budget: what the client has left after the borders, the
+/// fixed columns at their drawn widths and one separator per kept fixed
+/// column — at most [`DIALOG_TEXT_CELLS_MAX`]. A zero budget empties every
+/// text cell, and the empty column then drops out of the join by the rule
+/// above instead of inventing a second degrade rule.
+fn text_budget(client_width: usize, fixed: &[usize]) -> usize {
+    const BORDERS: usize = 4;
+    let kept: Vec<usize> = fixed.iter().copied().filter(|width| *width > 0).collect();
+    client_width
+        .saturating_sub(BORDERS)
+        .saturating_sub(kept.iter().sum::<usize>())
+        .saturating_sub(DIALOG_COLUMN_SEP.chars().count() * kept.len())
+        .min(DIALOG_TEXT_CELLS_MAX)
+}
+
+/// Aligned labels for the survivors: fixed columns clipped to their shared
+/// widths through the one cutter, text to its client budget, gaps as-is,
+/// present columns joined with [`DIALOG_COLUMN_SEP`].
+fn render_survivors(
+    survivors: &[CellRow],
+    fixed_caps: &[usize],
+    client_width: usize,
+) -> Vec<String> {
+    let text_at = fixed_caps.len();
+    let cells: Vec<&Vec<String>> = survivors
+        .iter()
+        .filter_map(|row| match row {
+            CellRow::Cells(cells) => Some(cells),
+            CellRow::Gap(_) => None,
+        })
+        .collect();
+    let fixed = fixed_widths(&cells, fixed_caps);
+    let budget = text_budget(client_width, &fixed);
+    let text_drawn = cells
+        .iter()
+        .map(|row| {
+            row.get(text_at)
+                .map_or(0, |cell| crate::orchestrator::terminal_cells(cell))
+        })
+        .max()
+        .unwrap_or(0)
+        .min(budget);
+    survivors
+        .iter()
+        .map(|row| match row {
+            CellRow::Gap(label) => label.clone(),
+            CellRow::Cells(row) => row
+                .iter()
+                .enumerate()
+                .filter_map(|(index, cell)| {
+                    let width = if index == text_at {
+                        text_drawn
+                    } else {
+                        fixed.get(index).copied().unwrap_or(0)
+                    };
+                    if width == 0 {
+                        return None;
+                    }
+                    let clipped = crate::event_text::clip_to_width(
+                        cell,
+                        width,
+                        crate::event_text::Cut::TrailingEllipsis,
+                    );
+                    Some(pad_column(&clipped, width, index == 0))
+                })
+                .collect::<Vec<_>>()
+                .join(DIALOG_COLUMN_SEP),
+        })
+        .collect()
 }
 
 /// One declaration as a root row: `<actor> state: <value> — <reason> (<age>)`,
@@ -1075,6 +1207,35 @@ pub fn floor_menu(session: &str, stop: Option<&str>) -> crate::tmux::Menu {
     }
 }
 
+/// The dialog Close row: keyed, running nothing.
+fn close_item() -> crate::tmux::MenuItem {
+    crate::tmux::MenuItem {
+        label: "Close".to_owned(),
+        key: "c".to_owned(),
+        action: crate::tmux::MenuAction::Run(String::new()),
+    }
+}
+
+/// Shrink `total` rows to what fits, newest kept: the dialog ladder. `build`
+/// draws the menu for a kept count; the loop drops the oldest until title,
+/// rows, separator and Close fit, and never refuses — one row always draws.
+fn fit_dialog(
+    client_width: usize,
+    client_height: usize,
+    total: usize,
+    build: &mut dyn FnMut(usize) -> crate::tmux::Menu,
+) -> crate::tmux::Menu {
+    let mut kept = total;
+    loop {
+        let menu = build(kept);
+        let (columns, lines) = menu_budget(&menu);
+        if (client_width >= columns && client_height >= lines) || kept <= 1 {
+            return menu;
+        }
+        kept -= 1;
+    }
+}
+
 /// One dialog (quota shape, no Back) against the FINAL live dimensions,
 /// dropping the OLDEST rows until it fits; the newest row always survives.
 #[must_use]
@@ -1084,30 +1245,54 @@ pub fn select_dialog(
     client_width: usize,
     client_height: usize,
 ) -> crate::tmux::Menu {
-    let build = |kept: usize| {
+    fit_dialog(client_width, client_height, rows.len(), &mut |kept| {
         let mut items: Vec<crate::tmux::MenuItem> =
             rows[..kept].iter().map(root_row_item).collect();
         items.push(root_separator());
-        items.push(crate::tmux::MenuItem {
-            label: "Close".to_owned(),
-            key: "c".to_owned(),
-            action: crate::tmux::MenuAction::Run(String::new()),
-        });
+        items.push(close_item());
         crate::tmux::Menu {
             title: title.to_owned(),
             title_style: String::new(),
             items,
         }
-    };
-    let mut kept = rows.len();
-    loop {
-        let menu = build(kept);
-        let (columns, lines) = menu_budget(&menu);
-        if (client_width >= columns && client_height >= lines) || kept <= 1 {
-            return menu;
+    })
+}
+
+/// One ALIGNED dialog against the final live dimensions: drop the oldest for
+/// height, then align over the survivors — shared fixed widths clipped to
+/// `fixed_caps`, text on the client's remaining budget — gaps as-is. The
+/// newest row always survives.
+#[must_use]
+pub fn select_aligned_dialog(
+    title: &str,
+    rows: &[CellRow],
+    fixed_caps: &[usize],
+    client_width: usize,
+    client_height: usize,
+) -> crate::tmux::Menu {
+    fit_dialog(client_width, client_height, rows.len(), &mut |kept| {
+        let survivors = &rows[..kept];
+        let labels = render_survivors(survivors, fixed_caps, client_width);
+        let mut items: Vec<crate::tmux::MenuItem> = survivors
+            .iter()
+            .zip(labels.iter())
+            .map(|(row, label)| crate::tmux::MenuItem {
+                label: label.clone(),
+                key: String::new(),
+                action: match row {
+                    CellRow::Gap(_) => crate::tmux::MenuAction::Disabled,
+                    CellRow::Cells(_) => crate::tmux::MenuAction::Run(String::new()),
+                },
+            })
+            .collect();
+        items.push(root_separator());
+        items.push(close_item());
+        crate::tmux::Menu {
+            title: title.to_owned(),
+            title_style: String::new(),
+            items,
         }
-        kept -= 1;
-    }
+    })
 }
 
 /// Reselect the root against the FINAL live client dimensions: full, then
@@ -1176,7 +1361,7 @@ struct ShowSources {
     server: ServerId,
     facts: Vec<String>,
     rows: Vec<RootRow>,
-    dialog: Vec<RootRow>,
+    dialog: Vec<CellRow>,
     stop: Option<String>,
     activity: Option<String>,
     memos: Option<String>,
@@ -1232,8 +1417,8 @@ fn read_sources(
     let facts = fact_rows(&option, &meta);
     let dialog = match view {
         ShowView::Root => Vec::new(),
-        ShowView::Activity => activity_rows(&option, &meta, &events, now),
-        ShowView::Memos => memo_rows(&option, &meta, &crate::store::open(&dir).memo_source(), now),
+        ShowView::Activity => activity_cells(&option, &meta, &events, now),
+        ShowView::Memos => memo_cells(&option, &meta, &crate::store::open(&dir).memo_source(), now),
     };
     let config = crate::doors::config_file(crate::shape::current(), root);
     let launcher = crate::session_tmux::picker_launcher(
@@ -1288,8 +1473,16 @@ fn run_show(root: &Path, captured: &Captured, view: ShowView, err: &mut impl Wri
             sources.stop.as_deref(),
             (width, height),
         ),
-        ShowView::Activity => select_dialog("Activity", &sources.dialog, width, height),
-        ShowView::Memos => select_dialog("Memos", &sources.dialog, width, height),
+        ShowView::Activity => select_aligned_dialog(
+            "Activity",
+            &sources.dialog,
+            ACTIVITY_FIXED_CAPS,
+            width,
+            height,
+        ),
+        ShowView::Memos => {
+            select_aligned_dialog("Memos", &sources.dialog, MEMO_FIXED_CAPS, width, height)
+        }
     };
     if !crate::transport::display_menu_centred(
         &sources.server,
@@ -2255,6 +2448,32 @@ mod tests {
             .collect()
     }
 
+    fn cell_rows(rows: &[super::CellRow]) -> Vec<&Vec<String>> {
+        rows.iter()
+            .filter_map(|row| match row {
+                super::CellRow::Cells(cells) => Some(cells),
+                super::CellRow::Gap(_) => None,
+            })
+            .collect()
+    }
+
+    fn cell_gaps(rows: &[super::CellRow]) -> Vec<&str> {
+        rows.iter()
+            .filter_map(|row| match row {
+                super::CellRow::Gap(label) => Some(label.as_str()),
+                super::CellRow::Cells(_) => None,
+            })
+            .collect()
+    }
+
+    fn cells_str(cells: &[String]) -> Vec<&str> {
+        cells.iter().map(String::as_str).collect()
+    }
+
+    fn aligned(rows: &[super::CellRow], caps: &[usize], width: usize) -> Vec<String> {
+        super::render_survivors(rows, caps, width)
+    }
+
     fn events(body: &str) -> crate::store::SourceRead {
         crate::store::SourceRead::Ready(body.as_bytes().to_vec())
     }
@@ -2722,11 +2941,11 @@ mod tests {
         format!(r#"{{"ts":"{ts}","actor":"{actor}","action":"{action}"{extra}}}"#)
     }
 
-    /// The nine human kinds, newest first, at most ten; gaps named.
+    /// The nine human kinds, newest first, at most thirty; gaps named.
     #[test]
     fn activity_picks_only_the_human_kinds_newest_first() {
         use crate::tmux::OptionReading;
-        // Every shown kind plus excluded records; eleven shown keep ten.
+        // Every shown kind plus excluded records; twelve shown, all kept.
         let fixture = [
             ("lead", "nudge", r#","summary":"x""#),
             ("lead", "state", r#","ref":"w","summary":"a""#),
@@ -2761,64 +2980,65 @@ mod tests {
         let now = crate::time::Timestamp::parse("2026-09-17T12:00:00Z").expect("now parses");
         let meta = parsed_meta(UUID_A, &["lead"]);
         let set = OptionReading::Set(UUID_A.to_owned());
-        let rows = super::activity_rows(&set, &meta, &events(&container), now);
-        let shown = declaration_rows(&rows);
-        let kinds: Vec<&str> = shown
-            .iter()
-            .map(|row| row.split([' ', ':']).nth(1).expect("kind word"))
-            .collect();
+        let rows = super::activity_cells(&set, &meta, &events(&container), now);
+        let shown = cell_rows(&rows);
+        let kinds: Vec<&str> = shown.iter().map(|cells| cells[2].as_str()).collect();
         assert_eq!(
             kinds,
             [
                 "relaunch", "goal", "done", "state", "review", "reply", "ask", "retire", "spawn",
-                "goal"
+                "goal", "done", "state"
             ],
             "{shown:?}"
         );
         assert_eq!(
-            shown[0], "lead relaunch: w — relaunched w (pane %3, slot spawned.0): resumed (4h)",
-            "a relaunch renders as a row"
+            cells_str(shown[0]),
+            [
+                "4h",
+                "lead",
+                "relaunch",
+                "w — relaunched w (pane %3, slot spawned.0): resumed"
+            ],
+            "a relaunch renders as cells"
         );
-        assert_eq!(
-            shown[3], "co state: b — f (4h)",
-            "a state reads as the root row"
-        );
-        assert_eq!(shown[6], "lead ask: w r1 — c (4h)");
+        assert_eq!(cells_str(shown[3]), ["4h", "co", "state", "b — f"]);
+        assert_eq!(shown[6][3], "w r1 — c");
         let wide = event(
             "2026-09-17T08:00:00Z",
             "lead",
             "ask",
             &format!(r#","summary":"{}""#, "y".repeat(200)),
         ) + "\n";
-        let rows = super::activity_rows(&set, &meta, &events(&wide), now);
-        let shown = declaration_rows(&rows);
-        assert_eq!(shown.len(), 1);
+        let rows = super::activity_cells(&set, &meta, &events(&wide), now);
+        let drawn = aligned(&rows, super::ACTIVITY_FIXED_CAPS, 200);
+        assert_eq!(drawn.len(), 1);
+        let text = drawn[0].rsplit('·').next().expect("text column").trim();
         assert!(
-            shown[0].contains("...") && shown[0].len() < 100,
-            "{shown:?}"
+            text.ends_with('…') && crate::orchestrator::terminal_cells(text) <= 100,
+            "{drawn:?}"
         );
-        let bad = super::activity_rows(
+        let bad = super::activity_cells(
             &OptionReading::Set("fa4a9b3e-0000-4000-8000-000000000000".to_owned()),
             &meta,
             &events(""),
             now,
         );
         assert_eq!(
-            gap_rows(&bad),
+            cell_gaps(&bad),
             vec!["activity: unavailable (meta: identity mismatch)"]
         );
-        let bad = super::activity_rows(
+        let bad = super::activity_cells(
             &OptionReading::Set(UUID_A.to_owned()),
             &meta,
             &crate::store::SourceRead::Invalid("a directory".to_owned()),
             now,
         );
         assert_eq!(
-            gap_rows(&bad),
+            cell_gaps(&bad),
             vec!["activity: unreadable (events: a directory)"]
         );
-        let rows = super::activity_rows(&set, &meta, &crate::store::SourceRead::Absent, now);
-        assert_eq!(gap_rows(&rows), vec!["activity: none"]);
+        let rows = super::activity_cells(&set, &meta, &crate::store::SourceRead::Absent, now);
+        assert_eq!(cell_gaps(&rows), vec!["activity: none"]);
     }
 
     /// The watchdog lifecycle audit renders beside the human kinds.
@@ -2839,13 +3059,16 @@ mod tests {
         let now = crate::time::Timestamp::parse("2026-09-17T12:00:00Z").expect("now parses");
         let meta = parsed_meta(UUID_A, &["lead"]);
         let set = OptionReading::Set(UUID_A.to_owned());
-        let rows = super::activity_rows(&set, &meta, &events(&container), now);
+        let rows = super::activity_cells(&set, &meta, &events(&container), now);
+        let shown = cell_rows(&rows);
+        assert_eq!(shown.len(), 2);
         assert_eq!(
-            declaration_rows(&rows),
-            [
-                "w watchdog-start: started (pane %3) (4h)",
-                "lead watchdog-stop: stopped (4h)"
-            ]
+            cells_str(shown[0]),
+            ["4h", "w", "watchdog-start", "started (pane %3)"]
+        );
+        assert_eq!(
+            cells_str(shown[1]),
+            ["4h", "lead", "watchdog-stop", "stopped"]
         );
     }
 
@@ -2871,13 +3094,13 @@ mod tests {
         let now = crate::time::Timestamp::parse("2026-09-17T12:00:00Z").expect("now parses");
         let meta = parsed_meta(UUID_A, &["lead"]);
         let set = OptionReading::Set(UUID_A.to_owned());
-        let rows = super::activity_rows(&set, &meta, &events(&container), now);
-        let shown = declaration_rows(&rows);
+        let rows = super::activity_cells(&set, &meta, &events(&container), now);
+        let shown = cell_rows(&rows);
         assert_eq!(shown.len(), 5, "{shown:?}");
-        assert!(shown.iter().all(|row| !row.starts_with("ae:")));
+        assert!(shown.iter().all(|cells| !cells[1].starts_with("ae:")));
     }
 
-    /// Brief's latest-per-topic: superseded stays out, ten kept.
+    /// Brief's latest-per-topic: superseded stays out, newest kept.
     #[test]
     fn memos_match_brief_latest_per_topic_newest_first() {
         use crate::tmux::OptionReading;
@@ -2892,17 +3115,15 @@ mod tests {
         file.push_str("2026-09-17T11:00:00Z\tcl:lead\tparking\tresume here: x\n");
         let ready = |b: &[u8]| crate::store::SourceRead::Ready(b.to_vec());
         let set = OptionReading::Set(UUID_A.to_owned());
-        let rows = super::memo_rows(&set, &meta, &ready(file.as_bytes()), now);
-        let shown = declaration_rows(&rows);
-        assert_eq!(shown.len(), 10, "{rows:?}");
-        assert_eq!(
-            &shown[..2],
-            &["parking: resume here: x (1h)", "decision: new (2h)"]
-        );
-        assert!(!shown.iter().any(|row| row.contains("old")), "{shown:?}");
-        assert!(!shown.iter().any(|row| row.starts_with("t1:")), "{shown:?}");
-        let rows = super::memo_rows(&set, &meta, &ready(b""), now);
-        assert_eq!(gap_rows(&rows), vec!["memos: none"]);
+        let rows = super::memo_cells(&set, &meta, &ready(file.as_bytes()), now);
+        let shown = cell_rows(&rows);
+        assert_eq!(shown.len(), 11, "{rows:?}");
+        assert_eq!(cells_str(shown[0]), ["1h", "parking", "resume here: x"]);
+        assert_eq!(cells_str(shown[1]), ["2h", "decision", "new"]);
+        assert!(!shown.iter().any(|cells| cells[2] == "old"), "{shown:?}");
+        assert!(shown.iter().any(|cells| cells[1] == "t1"), "{shown:?}");
+        let rows = super::memo_cells(&set, &meta, &ready(b""), now);
+        assert_eq!(cell_gaps(&rows), vec!["memos: none"]);
     }
 
     /// A short client drops the OLDEST rows first; Close always survives.
@@ -2921,6 +3142,302 @@ mod tests {
         let menu = super::select_dialog("Activity", &rows, 4, 2);
         let labels: Vec<&str> = menu.items.iter().map(|item| item.label.as_str()).collect();
         assert_eq!(labels, ["row 0", "", "Close"], "never refuses: {labels:?}");
+    }
+
+    /// Thirty kept, newest first; the thirty-first oldest record drops out.
+    #[test]
+    fn activity_keeps_thirty_newest_records() {
+        use crate::tmux::OptionReading;
+        let container = (0..35)
+            .map(|n| {
+                event(
+                    "2026-09-17T08:00:00Z",
+                    "lead",
+                    "done",
+                    &format!(r#","summary":"s{n:02}""#),
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        let now = crate::time::Timestamp::parse("2026-09-17T12:00:00Z").expect("now parses");
+        let meta = parsed_meta(UUID_A, &["lead"]);
+        let rows = super::activity_cells(
+            &OptionReading::Set(UUID_A.to_owned()),
+            &meta,
+            &events(&container),
+            now,
+        );
+        let shown = cell_rows(&rows);
+        assert_eq!(shown.len(), 30, "{shown:?}");
+        assert_eq!(shown[0][3], "s34", "newest first");
+        assert_eq!(shown[29][3], "s05", "s00..s04 dropped");
+    }
+
+    /// Thirty topics kept, newest first; older topics drop out.
+    #[test]
+    fn memos_keep_thirty_newest_topics() {
+        use crate::tmux::OptionReading;
+        use std::fmt::Write as _;
+        let mut file = String::new();
+        for n in 0..35 {
+            let _ = writeln!(file, "2026-09-17T08:{n:02}:00Z\tcl:lead\tt{n:02}\tw{n:02}");
+        }
+        let now = crate::time::Timestamp::parse("2026-09-17T12:00:00Z").expect("now parses");
+        let meta = parsed_meta(UUID_A, &["lead"]);
+        let rows = super::memo_cells(
+            &OptionReading::Set(UUID_A.to_owned()),
+            &meta,
+            &crate::store::SourceRead::Ready(file.into_bytes()),
+            now,
+        );
+        let shown = cell_rows(&rows);
+        assert_eq!(shown.len(), 30, "{shown:?}");
+        assert_eq!(shown[0][1], "t34", "newest first");
+        assert_eq!(shown[29][1], "t05", "t00..t04 dropped");
+    }
+
+    /// Every column starts at the same cell index in every row; age hugs the
+    /// right (short ages lead with a space), the rest hug the left.
+    #[test]
+    fn aligned_columns_share_cell_index() {
+        use crate::tmux::OptionReading;
+        let container = [
+            event(
+                "2026-09-17T00:00:00Z",
+                "longactorname",
+                "watchdog-start",
+                r#","summary":"t""#,
+            ),
+            event("2026-09-17T11:59:00Z", "lead", "done", r#","summary":"s""#),
+        ]
+        .join("\n")
+            + "\n";
+        let now = crate::time::Timestamp::parse("2026-09-17T12:00:00Z").expect("now parses");
+        let meta = parsed_meta(UUID_A, &["lead"]);
+        let rows = super::activity_cells(
+            &OptionReading::Set(UUID_A.to_owned()),
+            &meta,
+            &events(&container),
+            now,
+        );
+        let drawn = aligned(&rows, super::ACTIVITY_FIXED_CAPS, 200);
+        assert_eq!(drawn.len(), 2);
+        let starts = |label: &str| {
+            let mut at = Vec::new();
+            let mut index = 0;
+            for (n, part) in label.split('·').enumerate() {
+                if n > 0 {
+                    at.push(index);
+                }
+                index += crate::orchestrator::terminal_cells(part) + 3;
+            }
+            at
+        };
+        assert_eq!(starts(&drawn[0]), starts(&drawn[1]), "{drawn:?}");
+        assert!(drawn[1].starts_with("12h "), "longest age fills: {drawn:?}");
+        assert!(
+            drawn[0].starts_with(" 1m ·"),
+            "short age pads left: {drawn:?}"
+        );
+    }
+
+    /// An over-cap actor clips with `…` and the kind column still aligns.
+    #[test]
+    fn over_cap_actor_clips_with_ellipsis() {
+        use crate::tmux::OptionReading;
+        let container = [
+            event(
+                "2026-09-17T08:00:00Z",
+                "averylongactornameovercap",
+                "done",
+                r#","summary":"s""#,
+            ),
+            event("2026-09-17T08:00:00Z", "co", "done", r#","summary":"t""#),
+        ]
+        .join("\n")
+            + "\n";
+        let now = crate::time::Timestamp::parse("2026-09-17T12:00:00Z").expect("now parses");
+        let meta = parsed_meta(UUID_A, &["lead"]);
+        let rows = super::activity_cells(
+            &OptionReading::Set(UUID_A.to_owned()),
+            &meta,
+            &events(&container),
+            now,
+        );
+        let drawn = aligned(&rows, super::ACTIVITY_FIXED_CAPS, 200);
+        let actor: Vec<&str> = drawn[1].split('·').map(str::trim).collect();
+        assert_eq!(actor[1].chars().count(), 16, "{drawn:?}");
+        assert!(actor[1].ends_with('…'), "{drawn:?}");
+        assert_eq!(actor[2], "done", "later columns align: {drawn:?}");
+        let short: Vec<&str> = drawn[0].split('·').map(str::trim).collect();
+        assert_eq!(short[1], "co");
+        assert_eq!(short[2], "done");
+    }
+
+    /// Multibyte text sanitizes to `?`, so alignment never shifts by bytes.
+    #[test]
+    fn multibyte_text_keeps_alignment() {
+        use crate::tmux::OptionReading;
+        let container = [
+            event(
+                "2026-09-17T08:00:00Z",
+                "lead",
+                "done",
+                r#","summary":"a🎉中b""#,
+            ),
+            event("2026-09-17T08:00:00Z", "co", "done", r#","summary":"xy""#),
+        ]
+        .join("\n")
+            + "\n";
+        let now = crate::time::Timestamp::parse("2026-09-17T12:00:00Z").expect("now parses");
+        let meta = parsed_meta(UUID_A, &["lead"]);
+        let rows = super::activity_cells(
+            &OptionReading::Set(UUID_A.to_owned()),
+            &meta,
+            &events(&container),
+            now,
+        );
+        let drawn = aligned(&rows, super::ACTIVITY_FIXED_CAPS, 200);
+        let col =
+            |label: &str, n: usize| label.split('·').nth(n).expect("column").trim().to_owned();
+        assert_eq!(col(&drawn[1], 3), "a??b", "{drawn:?}");
+        let width = |label: &str| crate::orchestrator::terminal_cells(label);
+        assert_eq!(width(&drawn[0]), width(&drawn[1]), "{drawn:?}");
+    }
+
+    /// A column empty in every row takes no width and no separator.
+    #[test]
+    fn empty_text_column_takes_no_width() {
+        use crate::tmux::OptionReading;
+        let container = [
+            event("2026-09-17T08:00:00Z", "lead", "done", ""),
+            event("2026-09-17T08:00:00Z", "co", "done", ""),
+        ]
+        .join("\n")
+            + "\n";
+        let now = crate::time::Timestamp::parse("2026-09-17T12:00:00Z").expect("now parses");
+        let meta = parsed_meta(UUID_A, &["lead"]);
+        let rows = super::activity_cells(
+            &OptionReading::Set(UUID_A.to_owned()),
+            &meta,
+            &events(&container),
+            now,
+        );
+        let drawn = aligned(&rows, super::ACTIVITY_FIXED_CAPS, 200);
+        assert_eq!(drawn.len(), 2);
+        for label in &drawn {
+            assert_eq!(label.matches('·').count(), 2, "{drawn:?}");
+            assert!(!label.ends_with([' ', '·']), "{drawn:?}");
+        }
+    }
+
+    /// Memo cells carry brief's topic lines byte for byte: topic, text, order.
+    #[test]
+    fn memo_cells_match_brief_bytes() {
+        use crate::tmux::OptionReading;
+        let file = concat!(
+            "2026-09-17T08:00:00Z\tcl:lead\tdecision\told\n",
+            "2026-09-17T10:00:00Z\tcl:lead\tdecision\tnew\n",
+            "2026-09-17T11:00:00Z\tcl:lead\tparking\tresume here: x\n",
+        );
+        let now = crate::time::Timestamp::parse("2026-09-17T12:00:00Z").expect("now parses");
+        let meta = parsed_meta(UUID_A, &["lead"]);
+        let expected = crate::brief::topic_lines(file.as_bytes(), now, None);
+        let rows = super::memo_cells(
+            &OptionReading::Set(UUID_A.to_owned()),
+            &meta,
+            &crate::store::SourceRead::Ready(file.as_bytes().to_vec()),
+            now,
+        );
+        let shown = cell_rows(&rows);
+        assert_eq!(shown.len(), expected.len());
+        for (cells, line) in shown.iter().zip(expected.iter()) {
+            assert_eq!(cells[1], line.topic);
+            assert_eq!(cells[2], line.text);
+            assert_eq!(cells[0], crate::brief::age(line.age_secs));
+        }
+    }
+
+    /// Widths come from the SURVIVORS: a dropped long actor pads nothing.
+    #[test]
+    fn aligned_widths_come_from_survivors() {
+        use crate::tmux::OptionReading;
+        let mut fixture = vec![event(
+            "2026-09-17T08:00:00Z",
+            "averylongactornameovercap",
+            "done",
+            r#","summary":"old""#,
+        )];
+        for n in 1..10 {
+            fixture.push(event(
+                "2026-09-17T08:00:00Z",
+                "co",
+                "done",
+                &format!(r#","summary":"n{n}""#),
+            ));
+        }
+        let container = fixture.join("\n") + "\n";
+        let now = crate::time::Timestamp::parse("2026-09-17T12:00:00Z").expect("now parses");
+        let meta = parsed_meta(UUID_A, &["lead"]);
+        let rows = super::activity_cells(
+            &OptionReading::Set(UUID_A.to_owned()),
+            &meta,
+            &events(&container),
+            now,
+        );
+        assert_eq!(cell_rows(&rows).len(), 10);
+        let menu =
+            super::select_aligned_dialog("Activity", &rows, super::ACTIVITY_FIXED_CAPS, 200, 9);
+        let labels: Vec<&str> = menu.items.iter().map(|item| item.label.as_str()).collect();
+        assert_eq!(labels.len(), 6, "four survivors plus separator and Close");
+        let kind_at = |label: &str| {
+            let head: String = label.split('·').take(2).collect();
+            crate::orchestrator::terminal_cells(&head) + 3
+        };
+        assert!(
+            labels[..4]
+                .iter()
+                .all(|label| kind_at(label) == kind_at(labels[0])),
+            "{labels:?}"
+        );
+        assert!(
+            !labels[..4].iter().any(|label| label.contains('…')),
+            "no survivor clips: {labels:?}"
+        );
+    }
+
+    /// A wide client gets a wide text column; a narrow one still draws Close.
+    #[test]
+    fn text_takes_the_remaining_budget() {
+        use crate::tmux::OptionReading;
+        let summary = "z".repeat(200);
+        let container = event(
+            "2026-09-17T08:00:00Z",
+            "lead",
+            "done",
+            &format!(r#","summary":"{summary}""#),
+        ) + "\n";
+        let now = crate::time::Timestamp::parse("2026-09-17T12:00:00Z").expect("now parses");
+        let meta = parsed_meta(UUID_A, &["lead"]);
+        let rows = super::activity_cells(
+            &OptionReading::Set(UUID_A.to_owned()),
+            &meta,
+            &events(&container),
+            now,
+        );
+        let drawn = aligned(&rows, super::ACTIVITY_FIXED_CAPS, 296);
+        let text = drawn[0].rsplit('·').next().expect("text column").trim();
+        assert_eq!(crate::orchestrator::terminal_cells(text), 100, "{drawn:?}");
+        let menu =
+            super::select_aligned_dialog("Activity", &rows, super::ACTIVITY_FIXED_CAPS, 40, 60);
+        let labels: Vec<&str> = menu.items.iter().map(|item| item.label.as_str()).collect();
+        assert_eq!(labels.last(), Some(&"Close"), "{labels:?}");
+        let text = labels[0].rsplit('·').next().expect("text column").trim();
+        assert!(
+            crate::orchestrator::terminal_cells(text) < 100,
+            "narrow client clips harder: {labels:?}"
+        );
     }
 
     /// Per-roster provenance: two actors' declarations must stay
@@ -2955,5 +3472,16 @@ mod tests {
                 .any(|label| label.starts_with("lead state: working — two (")),
             "{labels:?}"
         );
+    }
+
+    /// Padding counts terminal cells, not bytes: a 2-cell CJK word pads to
+    /// the cell width on both sides.
+    #[test]
+    fn pad_counts_cells_not_bytes() {
+        let cells = crate::orchestrator::terminal_cells;
+        assert_eq!(cells(&super::pad_column("日本", 6, false)), 6);
+        assert_eq!(cells(&super::pad_column("日本", 6, true)), 6);
+        assert_eq!(super::pad_column("日本", 6, false), "日本  ");
+        assert_eq!(super::pad_column("日本", 6, true), "  日本");
     }
 }

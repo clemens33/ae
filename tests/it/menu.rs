@@ -8166,7 +8166,15 @@ fn the_uuid_outcome_reports_the_final_state_not_a_cause() {
 }
 
 /// Draw one dialog for a direct client; return its terminal bytes.
-fn dialog_text(tag: &str, view: &str, title: &str, events: &str, memo: &str) -> String {
+fn dialog_text(
+    tag: &str,
+    view: &str,
+    title: &str,
+    events: &str,
+    memo: &str,
+    width: usize,
+    height: usize,
+) -> String {
     let scratch = scratch(tag);
     assert!(tmux_present(&scratch), "tmux runs here");
     let socket = scratch.join("s");
@@ -8183,8 +8191,9 @@ fn dialog_text(tag: &str, view: &str, title: &str, events: &str, memo: &str) -> 
     fs::write(dir.join("events.jsonl"), events).unwrap_or_else(|error| panic!("plant: {error}"));
     fs::write(dir.join("memo.tsv"), memo).unwrap_or_else(|error| panic!("plant: {error}"));
     let record = scratch.join("dialog.terminal");
-    let (client, _terminal) =
-        direct_terminal_client(&socket, &scratch, &root, &config, tag, 120, 30, &record);
+    let (client, _terminal) = direct_terminal_client(
+        &socket, &scratch, &root, &config, tag, width, height, &record,
+    );
     let facts = gather_show_facts(&socket, &scratch, tag, &client);
     let mut child = show_child(&socket, &scratch, &root, &config, &facts, Some(view));
     let (_, raw) = wait_for_direct_menu_geometry(&record, title)
@@ -8205,6 +8214,8 @@ fn the_activity_dialog_draws_the_newest_human_records() {
          {\"ts\":\"x\",\"actor\":\"l\",\"action\":\"relaunch\",\"target\":\"w\",\"summary\":\"M2\"}\n\
          {\"ts\":\"x\",\"actor\":\"w\",\"action\":\"nudge\",\"summary\":\"T9\"}\n",
         "",
+        120,
+        30,
     );
     assert!(
         text.contains("M1") && text.contains("M2") && text.contains("Close"),
@@ -8223,6 +8234,8 @@ fn the_memos_dialog_draws_brief_latest_per_topic() {
         "",
         "2026-09-17T08:00:00Z\tcl:lead\tdecision\tOLDM\n\
          2026-09-17T09:00:00Z\tcl:lead\tdecision\tNEWM\n",
+        120,
+        30,
     );
     assert!(text.contains("NEWM") && text.contains("Close"), "{text}");
     assert!(!text.contains("OLDM"), "superseded stays out: {text}");
@@ -8365,4 +8378,113 @@ fn clicking_a_dialog_row_keeps_the_child_open_after_the_release() {
         flashed.is_empty(),
         "these rows flashed their child on a mouse row-pick: {flashed:?}"
     );
+}
+
+/// A 40-record journal with an over-cap actor and long text keeps newest rows
+/// plus Close on tall/short/narrow clients; the tall case pins the row count.
+#[test]
+fn the_activity_dialog_keeps_newest_rows_on_tall_short_and_narrow_clients() {
+    let mut events = String::new();
+    let filler = "z".repeat(190);
+    for n in 0..40 {
+        writeln!(
+            events,
+            "{{\"ts\":\"x\",\"actor\":\"averylongactornameovercap\",\"action\":\"ask\",\"summary\":\"ROW{n:02}{filler}\"}}"
+        )
+        .unwrap();
+    }
+    let sizes = [
+        ("dlg-activity-40", 120, 30),
+        ("dlg-activity-short", 120, 12),
+        ("dlg-activity-narrow", 40, 8),
+    ];
+    for (tag, width, height) in sizes {
+        let text = dialog_text(tag, "--activity", "Activity", &events, "", width, height);
+        assert!(text.contains("ROW39"), "newest row missing: {text}");
+        assert!(!text.contains("ROW00"), "oldest row survived: {text}");
+        assert!(text.contains("Close"), "{text}");
+        assert!(
+            text.contains("averylongactorn…"),
+            "capped actor missing: {text}"
+        );
+        if width == 120 && height == 30 {
+            let kept = text.matches("ROW").count();
+            assert!((23..=27).contains(&kept), "tall keeps ~25 rows, got {kept}");
+        }
+    }
+}
+
+/// Eight capped topics with long text draw newest plus Close on tall and
+/// narrow clients — the narrow case drops the oldest topics to fit.
+#[test]
+fn the_memos_dialog_draws_eight_topics_on_tall_and_narrow_clients() {
+    let mut memo = String::new();
+    let filler = "z".repeat(190);
+    for n in 0..8 {
+        writeln!(
+            memo,
+            "2026-09-17T0{n}:00:00Z\tcl:lead\taverylongtopicname{n}\tMEM{n}{filler}"
+        )
+        .unwrap();
+    }
+    let sizes = [("dlg-memos-8", 120, 30), ("dlg-memos-narrow", 40, 8)];
+    for (tag, width, height) in sizes {
+        let text = dialog_text(tag, "--memos", "Memos", "", &memo, width, height);
+        assert!(text.contains("Close"), "{text}");
+        assert!(
+            text.contains("averylongtopicn…"),
+            "capped topic missing: {text}"
+        );
+        if width == 120 {
+            for n in 0..8 {
+                assert!(
+                    text.contains(&format!("MEM{n}")),
+                    "topic MEM{n} missing: {text}"
+                );
+            }
+        } else {
+            assert!(text.contains("MEM7"), "newest topic missing: {text}");
+            assert!(!text.contains("MEM0"), "oldest topic survived: {text}");
+        }
+    }
+}
+
+/// Cell clipping has exactly one implementation: the definition lives once,
+/// and only its home plus the dialog renderer ever name it.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the inventory guard reads the crate's own sources; it proves where a name may appear"
+)]
+#[test]
+fn cell_clipping_runs_through_the_one_cutter() {
+    fn walk(dir: &Path, needle: &str, def: &str, holders: &mut Vec<String>, defs: &mut usize) {
+        let entries = fs::read_dir(dir).into_iter().flatten().flatten();
+        for entry in entries {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, needle, def, holders, defs);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                let text = fs::read_to_string(&path).unwrap_or_default();
+                if text.contains(needle) {
+                    holders.push(path.file_name().unwrap().to_string_lossy().into_owned());
+                }
+                *defs += usize::from(text.contains(def));
+            }
+        }
+    }
+    // Concatenated so this guard file never literally holds the needles.
+    let needle = ["clip", "_to_width("].concat();
+    let def = ["fn clip", "_to_width"].concat();
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let (mut holders, mut defs) = (Vec::new(), 0);
+    walk(&root.join("src"), &needle, &def, &mut holders, &mut defs);
+    walk(&root.join("tests"), &needle, &def, &mut holders, &mut defs);
+    holders.sort();
+    assert!(!holders.is_empty(), "the guard scanned nothing");
+    assert_eq!(
+        holders,
+        ["event_text.rs".to_owned(), "session_menu.rs".to_owned()],
+        "a second clipper appeared"
+    );
+    assert_eq!(defs, 1, "the cutter is defined more than once");
 }

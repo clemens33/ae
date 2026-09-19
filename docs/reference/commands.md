@@ -831,25 +831,27 @@ first, then the two dialog rows, then all but the first state — down to
 today's status-only menu and floor; it never refuses once the clicker is
 proven.
 
-The `Activity` dialog lists the newest 10 records a human cares about, newest
+The `Activity` dialog lists the newest 30 records a human cares about, newest
 first: `state`, `done`, `goal`, `spawn`, `retire`, `relaunch`, `ask`,
 `review`, `reply`, `watchdog-start` and `watchdog-stop` (the watchdog rows draw only for non-`ae:` actors, so ae-driven restarts never flood the dialog), each with actor,
-kind, clipped text and truthful age. Watchdog
+kind, clipped text and truthful age in aligned columns. Watchdog
 ticks, quota samples, other audits, delivery records, `memo`, `chat`, `focus`,
 `cancel`, `spawn-failed` and lifecycle request/result pairs are not activity
 and never render. The `Memos` dialog lists the latest record per memo topic
-exactly as `ae brief` computes it, newest first, at most 10. A short client
+exactly as `ae brief` computes it, newest first, at most 30. A short client
 drops each dialog's oldest rows until title, rows, separator and Close fit.
 
 Dialog rows are informational and keyless; `Close` (`c`) dismisses and writes
 nothing. There is no Back row — dismiss and right-click again. Like the
 settings quota dialog, a row starting with `-` would read as a tmux separator;
-actor names cannot start there, and a hostile memo topic starting with one
-renders as a divider line. Mouse-clicking `Activity…` / `Memos…` closes
-the dialog immediately: tmux delivers the click's own release to the fresh
-dialog, and no menu flag combination survives that. This is a tmux
-`display-menu` limit, not an ae bug (see issue #139) — press `a` / `m`
-instead, which always works.
+dialog rows begin with the age column — truthful age, or blank padding without
+a usable timestamp — so no row starts there whatever a hostile topic holds.
+Mouse-clicking `Activity…` / `Memos…` dismisses the fresh child in the measured
+case: with `-M -O` the click's trailing release lands inside it and closes it,
+while a short child the release lands outside of may survive that geometry.
+`-O` alone dies on mouse motion and Disabled breaks keyboard picks, so no flag
+combination fixes the click path. This is a tmux `display-menu` limit, not an
+ae bug (see issue #139) — the `a` / `m` keys open the same dialogs unaffected.
 
 ## `ae doctor`
 

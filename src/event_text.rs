@@ -366,10 +366,10 @@ pub(crate) fn clip_to_width(clean: &str, max: usize, cut: Cut) -> String {
 /// ANSI sequences collapsed to a single `?`, and bounded to `max` cells with a
 /// `...` middle cut.
 ///
-/// Every DYNAMIC menu row this crate draws — a declaration, a gap, a quota
-/// cell — goes through here before it becomes a tmux label, so no escape byte,
-/// control byte or wide character reaches a terminal formatting step; the
-/// crate's own literal action rows (Flip, Stop) carry no such text and do not.
+/// Every dynamic menu VALUE goes through the shared sanitize-then-cut path —
+/// `sanitize_menu_text` plus the one `clip_to_width` cutter — so no escape,
+/// control byte or wide character reaches a terminal. Dialog columns keep
+/// their head through `display_column`; literal action rows use neither.
 /// Because the kept alphabet is ASCII, one byte IS one display cell and `max`
 /// means what it says.
 #[must_use]

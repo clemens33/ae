@@ -57,10 +57,12 @@ keyed rows, `Activity…` and `Memos…`, each re-invoking the same `show` path
 with one new word (`--activity` / `--memos`): same seven facts, same final
 proof, no new binding. Each opens a read-only dialog shaped like the settings
 quota dialog — keyless informational rows, one blank separator, `Close` — with
-the newest 10 activity records (`state`, `done`, `goal`, `spawn`, `retire`,
+the newest 30 activity records (`state`, `done`, `goal`, `spawn`, `retire`,
 `relaunch`, `ask`, `review`, `reply`, `watchdog-start`, `watchdog-stop`) or
-the latest memo per topic exactly as `ae brief`
-computes it; a short client drops the oldest rows until the dialog fits.
+the latest memo per topic exactly as `ae brief` computes it, at most 30 rows
+each; columns share one width per dialog and every cell is clipped by the one
+`event_text::clip_to_width` cutter, so rows align. A short client drops the
+oldest rows until the dialog fits.
 Correlation is the session-scoped
 `@ae_session_uuid` read through argv-only `show-options` and the `session_id`
 of the clicked session's `meta`, from one read: a same-name recreation gets a
