@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.145] - 2026-09-19
+- Follow a manually switched model into the configured pin it satisfies
+- Guard a followed model against a tool flip and a stale observation
+- Retire an observation with the tool the meta records
+- Say that a seat resumes on the model the human switched to
+
 ## [v2026.9.144] - 2026-09-19
 - Stop a running seat in place before reseating it
 - Answer the reseat stop review
