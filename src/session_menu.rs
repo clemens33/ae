@@ -4460,6 +4460,24 @@ mod tests {
             !labels.iter().any(|label| label.contains("ladder 00")),
             "oldest turns drop first: {labels:?}"
         );
+        // Priority, not just survival: one row over budget drops the oldest
+        // turn while the gap stays — a gaps-first ladder would do the reverse.
+        let tight = super::select_board_dialog(
+            "Board",
+            &board,
+            super::BOARD_FIXED_CAPS,
+            200,
+            full_rows - 1,
+        );
+        let labels: Vec<&str> = tight.items.iter().map(|item| item.label.as_str()).collect();
+        assert!(
+            labels.iter().any(|label| label.contains("predecessor 1")),
+            "the gap survives a one-row cut: {labels:?}"
+        );
+        assert!(
+            !labels.iter().any(|label| label.contains("ladder 00")),
+            "the oldest turn pays for it: {labels:?}"
+        );
         remove_rig(&rig);
     }
 
