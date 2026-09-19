@@ -719,7 +719,10 @@ fn a_spawn_seats_stamps_launches_and_briefs_its_agent() {
 /// Muse has no system-instruction channel. Its ae context is the positional
 /// first user turn, and a spawn brief rides that SAME turn — nothing pasted.
 #[test]
-#[allow(clippy::too_many_lines, reason = "one end-to-end spawn story: seat, argv, fold, legs, resume")]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one end-to-end spawn story: seat, argv, fold, legs, resume"
+)]
 fn a_spawned_muse_agent_receives_positional_context_and_its_brief() {
     let probe = PathBuf::from(format!("/tmp/aesp-probe-muse.{}", std::process::id()));
     let _ = std::fs::create_dir_all(&probe);
