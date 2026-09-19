@@ -65,7 +65,7 @@ Reasons that are about *this* argv, not generic "hand-rolled is holy":
 
 ## 2. JSON — `src/json.rs`
 
-**What we have.** Both directions. Write path is the contract: SC-510d escape set (`\" \\ \n \t \r` plus `\u00XX` for remaining C0). Render is infallible (SC-506). Objects are insertion-ordered `Vec` pairs — tests pin a documented event line round-tripping **byte-identical** (`json.rs` "a_documented_event_line_round_trips"). Parse is tolerant of unknown keys (SC-511b) and non-i64 numbers (`Value::Raw`). Nesting cap 64, explicit, tested. This is the parser that will face **hostile persisted state** at P2/P3.
+**What we have.** Both directions. Write path is the contract: SC-510d escape set (`\" \\ \n \t \r` plus `\u00XX` for every control character — C0, DEL, C1). Render is infallible (SC-506). Objects are insertion-ordered `Vec` pairs — tests pin a documented event line round-tripping **byte-identical** (`json.rs` "a_documented_event_line_round_trips"). Parse is tolerant of unknown keys (SC-511b) and non-i64 numbers (`Value::Raw`). Nesting cap 64, explicit, tested. This is the parser that will face **hostile persisted state** at P2/P3.
 
 ### Candidates
 

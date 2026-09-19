@@ -92,8 +92,8 @@ pub fn event_line(line: &[u8]) -> Option<&[u8]> {
 ///
 /// The unescape set is the emitter's and only that: `\n` and `\t` become one
 /// SPACE, `\r` is dropped entirely, `\"` and `\\` unescape, and any other
-/// escape is kept as BOTH its characters. There is no `\uXXXX` handling, because
-/// the emitter never writes one.
+/// escape is kept as BOTH its characters — the `\u00XX` spelling the emitter
+/// writes for every control character included.
 ///
 /// ```
 /// use ae::event_text::extract;

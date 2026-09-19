@@ -2,8 +2,9 @@
 //!
 //! Hand-written rather than a dependency for three reasons, in order of weight:
 //!
-//! 1. **The escape set** ae writes is (`\"` `\\` `\n` `\t` `\r`).
-//!    A contract about bytes on disk is a contract this crate should own.
+//! 1. **The escape set** ae writes is the named escapes (`\"` `\\` `\n` `\t` `\r`)
+//!    plus `\u00XX` for every control character. A contract about bytes on disk is
+//!    a contract this crate should own.
 //! 2. **Rendering is infallible by construction**: a
 //!    [`Value`] tree renders to a `String` that always closes, so no
 //!    per-session failure can truncate the document mid-array.
@@ -164,6 +165,13 @@ impl fmt::Display for Value {
 }
 
 /// Escape `s` into `out` as the body of a JSON string (no surrounding quotes).
+///
+/// Every control character — C0 (`U+0000..=U+001F`), DEL (`U+007F`) and the C1
+/// block (`U+0080..=U+009F`) — leaves as a `\u00XX` escape, so a document ae
+/// writes stays inert when a terminal or reader renders it as text. Where JSON
+/// has a named escape (`\n`, `\t`, `\r`, `\"`, `\\`) that spelling is used.
+/// Format characters (`Cf`, e.g. the bidi override `U+202E`) are NOT controls
+/// and pass through raw; escaping those is a non-goal of this function.
 pub fn escape_into(s: &str, out: &mut String) {
     for ch in s.chars() {
         match ch {
@@ -172,7 +180,7 @@ pub fn escape_into(s: &str, out: &mut String) {
             '\n' => out.push_str("\\n"),
             '\t' => out.push_str("\\t"),
             '\r' => out.push_str("\\r"),
-            other if (other as u32) < 0x20 => {
+            other if other.is_control() => {
                 let _ = write!(out, "\\u{:04x}", u32::from(other));
             }
             other => out.push(other),
@@ -482,6 +490,51 @@ mod tests {
         let mut out = String::new();
         escape_into("a\"b\\c\nd\te\rf", &mut out);
         assert_eq!(out, r#"a\"b\\c\nd\te\rf"#);
+    }
+
+    #[test]
+    fn del_and_the_c1_block_leave_as_unicode_escapes() {
+        // DEL and C1 (e.g. CSI, U+009B) are control characters a terminal acts
+        // on, so they leave as \u00XX like every other control.
+        let mut out = String::new();
+        escape_into("\u{7f}\u{80}\u{9b}\u{9f}", &mut out);
+        assert_eq!(out, r"\u007f\u0080\u009b\u009f");
+    }
+
+    #[test]
+    fn the_control_boundary_is_del_and_c1_not_a_wider_range() {
+        // U+001F is the last C0 control and escapes; U+0020 stays raw.
+        let mut out = String::new();
+        escape_into("\u{1f}\u{20}", &mut out);
+        assert_eq!(out, "\\u001f ");
+        // U+009F is the last C1 control and escapes; U+00A0 (NBSP) is not a
+        // control and stays raw.
+        let mut out = String::new();
+        escape_into("\u{9f}\u{a0}", &mut out);
+        assert_eq!(out, "\\u009f\u{a0}");
+    }
+
+    #[test]
+    fn every_control_character_survives_a_render_parse_round_trip() {
+        // Every C0 control, DEL and every C1 control in one string: the
+        // rendered document is legal JSON and parses back to the input.
+        let hostile: String = (0x00u32..=0x1f)
+            .chain(std::iter::once(0x7f))
+            .chain(0x80..=0x9f)
+            .filter_map(char::from_u32)
+            .collect();
+        let rendered = Value::str(hostile.clone()).render();
+        assert_eq!(parse(&rendered), Ok(Value::Str(hostile)));
+    }
+
+    #[test]
+    fn format_characters_are_not_controls_and_stay_raw() {
+        // Only Cc escapes. Cf format characters (the bidi override U+202E
+        // included) pass through raw — a named non-goal of escape_into — and
+        // ordinary ASCII, umlaut and CJK text is byte-identical as before.
+        let mut out = String::new();
+        escape_into("aü中😀\u{202e}", &mut out);
+        assert_eq!(out, "aü中😀\u{202e}");
     }
 
     #[test]

@@ -68,7 +68,7 @@ Every event has these keys; `target`, `ref`, and `summary` are optional and omit
 - `recover` — the captured session id (Codex/Gemini/OpenCode UUID).
 - Other actions — usually absent.
 
-String values are JSON-escaped: `\"` `\\` `\n` `\t` `\r`, and control bytes are stripped at write time. Rendering is the core's (`src/json.rs`); the flat schema stays cheap for any reader to parse a line at a time.
+String values are JSON-escaped: `\"` `\\` `\n` `\t` `\r`, and every control character (C0, DEL, C1) is written as a `\u00XX` escape. Rendering is the core's (`src/json.rs`); the flat schema stays cheap for any reader to parse a line at a time.
 
 ### Routing-key fields
 

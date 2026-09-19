@@ -1624,12 +1624,12 @@ mod tests {
 
     #[test]
     fn the_json_row_for_a_control_laden_body_is_byte_identical() {
-        // `--json` is untouched by this slice: C0 is escaped by json.rs, DEL
-        // and C1 ride RAW (a named residual, not this owner's surface), and
-        // this golden is the pre-change bytes exactly.
+        // `--json` goes through json::escape_into: C0, DEL and C1 all leave as
+        // `\u00XX` escapes (owner json.rs), so a hostile body cannot put a raw
+        // control byte into the document.
         let body = "A\u{1b}[2J B\u{7} C\u{0} D\u{d} E\u{7f} F\u{9b}";
         let json = rendered(vec![row(1_789_549_200_500_000, "a", 0, body)], true, None);
-        let expected = "{\"kind\":\"row\",\"ts\":1789549200500000,\"actor\":\"s:seat\",\"role\":\"human\",\"body\":\"A\\u001b[2J B\\u0007 C\\u0000 D\\r E\u{7f} F\u{9b}\",\"source\":\"claude\",\"file\":\"a\",\"offset\":0,\"generation\":0}\n";
+        let expected = "{\"kind\":\"row\",\"ts\":1789549200500000,\"actor\":\"s:seat\",\"role\":\"human\",\"body\":\"A\\u001b[2J B\\u0007 C\\u0000 D\\r E\\u007f F\\u009b\",\"source\":\"claude\",\"file\":\"a\",\"offset\":0,\"generation\":0}\n";
         assert_eq!(json, expected);
     }
 
