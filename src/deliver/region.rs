@@ -635,8 +635,8 @@ fn heavy_rail_composer(rows: &[String], spec: Composed) -> bool {
     };
     let status = edge - 1;
     // The row above the edge must PROVE it is the status row: position alone
-    // would exclude a draft sitting there. Every other rail row must be
-    // blank or carry the placeholder; any other text is a human draft ae
+    // would leave a draft sitting there UNCHECKED. Every other rail row must
+    // be blank or carry the placeholder; any other text is a human draft ae
     // must not paste into.
     let proven = clipped_interior(&rows[status], table, width)
         .is_some_and(|interior| heavy_rail_status(&interior).is_some());
@@ -650,7 +650,7 @@ fn heavy_rail_composer(rows: &[String], spec: Composed) -> bool {
     }) {
         return false;
     }
-    !dialog_open(&rows[..edge], &spec.dialog)
+    !dialog_open(&rows[..top], &spec.dialog)
 }
 
 /// The `▀`-run length of a heavy-rail bottom edge: the box's own width, which
@@ -678,21 +678,21 @@ fn clipped_interior(row: &str, table: BoxTable, width: usize) -> Option<String> 
     Some(rest.chars().take(width).collect())
 }
 
-/// Whether `interior` — a heavy-rail row with its rail stripped and clipped
-/// to the edge run — parses as the `mode · model · effort` status grammar,
-/// returning the model and effort it proves. Shared with
-/// [`crate::harness_state`], which reads the SAME row for the picker cell:
-/// one helper, so the composer proof and the identity read can never
-/// disagree about what a status row is.
-pub(crate) fn heavy_rail_status(interior: &str) -> Option<(&str, &str)> {
+/// Split a heavy-rail row interior into its ` · ` fields, proving STRUCTURE
+/// only: at least 2 non-empty fields. Three is measured
+/// (`mode · model · effort`); two is tolerated for a variant-less model and
+/// is UNMEASURED. Shared with [`crate::harness_state`], which applies the
+/// stricter identity policy (exactly 3 plus the closed effort vocabulary) on
+/// top: one helper, two policies, so delivery never couples to the effort
+/// list or to a sidebar tail the char clip pulled in (extra text keeps
+/// fields non-empty, which is the tolerant direction here).
+pub(crate) fn heavy_rail_status(interior: &str) -> Option<Vec<&str>> {
     let fields: Vec<&str> = interior.trim().split(" · ").collect();
-    let [mode, model, effort] = fields.as_slice() else {
-        return None;
-    };
-    if mode.is_empty() || model.is_empty() || !crate::harness_state::is_effort_word(effort) {
-        return None;
+    if fields.len() >= 2 && fields.iter().all(|field| !field.is_empty()) {
+        Some(fields)
+    } else {
+        None
     }
-    Some((model, effort))
 }
 
 /// Whether the interior opens with one of the placeholder markers. Prefix,
@@ -714,7 +714,7 @@ fn dialog_open(rows: &[String], dialog: &DialogSig) -> bool {
         return false;
     }
     rows.iter().enumerate().any(|(at, row)| {
-        bounded_word_from(row, 0, dialog.dismiss)
+        bounded_word(row, dialog.dismiss)
             && ((at + 1)..=(at + dialog.gap)).any(|next| {
                 rows.get(next)
                     .is_some_and(|body| dialog_body(body, dialog.body))
@@ -727,17 +727,17 @@ fn dialog_open(rows: &[String], dialog: &DialogSig) -> bool {
 /// header proves it) and the sidebar shares the row to the RIGHT on a wide
 /// session, so the body is neither start- nor end-anchored.
 fn dialog_body(row: &str, body: &str) -> bool {
-    bounded_word_from(row, 0, body)
+    bounded_word(row, body)
 }
 
-/// Whether `word` occurs in `row` at or after `from` as a bounded word: both
-/// neighbours must be row edges or non-alphanumeric, so a substring inside a
-/// longer word never matches. An empty word never matches.
-fn bounded_word_from(row: &str, from: usize, word: &str) -> bool {
+/// Whether `word` occurs in `row` as a bounded word: both neighbours must
+/// be row edges or non-alphanumeric, so a substring inside a longer word
+/// never matches. An empty word never matches.
+fn bounded_word(row: &str, word: &str) -> bool {
     if word.is_empty() {
         return false;
     }
-    let mut start = from.min(row.len());
+    let mut start = 0;
     while let Some(relative) = row[start..].find(word) {
         let at = start + relative;
         let left = row[..at].chars().last();
@@ -1721,6 +1721,17 @@ mod tests {
         let busy =
             "  ┃\n  ┃\n  ┃  Build · m · max\n  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n  ⬝⬝⬝⬝⬝⬝⬝⬝  esc interrupt\n";
         assert!(composed_ui(busy, OPENCODE));
+    }
+
+    #[test]
+    fn a_status_row_with_an_unmeasured_shape_still_composes() {
+        // Delivery couples to STRUCTURE, never to the effort vocabulary: an
+        // unknown effort word, or a variant-less two-field row, still proves
+        // the row above the edge is structure rather than a draft. (The
+        // picker cell stays unobserved for both — pinned in harness_state.)
+        let frame = |status: &str| format!("  ┃\n  ┃\n  ┃  {status}\n  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n");
+        assert!(composed_ui(&frame("Build · m · reasoning"), OPENCODE));
+        assert!(composed_ui(&frame("Build · m"), OPENCODE));
     }
 
     #[test]

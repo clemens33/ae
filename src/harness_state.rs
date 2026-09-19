@@ -543,12 +543,18 @@ fn current_opencode_identity(capture: &str) -> HarnessIdentity {
     let Some(rest) = clipped.strip_prefix('┃') else {
         return HarnessIdentity::default();
     };
-    let Some((model, effort)) = crate::deliver::region::heavy_rail_status(rest) else {
+    let Some(fields) = crate::deliver::region::heavy_rail_status(rest) else {
         return HarnessIdentity::default();
     };
+    let [_, model, effort] = fields.as_slice() else {
+        return HarnessIdentity::default();
+    };
+    if !valid_effort(effort) {
+        return HarnessIdentity::default();
+    }
     HarnessIdentity {
-        model: Some(model.to_owned()),
-        effort: Some(effort.to_owned()),
+        model: Some((*model).to_owned()),
+        effort: Some((*effort).to_owned()),
     }
 }
 
@@ -1074,6 +1080,22 @@ mod tests {
             observed_identity(HISTORY_DRAFT, ToolKind::OpenCode),
             HarnessIdentity::default(),
             "a draft refuses the gate, so the status row is not read"
+        );
+    }
+
+    #[test]
+    fn an_unmeasured_status_shape_is_unobserved() {
+        // The picker cell keeps the strict policy — exactly three fields
+        // plus the closed effort vocabulary — while delivery proves
+        // structure alone (pinned in region).
+        let frame = |status: &str| format!("  ┃\n  ┃\n  ┃  {status}\n  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n");
+        assert_eq!(
+            observed_identity(&frame("Build · m · reasoning"), ToolKind::OpenCode),
+            HarnessIdentity::default()
+        );
+        assert_eq!(
+            observed_identity(&frame("Build · m"), ToolKind::OpenCode),
+            HarnessIdentity::default()
         );
     }
 
