@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.146] - 2026-09-19
+- Show the full client label in fleet menu agent rows
+- Collapse resolver guards into let-chains for clippy
+
 ## [v2026.9.145] - 2026-09-19
 - Follow a manually switched model into the configured pin it satisfies
 - Guard a followed model against a tool flip and a stale observation
