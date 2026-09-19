@@ -132,6 +132,8 @@ Additive facts that prove a pane's session across servers and tmux incarnations.
 | `throttle-cleared` | watchdog | Throttle pattern no longer present. |
 | `dead-cleared` | watchdog | The dead agent's process is positively back (re-run in place); retracts the `alert`. |
 | `recover` | watchdog | Post-launch session id captured for a previously-pending slot. |
+| `watchdog-start` | `ae watchdog start` | Audit: who started the watchdog, and the outcome (`started`, `already running`, `refused: …`). Carries no `target`, so it never un-quiets an agent; neutral to `alert_meaning`. Shown in the session menu Activity dialog. |
+| `watchdog-stop` | `ae watchdog stop` | Audit: who stopped the watchdog, and the outcome (`stopped`, `not running`, `refused: …`). Same neutrality and Activity listing as `watchdog-start`. |
 
 ## How `requests` reads events
 

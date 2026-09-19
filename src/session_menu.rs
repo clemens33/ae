@@ -64,8 +64,18 @@ const ACTIVITY_ROWS_MAX: usize = 10;
 const MEMO_ROWS_MAX: usize = 10;
 
 /// The event kinds a human cares about; the docs name what is not.
-const ACTIVITY_KINDS: [&str; 9] = [
-    "state", "done", "goal", "spawn", "retire", "relaunch", "ask", "review", "reply",
+const ACTIVITY_KINDS: [&str; 11] = [
+    "state",
+    "done",
+    "goal",
+    "spawn",
+    "retire",
+    "relaunch",
+    "ask",
+    "review",
+    "reply",
+    "watchdog-start",
+    "watchdog-stop",
 ];
 
 /// The context-menu row that starts the stop chain. ASCII, because the row is
@@ -2799,6 +2809,34 @@ mod tests {
         );
         let rows = super::activity_rows(&set, &meta, &crate::store::SourceRead::Absent, now);
         assert_eq!(gap_rows(&rows), vec!["activity: none"]);
+    }
+
+    /// The watchdog lifecycle audit renders beside the human kinds.
+    #[test]
+    fn activity_lists_the_watchdog_lifecycle_audit() {
+        use crate::tmux::OptionReading;
+        let fixture = [
+            ("lead", "nudge", r#","summary":"x""#),
+            ("lead", "watchdog-stop", r#","summary":"stopped""#),
+            ("w", "watchdog-start", r#","summary":"started (pane %3)""#),
+        ];
+        let container = fixture
+            .iter()
+            .map(|r| event("2026-09-17T08:00:00Z", r.0, r.1, r.2))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        let now = crate::time::Timestamp::parse("2026-09-17T12:00:00Z").expect("now parses");
+        let meta = parsed_meta(UUID_A, &["lead"]);
+        let set = OptionReading::Set(UUID_A.to_owned());
+        let rows = super::activity_rows(&set, &meta, &events(&container), now);
+        assert_eq!(
+            declaration_rows(&rows),
+            [
+                "w watchdog-start: started (pane %3) (4h)",
+                "lead watchdog-stop: stopped (4h)"
+            ]
+        );
     }
 
     /// Brief's latest-per-topic: superseded stays out, ten kept.

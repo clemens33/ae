@@ -230,6 +230,125 @@ fn a_watchdog_starts_once_reports_its_pid_and_stops_with_its_pane() {
     assert_eq!((code, out.trim()), (0, "Watchdog is not running."));
 }
 
+/// The audit ledger's lines, oldest first.
+fn events_of(meta_dir: &Path) -> Vec<String> {
+    match fs::read_to_string(meta_dir.join("events.jsonl")) {
+        Ok(body) => body.lines().map(str::to_owned).collect(),
+        Err(why) => panic!("the audit ledger exists: {why}"),
+    }
+}
+
+/// Every start and stop leaves exactly one audit record — through the one
+/// writer, with no target, and a read-only `status` leaves none.
+#[test]
+fn a_start_and_a_stop_each_leave_exactly_one_audit_record() {
+    let scratch = scratch("wdaudit");
+    require_tmux(&scratch);
+    let socket = socket_of(&scratch);
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let root = scratch.join("home");
+    let meta_dir = plant_session(&root, "wdaudit", &socket);
+    let (ok, _) = tmux(
+        &socket,
+        &scratch,
+        &["new-session", "-d", "-s", "wdaudit", "sleep", "60"],
+    );
+    assert!(ok, "the session the watchdog watches");
+
+    let (code, _, err) = watchdog(&root, &["start", "wdaudit"]);
+    assert_eq!(code, 0, "the start failed: {err}");
+    let pid = ae::watchdog_glue::read_pid(&meta_dir).expect("the published pidfile");
+    let (code, _, _) = watchdog(&root, &["start", "wdaudit"]);
+    assert_eq!(code, 0);
+    let (code, _, err) = watchdog(&root, &["stop", "wdaudit"]);
+    assert_eq!(code, 0, "the stop failed: {err}");
+    let (code, _, _) = watchdog(&root, &["stop", "wdaudit"]);
+    assert_eq!(code, 0);
+    let (code, _, _) = watchdog(&root, &["status", "wdaudit"]);
+    assert_eq!(code, 0);
+
+    let lines = events_of(&meta_dir);
+    assert_eq!(lines.len(), 4, "one record per start/stop, none for status");
+    let already = format!("already running (pid {pid})");
+    for (line, action, summary) in [
+        (&lines[0], "watchdog-start", "started"),
+        (&lines[1], "watchdog-start", already.as_str()),
+        (&lines[2], "watchdog-stop", "stopped"),
+        (&lines[3], "watchdog-stop", "not running"),
+    ] {
+        assert!(
+            line.contains(&format!(r#""action":"{action}""#)),
+            "missing action {action}: {line}"
+        );
+        // No `--pane` on these argv, so no calling pane is known.
+        assert!(line.contains(r#""actor":"human""#), "{line}");
+        assert!(
+            line.contains(&format!(r#""summary":"{summary}""#)),
+            "missing summary {summary}: {line}"
+        );
+        assert!(
+            !line.contains(r#""target""#),
+            "a target would un-quiet the named agent: {line}"
+        );
+        let event = ae::events::Event::parse_line(line).expect("the writer's JSON parses");
+        assert_eq!(event.alert_meaning(), ae::events::AlertMeaning::Undefined);
+    }
+}
+
+/// A refused start or stop is recorded too, and the refusal's exit code is
+/// unchanged by the audit.
+#[test]
+fn a_refused_start_and_stop_are_recorded_without_changing_the_outcome() {
+    // An append failure warns once and changes neither the outcome nor the
+    // exit code: the ledger is a directory here, so the audit cannot land.
+    let fail_scratch = scratch("wdfail");
+    let fail_root = fail_scratch.join("home");
+    let fail_dir = plant_session(&fail_root, "wdfail", &fail_scratch.join("no-such-socket"));
+    assert!(fs::create_dir_all(fail_dir.join("events.jsonl")).is_ok());
+    let (code, out, err) = watchdog(&fail_root, &["stop", "wdfail"]);
+    assert_eq!((code, out.trim()), (0, "Watchdog is not running."));
+    assert!(err.contains("ae: watchdog audit failed"), "{err}");
+    let _ = fs::remove_dir_all(&fail_scratch);
+
+    let scratch = scratch("wdref");
+    let _cleanup = Cleanup {
+        socket: socket_of(&scratch),
+        scratch: scratch.clone(),
+    };
+    // A server that answers nothing, with a pidfile claiming a daemon: every
+    // presence probe reads Unknown.
+    let root = scratch.join("home");
+    let meta_dir = plant_session(&root, "wdref", &scratch.join("no-such-socket"));
+    assert!(
+        fs::write(meta_dir.join(".watchdog.pid"), "424242\n").is_ok(),
+        "a pidfile no server speaks for"
+    );
+
+    let (code, _, err) = watchdog(&root, &["stop", "wdref"]);
+    assert_eq!(code, 1, "the refused stop keeps its exit code");
+    assert!(err.contains("tmux did not answer"), "{err}");
+    let (code, _, err) = watchdog(&root, &["start", "wdref"]);
+    assert_eq!(code, 0, "the skipped start keeps its exit code");
+    assert!(err.contains("start skipped"), "{err}");
+
+    let lines = events_of(&meta_dir);
+    assert_eq!(lines.len(), 2, "one refusal record per verb");
+    for (line, action) in [(&lines[0], "watchdog-stop"), (&lines[1], "watchdog-start")] {
+        assert!(
+            line.contains(&format!(r#""action":"{action}""#)),
+            "missing action {action}: {line}"
+        );
+        assert!(
+            line.contains("refused: tmux did not answer"),
+            "the outcome says refused: {line}"
+        );
+        assert!(!line.contains(r#""target""#), "{line}");
+    }
+}
+
 /// The `wdseed` session as a LAUNCH and a live daemon would have left it.
 ///
 /// The ownership pair the seed is proven against, the look the seed is rendered

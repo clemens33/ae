@@ -454,6 +454,9 @@ impl Event {
             // on a modal IS blocked on a human. The event summary and the
             // Notify line carry which seat and what to press.
             "human-prompt" => AlertMeaning::Raised(Reason::Blocked),
+            // The watchdog lifecycle's own audit (`watchdog-start` /
+            // `watchdog-stop`) falls through here: who turned it off or on
+            // carries no verdict about any agent. Pinned below.
             _ => AlertMeaning::Undefined,
         }
     }
@@ -1997,6 +2000,17 @@ mod tests {
                 event(action, Some("agent process dead — dropped to shell")).alert_meaning(),
                 AlertMeaning::Undefined,
                 "{action}: only `alert` may classify a summary"
+            );
+        }
+    }
+
+    #[test]
+    fn the_watchdog_lifecycle_audit_carries_no_watchdog_verdict() {
+        for action in ["watchdog-start", "watchdog-stop"] {
+            assert_eq!(
+                event(action, Some("agent process dead — dropped to shell")).alert_meaning(),
+                AlertMeaning::Undefined,
+                "{action}: who turned it off or on is not a verdict"
             );
         }
     }

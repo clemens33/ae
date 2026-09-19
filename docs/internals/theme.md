@@ -58,7 +58,8 @@ with one new word (`--activity` / `--memos`): same seven facts, same final
 proof, no new binding. Each opens a read-only dialog shaped like the settings
 quota dialog — keyless informational rows, one blank separator, `Close` — with
 the newest 10 activity records (`state`, `done`, `goal`, `spawn`, `retire`,
-`ask`, `review`, `reply`) or the latest memo per topic exactly as `ae brief`
+`relaunch`, `ask`, `review`, `reply`, `watchdog-start`, `watchdog-stop`) or
+the latest memo per topic exactly as `ae brief`
 computes it; a short client drops the oldest rows until the dialog fits.
 Correlation is the session-scoped
 `@ae_session_uuid` read through argv-only `show-options` and the `session_id`

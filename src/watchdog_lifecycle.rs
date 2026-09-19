@@ -28,6 +28,10 @@ const PANE_TITLE: &str = "ae watchdog";
 /// The start lock's name under the session's meta dir.
 const START_LOCK: &str = ".watchdog.start.lock";
 
+/// The event actions a start/stop records, whatever its outcome.
+const START_ACTION: &str = "watchdog-start";
+const STOP_ACTION: &str = "watchdog-stop";
+
 /// How long a starter blocks on the start lock before DEFERRING.
 const START_LOCK_WAIT: Duration = Duration::from_secs(15);
 
@@ -122,11 +126,11 @@ pub fn run(
         writeln!(err, "{USAGE}")?;
         return Ok(EXIT_USAGE);
     };
-    if target.is_empty() {
-        let caller_server = crate::doors::caller_server();
-        if let Some(own) = lifecycle::recorded_caller_session(root, caller_server.as_ref(), &pane) {
-            target = own;
-        }
+    let caller_server = crate::doors::caller_server();
+    if target.is_empty()
+        && let Some(own) = lifecycle::recorded_caller_session(root, caller_server.as_ref(), &pane)
+    {
+        target = own;
     }
     if target.is_empty() {
         writeln!(
@@ -160,8 +164,67 @@ pub fn run(
     };
     match action {
         Action::Status => status(&server, &target, &meta_dir, out),
-        Action::Start => start(&server, &target, &meta_dir, &knobs, out, err),
-        Action::Stop => stop(root, &server, &target, &meta_dir, out, err),
+        Action::Start => {
+            let caller = Caller::of(START_ACTION, caller_server.as_ref(), &pane);
+            start(&server, &target, &meta_dir, &knobs, &caller, out, err)
+        }
+        Action::Stop => {
+            let caller = Caller::of(STOP_ACTION, caller_server.as_ref(), &pane);
+            stop(root, &server, &target, &meta_dir, &caller, out, err)
+        }
+    }
+}
+
+/// Who asked — the facts every audit record carries.
+struct Caller<'a> {
+    action: &'static str,
+    actor: String,
+    pane: &'a str,
+}
+
+impl<'a> Caller<'a> {
+    fn of(action: &'static str, caller_server: Option<&ServerId>, pane: &'a str) -> Self {
+        Self {
+            action,
+            actor: actor_of(caller_server, pane),
+            pane,
+        }
+    }
+
+    /// One audit record for a start/stop that REACHED its decision, through the
+    /// one events writer. NO `target` (currency rule: this must not un-quiet
+    /// anyone); an append failure warns and never fails the command.
+    fn audit(&self, meta_dir: &Path, outcome: &str, err: &mut impl Write) {
+        let summary = if self.pane.is_empty() {
+            outcome.to_owned()
+        } else {
+            format!("{outcome} (pane {})", self.pane)
+        };
+        let now = crate::time::Timestamp::now();
+        let (actor, action) = (self.actor.as_str(), self.action);
+        let line = crate::tracked::event_line(&crate::tracked::EventFields::new(
+            now, actor, action, "", "", "", "", "", "", &summary, "",
+        ));
+        if let Err(why) = crate::store::open(meta_dir).append_event(&line) {
+            let _ = writeln!(err, "ae: watchdog audit failed: {why}");
+        }
+    }
+}
+
+/// The event's actor: the calling pane's ae stamp, or the human spelling
+/// every other audit uses when no agent called.
+fn actor_of(caller_server: Option<&ServerId>, pane: &str) -> String {
+    if pane.is_empty() {
+        return "human".to_owned();
+    }
+    let agent = caller_server
+        .and_then(|server| transport::observe_pane_owner(server, pane))
+        .map(|owner| owner.agent)
+        .unwrap_or_default();
+    if agent.is_empty() {
+        "human".to_owned()
+    } else {
+        agent
     }
 }
 
@@ -191,6 +254,7 @@ fn start(
     session: &str,
     meta_dir: &Path,
     knobs: &[String],
+    caller: &Caller,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> crate::Result<u8> {
@@ -205,6 +269,8 @@ fn start(
             err,
             "Watchdog start deferred: could not acquire the start lock (another start in progress)."
         )?;
+        let outcome = "refused: could not acquire the start lock (another start in progress)";
+        caller.audit(meta_dir, outcome, err);
         return Ok(0);
     };
     match presence(server, session, meta_dir) {
@@ -212,6 +278,8 @@ fn start(
             // Idempotent: confirm the meta flag and leave the live daemon's
             // status-right indicator alone.
             writeln!(out, "Watchdog is already running (pid {pid}).")?;
+            let outcome = format!("already running (pid {pid})");
+            caller.audit(meta_dir, &outcome, err);
             let _ = meta::rewrite(meta_dir, "watchdog", Some("true"));
             return Ok(0);
         }
@@ -220,6 +288,8 @@ fn start(
                 err,
                 "Watchdog start skipped — tmux did not answer, so a running watchdog cannot be ruled out."
             )?;
+            let outcome = "refused: tmux did not answer";
+            caller.audit(meta_dir, outcome, err);
             return Ok(0);
         }
         Presence::Stopped => {}
@@ -229,6 +299,8 @@ fn start(
     // watchdog-on-top / events-below.
     let Some(anchor) = session_launch::ensure_events_pane(server, session, meta_dir) else {
         writeln!(err, "Error: could not create watchdog pane")?;
+        let outcome = "refused: could not create watchdog pane";
+        caller.audit(meta_dir, outcome, err);
         return Ok(EXIT_FAILED);
     };
     let Some(command) = daemon_command(meta_dir, knobs) else {
@@ -236,6 +308,8 @@ fn start(
             err,
             "Error: no watchdog helper in the session and this process cannot name itself; nothing to run."
         )?;
+        let outcome = "refused: no watchdog helper and the core cannot name itself";
+        caller.audit(meta_dir, outcome, err);
         return Ok(EXIT_FAILED);
     };
     let (succeeded, stdout) = transport::run_tmux_op(&argv(
@@ -249,6 +323,8 @@ fn start(
     ));
     let Some(pane) = interpret_pane_id(succeeded, &stdout) else {
         writeln!(err, "Error: could not create watchdog pane")?;
+        let outcome = "refused: could not create watchdog pane";
+        caller.audit(meta_dir, outcome, err);
         return Ok(EXIT_FAILED);
     };
     // The stamp goes on BEFORE the daemon publishes its pidfile, so whenever a
@@ -274,6 +350,8 @@ fn start(
             err,
             "Error: watchdog did not publish a pidfile within the start bound; start aborted."
         )?;
+        let outcome = "refused: watchdog did not publish a pidfile within the start bound";
+        caller.audit(meta_dir, outcome, err);
         return Ok(EXIT_FAILED);
     }
     let _ = meta::rewrite(meta_dir, "watchdog", Some("true"));
@@ -281,6 +359,7 @@ fn start(
         out,
         "Watchdog started in hidden ae-monitor window. Use 'peek _watchdog' or 'peek _events' to inspect."
     )?;
+    caller.audit(meta_dir, "started", err);
     Ok(0)
 }
 
@@ -302,6 +381,7 @@ fn stop(
     server: &ServerId,
     session: &str,
     meta_dir: &Path,
+    caller: &Caller,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> crate::Result<u8> {
@@ -325,6 +405,8 @@ fn stop(
                 err,
                 "Error: tmux did not answer — the watchdog could not be stopped and may still be running."
             )?;
+            let outcome = "refused: tmux did not answer";
+            caller.audit(meta_dir, outcome, err);
             return Ok(EXIT_FAILED);
         }
         Presence::Stopped => {}
@@ -337,11 +419,14 @@ fn stop(
     // unanswerable server returns above rather than reaching this: a watchdog
     // that may still be running must not be described as absent.
     let _ = watchdog_daemon::seed_unwatched(server, session, root);
-    if stopped || !legacy.is_empty() {
+    let outcome = if stopped || !legacy.is_empty() {
         writeln!(out, "Watchdog stopped.")?;
+        "stopped"
     } else {
         writeln!(out, "Watchdog is not running.")?;
-    }
+        "not running"
+    };
+    caller.audit(meta_dir, outcome, err);
     let _ = meta::rewrite(meta_dir, "watchdog", Some("false"));
     Ok(0)
 }
@@ -431,8 +516,12 @@ fn stamped_pane(server: &ServerId, session: &str, agent: &str) -> PaneLook {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "tests read back what the door wrote; the boundary is on product code — see clippy.toml"
+)]
 mod tests {
-    use super::{Action, Presence, USAGE};
+    use super::{Action, Caller, Presence, START_ACTION, USAGE, actor_of};
 
     #[test]
     fn the_three_subcommands_are_the_whole_grammar() {
@@ -459,5 +548,34 @@ mod tests {
         // compare equal to a verified absence, because `start` acts on absence.
         assert_ne!(Presence::Unknown, Presence::Stopped);
         assert_ne!(Presence::Unknown, Presence::Running(1));
+    }
+
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let dir = std::path::PathBuf::from(format!("/tmp/ae-wdlife-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch meta dir");
+        dir
+    }
+
+    #[test]
+    fn an_unstamped_caller_is_the_human() {
+        assert_eq!(actor_of(None, ""), "human");
+        // A pane with no server to ask is unprovable, never an agent.
+        assert_eq!(actor_of(None, "%9"), "human");
+    }
+
+    #[test]
+    fn hostile_actor_bytes_cannot_escape_the_writers_json() {
+        let dir = scratch("hostile");
+        let caller = Caller {
+            action: START_ACTION,
+            actor: "a\"b\nc\x07".to_owned(),
+            pane: "%1",
+        };
+        caller.audit(&dir, "refused: x\"y", &mut Vec::new());
+        let body = std::fs::read_to_string(dir.join("events.jsonl")).expect("the audit line");
+        assert_eq!(body.lines().count(), 1, "still one line: {body:?}");
+        assert!(body.contains("(pane %1)"), "{body}");
+        crate::events::Event::parse_line(body.trim_end()).expect("the hostile line parses");
     }
 }
