@@ -350,6 +350,9 @@ fn parse_seat_records(stdin: &str, restored: bool) -> Result<Vec<SeatLines>, Str
             harness_session: optional(sid),
             config_home: None,
             config_home_base: None,
+            // `_meta-init` seats start in the session dir; only a spawn
+            // records an explicit target.
+            work_dir: None,
         });
     }
     Ok(seats)
@@ -606,7 +609,7 @@ fn add_seat(
         )?;
         return Ok(EXIT_USAGE);
     };
-    match add_seat_slot(dir, name, &profile, &binary, sid.as_deref()) {
+    match add_seat_slot(dir, name, &profile, &binary, sid.as_deref(), None) {
         Ok(slot) => {
             let mut body = match record(&["slot", &slot]) {
                 Ok(line) => line,
@@ -622,16 +625,22 @@ fn add_seat(
 /// Take the lowest free `spawned.<n>` for `name` and publish the seat, under
 /// one hold of the meta lock — the decision half of `add-seat`, as a value.
 ///
+/// A seat and its explicit target publish ATOMICALLY: one locked rewrite
+/// carries the seat rows and the `work_dir.<slot>` row together, so no
+/// seat-without-target state is ever observable. `None` records no row.
+///
 /// # Errors
 ///
 /// The refusal, phrased as [`refuse`] prints it: a bad or taken name, a v1 or
-/// doubtful roster, an unwritable meta, a control byte in a value.
+/// doubtful roster, an unwritable meta, a control byte in a value, or an
+/// unusable seat dir — every refusal lands before any write.
 pub fn add_seat_slot(
     dir: &Path,
     name: &str,
     profile: &str,
     binary: &str,
     sid: Option<&str>,
+    work_dir: Option<&str>,
 ) -> Result<String, String> {
     let _held = meta::lock(dir).map_err(|why| format!("cannot take the meta lock: {why}"))?;
     let text = text_of(dir)?;
@@ -658,6 +667,10 @@ pub fn add_seat_slot(
         }
     }
     let slot = format!("spawned.{}", lowest_free_spawned(&text));
+    let work_dir = match work_dir {
+        None => None,
+        Some(dir) => Some(meta::checked_seat_work_dir(&slot, dir)?),
+    };
     let mut next = text;
     if !next.is_empty() && !next.ends_with('\n') {
         next.push('\n');
@@ -673,6 +686,7 @@ pub fn add_seat_slot(
         harness_session: sid.map(ToOwned::to_owned),
         config_home: None,
         config_home_base: None,
+        work_dir,
     }]);
     // `render` opens the block it builds with `schema=2`.
     next.push_str(block.strip_prefix("schema=2\n").unwrap_or(&block));
@@ -1903,6 +1917,94 @@ mod tests {
         assert_eq!(
             Request::parse(&argv(&[LAUNCH_PLAN])),
             Request::LaunchPlan { tail: Vec::new() }
+        );
+    }
+
+    #[test]
+    fn add_seat_slot_publishes_seat_and_dir_in_one_rewrite() {
+        let scratch = Scratch::new("seat-dir-atomic");
+        scratch.file("meta", "schema=2\nseat.main=lead\nprofile.main=fable5\n");
+        let slot = super::add_seat_slot(
+            scratch.dir(),
+            "scout",
+            "fable5",
+            "claude",
+            None,
+            Some("/w/target"),
+        )
+        .expect("a seat");
+        assert_eq!(slot, "spawned.0");
+        let meta = scratch.meta();
+        assert!(meta.contains("seat.spawned.0=scout\n"), "{meta}");
+        assert!(meta.contains("work_dir.spawned.0=/w/target\n"), "{meta}");
+        // No seat-without-target state is observable: one publish, both rows.
+        let parsed = crate::meta::Meta::parse(&meta);
+        assert_eq!(parsed.roster().len(), 2);
+        assert_eq!(
+            parsed.roster()[1].work_dir,
+            crate::meta::RecordedWorkDir::Path("/w/target".into())
+        );
+    }
+
+    #[test]
+    fn add_seat_slot_refuses_a_bad_dir_before_any_write() {
+        let scratch = Scratch::new("seat-dir-refuse");
+        scratch.file("meta", "schema=2\nseat.main=lead\nprofile.main=fable5\n");
+        for bad in ["", "relative/path", "/x/\u{7}/y"] {
+            let before = scratch.meta();
+            let why =
+                super::add_seat_slot(scratch.dir(), "scout", "fable5", "claude", None, Some(bad))
+                    .expect_err("a refusal");
+            assert!(why.contains("work_dir"), "{why}");
+            assert_eq!(scratch.meta(), before, "the meta moved on a refusal");
+        }
+        // None records no row: today's shape, byte for byte.
+        let slot = super::add_seat_slot(scratch.dir(), "scout", "fable5", "claude", None, None)
+            .expect("a seat");
+        assert_eq!(slot, "spawned.0");
+        assert!(!scratch.meta().contains("work_dir."), "{}", scratch.meta());
+    }
+
+    #[test]
+    fn concurrent_add_seat_slot_allocates_distinct_slots() {
+        let scratch = Scratch::new("seat-dir-race");
+        scratch.file("meta", "schema=2\nseat.main=lead\nprofile.main=fable5\n");
+        let dir = scratch.dir();
+        let slots: Vec<String> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..4)
+                .map(|n| {
+                    scope.spawn(move || {
+                        super::add_seat_slot(
+                            dir,
+                            &format!("scout{n}"),
+                            "fable5",
+                            "claude",
+                            None,
+                            Some("/w/target"),
+                        )
+                        .expect("a seat")
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().expect("a thread"))
+                .collect()
+        });
+        let mut sorted = slots.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), 4, "slots collided: {slots:?}");
+        let parsed = crate::meta::Meta::parse(&scratch.meta());
+        assert_eq!(parsed.roster().len(), 5);
+        assert!(
+            parsed
+                .roster()
+                .iter()
+                .skip(1)
+                .all(|entry| matches!(entry.work_dir, crate::meta::RecordedWorkDir::Path(_))),
+            "a seat lost its dir: {:?}",
+            parsed.roster()
         );
     }
 }

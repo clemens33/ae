@@ -9,7 +9,9 @@ use std::io::{BufRead, BufReader, Read as _};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::meta::{RecordedClient, RecordedConfigHome, RecordedConfigHomeBase, RosterEntry};
+use crate::meta::{
+    RecordedClient, RecordedConfigHome, RecordedConfigHomeBase, RecordedWorkDir, RosterEntry,
+};
 use crate::quota::{Bounded, Budget};
 use crate::tool::{ToolKind, UsageSource};
 
@@ -1035,6 +1037,9 @@ fn add_retired(
                 RecordedConfigHomeBase::parse(&config_home_base)
             },
             binary: Some(tool),
+            // A retired seat is attributed, not located: its target lives in
+            // the retire event text, never in this struct.
+            work_dir: RecordedWorkDir::Missing,
         };
         let mut seat_budget = Budget::new();
         seats.extend(observe_entry(

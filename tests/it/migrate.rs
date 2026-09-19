@@ -1442,7 +1442,11 @@ fn an_ahead_meta_without_ae_core_keeps_old_helper_resolvable() {
     assert!(
         fs::write(
             dir.join("meta"),
-            "meta_version=3\nmode=local\nsession=version-only\nae_core_version=2026.9.9\n",
+            format!(
+                "{}={}\nmode=local\nsession=version-only\nae_core_version=2026.9.9\n",
+                ae::migrate::KEY,
+                ae::migrate::CURRENT + 1
+            ),
         )
         .is_ok()
     );
@@ -2044,4 +2048,26 @@ fn a_publish_starts_a_missing_watchdog_on_the_new_core() {
         }),
         "the recovery note is missing: {notes:?}"
     );
+}
+
+#[test]
+fn a_v3_meta_steps_to_v4_with_every_row_preserved() {
+    let rig = Rig::new("v3-to-v4");
+    let dir = rig.session("v3sess", "/nowhere/ae-core", Some(3));
+    let mut meta = meta_of(&dir);
+    meta.push_str("work_dir.main=/t\n");
+    assert!(fs::write(dir.join("meta"), meta).is_ok(), "a seat row");
+    let stepped = ae::migrate::session(&dir)
+        .expect("a step")
+        .expect("a migration");
+    assert_eq!(stepped, ae::migrate::Stepped::From(3));
+    let meta = meta_of(&dir);
+    assert!(
+        meta.contains(&format!("{}={}\n", ae::migrate::KEY, ae::migrate::CURRENT)),
+        "{meta}"
+    );
+    for row in ["work_dir=/w\n", "seat.main=lead\n", "work_dir.main=/t\n"] {
+        assert!(meta.contains(row), "{row} lost: {meta}");
+    }
+    assert_eq!(ae::migrate::session(&dir), Ok(None));
 }

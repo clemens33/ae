@@ -3,9 +3,11 @@
 //! The core side of `_meta-init`: given the seats a launch resolved, render the
 //! `schema=2` + `seat.<slot>` + `profile.<slot>` + `client.<slot>` +
 //! `harness_session.<slot>` + `agent_bin.<slot>` + `config_home.<slot>` +
-//! `config_home_base.<slot>` lines that [`crate::meta::init`] publishes in one
-//! rename. `client.<slot>` is written only when the launch honored a
-//! `profile@client` selection; its absence means no override was recorded.
+//! `config_home_base.<slot>` + `work_dir.<slot>` lines that
+//! [`crate::meta::init`] publishes in one rename. `client.<slot>` is written
+//! only when the launch honored a `profile@client` selection; its absence
+//! means no override was recorded. `work_dir.<slot>` is written only when the
+//! seat recorded an explicit target; its absence inherits the session dir.
 //! `agent.<slot>` is never written, and never read into a seat: a v1 meta is a
 //! session to start over from, not one to migrate.
 
@@ -30,6 +32,8 @@ pub struct SeatLines {
     pub config_home: Option<String>,
     /// The canonical effective `HOME` paired with an implicit config home.
     pub config_home_base: Option<String>,
+    /// The seat's explicit working directory, where one was recorded.
+    pub work_dir: Option<String>,
 }
 
 /// Render the v2 roster block for `seats`, in the order given.
@@ -57,6 +61,9 @@ pub fn render(seats: &[SeatLines]) -> String {
         if let Some(base) = &seat.config_home_base {
             let _ = writeln!(out, "config_home_base.{}={}", seat.slot, base);
         }
+        if let Some(dir) = &seat.work_dir {
+            let _ = writeln!(out, "work_dir.{}={}", seat.slot, dir);
+        }
     }
     out
 }
@@ -74,12 +81,16 @@ pub(crate) fn roster_doubting(a: &Anomaly) -> bool {
         "config_home.",
         "config_home_base.",
     ];
+    // `work_dir.<slot>` rows are NEVER identity doubt: a seat dir is not an
+    // identity, and the resolver owns its verdict. Doubting here would refuse
+    // a resume in preflight with a generic reason, before the rebuild could
+    // refuse with the shared restore-or-retire wording.
     match a {
         Anomaly::LegacyRoster { .. }
         | Anomaly::DuplicateName { .. }
         | Anomaly::InconsistentConfigHome { .. }
-        | Anomaly::MalformedRosterEntry { .. }
         | Anomaly::MalformedLine { .. } => true,
+        Anomaly::MalformedRosterEntry { key, .. } => !key.starts_with("work_dir."),
         Anomaly::DuplicateKey { key, .. } | Anomaly::UnknownKey { key, .. } => {
             IDENTITY_PREFIXES.iter().any(|p| key.starts_with(p))
         }
@@ -107,6 +118,7 @@ mod tests {
             harness_session: sid.map(ToOwned::to_owned),
             config_home: None,
             config_home_base: None,
+            work_dir: None,
         }
     }
 
@@ -189,5 +201,56 @@ mod tests {
             key: "telemetry.main".to_owned(),
             line: 9,
         }));
+    }
+
+    #[test]
+    fn render_writes_the_seat_dir_row_and_parses_back() {
+        let mut seats = [seat("main", "lead", "fable5", None, None)];
+        seats[0].work_dir = Some("/w/target".to_owned());
+        let block = render(&seats);
+        assert!(block.contains("work_dir.main=/w/target\n"), "{block}");
+        assert_eq!(
+            Meta::parse(&block).roster()[0].work_dir,
+            crate::meta::RecordedWorkDir::Path("/w/target".into())
+        );
+        // Absent stays absent: no row, and the block is byte-identical to the
+        // pre-seat-dir shape.
+        let seats = [seat("main", "lead", "fable5", None, None)];
+        let block = render(&seats);
+        assert!(!block.contains("work_dir."), "{block}");
+        assert_eq!(
+            Meta::parse(&block).roster()[0].work_dir,
+            crate::meta::RecordedWorkDir::Missing
+        );
+    }
+
+    #[test]
+    fn seat_dir_damage_never_doubts_the_roster() {
+        // A seat dir is not an identity: doubting here would refuse a resume
+        // in preflight with a generic reason, stealing the resolver's shared
+        // restore-or-retire wording. Every damage shape stays non-doubting.
+        for anomaly in [
+            crate::meta::Anomaly::DuplicateKey {
+                key: "work_dir.main".to_owned(),
+                line: 9,
+            },
+            crate::meta::Anomaly::UnknownKey {
+                key: "work_dir.main".to_owned(),
+                line: 9,
+            },
+            crate::meta::Anomaly::MalformedRosterEntry {
+                key: "work_dir.main".to_owned(),
+                line: 9,
+            },
+        ] {
+            assert!(!super::roster_doubting(&anomaly), "{anomaly:?}");
+        }
+        // Identity rows still doubt exactly as before.
+        assert!(super::roster_doubting(
+            &crate::meta::Anomaly::MalformedRosterEntry {
+                key: "seat.main".to_owned(),
+                line: 9,
+            }
+        ));
     }
 }

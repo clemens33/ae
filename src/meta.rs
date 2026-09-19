@@ -62,6 +62,18 @@ const PRIOR_TOOL_MAX: usize = 64;
 const PRIOR_TAG: char = ':';
 const CONFIG_HOME_PREFIX: &str = "config_home.";
 const CONFIG_HOME_BASE_PREFIX: &str = "config_home_base.";
+/// A seat's durable working directory (`work_dir.<slot>`): the canonical
+/// absolute path the seat starts in. Absence inherits the session `work_dir`;
+/// a present row is trusted only when sole, UTF-8, absolute and control-free.
+const SEAT_WORK_DIR_PREFIX: &str = "work_dir.";
+/// The defects a seat-dir row can carry — the parenthesised detail in the ONE
+/// refusal every operational consumer propagates verbatim.
+const SEAT_WORK_DIR_EMPTY: &str = "empty value";
+const SEAT_WORK_DIR_RELATIVE: &str = "not an absolute path";
+const SEAT_WORK_DIR_CONTROL: &str = "control characters";
+const SEAT_WORK_DIR_DUPLICATED: &str = "named more than once";
+const SEAT_WORK_DIR_NO_VALUE: &str = "no value";
+const SEAT_WORK_DIR_NON_UTF8: &str = "not UTF-8";
 /// The observed-model pair, as `key<slot>` — the model a live seat actually
 /// ran (`observed_model.`) and the profile's own model flag value at the time
 /// it was observed (`observed_model_pin.`). The two rows are ONE identity:
@@ -107,6 +119,35 @@ pub struct RosterEntry {
     pub config_home_base: RecordedConfigHomeBase,
     /// `agent_bin.<slot>` — the recorded binary, where the meta carries one.
     pub binary: Option<String>,
+    /// `work_dir.<slot>` — the seat's durable working directory.
+    pub work_dir: RecordedWorkDir,
+}
+
+/// What a seat's optional `work_dir.<slot>` row says.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum RecordedWorkDir {
+    /// No row recorded: the seat inherits the session `work_dir`.
+    #[default]
+    Missing,
+    /// A sole canonical absolute path, control-free.
+    Path(PathBuf),
+    /// A present row no value may be trusted from, with the defect the
+    /// evidence named — the detail [`resolve_seat_dir`]'s refusal carries.
+    Invalid(&'static str),
+}
+
+impl RecordedWorkDir {
+    pub(crate) fn parse(value: &str) -> Self {
+        if value.is_empty() {
+            Self::Invalid(SEAT_WORK_DIR_EMPTY)
+        } else if !Path::new(value).is_absolute() {
+            Self::Invalid(SEAT_WORK_DIR_RELATIVE)
+        } else if value.chars().any(char::is_control) {
+            Self::Invalid(SEAT_WORK_DIR_CONTROL)
+        } else {
+            Self::Path(PathBuf::from(value))
+        }
+    }
 }
 
 /// What a seat's optional `config_home.<slot>` row says.
@@ -275,6 +316,9 @@ struct PendingRow {
     /// A later duplicate of this metadata key was met, so its VALUE is
     /// invalidated.
     duplicated: bool,
+    /// False only for a bare row (no `=`): present but valueless. The key
+    /// alone cannot say so — keyed rows arrive already split.
+    has_value: bool,
 }
 
 /// How often a slot has been claimed by a `seat.<slot>` KEY: a second claim —
@@ -406,6 +450,7 @@ pub struct Meta {
     pending_config_homes: Vec<PendingRow>,
     pending_config_home_bases: Vec<PendingRow>,
     pending_clients: Vec<PendingRow>,
+    pending_work_dirs: Vec<PendingRow>,
     /// Every `seat.<slot>` KEY met so far — `=` or not, valid or not, first or
     /// repeated.
     claims: Vec<SlotClaim>,
@@ -466,6 +511,10 @@ impl Meta {
                 // A bare `agent.main` / `seat.main` is still a CLAIM on the
                 // slot, so it is noted before the line is refused.
                 meta.note_claim(raw, line, false);
+                // A bare seat-dir row reports ONLY its keyed verdict (which
+                // the resolver owns): a second MalformedLine anomaly would
+                // doubt the roster in preflight and steal the shared wording.
+                let bare_work_dir = raw.strip_prefix(SEAT_WORK_DIR_PREFIX).is_some();
                 let metadata = raw
                     .strip_prefix(CONFIG_HOME_PREFIX)
                     .map(|slot| (Metadata::ConfigHome, slot))
@@ -476,17 +525,34 @@ impl Meta {
                     .or_else(|| {
                         raw.strip_prefix(CLIENT_PREFIX)
                             .map(|slot| (Metadata::Client, slot))
+                    })
+                    .or_else(|| {
+                        raw.strip_prefix(SEAT_WORK_DIR_PREFIX)
+                            .map(|slot| (Metadata::WorkDir, slot))
                     });
                 if let Some((which, slot)) = metadata {
                     let already_seen = seen.iter().any(|previous| previous == raw);
                     if already_seen {
                         meta.invalidate(raw);
+                        // A repeated bare seat-dir row reports its duplicate:
+                        // MalformedLine is suppressed for this family, so
+                        // without this the invalidation would be silent.
+                        // DuplicateKey on `work_dir.` never doubts the
+                        // roster — the resolver still owns the verdict.
+                        if bare_work_dir {
+                            meta.anomalies.push(Anomaly::DuplicateKey {
+                                key: raw.to_owned(),
+                                line,
+                            });
+                        }
                     } else {
                         seen.push(raw.to_owned());
-                        meta.set_metadata(which, slot, raw, "", line);
+                        meta.set_metadata(which, slot, raw, "", line, false);
                     }
                 }
-                meta.anomalies.push(Anomaly::MalformedLine { line });
+                if !bare_work_dir {
+                    meta.anomalies.push(Anomaly::MalformedLine { line });
+                }
                 continue;
             };
             // Claims are judged on the raw key, BEFORE the duplicate check and
@@ -570,6 +636,11 @@ impl Meta {
                         entry.client = RecordedClient::Invalid;
                     }
                     self.mark_metadata_duplicated(key);
+                } else if let Some(slot) = key.strip_prefix(SEAT_WORK_DIR_PREFIX) {
+                    if let Some(entry) = self.roster.iter_mut().find(|e| e.slot == slot) {
+                        entry.work_dir = RecordedWorkDir::Invalid(SEAT_WORK_DIR_DUPLICATED);
+                    }
+                    self.mark_metadata_duplicated(key);
                 } else if let Some(slot) = key.strip_prefix(SEAT_PREFIX) {
                     // A doubly-named slot is a slot whose identity is in doubt,
                     // and agents[] membership is roster-defined —
@@ -618,9 +689,9 @@ impl Meta {
                 } else if let Some(slot) = key.strip_prefix(ROSTER_BIN_PREFIX) {
                     self.set_binary(slot, value);
                 } else if let Some(slot) = key.strip_prefix(PROFILE_PREFIX) {
-                    self.set_metadata(Metadata::Profile, slot, key, value, line);
+                    self.set_metadata(Metadata::Profile, slot, key, value, line, true);
                 } else if let Some(slot) = key.strip_prefix(HARNESS_SESSION_PREFIX) {
-                    self.set_metadata(Metadata::HarnessSession, slot, key, value, line);
+                    self.set_metadata(Metadata::HarnessSession, slot, key, value, line, true);
                 } else if key.strip_prefix(HARNESS_SESSION_PRIOR_PREFIX).is_some() {
                     // RAW, like the observed-model rows: the accessor is the
                     // one place the list is split and `valid_priors` the one
@@ -628,11 +699,13 @@ impl Meta {
                     self.harness_session_priors
                         .push((key.to_owned(), value.to_owned()));
                 } else if let Some(slot) = key.strip_prefix(CONFIG_HOME_PREFIX) {
-                    self.set_metadata(Metadata::ConfigHome, slot, key, value, line);
+                    self.set_metadata(Metadata::ConfigHome, slot, key, value, line, true);
                 } else if let Some(slot) = key.strip_prefix(CONFIG_HOME_BASE_PREFIX) {
-                    self.set_metadata(Metadata::ConfigHomeBase, slot, key, value, line);
+                    self.set_metadata(Metadata::ConfigHomeBase, slot, key, value, line, true);
                 } else if let Some(slot) = key.strip_prefix(CLIENT_PREFIX) {
-                    self.set_metadata(Metadata::Client, slot, key, value, line);
+                    self.set_metadata(Metadata::Client, slot, key, value, line, true);
+                } else if let Some(slot) = key.strip_prefix(SEAT_WORK_DIR_PREFIX) {
+                    self.set_metadata(Metadata::WorkDir, slot, key, value, line, true);
                 } else if let Some(slot) = key.strip_prefix(ROSTER_PREFIX) {
                     self.note_legacy(slot, line);
                 } else if let Some(slot) = key.strip_prefix(SEAT_PREFIX) {
@@ -718,6 +791,18 @@ impl Meta {
                     RecordedClient::parse(&row.value)
                 }
             });
+        let work_dir = take_pending(&mut self.pending_work_dirs, slot).map_or(
+            RecordedWorkDir::Missing,
+            |row| {
+                if row.duplicated {
+                    RecordedWorkDir::Invalid(SEAT_WORK_DIR_DUPLICATED)
+                } else if row.has_value {
+                    RecordedWorkDir::parse(&row.value)
+                } else {
+                    RecordedWorkDir::Invalid(SEAT_WORK_DIR_NO_VALUE)
+                }
+            },
+        );
         self.roster.push(RosterEntry {
             slot: slot.to_owned(),
             name: value.to_owned(),
@@ -727,6 +812,7 @@ impl Meta {
             config_home,
             config_home_base,
             binary,
+            work_dir,
         });
     }
 
@@ -767,6 +853,7 @@ impl Meta {
             &mut self.pending_config_homes,
             &mut self.pending_config_home_bases,
             &mut self.pending_clients,
+            &mut self.pending_work_dirs,
         ] {
             for row in list.iter_mut() {
                 if row.key == key {
@@ -797,11 +884,26 @@ impl Meta {
 
     /// Named per-seat metadata: attaches to its seat, or waits for one that has
     /// not been read yet.
-    fn set_metadata(&mut self, which: Metadata, slot: &str, key: &str, value: &str, line: usize) {
+    fn set_metadata(
+        &mut self,
+        which: Metadata,
+        slot: &str,
+        key: &str,
+        value: &str,
+        line: usize,
+        keyed: bool,
+    ) {
         let config_home = (which == Metadata::ConfigHome).then(|| RecordedConfigHome::parse(value));
         let config_home_base =
             (which == Metadata::ConfigHomeBase).then(|| RecordedConfigHomeBase::parse(value));
         let client = (which == Metadata::Client).then(|| RecordedClient::parse(value));
+        let work_dir = (which == Metadata::WorkDir).then(|| {
+            if keyed {
+                RecordedWorkDir::parse(value)
+            } else {
+                RecordedWorkDir::Invalid(SEAT_WORK_DIR_NO_VALUE)
+            }
+        });
         if slot.is_empty()
             || config_home
                 .as_ref()
@@ -812,6 +914,9 @@ impl Meta {
             || client
                 .as_ref()
                 .is_some_and(|value| *value == RecordedClient::Invalid)
+            || work_dir
+                .as_ref()
+                .is_some_and(|value| matches!(value, RecordedWorkDir::Invalid(_)))
         {
             self.anomalies.push(Anomaly::MalformedRosterEntry {
                 key: key.to_owned(),
@@ -835,6 +940,12 @@ impl Meta {
                 Metadata::Client => {
                     existing.client = client.unwrap_or(RecordedClient::Invalid);
                 }
+                Metadata::WorkDir => {
+                    // Unreachable `None`: `which` is WorkDir, so the verdict
+                    // above is `Some`. The fallback fails closed.
+                    existing.work_dir =
+                        work_dir.unwrap_or(RecordedWorkDir::Invalid(SEAT_WORK_DIR_EMPTY));
+                }
             }
             return;
         }
@@ -844,6 +955,7 @@ impl Meta {
             key: key.to_owned(),
             line,
             duplicated: false,
+            has_value: keyed,
         };
         match which {
             Metadata::Profile => self.pending_profiles.push(row),
@@ -851,6 +963,7 @@ impl Meta {
             Metadata::ConfigHome => self.pending_config_homes.push(row),
             Metadata::ConfigHomeBase => self.pending_config_home_bases.push(row),
             Metadata::Client => self.pending_clients.push(row),
+            Metadata::WorkDir => self.pending_work_dirs.push(row),
         }
     }
 
@@ -1099,6 +1212,7 @@ enum Metadata {
     ConfigHome,
     ConfigHomeBase,
     Client,
+    WorkDir,
 }
 
 /// A persisted epoch that can produce a meaningful age.
@@ -1110,6 +1224,105 @@ fn positive_epoch(value: Option<&str>) -> Option<i64> {
 fn take_pending(pending: &mut Vec<PendingRow>, slot: &str) -> Option<PendingRow> {
     let at = pending.iter().position(|row| row.slot == slot)?;
     Some(pending.swap_remove(at))
+}
+
+/// The record-side check for a seat-dir value: the same absolute/control-free
+/// rule the parser judges, refused with the shared wording before any write.
+pub(crate) fn checked_seat_work_dir(slot: &str, value: &str) -> Result<String, String> {
+    match RecordedWorkDir::parse(value) {
+        RecordedWorkDir::Path(path) => Ok(path.display().to_string()),
+        RecordedWorkDir::Invalid(detail) => Err(seat_work_dir_refusal(slot, detail)),
+        // `parse` judges a PRESENT value; only absence is Missing.
+        RecordedWorkDir::Missing => Err(seat_work_dir_refusal(slot, SEAT_WORK_DIR_EMPTY)),
+    }
+}
+
+/// The ONE wording for a present-but-unusable seat-dir row, with the defect
+/// the evidence named. Operational consumers propagate it verbatim.
+fn seat_work_dir_refusal(slot: &str, detail: &str) -> String {
+    format!(
+        "work_dir.{slot} is present but unusable ({detail}) — \
+         restore the recorded path or retire the seat."
+    )
+}
+
+/// The directory a seat starts in: its recorded `work_dir.<slot>`, or the
+/// session default when no row is recorded.
+///
+/// The ONE judge of a seat-dir row. Absence inherits, a recorded path is
+/// returned verbatim, and a present-but-unusable row refuses with the reason
+/// every operational consumer propagates. Recovery surfaces (retire, end)
+/// never call this — they read the row for audit and are never blocked by it.
+/// Absence means a KNOWN seat with no row: an unknown slot refuses, because a
+/// typoed slot silently inheriting the session dir is the wrong-repo hazard.
+///
+/// # Errors
+///
+/// The shared refusal when the slot's row is present but unusable, or the
+/// slot names no recorded seat at all.
+pub fn resolve_seat_dir(meta: &Meta, slot: &str) -> Result<String, String> {
+    let Some(entry) = meta.roster().iter().find(|entry| entry.slot == slot) else {
+        return Err(format!(
+            "no seat is recorded for slot '{slot}' — refusing a directory for an unknown seat."
+        ));
+    };
+    match &entry.work_dir {
+        RecordedWorkDir::Missing => Ok(meta.work_dir().unwrap_or(".").to_owned()),
+        RecordedWorkDir::Path(path) => Ok(path.display().to_string()),
+        RecordedWorkDir::Invalid(detail) => Err(seat_work_dir_refusal(slot, detail)),
+    }
+}
+
+/// The validated `work_dir.<slot>` row in raw meta bytes, for a rebuild that
+/// must judge the row BEFORE trusting a parse: `sole_value` answers `None`
+/// for a duplicate, an empty value and a lossy read alike, and any of those
+/// silently becoming absence would inherit the session dir (the wrong-repo
+/// hazard). So: no row is `Ok(None)`, one good row is carried, and anything
+/// else refuses with the shared wording — including a bare row, which the
+/// byte scan sees as a line without `=`.
+///
+/// # Errors
+///
+/// The shared refusal when the slot's row is present but unusable.
+pub fn raw_seat_work_dir(bytes: &[u8], slot: &str) -> Result<Option<String>, String> {
+    let key = format!("{SEAT_WORK_DIR_PREFIX}{slot}");
+    let mut valued: Option<&[u8]> = None;
+    let mut seen = 0u32;
+    for line in bytes.split(|byte| *byte == b'\n') {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        let bare = line == key.as_bytes();
+        if bare {
+            seen += 1;
+            continue;
+        }
+        let Some(value) = line
+            .strip_prefix(key.as_bytes())
+            .and_then(|rest| rest.strip_prefix(b"="))
+        else {
+            continue;
+        };
+        seen += 1;
+        valued = Some(value);
+    }
+    if seen == 0 {
+        return Ok(None);
+    }
+    if seen > 1 {
+        return Err(seat_work_dir_refusal(slot, SEAT_WORK_DIR_DUPLICATED));
+    }
+    let Some(value) = valued else {
+        return Err(seat_work_dir_refusal(slot, SEAT_WORK_DIR_NO_VALUE));
+    };
+    let value = std::str::from_utf8(value)
+        .map_err(|_| seat_work_dir_refusal(slot, SEAT_WORK_DIR_NON_UTF8))?;
+    // The VALUE verdict is the parser's own: one judge, no drift between the
+    // byte scan and the parsed read.
+    match RecordedWorkDir::parse(value) {
+        RecordedWorkDir::Path(_) => Ok(Some(value.to_owned())),
+        RecordedWorkDir::Invalid(detail) => Err(seat_work_dir_refusal(slot, detail)),
+        // `parse` judges a PRESENT value; only absence is Missing.
+        RecordedWorkDir::Missing => Err(seat_work_dir_refusal(slot, SEAT_WORK_DIR_EMPTY)),
+    }
 }
 
 /// The meta file's raw bytes — the read behind a single-key lookup, which
@@ -3634,6 +3847,187 @@ agent_bin.main=claude
                 meta_agent_role(damaged),
                 MetaAgentRole::Damaged,
                 "{damaged:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn seat_work_dir_row_parses_to_recorded_path() {
+        use super::{Meta, RecordedWorkDir};
+        let meta = Meta::parse("seat.main=lead\nwork_dir.main=/w/target\n");
+        assert!(meta.anomalies().is_empty());
+        assert_eq!(
+            meta.roster()[0].work_dir,
+            RecordedWorkDir::Path(std::path::PathBuf::from("/w/target"))
+        );
+        // A row read BEFORE its seat still attaches; spaces are content.
+        let meta = Meta::parse("work_dir.spawned.0=/w/with space\nseat.spawned.0=scout\n");
+        assert!(meta.anomalies().is_empty());
+        assert_eq!(
+            meta.roster()[0].work_dir,
+            RecordedWorkDir::Path(std::path::PathBuf::from("/w/with space"))
+        );
+        // No row is Missing, and the scalar row is untouched by the prefix.
+        let meta = Meta::parse("work_dir=/session\nseat.main=lead\n");
+        assert_eq!(meta.roster()[0].work_dir, RecordedWorkDir::Missing);
+        assert_eq!(meta.work_dir(), Some("/session"));
+    }
+
+    #[test]
+    fn seat_work_dir_malformed_values_are_invalid_and_reported() {
+        use super::{Anomaly, Meta, RecordedWorkDir};
+        for (bad, detail) in [
+            ("", "empty value"),
+            ("relative/path", "not an absolute path"),
+            ("/x/\u{7}/y", "control characters"),
+        ] {
+            let meta = Meta::parse(&format!("seat.main=lead\nwork_dir.main={bad}\n"));
+            assert_eq!(
+                meta.roster()[0].work_dir,
+                RecordedWorkDir::Invalid(detail),
+                "{bad:?}"
+            );
+            assert!(
+                meta.anomalies().iter().any(|a| matches!(
+                    a,
+                    Anomaly::MalformedRosterEntry { key, .. } if key == "work_dir.main"
+                )),
+                "{bad:?}: {:?}",
+                meta.anomalies()
+            );
+        }
+        // A bare row (no `=`) is PRESENT-but-valueless, never inherited. It
+        // reports ONLY its keyed verdict — no second MalformedLine that
+        // would doubt the roster and steal the shared wording.
+        let meta = Meta::parse("seat.main=lead\nwork_dir.main\n");
+        assert_eq!(
+            meta.roster()[0].work_dir,
+            RecordedWorkDir::Invalid("no value")
+        );
+        assert!(
+            meta.anomalies()
+                .iter()
+                .all(|a| !matches!(a, Anomaly::MalformedLine { .. })),
+            "{:?}",
+            meta.anomalies()
+        );
+        // A doubled row destroys trust in both.
+        let meta = Meta::parse("seat.main=lead\nwork_dir.main=/a\nwork_dir.main=/b\n");
+        assert_eq!(
+            meta.roster()[0].work_dir,
+            RecordedWorkDir::Invalid("named more than once")
+        );
+        assert!(
+            meta.anomalies().iter().any(|a| matches!(
+                a,
+                Anomaly::DuplicateKey { key, .. } if key == "work_dir.main"
+            )),
+            "{:?}",
+            meta.anomalies()
+        );
+    }
+
+    #[test]
+    fn mixed_keyed_and_bare_seat_dir_rows_report_duplicate_without_doubting() {
+        use super::{Anomaly, Meta, RecordedWorkDir};
+        for text in [
+            "seat.main=lead\nwork_dir.main=/a\nwork_dir.main\n",
+            "seat.main=lead\nwork_dir.main\nwork_dir.main=/a\n",
+            "seat.main=lead\nwork_dir.main\nwork_dir.main\n",
+        ] {
+            let meta = Meta::parse(text);
+            assert_eq!(
+                meta.roster()[0].work_dir,
+                RecordedWorkDir::Invalid("named more than once"),
+                "{text:?}"
+            );
+            assert!(
+                meta.anomalies().iter().any(|a| matches!(
+                    a,
+                    Anomaly::DuplicateKey { key, .. } if key == "work_dir.main"
+                )),
+                "{text:?}: {:?}",
+                meta.anomalies()
+            );
+            assert!(
+                meta.anomalies()
+                    .iter()
+                    .all(|a| !crate::roster::roster_doubting(a)),
+                "{text:?}: a seat-dir row must never doubt the roster"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_seat_dir_inherits_or_returns_recorded() {
+        use super::{Meta, resolve_seat_dir};
+        let meta = Meta::parse("work_dir=/session\nseat.main=lead\n");
+        assert_eq!(resolve_seat_dir(&meta, "main"), Ok("/session".to_owned()));
+        // An unknown slot FAILS CLOSED: absence means a known seat with no
+        // row, never a typo inheriting the session dir.
+        assert_eq!(
+            resolve_seat_dir(&meta, "spawned.9"),
+            Err("no seat is recorded for slot 'spawned.9' — \
+                 refusing a directory for an unknown seat."
+                .to_owned())
+        );
+        let meta = Meta::parse("work_dir=/session\nseat.main=lead\nwork_dir.main=/w/t\n");
+        assert_eq!(resolve_seat_dir(&meta, "main"), Ok("/w/t".to_owned()));
+        // No session scalar either: the process default, never an error.
+        let meta = Meta::parse("seat.main=lead\n");
+        assert_eq!(resolve_seat_dir(&meta, "main"), Ok(".".to_owned()));
+    }
+
+    #[test]
+    fn resolve_seat_dir_refuses_invalid_with_the_owned_reason() {
+        use super::{Meta, resolve_seat_dir};
+        let meta = Meta::parse("work_dir=/session\nseat.main=lead\nwork_dir.main=relative\n");
+        assert_eq!(
+            resolve_seat_dir(&meta, "main"),
+            Err(
+                "work_dir.main is present but unusable (not an absolute path) — \
+                 restore the recorded path or retire the seat."
+                    .to_owned()
+            )
+        );
+    }
+
+    #[test]
+    fn raw_seat_work_dir_judges_bytes_before_any_rebuild() {
+        use super::raw_seat_work_dir;
+        assert_eq!(raw_seat_work_dir(b"seat.main=lead\n", "main"), Ok(None));
+        assert_eq!(
+            raw_seat_work_dir(b"work_dir.main=/w\n", "main"),
+            Ok(Some("/w".to_owned()))
+        );
+        // CRLF: the carriage return is line ending, not value.
+        assert_eq!(
+            raw_seat_work_dir(b"work_dir.main=/w\r\n", "main"),
+            Ok(Some("/w".to_owned()))
+        );
+        // The scalar and near-miss keys never match a slotted scan.
+        assert_eq!(
+            raw_seat_work_dir(b"work_dir=/s\nwork_dir.mainx=/x\n", "main"),
+            Ok(None)
+        );
+        for (bytes, detail) in [
+            (
+                &b"work_dir.main=/a\nwork_dir.main=/b\n"[..],
+                "named more than once",
+            ),
+            (&b"work_dir.main=\n"[..], "empty value"),
+            (&b"work_dir.main\n"[..], "no value"),
+            (&b"work_dir.main=relative\n"[..], "not an absolute path"),
+            (&b"work_dir.main=/x/\x07/y\n"[..], "control characters"),
+            (&b"work_dir.main=/x/\xff\n"[..], "not UTF-8"),
+        ] {
+            assert_eq!(
+                raw_seat_work_dir(bytes, "main"),
+                Err(format!(
+                    "work_dir.main is present but unusable ({detail}) — \
+                     restore the recorded path or retire the seat."
+                )),
+                "{bytes:?}"
             );
         }
     }

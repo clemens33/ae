@@ -20,7 +20,7 @@
 //!
 //! A `schema=2`-only meta is therefore no longer merely STAMPED: it is placed
 //! at 2 by [`PRE_CHAIN`] and then STEPPED, so its report reads "migrated from
-//! 2 to 3" rather than "stamped". [`Stepped::Stamped`] stays for the day
+//! 2 to 4" rather than "stamped". [`Stepped::Stamped`] stays for the day
 //! `CURRENT` and `PRE_CHAIN` meet again.
 //!
 //! It runs wherever the core TOUCHES a session:
@@ -78,7 +78,7 @@ use crate::meta::{Selector, ServerSelector};
 pub const KEY: &str = "meta_version";
 
 /// The shape this core reads and writes.
-pub const CURRENT: u32 = 3;
+pub const CURRENT: u32 = 4;
 
 /// The shape a meta is at when it declares no [`KEY`] but does declare
 /// `schema=2`.
@@ -116,10 +116,16 @@ struct Step {
 /// A new step is `Step { from: N, apply: … }` plus a fixture in
 /// `tests/it/migrate.rs` that carries a real meta at N and asserts what N+1
 /// makes of it.
-const STEPS: &[Step] = &[Step {
-    from: 2,
-    apply: tag_priors,
-}];
+const STEPS: &[Step] = &[
+    Step {
+        from: 2,
+        apply: tag_priors,
+    },
+    Step {
+        from: 3,
+        apply: keep_v3_shape,
+    },
+];
 
 /// 2 -> 3: give every UNTAGGED predecessor the tool that owns it.
 ///
@@ -157,6 +163,19 @@ fn tag_priors(text: &str) -> Result<String, String> {
         }
     }
     Ok(out)
+}
+
+/// 3 -> 4: nothing moves. The seat-dir rows (`work_dir.<slot>`) are additive
+/// and every reader tolerates their absence, so the step is EMPTY on purpose —
+/// the bump itself is the guard: a CURRENT=3 core rebuilds the meta on resume
+/// and would silently drop rows it never enlisted, so it must refuse a v4
+/// meta as Ahead instead.
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "a Step's apply is fallible by type; this one keeps every row"
+)]
+fn keep_v3_shape(text: &str) -> Result<String, String> {
+    Ok(text.to_owned())
 }
 
 /// Why a meta could not be brought to [`CURRENT`].
@@ -265,7 +284,7 @@ fn version_of_row(value: &str) -> Result<u32, Refusal> {
 /// version and nothing needs writing.
 ///
 /// ```
-/// let current = ae::migrate::migrate("mode=local\nmeta_version=3\n");
+/// let current = ae::migrate::migrate("mode=local\nmeta_version=4\n");
 /// assert_eq!(current, Ok(None));
 /// assert!(ae::migrate::migrate("mode=local\n").is_err());
 /// ```
@@ -1249,5 +1268,41 @@ mod tests {
         ] {
             assert_eq!(version_of(foreign), None, "placed {foreign}");
         }
+    }
+
+    #[test]
+    fn the_3_to_4_step_keeps_every_row_byte_identical() {
+        assert_eq!(CURRENT, 4, "P1 bumps the chain for the seat-dir guard");
+        let text = "mode=local\nmeta_version=3\nwork_dir=/w\nseat.main=lead\nwork_dir.main=/t\n";
+        let migrated = migrate(text).expect("a step").expect("a migration");
+        assert_eq!(migrated.what, Stepped::From(3));
+        for row in [
+            "mode=local\n",
+            "work_dir=/w\n",
+            "seat.main=lead\n",
+            "work_dir.main=/t\n",
+        ] {
+            assert!(migrated.text.contains(row), "{row} lost: {}", migrated.text);
+        }
+        assert!(
+            migrated.text.contains(&format!("{KEY}=4\n")),
+            "{}",
+            migrated.text
+        );
+        assert_eq!(migrate(&migrated.text), Ok(None));
+    }
+
+    #[test]
+    fn a_schema_2_meta_walks_all_the_way_to_four() {
+        let migrated = migrate("mode=local\nschema=2\nseat.main=lead\n")
+            .expect("placed")
+            .expect("stepped");
+        assert_eq!(migrated.what, Stepped::From(PRE_CHAIN));
+        assert!(
+            migrated.text.contains(&format!("{KEY}={CURRENT}\n")),
+            "{}",
+            migrated.text
+        );
+        assert_eq!(migrate(&migrated.text), Ok(None));
     }
 }

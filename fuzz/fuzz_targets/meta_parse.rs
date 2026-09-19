@@ -24,4 +24,10 @@ fuzz_target!(|data: &[u8]| {
         }
         let _ = std::hint::black_box(ae::meta::priors_tagged(&raw, &text));
     }
+    // The seat-dir row is judged from RAW bytes before any parse trusts it:
+    // presence, duplication, bareness and UTF-8 are byte-level verdicts the
+    // resume enlistment refuses on. Same fixed slots as the roster reads.
+    for slot in ["main", "worker.0", "spawned.1"] {
+        let _ = std::hint::black_box(ae::meta::raw_seat_work_dir(data, slot));
+    }
 });

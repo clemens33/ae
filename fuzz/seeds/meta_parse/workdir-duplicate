@@ -1,0 +1,8 @@
+mode=local
+origin=/home/c/projects/ae
+work_dir=/home/c/projects/ae
+seat.main=lead
+profile.main=fablex
+agent_bin.main=claude
+work_dir.main=/a
+work_dir.main=/b

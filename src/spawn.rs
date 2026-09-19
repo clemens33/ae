@@ -348,14 +348,22 @@ pub fn run_spawn(
     // grammar, uniqueness and the lowest free index are decided under one hold
     // of the meta lock, BEFORE the pane exists, so the roster is never racy.
     let sid = (session_id != launch::PENDING).then_some(session_id.as_str());
-    let slot =
-        match crate::identity::add_seat_slot(dir, &parsed.name, &parsed.profile, &binary, sid) {
-            Ok(slot) => slot,
-            Err(why) => {
-                writeln!(err, "Error: {why}")?;
-                return Ok(EXIT_FAILED);
-            }
-        };
+    // No explicit target yet: `--dir` arrives in P2, and until then every
+    // spawn inherits the session dir exactly as today.
+    let slot = match crate::identity::add_seat_slot(
+        dir,
+        &parsed.name,
+        &parsed.profile,
+        &binary,
+        sid,
+        None,
+    ) {
+        Ok(slot) => slot,
+        Err(why) => {
+            writeln!(err, "Error: {why}")?;
+            return Ok(EXIT_FAILED);
+        }
+    };
     // The launch id guards observed-model writes for every seat. Capture tools
     // also use it to distinguish their own stores, but marker injection stays
     // gated by the adapter capability. Record it before the pane exists so

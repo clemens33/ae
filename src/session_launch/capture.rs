@@ -1547,6 +1547,7 @@ mod tests {
             config_home: crate::meta::RecordedConfigHome::Missing,
             config_home_base: crate::meta::RecordedConfigHomeBase::Missing,
             binary: Some(binary.to_owned()),
+            work_dir: crate::meta::RecordedWorkDir::Missing,
         }
     }
 

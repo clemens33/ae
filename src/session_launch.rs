@@ -3006,9 +3006,22 @@ fn build(
     // every unusable row, so an Invalid met here is a mid-flight hand edit —
     // and it still refuses rather than laundering toward Missing.
     let recorded_meta: Option<Meta> = if shape.resuming {
-        meta::read_bytes(&dir)
-            .ok()
-            .map(|bytes| Meta::parse(&String::from_utf8_lossy(&bytes)))
+        // A read failure refuses, never launders toward None: a later
+        // successful raw rebuild would drop the client rows and switch the
+        // seats' accounts.
+        let bytes = match meta::read_bytes(&dir) {
+            Ok(bytes) => bytes,
+            Err(why) => {
+                return rollback_launch(
+                    shape,
+                    &dir,
+                    &server,
+                    &format!("cannot read the meta to carry recorded clients: {why}"),
+                    err,
+                );
+            }
+        };
+        Some(Meta::parse(&String::from_utf8_lossy(&bytes)))
     } else {
         None
     };
@@ -3890,6 +3903,19 @@ fn meta_document(
             row("sweep_sec", seconds);
         }
     }
+    // The prior meta's raw bytes, read ONCE: the seat-dir enlistment below
+    // judges every launching slot against them. A fresh launch has no prior
+    // meta, which reads as no rows — but a RESUME that cannot read its meta
+    // must refuse rather than rebuild from nothing and silently drop rows.
+    let prior_meta = match meta::read_bytes(&dir) {
+        Ok(bytes) => bytes,
+        Err(_) if !shape.resuming => Vec::new(),
+        Err(why) => {
+            return Err(format!(
+                "could not read the prior meta to carry seat dirs forward: {why}"
+            ));
+        }
+    };
     for agent in launching {
         if !agent.launch_id.is_empty() {
             row(&format!("launch_id.{}", agent.slot), &agent.launch_id);
@@ -3926,6 +3952,16 @@ fn meta_document(
                 row(&key, &value);
             }
         }
+        // The seat-dir row carries from the RAW prior bytes, judged before any
+        // parse: a present-but-unusable row refuses the whole rebuild, and the
+        // caller publishes only on Ok — so the prior meta is never half-moved.
+        // Only absence inherits silently. The carried value is control-free by
+        // construction, so the row cannot corrupt the document.
+        match crate::meta::raw_seat_work_dir(&prior_meta, &agent.slot) {
+            Ok(Some(target)) => row(&format!("work_dir.{}", agent.slot), &target),
+            Ok(None) => {}
+            Err(why) => return Err(why),
+        }
     }
 
     let seats: Vec<roster::SeatLines> = launching
@@ -3939,6 +3975,9 @@ fn meta_document(
             harness_session: (!agent.session_id.is_empty()).then(|| agent.session_id.clone()),
             config_home: agent.config_home.clone(),
             config_home_base: agent.config_home_base.clone(),
+            // A launch never SETS a seat dir — only a spawn does, and the
+            // resume carry-forward above already wrote this slot's row.
+            work_dir: None,
         })
         .collect();
     if let Some(bad) = seats
@@ -4956,14 +4995,17 @@ struct Spawned {
 
 /// The `spawned.<n>` seats a resuming session's meta records, in slot order.
 ///
+/// Both callers resume-gate this: a fresh launch never asks. An unreadable
+/// meta therefore refuses — an empty list would rebuild without the spawned
+/// seats and drop their seat, dir and transcript rows for good.
+///
 /// # Errors
 ///
-/// An Invalid recorded client row, with its remedy — the meta rewrite would
-/// otherwise launder it.
+/// An unreadable meta, or an Invalid recorded client row with its remedy —
+/// the meta rewrite would otherwise launder it.
 fn spawned_entries(dir: &Path, session: &str) -> Result<Vec<Spawned>, String> {
-    let Ok(bytes) = meta::read_bytes(dir) else {
-        return Ok(Vec::new());
-    };
+    let bytes = meta::read_bytes(dir)
+        .map_err(|why| format!("cannot read the meta to restore spawned seats: {why}"))?;
     let text = String::from_utf8_lossy(&bytes).into_owned();
     let parsed = Meta::parse(&text);
     let mut out: Vec<Spawned> = Vec::new();
@@ -5130,6 +5172,7 @@ mod tests {
     };
     use crate::inventory::ServerId;
     use std::fmt::Write as _;
+    use std::os::unix::fs::PermissionsExt as _;
     use std::path::PathBuf;
 
     fn layout_words(layout: &str, panes: &[String], workers: usize) -> Vec<Vec<String>> {
@@ -5805,6 +5848,185 @@ mod tests {
         assert!(
             document.contains("observed_model_pin.main=fable\n"),
             "{document}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A resume rebuild's parts over a prior meta: the scratch root, the
+    /// session dir, and the launch inputs. The caller drives `meta_document`
+    /// itself — `resume_over` is the no-breakage shorthand.
+    fn resume_parts(
+        meta_text: &str,
+    ) -> (
+        PathBuf,
+        PathBuf,
+        super::Env,
+        super::Session,
+        [super::Launching; 1],
+        super::WatchdogFacts<'_>,
+    ) {
+        let root = scratch("seat-dir-document");
+        let home = root.join("home");
+        let dir = home.join("sessions").join("s");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("meta"), meta_text).unwrap();
+        let env = super::Env {
+            home: home.clone(),
+            cwd: PathBuf::from("/w"),
+            global: None,
+            local: None,
+            server_kind: String::new(),
+            server_value: String::new(),
+            caller_server: None,
+            inside_tmux: false,
+            attach: true,
+            core: None,
+            core_version: None,
+            no_autostart: true,
+            test_pre_lock_marker: None,
+        };
+        let shape = super::Session {
+            name: "s".to_owned(),
+            mode: super::Mode::Local,
+            work_dir: PathBuf::from("/w"),
+            origin: PathBuf::from("/o"),
+            layout: "vertical".to_owned(),
+            look: crate::theme::Look::DEFAULT,
+            resuming: true,
+            dir_created: false,
+        };
+        let launching = [super::Launching {
+            slot: "main".to_owned(),
+            name: "lead".to_owned(),
+            profile: "fable5".to_owned(),
+            client: None,
+            binary: "claude".to_owned(),
+            tool: ToolKind::Claude,
+            session_id: "sid".to_owned(),
+            config_home: None,
+            config_home_base: None,
+            launch_id: "L1".to_owned(),
+            pane: "%0".to_owned(),
+            command_snapshot: None,
+        }];
+        let watchdog = super::WatchdogFacts {
+            meta_agent: false,
+            sweep_sec: None,
+            quota_every_secs: "300",
+            idle_nudge_secs: "300",
+            quota: "on",
+        };
+        (root, dir, env, shape, launching, watchdog)
+    }
+
+    /// A resume rebuild over a prior meta: the session dir (kept, the caller
+    /// removes it), the prior bytes, and whatever the rebuild decided.
+    fn resume_over(meta_text: &str) -> (PathBuf, Vec<u8>, Result<String, String>) {
+        let (_root, dir, env, shape, launching, watchdog) = resume_parts(meta_text);
+        let before = std::fs::read(dir.join("meta")).unwrap();
+        let document = super::meta_document(&env, &shape, &launching, watchdog, None);
+        (dir, before, document)
+    }
+
+    #[test]
+    fn a_resume_document_carries_a_valid_seat_dir_forward() {
+        let (dir, _before, document) = resume_over(
+            "schema=2\nmeta_version=2\nmode=local\nsession=s\nsession_id=SID\ncreated=1\n\
+             started=1\nwork_dir=/w\norigin=/o\nseat.main=lead\nprofile.main=fable5\n\
+             agent_bin.main=claude\nharness_session.main=sid\nlaunch_id.main=L1\n\
+             work_dir.main=/w/target\n",
+        );
+        let document = document.expect("a resume document");
+        assert!(document.contains("work_dir.main=/w/target\n"), "{document}");
+        let root = dir
+            .parent()
+            .and_then(|sessions| sessions.parent())
+            .and_then(|home| home.parent())
+            .expect("a scratch root");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_resume_document_refuses_a_malformed_seat_dir_without_mutating() {
+        for bad in [
+            "work_dir.main=relative\n",
+            "work_dir.main=\n",
+            "work_dir.main=/a\nwork_dir.main=/b\n",
+        ] {
+            let (dir, before, document) = resume_over(&format!(
+                "schema=2\nmeta_version=2\nmode=local\nsession=s\nsession_id=SID\ncreated=1\n\
+                 started=1\nwork_dir=/w\norigin=/o\nseat.main=lead\nprofile.main=fable5\n\
+                 agent_bin.main=claude\nharness_session.main=sid\nlaunch_id.main=L1\n{bad}"
+            ));
+            let why = document.expect_err("a refusal");
+            assert!(why.contains("work_dir.main"), "{why}");
+            // Refuse BEFORE mutate: the rebuild failed while building its
+            // string, so the file still holds exactly the prior bytes.
+            assert_eq!(std::fs::read(dir.join("meta")).unwrap(), before);
+            let root = dir
+                .parent()
+                .and_then(|sessions| sessions.parent())
+                .and_then(|home| home.parent())
+                .expect("a scratch root");
+            let _ = std::fs::remove_dir_all(root);
+        }
+    }
+
+    #[test]
+    fn a_resume_that_cannot_read_its_meta_refuses_rather_than_dropping_rows() {
+        let (root, dir, env, shape, launching, watchdog) = resume_parts(
+            "schema=2\nmeta_version=2\nmode=local\nsession=s\nsession_id=SID\ncreated=1\n\
+             started=1\nwork_dir=/w\norigin=/o\nseat.main=lead\nprofile.main=fable5\n\
+             agent_bin.main=claude\nharness_session.main=sid\nlaunch_id.main=L1\n\
+             work_dir.main=/w/target\n",
+        );
+        std::fs::set_permissions(dir.join("meta"), std::fs::Permissions::from_mode(0o000)).unwrap();
+        let why =
+            super::meta_document(&env, &shape, &launching, watchdog, None).expect_err("a refusal");
+        assert!(why.contains("could not read the prior meta"), "{why}");
+        std::fs::set_permissions(dir.join("meta"), std::fs::Permissions::from_mode(0o600)).unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn spawned_entries_refuses_an_unreadable_meta_without_losing_rows() {
+        let (root, dir, _env, _shape, _launching, _watchdog) = resume_parts(
+            "schema=2\nmeta_version=2\nmode=local\nsession=s\nsession_id=SID\ncreated=1\n\
+             started=1\nwork_dir=/w\norigin=/o\nseat.main=lead\nprofile.main=fable5\n\
+             seat.spawned.0=scout\nprofile.spawned.0=fable5\n",
+        );
+        let before = std::fs::read(dir.join("meta")).unwrap();
+        std::fs::set_permissions(dir.join("meta"), std::fs::Permissions::from_mode(0o000)).unwrap();
+        let Err(why) = super::spawned_entries(&dir, "s") else {
+            panic!("an unreadable meta must refuse")
+        };
+        assert!(why.contains("cannot read the meta"), "{why}");
+        // Nothing was rebuilt from nothing: the bytes are intact and the
+        // spawned seat reads back whole once readable again.
+        std::fs::set_permissions(dir.join("meta"), std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(std::fs::read(dir.join("meta")).unwrap(), before);
+        let entries = super::spawned_entries(&dir, "s").expect("entries");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].slot, "spawned.0");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn solo_preflight_passes_seat_dir_damage_for_the_rebuild_to_refuse() {
+        // Ordering pin: a damaged seat-dir row is NOT identity doubt, so the
+        // resume preflight passes it and the REBUILD refuses with the shared
+        // restore-or-retire wording — never a generic doubtful-roster line.
+        let (root, dir, _env, _shape, _launching, _watchdog) = resume_parts(
+            "schema=2\nmeta_version=2\nmode=local\nsession=s\nsession_id=SID\ncreated=1\n\
+             started=1\nwork_dir=/w\norigin=/o\nseat.main=lead\nprofile.main=fable5\n\
+             agent_bin.main=claude\nharness_session.main=sid\nlaunch_id.main=L1\n\
+             work_dir.main=relative\n",
+        );
+        let identity = super::recorded_solo_identity(&dir).expect("preflight passes");
+        assert_eq!(
+            identity,
+            Some(("lead".to_owned(), "fable5".to_owned())),
+            "preflight must not steal the verdict"
         );
         let _ = std::fs::remove_dir_all(&root);
     }

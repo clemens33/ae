@@ -5768,7 +5768,8 @@ mod tests {
     use crate::events::Event;
     use crate::inventory::ServerId;
     use crate::meta::{
-        Meta, RecordedClient, RecordedConfigHome, RecordedConfigHomeBase, RosterEntry, Selector,
+        Meta, RecordedClient, RecordedConfigHome, RecordedConfigHomeBase, RecordedWorkDir,
+        RosterEntry, Selector,
     };
     use crate::procs::Descendancy;
     use crate::session::OwnWork;
@@ -6289,6 +6290,7 @@ mod tests {
             config_home,
             config_home_base,
             binary: Some(binary.to_owned()),
+            work_dir: RecordedWorkDir::Missing,
         }
     }
 
@@ -6853,6 +6855,7 @@ mod tests {
             config_home: RecordedConfigHome::Path(PathBuf::from("/tmp/cx")),
             config_home_base: RecordedConfigHomeBase::Missing,
             binary: Some("codex".to_owned()),
+            work_dir: RecordedWorkDir::Missing,
         };
         let identity = crate::quota::recorded_identity(&entry).expect("recorded identity");
         let mut observation = quota_observation(
@@ -7554,6 +7557,7 @@ mod tests {
             config_home: RecordedConfigHome::Path(PathBuf::from("/tmp/cx")),
             config_home_base: RecordedConfigHomeBase::Missing,
             binary: Some("codex".to_owned()),
+            work_dir: RecordedWorkDir::Missing,
         };
         let mut changed = base.clone();
         changed.harness_session = Some("018f1f70-7b2c-7000-8000-000000000002".to_owned());
@@ -7704,6 +7708,7 @@ mod tests {
             config_home: RecordedConfigHome::Missing,
             config_home_base: RecordedConfigHomeBase::Missing,
             binary: None,
+            work_dir: RecordedWorkDir::Missing,
         };
         let roster = [
             entry("main", "lead"),
@@ -7872,6 +7877,7 @@ mod tests {
             config_home: RecordedConfigHome::Path(PathBuf::from("/tmp/cx")),
             config_home_base: RecordedConfigHomeBase::Missing,
             binary: Some("codex".to_owned()),
+            work_dir: RecordedWorkDir::Missing,
         };
         let identity = crate::quota::recorded_identity(&entry).expect("recorded identity");
         let observation = quota_observation(
@@ -8029,6 +8035,7 @@ mod tests {
             config_home: RecordedConfigHome::Path(PathBuf::from("/tmp/cx")),
             config_home_base: RecordedConfigHomeBase::Missing,
             binary: Some("codex".to_owned()),
+            work_dir: RecordedWorkDir::Missing,
         };
         let identity = crate::quota::recorded_identity(&entry).expect("recorded identity");
         let mut observation = quota_observation(
@@ -8150,6 +8157,7 @@ mod tests {
             config_home: RecordedConfigHome::Path(PathBuf::from("/tmp/cx-recorded")),
             config_home_base: RecordedConfigHomeBase::Missing,
             binary: Some("codex".to_owned()),
+            work_dir: RecordedWorkDir::Missing,
         };
         let recorded = crate::quota::recorded_identity(&entry).expect("recorded identity");
         let current_source = Path::new("/tmp/cx-current/sessions");
@@ -8256,6 +8264,7 @@ mod tests {
             config_home: home,
             config_home_base: base,
             binary: Some(binary.to_owned()),
+            work_dir: RecordedWorkDir::Missing,
         };
         let explicit = crate::quota::recorded_identity(&entry(
             "claude",
@@ -11178,6 +11187,7 @@ mod tests {
             config_home: crate::meta::RecordedConfigHome::Missing,
             config_home_base: crate::meta::RecordedConfigHomeBase::Missing,
             binary: None,
+            work_dir: RecordedWorkDir::Missing,
         }
     }
 
@@ -11401,6 +11411,7 @@ mod tests {
             config_home: crate::meta::RecordedConfigHome::Missing,
             config_home_base: crate::meta::RecordedConfigHomeBase::Missing,
             binary: binary.map(str::to_owned),
+            work_dir: RecordedWorkDir::Missing,
         }
     }
 
@@ -12704,6 +12715,7 @@ mod tests {
             config_home: RecordedConfigHome::Path(PathBuf::from("/tmp/cx")),
             config_home_base: RecordedConfigHomeBase::Missing,
             binary: Some("codex".to_owned()),
+            work_dir: RecordedWorkDir::Missing,
         }
     }
 
