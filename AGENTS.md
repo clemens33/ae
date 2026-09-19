@@ -286,6 +286,10 @@ Name resolution takes the exact name, `%pane-id`, or `session:agent` / `@session
   turn stays, and it is PASSIVE: wording and reason at `src/launch.rs::initial_prompt_for`.
 - **agy's trust modal blocks the pane** until a human answers, and its trust list is
   exact-path. ae's context survives it (argv), and a spawn brief rides that same turn — no paste to lose.
+- **A seat resumes on the model the human switched to in its pane.** codex replays the observed id;
+  claude's display LABEL becomes the ONE configured pin VALUE it satisfies, among `[profiles]` whose
+  resolved command differs in the model flag's VALUE alone — else report-only, saying which refusal.
+  Effort is never followed; a vendor auto-fallback is. `launch_cmd::followed_pin_in`, `run::apply_observed_model`.
 - Meta v2 roster: `seat.<slot>` / `profile.<slot>` / `agent_bin.<slot>` / `harness_session.<slot>`,
   plus `harness_session_prior.<slot>` — up to four abandoned predecessor conversations, oldest
   first, with the current row cleared to `pending` when a resume falls back. Each element is
