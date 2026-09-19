@@ -233,35 +233,34 @@ pub struct Composed {
     /// the same box with an empty interior and no placeholder, so the markers
     /// here only name the placeholder PREFIX an empty interior may carry.
     pub markers: &'static [&'static str],
-    /// The modal dialogs that steal keystrokes from this composer: a dialog
-    /// open anywhere above the box refuses readiness even when the box itself
-    /// is drawn and empty.
+    /// The modal-dialog CHROME that refuses readiness: a header row carrying
+    /// the dismiss word with the body row below it, whatever the dialog's
+    /// title — a dialog open anywhere above the box refuses even when the box
+    /// itself is drawn and empty.
     pub dialog: DialogSig,
 }
 
-/// One tool's modal-dialog refusal signal: the dialogs whose open state
-/// refuses readiness although the composer is drawn and empty.
+/// One tool's modal-dialog refusal signal: the chrome whose open state
+/// refuses readiness although the composer is drawn and empty. Titles are
+/// deliberately NOT matched: the dialog family is open (pickers exist
+/// unmeasured), so a title list would be one drift point per dialog.
 ///
 /// Pub because [`Composed`] exposes it, and the public `wait_input_ready`
 /// probe takes that.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DialogSig {
-    /// Dialog titles that steal keystrokes, matched on the dialog's header
-    /// row beside [`DialogSig::dismiss`].
-    pub titles: &'static [&'static str],
-    /// The dismiss affordance the header row carries beside the title.
+    /// The dismiss affordance a dialog header row carries.
     pub dismiss: &'static str,
     /// The body row that must follow a matched header within [`DialogSig::gap`]
-    /// rows, so a transcript mention of a title alone never refuses.
+    /// rows, so a transcript mention of the dismiss word alone never refuses.
     pub body: &'static str,
     /// How many rows below the header the body may sit.
     pub gap: usize,
 }
 
 impl DialogSig {
-    /// No measured dialog: nothing is ever refused on its account.
+    /// No measured dialog chrome: nothing is ever refused on its account.
     pub const NONE: Self = Self {
-        titles: &[],
         dismiss: "",
         body: "",
         gap: 0,
@@ -270,7 +269,7 @@ impl DialogSig {
     /// Whether this carries no dialog signal.
     #[must_use]
     pub fn is_empty(self) -> bool {
-        self.titles.is_empty()
+        self.dismiss.is_empty() || self.body.is_empty()
     }
 }
 
@@ -852,17 +851,26 @@ const OPENCODE: ToolAdapter = ToolAdapter {
         // `┃` rails and `╹▀` bottom edge, owned by `region::composed_ui`;
         // this literal is the placeholder PREFIX an empty interior may carry
         // (the suggestion after it rotates per launch, and a seat with
-        // history draws no placeholder at all). The status row inside the box
-        // is excluded by POSITION, never matched. The dialogs below steal
-        // keystrokes while the box stays drawn and empty — a paste would land
-        // in the dialog's Search field — so either one open refuses. All UI
-        // text of ONE observed version, an inherited version-drift hazard: a
-        // renamed composer REFUSES visibly.
+        // history draws no placeholder at all). The row above the edge must
+        // also parse as the status grammar — position names it, the grammar
+        // proves it. Any dialog of the chrome below (measured: the Commands
+        // palette and the Sessions list) steals keystrokes while the box
+        // stays drawn and empty — a paste would land in the dialog's Search
+        // field — so an open one refuses. The permission prompt is the NAMED
+        // residual: unmeasured (a `true` turn ran unprompted under default
+        // config), and chrome keying would not cover it (no Search field).
+        // Tolerable because composed_ui gates only launch-shaped pastes —
+        // launch, spawn, brief_retry, and the launch recheck — all
+        // pre-first-turn, while send/ask/review never consult it. Widening:
+        // brief_retry fires up to 30 min post-spawn, so a seat that has
+        // since taken a turn reads composed where main refused it for the
+        // unrelated missing placeholder. All UI text of ONE observed
+        // version, an inherited version-drift hazard: a renamed composer
+        // REFUSES visibly.
         composed: Composed {
             anchor: ComposerAnchor::HeavyRail,
             markers: &["Ask anything…"],
             dialog: DialogSig {
-                titles: &["Commands", "Sessions"],
                 dismiss: "esc",
                 body: "Search",
                 gap: 3,
@@ -1493,7 +1501,6 @@ mod tests {
                             anchor: ComposerAnchor::HeavyRail,
                             markers: &["Ask anything…"],
                             dialog: DialogSig {
-                                titles: &["Commands", "Sessions"],
                                 dismiss: "esc",
                                 body: "Search",
                                 gap: 3,

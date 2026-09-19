@@ -8,10 +8,10 @@
   ┃                                                                                                                                                             $0.01 spent                             
   ┃  (no output)                                                                                                                                                                                        
   ┃                                                                                                                                                             ▼ MCP                                   
-                                                                                                                                                                • chrome-devtools Connected             
-     + Thought: 249ms                                                                                                                                           • context7 Connected                    
-                                                                                                                                                                • open-design Connected                 
-     Exit code 0.                                                                                                                                               • serena Connected                      
+                                                                                                                                                                • examplestool001 Connected             
+     + Thought: 249ms                                                                                                                                           • toolbox7 Connected                    
+                                                                                                                                                                • example-tl1 Connected                 
+     Exit code 0.                                                                                                                                               • demo01 Connected                      
                                                             Sessions                                                                     esc                                                            
      ▣  Build · DeepSeek V4.1 Flash · 4.6s                                                                                                                      LSP                                     
                                                             Search                                                                                              LSPs are disabled                       

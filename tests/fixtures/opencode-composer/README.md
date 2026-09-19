@@ -21,7 +21,10 @@ The two oldest frames are `capture-pane -e` bytes, the same serialisation
 `tests/fixtures/muse-composer/` uses. The five newer frames are PLAIN
 `capture-pane -p -J` bytes — the serialisation ae itself captures in
 production (`tmux::capture_pane_args`, no `-e`), so the identity grammar
-(which never strips SGR) reads them exactly as the watchdog would.
+(which never strips SGR) reads them exactly as the watchdog would. Scrubbed:
+the tmpdir became `/home/ocprobe`, and the sidebar's MCP server names became
+same-length synthetics (`examplestool001`, `toolbox7`, `example-tl1`,
+`demo01`) — geometry byte-identical, operator config gone.
 
 **What is load-bearing.** The boot frame must carry NEITHER marker below; the
 composed frame must carry the composer box. The logo block, the rotating
@@ -39,9 +42,11 @@ is narrower: a seat with history draws NO placeholder, so marker presence is
 never required — `Ask anything…` only names the placeholder PREFIX an empty
 interior may carry. All strings are ONE version's UI, so version drift is
 an INHERITED hazard this slice names rather than fixes: a renamed or restyled
-composer REFUSES visibly, which is the safe direction. The dialog titles
-(`Commands`, `Sessions`) carry the same hazard one row up: a renamed dialog
-stops refusing, so a new dialog chrome needs a new measured title here.
+composer REFUSES visibly, which is the safe direction. Dialogs are keyed on
+CHROME, not titles: any dialog pairing the `esc` dismiss word with a `Search`
+row refuses (measured: `Commands`, `Sessions`; unmeasured pickers share the
+family by construction). A dialog WITHOUT that chrome — the permission prompt
+has no `Search` field — needs its own measurement, not a title here.
 
 **The readiness moment was validated live** (2026-09-15, `ae-dev`, 80×24,
 opencode 1.18.31): a paste at composed-and-settled time lands in the composer

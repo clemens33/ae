@@ -543,16 +543,12 @@ fn current_opencode_identity(capture: &str) -> HarnessIdentity {
     let Some(rest) = clipped.strip_prefix('┃') else {
         return HarnessIdentity::default();
     };
-    let fields: Vec<&str> = rest.trim().split(" · ").collect();
-    let [mode, model, effort] = fields.as_slice() else {
+    let Some((model, effort)) = crate::deliver::region::heavy_rail_status(rest) else {
         return HarnessIdentity::default();
     };
-    if mode.is_empty() || model.is_empty() || !valid_effort(effort) {
-        return HarnessIdentity::default();
-    }
     HarnessIdentity {
-        model: Some((*model).to_owned()),
-        effort: Some((*effort).to_owned()),
+        model: Some(model.to_owned()),
+        effort: Some(effort.to_owned()),
     }
 }
 

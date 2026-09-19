@@ -7,10 +7,10 @@
                                                                                                                                                                 $0.01 spent                             
      ▣  Build · DeepSeek V4.1 Flash · 3.0s                                                                                                                                                              
                                                                                                                                                                 ▼ MCP                                   
-                                                                                                                                                                • chrome-devtools Connected             
-                                                                                                                                                                • context7 Connected                    
-                                                                                                                                                                • open-design Connected                 
-                                                                                                                                                                • serena Connected                      
+                                                                                                                                                                • examplestool001 Connected             
+                                                                                                                                                                • toolbox7 Connected                    
+                                                                                                                                                                • example-tl1 Connected                 
+                                                                                                                                                                • demo01 Connected                      
                                                                                                                                                                                                         
                                                                                                                                                                 LSP                                     
                                                                                                                                                                 LSPs are disabled                       

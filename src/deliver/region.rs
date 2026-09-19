@@ -605,8 +605,9 @@ fn is_box_edge(row: &str, table: BoxTable) -> bool {
 /// seat with history draws the same box with a blank interior and no
 /// placeholder at all — so marker PRESENCE is never required, and the markers
 /// only name the placeholder prefix an empty interior may carry. The status
-/// row (`Build · <model> · <effort>`) always sits directly above the edge and
-/// is excluded BY POSITION, never matched. At width 125 and above a session
+/// row (`Build · <model> · <effort>`) always sits directly above the edge:
+/// position names the candidate, the status grammar proves it, and a row
+/// that proves nothing is interior, not structure. At width 125 and above a session
 /// with history also draws a right sidebar whose text shares the box rows
 /// beyond the edge run, so every interior is clipped to the edge-run width
 /// before it is judged. A modal dialog (command palette, session list) leaves
@@ -629,16 +630,23 @@ fn heavy_rail_composer(rows: &[String], spec: Composed) -> bool {
     if edge - top < 2 {
         return false;
     }
-    let Some(width) = edge_run_width(&rows[edge]) else {
+    let Some(width) = edge_run_width(&rows[edge], table) else {
         return false;
     };
-    // Every rail row except the status row (directly above the edge) must be
+    let status = edge - 1;
+    // The row above the edge must PROVE it is the status row: position alone
+    // would exclude a draft sitting there. Every other rail row must be
     // blank or carry the placeholder; any other text is a human draft ae
     // must not paste into.
-    let status = edge - 1;
+    let proven = clipped_interior(&rows[status], table, width)
+        .is_some_and(|interior| heavy_rail_status(&interior).is_some());
+    if !proven {
+        return false;
+    }
     if !rows[top..status].iter().all(|row| {
-        let interior = clipped_interior(row, width);
-        trim_posix(&interior).is_empty() || starts_with_marker(&interior, spec.markers)
+        clipped_interior(row, table, width).is_some_and(|interior| {
+            trim_posix(&interior).is_empty() || starts_with_marker(&interior, spec.markers)
+        })
     }) {
         return false;
     }
@@ -646,14 +654,16 @@ fn heavy_rail_composer(rows: &[String], spec: Composed) -> bool {
 }
 
 /// The `▀`-run length of a heavy-rail bottom edge: the box's own width, which
-/// the sidebar never reaches. `None` when the row is no edge at all.
-fn edge_run_width(edge: &str) -> Option<usize> {
+/// the sidebar never reaches. `None` when the row is no edge at all —
+/// defensive only: the caller runs after [`is_box_edge`], which already
+/// proved the run non-empty, so `None` is unreachable there and refuses.
+fn edge_run_width(edge: &str, table: BoxTable) -> Option<usize> {
     let rest = edge
         .trim_start_matches(is_space)
-        .strip_prefix(BoxTable::HEAVY.edge.0)?;
+        .strip_prefix(table.edge.0)?;
     let run = rest
         .chars()
-        .take_while(|&cell| cell == BoxTable::HEAVY.edge.1)
+        .take_while(|&cell| cell == table.edge.1)
         .count();
     if run == 0 { None } else { Some(run) }
 }
@@ -661,13 +671,28 @@ fn edge_run_width(edge: &str) -> Option<usize> {
 /// What a heavy-rail row holds inside the box: past the left rail, clipped to
 /// the edge-run width so a wide sidebar never reads as box content. A wide
 /// (CJK) draft cell can pull one sidebar cell inside the clip — fail-closed.
-fn clipped_interior(row: &str, width: usize) -> String {
-    row.trim_start_matches(is_space)
-        .strip_prefix(BoxTable::HEAVY.rail)
-        .unwrap_or("")
-        .chars()
-        .take(width)
-        .collect()
+/// `None` when the row carries no rail: a rail-less row is content, never
+/// blank, so the caller refuses on it.
+fn clipped_interior(row: &str, table: BoxTable, width: usize) -> Option<String> {
+    let rest = row.trim_start_matches(is_space).strip_prefix(table.rail)?;
+    Some(rest.chars().take(width).collect())
+}
+
+/// Whether `interior` — a heavy-rail row with its rail stripped and clipped
+/// to the edge run — parses as the `mode · model · effort` status grammar,
+/// returning the model and effort it proves. Shared with
+/// [`crate::harness_state`], which reads the SAME row for the picker cell:
+/// one helper, so the composer proof and the identity read can never
+/// disagree about what a status row is.
+pub(crate) fn heavy_rail_status(interior: &str) -> Option<(&str, &str)> {
+    let fields: Vec<&str> = interior.trim().split(" · ").collect();
+    let [mode, model, effort] = fields.as_slice() else {
+        return None;
+    };
+    if mode.is_empty() || model.is_empty() || !crate::harness_state::is_effort_word(effort) {
+        return None;
+    }
+    Some((model, effort))
 }
 
 /// Whether the interior opens with one of the placeholder markers. Prefix,
@@ -678,19 +703,18 @@ fn starts_with_marker(interior: &str, markers: &[&str]) -> bool {
     markers.iter().any(|marker| trimmed.starts_with(marker))
 }
 
-/// Whether a measured modal dialog sits open above the composer: a header row
-/// carrying a dialog title and the dismiss word, with the body row within
-/// `gap` rows below it. Both halves are required, so a transcript mention of
-/// a title alone never refuses.
+/// Whether a modal dialog sits open above the composer, keyed on CHROME
+/// alone: a header row carrying the dismiss word as a bounded word, with the
+/// body row within `gap` rows below it. No title list: the dialog family is
+/// open (model/agent/theme pickers exist unmeasured), so titles would be one
+/// drift point per dialog. Both halves are required, so a transcript mention
+/// of the dismiss word alone never refuses.
 fn dialog_open(rows: &[String], dialog: &DialogSig) -> bool {
     if dialog.is_empty() {
         return false;
     }
     rows.iter().enumerate().any(|(at, row)| {
-        dialog
-            .titles
-            .iter()
-            .any(|title| dialog_header(row, title, dialog.dismiss))
+        bounded_word_from(row, 0, dialog.dismiss)
             && ((at + 1)..=(at + dialog.gap)).any(|next| {
                 rows.get(next)
                     .is_some_and(|body| dialog_body(body, dialog.body))
@@ -698,35 +722,32 @@ fn dialog_open(rows: &[String], dialog: &DialogSig) -> bool {
     })
 }
 
-/// Whether `row` opens with the dialog `body` as a bounded word. Prefix, not
-/// equality: on a wide session the sidebar shares the body's row past the
-/// dialog's own columns.
+/// Whether `row` carries the dialog `body` as a bounded word anywhere on it:
+/// transcript remnants survive LEFT of dialog rows (the narrow palette's
+/// header proves it) and the sidebar shares the row to the RIGHT on a wide
+/// session, so the body is neither start- nor end-anchored.
 fn dialog_body(row: &str, body: &str) -> bool {
-    trim_posix(row).strip_prefix(body).is_some_and(|rest| {
-        rest.chars()
-            .next()
-            .is_none_or(|cell| !cell.is_alphanumeric())
-    })
+    bounded_word_from(row, 0, body)
 }
 
-/// Whether `row` carries the dialog `title` with the `dismiss` word after it
-/// as a bounded word — a substring inside a longer word (`describe`) is not
-/// the dismiss affordance.
-fn dialog_header(row: &str, title: &str, dismiss: &str) -> bool {
-    let Some(title_at) = row.find(title) else {
+/// Whether `word` occurs in `row` at or after `from` as a bounded word: both
+/// neighbours must be row edges or non-alphanumeric, so a substring inside a
+/// longer word never matches. An empty word never matches.
+fn bounded_word_from(row: &str, from: usize, word: &str) -> bool {
+    if word.is_empty() {
         return false;
-    };
-    let mut from = title_at + title.len();
-    while let Some(relative) = row[from..].find(dismiss) {
-        let at = from + relative;
+    }
+    let mut start = from.min(row.len());
+    while let Some(relative) = row[start..].find(word) {
+        let at = start + relative;
         let left = row[..at].chars().last();
-        let right = row[at + dismiss.len()..].chars().next();
+        let right = row[at + word.len()..].chars().next();
         if left.is_none_or(|cell| !cell.is_alphanumeric())
             && right.is_none_or(|cell| !cell.is_alphanumeric())
         {
             return true;
         }
-        from = at + dismiss.len();
+        start = at + word.len();
     }
     false
 }
@@ -1462,6 +1483,12 @@ mod tests {
         let quoted = "  ┃\n  ┃  reply with the single word ok\n  ┃\nplain transcript\n";
         assert!(!composed_ui(quoted, OPENCODE));
 
+        // Main's ORIGINAL two-rail box: `write here` sits directly above the
+        // edge, where the status row would be — but it parses as no status
+        // grammar, so it is interior and the box refuses.
+        let original = "❯ Ask anything… quoted from an earlier turn\n\n   ┃\n   ┃  write here\n   ╹▀▀▀▀▀\n   tab agents\n";
+        assert!(!composed_ui(original, OPENCODE));
+
         // A marker visible ABOVE a drawn box does not grant readiness, and a
         // marker NAMING the box's own draft text does not either: the empty
         // interior owns the answer now, not marker presence. (`write here`
@@ -1618,6 +1645,9 @@ mod tests {
 
     #[test]
     fn an_open_dialog_refuses_despite_a_drawn_and_empty_box() {
+        // The narrow palette overlays an interior row, so it refuses on the
+        // interior rule too; the dialog-only refusal is pinned synthetically
+        // above and by the clean wide session list below.
         assert!(
             OPENCODE_PALETTE.contains("Commands"),
             "the palette is load-bearing"
@@ -1660,6 +1690,27 @@ mod tests {
             !composed_ui(&frame(&format!("{header}\n     Search\n")), OPENCODE),
             "header plus body within the gap refuses"
         );
+        assert!(
+            !composed_ui(&frame(&format!("{header}\n▣  Bu    Search\n")), OPENCODE),
+            "transcript remnants left of the body do not hide the dialog"
+        );
+    }
+
+    #[test]
+    fn an_unmeasured_dialog_is_refused_on_chrome_alone() {
+        // A 150-wide clean box, modelling the wide case where a dialog never
+        // touches the box; the picker title is one ae never measured.
+        let edge = format!("  ╹{}", "▀".repeat(150));
+        let picker = format!(
+            "     Models                                   esc\n\n     Search\n\n  ┃\n  ┃\n  ┃  Build · m · max\n{edge}\n"
+        );
+        assert!(!composed_ui(&picker, OPENCODE));
+        // But a bare `esc` mention with no Search body within the gap is
+        // transcript talk, not a dialog.
+        let mention = format!(
+            "press esc to cancel\nplain transcript\nmore\nstill more\n  ┃\n  ┃\n  ┃  Build · m · max\n{edge}\n"
+        );
+        assert!(composed_ui(&mention, OPENCODE));
     }
 
     #[test]
