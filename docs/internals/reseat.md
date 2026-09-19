@@ -236,71 +236,51 @@ the seat named on the argv.
 
 ## Carrying the conversation between two accounts (`src/carry.rs`)
 
-`reseat` was built for a TOOL change, where the successor cannot read the
-predecessor's store. When the two profiles run the SAME binary and differ only
-in their config home — one login to another, the move a dead vendor quota
-forces — that loss has no cause: the conversation is a set of ordinary files in
-a directory ae already knows the path of. So it is COPIED.
+`src/carry.rs` owns this and states its own rules; what belongs here is the
+evidence it rests on, the ladder, and what is deliberately left open.
 
 MEASURED 2026-09-19, claude 2.1.278: a transcript copied into another config
 home's `projects/<key>/` is found by `--resume <uuid>`, the id is global to the
-store, and the resume APPENDS. Claude is the ONLY tool this is true of as far
-as ae has evidence; `ToolAdapter::carry` is where that per-tool fact lives, and
-every other row is `NotPortable`. codex and muse look portable on paper and are
-unmeasured; agy, gemini and opencode keep stores ae has not characterized.
+store, and the resume APPENDS. That is the whole basis, and it is claude's
+alone — `ToolAdapter::carry` is where the per-tool fact lives and every other
+row is `NotPortable`. codex and muse look portable on paper and are unmeasured;
+agy, gemini and opencode keep stores ae has not characterized.
 
-`carry::plan` is pure and its `None` is SILENT — an ordinary tool change, a move
-inside one account, a seat whose id is not a grammar-proven UUID, or a tool
-whose store is not portable all behave exactly as they did before this existed.
-It carries only when the recorded `agent_bin` EQUALS the binary the new profile
-lexes to (the claim being made is that the successor reads the predecessor's own
-files, so the tool class is not enough), the adapter declares the file set
-portable, the id passes `capture::is_lowercase_uuid`, and both accounts resolve
-to usable paths that DIFFER.
+The ladder, all of it under the lifecycle lock the verb already holds:
 
-The target account is resolved with a CONTROLLED lookup — `HOME` and nothing
-else — because `reseat` runs in the caller's process and the caller's
-environment is not the pane's; the source comes from the seat's RECORDED row,
-because for a retained conversation the record is what names the store.
+1. `carry::plan`, pure, and its `None` is SILENT — an ordinary tool change, a
+   move inside one account, an id that is not a grammar-proven UUID, or a
+   non-portable store all behave exactly as they did before this existed. It
+   carries only when the recorded `agent_bin` EQUALS the binary the new profile
+   lexes to, the adapter says portable, `capture::is_lowercase_uuid` passes, and
+   both accounts resolve to usable paths that DIFFER;
+2. the conversation's bytes are read, and the target project directory
+   classified, before anything is written;
+3. sidecars, then project memory, then — LAST — the transcript, which is the
+   COMMIT MARKER: a crash before it leaves the target with nothing findable, so
+   the next attempt re-copies, finds its own files identical and commits;
+4. back in `reseat`: no seed pack, the start marker PUT BACK, and one guarded
+   meta replacement that keeps the conversation and rewrites the store rows.
 
-Paths are COMPUTED, never searched for, from `carry::project_key` — the one
-owner of `cwd with '/' as '-'`, which `rename.rs` also reads. It matches AE'S
-OWN PROBE (`run::resumable`) rather than claude's internal rule, which resolves
-symbolic links first: the copy exists to be found by that probe, so a divergence
-would put the file where nothing looks. When the two rules disagree — a working
-copy reached through a link — the transcript is simply not at this key and the
-carry refuses, which is honest: that seat could not be exact-resumed in its OLD
-account either. `run::resumable` still spells the rule inline; pointing it at
-the owner is a named residual, guarded meanwhile by a source-scan pin in
-`tests/it/doors.rs`.
+Two decisions worth the ink. The target account is resolved with a CONTROLLED
+lookup — `HOME` and nothing else — because `reseat` runs in the caller's process
+and the caller's environment is not the pane's; the source comes from the seat's
+RECORDED row, because for a retained conversation the record is what names the
+store. And paths are COMPUTED from `carry::project_key`, never searched for,
+which is what makes the result resumable: `project_key` matches AE'S OWN PROBE
+(`run::resumable`) rather than claude's internal rule, which resolves symbolic
+links first. When the two disagree — a working copy reached through a link — the
+transcript is not at this key and the carry refuses, which is honest: that seat
+could not be exact-resumed in its OLD account either.
 
-Four rules hold the module up:
-
-1. **bytes, never structure** — nothing is parsed, so this adds no parser and
-   owes no fuzz target;
-2. **no link is followed** — every node is `symlink_metadata`'d before it is
-   read, written or descended;
-3. **nothing in the target is overwritten** — a node already there is either
-   byte-identical (an earlier attempt, left exactly as it is, mtime included)
-   or it belongs to something else, and then the carry refuses;
-4. **the copy set is BINDING** — the transcript and every sidecar the source
-   has. A source that is not there is no failure; a read, a write or a target
-   ae cannot explain abandons the whole carry.
-
-THE TRANSCRIPT IS THE COMMIT MARKER. Sidecars and project memory go first and
-the transcript last, so a crash in the middle leaves the target with no
-conversation — nothing the tool or ae will find, and nothing that makes the next
-attempt refuse. That attempt re-copies, finds its own earlier files identical,
-no-ops over them and commits. Every file is published temp-then-rename for the
-same reason: a half-written sidecar would be neither identical nor explicable.
-
-Project `memory/` is not uuid-keyed — it belongs to the working copy and is
-shared by every conversation in that account — so it is copied only into an
-account that has none. An existing one is KEPT and said. Two accounts'
-memories are NEVER merged: that could not be undone by hand.
+RESIDUAL: `run::resumable` still spells the project key inline, so
+`carry::project_key` is the owner in fact but not yet by construction. Pointing
+it there is queued; meanwhile `tests/it/doors.rs` holds a tripwire over the
+duplicate that names the owner when it drifts.
 
 The human's rulings, 2026-09-19: typing the move with the other account's
 profile IS the consent, so ae prompts for nothing and prints ONE line naming the
-crossing; a copy that fails falls back LOUDLY to the seed path and the move
-still happens; there is no model-availability pre-check, because the existing
-post-launch identity reading is the check.
+crossing; project `memory/` is copied only into an account that has none and is
+NEVER merged; a copy that fails falls back LOUDLY to the seed path and the move
+still happens; and there is no model-availability pre-check, because the
+existing post-launch identity reading is the check.

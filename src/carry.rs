@@ -39,12 +39,8 @@
 //! half-written sidecar would be neither identical nor explicable, and would
 //! turn one interrupted carry into a permanent seeded fallback.
 //!
-//! The paths are COMPUTED, never searched for, and that is what makes the
-//! result resumable: the transcript lands at exactly the path
-//! `run::resumable`'s `StoreProbe::ProjectTranscript` will read once the pane
-//! is respawned into the seat's recorded working copy. A conversation whose
-//! file is not at that key is one ae could not have exact-resumed in the OLD
-//! home either, and it refuses rather than copying a file nothing will look at.
+//! The paths are COMPUTED, never searched for — see [`project_key`], which owns
+//! that spelling and the reason the carry refuses when it cannot compute one.
 
 use std::path::{Path, PathBuf};
 
