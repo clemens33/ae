@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.148] - 2026-09-19
+- Align fleet menu agent rows into client/model/effort columns
+- Fit the menualign tables to the format width
+- Restore legacy layout for observation-free rosters; reclaim dead squeeze gaps
+
 ## [v2026.9.147] - 2026-09-19
 - Name which half of the quiet gate held an abandoned delivery
 
