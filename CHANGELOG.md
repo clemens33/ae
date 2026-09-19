@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.138] - 2026-09-19
+- Draw the carried drift mark in picker model cells
+
 ## [v2026.9.137] - 2026-09-19
 - Bind the agy transcript verdicts on the history stream
 - Let the agy read-once line win over the missing-replies line
