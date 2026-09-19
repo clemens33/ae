@@ -86,10 +86,29 @@ fn plant_store(rig: &Rig, home: &Path) {
 /// pins read is the state this verb is handed rather than whatever `_run`'s
 /// own create path happened to record.
 fn dead_seat(rig: &Rig) -> String {
+    planted_seat(rig, Liveness::Dead)
+}
+
+/// The same seat with its tool STILL RUNNING, so the move has to stop it first
+/// and writes the stop's own record on the way. That record is the one a carry
+/// must not let speak about the conversation.
+fn running_seat(rig: &Rig) -> String {
+    planted_seat(rig, Liveness::Running)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Liveness {
+    Dead,
+    Running,
+}
+
+fn planted_seat(rig: &Rig, liveness: Liveness) -> String {
     rig.seat_rows("spawned.0", "scout", "claude-a", "claude");
     let pane = rig.new_pane("spawned.0", "scout");
     rig.start(&pane, "spawned.0", "claude");
-    rig.kill_tools(&pane);
+    if liveness == Liveness::Dead {
+        rig.kill_tools(&pane);
+    }
     let meta = rig.dir.join("meta");
     let text = std::fs::read_to_string(&meta).unwrap_or_default();
     // REPLACED, never appended. `_run` records rows of its own at a first
@@ -135,6 +154,48 @@ fn reseat(rig: &Rig, profile: &str) -> (Option<i32>, String, String) {
         &rig.main_pane.clone(),
         &["reseat", &rig.session, "scout", "--using", profile],
     )
+}
+
+#[test]
+fn a_running_seats_stop_record_says_nothing_about_the_conversation_it_carries() {
+    // THE OTHER RECORD. A seat whose tool is still running is STOPPED first,
+    // and that stop is audited the moment the pane is back at its shell —
+    // BEFORE the carry verdict exists. It therefore cannot name the
+    // conversation truthfully, so it names none at all: `prior` there would
+    // call a conversation abandoned while ae was in the middle of carrying it.
+    let rig = Rig::new("carrystop");
+    let pane = running_seat(&rig);
+
+    let (code, out, err) = reseat(&rig, "fake-claude-b");
+
+    assert_eq!(
+        code,
+        Some(0),
+        "out={out} err={err}\nframe was:\n{}",
+        rig.capture(&pane)
+    );
+    assert!(out.contains("carried conversation"), "it carried: {out}");
+    let events = rig.events();
+    // THE STOP HAPPENED, and is on the record — this pin is worth nothing if
+    // the seat was never running in the first place.
+    let stop = events
+        .lines()
+        .find(|line| line.contains("stopped claude in place"))
+        .unwrap_or_else(|| panic!("the running tool was stopped and audited:\n{events}"));
+    assert!(
+        !stop.contains(ID),
+        "the stop record names no conversation at all: {stop}"
+    );
+    // NOWHERE, on any record: the conversation this move carried is live.
+    assert!(
+        !events.contains(&format!("prior {ID}")),
+        "nothing calls the carried conversation prior:\n{events}"
+    );
+    // And the MOVE record still says what became of it.
+    assert!(
+        events.contains(&format!("conversation {ID}, carried]")),
+        "the move record names the conversation it carried:\n{events}"
+    );
 }
 
 #[test]

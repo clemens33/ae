@@ -1552,7 +1552,8 @@ when the move was between two accounts of one tool — whether it was `carried` 
 `seeded`, with the reason. The conversation is named by what happened to it: `prior <id>`
 where the move left one behind, and `conversation <id>, carried` where that same one
 continues in the other account, so a record never reads as if a live conversation were
-dead. A stop gets its own record, written once the pane is proven back at its shell
+dead. A stop names no conversation at all — it is written before the move's verdict, and
+which binary was ended in which pane is the whole of that event. A stop gets its own record, written once the pane is proven back at its shell
 and never before — it names the binary that was ended, because the meta keeps only the
 current one. The seat's history is
 the only place a later reader can see that its tool changed, and the meta keeps only the

@@ -552,9 +552,12 @@ fn a_reseat_records_who_asked_and_which_way_the_seat_moved() {
     assert_eq!(code, Some(0), "out={out} err={err}");
 
     let events = rig.events();
+    // THE MOVE's record, not the stop's: this seat was running, so the stop
+    // wrote a `reseat` record of its own first, and the conversation is a fact
+    // about the move. A stop names no conversation at all.
     let line = events
         .lines()
-        .find(|line| line.contains("\"action\":\"reseat\""))
+        .find(|line| line.contains("\"action\":\"reseat\"") && line.contains("reseated scout"))
         .unwrap_or_default();
     assert!(
         line.contains("\"actor\":\"lead\""),

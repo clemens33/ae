@@ -309,3 +309,12 @@ that decides, beside `::word`, because a record that called a live conversation
 prior would send a later reader after it believing it dead. A seeded fallback
 really did abandon one, so it keeps `prior`, and a move that was never a carry
 question writes what a tool change always wrote, byte for byte.
+
+THE STOP RECORD NAMES NO CONVERSATION AT ALL (`Names`). Which binary was ended,
+in which pane, and which move it belongs to is the whole of that event: a
+conversation id is not a fact about stopping a tool. It matters most where the
+move is about to carry, because the stop is durable at the moment the pane is
+proven back at its shell — BEFORE the verdict exists — so any word it chose
+would be a guess, and `prior` would be the wrong one. Deferring the record until
+the verdict is not open: a stop that finished must be on the record whatever
+happens next.

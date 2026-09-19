@@ -188,6 +188,22 @@ impl Carried {
     }
 }
 
+/// Does a record name the seat's conversation at all?
+///
+/// A STOP does not. Which binary was ended in which pane, and which move it
+/// belongs to, is the whole of that event: a conversation id is not a fact
+/// about stopping a tool. It matters most where the move is about to CARRY,
+/// because the stop is written before the verdict — any word it chose for that
+/// conversation would be a guess, and `prior` would be the wrong one, naming a
+/// conversation that is about to continue in another account as abandoned.
+/// Deferring the record instead is not open: it must be durable at the moment
+/// the pane is proven back at its shell.
+#[derive(Debug, Clone, Copy)]
+enum Mentions {
+    Conversation,
+    NothingOfIt,
+}
+
 /// Does this move's conversation travel? `None` is every silent arm.
 ///
 /// Reads the seat's recorded account rather than re-resolving the profile it is
@@ -846,9 +862,10 @@ pub(crate) fn run(
         from: &recorded,
         to: &parsed.profile,
         prior: &prior,
-        // Filled in once the carry question is answered, below. The STOP record
-        // is written before that and carries no word, which is right: a stop
-        // says nothing about where the conversation went.
+        // Filled in once the carry question is answered, below. Every record
+        // written before that is a STOP, and a stop names no conversation at
+        // all ([`Mentions`]), so no record can carry this placeholder into an
+        // audit line.
         carry: Carried::No,
     };
     // THE STOP, before the dead proof and before anything durable is written.
@@ -862,6 +879,7 @@ pub(crate) fn run(
             &at,
             &target,
             &format!("stopped {binary} in place (pane {})", target.pane),
+            Mentions::NothingOfIt,
         ),
         Stop::NotRunning => {}
     }
@@ -1107,7 +1125,13 @@ pub(crate) fn run(
             Ok(EXIT_FAILED)
         }
         Started::NotSeen => {
-            record(&dir, &at, &target, "pasted, tool not seen");
+            record(
+                &dir,
+                &at,
+                &target,
+                "pasted, tool not seen",
+                Mentions::Conversation,
+            );
             writeln!(
                 err,
                 "Error: '{}' moved to '{}' and its tool was not seen: look at the pane; \
@@ -1203,7 +1227,13 @@ fn finish(
     // LAST: the new tool may have died while the turns were delivered, and
     // exit 0 means the seat is up NOW.
     if !crate::seat_relaunch::observe_identity(target, &proven.agent_bin, true) {
-        record(dir, at, target, "tool stopped after the reseat");
+        record(
+            dir,
+            at,
+            target,
+            "tool stopped after the reseat",
+            Mentions::Conversation,
+        );
         writeln!(
             err,
             "Error: '{}' started on '{}' and is gone again (pane {}) — look at the pane.",
@@ -1228,7 +1258,7 @@ fn finish(
         "reseated {} (pane {}, slot {}) to {}{launch_note}{seed_note}",
         target.agent, target.pane, target.slot, parsed.profile
     );
-    record(dir, at, target, &line);
+    record(dir, at, target, &line, Mentions::Conversation);
     if !launch_ok || !seed_ok {
         writeln!(err, "Error: {line} — a turn never landed.")?;
         if seed.is_some() {
@@ -1279,7 +1309,14 @@ struct Record<'a> {
 /// The conversation id is filed under [`Carried::field`], which is the whole of
 /// the difference: a carried conversation was not left behind, so calling it
 /// `prior` in a durable record would be the opposite of what happened.
-fn summary(outcome: &str, from: &str, to: &str, prior: &str, carry: &Carried) -> String {
+fn summary(
+    outcome: &str,
+    from: &str,
+    to: &str,
+    prior: &str,
+    carry: &Carried,
+    mentions: Mentions,
+) -> String {
     let named = |value: &str| {
         if value.is_empty() || value == crate::launch::PENDING {
             "none".to_owned()
@@ -1287,22 +1324,27 @@ fn summary(outcome: &str, from: &str, to: &str, prior: &str, carry: &Carried) ->
             value.to_owned()
         }
     };
-    let word = carry.word();
-    format!(
-        "{outcome} [from {} to {to}, {} {}{}]",
-        named(from),
-        carry.field(),
-        named(prior),
-        if word.is_empty() {
-            String::new()
-        } else {
-            format!(", {word}")
+    let about = match mentions {
+        Mentions::NothingOfIt => String::new(),
+        Mentions::Conversation => {
+            let word = carry.word();
+            format!(
+                ", {} {}{}",
+                carry.field(),
+                named(prior),
+                if word.is_empty() {
+                    String::new()
+                } else {
+                    format!(", {word}")
+                }
+            )
         }
-    )
+    };
+    format!("{outcome} [from {} to {to}{about}]", named(from))
 }
 
-fn record(dir: &Path, at: &Record<'_>, target: &Target, outcome: &str) {
-    let summary = summary(outcome, at.from, at.to, at.prior, &at.carry);
+fn record(dir: &Path, at: &Record<'_>, target: &Target, outcome: &str, mentions: Mentions) {
+    let summary = summary(outcome, at.from, at.to, at.prior, &at.carry, mentions);
     let _ = crate::store::open(dir).append_event(&tracked::event_line(&EventFields {
         ts: at.now,
         // The caller's own display ref, exactly as `relaunch` records it: an
@@ -1488,7 +1530,8 @@ mod tests {
                 "a",
                 "b",
                 crate::launch::PENDING,
-                &super::Carried::No
+                &super::Carried::No,
+                super::Mentions::Conversation
             ),
             "reseated [from a to b, prior none]"
         );
@@ -1498,7 +1541,8 @@ mod tests {
                 "",
                 "b",
                 "11111111-1111-4111-8111-111111111111",
-                &super::Carried::No
+                &super::Carried::No,
+                super::Mentions::Conversation
             ),
             "reseated [from none to b, prior 11111111-1111-4111-8111-111111111111]"
         );
@@ -1517,7 +1561,14 @@ mod tests {
         // a move abandoned. A reader scanning records for a dead conversation
         // would otherwise find a live one and act on it.
         assert_eq!(
-            super::summary("reseated", "a", "b", ID, &super::Carried::Yes),
+            super::summary(
+                "reseated",
+                "a",
+                "b",
+                ID,
+                &super::Carried::Yes,
+                super::Mentions::Conversation
+            ),
             format!("reseated [from a to b, conversation {ID}, carried]")
         );
         // THE OTHER ARM of the same question. A seeded move really did leave
@@ -1529,16 +1580,45 @@ mod tests {
                 "a",
                 "b",
                 ID,
-                &super::Carried::Seeded("no transcript".to_owned())
+                &super::Carried::Seeded("no transcript".to_owned()),
+                super::Mentions::Conversation
             ),
             format!("reseated [from a to b, prior {ID}, seeded (no transcript)]")
         );
         // A move that was never a carry question at all records what a tool
         // change has always recorded, byte for byte.
         assert_eq!(
-            super::summary("reseated", "a", "b", ID, &super::Carried::No),
+            super::summary(
+                "reseated",
+                "a",
+                "b",
+                ID,
+                &super::Carried::No,
+                super::Mentions::Conversation
+            ),
             format!("reseated [from a to b, prior {ID}]")
         );
+        // THE STOP names no conversation at all, whatever the fate field would
+        // have said: ending a tool in a pane is not an event about a
+        // conversation, and this one is written BEFORE the carry verdict, so
+        // any word here would be a guess.
+        for fate in [
+            super::Carried::No,
+            super::Carried::Yes,
+            super::Carried::Seeded("no transcript".to_owned()),
+        ] {
+            assert_eq!(
+                super::summary(
+                    "stopped claude in place (pane %0)",
+                    "a",
+                    "b",
+                    ID,
+                    &fate,
+                    super::Mentions::NothingOfIt
+                ),
+                "stopped claude in place (pane %0) [from a to b]"
+            );
+        }
     }
 
     #[test]
