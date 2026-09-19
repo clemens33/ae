@@ -685,7 +685,11 @@ fn clipped_interior(row: &str, table: BoxTable, width: usize) -> Option<String> 
 /// stricter identity policy (exactly 3 plus the closed effort vocabulary) on
 /// top: one helper, two policies, so delivery never couples to the effort
 /// list or to a sidebar tail the char clip pulled in (extra text keeps
-/// fields non-empty, which is the tolerant direction here).
+/// fields non-empty, which is the tolerant direction here). Accepted
+/// residual: a human draft carrying ` · ` on the status position proves as
+/// structure and the box composes — chosen because the alternative is a
+/// PERMANENT refusal on any unknown status shape, and the geometry needs
+/// that draft on exactly row edge-1.
 pub(crate) fn heavy_rail_status(interior: &str) -> Option<Vec<&str>> {
     let fields: Vec<&str> = interior.trim().split(" · ").collect();
     if fields.len() >= 2 && fields.iter().all(|field| !field.is_empty()) {
@@ -1711,6 +1715,16 @@ mod tests {
             "press esc to cancel\nplain transcript\nmore\nstill more\n  ┃\n  ┃\n  ┃  Build · m · max\n{edge}\n"
         );
         assert!(composed_ui(&mention, OPENCODE));
+    }
+
+    #[test]
+    fn a_draft_carrying_the_separator_on_the_status_position_composes() {
+        // `note · reminder` proves as structure: two non-empty fields. Accepted
+        // residual, like the busy frame below — the alternative is a PERMANENT
+        // refusal on any unknown status shape, and the geometry needs that
+        // draft on exactly the row above the edge.
+        let draft = "  ┃\n  ┃\n  ┃  note · reminder\n  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n";
+        assert!(composed_ui(draft, OPENCODE));
     }
 
     #[test]
