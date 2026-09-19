@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.133] - 2026-09-19
+- Capture opencode's export through a scratch file
+- Keep the opencode capture owner-only and bounded
+- Say what the capture cap means and guard the plant
+
 ## [v2026.9.132] - 2026-09-18
 - Tell every predecessor conversation which tool owns it
 - Say that a writer settles a predecessor row and a reader judges its elements
