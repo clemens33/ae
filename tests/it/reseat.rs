@@ -254,7 +254,7 @@ fn a_pane_that_does_not_come_back_to_a_shell_is_refused_in_the_stops_own_words()
     );
     // Nothing moved: the seat still records the profile it had, so `relaunch`
     // brings it back and a second reseat is free to try again.
-    assert_eq!(rig.meta_row("profile.spawned.0"), "claude");
+    assert_eq!(rig.meta_row("profile.spawned.0"), "fake-claude");
 }
 
 #[test]
