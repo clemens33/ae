@@ -743,7 +743,7 @@ fn observe_generation(
     // locate, so an invalid id still refuses exactly once): it reports
     // whether assistant rows were produced, and the history stream binds
     // that verdict. With the flag off the leg never runs.
-    let (leg_rows, leg_coverage) = if assistant && tool.adapter().name == "agy" {
+    let (mut leg_rows, leg_coverage) = if assistant && tool.adapter().name == "agy" {
         read_agy_transcript(&actor, entry, home, tool)
     } else {
         (Vec::new(), Vec::new())
@@ -754,6 +754,16 @@ fn observe_generation(
             .with_assistant(assistant)
             .with_assistant_rows_found(!leg_rows.is_empty()),
         Err(failure) => {
+            // A failed history door refuses the generation — but the leg
+            // already read from a different file, so its rows stay: a
+            // partial board that says so, never a silent subset.
+            for row in &mut leg_rows {
+                row.generation = generation;
+            }
+            rows.append(&mut leg_rows);
+            for item in leg_coverage {
+                cover(item.reason);
+            }
             cover(door_reason(failure).to_owned());
             return Vec::new();
         }
