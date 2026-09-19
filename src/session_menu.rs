@@ -1004,29 +1004,50 @@ fn fixed_bytes(cells: &[&Vec<String>], fixed: &[usize]) -> Vec<usize> {
         .collect()
 }
 
-/// Text cells from tmux's byte allowance: a menu item is trimmed when its
-/// strlen BYTES exceed the client width minus 4, and tmux's trim keeps the
-/// TAIL — an over-wide label loses its age first and gains a `>`. Text is
-/// sanitized ASCII, so unclipped cells are bytes; a clipped value costs its
-/// cells plus 2 bytes for the `…`. Below 4 bytes even that is noise, so the
-/// column drops out of the join by the empty rule instead of inventing a
-/// second degrade rule.
-fn text_cells(client_width: usize, fixed: &[usize], drawn: usize) -> usize {
+/// Text width in CELLS such that every row's padded text field fits tmux's
+/// byte allowance: a menu item is trimmed when its strlen BYTES exceed the
+/// client width minus 4, and tmux's trim keeps the TAIL — an over-wide label
+/// loses its age first and gains a `>`. Cells alone cannot budget this: the
+/// text carries the product's own multibyte joiners (`—`) and the cutter's
+/// `…`, and the 100-cap can clip an otherwise fitting value — so the width
+/// shrinks from the drawn head until the actual clipped bytes of EVERY row,
+/// padding included, fit the room. Below 4 bytes even a lone `…` is noise,
+/// so the column drops out of the join by the empty rule instead of
+/// inventing a second degrade rule.
+fn text_cells(client_width: usize, fixed: &[usize], texts: &[&str]) -> usize {
     const BORDERS: usize = 4;
     let kept: Vec<usize> = fixed.iter().copied().filter(|bytes| *bytes > 0).collect();
     let room = client_width
         .saturating_sub(BORDERS)
         .saturating_sub(kept.iter().sum::<usize>())
         .saturating_sub(DIALOG_COLUMN_SEP.len() * kept.len());
-    if drawn == 0 {
-        0
-    } else if drawn <= room {
-        drawn.min(DIALOG_TEXT_CELLS_MAX)
-    } else if room >= 4 {
-        room.saturating_sub(2).min(DIALOG_TEXT_CELLS_MAX)
-    } else {
-        0
+    let drawn = texts
+        .iter()
+        .map(|text| text.chars().count())
+        .max()
+        .unwrap_or(0);
+    if drawn == 0 || room < 4 {
+        return 0;
     }
+    let mut width = drawn.min(DIALOG_TEXT_CELLS_MAX);
+    while width > 0
+        && texts
+            .iter()
+            .any(|text| padded_text_bytes(text, width) > room)
+    {
+        width -= 1;
+    }
+    width
+}
+
+/// One text cell's padded field BYTES at `width` cells: clipped through the
+/// one cutter, then space-padded to the width. Padding is one byte per cell
+/// but the clipped head keeps its multibyte owned glyphs, so bytes and cells
+/// part ways exactly here.
+fn padded_text_bytes(text: &str, width: usize) -> usize {
+    let clipped =
+        crate::event_text::clip_to_width(text, width, crate::event_text::Cut::TrailingEllipsis);
+    clipped.len() + width.saturating_sub(crate::orchestrator::terminal_cells(&clipped))
 }
 
 /// Aligned labels for the survivors: fixed columns clipped to their shared
@@ -1070,15 +1091,11 @@ fn render_survivors(
         fixed[index] = 0;
     }
     let bytes = fixed_bytes(&cells, &fixed);
-    let drawn_text = cells
+    let texts: Vec<&str> = cells
         .iter()
-        .map(|row| {
-            row.get(text_at)
-                .map_or(0, |cell| crate::orchestrator::terminal_cells(cell))
-        })
-        .max()
-        .unwrap_or(0);
-    let text_drawn = text_cells(client_width, &bytes, drawn_text);
+        .filter_map(|row| row.get(text_at).map(String::as_str))
+        .collect();
+    let text_drawn = text_cells(client_width, &bytes, &texts);
     survivors
         .iter()
         .map(|row| match row {
@@ -3300,6 +3317,163 @@ mod tests {
             drawn[2].starts_with("  - ·"),
             "unknown age pads with the column: {drawn:?}"
         );
+    }
+
+    /// A state text's product `—` costs bytes tmux counts but cells do not:
+    /// 9 cells fit a 9-byte room while 11 bytes do not, and the old
+    /// cell-counted budget drew the over-wide label (age first under tmux's
+    /// tail trim). The text column shrinks until padded BYTES fit; the short
+    /// row still aligns in cells.
+    #[test]
+    fn state_em_dash_text_fits_bytes_not_cells() {
+        use crate::tmux::OptionReading;
+        let container = format!(
+            "{}\n{}\n",
+            event(
+                "2026-09-17T11:58:00Z",
+                "al",
+                "state",
+                r#","ref":"ref","summary":"why""#
+            ),
+            event("2026-09-17T11:57:00Z", "al", "done", r#","target":"t""#),
+        );
+        let now = crate::time::Timestamp::parse("2026-09-17T12:00:00Z").expect("now parses");
+        let meta = parsed_meta(UUID_A, &["al"]);
+        let rows = super::activity_cells(
+            &OptionReading::Set(UUID_A.to_owned()),
+            &meta,
+            &events(&container),
+            now,
+        );
+        // Fixed 2+2+5 bytes, separators 12: room 9 at width 34.
+        let drawn = aligned(&rows, super::ACTIVITY_FIXED_CAPS, 34);
+        assert_eq!(drawn.len(), 2, "{drawn:?}");
+        for label in &drawn {
+            assert!(
+                label.len() <= 30,
+                "label bytes fit the allowance: {drawn:?}"
+            );
+        }
+        assert_eq!(
+            crate::orchestrator::terminal_cells(&drawn[0]),
+            crate::orchestrator::terminal_cells(&drawn[1]),
+            "rows align in cells: {drawn:?}"
+        );
+        let state = drawn
+            .iter()
+            .find(|label| label.contains("state"))
+            .expect("state row");
+        assert_eq!(state, "2m · al · state · ref …", "{drawn:?}");
+        let done = drawn
+            .iter()
+            .find(|label| label.contains("done"))
+            .expect("done row");
+        assert!(
+            done.ends_with("t    "),
+            "short text pads to the width: {drawn:?}"
+        );
+    }
+
+    /// The referenced-event joiner at a tight fit: `tgt r7 — why` is 12 cells
+    /// and 14 bytes, room 13, so the column clips to 9 cells / 13 bytes and
+    /// the label lands exactly on the allowance. Widths 10–12 all overrun
+    /// (11 is worse than unclipped: the `…` lands past the `—`), 9 fits.
+    #[test]
+    fn referenced_event_text_clips_to_exact_byte_fit() {
+        use crate::tmux::OptionReading;
+        let container = format!(
+            "{}\n",
+            event(
+                "2026-09-17T11:58:00Z",
+                "al",
+                "ask",
+                r#","target":"tgt","ref":"r7","summary":"why""#
+            ),
+        );
+        let now = crate::time::Timestamp::parse("2026-09-17T12:00:00Z").expect("now parses");
+        let meta = parsed_meta(UUID_A, &["al"]);
+        let rows = super::activity_cells(
+            &OptionReading::Set(UUID_A.to_owned()),
+            &meta,
+            &events(&container),
+            now,
+        );
+        // Fixed 2+2+3 bytes, separators 12: room 13 at width 36.
+        let drawn = aligned(&rows, super::ACTIVITY_FIXED_CAPS, 36);
+        assert_eq!(drawn, vec!["2m · al · ask · tgt r7 —…"], "{drawn:?}");
+        assert_eq!(
+            drawn[0].len(),
+            32,
+            "label lands on the allowance: {drawn:?}"
+        );
+    }
+
+    /// The 100-cell cap must not mint bytes it never reserved: a 99-cell text
+    /// carrying one product `—` (101 bytes) in a 99-byte room, and the pure
+    /// ASCII 101-in-101 case beside it — both shrink past the ellipsis cost
+    /// instead of drawing 2 bytes over.
+    #[test]
+    fn text_cap_boundary_reserves_ellipsis_bytes() {
+        use crate::tmux::OptionReading;
+        let now = crate::time::Timestamp::parse("2026-09-17T12:00:00Z").expect("now parses");
+        let meta = parsed_meta(UUID_A, &["al"]);
+        let render = |container: &str, width: usize| {
+            let rows = super::activity_cells(
+                &OptionReading::Set(UUID_A.to_owned()),
+                &meta,
+                &events(container),
+                now,
+            );
+            aligned(&rows, super::ACTIVITY_FIXED_CAPS, width)
+        };
+        // "t — " + 95 cells: 99 cells, 101 bytes. Fixed 2+2+4, separators 12:
+        // room 99 at width 123.
+        let container = format!(
+            "{}\n",
+            event(
+                "2026-09-17T11:58:00Z",
+                "al",
+                "done",
+                &format!(r#","target":"t","summary":"{}""#, "y".repeat(95)),
+            ),
+        );
+        let drawn = render(&container, 123);
+        assert_eq!(drawn.len(), 1, "{drawn:?}");
+        assert_eq!(
+            drawn[0].len(),
+            119,
+            "label lands on the allowance: {drawn:?}"
+        );
+        let text = drawn[0]
+            .rsplit(super::DIALOG_COLUMN_SEP)
+            .next()
+            .expect("text field");
+        assert!(text.starts_with("t — "), "head kept: {drawn:?}");
+        assert!(text.ends_with("…"), "clipped, not whole: {drawn:?}");
+        assert_eq!(crate::orchestrator::terminal_cells(text), 95, "{drawn:?}");
+        // Pure ASCII: 101 cells in a 101-byte room (width 125) clips to 99
+        // cells + `…` = 101 bytes, not 100 cells + `…` = 102.
+        let container = format!(
+            "{}\n",
+            event(
+                "2026-09-17T11:58:00Z",
+                "al",
+                "done",
+                &format!(r#","summary":"{}""#, "x".repeat(101)),
+            ),
+        );
+        let drawn = render(&container, 125);
+        assert_eq!(drawn.len(), 1, "{drawn:?}");
+        assert_eq!(
+            drawn[0].len(),
+            121,
+            "label lands on the allowance: {drawn:?}"
+        );
+        let text = drawn[0]
+            .rsplit(super::DIALOG_COLUMN_SEP)
+            .next()
+            .expect("text field");
+        assert_eq!(text, format!("{}…", "x".repeat(98)), "{drawn:?}");
     }
 
     /// An over-cap actor clips with `…` and the kind column still aligns.
