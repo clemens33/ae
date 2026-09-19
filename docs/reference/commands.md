@@ -1547,15 +1547,15 @@ had already happened or not. After the meta is written the pane sits at its shel
 is exactly what `relaunch` finishes — the refusal says so by name.
 
 Every attempt that reaches the pane is recorded as a `reseat` event, naming its caller (a
-seat by its own ref, a plain shell as the human), both profiles, the conversation, and —
-when the move was between two accounts of one tool — whether it was `carried` or
-`seeded`, with the reason. The conversation is named by what happened to it: `prior <id>`
-where the move left one behind, and `conversation <id>, carried` where that same one
-continues in the other account, so a record never reads as if a live conversation were
-dead. A stop names no conversation at all — it is written before the move's verdict, and
-which binary was ended in which pane is the whole of that event. A stop gets its own record, written once the pane is proven back at its shell
+seat by its own ref, a plain shell as the human) and both profiles. The MOVE's record also
+names the conversation, and names it by what happened to it: `prior <id>` where the move
+left one behind, `conversation <id>, carried` where that same one continues in the other
+account, so a record never reads as if a live conversation were dead — and, when the move
+was between two accounts of one tool, whether it was `carried` or `seeded`, with the
+reason. A stop gets its own record, written once the pane is proven back at its shell
 and never before — it names the binary that was ended, because the meta keeps only the
-current one. The seat's history is
+current one, and no conversation at all: it is written before the move's verdict, and
+which binary was ended in which pane is the whole of that event. The seat's history is
 the only place a later reader can see that its tool changed, and the meta keeps only the
 current profile — so the pairing of a predecessor conversation with the profile it ran under
 lives on that event and nowhere else.

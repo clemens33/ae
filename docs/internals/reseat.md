@@ -310,7 +310,7 @@ prior would send a later reader after it believing it dead. A seeded fallback
 really did abandon one, so it keeps `prior`, and a move that was never a carry
 question writes what a tool change always wrote, byte for byte.
 
-THE STOP RECORD NAMES NO CONVERSATION AT ALL (`Names`). Which binary was ended,
+THE STOP RECORD NAMES NO CONVERSATION AT ALL (`Mentions`). Which binary was ended,
 in which pane, and which move it belongs to is the whole of that event: a
 conversation id is not a fact about stopping a tool. It matters most where the
 move is about to carry, because the stop is durable at the moment the pane is
