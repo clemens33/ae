@@ -71,7 +71,12 @@ pub fn decide(identity: &HarnessIdentity, pin: Option<&str>, pin_match: PinMatch
 }
 
 /// Whether a drawn model name satisfies a pin under the adapter's rule.
-fn satisfies(pin: &str, model: &str, pin_match: PinMatch) -> bool {
+///
+/// Published inside the crate because the FOLLOW lookup
+/// ([`crate::launch_cmd::followed_pin_in`]) asks the same question of a
+/// CONFIGURED pin that the observer asks of the seat's own — one rule, never a
+/// second copy that could disagree with the drift mark it must match.
+pub(crate) fn satisfies(pin: &str, model: &str, pin_match: PinMatch) -> bool {
     match pin_match {
         PinMatch::Exact => pin == model,
         PinMatch::FamilyVersion => family_version_equivalent(pin, model),
@@ -138,6 +143,16 @@ fn tokenise(text: &str) -> FamilyVersion {
         push_token(&token, &mut family, &mut version);
     }
     FamilyVersion { family, version }
+}
+
+/// Whether a pin value names a VERSION as well as a family.
+///
+/// The follow lookup's tie-break: between two distinct pin values that both
+/// satisfy one label, the one naming a version is the more specific answer
+/// (`claude-opus-5` over a bare `opus`). Derived from the same tokeniser the
+/// match itself uses, so the two cannot disagree.
+pub(crate) fn pin_names_a_version(pin: &str) -> bool {
+    !tokenise(pin).version.is_empty()
 }
 
 /// Whether a drawn model name satisfies a pin under the family/version rule.

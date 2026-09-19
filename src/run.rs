@@ -495,9 +495,13 @@ fn build_with_snapshot(
 ///   profile edit, so the model flag is REWRITTEN to the observed value.
 /// - recorded pin == the profile's model now, but the adapter is report-only:
 ///   the scraped text is a display name, not a value drawn from the flag's own
-///   vocabulary, so ae refuses to replay it — even one already PERSISTED in
-///   the meta. The row is retained for the report and the seat resumes on the
-///   profile pin.
+///   vocabulary, so the LABEL is never replayed. ae FOLLOWS it instead, through
+///   the operator's own `[profiles]` block: the configured pin that label
+///   satisfies is a value the operator already wrote, and
+///   [`crate::launch_cmd::followed_pin`] applies THAT. No candidate, several,
+///   or a config it cannot read leaves today's behaviour exactly as it was —
+///   the row is retained for the report, the seat resumes on the profile pin,
+///   and the notice says which refusal it was.
 /// - recorded pin differs (including "the profile pins no model now"): the
 ///   profile edit is newer. Both rows are retired and the profile wins.
 /// - no recorded pin: the profile pins no model. Nothing is rewritten (ae never
@@ -534,21 +538,42 @@ fn apply_observed_model(dir: &Path, slot: &str, seat: &mut Seat) -> Option<Strin
     if current.as_deref() == Some(observed.as_str()) {
         return None;
     }
-    if !seat.tool.adapter().model.replays() {
-        // The adapter declares the scraped text a display label rather than a
-        // flag value. It is information for the human, never an argument for a
-        // process — including a value already recorded by an older ae.
-        return Some(format!(
-            "ae: seat {slot}: observed model {observed} is REPORT ONLY — the {} pane shows a display name, not a value its model flag takes, so ae will not replay it; resuming on the profile pin {recorded_pin}. A manual model choice does not survive a resume for this tool; set it in the profile instead.",
-            seat.tool.as_str()
-        ));
-    }
-    match crate::launch_cmd::replace_model_flag(seat.command.as_str(), seat.tool, &observed) {
+    // A replayable adapter draws the flag's OWN vocabulary, so the label IS the
+    // value. A report-only one draws a display label, which never becomes an
+    // argv word — ae follows it by finding the configured pin that label
+    // satisfies, a spelling the operator already wrote in `[profiles]`.
+    let apply = if seat.tool.adapter().model.replays() {
+        Ok(observed.clone())
+    } else {
+        crate::launch_cmd::followed_pin(
+            seat.identity_global.as_deref(),
+            seat.identity_local.as_deref(),
+            seat.tool,
+            seat.command.as_str(),
+            &observed,
+        )
+    };
+    let value = match apply {
+        Ok(value) => value,
+        Err(refusal) => {
+            return Some(format!(
+                "ae: seat {slot}: observed model {observed} is REPORT ONLY — {} — so ae will not apply it; resuming on the profile pin {recorded_pin}. Configure a profile that pins this model, or set it in the profile.",
+                refusal.why(&observed)
+            ));
+        }
+    };
+    match crate::launch_cmd::replace_model_flag(seat.command.as_str(), seat.tool, &value) {
         Ok(rewritten) => {
             seat.command = seat.command.with_text(rewritten);
-            Some(format!(
-                "ae: seat {slot}: resuming on the observed model {observed} (profile pins {recorded_pin}) — the manual choice is preserved."
-            ))
+            Some(if value == observed {
+                format!(
+                    "ae: seat {slot}: resuming on the observed model {observed} (profile pins {recorded_pin}) — the manual choice is preserved."
+                )
+            } else {
+                format!(
+                    "ae: seat {slot}: resuming on {value}, the configured pin the observed model {observed} names (profile pins {recorded_pin}) — the manual choice is preserved."
+                )
+            })
         }
         Err(why) => Some(format!(
             "ae: seat {slot}: manual model {observed} could NOT be preserved ({why}) — resuming on the profile pin {recorded_pin}. The observation is retained."
@@ -1206,6 +1231,13 @@ pub(crate) struct Seat {
     observed_model: Option<String>,
     /// The profile's model flag value recorded beside that observation.
     observed_model_pin: Option<String>,
+    /// The EXACT config pair this read handed [`crate::config::read_identity`],
+    /// so the FOLLOW lookup asks the one config owner the same question this
+    /// seat's own command was resolved by. Not `config_files`, which carries
+    /// the context document's list and ignores the orchestrator-seat overlay
+    /// exclusion below.
+    identity_global: Option<PathBuf>,
+    identity_local: Option<PathBuf>,
 }
 
 /// Read the seat `slot` names, refusing anything that is not launchable.
@@ -1350,6 +1382,8 @@ pub(crate) fn read_seat(
         agent: name,
         observed_model: parsed_meta.observed_model(slot).map(str::to_owned),
         observed_model_pin: parsed_meta.observed_model_pin(slot).map(str::to_owned),
+        identity_global: (!global.is_empty()).then(|| PathBuf::from(&global)),
+        identity_local: if orchestrator_seat { None } else { local },
     })
 }
 
@@ -1785,7 +1819,32 @@ mod tests {
             agent: "lead".to_owned(),
             observed_model: observed.map(str::to_owned),
             observed_model_pin: pin.map(str::to_owned),
+            identity_global: None,
+            identity_local: None,
         }
+    }
+
+    /// The identity config a follow case reads, published under a name of its
+    /// own so the cases cannot collide.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture publishes the very config file the lookup must read"
+    )]
+    fn follow_config(tag: &str, text: &str) -> PathBuf {
+        let path =
+            std::env::temp_dir().join(format!("ae-follow-{tag}-{}.config", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        std::fs::write(&path, text).expect("a config fixture");
+        path
+    }
+
+    const FOLLOW_SEAT: &str =
+        "claude --permission-mode bypassPermissions --model fable --effort xhigh";
+
+    fn following_seat(tag: &str, text: &str, observed: &str) -> Seat {
+        let mut seat = model_seat(FOLLOW_SEAT, ToolKind::Claude, Some(observed), Some("fable"));
+        seat.identity_global = Some(follow_config(tag, text));
+        seat
     }
 
     #[test]
@@ -1805,26 +1864,58 @@ mod tests {
         );
     }
 
+    /// An inventory with no Opus row: the follow has nothing to answer with.
+    const FOLLOW_NONE: &str = "[clients]\nclaude = claude\n\n[profiles]\nfablex = \"claude --permission-mode bypassPermissions --model fable --effort xhigh\"\n";
+    /// The same inventory plus the row whose pin `Opus 5 (1M context)` satisfies.
+    const FOLLOW_ONE: &str = "[clients]\nclaude = claude\n\n[profiles]\nfablex = \"claude --permission-mode bypassPermissions --model fable --effort xhigh\"\nopus5x = \"claude --permission-mode bypassPermissions --model claude-opus-5 --effort xhigh\"\nopus5 = \"claude --permission-mode bypassPermissions --model claude-opus-5 --effort xhigh\"\n";
+    /// Two spellings of that model: ae refuses rather than choose.
+    const FOLLOW_TWO: &str = "[clients]\nclaude = claude\n\n[profiles]\nfablex = \"claude --permission-mode bypassPermissions --model fable --effort xhigh\"\nopus5x = \"claude --permission-mode bypassPermissions --model claude-opus-5 --effort xhigh\"\nopusalt = \"claude --permission-mode bypassPermissions --model opus-5 --effort xhigh\"\n";
+
     #[test]
-    fn a_recorded_claude_label_is_reported_but_never_reaches_the_resume_command() {
-        // The Claude footer yields a DISPLAY label ("Opus 5 (1M context)"), not
-        // a value `--model` takes. A row an older ae already persisted must not
-        // be replayed: the seat resumes on the profile pin and says so.
-        let dir = std::env::temp_dir().join(format!("ae-run-model-label-{}", std::process::id()));
-        let mut seat = model_seat(
-            "claude --permission-mode bypassPermissions --model fable --effort xhigh",
-            ToolKind::Claude,
-            Some("Opus 5 (1M context)"),
-            Some("fable"),
-        );
+    fn a_claude_label_follows_the_configured_pin_that_label_satisfies() {
+        // The Claude footer yields a DISPLAY label ("Opus 5 (1M context)"), never
+        // a value `--model` takes — so the LABEL never becomes an argv word. The
+        // operator's own `[profiles]` block spells that model as
+        // `claude-opus-5`, and THAT is what the resume runs.
+        let dir = std::env::temp_dir().join(format!("ae-run-model-follow-{}", std::process::id()));
+        let mut seat = following_seat("one", FOLLOW_ONE, "Opus 5 (1M context)");
         let notice = apply_observed_model(&dir, "main", &mut seat).expect("a notice");
-        assert!(notice.contains("REPORT ONLY"), "{notice}");
-        assert!(!notice.contains("preserved"), "{notice}");
+        assert!(notice.contains("preserved"), "{notice}");
+        assert!(notice.contains("claude-opus-5"), "{notice}");
         assert_eq!(
             seat.command.as_str(),
-            "claude --permission-mode bypassPermissions --model fable --effort xhigh",
-            "the persisted label must never become an argv word"
+            "claude --permission-mode bypassPermissions --model claude-opus-5 --effort xhigh",
+            "only the model VALUE moves — the account, the mode and the effort are kept"
         );
+        assert!(
+            !seat.command.as_str().contains("Opus 5"),
+            "the display label must never become an argv word: {}",
+            seat.command.as_str()
+        );
+    }
+
+    #[test]
+    fn a_claude_label_no_profile_pins_stays_report_only_and_says_which_refusal() {
+        // EXPECTATION UPDATE of the old
+        // `a_recorded_claude_label_is_reported_but_never_reaches_the_resume_command`:
+        // report-only is now the REFUSAL arm, not the whole story, and each
+        // refusal names itself.
+        let dir = std::env::temp_dir().join(format!("ae-run-model-label-{}", std::process::id()));
+        for (tag, config, want) in [
+            ("none", FOLLOW_NONE, "no profile for Opus 5 (1M context)"),
+            ("two", FOLLOW_TWO, "ambiguous (claude-opus-5, opus-5)"),
+        ] {
+            let mut seat = following_seat(tag, config, "Opus 5 (1M context)");
+            let notice = apply_observed_model(&dir, "main", &mut seat).expect("a notice");
+            assert!(notice.contains("REPORT ONLY"), "{notice}");
+            assert!(notice.contains(want), "{notice}");
+            assert!(!notice.contains("preserved"), "{notice}");
+            assert_eq!(
+                seat.command.as_str(),
+                FOLLOW_SEAT,
+                "a refusal leaves the resume byte-identical to what it always was"
+            );
+        }
     }
 
     #[test]

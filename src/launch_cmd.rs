@@ -337,6 +337,164 @@ pub(crate) fn profile_model_pin(
     model_flag_value(command.as_str(), tool)
 }
 
+/// Why a seat's observed model cannot be FOLLOWED into a configured pin value.
+///
+/// Every arm keeps today's behaviour byte-identical — the seat resumes on its
+/// own pin — and every arm is SAID, on the resume notice and in `ae list`,
+/// because a silent refusal reads as preservation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FollowRefusal {
+    /// This tool has no model flag ae reads, so there is nothing to follow.
+    Unsupported,
+    /// The observed label is not a value ae will judge: empty, over-long, or
+    /// carrying a control byte.
+    Unusable,
+    /// The seat's own command pins no single usable model flag. ae never
+    /// APPENDS one, so there is no value to replace.
+    Pinless,
+    /// No configured profile pins a model this label satisfies.
+    NoCandidate,
+    /// Several distinct pin values do, and none is the more specific.
+    Ambiguous(Vec<String>),
+    /// The label already satisfies the seat's own pin — nothing to change.
+    AlreadyPinned,
+    /// The identity config could not be read on this machine.
+    Unreadable,
+}
+
+impl FollowRefusal {
+    /// The ONE clause every surface prints, so the resume notice and the
+    /// `ae list` cell cannot drift apart.
+    #[must_use]
+    pub fn why(&self, observed: &str) -> String {
+        match self {
+            Self::Unsupported => "this tool has no model flag ae follows".to_owned(),
+            Self::Unusable => "the observed model is not a usable value".to_owned(),
+            Self::Pinless => "the profile command carries no model flag to replace".to_owned(),
+            Self::NoCandidate => format!("no profile for {observed}"),
+            Self::Ambiguous(values) => format!("ambiguous ({})", values.join(", ")),
+            Self::AlreadyPinned => format!("{observed} already satisfies the pin"),
+            Self::Unreadable => "the identity config could not be read".to_owned(),
+        }
+    }
+}
+
+/// The longest observed label ae will carry into a lookup — the shape
+/// `usage::is_model_id` already bounds a model name by.
+const FOLLOW_LABEL_MAX: usize = 256;
+
+/// One command reduced to everything BUT its model flag's VALUE, plus that
+/// value.
+///
+/// The leading assignments are part of the skeleton, because they carry the
+/// ACCOUNT the tool runs against: a `CLAUDE_CONFIG_DIR=` prefix is the
+/// difference between two logins, and a candidate that changed it would move
+/// the seat's conversation and its quota window to another scope. Both flag
+/// forms reduce to the flag NAME, so `--model=x` and `--model x` compare equal.
+fn model_skeleton(cmd: &str, tool: ToolKind) -> Option<(Vec<String>, String)> {
+    let command = lex_simple_command(cmd).ok()?;
+    let flag = sole_model_flag(&command, tool).ok()?;
+    if flag.value.is_empty() {
+        return None;
+    }
+    let mut parts: Vec<String> = command.assignments.clone();
+    for (index, value) in command.word_values.iter().enumerate() {
+        if index == flag.value_index.unwrap_or(usize::MAX) {
+            continue;
+        }
+        if index == flag.index {
+            parts.push(flag.name.to_owned());
+        } else {
+            parts.push(value.clone());
+        }
+    }
+    Some((parts, flag.value))
+}
+
+/// The configured pin value a seat's OBSERVED model follows — PURE, over the
+/// parsed config, so every live case is a unit case.
+///
+/// The operator's own `[profiles]` block IS the display-label-to-flag-value
+/// table: ae never invents a spelling, it finds one the operator already wrote.
+/// A candidate must differ from the SEAT's own command in the model flag's
+/// value ALONE, which preserves the account, the effort and every other word by
+/// construction, and its pin must satisfy the label under this tool's own
+/// [`crate::tool::PinMatch`]. The tie-break is over distinct pin VALUES and
+/// never over profile labels, so an alias pair carrying one value is not a
+/// disagreement; two values are answered only when exactly one names a version.
+pub(crate) fn followed_pin_in(
+    cfg: &crate::config::IdentityConfig,
+    home: Option<&Path>,
+    tool: ToolKind,
+    seat_command: &str,
+    observed: &str,
+) -> Result<String, FollowRefusal> {
+    if model_flag_names(tool).is_empty() {
+        return Err(FollowRefusal::Unsupported);
+    }
+    if observed.is_empty()
+        || observed.len() > FOLLOW_LABEL_MAX
+        || observed.chars().any(char::is_control)
+    {
+        return Err(FollowRefusal::Unusable);
+    }
+    let pin_match = tool.adapter().pin_match;
+    let (seat_skeleton, seat_pin) =
+        model_skeleton(seat_command, tool).ok_or(FollowRefusal::Pinless)?;
+    if crate::model_drift::satisfies(&seat_pin, observed, pin_match) {
+        return Err(FollowRefusal::AlreadyPinned);
+    }
+    let mut values: Vec<String> = Vec::new();
+    for (profile, _) in &cfg.profiles {
+        let Ok(Some(command)) = cfg.command(profile, home) else {
+            continue;
+        };
+        let Some((skeleton, pin)) = model_skeleton(command.as_str(), tool) else {
+            continue;
+        };
+        if skeleton != seat_skeleton || !crate::model_drift::satisfies(&pin, observed, pin_match) {
+            continue;
+        }
+        if !values.contains(&pin) {
+            values.push(pin);
+        }
+    }
+    if values.len() == 1 {
+        return values.pop().ok_or(FollowRefusal::NoCandidate);
+    }
+    if values.is_empty() {
+        return Err(FollowRefusal::NoCandidate);
+    }
+    let mut versioned: Vec<String> = values
+        .iter()
+        .filter(|value| crate::model_drift::pin_names_a_version(value))
+        .cloned()
+        .collect();
+    if versioned.len() == 1 {
+        return versioned.pop().ok_or(FollowRefusal::NoCandidate);
+    }
+    values.sort();
+    Err(FollowRefusal::Ambiguous(values))
+}
+
+/// [`followed_pin_in`] for a caller holding the seat's RESOLVED command,
+/// reading the identity config through the one owner exactly as
+/// [`profile_model_pin`] does.
+pub(crate) fn followed_pin(
+    global: Option<&Path>,
+    local: Option<&Path>,
+    tool: ToolKind,
+    seat_command: &str,
+    observed: &str,
+) -> Result<String, FollowRefusal> {
+    if model_flag_names(tool).is_empty() {
+        return Err(FollowRefusal::Unsupported);
+    }
+    let cfg = crate::config::read_identity(global, local).map_err(|_| FollowRefusal::Unreadable)?;
+    let home = crate::doors::home();
+    followed_pin_in(&cfg, home.as_deref(), tool, seat_command, observed)
+}
+
 /// Rewrite the SINGLE model flag's value in a profile command.
 ///
 /// The flag must already exist: ae never appends one, because the launch argv
@@ -878,11 +1036,11 @@ pub(crate) fn is_assignment(word: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     use super::{
-        Refusal, Resolved, Split, ToolKind, config_home, config_home_resolution,
-        lex_simple_command, model_flag_value, replace_model_flag, split_binary,
+        FollowRefusal, Refusal, Resolved, Split, ToolKind, config_home, config_home_resolution,
+        followed_pin_in, lex_simple_command, model_flag_value, replace_model_flag, split_binary,
     };
 
     fn bin(cmd: &str) -> Option<String> {
@@ -1461,5 +1619,191 @@ mod tests {
         assert!(
             replace_model_flag("claude --model fable", ToolKind::Claude, "bad\nvalue").is_err()
         );
+    }
+
+    // --- the FOLLOW lookup -------------------------------------------------
+    // Rows are named per case instead of edited out of one blob, so each case
+    // states the whole inventory it is a claim about.
+    const FABLEX: &str =
+        "fablex = \"claude --permission-mode bypassPermissions --model fable --effort xhigh\"";
+    const FABLE5: &str =
+        "fable5 = \"claude --permission-mode bypassPermissions --model fable --effort xhigh\"";
+    const OPUS5X: &str = "opus5x = \"claude --permission-mode bypassPermissions --model claude-opus-5 --effort xhigh\"";
+    const OPUS5: &str = "opus5 = \"claude --permission-mode bypassPermissions --model claude-opus-5 --effort xhigh\"";
+    const OPUS5H: &str = "opus5h = \"claude --permission-mode bypassPermissions --model claude-opus-5 --effort high\"";
+    const OPUSBARE: &str =
+        "opusbare = \"claude --permission-mode bypassPermissions --model opus --effort xhigh\"";
+    const OPUSALT: &str =
+        "opusalt = \"claude --permission-mode bypassPermissions --model opus-5 --effort xhigh\"";
+    const MICFABLE: &str =
+        "claude-mic = \"cc-mic --permission-mode bypassPermissions --model fable --effort xhigh\"";
+    const MICOPUS: &str = "opus5x-mic = \"cc-mic --permission-mode bypassPermissions --model claude-opus-5 --effort xhigh\"";
+    const CLAUDE_SEAT: &str =
+        "claude --permission-mode bypassPermissions --model fable --effort xhigh";
+
+    fn inventory(rows: &[&str]) -> String {
+        format!(
+            "[clients]\nclaude = claude\ncc-mic = claude config_home=/accounts/mic\n\n[profiles]\n{}\n",
+            rows.join("\n")
+        )
+    }
+
+    fn follow(
+        rows: &[&str],
+        seat: &str,
+        tool: ToolKind,
+        observed: &str,
+    ) -> Result<String, FollowRefusal> {
+        let cfg = crate::config::parse_identity(&inventory(rows)).expect("config");
+        followed_pin_in(&cfg, Some(Path::new("/h")), tool, seat, observed)
+    }
+
+    /// The seat command as a LAUNCH resolves it — through the same client
+    /// expansion, so a test never encodes a quoting spelling of its own.
+    fn resolved_seat(rows: &[&str], profile: &str) -> String {
+        crate::config::parse_identity(&inventory(rows))
+            .expect("config")
+            .command(profile, Some(Path::new("/h")))
+            .expect("resolution")
+            .expect("profile")
+            .as_str()
+            .to_owned()
+    }
+
+    #[test]
+    fn a_display_label_follows_the_configured_profile_whose_pin_it_satisfies() {
+        // The operator's own inventory IS the display-label-to-flag-value table:
+        // `claude-opus-5` is the spelling `Opus 5 (1M context)` satisfies, and
+        // the 1M suffix is decoration on the label, not a pin of its own.
+        let rows = [FABLEX, OPUS5X];
+        for observed in ["Opus 5 (1M context)", "Opus 5"] {
+            assert_eq!(
+                follow(&rows, CLAUDE_SEAT, ToolKind::Claude, observed),
+                Ok("claude-opus-5".to_owned()),
+                "{observed:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn alias_profiles_collapse_because_the_tie_break_is_over_pin_values() {
+        // `opus5x` and `opus5` are byte-identical rows, as are `fablex` and
+        // `fable5`. Counted by LABEL this reads ambiguous; they carry ONE pin
+        // value, so the labels are immaterial and adding one changes nothing.
+        assert_eq!(
+            follow(
+                &[FABLEX, FABLE5, OPUS5X, OPUS5],
+                CLAUDE_SEAT,
+                ToolKind::Claude,
+                "Opus 5"
+            ),
+            follow(&[FABLEX, OPUS5X], CLAUDE_SEAT, ToolKind::Claude, "Opus 5"),
+        );
+    }
+
+    #[test]
+    fn a_bare_family_pin_loses_to_the_versioned_one() {
+        assert_eq!(
+            follow(
+                &[FABLEX, OPUSBARE, OPUS5X],
+                CLAUDE_SEAT,
+                ToolKind::Claude,
+                "Opus 5"
+            ),
+            Ok("claude-opus-5".to_owned()),
+            "a pin naming the version is the more specific answer"
+        );
+    }
+
+    #[test]
+    fn two_versioned_pin_values_refuse_rather_than_guess() {
+        assert_eq!(
+            follow(
+                &[FABLEX, OPUS5X, OPUSALT],
+                CLAUDE_SEAT,
+                ToolKind::Claude,
+                "Opus 5"
+            ),
+            Err(FollowRefusal::Ambiguous(vec![
+                "claude-opus-5".to_owned(),
+                "opus-5".to_owned()
+            ])),
+            "two spellings, sorted, and no choice made"
+        );
+    }
+
+    #[test]
+    fn a_candidate_must_differ_from_the_seat_in_the_model_value_alone() {
+        // The ACCOUNT rule holds in BOTH directions — this is what keeps a
+        // personal seat off a work profile and the work seat off a personal one,
+        // so the conversation and the quota window cannot move. EFFORT is
+        // preserved rather than voted on, so a row that changes it is not a
+        // candidate either.
+        assert_eq!(
+            follow(&[FABLEX, MICOPUS], CLAUDE_SEAT, ToolKind::Claude, "Opus 5"),
+            Err(FollowRefusal::NoCandidate),
+            "a profile on another config home is never a candidate"
+        );
+        let rows = [FABLEX, MICFABLE, MICOPUS];
+        let mic_seat = resolved_seat(&rows, "claude-mic");
+        assert_eq!(
+            follow(&rows, &mic_seat, ToolKind::Claude, "Opus 5"),
+            Ok("claude-opus-5".to_owned()),
+            "the work seat follows the work profile"
+        );
+        assert_eq!(
+            follow(&[FABLEX, OPUS5H], CLAUDE_SEAT, ToolKind::Claude, "Opus 5"),
+            Err(FollowRefusal::NoCandidate),
+            "effort is PRESERVED, never voted on"
+        );
+    }
+
+    #[test]
+    fn a_follow_refuses_loudly_for_everything_it_cannot_answer() {
+        for (seat, tool, observed, want) in [
+            (
+                "claude --permission-mode bypassPermissions",
+                ToolKind::Claude,
+                "Opus 5",
+                FollowRefusal::Pinless,
+            ),
+            (
+                "claude --model a --model b",
+                ToolKind::Claude,
+                "Opus 5",
+                FollowRefusal::Pinless,
+            ),
+            (
+                "muse --provider meta --model muse-spark-1.3",
+                ToolKind::Muse,
+                "muse-spark-1.3",
+                FollowRefusal::Unsupported,
+            ),
+            (
+                CLAUDE_SEAT,
+                ToolKind::Claude,
+                "Haiku 4.5",
+                FollowRefusal::NoCandidate,
+            ),
+            (
+                CLAUDE_SEAT,
+                ToolKind::Claude,
+                "Fable 5.1",
+                FollowRefusal::AlreadyPinned,
+            ),
+            (CLAUDE_SEAT, ToolKind::Claude, "", FollowRefusal::Unusable),
+            (
+                CLAUDE_SEAT,
+                ToolKind::Claude,
+                "Opus 5\u{1}",
+                FollowRefusal::Unusable,
+            ),
+        ] {
+            assert_eq!(
+                follow(&[FABLEX, OPUS5X], seat, tool, observed),
+                Err(want),
+                "{seat:?} / {observed:?}"
+            );
+        }
     }
 }
