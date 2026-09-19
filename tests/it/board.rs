@@ -942,6 +942,205 @@ fn agy_roster(slot: &str, seat: &str, id: &str) -> String {
     format!("seat.{slot}={seat}\nharness_session.{slot}={id}\nagent_bin.{slot}=agy\n")
 }
 
+/// One synthetic agy planner reply at the fixed stamp; odd shapes inline.
+fn agy_tr(step: u64, body: &str) -> String {
+    format!(
+        r#"{{"step_index":{step},"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-09-16T09:00:00Z","content":"{body}"}}"#
+    )
+}
+
+/// Plant `brain/<id>/.system_generated/logs/<file>` with these lines.
+fn plant_agy_transcript(root: &Path, id: &str, file: &str, lines: &[String]) {
+    let dir = root
+        .join(".gemini/antigravity-cli")
+        .join("brain")
+        .join(id)
+        .join(".system_generated/logs");
+    std::fs::create_dir_all(&dir).expect("brain dir");
+    std::fs::write(dir.join(file), lines.join("\n") + "\n").expect("transcript");
+}
+
+#[test]
+fn agy_replies_render_only_behind_the_flag_and_carry_step_identity() {
+    let root = rig("agy-flag");
+    let dir = root.join(".gemini/antigravity-cli");
+    std::fs::create_dir_all(&dir).expect("agy dir");
+    std::fs::write(
+        dir.join("history.jsonl"),
+        agy_record(Some(AGY_ID), "agy human words", 1_789_549_200_500) + "\n",
+    )
+    .expect("history");
+    plant_agy_transcript(
+        &root,
+        AGY_ID,
+        "transcript_full.jsonl",
+        &[
+            agy_tr(1, "synthetic reply one"),
+            agy_tr(2, "synthetic reply two"),
+        ],
+    );
+    plant_session(&root, "ship", &agy_roster("main", "lead", AGY_ID));
+    // Flag off: the human row only; the transcript might as well not exist.
+    let off = observe(&root, &["ship"], None);
+    assert_eq!(off.rows.len(), 1);
+    assert_eq!(off.rows[0].body, "agy human words");
+    let off_text = board::render(&off, false, None);
+    assert!(!off_text.contains("assistant"), "{off_text}");
+    // Flag on: both replies join with step identity and second micros.
+    let on = observe_with(&root, &["ship"], None, true);
+    assert_eq!(on.rows.len(), 3);
+    let replies: Vec<_> = on
+        .rows
+        .iter()
+        .filter(|row| row.body.starts_with("synthetic reply"))
+        .collect();
+    assert_eq!(replies.len(), 2);
+    assert_eq!((replies[0].offset, replies[1].offset), (1, 2));
+    assert_eq!(replies[0].file, format!("agy:{AGY_ID}"));
+    assert_eq!(replies[0].ts, 1_789_549_200_000_000);
+    assert!(
+        on.coverage.is_empty(),
+        "rows found: no missing-replies line"
+    );
+    assert!(board::render(&on, false, None).contains("synthetic reply one"));
+    // N8: the rendered JSON surface pins the identity too.
+    let json = board::render(&on, true, None);
+    assert!(json.contains(&format!("\"file\":\"agy:{AGY_ID}\",\"offset\":1")));
+    // --since filters the second-precision rows like any other.
+    let gated = observe_with(&root, &["ship"], Some(1_789_549_200_000_001), true);
+    assert_eq!(gated.rows.len(), 1, "both replies predate the floor");
+    assert_eq!(gated.rows[0].body, "agy human words");
+    // I7: the off-render with a store is byte-identical to the off-render
+    // without one, in text and in JSON — same rig, so the history file
+    // identity cannot differ; only the store comes and goes.
+    let off_json = board::render(&off, true, None);
+    std::fs::remove_dir_all(root.join(".gemini/antigravity-cli/brain")).expect("remove store");
+    let bare_off = observe(&root, &["ship"], None);
+    assert_eq!(board::render(&bare_off, false, None), off_text);
+    assert_eq!(board::render(&bare_off, true, None), off_json);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// One agy rig: history with a single human turn plus its session, no store.
+fn agy_history_rig(tag: &str) -> PathBuf {
+    let root = rig(tag);
+    let dir = root.join(".gemini/antigravity-cli");
+    std::fs::create_dir_all(&dir).expect("agy dir");
+    std::fs::write(
+        dir.join("history.jsonl"),
+        agy_record(Some(AGY_ID), "agy human words", 1_789_549_200_500) + "\n",
+    )
+    .expect("history");
+    plant_session(&root, "ship", &agy_roster("main", "lead", AGY_ID));
+    root
+}
+
+#[test]
+fn the_transcript_leg_prefers_full_counts_clips_and_covers_absence() {
+    // Both siblings: the full body wins, nothing is counted.
+    let root = agy_history_rig("agy-both");
+    plant_agy_transcript(
+        &root,
+        AGY_ID,
+        "transcript_full.jsonl",
+        &[agy_tr(1, "full reply")],
+    );
+    plant_agy_transcript(
+        &root,
+        AGY_ID,
+        "transcript.jsonl",
+        &[agy_tr(1, "clipped reply")],
+    );
+    let on = observe_with(&root, &["ship"], None, true);
+    assert!(on.rows.iter().any(|row| row.body == "full reply"));
+    assert!(!on.rows.iter().any(|row| row.body == "clipped reply"));
+    assert!(on.coverage.is_empty());
+    let _ = std::fs::remove_dir_all(&root);
+    // Truncated only: the clipped text renders and counts, once.
+    let root = agy_history_rig("agy-tran");
+    let clipped = agy_tr(1, "clipped reply").trim_end_matches('}').to_owned()
+        + r#","truncated_fields":["content"]}"#;
+    plant_agy_transcript(&root, AGY_ID, "transcript.jsonl", &[clipped]);
+    let on = observe_with(&root, &["ship"], None, true);
+    assert!(on.rows.iter().any(|row| row.body == "clipped reply"));
+    assert_eq!(on.coverage.len(), 1);
+    assert_eq!(on.coverage[0].reason, "1 reply clipped by the agy store");
+    let _ = std::fs::remove_dir_all(&root);
+    // Neither sibling: today's line, verbatim.
+    let root = agy_history_rig("agy-absent");
+    let on = observe_with(&root, &["ship"], None, true);
+    assert_eq!(on.rows.len(), 1);
+    assert_eq!(on.coverage.len(), 1);
+    assert_eq!(
+        on.coverage[0].reason,
+        "agy: no assistant records (history carries prompts only)"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+    // Found but yielding nothing: the line prints exactly when true (I5).
+    let root = agy_history_rig("agy-empty");
+    plant_agy_transcript(
+        &root,
+        AGY_ID,
+        "transcript_full.jsonl",
+        &[r#"{"step_index":0,"source":"SYSTEM","type":"CHECKPOINT","status":"DONE","created_at":"2026-09-16T09:00:00Z","content":"checkpoint words"}"#
+            .to_owned()],
+    );
+    let on = observe_with(&root, &["ship"], None, true);
+    assert_eq!(on.rows.len(), 1);
+    assert_eq!(on.coverage.len(), 1);
+    assert_eq!(
+        on.coverage[0].reason,
+        "agy: no assistant records (history carries prompts only)"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_tool_tagged_agy_prior_reads_with_its_generation() {
+    let root = agy_history_rig("agy-prior");
+    std::fs::write(
+        root.join("sessions/ship/meta"),
+        format!(
+            "schema=2\n{}harness_session_prior.main={AGY_OTHER}\n",
+            agy_roster("main", "lead", AGY_ID)
+        ),
+    )
+    .expect("meta");
+    let history = root.join(".gemini/antigravity-cli/history.jsonl");
+    let mut body = std::fs::read_to_string(&history).expect("history");
+    body.push_str(&(agy_record(Some(AGY_OTHER), "prior human words", 1_789_549_200_500) + "\n"));
+    std::fs::write(&history, body).expect("history");
+    plant_agy_transcript(
+        &root,
+        AGY_ID,
+        "transcript_full.jsonl",
+        &[agy_tr(1, "current reply")],
+    );
+    plant_agy_transcript(
+        &root,
+        AGY_OTHER,
+        "transcript_full.jsonl",
+        &[agy_tr(1, "prior reply")],
+    );
+    let on = observe_with(&root, &["ship"], None, true);
+    assert_eq!(on.rows.len(), 4);
+    let prior = on
+        .rows
+        .iter()
+        .find(|row| row.body == "prior reply")
+        .expect("prior row");
+    assert_eq!(prior.file, format!("agy:{AGY_OTHER}"));
+    assert_eq!(prior.generation, 1);
+    let current = on
+        .rows
+        .iter()
+        .find(|row| row.body == "current reply")
+        .expect("current row");
+    assert_eq!(current.generation, 0);
+    assert!(on.coverage.is_empty());
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 #[test]
 fn an_agy_seat_reads_only_its_own_conversation() {
     // ONE history file per home carries every agy conversation, so the seat's
