@@ -1165,12 +1165,15 @@ ae @my-feature send lead "review ready"          # short form
 ~/.ae/sessions/my-feature/send lead "review ready"   # the link
 ```
 
-`@` is attached to the session. A missing or malformed session, a missing
-helper and an unknown helper are usage errors (exit 2) that read no state; a
-session with no directory under the state root, or one whose entry is a file, a
-socket or a symlink of any kind, refuses with exit 1 and is never followed.
-`ae <helper> …` is not the short form, and a helper reached by bare name is
-still refused — see [helpers.md](helpers.md).
+`@` is attached to the session, and the short form takes canonical session names
+only (`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`) — a session retained from before that
+grammar, which the commands above still address, stays reachable by its link
+alone. A missing or malformed session, a missing helper and an unknown helper
+are usage errors (exit 2) that read no state; a session with no directory under
+the state root, or one whose entry is a file, a socket or a symlink of any kind,
+refuses with exit 1 and is never followed. `ae <helper> …` is not the short
+form, and a helper reached by bare name is still refused — see
+[helpers.md](helpers.md).
 
 The typed session selects the session a helper acts on, never who is calling
 it: identity stays pane-derived, so a writer that needs a caller refuses from a

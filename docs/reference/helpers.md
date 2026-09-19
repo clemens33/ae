@@ -1,6 +1,6 @@
 # Session helpers
 
-Every ae session has a directory at `~/.ae/sessions/<name>/` filled with helpers. Call one by its absolute path, or by the short form `ae @<session> <helper> …`. All of them are re-linked from the running ae binary on every start, resume, and `ae doctor --refresh`.
+Every ae session has a directory at `~/.ae/sessions/<name>/` filled with helpers. Call one by its absolute path, or — when the session's name fits the current grammar — by the short form `ae @<session> <helper> …`. All of them are re-linked from the running ae binary on every start, resume, and `ae doctor --refresh`.
 
 Each one is a **symlink to the ae core binary**. There is no script and no wrapper in front of it: the core reads the name it was invoked under to pick the entry, and the directory it was invoked from to find the session — or, in the short form below, the marked first word. The names and the argv are the contract — every agent in a live workspace calls them by name — and everything behind them is Rust.
 
@@ -21,6 +21,14 @@ The link names its directory, and stays valid everywhere:
 Both run the same helper, from the same `ae` core you invoked, against the same
 session. `@` is attached to the session name — `ae @ send` is not the short
 form, and neither is `ae send`, which is still a word for the ordinary route.
+
+**The short form takes canonical session names only.** The marker asks the
+current grammar, `^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`, and nothing else. Commands
+that address an *existing* session are more permissive: they also accept a name
+retained from before that grammar, as long as it is already a real direct-child
+directory. Such a session is reachable **by its link alone** — deliberately, so
+the marker is not the one place a pre-grammar name gets normalised — and the
+refusal prints the path spelling that works.
 The short form refuses, exit 2, before it reads anything, when the marker names
 no session, names one outside the session-name grammar, names no helper, or
 names a word that is not one; and it refuses, exit 1, when that session has no

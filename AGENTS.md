@@ -212,7 +212,12 @@ A helper has TWO accepted spellings and `src/shim.rs` owns both, because a secon
 table is a second set of names to drift: the LINK
 (`<state-root>/sessions/<session>/send lead 'hi'`) and the SHORT FORM
 (`ae @<session> send lead 'hi'`). Both end at the same `shim::Helper`, the same
-`shim::translate` and the same dispatch, run by the core the caller invoked.
+`shim::translate` and the same dispatch, run by the core the caller invoked. The short form is
+CANONICAL-NAME-ONLY: it asks `session_launch::name::is_session_name` and nothing else, so a
+session RETAINED from before that grammar — which `lib.rs::session_name_usable` still admits
+for every other consumer, by the migration rule in docs/history.md §"Session names" — is
+reachable by its link alone. That is deliberate: the marker may not be the one place a
+pre-grammar name is normalised, and the refusal prints the path spelling that works.
 
 | Helper | Purpose |
 |---|---|
@@ -248,9 +253,9 @@ in every session but works only when the caller pane belongs to the orchestrator
 (`meta_agent=true`), and every attempt is audited in that caller session. It is for verbatim,
 explicit human instructions only, never inferred or judgment work.
 
-**Call a helper by its FULL PATH, or as `ae @<session> <helper> …`.** A BARE name is
-refused: no `/` in `argv[0]` and no marker means no session to derive, and the core exits 2
-rather than guessing. That is why they are not on `PATH`. The `@` is attached to the session;
+**Call a helper by its FULL PATH, or — for a session whose name fits the current grammar —
+as `ae @<session> <helper> …`.** A BARE name is refused: no `/` in `argv[0]` and no marker
+means no session to derive, and the core exits 2 rather than guessing. That is why they are not on `PATH`. The `@` is attached to the session;
 `ae <helper> …` is NOT the short form and keeps its launch/usage semantics, which is why no
 helper name goes into `entry::ROUTED_VERBS`. The marker is parsed above every fall-through, so
 `@…` can never create, resume or rename a session; it refuses exit 2 on a bad name, a missing

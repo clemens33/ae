@@ -275,6 +275,41 @@ fn a_target_that_is_not_a_plain_session_directory_refuses_before_the_helper() {
     );
 }
 
+/// A session RETAINED from before the current name grammar is still addressed
+/// by every other consumer (`lib.rs::session_name_usable`), but the marker asks
+/// the grammar alone. So it is reachable by its LINK and refused by the short
+/// form — and the refusal has to hand over the spelling that works, or the
+/// session reads as unreachable.
+#[test]
+fn a_pre_grammar_session_is_link_only_and_the_refusal_says_so() {
+    let root = scratch("legacy");
+    // A name the grammar refuses, on disk as a real direct-child directory:
+    // exactly what the migration rule keeps working.
+    let legacy = plant(&root, "old.session");
+    let memo = link(&legacy, "memo");
+
+    let (code, stdout, stderr) = run(&root, &["@old.session", "memo", "add", "kept"]);
+    assert_eq!(code, Some(2), "the marker takes canonical names only");
+    assert!(stdout.is_empty(), "{stdout}");
+    assert!(
+        stderr.contains("'old.session' is not a session name"),
+        "the refusal names the cause: {stderr}"
+    );
+    assert!(
+        stderr.contains("the session's own link stays valid"),
+        "the refusal must hand over the spelling that works: {stderr}"
+    );
+    assert!(
+        !legacy.join("memo.tsv").exists(),
+        "a refused call wrote to the legacy session"
+    );
+
+    // And that spelling really is the one that works.
+    let (code, _, stderr) = through_link(&root, &memo, &["add", "kept"]);
+    assert_eq!(code, Some(0), "the link still serves it: {stderr}");
+    assert!(legacy.join("memo.tsv").exists(), "the link wrote");
+}
+
 #[test]
 fn the_marker_grants_no_caller_identity() {
     let root = scratch("identity");

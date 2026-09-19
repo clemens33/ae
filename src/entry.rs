@@ -300,9 +300,11 @@ Session helpers, in every session dir: send, relay, ask, review, reply, requests
   relaunch.
   ae @<session> <helper> [args...]
                          Run one of those helpers against a session, the short way
-                         (e.g. ae @demo send lead 'ready'). The session dir's own link
-                         stays valid; a bare helper name is still refused. The typed
-                         session picks the session, never who you are.
+                         (e.g. ae @demo send lead 'ready'). Canonical session names
+                         only; a session named before that grammar stays link-only.
+                         The session dir's own link is always valid, and a bare helper
+                         name is still refused. The typed session picks the session,
+                         never who you are.
 Run 'ae doctor' after install or agent CLI upgrades.
 Run 'ae doctor --refresh' after updating ae to regenerate existing session helpers.
 ";

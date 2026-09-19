@@ -16,6 +16,14 @@
 //! What the short form does NOT carry is AUTHORITY. It selects the session
 //! directory a helper acts on, nothing else: caller identity stays whatever the
 //! live pane proves, exactly as it does through the link.
+//!
+//! It is also CANONICAL-NAME-ONLY. [`short_form`] asks
+//! [`crate::session_launch::name::is_session_name`] and nothing else, while the
+//! commands that address an EXISTING session also admit a name retained from
+//! before that grammar (`lib.rs::session_name_usable`). So a pre-grammar session
+//! is reachable by its LINK alone — deliberately: the marker is a new spelling,
+//! not the one place such a name would finally be normalised, and its refusal
+//! prints the path spelling that works.
 
 use std::path::{Component, Path, PathBuf};
 

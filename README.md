@@ -168,7 +168,7 @@ Full command reference: **[docs/reference/commands.md](docs/reference/commands.m
 
 ## Session helpers
 
-Inside a session, agents and humans share a set of helpers in `~/.ae/sessions/<name>/` -- the wiring agents use to collaborate. Each is a symlink to the ae core binary, so call them by full path (they are deliberately not on `PATH`, and invoked by bare name they refuse):
+Inside a session, agents and humans share a set of helpers in `~/.ae/sessions/<name>/` -- the wiring agents use to collaborate. Each is a symlink to the ae core binary. Call one by its full path, or by the short form `ae @<session> <helper> …` when the session's name fits the current grammar (`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`); a session retained from before that grammar stays path-only. They are deliberately not on `PATH`, and invoked by bare name they refuse:
 
 ```bash
 send <agent> <message>         # message another agent
