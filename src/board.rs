@@ -570,7 +570,7 @@ pub fn observe(inputs: &Inputs<'_>, since_micros: Option<i64>) -> Observation {
 pub fn observe_with_meta(
     inputs: &Inputs<'_>,
     since_micros: Option<i64>,
-    supplied: Option<SuppliedMeta<'_>>,
+    supplied: Option<&SuppliedMeta<'_>>,
 ) -> Observation {
     let mut rows = Vec::new();
     let mut coverage = Vec::new();
@@ -578,21 +578,19 @@ pub fn observe_with_meta(
     let mut hidden_rows = Vec::new();
     for session in inputs.sessions {
         let held = supplied
-            .as_ref()
             .filter(|held| held.path == session.path.as_path())
             .map(|held| held.meta.clone());
-        let meta = match held {
-            Some(meta) => meta,
-            None => {
-                let Ok(meta) = crate::session::read_meta(&session.path) else {
-                    coverage.push(Coverage {
-                        actor: format!("{}:?", session.name),
-                        reason: "session meta unreadable".to_owned(),
-                    });
-                    continue;
-                };
-                meta
-            }
+        let meta = if let Some(meta) = held {
+            meta
+        } else {
+            let Ok(meta) = crate::session::read_meta(&session.path) else {
+                coverage.push(Coverage {
+                    actor: format!("{}:?", session.name),
+                    reason: "session meta unreadable".to_owned(),
+                });
+                continue;
+            };
+            meta
         };
         for entry in meta.roster() {
             let priors = meta.harness_session_prior(&entry.slot);

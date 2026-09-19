@@ -2351,7 +2351,7 @@ fn observe_with_a_matching_supplied_snapshot_matches_the_disk_read() {
             assistant: false,
         },
         None,
-        Some(board::SuppliedMeta {
+        Some(&board::SuppliedMeta {
             path: &dir,
             meta: &meta,
         }),
@@ -2460,7 +2460,7 @@ fn observe_ignores_a_supplied_snapshot_bound_elsewhere() {
             assistant: false,
         },
         None,
-        Some(board::SuppliedMeta {
+        Some(&board::SuppliedMeta {
             path: &elsewhere,
             meta: &stale,
         }),

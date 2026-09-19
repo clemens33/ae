@@ -607,8 +607,9 @@ pub enum MetaSource {
         branch: String,
         /// The `Meta` parsed from these same bytes: the snapshot the board
         /// owner reads when the caller supplies it, so the correlated bytes
-        /// and the read rows are one read, never two.
-        meta: crate::meta::Meta,
+        /// and the read rows are one read, never two. Boxed: the enum would
+        /// otherwise jump to the `Meta` footprint on every menu draw.
+        meta: Box<crate::meta::Meta>,
     },
 }
 
@@ -654,7 +655,7 @@ impl MetaSource {
                 .map(|value| value.strip_suffix(b"\r").unwrap_or(value))
                 .map(|value| String::from_utf8_lossy(value).into_owned())
                 .unwrap_or_default(),
-            meta: parsed,
+            meta: Box::new(parsed),
         }
     }
 }
@@ -1037,7 +1038,7 @@ pub fn board_cells(
     let observation = crate::board::observe_with_meta(
         &inputs,
         None,
-        Some(crate::board::SuppliedMeta {
+        Some(&crate::board::SuppliedMeta {
             path: dir,
             meta: held,
         }),
@@ -2930,7 +2931,7 @@ mod tests {
             work_dir: work_dir.to_owned(),
             branch: branch.to_owned(),
             // Correlation-only: no test drives the owner through this helper.
-            meta: crate::meta::Meta::default(),
+            meta: Box::default(),
         }
     }
 
