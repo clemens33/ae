@@ -214,41 +214,47 @@ fn a_running_seat_is_stopped_in_place_and_moved() {
 }
 
 #[test]
-fn a_shell_that_is_slow_to_come_back_is_waited_for_not_handed_to_the_dead_proof() {
+fn a_pane_that_does_not_come_back_to_a_shell_is_refused_in_the_stops_own_words() {
     // THE BOUNDED WAIT, PINNED. `respawn-pane` returns as soon as tmux has
     // STARTED the pane's command, not when that command is a shell a human
-    // could type into: a `default-command` that sleeps first leaves a non-shell
-    // in the foreground for seconds. Without the wait the stop hands that pane
-    // straight to the dead proof, which refuses it and moves nothing — so this
-    // seat arrives on its new profile only because the stop waited for it.
+    // could type into — and the command it starts is the pane's OWN, which
+    // this pane arranges to be a sleep the second time it runs. So the pane
+    // never comes back inside the bound, and the stop must wait the bound out
+    // and refuse IN ITS OWN WORDS, with the meta untouched. A stop that did
+    // not wait would hand that pane straight to the dead proof and refuse in
+    // the dead proof's words instead.
     let rig = Rig::new("slowshell");
     rig.seat_rows("spawned.0", "scout", "claude", "claude");
     record_history(&rig, "spawned.0");
-    let pane = rig.new_pane("spawned.0", "scout");
-    rig.start(&pane, "spawned.0", "claude");
+    let script = rig.scratch.join("slowshell");
     assert!(
-        rig.tmux(&[
-            "set-option",
-            "-t",
-            &rig.session,
-            "default-command",
-            "sleep 3; exec /bin/sh",
-        ])
-        .0,
-        "the respawned pane is not a shell for three seconds"
+        std::fs::write(
+            &script,
+            "[ -f \"$0.seen\" ] && exec sleep 60\n: > \"$0.seen\"\nexec /bin/sh\n",
+        )
+        .is_ok(),
+        "a start command that is a shell once and a sleep every time after"
     );
+    let pane = rig.new_pane_running(
+        "spawned.0",
+        "scout",
+        &format!("/bin/sh {}", script.display()),
+    );
+    rig.start(&pane, "spawned.0", "claude");
 
     let (code, out, err) = rig.run_top(
         &rig.main_pane.clone(),
         &["reseat", &rig.session, "scout", "--using", "fake-opencode"],
     );
 
-    assert_eq!(code, Some(0), "out={out} err={err}");
+    assert_eq!(code, Some(1), "out={out} err={err}");
     assert!(
-        rig.tool_pid(&pane, "opencode").is_some(),
-        "the successor holds the same pane"
+        err.contains("is not back at an idle shell after 10s"),
+        "the stop's own timeout, not the dead proof's refusal: {err}"
     );
-    assert_eq!(rig.meta_row("profile.spawned.0"), "fake-opencode");
+    // Nothing moved: the seat still records the profile it had, so `relaunch`
+    // brings it back and a second reseat is free to try again.
+    assert_eq!(rig.meta_row("profile.spawned.0"), "claude");
 }
 
 #[test]

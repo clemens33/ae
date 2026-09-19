@@ -328,6 +328,12 @@ impl Rig {
     }
 
     pub fn new_pane(&self, slot: &str, name: &str) -> String {
+        self.new_pane_running(slot, name, "/bin/sh")
+    }
+
+    /// The same pane, with the START command named: `respawn-pane` re-runs it,
+    /// which is how a pin can decide what comes back after a stop.
+    pub fn new_pane_running(&self, slot: &str, name: &str, command: &str) -> String {
         let (ok, pane) = self.tmux(&[
             "new-window",
             "-d",
@@ -336,7 +342,7 @@ impl Rig {
             "-P",
             "-F",
             "#{pane_id}",
-            "/bin/sh",
+            command,
         ]);
         assert!(ok, "a pane for {slot}");
         let pane = pane.trim().to_owned();
