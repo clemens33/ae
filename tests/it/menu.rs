@@ -4,6 +4,7 @@
 //! arm draws the menu, chooses rows, and proves both the ordinary lead-pane jump
 //! and the execution-time guard when that pane moves or vanishes.
 
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -8225,4 +8226,143 @@ fn the_memos_dialog_draws_brief_latest_per_topic() {
     );
     assert!(text.contains("NEWM") && text.contains("Close"), "{text}");
     assert!(!text.contains("OLDM"), "superseded stays out: {text}");
+}
+
+/// Wide planted rows for the row-pick test: the child must cover the row
+/// point, as a human's long reasons do — a narrow centred child would dodge
+/// the release and the test would pass vacuously.
+fn plant_wide_dialog_content(root: &Path, session: &str) {
+    let wide = "w".repeat(120);
+    let events = format!(
+        "{{\"ts\":\"2026-09-17T08:00:00Z\",\"actor\":\"lead\",\"action\":\"state\",\"ref\":\"working\",\"summary\":\"{wide}\"}}\n\
+         {{\"ts\":\"2026-09-17T08:01:00Z\",\"actor\":\"lead\",\"action\":\"ask\",\"target\":\"w\",\"ref\":\"r1\",\"summary\":\"{wide}\"}}\n\
+         {{\"ts\":\"2026-09-17T08:02:00Z\",\"actor\":\"lead\",\"action\":\"done\",\"summary\":\"{wide}\"}}\n"
+    );
+    fs::write(
+        root.join("sessions").join(session).join("events.jsonl"),
+        events,
+    )
+    .unwrap_or_else(|error| panic!("plant events: {error}"));
+    let mut memo = format!("2026-09-17T08:00:00Z\tcl:lead\tdecision\t{wide}\n");
+    for (hour, topic) in ["goal", "parking", "t1", "t2", "t3", "t4", "t5", "t6"]
+        .iter()
+        .enumerate()
+    {
+        let _ = writeln!(
+            memo,
+            "2026-09-17T{:02}:00:00Z\tcl:lead\t{topic}\t{wide}",
+            hour + 9
+        );
+    }
+    fs::write(root.join("sessions").join(session).join("memo.tsv"), memo)
+        .unwrap_or_else(|error| panic!("plant memo: {error}"));
+}
+
+/// A mouse row-pick must leave the child open: the press chooses the row, and
+/// the trailing release must not close the child it just opened (issue #139).
+/// On the 3.4 floor the rows are keyboard-only, so the key opens instead.
+/// Run explicitly: `TMUX_TMPDIR=$(mktemp -d) env -u TMUX -u TMUX_PANE cargo
+/// test --locked --test it clicking_a_dialog_row -- --ignored`. A PASS means
+/// tmux fixed the release delivery upstream — revisit display-popup dialogs.
+#[test]
+#[ignore = "upstream tmux limit (issue #139): a release on a fresh -M -O child closes it; run explicitly"]
+fn clicking_a_dialog_row_keeps_the_child_open_after_the_release() {
+    let scratch = scratch("dlg-click-stays");
+    if !tmux_present(&scratch) {
+        let _ = fs::remove_dir_all(&scratch);
+        panic!("tmux is not runnable here, so the row-pick release cannot be proven");
+    }
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let root = scratch.join("state");
+    let project = scratch.join("project");
+    let config = scratch.join("config");
+    assert!(fs::create_dir_all(&project).is_ok());
+    assert!(
+        fs::write(
+            &config,
+            "[profiles]\nidle = \"sleep 600\"\n\n[roster]\nlead = idle\n\n[workspace]\nmain = lead\nlayout = vertical\nwatchdog = false\n",
+        )
+        .is_ok()
+    );
+    for session in ["dlg-clicked", "dlg-viewed"] {
+        launch_ae_session(&socket, &scratch, &root, &project, &config, session);
+    }
+    plant_wide_dialog_content(&root, "dlg-clicked");
+    let listing = tmux(
+        &socket,
+        &scratch,
+        &["list-sessions", "-F", "#{session_name}|#{session_id}"],
+    )
+    .1;
+    let clicked_id = listing
+        .lines()
+        .find_map(|line| line.strip_prefix("dlg-clicked|"))
+        .unwrap_or_else(|| panic!("the clicked session is on the server: {listing}"))
+        .to_owned();
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &[
+                "set-option",
+                "-t",
+                "dlg-viewed",
+                "status-format[1]",
+                &format!("#[range=session|{clicked_id}] C #[norange]"),
+            ],
+        )
+        .0,
+        "set a deterministic session range"
+    );
+    let viewer = "dlg-viewer";
+    let client = nested_client(&socket, &scratch, "dlg-viewed", viewer);
+    std::thread::sleep(Duration::from_millis(600));
+    let mouse = menu_mouse(&socket);
+    // Soft verdicts: one run names EVERY row that flashes, not stop at
+    // the first — the Stop row's survival is geometry luck (residual R1),
+    // the dialog rows' flash is the bug.
+    let mut flashed: Vec<&str> = Vec::new();
+    for (row, key, marker) in [
+        ("Activity…", "a", "Close"),
+        ("Memos…", "m", "Close"),
+        ("Stop session...", "s", "Cancel"),
+    ] {
+        let menu = open_context_menu(&socket, &scratch, viewer, &client);
+        if mouse {
+            // Mid-row, not the label start: a centred child narrower than the
+            // root dodges an edge click, as a human's wide rows do not.
+            let (row_y, row_x) = menu
+                .lines()
+                .enumerate()
+                .find_map(|(y, line)| line.find(row).map(|x| (y + 1, x + 10)))
+                .unwrap_or_else(|| panic!("{row} row coordinates: {menu}"));
+            mouse_event(&socket, &scratch, viewer, 35, row_x, row_y, 'M');
+            mouse_event(&socket, &scratch, viewer, 0, row_x, row_y, 'M');
+            // A long hold: the child draws DURING the hold, so the release
+            // meets an open child deterministically — no spawn race.
+            std::thread::sleep(Duration::from_secs(2));
+            mouse_event(&socket, &scratch, viewer, 0, row_x, row_y, 'm');
+        } else {
+            assert!(tmux(&socket, &scratch, &["send-keys", "-t", viewer, key]).0);
+        }
+        std::thread::sleep(Duration::from_secs(1));
+        let shown = tmux(&socket, &scratch, &["capture-pane", "-p", "-t", viewer]).1;
+        if !shown.contains(marker) {
+            flashed.push(row);
+        }
+        assert!(tmux(&socket, &scratch, &["send-keys", "-t", viewer, "c"]).0);
+        wait_for(
+            &format!("the {row} child dismissed by key"),
+            || tmux(&socket, &scratch, &["capture-pane", "-p", "-t", viewer]).1,
+            |seen| !seen.contains(marker),
+        );
+    }
+    assert!(
+        flashed.is_empty(),
+        "these rows flashed their child on a mouse row-pick: {flashed:?}"
+    );
 }

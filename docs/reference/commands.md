@@ -845,7 +845,11 @@ Dialog rows are informational and keyless; `Close` (`c`) dismisses and writes
 nothing. There is no Back row — dismiss and right-click again. Like the
 settings quota dialog, a row starting with `-` would read as a tmux separator;
 actor names cannot start there, and a hostile memo topic starting with one
-renders as a divider line.
+renders as a divider line. Mouse-clicking `Activity…` / `Memos…` closes
+the dialog immediately: tmux delivers the click's own release to the fresh
+dialog, and no menu flag combination survives that. This is a tmux
+`display-menu` limit, not an ae bug (see issue #139) — press `a` / `m`
+instead, which always works.
 
 ## `ae doctor`
 
