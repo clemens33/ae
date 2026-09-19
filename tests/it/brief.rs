@@ -954,3 +954,42 @@ fn a_seat_pack_refuses_a_session_whose_meta_it_cannot_read_and_names_the_cause()
         "the cause is named: {stderr}"
     );
 }
+
+#[test]
+fn the_seat_pack_carries_agy_replies_beside_human_turns() {
+    // No pack change: the transcript leg feeds observe_seat_turns through
+    // observe_generation, so the binary proves the interaction.
+    let root = scratch("agy-pack");
+    let dir = plant(&root, "ship", &root.join("work"));
+    let id = "0199c0de-ffff-4890-abcd-ef0123456789";
+    let meta = fs::read_to_string(dir.join("meta")).expect("meta");
+    fs::write(
+        dir.join("meta"),
+        format!("{meta}harness_session.main={id}\nagent_bin.main=agy\n"),
+    )
+    .expect("agy rows");
+    let store = root.join(".gemini/antigravity-cli");
+    fs::create_dir_all(&store).expect("agy dir");
+    fs::write(
+        store.join("history.jsonl"),
+        format!(
+            "{{\"display\":\"pack human words\",\"timestamp\":1789549200500,\"conversationId\":\"{id}\",\"workspace\":\"/work\"}}\n"
+        ),
+    )
+    .expect("history");
+    let logs = store.join("brain").join(id).join(".system_generated/logs");
+    fs::create_dir_all(&logs).expect("brain dir");
+    fs::write(
+        logs.join("transcript_full.jsonl"),
+        "{\"step_index\":1,\"source\":\"MODEL\",\"type\":\"PLANNER_RESPONSE\",\"status\":\"DONE\",\"created_at\":\"2026-09-16T09:00:00Z\",\"content\":\"pack reply words\"}\n",
+    )
+    .expect("transcript");
+    let (code, stdout, stderr) = run(&root, &["brief", "ship", "--seat", "lead"]);
+    assert_eq!(code, Some(0), "stderr: {stderr}");
+    assert!(stdout.contains("## last turns"), "{stdout}");
+    assert!(stdout.contains("--- human"), "{stdout}");
+    assert!(stdout.contains("pack human words"), "{stdout}");
+    assert!(stdout.contains("--- assistant"), "{stdout}");
+    assert!(stdout.contains("pack reply words"), "{stdout}");
+    let _ = fs::remove_dir_all(&root);
+}

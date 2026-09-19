@@ -1142,6 +1142,53 @@ fn a_tool_tagged_agy_prior_reads_with_its_generation() {
 }
 
 #[test]
+fn a_symlinked_transcript_refuses_and_a_failed_history_keeps_leg_rows() {
+    use std::os::unix::fs::PermissionsExt;
+    // A symlinked transcript_full refuses instead of falling through; the
+    // history line stacks under it because no rows were produced.
+    let root = agy_history_rig("agy-symlink");
+    let logs = root
+        .join(".gemini/antigravity-cli/brain")
+        .join(AGY_ID)
+        .join(".system_generated/logs");
+    std::fs::create_dir_all(&logs).expect("brain dir");
+    std::os::unix::fs::symlink(root.join("real.jsonl"), logs.join("transcript_full.jsonl"))
+        .expect("link");
+    let on = observe_with(&root, &["ship"], None, true);
+    assert_eq!(on.rows.len(), 1);
+    assert_eq!(
+        on.coverage
+            .iter()
+            .map(|item| item.reason.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "agy: no assistant records (history carries prompts only)",
+            "transcript is not a regular file",
+        ]
+    );
+    let _ = std::fs::remove_dir_all(&root);
+    // B3-I2: an unreadable history keeps the leg rows it already holds.
+    let root = agy_history_rig("agy-unreadable");
+    plant_agy_transcript(
+        &root,
+        AGY_ID,
+        "transcript_full.jsonl",
+        &[agy_tr(1, "kept reply")],
+    );
+    std::fs::set_permissions(
+        root.join(".gemini/antigravity-cli/history.jsonl"),
+        std::fs::Permissions::from_mode(0o000),
+    )
+    .expect("chmod");
+    let on = observe_with(&root, &["ship"], None, true);
+    assert_eq!(on.rows.len(), 1);
+    assert_eq!(on.rows[0].body, "kept reply");
+    assert_eq!(on.coverage.len(), 1);
+    assert_eq!(on.coverage[0].reason, "transcript unreadable");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn an_agy_seat_reads_only_its_own_conversation() {
     // ONE history file per home carries every agy conversation, so the seat's
     // captured id alone separates its turns from a sibling's.
