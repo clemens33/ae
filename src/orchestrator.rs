@@ -695,6 +695,14 @@ impl Columns {
     /// word rather than the model.
     fn fit_models(&mut self, agents: &[&crate::tmux::PickerAgent], inner_width: usize) {
         let budget = inner_width.saturating_sub(AGENT_ROW_OVERHEAD + self.name + self.state);
+        // Byte-identity is owed to an all-v1 fleet: with no observation
+        // anywhere the block is one column exactly as before sub-columns
+        // existed. A roster with ANY observation is a drawing this slice
+        // invents, so it keeps the sub-columns — it has no old bytes to match.
+        if agents.iter().all(|agent| draws_fallback(agent)) {
+            self.fit_legacy_fallback(agents, budget);
+            return;
+        }
         for rung in FidelityRung::LADDER {
             let natural = natural_widths(agents, rung);
             debug_assert!(
@@ -709,6 +717,33 @@ impl Columns {
             (self.client, self.model, self.effort) = squeeze_widths(natural, budget);
         }
     }
+
+    /// The no-observation draw: every seat renders `~profile` (or `-`) in one
+    /// column — the widest fallback, floored at 4, capped at the old
+    /// whole-cell total, runged exactly as the old ladder runged it.
+    fn fit_legacy_fallback(&mut self, agents: &[&crate::tmux::PickerAgent], budget: usize) {
+        let widest = agents
+            .iter()
+            .map(|agent| {
+                let parts = model_parts(agent, FidelityRung::Full);
+                terminal_cells(&parts.model).min(MODEL_CELL_CAP)
+            })
+            .max()
+            .unwrap_or(0);
+        self.rung = if widest <= budget {
+            FidelityRung::Full
+        } else {
+            FidelityRung::NoEffort
+        };
+        self.client = 0;
+        self.model = widest.max(MIN_COLUMN_WIDTH).min(budget);
+        self.effort = 0;
+    }
+}
+
+/// Whether this seat draws the declared fallback rather than any observation.
+fn draws_fallback(agent: &crate::tmux::PickerAgent) -> bool {
+    agent.client.is_empty() && agent.model.is_empty() && agent.effort.is_empty()
 }
 
 /// One draw's model-block widths: the client, model and effort sub-columns.
@@ -738,20 +773,20 @@ fn block_cells(widths: ModelWidths) -> usize {
     widths.0 + widths.1 + widths.2 + drawn.saturating_sub(1)
 }
 
-/// Shrink `widths` into `budget`, rightmost first, so the client — the cheapest
-/// cell and the last to go — is what survives a squeeze. The gap count is the
-/// pre-squeeze one: a column squeezed to zero drops its gap at draw, so the
-/// drawn row only ever comes out shorter than this budgets.
+/// Shrink `widths` into `budget`, rightmost first, reclaiming each dead
+/// column's separator as it vanishes — so the client, the cheapest cell and
+/// the last to go, is what survives a squeeze.
 fn squeeze_widths(widths: ModelWidths, budget: usize) -> ModelWidths {
     let mut out = [widths.0, widths.1, widths.2];
-    let mut excess = block_cells(widths).saturating_sub(budget);
-    for width in out.iter_mut().rev() {
+    loop {
+        let excess = block_cells((out[0], out[1], out[2])).saturating_sub(budget);
         if excess == 0 {
             break;
         }
-        let take = (*width).min(excess);
-        *width -= take;
-        excess -= take;
+        let Some(vanish) = (0..3).rev().find(|&i| out[i] > 0) else {
+            break;
+        };
+        out[vanish] -= out[vanish].min(excess);
     }
     (out[0], out[1], out[2])
 }
@@ -2448,12 +2483,18 @@ mod tests {
         assert_eq!(squeezed.rung, FidelityRung::NoEffort);
         assert_eq!(
             (squeezed.client, squeezed.model, squeezed.effort),
-            (5, 0, 0)
+            (6, 0, 0)
         );
         assert!(
             !model_block(&plain, squeezed).contains('!'),
             "a clip narrower than the plain block takes the mark with the model"
         );
+        // Budget exactly the client column: the dead model's separator is
+        // reclaimed, so the client survives whole.
+        let exact = fitted(&[&agent], overhead + 12);
+        assert_eq!(exact.rung, FidelityRung::NoEffort);
+        assert_eq!((exact.client, exact.model, exact.effort), (12, 0, 0));
+        assert_eq!(model_block(&plain, exact), "cccccccccccc");
     }
 
     /// A full label keeps the rung order, and a 32-cell one clips with the
@@ -2472,7 +2513,7 @@ mod tests {
         assert_eq!(squeezed.rung, FidelityRung::NoEffort);
         assert_eq!(
             (squeezed.client, squeezed.model, squeezed.effort),
-            (9, 0, 0),
+            (10, 0, 0),
             "the squeeze takes the model column before the client"
         );
         let block = model_block(&model_parts(&wide, squeezed.rung), squeezed);
@@ -2679,7 +2720,7 @@ mod tests {
 
     /// At the plainer rung the effort column VANISHES for every row — no ragged
     /// blanks — the drift mark glues to the model, and a `~profile` fallback
-    /// aligns in the model column.
+    /// aligns in the model column (any observation keeps the sub-columns).
     #[test]
     fn the_no_effort_rung_drops_the_effort_column_for_all_rows() {
         let panes = [pane("$7", "%10"), pane("$7", "%11")];
@@ -2714,6 +2755,29 @@ mod tests {
                 col_of(row, state),
                 26,
                 "no kept effort column leaves blanks: {row:?}"
+            );
+        }
+    }
+
+    /// A roster with NO observation anywhere keeps the legacy single column —
+    /// the widest fallback floored at 4 and capped at the old whole-cell
+    /// total, byte-identical to before sub-columns existed. The pins hit the
+    /// boundaries: past the cap, exactly at it, and at the floor.
+    #[test]
+    fn a_roster_without_observations_keeps_the_legacy_column() {
+        let panes = [pane("$7", "%10")];
+        for (len, model, width) in [
+            (38, format!("~{}…", "p".repeat(35)), 37),
+            (36, format!("~{}", "p".repeat(36)), 37),
+            (1, "~p".to_owned(), 4),
+        ] {
+            let fact = format!("v1;2000;60;lead:{}:working:%10", "p".repeat(len));
+            let drawn = drawn_v2_roster(&fact, &panes, 100);
+            assert_eq!(drawn.items.len(), 2);
+            assert_eq!(
+                drawn.items[1].label,
+                format!("  ● {lead:<4} {model:<width$} working", lead = "lead"),
+                "{len}-cell profile"
             );
         }
     }
