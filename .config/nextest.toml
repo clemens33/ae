@@ -14,3 +14,18 @@ max-threads = 3
 [[profile.default.overrides]]
 filter = 'test(/^menu::/)'
 test-group = 'tmux-clients'
+
+# The `reseat` module drives a REAL tmux server too, but the resource it is
+# sensitive to is TIME, not a client: the stop reads a pane's frame TWICE a
+# second apart and then waits up to ten seconds for a respawned shell, and one
+# pin deliberately holds a pane that never returns. Under a fully parallel run
+# those waits and a sibling's fake tool drawing its frame compete for the same
+# cpu, and a frame that has not finished drawing reads as a different verdict.
+# Same reasoning as above, same shape: the module is the class, so a reseat
+# test added tomorrow is covered, and nothing is skipped, retried or weakened.
+[test-groups.tmux-seats]
+max-threads = 2
+
+[[profile.default.overrides]]
+filter = 'test(/^reseat::/)'
+test-group = 'tmux-seats'
