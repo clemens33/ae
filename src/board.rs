@@ -10,6 +10,7 @@
 //! that is two rows, not one.
 
 pub mod agy;
+pub mod agy_transcript;
 pub mod claude;
 pub mod codex;
 pub mod follow;
