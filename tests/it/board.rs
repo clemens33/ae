@@ -2006,6 +2006,32 @@ fn the_opencode_export_cap_is_the_documented_sixteen_mib() {
 }
 
 #[test]
+fn a_planted_control_laden_transcript_reaches_no_raw_control_byte() {
+    // The JSON TEXT carries the escapes; the reader parses them into real
+    // control bytes in the body, and the shipped binary must not print them.
+    let root = rig("boardctl");
+    let store = root.join("claude");
+    let line = "{\"type\":\"user\",\"timestamp\":\"2026-09-16T09:00:00.500Z\",\"message\":{\"role\":\"user\",\"content\":\"A\\u001b[2J B\\u0007 C\\u0000 D\\u000d E\\u007f F\\u009b\"}}".to_owned();
+    plant_transcript(&store, "work", CLAUDE_ID, &[line]);
+    plant_session(
+        &root,
+        "one",
+        &claude_roster("main", "lead", CLAUDE_ID, &store),
+    );
+    let (code, stdout, stderr) = run(&root, &["board", "one"]);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(
+        !stdout
+            .chars()
+            .any(|ch| ch.is_control() && ch != '\n' && ch != '\t'),
+        "the board's stdout carries no raw control: {stdout:?}"
+    );
+    assert!(stdout.contains('\u{FFFD}'), "{stdout:?}");
+    assert!(stdout.contains("[2J"), "visible text kept: {stdout:?}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn an_export_larger_than_a_pipe_buffer_reads_whole_through_the_shipped_binary() {
     // This pin claims only what it can see: a document well past a pipe buffer
     // is read end to end (its LAST row prints) and the ROW_CAP walk stays

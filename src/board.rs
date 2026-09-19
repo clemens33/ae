@@ -1140,6 +1140,31 @@ pub fn render_batch(observation: &Observation, json: bool, lines: Option<usize>)
 /// The indent every text body line wears, the clip marker included.
 const BODY_INDENT: &str = "  ";
 
+/// THE terminal-output owner for the text board: every C0 control except the
+/// row structure's `\n` and `\t`, DEL, and every C1 control renders as
+/// U+FFFD. A transcript body is hostile persisted state, and a raw ESC, BEL or
+/// NUL would let a board read clear the screen, retitle the terminal or smuggle
+/// an OSC 52 clipboard write; neutralising the introducer makes the rest of a
+/// sequence inert text, so no escape grammar is parsed. Neither neighbour fits:
+/// `goal::printable` DROPS controls and flattens to one line, and
+/// `event_text::display_cell` keeps printable ASCII only, parses escape
+/// sequences and bounds to a cell count; `sanitize::sanitize` is the compact
+/// verb's terminal-INPUT strip (drops, normalizes CR and NEL, strict UTF-8).
+/// This is the one owner for terminal OUTPUT, and [`render_batch_text`] is its
+/// one call site.
+#[must_use]
+fn terminal_text(text: &str) -> String {
+    text.chars()
+        .map(|ch| {
+            if ch == '\n' || ch == '\t' || !ch.is_control() {
+                ch
+            } else {
+                '\u{FFFD}'
+            }
+        })
+        .collect()
+}
+
 /// ONE text row renderer: the header, every body line indented, a blank line,
 /// and — with a clip — one marker naming the dropped remainder. Both the
 /// one-shot and every follow batch print rows through this function.
@@ -1191,7 +1216,7 @@ fn render_batch_text(observation: &Observation, lines: Option<usize>) -> String 
         }
         out.push_str(&text_row(row, lines));
     }
-    out
+    terminal_text(&out)
 }
 
 fn render_batch_json(observation: &Observation) -> String {
@@ -1552,6 +1577,60 @@ mod tests {
 
     fn words(items: &[&str]) -> Vec<String> {
         items.iter().map(|word| (*word).to_owned()).collect()
+    }
+
+    #[test]
+    fn a_control_laden_body_reaches_text_with_placeholders_and_no_control() {
+        let body = "A\u{1b}[2J B\u{7} C\u{0} D\u{d} E\u{7f} F\u{9b}";
+        let text = rendered(vec![row(1_789_549_200_500_000, "a", 0, body)], false, None);
+        assert!(
+            !text
+                .chars()
+                .any(|ch| ch.is_control() && ch != '\n' && ch != '\t'),
+            "no forbidden byte reaches the terminal: {text:?}"
+        );
+        assert_eq!(text.matches('\u{FFFD}').count(), 6, "{text:?}");
+        for visible in ["A", "B", "C", "D", "E", "F", "[2J"] {
+            assert!(text.contains(visible), "{visible} kept: {text:?}");
+        }
+    }
+
+    #[test]
+    fn an_osc_clipboard_or_title_sequence_is_inert_text() {
+        let body = "x\u{1b}]52;c;cGF5bG9hZA==\u{7}y\u{1b}]0;title\u{7}";
+        let text = rendered(vec![row(1_789_549_200_500_000, "a", 0, body)], false, None);
+        assert!(
+            !text.contains('\u{1b}') && !text.contains('\u{7}'),
+            "the introducer and terminator are gone: {text:?}"
+        );
+        assert!(
+            text.contains("52;c;cGF5bG9hZA==") && text.contains("0;title"),
+            "the payload stays as inert text: {text:?}"
+        );
+    }
+
+    #[test]
+    fn a_clean_multi_line_body_renders_byte_identically() {
+        let text = rendered(
+            vec![row(1_789_549_200_500_000, "a", 0, "first\nsecond")],
+            false,
+            None,
+        );
+        assert_eq!(
+            text,
+            "# 2026-09-16 UTC\n## 09:00:00 s:seat\n  first\n  second\n\n"
+        );
+    }
+
+    #[test]
+    fn the_json_row_for_a_control_laden_body_is_byte_identical() {
+        // `--json` is untouched by this slice: C0 is escaped by json.rs, DEL
+        // and C1 ride RAW (a named residual, not this owner's surface), and
+        // this golden is the pre-change bytes exactly.
+        let body = "A\u{1b}[2J B\u{7} C\u{0} D\u{d} E\u{7f} F\u{9b}";
+        let json = rendered(vec![row(1_789_549_200_500_000, "a", 0, body)], true, None);
+        let expected = "{\"kind\":\"row\",\"ts\":1789549200500000,\"actor\":\"s:seat\",\"role\":\"human\",\"body\":\"A\\u001b[2J B\\u0007 C\\u0000 D\\r E\u{7f} F\u{9b}\",\"source\":\"claude\",\"file\":\"a\",\"offset\":0,\"generation\":0}\n";
+        assert_eq!(json, expected);
     }
 
     #[test]

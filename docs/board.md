@@ -55,7 +55,10 @@ date divider and `## HH:MM:SS <session:seat>` headers with bodies; every body
 line is indented two spaces, and one blank line closes each row. The divider
 prints before the first row and again only when the UTC day moves past the
 previously printed row's — within one board and across `--follow` batches.
-Times are UTC, stated once in the divider, never on the row:
+Times are UTC, stated once in the divider, never on the row. Text output is
+neutralised: every C0 control except the row structure's newline and tab, DEL
+and every C1 control renders as U+FFFD, so a hostile transcript can never
+drive the terminal; `--json` is unchanged:
 
 ```text
 scope: current conversations plus each seat's recorded predecessors (up to 4, newest first) — nothing is inferred from time
