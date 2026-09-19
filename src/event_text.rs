@@ -298,18 +298,21 @@ pub fn pad_left_aligned(out: &mut Vec<u8>, field: &[u8], width: usize) {
     }
 }
 
-/// One line of session text projected for a menu cell: printable ASCII only,
-/// ANSI sequences collapsed to a single `?`, and bounded to `max` cells with a
-/// `...` middle cut.
-///
-/// Every DYNAMIC menu row this crate draws — a declaration, a gap, a quota
-/// cell — goes through here before it becomes a tmux label, so no escape byte,
-/// control byte or wide character reaches a terminal formatting step; the
-/// crate's own literal action rows (Flip, Stop) carry no such text and do not.
-/// Because the kept alphabet is ASCII, one byte IS one display cell and `max`
-/// means what it says.
+/// Where the one cutter puts its mark when text exceeds its budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Cut {
+    /// `ab...ij`: the middle cut `display_cell` has always drawn.
+    MiddleDots,
+    /// `abc…`: the trailing ellipsis aligned dialog columns draw.
+    TrailingEllipsis,
+}
+
+/// Session text projected to printable ASCII: ANSI sequences collapse to one
+/// `?`, and so does every non-ASCII scalar. The dialog joins sanitized parts
+/// with its own one-cell joiners after this, so the cutter below counts
+/// characters, never bytes.
 #[must_use]
-pub fn display_cell(text: &str, max: usize) -> String {
+pub(crate) fn sanitize_menu_text(text: &str) -> String {
     let mut chars = text.chars().peekable();
     let mut clean = String::with_capacity(text.len());
     while let Some(ch) = chars.next() {
@@ -322,16 +325,63 @@ pub fn display_cell(text: &str, max: usize) -> String {
             clean.push('?');
         }
     }
-    if clean.len() <= max {
-        return clean;
+    clean
+}
+
+/// The crate's one menu-text cutter: `clean` bounded to `max` cells. Both
+/// public projectors delegate here, and so does the dialogs' column aligner;
+/// a second cutter is a review, pinned beside the dialog tests.
+#[must_use]
+pub(crate) fn clip_to_width(clean: &str, max: usize, cut: Cut) -> String {
+    let chars: Vec<char> = clean.chars().collect();
+    if chars.len() <= max {
+        return clean.to_owned();
     }
-    if max <= 3 {
-        return ".".repeat(max);
+    match cut {
+        Cut::MiddleDots => {
+            if max <= 3 {
+                return ".".repeat(max);
+            }
+            let content = max - 3;
+            let head = content.div_ceil(2);
+            let tail = content - head;
+            format!(
+                "{}...{}",
+                chars[..head].iter().collect::<String>(),
+                chars[chars.len() - tail..].iter().collect::<String>()
+            )
+        }
+        Cut::TrailingEllipsis => {
+            if max == 0 {
+                return String::new();
+            }
+            let mut out: String = chars[..max - 1].iter().collect();
+            out.push('…');
+            out
+        }
     }
-    let content = max - 3;
-    let head = content.div_ceil(2);
-    let tail = content - head;
-    format!("{}...{}", &clean[..head], &clean[clean.len() - tail..])
+}
+
+/// One line of session text projected for a menu cell: printable ASCII only,
+/// ANSI sequences collapsed to a single `?`, and bounded to `max` cells with a
+/// `...` middle cut.
+///
+/// Every DYNAMIC menu row this crate draws — a declaration, a gap, a quota
+/// cell — goes through here before it becomes a tmux label, so no escape byte,
+/// control byte or wide character reaches a terminal formatting step; the
+/// crate's own literal action rows (Flip, Stop) carry no such text and do not.
+/// Because the kept alphabet is ASCII, one byte IS one display cell and `max`
+/// means what it says.
+#[must_use]
+pub fn display_cell(text: &str, max: usize) -> String {
+    clip_to_width(&sanitize_menu_text(text), max, Cut::MiddleDots)
+}
+
+/// One dialog COLUMN: the same projection, but an over-budget value keeps its
+/// head and ends in `…`, so a clipped column still reads left to right.
+#[must_use]
+pub fn display_column(text: &str, max: usize) -> String {
+    clip_to_width(&sanitize_menu_text(text), max, Cut::TrailingEllipsis)
 }
 
 /// Skip one escape sequence after its `\u{1b}` was folded to a `?`: a CSI runs
@@ -363,8 +413,8 @@ fn consume_escape(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
 #[cfg(test)]
 mod tests {
     use super::{
-        char_count, char_prefix, char_slice, display_cell, event_line, extract, last_records,
-        pad_left_aligned, read_lines, records, reversed,
+        Cut, char_count, char_prefix, char_slice, clip_to_width, display_cell, display_column,
+        event_line, extract, last_records, pad_left_aligned, read_lines, records, reversed,
     };
 
     fn padded(field: &[u8], width: usize) -> Vec<u8> {
@@ -540,6 +590,25 @@ mod tests {
             "?after",
             "an OSC sequence ends at BEL"
         );
+    }
+
+    /// The column projector: same sanitize, head kept, `…` marks the cut.
+    #[test]
+    fn display_column_keeps_the_head_and_marks_the_cut() {
+        assert_eq!(display_column("abcdefghij", 10), "abcdefghij");
+        assert_eq!(display_column("abcdefghij", 7), "abcdef…");
+        assert_eq!(display_column("abcdefghij", 1), "…");
+        assert_eq!(display_column("abcdefghij", 0), "");
+        assert_eq!(display_column("\u{1b}[31mab", 20), "?ab");
+        assert_eq!(display_column("中", 20), "?");
+    }
+
+    /// The one cutter counts characters, so the dialog's own `—` joiner —
+    /// joined after sanitizing — survives either cut un-split.
+    #[test]
+    fn the_cutter_never_splits_a_multibyte_joiner() {
+        assert_eq!(clip_to_width("ab — cd", 5, Cut::TrailingEllipsis), "ab —…");
+        assert_eq!(clip_to_width("ab — cd", 6, Cut::MiddleDots), "ab...d");
     }
 
     #[test]
