@@ -983,19 +983,50 @@ fn fixed_widths(rows: &[&Vec<String>], fixed_caps: &[usize]) -> Vec<usize> {
         .collect()
 }
 
-/// The text column's budget: what the client has left after the borders, the
-/// fixed columns at their drawn widths and one separator per kept fixed
-/// column — at most [`DIALOG_TEXT_CELLS_MAX`]. A zero budget empties every
-/// text cell, and the empty column then drops out of the join by the rule
-/// above instead of inventing a second degrade rule.
-fn text_budget(client_width: usize, fixed: &[usize]) -> usize {
+/// Worst-row bytes per fixed column at `fixed` widths: cells are sanitized
+/// ASCII so bytes equal cells, plus 2 when some row clips the column (the
+/// `…`); padding adds plain spaces. A zero width contributes nothing — the
+/// column is dropped from the join, not drawn empty.
+fn fixed_bytes(cells: &[&Vec<String>], fixed: &[usize]) -> Vec<usize> {
+    fixed
+        .iter()
+        .enumerate()
+        .map(|(index, width)| {
+            if *width == 0 {
+                return 0;
+            }
+            let clips = cells.iter().any(|row| {
+                row.get(index)
+                    .is_some_and(|cell| crate::orchestrator::terminal_cells(cell) > *width)
+            });
+            *width + usize::from(clips) * 2
+        })
+        .collect()
+}
+
+/// Text cells from tmux's byte allowance: a menu item is trimmed when its
+/// strlen BYTES exceed the client width minus 4, and tmux's trim keeps the
+/// TAIL — an over-wide label loses its age first and gains a `>`. Text is
+/// sanitized ASCII, so unclipped cells are bytes; a clipped value costs its
+/// cells plus 2 bytes for the `…`. Below 4 bytes even that is noise, so the
+/// column drops out of the join by the empty rule instead of inventing a
+/// second degrade rule.
+fn text_cells(client_width: usize, fixed: &[usize], drawn: usize) -> usize {
     const BORDERS: usize = 4;
-    let kept: Vec<usize> = fixed.iter().copied().filter(|width| *width > 0).collect();
-    client_width
+    let kept: Vec<usize> = fixed.iter().copied().filter(|bytes| *bytes > 0).collect();
+    let room = client_width
         .saturating_sub(BORDERS)
         .saturating_sub(kept.iter().sum::<usize>())
-        .saturating_sub(DIALOG_COLUMN_SEP.chars().count() * kept.len())
-        .min(DIALOG_TEXT_CELLS_MAX)
+        .saturating_sub(DIALOG_COLUMN_SEP.len() * kept.len());
+    if drawn == 0 {
+        0
+    } else if drawn <= room {
+        drawn.min(DIALOG_TEXT_CELLS_MAX)
+    } else if room >= 4 {
+        room.saturating_sub(2).min(DIALOG_TEXT_CELLS_MAX)
+    } else {
+        0
+    }
 }
 
 /// Aligned labels for the survivors: fixed columns clipped to their shared
@@ -1014,17 +1045,40 @@ fn render_survivors(
             CellRow::Gap(_) => None,
         })
         .collect();
-    let fixed = fixed_widths(&cells, fixed_caps);
-    let budget = text_budget(client_width, &fixed);
-    let text_drawn = cells
+    let mut fixed = fixed_widths(&cells, fixed_caps);
+    // The age column never narrows below 2: a lone `-` (unknown age) would
+    // start the label and tmux would take it for its dim marker, not text.
+    if let Some(age) = fixed.first_mut() {
+        *age = (*age).max(2);
+    }
+    // Omit whole fixed columns, age first, while the fixed part alone
+    // overflows tmux's byte budget: a complete age or none at all, never a
+    // truncated number.
+    let allow = client_width.saturating_sub(4);
+    let mut omit = Vec::new();
+    if !fixed.is_empty() {
+        omit.push(0);
+        omit.extend((1..fixed.len()).rev());
+    }
+    for index in omit {
+        let bytes = fixed_bytes(&cells, &fixed);
+        let kept = bytes.iter().filter(|bytes| **bytes > 0).count();
+        let total = bytes.iter().sum::<usize>() + DIALOG_COLUMN_SEP.len() * kept.saturating_sub(1);
+        if total <= allow {
+            break;
+        }
+        fixed[index] = 0;
+    }
+    let bytes = fixed_bytes(&cells, &fixed);
+    let drawn_text = cells
         .iter()
         .map(|row| {
             row.get(text_at)
                 .map_or(0, |cell| crate::orchestrator::terminal_cells(cell))
         })
         .max()
-        .unwrap_or(0)
-        .min(budget);
+        .unwrap_or(0);
+    let text_drawn = text_cells(client_width, &bytes, drawn_text);
     survivors
         .iter()
         .map(|row| match row {
@@ -3203,6 +3257,7 @@ mod tests {
     fn aligned_columns_share_cell_index() {
         use crate::tmux::OptionReading;
         let container = [
+            event("x", "co", "done", r#","summary":"u""#),
             event(
                 "2026-09-17T00:00:00Z",
                 "longactorname",
@@ -3222,7 +3277,7 @@ mod tests {
             now,
         );
         let drawn = aligned(&rows, super::ACTIVITY_FIXED_CAPS, 200);
-        assert_eq!(drawn.len(), 2);
+        assert_eq!(drawn.len(), 3);
         let starts = |label: &str| {
             let mut at = Vec::new();
             let mut index = 0;
@@ -3235,10 +3290,15 @@ mod tests {
             at
         };
         assert_eq!(starts(&drawn[0]), starts(&drawn[1]), "{drawn:?}");
+        assert_eq!(starts(&drawn[1]), starts(&drawn[2]), "{drawn:?}");
         assert!(drawn[1].starts_with("12h "), "longest age fills: {drawn:?}");
         assert!(
             drawn[0].starts_with(" 1m ·"),
             "short age pads left: {drawn:?}"
+        );
+        assert!(
+            drawn[2].starts_with("  - ·"),
+            "unknown age pads with the column: {drawn:?}"
         );
     }
 
@@ -3483,5 +3543,74 @@ mod tests {
         assert_eq!(cells(&super::pad_column("日本", 6, true)), 6);
         assert_eq!(super::pad_column("日本", 6, false), "日本  ");
         assert_eq!(super::pad_column("日本", 6, true), "  日本");
+    }
+
+    /// Labels never exceed tmux's byte allowance: at 40 wide with a maxed
+    /// topic and long text, every label fits 36 bytes and the age stays whole
+    /// — tmux's tail-keeping trim must never see these rows.
+    #[test]
+    fn narrow_labels_fit_tmux_byte_budget_with_complete_age() {
+        use crate::tmux::OptionReading;
+        let text = format!("MEM7{}", "z".repeat(196));
+        let file = format!("2026-09-17T07:00:00Z\tcl:lead\taverylongtopicname7\t{text}\n");
+        let now = crate::time::Timestamp::parse("2026-09-19T12:00:00Z").expect("now parses");
+        let meta = parsed_meta(UUID_A, &["lead"]);
+        let rows = super::memo_cells(
+            &OptionReading::Set(UUID_A.to_owned()),
+            &meta,
+            &events(&file),
+            now,
+        );
+        let drawn = aligned(&rows, super::MEMO_FIXED_CAPS, 40);
+        assert!(drawn.iter().all(|label| label.len() <= 36), "{drawn:?}");
+        assert!(drawn[0].starts_with("2d · "), "{drawn:?}");
+    }
+
+    /// When the fixed part alone overflows the byte budget, whole columns go
+    /// — age first, then kind — until it fits: never a truncated number.
+    #[test]
+    fn overflowing_fixed_columns_omit_until_fit() {
+        use crate::tmux::OptionReading;
+        let container = event(
+            "2026-09-17T08:00:00Z",
+            "averylongactornameovercap",
+            "watchdog-start",
+            r#","summary":"s""#,
+        ) + "\n";
+        let now = crate::time::Timestamp::parse("2026-09-17T12:00:00Z").expect("now parses");
+        let meta = parsed_meta(UUID_A, &["lead"]);
+        let rows = super::activity_cells(
+            &OptionReading::Set(UUID_A.to_owned()),
+            &meta,
+            &events(&container),
+            now,
+        );
+        let drawn = aligned(&rows, super::ACTIVITY_FIXED_CAPS, 40);
+        assert!(drawn.iter().all(|label| label.len() <= 36), "{drawn:?}");
+        assert!(
+            drawn[0].starts_with("averylongactorn… · watchdog-start"),
+            "{drawn:?}"
+        );
+        let drawn = aligned(&rows, super::ACTIVITY_FIXED_CAPS, 38);
+        assert!(drawn.iter().all(|label| label.len() <= 34), "{drawn:?}");
+        assert!(drawn[0].starts_with("averylongactorn… · s"), "{drawn:?}");
+    }
+
+    /// Unknown age renders a visible `-`, never blank and never starting the
+    /// label: the age column holds 2 cells so tmux cannot take it for a marker.
+    #[test]
+    fn unknown_age_renders_a_visible_dash() {
+        use crate::tmux::OptionReading;
+        let container = event("x", "co", "done", r#","summary":"t""#) + "\n";
+        let now = crate::time::Timestamp::parse("2026-09-17T12:00:00Z").expect("now parses");
+        let meta = parsed_meta(UUID_A, &["lead"]);
+        let rows = super::activity_cells(
+            &OptionReading::Set(UUID_A.to_owned()),
+            &meta,
+            &events(&container),
+            now,
+        );
+        let drawn = aligned(&rows, super::ACTIVITY_FIXED_CAPS, 120);
+        assert!(drawn[0].starts_with(" - · "), "{drawn:?}");
     }
 }

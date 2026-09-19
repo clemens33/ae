@@ -8387,9 +8387,17 @@ fn the_activity_dialog_keeps_newest_rows_on_tall_short_and_narrow_clients() {
     let mut events = String::new();
     let filler = "z".repeat(190);
     for n in 0..40 {
+        let kind = if n == 39 {
+            "ask"
+        } else if n == 0 {
+            "reply"
+        } else {
+            "done"
+        };
+        let ts = if n == 39 { "2026-09-17T08:00:00Z" } else { "x" };
         writeln!(
             events,
-            "{{\"ts\":\"x\",\"actor\":\"averylongactornameovercap\",\"action\":\"ask\",\"summary\":\"ROW{n:02}{filler}\"}}"
+            "{{\"ts\":\"{ts}\",\"actor\":\"averylongactornameovercap\",\"action\":\"{kind}\",\"summary\":\"ROW{n:02}{filler}\"}}"
         )
         .unwrap();
     }
@@ -8400,13 +8408,25 @@ fn the_activity_dialog_keeps_newest_rows_on_tall_short_and_narrow_clients() {
     ];
     for (tag, width, height) in sizes {
         let text = dialog_text(tag, "--activity", "Activity", &events, "", width, height);
-        assert!(text.contains("ROW39"), "newest row missing: {text}");
-        assert!(!text.contains("ROW00"), "oldest row survived: {text}");
         assert!(text.contains("Close"), "{text}");
+        assert!(!text.contains(" d · "), "tmux left-trimmed an age: {text}");
         assert!(
             text.contains("averylongactorn…"),
             "capped actor missing: {text}"
         );
+        assert!(text.contains("- · "), "unknown age invisible: {text}");
+        if width == 40 {
+            assert!(text.contains("ask"), "newest kind missing: {text}");
+            assert!(!text.contains("reply"), "oldest kind survived: {text}");
+            assert!(!text.contains("ROW"), "text should drop at 40 cols: {text}");
+        } else {
+            assert!(text.contains("ROW39"), "newest row missing: {text}");
+            assert!(!text.contains("ROW00"), "oldest row survived: {text}");
+            assert!(
+                text.contains("d · averylongactorn…"),
+                "known age invisible: {text}"
+            );
+        }
         if width == 120 && height == 30 {
             let kept = text.matches("ROW").count();
             assert!((23..=27).contains(&kept), "tall keeps ~25 rows, got {kept}");
@@ -8421,30 +8441,33 @@ fn the_memos_dialog_draws_eight_topics_on_tall_and_narrow_clients() {
     let mut memo = String::new();
     let filler = "z".repeat(190);
     for n in 0..8 {
-        writeln!(
-            memo,
-            "2026-09-17T0{n}:00:00Z\tcl:lead\taverylongtopicname{n}\tMEM{n}{filler}"
-        )
-        .unwrap();
+        let ts = if n == 3 {
+            "bad-ts".to_owned()
+        } else {
+            format!("2026-09-17T0{n}:00:00Z")
+        };
+        writeln!(memo, "{ts}\tcl:lead\taverylongtopicname{n}\tTK{n}Q{filler}").unwrap();
     }
     let sizes = [("dlg-memos-8", 120, 30), ("dlg-memos-narrow", 40, 8)];
     for (tag, width, height) in sizes {
         let text = dialog_text(tag, "--memos", "Memos", "", &memo, width, height);
         assert!(text.contains("Close"), "{text}");
+        assert!(!text.contains(" d · "), "tmux left-trimmed an age: {text}");
         assert!(
             text.contains("averylongtopicn…"),
             "capped topic missing: {text}"
         );
         if width == 120 {
+            assert!(text.contains("- · "), "unknown age invisible: {text}");
             for n in 0..8 {
                 assert!(
-                    text.contains(&format!("MEM{n}")),
-                    "topic MEM{n} missing: {text}"
+                    text.contains(&format!("TK{n}")),
+                    "topic TK{n} missing: {text}"
                 );
             }
         } else {
-            assert!(text.contains("MEM7"), "newest topic missing: {text}");
-            assert!(!text.contains("MEM0"), "oldest topic survived: {text}");
+            assert!(text.contains("TK7"), "newest topic missing: {text}");
+            assert!(!text.contains("TK0"), "oldest topic survived: {text}");
         }
     }
 }

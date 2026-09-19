@@ -844,14 +844,14 @@ drops each dialog's oldest rows until title, rows, separator and Close fit.
 Dialog rows are informational and keyless; `Close` (`c`) dismisses and writes
 nothing. There is no Back row — dismiss and right-click again. Like the
 settings quota dialog, a row starting with `-` would read as a tmux separator;
-dialog rows begin with the age column — truthful age, or blank padding without
-a usable timestamp — so no row starts there whatever a hostile topic holds.
+dialog rows begin with the age column — truthful age, or a `-` padded so the
+age never starts the label.
 Mouse-clicking `Activity…` / `Memos…` dismisses the fresh child in the measured
 case: with `-M -O` the click's trailing release lands inside it and closes it,
 while a short child the release lands outside of may survive that geometry.
-`-O` alone dies on mouse motion and Disabled breaks keyboard picks, so no flag
-combination fixes the click path. This is a tmux `display-menu` limit, not an
-ae bug (see issue #139) — the `a` / `m` keys open the same dialogs unaffected.
+Without `-O` menus die on mouse motion and Disabled breaks keyboard picks,
+so no flag combination fixes the click path. This is a tmux `display-menu`
+limit, not an ae bug (see issue #139); the `a` / `m` keys are unaffected.
 
 ## `ae doctor`
 

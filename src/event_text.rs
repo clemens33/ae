@@ -368,8 +368,10 @@ pub(crate) fn clip_to_width(clean: &str, max: usize, cut: Cut) -> String {
 ///
 /// Every dynamic menu VALUE goes through the shared sanitize-then-cut path —
 /// `sanitize_menu_text` plus the one `clip_to_width` cutter — so no escape,
-/// control byte or wide character reaches a terminal. Dialog columns keep
-/// their head through `display_column`; literal action rows use neither.
+/// control byte or wide character reaches a terminal. Dialog cells sanitize
+/// once at collection (widths are measured on clean text) and cut per column
+/// through the cutter directly; literal action rows carry no text and use
+/// neither.
 /// Because the kept alphabet is ASCII, one byte IS one display cell and `max`
 /// means what it says.
 #[must_use]
@@ -377,7 +379,7 @@ pub fn display_cell(text: &str, max: usize) -> String {
     clip_to_width(&sanitize_menu_text(text), max, Cut::MiddleDots)
 }
 
-/// One dialog COLUMN: the same projection, but an over-budget value keeps its
+/// The head-keeping projection for one column: an over-budget value keeps its
 /// head and ends in `…`, so a clipped column still reads left to right.
 #[must_use]
 pub fn display_column(text: &str, max: usize) -> String {
