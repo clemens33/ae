@@ -904,13 +904,27 @@ fn init_owns_exclusive_config_creation_and_first_launch_routes_through_it() {
         lib.contains("crate::init::create_exclusive(path, contents.as_bytes(), 0o666)"),
         "first-launch seeding must race through init's same exclusive writer and retain its umask-derived mode"
     );
+    let carry = halves
+        .iter()
+        .find(|(name, _)| name == "src/carry.rs")
+        .map_or_else(|| panic!("src/carry.rs was not scanned"), |(_, code)| code);
+    // THE SECOND LEGITIMATE CALLER, and the reason it is not a second copy:
+    // an account carry publishes a conversation file into a store ae does not
+    // hold a lock on, so it needs exactly this operation — a temp under a
+    // nonce that call opened, then a link that refuses an existing name — and
+    // a duplicate of it would be a second no-clobber publication to get wrong.
+    // Its mode is the store's, not the config's.
+    assert!(
+        carry.contains("crate::init::create_exclusive(path, bytes, 0o600)"),
+        "the carry's publication must be init's exclusive writer at the store's own mode"
+    );
     for (name, code) in &halves {
-        if name == "src/init.rs" || name == "src/lib.rs" {
+        if name == "src/init.rs" || name == "src/lib.rs" || name == "src/carry.rs" {
             continue;
         }
         assert!(
             !code.contains("create_exclusive("),
-            "{name} gained a caller of init's config-publication boundary"
+            "{name} gained a caller of init's exclusive-publication boundary"
         );
     }
 }
