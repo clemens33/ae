@@ -599,3 +599,37 @@ fn a_seat_whose_resume_marker_cannot_be_written_moves_nothing_at_all() {
         "on the account it was on"
     );
 }
+
+#[test]
+fn a_clear_that_fails_after_the_marker_leaves_the_seat_able_to_resume() {
+    // `clear_slot` removes the start marker FIRST and can fail on a later file.
+    // The meta has not moved, so the seat is still its old self — and its old
+    // self had that marker. Without it the next start would open a NEW
+    // conversation on the account the seat still records.
+    let rig = Rig::new("clrfail");
+    dead_seat(&rig);
+    let marker = rig.dir.join("launch.spawned.0.started");
+    let prompt = rig.dir.join("launch.spawned.0.prompt");
+    let _ = std::fs::remove_file(&prompt);
+    assert!(
+        std::fs::create_dir(&prompt).is_ok(),
+        "a launch file `clear_slot` cannot remove, AFTER the marker in its order"
+    );
+
+    let (code, out, err) = reseat(&rig, "fake-claude-b");
+
+    assert_ne!(code, Some(0), "the move refuses: out={out} err={err}");
+    assert!(
+        err.contains("could not be cleared") && !err.contains("could not be put back"),
+        "it says what failed, and the marker was not one of them: {err}"
+    );
+    assert!(
+        marker.is_file(),
+        "the seat can still resume the conversation it records"
+    );
+    assert_eq!(
+        rig.meta_row("harness_session.spawned.0"),
+        ID,
+        "and nothing about the seat moved"
+    );
+}

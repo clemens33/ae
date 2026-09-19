@@ -279,13 +279,15 @@ could not be exact-resumed in its OLD account either.
 THE BAR, stated because a guard that oversells itself is the defect it exists
 to prevent: both homes belong to the SAME OS user, so this is no silent
 clobber, no followed link and no silent skip — not a guarantee against someone
-who can already write in the account. A target name is claimed with `hard_link`
-rather than a rename, which is the only publication that refuses atomically;
-every component from the account root down is classified before it is used; and
-an `lstat` that fails for any reason but absence is a failure, never an
-absence. What is NOT closed is the window between a classification and the read
-or write that follows it: that needs `openat`/`O_NOFOLLOW`, which has no
-safe-Rust spelling without a libc dependency this crate forbids.
+who can already write in the account. A target name is claimed by the one
+exclusive creation ae already owns, `init::create_exclusive` — a temp under a
+nonce that call opened, then a `hard_link` onto the final name — and never by a
+rename, which would replace whatever appeared after the check. Every component
+from the account root down is classified before it is used; and an `lstat` that
+fails for any reason but absence is a failure, never an absence. What is NOT
+closed is the window between a classification and the read or write that
+follows it: that needs `openat`/`O_NOFOLLOW`, which has no safe-Rust spelling
+without a libc dependency this crate forbids.
 
 RESIDUAL: `run::resumable` still spells the project key inline, so
 `carry::project_key` is the owner in fact but not yet by construction. Pointing

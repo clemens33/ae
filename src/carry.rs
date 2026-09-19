@@ -47,7 +47,8 @@
 //! leaves the target with NO conversation — nothing the tool or ae will find,
 //! and nothing that makes the next attempt refuse. That next attempt re-copies,
 //! finds its own earlier files byte-identical, no-ops over them, and commits.
-//! Every file is published by temp-write and rename for the same reason: a
+//! Every file is published EXCLUSIVELY for the same reason — a temp only that
+//! call opened, then a `hard_link` onto the final name, never a rename: a
 //! half-written sidecar would be neither identical nor explicable, and would
 //! turn one interrupted carry into a permanent seeded fallback.
 //!
@@ -476,42 +477,21 @@ fn make_dir(path: &Path) -> Result<(), String> {
         .map_err(|why| format!("could not create {} ({why})", path.display()))
 }
 
-/// Publish `bytes` at `path`, `0600`, WITHOUT EVER REPLACING ANYTHING: a temp
-/// beside it, created with `create_new` so it can never be an existing file,
-/// then one `hard_link` onto the final name.
+/// Publish `bytes` at `path`, `0600`, WITHOUT EVER REPLACING ANYTHING.
+///
+/// [`crate::init::create_exclusive`] IS that operation and ae already owns it:
+/// a temp under a nonce THIS call opened — never a name a crashed attempt or
+/// another user could be holding, and so never one whose cleanup would delete
+/// someone else's bytes — then a `hard_link` onto the final name, which fails
+/// `AlreadyExists` in the same syscall that would have created it.
 ///
 /// NOT a rename. `rename` REPLACES a destination that appeared between the
-/// caller's classification and this write, and the target account is not under
-/// ae's lifecycle lock — only the session is. `hard_link` fails
-/// `AlreadyExists` in the same syscall that would have created the name, so no
-/// clobber is possible however the two races interleave, and the failure is
-/// the loud fallback like any other. The temp sits beside the final name, so
-/// the same-volume requirement is satisfied by construction.
+/// caller's classification and this write, and the target account is outside
+/// ae's lifecycle lock — only the session is under it. The temp sits beside the
+/// final name, so the same-volume requirement holds by construction.
 fn publish(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    use std::io::Write as _;
-    use std::os::unix::fs::OpenOptionsExt as _;
-
-    let temp = PathBuf::from(format!(
-        "{}.ae-carry.{}",
-        path.display(),
-        std::process::id()
-    ));
-    let written = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&temp)
-        .and_then(|mut file| {
-            file.write_all(bytes)?;
-            file.sync_all()
-        });
-    if let Err(why) = written {
-        let _ = std::fs::remove_file(&temp);
-        return Err(format!("could not write {} ({why})", temp.display()));
-    }
-    let linked = std::fs::hard_link(&temp, path);
-    let _ = std::fs::remove_file(&temp);
-    linked.map_err(|why| format!("could not publish {} ({why})", path.display()))
+    crate::init::create_exclusive(path, bytes, 0o600)
+        .map_err(|why| format!("could not publish {} ({why})", path.display()))
 }
 
 #[cfg(test)]
@@ -669,6 +649,35 @@ mod tests {
             changed.is_err_and(|why| why.contains("changed while ae was copying")),
             "a target that moved under the carry is a loud fallback, not an Ok"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture reads its own scratch dir; the boundary is about what PRODUCT code may reach, and tests/it/phase3.rs cuts at the test module"
+    )]
+    fn a_publication_never_removes_a_temp_it_did_not_open() {
+        // A temp named after the process ALONE is a name another attempt — or,
+        // after a crash and a pid reuse, another program — can already hold,
+        // and cleaning up a name like that deletes bytes ae never wrote.
+        let dir = scratch("nonce");
+        let path = dir.join("held.jsonl");
+        let squatter = dir.join(format!("held.jsonl.ae-carry.{}", std::process::id()));
+        assert!(std::fs::write(&squatter, b"not ae's\n").is_ok());
+
+        let published = super::publish(&path, b"ae's own\n");
+
+        assert!(
+            published.is_ok(),
+            "a name ae does not own cannot decide whether it can publish: {published:?}"
+        );
+        assert_eq!(
+            std::fs::read(&squatter).ok(),
+            Some(b"not ae's\n".to_vec()),
+            "and it is never the file ae cleans up"
+        );
+        assert_eq!(std::fs::read(&path).ok(), Some(b"ae's own\n".to_vec()));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

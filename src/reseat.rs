@@ -880,6 +880,7 @@ pub(crate) fn run(
         )?;
         return Ok(EXIT_FAILED);
     }
+    let planned = plan.is_some();
     let carried = match plan {
         None => Carried::No,
         Some(plan) => {
@@ -953,11 +954,25 @@ pub(crate) fn run(
         Some(pack)
     };
     if let Err(why) = crate::run::clear_slot(&dir, &target.slot) {
+        // THE MARKER, BACK. `clear_slot` removes it FIRST and can fail on a
+        // later file, and the meta has NOT moved — so the seat is still its old
+        // self and still needs the marker its old self had. Only where a carry
+        // was planned, because that is the one path where ae has just PROVEN
+        // the marker was there; a seat that never started must not be handed
+        // one it never had.
+        let stranded = planned && crate::launch::publish_data(&marker, b"").is_err();
         writeln!(
             err,
             "Error: the launch files of slot {} could not be cleared ({why}) — nothing else was \
-             touched and '{}' still records {was}.",
-            target.slot, target.agent
+             touched and '{}' still records {was}.{}",
+            target.slot,
+            target.agent,
+            if stranded {
+                " Its start marker could not be put back either, so its next start would open a \
+                 NEW conversation beside the one it records."
+            } else {
+                ""
+            }
         )?;
         return Ok(EXIT_FAILED);
     }
@@ -980,9 +995,10 @@ pub(crate) fn run(
             writeln!(
                 err,
                 "Error: {why} — the conversation was copied but slot {} could not be marked as \
-                 resuming, so nothing was moved and '{}' still records {was}. Re-run the same \
-                 reseat once {} can be written; until then relaunching '{}' would start a NEW \
-                 conversation on its old account, while the carried one is untouched in both.",
+                 resuming, so the seat was not moved and '{}' still records {was}. Re-run the \
+                 same reseat once {} can be written; until then relaunching '{}' would start a \
+                 NEW conversation on its old account. The source account still holds the \
+                 conversation; the copy in the other account is inert, since no record names it.",
                 target.slot,
                 target.agent,
                 marker.display(),
