@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.139] - 2026-09-19
+- Fold a spawn brief into the UserTurn launch turn
+- Decide fold-or-paste in spawn, fold in _run
+- Pin the fold at spawn level and in the seat pack
+- Sync contract lines with the argv brief
+- Format the fold
+- Backtick UserTurn in rustdoc
+- Silence the two spawn-test lints
+- Reflow the lint allow, move the scope pin below the verbs pin
+
 ## [v2026.9.138] - 2026-09-19
 - Draw the carried drift mark in picker model cells
 
