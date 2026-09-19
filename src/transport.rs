@@ -303,7 +303,9 @@ fn spawn<A: AsRef<std::ffi::OsStr>>(
         // The child wrote through a dup of this handle, so the offset is shared
         // and sits at the end: rewind, then read AT MOST `cap + 1` bytes. A
         // child past its ceiling is refused by the caller's reader without its
-        // whole output ever being allocated.
+        // whole output ever being allocated. This read is on a handle WE minted
+        // (create_new, 0600, single writer, guard-removed), not a world path —
+        // which is why it is not in the phase-3 world-read inventory.
         let mut cursor = file;
         if std::io::Seek::seek(&mut cursor, std::io::SeekFrom::Start(0)).is_err() {
             return None;
@@ -481,8 +483,10 @@ pub(crate) fn run_sysctl() -> (bool, String) {
 /// piped capture truncates the document while a regular file receives it
 /// whole. The file lives in the OS temp directory, is created 0600, and its
 /// guard removes it on every path. `cap` is the caller's byte ceiling: the door
-/// returns at most `cap + 1` bytes, and the caller's own reader refuses
-/// anything past its cap with its own reason.
+/// returns at most `cap + 1` bytes, and what that one extra byte means belongs
+/// to the caller — the board's reader refuses it with its budget reason, while
+/// the id-capture leg has no cap check and simply finds no id (the seat stays
+/// `pending`, never a wrong id).
 pub(crate) fn run_opencode(
     argv: &crate::session_launch::capture::OpenCodeArgv,
     cap: u64,
@@ -1328,16 +1332,29 @@ mod tests {
         reason = "a test: pre-plants and removes its own scratch capture name"
     )]
     fn a_pre_planted_first_name_still_yields_a_capture() {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        // The plant wears the scratch file's own mode and is removed by a
+        // guard, so even a failing run leaves no world-readable look-alike.
+        struct Plant(PathBuf);
+        impl Drop for Plant {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
         let first = std::env::temp_dir().join(format!("ae-opencode.{}.0.json", std::process::id()));
         let _ = std::fs::remove_file(&first);
-        std::fs::write(&first, b"planted").expect("the plant");
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&first)
+            .expect("the plant");
+        let _plant = Plant(first.clone());
         let scratch = CaptureScratch::new().expect("a capture despite the plant");
         assert_ne!(
             scratch.path, first,
             "the collision was skipped, not refused"
         );
-        drop(scratch);
-        let _ = std::fs::remove_file(&first);
     }
 
     #[test]
