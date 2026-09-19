@@ -739,10 +739,20 @@ fn observe_generation(
             return Vec::new();
         }
     };
+    // The agy transcript leg runs before the history READ (never before its
+    // locate, so an invalid id still refuses exactly once): it reports
+    // whether assistant rows were produced, and the history stream binds
+    // that verdict. With the flag off the leg never runs.
+    let (leg_rows, leg_coverage) = if assistant && tool.adapter().name == "agy" {
+        read_agy_transcript(&actor, entry, home, tool)
+    } else {
+        (Vec::new(), Vec::new())
+    };
     let streamed = match stream_transcript(&path, &metadata, 0) {
         Ok(streamed) => streamed
             .for_seat(entry.harness_session.as_deref().unwrap_or_default())
-            .with_assistant(assistant),
+            .with_assistant(assistant)
+            .with_assistant_rows_found(!leg_rows.is_empty()),
         Err(failure) => {
             cover(door_reason(failure).to_owned());
             return Vec::new();
@@ -750,7 +760,9 @@ fn observe_generation(
     };
     let file = file_identity(&path, &metadata);
     let passive = passive_turn(tool, &session.path, &entry.slot);
-    let (seat_rows, seat_coverage) = reader_for(tool)(&streamed, &actor, &file, tool);
+    let (mut seat_rows, mut seat_coverage) = reader_for(tool)(&streamed, &actor, &file, tool);
+    seat_rows.extend(leg_rows);
+    seat_coverage.extend(leg_coverage);
     let (mut seat_rows, hidden_rows): (Vec<Row>, Vec<Row>) = seat_rows
         .into_iter()
         .partition(|row| !hidden(row, passive.as_deref()));
@@ -765,6 +777,48 @@ fn observe_generation(
         cover(item.reason);
     }
     hidden_rows
+}
+
+/// One agy generation's transcript leg: locate the seat's own transcript,
+/// stream it through the ONE door, and read it with the transcript reader.
+/// Absence is rows, not coverage — the caller binds the rows-found verdict
+/// on the history stream, which covers the missing replies. Only a refused
+/// door is a coverage row of this leg's own.
+fn read_agy_transcript(
+    actor: &str,
+    entry: &crate::meta::RosterEntry,
+    home: Option<&Path>,
+    tool: ToolKind,
+) -> (Vec<Row>, Vec<Coverage>) {
+    let id = entry.harness_session.as_deref().unwrap_or_default();
+    let found = match locate_agy_transcript(tool, home, id) {
+        Ok(Some(found)) => found,
+        Ok(None) => return (Vec::new(), Vec::new()),
+        Err(reason) => {
+            return (
+                Vec::new(),
+                vec![Coverage {
+                    actor: actor.to_owned(),
+                    reason,
+                }],
+            );
+        }
+    };
+    let (path, metadata, truncated) = found;
+    let streamed = match stream_transcript(&path, &metadata, 0) {
+        Ok(streamed) => streamed.for_seat(id).with_assistant(true),
+        Err(failure) => {
+            return (
+                Vec::new(),
+                vec![Coverage {
+                    actor: actor.to_owned(),
+                    reason: door_reason(failure).to_owned(),
+                }],
+            );
+        }
+    };
+    let file = format!("agy:{id}");
+    agy_transcript::read_stream(&streamed, actor, &file, tool, truncated)
 }
 
 /// One `OpenCode` generation: prove the recorded id through the ONE grammar,
@@ -944,6 +998,43 @@ fn locate_seat(
     }
 }
 
+/// One agy seat's transcript: `transcript_full.jsonl` first, else
+/// `transcript.jsonl`, under the seat's own `brain/<id>/` store. The id is
+/// grammar-proven before any path is built, so the join cannot traverse,
+/// and each candidate goes through the ONE lstat — a symlink refuses, never
+/// falls through. `Ok(None)` is an absent (or unprovable) store, which the
+/// caller covers; the bool says the truncated sibling was opened.
+fn locate_agy_transcript(
+    tool: ToolKind,
+    home: Option<&Path>,
+    id: &str,
+) -> Result<Option<(PathBuf, std::fs::Metadata, bool)>, String> {
+    if !crate::session_launch::capture::is_lowercase_uuid(id) {
+        return Ok(None);
+    }
+    let Some(home) = home else {
+        return Ok(None);
+    };
+    let Some(dir) = tool.adapter().quota.default_home else {
+        return Ok(None);
+    };
+    let logs = home
+        .join(dir)
+        .join("brain")
+        .join(id)
+        .join(".system_generated")
+        .join("logs");
+    let full = logs.join("transcript_full.jsonl");
+    if let Some(metadata) = lstat_regular(&full)? {
+        return Ok(Some((full, metadata, false)));
+    }
+    let tran = logs.join("transcript.jsonl");
+    match lstat_regular(&tran)? {
+        Some(metadata) => Ok(Some((tran, metadata, true))),
+        None => Ok(None),
+    }
+}
+
 /// One follow poll: re-resolve every selected session's roster, re-locate every
 /// seat, read the bytes the held offsets ask for through the ONE door, and step
 /// the state. Selection itself is the caller's and is fixed for the follow.
@@ -1008,6 +1099,20 @@ fn follow_seat(
             };
         }
     };
+    // Agy + assistant: the transcript leg read once on the first pass and
+    // polls tail history only. Store EXISTENCE (not a row count — the poll
+    // reads nothing) decides the steady line; the reader's wins-rule keeps
+    // it singular, and an empty store's first pass already said "no records".
+    let read_once = assistant
+        && tool.adapter().name == "agy"
+        && matches!(
+            locate_agy_transcript(
+                tool,
+                home,
+                entry.harness_session.as_deref().unwrap_or_default()
+            ),
+            Ok(Some(_))
+        );
     let observed = follow::Located::of(&metadata);
     let streamed = match follow.plan(&actor, &observed) {
         follow::Plan::Hold => None,
@@ -1018,6 +1123,7 @@ fn follow_seat(
                     streamed
                         .for_seat(entry.harness_session.as_deref().unwrap_or_default())
                         .with_assistant(assistant)
+                        .with_assistant_read_once(read_once)
                 }),
         ),
     };
@@ -1870,6 +1976,70 @@ mod tests {
             batch.coverage.is_empty(),
             "the steady reason prints on change only"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test: plants and removes its own scratch session"
+    )]
+    fn an_agy_seat_streams_history_while_its_replies_read_once() {
+        let id = "0199c0de-ffff-4890-abcd-ef0123456789";
+        let root = std::env::temp_dir().join(format!("ae-board-agy-follow-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("sessions").join("s");
+        std::fs::create_dir_all(&dir).expect("session dir");
+        std::fs::write(
+            dir.join("meta"),
+            format!("schema=2\nseat.main=lead\nharness_session.main={id}\nagent_bin.main=agy\n"),
+        )
+        .expect("meta");
+        let store = root.join(".gemini/antigravity-cli");
+        std::fs::create_dir_all(&store).expect("agy dir");
+        std::fs::write(
+            store.join("history.jsonl"),
+            format!(
+                "{{\"display\":\"synthetic human words\",\"timestamp\":1789549200500,\"conversationId\":\"{id}\",\"workspace\":\"/work\"}}\n"
+            ),
+        )
+        .expect("history");
+        let logs = store.join("brain").join(id).join(".system_generated/logs");
+        std::fs::create_dir_all(&logs).expect("brain dir");
+        std::fs::write(
+            logs.join("transcript_full.jsonl"),
+            "{\"step_index\":1,\"source\":\"MODEL\",\"type\":\"PLANNER_RESPONSE\",\"status\":\"DONE\",\"created_at\":\"2026-09-16T09:00:00Z\",\"content\":\"synthetic reply\"}\n",
+        )
+        .expect("transcript");
+        let sessions = vec![crate::usage::SessionInput {
+            name: "s".to_owned(),
+            path: dir,
+        }];
+        let inputs = crate::board::Inputs {
+            home: Some(root.as_path()),
+            sessions: &sessions,
+            assistant: true,
+        };
+        let mut follow = super::follow::Follow::seeded(&[], &[], None);
+        let batch = super::follow_poll(&inputs, &mut follow);
+        assert_eq!(batch.rows.len(), 1, "the human row streams");
+        assert_eq!(batch.rows[0].body, "synthetic human words");
+        assert_eq!(batch.coverage.len(), 1, "the once-read line prints");
+        assert_eq!(
+            batch.coverage[0].reason,
+            "agy: assistant replies read once, not followed"
+        );
+        let batch = super::follow_poll(&inputs, &mut follow);
+        assert!(batch.rows.is_empty() && batch.coverage.is_empty(), "steady");
+        let off = crate::board::Inputs {
+            home: Some(root.as_path()),
+            sessions: &sessions,
+            assistant: false,
+        };
+        let mut follow = super::follow::Follow::seeded(&[], &[], None);
+        let batch = super::follow_poll(&off, &mut follow);
+        assert_eq!(batch.rows.len(), 1);
+        assert!(batch.coverage.is_empty(), "flag off: no once-read line");
         let _ = std::fs::remove_dir_all(&root);
     }
 
