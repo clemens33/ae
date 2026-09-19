@@ -605,6 +605,10 @@ pub enum MetaSource {
         /// The recorded `branch=`, or empty. No producer writes one today, so
         /// the row is dormant until one does.
         branch: String,
+        /// The `Meta` parsed from these same bytes: the snapshot the board
+        /// owner reads when the caller supplies it, so the correlated bytes
+        /// and the read rows are one read, never two.
+        meta: crate::meta::Meta,
     },
 }
 
@@ -650,6 +654,7 @@ impl MetaSource {
                 .map(|value| value.strip_suffix(b"\r").unwrap_or(value))
                 .map(|value| String::from_utf8_lossy(value).into_owned())
                 .unwrap_or_default(),
+            meta: parsed,
         }
     }
 }
@@ -992,7 +997,10 @@ pub struct BoardRows {
 /// first, through the board's own read: `observe` applies `hidden` and
 /// `collect`, so this function never filters and never sorts — the `.rev()`
 /// is a direction, not a second order. Proven correlation only, like every
-/// record-derived surface; the read is pure and writes nothing anywhere.
+/// record-derived surface. The correlated snapshot is supplied to the owner,
+/// which reads exactly it — no second meta read, no reread window. The read
+/// writes nothing into the session, with one shared-reader exception (the
+/// opencode transient export) ruled in `docs/reference/commands.md`.
 #[must_use]
 pub fn board_cells(
     session: &str,
@@ -1018,7 +1026,22 @@ pub fn board_cells(
         sessions: &[input],
         assistant: false,
     };
-    let observation = crate::board::observe(&inputs, None);
+    let MetaSource::Parsed { meta: held, .. } = meta else {
+        let reason = correlation_gap(option, meta).unwrap_or_else(|| "meta: unreadable".to_owned());
+        return BoardRows {
+            turns: Vec::new(),
+            gaps: vec![format!("board: unavailable ({reason})")],
+            summary: None,
+        };
+    };
+    let observation = crate::board::observe_with_meta(
+        &inputs,
+        None,
+        Some(crate::board::SuppliedMeta {
+            path: dir,
+            meta: held,
+        }),
+    );
     let mut turns = Vec::new();
     for row in observation.rows.iter().rev().take(BOARD_ROWS_MAX) {
         turns.push(board_turn_cells(session, row, now));
@@ -1073,8 +1096,17 @@ fn board_turn_cells(
     let prefix = format!("{session}:");
     let seat = row.actor.strip_prefix(&prefix).unwrap_or(&row.actor);
     let seat = crate::event_text::sanitize_menu_text(seat);
+    // A predecessor keeps its suffix whole: the name clips to the room the
+    // suffix leaves inside the seat cap, so `prior n` survives every
+    // client — and any reserved cell still fits the cap, so the shared
+    // column clip can never take the suffix back.
     let seat = if row.generation > 0 {
-        format!("{seat} prior {}", row.generation)
+        let suffix = format!(" prior {}", row.generation);
+        let room = BOARD_SEAT_CELLS.saturating_sub(crate::orchestrator::terminal_cells(&suffix));
+        format!(
+            "{}{suffix}",
+            crate::event_text::clip_to_width(&seat, room, crate::event_text::Cut::TrailingEllipsis)
+        )
     } else {
         seat
     };
@@ -1574,8 +1606,8 @@ pub fn select_root(
 /// carries the cutter's own — so the count reads `… +k lines` either way
 /// and exactly one multibyte mark ever enters the byte budget. A
 /// width-clipped one-liner ends in the cutter's `…` alone and never claims
-/// dropped lines. When even the marker and its space do not fit, the count
-/// survives and the head yields.
+/// dropped lines. When the count cannot survive whole, a bare width mark —
+/// never a partial count, which would state a wrong number.
 fn compose_preview(first: &str, marker: &str, width: usize) -> String {
     use crate::event_text::{Cut, clip_to_width};
     if marker.is_empty() {
@@ -1583,8 +1615,8 @@ fn compose_preview(first: &str, marker: &str, width: usize) -> String {
     }
     let tail = marker.strip_prefix('…').unwrap_or(marker);
     let tail_cells = crate::orchestrator::terminal_cells(tail);
-    if tail_cells + 1 >= width {
-        return clip_to_width(marker, width, Cut::TrailingEllipsis);
+    if tail_cells + 1 > width {
+        return clip_to_width("…", width, Cut::TrailingEllipsis);
     }
     let room = width - tail_cells - 1;
     let mut head = clip_to_width(first, room + 1, Cut::TrailingEllipsis);
@@ -1696,9 +1728,13 @@ fn board_menu(
 /// then turns newest first; the ladder drops the OLDEST turns until it fits,
 /// and only when the gaps alone overflow do they yield to the summary with
 /// its count — the drawn menu never implies completeness. A turn-less
-/// dialog keeps its gaps; a gap-less one keeps its newest turn. Never
-/// refuses: below every fit the floor still draws and tmux trims as it
-/// always has.
+/// dialog keeps its gaps; a gap-less one keeps its newest turn. The
+/// minimum supported draw geometry is 60 columns by 6 rows — one content
+/// row, the separator and Close, plus the title, borders and status the
+/// budget counts. Below it the smallest build is returned anyway and
+/// rendering is unsupported: tmux may trim or refuse, with no trim/draw
+/// guarantee — never a refusal from the model, and never a claim that
+/// the too-small client drew.
 #[must_use]
 pub fn select_board_dialog(
     title: &str,
@@ -2893,6 +2929,8 @@ mod tests {
             origin: origin.to_owned(),
             work_dir: work_dir.to_owned(),
             branch: branch.to_owned(),
+            // Correlation-only: no test drives the owner through this helper.
+            meta: crate::meta::Meta::default(),
         }
     }
 
@@ -4269,7 +4307,7 @@ mod tests {
             &rig.dir,
             None,
             &OptionReading::Set(UUID_A.to_owned()),
-            &parsed_meta(UUID_A, &["lead"]),
+            &super::MetaSource::read(&rig.dir),
             board_now(),
         )
     }
@@ -4287,6 +4325,16 @@ mod tests {
         let one_line = super::compose_preview(&"w".repeat(50), "", 30);
         assert!(one_line.ends_with('…'), "{one_line:?}");
         assert!(!one_line.contains("lines"), "{one_line:?}");
+        // A count that cannot survive whole degrades to a bare width mark,
+        // never a partial number; at exactly tail-plus-one it still fits.
+        assert_eq!(
+            super::compose_preview(&"w".repeat(40), "… +12 lines", 4),
+            "…"
+        );
+        assert_eq!(
+            super::compose_preview(&"w".repeat(40), "… +12 lines", 11),
+            "… +12 lines"
+        );
         let both = super::compose_preview(&"w".repeat(50), "… +3 lines", 30);
         assert!(both.ends_with("… +3 lines"), "{both:?}");
         assert!(both.starts_with('w'), "{both:?}");
@@ -4307,6 +4355,29 @@ mod tests {
         let composed = super::compose_preview("ok", "… +2 lines", 30);
         assert_eq!(composed, "ok… +2 lines");
         assert_eq!(cells(&composed), 12, "{composed:?}");
+    }
+
+    /// A narrow full render degrades the count to a bare width mark: the
+    /// turn row carries no `+` at all, and the exact `…` proves the narrow
+    /// path was taken rather than the pin passing vacuously on a full mark.
+    #[test]
+    fn board_narrow_render_never_shows_a_partial_count() {
+        let rig = board_rig("narrowcount", "s");
+        let body = (0..13_u32)
+            .map(|n| format!("line {n:02}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        plant_turn(&rig, BOARD_CURRENT, "2026-09-17T09:00:00Z", &body);
+        let board = board_rows(&rig, "s");
+        let menu = super::select_board_dialog("Board", &board, super::BOARD_FIXED_CAPS, 30, 60);
+        let turn = menu
+            .items
+            .iter()
+            .find(|item| !item.label.is_empty() && item.label != "Close")
+            .expect("turn row");
+        let text = turn.label.rsplit('·').next().expect("text column").trim();
+        assert_eq!(text, "…", "bounded omission, not a partial count");
+        remove_rig(&rig);
     }
 
     /// Newest first, newest thirty, through `collect` alone: 33 planted turns
@@ -4364,6 +4435,47 @@ mod tests {
         remove_rig(&rig);
     }
 
+    /// A long valid worker name keeps its suffix whole: the name clips to
+    /// the room `prior n` leaves, at collection and at a wide render alike.
+    #[test]
+    fn board_long_worker_name_keeps_its_prior_suffix() {
+        use crate::tmux::OptionReading;
+        let rig = board_rig("longseat", "s");
+        std::fs::write(
+            rig.dir.join("meta"),
+            format!(
+                "schema=2\nsession_id={UUID_A}\nseat.main=terminal-isolation-r2\n\
+                 harness_session.main={BOARD_CURRENT}\nagent_bin.main=claude\n\
+                 config_home.main={}\nharness_session_prior.main={BOARD_PRIOR}\n",
+                rig.store.display()
+            ),
+        )
+        .expect("long meta");
+        plant_turn(&rig, BOARD_CURRENT, "2026-09-17T09:00:00Z", "present words");
+        plant_turn(&rig, BOARD_PRIOR, "2026-09-16T09:00:00Z", "earlier words");
+        let board = super::board_cells(
+            "s",
+            &rig.dir,
+            None,
+            &OptionReading::Set(UUID_A.to_owned()),
+            &super::MetaSource::read(&rig.dir),
+            board_now(),
+        );
+        let prior = board
+            .turns
+            .iter()
+            .find(|turn| turn[2] == "earlier words")
+            .expect("prior turn");
+        assert!(prior[1].contains("prior 1"), "{:?}", prior[1]);
+        assert_eq!(crate::orchestrator::terminal_cells(&prior[1]), 16);
+        let menu = super::select_board_dialog("Board", &board, super::BOARD_FIXED_CAPS, 200, 60);
+        assert!(
+            menu.items.iter().any(|item| item.label.contains("prior 1")),
+            "suffix survives the wide render"
+        );
+        remove_rig(&rig);
+    }
+
     /// The clicked session only: a second session's turns never render.
     #[test]
     fn board_cells_render_only_the_clicked_session() {
@@ -4412,6 +4524,62 @@ mod tests {
         assert_eq!(
             board.gaps,
             ["board: unavailable (meta: identity mismatch)".to_owned()]
+        );
+        remove_rig(&rig);
+    }
+
+    /// Replacement after correlation cannot swap the rows: the owner reads
+    /// the held snapshot, so the correlated turns render and the file's new
+    /// incarnation contributes nothing — no spurious floor either.
+    #[test]
+    fn board_replacement_after_correlation_keeps_the_held_snapshot() {
+        use crate::tmux::OptionReading;
+        let rig = board_rig("heldsnap", "s");
+        plant_turn(
+            &rig,
+            BOARD_CURRENT,
+            "2026-09-17T09:00:00Z",
+            "held incarnation words",
+        );
+        plant_turn(
+            &rig,
+            BOARD_PRIOR,
+            "2026-09-16T09:00:00Z",
+            "foreign incarnation words",
+        );
+        let held = super::MetaSource::read(&rig.dir);
+        std::fs::write(
+            rig.dir.join("meta"),
+            format!(
+                "schema=2\nsession_id=2b4e28ba-2fa1-11d2-883f-0016d3cc4322\nseat.main=lead\n\
+                 harness_session.main={BOARD_PRIOR}\nagent_bin.main=claude\n\
+                 config_home.main={}\n",
+                rig.store.display()
+            ),
+        )
+        .expect("replaced meta");
+        let board = super::board_cells(
+            "s",
+            &rig.dir,
+            None,
+            &OptionReading::Set(UUID_A.to_owned()),
+            &held,
+            board_now(),
+        );
+        assert!(board.gaps.is_empty(), "{:?}", board.gaps);
+        let menu = super::select_board_dialog("Board", &board, super::BOARD_FIXED_CAPS, 200, 60);
+        let labels: Vec<&str> = menu.items.iter().map(|item| item.label.as_str()).collect();
+        assert!(
+            labels
+                .iter()
+                .any(|label| label.contains("held incarnation")),
+            "the held snapshot renders: {labels:?}"
+        );
+        assert!(
+            !labels
+                .iter()
+                .any(|label| label.contains("foreign incarnation")),
+            "the replacement contributes nothing: {labels:?}"
         );
         remove_rig(&rig);
     }
@@ -4516,10 +4684,12 @@ mod tests {
         remove_rig(&rig);
     }
 
-    /// The ladder ends in a drawable menu at the floor client: Close draws,
-    /// nothing panics, tmux gets a menu it accepts.
+    /// Below the 60x6 minimum the ladder returns its smallest build —
+    /// the newest turn, the separator and Close — for tmux to attempt
+    /// with no draw guarantee. Drawability at and above the minimum is
+    /// proven by the end-to-end minimum-geometry draw.
     #[test]
-    fn board_ladder_still_draws_at_the_floor_client() {
+    fn board_below_minimum_returns_smallest_build_for_tmux_to_trim() {
         let rig = board_rig("floor", "s");
         plant_turn(
             &rig,
@@ -4528,9 +4698,12 @@ mod tests {
             "floor words here",
         );
         let board = board_rows(&rig, "s");
-        let menu = super::select_board_dialog("Board", &board, super::BOARD_FIXED_CAPS, 8, 4);
+        let menu = super::select_board_dialog("Board", &board, super::BOARD_FIXED_CAPS, 200, 4);
         let labels: Vec<&str> = menu.items.iter().map(|item| item.label.as_str()).collect();
-        assert_eq!(labels.last(), Some(&"Close"), "{labels:?}");
+        assert_eq!(labels.len(), 3, "{labels:?}");
+        assert!(labels[0].contains("floor words here"), "{labels:?}");
+        assert_eq!(labels[1], "", "the separator");
+        assert_eq!(labels[2], "Close");
         remove_rig(&rig);
     }
 
@@ -4766,7 +4939,7 @@ mod tests {
             &rig.dir,
             None,
             &OptionReading::Set(UUID_A.to_owned()),
-            &parsed_meta(UUID_A, &[]),
+            &super::MetaSource::read(&rig.dir),
             board_now(),
         );
         assert!(board.turns.is_empty());

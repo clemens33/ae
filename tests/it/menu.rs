@@ -8388,6 +8388,22 @@ fn the_board_dialog_summarizes_coverage_at_a_small_client() {
     assert!(text.contains("Close"), "{text}");
 }
 
+/// Turn content draws at the minimum geometry: one turn at 60x6 renders
+/// its preview plus Close on a real client.
+#[test]
+fn the_board_dialog_draws_a_turn_at_minimum_geometry() {
+    let (text, _) = board_dialog_text(
+        "dlg-board-min",
+        &[("2026-09-17T08:00:00Z", "minimum geometry words")],
+        &[],
+        "",
+        60,
+        6,
+    );
+    assert!(text.contains("minimum geometry words"), "{text}");
+    assert!(text.contains("Close"), "{text}");
+}
+
 /// Wide planted rows for the row-pick test: the child must cover the row
 /// point, as a human's long reasons do — a narrow centred child would dodge
 /// the release and the test would pass vacuously.

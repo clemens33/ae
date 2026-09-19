@@ -17,6 +17,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use ae::board::{self, Inputs};
+use ae::meta::Meta;
 use ae::usage::SessionInput;
 
 use super::cli::ae;
@@ -2311,5 +2312,170 @@ fn an_export_larger_than_a_pipe_buffer_reads_whole_through_the_shipped_binary() 
         "the document's end was read whole"
     );
     assert!(!stdout.contains("coverage incomplete"), "{stdout}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// The CLI entry point is a delegation, not a new policy: a matching
+/// supplied snapshot observes exactly what the disk read observes.
+#[test]
+fn observe_with_a_matching_supplied_snapshot_matches_the_disk_read() {
+    let root = rig("supplied-equiv");
+    let store = root.join("store");
+    plant_transcript(
+        &store,
+        "work",
+        CLAUDE_ID,
+        &[user("2026-09-17T08:00:00Z", "equivalent words")],
+    );
+    let dir = plant_session(
+        &root,
+        "s",
+        &claude_roster("main", "lead", CLAUDE_ID, &store),
+    );
+    let disk = observe(&root, &["s"], None);
+    assert!(
+        disk.rows
+            .iter()
+            .any(|row| row.body.contains("equivalent words"))
+    );
+    let bytes = std::fs::read_to_string(dir.join("meta")).expect("meta bytes");
+    let meta = Meta::parse(&bytes);
+    let inputs = vec![SessionInput {
+        name: "s".to_owned(),
+        path: dir.clone(),
+    }];
+    let supplied = board::observe_with_meta(
+        &Inputs {
+            home: Some(root.as_path()),
+            sessions: &inputs,
+            assistant: false,
+        },
+        None,
+        Some(board::SuppliedMeta {
+            path: &dir,
+            meta: &meta,
+        }),
+    );
+    assert_eq!(disk, supplied);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// With no supplied snapshot the owner reads the disk on every call: a
+/// replaced meta moves the rows.
+#[test]
+fn observe_without_supply_follows_a_replaced_meta() {
+    let root = rig("supplied-selfread");
+    let store = root.join("store");
+    plant_transcript(
+        &store,
+        "work",
+        CLAUDE_ID,
+        &[user("2026-09-17T08:00:00Z", "first words")],
+    );
+    plant_transcript(
+        &store,
+        "work",
+        OTHER_ID,
+        &[user("2026-09-17T09:00:00Z", "second words")],
+    );
+    plant_session(
+        &root,
+        "s",
+        &claude_roster("main", "lead", CLAUDE_ID, &store),
+    );
+    let first = observe(&root, &["s"], None);
+    assert!(
+        first
+            .rows
+            .iter()
+            .any(|row| row.body.contains("first words"))
+    );
+    let dir = root.join("sessions").join("s");
+    std::fs::write(
+        dir.join("meta"),
+        format!(
+            "schema=2\n{}",
+            claude_roster("main", "lead", OTHER_ID, &store)
+        ),
+    )
+    .expect("replaced meta");
+    let second = observe(&root, &["s"], None);
+    assert!(
+        second
+            .rows
+            .iter()
+            .any(|row| row.body.contains("second words"))
+    );
+    assert!(
+        !second
+            .rows
+            .iter()
+            .any(|row| row.body.contains("first words"))
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A supplied snapshot bound to another path is ignored: the disk wins, so
+/// one session's snapshot can never leak into another session's read.
+#[test]
+fn observe_ignores_a_supplied_snapshot_bound_elsewhere() {
+    let root = rig("supplied-elsewhere");
+    let store = root.join("store");
+    plant_transcript(
+        &store,
+        "work",
+        CLAUDE_ID,
+        &[user("2026-09-17T08:00:00Z", "first words")],
+    );
+    plant_transcript(
+        &store,
+        "work",
+        OTHER_ID,
+        &[user("2026-09-17T09:00:00Z", "second words")],
+    );
+    let dir = plant_session(
+        &root,
+        "s",
+        &claude_roster("main", "lead", CLAUDE_ID, &store),
+    );
+    let bytes = std::fs::read_to_string(dir.join("meta")).expect("meta bytes");
+    let stale = Meta::parse(&bytes);
+    std::fs::write(
+        dir.join("meta"),
+        format!(
+            "schema=2\n{}",
+            claude_roster("main", "lead", OTHER_ID, &store)
+        ),
+    )
+    .expect("replaced meta");
+    let inputs = vec![SessionInput {
+        name: "s".to_owned(),
+        path: dir.clone(),
+    }];
+    let elsewhere = root.join("sessions").join("other");
+    let observed = board::observe_with_meta(
+        &Inputs {
+            home: Some(root.as_path()),
+            sessions: &inputs,
+            assistant: false,
+        },
+        None,
+        Some(board::SuppliedMeta {
+            path: &elsewhere,
+            meta: &stale,
+        }),
+    );
+    assert!(
+        observed
+            .rows
+            .iter()
+            .any(|row| row.body.contains("second words"))
+    );
+    assert!(
+        !observed
+            .rows
+            .iter()
+            .any(|row| row.body.contains("first words"))
+    );
     let _ = std::fs::remove_dir_all(&root);
 }

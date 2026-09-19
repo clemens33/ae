@@ -543,23 +543,56 @@ pub struct Observation {
     pub(crate) day_floor: Option<String>,
 }
 
+/// A caller-correlated meta for exactly one session: the snapshot the caller
+/// proved, bound to the session directory it was read from. The owner applies
+/// it only to the iterated session whose path matches, so a supplied snapshot
+/// can never leak across a multi-session read; a path that matches no session
+/// reads the disk as if nothing was supplied.
+pub struct SuppliedMeta<'m> {
+    /// The session directory the snapshot was read from.
+    pub path: &'m Path,
+    /// The correlated snapshot itself.
+    pub meta: &'m crate::meta::Meta,
+}
+
+/// Read every session from the disk it names: [`observe_with_meta`] with no
+/// supplied snapshot.
+#[must_use]
+pub fn observe(inputs: &Inputs<'_>, since_micros: Option<i64>) -> Observation {
+    observe_with_meta(inputs, since_micros, None)
+}
+
 /// Read every Claude, Codex, Grok, Muse and Antigravity seat of the handed-in
 /// sessions. A seat that cannot be read — unknown tool, unlocated store,
 /// unreadable transcript — becomes a [`Coverage`], never a silent subset; ae's
 /// own injected turns are removed by [`hidden`] and counted per seat.
 #[must_use]
-pub fn observe(inputs: &Inputs<'_>, since_micros: Option<i64>) -> Observation {
+pub fn observe_with_meta(
+    inputs: &Inputs<'_>,
+    since_micros: Option<i64>,
+    supplied: Option<SuppliedMeta<'_>>,
+) -> Observation {
     let mut rows = Vec::new();
     let mut coverage = Vec::new();
     let mut seeds = Vec::new();
     let mut hidden_rows = Vec::new();
     for session in inputs.sessions {
-        let Ok(meta) = crate::session::read_meta(&session.path) else {
-            coverage.push(Coverage {
-                actor: format!("{}:?", session.name),
-                reason: "session meta unreadable".to_owned(),
-            });
-            continue;
+        let held = supplied
+            .as_ref()
+            .filter(|held| held.path == session.path.as_path())
+            .map(|held| held.meta.clone());
+        let meta = match held {
+            Some(meta) => meta,
+            None => {
+                let Ok(meta) = crate::session::read_meta(&session.path) else {
+                    coverage.push(Coverage {
+                        actor: format!("{}:?", session.name),
+                        reason: "session meta unreadable".to_owned(),
+                    });
+                    continue;
+                };
+                meta
+            }
         };
         for entry in meta.roster() {
             let priors = meta.harness_session_prior(&entry.slot);

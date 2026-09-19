@@ -846,9 +846,16 @@ a partial board names its gaps instead of looking whole. A preview is the
 body's first line: a body with more lines carries the board's own
 `… +k lines` marker, and a first line clipped for width carries its own
 trailing mark instead — never `+0 lines`. Preview text transits the tmux
-child's argv, as every menu item does; the viewer creates no new durable
-artifact carrying turn text — nothing into `events.jsonl`, a memo, a log, an
-archive, an option value or a pane title. A short client
+child's argv, as every menu item does; the viewer itself writes nothing
+durable into the session — nothing into `events.jsonl`, a memo, a log, an
+archive, an option value or a pane title. One shared-reader exception, and
+it is stated exactly: opencode seats are read through a transient export
+of the full session JSON staged under the OS temp directory as
+`ae-opencode.<pid>.<n>.json` at mode 0600 (`create_new`, so a pre-planted
+node is refused), cleanup attempted on a normal exit — and any
+cleanup failure or crash can leave the full export behind. That write
+is pre-existing `ae board` behaviour the menu inherits,
+not a new artifact the viewer introduces. A short client
 drops each dialog's oldest rows until title, rows, separator and Close fit;
 the Board ladder drops turn rows before coverage rows, and where coverage
 alone cannot fit, an explicit summary with its count survives. Every
