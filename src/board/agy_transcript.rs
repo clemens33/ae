@@ -401,8 +401,7 @@ mod tests {
     #[test]
     fn per_record_damage_is_counted_and_the_rest_still_reads() {
         let no_step = r#"{"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-09-16T09:00:00Z","content":"lost"}"#.to_owned();
-        let contentless_running =
-            rec("11", "MODEL", "PLANNER_RESPONSE", "RUNNING", STAMP, "").to_owned();
+        let contentless_running = rec("11", "MODEL", "PLANNER_RESPONSE", "RUNNING", STAMP, "");
         let owned: Vec<String> = [
             "{ not json".to_owned(),
             "[1,2]".to_owned(),
