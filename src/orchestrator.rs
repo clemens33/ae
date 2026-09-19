@@ -560,9 +560,10 @@ const BRANCH_CAP: usize = 14;
 
 /// The widest the agent model column is ever drawn.
 ///
-/// `CLIENT 4 + 1 + MODEL 16 + 1 + EFFORT 6`. The effort width is the closed
-/// vocabulary's own widest word, not a guess.
-const MODEL_CELL_CAP: usize = 28;
+/// `CLIENT 4 + 1 + MODEL 16 + 1 + EFFORT 6 + DRIFT 1`. The effort width is
+/// the closed vocabulary's own widest word, not a guess; the drift cell is
+/// the one `!` a carried mark draws.
+const MODEL_CELL_CAP: usize = 29;
 
 /// The two indent cells, the glyph and the three separators an agent row spends
 /// before its model cell — what the model column must be budgeted against.
@@ -575,10 +576,13 @@ const AGENT_ROW_OVERHEAD: usize = 6;
 /// column the reader cannot read down.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FidelityRung {
-    /// Client, model and the effort the frame drew.
+    /// Client, model and the effort the frame drew, plus the drift mark when
+    /// the entry carries one.
     Full,
-    /// Client and model. Effort is dropped first because it is the only cell
-    /// whose absence costs no identity — the seat is still named.
+    /// Client and model, plus the drift mark when the entry carries one.
+    /// Effort is dropped first because it is the only cell whose absence
+    /// costs no identity — the seat is still named. The mark survives: it
+    /// costs one cell and names a disagreement, the more important signal.
     NoEffort,
 }
 
@@ -686,12 +690,14 @@ impl Columns {
 /// an older watchdog, or the legacy rung of a roster too wide to spell — has no
 /// client at all and renders the bare form.
 ///
-/// The drift mark the fact carries is deliberately NOT drawn. Durable drift
-/// today compares a display string with a pin string, so it fires on every
-/// observed seat (`Opus 5` against `claude-opus-5`); a mark on every row is a
-/// mark the reader learns to ignore. The field stays parsed and carried, and
-/// the day pin and display are comparable it can be drawn without a grammar
-/// change.
+/// A carried drift mark is drawn glued to the last drawn cell: after the
+/// effort at [`FidelityRung::Full`], after the model at
+/// [`FidelityRung::NoEffort`] or when the frame proved no effort. The mark
+/// fires only on a real disagreement now that pin and display are comparable,
+/// so it is signal rather than noise. It is drawn ONLY in the observed-model
+/// arm below: a declared fallback (`~profile`) or `-` names no observed model
+/// for the mark to disagree with, and the writer already empties it there —
+/// the reader stays fail-quiet too.
 fn model_cell(agent: &crate::tmux::PickerAgent, rung: FidelityRung) -> String {
     if !agent.model.is_empty() {
         // A model with no client is refused by the fact's own coherence check,
@@ -705,6 +711,9 @@ fn model_cell(agent: &crate::tmux::PickerAgent, rung: FidelityRung) -> String {
         if rung == FidelityRung::Full && !agent.effort.is_empty() {
             cell.push(' ');
             cell.push_str(&agent.effort);
+        }
+        if agent.drift {
+            cell.push('!');
         }
         return cell;
     }
@@ -1470,7 +1479,7 @@ fn clean(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        AGENT_ROW_OVERHEAD, Args, Columns, FidelityRung, KEYS, ROW_CAP, Usage,
+        AGENT_ROW_OVERHEAD, Args, Columns, FidelityRung, KEYS, MODEL_CELL_CAP, ROW_CAP, Usage,
         launch_tail_is_valid, menu, menu_for_client, menu_for_client_session, model_cell, pad,
         parse, parse_launch_tail, terminal_cells,
     };
@@ -2122,18 +2131,55 @@ mod tests {
         assert_eq!(at(&cell_agent("", "Opus 5", "", "fable5")), "Opus 5");
     }
 
-    /// Lead's ruling: the mark the fact carries is not drawn anywhere.
+    /// A carried mark is drawn glued to the last drawn cell — after the
+    /// effort at Full, after the model at `NoEffort` — and never on a
+    /// fallback cell, where no observed model names a disagreement.
     #[test]
-    fn a_carried_drift_mark_is_never_drawn() {
+    fn a_carried_drift_mark_is_drawn_glued_to_the_last_drawn_cell() {
         let mut marked = cell_agent("cc", "Opus 5", "xhigh", "fable5");
         marked.drift = true;
-        for rung in FidelityRung::LADDER {
-            assert_eq!(
-                model_cell(&marked, rung),
-                model_cell(&cell_agent("cc", "Opus 5", "xhigh", "fable5"), rung),
-                "a drifting seat draws byte-identically to one that agrees"
-            );
+        assert_eq!(
+            model_cell(&marked, FidelityRung::Full),
+            "cc Opus 5 xhigh!",
+            "Full: the mark glues to the effort"
+        );
+        assert_eq!(
+            model_cell(&marked, FidelityRung::NoEffort),
+            "cc Opus 5!",
+            "NoEffort: the mark survives the effort drop"
+        );
+        let mut effortless = cell_agent("oc", "DeepSeek V4.1 Flash", "", "ds41");
+        effortless.drift = true;
+        assert_eq!(
+            model_cell(&effortless, FidelityRung::Full),
+            "oc DeepSeek V4.1 Flash!",
+            "no effort proved: the mark glues to the model"
+        );
+        // Every fallback shape with a carried mark draws exactly as it would
+        // without one. The parser already refuses these states; this is the
+        // reader's own fail-quiet contract.
+        for (client, profile) in [("cx", "gpt56sol"), ("", "fable5"), ("-", "fable5")] {
+            let mut fallback = cell_agent(client, "", "", profile);
+            fallback.drift = true;
+            for rung in FidelityRung::LADDER {
+                assert_eq!(
+                    model_cell(&fallback, rung),
+                    model_cell(&cell_agent(client, "", "", profile), rung),
+                    "no observed model, no mark: {client:?}/{profile:?} at {rung:?}"
+                );
+                assert!(
+                    !model_cell(&fallback, rung).contains('!'),
+                    "no observed model, no mark: {client:?}/{profile:?} at {rung:?}"
+                );
+            }
         }
+        let mut profileless = cell_agent("cc", "", "", "");
+        profileless.drift = true;
+        assert_eq!(
+            model_cell(&profileless, FidelityRung::Full),
+            "-",
+            "a row that knows nothing says so, mark or not"
+        );
     }
 
     /// The columns one draw would use for a single agent at `inner_width`.
@@ -2170,6 +2216,56 @@ mod tests {
         let roomy = cell_agent("cc", "M", "max", "f");
         let shared = fitted(&[&agent, &roomy], overhead + full - 1);
         assert_eq!(shared.rung, FidelityRung::NoEffort);
+    }
+
+    /// The rung ladder budgets the mark before the column clip can eat it.
+    ///
+    /// The rule: the fit test measures the cell WITH its `!` at every rung,
+    /// so the ladder drops the effort while the mark is still inside the
+    /// budget, and the whole-label clip takes the mark only when the
+    /// `NoEffort` cell itself still exceeds it — rightmost-first, like any
+    /// other tail.
+    #[test]
+    fn the_ladder_budgets_the_drift_mark_before_the_clip() {
+        // The VALUE, not just the name: the arithmetic below derives from
+        // this constant, so a test that only spelled it would move with the
+        // product and prove nothing.
+        assert_eq!(MODEL_CELL_CAP, 4 + 1 + 16 + 1 + 6 + 1);
+        assert_eq!(terminal_cells("abcdefghijklmnopqrs"), 19);
+        let mut agent = cell_agent("cc", "abcdefghijklmnopqrs", "xhigh", "fable5");
+        agent.drift = true;
+        let full = model_cell(&agent, FidelityRung::Full);
+        assert_eq!(full, "cc abcdefghijklmnopqrs xhigh!");
+        assert_eq!(terminal_cells(&full), MODEL_CELL_CAP);
+        let overhead = AGENT_ROW_OVERHEAD + terminal_cells("lead") + terminal_cells("working");
+        // Exactly enough for the marked Full cell: equality takes the HIGHER
+        // rung and the mark survives the column.
+        let at_cap = fitted(&[&agent], overhead + MODEL_CELL_CAP);
+        assert_eq!(at_cap.rung, FidelityRung::Full);
+        assert_eq!(at_cap.model, MODEL_CELL_CAP);
+        assert!(
+            pad(&full, at_cap.model).ends_with('!'),
+            "a Full cell at exactly the cap keeps its mark"
+        );
+        // One cell less, and the effort is what pays for it — the mark stays
+        // inside the budget.
+        let below = fitted(&[&agent], overhead + MODEL_CELL_CAP - 1);
+        assert_eq!(below.rung, FidelityRung::NoEffort);
+        let plain = model_cell(&agent, FidelityRung::NoEffort);
+        assert_eq!(plain, "cc abcdefghijklmnopqrs!");
+        assert_eq!(below.model, terminal_cells(&plain));
+        assert!(
+            pad(&plain, below.model).ends_with('!'),
+            "the ladder drops the effort before the clip eats the mark"
+        );
+        // Squeezed past the plain cell, the clip takes the tail first.
+        let squeezed = fitted(&[&agent], overhead + 6);
+        assert_eq!(squeezed.rung, FidelityRung::NoEffort);
+        assert_eq!(squeezed.model, 6);
+        assert!(
+            !pad(&plain, squeezed.model).contains('!'),
+            "a clip narrower than the plain cell takes the mark with the tail"
+        );
     }
 
     /// The model is what gets clipped — never the state word beside it.

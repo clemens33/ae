@@ -274,15 +274,17 @@ drew, with that frame's effort while the width allows one. A seat whose model
 has not been re-proven — a turn in flight, a draft sitting in the box, or a
 harness ae does not observe at all — falls back to its DECLARED profile behind a
 `~`, so the row never guesses; that is also what a seat reads as once the
-watchdog's 30-cycle hold on its last proven identity expires. The drift mark the
-fact carries is deliberately not drawn; drawing it is a later slice. Those
+watchdog's 30-cycle hold on its last proven identity expires. A carried drift
+mark is drawn glued to the model cell's last drawn cell — after the effort at
+full fidelity, after the model when the effort is dropped — and never on a
+declared-fallback cell, where no observed model names a disagreement. Those
 column widths are fitted per draw — the widest content among the drawn rows,
 floored at four cells and capped at the layout's name 18, state 13, branch 14
-and model 28 — and a session row
+and model 29 — and a session row
 shares its name and state columns with the agent rows under it. The model column
 is chosen in a second pass, after those shared columns are final: one fidelity
 rung for the whole menu, dropping the effort before the model is clipped, and
-never the client. The tmux reader
+never the client; the one-cell drift mark survives the effort drop. The tmux reader
 strips pipes and control bytes from the branch field
 without changing the raw session option, preserving the record boundary.
 Choosing a row switches to its

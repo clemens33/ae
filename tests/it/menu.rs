@@ -891,11 +891,12 @@ fn a_v2_roster_draws_its_models_in_a_real_tmux_menu() {
     let watcher = scratch.join("watcher");
 
     let staged = stage(&socket, &main);
-    // One observed seat with an effort, one observed seat without, and one the
-    // watchdog never proved — which must fall back to its declared profile.
+    // One observed seat with an effort, one observed seat without that carries
+    // a drift mark, and one the watchdog never proved — which must fall back
+    // to its declared profile.
     let fact = format!(
         "v2;{};60;lead:fable5:working:{}:cc:Fable 5.1:xhigh:;\
-         builder:ds41:done:{}:oc:DeepSeek V4.1 Flash::;\
+         builder:ds41:done:{}:oc:DeepSeek V4.1 Flash::!;\
          gone:gpt56luna:dead::cx:::",
         ae::time::Timestamp::now().epoch(),
         staged.ids[0],
@@ -921,8 +922,8 @@ fn a_v2_roster_draws_its_models_in_a_real_tmux_menu() {
         "an observed seat draws client, model and effort: {drawn}"
     );
     assert!(
-        drawn.contains("oc DeepSeek V4.1 Flash"),
-        "a seat whose frame proved no effort draws no trailing one: {drawn}"
+        drawn.contains("oc DeepSeek V4.1 Flash!"),
+        "a drifting seat draws the mark glued to its model: {drawn}"
     );
     assert!(
         drawn.contains("cx ~gpt56luna"),
