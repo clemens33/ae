@@ -894,7 +894,7 @@ fn init_owns_exclusive_config_creation_and_first_launch_routes_through_it() {
         init.contains("file.write_all(bytes).and_then(|()| file.sync_all())")
             && init.contains("fs::hard_link(&temp, path)")
             && init.contains("let _ = fs::remove_file(&temp)"),
-        "exclusive config publication must fsync a temp, hard-link without clobbering, then unlink the temp"
+        "exclusive publication must fsync a temp, hard-link without clobbering, then unlink the temp"
     );
     assert!(
         init.contains("fs::rename(&temp, path)"),
