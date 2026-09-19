@@ -4410,7 +4410,8 @@ pub(crate) fn rebind_monitor_panes(
     } else {
         let tail = ["start".to_owned(), session.to_owned()];
         let (mut out, mut err) = (Vec::new(), Vec::new());
-        match crate::watchdog_lifecycle::run(root, &tail, &mut out, &mut err) {
+        let audit = crate::watchdog_lifecycle::RENAME_ACTOR;
+        match crate::watchdog_lifecycle::run_with_actor(root, &tail, audit, &mut out, &mut err) {
             Ok(0) => {}
             Ok(_) | Err(_) => {
                 return Err(format!(

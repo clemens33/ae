@@ -1778,6 +1778,11 @@ fn a_running_sessions_daemons_are_restarted_on_the_new_core() {
         "the sweep did not report the bridge restart: {notes:?}"
     );
 
+    // The restart audited itself as ae-driven, not as the upgrading caller.
+    // (The rig planted one earlier human record, so only this count is ours.)
+    let audits = fs::read_to_string(dir.join("events.jsonl")).unwrap_or_default();
+    assert_eq!(audits.matches("ae:upgrade").count(), 2, "{audits}");
+
     // Agent panes are NEVER touched — the ORIGINAL pane, by id. A count would
     // be satisfied by a sweep that killed the agent and left the two monitor
     // panes standing, which is the failure this line exists to catch.

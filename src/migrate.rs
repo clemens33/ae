@@ -912,7 +912,8 @@ fn restart_watchdog(root: &Path, server: &ServerId, name: &str, dir: &Path) -> S
     for action in ["stop", "start"] {
         let tail = [action.to_owned(), name.to_owned()];
         let (mut out, mut err) = (Vec::new(), Vec::new());
-        match crate::watchdog_lifecycle::run(root, &tail, &mut out, &mut err) {
+        let audit = crate::watchdog_lifecycle::UPGRADE_ACTOR;
+        match crate::watchdog_lifecycle::run_with_actor(root, &tail, audit, &mut out, &mut err) {
             Ok(0) => {}
             Ok(_) | Err(_) => {
                 return format!(
@@ -937,7 +938,8 @@ fn restart_watchdog(root: &Path, server: &ServerId, name: &str, dir: &Path) -> S
 fn start_watchdog(root: &Path, server: &ServerId, name: &str, dir: &Path) -> String {
     let tail = ["start".to_owned(), name.to_owned()];
     let (mut out, mut err) = (Vec::new(), Vec::new());
-    match crate::watchdog_lifecycle::run(root, &tail, &mut out, &mut err) {
+    let audit = crate::watchdog_lifecycle::UPGRADE_ACTOR;
+    match crate::watchdog_lifecycle::run_with_actor(root, &tail, audit, &mut out, &mut err) {
         Ok(0) => {}
         Ok(_) | Err(_) => {
             return format!(

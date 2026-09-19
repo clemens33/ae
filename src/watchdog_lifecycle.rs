@@ -32,6 +32,10 @@ const START_LOCK: &str = ".watchdog.start.lock";
 const START_ACTION: &str = "watchdog-start";
 const STOP_ACTION: &str = "watchdog-stop";
 
+/// ae-driven restart actors: no caller stamp leaks into other ledgers.
+pub(crate) const UPGRADE_ACTOR: &str = "ae:upgrade";
+pub(crate) const RENAME_ACTOR: &str = "ae:rename";
+
 /// How long a starter blocks on the start lock before DEFERRING.
 const START_LOCK_WAIT: Duration = Duration::from_secs(15);
 
@@ -79,6 +83,27 @@ pub enum Presence {
 pub fn run(
     root: &Path,
     tail: &[String],
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> crate::Result<u8> {
+    run_inner(root, tail, None, out, err)
+}
+
+/// The ae-driven entry: explicit audit actor. Internal callers only.
+pub(crate) fn run_with_actor(
+    root: &Path,
+    tail: &[String],
+    actor: &str,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> crate::Result<u8> {
+    run_inner(root, tail, Some(actor), out, err)
+}
+
+fn run_inner(
+    root: &Path,
+    tail: &[String],
+    actor: Option<&str>,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> crate::Result<u8> {
@@ -165,11 +190,11 @@ pub fn run(
     match action {
         Action::Status => status(&server, &target, &meta_dir, out),
         Action::Start => {
-            let caller = Caller::of(START_ACTION, caller_server.as_ref(), &pane);
+            let caller = Caller::of(actor, START_ACTION, caller_server.as_ref(), &pane, &target);
             start(&server, &target, &meta_dir, &knobs, &caller, out, err)
         }
         Action::Stop => {
-            let caller = Caller::of(STOP_ACTION, caller_server.as_ref(), &pane);
+            let caller = Caller::of(actor, STOP_ACTION, caller_server.as_ref(), &pane, &target);
             stop(root, &server, &target, &meta_dir, &caller, out, err)
         }
     }
@@ -183,10 +208,23 @@ struct Caller<'a> {
 }
 
 impl<'a> Caller<'a> {
-    fn of(action: &'static str, caller_server: Option<&ServerId>, pane: &'a str) -> Self {
+    fn of(
+        override_actor: Option<&str>,
+        action: &'static str,
+        caller_server: Option<&ServerId>,
+        pane: &'a str,
+        target: &str,
+    ) -> Self {
+        if let Some(actor) = override_actor {
+            return Self {
+                action,
+                actor: actor.to_owned(),
+                pane: "",
+            };
+        }
         Self {
             action,
-            actor: actor_of(caller_server, pane),
+            actor: actor_of(caller_server, pane, target),
             pane,
         }
     }
@@ -211,20 +249,30 @@ impl<'a> Caller<'a> {
     }
 }
 
-/// The event's actor: the calling pane's ae stamp, or the human spelling
-/// every other audit uses when no agent called.
-fn actor_of(caller_server: Option<&ServerId>, pane: &str) -> String {
+/// The calling pane's ae stamp (bare at home, qualified abroad), or the
+/// human spelling every other audit uses when no agent called.
+fn actor_of(caller_server: Option<&ServerId>, pane: &str, target: &str) -> String {
     if pane.is_empty() {
         return "human".to_owned();
     }
-    let agent = caller_server
-        .and_then(|server| transport::observe_pane_owner(server, pane))
-        .map(|owner| owner.agent)
-        .unwrap_or_default();
-    if agent.is_empty() {
-        "human".to_owned()
+    let Some(server) = caller_server else {
+        return "human".to_owned();
+    };
+    let Some(owner) = transport::observe_pane_owner(server, pane) else {
+        return "human".to_owned();
+    };
+    if owner.agent.is_empty() {
+        return "human".to_owned();
+    }
+    spell_caller(&owner.session, &owner.agent, owner.session == target)
+}
+
+/// Bare at home, routing-qualified abroad: a bare name always means own agent.
+fn spell_caller(session: &str, agent: &str, same_session: bool) -> String {
+    if same_session {
+        agent.to_owned()
     } else {
-        agent
+        format!("{session}:{agent}")
     }
 }
 
@@ -521,7 +569,9 @@ fn stamped_pane(server: &ServerId, session: &str, agent: &str) -> PaneLook {
     reason = "tests read back what the door wrote; the boundary is on product code — see clippy.toml"
 )]
 mod tests {
-    use super::{Action, Caller, Presence, START_ACTION, USAGE, actor_of};
+    use super::{
+        Action, Caller, Presence, START_ACTION, USAGE, actor_of, run_with_actor, spell_caller,
+    };
 
     #[test]
     fn the_three_subcommands_are_the_whole_grammar() {
@@ -559,9 +609,38 @@ mod tests {
 
     #[test]
     fn an_unstamped_caller_is_the_human() {
-        assert_eq!(actor_of(None, ""), "human");
-        // A pane with no server to ask is unprovable, never an agent.
-        assert_eq!(actor_of(None, "%9"), "human");
+        assert!(
+            ["", "%9"]
+                .iter()
+                .all(|pane| actor_of(None, pane, "s") == "human")
+        );
+    }
+
+    #[test]
+    fn a_caller_spells_bare_at_home_and_qualified_abroad() {
+        assert_eq!(spell_caller("aedev", "lead", true), "lead");
+        assert_eq!(spell_caller("aedev", "lead", false), "aedev:lead");
+    }
+
+    #[test]
+    fn an_explicit_actor_overrides_the_caller_on_both_verbs() {
+        let root = scratch("override");
+        let dir = root.join("sessions").join("s");
+        std::fs::create_dir_all(&dir).expect("a session meta dir");
+        let meta = "mode=local\nsession=s\ntmux_server_kind=socket\ntmux_server=/nonexistent\n";
+        std::fs::write(dir.join("meta"), meta).expect("the record");
+        std::fs::write(dir.join(".watchdog.pid"), "424242\n").expect("a pidfile");
+        for (verb, code) in [("stop", 1), ("start", 0)] {
+            let tail = [verb.to_owned(), "s".to_owned()];
+            let (mut out, mut err) = (Vec::new(), Vec::new());
+            let got = run_with_actor(&root, &tail, "ae:upgrade", &mut out, &mut err)
+                .expect("buffers write");
+            assert_eq!(got, code, "{verb}");
+        }
+        let body = std::fs::read_to_string(dir.join("events.jsonl")).expect("the audit lines");
+        assert_eq!(body.lines().count(), 2, "one record per verb: {body}");
+        assert_eq!(body.matches("ae:upgrade").count(), 2, "{body}");
+        assert_eq!(body.matches("\"action\":\"watchdog").count(), 2);
     }
 
     #[test]
