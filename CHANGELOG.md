@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.140] - 2026-09-19
+- Republish the capture floor on a resume fallback
+
 ## [v2026.9.139] - 2026-09-19
 - Fold a spawn brief into the UserTurn launch turn
 - Decide fold-or-paste in spawn, fold in _run
