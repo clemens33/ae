@@ -296,7 +296,7 @@ pub fn inject_ae_context(
 }
 
 /// Inject the rendered context, folding a spawn brief into the SAME launch
-/// turn on the UserTurn channel when one is given. Callers pass `Some` only
+/// turn on the `UserTurn` channel when one is given. Callers pass `Some` only
 /// on `ContextChannel::UserTurn`; every other channel ignores the brief and
 /// renders exactly as [`inject_ae_context`].
 #[must_use]

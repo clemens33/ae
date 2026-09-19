@@ -12,7 +12,7 @@
 //! 3. `workspace.md` is regenerated from the live panes;
 //! 4. the slot's start marker is claimed and the pane command is pasted into
 //!    the pane's shell, where the core composes the agent and becomes it;
-//! 5. the BRIEF rides the launch turn on the UserTurn channel, else is
+//! 5. the BRIEF rides the launch turn on the `UserTurn` channel, else is
 //!    delivered only after the TUI proves it will accept input.
 //!
 //! A failure before the pane can launch ROLLS BACK: the seat goes, the launch
@@ -770,7 +770,7 @@ fn unproved_recovery(facts: &Facts, dir: &Path, pane: &str, slot: &str) -> Brief
     }
 }
 
-/// Deliver the brief by paste: every claude/opencode spawn, and the UserTurn
+/// Deliver the brief by paste: every claude/opencode spawn, and the `UserTurn`
 /// spawns the fold does not take (no prompt, or past the bound).
 #[allow(
     clippy::too_many_arguments,
