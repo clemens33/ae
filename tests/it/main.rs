@@ -35,6 +35,7 @@ mod phase2;
 mod phase3;
 mod quota;
 mod reseat;
+mod reseat_carry;
 mod run;
 mod sanitize;
 mod seat_relaunch;

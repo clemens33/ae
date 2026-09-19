@@ -1031,3 +1031,42 @@ fn known_session_file_mutations_stay_with_the_store() {
         );
     }
 }
+
+#[test]
+fn the_claude_project_key_is_spelled_in_exactly_two_places_and_they_agree() {
+    // ONE RULE, and for now two spellings of it. `carry::project_key` is the
+    // owner: `rename.rs` reads it, and the account carry builds every path from
+    // it, so a copy lands exactly where the resume probe will look for it.
+    // `run::resumable` still spells the rule INLINE — `src/run.rs` was frozen
+    // for another slice while this one was built, and pointing it at the owner
+    // is a named residual rather than a thing this test wants to hide.
+    //
+    // So the guard is the honest one: if that inline spelling changes, this
+    // goes RED and names where the rule lives. It is a tripwire over a known
+    // duplicate, not a proof of agreement — the proof is the day run.rs calls
+    // `carry::project_key` and this test is deleted with the duplicate.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let inline = ".map(|ch| if ch == '/' { '-' } else { ch })";
+    let owner = fs::read_to_string(root.join("src/carry.rs")).expect("the owner is readable");
+    assert!(
+        owner.contains(inline),
+        "carry::project_key no longer spells the rule it owns"
+    );
+    let probe = fs::read_to_string(root.join("src/run.rs")).expect("the probe is readable");
+    assert_eq!(
+        probe.matches(inline).count(),
+        1,
+        "src/run.rs::resumable's inline project key changed or moved; it must agree with \
+         ae::carry::project_key, which is the owner every other caller reads"
+    );
+    // And nobody else grew a third one while this residual was open.
+    for (name, code) in product_halves() {
+        if name == "src/carry.rs" || name == "src/run.rs" {
+            continue;
+        }
+        assert!(
+            !code.contains(inline),
+            "{name} spells the claude project key itself; call ae::carry::project_key"
+        );
+    }
+}

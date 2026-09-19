@@ -83,12 +83,19 @@ Then, under `.lifecycle.<session>.lock`:
    shell and never before, naming the binary ended because the meta keeps only
    the current one.
 9. `prove_dead`;
+9a. the CARRY question (`src/carry.rs`) — see below. Asked here, past the dead
+    proof and before anything is removed, so every refusal costs only the
+    reading. A move that does not carry leaves steps 10-17 exactly as they
+    were;
 10. the seed pack is BUILT — before anything is removed, because it reads the
     seat's recorded first message and step 11 deletes that file;
 11. the seed is published as `seed.<agent>.md` (0600), then `run::clear_slot`
     removes the start marker, the prompt file, the launch script and the
     per-tool id files, so the successor's `_run` has no stale first message
-    and no resume decision to make;
+    and no resume decision to make. A CARRIED seat publishes no seed and then
+    puts the start marker BACK: `_run` reads exactly that file to choose
+    between creating a conversation and resuming one, so without it the store
+    would be copied and the successor would open a new conversation beside it;
 12. ONE guarded meta replacement (`meta::publish_seat_move`);
 13. `read_seat` again — the command, the tool and the conversation are the new
     profile's now — then `start`.
@@ -100,7 +107,8 @@ to 45 s and no session may be held out of its own lifecycle for that. Past it:
     not exist until a user turn, and that registration handshake must not sit
     under a 24 KB seed);
 15. the seed, as `⟦ae:ctx⟧` — `provenance` puts the marker on, because
-    `deliver_launch_turn` pastes its text verbatim;
+    `deliver_launch_turn` pastes its text verbatim. A carried seat is handed
+    none: it resumed the conversation itself;
 16. the post-launch capture for a slot that still reads `pending`;
 17. a LAST identity reading, because exit 0 means the seat is up NOW.
 
@@ -112,18 +120,28 @@ agent the caller proved: a reseat holds the lifecycle lock so no second reseat
 interleaves, but a `retire` plus a re-`spawn` can land a DIFFERENT seat on the
 slot, and that successor must not inherit the move.
 
-WRITES `profile`, `agent_bin`, `harness_session` (a fresh UUID where the tool
-takes one at launch, `pending` otherwise), `launch_id`, `capture_floor`, and
-appends the old conversation to `harness_session_prior` TAGGED with the tool
-that owns it — the whole point of the tag, since the successor's tool reads a
-different store.
+`meta::Conversation` says what becomes of the conversation, as ONE value: the
+two arms differ in three rows at once, and a caller able to spell half of each
+would publish a seat whose records contradict themselves.
 
-REMOVES `config_home` and `config_home_base` (they belong to the tool that is
-leaving; `_run` records the new tool's own at its first start, and a stale row
-would point the successor's reader at the predecessor's store), `launch_time`
+`Fresh` WRITES `harness_session` (a fresh UUID where the tool takes one at
+launch, `pending` otherwise) and `capture_floor`, and appends the old
+conversation to `harness_session_prior` TAGGED with the tool that owns it — the
+whole point of the tag, since the successor's tool reads a different store. It
+REMOVES `config_home` and `config_home_base`.
+
+`Carried` touches NONE of those four: the seat still holds the conversation the
+row names, a retained exact conversation keeps the floor it was born under, and
+nothing was abandoned, so there is no predecessor. It REWRITES `config_home`
+and `config_home_base` to the target account instead, in that same replacement —
+a published conversation whose store no row names is the window that would let a
+later reader resolve it in the home the seat just left.
+
+Both arms WRITE `profile`, `agent_bin` and `launch_id`, and REMOVE `launch_time`
 (it would date a launch that has not happened), `observed_model` and its pin
-(they would read as drift the moment the new tool answers), and `client` (a
-launch's `profile@client` override, for a profile this seat no longer runs).
+(they would read as drift the moment the new tool answers, and a second account
+of one tool may well serve a different one), and `client` (a launch's
+`profile@client` override, for a profile this seat no longer runs).
 The client row is removed rather than emptied: an empty override is not the
 same fact as no override.
 
@@ -215,3 +233,74 @@ refusal and `--stop-unknown` is the caller saying they meant it — there is no
 
 It does not recreate a pane, and it does not touch anything in the session but
 the seat named on the argv.
+
+## Carrying the conversation between two accounts (`src/carry.rs`)
+
+`reseat` was built for a TOOL change, where the successor cannot read the
+predecessor's store. When the two profiles run the SAME binary and differ only
+in their config home — one login to another, the move a dead vendor quota
+forces — that loss has no cause: the conversation is a set of ordinary files in
+a directory ae already knows the path of. So it is COPIED.
+
+MEASURED 2026-09-19, claude 2.1.278: a transcript copied into another config
+home's `projects/<key>/` is found by `--resume <uuid>`, the id is global to the
+store, and the resume APPENDS. Claude is the ONLY tool this is true of as far
+as ae has evidence; `ToolAdapter::carry` is where that per-tool fact lives, and
+every other row is `NotPortable`. codex and muse look portable on paper and are
+unmeasured; agy, gemini and opencode keep stores ae has not characterized.
+
+`carry::plan` is pure and its `None` is SILENT — an ordinary tool change, a move
+inside one account, a seat whose id is not a grammar-proven UUID, or a tool
+whose store is not portable all behave exactly as they did before this existed.
+It carries only when the recorded `agent_bin` EQUALS the binary the new profile
+lexes to (the claim being made is that the successor reads the predecessor's own
+files, so the tool class is not enough), the adapter declares the file set
+portable, the id passes `capture::is_lowercase_uuid`, and both accounts resolve
+to usable paths that DIFFER.
+
+The target account is resolved with a CONTROLLED lookup — `HOME` and nothing
+else — because `reseat` runs in the caller's process and the caller's
+environment is not the pane's; the source comes from the seat's RECORDED row,
+because for a retained conversation the record is what names the store.
+
+Paths are COMPUTED, never searched for, from `carry::project_key` — the one
+owner of `cwd with '/' as '-'`, which `rename.rs` also reads. It matches AE'S
+OWN PROBE (`run::resumable`) rather than claude's internal rule, which resolves
+symbolic links first: the copy exists to be found by that probe, so a divergence
+would put the file where nothing looks. When the two rules disagree — a working
+copy reached through a link — the transcript is simply not at this key and the
+carry refuses, which is honest: that seat could not be exact-resumed in its OLD
+account either. `run::resumable` still spells the rule inline; pointing it at
+the owner is a named residual, guarded meanwhile by a source-scan pin in
+`tests/it/doors.rs`.
+
+Four rules hold the module up:
+
+1. **bytes, never structure** — nothing is parsed, so this adds no parser and
+   owes no fuzz target;
+2. **no link is followed** — every node is `symlink_metadata`'d before it is
+   read, written or descended;
+3. **nothing in the target is overwritten** — a node already there is either
+   byte-identical (an earlier attempt, left exactly as it is, mtime included)
+   or it belongs to something else, and then the carry refuses;
+4. **the copy set is BINDING** — the transcript and every sidecar the source
+   has. A source that is not there is no failure; a read, a write or a target
+   ae cannot explain abandons the whole carry.
+
+THE TRANSCRIPT IS THE COMMIT MARKER. Sidecars and project memory go first and
+the transcript last, so a crash in the middle leaves the target with no
+conversation — nothing the tool or ae will find, and nothing that makes the next
+attempt refuse. That attempt re-copies, finds its own earlier files identical,
+no-ops over them and commits. Every file is published temp-then-rename for the
+same reason: a half-written sidecar would be neither identical nor explicable.
+
+Project `memory/` is not uuid-keyed — it belongs to the working copy and is
+shared by every conversation in that account — so it is copied only into an
+account that has none. An existing one is KEPT and said. Two accounts'
+memories are NEVER merged: that could not be undone by hand.
+
+The human's rulings, 2026-09-19: typing the move with the other account's
+profile IS the consent, so ae prompts for nothing and prints ONE line naming the
+crossing; a copy that fails falls back LOUDLY to the seed path and the move
+still happens; there is no model-availability pre-check, because the existing
+post-launch identity reading is the check.

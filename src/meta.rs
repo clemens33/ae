@@ -1348,13 +1348,45 @@ pub(crate) struct SeatMove<'a> {
     pub profile: &'a str,
     /// The binary that profile lexes to — the seat's new identity.
     pub binary: &'a str,
-    /// The conversation the new tool starts on: a fresh UUID where the tool
-    /// takes one at launch, `pending` where its id can only be captured after.
-    pub harness_session: &'a str,
     /// The token that guards this seat's observed-model writes from now on.
     pub launch_id: &'a str,
-    /// The floor every store scan for the new conversation starts at.
-    pub capture_floor: i64,
+    /// What happens to the conversation the seat was holding.
+    pub conversation: Conversation<'a>,
+}
+
+/// What a seat move does with the conversation the seat was holding — ONE
+/// value, because the two arms differ in three rows at once and a caller that
+/// could spell half of each would publish a seat whose records contradict
+/// themselves.
+pub(crate) enum Conversation<'a> {
+    /// The successor opens a NEW conversation and the old one is ABANDONED: it
+    /// becomes a predecessor, tagged with the tool that owns its store, and the
+    /// seat's store rows go with it — they belong to the account that is
+    /// leaving, and `_run` records the successor's own at its first start.
+    Fresh {
+        /// A fresh UUID where the tool takes one at launch, `pending` where its
+        /// id can only be captured afterwards.
+        id: &'a str,
+        /// The floor every store scan for that new conversation starts at.
+        capture_floor: i64,
+    },
+    /// The conversation TRAVELLED: its files were copied into another account
+    /// of the SAME tool, so the id stays, the capture floor it was born under
+    /// stays, and nothing is abandoned — there is no predecessor, because the
+    /// seat still holds the conversation the row names.
+    ///
+    /// The store rows are REWRITTEN rather than removed, in this same
+    /// replacement: a published conversation whose account no row names is the
+    /// window that would let a later reader look in the home the seat just
+    /// left.
+    Carried {
+        /// `config_home.<slot>` — the target account, in
+        /// [`RecordedConfigHome::record_value`]'s grammar.
+        config_home: &'a str,
+        /// `config_home_base.<slot>` — the canonical effective `HOME` an
+        /// IMPLICIT store was selected against, and `None` for an explicit one.
+        config_home_base: Option<&'a str>,
+    },
 }
 
 /// The seat's rows after that move — PURE, so every one of them is pinnable
@@ -1376,11 +1408,6 @@ pub(crate) struct SeatMove<'a> {
 /// longer runs. The row is removed rather than emptied, because an empty
 /// override is not the same fact as no override.
 pub(crate) fn reseated(text: &str, slot: &str, move_to: &SeatMove<'_>) -> String {
-    let value = |key: &str| crate::lifecycle::meta_value(text.as_bytes(), key);
-    let old_id = value(&format!("{HARNESS_SESSION_PREFIX}{slot}"));
-    let old_binary = value(&format!("{ROSTER_BIN_PREFIX}{slot}"));
-    let parsed = Meta::parse(text);
-    let priors = parsed.harness_session_prior(slot);
     let mut rows: Vec<(String, Option<String>)> = vec![
         (
             format!("{PROFILE_PREFIX}{slot}"),
@@ -1391,29 +1418,58 @@ pub(crate) fn reseated(text: &str, slot: &str, move_to: &SeatMove<'_>) -> String
             Some(move_to.binary.to_owned()),
         ),
         (format!("{CLIENT_PREFIX}{slot}"), None),
-        (format!("{CONFIG_HOME_PREFIX}{slot}"), None),
-        (format!("{CONFIG_HOME_BASE_PREFIX}{slot}"), None),
-        (
-            format!("{HARNESS_SESSION_PREFIX}{slot}"),
-            Some(move_to.harness_session.to_owned()),
-        ),
         (
             format!("launch_id.{slot}"),
             Some(move_to.launch_id.to_owned()),
-        ),
-        (
-            format!("capture_floor.{slot}"),
-            Some(move_to.capture_floor.to_string()),
         ),
         (format!("{LAUNCH_TIME_PREFIX}{slot}"), None),
         (format!("{OBSERVED_MODEL_PREFIX}{slot}"), None),
         (format!("{OBSERVED_MODEL_PIN_PREFIX}{slot}"), None),
     ];
-    // A predecessor row is written only when there is a conversation to keep:
-    // a seat whose id never resolved has nothing to hand on, and `prior_with`
-    // refuses an id it cannot judge rather than recording a guess.
-    if let Some(row) = prior_with(&priors, &old_id, &old_binary) {
-        rows.push((format!("{HARNESS_SESSION_PRIOR_PREFIX}{slot}"), Some(row)));
+    match &move_to.conversation {
+        Conversation::Fresh { id, capture_floor } => {
+            let value = |key: &str| crate::lifecycle::meta_value(text.as_bytes(), key);
+            let old_id = value(&format!("{HARNESS_SESSION_PREFIX}{slot}"));
+            let old_binary = value(&format!("{ROSTER_BIN_PREFIX}{slot}"));
+            let parsed = Meta::parse(text);
+            let priors = parsed.harness_session_prior(slot);
+            rows.push((format!("{CONFIG_HOME_PREFIX}{slot}"), None));
+            rows.push((format!("{CONFIG_HOME_BASE_PREFIX}{slot}"), None));
+            rows.push((
+                format!("{HARNESS_SESSION_PREFIX}{slot}"),
+                Some((*id).to_owned()),
+            ));
+            rows.push((
+                format!("capture_floor.{slot}"),
+                Some(capture_floor.to_string()),
+            ));
+            // A predecessor row is written only when there is a conversation to
+            // keep: a seat whose id never resolved has nothing to hand on, and
+            // `prior_with` refuses an id it cannot judge rather than recording
+            // a guess.
+            if let Some(row) = prior_with(&priors, &old_id, &old_binary) {
+                rows.push((format!("{HARNESS_SESSION_PRIOR_PREFIX}{slot}"), Some(row)));
+            }
+        }
+        // EVERY ROW THE FRESH ARM TOUCHES IS LEFT ALONE HERE, deliberately:
+        // `harness_session.<slot>` because the seat still holds it,
+        // `capture_floor.<slot>` because a retained exact conversation keeps
+        // the floor it was born under, and `harness_session_prior.<slot>`
+        // because nothing was abandoned. The store rows are the only ones that
+        // move, and they move together.
+        Conversation::Carried {
+            config_home,
+            config_home_base,
+        } => {
+            rows.push((
+                format!("{CONFIG_HOME_PREFIX}{slot}"),
+                Some((*config_home).to_owned()),
+            ));
+            rows.push((
+                format!("{CONFIG_HOME_BASE_PREFIX}{slot}"),
+                config_home_base.map(str::to_owned),
+            ));
+        }
     }
     rows.iter().fold(text.to_owned(), |document, (key, value)| {
         rewritten(&document, key, value.as_deref())
@@ -2140,9 +2196,79 @@ mod tests {
         super::SeatMove {
             profile,
             binary,
-            harness_session: id,
             launch_id: "L-NEW",
-            capture_floor: 5000,
+            conversation: super::Conversation::Fresh {
+                id,
+                capture_floor: 5000,
+            },
+        }
+    }
+
+    /// The same move, but the conversation TRAVELLED: another account of the
+    /// same tool, reached by copying its files.
+    fn carrying<'a>(profile: &'a str, binary: &'a str, home: &'a str) -> super::SeatMove<'a> {
+        super::SeatMove {
+            profile,
+            binary,
+            launch_id: "L-NEW",
+            conversation: super::Conversation::Carried {
+                config_home: home,
+                config_home_base: None,
+            },
+        }
+    }
+
+    #[test]
+    fn a_carried_conversation_keeps_its_id_its_floor_and_leaves_no_predecessor() {
+        // The seat moved; the conversation did not. Nothing was abandoned, so
+        // nothing may be recorded as abandoned — and the store rows go with the
+        // conversation in this SAME document, because a published conversation
+        // whose account no row names would resolve to the home it just left.
+        let moved = super::reseated(&seated(), "main", &carrying("cc-mic", "claude", "/h/b"));
+        let value = |key: &str| crate::lifecycle::meta_value(moved.as_bytes(), key);
+        assert_eq!(value("profile.main"), "cc-mic");
+        assert_eq!(value("agent_bin.main"), "claude");
+        assert_eq!(
+            value("harness_session.main"),
+            "11111111-1111-4111-8111-111111111111",
+            "the conversation the seat still holds is untouched"
+        );
+        assert_eq!(
+            value("capture_floor.main"),
+            "1000",
+            "a retained exact conversation keeps the floor it was born under"
+        );
+        assert!(
+            !moved.contains("harness_session_prior.main="),
+            "nothing was abandoned:\n{moved}"
+        );
+        // The store rows moved TOGETHER: the target path, and the base row this
+        // seat used to carry REMOVED, because an explicit store has none and a
+        // stale base would pair this account with another one's HOME.
+        assert_eq!(value("config_home.main"), "/h/b");
+        assert!(
+            !moved.contains("config_home_base.main="),
+            "an explicit store has no base row:\n{moved}"
+        );
+        // An IMPLICIT target is one identity with the HOME that selected it,
+        // and both of its rows are published in this same document.
+        let implicit = super::SeatMove {
+            profile: "cc-mic",
+            binary: "claude",
+            launch_id: "L-NEW",
+            conversation: super::Conversation::Carried {
+                config_home: "implicit:/h/b/.claude",
+                config_home_base: Some("/h/b"),
+            },
+        };
+        let moved = super::reseated(&seated(), "main", &implicit);
+        let value = |key: &str| crate::lifecycle::meta_value(moved.as_bytes(), key);
+        assert_eq!(value("config_home.main"), "implicit:/h/b/.claude");
+        assert_eq!(value("config_home_base.main"), "/h/b");
+        // Everything a move always did to the seat's identity still happens.
+        assert_eq!(value("launch_id.main"), "L-NEW");
+        for gone in ["launch_time.main=", "observed_model.main=", "client.main="] {
+            assert!(!moved.contains(gone), "{gone} survived:\n{moved}");
         }
     }
 

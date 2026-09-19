@@ -144,6 +144,31 @@ pub(crate) enum StoreProbe {
     RecordedId,
 }
 
+/// Whether one conversation of this harness can be MOVED between two accounts
+/// of the same tool by copying files, and what that file set is.
+///
+/// The question `ae reseat` asks when the profile it moves a seat to runs the
+/// SAME binary under a different config home: the conversation can travel only
+/// if the tool keeps it as a portable set of ordinary files in that home.
+///
+/// Every row but claude's is [`CarrySpec::NotPortable`], and that is a
+/// statement about EVIDENCE rather than about the tools: claude's portability
+/// was measured (2026-09-19, claude 2.1.278 — a transcript copied into another
+/// config home is found by `--resume <uuid>`, and the resume appends). codex
+/// and muse look plausibly portable on paper and are UNMEASURED; agy, gemini
+/// and opencode keep databases or stores ae has not characterized at all. An
+/// unmeasured tool takes the seed path, which is what it did before this
+/// existed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CarrySpec {
+    /// No measured portable file set: a move to another account starts a fresh
+    /// conversation and the successor is handed the seed pack.
+    NotPortable,
+    /// Claude's store: one transcript at `projects/<cwd key>/<uuid>.jsonl`,
+    /// with uuid-keyed sidecars beside it and at the store root.
+    ProjectTranscript,
+}
+
 /// Static resume behaviour for one harness.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ResumeSpec {
@@ -481,6 +506,9 @@ pub(crate) struct ToolAdapter {
     pub(crate) launch: LaunchSpec,
     /// Exact/fallback resume behaviour and its store evidence.
     pub(crate) resume: ResumeSpec,
+    /// Whether one conversation can be carried to another account of this same
+    /// tool by copying files.
+    pub(crate) carry: CarrySpec,
     /// Post-launch conversation-id capture behaviour.
     pub(crate) capture: CaptureSpec,
     /// Input observation and first-turn delivery behaviour.
@@ -533,6 +561,7 @@ const CLAUDE: ToolAdapter = ToolAdapter {
         },
         probe: StoreProbe::ProjectTranscript,
     },
+    carry: CarrySpec::ProjectTranscript,
     capture: CaptureSpec::None,
     input: InputSpec {
         model: InputModel::BorderDelimited,
@@ -580,6 +609,7 @@ const CODEX: ToolAdapter = ToolAdapter {
         },
         probe: StoreProbe::DatedRollouts,
     },
+    carry: CarrySpec::NotPortable,
     capture: CaptureSpec::HandshakeRolloutOrTui,
     input: InputSpec {
         model: InputModel::StyleDelimited,
@@ -627,6 +657,7 @@ const GEMINI: ToolAdapter = ToolAdapter {
         },
         probe: StoreProbe::RecordedId,
     },
+    carry: CarrySpec::NotPortable,
     capture: CaptureSpec::ChatHistory,
     input: InputSpec {
         model: InputModel::Unmodelled,
@@ -675,6 +706,7 @@ const AGY: ToolAdapter = ToolAdapter {
         },
         probe: StoreProbe::ConversationDatabase,
     },
+    carry: CarrySpec::NotPortable,
     capture: CaptureSpec::ConversationDatabaseOrLog,
     input: InputSpec {
         model: InputModel::Unmodelled,
@@ -744,6 +776,7 @@ const GROK: ToolAdapter = ToolAdapter {
         },
         probe: StoreProbe::RecordedId,
     },
+    carry: CarrySpec::NotPortable,
     capture: CaptureSpec::None,
     input: InputSpec {
         model: InputModel::Unmodelled,
@@ -812,6 +845,7 @@ const MUSE: ToolAdapter = ToolAdapter {
         // not put that id in their `session.jsonl` file name for a store probe.
         probe: StoreProbe::RecordedId,
     },
+    carry: CarrySpec::NotPortable,
     capture: CaptureSpec::MuseDatedSessions,
     input: InputSpec {
         // Modelled as a border-delimited composer: the live prompt is the
@@ -864,6 +898,7 @@ const OPENCODE: ToolAdapter = ToolAdapter {
         },
         probe: StoreProbe::RecordedId,
     },
+    carry: CarrySpec::NotPortable,
     capture: CaptureSpec::SessionList,
     input: InputSpec {
         model: InputModel::Unmodelled,
@@ -939,6 +974,7 @@ const UNKNOWN: ToolAdapter = ToolAdapter {
         form: ResumeForm::None,
         probe: StoreProbe::RecordedId,
     },
+    carry: CarrySpec::NotPortable,
     capture: CaptureSpec::None,
     input: InputSpec {
         model: InputModel::Unmodelled,
@@ -1258,6 +1294,7 @@ mod tests {
                         },
                         probe: StoreProbe::ProjectTranscript,
                     },
+                    carry: CarrySpec::ProjectTranscript,
                     capture: CaptureSpec::None,
                     input: InputSpec {
                         model: InputModel::BorderDelimited,
@@ -1304,6 +1341,7 @@ mod tests {
                         },
                         probe: StoreProbe::DatedRollouts,
                     },
+                    carry: CarrySpec::NotPortable,
                     capture: CaptureSpec::HandshakeRolloutOrTui,
                     input: InputSpec {
                         model: InputModel::StyleDelimited,
@@ -1350,6 +1388,7 @@ mod tests {
                         },
                         probe: StoreProbe::RecordedId,
                     },
+                    carry: CarrySpec::NotPortable,
                     capture: CaptureSpec::ChatHistory,
                     input: InputSpec {
                         model: InputModel::Unmodelled,
@@ -1397,6 +1436,7 @@ mod tests {
                         },
                         probe: StoreProbe::ConversationDatabase,
                     },
+                    carry: CarrySpec::NotPortable,
                     capture: CaptureSpec::ConversationDatabaseOrLog,
                     input: InputSpec {
                         model: InputModel::Unmodelled,
@@ -1451,6 +1491,7 @@ mod tests {
                         },
                         probe: StoreProbe::RecordedId,
                     },
+                    carry: CarrySpec::NotPortable,
                     capture: CaptureSpec::None,
                     input: InputSpec {
                         model: InputModel::Unmodelled,
@@ -1501,6 +1542,7 @@ mod tests {
                         },
                         probe: StoreProbe::RecordedId,
                     },
+                    carry: CarrySpec::NotPortable,
                     capture: CaptureSpec::MuseDatedSessions,
                     input: InputSpec {
                         model: InputModel::BorderDelimited,
@@ -1547,6 +1589,7 @@ mod tests {
                         },
                         probe: StoreProbe::RecordedId,
                     },
+                    carry: CarrySpec::NotPortable,
                     capture: CaptureSpec::SessionList,
                     input: InputSpec {
                         model: InputModel::Unmodelled,
@@ -1606,6 +1649,7 @@ mod tests {
                     form: ResumeForm::None,
                     probe: StoreProbe::RecordedId,
                 },
+                carry: CarrySpec::NotPortable,
                 capture: CaptureSpec::None,
                 input: InputSpec {
                     model: InputModel::Unmodelled,

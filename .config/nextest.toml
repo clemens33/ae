@@ -26,6 +26,7 @@ test-group = 'tmux-clients'
 [test-groups.tmux-seats]
 max-threads = 2
 
+# `reseat_carry` is the same class: the same rig, the same stop, the same waits.
 [[profile.default.overrides]]
-filter = 'test(/^reseat::/)'
+filter = 'test(/^reseat(_carry)?::/)'
 test-group = 'tmux-seats'

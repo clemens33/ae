@@ -165,6 +165,19 @@ fn fakes(scratch: &Path, tools: &Path) -> String {
             script.display()
         );
     }
+    // TWO ACCOUNTS OF ONE TOOL. The same fake, the same script, and nothing
+    // different but the config home each names — the shape `reseat`'s account
+    // carry exists for, and one a profile can only express as a leading
+    // assignment on an otherwise identical command.
+    for account in ["a", "b"] {
+        let _ = writeln!(
+            profiles,
+            "fake-claude-{account} = \"CLAUDE_CONFIG_DIR={} {} {}\"",
+            scratch.join(format!("home-{account}")).display(),
+            tools.join("claude").display(),
+            scratch.join("claude.pl").display()
+        );
+    }
     profiles
 }
 

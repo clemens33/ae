@@ -1740,6 +1740,11 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
             // the bounded, non-following read of a seat's undelivered-brief
             // retry record — the one source a retried brief is built from.
             "src/brief_retry.rs".to_owned(),
+            // The account carry's three doors: every store node classified
+            // with lstat before it is read, written or descended; one
+            // classified sidecar directory enumerated; and the conversation's
+            // own bytes read, which it copies opaquely and never parses.
+            "src/carry.rs".to_owned(),
             // Compact's own door: the stored request body a handover reply
             // names, read after its regular-file gate. An arbitrary path, not a
             // session file, which is why it is compact's and not the store's.

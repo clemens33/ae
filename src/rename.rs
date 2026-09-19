@@ -1308,16 +1308,14 @@ fn seat_tool(seat: &crate::meta::RosterEntry) -> crate::tool::ToolKind {
     crate::tool::ToolKind::from_binary_name(name)
 }
 
-/// The Claude transcript path ae's exact-resume probe reads: `projects/<cwd
-/// with '/' as '-'>/<id>.jsonl` under an explicit config home. Replicates
-/// `run::resumable`'s `StoreProbe::ProjectTranscript` spelling so the
-/// preflight asks the same question a later resume would.
+/// The Claude transcript path ae's exact-resume probe reads:
+/// `projects/<project key>/<id>.jsonl` under an explicit config home. The key
+/// comes from [`crate::carry::project_key`], the one owner, so this preflight
+/// and the account carry cannot disagree about where a conversation lives.
 fn transcript_path(home: &Path, cwd: &str, id: &str) -> PathBuf {
-    let key: String = cwd
-        .chars()
-        .map(|ch| if ch == '/' { '-' } else { ch })
-        .collect();
-    home.join("projects").join(key).join(format!("{id}.jsonl"))
+    home.join("projects")
+        .join(crate::carry::project_key(Path::new(cwd)))
+        .join(format!("{id}.jsonl"))
 }
 
 /// Pending-request and unreadable-evidence blockers naming `names`.

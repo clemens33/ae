@@ -1424,8 +1424,8 @@ copy under the new session name. Live renames never move managed work.
 ## `ae reseat <session> <agent> --using <profile> [--stop-unknown]`
 
 Move ONE seat to another profile, in place. Same slot, same pane, same name, same
-records — only the tool changes, and the successor is handed ae's own account of the
-seat as its first turn.
+records. Between two accounts of the SAME tool the whole conversation comes with it;
+across tools the successor is handed ae's own account of the seat as its first turn.
 
 The pain it answers: a seat whose vendor quota dies used to be lost with its context.
 The only way on was a fresh spawn under a new name plus a handover written by hand,
@@ -1499,6 +1499,36 @@ point of the verb, because the moment a lead's own quota dies no agent of that s
 run anything. A seat cannot reseat **itself**: the tool running the command is the one that
 would be replaced under it.
 
+**Between two accounts of ONE tool, the conversation travels.** When the profile you move
+to runs the SAME binary and differs only in its config home — `opus5x` on `~/.claude` to
+`opus5x-mic` on `~/.claude-mic`, the move a dead login forces — ae COPIES that
+conversation's files into the other account and the seat RESUMES it. No seed pack, no
+fresh conversation: the successor remembers everything, because it is the same
+conversation read by a different login. Claude only, today; every other tool takes the
+seed path, because portability there is unmeasured.
+
+- **typing the move IS the consent.** There is no prompt, and ae never asks one. It prints
+  ONE line naming the crossing — the conversation, the account it left, the account it
+  arrived in — because a transcript re-sent through another login is visible to whoever
+  operates that login, and that is worth saying out loud exactly once.
+- **it copies, never moves.** The old account keeps its conversation, so a carry that goes
+  wrong costs nothing.
+- **the copy set is the transcript and its sidecars** — tool results, checkpoints, tasks,
+  session environment. Whatever the source has, the target gets.
+- **project memory is copied only into an account that has none.** If the target already
+  has one for that working copy, it is KEPT and ae says so. Two accounts' memories are
+  never merged: that could not be undone by hand.
+- **nothing in the target is overwritten.** A file already there is either byte-identical —
+  an earlier attempt, so it is left exactly as it is — or it belongs to something else, and
+  then the carry stops.
+- **anything it cannot do falls back LOUDLY** to the ordinary move: a fresh conversation
+  and the seed pack, with what failed named on stderr. The seat still moves.
+
+What does NOT travel with it: the other account's MCP and connector authorizations, its
+settings and hooks, its global history, and whichever models that login's plan allows. The
+first turn on the new account also re-reads the whole conversation at full price — no
+prompt cache crosses accounts.
+
 **Refusals**, in the order they are answered. Everything durable is answered from the
 session's records, so a stopped session diagnoses a typo exactly as a running one does:
 an argv that is not `<session> <agent> --using <profile>`; a session ae cannot read; a
@@ -1516,8 +1546,9 @@ had already happened or not. After the meta is written the pane sits at its shel
 is exactly what `relaunch` finishes — the refusal says so by name.
 
 Every attempt that reaches the pane is recorded as a `reseat` event, naming its caller (a
-seat by its own ref, a plain shell as the human), both profiles and the conversation being
-left behind. A stop gets its own record, written once the pane is proven back at its shell
+seat by its own ref, a plain shell as the human), both profiles, the conversation being
+left behind, and — when the move was between two accounts of one tool — whether it was
+`carried` or `seeded`, with the reason. A stop gets its own record, written once the pane is proven back at its shell
 and never before — it names the binary that was ended, because the meta keeps only the
 current one. The seat's history is
 the only place a later reader can see that its tool changed, and the meta keeps only the
