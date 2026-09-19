@@ -867,9 +867,11 @@ pub(crate) fn run(
     // open a NEW conversation beside the store this is about to copy. The two
     // files cannot be one write, so the failure is taken HERE instead: nothing
     // has been removed, nothing copied, and the seat is exactly what it was.
-    // Past this point only a crash can separate the removal from the rewrite,
-    // and re-running the same reseat converges — the source store is untouched
-    // and the seat still records the conversation.
+    // Past this point the removal and the rewrite are two writes, and what can
+    // separate them is a crash OR a rewrite that fails after the removal: the
+    // clear arm below and the put-back arm both take that case, and both say
+    // what they left. Re-running the same reseat converges — the source store
+    // is untouched and the seat still records the conversation.
     if plan.is_some()
         && let Err(why) = crate::launch::publish_data(&marker, b"")
     {
@@ -990,8 +992,9 @@ pub(crate) fn run(
     // already proven possible before anything moved, so a failure here is a
     // transient one and is tried once more; a second failure REFUSES with the
     // meta unmoved, which is the seat's old self — it still records its old
-    // profile, both stores are untouched, and re-running the same reseat puts
-    // the marker back and carries again.
+    // profile, the SOURCE store is untouched and the copy already in the other
+    // account is inert because no record names it, so re-running the same
+    // reseat puts the marker back and carries again.
     if carried == Carried::Yes {
         let mut back = crate::launch::publish_data(&marker, b"");
         if back.is_err() {
