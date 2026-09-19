@@ -1136,24 +1136,18 @@ fn run_quota_dialog(
     // through the same owner, quoting the FULL menu's budget. The refusal
     // keeps its exit code after the tell, as every menu continuation does: a
     // hand-run is indistinguishable from the menu row and reads the same code.
-    let menu = match settings_menu::quota_dialog_menu_fitted(
-        &rows,
-        &look.palette,
-        live.width,
-        live.height,
-    ) {
-        Some(menu) => menu,
-        None => {
-            let (columns, lines) = session_menu::menu_budget(&menu);
-            report(
-                &format!(
-                    "this terminal is {}x{}; quota needs {columns}x{lines}",
-                    live.width, live.height
-                ),
-                err,
-            );
-            return EXIT_UNAVAILABLE;
-        }
+    let Some(menu) =
+        settings_menu::quota_dialog_menu_fitted(&rows, &look.palette, live.width, live.height)
+    else {
+        let (columns, lines) = session_menu::menu_budget(&menu);
+        report(
+            &format!(
+                "this terminal is {}x{}; quota needs {columns}x{lines}",
+                live.width, live.height
+            ),
+            err,
+        );
+        return EXIT_UNAVAILABLE;
     };
     if !transport::display_menu_centred(server, &client_name, &live.session_id, &menu, menu_mouse) {
         report(

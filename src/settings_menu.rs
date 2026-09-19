@@ -574,10 +574,7 @@ pub(crate) fn quota_dialog_menu_fitted(
         if client_width < columns || kept.len() <= 1 {
             return None;
         }
-        let Some(victim) = drop_candidate(&kept) else {
-            return None;
-        };
-        kept.remove(victim);
+        kept.remove(drop_candidate(&kept)?);
     }
 }
 
