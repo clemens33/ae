@@ -21,7 +21,8 @@ pub const MSG: &str = "msg";
 /// ae's own launch / workspace-context turn. BINDING: ae is speaking.
 pub const CTX: &str = "ctx";
 
-/// A spawner's task contract, pasted into the fresh seat it starts.
+/// A spawner's task contract, pasted into the fresh seat it starts — or folded
+/// into its launch turn where the context already rides one.
 pub const BRIEF: &str = "brief";
 
 /// A control action, delivered by `interrupt`.

@@ -771,7 +771,8 @@ fn unproved_recovery(facts: &Facts, dir: &Path, pane: &str, slot: &str) -> Brief
     }
 }
 
-/// Deliver the brief to a tool whose context rode a system-prompt channel.
+/// Deliver the brief by paste: every claude/opencode spawn, and the UserTurn
+/// spawns the fold does not take (no prompt, or past the bound).
 #[allow(
     clippy::too_many_arguments,
     reason = "one call site; every argument is a fact about it"
