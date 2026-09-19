@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.136] - 2026-09-19
+- Escape DEL and C1 controls in every JSON string
+
 ## [v2026.9.135] - 2026-09-19
 - Prove an empty opencode composer on seats with history
 - Prove the opencode status row and key dialogs on chrome alone
