@@ -241,7 +241,6 @@ impl Facts {
 /// # Errors
 ///
 /// Only a failure to write `out` or `err`. Every refusal is an exit code.
-#[allow(clippy::too_many_lines, reason = "the frozen order, kept in one place")]
 pub fn run_spawn(
     dir: &Path,
     tail: &[String],
@@ -250,61 +249,61 @@ pub fn run_spawn(
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> io::Result<u8> {
-    let parsed = match parse(tail) {
-        Ok(parsed) => parsed,
-        Err(line) => {
-            writeln!(err, "{line}")?;
-            return Ok(EXIT_FAILED);
-        }
-    };
-    // THE PEER BOUNDARY.
-    if !crate::config::is_agent_name(&parsed.name) {
-        writeln!(
-            err,
-            "Error: invalid agent name '{}'. Names must match {}.",
-            parsed.name,
-            crate::config::AGENT_NAME_GRAMMAR
-        )?;
-        return Ok(EXIT_FAILED);
-    }
-    let facts = match facts(dir) {
-        Ok(facts) => facts,
-        Err(why) => {
-            writeln!(err, "Error: {why}")?;
-            return Ok(EXIT_FAILED);
-        }
-    };
-    if !transport::session_exists(&facts.server, &facts.session) {
-        writeln!(err, "Error: session '{}' not running", facts.session)?;
-        return Ok(EXIT_FAILED);
-    }
-    let cfg = match facts.identity() {
-        Ok(cfg) => cfg,
-        Err(why) => {
-            writeln!(err, "{why}")?;
-            return Ok(EXIT_FAILED);
-        }
-    };
-    let home = crate::doors::home();
-    let command = match cfg.command(&parsed.profile, home.as_deref()) {
-        Ok(command) => command,
+    let state_root = crate::doors::state_root(crate::shape::current());
+    let invoker_cwd = crate::doors::cwd();
+    run_spawn_inner(
+        dir,
+        tail,
+        caller,
+        now,
+        out,
+        err,
+        None,
+        state_root.as_deref(),
+        &invoker_cwd,
+    )
+}
+
+/// Step A then step B then the inherited tail, against typed seam inputs.
+/// `None` target is the shipped path, byte for byte.
+#[allow(
+    clippy::too_many_lines,
+    clippy::too_many_arguments,
+    reason = "the frozen order, kept in one place; the seam's typed inputs ride one signature"
+)]
+fn run_spawn_inner(
+    dir: &Path,
+    tail: &[String],
+    caller: &str,
+    now: Timestamp,
+    out: &mut impl Write,
+    err: &mut impl Write,
+    target: Option<&Path>,
+    state_root: Option<&Path>,
+    invoker_cwd: &Path,
+) -> io::Result<u8> {
+    let staged = match record_spawned_seat(dir, tail, now, target, state_root, invoker_cwd, err)? {
+        Ok(staged) => staged,
         Err(why) => {
             writeln!(err, "{why}")?;
             return Ok(EXIT_FAILED);
         }
     };
-    let Some(command) = command else {
-        writeln!(
-            err,
-            "Error: profile '{}' not defined in [profiles] of {}",
-            parsed.profile,
-            facts
-                .global
-                .as_ref()
-                .map_or_else(String::new, |path| path.display().to_string())
-        )?;
-        return Ok(EXIT_FAILED);
+    let pane = match start_spawned_pane(dir, &staged, caller, now, out, err) {
+        Ok(pane) => pane,
+        Err(why) => {
+            writeln!(err, "{why}")?;
+            return Ok(EXIT_FAILED);
+        }
     };
+    let StagedSeat {
+        slot,
+        session: facts,
+        argv: parsed,
+        tool,
+        command,
+        ..
+    } = staged;
     // The brief the new agent is handed.
     let brief = if parsed.prompt.is_empty() {
         format!(
@@ -319,112 +318,6 @@ pub fn run_spawn(
             parsed.prompt,
             dir.display()
         )
-    };
-
-    // THE SAME GRAMMAR AS A LAUNCH SEAT, before any effect. config.rs enforces the
-    // one-simple-command lexer for the initial roster, and a profile selected at
-    // spawn is held to the same one: a value like `bad = "touch m; tail -f
-    // /dev/null"` is REFUSED rather than run. Tool and binary come from the one
-    // validated parse.
-    let lexed = match crate::launch_cmd::lex_simple_command(command.as_str()) {
-        Ok(lexed) => lexed,
-        Err(why) => {
-            writeln!(
-                err,
-                "Error: profile '{}' refused — {why}. Nothing was spawned.",
-                parsed.profile
-            )?;
-            return Ok(EXIT_FAILED);
-        }
-    };
-    let tool = lexed.tool();
-    let binary = lexed.binary.clone();
-    let session_id = if launch::takes_launch_session_id(tool) {
-        launch::generate_uuid()
-    } else {
-        launch::PENDING.to_owned()
-    };
-    // Identity v2: the SEAT is the core's to allocate and write — the name
-    // grammar, uniqueness and the lowest free index are decided under one hold
-    // of the meta lock, BEFORE the pane exists, so the roster is never racy.
-    let sid = (session_id != launch::PENDING).then_some(session_id.as_str());
-    // No explicit target yet: `--dir` arrives in P2, and until then every
-    // spawn inherits the session dir exactly as today.
-    let slot = match crate::identity::add_seat_slot(
-        dir,
-        &parsed.name,
-        &parsed.profile,
-        &binary,
-        sid,
-        None,
-    ) {
-        Ok(slot) => slot,
-        Err(why) => {
-            writeln!(err, "Error: {why}")?;
-            return Ok(EXIT_FAILED);
-        }
-    };
-    // The launch id guards observed-model writes for every seat. Capture tools
-    // also use it to distinguish their own stores, but marker injection stays
-    // gated by the adapter capability. Record it before the pane exists so
-    // `_run` can compose either use from the same durable identity.
-    if meta::rewrite(
-        dir,
-        &format!("launch_id.{slot}"),
-        Some(&crate::session_launch::launch_token(tool, None)),
-    )
-    .is_err()
-    {
-        writeln!(
-            err,
-            "ae: could not record the launch token of '{}'.",
-            parsed.name
-        )?;
-    }
-    // The capture lower bound is a BIRTH fact: publish it before the pane can
-    // exec the tool. `launch_time` remains the post-exec lifecycle stamp.
-    if tool.adapter().capture.is_needed()
-        && meta::rewrite(
-            dir,
-            &format!("capture_floor.{slot}"),
-            Some(&now.epoch().to_string()),
-        )
-        .is_err()
-    {
-        let _ = crate::identity::remove_seat_slot(dir, &parsed.name);
-        writeln!(
-            err,
-            "Error: '{}' capture floor could not be recorded — nothing was spawned.",
-            parsed.name
-        )?;
-        return Ok(EXIT_FAILED);
-    }
-
-    // THE LAUNCH-ATTEMPT STAMP, before the window this spawn is about to
-    // create. A spawn is an ae launch into a tmux server exactly as a resume
-    // is, so it owes the same evidence — see [`crate::store::LAUNCH_ATTEMPT`].
-    // CHECKED: an unrecorded attempt would make a later reboot proof read this
-    // session as untouched since the boot, so nothing is spawned instead.
-    if let Err(why) = crate::store::open(dir).stamp_launch_attempt(now.epoch()) {
-        let _ = crate::identity::remove_seat_slot(dir, &parsed.name);
-        writeln!(
-            err,
-            "Error: '{}' launch attempt could not be recorded ({why}) — nothing was spawned.",
-            parsed.name
-        )?;
-        return Ok(EXIT_FAILED);
-    }
-
-    // New window per spawned agent: the main window keeps the lead layout
-    // untouched and N parallel workers stay usable.
-    let Some(pane) = transport::new_window(&facts.server, &facts.session, &facts.work_dir) else {
-        let _ = crate::identity::remove_seat_slot(dir, &parsed.name);
-        writeln!(
-            err,
-            "Error: could not create a pane for '{}' — seat released.",
-            parsed.name
-        )?;
-        return Ok(EXIT_FAILED);
     };
     stamp_pane(&facts.server, &pane, &parsed.name, &slot, &parsed.profile);
     crate::session_launch::name_agent_window(&facts.server, &pane, &parsed.name);
@@ -650,6 +543,244 @@ pub fn run_spawn(
     writeln!(out, "Spawned {} in pane {pane}", parsed.name)?;
     record_spawn(dir, now, caller, &parsed.name, &parsed.prompt);
     Ok(0)
+}
+
+/// A seat step A recorded and stamped, not yet backed by a pane.
+struct StagedSeat {
+    slot: String,
+    session: Facts,
+    argv: Parsed,
+    tool: ToolKind,
+    command: crate::config::ResolvedCommand,
+    explicit: bool,
+}
+
+/// Step A: validate, record the seat and stamp the attempt — no pane yet.
+/// Refusals travel in `Ok(Err)` for the inner to print; the outer `Err`
+/// is an output failure partway (the launch-token warning), aborting first.
+#[allow(
+    clippy::too_many_lines,
+    reason = "step A owns the frozen order through the stamp"
+)]
+fn record_spawned_seat(
+    dir: &Path,
+    tail: &[String],
+    now: Timestamp,
+    target: Option<&Path>,
+    state_root: Option<&Path>,
+    invoker_cwd: &Path,
+    err: &mut impl Write,
+) -> io::Result<Result<StagedSeat, String>> {
+    let parsed = match parse(tail) {
+        Ok(parsed) => parsed,
+        Err(line) => return Ok(Err(line)),
+    };
+    // THE PEER BOUNDARY.
+    if !crate::config::is_agent_name(&parsed.name) {
+        return Ok(Err(format!(
+            "Error: invalid agent name '{}'. Names must match {}.",
+            parsed.name,
+            crate::config::AGENT_NAME_GRAMMAR
+        )));
+    }
+    if let Err(why) = meta::plan_spawn_target(target, state_root) {
+        return Ok(Err(why));
+    }
+    let facts = match facts(dir) {
+        Ok(facts) => facts,
+        Err(why) => return Ok(Err(format!("Error: {why}"))),
+    };
+    if !transport::session_exists(&facts.server, &facts.session) {
+        return Ok(Err(format!(
+            "Error: session '{}' not running",
+            facts.session
+        )));
+    }
+    let cfg = match facts.identity() {
+        Ok(cfg) => cfg,
+        Err(why) => return Ok(Err(why.to_string())),
+    };
+    let home = crate::doors::home();
+    let command = match cfg.command(&parsed.profile, home.as_deref()) {
+        Ok(command) => command,
+        Err(why) => return Ok(Err(why.to_string())),
+    };
+    let Some(command) = command else {
+        return Ok(Err(format!(
+            "Error: profile '{}' not defined in [profiles] of {}",
+            parsed.profile,
+            facts
+                .global
+                .as_ref()
+                .map_or_else(String::new, |path| path.display().to_string())
+        )));
+    };
+
+    // THE SAME GRAMMAR AS A LAUNCH SEAT, before any effect. config.rs enforces the
+    // one-simple-command lexer for the initial roster, and a profile selected at
+    // spawn is held to the same one: a value like `bad = "touch m; tail -f
+    // /dev/null"` is REFUSED rather than run. Tool and binary come from the one
+    // validated parse.
+    let lexed = match crate::launch_cmd::lex_simple_command(command.as_str()) {
+        Ok(lexed) => lexed,
+        Err(why) => {
+            return Ok(Err(format!(
+                "Error: profile '{}' refused — {why}. Nothing was spawned.",
+                parsed.profile
+            )));
+        }
+    };
+    let tool = lexed.tool();
+    let binary = lexed.binary.clone();
+    let session_id = if launch::takes_launch_session_id(tool) {
+        launch::generate_uuid()
+    } else {
+        launch::PENDING.to_owned()
+    };
+    // Identity v2: the SEAT is the core's to allocate and write — the name
+    // grammar, uniqueness and the lowest free index are decided under one hold
+    // of the meta lock, BEFORE the pane exists, so the roster is never racy.
+    let sid = (session_id != launch::PENDING).then_some(session_id.as_str());
+    // The target the seat records: none on the shipped path, the typed
+    // explicit spelling through the seam.
+    let spec = match target {
+        Some(spelled) => crate::identity::TargetSpec::Explicit {
+            target: spelled,
+            state_root,
+            invoker_cwd,
+        },
+        None => crate::identity::TargetSpec::None,
+    };
+    let slot = match crate::identity::add_seat_slot_core(
+        dir,
+        &parsed.name,
+        &parsed.profile,
+        &binary,
+        sid,
+        spec,
+    ) {
+        Ok(slot) => slot,
+        Err(why) => return Ok(Err(format!("Error: {why}"))),
+    };
+    // The launch id guards observed-model writes for every seat. Capture tools
+    // also use it to distinguish their own stores, but marker injection stays
+    // gated by the adapter capability. Record it before the pane exists so
+    // `_run` can compose either use from the same durable identity.
+    if meta::rewrite(
+        dir,
+        &format!("launch_id.{slot}"),
+        Some(&crate::session_launch::launch_token(tool, None)),
+    )
+    .is_err()
+    {
+        writeln!(
+            err,
+            "ae: could not record the launch token of '{}'.",
+            parsed.name
+        )?;
+    }
+    // The capture lower bound is a BIRTH fact: publish it before the pane can
+    // exec the tool. `launch_time` remains the post-exec lifecycle stamp.
+    if tool.adapter().capture.is_needed()
+        && meta::rewrite(
+            dir,
+            &format!("capture_floor.{slot}"),
+            Some(&now.epoch().to_string()),
+        )
+        .is_err()
+    {
+        let _ = crate::identity::remove_seat_slot(dir, &parsed.name);
+        return Ok(Err(format!(
+            "Error: '{}' capture floor could not be recorded — nothing was spawned.",
+            parsed.name
+        )));
+    }
+
+    // THE LAUNCH-ATTEMPT STAMP, before the window this spawn is about to
+    // create. A spawn is an ae launch into a tmux server exactly as a resume
+    // is, so it owes the same evidence — see [`crate::store::LAUNCH_ATTEMPT`].
+    // CHECKED: an unrecorded attempt would make a later reboot proof read this
+    // session as untouched since the boot, so nothing is spawned instead.
+    if let Err(why) = crate::store::open(dir).stamp_launch_attempt(now.epoch()) {
+        let _ = crate::identity::remove_seat_slot(dir, &parsed.name);
+        return Ok(Err(format!(
+            "Error: '{}' launch attempt could not be recorded ({why}) — nothing was spawned.",
+            parsed.name
+        )));
+    }
+    Ok(Ok(StagedSeat {
+        slot,
+        session: facts,
+        argv: parsed,
+        tool,
+        command,
+        explicit: target.is_some(),
+    }))
+}
+
+/// The retained-seat tail of a JIT refusal that kept its rows for repair.
+fn retained_for_repair(name: &str) -> String {
+    format!("seat '{name}' retained; repair the session meta first, then retire the seat.")
+}
+
+/// Step B: prove the staged seat's start directory and open its pane.
+/// Only the JIT and the window creation live here; the inner owns the tail.
+/// Unreadable meta and byte-gate refusals preserve exact bytes and name the
+/// retained seat; parsed-path failures clean up, surfacing a failed cleanup.
+fn start_spawned_pane(
+    dir: &Path,
+    staged: &StagedSeat,
+    _caller: &str,
+    _now: Timestamp,
+    _out: &mut impl Write,
+    _err: &mut impl Write,
+) -> Result<String, String> {
+    // Hostile/read preserve: unreadable meta and byte-gate refusals return
+    // before cleanup; parsed-path failures clean, surfacing a failed cleanup.
+    let start_dir = if staged.explicit {
+        let bytes = match meta::read_bytes(dir) {
+            Ok(bytes) => bytes,
+            Err(why) => {
+                return Err(format!(
+                    "cannot read the meta: {why} — {}",
+                    retained_for_repair(&staged.argv.name)
+                ));
+            }
+        };
+        if let Err(why) = meta::raw_seat_work_dir(&bytes, &staged.slot) {
+            return Err(format!(
+                "{why} — {}",
+                retained_for_repair(&staged.argv.name)
+            ));
+        }
+        let parsed = Meta::parse(&String::from_utf8_lossy(&bytes));
+        match meta::checked_explicit_pane_start_dir(&parsed, &staged.slot) {
+            Ok(start) => start,
+            Err(jit) => {
+                if let Err(cleanup) = crate::identity::remove_seat_slot(dir, &staged.argv.name) {
+                    return Err(format!(
+                        "{jit} — seat cleanup failed ({cleanup}); {}",
+                        retained_for_repair(&staged.argv.name)
+                    ));
+                }
+                return Err(jit);
+            }
+        }
+    } else {
+        staged.session.work_dir.clone()
+    };
+    // New window per spawned agent: the main window keeps the lead layout
+    // untouched and N parallel workers stay usable.
+    let Some(pane) =
+        transport::new_window(&staged.session.server, &staged.session.session, &start_dir)
+    else {
+        let _ = crate::identity::remove_seat_slot(dir, &staged.argv.name);
+        return Err(format!(
+            "Error: could not create a pane for '{}' — seat released.",
+            staged.argv.name
+        ));
+    };
+    Ok(pane)
 }
 
 /// Record the seat a live pane opened, whether its first brief landed or not.
@@ -1288,5 +1419,469 @@ mod tests {
             "a retired seat's record must be gone"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A live private tmux server (socket-pinned, never ambient) plus a
+    /// session dir shaped for the spawn seam. First in-module tmux rig:
+    /// every server round-trip goes through the existing transport door,
+    /// so no new process site is added.
+    struct TmuxRig {
+        scratch: std::path::PathBuf,
+        dir: std::path::PathBuf,
+        sock: std::path::PathBuf,
+        session: String,
+    }
+
+    impl TmuxRig {
+        fn server(&self) -> crate::inventory::ServerId {
+            crate::inventory::ServerId::Selected(crate::meta::Selector::Socket(self.sock.clone()))
+        }
+
+        fn new(tag: &str, session: &str, fake_bin: &str) -> Self {
+            use std::os::unix::fs::PermissionsExt as _;
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            static N: AtomicUsize = AtomicUsize::new(0);
+            let scratch = std::env::temp_dir().join(format!(
+                "ae-spawn-tmux-{tag}-{}-{}",
+                std::process::id(),
+                N.fetch_add(1, Ordering::Relaxed)
+            ));
+            let _ = std::fs::remove_dir_all(&scratch);
+            std::fs::create_dir_all(&scratch).expect("scratch");
+            let dir = scratch.join("sess");
+            std::fs::create_dir(&dir).expect("session dir");
+            let sock = scratch.join("tmux.sock");
+            let rig = Self {
+                scratch,
+                dir,
+                sock,
+                session: session.to_owned(),
+            };
+            let argv = crate::session_tmux::argv(
+                &rig.server(),
+                &crate::session_tmux::Op::NewSession {
+                    name: session,
+                    work_dir: rig.scratch.to_str().unwrap(),
+                },
+            );
+            let (ok, pane) = crate::transport::run_tmux_op(&argv);
+            assert!(ok, "a live private server");
+            let main_pane = pane.trim().to_owned();
+            assert!(!main_pane.is_empty(), "a main pane id");
+            let bin = rig.scratch.join("bin");
+            std::fs::create_dir(&bin).expect("bin");
+            let fake = bin.join(fake_bin);
+            std::fs::write(&fake, "#!/bin/sh\nexit 0\n").expect("fake tool");
+            std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).expect("exec");
+            let config = rig.scratch.join("config");
+            std::fs::write(&config, format!("[profiles]\nfake = {}\n", fake.display()))
+                .expect("config");
+            std::fs::write(
+                rig.dir.join("meta"),
+                format!(
+                    "session={session}\nwork_dir={}\nmode=local\nconfig={}\nmain_pane={main_pane}\n\
+                     tmux_server_kind=socket\ntmux_server={}\nschema=2\nseat.main=lead\n\
+                     profile.main=fake\n",
+                    rig.scratch.display(),
+                    config.display(),
+                    rig.sock.display(),
+                ),
+            )
+            .expect("a v2 meta");
+            rig
+        }
+
+        fn meta(&self) -> String {
+            std::fs::read_to_string(self.dir.join("meta")).expect("meta")
+        }
+    }
+
+    impl Drop for TmuxRig {
+        fn drop(&mut self) {
+            let server = self.server();
+            if let Some(id) = crate::transport::observe_session_id(&server, &self.session) {
+                let _ = crate::transport::kill_session(&server, &id);
+            }
+            let _ = std::fs::remove_dir_all(&self.scratch);
+        }
+    }
+
+    // B2-spawn I1: omitted-None runs lifecycle-to-stamped-pane; no
+    // work_dir row. The prompt rides argv (grok is UserTurn AND
+    // capture-free, so no paste is owed, no fake TUI is needed, and no
+    // capture child or vendor-store read can escape the rig). This proves
+    // the seam's own stamp, not a harness launch — tests/it/spawn owns
+    // actual core/tool launch.
+    #[test]
+    fn tmux_omitted_none_spawns_without_a_target_row() {
+        let rig = TmuxRig::new("none", "ae-tmux-none", "grok");
+        let tail = ["scout", "--using", "fake", "do the thing"]
+            .iter()
+            .map(|word| (*word).to_owned())
+            .collect::<Vec<_>>();
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let rc = super::run_spawn_inner(
+            &rig.dir,
+            &tail,
+            "",
+            Timestamp::now(),
+            &mut out,
+            &mut err,
+            None,
+            None,
+            &rig.scratch,
+        )
+        .expect("spawn runs");
+        assert_eq!(rc, 0, "stderr: {}", String::from_utf8_lossy(&err));
+        let meta = rig.meta();
+        assert!(meta.contains("seat.spawned.0=scout\n"), "{meta}");
+        assert!(!meta.contains("work_dir."), "{meta}");
+        let slots = crate::transport::observe_slots(&rig.server(), &rig.session).expect("slots");
+        assert!(
+            slots
+                .iter()
+                .any(|seen| seen.slot == "spawned.0" && seen.agent == "scout"),
+            "a live pane stamped spawned.0/scout: {slots:?}"
+        );
+    }
+
+    // B2-spawn I2: the spawned pane starts at the recorded target. The
+    // cwd is read directly through the test-only pane observer.
+    #[test]
+    fn tmux_spawned_pane_starts_at_the_recorded_target() {
+        let rig = TmuxRig::new("target", "ae-tmux-target", "grok");
+        let target = rig.scratch.join("repo");
+        std::fs::create_dir(&target).unwrap();
+        let canon = std::fs::canonicalize(&target).unwrap();
+        let state = rig.scratch.join("state");
+        std::fs::create_dir(&state).unwrap();
+        let tail: Vec<String> = ["scout", "--using", "fake", "go"]
+            .iter()
+            .map(|w| (*w).to_owned())
+            .collect();
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let rc = super::run_spawn_inner(
+            &rig.dir,
+            &tail,
+            "",
+            Timestamp::now(),
+            &mut out,
+            &mut err,
+            Some(target.as_path()),
+            Some(state.as_path()),
+            &rig.scratch,
+        )
+        .expect("spawn runs");
+        assert_eq!(rc, 0, "stderr: {}", String::from_utf8_lossy(&err));
+        let meta = rig.meta();
+        assert!(
+            meta.contains(&format!("work_dir.spawned.0={}\n", canon.display())),
+            "{meta}"
+        );
+        let slots = crate::transport::observe_slots(&rig.server(), &rig.session).expect("slots");
+        let pane = slots
+            .iter()
+            .find(|seen| seen.slot == "spawned.0")
+            .expect("pane")
+            .pane
+            .clone();
+        // The pane's cwd, read directly; unobserved hard-fails.
+        let cwd = crate::transport::observe_pane_current_path(&rig.server(), &pane)
+            .expect("a cwd reading");
+        assert_eq!(cwd, canon.to_str().unwrap());
+    }
+
+    // B2-spawn I3: removing the recorded node (meta untouched) makes step B
+    // refuse via the JIT arm with full cleanup and a retained stamp.
+    #[test]
+    fn tmux_jit_refusal_cleans_the_staged_seat() {
+        let rig = TmuxRig::new("jit", "ae-tmux-jit", "codex");
+        let target = rig.scratch.join("repo");
+        let state = rig.scratch.join("state");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::create_dir(&state).unwrap();
+        let tail: Vec<String> = ["scout", "--using", "fake", "go"]
+            .iter()
+            .map(|w| (*w).to_owned())
+            .collect();
+        let snap = |name: &str| std::fs::read(rig.dir.join(name)).ok();
+        let before = [
+            snap("workspace.md"),
+            snap("events.jsonl"),
+            snap("brief-retry.spawned.0.rec"),
+        ];
+        let mut err = Vec::new();
+        let staged = super::record_spawned_seat(
+            &rig.dir,
+            &tail,
+            Timestamp::now(),
+            Some(target.as_path()),
+            Some(state.as_path()),
+            &rig.scratch,
+            &mut err,
+        )
+        .expect("staged io")
+        .expect("staged");
+        // Sandbox pin: even an unexpected step-B launch scans here, never $HOME.
+        let cxhome = rig.scratch.join("cxhome");
+        std::fs::create_dir(&cxhome).unwrap();
+        let pinned = cxhome.to_str().unwrap().to_owned();
+        crate::meta::rewrite(&rig.dir, "config_home.spawned.0", Some(&pinned))
+            .expect("sandbox pin");
+        let staged_meta = rig.meta();
+        for row in [
+            "seat.spawned.0=scout",
+            "profile.spawned.0=fake",
+            "agent_bin.spawned.0=",
+            "work_dir.spawned.0=",
+            "launch_id.spawned.0=",
+            "capture_floor.spawned.0=",
+            "config_home.spawned.0=",
+        ] {
+            assert!(staged_meta.contains(row), "{staged_meta}");
+        }
+        std::fs::remove_dir(&target).unwrap();
+        let mut out = Vec::new();
+        let why =
+            super::start_spawned_pane(&rig.dir, &staged, "", Timestamp::now(), &mut out, &mut err)
+                .expect_err("JIT refuses");
+        assert!(why.contains("recorded target gone"), "{why}");
+        let meta = rig.meta();
+        for key in [
+            "seat.",
+            "work_dir.",
+            "launch_id.",
+            "capture_floor.",
+            "profile.",
+            "agent_bin.",
+            "harness_session.",
+            "config_home.",
+        ] {
+            assert!(!meta.contains(&format!("{key}spawned.0=")), "{meta}");
+        }
+        assert!(meta.contains("seat.main=lead\n"), "{meta}");
+        assert!(meta.contains("profile.main=fake\n"), "{meta}");
+        assert!(
+            rig.dir.join(crate::store::LAUNCH_ATTEMPT).is_file(),
+            "stamp retained"
+        );
+        assert_eq!(
+            [
+                snap("workspace.md"),
+                snap("events.jsonl"),
+                snap("brief-retry.spawned.0.rec")
+            ],
+            before
+        );
+        let slots = crate::transport::observe_slots(&rig.server(), &rig.session).expect("slots");
+        assert_eq!(slots.len(), 1, "no new pane, still the main one: {slots:?}");
+        assert_eq!(staged.slot, "spawned.0");
+    }
+
+    // B2-spawn I4: server killed after A; new_window fails, arm cleans, stamp stays.
+    #[test]
+    fn tmux_server_kill_drives_the_pane_failure_arm() {
+        let rig = TmuxRig::new("kill", "ae-tmux-kill", "codex");
+        let target = rig.scratch.join("repo");
+        let state = rig.scratch.join("state");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::create_dir(&state).unwrap();
+        let tail = ["scout", "--using", "fake", "go"]
+            .map(str::to_owned)
+            .to_vec();
+        let snap = |name: &str| std::fs::read(rig.dir.join(name)).ok();
+        let before = [snap("workspace.md"), snap("events.jsonl")];
+        let mut err = Vec::new();
+        let staged = super::record_spawned_seat(
+            &rig.dir,
+            &tail,
+            Timestamp::now(),
+            Some(target.as_path()),
+            Some(state.as_path()),
+            &rig.scratch,
+            &mut err,
+        )
+        .expect("staged io")
+        .expect("staged");
+        let id = crate::transport::observe_session_id(&rig.server(), &rig.session).expect("id");
+        let _ = crate::transport::kill_session(&rig.server(), &id);
+        let mut out = Vec::new();
+        let why =
+            super::start_spawned_pane(&rig.dir, &staged, "", Timestamp::now(), &mut out, &mut err)
+                .expect_err("no server, no pane");
+        assert!(why.contains("could not create a pane"), "{why}");
+        assert!(!rig.meta().contains("spawned.0="), "{}", rig.meta());
+        let stamp = rig.dir.join(crate::store::LAUNCH_ATTEMPT);
+        assert!(stamp.is_file(), "stamp retained");
+        assert_eq!([snap("workspace.md"), snap("events.jsonl")], before);
+        assert!(!rig.dir.join("brief-retry.spawned.0.rec").exists());
+    }
+
+    // B2-spawn I5: messages-as-FILE fails the pre-event body store after a
+    // live pane; the rollback removes seat, rows, artifacts, and the pane.
+    // Driven through the full inner (owner re-rule): the narrow step helper
+    // owns JIT plus pane creation only, so the post-pane rollback property
+    // is pinned where it lives — on the inner path.
+    #[test]
+    fn tmux_body_store_failure_rolls_back_the_live_spawn() {
+        let rig = TmuxRig::new("rollback", "ae-tmux-rollback", "grok");
+        let target = rig.scratch.join("repo");
+        let state = rig.scratch.join("state");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::create_dir(&state).unwrap();
+        let tail = ["scout", "--using", "fake", "go"]
+            .map(str::to_owned)
+            .to_vec();
+        std::fs::write(rig.dir.join("messages"), "not a directory").expect("the blocker");
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let rc = super::run_spawn_inner(
+            &rig.dir,
+            &tail,
+            "",
+            Timestamp::now(),
+            &mut out,
+            &mut err,
+            Some(target.as_path()),
+            Some(state.as_path()),
+            &rig.scratch,
+        )
+        .expect("spawn runs");
+        assert_eq!(
+            rc,
+            crate::state::EXIT_FAILED,
+            "stderr: {}",
+            String::from_utf8_lossy(&err)
+        );
+        assert!(String::from_utf8_lossy(&err).contains("task body could not be stored"));
+        assert!(!rig.meta().contains("spawned.0="), "{}", rig.meta());
+        let slots = crate::transport::observe_slots(&rig.server(), &rig.session).expect("slots");
+        let live = slots.iter().all(|seen| seen.slot != "spawned.0");
+        assert!(live, "{slots:?}");
+        let stamp = rig.dir.join(crate::store::LAUNCH_ATTEMPT);
+        assert!(stamp.is_file(), "stamp retained");
+        let manifest = std::fs::read_to_string(rig.dir.join("workspace.md")).expect("manifest");
+        let clean = !manifest.contains("scout") && !manifest.contains("spawned.0");
+        assert!(clean, "{manifest}");
+        assert!(!rig.dir.join("events.jsonl").exists(), "no pre-event rows");
+        assert!(!rig.dir.join("brief-retry.spawned.0.rec").exists());
+    }
+
+    // B2-spawn pin 17 (BLOCKER reg): an invalid-UTF8 work_dir row whose lossy
+    // U+FFFD spelling names a REAL directory refuses BEFORE the lossy parse.
+    #[test]
+    fn tmux_invalid_row_bytes_refuse_before_the_lossy_parse() {
+        let rig = TmuxRig::new("rawjit", "ae-tmux-rawjit", "grok");
+        let target = rig.scratch.join("repo");
+        let state = rig.scratch.join("state");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::create_dir(&state).unwrap();
+        let tail = ["scout", "--using", "fake", "go"]
+            .map(str::to_owned)
+            .to_vec();
+        let snap = |name: &str| std::fs::read(rig.dir.join(name)).ok();
+        let before = [snap("workspace.md"), snap("events.jsonl")];
+        let mut err = Vec::new();
+        let staged = super::record_spawned_seat(
+            &rig.dir,
+            &tail,
+            Timestamp::now(),
+            Some(target.as_path()),
+            Some(state.as_path()),
+            &rig.scratch,
+            &mut err,
+        )
+        .expect("staged io")
+        .expect("staged");
+        let scratch = std::fs::canonicalize(&rig.scratch).unwrap();
+        std::fs::create_dir(scratch.join("\u{fffd}")).unwrap();
+        let canon = std::fs::canonicalize(&target).unwrap();
+        let needle = format!("work_dir.spawned.0={}\n", canon.display());
+        let raw = std::fs::read(rig.dir.join("meta")).unwrap();
+        let is_row = |w: &[u8]| w == needle.as_bytes();
+        let at = raw.windows(needle.len()).position(is_row).expect("row");
+        let mut evil = format!("work_dir.spawned.0={}", scratch.display()).into_bytes();
+        evil.extend_from_slice(b"/\xff\n");
+        let mut corrupted = raw.clone();
+        corrupted.splice(at..at + needle.len(), evil);
+        std::fs::write(rig.dir.join("meta"), corrupted).unwrap();
+        let frozen = std::fs::read(rig.dir.join("meta")).unwrap();
+        assert!(frozen.contains(&0xff), "row actually corrupted");
+        let mut out = Vec::new();
+        let why =
+            super::start_spawned_pane(&rig.dir, &staged, "", Timestamp::now(), &mut out, &mut err)
+                .expect_err("raw refuses");
+        assert!(why.contains("present but unusable (not UTF-8)"), "{why}");
+        assert!(
+            why.contains("retained; repair the session meta first"),
+            "{why}"
+        );
+        let after = std::fs::read(rig.dir.join("meta")).unwrap();
+        assert_eq!(after, frozen, "raw-invalid rows stay for repair");
+        assert!(
+            rig.dir.join(crate::store::LAUNCH_ATTEMPT).is_file(),
+            "stamp retained"
+        );
+        let slots = crate::transport::observe_slots(&rig.server(), &rig.session).expect("slots");
+        assert_eq!(slots.len(), 1, "no new pane: {slots:?}");
+        assert_eq!([snap("workspace.md"), snap("events.jsonl")], before);
+        assert!(!rig.dir.join("brief-retry.spawned.0.rec").exists());
+    }
+
+    // B2-spawn pin 18: a duplicate valid-UTF8 work_dir row refuses on the
+    // raw gate BEFORE any cleanup — bytes stay identical where a rebuild
+    // would otherwise succeed.
+    #[test]
+    fn tmux_duplicate_row_refuses_without_rebuild() {
+        let rig = TmuxRig::new("dupjit", "ae-tmux-dupjit", "grok");
+        let target = rig.scratch.join("repo");
+        let state = rig.scratch.join("state");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::create_dir(&state).unwrap();
+        let tail = ["scout", "--using", "fake", "go"]
+            .map(str::to_owned)
+            .to_vec();
+        let snap = |name: &str| std::fs::read(rig.dir.join(name)).ok();
+        let before = [snap("workspace.md"), snap("events.jsonl")];
+        let mut err = Vec::new();
+        let staged = super::record_spawned_seat(
+            &rig.dir,
+            &tail,
+            Timestamp::now(),
+            Some(target.as_path()),
+            Some(state.as_path()),
+            &rig.scratch,
+            &mut err,
+        )
+        .expect("staged io")
+        .expect("staged");
+        let other = rig.scratch.join("other");
+        std::fs::create_dir(&other).unwrap();
+        let meta_path = rig.dir.join("meta");
+        let mut dup = std::fs::read(&meta_path).unwrap();
+        dup.extend_from_slice(format!("work_dir.spawned.0={}\n", other.display()).as_bytes());
+        std::fs::write(&meta_path, &dup).unwrap();
+        let frozen = dup;
+        let mut out = Vec::new();
+        let why =
+            super::start_spawned_pane(&rig.dir, &staged, "", Timestamp::now(), &mut out, &mut err)
+                .expect_err("raw refuses");
+        assert!(why.contains("named more than once"), "{why}");
+        assert!(
+            why.contains("retained; repair the session meta first"),
+            "{why}"
+        );
+        let after = std::fs::read(&meta_path).unwrap();
+        assert_eq!(after, frozen, "duplicate rows stay for repair");
+        assert!(
+            rig.dir.join(crate::store::LAUNCH_ATTEMPT).is_file(),
+            "stamp retained"
+        );
+        let slots = crate::transport::observe_slots(&rig.server(), &rig.session).expect("slots");
+        assert_eq!(slots.len(), 1, "no new pane: {slots:?}");
+        assert_eq!([snap("workspace.md"), snap("events.jsonl")], before);
+        assert!(!rig.dir.join("brief-retry.spawned.0.rec").exists());
     }
 }

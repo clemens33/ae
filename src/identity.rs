@@ -622,25 +622,53 @@ fn add_seat(
     }
 }
 
+/// What target (if any) a seat add records. The locked core owns the
+/// single lock→parse→check→allocate→publish sequence for all three:
+/// `None` seats without a row, `LegacySpelling` grammar-checks a `&str`
+/// exactly as before, and `Explicit` validates a typed path against the
+/// same parsed bytes it publishes.
+#[derive(Clone, Copy)]
+pub(crate) enum TargetSpec<'a> {
+    /// No row recorded: today's seat shape, byte for byte.
+    None,
+    /// A caller spelling, grammar-checked only (the `_roster` path).
+    LegacySpelling(&'a str),
+    /// A typed spawn target: representability, then full record
+    /// validation (mode, legacy, strict proof, containment) under the
+    /// one lock, published atomically with the seat block.
+    Explicit {
+        /// The spelled target; refusal precedes any write.
+        target: &'a Path,
+        /// The state root containment proves against; `None` refuses.
+        state_root: Option<&'a Path>,
+        /// The invoker cwd a relative spelling joins.
+        invoker_cwd: &'a Path,
+    },
+}
+
 /// Take the lowest free `spawned.<n>` for `name` and publish the seat, under
 /// one hold of the meta lock — the decision half of `add-seat`, as a value.
 ///
 /// A seat and its explicit target publish ATOMICALLY: one locked rewrite
 /// carries the seat rows and the `work_dir.<slot>` row together, so no
-/// seat-without-target state is ever observable. `None` records no row.
+/// seat-without-target state is ever observable. An explicit target is
+/// validated against the same parsed bytes the seat publishes, so no
+/// ae-side drift can invalidate validation between check and write.
+/// `None` records no row.
 ///
 /// # Errors
 ///
 /// The refusal, phrased as [`refuse`] prints it: a bad or taken name, a v1 or
-/// doubtful roster, an unwritable meta, a control byte in a value, or an
-/// unusable seat dir — every refusal lands before any write.
-pub fn add_seat_slot(
+/// doubtful roster, an unwritable meta, a control byte in a value, an
+/// unusable seat dir, or a refused explicit target — every refusal lands
+/// before any write.
+pub(crate) fn add_seat_slot_core(
     dir: &Path,
     name: &str,
     profile: &str,
     binary: &str,
     sid: Option<&str>,
-    work_dir: Option<&str>,
+    target: TargetSpec<'_>,
 ) -> Result<String, String> {
     let _held = meta::lock(dir).map_err(|why| format!("cannot take the meta lock: {why}"))?;
     let text = text_of(dir)?;
@@ -667,9 +695,28 @@ pub fn add_seat_slot(
         }
     }
     let slot = format!("spawned.{}", lowest_free_spawned(&text));
-    let work_dir = match work_dir {
-        None => None,
-        Some(dir) => Some(meta::checked_seat_work_dir(&slot, dir)?),
+    let work_dir = match target {
+        TargetSpec::None => None,
+        TargetSpec::LegacySpelling(dir) => Some(meta::checked_seat_work_dir(&slot, dir)?),
+        TargetSpec::Explicit {
+            target,
+            state_root,
+            invoker_cwd,
+        } => {
+            // Authoritative representability: `plan_` owns these wordings.
+            meta::plan_spawn_target(Some(target), state_root)?;
+            let (Some(spelling), Some(root)) = (target.to_str(), state_root) else {
+                // Unreachable: `plan_` just proved both.
+                return Err("internal error: a planned target failed its own proof.".to_owned());
+            };
+            Some(meta::record_seat_target(
+                &current,
+                &slot,
+                spelling,
+                root,
+                invoker_cwd,
+            )?)
+        }
     };
     let mut next = text;
     if !next.is_empty() && !next.ends_with('\n') {
@@ -692,6 +739,28 @@ pub fn add_seat_slot(
     next.push_str(block.strip_prefix("schema=2\n").unwrap_or(&block));
     publish(dir, &next)?;
     Ok(slot)
+}
+
+/// Add a seat with an optional caller spelling: the pre-typed entry point,
+/// kept byte-identical for spawn and `_roster` by delegating to the one
+/// locked core.
+///
+/// # Errors
+///
+/// Whatever [`add_seat_slot_core`] refuses with for the mapped spec.
+pub fn add_seat_slot(
+    dir: &Path,
+    name: &str,
+    profile: &str,
+    binary: &str,
+    sid: Option<&str>,
+    work_dir: Option<&str>,
+) -> Result<String, String> {
+    let target = match work_dir {
+        None => TargetSpec::None,
+        Some(spelling) => TargetSpec::LegacySpelling(spelling),
+    };
+    add_seat_slot_core(dir, name, profile, binary, sid, target)
 }
 
 /// Read `add-seat`'s flags: `--using <profile>`, `--binary <bin>`,
@@ -2006,5 +2075,225 @@ mod tests {
             "a seat lost its dir: {:?}",
             parsed.roster()
         );
+    }
+
+    /// Local-mode session meta for core-target tests. Targets live beside
+    /// `state/`, never under it, so containment holds by construction.
+    fn local_core_dirs(tag: &str) -> Scratch {
+        let scratch = Scratch::new(tag);
+        scratch.file(
+            "meta",
+            "schema=2\nmode=local\nseat.main=lead\nprofile.main=fable5\n",
+        );
+        std::fs::create_dir(scratch.dir().join("state")).expect("state root");
+        scratch
+    }
+
+    /// One explicit-target core add against a fixture.
+    fn add_explicit(
+        scratch: &Scratch,
+        name: &str,
+        target: &Path,
+        state: Option<&Path>,
+    ) -> Result<String, String> {
+        super::add_seat_slot_core(
+            scratch.dir(),
+            name,
+            "fable5",
+            "claude",
+            None,
+            super::TargetSpec::Explicit {
+                target,
+                state_root: state,
+                invoker_cwd: scratch.dir(),
+            },
+        )
+    }
+
+    // B2-spawn U4: differing targets per seat, no cross-talk.
+    #[test]
+    fn core_records_distinct_targets_per_seat() {
+        let scratch = local_core_dirs("core-distinct");
+        let state = scratch.dir().join("state");
+        let mut canons = Vec::new();
+        for (name, tag) in [("scout", "one"), ("sage", "two")] {
+            let target = scratch.dir().join(tag);
+            std::fs::create_dir(&target).unwrap();
+            let slot =
+                add_explicit(&scratch, name, &target, Some(state.as_path())).expect("a seat");
+            canons.push((slot, std::fs::canonicalize(&target).unwrap()));
+        }
+        let meta = scratch.meta();
+        assert_ne!(canons[0].1, canons[1].1);
+        for (slot, canon) in &canons {
+            let row = format!("work_dir.{slot}={}\n", canon.display());
+            assert!(meta.contains(&row), "{meta}");
+            let parsed = crate::meta::Meta::parse(&meta);
+            assert_eq!(
+                crate::meta::checked_explicit_pane_start_dir(&parsed, slot),
+                Ok(canon.display().to_string())
+            );
+        }
+    }
+
+    // B2-spawn U5: spaces record + resolve.
+    #[test]
+    fn core_records_a_target_with_spaces() {
+        let scratch = local_core_dirs("core-spaces");
+        let target = scratch.dir().join("my repo");
+        std::fs::create_dir(&target).unwrap();
+        let state = scratch.dir().join("state");
+        let slot = add_explicit(&scratch, "scout", &target, Some(state.as_path())).expect("a seat");
+        let canon = std::fs::canonicalize(&target).unwrap();
+        let meta = scratch.meta();
+        assert!(
+            meta.contains(&format!("work_dir.{slot}={}\n", canon.display())),
+            "{meta}"
+        );
+        let parsed = crate::meta::Meta::parse(&meta);
+        assert_eq!(
+            crate::meta::checked_explicit_pane_start_dir(&parsed, &slot),
+            Ok(canon.display().to_string())
+        );
+    }
+
+    // B2-spawn U6: a non-git dir records + resolves (no repo needed).
+    #[test]
+    fn core_records_a_plain_non_git_dir() {
+        let scratch = local_core_dirs("core-nongit");
+        let target = scratch.dir().join("not-a-repo");
+        std::fs::create_dir(&target).unwrap();
+        let state = scratch.dir().join("state");
+        let slot = add_explicit(&scratch, "scout", &target, Some(state.as_path())).expect("a seat");
+        let canon = std::fs::canonicalize(&target).unwrap();
+        let meta = scratch.meta();
+        assert!(
+            meta.contains(&format!("work_dir.{slot}={}\n", canon.display())),
+            "{meta}"
+        );
+        let parsed = crate::meta::Meta::parse(&meta);
+        assert_eq!(
+            crate::meta::checked_explicit_pane_start_dir(&parsed, &slot),
+            Ok(canon.display().to_string())
+        );
+    }
+
+    // B2-spawn U7: slot reuse is row-clean across add/remove/add.
+    #[test]
+    fn core_slot_reuse_leaves_no_stale_row() {
+        let scratch = local_core_dirs("core-reuse");
+        let target = scratch.dir().join("repo");
+        std::fs::create_dir(&target).unwrap();
+        let state = scratch.dir().join("state");
+        let first =
+            add_explicit(&scratch, "scout", &target, Some(state.as_path())).expect("a seat");
+        assert!(
+            scratch.meta().contains(&format!("work_dir.{first}=")),
+            "{}",
+            scratch.meta()
+        );
+        super::remove_seat_slot(scratch.dir(), "scout").expect("retired");
+        assert!(!scratch.meta().contains("work_dir."), "{}", scratch.meta());
+        let second = super::add_seat_slot(scratch.dir(), "sage", "fable5", "claude", None, None)
+            .expect("a seat");
+        assert_eq!(second, first, "the freed slot is reused");
+        assert!(!scratch.meta().contains("work_dir."), "{}", scratch.meta());
+    }
+
+    // B2-spawn U8: managed/legacy refuses atomically, record order kept.
+    #[test]
+    fn core_refuses_managed_without_a_partial_seat() {
+        // Managed mode=git, the real spelling: mode refuses before empty,
+        // so the record order survives the core.
+        let managed = Scratch::new("core-managed");
+        managed.file(
+            "meta",
+            "schema=2\nmode=git\nseat.main=lead\nprofile.main=fable5\n",
+        );
+        let target = managed.dir().join("repo");
+        std::fs::create_dir(&target).unwrap();
+        let state = managed.dir().join("state");
+        std::fs::create_dir(&state).unwrap();
+        for spelled in [target.as_path(), Path::new("")] {
+            let before = managed.meta();
+            let why = add_explicit(&managed, "scout", spelled, Some(state.as_path()))
+                .expect_err("a refusal");
+            assert_eq!(
+                why,
+                "explicit seat targets record on local sessions only — \
+                 this session's mode is 'git'."
+                    .to_owned()
+            );
+            assert_eq!(managed.meta(), before, "the meta moved on a refusal");
+        }
+        // A legacy agent.<slot> row IS roster-doubting, so the core's
+        // seat_write_refusal fires before record_: the pin asserts that
+        // routing, byte-identical.
+        let legacy = Scratch::new("core-legacy");
+        legacy.file(
+            "meta",
+            "schema=2\nmode=local\nseat.main=lead\nprofile.main=fable5\nagent.spawned.9=ghost\n",
+        );
+        let target = legacy.dir().join("repo");
+        std::fs::create_dir(&target).unwrap();
+        let state = legacy.dir().join("state");
+        std::fs::create_dir(&state).unwrap();
+        let before = legacy.meta();
+        let why =
+            add_explicit(&legacy, "scout", &target, Some(state.as_path())).expect_err("a refusal");
+        assert_eq!(
+            why,
+            "this session's roster is in doubt and may not be written to: \
+             slot spawned.9 carries the retired v1 roster agent.spawned.9 (line 5): \
+             this session is not served by this ae"
+                .to_owned()
+        );
+        assert_eq!(legacy.meta(), before, "the meta moved on a refusal");
+    }
+
+    // B2-spawn U9: the CORE rejects Some + no state root, byte-identical.
+    #[test]
+    fn core_refuses_some_without_a_state_root() {
+        let scratch = local_core_dirs("core-noroot");
+        let target = scratch.dir().join("repo");
+        std::fs::create_dir(&target).unwrap();
+        let before = scratch.meta();
+        let why = add_explicit(&scratch, "scout", &target, None).expect_err("a refusal");
+        assert_eq!(
+            why,
+            "no ae state root is available — an explicit target cannot prove containment."
+                .to_owned()
+        );
+        assert_eq!(scratch.meta(), before, "the meta moved on a refusal");
+    }
+
+    // B2-spawn U10: empty + control spellings refuse with owned wordings.
+    #[test]
+    fn core_refuses_empty_and_control_spellings() {
+        let scratch = local_core_dirs("core-spellings");
+        let state = scratch.dir().join("state");
+        let before = scratch.meta();
+        let why = add_explicit(&scratch, "scout", Path::new(""), Some(state.as_path()))
+            .expect_err("a refusal");
+        assert_eq!(
+            why,
+            "work_dir.spawned.0 is present but unusable (empty value) — \
+             restore the recorded path or retire the seat."
+                .to_owned()
+        );
+        // A control byte that PROVES: the shared row wording, never absence.
+        // A nonexistent path would let strict absence win and pass even if
+        // control-row validation were deleted — so the dir is real.
+        let weird = scratch.dir().join("we\u{7}ird");
+        std::fs::create_dir(&weird).unwrap();
+        let why =
+            add_explicit(&scratch, "scout", &weird, Some(state.as_path())).expect_err("a refusal");
+        assert_eq!(
+            why,
+            "work_dir.spawned.0 is present but unusable (control characters) — \
+             restore the recorded path or retire the seat."
+                .to_owned()
+        );
+        assert_eq!(scratch.meta(), before, "the meta moved on a refusal");
     }
 }

@@ -3210,6 +3210,18 @@ pub fn server_pid_args(server: &ServerId) -> Vec<String> {
     args
 }
 
+/// `display-message -p -t <pane> '#{pane_current_path}'` — TEST ONLY.
+/// No product reader observes pane paths; none may be added unruled.
+#[cfg(test)]
+#[must_use]
+pub fn pane_current_path_args(server: &ServerId, pane: &str) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(
+        ["display-message", "-p", "-t", pane, "#{pane_current_path}"].map(ToOwned::to_owned),
+    );
+    args
+}
+
 /// The single value a `display-message -p` answer carries: its first line,
 /// trimmed, and only when the query SUCCEEDED.
 #[must_use]
@@ -6535,6 +6547,23 @@ mod tests {
             entries[1].command.contains("'/opt/ae'"),
             "{}",
             entries[1].command
+        );
+    }
+
+    #[test]
+    fn pane_current_path_argv_targets_the_pane_and_format() {
+        let sock = ServerId::Selected(Selector::Socket(std::path::PathBuf::from("/tmp/s")));
+        assert_eq!(
+            super::pane_current_path_args(&sock, "%3"),
+            vec![
+                "-S",
+                "/tmp/s",
+                "display-message",
+                "-p",
+                "-t",
+                "%3",
+                "#{pane_current_path}"
+            ]
         );
     }
 }

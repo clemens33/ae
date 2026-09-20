@@ -41,6 +41,8 @@ fuzz_target!(|data: &[u8]| {
     ];
     for slot in ["main", "worker.0", "spawned.1"] {
         let _ = std::hint::black_box(ae::meta::resolve_seat_dir(&parsed, slot));
+        // Explicit rows refuse Missing where the typed resolve inherits.
+        let _ = std::hint::black_box(ae::meta::explicit_seat_row(&parsed, slot));
         let typed =
             ae::meta::resolve_seat_target(&parsed, slot, std::path::PathBuf::from("/session"));
         let _ = std::hint::black_box(&typed);

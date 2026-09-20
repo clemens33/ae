@@ -642,6 +642,19 @@ pub fn capture_pane(server: &ServerId, pane: &str) -> Option<String> {
     succeeded.then_some(stdout)
 }
 
+/// A live pane's cwd — TEST ONLY for the spawn-seam pins. `None` when the
+/// query failed or answered empty; the CALLER hard-fails on `None`, because
+/// an unobserved pane proves nothing about the seam.
+#[cfg(test)]
+#[must_use]
+pub fn observe_pane_current_path(server: &ServerId, pane: &str) -> Option<String> {
+    if !addressable(server) {
+        return None;
+    }
+    let (succeeded, stdout) = run(PROGRAM, &tmux::pane_current_path_args(server, pane));
+    tmux::interpret_display_value(succeeded, &stdout)
+}
+
 /// The id tmux holds for the session named exactly `name` on `server`.
 #[must_use]
 pub fn observe_session_id(server: &ServerId, name: &str) -> Option<String> {

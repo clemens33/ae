@@ -30,3 +30,12 @@ max-threads = 2
 [[profile.default.overrides]]
 filter = 'test(/^reseat(_carry)?::/)'
 test-group = 'tmux-seats'
+
+# `spawn::tests::tmux_*`: same class again — socket-pinned REAL tmux
+# servers spun per pin, so small group, module-anchored filter.
+[test-groups.tmux-spawn-unit]
+max-threads = 2
+
+[[profile.default.overrides]]
+filter = 'test(/^spawn::tests::tmux_/)'
+test-group = 'tmux-spawn-unit'

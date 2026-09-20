@@ -1541,6 +1541,88 @@ pub fn checked_pane_start_dir(
     }
 }
 
+/// The ONLY pre-lock check a spawn target gets: REPRESENTABILITY, not
+/// semantics. A non-UTF8 spelling can never become a row value, and a
+/// missing state root can never prove containment — both are unexpressible
+/// in [`record_seat_target`]'s `(&str, &Path)` signature, so this gate runs
+/// before the session check (fail fast) AND first inside the locked core
+/// (authoritative), and it cannot reorder any record refusal. Everything
+/// semantic — empty, control, strict proof, containment, mode, legacy —
+/// lives only in the locked core. Pure: no door read, no meta read.
+///
+/// # Errors
+///
+/// The direct refusal when a `Some` spelling is not UTF-8 or no state root
+/// is available. `None` always plans to no explicit target.
+pub fn plan_spawn_target(
+    target: Option<&Path>,
+    state_root: Option<&Path>,
+) -> Result<Option<PathBuf>, String> {
+    let Some(spelled) = target else {
+        return Ok(None);
+    };
+    #[allow(
+        clippy::unnecessary_debug_formatting,
+        reason = "Debug escapes non-UTF8 bytes losslessly; Display would print lossy replacement chars for the very bytes refused"
+    )]
+    if spelled.to_str().is_none() {
+        return Err(format!(
+            "the spelled target {spelled:?} is not UTF-8 — explicit seat targets must be UTF-8."
+        ));
+    }
+    if state_root.is_none() {
+        return Err(
+            "no ae state root is available — an explicit target cannot prove containment."
+                .to_owned(),
+        );
+    }
+    Ok(Some(spelled.to_path_buf()))
+}
+
+/// The PURE explicit-row selector: what a seat's `work_dir.<slot>` row says,
+/// with no inheritance fallback. Missing is a refusal — the explicit JIT
+/// must never start a seat whose target was never recorded — Invalid carries
+/// its owned reason, and Path carries the value for the strict door to
+/// re-prove. Pure over the parse: no filesystem touch, so the `meta_parse`
+/// fuzz target drives this for fixed slots.
+///
+/// # Errors
+///
+/// The honest no-row refusal, the shared row refusal for a present but
+/// unusable row, or the unknown-seat refusal.
+pub fn explicit_seat_row(meta: &Meta, slot: &str) -> Result<PathBuf, String> {
+    let entry = seat_entry(meta, slot)?;
+    match &entry.work_dir {
+        RecordedWorkDir::Missing => Err(format!(
+            "no work_dir.{slot} row is recorded — the seat has no explicit target."
+        )),
+        RecordedWorkDir::Path(path) => Ok(path.clone()),
+        RecordedWorkDir::Invalid(detail) => Err(seat_work_dir_refusal(slot, detail)),
+    }
+}
+
+/// The directory an EXPLICIT seat's pane starts in: the recorded row,
+/// re-proven immediately before use. Unlike [`checked_pane_start_dir`] this
+/// takes no session facts — an explicit row never inherits, so there is no
+/// session canonical to prove and no unrelated failure to add. A retargeted
+/// alias or a swapped node refuses with the shared row wording instead of
+/// following into a surprise destination.
+///
+/// # Errors
+///
+/// The no-row, unusable-row, unknown-seat, or moved/vanished-target refusal.
+pub fn checked_explicit_pane_start_dir(meta: &Meta, slot: &str) -> Result<String, String> {
+    let canonical = explicit_seat_row(meta, slot)?;
+    check_seat_target_use(
+        slot,
+        &SeatTarget {
+            canonical: canonical.clone(),
+            provenance: SeatProvenance::Explicit,
+        },
+    )?;
+    Ok(canonical.display().to_string())
+}
+
 /// An inherited session dir that fails its use check, worded for what it
 /// is: no row, no retire — restore the session dir.
 fn inherited_dir_refusal(session_dir: &str, error: &crate::doors::StrictDirError) -> String {
@@ -4836,6 +4918,95 @@ agent_bin.main=claude
         assert!(
             err.contains("no longer resolves to its recorded place"),
             "{err}"
+        );
+    }
+
+    // B2-spawn U1: omission is not a target and proves nothing.
+    #[test]
+    fn plan_spawn_target_omitted_means_no_explicit_target() {
+        use super::plan_spawn_target;
+        use std::path::Path;
+        let root = Path::new("/state");
+        assert_eq!(plan_spawn_target(None, Some(root)), Ok(None));
+        // None skips even the state-root proof: nothing to contain.
+        assert_eq!(plan_spawn_target(None, None), Ok(None));
+    }
+
+    // B2-spawn U2: a non-UTF8 spelling refuses before any door read. Pure:
+    // no fixture directory exists, so a door touch would fail, not pass.
+    #[test]
+    fn plan_spawn_target_refuses_a_non_utf8_spelling_up_front() {
+        use super::plan_spawn_target;
+        use std::os::unix::ffi::OsStrExt as _;
+        let weird = std::path::Path::new(std::ffi::OsStr::from_bytes(b"/w/we\xffird"));
+        let root = std::path::Path::new("/state");
+        assert_eq!(
+            plan_spawn_target(Some(weird), Some(root)),
+            Err("the spelled target \"/w/we\\xFFird\" is not UTF-8 — \
+                 explicit seat targets must be UTF-8."
+                .to_owned())
+        );
+    }
+
+    // B2-spawn U3: Some without a state root cannot prove containment.
+    #[test]
+    fn plan_spawn_target_refuses_some_without_a_state_root() {
+        use super::plan_spawn_target;
+        use std::path::Path;
+        assert_eq!(
+            plan_spawn_target(Some(Path::new("/w/t")), None),
+            Err("no ae state root is available — an explicit target cannot \
+                 prove containment."
+                .to_owned())
+        );
+    }
+
+    // B2-spawn U11: the explicit-row selector + JIT use the recorded place.
+    #[test]
+    fn explicit_jit_starts_from_the_recorded_place_or_refuses() {
+        use super::{Meta, checked_explicit_pane_start_dir, explicit_seat_row};
+        let scratch = Scratch::new("explicit-jit");
+        let target = scratch.0.join("repo");
+        std::fs::create_dir(&target).unwrap();
+        let canonical = std::fs::canonicalize(&target).unwrap();
+        let meta = Meta::parse(&format!(
+            "mode=local\nseat.spawned.0=scout\nwork_dir.spawned.0={}\n",
+            canonical.display()
+        ));
+        assert_eq!(explicit_seat_row(&meta, "spawned.0"), Ok(canonical.clone()));
+        assert_eq!(
+            checked_explicit_pane_start_dir(&meta, "spawned.0"),
+            Ok(canonical.display().to_string())
+        );
+        // The recorded node removed, meta unchanged: the JIT refuses with
+        // the shared row wording instead of following the ghost.
+        std::fs::remove_dir(&target).unwrap();
+        assert_eq!(
+            checked_explicit_pane_start_dir(&meta, "spawned.0"),
+            Err(
+                "work_dir.spawned.0 is present but unusable (recorded target \
+                 gone) — restore the recorded path or retire the seat."
+                    .to_owned()
+            )
+        );
+        // No row is a refusal, never an inheritance: the explicit JIT must
+        // not start a seat whose target was never recorded.
+        let bare = Meta::parse("mode=local\nseat.spawned.0=scout\n");
+        assert_eq!(
+            explicit_seat_row(&bare, "spawned.0"),
+            Err("no work_dir.spawned.0 row is recorded — the seat has no \
+                 explicit target."
+                .to_owned())
+        );
+        // A present-but-unusable row refuses with its owned reason.
+        let bad = Meta::parse("mode=local\nseat.spawned.0=scout\nwork_dir.spawned.0=relative\n");
+        assert_eq!(
+            explicit_seat_row(&bad, "spawned.0"),
+            Err(
+                "work_dir.spawned.0 is present but unusable (not an absolute \
+                 path) — restore the recorded path or retire the seat."
+                    .to_owned()
+            )
         );
     }
 }
