@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.155] - 2026-09-20
+- Document that a new door caller moves neither inventory
+- Refuse a not-newer unpinned upgrade; mark superseded checks
+
 ## [v2026.9.154] - 2026-09-20
 - Validate seat directories across run context and spawn
 
