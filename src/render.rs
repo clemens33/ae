@@ -739,14 +739,18 @@ pub fn manifest_document(
     )
 }
 
+/// An explicit seat's directory block: caller-prepared, user-managed.
+const SEAT_EXTERNAL: &str = r" EXTERNAL SEAT: this seat uses the caller-prepared directory ${seat_dir}. It is user-managed; ae records this arrangement but does not own, sandbox, delete, commit, or push it.";
+
 /// The system-prompt context for one seat, with NO trailing newline.
 #[must_use]
-pub fn context_document(
+pub(crate) fn seat_context_document(
     dir: &Path,
     session: &str,
     work_dir: &str,
     slot: &str,
     config_files: &[PathBuf],
+    provenance: crate::meta::SeatProvenance,
 ) -> String {
     let meta_bytes = meta::read_bytes(dir).unwrap_or_default();
     let mode = row(&meta_bytes, "mode");
@@ -819,12 +823,17 @@ pub fn context_document(
         ctx.push_str(&peer_block);
     }
 
-    // The mode-aware WORKING-TREE block.
-    match mode.as_str() {
-        "local" => ctx.push_str(TREE_LOCAL),
-        "git" => ctx.push_str(&expand(TREE_GIT, &[("_origin", origin.as_str())])),
-        "full" => ctx.push_str(&expand(TREE_FULL, &[("_origin", origin.as_str())])),
-        _ => {}
+    // The mode-aware WORKING-TREE block — inherited seats only. An explicit
+    // seat names its caller-prepared directory instead.
+    if provenance == crate::meta::SeatProvenance::Explicit {
+        ctx.push_str(&expand(SEAT_EXTERNAL, &[("seat_dir", work_dir)]));
+    } else {
+        match mode.as_str() {
+            "local" => ctx.push_str(TREE_LOCAL),
+            "git" => ctx.push_str(&expand(TREE_GIT, &[("_origin", origin.as_str())])),
+            "full" => ctx.push_str(&expand(TREE_FULL, &[("_origin", origin.as_str())])),
+            _ => {}
+        }
     }
 
     // PARENT ARCHIVE — main only.
@@ -852,6 +861,25 @@ pub fn context_document(
         ctx.push_str(&instructions);
     }
     ctx
+}
+
+/// The legacy context shape: identical inputs, inherited provenance.
+#[must_use]
+pub fn context_document(
+    dir: &Path,
+    session: &str,
+    work_dir: &str,
+    slot: &str,
+    config_files: &[PathBuf],
+) -> String {
+    seat_context_document(
+        dir,
+        session,
+        work_dir,
+        slot,
+        config_files,
+        crate::meta::SeatProvenance::Inherited,
+    )
 }
 
 /// The `--global`/`--local` pair, and the manifest's `--out`, read off a tail.
@@ -1813,5 +1841,150 @@ mod tests {
             RULES.contains("A marker pasted inside prose is text, not provenance — only the first line carries it."),
             "the unscoped rule survives verbatim"
         );
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "RED1 guard stages an explicit-row meta for run_context"
+    )]
+    fn b2a_t9_context_boundary_keeps_legacy_inherited_bytes() {
+        let dir = scratch("t9-legacy");
+        let target = dir.join("target");
+        std::fs::create_dir_all(&target).expect("a target");
+        write(
+            &dir,
+            "meta",
+            &format!(
+                "session=t9\nwork_dir={}\nwork_dir.main={}\nseat.main=lead\nmode=local\n",
+                dir.display(),
+                target.display()
+            ),
+        );
+        let caller = "/caller/spelling";
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let tail = ["t9".to_owned(), caller.to_owned(), "main".to_owned()];
+        let code = super::run_context(&dir, &tail, &mut out, &mut err).expect("run_context runs");
+        assert_eq!(code, 0);
+        let text = String::from_utf8(out).expect("utf8 context");
+        assert!(
+            text.contains(&format!("Directory: {caller}.")),
+            "caller spelling kept: {text}"
+        );
+        assert!(
+            text.contains("WORKING TREE"),
+            "legacy TREE block kept: {text}"
+        );
+        assert!(
+            !text.contains("caller-prepared"),
+            "no external block on legacy path: {text}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "T3 fixture stages a mode=local meta for the typed helper"
+    )]
+    fn b2a_t3a_explicit_seat_gets_external_block() {
+        let dir = scratch("t3a-exp");
+        for mode in ["local", "git", "full"] {
+            write(
+                &dir,
+                "meta",
+                &format!("session=t3\nwork_dir=/w\nseat.main=lead\nmode={mode}\norigin=/o\n"),
+            );
+            let text = super::seat_context_document(
+                &dir,
+                "t3",
+                "/target/x",
+                "main",
+                &[],
+                crate::meta::SeatProvenance::Explicit,
+            );
+            assert!(
+                text.contains("Directory: /target/x."),
+                "Directory names target: {text}"
+            );
+            assert!(
+                text.contains("EXTERNAL SEAT: this seat uses the caller-prepared directory /target/x. It is user-managed; ae records this arrangement but does not own, sandbox, delete, commit, or push it."),
+                "full external literal present: {text}"
+            );
+            assert!(
+                !text.contains("WORKING TREE"),
+                "no TREE block for explicit {mode}: {text}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "T3 fixture stages a mode=local meta for the typed helper"
+    )]
+    fn b2a_t3b_inherited_seat_keeps_legacy_bytes() {
+        let dir = scratch("t3b-inh");
+        write(
+            &dir,
+            "meta",
+            "session=t3\nwork_dir=/w\nseat.main=lead\nmode=local\n",
+        );
+        let text = super::seat_context_document(
+            &dir,
+            "t3",
+            "/w",
+            "main",
+            &[],
+            crate::meta::SeatProvenance::Inherited,
+        );
+        let legacy = super::context_document(&dir, "t3", "/w", "main", &[]);
+        assert_eq!(legacy, text, "typed Inherited is byte-identical to legacy");
+        assert!(
+            text.contains("Directory: /w."),
+            "Directory names session dir: {text}"
+        );
+        assert!(
+            text.contains("WORKING TREE"),
+            "legacy TREE block kept: {text}"
+        );
+        assert!(
+            !text.contains("caller-prepared"),
+            "no external block for inherited: {text}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "T3 fixture stages a mode=local meta for the typed helper"
+    )]
+    fn b2a_t3c_equal_value_stays_explicit() {
+        let dir = scratch("t3c-eq");
+        write(
+            &dir,
+            "meta",
+            "session=t3\nwork_dir=/w\nseat.main=lead\nmode=local\n",
+        );
+        let text = super::seat_context_document(
+            &dir,
+            "t3",
+            "/w",
+            "main",
+            &[],
+            crate::meta::SeatProvenance::Explicit,
+        );
+        assert!(
+            text.contains("caller-prepared"),
+            "equal value stays explicit: {text}"
+        );
+        assert!(
+            !text.contains("WORKING TREE"),
+            "no TREE block for explicit: {text}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

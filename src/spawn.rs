@@ -289,7 +289,7 @@ fn run_spawn_inner(
             return Ok(EXIT_FAILED);
         }
     };
-    let pane = match start_spawned_pane(dir, &staged, caller, now, out, err) {
+    let (pane, _spelling, held) = match start_spawned_pane(dir, &staged, caller, now, out, err) {
         Ok(pane) => pane,
         Err(why) => {
             writeln!(err, "{why}")?;
@@ -303,7 +303,8 @@ fn run_spawn_inner(
         tool,
         command,
         ..
-    } = staged;
+    } = &staged;
+    let tool = *tool;
     // The brief the new agent is handed.
     let brief = if parsed.prompt.is_empty() {
         format!(
@@ -319,7 +320,7 @@ fn run_spawn_inner(
             dir.display()
         )
     };
-    stamp_pane(&facts.server, &pane, &parsed.name, &slot, &parsed.profile);
+    stamp_pane(&facts.server, &pane, &parsed.name, slot, &parsed.profile);
     crate::session_launch::name_agent_window(&facts.server, &pane, &parsed.name);
     // A spawn makes a NEW window, and the pane border, menu and popup styles
     // live in the window table — so the window is stamped here rather than
@@ -335,8 +336,8 @@ fn run_spawn_inner(
     // Everything a launch command is made of — the context injection, the
     // session id, the create-vs-resume decision — is composed by `_run` IN the
     // pane, from this session's own state.
-    if let Err(why) = crate::run::clear_slot(dir, &slot) {
-        rollback(dir, &facts, &slot, &pane, &parsed.name, err)?;
+    if let Err(why) = crate::run::clear_slot(dir, slot) {
+        rollback(dir, facts, slot, &pane, &parsed.name, err)?;
         writeln!(
             err,
             "Error: '{}' could not claim slot {slot} ({why}) — spawn rolled back.",
@@ -352,7 +353,7 @@ fn run_spawn_inner(
     // clear that failed leaves the previous occupant still holding the slot —
     // so removing its record first would destroy a brief that is still owed to
     // a seat that still exists.
-    crate::brief_retry::remove(dir, &slot);
+    crate::brief_retry::remove(dir, slot);
     // Codex's workspace context rides `developer_instructions`; what is left for
     // the launch command is the seat's registration handshake, which travels
     // with the brief as the inline first message `_run` composes. That combined
@@ -366,13 +367,13 @@ fn run_spawn_inner(
     } else {
         caller
     };
-    let initial = launch::initial_turn_with_brief(tool, dir, &slot, actor, &brief);
+    let initial = launch::initial_turn_with_brief(tool, dir, slot, actor, &brief);
     // Publish the recoverable text BEFORE anything can paste it.
     if !initial.is_empty() {
         let stored = deliver::store_body(dir, &format!("spawn-{slot}"), SPAWN_ACTION, &initial)
-            .and_then(|_| crate::run::publish_prompt(dir, &slot, &initial));
+            .and_then(|_| crate::run::publish_prompt(dir, slot, &initial));
         if let Err(why) = stored {
-            rollback(dir, &facts, &slot, &pane, &parsed.name, err)?;
+            rollback(dir, facts, slot, &pane, &parsed.name, err)?;
             writeln!(
                 err,
                 "Error: '{}' task body could not be stored ({why}) — spawn rolled back.",
@@ -381,75 +382,28 @@ fn run_spawn_inner(
             return Ok(EXIT_FAILED);
         }
     }
-    // A spawn brief rides the LAUNCH TURN on the UserTurn channel — the same
-    // single positional that already carries the context — so no paste can
-    // land mid-turn. Gate on the RAW prompt: `brief` is never empty, it
-    // carries a default text when no prompt was given, and a no-prompt spawn
-    // keeps today's paste path byte-identical.
-    let brief_rides_argv = if !parsed.prompt.is_empty()
-        && matches!(
-            tool.adapter().launch.context,
-            crate::tool::ContextChannel::UserTurn { .. }
-        ) {
-        // Render the SAME context `_run` will compose with: the seat rows are
-        // claimed, so both renders are byte-identical short of a concurrent
-        // config edit, whose drift the bound's floor absorbs.
-        let local = crate::config::local_overlay(dir, &facts.origin);
-        let config_files =
-            crate::config::ctx_config_files(facts.global.as_deref(), local.as_deref());
-        let ctx = crate::render::context_document(
-            dir,
-            &facts.session,
-            &facts.work_dir,
-            &slot,
-            &config_files,
-        );
-        // Read back what was recorded, exactly as `_run` reads it — a failed
-        // record means an empty marker in both processes, not a skew.
-        let launch_id = crate::meta::read_bytes(dir)
-            .ok()
-            .and_then(|bytes| {
-                crate::meta::sole_value(&bytes, &format!("launch_id.{slot}"))
-                    .map(|value| String::from_utf8_lossy(value).into_owned())
-            })
-            .unwrap_or_default();
-        let framed = crate::provenance::first_line(&crate::provenance::brief(actor), &brief);
-        let full = launch::user_turn_text(
-            &ctx,
-            tool.adapter().launch_marker,
-            &launch_id,
-            &slot,
-            Some(&framed),
-        );
-        if launch::folded_turn_fits(&full) {
-            let stored = deliver::store_body(dir, &format!("spawn-{slot}"), SPAWN_ACTION, &framed)
-                .and_then(|_| crate::run::publish_prompt(dir, &slot, &framed));
-            if let Err(why) = stored {
-                rollback(dir, &facts, &slot, &pane, &parsed.name, err)?;
-                writeln!(
-                    err,
-                    "Error: '{}' task body could not be stored ({why}) — spawn rolled back.",
-                    parsed.name
-                )?;
-                return Ok(EXIT_FAILED);
-            }
-            true
-        } else {
-            writeln!(
-                err,
-                "ae: spawn '{}': folded launch turn {} bytes exceeds {} — briefing by paste instead.",
-                parsed.name,
-                launch::quoted_turn_len(&full),
-                launch::MAX_FOLDED_TURN_BYTES
-            )?;
-            false
+    // The launch-turn branch: gate, verify against the B-held target, fold or
+    // fall back. A refusal already ran its teardown; print its line and stop.
+    let brief_rides_argv = match spawn_launch_turn_branch(
+        dir,
+        &staged,
+        &held,
+        &brief,
+        actor,
+        &pane,
+        &parsed.name,
+        out,
+        err,
+    )? {
+        Err(failure) => {
+            writeln!(err, "{}", failure.message)?;
+            return Ok(EXIT_FAILED);
         }
-    } else {
-        false
+        Ok(turned) => matches!(turned, BranchTurn::Folded(_full)),
     };
     // RESOLVED, never raw.
     let Some(core) = crate::shape::resolved_exe() else {
-        rollback(dir, &facts, &slot, &pane, &parsed.name, err)?;
+        rollback(dir, facts, slot, &pane, &parsed.name, err)?;
         writeln!(
             err,
             "Error: the core could not name its own binary — spawn rolled back."
@@ -461,7 +415,7 @@ fn run_spawn_inner(
     let _ = deliver::submit_shell_text(
         &facts.server,
         &pane,
-        &crate::run::pane_command_with_snapshot(&core, dir, &slot, command.as_str()),
+        &crate::run::pane_command_with_snapshot(&core, dir, slot, command.as_str()),
     );
     wait_for_agent_start(&facts.server, &pane, tool);
     // Preserve the post-exec lifecycle stamp separately from the pre-exec
@@ -491,9 +445,9 @@ fn run_spawn_inner(
     let failure = if initial.is_empty() && !brief_rides_argv {
         deliver_brief(
             dir,
-            &facts,
+            facts,
             &pane,
-            &slot,
+            slot,
             &parsed.name,
             &brief,
             actor,
@@ -508,7 +462,7 @@ fn run_spawn_inner(
             &Undelivered {
                 dir,
                 name: &parsed.name,
-                slot: &slot,
+                slot,
                 pane: &pane,
                 brief: &brief,
                 actor,
@@ -723,6 +677,272 @@ fn retained_for_repair(name: &str) -> String {
     format!("seat '{name}' retained; repair the session meta first, then retire the seat.")
 }
 
+fn cleanup_outcome(released: &str, cleanup: &Result<String, String>) -> String {
+    match cleanup {
+        Ok(_) => released.to_owned(),
+        Err(why) => format!(
+            "Seat cleanup failed ({why}); the outcome is uncertain — inspect or repair the session meta before retrying or retiring."
+        ),
+    }
+}
+
+/// Whether the launch turn rides argv (fold) or today's paste path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FoldGate {
+    Attempt,
+    Skip,
+}
+
+pub(crate) fn fold_gate(raw_empty: bool, channel: crate::tool::ContextChannel) -> FoldGate {
+    match (raw_empty, channel) {
+        (false, crate::tool::ContextChannel::UserTurn { .. }) => FoldGate::Attempt,
+        _ => FoldGate::Skip,
+    }
+}
+
+/// What the branch decided: a folded argv turn, or today's paste path.
+#[derive(Debug)]
+pub(crate) enum BranchTurn {
+    Folded(String),
+    PasteFallback,
+}
+
+/// A refused branch: which teardown ran, and the line the caller prints.
+#[derive(Debug)]
+pub(crate) struct CtxFailure {
+    pub(crate) mode: RollbackMode,
+    pub(crate) message: String,
+}
+
+fn branch_failure(mode: RollbackMode, name: &str, slot: &str, why: &str) -> CtxFailure {
+    CtxFailure {
+        mode,
+        message: format!("spawn of '{name}' ({slot}) refused: {why}"),
+    }
+}
+
+/// Preserve refusals share one tail: the seat stays; repair the session
+/// meta before retiring it. Read and raw failures use this ctor.
+fn preserve_failure(name: &str, slot: &str, why: &str) -> CtxFailure {
+    let head = why.strip_suffix('.').unwrap_or(why);
+    let tail =
+        format!("{head}. The seat is retained; repair the session meta first, before retiring it.");
+    branch_failure(RollbackMode::Preserve, name, slot, &tail)
+}
+
+/// Which teardown a refusal ran.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RollbackMode {
+    Full,
+    Preserve,
+}
+
+fn preserve_teardown(dir: &Path, staged: &StagedSeat, pane: &str, err: &mut impl Write) {
+    drop_launch_artifacts(dir, &staged.slot);
+    let server = &staged.session.server;
+    let session = &staged.session.session;
+    let _ = watchdog_glue::kill_owned_pane(server, pane, session, Some(&staged.argv.name), err);
+}
+
+/// One snapshot: fresh dir + provenance + launch id, or a worded failure.
+struct BranchPrep {
+    dir: PathBuf,
+    provenance: meta::SeatProvenance,
+    launch_id: String,
+}
+
+fn derive_branch_prep(
+    dir: &Path,
+    staged: &StagedSeat,
+    held: &meta::SeatTarget,
+) -> Result<BranchPrep, CtxFailure> {
+    let slot = &staged.slot;
+    let name = &staged.argv.name;
+    let bytes =
+        meta::read_bytes(dir).map_err(|why| preserve_failure(name, slot, &why.to_string()))?;
+    let work_dir_row =
+        meta::raw_seat_work_dir(&bytes, slot).map_err(|why| preserve_failure(name, slot, &why))?;
+    let parsed = Meta::parse(&String::from_utf8_lossy(&bytes));
+    let (fresh, provenance) = if work_dir_row.is_some() {
+        let start = meta::checked_explicit_pane_start_dir(&parsed, slot)
+            .map_err(|why| branch_failure(RollbackMode::Full, name, slot, &why))?;
+        (PathBuf::from(start), meta::SeatProvenance::Explicit)
+    } else {
+        let spelling = row(&bytes, "work_dir");
+        meta::checked_pane_start_dir(&parsed, slot, &spelling, held.canonical.clone())
+            .map_err(|why| branch_failure(RollbackMode::Full, name, slot, &why))?;
+        (held.canonical.clone(), meta::SeatProvenance::Inherited)
+    };
+    let launch_id = meta::sole_value(&bytes, &format!("launch_id.{slot}"))
+        .map(|value| String::from_utf8_lossy(value).into_owned())
+        .unwrap_or_default();
+    let prep = BranchPrep {
+        dir: fresh,
+        provenance,
+        launch_id,
+    };
+    if prep.dir != held.canonical || prep.provenance != held.provenance {
+        let why = format!(
+            "seat target changed since staging (was {:?} {}, now {:?} {})",
+            held.provenance,
+            held.canonical.display(),
+            prep.provenance,
+            prep.dir.display()
+        );
+        return Err(branch_failure(RollbackMode::Full, name, slot, &why));
+    }
+    Ok(prep)
+}
+
+fn compose_folded_full(
+    dir: &Path,
+    staged: &StagedSeat,
+    prep: &BranchPrep,
+    brief: &str,
+    actor: &str,
+) -> (String, String) {
+    let local = crate::config::local_overlay(dir, &staged.session.origin);
+    let config_files =
+        crate::config::ctx_config_files(staged.session.global.as_deref(), local.as_deref());
+    let ctx = crate::render::seat_context_document(
+        dir,
+        &staged.session.session,
+        &prep.dir.to_string_lossy(),
+        &staged.slot,
+        &config_files,
+        prep.provenance,
+    );
+    let framed = crate::provenance::first_line(&crate::provenance::brief(actor), brief);
+    let full = launch::user_turn_text(
+        &ctx,
+        staged.tool.adapter().launch_marker,
+        &prep.launch_id,
+        &staged.slot,
+        Some(&framed),
+    );
+    (framed, full)
+}
+
+fn store_brief_or_fallback(
+    dir: &Path,
+    staged: &StagedSeat,
+    pane: &str,
+    framed: &str,
+    full: String,
+    err: &mut impl Write,
+) -> io::Result<Result<BranchTurn, CtxFailure>> {
+    if launch::folded_turn_fits(&full) {
+        let reference = format!("spawn-{}", staged.slot);
+        let stored = deliver::store_body(dir, &reference, SPAWN_ACTION, framed)
+            .and_then(|_| crate::run::publish_prompt(dir, &staged.slot, framed));
+        if let Err(why) = stored {
+            rollback(
+                dir,
+                &staged.session,
+                &staged.slot,
+                pane,
+                &staged.argv.name,
+                err,
+            )?;
+            return Ok(Err(CtxFailure {
+                mode: RollbackMode::Full,
+                message: format!(
+                    "Error: '{}' task body could not be stored ({why}) — spawn rolled back.",
+                    staged.argv.name
+                ),
+            }));
+        }
+        Ok(Ok(BranchTurn::Folded(full)))
+    } else {
+        writeln!(
+            err,
+            "ae: spawn '{}': folded launch turn {} bytes exceeds {} — briefing by paste instead.",
+            staged.argv.name,
+            launch::quoted_turn_len(&full),
+            launch::MAX_FOLDED_TURN_BYTES
+        )?;
+        Ok(Ok(BranchTurn::PasteFallback))
+    }
+}
+
+#[allow(clippy::too_many_arguments, reason = "B step owns 9 launch inputs")]
+/// The spawn launch-turn branch: verify the snapshot against the B-held
+/// target, then gate, fold or fall back. Owns dispatch and teardown; the
+/// caller prints the line.
+fn spawn_launch_turn_branch(
+    dir: &Path,
+    staged: &StagedSeat,
+    held: &meta::SeatTarget,
+    brief: &str,
+    actor: &str,
+    pane: &str,
+    name: &str,
+    _out: &mut impl Write,
+    err: &mut impl Write,
+) -> io::Result<Result<BranchTurn, CtxFailure>> {
+    // The gate is pure and may be computed early, but it must never bypass
+    // validation: the one snapshot (read, raw row, provenance, launch id)
+    // derives BEFORE any Skip return, so a Skip over a mutated snapshot
+    // still refuses, with its teardown, instead of pasting over the drift.
+    let gate = fold_gate(
+        staged.argv.prompt.is_empty(),
+        staged.tool.adapter().launch.context,
+    );
+    let prep = match derive_branch_prep(dir, staged, held) {
+        Ok(prep) => prep,
+        Err(failure) => {
+            if failure.mode == RollbackMode::Full {
+                rollback(dir, &staged.session, &staged.slot, pane, name, err)?;
+            } else {
+                preserve_teardown(dir, staged, pane, err);
+            }
+            return Ok(Err(failure));
+        }
+    };
+    if gate == FoldGate::Skip {
+        return Ok(Ok(BranchTurn::PasteFallback));
+    }
+    let (framed, full) = compose_folded_full(dir, staged, &prep, brief, actor);
+    store_brief_or_fallback(dir, staged, pane, &framed, full, err)
+}
+
+fn prepare_spawn_target(
+    dir: &Path,
+    staged: &StagedSeat,
+) -> Result<(String, String, meta::SeatTarget), String> {
+    let name = &staged.argv.name;
+    let kept = retained_for_repair(name);
+    let bytes =
+        meta::read_bytes(dir).map_err(|why| format!("cannot read the meta: {why} — {kept}"))?;
+    let row_state =
+        meta::raw_seat_work_dir(&bytes, &staged.slot).map_err(|why| format!("{why} — {kept}"))?;
+    if row_state.is_some() {
+        let cleanup = crate::identity::remove_seat_slot(dir, name);
+        return Err(format!(
+            "a work_dir.{} row appeared after staging; the staged inherited target no longer holds. {}",
+            staged.slot,
+            cleanup_outcome(
+                "The staged seat was released; remove the unexpected row and spawn again.",
+                &cleanup
+            )
+        ));
+    }
+    let spelling = row(&bytes, "work_dir");
+    let canonical = crate::doors::canonical_strict_dir(Path::new(&spelling)).map_err(|error| {
+        let stem = meta::inherited_dir_cause(&spelling, &error);
+        let cleanup = crate::identity::remove_seat_slot(dir, name);
+        format!(
+            "{stem}. {}",
+            cleanup_outcome(
+                "The staged seat was released; restore the directory, then spawn again.",
+                &cleanup
+            )
+        )
+    })?;
+    let held = meta::select_seat_target(None, canonical);
+    Ok((spelling.clone(), spelling, held))
+}
+
 /// Step B: prove the staged seat's start directory and open its pane.
 /// Only the JIT and the window creation live here; the inner owns the tail.
 /// Unreadable meta and byte-gate refusals preserve exact bytes and name the
@@ -734,10 +954,10 @@ fn start_spawned_pane(
     _now: Timestamp,
     _out: &mut impl Write,
     _err: &mut impl Write,
-) -> Result<String, String> {
+) -> Result<(String, String, meta::SeatTarget), String> {
     // Hostile/read preserve: unreadable meta and byte-gate refusals return
     // before cleanup; parsed-path failures clean, surfacing a failed cleanup.
-    let start_dir = if staged.explicit {
+    let (start_dir, spelling, held) = if staged.explicit {
         let bytes = match meta::read_bytes(dir) {
             Ok(bytes) => bytes,
             Err(why) => {
@@ -755,32 +975,40 @@ fn start_spawned_pane(
         }
         let parsed = Meta::parse(&String::from_utf8_lossy(&bytes));
         match meta::checked_explicit_pane_start_dir(&parsed, &staged.slot) {
-            Ok(start) => start,
+            Ok(start) => {
+                let held = meta::SeatTarget {
+                    canonical: PathBuf::from(start.as_str()),
+                    provenance: meta::SeatProvenance::Explicit,
+                };
+                (start.clone(), start, held)
+            }
             Err(jit) => {
-                if let Err(cleanup) = crate::identity::remove_seat_slot(dir, &staged.argv.name) {
-                    return Err(format!(
-                        "{jit} — seat cleanup failed ({cleanup}); {}",
-                        retained_for_repair(&staged.argv.name)
-                    ));
-                }
-                return Err(jit);
+                let cleanup = crate::identity::remove_seat_slot(dir, &staged.argv.name);
+                return Err(format!(
+                    "{jit} {}",
+                    cleanup_outcome(
+                        "The staged seat was released; restore the recorded target, then spawn again.",
+                        &cleanup
+                    )
+                ));
             }
         }
     } else {
-        staged.session.work_dir.clone()
+        prepare_spawn_target(dir, staged)?
     };
     // New window per spawned agent: the main window keeps the lead layout
     // untouched and N parallel workers stay usable.
     let Some(pane) =
         transport::new_window(&staged.session.server, &staged.session.session, &start_dir)
     else {
-        let _ = crate::identity::remove_seat_slot(dir, &staged.argv.name);
+        let cleanup = crate::identity::remove_seat_slot(dir, &staged.argv.name);
         return Err(format!(
-            "Error: could not create a pane for '{}' — seat released.",
-            staged.argv.name
+            "Error: could not create a pane for '{}'. {}",
+            staged.argv.name,
+            cleanup_outcome("The staged seat was released; spawn again.", &cleanup)
         ));
     };
-    Ok(pane)
+    Ok((pane, spelling, held))
 }
 
 /// Record the seat a live pane opened, whether its first brief landed or not.
@@ -1332,6 +1560,7 @@ mod tests {
 
     use super::{BriefRecovery, Undelivered, drop_launch_artifacts, record_for_retry};
     use crate::time::Timestamp;
+    use std::os::unix::fs::PermissionsExt as _;
 
     /// A scratch session dir whose meta carries `token` as the slot's launch
     /// id, or no token row at all when it is empty.
@@ -1755,11 +1984,16 @@ mod tests {
             "stderr: {}",
             String::from_utf8_lossy(&err)
         );
-        assert!(String::from_utf8_lossy(&err).contains("task body could not be stored"));
+        let text = String::from_utf8_lossy(&err);
+        let line = text
+            .lines()
+            .find(|line| line.starts_with("Error: 'scout' task body could not be stored ("))
+            .expect("the store line");
+        assert!(line.ends_with(") — spawn rolled back."), "{line}");
         assert!(!rig.meta().contains("spawned.0="), "{}", rig.meta());
         let slots = crate::transport::observe_slots(&rig.server(), &rig.session).expect("slots");
-        let live = slots.iter().all(|seen| seen.slot != "spawned.0");
-        assert!(live, "{slots:?}");
+        let seat_removed = slots.iter().all(|seen| seen.slot != "spawned.0");
+        assert!(seat_removed, "{slots:?}");
         let stamp = rig.dir.join(crate::store::LAUNCH_ATTEMPT);
         assert!(stamp.is_file(), "stamp retained");
         let manifest = std::fs::read_to_string(rig.dir.join("workspace.md")).expect("manifest");
@@ -1883,5 +2117,1099 @@ mod tests {
         assert_eq!(slots.len(), 1, "no new pane: {slots:?}");
         assert_eq!([snap("workspace.md"), snap("events.jsonl")], before);
         assert!(!rig.dir.join("brief-retry.spawned.0.rec").exists());
+    }
+
+    // E10-T1: inherited staging + malformed row + invalid session dir refuses
+    // on the raw gate BEFORE lossy scalar/FS/remove/new_window; hostile bytes stay.
+    #[test]
+    fn tmux_inherited_malformed_row_and_invalid_session_refuse_before_any_effect() {
+        let rig = TmuxRig::new("e10t1", "ae-tmux-e10t1", "grok");
+        let tail = ["scout", "--using", "fake", "go"]
+            .map(str::to_owned)
+            .to_vec();
+        let snap = |name: &str| std::fs::read(rig.dir.join(name)).ok();
+        let mut err = Vec::new();
+        let staged = super::record_spawned_seat(
+            &rig.dir,
+            &tail,
+            Timestamp::now(),
+            None,
+            None,
+            &rig.scratch,
+            &mut err,
+        )
+        .expect("staged io")
+        .expect("staged");
+        std::fs::write(rig.dir.join("workspace.md"), b"e10t1-manifest\n").expect("manifest");
+        std::fs::write(rig.dir.join("events.jsonl"), b"e10t1-events\n").expect("events");
+        // A->B: hostile row + session dir repointed at nothing.
+        let gone = rig.scratch.join("gone");
+        assert!(!gone.exists(), "missing premise");
+        let meta = std::fs::read_to_string(rig.dir.join("meta")).expect("meta");
+        assert!(!meta.contains("work_dir.spawned.0="), "{meta}");
+        let repointed = meta.replacen(
+            &format!("work_dir={}", rig.scratch.display()),
+            &format!("work_dir={}", gone.display()),
+            1,
+        );
+        let mut hostile = repointed.into_bytes();
+        hostile.extend_from_slice(b"work_dir.spawned.0=/\xff\n");
+        std::fs::write(rig.dir.join("meta"), &hostile).expect("hostile meta");
+        let frozen = hostile;
+        assert!(frozen.contains(&0xff), "row actually malformed");
+        let before = [
+            snap("workspace.md"),
+            snap("events.jsonl"),
+            snap("brief-retry.spawned.0.rec"),
+            snap("launch.spawned.0.prompt"),
+        ];
+        let mut out = Vec::new();
+        let why =
+            super::start_spawned_pane(&rig.dir, &staged, "", Timestamp::now(), &mut out, &mut err)
+                .expect_err("raw gate refuses");
+        assert!(why.contains("present but unusable (not UTF-8)"), "{why}");
+        assert_eq!(
+            why,
+            format!(
+                "work_dir.{} is present but unusable (not UTF-8) — restore the recorded path or retire the seat. — seat 'scout' retained; repair the session meta first, then retire the seat.",
+                staged.slot
+            )
+        );
+        assert!(!why.contains("session directory"), "{why}");
+        assert!(
+            why.contains("retained; repair the session meta first"),
+            "{why}"
+        );
+        assert_eq!(
+            std::fs::read(rig.dir.join("meta")).expect("post"),
+            frozen,
+            "hostile bytes stay for repair"
+        );
+        assert!(
+            rig.dir.join(crate::store::LAUNCH_ATTEMPT).is_file(),
+            "stamp kept"
+        );
+        assert_eq!(
+            [
+                snap("workspace.md"),
+                snap("events.jsonl"),
+                snap("brief-retry.spawned.0.rec"),
+                snap("launch.spawned.0.prompt"),
+            ],
+            before
+        );
+        let slots = crate::transport::observe_slots(&rig.server(), &rig.session).expect("slots");
+        assert_eq!(slots.len(), 1, "no new pane: {slots:?}");
+    }
+
+    // E10-T2: staged Inherited + valid canon-equal row is a provenance flip and
+    // Full-refuses BEFORE the pane: seat released, rows gone, no window.
+    #[test]
+    fn tmux_inherited_valid_new_row_refuses_before_the_pane() {
+        let rig = TmuxRig::new("e10t2", "ae-tmux-e10t2", "grok");
+        let tail = ["scout", "--using", "fake", "go"]
+            .map(str::to_owned)
+            .to_vec();
+        let snap = |name: &str| std::fs::read(rig.dir.join(name)).ok();
+        let mut err = Vec::new();
+        let staged = super::record_spawned_seat(
+            &rig.dir,
+            &tail,
+            Timestamp::now(),
+            None,
+            None,
+            &rig.scratch,
+            &mut err,
+        )
+        .expect("staged io")
+        .expect("staged");
+        std::fs::write(rig.dir.join("workspace.md"), b"e10t2-manifest\n").expect("manifest");
+        std::fs::write(rig.dir.join("events.jsonl"), b"e10t2-events\n").expect("events");
+        // A->B: a valid row appears under a staged-Inherited seat — even
+        // canon-equal, the provenance contract no longer holds.
+        let canon = std::fs::canonicalize(&rig.scratch).expect("canon");
+        let scalar = super::row(
+            &std::fs::read(rig.dir.join("meta")).expect("meta"),
+            "work_dir",
+        );
+        assert_eq!(
+            std::fs::canonicalize(&scalar).expect("session canon"),
+            canon,
+            "appended row is canon-equal to the session target"
+        );
+        let mut meta = std::fs::read(rig.dir.join("meta")).expect("meta");
+        meta.extend_from_slice(
+            format!("work_dir.{}={}\n", staged.slot, canon.display()).as_bytes(),
+        );
+        std::fs::write(rig.dir.join("meta"), &meta).expect("new row");
+        let before = [
+            snap("workspace.md"),
+            snap("events.jsonl"),
+            snap("brief-retry.spawned.0.rec"),
+            snap("launch.spawned.0.prompt"),
+        ];
+        let mut out = Vec::new();
+        let why =
+            super::start_spawned_pane(&rig.dir, &staged, "", Timestamp::now(), &mut out, &mut err)
+                .expect_err("drift refuses");
+        assert_eq!(
+            why,
+            format!(
+                "a work_dir.{} row appeared after staging; the staged inherited target no longer holds. The staged seat was released; remove the unexpected row and spawn again.",
+                staged.slot
+            )
+        );
+        let after = rig.meta();
+        for key in [
+            "seat.",
+            "profile.",
+            "agent_bin.",
+            "work_dir.",
+            "launch_id.",
+            "capture_floor.",
+            "config_home.",
+            "harness_session.",
+        ] {
+            assert!(
+                !after.contains(&format!("{key}{}=", staged.slot)),
+                "{after}"
+            );
+        }
+        assert!(
+            rig.dir.join(crate::store::LAUNCH_ATTEMPT).is_file(),
+            "stamp kept"
+        );
+        assert_eq!(
+            [
+                snap("workspace.md"),
+                snap("events.jsonl"),
+                snap("brief-retry.spawned.0.rec"),
+                snap("launch.spawned.0.prompt"),
+            ],
+            before
+        );
+        let slots = crate::transport::observe_slots(&rig.server(), &rig.session).expect("slots");
+        assert_eq!(slots.len(), 1, "no new pane: {slots:?}");
+    }
+
+    // E10-T3: explicit JIT arm + failed cleanup reports uncertain, never retained.
+    // The RAII guard installs BEFORE chmod/probe; the skip path restores + discloses.
+    #[test]
+    #[allow(clippy::items_after_statements, reason = "leg-local RAII guard")]
+    fn tmux_explicit_cleanup_failure_reports_uncertain_never_retained() {
+        let rig = TmuxRig::new("e10t3", "ae-tmux-e10t3", "grok");
+        let target = rig.scratch.join("repo");
+        let state = rig.scratch.join("state");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::create_dir(&state).unwrap();
+        let tail = ["scout", "--using", "fake", "go"]
+            .map(str::to_owned)
+            .to_vec();
+        let snap = |name: &str| std::fs::read(rig.dir.join(name)).ok();
+        let mut err = Vec::new();
+        let staged = super::record_spawned_seat(
+            &rig.dir,
+            &tail,
+            Timestamp::now(),
+            Some(target.as_path()),
+            Some(state.as_path()),
+            &rig.scratch,
+            &mut err,
+        )
+        .expect("staged io")
+        .expect("staged");
+        std::fs::write(rig.dir.join("workspace.md"), b"e10t3-manifest\n").expect("manifest");
+        std::fs::write(rig.dir.join("events.jsonl"), b"e10t3-events\n").expect("events");
+        std::fs::remove_dir(&target).expect("gone premise");
+        let frozen = std::fs::read(rig.dir.join("meta")).expect("pre bytes");
+        let before = [
+            snap("workspace.md"),
+            snap("events.jsonl"),
+            snap("brief-retry.spawned.0.rec"),
+            snap("launch.spawned.0.prompt"),
+        ];
+        let dir_meta = std::fs::metadata(&rig.dir).expect("mode");
+        let orig = std::os::unix::fs::MetadataExt::mode(&dir_meta) & 0o777;
+        struct DenyRestore<'a> {
+            dir: &'a std::path::Path,
+            mode: u32,
+        }
+        impl Drop for DenyRestore<'_> {
+            fn drop(&mut self) {
+                let _ =
+                    std::fs::set_permissions(self.dir, std::fs::Permissions::from_mode(self.mode));
+            }
+        }
+        let guard = DenyRestore {
+            dir: &rig.dir,
+            mode: orig,
+        };
+        std::fs::set_permissions(&rig.dir, std::fs::Permissions::from_mode(0o555)).expect("deny");
+        let denied = match std::fs::write(rig.dir.join("e10t3-deny-probe"), "x") {
+            Err(why) if why.kind() == std::io::ErrorKind::PermissionDenied => why.to_string(),
+            Err(why) => panic!("denial premise broken: {why:?}"),
+            Ok(()) => {
+                drop(guard);
+                eprintln!("E10-T3 SKIP: denial unobserved; RED unclaimed on this host");
+                return;
+            }
+        };
+        let mut out = Vec::new();
+        let why =
+            super::start_spawned_pane(&rig.dir, &staged, "", Timestamp::now(), &mut out, &mut err)
+                .expect_err("cleanup fails");
+        assert_eq!(
+            why,
+            format!(
+                "work_dir.{} is present but unusable (recorded target gone) — restore the recorded path or retire the seat. Seat cleanup failed (the meta was not published, and nothing changed: {denied}); the outcome is uncertain — inspect or repair the session meta before retrying or retiring.",
+                staged.slot
+            )
+        );
+        assert!(!why.contains("retained"), "{why}");
+        drop(guard);
+        assert_eq!(
+            std::fs::read(rig.dir.join("meta")).expect("post"),
+            frozen,
+            "denied cleanup changes nothing"
+        );
+        assert!(
+            rig.meta().contains(&format!("seat.{}=scout", staged.slot)),
+            "seat row kept"
+        );
+        assert!(
+            rig.dir.join(crate::store::LAUNCH_ATTEMPT).is_file(),
+            "stamp kept"
+        );
+        assert_eq!(
+            [
+                snap("workspace.md"),
+                snap("events.jsonl"),
+                snap("brief-retry.spawned.0.rec"),
+                snap("launch.spawned.0.prompt"),
+            ],
+            before
+        );
+        let slots = crate::transport::observe_slots(&rig.server(), &rig.session).expect("slots");
+        assert_eq!(slots.len(), 1, "no new pane: {slots:?}");
+        let dir_meta = std::fs::metadata(&rig.dir).expect("mode");
+        let restored = std::os::unix::fs::MetadataExt::mode(&dir_meta) & 0o777;
+        assert_eq!(restored, orig);
+    }
+
+    #[test]
+    fn b2a_t5a_empty_prompt_never_attempts_fold() {
+        use crate::tool::ContextChannel;
+        for channel in [
+            ContextChannel::SystemPromptFlag("--x"),
+            ContextChannel::DeveloperInstructions,
+            ContextChannel::UserTurn { flag: None },
+            ContextChannel::UserTurn { flag: Some("--x") },
+            ContextChannel::ConfigFile,
+            ContextChannel::None,
+        ] {
+            assert_eq!(
+                super::fold_gate(true, channel),
+                super::FoldGate::Skip,
+                "{channel:?}"
+            );
+        }
+        assert_eq!(
+            super::fold_gate(false, ContextChannel::UserTurn { flag: None }),
+            super::FoldGate::Attempt
+        );
+    }
+
+    #[test]
+    fn b2a_t5b_only_user_turn_attempts_fold() {
+        use crate::tool::ContextChannel;
+        for channel in [
+            ContextChannel::SystemPromptFlag("--x"),
+            ContextChannel::DeveloperInstructions,
+            ContextChannel::ConfigFile,
+            ContextChannel::None,
+        ] {
+            assert_eq!(
+                super::fold_gate(false, channel),
+                super::FoldGate::Skip,
+                "{channel:?}"
+            );
+        }
+        for channel in [
+            ContextChannel::UserTurn { flag: None },
+            ContextChannel::UserTurn { flag: Some("--x") },
+        ] {
+            assert_eq!(
+                super::fold_gate(false, channel),
+                super::FoldGate::Attempt,
+                "{channel:?}"
+            );
+        }
+    }
+
+    struct FailWriter;
+
+    impl std::io::Write for FailWriter {
+        fn write(&mut self, _bytes: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::other("boom"))
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "T5i stages a valid seat plus oversized brief for the branch"
+    )]
+    fn b2a_t5i_oversized_fold_with_failing_writer_propagates_io_error() {
+        let dir = std::env::temp_dir().join(format!("ae-b2a-t5i-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a fixture dir");
+        let meta = format!(
+            "session=t5i\nwork_dir={}\nseat.spawned.0=scout\n",
+            dir.display()
+        );
+        std::fs::write(dir.join("meta"), meta).expect("a meta");
+        let facts = super::facts(&dir).expect("facts");
+        let tail = ["scout", "--using", "fake", "go"]
+            .map(str::to_owned)
+            .to_vec();
+        let argv = super::parse(&tail).expect("argv");
+        let staged = super::StagedSeat {
+            slot: "spawned.0".to_owned(),
+            session: facts,
+            argv,
+            tool: crate::tool::ToolKind::Grok,
+            command: crate::config::IdentityConfig::resolved_snapshot("grok"),
+            explicit: false,
+        };
+        let held = crate::meta::SeatTarget {
+            canonical: std::fs::canonicalize(&dir).expect("canon"),
+            provenance: crate::meta::SeatProvenance::Inherited,
+        };
+        let brief = "x".repeat(crate::launch::MAX_FOLDED_TURN_BYTES + 1);
+        let mut out = Vec::new();
+        let mut err = FailWriter;
+        let refused = super::spawn_launch_turn_branch(
+            &dir, &staged, &held, &brief, "actor", "%9", "scout", &mut out, &mut err,
+        );
+        let boom = refused.expect_err("the warning write fails");
+        assert_eq!(boom.to_string(), "boom");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn b2a_branch_rig(
+        tag: &str,
+        session: &str,
+        target: Option<&std::path::Path>,
+        state: &std::path::Path,
+    ) -> (TmuxRig, super::StagedSeat, crate::meta::SeatTarget, String) {
+        let rig = TmuxRig::new(tag, session, "grok");
+        let tail = ["scout", "--using", "fake", "go"]
+            .iter()
+            .map(|word| (*word).to_owned())
+            .collect::<Vec<_>>();
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let staged = super::record_spawned_seat(
+            &rig.dir,
+            &tail,
+            Timestamp::now(),
+            target,
+            Some(state),
+            state,
+            &mut err,
+        )
+        .expect("staged io")
+        .expect("staged");
+        let (pane, _spelling, held) =
+            super::start_spawned_pane(&rig.dir, &staged, "", Timestamp::now(), &mut out, &mut err)
+                .expect("pane starts");
+        (rig, staged, held, pane)
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "T5c stages an explicit target plus state root for the branch"
+    )]
+    fn tmux_b2a_t5c_explicit_branch_folds_identical_spellings() {
+        let root = std::env::temp_dir().join(format!("ae-b2a-t5c-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let target = root.join("target");
+        let state = root.join("state");
+        std::fs::create_dir_all(&target).expect("a target");
+        std::fs::create_dir_all(&state).expect("a state root");
+        let row_canon = std::fs::canonicalize(&target).expect("row canon");
+        let (rig, staged, held, pane) = b2a_branch_rig("t5c", "ae-tmux-t5c", Some(&target), &state);
+        assert_eq!(held.canonical, row_canon, "held is the row canon");
+        assert_eq!(held.provenance, crate::meta::SeatProvenance::Explicit);
+        let cwd =
+            crate::transport::observe_pane_current_path(&rig.server(), &pane).expect("pane cwd");
+        assert_eq!(
+            std::fs::canonicalize(&cwd).expect("cwd canon"),
+            row_canon,
+            "pane cwd == held == row"
+        );
+        let brief = "do the thing";
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let turned = super::spawn_launch_turn_branch(
+            &rig.dir, &staged, &held, brief, "actor", &pane, "scout", &mut out, &mut err,
+        )
+        .expect("branch io");
+        let Ok(super::BranchTurn::Folded(full)) = turned else {
+            panic!("expected Folded");
+        };
+        let framed = crate::provenance::first_line(&crate::provenance::brief("actor"), brief);
+        let stored = std::fs::read_to_string(crate::run::prompt_file(&rig.dir, &staged.slot))
+            .expect("stored prompt");
+        assert_eq!(stored, framed, "stored prompt is the exact framed brief");
+        assert!(
+            !stored.contains("Directory:"),
+            "context absent from stored prompt"
+        );
+        assert!(full.contains(&format!("Directory: {}.", row_canon.display())));
+        assert!(full.contains("caller-prepared"));
+        assert!(!full.contains("WORKING TREE"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "T5d retargets a session alias between B and branch"
+    )]
+    fn tmux_b2a_t5d_alias_retarget_takes_full() {
+        let root = std::env::temp_dir().join(format!("ae-b2a-t5d-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("a root");
+        let (rig, staged, held, pane) = b2a_branch_rig("t5d", "ae-tmux-t5d", None, &root);
+        let dir_b = root.join("b");
+        std::fs::create_dir_all(&dir_b).expect("a second dir");
+        let alias = root.join("alias");
+        std::os::unix::fs::symlink(&held.canonical, &alias).expect("an alias");
+        let meta = std::fs::read_to_string(rig.dir.join("meta")).expect("meta");
+        let repointed = meta.replacen(
+            &format!("work_dir={}", rig.scratch.display()),
+            &format!("work_dir={}", alias.display()),
+            1,
+        );
+        assert_ne!(repointed, meta, "alias entered the meta");
+        std::fs::write(rig.dir.join("meta"), &repointed).expect("repointed meta");
+        std::fs::remove_file(&alias).expect("unlink");
+        std::os::unix::fs::symlink(&dir_b, &alias).expect("retargeted alias");
+        let manifest_path = rig.dir.join("workspace.md");
+        std::fs::write(&manifest_path, "scout-stale-sentinel\n").expect("planted sentinel");
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let turned = super::spawn_launch_turn_branch(
+            &rig.dir, &staged, &held, "go", "actor", &pane, "scout", &mut out, &mut err,
+        )
+        .expect("branch io");
+        let failure = match turned {
+            Err(failure) => failure,
+            other => panic!("expected Full failure, got {other:?}"),
+        };
+        assert_eq!(failure.mode, super::RollbackMode::Full);
+        assert!(failure.message.contains("spawned.0"), "{}", failure.message);
+        assert!(!rig.meta().contains("spawned.0="), "seat removed");
+        assert!(
+            !rig.dir.join("brief-retry.spawned.0.rec").exists(),
+            "no retry"
+        );
+        assert!(
+            !crate::run::prompt_file(&rig.dir, &staged.slot).exists(),
+            "no prompt stored"
+        );
+        let slots = crate::transport::observe_slots(&rig.server(), &rig.session).expect("slots");
+        assert!(
+            slots.iter().all(|seen| seen.slot != "spawned.0"),
+            "{slots:?}"
+        );
+        let manifest = std::fs::read_to_string(rig.dir.join("workspace.md")).expect("manifest");
+        assert!(!manifest.contains("scout"), "regen sans seat: {manifest}");
+        assert!(
+            rig.dir.join(crate::store::LAUNCH_ATTEMPT).is_file(),
+            "stamp kept"
+        );
+        assert!(held.canonical.is_dir(), "old canonical still present");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The exact Preserve line for the 0x07-poisoned row: T5e and the T5f
+    /// Preserve arm poison identically, so both pin this one literal.
+    const PRESERVE_POISON_LINE: &str = "spawn of 'scout' (spawned.0) refused: work_dir.spawned.0 is present but unusable (control characters) — restore the recorded path or retire the seat. The seat is retained; repair the session meta first, before retiring it.";
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "T5e corrupts the row bytes between B and branch"
+    )]
+    fn tmux_b2a_t5e_raw_row_mutation_takes_preserve() {
+        let root = std::env::temp_dir().join(format!("ae-b2a-t5e-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let target = root.join("target");
+        let state = root.join("state");
+        std::fs::create_dir_all(&target).expect("a target");
+        std::fs::create_dir_all(&state).expect("a state root");
+        let (rig, staged, held, pane) = b2a_branch_rig("t5e", "ae-tmux-t5e", Some(&target), &state);
+        let meta = std::fs::read_to_string(rig.dir.join("meta")).expect("meta");
+        let row = format!("work_dir.{}=", staged.slot);
+        let start = meta.find(&row).expect("the row") + row.len();
+        let end = meta[start..].find('\n').expect("eol") + start;
+        let mut poisoned = meta.into_bytes();
+        poisoned[end - 1] = 0x07;
+        std::fs::write(rig.dir.join("meta"), &poisoned).expect("poisoned meta");
+        let manifest_path = rig.dir.join("workspace.md");
+        std::fs::write(&manifest_path, "t5e-unique-sentinel\n").expect("planted sentinel");
+        let manifest_before = std::fs::read_to_string(&manifest_path).expect("manifest");
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let turned = super::spawn_launch_turn_branch(
+            &rig.dir, &staged, &held, "go", "actor", &pane, "scout", &mut out, &mut err,
+        )
+        .expect("branch io");
+        let failure = match turned {
+            Err(failure) => failure,
+            other => panic!("expected Preserve failure, got {other:?}"),
+        };
+        assert_eq!(failure.mode, super::RollbackMode::Preserve);
+        assert_eq!(failure.message, PRESERVE_POISON_LINE);
+        assert_eq!(
+            std::fs::read(rig.dir.join("meta")).expect("post bytes"),
+            poisoned,
+            "meta byte-identical"
+        );
+        assert_eq!(
+            std::fs::read_to_string(rig.dir.join("workspace.md")).expect("manifest"),
+            manifest_before,
+            "manifest untouched"
+        );
+        let slots = crate::transport::observe_slots(&rig.server(), &rig.session).expect("slots");
+        assert!(
+            slots.iter().all(|seen| seen.slot != "spawned.0"),
+            "{slots:?}"
+        );
+        assert!(
+            !rig.dir.join("brief-retry.spawned.0.rec").exists(),
+            "no retry"
+        );
+        assert!(
+            rig.dir.join(crate::store::LAUNCH_ATTEMPT).is_file(),
+            "stamp kept"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "T5f mutates meta between B and branch in both arms"
+    )]
+    fn tmux_b2a_t5f_refusal_wording_names_seat_in_both_modes() {
+        let root = std::env::temp_dir().join(format!("ae-b2a-t5f-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("a root");
+        // FULL arm: T5d alias-retarget shape; wording asserted, residue per T5d.
+        let (rig, staged, held, pane) = b2a_branch_rig("t5f-full", "ae-tmux-t5f-full", None, &root);
+        let dir_b = root.join("b");
+        std::fs::create_dir_all(&dir_b).expect("a second dir");
+        let alias = root.join("alias");
+        std::os::unix::fs::symlink(&held.canonical, &alias).expect("an alias");
+        let meta = std::fs::read_to_string(rig.dir.join("meta")).expect("meta");
+        let repointed = meta.replacen(
+            &format!("work_dir={}", rig.scratch.display()),
+            &format!("work_dir={}", alias.display()),
+            1,
+        );
+        std::fs::write(rig.dir.join("meta"), &repointed).expect("repointed meta");
+        std::fs::remove_file(&alias).expect("unlink");
+        std::os::unix::fs::symlink(&dir_b, &alias).expect("retargeted alias");
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let turned = super::spawn_launch_turn_branch(
+            &rig.dir, &staged, &held, "go", "actor", &pane, "scout", &mut out, &mut err,
+        )
+        .expect("branch io");
+        let full = match turned {
+            Err(failure) => failure,
+            other => panic!("expected Full failure, got {other:?}"),
+        };
+        assert_eq!(full.mode, super::RollbackMode::Full);
+        assert!(full.message.contains("spawned.0"), "{}", full.message);
+        assert!(full.message.contains("scout"), "{}", full.message);
+        // PRESERVE arm: T5e raw-poison shape; wording asserted, residue per T5e.
+        let target = root.join("target");
+        let state = root.join("state");
+        std::fs::create_dir_all(&target).expect("a target");
+        std::fs::create_dir_all(&state).expect("a state root");
+        let (rig, staged, held, pane) =
+            b2a_branch_rig("t5f-pres", "ae-tmux-t5f-pres", Some(&target), &state);
+        let meta = std::fs::read_to_string(rig.dir.join("meta")).expect("meta");
+        let row = format!("work_dir.{}=", staged.slot);
+        let start = meta.find(&row).expect("the row") + row.len();
+        let end = meta[start..].find('\n').expect("eol") + start;
+        let mut poisoned = meta.into_bytes();
+        poisoned[end - 1] = 0x07;
+        std::fs::write(rig.dir.join("meta"), &poisoned).expect("poisoned meta");
+        let turned = super::spawn_launch_turn_branch(
+            &rig.dir, &staged, &held, "go", "actor", &pane, "scout", &mut out, &mut err,
+        )
+        .expect("branch io");
+        let preserve = match turned {
+            Err(failure) => failure,
+            other => panic!("expected Preserve failure, got {other:?}"),
+        };
+        assert_eq!(preserve.mode, super::RollbackMode::Preserve);
+        assert_eq!(preserve.message, PRESERVE_POISON_LINE);
+        assert!(preserve.message.contains("scout"), "{}", preserve.message);
+        assert_ne!(full.message, preserve.message, "mode-distinct diagnostics");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        clippy::too_many_lines,
+        clippy::items_after_statements,
+        reason = "T5g: 3 legs share one rig; meta mutated A-to-B; leg-local RAII guard"
+    )]
+    fn tmux_b2a_t5g_inherited_spelling_mutation_refuses_before_new_window() {
+        let root = std::env::temp_dir().join(format!("ae-b2a-t5g-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("a root");
+        let rig = TmuxRig::new("t5g", "ae-tmux-t5g", "grok");
+        let file = root.join("file");
+        std::fs::write(&file, "not a directory\n").expect("a file");
+        let manifest = b"t5g-manifest-sentinel\n".to_vec();
+        std::fs::write(rig.dir.join("workspace.md"), &manifest).expect("manifest");
+        let tail = ["scout", "--using", "fake", "go"]
+            .map(str::to_owned)
+            .to_vec();
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let panes = || {
+            crate::transport::observe_panes(&rig.server(), &rig.session)
+                .expect("panes")
+                .len()
+        };
+        let run_b = |staged: &super::StagedSeat, out: &mut Vec<u8>, err: &mut Vec<u8>| {
+            super::start_spawned_pane(&rig.dir, staged, "", Timestamp::now(), out, err)
+        };
+        let stamp = rig.dir.join(crate::store::LAUNCH_ATTEMPT);
+        let before = panes();
+        // MISSING leg: A stages, spelling repointed at nothing, B refuses.
+        let staged = super::record_spawned_seat(
+            &rig.dir,
+            &tail,
+            Timestamp::now(),
+            None,
+            Some(&root),
+            &root,
+            &mut err,
+        )
+        .expect("staged io")
+        .expect("staged");
+        let gone = root.join("gone");
+        assert!(!gone.exists(), "missing premise");
+        let meta = std::fs::read_to_string(rig.dir.join("meta")).expect("meta");
+        let repointed = meta.replacen(
+            &format!("work_dir={}", rig.scratch.display()),
+            &format!("work_dir={}", gone.display()),
+            1,
+        );
+        std::fs::write(rig.dir.join("meta"), &repointed).expect("repointed meta");
+        let refusal = run_b(&staged, &mut out, &mut err).expect_err("B refuses a missing dir");
+        assert_eq!(
+            refusal,
+            format!(
+                "the session directory '{gone}' is gone. The staged seat was released; restore the directory, then spawn again.",
+                gone = gone.display()
+            )
+        );
+        assert!(!rig.meta().contains("spawned.0="), "rows removed");
+        assert!(stamp.is_file(), "stamp kept");
+        assert_eq!(
+            std::fs::read(rig.dir.join("workspace.md")).expect("m"),
+            manifest
+        );
+        assert_eq!(panes(), before, "no new window");
+        // FILE leg: restore, A stages again, spelling repointed at a file.
+        let meta = std::fs::read_to_string(rig.dir.join("meta")).expect("meta");
+        let restored = meta.replacen(
+            &format!("work_dir={}", gone.display()),
+            &format!("work_dir={}", rig.scratch.display()),
+            1,
+        );
+        std::fs::write(rig.dir.join("meta"), &restored).expect("restored meta");
+        let staged = super::record_spawned_seat(
+            &rig.dir,
+            &tail,
+            Timestamp::now(),
+            None,
+            Some(&root),
+            &root,
+            &mut err,
+        )
+        .expect("staged io")
+        .expect("staged");
+        assert!(file.is_file(), "file premise");
+        let meta = std::fs::read_to_string(rig.dir.join("meta")).expect("meta");
+        let repointed = meta.replacen(
+            &format!("work_dir={}", rig.scratch.display()),
+            &format!("work_dir={}", file.display()),
+            1,
+        );
+        std::fs::write(rig.dir.join("meta"), &repointed).expect("repointed meta");
+        super::start_spawned_pane(&rig.dir, &staged, "", Timestamp::now(), &mut out, &mut err)
+            .expect_err("B refuses a file");
+        assert!(!rig.meta().contains("spawned.0="), "rows removed");
+        assert!(stamp.is_file(), "stamp kept");
+        assert_eq!(
+            std::fs::read(rig.dir.join("workspace.md")).expect("m"),
+            manifest
+        );
+        assert_eq!(panes(), before, "no new window");
+        // DENIED leg: unwritable session dir, cleanup fails, seat stays, line stays uncertain.
+        let staged = super::record_spawned_seat(
+            &rig.dir,
+            &tail,
+            Timestamp::now(),
+            None,
+            Some(&root),
+            &root,
+            &mut err,
+        )
+        .expect("staged io")
+        .expect("staged");
+        let pre_bytes = std::fs::read(rig.dir.join("meta")).expect("pre bytes");
+        let events_before = std::fs::read(rig.dir.join("events.jsonl")).ok();
+        let dir_meta = std::fs::metadata(&rig.dir).expect("mode");
+        let orig = std::os::unix::fs::MetadataExt::mode(&dir_meta) & 0o777;
+        struct DenyRestore<'a> {
+            dir: &'a std::path::Path,
+            mode: u32,
+        }
+        impl Drop for DenyRestore<'_> {
+            fn drop(&mut self) {
+                let _ =
+                    std::fs::set_permissions(self.dir, std::fs::Permissions::from_mode(self.mode));
+            }
+        }
+        let guard = DenyRestore {
+            dir: &rig.dir,
+            mode: orig,
+        };
+        std::fs::set_permissions(&rig.dir, std::fs::Permissions::from_mode(0o555)).expect("deny");
+        let denied = match std::fs::write(rig.dir.join("t5g-deny-probe"), "x") {
+            Err(why) if why.kind() == std::io::ErrorKind::PermissionDenied => why.to_string(),
+            Err(why) => panic!("denial premise broken: {why:?}"),
+            Ok(()) => {
+                drop(guard);
+                let _ = std::fs::remove_dir_all(&root);
+                return;
+            }
+        };
+        let refusal = run_b(&staged, &mut out, &mut err).expect_err("B refuses a denied dir");
+        assert_eq!(
+            refusal,
+            format!(
+                "the session directory '{file}' is not a directory. Seat cleanup failed (the meta was not published, and nothing changed: {denied}); the outcome is uncertain — inspect or repair the session meta before retrying or retiring.",
+                file = file.display()
+            )
+        );
+        drop(guard);
+        assert_eq!(
+            std::fs::read(rig.dir.join("meta")).expect("post"),
+            pre_bytes
+        );
+        let row = format!("seat.{}=scout", staged.slot);
+        assert!(rig.meta().contains(&row), "row kept");
+        assert!(stamp.is_file(), "stamp kept");
+        assert_eq!(
+            std::fs::read(rig.dir.join("workspace.md")).expect("m"),
+            manifest
+        );
+        assert_eq!(panes(), before, "no new window");
+        let dir_meta = std::fs::metadata(&rig.dir).expect("mode");
+        let restored = std::os::unix::fs::MetadataExt::mode(&dir_meta) & 0o777;
+        assert_eq!(restored, orig);
+        let events_now = std::fs::read(rig.dir.join("events.jsonl")).ok();
+        assert_eq!(events_now, events_before);
+        let retry = rig.dir.join(format!("brief-retry.{}.rec", staged.slot));
+        assert!(!retry.exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "T5h plants a symlinked spelling before production A"
+    )]
+    fn tmux_b2a_t5h_symlinked_spelling_threads_to_window_unresolved() {
+        let root = std::env::temp_dir().join(format!("ae-b2a-t5h-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("a root");
+        let rig = TmuxRig::new("t5h", "ae-tmux-t5h", "grok");
+        let (real, link) = (root.join("real"), root.join("link"));
+        std::fs::create_dir(&real).expect("a real dir");
+        std::os::unix::fs::symlink(&real, &link).expect("a symlink");
+        let link_spelling = link.display().to_string();
+        let meta = std::fs::read_to_string(rig.dir.join("meta")).expect("meta");
+        let repointed = meta.replacen(
+            &format!("work_dir={}", rig.scratch.display()),
+            &format!("work_dir={}", link.display()),
+            1,
+        );
+        std::fs::write(rig.dir.join("meta"), &repointed).expect("repointed meta");
+        let tail = ["scout", "--using", "fake", "go"]
+            .map(str::to_owned)
+            .to_vec();
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let staged = super::record_spawned_seat(
+            &rig.dir,
+            &tail,
+            Timestamp::now(),
+            None,
+            Some(&root),
+            &root,
+            &mut err,
+        )
+        .expect("staged io")
+        .expect("staged");
+        assert!(!rig.meta().contains("work_dir.spawned.0="), "no seat row");
+        assert_eq!(staged.session.work_dir, link_spelling, "A keeps link");
+        let before = crate::transport::observe_panes(&rig.server(), &rig.session).expect("panes");
+        let (pane, spelling, held) =
+            super::start_spawned_pane(&rig.dir, &staged, "", Timestamp::now(), &mut out, &mut err)
+                .expect("B opens");
+        let real_canon = std::fs::canonicalize(&real).expect("real canon");
+        assert_eq!(held.canonical, real_canon, "held is the real canon");
+        assert_eq!(held.provenance, crate::meta::SeatProvenance::Inherited);
+        assert_eq!(spelling, staged.session.work_dir, "B returns its spelling");
+        let cwd =
+            crate::transport::observe_pane_current_path(&rig.server(), &pane).expect("pane cwd");
+        assert_eq!(cwd, real_canon.display().to_string(), "cwd physical");
+        let after = crate::transport::observe_panes(&rig.server(), &rig.session).expect("panes");
+        assert_eq!((before.len(), after.len()), (1, 2), "exactly one window");
+        let retry = rig.dir.join("brief-retry.spawned.0.rec");
+        let prompt = crate::run::prompt_file(&rig.dir, &staged.slot);
+        assert!(!retry.exists() && !prompt.exists(), "no B artifacts");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "T5j rewrites session scalar and drops the row post-B"
+    )]
+    fn tmux_b2a_t5j_provenance_flip_takes_full() {
+        let root = std::env::temp_dir().join(format!("ae-b2a-t5j-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let target = root.join("target");
+        let state = root.join("state");
+        std::fs::create_dir_all(&target).expect("a target");
+        std::fs::create_dir_all(&state).expect("a state root");
+        let (rig, staged, held, pane) = b2a_branch_rig("t5j", "ae-tmux-t5j", Some(&target), &state);
+        assert_eq!(held.provenance, crate::meta::SeatProvenance::Explicit);
+        let meta = std::fs::read_to_string(rig.dir.join("meta")).expect("meta");
+        let row_canon = std::fs::canonicalize(&target).expect("row canon");
+        let body = meta
+            .replacen(
+                &format!("work_dir={}", rig.scratch.display()),
+                &format!("work_dir={}", row_canon.display()),
+                1,
+            )
+            .replacen(
+                &format!("work_dir.{}={}\n", staged.slot, row_canon.display()),
+                "",
+                1,
+            );
+        std::fs::write(rig.dir.join("meta"), &body).expect("surgery");
+        assert_eq!(
+            crate::meta::raw_seat_work_dir(body.as_bytes(), &staged.slot),
+            Ok(None)
+        );
+        let spelling = body
+            .lines()
+            .find(|line| line.starts_with("work_dir="))
+            .expect("row");
+        assert_eq!(
+            std::fs::canonicalize(spelling.strip_prefix("work_dir=").expect("v")).expect("canon"),
+            held.canonical
+        );
+        let manifest_path = rig.dir.join("workspace.md");
+        std::fs::write(&manifest_path, "scout-stale-sentinel\n").expect("planted sentinel");
+        let events = rig.dir.join("events.jsonl");
+        let events_before = std::fs::read(&events).ok();
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let turned = super::spawn_launch_turn_branch(
+            &rig.dir, &staged, &held, "go", "actor", &pane, "scout", &mut out, &mut err,
+        )
+        .expect("branch io");
+        let failure = match turned {
+            Err(failure) => failure,
+            other => panic!("expected Full failure, got {other:?}"),
+        };
+        assert_eq!(failure.mode, super::RollbackMode::Full);
+        assert!(failure.message.contains("spawned.0"), "{}", failure.message);
+        assert!(!rig.meta().contains("spawned.0="), "seat removed");
+        let slots = crate::transport::observe_slots(&rig.server(), &rig.session).expect("slots");
+        assert!(
+            slots.iter().all(|seen| seen.slot != "spawned.0"),
+            "{slots:?}"
+        );
+        assert!(
+            !rig.dir.join("brief-retry.spawned.0.rec").exists(),
+            "no retry"
+        );
+        assert!(
+            !crate::run::prompt_file(&rig.dir, &staged.slot).exists(),
+            "no prompt stored"
+        );
+        let manifest = std::fs::read_to_string(&manifest_path).expect("manifest");
+        assert!(
+            !manifest.contains("scout"),
+            "regen sans sentinel: {manifest}"
+        );
+        assert!(
+            rig.dir.join(crate::store::LAUNCH_ATTEMPT).is_file(),
+            "stamp kept"
+        );
+        assert_eq!(
+            std::fs::read(&events).ok(),
+            events_before,
+            "events unchanged"
+        );
+        assert!(held.canonical.is_dir(), "old canonical still alive");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "T5k poisons the row, then Skips the fold over it"
+    )]
+    fn tmux_b2a_t5k_skip_malformed_snapshot_takes_preserve() {
+        let root = std::env::temp_dir().join(format!("ae-b2a-t5k-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let target = root.join("target");
+        let state = root.join("state");
+        std::fs::create_dir_all(&target).expect("a target");
+        std::fs::create_dir_all(&state).expect("a state root");
+        let (rig, mut staged, held, pane) =
+            b2a_branch_rig("t5k", "ae-tmux-t5k", Some(&target), &state);
+        // Skip the fold: an empty prompt gates Skip on every channel, so a
+        // PasteFallback here would prove validation was bypassed.
+        staged.argv.prompt.clear();
+        let meta = std::fs::read_to_string(rig.dir.join("meta")).expect("meta");
+        let row = format!("work_dir.{}=", staged.slot);
+        let start = meta.find(&row).expect("the row") + row.len();
+        let end = meta[start..].find('\n').expect("eol") + start;
+        let mut poisoned = meta.into_bytes();
+        poisoned[end - 1] = 0x07;
+        std::fs::write(rig.dir.join("meta"), &poisoned).expect("poisoned meta");
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let turned = super::spawn_launch_turn_branch(
+            &rig.dir, &staged, &held, "go", "actor", &pane, "scout", &mut out, &mut err,
+        )
+        .expect("branch io");
+        let failure = match turned {
+            Err(failure) => failure,
+            other => panic!("expected Preserve failure, got {other:?}"),
+        };
+        assert_eq!(failure.mode, super::RollbackMode::Preserve);
+        assert_eq!(failure.message, PRESERVE_POISON_LINE);
+        assert_eq!(
+            std::fs::read(rig.dir.join("meta")).expect("post bytes"),
+            poisoned,
+            "meta byte-identical"
+        );
+        let slots = crate::transport::observe_slots(&rig.server(), &rig.session).expect("slots");
+        assert!(
+            slots.iter().all(|seen| seen.slot != "spawned.0"),
+            "{slots:?}"
+        );
+        assert!(
+            !rig.dir.join("brief-retry.spawned.0.rec").exists(),
+            "no retry"
+        );
+        assert!(
+            rig.dir.join(crate::store::LAUNCH_ATTEMPT).is_file(),
+            "stamp kept"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "T5l plants a canon-equal row staging never saw, both gates"
+    )]
+    fn tmux_b2a_t5l_skip_canon_equal_new_row_takes_full() {
+        use std::fmt::Write as _;
+        let root = std::env::temp_dir().join(format!("ae-b2a-t5l-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let legs = [
+            ("t5l-skip", "ae-tmux-t5l-skip", true),
+            ("t5l-try", "ae-tmux-t5l-try", false),
+        ];
+        for (tag, session, skip) in legs {
+            let (rig, mut staged, held, pane) = b2a_branch_rig(tag, session, None, &root);
+            if skip {
+                staged.argv.prompt.clear();
+            }
+            // A VALID row staging never saw, canon-equal to held: only the
+            // presence-vs-staged check can refuse it, on either gate.
+            let mut body = rig.meta();
+            if !body.ends_with('\n') {
+                body.push('\n');
+            }
+            let disp = held.canonical.display();
+            writeln!(body, "work_dir.{}={}", staged.slot, disp).expect("row");
+            std::fs::write(rig.dir.join("meta"), &body).expect("new row");
+            let mut out = Vec::new();
+            let mut err = Vec::new();
+            let turned = super::spawn_launch_turn_branch(
+                &rig.dir, &staged, &held, "go", "actor", &pane, "scout", &mut out, &mut err,
+            )
+            .expect("branch io");
+            let failure = match turned {
+                Err(failure) => failure,
+                other => panic!("expected Full failure, got {other:?}"),
+            };
+            assert_eq!(failure.mode, super::RollbackMode::Full);
+            assert!(
+                failure.message.contains("changed since staging"),
+                "presence mismatch, not a row refusal: {}",
+                failure.message
+            );
+            if skip {
+                assert!(!rig.meta().contains("spawned.0="), "seat removed");
+                let slots =
+                    crate::transport::observe_slots(&rig.server(), &rig.session).expect("slots");
+                assert!(
+                    slots.iter().all(|seen| seen.slot != "spawned.0"),
+                    "{slots:?}"
+                );
+                assert!(
+                    !rig.dir.join("brief-retry.spawned.0.rec").exists(),
+                    "no retry"
+                );
+                assert!(
+                    !crate::run::prompt_file(&rig.dir, &staged.slot).exists(),
+                    "no prompt stored"
+                );
+                assert!(
+                    rig.dir.join(crate::store::LAUNCH_ATTEMPT).is_file(),
+                    "stamp kept"
+                );
+            }
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

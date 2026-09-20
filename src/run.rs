@@ -430,12 +430,13 @@ fn build_with_snapshot(
     let model_notice = (mode == Mode::Resume)
         .then(|| apply_observed_model(dir, slot, &mut seat))
         .flatten();
-    let ctx = crate::render::context_document(
+    let ctx = crate::render::seat_context_document(
         dir,
         &seat.session,
         &seat.work_dir,
         slot,
         &seat.config_files,
+        seat.dir_source,
     );
     let current = crate::launch_cmd::config_home_resolution(&seat.command, seat.tool, &env_lookup);
     let canonical_current = canonical_config_home(&current.home);
@@ -1266,6 +1267,7 @@ fn apply_config_home(
 pub(crate) struct Seat {
     session: String,
     work_dir: String,
+    dir_source: crate::meta::SeatProvenance,
     config_files: Vec<PathBuf>,
     /// The resolved command, carried to `_run` as its `--command-snapshot` by
     /// a caller that resolves the seat once and pastes the line itself.
@@ -1411,6 +1413,16 @@ pub(crate) fn read_seat(
     if profile.is_empty() {
         return Err(format!("seat '{slot}' has no profile recorded"));
     }
+    let seat_dir_source = match crate::meta::raw_seat_work_dir(&bytes, slot) {
+        Ok(None) => crate::meta::SeatProvenance::Inherited,
+        Ok(Some(_)) => crate::meta::SeatProvenance::Explicit,
+        Err(refusal) => return Err(refusal),
+    };
+    let session_dir = value("work_dir");
+    let session_canonical = crate::doors::canonical_strict_dir(Path::new(&session_dir))
+        .map_err(|error| crate::meta::inherited_dir_refusal(&session_dir, &error))?;
+    let work_dir =
+        crate::meta::checked_pane_start_dir(&parsed_meta, slot, &session_dir, session_canonical)?;
     let origin = value("origin");
     let global = value("config");
     let local = crate::config::local_overlay(dir, &origin);
@@ -1454,7 +1466,8 @@ pub(crate) fn read_seat(
     }
     Ok(Seat {
         session: value("session"),
-        work_dir: value("work_dir"),
+        work_dir,
+        dir_source: seat_dir_source,
         config_files,
         tool,
         command,
@@ -1556,6 +1569,462 @@ mod tests {
             "no stale brief folds into the successor's launch turn"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "test fixture resolves the meta path the product reads"
+    )]
+    fn b2a_meta_path(dir: &std::path::Path) -> std::path::PathBuf {
+        crate::store::open(dir).meta_path()
+    }
+
+    fn b2a_base_meta(dir: &std::path::Path) -> Vec<u8> {
+        format!(
+            "session=b2a\nwork_dir={}\nseat.main=lead\nprofile.main=cl\nagent_bin.main=claude\n",
+            dir.display()
+        )
+        .into_bytes()
+    }
+
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "test fixture snapshots the dir listing for identity asserts"
+    )]
+    fn b2a_listing(dir: &std::path::Path) -> Vec<std::ffi::OsString> {
+        let mut names: Vec<std::ffi::OsString> = std::fs::read_dir(dir)
+            .expect("a listing")
+            .map(|entry| entry.expect("an entry").file_name())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture writes a hostile meta, then proves byte-identity"
+    )]
+    fn b2a_t1a_lossy_decoy_row_refuses_before_typed_resolution() {
+        let dir = std::env::temp_dir().join(format!("ae-b2a-t1a-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a fixture dir");
+        std::fs::create_dir_all(dir.join("\u{fffd}")).expect("the decoy dir");
+        let mut meta = b2a_base_meta(&dir);
+        meta.extend_from_slice(format!("work_dir.main={}/", dir.display()).as_bytes());
+        meta.push(0xff);
+        meta.push(b'\n');
+        let path = b2a_meta_path(&dir);
+        std::fs::write(&path, &meta).expect("the hostile meta");
+        let before = std::fs::read(&path).expect("pre bytes");
+        let listing = b2a_listing(&dir);
+        let err = read_seat(&dir, "main", Some("claude"))
+            .err()
+            .expect("hostile row refuses");
+        assert!(
+            err.contains("work_dir.main") && err.contains("not UTF-8"),
+            "named refusal: {err}"
+        );
+        assert_eq!(
+            std::fs::read(&path).expect("post bytes"),
+            before,
+            "meta identical"
+        );
+        assert_eq!(b2a_listing(&dir), listing, "listing identical");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture writes a hostile meta, then proves byte-identity"
+    )]
+    fn b2a_t1b_duplicate_row_refuses_before_typed_resolution() {
+        let dir = std::env::temp_dir().join(format!("ae-b2a-t1b-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a fixture dir");
+        let seat = dir.join("seat");
+        std::fs::create_dir_all(&seat).expect("the seat dir");
+        let mut meta = b2a_base_meta(&dir);
+        meta.extend_from_slice(
+            format!(
+                "work_dir.main={}\nwork_dir.main={}\n",
+                seat.display(),
+                dir.display()
+            )
+            .as_bytes(),
+        );
+        let path = b2a_meta_path(&dir);
+        std::fs::write(&path, &meta).expect("the hostile meta");
+        let before = std::fs::read(&path).expect("pre bytes");
+        let listing = b2a_listing(&dir);
+        let err = read_seat(&dir, "main", Some("claude"))
+            .err()
+            .expect("duplicate refuses");
+        assert!(
+            err.contains("work_dir.main") && err.contains("named more than once"),
+            "named refusal: {err}"
+        );
+        assert_eq!(
+            std::fs::read(&path).expect("post bytes"),
+            before,
+            "meta identical"
+        );
+        assert_eq!(b2a_listing(&dir), listing, "listing identical");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture writes hostile metas, then proves byte-identity"
+    )]
+    fn b2a_t1c_bare_and_control_rows_refuse_before_typed_resolution() {
+        for (tag, row) in [
+            ("bare", b"work_dir.main\n".as_slice()),
+            ("bel", b"work_dir.main=/x/\x07/y\n".as_slice()),
+        ] {
+            let dir = std::env::temp_dir().join(format!("ae-b2a-t1c-{tag}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("a fixture dir");
+            let mut meta = b2a_base_meta(&dir);
+            meta.extend_from_slice(row);
+            let path = b2a_meta_path(&dir);
+            std::fs::write(&path, &meta).expect("the hostile meta");
+            let before = std::fs::read(&path).expect("pre bytes");
+            let listing = b2a_listing(&dir);
+            let err = read_seat(&dir, "main", Some("claude"))
+                .err()
+                .expect("hostile row refuses");
+            assert!(err.contains("work_dir.main"), "{tag} names the row: {err}");
+            assert_eq!(
+                std::fs::read(&path).expect("post bytes"),
+                before,
+                "meta identical"
+            );
+            assert_eq!(b2a_listing(&dir), listing, "listing identical");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture writes a hostile meta to prove presence wins"
+    )]
+    fn b2a_t1d_presence_precedes_the_raw_gate() {
+        let dir = std::env::temp_dir().join(format!("ae-b2a-t1d-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a fixture dir");
+        let path = b2a_meta_path(&dir);
+        std::fs::write(
+            &path,
+            format!(
+                "session=b2a\nwork_dir={}\nprofile.main=cl\nagent_bin.main=claude\nwork_dir.main=/x/\x07/y\n",
+                dir.display()
+            ),
+        )
+        .expect("no-seat meta");
+        let err = read_seat(&dir, "main", Some("claude"))
+            .err()
+            .expect("unknown seat refuses");
+        assert!(err.contains("no seat"), "presence first: {err}");
+        std::fs::write(
+            &path,
+            format!(
+                "session=b2a\nwork_dir={}\nseat.main=lead\nagent_bin.main=claude\nwork_dir.main=/x/\x07/y\n",
+                dir.display()
+            ),
+        )
+        .expect("no-profile meta");
+        let err = read_seat(&dir, "main", Some("claude"))
+            .err()
+            .expect("missing profile refuses");
+        assert!(err.contains("has no profile"), "presence first: {err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture points a row at a missing dir"
+    )]
+    fn b2a_t2c_removed_row_dir_refuses() {
+        let dir = std::env::temp_dir().join(format!("ae-b2a-t2c-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a fixture dir");
+        let mut meta = b2a_base_meta(&dir);
+        meta.extend_from_slice(format!("work_dir.main={}/gone\n", dir.display()).as_bytes());
+        let path = b2a_meta_path(&dir);
+        std::fs::write(&path, &meta).expect("the fixture meta");
+        let before = std::fs::read(&path).expect("pre bytes");
+        let err = read_seat(&dir, "main", Some("claude"))
+            .err()
+            .expect("removed dir refuses");
+        assert!(err.contains("work_dir.main"), "row-named refusal: {err}");
+        assert_eq!(
+            std::fs::read(&path).expect("post bytes"),
+            before,
+            "meta identical"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture points rows at a file and a non-canonical dir"
+    )]
+    fn b2a_t2d_file_and_noncanonical_rows_refuse() {
+        let dir = std::env::temp_dir().join(format!("ae-b2a-t2d-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).expect("sub dir");
+        std::fs::create_dir_all(dir.join("seat")).expect("seat dir");
+        std::fs::write(dir.join("file"), "not a dir").expect("the file");
+        for (tag, value) in [
+            ("file", format!("{}/file", dir.display())),
+            ("legs", format!("{}/sub/../seat", dir.display())),
+        ] {
+            let mut meta = b2a_base_meta(&dir);
+            meta.extend_from_slice(format!("work_dir.main={value}\n").as_bytes());
+            let path = b2a_meta_path(&dir);
+            std::fs::write(&path, &meta).expect("the fixture meta");
+            let before = std::fs::read(&path).expect("pre bytes");
+            let err = read_seat(&dir, "main", Some("claude"))
+                .err()
+                .expect("unusable row refuses");
+            assert!(
+                err.contains("work_dir.main"),
+                "{tag} row-named refusal: {err}"
+            );
+            assert_eq!(
+                std::fs::read(&path).expect("post bytes"),
+                before,
+                "meta identical"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture breaks the dir and the identity at once"
+    )]
+    fn b2a_t2e_dir_refusal_beats_identity() {
+        let dir = std::env::temp_dir().join(format!("ae-b2a-t2e-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a fixture dir");
+        let meta = format!(
+            "session=b2a\nwork_dir={0}\nseat.main=lead\nprofile.main=cl\nwork_dir.main={0}/gone\n",
+            dir.display()
+        );
+        let path = b2a_meta_path(&dir);
+        std::fs::write(&path, meta).expect("the fixture meta");
+        let err = read_seat(&dir, "main", Some("claude"))
+            .err()
+            .expect("dir refuses first");
+        assert!(err.contains("work_dir.main"), "dir wins: {err}");
+        assert!(
+            !err.contains("changed tool kind"),
+            "no identity leak: {err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture removes the inherited session dir"
+    )]
+    fn b2a_t2f_gone_session_dir_refuses_without_row_language() {
+        let dir = std::env::temp_dir().join(format!("ae-b2a-t2f-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a fixture dir");
+        let gone = dir.join("gone");
+        let meta = format!(
+            "session=b2a\nwork_dir={}\nseat.main=lead\nprofile.main=cl\nagent_bin.main=claude\n",
+            gone.display()
+        );
+        let path = b2a_meta_path(&dir);
+        std::fs::write(&path, meta).expect("the fixture meta");
+        let before = std::fs::read(&path).expect("pre bytes");
+        let err = read_seat(&dir, "main", Some("claude"))
+            .err()
+            .expect("gone session refuses");
+        assert!(err.contains("is gone"), "gone wording: {err}");
+        assert!(!err.contains("work_dir."), "no row language: {err}");
+        assert_eq!(
+            std::fs::read(&path).expect("post bytes"),
+            before,
+            "meta identical"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture stages an explicit row, then proves byte-identity"
+    )]
+    fn b2a_t2a_explicit_row_resolves_canonical_with_provenance() {
+        let dir = std::env::temp_dir().join(format!("ae-b2a-t2a-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("seat")).expect("the seat dir");
+        let canon = std::fs::canonicalize(dir.join("seat")).expect("canonical seat");
+        let mut meta = b2a_base_meta(&dir);
+        meta.extend_from_slice(format!("work_dir.main={}\n", canon.display()).as_bytes());
+        let path = b2a_meta_path(&dir);
+        std::fs::write(&path, &meta).expect("the fixture meta");
+        let before = std::fs::read(&path).expect("pre bytes");
+        let seat_out = read_seat(&dir, "main", Some("claude")).expect("explicit resolves");
+        assert_eq!(
+            seat_out.work_dir,
+            canon.display().to_string(),
+            "canonical value"
+        );
+        assert_eq!(
+            seat_out.dir_source,
+            crate::meta::SeatProvenance::Explicit,
+            "provenance carried"
+        );
+        assert_eq!(
+            std::fs::read(&path).expect("post bytes"),
+            before,
+            "meta identical"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture stages an inheriting seat, then proves byte-identity"
+    )]
+    fn b2a_t2b_missing_row_inherits_session_spelling() {
+        let dir = std::env::temp_dir().join(format!("ae-b2a-t2b-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a fixture dir");
+        let path = b2a_meta_path(&dir);
+        std::fs::write(&path, b2a_base_meta(&dir)).expect("the fixture meta");
+        let before = std::fs::read(&path).expect("pre bytes");
+        let seat_out = read_seat(&dir, "main", Some("claude")).expect("inherited resolves");
+        assert_eq!(
+            seat_out.work_dir,
+            dir.display().to_string(),
+            "session spelling kept"
+        );
+        assert_eq!(
+            seat_out.dir_source,
+            crate::meta::SeatProvenance::Inherited,
+            "provenance carried"
+        );
+        assert_eq!(
+            std::fs::read(&path).expect("post bytes"),
+            before,
+            "meta identical"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "RED1 fixture stages two CREATE seats and builds both"
+    )]
+    fn b2a_t4_build_threads_explicit_dir_into_context() {
+        let uuid = "12345678-90ab-cdef-1234-567890abcdef";
+        let root = std::env::temp_dir().join(format!("ae-b2a-t4-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let store = root.join("store");
+        std::fs::create_dir_all(&store).expect("a store");
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&bin).expect("a bin dir");
+        std::fs::write(bin.join("claude"), "").expect("a binary");
+        let cfg = root.join("config");
+        std::fs::write(
+            &cfg,
+            format!(
+                "[clients]\nclaude = {}/bin/claude\n\n[profiles]\nfablex = \"claude --model fable\"\n\n[roster]\nlead = fablex\n\n[workspace]\nmain = lead\n",
+                root.display()
+            ),
+        )
+        .expect("a config");
+        let target = root.join("target");
+        std::fs::create_dir_all(&target).expect("a target");
+        let target = std::fs::canonicalize(&target).expect("canonical target");
+        let write_meta = |dir: &std::path::Path, row: &str| {
+            std::fs::create_dir_all(dir).expect("a session dir");
+            std::fs::write(
+                dir.join("meta"),
+                format!(
+                    "session=t4\nwork_dir={}\n{}seat.main=lead\nprofile.main=fablex\nagent_bin.main=claude\nharness_session.main={}\nlaunch_id.main=L1\nmode=local\nconfig={}\n",
+                    dir.display(),
+                    row,
+                    uuid,
+                    cfg.display()
+                ),
+            )
+            .expect("a meta");
+        };
+        let exp = root.join("exp");
+        write_meta(&exp, &format!("work_dir.main={}\n", target.display()));
+        let ctl = root.join("ctl");
+        write_meta(&ctl, "");
+        let before = std::fs::read(exp.join("meta")).expect("pre bytes");
+        let eplan = super::build(&exp, "main").expect("explicit builds");
+        let cplan = super::build(&ctl, "main").expect("control builds");
+        let flag = "--append-system-prompt";
+        let at = |argv: &[String]| {
+            argv.iter()
+                .position(|w| w == flag)
+                .map(|i| i + 1)
+                .expect("the flag")
+        };
+        let (ei, ci) = (at(&eplan.argv), at(&cplan.argv));
+        let ectx = &eplan.argv[ei];
+        assert!(
+            ectx.contains(&format!("Directory: {}.", target.display())),
+            "Directory names the resolved target: {ectx}"
+        );
+        assert!(
+            ectx.contains(&format!("EXTERNAL SEAT: this seat uses the caller-prepared directory {}. It is user-managed; ae records this arrangement but does not own, sandbox, delete, commit, or push it.", target.display())),
+            "full external literal present: {ectx}"
+        );
+        assert!(
+            !ectx.contains("WORKING TREE"),
+            "no TREE block for explicit: {ectx}"
+        );
+        for plan in [&eplan, &cplan] {
+            let si = plan
+                .argv
+                .iter()
+                .position(|w| w == "--session-id")
+                .expect("session id");
+            assert_eq!(plan.argv[si + 1], uuid, "exact staged UUID retained");
+        }
+        let non_ctx = |argv: &[String], i: usize| {
+            argv.iter()
+                .enumerate()
+                .filter(|(j, _)| *j != i)
+                .map(|(_, w)| w.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            non_ctx(&eplan.argv, ei),
+            non_ctx(&cplan.argv, ci),
+            "sole argv difference is context"
+        );
+        assert_eq!(
+            std::fs::read(exp.join("meta")).expect("post bytes"),
+            before,
+            "meta identical"
+        );
+        assert!(
+            !super::started_marker(&exp, "main").exists(),
+            "no marker published"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -1893,6 +2362,7 @@ mod tests {
         Seat {
             session: "s".to_owned(),
             work_dir: "/w".to_owned(),
+            dir_source: crate::meta::SeatProvenance::Inherited,
             config_files: Vec::new(),
             command: crate::config::IdentityConfig::resolved_snapshot(command),
             tool,
@@ -2235,6 +2705,7 @@ mod tests {
         let dir = root.join("sessions").join("noted");
         let store = root.join("store");
         std::fs::create_dir_all(&dir).expect("a session dir");
+        std::fs::create_dir_all(root.join("work")).expect("a recorded work dir");
         std::fs::create_dir_all(&store).expect("an override store");
         // `_run` canonicalizes before it compares (`/tmp` is a symlink on
         // macOS), so the fixture records the canonical spelling too.

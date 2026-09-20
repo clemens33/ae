@@ -1623,20 +1623,30 @@ pub fn checked_explicit_pane_start_dir(meta: &Meta, slot: &str) -> Result<String
     Ok(canonical.display().to_string())
 }
 
+/// Factual stem of an inherited-dir refusal: the door finding, no remedy.
+pub(crate) fn inherited_dir_cause(
+    session_dir: &str,
+    error: &crate::doors::StrictDirError,
+) -> String {
+    use crate::doors::StrictDirError::{Absent, NotDirectory, Unreadable};
+    let tail = match error {
+        Absent { .. } => String::from("is gone"),
+        NotDirectory { .. } => String::from("is not a directory"),
+        Unreadable { kind, .. } => format!("cannot be read ({kind:?})"),
+    };
+    format!("the session directory '{session_dir}' {tail}")
+}
+
 /// An inherited session dir that fails its use check, worded for what it
 /// is: no row, no retire — restore the session dir.
-fn inherited_dir_refusal(session_dir: &str, error: &crate::doors::StrictDirError) -> String {
-    use crate::doors::StrictDirError::{Absent, NotDirectory, Unreadable};
-    let remedy = "restore it before resuming this seat";
-    match error {
-        Absent { .. } => format!("the session directory '{session_dir}' is gone — {remedy}."),
-        Unreadable { kind, .. } => {
-            format!("the session directory '{session_dir}' cannot be read ({kind:?}) — {remedy}.")
-        }
-        NotDirectory { .. } => {
-            format!("the session directory '{session_dir}' is not a directory — {remedy}.")
-        }
-    }
+pub(crate) fn inherited_dir_refusal(
+    session_dir: &str,
+    error: &crate::doors::StrictDirError,
+) -> String {
+    format!(
+        "{} — restore it before resuming this seat.",
+        inherited_dir_cause(session_dir, error)
+    )
 }
 
 /// A strict-door failure worded for the path it refused, with the remedy the
