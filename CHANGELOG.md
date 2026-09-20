@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.153] - 2026-09-20
+- Add strict directory validation for worker seats
+- Add private typed seam for spawn with explicit target
+
 ## [v2026.9.152] - 2026-09-19
 - Add Board dialog to session menu
 - Pin Board ladder priority at one row over budget
