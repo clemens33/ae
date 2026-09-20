@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.154] - 2026-09-20
+- Validate seat directories across run context and spawn
+
 ## [v2026.9.153] - 2026-09-20
 - Add strict directory validation for worker seats
 - Add private typed seam for spawn with explicit target
