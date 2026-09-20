@@ -102,13 +102,15 @@ checks wait 900 seconds; failed or interrupted attempts back off 3600 seconds. B
 Manual `ae upgrade` shares the outer lock for its whole operation and waits for it. The
 automatic latest manifest request has a two-second global deadline; manual latest and exact
 pins retain the normal transfer budget. Latest is only discovery: archives are fetched from
-their immutable `releases/download/v<V>/...` route and verified before delegation.
+their immutable `releases/download/v<V>/...` route and verified before delegation. An unpinned
+manual upgrade whose latest resolves not-newer than the installed version stops after the
+manifest: it prints provenance and installs nothing.
 
 Only automatic publication carries the internal newer-only flag. The downloaded core takes
 the existing install lock, recovers an interrupted publish, then repeats the numeric
-strictly-newer comparison before it creates a journal or mutates anything. A manual upgrade
-still permits an explicit reinstall or downgrade. The publisher then migrates and relinks every
-placeable session before moving the public command pointer, reports and skips stopped
+strictly-newer comparison before it creates a journal or mutates anything. A PINNED manual
+upgrade still permits an explicit reinstall or downgrade. The publisher then migrates and relinks
+every placeable session before moving the public command pointer, reports and skips stopped
 unplaceable sessions, and prunes only afterward. Running agent harnesses stay alive; helpers
 and companion daemons move to the new core, subject to the same partial-failure diagnostics as
 a manual publish.

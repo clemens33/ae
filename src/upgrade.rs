@@ -353,7 +353,7 @@ pub fn run(
         }
     };
     match upgrade(&home, &pin, out) {
-        Ok(published) => {
+        Ok(ManualOutcome::Published(published)) => {
             for note in &published.notes {
                 writeln!(out, "ae: {note}")?;
             }
@@ -363,6 +363,10 @@ pub fn run(
                 published.version,
                 published.version_dir.display()
             )?;
+            out.flush()?;
+            Ok(0)
+        }
+        Ok(ManualOutcome::AlreadyCurrent) => {
             out.flush()?;
             Ok(0)
         }
@@ -403,12 +407,27 @@ fn namespace_escape(home: &Path) -> Option<String> {
     ))
 }
 
+/// The manual answer after discovery: a publication, or proof there was
+/// nothing to do. [`AutomaticInstall`] stays the downloaded core's answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ManualOutcome {
+    Published(crate::install::Published),
+    AlreadyCurrent,
+}
+
 /// Download, verify, extract, publish.
-fn upgrade(
+fn upgrade(home: &Path, pin: &Pin, out: &mut impl std::io::Write) -> Result<ManualOutcome, String> {
+    upgrade_with(home, pin, current_platform()?, out, &mut fetch_network)
+}
+
+/// Manual path with injected network, so tests prove the refusal offline.
+fn upgrade_with(
     home: &Path,
     pin: &Pin,
+    platform: &str,
     out: &mut impl std::io::Write,
-) -> Result<crate::install::Published, String> {
+    fetcher: &mut impl FnMut(&str, u64, Duration) -> Result<Vec<u8>, String>,
+) -> Result<ManualOutcome, String> {
     let paths = crate::install::fixed_paths(home)?;
     crate::install::prepare_home(&paths)?;
     let _held = crate::autoupgrade::lock(&paths.home, crate::autoupgrade::MANUAL_LOCK_WAIT)
@@ -417,22 +436,39 @@ fn upgrade(
                 "another ae upgrade or automatic check is in progress: {why}; retry in a few minutes"
             )
         })?;
-    let candidate = discover(pin)?;
+    let candidate = discover_manual_with(pin, platform, fetcher)?;
+    // Unpinned latest not newer than installed stops here: no archive, no publish, no
+    // restarts. A pin or unreadable pointer proceeds (explicit / repair). Args are
+    // compare_versions(candidate, installed): Less|Equal stops; None unreachable.
+    if *pin == Pin::Latest
+        && let Ok(installed) = crate::install::current_public_version(&paths)
+        && matches!(
+            crate::install::compare_versions(candidate.version(), &installed),
+            Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
+        )
+    {
+        let _ = writeln!(
+            out,
+            "ae: latest release {} (releases/latest, fetched just now) is not newer than what is \
+             installed ({installed}): already current, nothing to do.",
+            candidate.version()
+        );
+        let _ = writeln!(
+            out,
+            "ae: a release published minutes ago may lag the latest alias; retry it pinned: \
+             AE_VERSION=<calver> ae upgrade."
+        );
+        return Ok(ManualOutcome::AlreadyCurrent);
+    }
     let _ = writeln!(out, "ae upgrade: fetching {}", candidate.archive);
     let _ = out.flush();
-    let prepared = prepare(candidate)?;
+    let prepared = prepare_with(candidate, fetcher)?;
     delegate(&prepared.root, home, prepared.version(), false).and_then(|answer| match answer {
-        AutomaticInstall::Published(published) => Ok(published),
+        AutomaticInstall::Published(published) => Ok(ManualOutcome::Published(published)),
         AutomaticInstall::Superseded { .. } => {
             Err("manual upgrade unexpectedly used the automatic version guard".to_owned())
         }
     })
-}
-
-/// Discover a manually requested release from one manifest GET. Both latest
-/// discovery and an exact operator pin retain the ordinary transfer budget.
-pub(crate) fn discover(pin: &Pin) -> Result<Candidate, String> {
-    discover_manual_with(pin, current_platform()?, &mut fetch_network)
 }
 
 /// Automatic discovery is always latest and has a foreground-safe deadline.
@@ -785,6 +821,103 @@ mod tests {
             candidate.archive_url,
             "https://github.com/clemens33/ae/releases/download/v2026.9.7/ae-2026.9.7-linux-x86_64-musl.tar.gz"
         );
+    }
+
+    fn home_fixture(tag: &str, installed: Option<&str>) -> PathBuf {
+        let home = std::env::temp_dir().join(format!("ae-upgrade-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).expect("fixture home");
+        if let Some(version) = installed {
+            let dir = home.join(".ae").join("versions").join(version);
+            std::fs::create_dir_all(&dir).expect("version dir");
+            let bin = home.join(".local").join("bin");
+            std::fs::create_dir_all(&bin).expect("bin");
+            std::os::unix::fs::symlink(dir.join(crate::shape::CORE), bin.join("ae")).expect("link");
+        }
+        home
+    }
+
+    fn manifest_for(version: &str, platform: &str) -> Vec<u8> {
+        format!("{}  ae-{version}-{platform}.tar.gz\n", "a".repeat(64)).into_bytes()
+    }
+
+    #[test]
+    fn unpinned_latest_not_newer_fetches_only_the_manifest() {
+        for (tag, installed, latest) in [
+            ("equal", "2026.9.150", "2026.9.150"),
+            ("older", "2026.9.151", "2026.9.150"),
+        ] {
+            let home = home_fixture(tag, Some(installed));
+            let manifest = manifest_for(latest, "darwin-arm64");
+            let mut calls = 0;
+            let mut out = Vec::new();
+            let outcome = upgrade_with(
+                &home,
+                &Pin::Latest,
+                "darwin-arm64",
+                &mut out,
+                &mut |url, _, _| {
+                    calls += 1;
+                    assert!(
+                        url.ends_with("/releases/latest/download/SHA256SUMS"),
+                        "reinstall: {url}"
+                    );
+                    Ok(manifest.clone())
+                },
+            )
+            .expect("already current is success");
+            assert_eq!(outcome, ManualOutcome::AlreadyCurrent, "{tag}");
+            assert_eq!(calls, 1, "{tag}");
+            assert_eq!(
+                String::from_utf8(out).expect("utf8"),
+                format!(
+                    "ae: latest release {latest} (releases/latest, fetched just now) is not newer than what is installed ({installed}): already current, nothing to do.\nae: a release published minutes ago may lag the latest alias; retry it pinned: AE_VERSION=<calver> ae upgrade.\n"
+                ),
+                "{tag}"
+            );
+            let _ = std::fs::remove_dir_all(&home);
+        }
+    }
+
+    #[test]
+    fn upgrades_that_proceed_reach_the_archive() {
+        for (tag, pin_latest, installed, latest) in [
+            ("nolink", true, None, "2026.9.150"),
+            ("newer", true, Some("2026.9.150"), "2026.9.151"),
+            ("pinned", false, Some("2026.9.150"), "2026.9.150"),
+        ] {
+            let home = home_fixture(tag, installed);
+            let manifest = manifest_for(latest, "darwin-arm64");
+            let pin = if pin_latest {
+                Pin::Latest
+            } else {
+                Pin::Exact(latest.to_owned())
+            };
+            let mut urls = Vec::new();
+            let mut out = Vec::new();
+            let failed = upgrade_with(&home, &pin, "darwin-arm64", &mut out, &mut |url, _, _| {
+                urls.push(url.to_owned());
+                if url.ends_with(MANIFEST) {
+                    Ok(manifest.clone())
+                } else {
+                    Ok(b"not the recorded archive".to_vec())
+                }
+            })
+            .err()
+            .unwrap_or_default();
+            assert_eq!(urls.len(), 2, "{tag} reaches the archive");
+            assert!(urls[0].ends_with("/SHA256SUMS"), "{tag}");
+            assert!(
+                urls[0].contains(if pin_latest { "latest/" } else { "download/v" }),
+                "{tag}"
+            );
+            assert!(
+                urls[1].contains(&format!("/releases/download/v{latest}/")),
+                "{tag}"
+            );
+            assert!(failed.contains("checksum mismatch"), "{tag}: {failed}");
+            let _ = std::fs::remove_dir_all(&home);
+        }
     }
 
     #[test]

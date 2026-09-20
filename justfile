@@ -631,19 +631,21 @@ release:
     # same reason.
     publish() {
         if gh release view "$TAG" -R "$REPO" >/dev/null 2>&1; then
-            gh release upload "$TAG" "${ASSETS[@]}" --clobber -R "$REPO"
+            gh release upload "$TAG" "${ASSETS[@]}" --clobber -R "$REPO" && gh release edit "$TAG" -R "$REPO" --latest
         else
+            # --latest pins make_latest explicitly: without it GitHub sorts by commit date.
             gh release create "$TAG" "${ASSETS[@]}" \
                 -R "$REPO" \
                 --target "$SHA" \
                 --title "ae $VERSION" \
-                --notes-file "$NOTES_FILE"
+                --notes-file "$NOTES_FILE" \
+                --latest
         fi
     }
     if ! publish; then
         echo "Error: publishing $TAG failed. The commit is pushed; the tag is LOCAL only." >&2
         echo "       Nothing is published, so nothing is broken for installers. Retry with:" >&2
-        echo "       gh release create $TAG ${ASSETS[*]} -R $REPO --target $SHA --title 'ae $VERSION' --notes-file $NOTES_FILE" >&2
+        echo "       gh release create $TAG ${ASSETS[*]} -R $REPO --target $SHA --title 'ae $VERSION' --notes-file $NOTES_FILE --latest" >&2
         exit 1
     fi
 

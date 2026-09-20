@@ -14,7 +14,8 @@ ae <name> --seat <agent>=<profile> [...]
 ae list [--all|--stopped|--needs-attn]
                        List sessions (running by default; --all adds stopped
                        history, --needs-attn only those needing attention)
-ae upgrade             Install the latest tagged immutable release; no extra arguments
+ae upgrade             Install the latest tagged immutable release; no extra arguments;
+                       unpinned exits already-current when latest is not newer
 ae next [--attach]     Name the top running session needing attention (read-only;
                        alias: ae jump). --attach jumps to it. Non-zero when none.
 ae brief [name] [--all] [--since <dur>] [--seat <agent>]
@@ -881,7 +882,8 @@ returns non-zero if anything failed: the two hard dependencies (`tmux`, `git`), 
 config parses and names a startup roster whose profiles resolve to real executables, whether
 the state root's sessions are coherent, and whether each session's recorded core agrees with
 the binary answering right now. Its read-only `auto-upgrade` and `upgrade-check` rows report
-global policy plus missing, stale, failed or malformed check state; they never schedule work.
+global policy plus missing, stale, failed or malformed check state, and a superseded note when
+the installed version moved past what the check saw; they never schedule work.
 
 The report is the core's. Its bash-version row is fed through a `--bash-major` flag rather
 than the core probing `bash --version` itself, which would report whatever is first on

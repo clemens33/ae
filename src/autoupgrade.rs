@@ -263,18 +263,46 @@ fn status_at(shape: &crate::shape::Shape, now: i64) -> Status {
         CheckState::Valid(check) => {
             let failed = check.result.uses_backoff();
             let stale = enabled && !failed && due(&CheckState::Valid(check.clone()), now);
+            let mut detail = format!(
+                "{}: {}; seen {}",
+                crate::time::Timestamp::from_epoch(check.attempted_at),
+                check.result.as_str(),
+                check.seen.as_deref().unwrap_or("none")
+            );
+            // The verdict stays verbatim; the suffix names the newer install ahead of any
+            // stale flag, and an unreadable pointer means no suffix, no warning.
+            detail.push_str(&superseded_suffix(home, check.seen.as_deref()));
+            if stale {
+                detail.push_str("; stale");
+            }
             StatusRow {
-                detail: format!(
-                    "{}: {}; seen {}",
-                    crate::time::Timestamp::from_epoch(check.attempted_at),
-                    check.result.as_str(),
-                    check.seen.as_deref().unwrap_or("none")
-                ) + if stale { "; stale" } else { "" },
+                detail,
                 warning: failed || stale,
             }
         }
     };
     Status { policy, check }
+}
+
+/// Suffix when installed is newer than seen, else empty; silent on unreadable state.
+fn superseded_suffix(ae_home: &Path, seen: Option<&str>) -> String {
+    let Some(seen) = seen else {
+        return String::new();
+    };
+    let Some(home) = ae_home.parent() else {
+        return String::new();
+    };
+    let Ok(paths) = crate::install::fixed_paths(home) else {
+        return String::new();
+    };
+    let Ok(installed) = crate::install::current_public_version(&paths) else {
+        return String::new();
+    };
+    if crate::install::compare_versions(&installed, seen) == Some(std::cmp::Ordering::Greater) {
+        format!("; superseded by installed {installed}")
+    } else {
+        String::new()
+    }
 }
 
 fn unavailable_status(reason: &str) -> Status {
@@ -631,6 +659,88 @@ mod tests {
             home: home.to_owned(),
             version_dir: home.join("versions").join(crate::VERSION),
             version: crate::VERSION.to_owned(),
+        }
+    }
+
+    fn home_with_installed(tag: &str, version: &str) -> std::path::PathBuf {
+        let home = root(tag);
+        let _ = std::fs::remove_dir_all(&home);
+        let dir = home.join(".ae").join("versions").join(version);
+        std::fs::create_dir_all(&dir).expect("version dir");
+        let bin = home.join(".local").join("bin");
+        std::fs::create_dir_all(&bin).expect("bin");
+        std::os::unix::fs::symlink(dir.join(crate::shape::CORE), bin.join("ae")).expect("link");
+        home
+    }
+
+    fn check_row(home: &Path, seen: &str, result: CheckResult, now: i64) -> StatusRow {
+        let ae_home = home.join(".ae");
+        std::fs::write(ae_home.join("config"), "[workspace]\nauto_upgrade = on\n").expect("config");
+        write_check(
+            &ae_home,
+            &Check {
+                attempted_at: 1_789_000_000,
+                seen: Some(seen.to_owned()),
+                result,
+            },
+        )
+        .expect("state");
+        status_at(&installed(&ae_home), now).check
+    }
+
+    #[test]
+    fn check_detail_names_a_superseding_install_ahead_of_stale() {
+        for (tag, seen, result, stale, warning, suffix) in [
+            (
+                "superseded",
+                "2026.9.153",
+                CheckResult::Current,
+                false,
+                false,
+                true,
+            ),
+            (
+                "matched",
+                "2026.9.154",
+                CheckResult::Current,
+                false,
+                false,
+                false,
+            ),
+            (
+                "failed",
+                "2026.9.153",
+                CheckResult::FailedInstall,
+                false,
+                true,
+                true,
+            ),
+            (
+                "stale",
+                "2026.9.153",
+                CheckResult::Current,
+                true,
+                true,
+                true,
+            ),
+        ] {
+            let home = home_with_installed(tag, "2026.9.154");
+            let now = if stale {
+                1_789_000_000 + CADENCE_SECS
+            } else {
+                1_789_000_000
+            };
+            let row = check_row(&home, seen, result, now);
+            let mut expected = format!("2026-09-10T00:26:40Z: {}; seen {seen}", result.as_str());
+            if suffix {
+                expected.push_str("; superseded by installed 2026.9.154");
+            }
+            if stale {
+                expected.push_str("; stale");
+            }
+            assert_eq!(row.detail, expected, "{tag}");
+            assert_eq!(row.warning, warning, "{tag}");
+            let _ = std::fs::remove_dir_all(&home);
         }
     }
 
