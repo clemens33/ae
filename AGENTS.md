@@ -149,7 +149,10 @@ Other rules of the loop:
   `tests/it/`'s `cli.rs`, `install.rs`, `migrate.rs`, `shape.rs`, `parity.rs` and `doors.rs`.
   `tests/it/doors.rs` pins the exact per-file counts, so a new door is a review, not a diff.
   Same for the world-reading methods in `clippy.toml`'s `disallowed-methods`: each lives at a
-  named door carrying its reason.
+  named door carrying its reason. A new caller of an existing door moves neither inventory:
+  `tests/it/phase3.rs` is the FILE-level world-read inventory, `tests/it/doors.rs` counts
+  disallowed-TYPES relaxation SITES per file, so reads in an already-listed file add no file
+  and calls through an existing door add no site.
 - No clap, serde, anyhow, thiserror, chrono or nix. Adding any runtime dependency is a
   ruling, not a commit. See docs/history.md §11 for the researched line and its triggers.
 - **No new Bash.** `install` is policy-frozen. There is no other bash file and none may
