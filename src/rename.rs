@@ -2268,12 +2268,19 @@ fn opencode_plan(dir: &Path, intent: &Intent) -> Result<OpencodePlan, String> {
         }
         let safe = crate::launch::safe_slot(&seat.slot);
         wanted.push(safe.clone());
-        let ctx = crate::render::context_document(
+        let new_work = &intent.new_work;
+        let (seat_dir, provenance) = match crate::meta::raw_seat_work_dir(&bytes, &seat.slot) {
+            Ok(None) => (new_work.clone(), crate::meta::SeatProvenance::Inherited),
+            Ok(Some(row)) => (row, crate::meta::SeatProvenance::Explicit),
+            Err(why) => return Err(why),
+        };
+        let ctx = crate::render::seat_context_document(
             dir,
             &intent.new,
-            &intent.new_work,
+            &seat_dir,
             &seat.slot,
             &config_files,
+            provenance,
         );
         let md = dir.join(format!("opencode.{safe}.md"));
         let json = dir.join(format!("opencode.{safe}.json"));
@@ -2359,6 +2366,7 @@ fn opencode_current(dir: &Path, intent: &Intent) -> bool {
 /// slots the launch generated any for. Then verify all three.
 fn do_assets(root: &Path, intent: &Intent) -> Result<(), String> {
     let dir = crate::lifecycle::sessions_dir(root).join(&intent.new);
+    let plan = opencode_plan(&dir, intent)?;
     publish_manifest(&dir, &intent.new)?;
     if !helpers_ready(&dir) {
         let core = helper_core(&dir).ok_or_else(|| {
@@ -2370,7 +2378,6 @@ fn do_assets(root: &Path, intent: &Intent) -> Result<(), String> {
     // Generated provider context from the seat-tool plan: required pairs
     // published byte-exact, strays removed, then the whole asset set
     // verified — never trusted from whatever files happen to be present.
-    let plan = opencode_plan(&dir, intent)?;
     for file in &plan.required {
         crate::session_launch::assets::publish_document(
             &file.md,
@@ -3844,6 +3851,34 @@ mod tests {
         );
         std::fs::write(dir.join("meta"), &meta).unwrap();
         let forward = trap_intent("tfoo", "tfoobar", "/wt/tfoo", "/wt/tfoobar");
+        // S1: an explicit seat row resolves with no session proof.
+        let seat_dir = dir.join("seat-explicit").display().to_string();
+        let missing = dir.join("session-missing").display().to_string();
+        assert!(!Path::new(&missing).exists());
+        let explicit = meta.replace(
+            "seat.main=lead\n",
+            &format!("seat.main=lead\nwork_dir.main={seat_dir}\n"),
+        );
+        std::fs::write(dir.join("meta"), &explicit).unwrap();
+        let absent = trap_intent("tfoo", "tfoobar", "/wt/tfoo", &missing);
+        let planned = opencode_plan(&dir, &absent).expect("explicit plans with no session dir");
+        let pair = &planned.required[0];
+        let md = String::from_utf8_lossy(&pair.md_bytes);
+        let json = String::from_utf8_lossy(&pair.json_bytes);
+        let sentence = format!(
+            "EXTERNAL SEAT: this seat uses the caller-prepared directory {seat_dir}. It is user-managed;"
+        );
+        assert!(md.contains(&sentence), "{md}");
+        let pointer = crate::json::Value::Str(pair.md.display().to_string()).render();
+        let want_json = format!("{{\"instructions\":[{pointer}]}}\n");
+        assert_eq!(json.into_owned(), want_json);
+        // Inherited renders byte-identical to the legacy document.
+        std::fs::write(dir.join("meta"), &meta).unwrap();
+        let legacy = opencode_plan(&dir, &absent).expect("inherited plans");
+        let want = crate::render::context_document(&dir, "tfoobar", &missing, "main", &[]);
+        let legacy_md = String::from_utf8_lossy(&legacy.required[0].md_bytes);
+        assert_eq!(legacy_md, format!("{want}\n"));
+        std::fs::write(dir.join("meta"), &meta).unwrap();
         // Canonical bytes from the plan itself verify...
         let plan = opencode_plan(&dir, &forward).expect("a plan");
         assert_eq!(plan.required.len(), 1, "the opencode seat requires a pair");
@@ -3875,6 +3910,45 @@ mod tests {
         let _ = std::fs::remove_file(dir.join("send"));
         std::os::unix::fs::symlink(&other, dir.join("send")).unwrap();
         assert!(!helpers_ready(&dir), "a repointed link is not checked");
+    }
+
+    /// S1: seat rows survive the meta rewrite; a duplicate refuses pre-assets, honestly.
+    #[test]
+    fn the_transaction_keeps_seat_rows_and_refuses_a_duplicate_before_assets() {
+        let root = scratch("s1-seat-rows");
+        let dir = root.join("sessions").join("tfoobar");
+        std::fs::create_dir_all(&dir).unwrap();
+        let seat = dir.join("seat-explicit").display().to_string();
+        let before = format!(
+            "session=tfoo\nsession_id=e795c9e9-1234-4890-abcd-ef0123456789\nmode=full\norigin=/o\nwork_dir=/wt/tfoo\nwork_dir.main={seat}\nseat.main=lead\nprofile.main=opencode\nagent_bin.main=/tmp/fake-bin/opencode\nae_core={}\n",
+            root.join("ae-core").display()
+        );
+        std::fs::write(dir.join("meta"), &before).unwrap();
+        let mut intent = trap_intent("tfoo", "tfoobar", "/wt/tfoo", "/wt/tfoobar");
+        do_meta(&root, &intent).expect("meta publishes");
+        let after = std::fs::read_to_string(dir.join("meta")).unwrap();
+        let want = before.replace("session=tfoo\n", "session=tfoobar\n");
+        let want = want.replace("work_dir=/wt/tfoo\n", "work_dir=/wt/tfoobar\n");
+        assert_eq!(after, want, "only the identity rows move");
+        std::fs::write(dir.join("meta"), format!("{after}work_dir.main={seat}\n")).unwrap();
+        std::fs::write(root.join("ae-core"), b"core").unwrap();
+        let manifest = b"sentinel manifest\n";
+        std::fs::write(dir.join("workspace.md"), manifest).unwrap();
+        std::os::unix::fs::symlink(dir.join("nowhere"), dir.join("send")).unwrap();
+        intent.phase = PHASE_META_PUBLISHED.to_owned();
+        match complete_transaction(&root, &mut intent, None, &mut Vec::new()) {
+            Err(TxnError::Fail(msg)) => {
+                assert!(msg.contains("coherent meta published"), "{msg}");
+                assert!(msg.contains("Remaining: assets, result"), "{msg}");
+            }
+            other => panic!("a duplicate row refuses honestly, got {other:?}"),
+        }
+        assert_eq!(std::fs::read(dir.join("workspace.md")).unwrap(), manifest);
+        assert_eq!(
+            std::fs::read_link(dir.join("send")).unwrap(),
+            dir.join("nowhere")
+        );
+        assert!(std::fs::remove_dir_all(&root).is_ok());
     }
 
     /// Sweep ADD: the state move itself refuses a destination entry even
