@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.156] - 2026-09-20
+- Regenerate rename provider context per seat directory
+
 ## [v2026.9.155] - 2026-09-20
 - Document that a new door caller moves neither inventory
 - Refuse a not-newer unpinned upgrade; mark superseded checks
