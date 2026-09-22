@@ -129,18 +129,29 @@ pub fn publish_prompt(dir: &Path, slot: &str, text: &str) -> Result<(), String> 
 /// moves the command link, so a re-run lands on a core that reads that meta.
 /// Helpers keep the immutable core; a missing link fails closed to the core.
 /// `Displaced` takes the link as shape arithmetic; the gate refuses it first.
+fn pane_command_link(shape: &crate::shape::Shape) -> Option<PathBuf> {
+    shape
+        .command_link()
+        .filter(|link| crate::lifecycle::path_exists(link))
+}
+
 fn pane_head_for(shape: &crate::shape::Shape, core: &Path) -> PathBuf {
-    if let Some(link) = shape.command_link()
-        && crate::lifecycle::path_exists(&link)
-    {
-        return link;
-    }
-    core.to_path_buf()
+    pane_command_link(shape).unwrap_or_else(|| core.to_path_buf())
+}
+
+fn has_installed_pane_head_for(shape: &crate::shape::Shape) -> bool {
+    matches!(shape, crate::shape::Shape::Installed { .. }) && pane_command_link(shape).is_some()
 }
 
 /// [`pane_head_for`] for this process's own shape.
 pub(crate) fn pane_head(core: &Path) -> PathBuf {
     pane_head_for(crate::shape::current(), core)
+}
+
+/// Whether an installed shape uses [`pane_head`]'s public command link.
+/// Displaced gate refuses first.
+pub(crate) fn has_installed_pane_head() -> bool {
+    has_installed_pane_head_for(crate::shape::current())
 }
 
 /// The line a pane runs, on an already-chosen head: the head, this entry, the
@@ -2812,13 +2823,14 @@ mod tests {
             home: r0.join(".ae"),
             declared: "/elsewhere".into(),
         };
-        for (shape, core, head) in [
-            (installed(&r0), core(&r0), link(&r0)),
-            (installed(&r1), core(&r1), core(&r1)),
-            (Shape::Checkout, core(&r1), core(&r1)),
-            (displaced, core(&r0), link(&r0)),
-            (installed(&r2), core(&r2), link(&r2)),
+        for (shape, core, head, uses_installed_head) in [
+            (installed(&r0), core(&r0), link(&r0), true),
+            (installed(&r1), core(&r1), core(&r1), false),
+            (Shape::Checkout, core(&r1), core(&r1), false),
+            (displaced, core(&r0), link(&r0), false),
+            (installed(&r2), core(&r2), link(&r2), true),
         ] {
+            assert_eq!(has_installed_pane_head_for(&shape), uses_installed_head);
             let got = pane_command_for(&shape, &core, dir, "spawned.0");
             let want = format!("'{}' _run '/s/tg1' 'spawned.0'", head.display());
             assert_eq!(got, want);

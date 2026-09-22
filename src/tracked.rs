@@ -261,6 +261,38 @@ pub fn reply_command(dir: &Path, target_name: &str, req_id: &str, label: &str) -
     )
 }
 
+fn reply_footer_command_for(
+    dir: &Path,
+    session: &str,
+    target_name: &str,
+    req_id: &str,
+    label: &str,
+    installed_head: bool,
+) -> String {
+    if installed_head && crate::session_launch::name::is_session_name(session) {
+        format!("ae @{session} reply --as \"{target_name}\" \"{req_id}\" \"{label}\"")
+    } else {
+        reply_command(dir, target_name, req_id, label)
+    }
+}
+
+fn reply_footer_command(
+    dir: &Path,
+    session: &str,
+    target_name: &str,
+    req_id: &str,
+    label: &str,
+) -> String {
+    reply_footer_command_for(
+        dir,
+        session,
+        target_name,
+        req_id,
+        label,
+        crate::run::has_installed_pane_head(),
+    )
+}
+
 /// The delivered text, before the provenance envelope `send` prepends: `<header> <id> from <sender>: <body>`, the instructions block
 /// for a review, and the REQUIRED footer.
 ///
@@ -1550,7 +1582,8 @@ pub fn run(
     } else {
         resolved.agent.clone()
     };
-    let reply_cmd = reply_command(dir, &target_name, &req_id, kind.reply_label());
+    let reply_cmd =
+        reply_footer_command(dir, own_session, &target_name, &req_id, kind.reply_label());
     let message = compose(kind, &req_id, &sender.display, &parsed.body, &reply_cmd);
     // The action and ref name the recovery file the body store writes; the
     // envelope names the same VERIFIED sender the composed message and the
@@ -1896,6 +1929,52 @@ mod tests {
                 super::REVIEW_INSTRUCTIONS
             )
         );
+    }
+
+    #[test]
+    fn reply_footer_uses_short_spelling_only_for_installed_canonical_sessions() {
+        let cases = [
+            (
+                "/h/.ae/sessions/s",
+                "s",
+                true,
+                "ae @s reply --as \"cl:w\" \"ae-1\" \"<your reply>\"",
+            ),
+            (
+                "/h/.ae/sessions/s",
+                "s",
+                false,
+                "/h/.ae/sessions/s/reply --as \"cl:w\" \"ae-1\" \"<your reply>\"",
+            ),
+            (
+                "/h/.ae/sessions/old.name",
+                "old.name",
+                true,
+                "/h/.ae/sessions/old.name/reply --as \"cl:w\" \"ae-1\" \"<your reply>\"",
+            ),
+        ];
+        for (dir, session, installed, command) in cases {
+            let footer = compose(
+                Kind::Ask,
+                "ae-1",
+                "cl:lead",
+                "question",
+                &super::reply_footer_command_for(
+                    std::path::Path::new(dir),
+                    session,
+                    "cl:w",
+                    "ae-1",
+                    Kind::Ask.reply_label(),
+                    installed,
+                ),
+            );
+            assert!(
+                footer.contains(&format!(
+                    "REQUIRED: When you have finished, you MUST run this exact command to reply:\n{command}\nDo not reply any other way."
+                )),
+                "{footer}"
+            );
+        }
     }
 
     #[test]

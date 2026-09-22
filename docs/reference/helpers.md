@@ -57,8 +57,7 @@ foreign pane stays foreign, and `--cross-session` still binds every delivery
 helper. Naming a session buys no authority in it.
 
 When another agent hands you an exact `reply` or `send` command, run it
-**verbatim**. Those carry full paths and are meant to be pasted, not rewritten
-into the short form.
+**verbatim**. Either spelling is meant to be pasted, not rewritten.
 
 **Never write through a helper path.** `>`, `>>`, `chmod`, `cp` and `sed -i` follow a symlink, so `> ~/.ae/sessions/<name>/send` truncates the ae core binary rather than replacing a helper — and every session on the machine is bound to it. Reading through one is fine. If you need to replace a helper, delete it first, or just run `ae doctor --refresh <name>` and let ae re-link the set.
 
@@ -242,8 +241,10 @@ When an agent receives an `ask` / `review` request, the message includes the exa
 REQUEST ae-20260518T064807Z-bedad2f3 from claude:lead: <your question>
 
 REQUIRED: When you have finished, you MUST run this exact command to reply:
-/home/ckriech/.ae/sessions/<name>/reply --as "codex:coworker" "ae-2026..." "<your reply>"
+ae @<name> reply --as "codex:coworker" "ae-2026..." "<your reply>"
 Do not reply any other way. Do NOT use peek/peak as a reply mechanism.
 ```
+
+Installed ae uses this short spelling when its command link exists and the session name is canonical; checkout ae and retained pre-grammar names keep the full helper path.
 
 Agents are instructed to run that command verbatim. If they do, `requests` changes the row from `pending` to `replied`; an authorized `cancel` shows `cancelled`, and either party's seat retirement shows `retired`.
