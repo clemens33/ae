@@ -187,3 +187,13 @@ re-briefed.**
 *Corollary — history carries the why.* When evidence kills a feature, ship the build
 and the cut as two commits (`5a2e6a4` feat + `4f63c19` cut), so the history carries
 *why* it died, not just that it is absent.
+
+## 14. Judge and cruncher — judgment reads digests, not files
+
+**Pattern.** When a judgment-class seat must inspect more than five files or 2,000 lines, the judge delegates bulk reading to a cruncher: the judge decides; the cruncher reads, counts, greps, and returns facts only, with each claim tied to `file:line` or a reproducible command. A judging worker spawns only within the permission its brief grants; otherwise it asks its spawner. Choose the cheapest non-judgment profile that can read reliably; prefer a different provider when policy allows.
+
+**Why.** Bulk reading spends judgment capacity on navigation and makes decisive details easier to miss. A cited digest compresses the evidence while keeping source available for verification.
+
+**How ae applies it.** Store each digest under `.local/`, keep it under 250 lines, and send only a short pointer, never the whole digest. The judge reads the digest plus 10–15 bounded spot-check windows covering decisive evidence. Before finalizing, the cruncher fact-checks the judge's draft line by line as HOLDS / WRONG; when providers differ, this check is the rule-11 second read for that judgment; a gated diff keeps its own diff review. Below threshold, read the source directly; delegation is overhead.
+
+**Anti-pattern.** The judge opens every source file, the cruncher supplies opinions instead of cited facts, or a reviewer treats the digest as proof without spot-checking. A digest is a map to evidence, not a substitute for it.

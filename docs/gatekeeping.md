@@ -1482,6 +1482,8 @@ it was written to catch**, not merely whether it is about the same subject. Obli
 before a change do not automatically extend to what the change introduced — and a phase that
 alters semantics has, by definition, produced cases its predecessors were not written against.
 
+For bulk source reading, follow the judge-and-cruncher pattern in [`design-patterns.md`](design-patterns.md).
+
 ### A structural criterion measures a PROXY, and satisfying it can defeat the goal
 
 A rule forbade observing mutable state twice: the digest was reading session files again, after
