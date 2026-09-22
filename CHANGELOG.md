@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.159] - 2026-09-22
+- Add judge and cruncher delegation pattern
+- Show reseat records in the Activity dialog
+- Use short reply helper in installed sessions
+
 ## [v2026.9.158] - 2026-09-22
 - Bind seat directory and provenance at scan and commit
 
