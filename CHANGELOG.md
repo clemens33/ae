@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.157] - 2026-09-22
+- Require proof before confirming done
+
 ## [v2026.9.156] - 2026-09-20
 - Regenerate rename provider context per seat directory
 
