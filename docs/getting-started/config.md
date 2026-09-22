@@ -38,6 +38,7 @@ watchdog = true
 quota = on
 quota_every_secs = 300
 idle_nudge_secs = 300
+done_confirmations = 2
 # auto_upgrade = on
 
 [prompt]
@@ -188,6 +189,7 @@ Old seat files that still carry `[profiles]`/`[roster]` are ignored for identity
 | `quota` | Whether ae acts on vendor quota at all (`on` / `off`); absent means `on`. When `off`, agents are never told about quota, the watchdog books no quota advisory, sends no checkpoint ask and renders no quota throttle line, and the settings menu carries no quota entry. While `on`, a scope entering `low` or worse asks every seat on it, once, to write a durable checkpoint before its subscription runs dry. `ae quota` works identically in both states. `off` wins over `quota_every_secs` | `on` |
 | `quota_every_secs` | Watchdog cadence in seconds for the quota observation, rounded to whole watchdog cycles (`0` disables it) | `300` |
 | `idle_nudge_secs` | Continuous positively observed empty-input time before the watchdog reminds the seat (`0` disables) | `300` |
+| `done_confirmations` | Delivered proof challenges a later `done` must answer before confirmation (`0` disables; range `0`–`9`) | `2` |
 | `orchestrator` | Mark this session as the fleet overview seat (`true`); grants its panes the bare human-authority `relay` helper | `false`       |
 | `sweep` | Persist this orchestrator's changed-overview minimum spacing in seconds (`0` disables; positive values below `60` become `60`) | `AE_WATCHDOG_SWEEP_SEC`, then `120` |
 | `auto_upgrade` | Let an installed ae quietly check for and apply strictly newer releases (`on` / `off`); global config only | `on` |
@@ -374,7 +376,9 @@ effective observation period is the requested seconds rounded up to that grid.
 
 Idle reminders use `[workspace] idle_nudge_secs`, also persisted at launch and
 validated as unsigned integer seconds. The default is 300; `0` disables idle
-reminders without disabling legacy stale detection for unmodeled frames.
+reminders, done challenges included, without disabling legacy stale detection for unmodeled frames.
+`done_confirmations` is persisted too; bad input falls back to 2 with a note. A resumed session
+keeps its recorded value, so config changes apply on relaunch; a session without the row records 2.
 
 ## Model tiers (recommended profiles)
 

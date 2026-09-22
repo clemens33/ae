@@ -19,14 +19,14 @@ use crate::tmux::{self, OptionScope, StopProbe};
 use crate::tracked::{self, EventFields};
 use crate::transport;
 use crate::watchdog::{
-    QuietCycle, QuietKind, QuietPane, SweepAlert, SweepEffect, SweepKnobs, SweepObservation,
-    SweepState, SweepVerdict, Throttle, classify_dead, declaration_key, is_sweep_target,
-    latest_relevant_event, quiet_hash, quiet_pane_decision, quiet_reason, quiet_stabilize,
-    record_sweep, stale_composite, sweep_step, throttle_class,
+    DoneProgress, QuietCycle, QuietKind, QuietPane, SweepAlert, SweepEffect, SweepKnobs,
+    SweepObservation, SweepState, SweepVerdict, Throttle, classify_dead, declaration_key,
+    is_sweep_target, latest_relevant_event, quiet_hash, quiet_pane_decision, quiet_reason,
+    quiet_stabilize, record_sweep, stale_composite, sweep_step, throttle_class,
 };
 
 /// The event actor every watchdog emission carries.
-const ACTOR: &str = "watchdog";
+const ACTOR: &str = crate::watchdog::WATCHDOG_ACTOR;
 
 /// The panes that are not agents: unstamped, tmux's own null, this daemon, the
 /// events pane, and the two older names a session can still carry.
@@ -65,6 +65,8 @@ pub struct Knobs {
     pub quota_aware: bool,
     /// Seconds of continuously observed idle before the state reminder; zero disables it.
     pub idle_nudge_secs: u64,
+    /// Later done declarations required after verified challenges.
+    pub done_confirmations: u8,
     /// The window under which a pane change or an event counts as recent.
     pub stale_secs: u64,
     /// How many nudges may be DELIVERED before the alert replaces them.
@@ -95,6 +97,7 @@ impl Default for Knobs {
             quota_every_secs: 300,
             quota_aware: true,
             idle_nudge_secs: crate::watchdog::DEFAULT_IDLE_NUDGE_SECS,
+            done_confirmations: crate::watchdog::DEFAULT_DONE_CONFIRMATIONS,
             stale_secs: 900,
             max_nudges: 2,
             throttle_alert_cycles: 5,
@@ -250,6 +253,8 @@ pub struct Observation {
     /// The RESOLVED quiet suppression: `Done` always, `WaitingUser`/`Blocked`
     /// only while their baseline holds.
     pub quiet: Option<QuietKind>,
+    /// The shared journal-derived done episode verdict.
+    pub done_progress: DoneProgress,
     /// Whether a process named the agent binary runs under the pane.
     pub descendancy: Descendancy,
     /// Age of the newest event this agent is the ACTOR of.
@@ -369,6 +374,12 @@ pub enum Effect {
     },
     /// Deliver one nudge through the session's own send helper.
     Nudge,
+    /// Deliver proof challenge without consuming the ordinary nudge budget.
+    DoneChallenge {
+        confirmations: u8,
+        required: u8,
+        done_age_secs: u64,
+    },
     /// A line for the human, published with `display-message`.
     Notify(String),
     /// ONE quota pass outside the cadence, on the cycle a seat left the usage
@@ -1111,8 +1122,8 @@ pub fn stale_display(event_age_secs: u64) -> String {
 pub fn nudge_text(goal: Option<&str>, meta_dir: &Path) -> String {
     let prefix = goal.map_or_else(String::new, |goal| format!("Session goal: {goal}. "));
     format!(
-        "{prefix}Status check: if you have more work, continue. Otherwise declare your state so \
-         I stop nudging: {}/state <waiting-user|waiting-agent|blocked|done> \"<reason>\"",
+        "{prefix}Continue the assigned work now. Do not re-plan or ask unless blocked. Then \
+         declare state: {}/state <waiting-user|waiting-agent|blocked|done> \"<reason>\"",
         meta_dir.display()
     )
 }
@@ -1123,8 +1134,32 @@ pub fn nudge_text(goal: Option<&str>, meta_dir: &Path) -> String {
 pub fn idle_nudge_text(goal: Option<&str>, meta_dir: &Path) -> String {
     let prefix = goal.map_or_else(String::new, |goal| format!("Session goal: {goal}. "));
     format!(
-        "{prefix}you look idle: declare state or continue. State helper: {}/state \
+        "{prefix}You look idle. Continue the assigned work now. Do not re-plan or ask unless \
+         blocked. Then declare state: {}/state \
          <waiting-user|waiting-agent|blocked|done> \"<reason>\"",
+        meta_dir.display()
+    )
+}
+
+#[must_use]
+pub fn done_challenge_text(
+    goal: Option<&str>,
+    meta_dir: &Path,
+    age: u64,
+    confirmations: u8,
+    required: u8,
+) -> String {
+    let prefix = goal.map_or_else(String::new, |goal| format!("Session goal: {goal}. "));
+    let minutes = age / 60;
+    format!(
+        "{prefix}Continue the assigned work now. Do not re-plan or ask unless blocked. Done was \
+         declared {minutes}m ago; confirmation {} of {required}. Re-read your brief and goal. State how \
+         each deliverable was verified. Anything unverified: declare working and finish assigned \
+         work NOW. Worker awaiting owner review: invent no scope; do not commit or edit solely for \
+         this challenge. Otherwise re-declare done with completed work and proof, including any \
+         held review. This is self-attestation, not owner approval. Then declare state: {}/state \
+         <waiting-user|waiting-agent|blocked|done> \"<reason>\"",
+        confirmations.saturating_add(1),
         meta_dir.display()
     )
 }
@@ -1433,6 +1468,10 @@ pub fn account(prior: &PaneState, seen: &Observation, knobs: &Knobs) -> Accounti
 /// Steps 3 through 10 — the ordinary judgement of a pane that is not dead (any
 /// more). `prior` is the carry the verdict is judged against: the reset
 /// episode a clear just returned, or the standing carry.
+#[allow(
+    clippy::too_many_lines,
+    reason = "ordered accounting ladder mirrors the documented watchdog steps"
+)]
 fn account_ordinary(
     prior: &PaneState,
     mut next: PaneState,
@@ -1496,6 +1535,24 @@ fn account_ordinary(
             });
         }
         next.human_prompt_streak = 0;
+    }
+
+    if let DoneProgress::ChallengeDue {
+        confirmations,
+        required,
+        done_age_secs,
+        attempts,
+    } = seen.done_progress
+    {
+        if attempts < knobs.undelivered_max {
+            effects.push(Effect::DoneChallenge {
+                confirmations,
+                required,
+                done_age_secs,
+            });
+        } else if attempts == knobs.undelivered_max {
+            effects.extend(unreachable_effects(attempts, &stale_display(done_age_secs)));
+        }
     }
 
     // 6. A quiet declaration. A FRESH `waiting-agent` holds like the other
@@ -1876,21 +1933,23 @@ pub fn record_nudge(
     }
     state.undelivered_streak = state.undelivered_streak.saturating_add(1);
     if state.undelivered_streak == knobs.undelivered_max {
-        return vec![
-            Effect::Emit {
-                action: "alert",
-                summary: format!(
-                    "nudge unreachable/occupied — {} undelivered attempts ({display})",
-                    state.undelivered_streak
-                ),
-            },
-            Effect::Notify(format!(
-                "unreachable — {} nudges could not be delivered",
-                state.undelivered_streak
-            )),
-        ];
+        return unreachable_effects(state.undelivered_streak, display);
     }
     Vec::new()
+}
+
+fn unreachable_effects(attempts: u32, display: &str) -> Vec<Effect> {
+    vec![
+        Effect::Emit {
+            action: "alert",
+            summary: format!(
+                "nudge unreachable/occupied — {attempts} undelivered attempts ({display})"
+            ),
+        },
+        Effect::Notify(format!(
+            "unreachable — {attempts} nudges could not be delivered"
+        )),
+    ]
 }
 
 /// Seconds between `at` and `now`, clamped at zero.
@@ -2912,6 +2971,12 @@ fn session_mark(by_pane: &[PaneMark], roster: &[Mark]) -> Mark {
         .unwrap_or(Mark::Idle)
 }
 
+fn launch_id_for<'a>(ids: &'a [(String, String)], slot: &str) -> Option<&'a str> {
+    ids.iter()
+        .find(|(seat, _)| seat.as_str() == slot)
+        .map(|(_, id)| id.as_str())
+}
+
 /// Run the watchdog for one session until its session or its state goes away.
 ///
 /// # Errors
@@ -2956,6 +3021,15 @@ pub fn run(
             return Ok(crate::state::EXIT_USAGE);
         }
     };
+    let raw = crate::meta::sole_value(&bytes, "done_confirmations")
+        .and_then(|value| std::str::from_utf8(value).ok());
+    let doubled = raw.is_none() && crate::meta::first_value(&bytes, "done_confirmations").is_some();
+    let (count, note) =
+        crate::meta::resolve_done_confirmations(raw, doubled, knobs.done_confirmations);
+    knobs.done_confirmations = count;
+    if let Some(note) = note {
+        writeln!(err, "ae: watchdog: {note}")?;
+    }
     let meta = Meta::parse(&String::from_utf8_lossy(&bytes));
     // The INITIAL resolution, kept as the fast refuse.
     let server = match meta.server_selector() {
@@ -3955,8 +4029,13 @@ impl Cycle<'_> {
                 }
                 QuotaAction::Deliver(pending) => {
                     let text = pending.advisory.render(self.meta_dir, now);
-                    let delivery =
-                        self.deliver(&pending.recipient.agent, &text, "quota-advisory", &text);
+                    let delivery = self.deliver(
+                        &pending.recipient.agent,
+                        &text,
+                        "quota-advisory",
+                        &text,
+                        None,
+                    );
                     if let Some(QuotaAction::Dropped { recipient, summary }) = carry
                         .record_delivery(&pending, quota_delivery(&delivery), self.meta_dir, now)
                     {
@@ -3968,7 +4047,7 @@ impl Cycle<'_> {
                     // the seat reads one marker, written by `provenance`.
                     let text = ask.advisory.checkpoint_ask(self.meta_dir);
                     let delivery =
-                        self.deliver(&ask.recipient.agent, &text, "quota-checkpoint", &text);
+                        self.deliver(&ask.recipient.agent, &text, "quota-checkpoint", &text, None);
                     if let Some(QuotaAction::Dropped { recipient, summary }) =
                         carry.record_ask_delivery(&ask, quota_delivery(&delivery), self.meta_dir)
                     {
@@ -4429,6 +4508,17 @@ impl Cycle<'_> {
             let identity = quiet_hash(&format!("{slot}\n{agent}"));
             let carried = entry_mut(&mut carry.panes, &pane.pane_id);
             restore_idle(carried, &pane.observed, identity);
+            let launch = launch_id_for(&self.launch_ids, &slot);
+            let done_progress = crate::watchdog::done_progress(
+                &events,
+                self.session,
+                &slot,
+                agent,
+                launch,
+                Timestamp::from_epoch(now),
+                self.knobs.idle_nudge_secs,
+                self.knobs.done_confirmations,
+            );
             let seen = Observation {
                 now_epoch: now,
                 hash,
@@ -4447,7 +4537,9 @@ impl Cycle<'_> {
                     &quiet_query(&events, agent, &slot, hash, index, &pane.pane_id),
                     carried,
                     &mut carry.quiet,
+                    done_progress,
                 ),
+                done_progress,
                 descendancy,
                 last_actor_event_age_secs: last_actor_event_age(
                     &events,
@@ -4991,11 +5083,16 @@ impl Cycle<'_> {
         query: &QuietQuery<'_>,
         state: &mut PaneState,
         quiet_cycle: &mut QuietCycle,
+        done_progress: DoneProgress,
     ) -> Option<QuietKind> {
         let relevant = latest_relevant_event(query.events, self.session, query.slot, query.agent)?;
         let kind = quiet_reason(&relevant)?;
         if kind == QuietKind::Done {
-            return Some(kind);
+            return (!matches!(
+                done_progress,
+                DoneProgress::None | DoneProgress::Lapsed { .. }
+            ))
+            .then_some(kind);
         }
         let event = relevant.event;
         let key = declaration_key(event);
@@ -5101,10 +5198,30 @@ impl Cycle<'_> {
                     (true, None) => format!("{display}, harness waiting at input"),
                     (false, _) => format!("{display}, no recent ae activity"),
                 };
-                let delivered = self.deliver(agent, &text, "nudge", &summary).code == Some(0);
+                let delivered = self.deliver(agent, &text, "nudge", &summary, None).code == Some(0);
                 for effect in record_nudge(state, delivered, &self.knobs, &display) {
                     self.apply(&effect, on, state, err)?;
                 }
+                Ok(())
+            }
+            Effect::DoneChallenge {
+                confirmations,
+                required,
+                done_age_secs,
+            } => {
+                let text = done_challenge_text(
+                    self.goal.as_deref(),
+                    self.meta_dir,
+                    *done_age_secs,
+                    *confirmations,
+                    *required,
+                );
+                let summary = format!(
+                    "confirmation {}/{required}",
+                    confirmations.saturating_add(1)
+                );
+                let launch = launch_id_for(&self.launch_ids, on.slot);
+                let _ = self.deliver(agent, &text, "done-challenge", &summary, launch);
                 Ok(())
             }
         }
@@ -5141,7 +5258,7 @@ impl Cycle<'_> {
         // Delivery is CHECKED.
         let body = overview.body();
         let delivered = self
-            .deliver(on.agent, &body, "nudge", "fleet overview changed")
+            .deliver(on.agent, &body, "nudge", "fleet overview changed", None)
             .code
             == Some(0);
         // This is intentionally AFTER the checked delivery. A deferred submit
@@ -5177,18 +5294,21 @@ impl Cycle<'_> {
     /// route through it rather than each spawning for itself: a second delivery
     /// site is a second thing to audit, and a unit guard in this file holds the
     /// count at one.
-    fn deliver(&self, agent: &str, text: &str, action: &str, summary: &str) -> transport::Delivery {
-        transport::deliver(
-            self.helper.path(),
-            agent,
-            text,
-            false,
-            &[
-                ("AE_SENDER_OVERRIDE", ACTOR),
-                ("_AE_EVENT_ACTION", action),
-                ("_AE_EVENT_SUMMARY", summary),
-            ],
-        )
+    fn deliver(
+        &self,
+        agent: &str,
+        text: &str,
+        action: &str,
+        summary: &str,
+        reference: Option<&str>,
+    ) -> transport::Delivery {
+        let mut vars = vec![
+            ("AE_SENDER_OVERRIDE", ACTOR),
+            ("_AE_EVENT_ACTION", action),
+            ("_AE_EVENT_SUMMARY", summary),
+        ];
+        vars.extend(reference.map(|value| ("_AE_EVENT_REF", value)));
+        transport::deliver(self.helper.path(), agent, text, false, &vars)
     }
 
     /// One brief-retry pass: set aside what is permanently damaged, then spend
@@ -5263,6 +5383,7 @@ impl Cycle<'_> {
             RETRY_PLACEHOLDER,
             crate::brief_retry::RETRY_ACTION,
             "",
+            None,
         );
         if delivery.code != Some(0) {
             // Every outcome the helper acts on, it has already recorded and
@@ -5748,19 +5869,20 @@ fn bar_glyph(dead: usize, stale: usize, icons: bool) -> &'static str {
 mod tests {
     use super::{
         ACTOR, ADOPTION_TICK, Adopted, Adoption, AdoptionBackend, AgentObservation, Carry,
-        Continuation, Cycle, DETACHED_MOTION_TICK, Effect, FactRung, HOLD_MAX_CYCLES,
+        Continuation, Cycle, DETACHED_MOTION_TICK, DoneProgress, Effect, FactRung, HOLD_MAX_CYCLES,
         HarnessObservation, Journal, Knobs, MissingState, MotionState, MotionVerdict, Observation,
         OverviewReading, PaneState, PendingAdvisory, PendingAsk, QuietCycle, QuietQuery,
         QuotaAction, QuotaCarry, QuotaDelivery, QuotaLevel, QuotaRecipient, Rebind,
         ResolveIdentity, SeatIdentity, SendHelper, TickerMode, UNKNOWN_ALERT_CYCLES, Verdict,
         WatchdogPresence, account, adopt_server, adoption_due, adoption_from, adoption_writes,
-        age_secs, agents_fact, bar_glyph, continuation, deferred, entry_mut, fact_at, fleet_rows,
-        held_seats, holds_seat, idle_nudge_seconds, idle_nudge_text, idle_nudge_text_waiting,
-        is_meta_agent, last_actor_event_age, last_done_event_at, last_working_declaration_at,
-        motion_cadence, motion_failure, motion_observation_due, motion_publish_failure,
-        motion_ticker_enabled, nudge_text, observed_option, proven_ownership, quota_ask_candidates,
-        quota_delivery, quota_observation_due, quota_recipients, quota_seconds, read_events,
-        rebind, record_nudge, restore_idle, session_name, slot_latched, slot_mark, stale_display,
+        age_secs, agents_fact, bar_glyph, continuation, deferred, done_challenge_text, entry_mut,
+        fact_at, fleet_rows, held_seats, holds_seat, idle_nudge_seconds, idle_nudge_text,
+        idle_nudge_text_waiting, is_meta_agent, last_actor_event_age, last_done_event_at,
+        last_working_declaration_at, launch_id_for, motion_cadence, motion_failure,
+        motion_observation_due, motion_publish_failure, motion_ticker_enabled, nudge_text,
+        observed_option, proven_ownership, quota_ask_candidates, quota_delivery,
+        quota_observation_due, quota_recipients, quota_seconds, read_events, rebind, record_nudge,
+        restore_idle, run, session_name, slot_latched, slot_mark, stale_display,
         static_observe_cadence, sweep_effects, sweep_seconds, system_time_from_epoch,
         throttle_quota_line, ticker_mode, window_agents_line,
     };
@@ -6072,6 +6194,7 @@ mod tests {
             capture_ok: true,
             throttle_quota: None,
             quiet: None,
+            done_progress: DoneProgress::None,
             descendancy: Descendancy::Present,
             last_actor_event_age_secs: 0,
             sweep: None,
@@ -7955,6 +8078,25 @@ mod tests {
             idle_nudge_seconds(b"idle_nudge_secs=60\nidle_nudge_secs=120\n", 300),
             Err("60".to_owned()),
             "ambiguous persisted state must not enable an arbitrary cadence"
+        );
+    }
+
+    #[test]
+    fn a_single_done_confirmation_row_is_not_reported_as_doubled() {
+        let scratch = Scratch::new("done-confirmations-single");
+        std::fs::write(scratch.0.join("meta"), "done_confirmations=5\n").expect("write meta");
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        assert_eq!(
+            run(&scratch.0, Knobs::default(), &mut out, &mut err).expect("watchdog result"),
+            1,
+            "the missing server selector ends the probe after knob resolution"
+        );
+        let err = String::from_utf8(err).expect("watchdog stderr");
+        assert!(err.contains("no positive tmux server recorded"));
+        assert!(
+            !err.contains("done_confirmations ignored"),
+            "one valid row is not an ambiguous persisted value"
         );
     }
 
@@ -10113,7 +10255,7 @@ mod tests {
         let text = idle_nudge_text_waiting(None, Path::new("/m"), &reason);
         assert!(text.contains(&reason), "the reminder names it: {text}");
         assert!(
-            text.contains("you look idle"),
+            text.contains("You look idle"),
             "on top of the ordinary reminder, not instead of it: {text}"
         );
     }
@@ -10723,7 +10865,7 @@ mod tests {
             pane_id: "%1",
         };
 
-        let first = cycle.resolve_quiet(&query, &mut state, &mut quiet_cycle);
+        let first = cycle.resolve_quiet(&query, &mut state, &mut quiet_cycle, DoneProgress::None);
         assert_eq!(first, Some(QuietKind::WaitingUser));
         assert_eq!(state.quiet_base, Some((key.clone(), 9, 1)));
         let mut observed = seen();
@@ -10735,7 +10877,7 @@ mod tests {
         );
 
         query.hash = 11;
-        let second = cycle.resolve_quiet(&query, &mut state, &mut quiet_cycle);
+        let second = cycle.resolve_quiet(&query, &mut state, &mut quiet_cycle, DoneProgress::None);
         assert_eq!(second, None);
         observed.hash = 11;
         observed.quiet = second;
@@ -10745,9 +10887,89 @@ mod tests {
         );
 
         query.hash = 9;
-        let settled = cycle.resolve_quiet(&query, &mut state, &mut quiet_cycle);
+        let settled = cycle.resolve_quiet(&query, &mut state, &mut quiet_cycle, DoneProgress::None);
         assert_eq!(settled, Some(QuietKind::WaitingUser));
         assert_eq!(state.quiet_base, Some((key, 9, 0)));
+    }
+
+    #[test]
+    fn a_done_declaration_is_quiet_only_while_its_episode_is_live() {
+        let scratch = Scratch::new("done-quiet-progress");
+        let helper = SendHelper::for_session(&scratch.0);
+        let server = ServerId::Ambient;
+        let cycle = Cycle {
+            knobs: Knobs::default(),
+            meta_dir: &scratch.0,
+            helper: &helper,
+            server: &server,
+            session: "demo",
+            goal: None,
+            roster: Vec::new(),
+            local_config: None,
+            lead_pair: false,
+            fleet_order: crate::theme::FleetOrder::EMPTY,
+            meta_agent: false,
+            launch_ids: Vec::new(),
+        };
+        let events = vec![
+            Event::parse_line(
+                r#"{"ts":"2026-08-29T04:00:00Z","actor":"opus5:builder","action":"state","ref":"done","summary":"proof","actor_slot":"main","actor_session":"demo"}"#,
+            )
+            .expect("well-formed done event"),
+        ];
+        let query = QuietQuery {
+            events: &events,
+            agent: "opus5:builder",
+            slot: "main",
+            hash: 7,
+            index: 1,
+            pane_id: "%1",
+        };
+        for (progress, expected) in [
+            (DoneProgress::None, None),
+            (
+                DoneProgress::Lapsed {
+                    confirmations: 1,
+                    required: 2,
+                },
+                None,
+            ),
+            (
+                DoneProgress::Provisional {
+                    confirmations: 0,
+                    required: 2,
+                },
+                Some(QuietKind::Done),
+            ),
+            (
+                DoneProgress::ChallengeDue {
+                    confirmations: 1,
+                    required: 2,
+                    done_age_secs: 60,
+                    attempts: 0,
+                },
+                Some(QuietKind::Done),
+            ),
+            (
+                DoneProgress::Challenged {
+                    confirmations: 1,
+                    required: 2,
+                },
+                Some(QuietKind::Done),
+            ),
+            (DoneProgress::Confirmed, Some(QuietKind::Done)),
+        ] {
+            assert_eq!(
+                cycle.resolve_quiet(
+                    &query,
+                    &mut PaneState::default(),
+                    &mut QuietCycle::new(4),
+                    progress,
+                ),
+                expected,
+                "{progress:?}"
+            );
+        }
     }
 
     fn witness_b_idle_after_new_working_then_memo() -> Observation {
@@ -10952,6 +11174,46 @@ mod tests {
     }
 
     #[test]
+    fn an_unconfirmed_done_challenge_alerts_once_without_another_paste() {
+        let knobs = Knobs::default();
+        let mut observed = seen();
+        observed.done_progress = DoneProgress::ChallengeDue {
+            confirmations: 0,
+            required: 2,
+            done_age_secs: 300,
+            attempts: knobs.undelivered_max,
+        };
+        let at_bound = account(&PaneState::default(), &observed, &knobs);
+        assert_eq!(
+            emitted(&at_bound.effects),
+            vec![(
+                "alert",
+                "nudge unreachable/occupied — 3 undelivered attempts (idle 5m)"
+            )],
+            "the existing unreachable alert fires exactly once"
+        );
+        assert!(
+            !at_bound
+                .effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::DoneChallenge { .. })),
+            "the capped challenge is not pasted"
+        );
+
+        observed.done_progress = DoneProgress::ChallengeDue {
+            confirmations: 0,
+            required: 2,
+            done_age_secs: 300,
+            attempts: knobs.undelivered_max + 1,
+        };
+        let past_bound = account(&PaneState::default(), &observed, &knobs);
+        assert!(
+            past_bound.effects.is_empty(),
+            "past the equality boundary neither alert nor paste repeats"
+        );
+    }
+
+    #[test]
     fn the_counter_counts_deliveries_and_the_streak_counts_attempts() {
         let knobs = Knobs::default();
         let mut state = PaneState::default();
@@ -10990,18 +11252,18 @@ mod tests {
     #[test]
     fn the_nudge_names_this_sessions_own_state_helper() {
         let meta = Path::new("/home/x/.ae/sessions/demo");
-        let plain = nudge_text(None, meta);
-        assert!(plain.starts_with("Status check: if you have more work, continue."));
-        assert!(plain.ends_with(
-            "/home/x/.ae/sessions/demo/state <waiting-user|waiting-agent|blocked|done> \"<reason>\""
-        ));
-        let goaled = nudge_text(Some("ship P4.1"), meta);
-        assert!(goaled.starts_with("Session goal: ship P4.1. Status check:"));
-        let idle = idle_nudge_text(Some("ship P4.1"), meta);
-        assert!(idle.contains("you look idle: declare state or continue"));
-        assert!(idle.ends_with(
-            "/home/x/.ae/sessions/demo/state <waiting-user|waiting-agent|blocked|done> \"<reason>\""
-        ));
+        assert_eq!(
+            nudge_text(None, meta),
+            "Continue the assigned work now. Do not re-plan or ask unless blocked. Then declare state: /home/x/.ae/sessions/demo/state <waiting-user|waiting-agent|blocked|done> \"<reason>\""
+        );
+        assert_eq!(
+            idle_nudge_text(Some("ship P4.1"), meta),
+            "Session goal: ship P4.1. You look idle. Continue the assigned work now. Do not re-plan or ask unless blocked. Then declare state: /home/x/.ae/sessions/demo/state <waiting-user|waiting-agent|blocked|done> \"<reason>\""
+        );
+        assert_eq!(
+            done_challenge_text(Some("ship P4.1"), meta, 300, 0, 2),
+            "Session goal: ship P4.1. Continue the assigned work now. Do not re-plan or ask unless blocked. Done was declared 5m ago; confirmation 1 of 2. Re-read your brief and goal. State how each deliverable was verified. Anything unverified: declare working and finish assigned work NOW. Worker awaiting owner review: invent no scope; do not commit or edit solely for this challenge. Otherwise re-declare done with completed work and proof, including any held review. This is self-attestation, not owner approval. Then declare state: /home/x/.ae/sessions/demo/state <waiting-user|waiting-agent|blocked|done> \"<reason>\""
+        );
     }
 
     /// IMPORTANT 4: the CURRENT generator's exact bytes must survive the LIVE
@@ -11020,6 +11282,10 @@ mod tests {
         for (label, text) in [
             ("status", nudge_text(None, meta)),
             ("status-goaled", nudge_text(Some("ship P4.1"), meta)),
+            (
+                "done-challenge",
+                done_challenge_text(Some("ship P4.1"), meta, 300, 0, 2),
+            ),
         ] {
             assert_eq!(
                 quiet_filter(&text),
@@ -12063,6 +12329,16 @@ mod tests {
             Mark::Idle,
             "a roster that is merely quiet says nothing"
         );
+    }
+
+    #[test]
+    fn a_launch_id_lookup_uses_the_requested_seat_only() {
+        let ids = [
+            ("main".to_owned(), "L1".to_owned()),
+            ("worker.1".to_owned(), "L2".to_owned()),
+        ];
+        assert_eq!(launch_id_for(&ids, "worker.1"), Some("L2"));
+        assert_eq!(launch_id_for(&ids, "absent"), None);
     }
 
     #[test]

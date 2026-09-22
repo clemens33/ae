@@ -18,6 +18,8 @@ fuzz_target!(|data: &[u8]| {
     // with comes off the same hostile document, so it is driven from it here.
     let parsed = ae::meta::Meta::parse(&text);
     for slot in ["main", "worker.0", "spawned.1"] {
+        let _ = std::hint::black_box(parsed.launch_id(slot));
+        let _ = std::hint::black_box(parsed.done_confirmations_pin());
         let raw = parsed.harness_session_prior(slot);
         for element in &raw {
             let _ = std::hint::black_box(ae::meta::prior_parts(element));

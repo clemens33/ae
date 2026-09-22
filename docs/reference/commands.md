@@ -1267,7 +1267,9 @@ It never performs an extra quota read for throttling.
 For modeled Claude Code and Codex frames, a positive empty input box starts the
 independent `[workspace] idle_nudge_secs` clock (default 300 seconds; `0`
 disables). Pane redraws do not reset this clock. The reminder uses the existing
-session `send` path and says `you look idle: declare state or continue`.
+session `send` path and orders the seat to continue assigned work, then declare state.
+A `done` declaration uses that cadence for verified proof challenges until
+`[workspace] done_confirmations` later declarations confirm it (default 2, range 0–9; 0 disables).
 
 ### Meta-agent (orchestrator) overview spacing
 

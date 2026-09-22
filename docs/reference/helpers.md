@@ -151,7 +151,7 @@ Every agent pane carries a stable **slot** — `main`, `worker.<n>`, or `spawned
 | Helper | Purpose |
 |---|---|
 | `state <working\|waiting-user\|waiting-agent\|blocked\|done> [reason]` | Declare or read the caller's state. `waiting-user`/`waiting-agent`/`blocked` require 80–600 characters after trimming: 2–5 self-contained sentences stating the decision or blocker, impacts, recommendation or unblock owner, what you tried, and a `.local/<file>` or memo-topic path. `waiting-agent` names the agent you wait on and what you need from them; `blocked` keeps a concrete EXTERNAL blocker only. A fresh `waiting-agent` claims no human; past `idle_nudge_secs * OWN_WORK_AGE_CAP` nudge periods it escalates to exactly `blocked`: attention marker, and nudging too only when the idle-nudge cadence is enabled. One stated exception: at `idle_nudge_secs = 0` the own-work deferral is vacuous while the attention ceiling scales from the documented default (300 s, so 1200 s), because zero keeps the marker and only suppresses the nudge. Pointers such as `see pane` are a violation of this rule. A spawned (`spawned.<n>`) seat cannot declare `waiting-user` (exit 2): its spawner owns the human question, so it declares `waiting-agent` and the spawner escalates. |
-| `mark-done [message]` | Signal completion / pause. The watchdog stops nudging until a newer ae event mentions the agent. |
+| `mark-done [message]` | Signal completion / pause. Done stays provisional until the configured proof challenges are answered; `done_confirmations = 0` restores immediate done. |
 | `memo add [--topic t] <text>` | Append to durable shared session memory. |
 | `memo read [--topic t]` | Read shared memory. |
 | `memo tail [n]` | Show latest entries. |

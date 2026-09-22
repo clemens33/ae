@@ -1256,9 +1256,15 @@ fn render_event_line(
 /// The body file remains the recovery source, while the event makes the
 /// uncertainty visible to `requests` and `events-tail` without changing the
 /// frozen event shape.
+const UNCONFIRMED_SUMMARY_PREFIX: &str = "[unconfirmed] ";
+
 #[must_use]
 pub(crate) fn unconfirmed_summary(summary: &str) -> String {
-    format!("[unconfirmed] {summary}")
+    format!("{UNCONFIRMED_SUMMARY_PREFIX}{summary}")
+}
+
+pub(crate) fn summary_is_unconfirmed(summary: Option<&str>) -> bool {
+    summary.is_some_and(|summary| summary.starts_with(UNCONFIRMED_SUMMARY_PREFIX))
 }
 
 /// Render an event for a delivery whose submit was not confirmed.

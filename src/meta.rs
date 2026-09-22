@@ -96,6 +96,7 @@ const CORE_KEY: &str = "ae_core_version";
 const CREATED_KEY: &str = "created";
 const STARTED_KEY: &str = "started";
 const LAUNCH_TIME_PREFIX: &str = "launch_time.";
+const LAUNCH_ID_PREFIX: &str = "launch_id.";
 
 /// One agent, as the roster records it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -430,6 +431,7 @@ pub struct Meta {
     started: Option<String>,
     /// Per-seat legacy launch times, retained for the started fallback.
     launch_times: Vec<(String, String)>,
+    launch_ids: Vec<(String, String)>,
     /// `observed_model.<slot>` rows, kept RAW until the accessor validates.
     observed_models: Vec<(String, String)>,
     /// `observed_model_pin.<slot>` rows, same rule.
@@ -460,6 +462,7 @@ pub struct Meta {
     schema: Option<String>,
     /// The raw pinned idle reminder cadence, kept until the accessor parses it.
     idle_nudge_secs: Option<String>,
+    done_confirmations: Option<String>,
     /// Two selector keys, kept RAW.
     server_value: Option<String>,
     server_kind: Option<String>,
@@ -586,6 +589,7 @@ impl Meta {
             "goal" => self.goal = None,
             "ae_version" => self.ae_version = None,
             "idle_nudge_secs" => self.idle_nudge_secs = None,
+            "done_confirmations" => self.done_confirmations = None,
             CORE_KEY => self.ae_core = None,
             CREATED_KEY => self.created = None,
             STARTED_KEY => self.started = None,
@@ -598,6 +602,8 @@ impl Meta {
             _ => {
                 if key.strip_prefix(LAUNCH_TIME_PREFIX).is_some() {
                     self.launch_times.retain(|(recorded, _)| recorded != key);
+                } else if key.strip_prefix(LAUNCH_ID_PREFIX).is_some() {
+                    self.launch_ids.retain(|(recorded, _)| recorded != key);
                 } else if key.strip_prefix(OBSERVED_MODEL_PREFIX).is_some() {
                     self.observed_models.retain(|(recorded, _)| recorded != key);
                 } else if key.strip_prefix(OBSERVED_MODEL_PIN_PREFIX).is_some() {
@@ -659,6 +665,7 @@ impl Meta {
             "goal" => self.goal = Some(value.to_owned()),
             "ae_version" => self.ae_version = Some(value.to_owned()),
             "idle_nudge_secs" => self.idle_nudge_secs = Some(value.to_owned()),
+            "done_confirmations" => self.done_confirmations = Some(value.to_owned()),
             CORE_KEY => self.ae_core = Some(value.to_owned()),
             CREATED_KEY => self.created = Some(value.to_owned()),
             STARTED_KEY => self.started = Some(value.to_owned()),
@@ -674,6 +681,11 @@ impl Meta {
                     .is_some_and(|slot| !slot.is_empty())
                 {
                     self.launch_times.push((key.to_owned(), value.to_owned()));
+                } else if key
+                    .strip_prefix(LAUNCH_ID_PREFIX)
+                    .is_some_and(|slot| !slot.is_empty())
+                {
+                    self.launch_ids.push((key.to_owned(), value.to_owned()));
                 } else if key
                     .strip_prefix(OBSERVED_MODEL_PREFIX)
                     .is_some_and(|slot| !slot.is_empty())
@@ -1110,6 +1122,11 @@ impl Meta {
         observed_row(&self.observed_models, OBSERVED_MODEL_PREFIX, slot)
     }
 
+    #[must_use]
+    pub fn launch_id(&self, slot: &str) -> Option<&str> {
+        observed_row(&self.launch_ids, LAUNCH_ID_PREFIX, slot)
+    }
+
     /// The profile's own model flag value, recorded beside the observation.
     #[must_use]
     pub fn observed_model_pin(&self, slot: &str) -> Option<&str> {
@@ -1195,6 +1212,14 @@ impl Meta {
             matches!(anomaly, Anomaly::DuplicateKey { key, .. } if key == "idle_nudge_secs")
         });
         (self.idle_nudge_secs.as_deref(), doubled)
+    }
+
+    #[must_use]
+    pub fn done_confirmations_pin(&self) -> (Option<&str>, bool) {
+        let doubled = self.anomalies.iter().any(
+            |anomaly| matches!(anomaly, Anomaly::DuplicateKey { key, .. } if key == "done_confirmations"),
+        );
+        (self.done_confirmations.as_deref(), doubled)
     }
 
     /// Everything this reader met and is not authorised to interpret.
@@ -1792,6 +1817,28 @@ pub fn resolve_idle_nudge_secs(
     match recorded {
         None => Some(fallback),
         Some(raw) => raw.parse::<u64>().ok(),
+    }
+}
+
+/// Resolve the bounded done-confirmation count. Unlike idle cadence, bad input
+/// deliberately falls back and returns the one launch note to print.
+#[must_use]
+pub fn resolve_done_confirmations(
+    recorded: Option<&str>,
+    doubled: bool,
+    fallback: u8,
+) -> (u8, Option<String>) {
+    let parsed = (!doubled)
+        .then(|| recorded?.parse::<u8>().ok())
+        .flatten()
+        .filter(|n| *n <= 9);
+    match (recorded, parsed) {
+        (None, _) => (fallback, None),
+        (_, Some(value)) => (value, None),
+        _ => (
+            fallback,
+            Some("done_confirmations ignored; using default 2".to_owned()),
+        ),
     }
 }
 
@@ -4002,6 +4049,62 @@ agent_bin.main=claude
             resolve("mode=local\n"),
             Some(300),
             "an ABSENT row takes the caller's fallback"
+        );
+    }
+
+    #[test]
+    fn done_confirmations_accepts_one_digit_and_falls_back_with_one_note() {
+        for value in 0..=9 {
+            assert_eq!(
+                super::resolve_done_confirmations(Some(&value.to_string()), false, 2),
+                (value, None)
+            );
+        }
+        for raw in ["10", "-1", "x", ""] {
+            let (value, note) = super::resolve_done_confirmations(Some(raw), false, 2);
+            assert_eq!(value, 2, "{raw:?} falls back");
+            assert!(
+                note.as_deref()
+                    .is_some_and(|note| note.contains("done_confirmations") && note.len() <= 80),
+                "{raw:?} leaves one bounded visible note"
+            );
+        }
+        assert!(
+            super::resolve_done_confirmations(Some("2"), true, 2)
+                .1
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn done_confirmations_meta_row_is_absorbed_and_invalidated() {
+        let resolve = |text: &str| {
+            let meta = Meta::parse(text);
+            let pin = meta.done_confirmations_pin();
+            (
+                (pin.0.map(str::to_owned), pin.1),
+                super::resolve_done_confirmations(pin.0, pin.1, 2),
+            )
+        };
+        assert_eq!(
+            resolve("done_confirmations=5\n"),
+            ((Some("5".to_owned()), false), (5, None)),
+            "the read side consumes the recorded row rather than its default"
+        );
+
+        let (pin, resolved) = resolve("done_confirmations=5\ndone_confirmations=6\n");
+        assert_eq!(pin, (None, true), "a duplicate invalidates the raw row");
+        assert_eq!(resolved.0, 2, "a duplicate falls back to the default");
+    }
+
+    #[test]
+    fn a_duplicate_launch_id_invalidates_only_its_slot() {
+        let meta = Meta::parse("launch_id.main=L1\nlaunch_id.worker.1=L2\nlaunch_id.main=L3\n");
+        assert_eq!(meta.launch_id("main"), None);
+        assert_eq!(
+            meta.launch_id("worker.1"),
+            Some("L2"),
+            "invalidating one launch witness must retain every other slot"
         );
     }
 

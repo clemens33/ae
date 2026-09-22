@@ -5,6 +5,8 @@
 //! chance to disagree. The machine rendering is [`crate::digest::Digest`]
 //! verbatim; this module calls it and does not re-derive the shape.
 
+use std::fmt::Write as _;
+
 use crate::digest::{Digest, SessionEntry, Status};
 use crate::filters::{ListArgs, Scope};
 use crate::inventory::FailedSource;
@@ -322,6 +324,34 @@ pub fn table_at(sessions: &[&SessionEntry], now: Timestamp) -> String {
             // keeps the declaration under its own `state` key.
             if agent.reason == Some(crate::attention::Reason::Limit) {
                 out.push_str("limit");
+            } else if session.agent_state_is_exact() && agent.state.as_deref() == Some("done") {
+                match agent.done_progress {
+                    Some(
+                        crate::watchdog::DoneProgress::Provisional {
+                            confirmations,
+                            required,
+                        }
+                        | crate::watchdog::DoneProgress::ChallengeDue {
+                            confirmations,
+                            required,
+                            ..
+                        }
+                        | crate::watchdog::DoneProgress::Challenged {
+                            confirmations,
+                            required,
+                        },
+                    ) => {
+                        let _ = write!(out, "done (unconfirmed {confirmations}/{required})");
+                    }
+                    Some(crate::watchdog::DoneProgress::Lapsed {
+                        confirmations,
+                        required,
+                    }) => {
+                        let _ =
+                            write!(out, "done (unconfirmed {confirmations}/{required}, lapsed)");
+                    }
+                    _ => out.push_str("done"),
+                }
             } else {
                 out.push_str(
                     match (session.agent_state_is_exact(), agent.state.as_deref()) {
@@ -515,6 +545,7 @@ mod tests {
             alive,
             observed: crate::harness_state::HarnessState::Unknown,
             state: state.map(ToOwned::to_owned),
+            done_progress: None,
             reason: None,
             own_work: None,
             model_drift: crate::model_drift::ModelDrift::Quiet,
@@ -1161,6 +1192,65 @@ mod tests {
     }
 
     #[test]
+    fn provisional_done_is_table_only_and_confirmed_done_is_plain() {
+        let render = |progress| {
+            let mut session = SessionEntry::new("solo", Status::Running);
+            let mut entry = agent("lead", Some(true), Some("done"));
+            entry.done_progress = progress;
+            session.agents = vec![entry];
+            table(&[&session])
+        };
+        assert!(
+            render(Some(crate::watchdog::DoneProgress::Provisional {
+                confirmations: 1,
+                required: 2,
+            }))
+            .contains("done (unconfirmed 1/2)")
+        );
+        assert!(
+            render(Some(crate::watchdog::DoneProgress::Lapsed {
+                confirmations: 1,
+                required: 2,
+            }))
+            .contains("done (unconfirmed 1/2, lapsed) · observed:unknown"),
+            "the lapsed verdict stays visible without claiming confirmed done"
+        );
+        assert!(render(None).contains("done · observed:unknown"));
+        let mut entry = agent("lead", Some(true), Some("done"));
+        entry.done_progress = Some(crate::watchdog::DoneProgress::Provisional {
+            confirmations: 0,
+            required: 2,
+        });
+        assert_eq!(entry.to_json().get_str("state"), Some("done"));
+        assert_eq!(entry.to_json().get("done_progress"), None);
+
+        entry.reason = Some(Reason::Limit);
+        let mut limited = SessionEntry::new("limited", Status::Running);
+        limited.agents = vec![entry.clone()];
+        let shown = table(&[&limited]);
+        assert!(shown.contains("limit · observed:unknown"));
+        assert!(!shown.contains("unconfirmed"), "limit replaces the cell");
+
+        entry.reason = None;
+        let mut undeclared = SessionEntry::new("undeclared", Status::Running);
+        let mut no_state = entry.clone();
+        no_state.state = None;
+        undeclared.agents = vec![no_state];
+        let shown = table(&[&undeclared]);
+        assert!(shown.contains("- · observed:unknown"));
+        assert!(!shown.contains("unconfirmed"), "undeclared stays bare");
+
+        let mut unknown = SessionEntry::degraded("unknown", Status::Running);
+        unknown.agents = vec![entry];
+        let shown = table(&[&unknown]);
+        assert!(shown.contains("unknown · observed:unknown"));
+        assert!(
+            !shown.contains("unconfirmed"),
+            "inexact state stays unknown"
+        );
+    }
+
+    #[test]
     fn sc_017h_an_agent_that_declared_nothing_is_not_rendered_as_blank() {
         // CONTENT, not form.
         let rendered_with = |state: Option<&str>| {
@@ -1644,6 +1734,7 @@ mod tests {
                 alive: None,
                 observed: crate::harness_state::HarnessState::Unknown,
                 state: Some("working".to_owned()),
+                done_progress: None,
                 reason: None,
                 own_work: None,
                 model_drift: crate::model_drift::ModelDrift::Quiet,
@@ -1678,6 +1769,7 @@ mod tests {
                 alive,
                 observed: crate::harness_state::HarnessState::Unknown,
                 state: Some("working".to_owned()),
+                done_progress: None,
                 reason: None,
                 own_work: None,
                 model_drift: crate::model_drift::ModelDrift::Quiet,
@@ -1728,6 +1820,7 @@ mod tests {
                 alive: Some(true),
                 observed: crate::harness_state::HarnessState::Idle,
                 state: Some("working".to_owned()),
+                done_progress: None,
                 reason: None,
                 own_work,
                 model_drift: crate::model_drift::ModelDrift::Quiet,
@@ -1776,6 +1869,7 @@ mod tests {
             alive: Some(true),
             observed: crate::harness_state::HarnessState::Idle,
             state: Some("blocked".to_owned()),
+            done_progress: None,
             reason: None,
             own_work: None,
             model_drift: crate::model_drift::ModelDrift::Quiet,
@@ -1804,6 +1898,7 @@ mod tests {
             alive: Some(true),
             observed: crate::harness_state::HarnessState::Unknown,
             state: Some("blocked".to_owned()),
+            done_progress: None,
             reason: None,
             own_work: None,
             model_drift: crate::model_drift::ModelDrift::Quiet,
@@ -1839,6 +1934,7 @@ mod tests {
                 alive: Some(true),
                 observed: crate::harness_state::HarnessState::Busy,
                 state: Some("working".to_owned()),
+                done_progress: None,
                 reason: None,
                 own_work: None,
                 model_drift: crate::model_drift::ModelDrift::Quiet,
@@ -1851,6 +1947,7 @@ mod tests {
                 alive: Some(true),
                 observed: crate::harness_state::HarnessState::Idle,
                 state: Some("working".to_owned()),
+                done_progress: None,
                 reason: None,
                 own_work: None,
                 model_drift: crate::model_drift::ModelDrift::Quiet,

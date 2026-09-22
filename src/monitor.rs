@@ -1027,6 +1027,7 @@ mod tests {
             reference: reference.to_owned(),
             alive: Some(true),
             state: state.map(ToOwned::to_owned),
+            done_progress: None,
             reason: why,
             ..AgentEntry::default()
         }

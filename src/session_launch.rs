@@ -2462,6 +2462,32 @@ fn launch(
         )?;
         return Ok(EXIT_USAGE);
     }
+    let recorded_done = meta_present
+        .then(|| meta_value(&dir, "done_confirmations"))
+        .flatten();
+    let configured_done = if recorded_done.is_none() {
+        if let Ok(value) = configured_unsigned_workspace_seconds(
+            env.global.as_deref(),
+            env.local.as_deref(),
+            "done_confirmations",
+        ) {
+            value
+        } else {
+            writeln!(err, "Note: done_confirmations ignored; using default 2")?;
+            None
+        }
+    } else {
+        None
+    };
+    let (done_confirmations, note) = crate::meta::resolve_done_confirmations(
+        recorded_done.as_deref().or(configured_done.as_deref()),
+        false,
+        crate::watchdog::DEFAULT_DONE_CONFIRMATIONS,
+    );
+    if let Some(note) = note {
+        writeln!(err, "Note: {note}")?;
+    }
+    let done_confirmations = done_confirmations.to_string();
     // `quota = off` is pinned like `quota_every_secs`: the recorded meta wins
     // on resume so a config flip applies to NEW sessions only. Absent means ON
     // — exactly today's behaviour — through the ONE `config::quota_aware`
@@ -2744,6 +2770,7 @@ fn launch(
             sweep_sec: sweep_sec.as_deref(),
             quota_every_secs: &quota_every_secs,
             idle_nudge_secs: &idle_nudge_secs,
+            done_confirmations: &done_confirmations,
             quota: &quota,
         },
         parent.as_ref(),
@@ -2838,6 +2865,7 @@ struct WatchdogFacts<'a> {
     sweep_sec: Option<&'a str>,
     quota_every_secs: &'a str,
     idle_nudge_secs: &'a str,
+    done_confirmations: &'a str,
     quota: &'a str,
 }
 
@@ -3885,6 +3913,7 @@ fn meta_document(
     }
     row("quota_every_secs", watchdog.quota_every_secs);
     row("idle_nudge_secs", watchdog.idle_nudge_secs);
+    row("done_confirmations", watchdog.done_confirmations);
     row("quota", watchdog.quota);
     if let Some(id) = parent_id {
         row("parent_archive_id", &id);
@@ -5837,6 +5866,7 @@ mod tests {
             sweep_sec: None,
             quota_every_secs: "300",
             idle_nudge_secs: "300",
+            done_confirmations: "2",
             quota: "on",
         };
         let document = super::meta_document(&env, &shape, &launching, watchdog, None)
@@ -5914,6 +5944,7 @@ mod tests {
             sweep_sec: None,
             quota_every_secs: "300",
             idle_nudge_secs: "300",
+            done_confirmations: "2",
             quota: "on",
         };
         (root, dir, env, shape, launching, watchdog)

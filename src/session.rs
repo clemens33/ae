@@ -756,6 +756,7 @@ pub fn entry_from(
 ) -> SessionEntry {
     let mut entry = SessionEntry::new(name, runtime.status);
     entry.branch.clone_from(&runtime.branch);
+    let meta = snapshot.meta.as_ref();
 
     // The ONE cadence resolver, over the pin's raw inputs: `Some` for an
     // absent row (the documented default) or a usable pin, `None` for a row
@@ -768,10 +769,18 @@ pub fn entry_from(
             let (recorded, doubled) = meta.idle_nudge_pin();
             crate::meta::resolve_idle_nudge_secs(recorded, doubled, DEFAULT_IDLE_NUDGE_SECS)
         });
+    let done_confirmations = meta.map_or(crate::watchdog::DEFAULT_DONE_CONFIRMATIONS, |meta| {
+        let (raw, doubled) = meta.done_confirmations_pin();
+        crate::meta::resolve_done_confirmations(
+            raw,
+            doubled,
+            crate::watchdog::DEFAULT_DONE_CONFIRMATIONS,
+        )
+        .0
+    });
 
     // The one raw-record producer: it attaches the values and the provenance that
     // decides whether every serializer may publish them.
-    let meta = snapshot.meta.as_ref();
     if let Some(meta) = meta {
         entry.mode = meta.mode().map(ToOwned::to_owned);
         entry.origin = meta.origin().map(ToOwned::to_owned);
@@ -807,6 +816,7 @@ pub fn entry_from(
             entry.started_epoch,
             now,
             idle_nudge_secs,
+            done_confirmations,
         );
         entry.set_established_runtime_dead_agents(established_runtime_dead_agents(meta, runtime));
     }
@@ -922,6 +932,11 @@ fn agent_liveness(runtime: &SessionRuntime, agent: Option<&AgentRuntime>) -> Opt
 
 /// The `agents[]` array: the meta's roster, answered by the runtime and the
 /// event stream.
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "one join keeps roster, runtime, journal, and recorded policy consistent"
+)]
 fn agent_entries(
     meta: &Meta,
     read: Option<&SessionRead>,
@@ -930,6 +945,7 @@ fn agent_entries(
     started_epoch: Option<i64>,
     now: Timestamp,
     idle_nudge_secs: Option<u64>,
+    done_confirmations: u8,
 ) -> Vec<AgentEntry> {
     // The seats that still exist: a stopped or absent pane holds nobody's
     // work, and a retired agent is off the roster entirely.
@@ -968,7 +984,7 @@ fn agent_entries(
                 )
                 // The ownership VERDICT travels with the record; this filter
                 // consumes it and never re-derives identity by display.
-                .filter(|relevant| relevant.is_own && relevant.event.declared_state().is_some())
+                .filter(crate::watchdog::declaration_current)
                 .map(|relevant| relevant.event)
             });
             let declared = current_declaration.or_else(|| {
@@ -1011,6 +1027,24 @@ fn agent_entries(
                 // the agent actually declared; the escalation lives in `reason`
                 // (and in `brief`'s needs), never by rewriting the value.
                 state: declared_state.map(ToOwned::to_owned),
+                done_progress: read.and_then(|read| {
+                    let progress = crate::watchdog::done_progress(
+                        &read.events,
+                        session,
+                        &slot.slot,
+                        &reference,
+                        meta.launch_id(&slot.slot),
+                        now,
+                        idle_nudge_secs.unwrap_or(0),
+                        done_confirmations,
+                    );
+                    (!matches!(
+                        progress,
+                        crate::watchdog::DoneProgress::None
+                            | crate::watchdog::DoneProgress::Confirmed
+                    ))
+                    .then_some(progress)
+                }),
                 // This agent's OWN contribution, from the two evidence classes:
                 // ALERT-DERIVED dead/stale/throttled, and SELF-DECLARED
                 // waiting-user/waiting-agent/blocked.
@@ -3007,6 +3041,76 @@ mod tests {
             entry.attention,
             Some(Reason::Blocked),
             "a nudge must not end the hold it was asking about"
+        );
+    }
+
+    #[test]
+    fn challenge_and_abandonment_use_the_daemons_currency_rule_on_read_surfaces() {
+        for action in ["done-challenge", "delivery-abandoned"] {
+            for (state, daemon) in [
+                ("done", Some(crate::watchdog::QuietKind::Done)),
+                ("waiting-user", None),
+                ("waiting-agent", None),
+                ("blocked", None),
+            ] {
+                let scratch = Scratch::new(&format!("currency-{action}-{state}"));
+                scratch.meta(&format!(
+                    "{META}launch_id.main=launch-1\ndone_confirmations=2\n"
+                ));
+                scratch.events(&[
+                    event(
+                        &at(2_000),
+                        "lead",
+                        "state",
+                        &format!(r#","ref":"{state}""#),
+                    ),
+                    event(
+                        &at(10),
+                        "watchdog",
+                        action,
+                        r#","target":"lead","ref":"launch-1","target_slot":"main","target_session":"live""#,
+                    ),
+                ]);
+                let events = SessionRead::open(&scratch.0).expect("events read").events;
+                let found = crate::watchdog::latest_relevant_event(&events, "live", "main", "lead")
+                    .expect("declaration remains selected");
+                assert_eq!(
+                    crate::watchdog::quiet_reason(&found),
+                    daemon,
+                    "{action}/{state}"
+                );
+                let entry = entry_for(&scratch.0, "live", &running(), NOW, DEFAULT_UNANSWERED_SECS);
+                assert_eq!(entry.agents[0].state.as_deref(), Some(state));
+                if state == "waiting-agent" {
+                    assert_eq!(entry.agents[0].reason, None, "read side consumes currency");
+                }
+                if state == "done" {
+                    assert!(entry.agents[0].done_progress.is_some());
+                }
+            }
+        }
+
+        let lapsed = Scratch::new("currency-lapsed-done");
+        lapsed.meta(&format!(
+            "{META}launch_id.main=launch-1\ndone_confirmations=2\n"
+        ));
+        lapsed.events(&[
+            event(&at(2_000), "lead", "state", r#","ref":"done""#),
+            event(
+                &at(400),
+                "watchdog",
+                "done-challenge",
+                r#","target":"lead","ref":"launch-1","target_slot":"main","target_session":"live""#,
+            ),
+        ]);
+        let entry = entry_for(&lapsed.0, "live", &running(), NOW, DEFAULT_UNANSWERED_SECS);
+        assert!(matches!(
+            entry.agents[0].done_progress,
+            Some(crate::watchdog::DoneProgress::Lapsed { .. })
+        ));
+        assert!(
+            crate::listing::table(&[&entry])
+                .contains("done (unconfirmed 0/2, lapsed) · observed:unknown")
         );
     }
 

@@ -225,11 +225,13 @@ pub fn stale_composite(
 /// the one provenance owner, so the spelling cannot drift from what `send`
 /// actually emits.
 fn nudge_envelope() -> String {
-    crate::provenance::peer(NUDGE_ACTOR)
+    crate::provenance::peer(WATCHDOG_ACTOR)
 }
 
 /// The nudge's own sentence, for the panes that render it unornamented.
-const NUDGE_SENTENCE: &str = "Status check: if you have more work, continue. \
+const NUDGE_SENTENCE: &str =
+    "Continue the assigned work now. Do not re-plan or ask unless blocked. ";
+const NUDGE_SENTENCE_LEGACY: &str = "Status check: if you have more work, continue. \
      Otherwise declare your state so I stop nudging: ";
 
 /// The invitation the nudge ends with, in the current vocabulary.
@@ -288,7 +290,10 @@ fn raw_nudge(line: &str) -> bool {
     else {
         return false;
     };
-    if body.starts_with(NUDGE_SENTENCE) {
+    if [NUDGE_SENTENCE, NUDGE_SENTENCE_LEGACY]
+        .iter()
+        .any(|sentence| body.starts_with(sentence))
+    {
         return true;
     }
     // `(Session goal: .*\. )?` — any goal text, ending at a `". "` the sentence
@@ -297,8 +302,11 @@ fn raw_nudge(line: &str) -> bool {
         return false;
     };
     goal.match_indices(". ").any(|(at, sep)| {
-        goal.get(at + sep.len()..)
-            .is_some_and(|tail| tail.starts_with(NUDGE_SENTENCE))
+        goal.get(at + sep.len()..).is_some_and(|tail| {
+            [NUDGE_SENTENCE, NUDGE_SENTENCE_LEGACY]
+                .iter()
+                .any(|sentence| tail.starts_with(sentence))
+        })
     })
 }
 
@@ -432,7 +440,7 @@ pub fn quiet_hash(buf: &str) -> u64 {
 
 /// The actor every watchdog-originated event carries, and the action its nudge
 /// carries.
-const NUDGE_ACTOR: &str = "watchdog";
+pub const WATCHDOG_ACTOR: &str = "watchdog";
 const NUDGE_ACTION: &str = "nudge";
 
 /// Whether `event`'s actor IS the seat at `slot` / `agent` in `session` — the
@@ -488,6 +496,10 @@ fn is_cross_session_form(name: &str, session: &str, agent: &str) -> bool {
 /// kills a re-derivation — the owner says own, a display check says inbound,
 /// and two consumers would split.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "selection facts are consumed independently by distinct declaration-state arms"
+)]
 pub struct Relevant<'a> {
     /// The selected record.
     pub event: &'a Event,
@@ -497,7 +509,14 @@ pub struct Relevant<'a> {
     pub is_own: bool,
     /// Whether the walk stepped past the watchdog's own nudges to reach it.
     pub looked_past_nudge: bool,
+    /// Whether the walk stepped past a delivered done challenge.
+    pub looked_past_done_challenge: bool,
+    /// Whether the walk stepped past an abandoned watchdog delivery.
+    pub looked_past_abandoned: bool,
 }
+
+pub const DEFAULT_DONE_CONFIRMATIONS: u8 = 2;
+const DONE_CHALLENGE_ACTION: &str = "done-challenge";
 
 /// The newest event relevant to the seat at `slot`/`agent` in `session`, with
 /// the ownership verdict and whether the walk stepped past any of the
@@ -517,19 +536,36 @@ pub fn latest_relevant_event<'a>(
     agent: &str,
 ) -> Option<Relevant<'a>> {
     let mut looked_past_nudge = false;
+    let mut looked_past_done_challenge = false;
+    let mut looked_past_abandoned = false;
     for event in events.iter().rev() {
         let is_own = event_is_actor(event, session, slot, agent);
         if !is_own && !event_is_addressed_to(event, session, slot, agent) {
             continue;
         }
-        if event.actor == NUDGE_ACTOR && event.action == NUDGE_ACTION {
-            looked_past_nudge = true;
+        if event.actor == WATCHDOG_ACTOR {
+            match event.action.as_str() {
+                NUDGE_ACTION => looked_past_nudge = true,
+                DONE_CHALLENGE_ACTION => looked_past_done_challenge = true,
+                crate::tracked::ABANDONED_ACTION => looked_past_abandoned = true,
+                _ => {
+                    return Some(Relevant {
+                        event,
+                        is_own,
+                        looked_past_nudge,
+                        looked_past_done_challenge,
+                        looked_past_abandoned,
+                    });
+                }
+            }
             continue;
         }
         return Some(Relevant {
             event,
             is_own,
             looked_past_nudge,
+            looked_past_done_challenge,
+            looked_past_abandoned,
         });
     }
     None
@@ -560,8 +596,8 @@ pub enum QuietKind {
 /// declaration.
 #[must_use]
 pub fn quiet_reason(relevant: &Relevant<'_>) -> Option<QuietKind> {
-    if !relevant.is_own {
-        return None; // inbound: news, and news ends a quiet state
+    if !declaration_current(relevant) {
+        return None;
     }
     // `declared_state` already folds a bare `action = done` record into `done`.
     let kind = match relevant.event.declared_state()? {
@@ -571,10 +607,174 @@ pub fn quiet_reason(relevant: &Relevant<'_>) -> Option<QuietKind> {
         "blocked" => QuietKind::Blocked,
         _ => return None, // `working`, or a ref that declares no state
     };
-    if relevant.looked_past_nudge && kind == QuietKind::Done {
-        return None;
-    }
     Some(kind)
+}
+
+/// Whether the selected record is the seat's still-current declaration.
+#[must_use]
+pub fn declaration_current(relevant: &Relevant<'_>) -> bool {
+    if !relevant.is_own {
+        return false;
+    }
+    let Some(state) = relevant.event.declared_state() else {
+        return false;
+    };
+    if state == "done" {
+        !relevant.looked_past_nudge
+    } else {
+        !relevant.looked_past_done_challenge && !relevant.looked_past_abandoned
+    }
+}
+
+/// Journal-derived progress for the current seat incarnation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DoneProgress {
+    None,
+    Provisional {
+        confirmations: u8,
+        required: u8,
+    },
+    ChallengeDue {
+        confirmations: u8,
+        required: u8,
+        done_age_secs: u64,
+        /// Failed challenge deliveries reconstructed from this episode's
+        /// journal, so a daemon restart cannot reopen the delivery budget.
+        attempts: u32,
+    },
+    Challenged {
+        confirmations: u8,
+        required: u8,
+    },
+    Lapsed {
+        confirmations: u8,
+        required: u8,
+    },
+    Confirmed,
+}
+
+/// Fold existing parsed records. Without a launch witness, only ref-less
+/// challenges count; lifecycle/inbound boundaries still prevent inheritance.
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+pub fn done_progress(
+    events: &[Event],
+    session: &str,
+    slot: &str,
+    agent: &str,
+    launch: Option<&str>,
+    now: crate::time::Timestamp,
+    cadence: u64,
+    required: u8,
+) -> DoneProgress {
+    let mut episode: Option<(
+        u8,
+        crate::time::Timestamp,
+        Option<crate::time::Timestamp>,
+        u32,
+    )> = None;
+    let mut last_done: Option<(crate::time::Timestamp, Option<&str>)> = None;
+    for event in events {
+        let own = event_is_actor(event, session, slot, agent);
+        let addressed = event_is_addressed_to(event, session, slot, agent);
+        if !own && !addressed {
+            continue;
+        }
+        if event.action == DONE_CHALLENGE_ACTION && event.actor == WATCHDOG_ACTOR {
+            // The journal can bound attempts only after a challenge was pasted:
+            // an unconfirmed done-challenge event and a delivery-abandoned event
+            // with this launch reference are durable. Pre-paste refusals (input
+            // not ready, a busy pane, or human typing) record nothing, so attempts
+            // stays zero and the push repeats each cycle; tracked as #148.
+            let matching = launch.map_or(event.reference.is_none(), |id| {
+                event.reference.as_deref() == Some(id)
+            });
+            if !matching {
+                episode = None;
+                last_done = None;
+                continue;
+            }
+            if crate::tracked::summary_is_unconfirmed(event.summary.as_deref()) {
+                if let Some((_, _, _, attempts)) = episode.as_mut() {
+                    *attempts = attempts.saturating_add(1);
+                }
+            } else if let Some((_, _, outstanding, _)) = episode.as_mut()
+                && outstanding.is_none()
+            {
+                *outstanding = Some(event.ts);
+            }
+            continue;
+        }
+        if event.actor == WATCHDOG_ACTOR && event.action == crate::tracked::ABANDONED_ACTION {
+            let matching = launch.map_or(event.reference.is_none(), |id| {
+                event.reference.as_deref() == Some(id)
+            });
+            if matching {
+                // With no launch witness, a ref-less abandoned ordinary nudge
+                // also counts. That degraded mode suppresses challenges sooner,
+                // the conservative direction, and still raises the alert.
+                if let Some((_, _, _, attempts)) = episode.as_mut() {
+                    *attempts = attempts.saturating_add(1);
+                }
+            }
+            continue;
+        }
+        if event.actor == WATCHDOG_ACTOR && event.action == NUDGE_ACTION {
+            continue;
+        }
+        if own && event.declared_state() == Some("done") {
+            let signature = (event.ts, event.summary.as_deref());
+            if last_done == Some(signature) {
+                continue;
+            }
+            last_done = Some(signature);
+            match episode.as_mut() {
+                Some((count, done_at, outstanding @ Some(_), _)) => {
+                    *count = count.saturating_add(1);
+                    *done_at = event.ts;
+                    *outstanding = None;
+                }
+                None => episode = Some((0, event.ts, None, 0)),
+                _ => {}
+            }
+            continue;
+        }
+        episode = None;
+        last_done = None;
+    }
+    let Some((confirmations, done_at, outstanding, attempts)) = episode else {
+        return DoneProgress::None;
+    };
+    if required == 0 || cadence == 0 || confirmations >= required {
+        return DoneProgress::Confirmed;
+    }
+    if let Some(challenged_at) = outstanding {
+        return if challenged_at.seconds_until(now).max(0).cast_unsigned() >= cadence {
+            DoneProgress::Lapsed {
+                confirmations,
+                required,
+            }
+        } else {
+            DoneProgress::Challenged {
+                confirmations,
+                required,
+            }
+        };
+    }
+    let age = done_at.seconds_until(now).max(0).cast_unsigned();
+    if age >= cadence {
+        DoneProgress::ChallengeDue {
+            confirmations,
+            required,
+            done_age_secs: age,
+            attempts,
+        }
+    } else {
+        DoneProgress::Provisional {
+            confirmations,
+            required,
+        }
+    }
 }
 
 /// Seconds of continuously observed idle before the state reminder; zero
@@ -1186,17 +1386,19 @@ mod tests {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use super::{
-        DEFAULT_IDLE_NUDGE_SECS, HUMAN_PROMPT_WINDOW, OVERVIEW_HOLD_WHILE_WORKING_SECS,
-        OWN_WORK_AGE_CAP, QuietCycle, QuietKind, QuietPane, SweepAlert, SweepEffect, SweepKnobs,
-        SweepObservation, SweepState, SweepVerdict, Throttle, WedgeDetail, classify_dead,
-        command_is_shell, declaration_key, indented, is_echo, is_sweep_target,
-        latest_relevant_event, quiet_cursor_advance, quiet_filter, quiet_hash, quiet_pane_decision,
-        quiet_reason, quiet_stabilize, quiet_stabilize_allowed, raw_nudge, record_sweep,
-        shows_throttle, stale_composite, submit_hdr, sweep_step, throttle_class,
-        waiting_agent_cap_secs, waiting_agent_escalated,
+        DEFAULT_IDLE_NUDGE_SECS, DoneProgress, HUMAN_PROMPT_WINDOW,
+        OVERVIEW_HOLD_WHILE_WORKING_SECS, OWN_WORK_AGE_CAP, QuietCycle, QuietKind, QuietPane,
+        SweepAlert, SweepEffect, SweepKnobs, SweepObservation, SweepState, SweepVerdict, Throttle,
+        WedgeDetail, classify_dead, command_is_shell, declaration_current, declaration_key,
+        done_progress, indented, is_echo, is_sweep_target, latest_relevant_event,
+        quiet_cursor_advance, quiet_filter, quiet_hash, quiet_pane_decision, quiet_reason,
+        quiet_stabilize, quiet_stabilize_allowed, raw_nudge, record_sweep, shows_throttle,
+        stale_composite, submit_hdr, sweep_step, throttle_class, waiting_agent_cap_secs,
+        waiting_agent_escalated,
     };
     use crate::events::Event;
     use crate::procs::Descendancy;
+    use crate::time::Timestamp;
 
     /// Build an event through the TYPED reader, so these tests exercise the same
     /// parse the daemon will.
@@ -1432,6 +1634,354 @@ mod tests {
         ] {
             assert_eq!(classify(line), Some(kind));
         }
+    }
+
+    fn progress(lines: &[&str], now: &str, required: u8, cadence: u64) -> DoneProgress {
+        done_progress(
+            &log(lines),
+            "aerewrite",
+            "main",
+            "opus5:builder",
+            Some("launch-1"),
+            Timestamp::parse(now).expect("test time"),
+            cadence,
+            required,
+        )
+    }
+
+    const DONE_0: &str = r#"{"ts":"2026-08-29T04:00:00Z","actor":"opus5:builder","action":"state","ref":"done","summary":"complete","actor_slot":"main","actor_session":"aerewrite"}"#;
+    const CHALLENGE_1: &str = r#"{"ts":"2026-08-29T04:01:00Z","actor":"watchdog","action":"done-challenge","target":"opus5:builder","ref":"launch-1","target_slot":"main","target_session":"aerewrite"}"#;
+    const DONE_1: &str = r#"{"ts":"2026-08-29T04:01:30Z","actor":"opus5:builder","action":"state","ref":"done","summary":"proof one","actor_slot":"main","actor_session":"aerewrite"}"#;
+    const CHALLENGE_2: &str = r#"{"ts":"2026-08-29T04:02:30Z","actor":"watchdog","action":"done-challenge","target":"opus5:builder","ref":"launch-1","target_slot":"main","target_session":"aerewrite"}"#;
+    const DONE_2: &str = r#"{"ts":"2026-08-29T04:03:00Z","actor":"opus5:builder","action":"state","ref":"done","summary":"proof two","actor_slot":"main","actor_session":"aerewrite"}"#;
+
+    #[test]
+    fn done_is_challenged_twice_then_confirmed_across_restart() {
+        assert_eq!(
+            progress(&[DONE_0], "2026-08-29T04:00:59Z", 2, 60),
+            DoneProgress::Provisional {
+                confirmations: 0,
+                required: 2,
+            }
+        );
+        assert_eq!(
+            progress(&[DONE_0], "2026-08-29T04:01:00Z", 2, 60),
+            DoneProgress::ChallengeDue {
+                confirmations: 0,
+                required: 2,
+                done_age_secs: 60,
+                attempts: 0,
+            }
+        );
+        assert_eq!(
+            progress(&[DONE_0, CHALLENGE_1], "2026-08-29T04:01:59Z", 2, 60),
+            DoneProgress::Challenged {
+                confirmations: 0,
+                required: 2,
+            },
+            "journal reconstruction survives a daemon restart"
+        );
+        assert_eq!(
+            progress(
+                &[DONE_0, CHALLENGE_1, DONE_1],
+                "2026-08-29T04:02:30Z",
+                2,
+                60
+            ),
+            DoneProgress::ChallengeDue {
+                confirmations: 1,
+                required: 2,
+                done_age_secs: 60,
+                attempts: 0,
+            }
+        );
+        assert_eq!(
+            progress(
+                &[DONE_0, CHALLENGE_1, DONE_1, CHALLENGE_2, DONE_2],
+                "2026-08-29T14:03:00Z",
+                2,
+                60,
+            ),
+            DoneProgress::Confirmed
+        );
+    }
+
+    #[test]
+    fn zero_knobs_preserve_todays_done_without_challenges() {
+        assert_eq!(
+            progress(&[DONE_0], "2026-08-30T04:00:00Z", 0, 60),
+            DoneProgress::Confirmed
+        );
+        assert_eq!(
+            progress(&[DONE_0], "2026-08-30T04:00:00Z", 2, 0),
+            DoneProgress::Confirmed
+        );
+    }
+
+    #[test]
+    fn done_cannot_preconfirm_and_same_second_order_is_append_order() {
+        let repeated = DONE_1.replace("04:01:30", "04:00:00");
+        assert_eq!(
+            progress(&[DONE_0, &repeated], "2026-08-29T04:00:30Z", 2, 60),
+            DoneProgress::Provisional {
+                confirmations: 0,
+                required: 2,
+            }
+        );
+        let challenge = CHALLENGE_1.replace("04:01:00", "04:00:00");
+        assert_eq!(
+            progress(
+                &[DONE_0, &challenge, &repeated],
+                "2026-08-29T04:00:30Z",
+                2,
+                60,
+            ),
+            DoneProgress::Provisional {
+                confirmations: 1,
+                required: 2,
+            }
+        );
+        assert_eq!(
+            progress(
+                &[DONE_0, &repeated, &challenge],
+                "2026-08-29T04:00:30Z",
+                2,
+                60,
+            ),
+            DoneProgress::Challenged {
+                confirmations: 0,
+                required: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn an_unanswered_challenge_lapses_to_the_idle_path() {
+        assert_eq!(
+            progress(&[DONE_0, CHALLENGE_1], "2026-08-29T04:02:00Z", 2, 60),
+            DoneProgress::Lapsed {
+                confirmations: 0,
+                required: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn a_late_answer_keeps_credit_until_an_inbound_boundary() {
+        let late = DONE_1.replace("04:01:30", "04:03:00");
+        assert_eq!(
+            progress(&[DONE_0, CHALLENGE_1, &late], "2026-08-29T04:03:30Z", 2, 60,),
+            DoneProgress::Provisional {
+                confirmations: 1,
+                required: 2,
+            }
+        );
+        let inbound = r#"{"ts":"2026-08-29T04:02:00Z","actor":"lead","action":"send","target":"opus5:builder","target_slot":"main","target_session":"aerewrite"}"#;
+        assert_eq!(
+            progress(
+                &[DONE_0, CHALLENGE_1, inbound, &late],
+                "2026-08-29T04:03:30Z",
+                2,
+                60,
+            ),
+            DoneProgress::Provisional {
+                confirmations: 0,
+                required: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn an_own_non_done_declaration_ends_the_episode_without_credit() {
+        let working = r#"{"ts":"2026-08-29T04:01:30Z","actor":"opus5:builder","action":"state","ref":"working","summary":"finishing tests","actor_slot":"main","actor_session":"aerewrite"}"#;
+        assert_eq!(
+            progress(
+                &[DONE_0, CHALLENGE_1, working],
+                "2026-08-29T04:02:00Z",
+                2,
+                60,
+            ),
+            DoneProgress::None,
+            "only a later done can consume an outstanding challenge"
+        );
+    }
+
+    #[test]
+    fn a_successor_or_missing_launch_witness_inherits_no_confirmation() {
+        let events = log(&[DONE_0, CHALLENGE_1, DONE_1]);
+        assert_eq!(
+            done_progress(
+                &events,
+                "aerewrite",
+                "main",
+                "opus5:builder",
+                Some("launch-2"),
+                Timestamp::parse("2026-08-29T04:02:00Z").expect("test time"),
+                60,
+                2,
+            ),
+            DoneProgress::Provisional {
+                confirmations: 0,
+                required: 2,
+            }
+        );
+        assert_eq!(
+            done_progress(
+                &events,
+                "aerewrite",
+                "main",
+                "opus5:builder",
+                None,
+                Timestamp::parse("2026-08-29T04:02:00Z").expect("test time"),
+                60,
+                2,
+            ),
+            DoneProgress::Provisional {
+                confirmations: 0,
+                required: 2
+            },
+            "no incarnation witness must not inherit journal credit"
+        );
+    }
+
+    #[test]
+    fn unconfirmed_delivery_does_not_arm_a_confirmation() {
+        let unconfirmed =
+            CHALLENGE_1.replacen('}', r#","summary":"[unconfirmed] done challenge"}"#, 1);
+        assert!(crate::tracked::summary_is_unconfirmed(
+            event(&unconfirmed).summary.as_deref()
+        ));
+        assert!(matches!(
+            progress(&[DONE_0, &unconfirmed], "2026-08-29T04:01:30Z", 2, 60),
+            DoneProgress::ChallengeDue { attempts: 1, .. }
+        ));
+    }
+
+    #[test]
+    fn failed_challenge_attempts_survive_restart_and_ignore_abandoned_nudges() {
+        let first = CHALLENGE_1.replacen('}', r#","summary":"[unconfirmed] first"}"#, 1);
+        let second = CHALLENGE_2.replacen('}', r#","summary":"[unconfirmed] second"}"#, 1);
+        assert!(matches!(
+            progress(&[DONE_0, &first, &second], "2026-08-29T04:03:30Z", 5, 60),
+            DoneProgress::ChallengeDue { attempts: 2, .. }
+        ));
+
+        let abandoned_nudge = r#"{"ts":"2026-08-29T04:01:00Z","actor":"watchdog","action":"delivery-abandoned","target":"opus5:builder","target_slot":"main","target_session":"aerewrite"}"#;
+        assert!(matches!(
+            progress(&[DONE_0, abandoned_nudge], "2026-08-29T04:02:00Z", 5, 60),
+            DoneProgress::ChallengeDue { attempts: 0, .. }
+        ));
+    }
+
+    #[test]
+    fn a_ref_less_watchdog_nudge_preserves_the_degraded_episode() {
+        let challenge = CHALLENGE_1.replace(r#","ref":"launch-1""#, "");
+        let nudge = r#"{"ts":"2026-08-29T04:02:00Z","actor":"watchdog","action":"nudge","target":"opus5:builder","target_slot":"main","target_session":"aerewrite"}"#;
+        assert_eq!(
+            done_progress(
+                &log(&[DONE_0, &challenge, DONE_1, nudge]),
+                "aerewrite",
+                "main",
+                "opus5:builder",
+                None,
+                Timestamp::parse("2026-08-29T04:02:30Z").expect("test time"),
+                60,
+                5,
+            ),
+            DoneProgress::ChallengeDue {
+                confirmations: 1,
+                required: 5,
+                done_age_secs: 60,
+                attempts: 0,
+            },
+            "a delivered nudge preserves both credit and the failed-attempt budget"
+        );
+    }
+
+    #[test]
+    fn delivered_challenges_never_spend_the_failure_budget() {
+        let mut owned = vec![DONE_0.to_owned()];
+        for round in 1..=3 {
+            owned.push(format!(
+                r#"{{"ts":"2026-08-29T04:{:02}:00Z","actor":"watchdog","action":"done-challenge","target":"opus5:builder","ref":"launch-1","target_slot":"main","target_session":"aerewrite"}}"#,
+                round * 2 - 1
+            ));
+            owned.push(format!(
+                r#"{{"ts":"2026-08-29T04:{:02}:30Z","actor":"opus5:builder","action":"state","ref":"done","summary":"proof {round}","actor_slot":"main","actor_session":"aerewrite"}}"#,
+                round * 2 - 1
+            ));
+        }
+        let lines: Vec<&str> = owned.iter().map(String::as_str).collect();
+        assert_eq!(
+            progress(&lines, "2026-08-29T04:06:30Z", 5, 60),
+            DoneProgress::ChallengeDue {
+                confirmations: 3,
+                required: 5,
+                done_age_secs: 60,
+                attempts: 0,
+            },
+            "healthy delivered challenges never spend the failure budget"
+        );
+    }
+
+    #[test]
+    fn done_challenge_is_walked_past_without_ending_done() {
+        let events = log(&[DONE_0, CHALLENGE_1]);
+        let found = latest_relevant_event(&events, "aerewrite", "main", "opus5:builder")
+            .expect("done remains relevant");
+        assert!(found.looked_past_done_challenge);
+        assert_eq!(quiet_reason(&found), Some(QuietKind::Done));
+    }
+
+    #[test]
+    fn abandoned_delivery_is_walked_past_without_ending_done() {
+        let abandoned = r#"{"ts":"2026-08-29T04:01:00Z","actor":"watchdog","action":"delivery-abandoned","target":"opus5:builder","target_slot":"main","target_session":"aerewrite"}"#;
+        let events = log(&[DONE_0, abandoned]);
+        let found = latest_relevant_event(&events, "aerewrite", "main", "opus5:builder")
+            .expect("done remains relevant");
+        assert!(found.looked_past_abandoned);
+        assert_eq!(quiet_reason(&found), Some(QuietKind::Done));
+    }
+
+    #[test]
+    fn challenge_and_abandonment_do_not_extend_other_quiet_states() {
+        for action in ["done-challenge", "delivery-abandoned"] {
+            for state in ["waiting-user", "waiting-agent", "blocked"] {
+                let declaration = format!(
+                    r#"{{"ts":"2026-08-29T04:00:00Z","actor":"opus5:builder","action":"state","ref":"{state}"}}"#
+                );
+                let footprint = format!(
+                    r#"{{"ts":"2026-08-29T04:01:00Z","actor":"watchdog","action":"{action}","target":"opus5:builder","ref":"launch-1"}}"#
+                );
+                let events = log(&[&declaration, &footprint]);
+                let found = latest_relevant_event(&events, "aerewrite", "main", "opus5:builder")
+                    .expect("declaration is walked back to");
+                assert_eq!(quiet_reason(&found), None, "{action} after {state}");
+            }
+        }
+    }
+
+    #[test]
+    fn declaration_currency_has_one_owner_distinct_from_quietness() {
+        let current = |declaration: &str, footprint: Option<&str>| {
+            let mut lines = vec![declaration];
+            lines.extend(footprint);
+            let events = log(&lines);
+            let found = latest_relevant_event(&events, "aerewrite", "main", "opus5:builder")
+                .expect("declaration selected");
+            declaration_current(&found)
+        };
+        let working = r#"{"ts":"2026-08-29T04:00:00Z","actor":"opus5:builder","action":"state","ref":"working"}"#;
+        let nudge = r#"{"ts":"2026-08-29T04:01:00Z","actor":"watchdog","action":"nudge","target":"opus5:builder"}"#;
+        assert!(current(working, None), "working is current but not quiet");
+        assert!(
+            !current(DONE_0, Some(nudge)),
+            "ordinary nudge invalidates done"
+        );
+        assert!(
+            current(DONE_0, Some(CHALLENGE_1)),
+            "challenge preserves done currency"
+        );
     }
 
     #[test]
