@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.158] - 2026-09-22
+- Bind seat directory and provenance at scan and commit
+
 ## [v2026.9.157] - 2026-09-22
 - Require proof before confirming done
 
