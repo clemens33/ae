@@ -1737,6 +1737,27 @@ pub fn raw_seat_work_dir(bytes: &[u8], slot: &str) -> Result<Option<String>, Str
     }
 }
 
+/// Effective directory + provenance from raw bytes.
+///
+/// # Errors
+///
+/// The shared refusal when the slot's row is present but unusable. The
+/// session value is read only when no row is present.
+pub fn effective_seat_dir(bytes: &[u8], slot: &str) -> Result<(String, SeatProvenance), String> {
+    if let Some(row) = raw_seat_work_dir(bytes, slot)? {
+        return Ok((row, SeatProvenance::Explicit));
+    }
+    let raw = first_value(bytes, "work_dir").unwrap_or_default();
+    let session = String::from_utf8_lossy(raw).into_owned();
+    Ok((session, SeatProvenance::Inherited))
+}
+
+/// Token proof only for explicit rows; inherited seats keep their cwd chains.
+#[must_use]
+pub fn explicit_token_only(provenance: SeatProvenance) -> bool {
+    provenance == SeatProvenance::Explicit
+}
+
 /// The meta file's raw bytes — the read behind a single-key lookup, which
 /// scans the file rather than parsing it.
 ///
@@ -4520,6 +4541,31 @@ agent_bin.main=claude
                 "{bytes:?}"
             );
         }
+    }
+
+    #[test]
+    fn effective_seat_dir_binds_raw_row_first_session_value_second() {
+        use super::{SeatProvenance as P, effective_seat_dir as resolve};
+        for (bytes, dir, prov) in [
+            (&b"work_dir=/s\n"[..], "/s", P::Inherited),
+            (&b"work_dir=/s\nwork_dir.main=/s\n"[..], "/s", P::Explicit),
+            (&b"seat.main=lead\n"[..], "", P::Inherited),
+        ] {
+            assert_eq!(resolve(bytes, "main"), Ok((dir.to_owned(), prov)));
+        }
+        for bytes in [
+            &b"work_dir=/s\nwork_dir.main=\n"[..],
+            &b"work_dir=/s\nwork_dir.main=/a\nwork_dir.main=/b\n"[..],
+            &b"work_dir=/s\nwork_dir.main=/x/\xff\n"[..],
+        ] {
+            assert!(resolve(bytes, "main").is_err(), "{bytes:?}");
+        }
+    }
+
+    #[test]
+    fn token_only_names_explicit_and_nothing_else() {
+        use super::{SeatProvenance as P, explicit_token_only as policy};
+        assert!(policy(P::Explicit) && !policy(P::Inherited));
     }
 
     /// A scratch root, removed on drop.

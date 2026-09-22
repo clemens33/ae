@@ -191,6 +191,8 @@ pub struct Captured {
     agent: String,
     tool: ToolKind,
     launch_id: String,
+    work_dir: String,
+    provenance: crate::meta::SeatProvenance,
 }
 
 impl Captured {
@@ -200,6 +202,8 @@ impl Captured {
             agent: facts.agent.clone(),
             tool: facts.tool,
             launch_id: facts.launch_id.clone(),
+            work_dir: facts.work_dir.clone(),
+            provenance: facts.provenance,
         }
     }
 
@@ -270,8 +274,10 @@ struct Facts {
     /// Which harness the seat holds — read from `agent_bin.<slot>`, because the
     /// roster is the core's record of what a seat is.
     tool: ToolKind,
-    /// The session's working directory, which every cwd match compares against.
+    /// The seat's effective directory, which every cwd match compares against.
     work_dir: String,
+    /// Recorded or inherited — provenance, never value, gates the cwd legs.
+    provenance: crate::meta::SeatProvenance,
     /// The oldest conversation birth this seat may accept, in epoch seconds.
     capture_floor: i64,
     /// The launch token, empty when none was minted.
@@ -285,6 +291,7 @@ struct Facts {
 /// Read one seat's capture facts, or nothing when the meta cannot be read.
 fn facts(dir: &Path, slot: &str) -> Option<Facts> {
     let bytes = crate::meta::read_bytes(dir).ok()?;
+    let (work_dir, provenance) = crate::meta::effective_seat_dir(&bytes, slot).ok()?;
     let parsed = crate::meta::Meta::parse(&String::from_utf8_lossy(&bytes));
     let value = |key: &str| {
         crate::meta::first_value(&bytes, key)
@@ -300,7 +307,8 @@ fn facts(dir: &Path, slot: &str) -> Option<Facts> {
     Some(Facts {
         agent: entry.map(|entry| entry.name.clone()).unwrap_or_default(),
         tool,
-        work_dir: value("work_dir"),
+        work_dir,
+        provenance,
         // New launches always publish this before exec. A retained conversation
         // from metadata predating the row gets an unbounded floor: its token or
         // recorded id is stronger evidence than a later resume timestamp. A
@@ -386,6 +394,12 @@ fn commit_inner(dir: &Path, slot: &str, captured: &Captured, may_replace: bool) 
     let Ok(bytes) = crate::meta::read_bytes(dir) else {
         return false;
     };
+    let Ok((now_dir, now_prov)) = crate::meta::effective_seat_dir(&bytes, slot) else {
+        return false;
+    };
+    if now_dir != captured.work_dir || now_prov != captured.provenance {
+        return false;
+    }
     let Ok(text) = String::from_utf8(bytes) else {
         return false;
     };
@@ -590,11 +604,23 @@ fn capture_codex(
     }
     // The TUI scrape, least reliable and therefore last: codex prints
     // `session id: <uuid>` once in its header.
-    if facts.launch_id.is_empty() {
-        let screen = crate::transport::capture_pane(server, pane)?;
-        return scrape_session_id(&screen);
+    let read = crate::transport::capture_pane;
+    codex_tui_fallback(facts.provenance, &facts.launch_id, pane, server, read)
+}
+
+/// The codex TUI fallback behind a pane-reader seam: production passes the
+/// live pane reader, the pin a counting double. Only a legacy seat is scraped.
+fn codex_tui_fallback(
+    provenance: crate::meta::SeatProvenance,
+    launch_id: &str,
+    pane: &str,
+    server: &ServerId,
+    read: impl Fn(&ServerId, &str) -> Option<String>,
+) -> Option<String> {
+    if crate::meta::explicit_token_only(provenance) || !launch_id.is_empty() {
+        return None;
     }
-    None
+    scrape_session_id(&read(server, pane)?)
 }
 
 /// One look through codex's own history. A seat with a launch token accepts
@@ -605,6 +631,9 @@ fn scan_codex(config_home: &Path, facts: &Facts) -> Option<String> {
         return find_codex_by_launch_id(config_home, marker, &facts.launch_id, facts.capture_floor);
     }
     if facts.work_dir.is_empty() {
+        return None;
+    }
+    if crate::meta::explicit_token_only(facts.provenance) {
         return None;
     }
     let days = day_dirs(Timestamp::now());
@@ -865,6 +894,9 @@ fn scan_gemini(home: &Path, facts: &Facts) -> Option<String> {
     {
         return Some(id);
     }
+    if crate::meta::explicit_token_only(facts.provenance) {
+        return None;
+    }
     find_gemini_by_cwd(home, &facts.work_dir, facts.capture_floor)
 }
 
@@ -961,6 +993,9 @@ fn scan_agy(home: &Path, facts: &Facts) -> Option<String> {
         });
     }
     if facts.work_dir.is_empty() {
+        return None;
+    }
+    if crate::meta::explicit_token_only(facts.provenance) {
         return None;
     }
     find_agy_by_cwd(home, &facts.work_dir, facts.capture_floor)
@@ -1698,6 +1733,7 @@ mod tests {
             agent: "lead".to_owned(),
             tool: ToolKind::Codex,
             work_dir: work.display().to_string(),
+            provenance: crate::meta::SeatProvenance::Inherited,
             capture_floor: 0,
             launch_id: launch_id.to_owned(),
             launch_marker: Some("CODEX"),
@@ -1753,6 +1789,7 @@ mod tests {
             agent: "lead".to_owned(),
             tool: ToolKind::Muse,
             work_dir: root.display().to_string(),
+            provenance: crate::meta::SeatProvenance::Inherited,
             capture_floor: 0,
             launch_id: "own-token".to_owned(),
             launch_marker: Some("MUSE"),
@@ -1910,6 +1947,7 @@ mod tests {
             agent: "lead".to_owned(),
             tool: ToolKind::Agy,
             work_dir: work.clone(),
+            provenance: crate::meta::SeatProvenance::Inherited,
             capture_floor: 0,
             launch_id: "own-token".to_owned(),
             launch_marker: Some("AGY"),
@@ -2146,6 +2184,7 @@ mod tests {
             agent: "lead".to_owned(),
             tool: ToolKind::Codex,
             work_dir: work.display().to_string(),
+            provenance: crate::meta::SeatProvenance::Inherited,
             capture_floor: 0,
             launch_id: "current-token".to_owned(),
             launch_marker: Some("CODEX"),
@@ -2206,6 +2245,8 @@ mod tests {
             agent: "retired".to_owned(),
             tool: ToolKind::Codex,
             launch_id: "retired-token".to_owned(),
+            work_dir: String::new(),
+            provenance: crate::meta::SeatProvenance::Inherited,
         };
 
         assert!(
@@ -2223,6 +2264,8 @@ mod tests {
             agent: "current".to_owned(),
             tool: ToolKind::Codex,
             launch_id: "current-token".to_owned(),
+            work_dir: String::new(),
+            provenance: crate::meta::SeatProvenance::Inherited,
         };
         assert!(
             !commit(&dir, "spawned.0", &current),
@@ -2265,9 +2308,11 @@ mod tests {
             &format!(
                 "schema=2\nwork_dir={}\nseat.main=lead\nagent_bin.main=codex\n\
                  harness_session.main=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\n\
-                 config_home.main={}\nlaunch_id.main=tok-recorded\nlaunch_time.main=0\n",
+                 config_home.main={}\nlaunch_id.main=tok-recorded\nlaunch_time.main=0\n\
+                 work_dir.main={}\n",
                 work.display(),
-                config_home.display()
+                config_home.display(),
+                work.display()
             ),
         );
         let mut out = Vec::new();
@@ -2280,8 +2325,13 @@ mod tests {
         );
         let meta = std::fs::read_to_string(dir.join("meta")).expect("the committed meta");
         assert!(
-            meta.contains(&format!("harness_session.main={id}")),
+            meta.contains(&format!("harness_session.main={id}\n")),
             "the token-proven handshake must replace a wrong earlier capture: {meta}"
+        );
+        let prior = "harness_session_prior.main=codex:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\n";
+        assert!(
+            meta.contains(prior),
+            "the replaced id must be kept as the newest tagged predecessor: {meta}"
         );
         assert!(
             !sid_file(&dir, "main").exists(),
@@ -2354,5 +2404,389 @@ mod tests {
             assert!(!is_opencode_session_id(bad), "{bad:?}");
         }
         assert!(is_opencode_session_id("ses_a1B2"));
+    }
+
+    /// One attempt-time capture result via the production snapshot owner.
+    fn attempt_captured(dir: &Path, id: &str) -> Captured {
+        let snapshot = facts(dir, "main").expect("attempt facts");
+        Captured::new(&snapshot, id.to_owned())
+    }
+
+    #[test]
+    fn facts_derive_seat_dir_and_refuse_damage() {
+        use crate::meta::SeatProvenance as P;
+        for (meta, dir, prov) in [
+            ("work_dir=/s\nwork_dir.main=/e\n", "/e", P::Explicit),
+            ("work_dir=/s\n", "/s", P::Inherited),
+            ("work_dir=/s\nwork_dir.main=/s\n", "/s", P::Explicit),
+        ] {
+            let d = scratch("facts-seat");
+            let m = d.join("meta");
+            write(&m, &format!("schema=2\nseat.main=lead\n{meta}"));
+            let got = facts(&d, "main").map(|f| (f.work_dir, f.provenance));
+            assert_eq!(got, Some((dir.to_owned(), prov)));
+        }
+        for meta in [
+            &b"schema=2\nwork_dir=/s\nseat.main=lead\nwork_dir.main=\n"[..],
+            &b"schema=2\nwork_dir=/s\nseat.main=lead\nwork_dir.main=/a\nwork_dir.main=/b\n"[..],
+            &b"schema=2\nwork_dir=/s\nwork_dir.main=/x/\xff\n"[..],
+        ] {
+            let d = scratch("facts-seat-bad");
+            write_bytes(&d.join("meta"), meta);
+            assert!(facts(&d, "main").is_none());
+        }
+    }
+
+    #[test]
+    fn commit_refuses_when_the_seat_directory_moves_midflight() {
+        let session = "work_dir=/s\n";
+        for (attempt, now) in [
+            ("", "work_dir.main=/s\n"),
+            ("work_dir.main=/s\n", ""),
+            ("work_dir.main=/a\n", "work_dir.main=/b\n"),
+            ("work_dir.main=/a\n", "work_dir.main=\n"),
+        ] {
+            let dir = scratch("commit-bind");
+            let base = "schema=2\nseat.main=lead\nagent_bin.main=codex\n\
+                        harness_session.main=pending\nlaunch_id.main=tok\n";
+            write(&dir.join("meta"), &format!("{base}{session}{attempt}"));
+            let got = attempt_captured(&dir, "id");
+            write(&dir.join("meta"), &format!("{base}{session}{now}"));
+            assert!(!commit(&dir, "main", &got), "{attempt:?} -> {now:?}");
+        }
+    }
+
+    #[test]
+    fn commit_refuses_inherited_session_dir_drift_and_stays_pending() {
+        let dir = scratch("commit-drift");
+        let base = "schema=2\nseat.main=lead\nagent_bin.main=codex\n\
+                    harness_session.main=pending\nlaunch_id.main=tok\n";
+        write(&dir.join("meta"), &format!("{base}work_dir=/s\n"));
+        let got = attempt_captured(&dir, "id");
+        write(&dir.join("meta"), &format!("{base}work_dir=/t\n"));
+        assert!(!commit(&dir, "main", &got));
+        let meta = std::fs::read_to_string(dir.join("meta")).expect("meta");
+        assert!(meta.contains("harness_session.main=pending"), "{meta}");
+    }
+
+    #[test]
+    fn authoritative_commit_refuses_a_drifted_directory() {
+        let dir = scratch("commit-auth-drift");
+        let old = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let base = "schema=2\nseat.main=lead\nagent_bin.main=codex\nlaunch_id.main=tok\n";
+        let id_row = format!("harness_session.main={old}\n");
+        let m = dir.join("meta");
+        write(&m, &format!("{base}{id_row}work_dir.main=/a\n"));
+        let got = attempt_captured(&dir, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
+        write(&m, &format!("{base}{id_row}work_dir.main=/b\n"));
+        let before = std::fs::read(&m).expect("meta");
+        assert!(!commit_authoritative(&dir, "main", &got));
+        assert_eq!(std::fs::read(&m).expect("meta"), before);
+    }
+
+    #[test]
+    fn damaged_row_register_sid_exits_2_with_meta_unchanged() {
+        let dir = scratch("sid-damaged");
+        let meta = "schema=2\nwork_dir=/s\nwork_dir.main=\nseat.main=lead\n\
+                    agent_bin.main=codex\nconfig_home.main=/nonexistent-ae-t8t\n";
+        write(&dir.join("meta"), meta);
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = register_sid(&dir, "main", None, &mut out, &mut err).expect("exit");
+        assert_eq!(code, 2);
+        let after = std::fs::read(dir.join("meta")).expect("meta");
+        assert_eq!(after.as_slice(), meta.as_bytes());
+        assert!(!dir.join("codex.main.sid").exists());
+    }
+
+    /// One codex rollout under today's partition: id/cwd/stamp/token lines.
+    fn rollout(config_home: &Path, id: &str, cwd: &str, stamp: &str, token: &str) {
+        let day = day_dirs(Timestamp::now())
+            .into_iter()
+            .next()
+            .expect("today");
+        let path = config_home.join(format!("sessions/{day}/rollout-{id}.jsonl"));
+        let body = format!(
+            "{{\"timestamp\":\"{stamp}\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"cwd\":\"{cwd}\"}}}}\n\
+             {token}\n"
+        );
+        write(&path, &body);
+    }
+
+    #[test]
+    fn explicit_codex_without_token_stays_pending() {
+        let root = scratch("codex-exp-empty");
+        let config_home = root.join("home").join(".codex");
+        let seat = root.join("seat").display().to_string();
+        rollout(&config_home, "c0de-e1", &seat, "", "");
+        let facts = Facts {
+            agent: "lead".to_owned(),
+            tool: ToolKind::Codex,
+            work_dir: seat,
+            provenance: crate::meta::SeatProvenance::Explicit,
+            capture_floor: 0,
+            launch_id: String::new(),
+            launch_marker: Some("CODEX"),
+            config_home: crate::meta::RecordedConfigHome::Missing,
+        };
+        assert_eq!(scan_codex(&config_home, &facts), None);
+    }
+
+    #[test]
+    fn explicit_codex_with_missing_token_stays_pending() {
+        let root = scratch("codex-exp-miss");
+        let config_home = root.join("home").join(".codex");
+        let seat = root.join("seat").display().to_string();
+        let token = "{\"text\":\"AE_CODEX_LAUNCH_ID=other-token\"}";
+        rollout(&config_home, "c0de-0e", &seat, "", token);
+        let facts = Facts {
+            agent: "lead".to_owned(),
+            tool: ToolKind::Codex,
+            work_dir: seat,
+            provenance: crate::meta::SeatProvenance::Explicit,
+            capture_floor: 0,
+            launch_id: "missing-token".to_owned(),
+            launch_marker: Some("CODEX"),
+            config_home: crate::meta::RecordedConfigHome::Missing,
+        };
+        assert_eq!(scan_codex(&config_home, &facts), None);
+    }
+
+    #[test]
+    fn inherited_codex_matches_cwd_with_a_floored_decoy_present() {
+        let root = scratch("codex-inh-decoy");
+        let config_home = root.join("home").join(".codex");
+        let seat = root.join("seat").display().to_string();
+        let old = "2026-09-10T10:00:00Z";
+        let new = "2026-09-10T10:02:00Z";
+        rollout(&config_home, "c0de-00", &seat, old, "");
+        rollout(&config_home, "c0de-ff", &seat, new, "");
+        let facts = Facts {
+            agent: "lead".to_owned(),
+            tool: ToolKind::Codex,
+            work_dir: seat,
+            provenance: crate::meta::SeatProvenance::Inherited,
+            capture_floor: 1_789_034_460, // 2026-09-10T10:01:00Z
+            launch_id: String::new(),
+            launch_marker: Some("CODEX"),
+            config_home: crate::meta::RecordedConfigHome::Missing,
+        };
+        let got = scan_codex(&config_home, &facts);
+        assert_eq!(got.as_deref(), Some("c0de-ff"));
+    }
+
+    /// One gemini project: root row + one chat carrying id and token text.
+    fn gemini_chat(home: &Path, proj: &str, root: &str, id: &str, token: &str) {
+        let project = home.join(".gemini").join("tmp").join(proj);
+        write(&project.join(".project_root"), root);
+        let body = format!("{{\"sessionId\":\"{id}\",\"messages\":[\"{token}\"]}}");
+        write(&project.join("chats").join("session-a.json"), &body);
+    }
+
+    #[test]
+    fn gemini_token_hit_wins_over_a_same_token_decoy_project() {
+        let root = scratch("gem-tok-decoy");
+        let home = root.join("home");
+        let seat = root.display().to_string();
+        let tok = "AE_GEMINI_LAUNCH_ID=tok-a";
+        gemini_chat(&home, "digest", &seat, "sess-expected", tok);
+        gemini_chat(&home, "elsewhere", "/nowhere", "sess-decoy", tok);
+        let facts = Facts {
+            agent: "lead".to_owned(),
+            tool: ToolKind::Gemini,
+            work_dir: seat,
+            provenance: crate::meta::SeatProvenance::Explicit,
+            capture_floor: 0,
+            launch_id: "tok-a".to_owned(),
+            launch_marker: Some("GEMINI"),
+            config_home: crate::meta::RecordedConfigHome::Missing,
+        };
+        let got = scan_gemini(&home, &facts);
+        assert_eq!(got.as_deref(), Some("sess-expected"));
+    }
+
+    #[test]
+    fn explicit_gemini_without_token_stays_pending() {
+        let root = scratch("gem-exp-empty");
+        let home = root.join("home");
+        let seat = root.display().to_string();
+        gemini_chat(&home, "digest", &seat, "sess-seat", "");
+        let facts = Facts {
+            agent: "lead".to_owned(),
+            tool: ToolKind::Gemini,
+            work_dir: seat,
+            provenance: crate::meta::SeatProvenance::Explicit,
+            capture_floor: 0,
+            launch_id: String::new(),
+            launch_marker: Some("GEMINI"),
+            config_home: crate::meta::RecordedConfigHome::Missing,
+        };
+        assert_eq!(scan_gemini(&home, &facts), None);
+    }
+
+    #[test]
+    fn explicit_gemini_with_missing_token_stays_pending() {
+        let root = scratch("gem-exp-miss");
+        let home = root.join("home");
+        let seat = root.display().to_string();
+        gemini_chat(&home, "digest", &seat, "sess-seat", "");
+        let facts = Facts {
+            agent: "lead".to_owned(),
+            tool: ToolKind::Gemini,
+            work_dir: seat,
+            provenance: crate::meta::SeatProvenance::Explicit,
+            capture_floor: 0,
+            launch_id: "missing-gem".to_owned(),
+            launch_marker: Some("GEMINI"),
+            config_home: crate::meta::RecordedConfigHome::Missing,
+        };
+        assert_eq!(scan_gemini(&home, &facts), None);
+    }
+
+    #[test]
+    fn inherited_gemini_with_missing_token_keeps_cwd_fallback() {
+        let root = scratch("gem-inh-miss");
+        let home = root.join("home");
+        let seat = root.display().to_string();
+        gemini_chat(&home, "digest", &seat, "sess-fallback", "");
+        let facts = Facts {
+            agent: "lead".to_owned(),
+            tool: ToolKind::Gemini,
+            work_dir: seat,
+            provenance: crate::meta::SeatProvenance::Inherited,
+            capture_floor: 0,
+            launch_id: "missing-gem".to_owned(),
+            launch_marker: Some("GEMINI"),
+            config_home: crate::meta::RecordedConfigHome::Missing,
+        };
+        let got = scan_gemini(&home, &facts);
+        assert_eq!(got.as_deref(), Some("sess-fallback"));
+    }
+
+    /// One agy home: a token db plus the cli log naming the seat.
+    fn agy_home(home: &Path, seat: &str, dbid: &str, tok: &str, logid: &str) {
+        let db = home.join(AGY_CONVERSATIONS).join(format!("{dbid}.db"));
+        let marker = format!("AE_AGY_LAUNCH_ID={tok}");
+        write_bytes(&db, marker.as_bytes());
+        let log = home.join(AGY_LOGS).join("cli-1.log");
+        let text = format!("workspaceDirs=[{seat}]\nCreated conversation {logid}\n");
+        write(&log, &text);
+    }
+
+    #[test]
+    fn inherited_agy_token_hit_and_cwd_fallback_stay_split_by_arm() {
+        let root = scratch("agy-inh-arms");
+        let home = root.join("home");
+        let seat = root.display().to_string();
+        agy_home(&home, &seat, "aa01", "tok-agy", "bb02");
+        let base = Facts {
+            agent: "lead".to_owned(),
+            tool: ToolKind::Agy,
+            work_dir: seat,
+            provenance: crate::meta::SeatProvenance::Inherited,
+            capture_floor: 0,
+            launch_id: "tok-agy".to_owned(),
+            launch_marker: Some("AGY"),
+            config_home: crate::meta::RecordedConfigHome::Missing,
+        };
+        let got = scan_agy(&home, &base);
+        assert_eq!(got.as_deref(), Some("aa01"));
+        let empty = Facts {
+            launch_id: String::new(),
+            ..base
+        };
+        let got = scan_agy(&home, &empty);
+        assert_eq!(got.as_deref(), Some("bb02"));
+    }
+
+    #[test]
+    fn explicit_agy_without_token_stays_pending() {
+        let root = scratch("agy-exp-empty");
+        let home = root.join("home");
+        let seat = root.display().to_string();
+        agy_home(&home, &seat, "aa01", "tok-agy", "bb02");
+        let facts = Facts {
+            agent: "lead".to_owned(),
+            tool: ToolKind::Agy,
+            work_dir: seat,
+            provenance: crate::meta::SeatProvenance::Explicit,
+            capture_floor: 0,
+            launch_id: String::new(),
+            launch_marker: Some("AGY"),
+            config_home: crate::meta::RecordedConfigHome::Missing,
+        };
+        assert_eq!(scan_agy(&home, &facts), None);
+    }
+
+    #[test]
+    fn explicit_muse_token_hit_captures_its_directory() {
+        let home = scratch("muse-exp-hit").join("home");
+        let day = day_dir(Timestamp::now());
+        let mine = "01a09b51-c88a-7fc0-8f71-200ea396c8a7";
+        write_bytes(
+            &home
+                .join(MUSE_SESSIONS)
+                .join(&day)
+                .join(mine)
+                .join("session.jsonl"),
+            b"AE_MUSE_LAUNCH_ID=tok-m",
+        );
+        let facts = Facts {
+            agent: "lead".to_owned(),
+            tool: ToolKind::Muse,
+            work_dir: home.display().to_string(),
+            provenance: crate::meta::SeatProvenance::Explicit,
+            capture_floor: 0,
+            launch_id: "tok-m".to_owned(),
+            launch_marker: Some("MUSE"),
+            config_home: crate::meta::RecordedConfigHome::Missing,
+        };
+        assert_eq!(scan_muse(&home, &facts).as_deref(), Some(mine));
+    }
+
+    #[test]
+    fn the_tui_fallback_reads_only_a_tokenless_inherited_seat() {
+        use crate::meta::SeatProvenance as P;
+        let calls = std::cell::Cell::new(0);
+        let read = |_: &ServerId, _: &str| {
+            calls.set(calls.get() + 1);
+            None
+        };
+        let no = |p: P, t: &str| codex_tui_fallback(p, t, "%0", &ServerId::Ambient, read);
+        assert!(no(P::Explicit, "t").is_none());
+        assert_eq!(calls.get(), 0);
+        assert!(no(P::Explicit, "").is_none());
+        assert_eq!(calls.get(), 0);
+        assert!(no(P::Inherited, "t").is_none());
+        assert_eq!(calls.get(), 0);
+        assert!(no(P::Inherited, "").is_none());
+        assert_eq!(calls.get(), 1);
+    }
+
+    #[test]
+    fn explicit_empty_register_sid_refuses_a_matching_rollout() {
+        let dir = scratch("sid-exp-empty");
+        let account = dir.join("account");
+        rollout(
+            &account,
+            "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+            &dir.join("seat").display().to_string(),
+            "2026-09-10T10:02:00Z",
+            "",
+        );
+        write(
+            &dir.join("meta"),
+            &format!(
+                "schema=2\nseat.main=lead\nagent_bin.main=codex\nharness_session.main=pending\n\
+                 config_home.main={h}\nwork_dir.main={s}\n",
+                h = account.display(),
+                s = dir.join("seat").display(),
+            ),
+        );
+        let before = std::fs::read(dir.join("meta")).expect("meta");
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = register_sid(&dir, "main", None, &mut out, &mut err).expect("exit");
+        assert_eq!(code, crate::state::EXIT_FAILED);
+        assert_eq!(std::fs::read(dir.join("meta")).expect("meta"), before);
+        assert!(!dir.join("codex.main.sid").exists());
     }
 }

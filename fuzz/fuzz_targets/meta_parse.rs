@@ -53,5 +53,9 @@ fuzz_target!(|data: &[u8]| {
                 let _ = std::hint::black_box(ae::meta::contained_in(&target.canonical, root));
             }
         }
+        let effective = std::hint::black_box(ae::meta::effective_seat_dir(data, slot));
+        if let Ok((_, provenance)) = effective {
+            let _ = std::hint::black_box(ae::meta::explicit_token_only(provenance));
+        }
     }
 });

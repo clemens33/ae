@@ -573,3 +573,36 @@ fn a_tokenless_register_sid_never_replaces_a_recorded_id_by_cwd() {
         "the unproved id reached meta: {meta}"
     );
 }
+
+#[test]
+fn an_explicit_opencode_seat_captures_the_session_in_its_own_seat_directory() {
+    let rig = Rig::new("oc-exp", "opencode", 1);
+    let seat = rig.scratch.join("seat");
+    assert!(std::fs::create_dir_all(&seat).is_ok(), "a seat dir");
+    rig.write(
+        &rig.session.join("meta"),
+        &format!(
+            "session=cap\nwork_dir={}\nmode=local\nschema=2\nseat.main=lead\n\
+             profile.main=tool\nagent_bin.main=opencode\nharness_session.main=pending\n\
+             launch_time.main=1\ncapture_floor.main=1\nlaunch_id.main=tok-1\n\
+             work_dir.main={}\n",
+            rig.project.display(),
+            seat.display(),
+        ),
+    );
+    rig.fake_opencode(&format!(
+        r#"[{{"id":"ses_session","directory":"{project}","created":5000,"updated":6000}},
+  {{"id":"ses_seat","directory":"{seat}","created":2000,"updated":3000}}]"#,
+        project = rig.project.display(),
+        seat = seat.display(),
+    ));
+
+    let (code, stderr) = rig.capture();
+    assert_eq!((code, stderr.as_str()), (Some(0), ""));
+    let meta = rig.meta();
+    assert!(meta.contains("harness_session.main=ses_seat\n"), "{meta}");
+    assert!(
+        !meta.contains("ses_session"),
+        "the session-dir decoy was captured:\n{meta}"
+    );
+}
