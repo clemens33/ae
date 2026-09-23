@@ -47,6 +47,16 @@ does, and a live seat is only reached at the dead proof.
 
 Then, under `.lifecycle.<session>.lock`:
 
+7a. the CARRY CHECK and the TOOL-CHANGE NOTE, before anything is stopped. A
+    move that will carry (the ladder below, step 1) walks the whole copy set
+    with `carry::Mode::Check` — the copy's own walk, every node classified,
+    read and compared, nothing created — and a failure refuses here, exit 1,
+    nothing stopped, written or journaled. A tool change (recorded `agent_bin`
+    differs from the new binary) prints ONE stderr note instead, a dead pane
+    included: if the move succeeds it starts a fresh conversation, the
+    recorded id stays behind as a predecessor, and ae searches for no
+    conversation the records do not name. A working copy ae cannot use skips
+    the Check; step 8 or 9 names it;
 8. the STOP (`stop_running_tool`), for a seat whose tool is still running. A
    seat already gone returns straight to step 9 having read nothing but the
    pane, and every arm here refuses BEFORE the respawn, which is the one
@@ -93,7 +103,9 @@ Then, under `.lifecycle.<session>.lock`:
 9a. the CARRY question (`src/carry.rs`) — see below. Asked here, past the dead
     proof and before anything is removed, so every refusal costs only the
     reading. A move that does not carry leaves steps 10-17 exactly as they
-    were;
+    were. A copy failure here is only what appeared after 7a — the target
+    account is outside the lock — or a write the Check never tries, and it
+    keeps the loud seeded fallback;
 10. the seed pack is BUILT — before anything is removed, because it reads the
     seat's recorded first message and step 11 deletes that file;
 11. the seed is published as `seed.<agent>.md` (0600), then `run::clear_slot`
