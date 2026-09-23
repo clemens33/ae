@@ -53,10 +53,10 @@ Then, under `.lifecycle.<session>.lock`:
     read and compared, nothing created — and a failure refuses here, exit 1,
     nothing stopped, written or journaled. A tool change (recorded `agent_bin`
     differs from the new binary) prints ONE stderr note instead, a dead pane
-    included: if the move succeeds it starts a fresh conversation, the
-    recorded id stays behind as a predecessor, and ae searches for no
-    conversation the records do not name. A working copy ae cannot use skips
-    the Check; step 8 or 9 names it;
+    included: if the move succeeds it starts a fresh conversation, a recorded
+    id that passes the UUID grammar stays behind as a predecessor, and ae
+    searches for no conversation the records do not name. A working copy ae
+    cannot use skips the Check; step 8 or 9 names it;
 8. the STOP (`stop_running_tool`), for a seat whose tool is still running. A
    seat already gone returns straight to step 9 having read nothing but the
    pane, and every arm here refuses BEFORE the respawn, which is the one
@@ -318,7 +318,9 @@ profile IS the consent, so ae prompts for nothing and prints ONE line naming the
 crossing; project `memory/` is copied only into an account that has none and is
 NEVER merged; a copy that fails falls back LOUDLY to the seed path and the move
 still happens; and there is no model-availability pre-check, because the
-existing post-launch identity reading is the check.
+existing post-launch identity reading is the check. Narrowed 2026-09-23 (#155):
+a failure the pre-stop Check (step 7a) can see refuses the move instead, so the
+fallback keeps only a failed write and a change the Check could not see.
 
 THE RECORD SPELLS THE CONVERSATION BY WHAT HAPPENED TO IT. Every other arm
 names what the move left behind — `prior <id>` — but a CARRIED conversation is
