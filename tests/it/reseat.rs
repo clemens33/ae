@@ -613,9 +613,6 @@ fn a_pane_running_another_harness_than_its_records_is_refused_by_name_and_doctor
     // read `2.1.274` while `ps` read `…/bin/claude` — the SAME layout here.
     let rig = Rig::new("mismatch");
     rig.seat_rows("worker.1", "w1", "codex", "codex");
-    let rows = std::fs::read_to_string(rig.dir.join("meta")).unwrap_or_default();
-    let history = format!("{rows}harness_session.worker.1={OLD_ID}\n");
-    assert!(std::fs::write(rig.dir.join("meta"), history).is_ok());
     let pane = rig.new_pane("worker.1", "w1");
     // Every pane at its shell: NOTHING was checked, so nothing is claimed.
     let (_, blind, _) = rig.run_top(&rig.main_pane.clone(), &["doctor"]);
@@ -652,11 +649,14 @@ fn a_pane_running_another_harness_than_its_records_is_refused_by_name_and_doctor
     );
 
     assert_eq!(code, Some(1), "out={out} err={err}");
+    // The tool-change note comes first and says only what a move WOULD do.
+    let note = "note: 'w1' records codex and 'fake-claude' runs claude: if this move succeeds";
+    assert!(err.contains(note), "{err}");
     for part in [
         "runs claude",
         "but its records say codex (profile 'fake-codex')",
         "so it did not stop claude and nothing was reseated",
-        "it does not bring along a conversation held by claude",
+        "it does not bring along any conversation held by claude",
     ] {
         assert!(err.contains(part), "{part:?} missing: {err}");
     }
@@ -673,23 +673,30 @@ fn a_pane_running_another_harness_than_its_records_is_refused_by_name_and_doctor
         "{report}"
     );
     assert_eq!(rig.meta(), meta, "doctor rewrote a record");
+}
 
-    // THE RETRY (#155): claude is quit and the move re-run. The records still
-    // say codex, so it is a TOOL CHANGE, and it says what that costs first.
-    rig.kill_tools(&pane);
+#[test]
+fn a_tool_change_says_before_the_move_what_it_leaves_behind() {
+    // THE #155 RETRY: the pane is back at its shell, the records still say
+    // codex, and the move goes to claude — a fresh conversation, said first.
+    let rig = Rig::new("toolnote");
+    rig.seat_rows("worker.1", "w1", "codex", "codex");
+    record_history(&rig, "worker.1");
+    rig.new_pane("worker.1", "w1");
+
     let (code, out, err) = rig.run_top(
         &rig.main_pane.clone(),
         &["reseat", &rig.session, "w1", "--using", "fake-claude"],
     );
+
+    let note = format!(
+        "note: 'w1' records codex and 'fake-claude' runs claude: if this move succeeds it starts \
+         a fresh claude conversation and its recorded conversation {OLD_ID} stays behind as a \
+         predecessor. ae searches for no conversation its records do not name; any other stays \
+         in its own account."
+    );
+    assert!(err.contains(&note), "out={out} err={err}");
     assert_eq!(code, Some(0), "out={out} err={err}");
-    for part in [
-        "note: 'w1' records codex and 'fake-claude' runs claude",
-        "so this move starts a fresh claude conversation",
-        &format!("its recorded conversation {OLD_ID} stays behind as a predecessor"),
-        "ae searches for no conversation its records do not name",
-    ] {
-        assert!(err.contains(part), "{part:?} missing: {err}");
-    }
     assert_eq!(
         rig.meta_row("harness_session_prior.worker.1"),
         format!("codex:{OLD_ID}")

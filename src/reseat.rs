@@ -964,9 +964,9 @@ pub(crate) fn run(
     if !from_binary.is_empty() && from_binary != moving.binary {
         writeln!(
             err,
-            "note: '{}' records {from_binary} and '{}' runs {}, so this move starts a fresh {} \
-             conversation{}. ae searches for no conversation its records do not name; any other \
-             stays in its own account.",
+            "note: '{}' records {from_binary} and '{}' runs {}: if this move succeeds it starts a \
+             fresh {} conversation{}. ae searches for no conversation its records do not name; \
+             any other stays in its own account.",
             target.agent,
             parsed.profile,
             moving.binary,

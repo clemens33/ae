@@ -479,8 +479,8 @@ pub(crate) fn mismatch_refusal(
         "Error: pane {} of '{}' runs {names}{shown}, but its records say {} ({profile}) — ae \
          stops and replaces only the tool a seat records, so it did not stop {names} and nothing \
          was {}. Quit {names} in that pane until its shell is back, then re-run the {} — it \
-         does not bring along a conversation held by {names}, which stays in its tool's own \
-         account; `ae doctor` names every seat whose pane disagrees with its record.",
+         does not bring along any conversation held by {names}, which stays in the account of \
+         the tool holding it; `ae doctor` names every seat whose pane disagrees with its record.",
         target.pane, target.agent, recorded.binary, verb.past, verb.imperative
     ))
 }
@@ -855,7 +855,7 @@ mod tests {
             "but its records say codex (profile 'opus5x')",
             "so it did not stop claude and nothing was reseated",
             "Quit claude in that pane until its shell is back, then re-run the reseat",
-            "it does not bring along a conversation held by claude, which stays in its tool's own account",
+            "it does not bring along any conversation held by claude, which stays in the account of the tool holding it",
             "ae doctor",
         ] {
             assert!(line.contains(part), "{part:?} missing: {line}");
@@ -873,7 +873,7 @@ mod tests {
         for part in [
             "runs claude and gemini, but its records say codex (no profile)",
             "nothing was relaunched",
-            "re-run the relaunch — it does not bring along a conversation held by claude and gemini",
+            "re-run the relaunch — it does not bring along any conversation held by claude and gemini, which stays in the account of the tool holding it",
         ] {
             assert!(line.contains(part), "{part:?} missing: {line}");
         }
