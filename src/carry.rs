@@ -188,9 +188,23 @@ pub fn project_key(work_dir: &Path) -> String {
         .collect()
 }
 
-/// COPY the conversation. `Err` is the loud fallback: the seat still moves, on
-/// a fresh conversation with the seed pack, and the reason is what ae prints.
-pub(crate) fn run(plan: &Plan) -> Result<Crossing, String> {
+/// Whether a walk over the copy set WRITES. ONE walk, two uses: `Check`
+/// classifies, reads and compares every node exactly as `Copy` does — the
+/// transcript, the sidecar trees, project memory, depth and node budget — and
+/// skips only the creation in [`make_dir`] and [`publish`]. It proves the set
+/// as it stands at that moment and no longer: the target account is outside
+/// ae's lifecycle lock, so what appears between a `Check` and its `Copy` is met
+/// by the copy's own refusal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Mode {
+    Check,
+    Copy,
+}
+
+/// CHECK or COPY the conversation. A `Copy` `Err` is the loud fallback: the
+/// seat still moves, on a fresh conversation with the seed pack, and the
+/// reason is what ae prints.
+pub(crate) fn run(plan: &Plan, mode: Mode) -> Result<Crossing, String> {
     let name = format!("{}.jsonl", plan.id);
     let project: [&str; 2] = ["projects", &plan.key];
     // THE CONVERSATION ITSELF, read before anything is written: a carry that
@@ -220,9 +234,9 @@ pub(crate) fn run(plan: &Plan) -> Result<Crossing, String> {
 
     let mut budget = MAX_NODES;
     // SIDECARS FIRST. Each is optional in the source and binding once present.
-    copy_tree(plan, &[project[0], project[1], &plan.id], &mut budget)?;
+    copy_tree(plan, &[project[0], project[1], &plan.id], &mut budget, mode)?;
     for root in SIDECAR_ROOTS {
-        copy_tree(plan, &[root, &plan.id], &mut budget)?;
+        copy_tree(plan, &[root, &plan.id], &mut budget, mode)?;
     }
     // PROJECT MEMORY is not uuid-keyed: it belongs to the working copy and is
     // shared by every conversation in that account. ae copies it only into an
@@ -237,7 +251,7 @@ pub(crate) fn run(plan: &Plan) -> Result<Crossing, String> {
         other => return Err(format!("{} {}", target_memory.display(), other.word())),
     };
     if !memory_kept {
-        copy_tree(plan, &[project[0], project[1], MEMORY], &mut budget)?;
+        copy_tree(plan, &[project[0], project[1], MEMORY], &mut budget, mode)?;
     }
     // THE COMMIT. Last, so everything above is already in place when the
     // conversation becomes findable.
@@ -248,8 +262,8 @@ pub(crate) fn run(plan: &Plan) -> Result<Crossing, String> {
         // successor is about to resume exactly these bytes.
         let (_, node) = under(&plan.to, &[project[0], project[1], &name])?;
         still_holds(&target_file, node, &bytes)?;
-    } else {
-        make_dir(&target)?;
+    } else if mode == Mode::Copy {
+        make_dir(&target, mode)?;
         publish(&target_file, &bytes)?;
     }
     Ok(Crossing { memory_kept })
@@ -271,14 +285,14 @@ fn still_holds(path: &Path, node: Node, bytes: &[u8]) -> Result<(), String> {
 
 /// Copy one optional tree, named by its components under each account root. A
 /// source that is not there is `Ok`; anything present is binding.
-fn copy_tree(plan: &Plan, parts: &[&str], budget: &mut usize) -> Result<(), String> {
+fn copy_tree(plan: &Plan, parts: &[&str], budget: &mut usize, mode: Mode) -> Result<(), String> {
     let (source, node) = under(&plan.from, parts)?;
     match node {
         Node::Missing => Ok(()),
         Node::Dir => {
             let (target, node) = under(&plan.to, parts)?;
             match node {
-                Node::Missing | Node::Dir => copy_dir(&source, &target, MAX_DEPTH, budget),
+                Node::Missing | Node::Dir => copy_dir(&source, &target, MAX_DEPTH, budget, mode),
                 other => Err(format!("{} {}", target.display(), other.word())),
             }
         }
@@ -289,14 +303,20 @@ fn copy_tree(plan: &Plan, parts: &[&str], budget: &mut usize) -> Result<(), Stri
 /// Copy one CLASSIFIED source directory into a target ae has classified too.
 /// Every child is classified before it is read, written or descended, so the
 /// no-link walk [`under`] makes over the roots holds all the way down.
-fn copy_dir(source: &Path, target: &Path, depth: usize, budget: &mut usize) -> Result<(), String> {
+fn copy_dir(
+    source: &Path,
+    target: &Path,
+    depth: usize,
+    budget: &mut usize,
+    mode: Mode,
+) -> Result<(), String> {
     if depth == 0 {
         return Err(format!(
             "{} is nested deeper than ae will copy",
             source.display()
         ));
     }
-    make_dir(target)?;
+    make_dir(target, mode)?;
     for entry in children(source)? {
         if *budget == 0 {
             return Err(format!(
@@ -310,8 +330,8 @@ fn copy_dir(source: &Path, target: &Path, depth: usize, budget: &mut usize) -> R
         };
         let into = target.join(name);
         match classify(&entry)? {
-            Node::Dir => copy_dir(&entry, &into, depth - 1, budget)?,
-            Node::File => copy_file(&entry, &into)?,
+            Node::Dir => copy_dir(&entry, &into, depth - 1, budget, mode)?,
+            Node::File => copy_file(&entry, &into, mode)?,
             // A LISTED ENTRY THAT IS GONE is a source ae cannot promise it
             // copied, exactly like one it cannot read. The copy set is binding,
             // so this abandons the carry rather than delivering it short.
@@ -322,9 +342,10 @@ fn copy_dir(source: &Path, target: &Path, depth: usize, budget: &mut usize) -> R
 }
 
 /// One file into a target that must not already hold a different one.
-fn copy_file(source: &Path, target: &Path) -> Result<(), String> {
+fn copy_file(source: &Path, target: &Path, mode: Mode) -> Result<(), String> {
     let bytes = read_regular(source, Node::File)?;
     match classify(target)? {
+        Node::Missing if mode == Mode::Check => Ok(()),
         Node::Missing => publish(target, &bytes),
         Node::File if read_regular(target, Node::File)? == bytes => Ok(()),
         _ => Err(format!("{} already exists", target.display())),
@@ -459,17 +480,19 @@ fn children(path: &Path) -> Result<Vec<PathBuf>, String> {
 
 /// `path` as a directory at `0700`, created with its parents if it is not
 /// there. An existing DIRECTORY is success; anything else is not, because the
-/// caller is about to write into it.
-fn make_dir(path: &Path) -> Result<(), String> {
+/// caller is about to write into it. A [`Mode::Check`] classifies and creates
+/// nothing.
+fn make_dir(path: &Path, mode: Mode) -> Result<(), String> {
     use std::os::unix::fs::DirBuilderExt as _;
 
     match classify(path)? {
         Node::Dir => return Ok(()),
+        Node::Missing if mode == Mode::Check => return Ok(()),
         Node::Missing => {}
         other => return Err(format!("{} {}", path.display(), other.word())),
     }
     if let Some(parent) = path.parent() {
-        make_dir(parent)?;
+        make_dir(parent, mode)?;
     }
     std::fs::DirBuilder::new()
         .mode(0o700)
@@ -631,6 +654,123 @@ mod tests {
             .map(|entries| entries.filter_map(Result::ok).map(|e| e.path()).collect())
             .unwrap_or_default();
         assert_eq!(left, vec![path], "no scratch file is left behind");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn put(path: &Path, bytes: &[u8]) {
+        assert!(
+            path.parent()
+                .is_some_and(|p| std::fs::create_dir_all(p).is_ok())
+        );
+        assert!(std::fs::write(path, bytes).is_ok(), "{}", path.display());
+    }
+
+    /// A whole source set in `a`, an empty account `b`, and the plan between.
+    fn planted(tag: &str) -> super::Plan {
+        let dir = scratch(tag);
+        let (from, to) = (dir.join("a"), dir.join("b"));
+        let project = from.join("projects").join("-w");
+        put(&project.join(format!("{ID}.jsonl")), b"transcript");
+        put(&project.join(ID).join("tool-results/t1.txt"), b"tool");
+        put(&project.join("memory/notes.md"), b"remembered");
+        put(&from.join("file-history").join(ID).join("h@v1"), b"check");
+        put(&from.join("tasks").join(ID).join("1.json"), b"{}");
+        assert!(std::fs::create_dir_all(&to).is_ok());
+        let (key, id) = ("-w".to_owned(), ID.to_owned());
+        super::Plan { from, to, key, id }
+    }
+
+    /// Every node under `root`, sorted — what a Check must leave as it was.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture lists its own scratch dir; the boundary is about what PRODUCT code may reach"
+    )]
+    fn listing(root: &Path) -> Vec<std::path::PathBuf> {
+        let (mut found, mut stack) = (Vec::new(), vec![root.to_path_buf()]);
+        while let Some(dir) = stack.pop() {
+            for path in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+                let path = path.path();
+                if path.is_dir() && !path.is_symlink() {
+                    stack.push(path.clone());
+                }
+                found.push(path);
+            }
+        }
+        found.sort();
+        found
+    }
+
+    #[test]
+    fn a_check_proves_a_clean_set_and_creates_nothing() {
+        let plan = planted("check");
+        assert!(super::run(&plan, super::Mode::Check).is_ok(), "a clean set");
+        assert_eq!(listing(&plan.to), Vec::<std::path::PathBuf>::new());
+        let _ = std::fs::remove_dir_all(plan.from.parent().unwrap_or(&plan.from));
+    }
+
+    #[test]
+    fn every_failure_a_check_meets_leaves_the_target_as_it_found_it() {
+        use std::os::unix::fs::PermissionsExt as _;
+        // Run as root, `closed` stops being a refusal and this fails loudly.
+        type Broken = fn(&super::Plan);
+        let cases: [(&str, Broken); 5] = [
+            ("link", |plan| {
+                let leaf = plan.from.join("file-history").join(ID).join("h@v1");
+                assert!(std::fs::remove_file(&leaf).is_ok());
+                assert!(std::os::unix::fs::symlink("/etc/hosts", &leaf).is_ok());
+            }),
+            ("clash", |plan| {
+                put(
+                    &plan.to.join("file-history").join(ID).join("h@v1"),
+                    b"theirs",
+                );
+            }),
+            ("closed", |plan| {
+                let file = plan.from.join("tasks").join(ID).join("1.json");
+                let closed = std::fs::Permissions::from_mode(0o000);
+                assert!(std::fs::set_permissions(file, closed).is_ok());
+            }),
+            ("deep", |plan| {
+                put(
+                    &plan.from.join("file-history").join(ID).join("a/b/c/d/x"),
+                    b"deep",
+                );
+            }),
+            ("memory", |plan| {
+                put(&plan.to.join("projects/-w/memory"), b"not a directory");
+            }),
+        ];
+        for (tag, broken) in cases {
+            let plan = planted(tag);
+            broken(&plan);
+            let before = listing(&plan.to);
+            let checked = super::run(&plan, super::Mode::Check).err();
+            assert!(
+                checked.is_some(),
+                "{tag}: a Check refuses what a Copy would"
+            );
+            assert_eq!(
+                listing(&plan.to),
+                before,
+                "{tag}: {checked:?} created something"
+            );
+            let _ = std::fs::remove_dir_all(plan.from.parent().unwrap_or(&plan.from));
+        }
+    }
+
+    #[test]
+    fn a_check_meets_the_node_budget_a_copy_would() {
+        let dir = scratch("budget");
+        put(&dir.join("src/one"), b"1");
+        put(&dir.join("src/two"), b"2");
+        let (source, target, mut budget) = (dir.join("src"), dir.join("dst"), 1);
+        let checked = super::copy_dir(&source, &target, 4, &mut budget, super::Mode::Check);
+        assert!(checked.is_err_and(|why| why.contains("more files than ae will copy")));
+        assert_eq!(
+            super::classify(&target),
+            Ok(super::Node::Missing),
+            "creates nothing"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -208,6 +208,7 @@ fn a_move_between_two_accounts_of_one_tool_carries_the_whole_conversation() {
     let (code, out, err) = reseat(&rig, "fake-claude-b");
 
     assert_eq!(code, Some(0), "out={out} err={err}");
+    assert!(!err.contains("starts a fresh"), "no note: {err}");
     // RULING 1: the crossing is named exactly once, and it names both accounts.
     let crossings: Vec<&str> = out
         .lines()
@@ -332,20 +333,21 @@ fn the_carried_seat_resumes_its_conversation_instead_of_creating_a_second_one() 
 }
 
 #[test]
-fn a_target_account_already_holding_another_conversation_falls_back_loudly() {
+fn a_target_account_already_holding_another_conversation_is_refused_before_the_move() {
     let rig = Rig::new("clash");
     dead_seat(&rig);
     let (from, to) = (account(&rig, "a"), account(&rig, "b"));
     let key = ae::carry::project_key(&work_dir(&rig));
     let clash = to.join("projects").join(&key).join(format!("{ID}.jsonl"));
     write(&clash, b"someone else's conversation\n");
+    let meta = rig.meta();
 
     let (code, out, err) = reseat(&rig, "fake-claude-b");
 
-    assert_eq!(code, Some(0), "the seat still moves: out={out} err={err}");
+    assert_eq!(code, Some(1), "refused first: out={out} err={err}");
     assert!(
         err.contains("could not carry") && err.contains(ID),
-        "the fallback is LOUD and names the conversation: {err}"
+        "the refusal is LOUD and names the conversation: {err}"
     );
     assert_eq!(
         std::fs::read(&clash).ok(),
@@ -356,6 +358,68 @@ fn a_target_account_already_holding_another_conversation_falls_back_loudly() {
         std::fs::read(from.join("projects").join(&key).join(format!("{ID}.jsonl"))).ok(),
         Some(TRANSCRIPT.to_vec()),
         "and the source is untouched"
+    );
+    assert_eq!(rig.meta(), meta, "the seat is exactly what it was");
+    assert!(!rig.dir.join("seed.scout.md").exists(), "no seed: no move");
+}
+
+#[test]
+fn a_running_seat_whose_carry_would_fail_is_refused_before_it_is_stopped() {
+    // THE PRE-STOP CHECK reads and compares the whole set under the lock BEFORE
+    // the running tool is ended, so a target holding a different sidecar costs
+    // a refusal — not a stopped tool and a fresh conversation.
+    let rig = Rig::new("prestop");
+    let pane = running_seat(&rig);
+    let theirs = account(&rig, "b")
+        .join("file-history")
+        .join(ID)
+        .join("h@v1");
+    write(&theirs, b"another checkpoint");
+    let pid = rig.tool_pid(&pane, "claude");
+    let (meta, events) = (rig.meta(), rig.events());
+
+    let (code, out, err) = reseat(&rig, "fake-claude-b");
+
+    assert_eq!(code, Some(1), "out={out} err={err}");
+    assert!(
+        err.contains("could not carry") && err.contains("nothing was stopped"),
+        "{err}"
+    );
+    assert!(
+        pid.is_some() && rig.tool_pid(&pane, "claude") == pid,
+        "never stopped"
+    );
+    assert_eq!(
+        (rig.meta(), rig.events()),
+        (meta, events),
+        "nothing written"
+    );
+    assert_eq!(
+        std::fs::read(&theirs).ok(),
+        Some(b"another checkpoint".to_vec())
+    );
+}
+
+#[test]
+fn a_carry_that_fails_only_once_it_writes_falls_back_loudly() {
+    // The pre-stop CHECK reads and compares the whole set and writes nothing,
+    // so a target ae may not WRITE into passes it and meets only the copy, past
+    // the stop: the one failure left to the seeded fallback.
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let rig = Rig::new("rofall");
+    dead_seat(&rig);
+    let to = account(&rig, "b");
+    assert!(std::fs::create_dir_all(&to).is_ok(), "the target account");
+    assert!(std::fs::set_permissions(&to, std::fs::Permissions::from_mode(0o500)).is_ok());
+
+    let (code, out, err) = reseat(&rig, "fake-claude-b");
+
+    let _ = std::fs::set_permissions(&to, std::fs::Permissions::from_mode(0o700));
+    assert_eq!(code, Some(0), "the seat still moves: out={out} err={err}");
+    assert!(
+        err.contains("could not carry") && err.contains(ID),
+        "the fallback is LOUD and names the conversation: {err}"
     );
     // TODAY'S PATH, in full: a fresh conversation, a predecessor, a seed pack.
     assert_ne!(rig.meta_row("harness_session.spawned.0"), ID);
@@ -417,7 +481,7 @@ fn a_linked_conversation_file_is_refused_rather_than_followed() {
 
     let (code, out, err) = reseat(&rig, "fake-claude-b");
 
-    assert_eq!(code, Some(0), "the seat still moves: out={out} err={err}");
+    assert_eq!(code, Some(1), "refused first: out={out} err={err}");
     assert!(
         err.contains("could not carry") && err.contains("symbolic link"),
         "the link is named, not followed: {err}"
@@ -430,7 +494,7 @@ fn a_linked_conversation_file_is_refused_rather_than_followed() {
             .exists(),
         "the copy set is binding: no transcript lands when part of it cannot"
     );
-    assert!(rig.dir.join("seed.scout.md").exists(), "today's path");
+    assert!(!rig.dir.join("seed.scout.md").exists(), "no seed: no move");
 }
 
 #[test]
@@ -532,10 +596,10 @@ fn a_store_reached_through_a_linked_ancestor_is_refused_rather_than_followed() {
 
     let (code, out, err) = reseat(&rig, "fake-claude-b");
 
-    assert_eq!(code, Some(0), "the seat still moves: out={out} err={err}");
+    assert_eq!(code, Some(1), "refused first: out={out} err={err}");
     assert!(
         err.contains("could not carry") && err.contains("is a symbolic link"),
-        "the fallback is loud and says what it refused: {err}"
+        "the refusal is loud and says what it refused: {err}"
     );
     assert!(
         !to.join("file-history").join(ID).exists(),
@@ -548,10 +612,7 @@ fn a_store_reached_through_a_linked_ancestor_is_refused_rather_than_followed() {
             .exists(),
         "and the conversation never became findable"
     );
-    assert!(
-        rig.dir.join("seed.scout.md").exists(),
-        "today's path, in full"
-    );
+    assert!(!rig.dir.join("seed.scout.md").exists(), "no seed: no move");
 }
 
 #[test]
@@ -575,10 +636,10 @@ fn a_sidecar_ae_cannot_even_stat_is_never_silently_left_behind() {
     let (code, out, err) = reseat(&rig, "fake-claude-b");
 
     let _ = std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(0o700));
-    assert_eq!(code, Some(0), "the seat still moves: out={out} err={err}");
+    assert_eq!(code, Some(1), "refused first: out={out} err={err}");
     assert!(
         err.contains("could not carry"),
-        "the fallback is loud: {err}"
+        "the refusal is loud: {err}"
     );
     assert!(
         !to.join("tasks").join(ID).exists()
@@ -589,10 +650,7 @@ fn a_sidecar_ae_cannot_even_stat_is_never_silently_left_behind() {
                 .exists(),
         "a carry that cannot read its whole set delivers none of it"
     );
-    assert!(
-        rig.dir.join("seed.scout.md").exists(),
-        "today's path, in full"
-    );
+    assert!(!rig.dir.join("seed.scout.md").exists(), "no seed: no move");
 }
 
 #[test]
@@ -609,10 +667,10 @@ fn a_target_project_memory_that_is_not_a_directory_is_never_called_kept() {
 
     let (code, out, err) = reseat(&rig, "fake-claude-b");
 
-    assert_eq!(code, Some(0), "the seat still moves: out={out} err={err}");
+    assert_eq!(code, Some(1), "refused first: out={out} err={err}");
     assert!(
         err.contains("could not carry") && err.contains("memory"),
-        "the fallback names what it found: {err}"
+        "the refusal names what it found: {err}"
     );
     assert!(
         !out.contains("kept, never merged"),
@@ -623,10 +681,7 @@ fn a_target_project_memory_that_is_not_a_directory_is_never_called_kept() {
         Some(b"not a directory\n".to_vec()),
         "and it was not written through"
     );
-    assert!(
-        rig.dir.join("seed.scout.md").exists(),
-        "today's path, in full"
-    );
+    assert!(!rig.dir.join("seed.scout.md").exists(), "no seed: no move");
 }
 
 #[test]

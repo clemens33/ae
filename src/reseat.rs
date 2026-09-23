@@ -937,6 +937,47 @@ pub(crate) fn run(
         // audit line.
         carry: Carried::No,
     };
+    // A CARRY THAT WOULD FAIL refuses HERE, before a running tool is ended: the
+    // whole copy set is proven by the copy's own walk, writing nothing. A
+    // working copy ae cannot use is left to the stop and the dead proof, which
+    // name it in their own words.
+    if let Ok(work_dir) = crate::seat_relaunch::usable_work_dir(&locked)
+        && let Some(plan) = carry_plan(&locked, &target.slot, &moving, &prior, &work_dir)
+        && let Err(why) = crate::carry::run(&plan, crate::carry::Mode::Check)
+    {
+        let (from, to) = plan.homes();
+        writeln!(
+            err,
+            "Error: '{}' could not carry conversation {} from {} to {} ({why}) — nothing was \
+             stopped or reseated.",
+            target.agent,
+            plan.id(),
+            from.display(),
+            to.display()
+        )?;
+        return Ok(EXIT_FAILED);
+    }
+    // A TOOL CHANGE says what it costs before anything happens, a dead pane
+    // included: the successor cannot read the old tool's store, and ae looks
+    // for no conversation its records do not name.
+    let from_binary = crate::lifecycle::meta_value(&locked, &format!("agent_bin.{}", target.slot));
+    if !from_binary.is_empty() && from_binary != moving.binary {
+        writeln!(
+            err,
+            "note: '{}' records {from_binary} and '{}' runs {}, so this move starts a fresh {} \
+             conversation{}. ae searches for no conversation its records do not name; any other \
+             stays in its own account.",
+            target.agent,
+            parsed.profile,
+            moving.binary,
+            moving.binary,
+            if crate::session_launch::capture::is_lowercase_uuid(&prior) {
+                format!(" and its recorded conversation {prior} stays behind as a predecessor")
+            } else {
+                String::new()
+            }
+        )?;
+    }
     // THE STOP, before the dead proof and before anything durable is written.
     match stop_running_tool(&dir, &target, &locked, parsed.stop_unknown, err)? {
         Stop::Refused => return Ok(EXIT_FAILED),
@@ -985,7 +1026,7 @@ pub(crate) fn run(
         None => Carried::No,
         Some(plan) => {
             let (from, to) = plan.homes();
-            match crate::carry::run(&plan) {
+            match crate::carry::run(&plan, crate::carry::Mode::Copy) {
                 Ok(crossing) => {
                     // RULING 1: typing the reseat with the other account's
                     // profile IS the consent, so there is no prompt — but the
