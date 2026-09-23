@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.164] - 2026-09-23
+- End a wait on the human's input in its pane instead of pane churn, and retire the churn yield
+- Document that a wait ends on the human's input in its pane, and name what that reading cannot see
+- Say what the capture filter and a fresh pane's hash guard now that the quiet baseline is gone
+
 ## [v2026.9.163] - 2026-09-23
 - End a quiet state only on what one table names: waits outlive their own and their peers' traffic
 - Record a watchdog challenge refused before its paste as an attempt the folds count
