@@ -116,7 +116,7 @@ ae end -f <name>                                    # nuclear option
 `send` (and `ask` / `review` / `reply` / `interrupt`) report loudly rather than dropping a message. The stderr line names the guard that fired:
 
 - **`send to <target> REFUSED — target pane is a shell, not a running agent`** — the target agent has exited and its pane fell back to a shell. Nothing was pasted (a stray Enter would run your message as a shell command). Relaunch the agent (`relaunch <target>`, from another seat of the same session), then re-send.
-- **`send to <target> ABANDONED — target has unsent/human input or is busy`** — the target's input box stayed non-empty for ~2s (a human is typing, or it's mid-generation). Nothing was pasted, to avoid clipping that input. Wait, then re-send.
+- **`send to <target> ABANDONED — target stayed busy (<evidence>)`** — for ~2s the target's input box stayed non-empty or unreadable, or a human was active on the pane. The parenthesis names what held and what ae saw (`composer occupied: 13 content cells on 1 row`, `composer unreadable: no live prompt row`, `human input or attention on the pane: client active 2s ago`), never the text itself. Nothing was pasted, to avoid clipping that input. Wait, then re-send.
 - **`send to <target> UNCONFIRMED — submit not verified`** (or `submit UNCONFIRMED to pane …`) — the message was pasted but ae couldn't confirm it left the input box after retrying Enter. It may or may not have sent; re-send. ae keeps no outbox — the loud failure is your cue.
 
 ## `reply` rejected: `request … is assigned to slot …`

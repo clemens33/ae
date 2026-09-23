@@ -133,7 +133,7 @@ Only one path touches tmux. Only one path mints request ids. Only one path valid
 1. **Dead-pane refusal.** If the target agent has exited and its pane fell back to a shell, `send` refuses — a stray Enter would run the message as a shell command. Nothing is pasted:
    `ae: send to <target> REFUSED — target pane is a shell, not a running agent …`
 2. **Busy / human-input defer.** For a modelled TUI (claude, codex) `send` waits while the input box is non-empty, mid-generation, or unreadable — fail-closed, so it never clips a half-typed human question or pastes into a busy prompt. It retries for ~2s (5 × 0.4s); if the input never clears it abandons rather than clobbering:
-   `ae: send to <target> ABANDONED — target has unsent/human input or is busy …`
+   `ae: send to <target> ABANDONED — target stayed busy (composer occupied: 13 content cells on 1 row); …` — the parenthesis names each half that held and what ae saw, never the text
    A box holding NOTHING but a staged paste chip (`[Pasted Content N chars]`) is treated as ae's own unsent paste, not a human draft: once the pane stops redrawing and no human attention is recent, `send` presses Enter to drain that chip (bounded: one Enter) before pasting — the residue being that a human's own untouched chip on an idle pane is drained too.
 3. **Submit verification.** After pasting, `send` confirms the text left the input box, nudging Enter up to twice more. If it still can't confirm, it fails loudly:
    `ae: send to <target> UNCONFIRMED — submit not verified. Re-send.`

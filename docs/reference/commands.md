@@ -1971,8 +1971,10 @@ re-proves identity under the lifecycle lock first. Every outcome advances; the
 report carries one line per seat plus the hand-compaction line.
 
 `dispatched` means attempted: the command was pasted and Enter was sent; it is
-never proof of submission. `not dispatched (staged text)` means the text may sit
-unsubmitted in the seat's composer — clear it before any send. Any destructive
+never proof of submission. `not dispatched (staged text)` means the seat's drawn
+composer still held exactly that command when re-read 2 s after Enter — clear it
+before any send. A box holding anything else then reads `dispatched`, its record
+marked `unconfirmed-input`. Any destructive
 flag (`-f`, `--force`, `--keep-history`, `--digest-only`, `--exec-plan`) on
 `ae compact` is refused with a pointer to the verb that owns it (`ae reboot`).
 
