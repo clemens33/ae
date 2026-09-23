@@ -7616,6 +7616,46 @@ mod tests {
     }
 
     #[test]
+    fn a_seat_that_left_is_asked_on_return_and_an_expired_ask_is_never_booked_again() {
+        let roster = [claude_seat("main", "lead", CONVERSATION_A)];
+        let here = candidates_running(&roster, &[None]);
+        let meta = Path::new("/m");
+        let window = fable_window(&roster[0], "100", 9_900, None);
+        let mut late = window.clone();
+        late.now = 9_900 + 3_601;
+        let mut carry = QuotaCarry::default();
+        let mut pass = |observation, candidates: &[QuotaAskCandidate]| {
+            let actions = carry.reconcile_with_candidates(observation, &[], candidates, meta);
+            for ask in checkpoint_asks(&actions) {
+                let _ = carry.record_ask_delivery(ask, QuotaDelivery::Retryable, meta);
+            }
+            let dropped: Vec<String> = actions
+                .iter()
+                .filter_map(|action| match action {
+                    QuotaAction::Dropped { summary, .. } => summary
+                        .split_once(": ")
+                        .map(|(reason, _)| reason.to_owned()),
+                    _ => None,
+                })
+                .collect();
+            (asked_agents(&actions), dropped)
+        };
+        assert_eq!(pass(&window, &here), (vec!["lead".to_owned()], vec![]));
+        // Gone before its retry: dropped, and a return inside the episode asks.
+        let gone = pass(&window, &[]);
+        assert_eq!(
+            gone,
+            (vec![], vec!["checkpoint recipient is gone".to_owned()])
+        );
+        assert_eq!(pass(&window, &here), (vec!["lead".to_owned()], vec![]));
+        // Aged out before its retry: dropped once, and nothing is booked again
+        // from facts that old.
+        let expired = pass(&late, &here);
+        assert_eq!(expired, (vec![], vec!["checkpoint ask expired".to_owned()]));
+        assert_eq!(pass(&late, &here), (vec![], vec![]));
+    }
+
+    #[test]
     fn a_receipt_names_one_window_one_reset_and_one_conversation() {
         let key = super::QuotaKey {
             source: PathBuf::from("/tmp/cc/.claude.json"),
