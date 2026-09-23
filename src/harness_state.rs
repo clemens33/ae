@@ -1385,6 +1385,23 @@ mod tests {
         let draft = frame("› fix the bug ⠁  ⠈");
         assert!(has_human_draft(&draft, ToolKind::Codex));
         assert_eq!(classify(&draft, ToolKind::Codex), HarnessState::Unknown);
+        assert_eq!(
+            current_identity(&draft, ToolKind::Codex),
+            HarnessIdentity::default()
+        );
+        assert_eq!(
+            current_identity(&shimmer, ToolKind::Codex).model.as_deref(),
+            Some("gpt-6-astra")
+        );
+        // No draft is read over a footer that is not codex's.
+        let foreign = draft.replace("gpt-6-astra xhigh", "claude-x xhigh");
+        assert!(!has_human_draft(&foreign, ToolKind::Codex));
+        // A dot never stands in for the ornament, and a letter never for a dot.
+        let ornament = frame("⠁ Ask Codex to do anything");
+        assert_eq!(classify(&ornament, ToolKind::Codex), HarnessState::Unknown);
+        let respelled = frame("› Ask Codex to do anythinG");
+        assert_eq!(classify(&respelled, ToolKind::Codex), HarnessState::Unknown);
+        assert!(has_human_draft(&respelled, ToolKind::Codex));
         // Dots alone after the ornament are no draft, and no placeholder
         // either: the frame stays unrecognised rather than guessed idle.
         let dots = frame("›⠁  ⠈ ⠂");
@@ -1410,6 +1427,8 @@ mod tests {
         }
         let other = "› Ask Codex to do anything\n\n  claude-x high · ~/ae\n";
         assert_eq!(classify(other, ToolKind::Codex), HarnessState::Unknown);
+        let effort = "› Ask Codex to do anything\n\n  GPT-6-Astra turbo · ~/ae\n";
+        assert_eq!(classify(effort, ToolKind::Codex), HarnessState::Unknown);
     }
 
     #[test]

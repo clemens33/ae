@@ -900,12 +900,21 @@ fn recently_viewed(server: &ServerId, pane: &str) -> Option<i64> {
     let since = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .ok()?;
-    let now = i64::try_from(since.as_secs()).unwrap_or(i64::MAX);
+    freshest_view(
+        &clients,
+        pane,
+        i64::try_from(since.as_secs()).unwrap_or(i64::MAX),
+    )
+}
+
+/// The youngest input age among `clients` viewing `pane` at epoch `now`, when
+/// it is inside [`VIEW_GRACE`]. A clock skewed ahead reads as input just now.
+fn freshest_view(clients: &[crate::tmux::ObservedClient], pane: &str, now: i64) -> Option<i64> {
     clients
         .iter()
         .filter(|client| client.pane == pane)
         .filter_map(|client| client.activity.and_then(|epoch| i64::try_from(epoch).ok()))
-        .map(|epoch| now - epoch)
+        .map(|epoch| (now - epoch).max(0))
         .filter(|age| *age < VIEW_GRACE)
         .min()
 }
@@ -1467,11 +1476,24 @@ pub fn settle_staged(
     model: InputModel,
     pasted: &str,
 ) -> SubmitState {
+    settle(STAGED_SETTLE, model, pasted, || {
+        std::thread::sleep(VERIFY_POLL);
+        transport::capture_screen(server, pane, Styling::Escapes)
+    })
+}
+
+/// [`settle_staged`]'s loop over `next` capture until one decides or `budget`
+/// is spent; the read that finds it spent is the last.
+fn settle(
+    budget: Duration,
+    model: InputModel,
+    pasted: &str,
+    mut next: impl FnMut() -> Option<String>,
+) -> SubmitState {
     let started = Instant::now();
     loop {
-        std::thread::sleep(VERIFY_POLL);
-        let capture = transport::capture_screen(server, pane, Styling::Escapes);
-        let last = started.elapsed() >= STAGED_SETTLE;
+        let capture = next();
+        let last = started.elapsed() >= budget;
         if let Some(state) = staged_after_settle(capture.as_deref(), model, pasted, last) {
             return state;
         }
@@ -1763,8 +1785,9 @@ mod tests {
     use super::{
         DeferHeld, Failure, LivenessRefusal, Occupancy, PaneLiveness, Request, Shape, Snapshot,
         SubmitState, TargetInput, UNVERIFIED, Unverifiable, VERIFY_POLL, buffer_name, choose_input,
-        frame, instant_alive, is_name_safe, observed_liveness, pane_settled, refuses_as_dead,
-        settle_for, staged_after_settle, store_body, under_lock_refusal, unmodelled_ready,
+        frame, freshest_view, instant_alive, is_name_safe, observed_liveness, pane_settled,
+        refuses_as_dead, settle, settle_for, staged_after_settle, store_body, under_lock_refusal,
+        unmodelled_ready,
     };
     use crate::deliver::region::Reading;
     use crate::inventory::ServerId;
@@ -2051,6 +2074,52 @@ mod tests {
             Unverifiable::Unconfirmed.event_marker(),
             "unconfirmed-input"
         );
+    }
+
+    #[test]
+    fn the_settle_decides_only_on_the_read_that_finds_its_budget_spent() {
+        let text = "/compact checkpoint ae-x saved; compact now";
+        let rule = "─".repeat(60);
+        let boxed = |body: &str| format!("t\n{rule}\n\u{1b}[1m❯\u{1b}[0m\u{a0}{body}\n{rule}\n");
+        let border = InputModel::BorderDelimited;
+        // A box still staged on an early read, cleared once the budget is spent.
+        let mut reads = vec![boxed(text), boxed("")].into_iter();
+        let late = settle(Duration::from_millis(40), border, text, || {
+            let read = reads.next();
+            if reads.len() == 0 {
+                std::thread::sleep(Duration::from_millis(60));
+            }
+            read
+        });
+        assert_eq!(late, SubmitState::Submitted);
+        // A box that never clears is staged at the first read past a spent budget.
+        let mut calls = 0;
+        let spent = settle(Duration::ZERO, border, text, || {
+            calls += 1;
+            assert!(calls < 50, "the settle never took its last read");
+            Some(boxed(text))
+        });
+        assert_eq!((spent, calls), (SubmitState::StillStaged, 1));
+    }
+
+    #[test]
+    fn a_viewer_counts_only_on_the_pane_and_inside_the_grace() {
+        let client = |pane: &str, activity: Option<u64>| crate::tmux::ObservedClient {
+            name: "/dev/ttys001".to_owned(),
+            session: "s".to_owned(),
+            pane: pane.to_owned(),
+            activity,
+        };
+        let now = 1_000_000;
+        let at = |age: u64| Some(now - age);
+        let now = i64::try_from(now).unwrap_or(i64::MAX);
+        let seen = |clients: &[crate::tmux::ObservedClient]| freshest_view(clients, "%1", now);
+        assert_eq!(seen(&[client("%1", at(2))]), Some(2));
+        assert_eq!(seen(&[client("%1", at(4))]), None);
+        assert_eq!(seen(&[client("%1", at(3)), client("%1", at(1))]), Some(1));
+        assert_eq!(seen(&[client("%1", at(2)), client("%2", at(0))]), Some(2));
+        assert_eq!(seen(&[client("%1", None)]), None);
+        assert_eq!(seen(&[client("%1", Some(1_000_005))]), Some(0));
     }
 
     #[test]

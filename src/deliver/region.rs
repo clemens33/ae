@@ -311,7 +311,7 @@ fn content_end(segments: &[Segment], prompt_line: usize, stop_at: StopAt) -> usi
     let max_width = segments
         .iter()
         .map(|seg| seg.line)
-        .collect::<std::collections::BTreeSet<_>>()
+        .collect::<BTreeSet<_>>()
         .into_iter()
         .filter_map(|line| rows.get(line))
         .map(|row| row.chars().count())
@@ -2010,6 +2010,9 @@ mod tests {
         assert!(!holds_pasted(&echo, border, text));
         let unfenced = format!("t\n\n\u{1b}[1m❯\u{1b}[0m {text}\n{rule}\n  model\n");
         assert!(!holds_pasted(&unfenced, border, text));
+        // A rule only on one side of the row above is a heading, not the box.
+        let heading = format!("t\n──── notes\n\u{1b}[1m❯\u{1b}[0m {text}\n{rule}\n  model\n");
+        assert!(!holds_pasted(&heading, border, text));
         // Muse fences its box with a TITLED rule; a lone chip stands in.
         assert!(holds_pasted(MUSE_OCCUPIED, border, text));
         assert!(!holds_pasted(
