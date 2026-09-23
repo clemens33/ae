@@ -196,10 +196,12 @@ is caught at the next.
 
 The ask is once per episode across a restart too. A delivered or unconfirmed ask journals a receipt
 in its ref — a hash of the window, its reset and the seat's conversation — and a restarted daemon's
-first sight of a band it finds already entered skips every seat whose receipt is there. A real entry
-from headroom always asks again. The receipt is memory, not a guarantee: an abandoned or failed
-paste leaves none, so the restart asks again; a helper that dies after its paste asks once more; a
-64-bit hash collision costs one ask. Nothing here is exactly-once.
+first sight of a band it finds already entered skips every seat whose receipt is there. An entry
+from headroom that the daemon sees always asks again. One it never saw reads as the same episode and
+is not asked: the band re-entered under the same reset, which within one window only a policy change
+or a vendor correction can do, while no daemon was watching. The receipt is memory, not a
+guarantee: an abandoned or failed paste leaves none, so the restart asks again; a helper that dies
+after its paste asks once more; a 64-bit hash collision costs one ask. Nothing here is exactly-once.
 
 A seat is on the scope when its recorded identity — the tool kind of `agent_bin.<slot>` plus the
 canonical `config_home.<slot>`, an `implicit:` home resolved through its recorded
