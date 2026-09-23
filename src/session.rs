@@ -967,14 +967,13 @@ fn agent_entries(
             // even when a later relevant event has superseded it — the cell
             // shows what the agent declared; only the escalation is withheld.
             //
-            // RESIDUAL, and deliberately not faked: the daemon ALSO yields a
-            // quiet hold after the PANE keeps changing for two cycles (a human
-            // typing in the pane, leaving no event). A directory read cannot
-            // see panes, so a declaration the daemon has already yielded by
-            // pane activity can still read as current here and, past its
-            // ceiling, escalate on the human-marker surfaces; the pane's own
-            // border follows the daemon. This residual is named in
-            // AGENTS.md and `.local/waitagent-sites.md`.
+            // RESIDUAL, and deliberately not faked: the daemon ALSO ends a
+            // wait on a client's input in the seat's pane (a human answering
+            // there, leaving no event). A directory read cannot see clients,
+            // so a declaration the daemon has already ended that way can
+            // still read as current here and, past its ceiling, escalate on
+            // the human-marker surfaces; the pane's own border follows the
+            // daemon. This residual is named in AGENTS.md.
             let current_declaration = read.and_then(|read| {
                 crate::watchdog::latest_relevant_event(
                     &read.events,

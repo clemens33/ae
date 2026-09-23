@@ -786,6 +786,60 @@ pub fn declaration_current(relevant: &Relevant<'_>) -> bool {
     }
 }
 
+/// The watchdog's newest delivery to the seat that may have reached its pane —
+/// an idle or sweep nudge, a challenge, a quota advisory or checkpoint ask,
+/// unconfirmed ones included because they may have landed. A challenge
+/// refused before its paste painted nothing, so it is not one.
+#[must_use]
+pub fn last_watchdog_delivery(
+    events: &[Event],
+    session: &str,
+    slot: &str,
+    agent: &str,
+) -> Option<crate::time::Timestamp> {
+    let painting = [
+        NUDGE_ACTION,
+        SWEEP_NUDGE_ACTION,
+        DONE_CHALLENGE_ACTION,
+        WAIT_CHALLENGE_ACTION,
+        crate::quota::action::ADVISORY,
+        crate::quota::action::CHECKPOINT,
+    ];
+    let refused = |event: &Event| {
+        event
+            .summary
+            .as_deref()
+            .is_some_and(|summary| summary.contains(crate::send::REFUSED_PRE_PASTE))
+    };
+    events
+        .iter()
+        .rev()
+        .find(|event| {
+            event.actor == WATCHDOG_ACTOR
+                && painting.contains(&event.action.as_str())
+                && event_is_addressed_to(event, session, slot, agent)
+                && !refused(event)
+        })
+        .map(|event| event.ts)
+}
+
+/// Whether the human's own input in the seat's pane ends its wait: a client
+/// viewing the pane gave input (`activity`, epoch seconds) STRICTLY after both
+/// the declaration and the watchdog's newest delivery there. The delivery
+/// bound caps what a stray input costs at one nudge: the nudge it lets through
+/// re-arms the hold.
+#[must_use]
+pub fn human_input_ends_wait(
+    activity: Option<u64>,
+    declared: crate::time::Timestamp,
+    last_delivery: Option<crate::time::Timestamp>,
+) -> bool {
+    let bound = last_delivery.map_or(declared.epoch(), |at| at.epoch().max(declared.epoch()));
+    activity
+        .and_then(|epoch| i64::try_from(epoch).ok())
+        .is_some_and(|epoch| epoch > bound)
+}
+
 /// Journal-derived progress for the current seat incarnation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DoneProgress {
@@ -1191,8 +1245,8 @@ pub fn waiting_agent_escalated(age_secs: u64, idle_nudge_secs: u64) -> bool {
     age_secs >= waiting_agent_cap_secs(idle_nudge_secs)
 }
 
-/// The declaration's identity, as [`quiet_pane_decision`] compares it —
-/// `action|ts|ref|actor|summary`.
+/// The declaration's identity — `action|ts|ref|actor|summary`, so a
+/// same-second re-declaration is a new one.
 #[must_use]
 pub fn declaration_key(event: &Event) -> String {
     format!(
@@ -1203,117 +1257,6 @@ pub fn declaration_key(event: &Event) -> String {
         event.actor,
         event.summary.as_deref().unwrap_or("")
     )
-}
-
-/// What a pane's current hash means for a declared quiet state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum QuietPane {
-    /// No baseline for THIS declaration yet — take one.
-    Arm,
-    /// The pane still shows only what it showed when the baseline was armed.
-    Hold,
-    /// The pane changed once: move the baseline and keep honoring quiet state.
-    Rearm(u64),
-    /// Something new landed: a human's reply, or the agent resuming.
-    Yield,
-}
-
-/// The escape hatch's verdict for one pane.
-#[must_use]
-pub fn quiet_pane_decision(
-    cur_hash: u64,
-    armed: Option<(&str, u64, u8)>,
-    decl_key: &str,
-) -> QuietPane {
-    match armed {
-        Some((armed_key, armed_hash, changed_streak)) if armed_key == decl_key => {
-            if cur_hash == armed_hash {
-                QuietPane::Hold
-            } else if changed_streak == 0 {
-                QuietPane::Rearm(cur_hash)
-            } else {
-                QuietPane::Yield
-            }
-        }
-        _ => QuietPane::Arm,
-    }
-}
-
-/// The settled baseline for a pane, or `None` if it never held still.
-#[must_use]
-pub fn quiet_stabilize(samples: &[&str], tries: usize) -> Option<u64> {
-    let mut captures = samples.iter();
-    let mut prev = quiet_hash(captures.next()?);
-    for _ in 0..tries {
-        let cur = quiet_hash(captures.next()?);
-        if cur == prev {
-            return Some(cur);
-        }
-        prev = cur;
-    }
-    None
-}
-
-/// Whether a pane may pay the stabilization beat this cycle.
-#[must_use]
-pub const fn quiet_stabilize_allowed(spent: usize, max: usize, idx: usize, cursor: usize) -> bool {
-    spent < max && idx >= cursor
-}
-
-/// Where the next cycle starts.
-#[must_use]
-pub const fn quiet_cursor_advance(cursor: usize, spent: usize, max: usize, seen: usize) -> usize {
-    if spent < max || cursor > seen {
-        0
-    } else {
-        cursor
-    }
-}
-
-/// The rotating stabilization budget, as ONE machine.
-#[derive(Debug, Clone, Copy)]
-pub struct QuietCycle {
-    max: usize,
-    cursor: usize,
-    spent: usize,
-}
-
-impl QuietCycle {
-    /// A budget of `max` stabilizing panes per cycle, starting at the first pane.
-    #[must_use]
-    pub const fn new(max: usize) -> Self {
-        Self {
-            max,
-            cursor: 0,
-            spent: 0,
-        }
-    }
-
-    /// Start of a watchdog cycle: the budget refills, the cursor does not move.
-    pub const fn begin(&mut self) {
-        self.spent = 0;
-    }
-
-    /// May the pane at `idx` stabilize now?
-    pub const fn step(&mut self, idx: usize) -> bool {
-        if !quiet_stabilize_allowed(self.spent, self.max, idx, self.cursor) {
-            return false;
-        }
-        self.spent += 1;
-        self.cursor = idx + 1; // the next cycle resumes after this pane
-        true
-    }
-
-    /// End of the cycle: rotate for the next one.
-    pub const fn end(&mut self, panes_seen: usize) {
-        self.cursor = quiet_cursor_advance(self.cursor, self.spent, self.max, panes_seen);
-    }
-
-    /// Where the next cycle will resume — the rotation's only observable state.
-    #[must_use]
-    pub const fn cursor(&self) -> usize {
-        self.cursor
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1754,14 +1697,13 @@ mod tests {
     use super::WaitState::{Blocked, WaitingAgent};
     use super::{
         DEFAULT_IDLE_NUDGE_SECS, DoneProgress, HUMAN_PROMPT_WINDOW,
-        OVERVIEW_HOLD_WHILE_WORKING_SECS, OWN_WORK_AGE_CAP, QuietCycle, QuietKind, QuietPane,
-        SweepAlert, SweepEffect, SweepKnobs, SweepObservation, SweepState, SweepVerdict, Throttle,
-        WaitProgress, WaitState, WedgeDetail, classify_dead, command_is_shell, declaration_current,
-        declaration_key, done_progress, indented, is_echo, is_sweep_target, latest_relevant_event,
-        quiet_cursor_advance, quiet_filter, quiet_hash, quiet_pane_decision, quiet_reason,
-        quiet_stabilize, quiet_stabilize_allowed, raw_nudge, record_sweep, shows_throttle,
-        stale_composite, submit_hdr, sweep_step, throttle_class, wait_progress,
-        waiting_agent_cap_secs, waiting_agent_escalated,
+        OVERVIEW_HOLD_WHILE_WORKING_SECS, OWN_WORK_AGE_CAP, QuietKind, SweepAlert, SweepEffect,
+        SweepKnobs, SweepObservation, SweepState, SweepVerdict, Throttle, WaitProgress, WaitState,
+        WedgeDetail, classify_dead, command_is_shell, declaration_current, declaration_key,
+        done_progress, indented, is_echo, is_sweep_target, latest_relevant_event, quiet_filter,
+        quiet_hash, quiet_reason, raw_nudge, record_sweep, shows_throttle, stale_composite,
+        submit_hdr, sweep_step, throttle_class, wait_progress, waiting_agent_cap_secs,
+        waiting_agent_escalated,
     };
     use crate::events::Event;
     use crate::procs::Descendancy;
@@ -2626,15 +2568,6 @@ mod tests {
             r#"{"ts":"2026-08-29T04:00:00Z","actor":"opus5:builder","action":"state","ref":"waiting-user","summary":"now something else"}"#,
         );
         assert_ne!(declaration_key(&first), declaration_key(&second));
-        assert_eq!(
-            quiet_pane_decision(
-                7,
-                Some((&declaration_key(&first), 7, 0)),
-                &declaration_key(&second)
-            ),
-            QuietPane::Arm,
-            "a new declaration re-arms the baseline"
-        );
         // An absent ref and summary render empty.
         let bare =
             event(r#"{"ts":"2026-08-29T04:00:00Z","actor":"opus5:builder","action":"done"}"#);
@@ -3191,6 +3124,71 @@ mod tests {
         assert_eq!(reason(&lines), None, "the seat moved on");
     }
 
+    /// P1: the watchdog's newest delivery that may have reached the pane — any
+    /// painting action, confirmed or not, addressed to this seat. A challenge
+    /// refused before its paste, an abandoned delivery, a watchdog record that
+    /// delivers nothing, a peer's send and another seat's nudge are not one.
+    #[test]
+    fn the_last_watchdog_delivery_is_only_what_may_have_reached_the_pane() {
+        let me = "opus5:builder";
+        let last = |record: &str| {
+            let events = log(&[DECL_USER, record]);
+            super::last_watchdog_delivery(&events, "aerewrite", "main", me)
+                .map(|found| found.to_string())
+        };
+        let painted = Some("2026-08-29T04:05:00Z".to_owned());
+        for action in [
+            "nudge",
+            super::SWEEP_NUDGE_ACTION,
+            "done-challenge",
+            "wait-challenge",
+            crate::quota::action::ADVISORY,
+            crate::quota::action::CHECKPOINT,
+        ] {
+            let record = after_declaration("watchdog", action, r#","summary":"[unconfirmed] x""#);
+            assert_eq!(last(&record), painted, "{action}");
+        }
+        let refused = format!(
+            r#","summary":"[unconfirmed] blocked confirmation 1/2{}dead pane""#,
+            crate::send::REFUSED_PRE_PASTE
+        );
+        for record in [
+            after_declaration("watchdog", "wait-challenge", &refused),
+            after_declaration("watchdog", crate::tracked::ABANDONED_ACTION, ""),
+            after_declaration("watchdog", "alert", ""),
+            after_declaration("lead", "send", ""),
+            after_declaration("watchdog", "nudge", "")
+                .replace(r#""target_slot":"main""#, r#""target_slot":"spawned.1""#),
+        ] {
+            assert_eq!(last(&record), None, "{record}");
+        }
+    }
+
+    /// P1: input from a client viewing the pane ends a wait only when it is
+    /// STRICTLY newer than both the declaration and the last delivery there.
+    #[test]
+    fn human_input_ends_a_wait_only_after_the_declaration_and_the_last_delivery() {
+        let declared = Timestamp::from_epoch(1_000);
+        let delivered = Some(Timestamp::from_epoch(1_300));
+        for (activity, delivery, ends) in [
+            (None, None, false),
+            (Some(999), None, false),
+            (Some(1_000), None, false),
+            (Some(1_001), None, true),
+            (Some(1_200), delivered, false),
+            (Some(1_300), delivered, false),
+            (Some(1_301), delivered, true),
+            (Some(1_001), Some(Timestamp::from_epoch(500)), true),
+            (Some(u64::MAX), None, false),
+        ] {
+            assert_eq!(
+                super::human_input_ends_wait(activity, declared, delivery),
+                ends,
+                "{activity:?} after {delivery:?}"
+            );
+        }
+    }
+
     /// Every summary ae writes for a challenge reads back as that challenge
     /// through the ONE grammar: as written, unconfirmed, refused before its
     /// paste, and abandoned — by the real abandoned-delivery writer, under
@@ -3569,118 +3567,6 @@ tail line
         // A human's reply IS news.
         let after_human = format!("{after_nudge}yes, please continue\n");
         assert_ne!(quiet_hash(quiet_pane), quiet_hash(&after_human));
-    }
-
-    #[test]
-    fn an_unarmed_pane_arms_then_holds_until_the_pane_keeps_changing() {
-        let decl = "state|2026-08-29T04:00:00Z|waiting-user|opus5:builder|review";
-        assert_eq!(
-            quiet_pane_decision(7, None, decl),
-            QuietPane::Arm,
-            "no baseline yet"
-        );
-        assert_eq!(
-            quiet_pane_decision(7, Some((decl, 7, 0)), decl),
-            QuietPane::Hold
-        );
-        assert_eq!(
-            quiet_pane_decision(9, Some((decl, 7, 0)), decl),
-            QuietPane::Rearm(9)
-        );
-        assert_eq!(
-            quiet_pane_decision(11, Some((decl, 9, 1)), decl),
-            QuietPane::Yield,
-            "two consecutive changes yield"
-        );
-        assert_eq!(
-            quiet_pane_decision(9, Some((decl, 9, 1)), decl),
-            QuietPane::Hold,
-            "change then same holds and lets the daemon reset streak"
-        );
-        // A NEW declaration re-arms even against a baseline that is still held —
-        // the key is the full tuple, so two same-second declarations differ.
-        let redeclared = "state|2026-08-29T04:00:00Z|waiting-user|opus5:builder|now blocked";
-        assert_eq!(
-            quiet_pane_decision(7, Some((decl, 7, 0)), redeclared),
-            QuietPane::Arm
-        );
-    }
-
-    #[test]
-    fn stabilization_settles_on_two_consecutive_matching_samples() {
-        let settling = "declared\nMarked opus5:builder waiting-user: review\n";
-        let samples = ["declared\n", settling, settling];
-        let settled = quiet_stabilize(&samples, 2);
-        assert_eq!(
-            settled,
-            Some(quiet_hash(settling)),
-            "the settled baseline is the repeated sample's hash"
-        );
-    }
-
-    #[test]
-    fn a_pane_that_never_holds_still_has_no_baseline() {
-        let samples = ["one\n", "two\n", "three\n", "four\n"];
-        assert_eq!(
-            quiet_stabilize(&samples, 3),
-            None,
-            "still emitting means working, not waiting"
-        );
-        // Fewer samples than tries is the failed-capture exit: no baseline, and
-        // NOT an accidental settle on two empty captures.
-        assert_eq!(quiet_stabilize(&["one\n"], 2), None);
-        assert_eq!(quiet_stabilize(&[], 2), None);
-        // Nudges and echoes are filtered out, so two samples that differ only by
-        // the watchdog's own footprints DO settle.
-        assert!(quiet_stabilize(&["idle\n", "idle\nMarked a done\n"], 1).is_some());
-    }
-
-    #[test]
-    fn the_rotating_budget_reaches_every_pane_within_one_rotation() {
-        // The fairness bug this rotation exists to prevent: with a plain
-        // budget, the first two panes consume both slots EVERY cycle and panes
-        // 3+ are never attempted.
-        let mut cycle = QuietCycle::new(2);
-        let mut reached: Vec<usize> = Vec::new();
-        for _ in 0..3 {
-            cycle.begin();
-            for idx in 1..=5 {
-                if cycle.step(idx) {
-                    reached.push(idx);
-                }
-            }
-            cycle.end(5);
-        }
-        reached.sort_unstable();
-        assert_eq!(
-            reached,
-            vec![1, 2, 3, 4, 5],
-            "every pane is offered a turn within one full rotation"
-        );
-    }
-
-    #[test]
-    fn the_cursor_wraps_when_the_budget_is_not_spent_or_the_panes_shrink() {
-        // Everyone reachable got a turn: start over next cycle.
-        assert_eq!(quiet_cursor_advance(3, 1, 2, 5), 0);
-        // Budget spent and panes remain behind the cursor: resume there.
-        assert_eq!(quiet_cursor_advance(3, 2, 2, 5), 3);
-        // The cursor ran past the last pane (panes disappeared): start over.
-        assert_eq!(quiet_cursor_advance(6, 2, 2, 5), 0);
-    }
-
-    #[test]
-    fn the_budget_predicate_is_position_and_count_together() {
-        assert!(
-            quiet_stabilize_allowed(0, 2, 1, 0),
-            "fresh cycle, first pane"
-        );
-        assert!(!quiet_stabilize_allowed(2, 2, 3, 0), "budget spent");
-        assert!(!quiet_stabilize_allowed(0, 2, 1, 3), "behind the cursor");
-        assert!(
-            quiet_stabilize_allowed(1, 2, 3, 3),
-            "at the cursor, budget left"
-        );
     }
 
     // -- the orchestrator overview cadence -----------------------------------

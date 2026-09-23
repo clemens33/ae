@@ -19,10 +19,10 @@ use crate::tmux::{self, OptionScope, StopProbe};
 use crate::tracked::{self, EventFields};
 use crate::transport;
 use crate::watchdog::{
-    DoneProgress, QuietCycle, QuietKind, QuietPane, SweepAlert, SweepEffect, SweepKnobs,
-    SweepObservation, SweepState, SweepVerdict, Throttle, WaitProgress, WaitState, classify_dead,
-    declaration_key, is_sweep_target, latest_relevant_event, quiet_hash, quiet_pane_decision,
-    quiet_reason, quiet_stabilize, record_sweep, stale_composite, sweep_step, throttle_class,
+    DoneProgress, QuietKind, SweepAlert, SweepEffect, SweepKnobs, SweepObservation, SweepState,
+    SweepVerdict, Throttle, WaitProgress, WaitState, classify_dead, declaration_key,
+    is_sweep_target, latest_relevant_event, quiet_hash, quiet_reason, record_sweep,
+    stale_composite, sweep_step, throttle_class,
 };
 
 /// The event actor every watchdog emission carries.
@@ -78,11 +78,10 @@ pub struct Knobs {
     /// Consecutive cycles a human-only prompt must hold before it is NAMED.
     /// Two: one cycle is a redraw, two is a seat that is actually stuck.
     pub human_prompt_cycles: u32,
-    /// The beat between the two captures a quiet baseline must match across.
+    /// `--quiet-beat-ms`, `--quiet-tries` and `--quiet-panes-per-cycle`:
+    /// accepted, unread since #115 retired the pane-churn yield they tuned.
     pub quiet_beat_ms: u64,
-    /// How many re-captures the stabilizer may take before giving up.
     pub quiet_tries: usize,
-    /// How many panes may pay that beat in one cycle.
     pub quiet_panes_per_cycle: usize,
     /// The orchestrator changed-overview spacing, retry and bound.
     pub sweep: SweepKnobs,
@@ -218,9 +217,10 @@ pub struct PaneState {
     pub unknown_streak: u32,
     /// The persistent-unknown alert is raised once per streak, not per cycle.
     pub unknown_alerted: bool,
-    /// The armed quiet baseline: declaration key, settled hash, and the number
-    /// of consecutive cycles whose hash differed from the prior baseline.
-    pub quiet_base: Option<(String, u64, u8)>,
+    /// The newest input a client viewing this pane gave, as `(identity,
+    /// epoch)`: kept across cycles so a detach does not erase it, and keyed by
+    /// the seat identity so a pane id reused by another seat starts empty.
+    pub client_activity: Option<(u64, u64)>,
     /// The orchestrator sweep branch's carry.
     pub sweep: SweepState,
 }
@@ -3494,7 +3494,7 @@ fn watch(
     deferred: &mut crate::watchdog_glue::Deferred,
     err: &mut impl Write,
 ) -> crate::Result<u8> {
-    let mut carry = Carry::new(&knobs);
+    let mut carry = Carry::new();
     // The global config PATH is stable for this daemon's life; its CONTENT is
     // re-read every cycle below, so a config flip — quota awareness, or the
     // human's fleet order — reaches an unpinned session within one cycle.
@@ -3521,7 +3521,6 @@ fn watch(
                     server,
                     named,
                     &mut carry,
-                    &knobs,
                     |leaving| clear_published(leaving, session),
                     journal,
                     err,
@@ -3963,9 +3962,6 @@ struct Carry {
     panes: Vec<(String, PaneState)>,
     /// The missing-pane debounce, keyed by roster slot.
     missing: Vec<(String, MissingState)>,
-    /// The rotating stabilization budget, whose cursor indexes THIS server's
-    /// pane enumeration.
-    quiet: QuietCycle,
     /// The faster publisher that runs between verdict cycles.
     motion: MotionState,
     /// Session-local quota transitions, pending per-recipient deliveries, and
@@ -3994,11 +3990,10 @@ struct Carry {
 }
 
 impl Carry {
-    fn new(knobs: &Knobs) -> Self {
+    fn new() -> Self {
         Self {
             panes: Vec::new(),
             missing: Vec::new(),
-            quiet: QuietCycle::new(knobs.quiet_panes_per_cycle),
             motion: MotionState::default(),
             quota: QuotaCarry::default(),
             adoption: Adoption::default(),
@@ -4008,8 +4003,8 @@ impl Carry {
     }
 
     /// Drop every carry, because the server they are scoped to is being left.
-    fn reset(&mut self, knobs: &Knobs) {
-        *self = Self::new(knobs);
+    fn reset(&mut self) {
+        *self = Self::new();
     }
 }
 
@@ -4018,7 +4013,6 @@ fn adopt_server(
     leaving: crate::inventory::ServerId,
     joining: crate::inventory::ServerId,
     carry: &mut Carry,
-    knobs: &Knobs,
     retract: impl FnOnce(&crate::inventory::ServerId) -> bool,
     journal: &Journal<'_>,
     err: &mut impl Write,
@@ -4042,7 +4036,7 @@ fn adopt_server(
     }
     drop(leaving); // the old server is unaddressable from here on, by construction
     // 2.
-    carry.reset(knobs);
+    carry.reset();
     Ok(joining)
 }
 
@@ -4196,7 +4190,7 @@ struct MissingState {
 }
 
 /// What one pane's quiet resolution needs, gathered so the call reads as one
-/// question rather than eight positional arguments.
+/// question.
 struct QuietQuery<'a> {
     /// The session's events, oldest first.
     events: &'a [Event],
@@ -4205,31 +4199,31 @@ struct QuietQuery<'a> {
     /// The pane's roster slot — half of the routing key the ONE relevance
     /// owner judges actor and target by.
     slot: &'a str,
-    /// This cycle's filtered pane hash.
-    hash: u64,
-    /// The pane's 1-based position in this cycle's traversal, for the budget.
-    index: usize,
-    /// The pane to re-capture while settling a baseline.
-    pane_id: &'a str,
+    /// The newest input a client viewing the pane gave, epoch seconds.
+    activity: Option<u64>,
 }
 
-/// One pane's quiet question, as the collection site assembles it.
-fn quiet_query<'a>(
-    events: &'a [Event],
-    agent: &'a str,
-    slot: &'a str,
-    hash: u64,
-    index: usize,
-    pane_id: &'a str,
-) -> QuietQuery<'a> {
-    QuietQuery {
-        events,
-        agent,
-        slot,
-        hash,
-        index,
-        pane_id,
-    }
+/// The newest input any client viewing `pane` gave, or `None` when none did
+/// or the client read failed.
+fn viewing_input(clients: Option<&[tmux::ObservedClient]>, pane: &str) -> Option<u64> {
+    clients?
+        .iter()
+        .filter(|client| client.pane == pane)
+        .filter_map(|client| client.activity)
+        .max()
+}
+
+/// Fold this cycle's `observed` input into the pane's memory for the seat
+/// `identity`: a memory held for another seat is dropped, never read.
+fn remember_input(
+    held: Option<(u64, u64)>,
+    identity: u64,
+    observed: Option<u64>,
+) -> Option<(u64, u64)> {
+    let kept = held
+        .filter(|(owner, _)| *owner == identity)
+        .map(|(_, at)| at);
+    kept.max(observed).map(|at| (identity, at))
 }
 
 /// Everything one cycle needs that does not change within it.
@@ -4868,8 +4862,8 @@ impl Cycle<'_> {
         let seats = held_seats(&observed, table.as_deref(), &|slot| self.agent_bin(slot));
         let outstanding = crate::session::Outstanding::read(&events, self.session, &seats);
 
-        carry.quiet.begin();
-        let mut index = 0_usize;
+        // ONE client read per cycle; a failed read changes no pane's memory.
+        let clients = transport::observe_clients(self.server);
         let mut live: Vec<String> = Vec::new();
         let mut counts = Counts::default();
         let mut by_slot: Vec<(String, Verdict)> = Vec::new();
@@ -4885,7 +4879,6 @@ impl Cycle<'_> {
             if NON_AGENT_PANES.contains(&agent) {
                 continue;
             }
-            index += 1;
             live.push(agent.to_owned());
             let slot = pane.slot.clone().unwrap_or_default();
             let agent_bin = self.agent_bin(&slot);
@@ -4918,12 +4911,18 @@ impl Cycle<'_> {
                 self.knobs.idle_nudge_secs,
                 self.knobs.done_confirmations,
             );
-            let quiet = self.resolve_quiet(
-                &quiet_query(&events, agent, &slot, hash, index, &pane.pane_id),
-                carried,
-                &mut carry.quiet,
-                done_progress,
+            carried.client_activity = remember_input(
+                carried.client_activity,
+                identity,
+                viewing_input(clients.as_deref(), &pane.pane_id),
             );
+            let query = QuietQuery {
+                events: &events,
+                agent,
+                slot: &slot,
+                activity: carried.client_activity.map(|(_, at)| at),
+            };
+            let quiet = self.resolve_quiet(&query, done_progress);
             let wait_state = match quiet {
                 Some(QuietKind::WaitingAgent) => Some(WaitState::WaitingAgent),
                 Some(QuietKind::Blocked) => Some(WaitState::Blocked),
@@ -5010,7 +5009,6 @@ impl Cycle<'_> {
                 observed: observed_option(seen.harness.frame, carried),
             });
         }
-        carry.quiet.end(index);
         let inputs = QuotaInputs {
             panes: &observed,
             held: &carry.panes,
@@ -5502,12 +5500,11 @@ impl Cycle<'_> {
             .filter(|binary| !binary.is_empty())
     }
 
-    /// The RESOLVED quiet suppression for one pane.
+    /// The RESOLVED quiet suppression for one pane: `done` while its episode
+    /// is live, a wait until the human's own input in the pane ends it.
     fn resolve_quiet(
         &self,
         query: &QuietQuery<'_>,
-        state: &mut PaneState,
-        quiet_cycle: &mut QuietCycle,
         done_progress: DoneProgress,
     ) -> Option<QuietKind> {
         let relevant = latest_relevant_event(query.events, self.session, query.slot, query.agent)?;
@@ -5519,57 +5516,15 @@ impl Cycle<'_> {
             ))
             .then_some(kind);
         }
-        let event = relevant.event;
-        let key = declaration_key(event);
-        let armed = state
-            .quiet_base
-            .as_ref()
-            .map(|(armed_key, armed_hash, changed_streak)| {
-                (armed_key.as_str(), *armed_hash, *changed_streak)
-            });
-        match quiet_pane_decision(query.hash, armed, &key) {
-            QuietPane::Hold => {
-                state.quiet_base = Some((key, query.hash, 0));
-                Some(kind)
-            }
-            QuietPane::Yield => None,
-            QuietPane::Rearm(hash) => {
-                let changed_streak = state
-                    .quiet_base
-                    .as_ref()
-                    .map_or(1, |(_, _, streak)| streak.saturating_add(1));
-                state.quiet_base = Some((key, hash, changed_streak));
-                Some(kind)
-            }
-            QuietPane::Arm => {
-                if !quiet_cycle.step(query.index) {
-                    return None; // budget spent this cycle; try again next one
-                }
-                let samples = self.settle(query.pane_id);
-                let borrowed: Vec<&str> = samples.iter().map(String::as_str).collect();
-                let settled = quiet_stabilize(&borrowed, self.knobs.quiet_tries)?;
-                state.quiet_base = Some((key, settled, 0));
-                Some(kind)
-            }
-        }
-    }
-
-    /// The samples a baseline must settle across: one capture, then a beat and
-    /// another, up to `quiet_tries` times.
-    fn settle(&self, pane_id: &str) -> Vec<String> {
-        let mut samples = Vec::new();
-        let Some(first) = transport::capture_pane(self.server, pane_id) else {
-            return samples;
-        };
-        samples.push(first);
-        for _ in 0..self.knobs.quiet_tries {
-            std::thread::sleep(Duration::from_millis(self.knobs.quiet_beat_ms));
-            let Some(next) = transport::capture_pane(self.server, pane_id) else {
-                return samples;
-            };
-            samples.push(next);
-        }
-        samples
+        let delivered = crate::watchdog::last_watchdog_delivery(
+            query.events,
+            self.session,
+            query.slot,
+            query.agent,
+        );
+        let ended =
+            crate::watchdog::human_input_ends_wait(query.activity, relevant.event.ts, delivered);
+        (!ended).then_some(kind)
     }
 
     /// Perform one effect.
@@ -6329,13 +6284,13 @@ mod tests {
         ACTOR, ADOPTION_TICK, Adopted, Adoption, AdoptionBackend, AgentObservation, Carry,
         Continuation, Cycle, DETACHED_MOTION_TICK, DoneProgress, Effect, FactRung, HOLD_MAX_CYCLES,
         HarnessObservation, Journal, Knobs, MissingState, MotionState, MotionVerdict, Observation,
-        OverviewReading, PaneState, PendingAdvisory, PendingAsk, QuietCycle, QuietQuery,
-        QuotaAction, QuotaAskCandidate, QuotaCarry, QuotaDelivery, QuotaLevel, QuotaRecipient,
-        Rebind, ResolveIdentity, SeatIdentity, SendHelper, TickerMode, UNKNOWN_ALERT_CYCLES,
-        Verdict, WatchdogPresence, account, adopt_server, adoption_due, adoption_from,
-        adoption_writes, age_secs, agents_fact, ask_receipt, bar_glyph, continuation, deferred,
-        delivered_receipts, done_challenge_text, entry_mut, fact_at, fleet_rows, held_seats,
-        holds_seat, idle_nudge_seconds, idle_nudge_text, idle_nudge_text_waiting, is_meta_agent,
+        OverviewReading, PaneState, PendingAdvisory, PendingAsk, QuietQuery, QuotaAction,
+        QuotaAskCandidate, QuotaCarry, QuotaDelivery, QuotaLevel, QuotaRecipient, Rebind,
+        ResolveIdentity, SeatIdentity, SendHelper, TickerMode, UNKNOWN_ALERT_CYCLES, Verdict,
+        WatchdogPresence, account, adopt_server, adoption_due, adoption_from, adoption_writes,
+        age_secs, agents_fact, ask_receipt, bar_glyph, continuation, deferred, delivered_receipts,
+        done_challenge_text, entry_mut, fact_at, fleet_rows, held_seats, holds_seat,
+        idle_nudge_seconds, idle_nudge_text, idle_nudge_text_waiting, is_meta_agent,
         last_actor_event_age, last_done_event_at, last_working_declaration_at, launch_id_for,
         live_model, motion_cadence, motion_failure, motion_observation_due, motion_publish_failure,
         motion_ticker_enabled, nudge_text, observed_option, proven_ownership, quota_ask_candidates,
@@ -6357,7 +6312,7 @@ mod tests {
     use crate::tmux::StopProbe;
     use crate::watchdog::{
         QuietKind, SweepAlert, SweepEffect, SweepObservation, SweepVerdict, Throttle, WaitProgress,
-        WaitState, WedgeDetail, declaration_key, quiet_filter, quiet_hash,
+        WaitState, WedgeDetail, quiet_filter, quiet_hash,
     };
     use std::io::ErrorKind;
     use std::path::{Path, PathBuf};
@@ -9083,7 +9038,7 @@ mod tests {
     fn unaware_cycle_clears_held_quota_state_before_any_consumer() {
         let recipients = [quota_recipient("main", "lead")];
         let dir = Path::new("/m");
-        let mut carry = Carry::new(&Knobs::default());
+        let mut carry = Carry::new();
         assert!(
             carry
                 .quota
@@ -10867,7 +10822,7 @@ mod tests {
             "the move goes through the adopt, and nothing else assigns the server"
         );
         assert_eq!(
-            source.matches(concat!("carry.reset(", "knobs)")).count(),
+            source.matches(concat!("carry.reset(", ")")).count(),
             1,
             "the adopt drops every server-scoped carry — pane ids are server-local and \
              REUSABLE, so the old server's per-pane history must not reach the new one"
@@ -10880,7 +10835,7 @@ mod tests {
             .find("retract(&leaving)")
             .expect("the adopt attempts a retraction from the server it is leaving");
         let resets = adopt
-            .find(concat!("carry.reset(", "knobs)"))
+            .find(concat!("carry.reset(", ")"))
             .expect("the adopt resets the server-scoped carry");
         assert!(
             retracts < resets,
@@ -10904,7 +10859,7 @@ mod tests {
             .map(|(_, body)| body)
             .expect("the adopt is defined in this file");
         let (before_reset, _) = adopt
-            .split_once(concat!("carry.reset(", "knobs)"))
+            .split_once(concat!("carry.reset(", ")"))
             .expect("the reset is found above");
         assert_eq!(
             before_reset.matches("if !retract(&leaving) {").count(),
@@ -12057,70 +12012,177 @@ mod tests {
         );
     }
 
+    /// P1 memory: a client's input is kept across cycles (a detach or a failed
+    /// read keeps it), only ever grows, and belongs to ONE seat — a pane id a
+    /// new seat reuses starts empty, so the old seat's input never ends the
+    /// new seat's wait.
     #[test]
-    fn quiet_repaint_rearms_once_then_two_changes_activate() {
-        let scratch = Scratch::new("quiet-streak");
+    fn client_input_is_remembered_per_seat_and_read_only_from_viewers() {
+        use super::{remember_input, viewing_input};
+        for (held, observed, kept) in [
+            (None, Some(5), Some((1, 5))),
+            (Some((1, 5)), None, Some((1, 5))),
+            (Some((1, 5)), Some(3), Some((1, 5))),
+            (Some((1, 5)), Some(9), Some((1, 9))),
+            (Some((2, 5)), None, None),
+            (Some((2, 5)), Some(3), Some((1, 3))),
+        ] {
+            assert_eq!(
+                remember_input(held, 1, observed),
+                kept,
+                "{held:?} + {observed:?}"
+            );
+        }
+        let client = |pane: &str, activity: Option<u64>| crate::tmux::ObservedClient {
+            name: "/dev/ttys001".to_owned(),
+            session: "demo".to_owned(),
+            pane: pane.to_owned(),
+            activity,
+        };
+        let clients = [
+            client("%1", Some(7)),
+            client("%1", Some(9)),
+            client("%1", None),
+            client("%2", Some(50)),
+        ];
+        assert_eq!(viewing_input(Some(&clients), "%1"), Some(9));
+        assert_eq!(viewing_input(Some(&clients), "%3"), None);
+        assert_eq!(
+            viewing_input(None, "%1"),
+            None,
+            "a failed read sees nothing"
+        );
+    }
+
+    /// One `demo` journal record at `at`: the `lead` seat's own, or addressed
+    /// to it.
+    fn demo_event(at: i64, actor: &str, action: &str, extra: &str) -> Event {
+        let routing = if actor == "lead" {
+            r#""actor_slot":"main","actor_session":"demo""#
+        } else {
+            r#""target":"lead","target_slot":"main","target_session":"demo""#
+        };
+        let ts = crate::time::Timestamp::from_epoch(at);
+        Event::parse_line(&format!(
+            r#"{{"ts":"{ts}","actor":"{actor}","action":"{action}",{routing}{extra}}}"#
+        ))
+        .expect("a journal line")
+    }
+
+    /// P1 through the resolver (T4): a wait ends on input newer than both its
+    /// declaration and the watchdog's last delivery; a `done` never does. A
+    /// challenge refused before its paste painted nothing and raises no bound.
+    #[test]
+    fn the_humans_input_in_the_pane_ends_a_wait_but_never_a_done() {
+        let scratch = Scratch::new("p1-resolve");
         let helper = SendHelper::for_session(&scratch.0);
         let server = ServerId::Ambient;
-        let cycle = Cycle {
-            knobs: Knobs::default(),
-            meta_dir: &scratch.0,
-            helper: &helper,
-            server: &server,
-            session: "demo",
-            goal: None,
-            roster: Vec::new(),
-            local_config: None,
-            lead_pair: false,
-            fleet_order: crate::theme::FleetOrder::EMPTY,
-            meta_agent: false,
-            launch_ids: Vec::new(),
+        let cycle = demo_cycle(&scratch.0, &helper, &server);
+        let at = 1_789_000_000;
+        let resolve = |events: &[Event], activity: i64| {
+            let query = QuietQuery {
+                events,
+                agent: "lead",
+                slot: "main",
+                activity: u64::try_from(activity).ok(),
+            };
+            let live = DoneProgress::Provisional {
+                confirmations: 0,
+                required: 2,
+            };
+            cycle.resolve_quiet(&query, live)
         };
-        let event = Event::parse_line(
-            r#"{"ts":"2026-08-29T04:00:00Z","actor":"opus5:builder","action":"state","ref":"waiting-user","summary":"review"}"#,
-        )
-        .expect("well-formed state event");
-        let key = declaration_key(&event);
-        let events = vec![event];
-        let mut state = PaneState {
-            quiet_base: Some((key.clone(), 7, 0)),
-            ..PaneState::default()
-        };
-        let mut quiet_cycle = QuietCycle::new(4);
-        let mut query = QuietQuery {
+        for (state, kind) in [
+            ("waiting-user", QuietKind::WaitingUser),
+            ("waiting-agent", QuietKind::WaitingAgent),
+            ("blocked", QuietKind::Blocked),
+        ] {
+            let declared = format!(r#","ref":"{state}""#);
+            let mut events = vec![demo_event(at, "lead", "state", &declared)];
+            assert_eq!(resolve(&events, at), Some(kind), "{state}: input at it");
+            assert_eq!(resolve(&events, at + 1), None, "{state}: input after it");
+            events.push(demo_event(at + 60, "watchdog", "nudge", ""));
+            assert_eq!(
+                resolve(&events, at + 30),
+                Some(kind),
+                "{state}: before the nudge"
+            );
+            assert_eq!(resolve(&events, at + 61), None, "{state}: after the nudge");
+        }
+        let refused = format!(
+            r#","summary":"[unconfirmed] blocked confirmation 1/2{}dead pane""#,
+            crate::send::REFUSED_PRE_PASTE
+        );
+        let mut blocked = vec![
+            demo_event(at, "lead", "state", r#","ref":"blocked""#),
+            demo_event(at + 60, "watchdog", "wait-challenge", &refused),
+        ];
+        assert_eq!(
+            resolve(&blocked, at + 30),
+            None,
+            "a refused challenge painted nothing"
+        );
+        blocked[1] = demo_event(
+            at + 60,
+            "watchdog",
+            "wait-challenge",
+            r#","summary":"blocked confirmation 1/2""#,
+        );
+        assert_eq!(
+            resolve(&blocked, at + 30),
+            Some(QuietKind::Blocked),
+            "a pasted one did"
+        );
+        let done = [demo_event(at, "lead", "state", r#","ref":"done""#)];
+        assert_eq!(
+            resolve(&done, at + 9_999),
+            Some(QuietKind::Done),
+            "input never ends done"
+        );
+    }
+
+    /// T5 (#115): a `waiting-user` with its own reply and a peer's send behind
+    /// it, on a pane that keeps changing, is never nudged — neither the seat's
+    /// traffic, its peers' nor churn is the human.
+    #[test]
+    fn a_waiting_user_outlives_its_own_traffic_and_a_churning_pane() {
+        let scratch = Scratch::new("t5-churn");
+        let helper = SendHelper::for_session(&scratch.0);
+        let server = ServerId::Ambient;
+        let cycle = demo_cycle(&scratch.0, &helper, &server);
+        let at = 1_789_000_000;
+        let events = [
+            demo_event(at, "lead", "state", r#","ref":"waiting-user""#),
+            demo_event(
+                at + 10,
+                "lead",
+                "reply",
+                r#","ref":"ae-7","target":"colead""#,
+            ),
+            demo_event(at + 20, "colead", "send", r#","summary":"news""#),
+        ];
+        let query = QuietQuery {
             events: &events,
-            agent: "opus5:builder",
+            agent: "lead",
             slot: "main",
-            hash: 9,
-            index: 1,
-            pane_id: "%1",
+            activity: None,
         };
-
-        let first = cycle.resolve_quiet(&query, &mut state, &mut quiet_cycle, DoneProgress::None);
-        assert_eq!(first, Some(QuietKind::WaitingUser));
-        assert_eq!(state.quiet_base, Some((key.clone(), 9, 1)));
-        let mut observed = seen();
-        observed.hash = 9;
-        observed.quiet = first;
-        assert_eq!(
-            account(&PaneState::default(), &observed, &Knobs::default()).verdict,
-            Verdict::Quiet(QuietKind::WaitingUser)
-        );
-
-        query.hash = 11;
-        let second = cycle.resolve_quiet(&query, &mut state, &mut quiet_cycle, DoneProgress::None);
-        assert_eq!(second, None);
-        observed.hash = 11;
-        observed.quiet = second;
-        assert_eq!(
-            account(&state, &observed, &Knobs::default()).verdict,
-            Verdict::Active
-        );
-
-        query.hash = 9;
-        let settled = cycle.resolve_quiet(&query, &mut state, &mut quiet_cycle, DoneProgress::None);
-        assert_eq!(settled, Some(QuietKind::WaitingUser));
-        assert_eq!(state.quiet_base, Some((key, 9, 0)));
+        let mut state = PaneState::default();
+        for turn in 1..=3 {
+            let mut observed = seen();
+            observed.quiet = cycle.resolve_quiet(&query, DoneProgress::None);
+            observed.hash = 100 + turn;
+            observed.now_epoch = at + 600 * i64::try_from(turn).expect("small");
+            observed.last_actor_event_age_secs = 10_000;
+            let booked = account(&state, &observed, &Knobs::default());
+            assert_eq!(
+                booked.verdict,
+                Verdict::Quiet(QuietKind::WaitingUser),
+                "cycle {turn}"
+            );
+            assert!(!booked.effects.contains(&Effect::Nudge), "cycle {turn}");
+            state = booked.next;
+        }
     }
 
     #[test]
@@ -12152,9 +12214,7 @@ mod tests {
             events: &events,
             agent: "opus5:builder",
             slot: "main",
-            hash: 7,
-            index: 1,
-            pane_id: "%1",
+            activity: None,
         };
         for (progress, expected) in [
             (DoneProgress::None, None),
@@ -12191,12 +12251,7 @@ mod tests {
             (DoneProgress::Confirmed, Some(QuietKind::Done)),
         ] {
             assert_eq!(
-                cycle.resolve_quiet(
-                    &query,
-                    &mut PaneState::default(),
-                    &mut QuietCycle::new(4),
-                    progress,
-                ),
+                cycle.resolve_quiet(&query, progress),
                 expected,
                 "{progress:?}"
             );
@@ -12966,9 +13021,8 @@ mod tests {
     /// which statement comes first.
     #[test]
     fn a_daemon_that_has_never_read_a_look_publishes_nothing() {
-        let knobs = Knobs::default();
         assert_eq!(
-            Carry::new(&knobs).look,
+            Carry::new().look,
             None,
             "a default look would be the same guess the fallback exists to avoid"
         );
@@ -14408,8 +14462,8 @@ mod tests {
 
     /// A carry loaded with one server's history, on pane ids the next server
     /// will reuse.
-    fn loaded(knobs: &Knobs) -> Carry {
-        let mut carry = Carry::new(knobs);
+    fn loaded() -> Carry {
+        let mut carry = Carry::new();
         for pane_id in ["%0", "%1", "%2"] {
             let state = entry_mut(&mut carry.panes, pane_id);
             state.dead_latched = true;
@@ -14418,19 +14472,12 @@ mod tests {
             state.throttle_streak = 4;
             state.prev_hash = Some(99);
             state.last_hash_change = Some(1_000);
-            state.quiet_base = Some(("alpha-declaration".to_owned(), 99, 0));
+            state.client_activity = Some((99, 1_000));
             state.sweep.wedge_alerted = true;
             state.sweep.unreachable_alerted = true;
             state.sweep.fails = 5;
         }
         entry_mut(&mut carry.missing, "main").alerted = true;
-        // SPEND the budget: an unspent cycle wraps the cursor to 0 by design,
-        // which would make the reset assertion below vacuous.
-        for idx in 0..knobs.quiet_panes_per_cycle {
-            assert!(carry.quiet.step(idx), "the budget allows pane {idx}");
-        }
-        carry.quiet.end(5);
-        assert_ne!(carry.quiet.cursor(), 0, "the cursor really did move");
         carry
     }
 
@@ -14441,7 +14488,6 @@ mod tests {
             carry.missing.is_empty(),
             "nor the missing-pane debounce, which latches for the daemon's life"
         );
-        assert_eq!(carry.quiet.cursor(), 0, "nor the stabilization rotation");
         let fresh = entry_mut(&mut carry.panes, "%0").clone();
         assert_eq!(fresh, PaneState::default());
         assert!(!fresh.dead_latched, "a live pane is not inherited dead");
@@ -14449,7 +14495,7 @@ mod tests {
         assert_eq!(fresh.undelivered_streak, 0);
         assert_eq!(fresh.throttle_streak, 0);
         assert_eq!(fresh.prev_hash, None, "the quiet baseline re-arms");
-        assert_eq!(fresh.quiet_base, None);
+        assert_eq!(fresh.client_activity, None, "nor another seat's input");
         assert_eq!(
             fresh.sweep,
             crate::watchdog::SweepState::default(),
@@ -14462,14 +14508,13 @@ mod tests {
     fn a_server_move_retracts_the_old_bars_and_carries_no_pane_history() {
         // THE TWO DEFECTS the re-review found, together.
         let scratch = Scratch::new("adopt");
-        let knobs = Knobs::default();
         let journal = Journal {
             meta_dir: &scratch.0,
             session: "demo",
         };
         let alpha = ServerId::Selected(Selector::Name("alpha".to_owned()));
         let beta = ServerId::Selected(Selector::Name("beta".to_owned()));
-        let mut carry = loaded(&knobs);
+        let mut carry = loaded();
         let mut retracted: Vec<ServerId> = Vec::new();
         let mut err = Vec::new();
 
@@ -14477,7 +14522,6 @@ mod tests {
             alpha.clone(),
             beta.clone(),
             &mut carry,
-            &knobs,
             |leaving| {
                 retracted.push(leaving.clone());
                 true
@@ -14505,21 +14549,19 @@ mod tests {
     fn an_unreachable_old_server_does_not_block_the_move() {
         // The failure boundary.
         let scratch = Scratch::new("adopt-dead");
-        let knobs = Knobs::default();
         let journal = Journal {
             meta_dir: &scratch.0,
             session: "demo",
         };
         let alpha = ServerId::Selected(Selector::Name("alpha".to_owned()));
         let beta = ServerId::Selected(Selector::Name("beta".to_owned()));
-        let mut carry = loaded(&knobs);
+        let mut carry = loaded();
         let mut err = Vec::new();
 
         let now = adopt_server(
             alpha,
             beta.clone(),
             &mut carry,
-            &knobs,
             |_| false, // the old server is gone
             &journal,
             &mut err,
