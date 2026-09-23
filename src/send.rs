@@ -409,6 +409,33 @@ fn write_retryable_marker(
     Ok(())
 }
 
+/// What joins a refused challenge's summary to its reason — how a reader tells
+/// a challenge that painted nothing from one that reached the pane.
+pub(crate) const REFUSED_PRE_PASTE: &str = "; refused pre-paste: ";
+
+/// Why a watchdog challenge was refused BEFORE its paste — only for the
+/// failures that prove nothing reached the pane and record nothing of their
+/// own. `None` for any other action, for a paste that may have landed, and for
+/// a refusal the journal already carries (`delivery-abandoned`, unconfirmed).
+fn refused_before_paste(action: &str, failure: &deliver::Failure) -> Option<&'static str> {
+    if action != crate::watchdog::DONE_CHALLENGE_ACTION
+        && action != crate::watchdog::WAIT_CHALLENGE_ACTION
+    {
+        return None;
+    }
+    match failure {
+        deliver::Failure::DeadPane => Some("dead pane"),
+        deliver::Failure::Unproven { .. } => Some("pane not proven live"),
+        deliver::Failure::Storage => Some("body not stored"),
+        deliver::Failure::Lock => Some("target lock held"),
+        deliver::Failure::NoticeRefused { .. } => Some("notice not composed"),
+        deliver::Failure::NotComposed { .. } => Some("input box left"),
+        deliver::Failure::Abandoned { .. }
+        | deliver::Failure::Paste { .. }
+        | deliver::Failure::Unconfirmed { .. } => None,
+    }
+}
+
 /// Record a send after its body was delivered or its submit was left
 /// unconfirmed. A notice proof failure is deliberately not this path: it is
 /// not an ambiguous submit and must remain a failed, unrecorded delivery.
@@ -444,9 +471,24 @@ fn record_send_delivery(
             // the diagnostic, naming which half held.
             return tracked::record_abandoned_delivery(dir, event, held, err);
         }
-        Err(_) => {
+        Err(failure) => {
             // Every other refused delivery has already said what happened and
-            // where the body is; nothing is recorded for one.
+            // where the body is; only a watchdog challenge refused before its
+            // paste is recorded, as an unconfirmed attempt of that challenge,
+            // which both episode folds count toward `undelivered_max` (#148).
+            if let Some(why) = refused_before_paste(action, &failure) {
+                let summary = format!("{}{REFUSED_PRE_PASTE}{why}", event.summary);
+                let line = tracked::unconfirmed_event_line(&EventFields {
+                    summary: &summary,
+                    ..*event
+                });
+                if let Err(why) = store::open(dir).append_event(&line) {
+                    writeln!(
+                        err,
+                        "ae: {action} to {target_name} was refused but its record was not emitted: {why}"
+                    )?;
+                }
+            }
             return Ok(EXIT_FAILED);
         }
     };
@@ -513,6 +555,170 @@ mod tests {
 
     fn words(items: &[&str]) -> Vec<String> {
         items.iter().map(|item| (*item).to_owned()).collect()
+    }
+
+    /// Every delivery failure, and the reason its record names when the
+    /// refused delivery is a watchdog challenge — `None` where none is written.
+    fn refusals() -> [(crate::deliver::Failure, Option<&'static str>); 9] {
+        use crate::deliver::Failure;
+        let body = || "/b".to_owned();
+        [
+            (Failure::DeadPane, Some("dead pane")),
+            (
+                Failure::Unproven { body_file: body() },
+                Some("pane not proven live"),
+            ),
+            (Failure::Storage, Some("body not stored")),
+            (Failure::Lock, Some("target lock held")),
+            (
+                Failure::NoticeRefused { body_file: body() },
+                Some("notice not composed"),
+            ),
+            (
+                Failure::NotComposed { body_file: body() },
+                Some("input box left"),
+            ),
+            (
+                Failure::Abandoned {
+                    held: DeferHeld::ComposerOccupied,
+                },
+                None,
+            ),
+            (Failure::Paste { body_file: body() }, None),
+            (
+                Failure::Unconfirmed {
+                    body_file: body(),
+                    framed: "x".to_owned(),
+                    notice: true,
+                },
+                None,
+            ),
+        ]
+    }
+
+    /// Record one refused `action` delivery to `lead` in an isolated ledger,
+    /// asserting its failed exit; the records of `action` it left there.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the test writes and reads its isolated event ledger"
+    )]
+    fn refused(
+        action: &str,
+        summary: &str,
+        failure: crate::deliver::Failure,
+        tag: usize,
+    ) -> Vec<crate::events::Event> {
+        let dir = std::env::temp_dir().join(format!(
+            "ae-send-refused-{}-{action}-{tag}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("the isolated state directory");
+        let event = EventFields {
+            ts: Timestamp::parse("2026-08-27T07:05:00Z").expect("the timestamp parses"),
+            actor: "watchdog",
+            action,
+            target: "lead",
+            reference: "launch-1",
+            actor_slot: "",
+            actor_session: "s",
+            target_slot: "main",
+            target_session: "s",
+            target_server: "",
+            target_pane: "",
+            target_session_uuid: "",
+            caller_server: "",
+            caller_pane: "",
+            caller_session_uuid: "",
+            identity_gap: "",
+            summary,
+            body_file: "",
+        };
+        let code = record_send_delivery(
+            &dir,
+            &event,
+            Err(failure),
+            &Env::default(),
+            None,
+            &mut Vec::new(),
+        )
+        .expect("the refusal is handled");
+        assert_eq!(code, 1, "{action}/{tag}: a refusal keeps its failed exit");
+        let ledger = std::fs::read_to_string(dir.join("events.jsonl")).unwrap_or_default();
+        let _ = std::fs::remove_dir_all(&dir);
+        ledger
+            .lines()
+            .map(|line| crate::events::Event::parse_line(line).expect("a record"))
+            .filter(|record| record.action == action)
+            .collect()
+    }
+
+    /// The attempts the episode fold of the state a challenge `action` asks
+    /// about counts, over that declaration followed by `records`.
+    fn folded_attempts(action: &str, mut records: Vec<crate::events::Event>) -> u32 {
+        use crate::watchdog::{DoneProgress, WaitProgress, WaitState};
+        let state = if action == "done-challenge" {
+            "done"
+        } else {
+            "blocked"
+        };
+        let mut events = vec![crate::events::Event::parse_line(&format!(
+            r#"{{"ts":"2026-08-27T07:00:00Z","actor":"lead","action":"state","ref":"{state}","actor_slot":"main","actor_session":"s"}}"#
+        ))
+        .expect("the declaration parses")];
+        events.append(&mut records);
+        let now = Timestamp::parse("2026-08-27T07:10:00Z").expect("the timestamp parses");
+        let launch = Some("launch-1");
+        let done =
+            crate::watchdog::done_progress(&events, "s", "main", "lead", launch, now, 300, 2);
+        let wait = crate::watchdog::wait_progress(
+            &events,
+            "s",
+            "main",
+            "lead",
+            launch,
+            now,
+            300,
+            2,
+            WaitState::Blocked,
+        );
+        match (done, wait) {
+            (DoneProgress::ChallengeDue { attempts, .. }, _)
+            | (_, WaitProgress::ChallengeDue { attempts, .. }) => attempts,
+            other => panic!("{action}: {other:?}"),
+        }
+    }
+
+    /// #148: a watchdog challenge refused BEFORE its paste is journaled as an
+    /// unconfirmed attempt of that challenge — for exactly the failures that
+    /// prove nothing reached the pane and record nothing of their own — and
+    /// that very line is an attempt to its episode fold. Every other action
+    /// and every other failure writes no challenge record.
+    #[test]
+    fn a_challenge_refused_before_its_paste_is_an_attempt_the_folds_count() {
+        for (action, summary) in [
+            ("done-challenge", "confirmation 1/2"),
+            ("wait-challenge", "blocked confirmation 1/2"),
+            ("send", "hello"),
+            ("quota-advisory", "quota"),
+        ] {
+            for (tag, (failure, why)) in refusals().into_iter().enumerate() {
+                let records = refused(action, summary, failure, tag);
+                let Some(why) = why.filter(|_| action.ends_with("-challenge")) else {
+                    assert!(records.is_empty(), "{action}/{tag}: no challenge record");
+                    continue;
+                };
+                assert_eq!(records.len(), 1, "{action}/{tag}");
+                let expected = format!("[unconfirmed] {summary}; refused pre-paste: {why}");
+                assert_eq!(records[0].summary.as_deref(), Some(expected.as_str()));
+                assert_eq!(records[0].reference.as_deref(), Some("launch-1"));
+                assert_eq!(
+                    folded_attempts(action, records),
+                    1,
+                    "{action}/{tag}: counted"
+                );
+            }
+        }
     }
 
     #[test]

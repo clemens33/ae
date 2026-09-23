@@ -520,12 +520,12 @@ pub struct Relevant<'a> {
 }
 
 pub const DEFAULT_DONE_CONFIRMATIONS: u8 = 2;
-const DONE_CHALLENGE_ACTION: &str = "done-challenge";
+pub(crate) const DONE_CHALLENGE_ACTION: &str = "done-challenge";
 /// The watchdog's proof challenge for a `waiting-agent`/`blocked` declaration.
 /// A NEW wire action (not `done-challenge` reused): the two folds match
 /// challenges by action, and sharing one would let a wait challenge arm a done
 /// confirmation. Both wait states share it, so the summary names the state.
-const WAIT_CHALLENGE_ACTION: &str = "wait-challenge";
+pub(crate) const WAIT_CHALLENGE_ACTION: &str = "wait-challenge";
 
 /// Whether a `wait-challenge` record names `state` (delivered, unconfirmed
 /// and delivery-abandoned summaries all carry the state word).
