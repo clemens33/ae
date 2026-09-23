@@ -82,10 +82,17 @@ or ported as one. What was ported is BEHAVIOUR, not test count: one strong end-t
 per invariant, driving the real binary against a real tmux server, rather than a
 transliteration of a 40-assertion bash section.
 
-`tests/it` runs against real servers. Its rigs create a tmux session on their own socket
-under a short `/tmp` path (`sun_path` is 104 bytes on macOS), launch real panes, and tear
-everything down in a `Drop` so a failed assertion cannot leave a server behind for the next
-timing-sensitive test. `doctor::doctor_refresh_republishes_the_shims_the_manifest_and_the_core_pin`
+`tests/it` runs against real servers. Every scratch root comes from one owner,
+`cli::OwnedScratch::root`: `<base>/ae-it-<pid>/<family>.<tag>`, the base `AE_TEST_TMPDIR` or
+`/tmp` — short, because a tmux socket beneath it must fit `sun_path` (104 bytes on macOS), and
+the owner refuses a root that leaves no room. The root is registered with the lane's reaper
+before any tmux starts there, and its `Drop` kills every server beneath it before removing it.
+A test killed outright is reaped when its lane exits. The lane waits up to 30 s for an orphaned
+child to let go; past that it fails, and it keeps itself for the next lane to reap.
+`cli::no_test_file_rolls_its_own_scratch_root` refuses a root built by hand. Parallelism is
+config: nextest runs at most eight tests (`.config/nextest.toml`, lowered to the core count by
+the lane), `just rust-mutants` one mutant at a time on four (`.cargo/mutants.toml`).
+`NEXTEST_TEST_THREADS` overrides the first for one run. `doctor::doctor_refresh_republishes_the_shims_the_manifest_and_the_core_pin`
 is the canary for the link set: it clobbers a helper, refreshes, and pins the link targets
 against what the core links at launch, so the refresh entry and the launch entry cannot
 drift. It asserts the set is EXACTLY the core's list, never `>= N`, so an artifact quietly

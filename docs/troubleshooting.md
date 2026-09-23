@@ -213,6 +213,18 @@ are symlinks to that same binary and do not invoke Bash.
 Resume / session-id capture for external CLIs still depends on each tool's local
 storage format, which differs across platforms.
 
+## The test suite loads the machine or leaves files behind
+
+The integration suite starts real processes — tmux servers, fake agents, the product — and an
+on-access scanner (Microsoft Defender, macOS `syspolicyd` and Spotlight `mds`) inspects every
+exec and every scratch file. Where policy allows, exclude the scratch base: `/tmp`, or a short
+directory you name in `AE_TEST_TMPDIR`. Lower the process count for one run with
+`NEXTEST_TEST_THREADS=4 just test`.
+
+A lane that fails with `error: kept …` left a scratch root or a tmux server that outlived it;
+the next `just test` reaps it. Roots from before the single scratch owner (`/tmp/ae*.<pid>.<tag>`
+and `tmux -S /tmp/ae…/sock` servers) are never swept: remove them once, with no test running.
+
 ## Where to look when things break
 
 In priority order:
