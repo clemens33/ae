@@ -357,6 +357,20 @@ fn stage(socket: &Path, main: &Path) -> Staged {
             "the nested client in {viewer}"
         );
     }
+    let client_for = |viewer: &str| {
+        tmux(
+            socket,
+            main,
+            &["display-message", "-p", "-t", viewer, "#{pane_tty}"],
+        )
+        .1
+        .trim()
+        .to_owned()
+    };
+    let client = client_for("viewer");
+    let other_client = client_for("other-viewer");
+    // BY NAME: tmux lists a client as `client-<pid>` until it has named its
+    // terminal, so two `|home|` rows can still be one client short.
     let clients = wait_for(
         "two clients on one pane",
         || {
@@ -371,31 +385,12 @@ fn stage(socket: &Path, main: &Path) -> Staged {
             )
             .1
         },
-        |seen| seen.lines().filter(|line| line.contains("|home|")).count() == 2,
-    );
-    let client_for = |viewer: &str| {
-        tmux(
-            socket,
-            main,
-            &["display-message", "-p", "-t", viewer, "#{pane_tty}"],
-        )
-        .1
-        .trim()
-        .to_owned()
-    };
-    let client = client_for("viewer");
-    let other_client = client_for("other-viewer");
-    assert!(
-        clients
-            .lines()
-            .any(|line| line.starts_with(&format!("{client}|home|"))),
-        "{clients}"
-    );
-    assert!(
-        clients
-            .lines()
-            .any(|line| line.starts_with(&format!("{other_client}|home|"))),
-        "{clients}"
+        |seen| {
+            [&client, &other_client].iter().all(|name| {
+                seen.lines()
+                    .any(|line| line.starts_with(&format!("{name}|home|")))
+            })
+        },
     );
     let home_pane = clients
         .lines()
@@ -3894,6 +3889,7 @@ fn quota_dialog_reproves_client_server_and_session_before_drawing() {
         .0
     );
     let client = nested_client(&socket, &scratch, "forrest", "identity-viewer");
+    let record = record_client(&socket, &scratch, "identity-viewer");
     let caller_pane = tmux(
         &socket,
         &scratch,
@@ -3956,6 +3952,7 @@ fn quota_dialog_reproves_client_server_and_session_before_drawing() {
         String::from_utf8_lossy(&output.stderr)
     );
     // A non-decimal pid never reaches the server: the grammar refuses it.
+    let from = recorded(&record);
     let malformed = forged("--client-pid", "nope".to_owned());
     let output = quota_dialog_invocation_command(
         &socket,
@@ -3973,16 +3970,8 @@ fn quota_dialog_reproves_client_server_and_session_before_drawing() {
         "malformed pid: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let told = tmux(
-        &socket,
-        &scratch,
-        &["capture-pane", "-p", "-t", "identity-viewer"],
-    )
-    .1;
-    assert!(
-        told.contains("invocation was refused"),
-        "the parse refusal reaches the client: {told:?}"
-    );
+    // The parse refusal reaches the client.
+    wait_drawn(&record, from, "invocation was refused");
     // A replaced server that kept its pid but not its start time is still a
     // replacement: the start comparison is load-bearing, not decorative.
     let restarted = forged("--server-start", format!("{}0", value("--server-start")));
@@ -4139,6 +4128,7 @@ fn quota_dialog_reproves_client_server_and_session_before_drawing() {
         "no size report first: {error}"
     );
     // A too-small client reports its live size and draws nothing.
+    let from = recorded(&record);
     let output =
         quota_dialog_invocation_command(&socket, &scratch, &root, &config, &caller_pane, &small)
             .output()
@@ -4149,19 +4139,10 @@ fn quota_dialog_reproves_client_server_and_session_before_drawing() {
         error.contains("this terminal is 40x8; quota needs"),
         "live size reported: {error}"
     );
-    let viewer = tmux(
-        &socket,
-        &scratch,
-        &["capture-pane", "-p", "-t", "identity-viewer"],
-    )
-    .1;
+    let viewer = wait_drawn(&record, from, "this terminal is 40x8");
     assert!(
         !viewer.contains("Client quotas"),
         "no refusal drew a dialog: {viewer}"
-    );
-    assert!(
-        viewer.contains("this terminal is 40x8"),
-        "the size refusal reaches the client: {viewer:?}"
     );
 }
 
@@ -4211,6 +4192,7 @@ fn quota_dialog_switched_session_refusal_says_why_on_the_invoking_client() {
     // Capture on `forrest`, then switch: the continuation's proof round meets
     // a live same-pid client on another session — the human's click-away shape.
     let captured = dialog_identity(&socket, &scratch, "forrest", &client);
+    let record = record_client(&socket, &scratch, "audible-viewer");
     assert!(
         tmux(
             &socket,
@@ -4236,18 +4218,9 @@ fn quota_dialog_switched_session_refusal_says_why_on_the_invoking_client() {
         error.contains("switched session"),
         "stderr names the switch: {error}"
     );
-    // The message is sent before ae exits, so one synchronous capture past the
-    // reaped invocation proves it reached the invoking client — no polling.
-    let viewer = tmux(
-        &socket,
-        &scratch,
-        &["capture-pane", "-p", "-t", "audible-viewer"],
-    )
-    .1;
-    assert!(
-        viewer.contains("switched session"),
-        "the invoking client reads why nothing drew: {viewer:?}"
-    );
+    // ae has SENT the message when it exits; the client draws it later, so the
+    // proof is the client's own record, not a capture raced against that draw.
+    let viewer = wait_drawn(&record, 0, "switched session");
     assert!(
         !viewer.contains("Client quotas"),
         "no refusal drew a dialog: {viewer:?}"
@@ -4855,6 +4828,19 @@ fn settings_range_measures_renders_clicks_and_cancels_on_the_exact_client() {
         "{other}"
     );
 
+    // The click must meet the status line as drawn at the NEW size, so that
+    // line names the size it was drawn at; the range stays at columns 0-2.
+    let record = record_client(&socket, &scratch, "settings-clicked");
+    let sized = "#[range=user|ae-settings] ⚙ #[norange] at #{client_width}x#{client_height}";
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &["set-option", "-t", "viewed", "status-format[1]", sized]
+        )
+        .0
+    );
+    let from = recorded(&record);
     assert!(
         tmux(
             &socket,
@@ -4871,38 +4857,10 @@ fn settings_range_measures_renders_clicks_and_cancels_on_the_exact_client() {
         )
         .0
     );
-    wait_for(
-        "tiny settings client",
-        || {
-            tmux(
-                &socket,
-                &scratch,
-                &[
-                    "display-message",
-                    "-p",
-                    "-c",
-                    &clicked,
-                    "#{client_width}x#{client_height}",
-                ],
-            )
-            .1
-        },
-        |seen| seen.trim() == "20x5",
-    );
+    wait_drawn(&record, from, " at 20x5");
+    let from = recorded(&record);
     click_status(&socket, &scratch, "settings-clicked", &clicked, 0, 2);
-    let tiny = wait_for(
-        "tiny settings refusal",
-        || {
-            tmux(
-                &socket,
-                &scratch,
-                &["capture-pane", "-p", "-t", "settings-clicked"],
-            )
-            .1
-        },
-        |seen| seen.contains("this terminal is 20x"),
-    );
-    assert!(tiny.contains("this terminal is 20x"), "{tiny}");
+    wait_drawn(&record, from, "this terminal is 20x");
     assert!(tmux(&socket, &scratch, &["has-session", "-t", "=orchestrator"]).0);
     assert_eq!(meta_bytes(&role_dir), before_cancel);
     assert!(!untouched.is_empty());
@@ -5199,6 +5157,49 @@ fn nested_client(socket: &Path, scratch: &Path, session: &str, viewer: &str) -> 
         |seen| seen.lines().any(|line| line == tty),
     );
     tty
+}
+
+/// Record, from now on, every byte tmux draws on the nested client in
+/// `viewer`'s pane. tmux writes a client's frames to its terminal itself, so
+/// the record is what THAT client showed, in order, and a message that has
+/// since expired is still in it.
+fn record_client(socket: &Path, scratch: &Path, viewer: &str) -> PathBuf {
+    let record = scratch.join(format!("{viewer}.terminal"));
+    let pipe = format!("cat >> '{}'", record.display());
+    assert!(
+        tmux(socket, scratch, &["pipe-pane", "-o", "-t", viewer, &pipe]).0,
+        "a recorder on {viewer}"
+    );
+    record
+}
+
+/// How many bytes `record` holds now: what a later wait reads past.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "a client's terminal record is read while the client still draws into it"
+)]
+fn recorded(record: &Path) -> usize {
+    fs::read(record).map_or(0, |bytes| bytes.len())
+}
+
+/// Wait until `record` shows `needle` past byte `from`; the text past it.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "a client's terminal record is read while the client still draws into it"
+)]
+fn wait_drawn(record: &Path, from: usize, needle: &str) -> String {
+    let deadline = Instant::now() + PATIENCE;
+    let mut drawn = String::new();
+    while Instant::now() < deadline {
+        let bytes = fs::read(record).unwrap_or_default();
+        drawn = String::from_utf8_lossy(bytes.get(from..).unwrap_or_default()).into_owned();
+        if drawn.contains(needle) {
+            return drawn;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let tail = drawn.get(drawn.floor_char_boundary(drawn.len().saturating_sub(600))..);
+    panic!("the client never drew {needle:?}; it last drew {tail:?}");
 }
 
 fn click_status(socket: &Path, scratch: &Path, viewer: &str, client: &str, button: u8, x: usize) {
