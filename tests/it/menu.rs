@@ -31,7 +31,8 @@ fn scratch(tag: &str) -> PathBuf {
 }
 
 /// Kill the arm's server and remove its scratch WHATEVER ended the arm — a
-/// failed assertion included, so one failure leaves no server behind.
+/// failed assertion included, so one failure leaves no server behind. A server
+/// that survives keeps the scratch, which the lane reaper retries.
 struct Cleanup {
     socket: PathBuf,
     scratch: PathBuf,
@@ -39,18 +40,28 @@ struct Cleanup {
 
 impl Drop for Cleanup {
     fn drop(&mut self) {
-        let bin = self.scratch.join("cleanup");
-        let _ = fs::create_dir_all(&bin);
-        let _ = run_tmux(
-            &[
-                "-S".to_owned(),
-                self.socket.display().to_string(),
-                "kill-server".to_owned(),
-            ],
-            &bin,
-        );
-        let _ = fs::remove_dir_all(&self.scratch);
+        let listed = std::slice::from_ref(&self.socket);
+        if super::parity::capture::raw::kill_servers_under(&self.scratch, listed) {
+            let _ = fs::remove_dir_all(&self.scratch);
+        }
     }
+}
+
+/// A socket the kill cannot end — here one tmux cannot even talk to — keeps
+/// the scratch, so a live server is never unlinked out of the reaper's reach.
+#[test]
+fn a_server_the_cleanup_cannot_kill_keeps_its_scratch() {
+    let root = scratch("kill-fail");
+    let socket = root.join("s");
+    let bound = std::os::unix::net::UnixDatagram::bind(&socket).expect("a foreign socket");
+    drop(Cleanup {
+        socket: socket.clone(),
+        scratch: root.clone(),
+    });
+    let kept = fs::remove_file(&socket).is_ok();
+    drop(bound);
+    let _ = fs::remove_dir_all(&root);
+    assert!(kept, "the cleanup removed a socket it could not kill");
 }
 
 /// One tmux call on the arm's server, from its own directory so two threads
