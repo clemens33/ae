@@ -1161,6 +1161,30 @@ _tmux-isolated lane *args:
         rm -rf "$test_tmux_tmp"
     }
     trap cleanup EXIT
+    # Cargo runs in a session of its own with no controlling terminal, so no
+    # test can take the lane's terminal for a tmux pane it is in (#149). The
+    # perl parent stays in this shell's process group: a Ctrl-C reaches it, it
+    # passes the signal to cargo's whole group, and it ends as cargo did.
+    detached() {
+        perl -MPOSIX -e '
+            my ($set, $old) = (POSIX::SigSet->new(SIGINT, SIGTERM, SIGHUP), POSIX::SigSet->new);
+            sigprocmask(SIG_BLOCK, $set, $old) or die "detached: sigprocmask: $!\n";
+            defined(my $pid = fork) or die "detached: fork: $!\n";
+            if (!$pid) {
+                setsid() or die "detached: setsid: $!\n";
+                sigprocmask(SIG_SETMASK, $old);
+                exec { $ARGV[0] } @ARGV or die "detached: $ARGV[0]: $!\n";
+            }
+            $SIG{$_} = sub { kill("-$_[0]", $pid) or kill($_[0], $pid) } for qw(INT TERM HUP);
+            sigprocmask(SIG_SETMASK, $old);
+            waitpid($pid, 0) == $pid or die "detached: waitpid: $!\n";
+            my $signal = $? & 127;
+            exit($? >> 8) unless $signal;
+            $SIG{$_} = "DEFAULT" for qw(INT TERM HUP);
+            kill($signal, $$);
+            exit(128 + $signal);
+        ' "$@"
+    }
     reap_dead_scratch
     mkdir "$test_tmux_tmp/tmp"
     export TMPDIR="$test_tmux_tmp/tmp"
@@ -1177,11 +1201,11 @@ _tmux-isolated lane *args:
     tmux -f /dev/null -L ae new-session -d -s foreign-review-sentry -e AE_SESSION=foreign-review-sentry
     case "$lane" in
         test)
-            cargo nextest run --locked --all-features
-            cargo test --doc --locked --all-features
+            detached cargo nextest run --locked --all-features
+            detached cargo test --doc --locked --all-features
             ;;
-        cov) cargo llvm-cov nextest --locked --all-features ;;
-        mutants) cargo mutants --cargo-arg=--locked --jobs 1 "$@" ;;
+        cov) detached cargo llvm-cov nextest --locked --all-features ;;
+        mutants) detached cargo mutants --cargo-arg=--locked --jobs 1 "$@" ;;
         *) echo "Error: unknown isolated test lane '$lane'" >&2; exit 2 ;;
     esac
 

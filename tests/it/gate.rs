@@ -161,10 +161,10 @@ fn rust_test_tmux_isolation_ok(justfile: &str) -> bool {
         "export TMUX_TMPDIR=\"$test_tmux_tmp\"",
         "unset TMUX TMUX_PANE",
         "tmux -f /dev/null -L ae new-session -d -s foreign-review-sentry -e AE_SESSION=foreign-review-sentry",
-        "cargo nextest run --locked --all-features",
-        "cargo test --doc --locked --all-features",
-        "cargo llvm-cov nextest --locked --all-features",
-        "cargo mutants --cargo-arg=--locked --jobs 1 \"$@\"",
+        "detached cargo nextest run --locked --all-features",
+        "detached cargo test --doc --locked --all-features",
+        "detached cargo llvm-cov nextest --locked --all-features",
+        "detached cargo mutants --cargo-arg=--locked --jobs 1 \"$@\"",
     ];
     if required.iter().any(|needle| position(needle).is_none()) {
         return false;
@@ -594,6 +594,145 @@ fn a_killed_tests_scratch_and_server_are_swept_by_the_lane() {
         .filter(|entry| entry.starts_with("ae-it-") || entry.starts_with("ae-rust-test."))
         .collect();
     assert!(left.is_empty(), "scratch outlived the lanes: {left:?}");
+}
+
+/// A fake `cargo` in `<base>/bin` for the terminal pin; the `PATH` that finds it
+/// first. It exits `$AE_GATE_EXIT` when set, else reports whether `/dev/tty`
+/// opens and its pid, then sleeps.
+fn fake_tty_cargo(base: &Path) -> String {
+    use std::os::unix::fs::PermissionsExt as _;
+    let cargo = base.join("bin").join("cargo");
+    std::fs::create_dir_all(base.join("bin"))
+        .and_then(|()| {
+            std::fs::write(
+                &cargo,
+                "#!/bin/sh\n[ \"$1\" = nextest ] || exit 0\n[ -z \"$AE_GATE_EXIT\" ] || exit \"$AE_GATE_EXIT\"\n\
+                 if (: </dev/tty) 2>/dev/null; then t=tty; else t=none; fi\n\
+                 echo \"$t $$\" >\"$AE_TEST_TMPDIR/tty.tmp\" && mv \"$AE_TEST_TMPDIR/tty.tmp\" \"$AE_TEST_TMPDIR/tty\"\n\
+                 exec sleep 300\n",
+            )
+        })
+        .and_then(|()| std::fs::set_permissions(&cargo, std::fs::Permissions::from_mode(0o755)))
+        .unwrap_or_else(|why| panic!("the fake cargo: {why}"));
+    format!(
+        "{}:{}",
+        base.join("bin").display(),
+        std::env::var("PATH").unwrap_or_default()
+    )
+}
+
+/// The text of `file` once something wrote it, or empty after a minute.
+fn wait_written(file: &Path) -> String {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_mins(1);
+    loop {
+        let text = std::fs::read_to_string(file).unwrap_or_default();
+        if !text.is_empty() || std::time::Instant::now() > deadline {
+            return text;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+/// A lane started in a terminal hands cargo NO controlling terminal (#149), so
+/// no test can take `just test`'s terminal for a pane it is in. Ctrl-C there
+/// still ends cargo, through the lane, and the lane ends as cargo did.
+#[test]
+fn a_lane_run_in_a_terminal_detaches_cargo_and_still_stops_on_ctrl_c() {
+    let base = super::cli::OwnedScratch::root("gate", "tty");
+    let path = fake_tty_cargo(&base);
+    let lane = |invocation: Invocation| {
+        invocation
+            .env("PATH", &path)
+            .env("TMPDIR", &*base)
+            .env("AE_TEST_TMPDIR", &*base)
+    };
+    let run = |invocation: Invocation, name: &str| {
+        raw::run(
+            &lane(invocation),
+            &base,
+            &base.join(format!("{name}-out")),
+            &base.join(format!("{name}-err")),
+        )
+        .unwrap_or_else(|why| panic!("{name} runs: {why}"))
+        .outcome()
+    };
+    let wait = |file: &str| wait_written(&base.join(file));
+
+    // A failing cargo fails the lane with cargo's own status.
+    let failed = run(
+        Invocation::new("just")
+            .arg("--working-directory")
+            .arg(root())
+            .arg("--justfile")
+            .arg(root().join("justfile"))
+            .arg("_tmux-isolated")
+            .arg("test")
+            .env("AE_GATE_EXIT", "7"),
+        "failing",
+    );
+    assert!(matches!(failed, ExitOutcome::Code(7)));
+
+    // A tmux pane is a real controlling terminal, and C-c there signals the
+    // pane's foreground process group: what a developer's Ctrl-C does.
+    let socket = base.join("s");
+    let started = run(
+        Invocation::new("tmux")
+            .arg("-f")
+            .arg("/dev/null")
+            .arg("-S")
+            .arg(&socket)
+            .arg("new-session")
+            .arg("-d")
+            .arg("-s")
+            .arg("lane")
+            .arg("-c")
+            .arg(root())
+            .arg("--")
+            .arg("sh")
+            .arg("-c")
+            .arg(
+                "trap : INT; just _tmux-isolated test; echo $? >\"$AE_TEST_TMPDIR/rc.tmp\"; \
+                 mv \"$AE_TEST_TMPDIR/rc.tmp\" \"$AE_TEST_TMPDIR/rc\"",
+            ),
+        "pane",
+    );
+    assert!(matches!(started, ExitOutcome::Code(0)));
+    let seen = wait("tty");
+    let (tty, pid) = seen.trim().split_once(' ').unwrap_or(("", ""));
+    let _ = run(
+        Invocation::new("tmux")
+            .arg("-S")
+            .arg(&socket)
+            .arg("send-keys")
+            .arg("-t")
+            .arg("lane")
+            .arg("C-c"),
+        "ctrl-c",
+    );
+    let rc = wait("rc");
+    let alive = matches!(
+        run(Invocation::new("kill").arg("-0").arg(pid), "alive"),
+        ExitOutcome::Code(0)
+    );
+    if alive {
+        let _ = run(Invocation::new("kill").arg("-KILL").arg(pid), "reap");
+    }
+    assert_eq!(tty, "none", "cargo ran with the lane's terminal: {seen:?}");
+    assert!(!alive, "Ctrl-C left the lane's cargo {pid} running");
+    assert!(
+        !matches!(rc.trim(), "" | "0"),
+        "a Ctrl-C'd lane must end nonzero, got {rc:?}"
+    );
+    let lanes: Vec<String> = std::fs::read_dir(&*base)
+        .expect("the lane base")
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|entry| entry.starts_with("ae-rust-test."))
+        .collect();
+    assert!(
+        lanes.is_empty(),
+        "the Ctrl-C'd lane was not reaped: {lanes:?}"
+    );
 }
 
 /// Whether the `release` recipe refreshes the fuzz crate's lock inside the
