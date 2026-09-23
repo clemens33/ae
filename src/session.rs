@@ -3070,21 +3070,28 @@ mod tests {
         );
     }
 
-    /// A peer's message leaves `waiting-agent` standing, so it still
-    /// escalates; the human through a chat bridge and the agent's own
-    /// re-declaration end it.
+    /// T7: `ae list` reads the walk's table. A peer's message, the seat's own
+    /// traffic and the watchdog's own records leave `waiting-agent` standing,
+    /// so it still escalates; the human through a chat bridge, a reply to the
+    /// seat's own ask and its own re-declaration end it.
     #[test]
     fn a_waiting_agent_outlives_its_peers_but_not_the_human_or_itself() {
+        let held = Some(Reason::Blocked);
+        let to_lead = r#","target":"lead""#;
+        let answer = |id: &str| format!(r#","ref":"{id}","target":"lead""#);
+        let (mine, other) = (answer("ae-1"), answer("ae-9"));
         for (tag, actor, action, extra, attention) in [
-            (
-                "peer",
-                "colead",
-                "send",
-                r#","target":"lead""#,
-                Some(Reason::Blocked),
-            ),
-            ("human", "telegram:42", "send", r#","target":"lead""#, None),
+            ("peer", "colead", "send", to_lead, held),
+            ("human", "telegram:42", "send", to_lead, None),
             ("redeclared", "lead", "state", r#","ref":"working""#, None),
+            ("own-memo", "lead", "memo", r#","ref":"arch""#, held),
+            ("own-reply", "lead", "reply", r#","ref":"ae-7""#, held),
+            ("answer", "colead", "reply", &mine, None),
+            ("foreign", "colead", "reply", &other, held),
+            ("sweep", "watchdog", "sweep-nudge", to_lead, held),
+            ("advisory", "watchdog", "quota-advisory", to_lead, held),
+            ("checkpoint", "watchdog", "quota-checkpoint", to_lead, held),
+            ("modal", "watchdog", "human-prompt", to_lead, held),
         ] {
             let scratch = Scratch::new(&format!("waiting-agent-{tag}"));
             scratch.meta(META);
@@ -3095,6 +3102,7 @@ mod tests {
                     "state",
                     r#","ref":"waiting-agent","summary":"waiting on colead's re-review""#,
                 ),
+                event(&at(20), "lead", "ask", r#","ref":"ae-1","target":"colead""#),
                 event(&at(10), actor, action, extra),
             ]);
             let entry = entry_for(&scratch.0, "live", &running(), NOW, DEFAULT_UNANSWERED_SECS);

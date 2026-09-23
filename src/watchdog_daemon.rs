@@ -1869,8 +1869,11 @@ fn account_ordinary(
 
     // 6. A quiet declaration. A FRESH `waiting-agent` holds like the other
     // quiet states; past its ceiling, measured from the declaration itself,
-    // it escalates (see the helper).
+    // it escalates (see the helper). The declaration keeps the bar over a
+    // human-only prompt, but the prompt is still BOOKED under it: named once
+    // per episode, so a seat stuck on a modal still summons the human.
     if let Some(kind) = seen.quiet {
+        book_human_prompt(prior, &mut next, &mut effects, seen, knobs);
         if let Some(verdict) =
             book_waiting_agent_escalation(prior, &mut next, &mut effects, seen, knobs)
         {
@@ -6592,26 +6595,44 @@ mod tests {
         }
     }
 
-    /// A DECLARED quiet state outranks the modal: branch 6 returns above 8.5.
-    /// An agent that said `done` is not news because its pane draws a menu.
+    /// A DECLARED quiet state keeps the bar over the modal, and the modal is
+    /// still named ONCE per episode: a seat stuck on a menu needs the human
+    /// whatever it declared. The `human-prompt` record ends no declaration
+    /// (the walk's table pins that row).
     #[test]
-    fn a_declared_quiet_seat_on_a_modal_stays_quiet_and_is_never_named() {
+    fn a_declared_quiet_seat_on_a_modal_keeps_its_bar_and_is_named_once() {
+        use crate::watchdog::QuietKind;
         let knobs = Knobs::default();
-        let quiet = Observation {
-            quiet: Some(crate::watchdog::QuietKind::Done),
-            ..on_a_modal()
+        let notified = |effects: &[Effect]| {
+            let notes = effects.iter();
+            notes.filter(|e| matches!(e, Effect::Notify(_))).count()
         };
-        let first = account(&PaneState::default(), &quiet, &knobs);
-        let second = account(&first.next, &quiet, &knobs);
-        assert_eq!(
-            second.verdict,
-            Verdict::Quiet(crate::watchdog::QuietKind::Done)
-        );
-        assert!(
-            !actions(&second.effects).contains(&"human-prompt"),
-            "a declared-quiet seat is not paged: {:?}",
-            second.effects
-        );
+        for kind in [
+            QuietKind::Done,
+            QuietKind::WaitingUser,
+            QuietKind::WaitingAgent,
+            QuietKind::Blocked,
+        ] {
+            let quiet = Observation {
+                quiet: Some(kind),
+                ..on_a_modal()
+            };
+            let first = account(&PaneState::default(), &quiet, &knobs);
+            let second = account(&first.next, &quiet, &knobs);
+            let third = account(&second.next, &quiet, &knobs);
+            for cycle in [&first, &second, &third] {
+                assert_eq!(
+                    cycle.verdict,
+                    Verdict::Quiet(kind),
+                    "{kind:?} keeps the bar"
+                );
+            }
+            assert!(actions(&first.effects).is_empty(), "{kind:?}: a redraw");
+            assert_eq!(actions(&second.effects), ["human-prompt"], "{kind:?}");
+            assert_eq!(notified(&second.effects), 1, "{kind:?}: one summons");
+            assert!(actions(&third.effects).is_empty(), "{kind:?}: not again");
+            assert_eq!(notified(&third.effects), 0, "{kind:?}: not again");
+        }
     }
 
     /// The two vendor verdicts are WORSE news and keep their rank above it.
@@ -12421,6 +12442,67 @@ mod tests {
             past_bound.effects.is_empty(),
             "past the equality boundary neither alert nor paste repeats"
         );
+    }
+
+    /// T6 (#148), journal-fed: the records the send helper writes for a
+    /// challenge refused before its paste are what the folds count, so the
+    /// bound fires from the journal alone — pushes below it, one alert at it.
+    #[test]
+    fn refused_challenges_in_the_journal_reach_the_attempt_bound() {
+        let knobs = Knobs::default();
+        for (state, action, summary) in [
+            ("done", "done-challenge", "confirmation 1/2"),
+            ("blocked", "wait-challenge", "blocked confirmation 1/2"),
+        ] {
+            let record = |minute: u32| {
+                Event::parse_line(&format!(
+                    r#"{{"ts":"2026-08-27T07:0{minute}:00Z","actor":"watchdog","action":"{action}","target":"lead","ref":"launch-1","target_slot":"main","target_session":"s","summary":"[unconfirmed] {summary}; refused pre-paste: dead pane"}}"#
+                ))
+                .expect("the refusal record parses")
+            };
+            let declared = format!(
+                r#"{{"ts":"2026-08-27T07:00:00Z","actor":"lead","action":"state","ref":"{state}","actor_slot":"main","actor_session":"s"}}"#
+            );
+            let mut events = vec![Event::parse_line(&declared).expect("the declaration")];
+            let mut pushes = Vec::new();
+            for refusals in 0..=knobs.undelivered_max {
+                let now = crate::time::Timestamp::parse("2026-08-27T07:20:00Z").expect("time");
+                let launch = Some("launch-1");
+                let mut observed = seen();
+                if state == "done" {
+                    observed.done_progress = crate::watchdog::done_progress(
+                        &events, "s", "main", "lead", launch, now, 300, 2,
+                    );
+                } else {
+                    observed.quiet = Some(QuietKind::Blocked);
+                    observed.wait_progress = crate::watchdog::wait_progress(
+                        &events,
+                        "s",
+                        "main",
+                        "lead",
+                        launch,
+                        now,
+                        300,
+                        2,
+                        WaitState::Blocked,
+                    );
+                }
+                let booked = account(&PaneState::default(), &observed, &knobs);
+                let challenged = booked.effects.iter().any(|effect| {
+                    matches!(
+                        effect,
+                        Effect::DoneChallenge { .. } | Effect::WaitChallenge { .. }
+                    )
+                });
+                pushes.push((challenged, emitted(&booked.effects).len()));
+                events.push(record(refusals + 1));
+            }
+            assert_eq!(
+                pushes,
+                [(true, 0), (true, 0), (true, 0), (false, 1)],
+                "{action}: pushed below the bound, one alert at it"
+            );
+        }
     }
 
     fn wait_due(attempts: u32) -> WaitProgress {
