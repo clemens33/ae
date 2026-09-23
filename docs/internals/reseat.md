@@ -55,7 +55,10 @@ Then, under `.lifecycle.<session>.lock`:
    take); the caller proven not to be running UNDER the target, because the
    pane check at step 7 is only half that rule — a process the target's own
    tool started carries no `$TMUX_PANE` to compare, so `procs::is_descendant_of`
-   walks the tree, and a missing pid or unusable table REFUSES; the pane's
+   walks the tree, and a missing pid or unusable table REFUSES; the TREE,
+   from that same snapshot: a known harness the seat does not record
+   anywhere in it (`procs::harness_rows`) REFUSES by tool, pid and parent,
+   because the respawn ends the whole tree, and no flag lifts it; the pane's
    SEND-LOCK, asked with a short wait of its own because the lifecycle lock is
    already held; then the FRAME.
 
@@ -82,7 +85,9 @@ Then, under `.lifecycle.<session>.lock`:
    Last, the stop's own event, written once the pane is PROVEN back at its
    shell and never before, naming the binary ended because the meta keeps only
    the current one.
-9. `prove_dead`;
+9. `prove_dead`, which refuses a pane running a KNOWN harness other than the
+   recorded one BY NAME (`procs::observed_harness`, diagnosis only; `ae doctor`
+   names the same seat) rather than as busy;
 9a. the CARRY question (`src/carry.rs`) — see below. Asked here, past the dead
     proof and before anything is removed, so every refusal costs only the
     reading. A move that does not carry leaves steps 10-17 exactly as they
