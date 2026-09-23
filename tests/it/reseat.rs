@@ -614,6 +614,15 @@ fn a_pane_running_another_harness_than_its_records_is_refused_by_name_and_doctor
     let rig = Rig::new("mismatch");
     rig.seat_rows("worker.1", "w1", "codex", "codex");
     let pane = rig.new_pane("worker.1", "w1");
+    // Every pane at its shell: NOTHING was checked, so nothing is claimed.
+    let (_, blind, _) = rig.run_top(&rig.main_pane.clone(), &["doctor"]);
+    let summary = blind
+        .lines()
+        .find(|line| line.contains("live seat(s) checked"));
+    assert!(
+        summary.is_some_and(|line| line.contains(" 0 of 2 live seat(s) checked; uncovered: ")),
+        "{blind}"
+    );
     let native = rig.scratch.join("native");
     let version = native.join("versions/2.1.274");
     assert!(std::fs::create_dir_all(native.join("bin")).is_ok());
