@@ -73,6 +73,15 @@ my $chev = "\xe2\x8f\xb5";
 my $spin = "\xe2\x9c\xb3";
 my $done = "\xe2\x9c\xbb";
 sub busy_now { return (-e $busyfile) ? 1 : 0; }
+# Names the frame this fake drew LAST, once its bytes are written, so a test
+# can wait for the frame rather than for the process.
+sub drawn {
+    my $drawn = "__DRAWN__.$$";
+    open(my $fh, '>', "$drawn.tmp") or die;
+    print $fh shift;
+    close($fh);
+    rename("$drawn.tmp", $drawn) or die;
+}
 sub draw {
     my $busy = shift;
     print "\e[H\e[2J";
@@ -89,6 +98,7 @@ sub draw {
         print "$bar\r\n";
         print "$brain Opus 5 $dot fake\r\n";
         print "$chev$chev accept edits on\r\n";
+        drawn($busy ? "esc to interrupt" : "done (0s)");
     } elsif ($composed) {
         print "opencode\r\n";
         print "$rail\r\n";
@@ -97,8 +107,10 @@ sub draw {
         print "$rail  Build $dot fake model\r\n";
         print "$corner", ($block x 60), "\r\n";
         print "tab agents  ctrl+p commands\r\n";
+        drawn("Ask anything");
     } else {
         print "fake agent is starting\r\n";
+        drawn("fake agent is starting");
     }
 }
 my $shown = busy_now();
@@ -156,7 +168,8 @@ fn fakes(scratch: &Path, tools: &Path) -> String {
             )
             .replace("__COMPOSED__", composed)
             .replace("__FRAME__", frame)
-            .replace("__BUSY__", &scratch.join("__BUSY__").display().to_string());
+            .replace("__BUSY__", &scratch.join("__BUSY__").display().to_string())
+            .replace("__DRAWN__", &scratch.join("drawn").display().to_string());
         assert!(std::fs::write(&script, body).is_ok(), "the fake body");
         let _ = writeln!(
             profiles,
@@ -380,7 +393,10 @@ impl Rig {
         );
         assert!(self.tmux(&["send-keys", "-t", pane, &line, "Enter"]).0);
         for _ in 0..200 {
-            if self.tool_pid(pane, tool).is_some() {
+            if let Some(pid) = self.tool_pid(pane, tool) {
+                // A running tool is not yet a drawn one, and a frame is what
+                // the product reads.
+                self.wait_drawn(pane, pid, None);
                 return;
             }
             std::thread::sleep(Duration::from_millis(50));
@@ -408,9 +424,30 @@ impl Rig {
     /// that ran straight on would race its own setup.
     pub fn mark_busy(&self, pane: &str) {
         assert!(std::fs::write(self.scratch.join("__BUSY__"), "").is_ok());
-        assert!(
-            self.wait_capture(pane, "esc to interrupt"),
-            "the fake should draw its busy frame, saw:\n{}",
+        let pid = self.tool_pid(pane, "claude");
+        let pid = pid.unwrap_or_else(|| panic!("the frame-drawing fake runs in {pane}"));
+        self.wait_drawn(pane, pid, Some("esc to interrupt"));
+    }
+
+    /// Wait until the fake `pid` has DRAWN a frame — `want`'s, when named —
+    /// and the pane shows it. The fake names its last frame only after writing
+    /// it and redraws only when `__BUSY__` changes, so what this sees stays.
+    fn wait_drawn(&self, pane: &str, pid: u32, want: Option<&str>) {
+        let marker = self.scratch.join(format!("drawn.{pid}"));
+        let deadline = std::time::Instant::now() + Duration::from_mins(1);
+        let mut drawn = String::new();
+        while std::time::Instant::now() < deadline {
+            drawn = std::fs::read_to_string(&marker).unwrap_or_default();
+            if !drawn.is_empty()
+                && want.is_none_or(|want| drawn == want)
+                && self.capture(pane).contains(&drawn)
+            {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        panic!(
+            "the fake {pid} should draw {want:?} in {pane}; it last drew {drawn:?}, the pane shows:\n{}",
             self.capture(pane)
         );
     }
@@ -425,16 +462,6 @@ impl Rig {
 
     pub fn capture(&self, pane: &str) -> String {
         self.tmux(&["capture-pane", "-p", "-t", pane]).1
-    }
-
-    fn wait_capture(&self, pane: &str, needle: &str) -> bool {
-        for _ in 0..200 {
-            if self.capture(pane).contains(needle) {
-                return true;
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        false
     }
 
     fn pane_cmd(&self, pane: &str) -> String {
