@@ -7617,8 +7617,11 @@ mod tests {
 
     #[test]
     fn a_seat_that_left_is_asked_on_return_and_an_expired_ask_is_never_booked_again() {
-        let roster = [claude_seat("main", "lead", CONVERSATION_A)];
-        let here = candidates_running(&roster, &[None]);
+        let roster = [
+            claude_seat("main", "lead", CONVERSATION_A),
+            claude_seat("worker.0", "colead", CONVERSATION_B),
+        ];
+        let here = candidates_running(&roster, &[None, None]);
         let meta = Path::new("/m");
         let window = fable_window(&roster[0], "100", 9_900, None);
         let mut late = window.clone();
@@ -7627,7 +7630,13 @@ mod tests {
         let mut pass = |observation, candidates: &[QuotaAskCandidate]| {
             let actions = carry.reconcile_with_candidates(observation, &[], candidates, meta);
             for ask in checkpoint_asks(&actions) {
-                let _ = carry.record_ask_delivery(ask, QuotaDelivery::Retryable, meta);
+                // The colead takes its ask; the lead is busy every time.
+                let result = if ask.recipient.agent == "colead" {
+                    QuotaDelivery::Delivered
+                } else {
+                    QuotaDelivery::Retryable
+                };
+                let _ = carry.record_ask_delivery(ask, result, meta);
             }
             let dropped: Vec<String> = actions
                 .iter()
@@ -7640,9 +7649,11 @@ mod tests {
                 .collect();
             (asked_agents(&actions), dropped)
         };
-        assert_eq!(pass(&window, &here), (vec!["lead".to_owned()], vec![]));
+        let both = vec!["lead".to_owned(), "colead".to_owned()];
+        assert_eq!(pass(&window, &here), (both, vec![]));
         // Gone before its retry: dropped, and a return inside the episode asks.
-        let gone = pass(&window, &[]);
+        // The seat that stayed keeps its mark.
+        let gone = pass(&window, &here[1..]);
         assert_eq!(
             gone,
             (vec![], vec!["checkpoint recipient is gone".to_owned()])
