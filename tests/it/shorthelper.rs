@@ -24,8 +24,7 @@ use super::cli::{ae, helper};
 
 /// A scratch state root with its `sessions/` directory, per test.
 fn scratch(tag: &str) -> PathBuf {
-    let dir = PathBuf::from(format!("/tmp/ae-shorthelper-{}-{tag}", std::process::id()));
-    let _ = fs::remove_dir_all(&dir);
+    let dir = super::cli::OwnedScratch::root("sh", tag).keep();
     assert!(
         fs::create_dir_all(dir.join("sessions")).is_ok(),
         "a scratch state root"

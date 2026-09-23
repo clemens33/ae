@@ -160,12 +160,7 @@ impl Rig {
 
     fn with_mode(tag: &str, tool: &str, marker_secs: u32, mode: &str) -> Self {
         use std::os::unix::fs::PermissionsExt;
-        let scratch = PathBuf::from(format!("/tmp/aedl.{}.{tag}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&scratch);
-        assert!(
-            std::fs::create_dir_all(&scratch).is_ok(),
-            "a scratch directory"
-        );
+        let scratch = super::cli::OwnedScratch::root("dlv", tag).keep();
         let script = scratch.join("faketui.pl");
         assert!(std::fs::write(&script, FAKE_TUI).is_ok(), "the fake TUI");
         assert!(

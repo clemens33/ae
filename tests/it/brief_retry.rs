@@ -47,8 +47,7 @@ impl Rig {
     /// A state root with one session, a live tmux server, and a roster seat
     /// whose pane really exists on it.
     fn new(tag: &str) -> Self {
-        let scratch = PathBuf::from(format!("/tmp/ae-briefretry.{}.{tag}", std::process::id()));
-        let _ = fs::remove_dir_all(&scratch);
+        let scratch = super::cli::OwnedScratch::root("briefretry", tag).keep();
         let root = scratch.join("state");
         let dir = root.join("sessions").join("fixture");
         let home = scratch.join("home");

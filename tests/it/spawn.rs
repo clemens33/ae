@@ -160,12 +160,7 @@ struct Rig {
 impl Rig {
     fn new(tag: &str) -> Self {
         use std::os::unix::fs::PermissionsExt;
-        let scratch = PathBuf::from(format!("/tmp/aesp.{}.{tag}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&scratch);
-        assert!(
-            std::fs::create_dir_all(&scratch).is_ok(),
-            "a scratch directory"
-        );
+        let scratch = super::cli::OwnedScratch::root("sp", tag).keep();
         let session = format!("sp{tag}");
         let dir = scratch.join("sessions").join(&session);
         assert!(std::fs::create_dir_all(&dir).is_ok(), "a session dir");
@@ -603,10 +598,7 @@ fn wait_for_agent_gone(rig: &Rig, slot: &str, binary: &str) -> String {
 /// script, launched process and the brief in the agent's own input box.
 #[test]
 fn a_spawn_seats_stamps_launches_and_briefs_its_agent() {
-    let probe = PathBuf::from(format!("/tmp/aesp-probe.{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&probe);
-    let present = tmux_present(&probe);
-    let _ = std::fs::remove_dir_all(&probe);
+    let present = tmux_present(&super::cli::OwnedScratch::root("sp", "probe"));
     if !present {
         return;
     }
@@ -724,10 +716,7 @@ fn a_spawn_seats_stamps_launches_and_briefs_its_agent() {
     reason = "one end-to-end spawn story: seat, argv, fold, legs, resume"
 )]
 fn a_spawned_muse_agent_receives_positional_context_and_its_brief() {
-    let probe = PathBuf::from(format!("/tmp/aesp-probe-muse.{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&probe);
-    let present = tmux_present(&probe);
-    let _ = std::fs::remove_dir_all(&probe);
+    let present = tmux_present(&super::cli::OwnedScratch::root("sp", "probe-muse"));
     if !present {
         return;
     }
@@ -883,10 +872,7 @@ fn a_spawned_muse_agent_receives_positional_context_and_its_brief() {
 /// the default brief is pasted after launch, and no prompt file is recorded.
 #[test]
 fn a_spawn_without_a_prompt_briefs_by_paste_on_the_user_turn_channel() {
-    let probe = PathBuf::from(format!("/tmp/aesp-probe-noprompt.{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&probe);
-    let present = tmux_present(&probe);
-    let _ = std::fs::remove_dir_all(&probe);
+    let present = tmux_present(&super::cli::OwnedScratch::root("sp", "probe-noprompt"));
     if !present {
         return;
     }
@@ -920,10 +906,7 @@ fn a_spawn_without_a_prompt_briefs_by_paste_on_the_user_turn_channel() {
 /// body pasted exactly as today, and no prompt file for `_run` to fold.
 #[test]
 fn an_oversized_brief_falls_back_to_paste_with_one_stderr_line() {
-    let probe = PathBuf::from(format!("/tmp/aesp-probe-huge.{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&probe);
-    let present = tmux_present(&probe);
-    let _ = std::fs::remove_dir_all(&probe);
+    let present = tmux_present(&super::cli::OwnedScratch::root("sp", "probe-huge"));
     if !present {
         return;
     }
@@ -984,10 +967,7 @@ fn an_oversized_brief_falls_back_to_paste_with_one_stderr_line() {
 /// artifacts, non-zero — and never a task-bearing `spawn` event.
 #[test]
 fn a_spawn_that_cannot_store_its_task_rolls_the_whole_thing_back() {
-    let probe = PathBuf::from(format!("/tmp/aesp-probe2.{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&probe);
-    let present = tmux_present(&probe);
-    let _ = std::fs::remove_dir_all(&probe);
+    let present = tmux_present(&super::cli::OwnedScratch::root("sp", "probe2"));
     if !present {
         return;
     }
@@ -1041,10 +1021,7 @@ fn a_spawn_that_cannot_store_its_task_rolls_the_whole_thing_back() {
 /// pasting into a boot frame is the silent loss this slice exists to kill.
 #[test]
 fn a_pane_that_leaves_its_composed_box_under_the_lock_refuses_the_brief() {
-    let probe = PathBuf::from(format!("/tmp/aesp-probe-ocbox.{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&probe);
-    let present = tmux_present(&probe);
-    let _ = std::fs::remove_dir_all(&probe);
+    let present = tmux_present(&super::cli::OwnedScratch::root("sp", "probe-ocbox"));
     if !present {
         return;
     }
@@ -1096,10 +1073,7 @@ fn a_pane_that_leaves_its_composed_box_under_the_lock_refuses_the_brief() {
 /// just the screen: the brief is refused and the canary inside it never runs.
 #[test]
 fn a_dead_agent_with_a_stale_composer_cannot_take_the_brief() {
-    let probe = PathBuf::from(format!("/tmp/aesp-probe-ocdead.{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&probe);
-    let present = tmux_present(&probe);
-    let _ = std::fs::remove_dir_all(&probe);
+    let present = tmux_present(&super::cli::OwnedScratch::root("sp", "probe-ocdead"));
     if !present {
         return;
     }
@@ -1164,10 +1138,7 @@ fn a_dead_agent_with_a_stale_composer_cannot_take_the_brief() {
 /// not paste into a shell on a guess.
 #[test]
 fn an_unreadable_meta_with_a_stale_composer_cannot_take_the_brief() {
-    let probe = PathBuf::from(format!("/tmp/aesp-probe-ocmeta.{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&probe);
-    let present = tmux_present(&probe);
-    let _ = std::fs::remove_dir_all(&probe);
+    let present = tmux_present(&super::cli::OwnedScratch::root("sp", "probe-ocmeta"));
     if !present {
         return;
     }
@@ -1235,10 +1206,7 @@ fn an_unreadable_meta_with_a_stale_composer_cannot_take_the_brief() {
 /// the delivery diagnosis, and the real retire record closes the same seat.
 #[test]
 fn a_live_partial_spawn_opens_a_seat_keeps_its_failure_and_retires_cleanly() {
-    let probe = PathBuf::from(format!("/tmp/aesp-probe-partial.{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&probe);
-    let present = tmux_present(&probe);
-    let _ = std::fs::remove_dir_all(&probe);
+    let present = tmux_present(&super::cli::OwnedScratch::root("sp", "probe-partial"));
     if !present {
         return;
     }
@@ -1323,10 +1291,7 @@ fn a_live_partial_spawn_opens_a_seat_keeps_its_failure_and_retires_cleanly() {
 /// anything.
 #[test]
 fn a_retire_purges_the_seat_and_refuses_what_is_not_its_to_take() {
-    let probe = PathBuf::from(format!("/tmp/aesp-probe3.{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&probe);
-    let present = tmux_present(&probe);
-    let _ = std::fs::remove_dir_all(&probe);
+    let present = tmux_present(&super::cli::OwnedScratch::root("sp", "probe3"));
     if !present {
         return;
     }
@@ -1427,10 +1392,7 @@ fn a_retire_purges_the_seat_and_refuses_what_is_not_its_to_take() {
 /// this rule exists to end.
 #[test]
 fn a_real_retire_closes_the_request_that_seat_was_sent() {
-    let probe = PathBuf::from(format!("/tmp/aesp-probe-zomb.{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&probe);
-    let present = tmux_present(&probe);
-    let _ = std::fs::remove_dir_all(&probe);
+    let present = tmux_present(&super::cli::OwnedScratch::root("sp", "probe-zomb"));
     if !present {
         return;
     }
@@ -1473,10 +1435,7 @@ fn a_real_retire_closes_the_request_that_seat_was_sent() {
 
 #[test]
 fn a_reused_codex_slot_never_inherits_the_retired_seats_session_id() {
-    let probe = PathBuf::from(format!("/tmp/aesp-probe-sid.{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&probe);
-    let present = tmux_present(&probe);
-    let _ = std::fs::remove_dir_all(&probe);
+    let present = tmux_present(&super::cli::OwnedScratch::root("sp", "probe-sid"));
     if !present {
         return;
     }
@@ -1588,10 +1547,7 @@ fn a_reused_codex_slot_never_inherits_the_retired_seats_session_id() {
 /// The argv grammar refuses before any effect.
 #[test]
 fn the_spawn_grammar_refuses_a_missing_profile_and_a_hostile_name() {
-    let probe = PathBuf::from(format!("/tmp/aesp-probe4.{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&probe);
-    let present = tmux_present(&probe);
-    let _ = std::fs::remove_dir_all(&probe);
+    let present = tmux_present(&super::cli::OwnedScratch::root("sp", "probe4"));
     if !present {
         return;
     }
@@ -1659,10 +1615,7 @@ fn a_profile_that_is_not_one_simple_command_is_refused_before_any_effect() {
 /// unproven pane, so a send could execute the brief as shell input.
 #[test]
 fn a_timed_out_brief_never_advises_a_send() {
-    let probe = PathBuf::from(format!("/tmp/aesp-probe-ocrage.{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&probe);
-    let present = tmux_present(&probe);
-    let _ = std::fs::remove_dir_all(&probe);
+    let present = tmux_present(&super::cli::OwnedScratch::root("sp", "probe-ocrage"));
     if !present {
         return;
     }
@@ -1738,10 +1691,7 @@ fn a_timed_out_brief_never_advises_a_send() {
 /// send advice from a fresh liveness observation.
 #[test]
 fn a_failed_body_store_names_the_fallback_file_without_an_empty_body_claim() {
-    let probe = PathBuf::from(format!("/tmp/aesp-probe-ocstore.{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&probe);
-    let present = tmux_present(&probe);
-    let _ = std::fs::remove_dir_all(&probe);
+    let present = tmux_present(&super::cli::OwnedScratch::root("sp", "probe-ocstore"));
     if !present {
         return;
     }

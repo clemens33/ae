@@ -28,9 +28,7 @@ struct Rig {
 
 impl Rig {
     fn new(tag: &str) -> Self {
-        let scratch = PathBuf::from(format!("/tmp/aedoc.{}.{tag}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&scratch);
-        assert!(std::fs::create_dir_all(&scratch).is_ok(), "a scratch dir");
+        let scratch = super::cli::OwnedScratch::root("doc", tag).keep();
         let home = scratch.join("aehome");
         assert!(
             std::fs::create_dir_all(home.join("sessions")).is_ok(),
@@ -121,10 +119,7 @@ impl Drop for Rig {
 
 /// Guard: the tmux-dependent halves prove nothing without a real tmux.
 fn skip() -> bool {
-    let probe = PathBuf::from(format!("/tmp/aedoc-probe.{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&probe);
-    let present = super::phase2::tmux_present(&probe);
-    let _ = std::fs::remove_dir_all(&probe);
+    let present = super::phase2::tmux_present(&super::cli::OwnedScratch::root("doc", "probe"));
     !present
 }
 

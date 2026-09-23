@@ -17,8 +17,7 @@ const RETIRED_ID: &str = "0199c0de-1234-4890-abcd-ef0123456790";
 const CODEX_ID: &str = "01a08046-1974-7352-ade3-81a786200795";
 
 fn rig(tag: &str) -> PathBuf {
-    let root = std::env::temp_dir().join(format!("ae-usage-it-{}-{tag}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    let root = super::cli::OwnedScratch::root("usage", tag).keep();
     std::fs::create_dir_all(root.join("sessions/live")).expect("session");
     root
 }

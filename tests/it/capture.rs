@@ -35,8 +35,7 @@ struct Rig {
 
 impl Rig {
     fn new(tag: &str, binary: &str, launch_time: i64) -> Self {
-        let scratch = PathBuf::from(format!("/tmp/aecap.{}.{tag}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&scratch);
+        let scratch = super::cli::OwnedScratch::root("cap", tag).keep();
         let rig = Self {
             session: scratch.join("session"),
             home: scratch.join("home"),

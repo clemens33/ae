@@ -193,9 +193,7 @@ pub struct Rig {
 
 impl Rig {
     pub fn new(tag: &str) -> Self {
-        let scratch = PathBuf::from(format!("/tmp/aerl.{}.{tag}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&scratch);
-        assert!(std::fs::create_dir_all(&scratch).is_ok(), "a scratch dir");
+        let scratch = super::cli::OwnedScratch::root("rl", tag).keep();
         let tools = scratch.join("tools");
         assert!(std::fs::create_dir_all(&tools).is_ok(), "a tools dir");
         let session = format!("rl{tag}");

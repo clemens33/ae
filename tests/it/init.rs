@@ -18,10 +18,7 @@ struct Rig {
 
 impl Rig {
     fn new(tag: &str, tools: &[&str]) -> Self {
-        let mut scratch = OwnedScratch::existing(PathBuf::from(format!(
-            "/tmp/aeinit.{}.{tag}",
-            std::process::id()
-        )));
+        let mut scratch = OwnedScratch::root("init", tag);
         scratch.add_tmux_server(scratch.join("tmux.sock"));
         let config = scratch.join("selected").join("config");
         let bin = scratch.join("bin");

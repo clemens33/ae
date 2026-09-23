@@ -43,17 +43,17 @@ const STALE_AFTER: std::time::Duration = std::time::Duration::from_hours(1);
 /// under `/tmp` is the isolation WORKING: none of them reaches the developer's
 /// own home.
 ///
-/// The owner normally removes it after its child exits. The first allocation
-/// also sweeps what an interrupted process left, on age rather than liveness —
-/// there is no portable "is this pid gone" here, and [`STALE_AFTER`] is far
-/// longer than a suite run.
+/// The owner normally removes it after its child exits, and it is registered
+/// with the lane reaper for a process that never gets there. The first
+/// allocation still drains the pre-registry `/tmp/ae-hermetic-*` spelling, on
+/// age: [`STALE_AFTER`] is far longer than a suite run.
 fn run_scratch() -> std::path::PathBuf {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let nth = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     if nth == 0 {
         sweep_stale_scratches();
     }
-    std::path::PathBuf::from(format!("/tmp/ae-hermetic-{}-{nth}", std::process::id()))
+    own_root_path(&format!("hermetic.{nth}"))
 }
 
 /// Existing, process-private directory for the runner's bare `tmux -L name`
@@ -79,7 +79,7 @@ fn isolated_tmux_tmpdir() -> &'static std::path::Path {
     .as_path()
 }
 
-/// Remove every hermetic scratch older than [`STALE_AFTER`].
+/// Remove every legacy `/tmp/ae-hermetic-*` scratch older than [`STALE_AFTER`].
 fn sweep_stale_scratches() {
     let Ok(entries) = std::fs::read_dir("/tmp") else {
         return;
@@ -294,6 +294,10 @@ pub(crate) struct OwnedScratch {
 
 impl OwnedScratch {
     pub(crate) fn absent(path: std::path::PathBuf) -> Self {
+        assert!(
+            raw::register_owned_root(&path).is_ok(),
+            "a runner scratch enters the reaper registry"
+        );
         let tmux_servers = vec![named_tmux_socket(&path, ae::doors::DEFAULT_SERVER_NAME)];
         Self { path, tmux_servers }
     }
@@ -312,8 +316,32 @@ impl OwnedScratch {
         Self { path, tmux_servers }
     }
 
+    /// The suite's ONE scratch root, `<base>/ae-it-<pid>/<family>.<tag>`
+    /// (`scratch::base`): created empty, and registered with the lane's reaper
+    /// before any tmux can start there, so a killed test is still reaped.
+    pub(crate) fn root(family: &str, tag: &str) -> Self {
+        let scratch = Self::existing(own_root_path(&format!("{family}.{tag}")));
+        let longest = named_tmux_socket(&scratch.path, "a-sixteen-b-name");
+        assert!(
+            longest.as_os_str().len() <= super::scratch::SOCKET_PATH_MAX,
+            "{} leaves no room for a tmux socket: shorten AE_TEST_TMPDIR or the tag",
+            scratch.path.display()
+        );
+        assert!(
+            raw::register_owned_root(&scratch.path).is_ok(),
+            "a scratch root enters the reaper registry"
+        );
+        scratch
+    }
+
     pub(crate) fn path(&self) -> &std::path::Path {
         &self.path
+    }
+
+    /// Hand the root to a fixture's own cleanup. It stays registered, so the
+    /// lane reaper still removes it if that fixture never runs.
+    pub(crate) fn keep(mut self) -> std::path::PathBuf {
+        std::mem::take(&mut self.path)
     }
 
     pub(crate) fn add_tmux_server(&mut self, socket: std::path::PathBuf) {
@@ -361,18 +389,13 @@ impl Drop for OwnedScratch {
         // An absent scratch is deliberately inert: no child can have a live
         // cwd there, and raw::run cannot create capture files inside it.
         if !self.path.exists() || !owns_scratch_path(&self.path) {
+            release_process_dir(&self.path);
             return;
         }
 
-        for (index, socket) in self.tmux_servers.iter().enumerate() {
-            let out = self.path.join(format!(".cleanup-{index}-out"));
-            let err = self.path.join(format!(".cleanup-{index}-err"));
-            let invocation = Invocation::new("tmux")
-                .arg("-S")
-                .arg(socket)
-                .arg("kill-server");
-            let _ = raw::run(&invocation, &self.path, &out, &err);
-        }
+        // Every server beneath the root, not only the listed ones: a fixture
+        // may start one under any `-L` name with `TMUX_TMPDIR` pointed here.
+        raw::kill_servers_under(&self.path, &self.tmux_servers);
 
         // A pane's command can outlive the server's shutdown briefly. Stop
         // processes carrying this exact scratch path before waiting for them.
@@ -409,6 +432,25 @@ impl Drop for OwnedScratch {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
         let _ = std::fs::remove_dir_all(&self.path);
+        release_process_dir(&self.path);
+    }
+}
+
+/// `<base>/ae-it-<pid>/<name>`: where [`OwnedScratch::root`] puts a root.
+fn own_root_path(name: &str) -> std::path::PathBuf {
+    super::scratch::base()
+        .join(format!("ae-it-{}", std::process::id()))
+        .join(name)
+}
+
+/// Remove this process's `ae-it-<pid>` once its last root is gone.
+fn release_process_dir(root: &std::path::Path) {
+    if let Some(parent) = root.parent()
+        && parent
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy() == format!("ae-it-{}", std::process::id()))
+    {
+        let _ = std::fs::remove_dir(parent);
     }
 }
 
@@ -459,7 +501,8 @@ fn owns_scratch_path(path: &std::path::Path) -> bool {
     // temp root.
     let in_system_temp = path.starts_with(std::env::temp_dir())
         || path.starts_with("/tmp")
-        || path.starts_with("/private/tmp");
+        || path.starts_with("/private/tmp")
+        || path.starts_with(super::scratch::base());
     in_system_temp
         && path.components().count() >= 3
         && path.components().any(|component| {
@@ -495,6 +538,117 @@ fn isolated(mut command: Runner, dir: &std::path::Path) -> Runner {
         .env("AE_TMUX_SERVER", dead_socket(dir))
         .env("SHELL", "/bin/sh");
     command
+}
+
+/// ONE scratch owner (#159): no test file builds a root of its own, because a
+/// root [`OwnedScratch::root`] did not make is one no reaper will ever find.
+#[test]
+fn no_test_file_rolls_its_own_scratch_root() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/it");
+    let banned = [
+        concat!("format!(\"", "/tmp/"),
+        concat!("temp_dir()", ".join("),
+    ];
+    let mut scanned = 0;
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir(&dir).expect("tests/it").flatten() {
+        let text = std::fs::read_to_string(entry.path()).expect("a test source");
+        let squashed: String = text.split_whitespace().collect();
+        scanned += 1;
+        for pattern in banned {
+            if squashed.contains(pattern) {
+                found.push(format!("{}: {pattern}", entry.file_name().display()));
+            }
+        }
+    }
+    assert!(
+        scanned > 40,
+        "the guard scanned {scanned} files; it did not run"
+    );
+    assert!(found.is_empty(), "use OwnedScratch::root: {found:?}");
+}
+
+/// The child half of the panic pin: a scratch owner holding a tmux server
+/// under a name the owner was never told about, then an assertion failure.
+#[test]
+fn scratch_owner_panic_child() {
+    let Some(name) = std::env::var_os("AE_SCRATCH_PANIC_CHILD") else {
+        return;
+    };
+    let report = std::env::var_os("AE_SCRATCH_PANIC_REPORT").expect("the report path");
+    let scratch = OwnedScratch::root("r1", "child");
+    std::fs::write(report, scratch.path().as_os_str().as_encoded_bytes()).expect("the report");
+    let started = raw::run(
+        &Invocation::new("tmux")
+            .arg("-f")
+            .arg("/dev/null")
+            .arg("-L")
+            .arg(&name)
+            .arg("new-session")
+            .arg("-d"),
+        &scratch,
+        &scratch.join("start-out"),
+        &scratch.join("start-err"),
+    )
+    .expect("the child's server starts");
+    assert!(matches!(started.outcome(), ExitOutcome::Code(0)));
+    panic!("the injected panic");
+}
+
+/// Kills the panic pin's server by its unique name, whatever the owner did.
+struct NamedServerCleanup(std::path::PathBuf, String);
+
+impl Drop for NamedServerCleanup {
+    fn drop(&mut self) {
+        let _ = raw::run(
+            &Invocation::new("pkill").arg("-f").arg(&self.1),
+            &self.0,
+            &self.0.join("pkill-out"),
+            &self.0.join("pkill-err"),
+        );
+    }
+}
+
+/// A test that panics while it owns a scratch root leaves neither the root
+/// nor ANY tmux server started beneath it — not only the one it listed.
+#[test]
+fn a_panicking_test_leaves_no_scratch_and_no_tmux_server() {
+    let probe = OwnedScratch::root("r1", "parent");
+    let name = format!("aeitpanic{}", std::process::id());
+    let _cleanup = NamedServerCleanup(probe.path().to_owned(), name.clone());
+    let child = std::env::current_exe().expect("the integration test binary");
+    let status = raw::run(
+        &Invocation::new(child)
+            .arg("--exact")
+            .arg("cli::scratch_owner_panic_child")
+            .env("AE_SCRATCH_PANIC_CHILD", &name)
+            .env("AE_SCRATCH_PANIC_REPORT", probe.join("root")),
+        &probe,
+        &probe.join("child-out"),
+        &probe.join("child-err"),
+    )
+    .expect("the panicking child runs");
+    let root = std::fs::read_to_string(probe.join("root")).expect("the child's root");
+    let output = std::fs::read_to_string(probe.join("child-out")).unwrap_or_default();
+    assert!(
+        matches!(status.outcome(), ExitOutcome::Code(101)),
+        "the child must fail by its panic: {output}"
+    );
+    let alive = raw::run(
+        &Invocation::new("pgrep").arg("-f").arg(&name),
+        &probe,
+        &probe.join("pgrep-out"),
+        &probe.join("pgrep-err"),
+    )
+    .is_ok_and(|status| matches!(status.outcome(), ExitOutcome::Code(0)));
+    assert!(
+        !alive,
+        "the panicking test left its tmux server -L {name} running"
+    );
+    assert!(
+        !std::path::Path::new(&root).exists(),
+        "the panicking test left its scratch root {root}"
+    );
 }
 
 #[test]
@@ -588,17 +742,15 @@ fn the_black_box_runner_cannot_see_the_developers_own_home_or_tmux() {
     // The cleanup floor is exercised in both directions: a correctly named
     // process-owned path is accepted, while a broad or pid-less path is not.
     assert!(!owns_scratch_path(std::path::Path::new("/tmp")));
-    assert!(owns_scratch_path(std::path::Path::new(&format!(
-        "/tmp/ae-hermetic-{}-0",
-        std::process::id()
-    ))));
+    assert!(owns_scratch_path(&own_root_path("hermetic.0")));
     assert!(!owns_scratch_path(std::path::Path::new(
         "/tmp/ae-hermetic-without-a-process-id"
     )));
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_nanos());
-    let unowned = std::path::PathBuf::from(format!("/tmp/ae-unowned-guard-no-process-{nonce}"));
+    // Deliberately outside the owner's grammar: no process id anywhere in it.
+    let unowned = std::path::Path::new("/tmp").join(format!("ae-unowned-guard-no-process-{nonce}"));
     assert!(
         std::fs::create_dir_all(&unowned).is_ok(),
         "an unowned scratch"
@@ -929,8 +1081,7 @@ fn criterion_1_the_real_list_and_ls_surfaces_answer_over_a_real_state_root() {
 /// Run `git` with `args` and return its stdout, or `None` if it could not run.
 fn git(args: &[&str]) -> Option<String> {
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let scratch = std::env::temp_dir().join(format!("ae-git-{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&scratch);
+    let scratch = OwnedScratch::root("git", "in");
     let out = scratch.join("out");
     let err = scratch.join("err");
     let mut invocation = Invocation::new("git");
@@ -1144,8 +1295,7 @@ pub(crate) fn byte_tree(root: &std::path::Path) -> Vec<(String, Option<Vec<u8>>)
 
 /// A scratch state root, short-lived and per-test.
 fn scratch(tag: &str) -> std::path::PathBuf {
-    let dir = std::path::PathBuf::from(format!("/tmp/ae-cli-{}-{tag}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = super::cli::OwnedScratch::root("cli", tag).keep();
     assert!(
         std::fs::create_dir_all(dir.join("sessions")).is_ok(),
         "a scratch state root"
@@ -1263,9 +1413,7 @@ fn requests_all_reports_a_retired_target_as_retired_not_pending() {
 fn requests_mine_and_inbox_answer_for_the_pane_tmux_pane_names() {
     // A REAL isolated server, created and stamped through the harness's pinned
     // process door (`-S` addressing).
-    let scratch_dir = std::path::PathBuf::from(format!("/tmp/aeid.{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&scratch_dir);
-    std::fs::create_dir_all(&scratch_dir).expect("a scratch directory");
+    let scratch_dir = super::cli::OwnedScratch::root("cli", "id").keep();
     let sock = scratch_dir.join("sock");
     let server = ae::inventory::ServerId::Selected(ae::meta::Selector::Socket(sock.clone()));
     let tmux = |tail: &[&str]| {
@@ -1834,9 +1982,7 @@ fn state_refuses_without_a_pane_identity_and_writes_nothing() {
 #[test]
 fn state_declares_for_the_pane_and_a_held_lock_fails_it_at_the_bound() {
     // A real isolated server, as in the requests identity test.
-    let scratch_dir = std::path::PathBuf::from(format!("/tmp/aest.{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&scratch_dir);
-    std::fs::create_dir_all(&scratch_dir).expect("a scratch directory");
+    let scratch_dir = super::cli::OwnedScratch::root("cli", "st").keep();
     let sock = scratch_dir.join("sock");
     let server = ae::inventory::ServerId::Selected(ae::meta::Selector::Socket(sock.clone()));
     let tmux = |tail: &[&str]| {
@@ -1943,9 +2089,7 @@ fn state_declares_for_the_pane_and_a_held_lock_fails_it_at_the_bound() {
 #[test]
 fn a_spawned_pane_cannot_declare_waiting_user_but_can_declare_waiting_agent() {
     // A real isolated server, as in the main-slot state test beside this one.
-    let scratch_dir = std::path::PathBuf::from(format!("/tmp/aesp.{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&scratch_dir);
-    std::fs::create_dir_all(&scratch_dir).expect("a scratch directory");
+    let scratch_dir = super::cli::OwnedScratch::root("cli", "sp").keep();
     let sock = scratch_dir.join("sock");
     let server = ae::inventory::ServerId::Selected(ae::meta::Selector::Socket(sock.clone()));
     let tmux = |tail: &[&str]| {
@@ -2217,13 +2361,7 @@ struct Tracked {
 impl Tracked {
     fn new(tag: &str) -> Self {
         use std::os::unix::fs::PermissionsExt;
-        let scratch_dir =
-            std::path::PathBuf::from(format!("/tmp/aetr.{}.{tag}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&scratch_dir);
-        assert!(
-            std::fs::create_dir_all(&scratch_dir).is_ok(),
-            "a scratch directory"
-        );
+        let scratch_dir = OwnedScratch::root("tr", tag).keep();
         let sock = scratch_dir.join("sock");
         let session = format!("tr{tag}");
         let mut fixture = Self {
@@ -3978,8 +4116,7 @@ fn the_telegram_daemon_entry_names_what_it_actually_needs_and_never_stutters() {
 
     // A startup refusal: one "telegram:", named once, with the path that is
     // wrong and nothing else.
-    let empty = std::env::temp_dir().join(format!("ae-tg-entry-{}", std::process::id()));
-    std::fs::create_dir_all(&empty).expect("a temp ae home");
+    let empty = OwnedScratch::root("tg", "entry");
     let refused = ae()
         .arg("_telegram-run")
         .arg(&empty)
@@ -4011,9 +4148,7 @@ impl NextFixture {
         reason = "a fixture that cannot build must panic where it broke, not later"
     )]
     fn plant(tag: &str) -> Self {
-        let scratch = std::path::PathBuf::from(format!("/tmp/aenx.{tag}.{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&scratch);
-        std::fs::create_dir_all(&scratch).expect("a scratch directory");
+        let scratch = super::cli::OwnedScratch::root("cli", tag).keep();
         // `<scratch>/tmux-<uid>/default` — the exact path a bare `tmux` derives
         // from `$TMUX_TMPDIR`, so pointing that at the scratch directory makes
         // THIS server the ambient one.

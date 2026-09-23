@@ -1042,63 +1042,125 @@ rust-lint:
 # One config-free named server per test-tool invocation. Every lane that can
 # execute the integration target comes through here, including the mutation
 # baseline and coverage.
+#
+# Every test scratch root (`tests/it/scratch.rs`) and every lane directory sits
+# under ONE base, AE_TEST_TMPDIR or /tmp: short, because a tmux socket beneath
+# it must fit AF_UNIX's 104 bytes. The lane also points TMPDIR into itself, so
+# what a test, a product child or cargo-mutants' tree copy leaves in the temp
+# dir leaves with the lane. NEXTEST_TEST_THREADS defaults to min(cpus, 8).
 _tmux-isolated lane *args:
     #!/usr/bin/env bash
     set -euo pipefail
     lane="$1"
     shift
+    base="${AE_TEST_TMPDIR:-/tmp}"
+    base_real="$(cd -P "$base" 2>/dev/null && pwd || printf '%s' "$base")"
+    legacy="${TMPDIR:-/tmp}"
     owner_is_dead() {
         local owner="$1" error
         error="$(LC_ALL=C kill -0 "$owner" 2>&1)" && return 1
         [[ "$error" == *"No such process"* ]]
     }
+    # A socket whose server is already gone counts as reaped.
     reap_sockets() {
-        local root="$1" socket failed=0
+        local root="$1" socket error failed=0
         find "$root" -type s -print >/dev/null 2>&1 || return 1
         while IFS= read -r socket; do
-            tmux -S "$socket" kill-server >/dev/null 2>&1 || failed=1
+            error="$(tmux -S "$socket" kill-server 2>&1)" || [[ "$error" == *"no server running"* ]] || failed=1
         done < <(find "$root" -type s -print 2>/dev/null)
         return "$failed"
     }
-    reap_stale_lanes() {
-        local root="${TMPDIR:-/tmp}" stale name owner registry owner_dir entry scratch
-        for stale in "$root"/ae-rust-test.*; do
-            [[ -d "$stale" ]] || continue
-            name="${stale##*/ae-rust-test.}"
-            owner="${name%%.*}"
-            [[ "$owner" =~ ^[0-9]+$ ]] || continue
-            owner_is_dead "$owner" || continue
-            registry="$stale/.ae-parity-fixtures"
-            [[ ! -e "$registry" || -d "$registry" ]] || continue
-            if [[ -d "$registry" ]]; then
-                [[ -r "$registry" && -x "$registry" ]] || continue
-                for owner_dir in "$registry"/*; do
-                    [[ -e "$owner_dir" ]] || continue
-                    [[ -d "$owner_dir" && -r "$owner_dir" && -x "$owner_dir" ]] || continue 2
-                    owner="${owner_dir##*/}"
-                    [[ "$owner" =~ ^[0-9]+$ ]] || continue 2
-                    owner_is_dead "$owner" || continue 2
-                    for entry in "$owner_dir"/*; do
-                        [[ -e "$entry" ]] || continue
-                        [[ -L "$entry" ]] || continue 3
-                        scratch="$(readlink "$entry")" || continue 3
-                        reap_sockets "$scratch" || continue 3
-                    done
-                done
+    # The ONE deletion rule, as tests/it/scratch.rs::owned_root: a registered
+    # target is deleted only as <base>/ae-it-<owner>/<one name> (or gone), no
+    # link, and then as the whole ae-it-<owner>, left in $owned. Any other
+    # target is only killed.
+    owned_root() {
+        local owner="$1" target="$2" prefix rest
+        for prefix in "$base" "$base_real"; do
+            rest="${target#"$prefix/ae-it-$owner/"}"
+            [[ "$rest" != "$target" && -n "$rest" && "$rest" != */* && "$rest" != . && "$rest" != .. ]] || continue
+            [[ -d "$prefix/ae-it-$owner" && ! -L "$prefix/ae-it-$owner" && ! -L "$target" ]] || return 1
+            [[ -d "$target" || ! -e "$target" ]] || return 1
+            owned="$prefix/ae-it-$owner"
+            return 0
+        done
+        return 1
+    }
+    # Reap every root a DEAD owner registered in lane $1; fails if any is left.
+    reap_registry() {
+        local registry="$1/.ae-parity-fixtures" owner_dir owner entry scratch failed=0
+        [[ -e "$registry" ]] || return 0
+        [[ -d "$registry" && ! -L "$registry" && -r "$registry" && -x "$registry" ]] || return 1
+        for owner_dir in "$registry"/*; do
+            [[ -e "$owner_dir" ]] || continue
+            owner="${owner_dir##*/}"
+            if [[ ! -d "$owner_dir" || ! "$owner" =~ ^[0-9]+$ ]] || ! owner_is_dead "$owner"; then
+                failed=1
+                continue
             fi
-            reap_sockets "$stale" || continue
-            rm -rf "$stale"
+            for entry in "$owner_dir"/*; do
+                if [[ ! -L "$entry" ]]; then
+                    [[ ! -e "$entry" ]] || failed=1
+                    continue
+                fi
+                scratch="$(readlink "$entry")" || { failed=1; continue; }
+                if owned_root "$owner" "$scratch"; then
+                    if reap_sockets "$owned"; then rm -rf "$owned"; else failed=1; fi
+                elif [[ -e "$scratch" ]]; then
+                    reap_sockets "$scratch" || failed=1
+                fi
+            done
+        done
+        return "$failed"
+    }
+    reap_stale_lanes() {
+        local root stale name owner
+        for root in "$base" "$legacy"; do
+            for stale in "$root"/ae-rust-test.*; do
+                [[ -d "$stale" && ! -L "$stale" ]] || continue
+                name="${stale##*/ae-rust-test.}"
+                owner="${name%%.*}"
+                [[ "$owner" =~ ^[0-9]+$ ]] || continue
+                owner_is_dead "$owner" || continue
+                reap_registry "$stale" || continue
+                reap_sockets "$stale" || continue
+                rm -rf "$stale"
+            done
+            [[ "$legacy" != "$base" ]] || break
+        done
+    }
+    # A dead test's root no lane registered, and only when older than this
+    # lane: a reused pid's fresh root is never taken.
+    reap_dead_scratch() {
+        local dir owner
+        for dir in "$base"/ae-it-*; do
+            [[ -d "$dir" && ! -L "$dir" ]] || continue
+            owner="${dir##*/ae-it-}"
+            [[ "$owner" =~ ^[0-9]+$ ]] || continue
+            [[ -z "$(find "$dir" -prune -newer "$test_tmux_tmp")" ]] || continue
+            owner_is_dead "$owner" || continue
+            if reap_sockets "$dir"; then rm -rf "$dir"; fi
         done
     }
     reap_stale_lanes
-    test_tmux_tmp="$(mktemp -d "${TMPDIR:-/tmp}/ae-rust-test.$$.XXXXXX")"
+    test_tmux_tmp="$(mktemp -d "$base/ae-rust-test.$$.XXXXXX")"
     cleanup() {
         TMUX_TMPDIR="$test_tmux_tmp" env -u TMUX -u TMUX_PANE tmux -L ae kill-server >/dev/null 2>&1 || true
+        reap_registry "$test_tmux_tmp" || true
+        reap_dead_scratch
         rm -rf "$test_tmux_tmp"
     }
     trap cleanup EXIT
+    reap_dead_scratch
+    mkdir "$test_tmux_tmp/tmp"
+    export TMPDIR="$test_tmux_tmp/tmp"
     export TMUX_TMPDIR="$test_tmux_tmp"
     unset TMUX TMUX_PANE
+    if [[ -z "${NEXTEST_TEST_THREADS:-}" ]]; then
+        cpus="$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)"
+        [[ "$cpus" =~ ^[0-9]+$ ]] || cpus=8
+        export NEXTEST_TEST_THREADS=$((cpus < 8 ? cpus : 8))
+    fi
     # An owned sentry proves every in-process fleet read stays on this run's
     # server. It is deliberately visible: Name(ae) is a real entitlement, and
     # tests asserting whole-fleet cardinality account for this one row.
@@ -1109,7 +1171,7 @@ _tmux-isolated lane *args:
             cargo test --doc --locked --all-features
             ;;
         cov) cargo llvm-cov nextest --locked --all-features ;;
-        mutants) cargo mutants --cargo-arg=--locked "$@" ;;
+        mutants) cargo mutants --cargo-arg=--locked --jobs 1 "$@" ;;
         *) echo "Error: unknown isolated test lane '$lane'" >&2; exit 2 ;;
     esac
 

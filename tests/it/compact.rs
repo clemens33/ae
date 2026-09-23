@@ -17,9 +17,7 @@ use std::time::Duration;
 struct Scratch(PathBuf);
 impl Scratch {
     fn new(tag: &str) -> Self {
-        let dir = std::env::temp_dir().join(format!("ae-compact-it-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("scratch");
+        let dir = super::cli::OwnedScratch::root("compact", tag).keep();
         Self(dir)
     }
 }

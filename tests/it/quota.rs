@@ -15,8 +15,7 @@ const THIRD_ID: &str = "01a08046-2100-7abc-8abc-bbbbbbbbbbbb";
 const FOURTH_ID: &str = "01a08046-2200-7abc-8abc-cccccccccccc";
 
 fn rig(tag: &str) -> PathBuf {
-    let root = PathBuf::from(format!("/tmp/ae-quota-it-{}-{tag}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    let root = super::cli::OwnedScratch::root("quota", tag).keep();
     std::fs::create_dir_all(root.join(".codex/sessions/2026/09/08"))
         .expect("quota rig directories");
     std::fs::create_dir_all(root.join("sessions/session")).expect("session directory");

@@ -145,7 +145,14 @@ fn rust_test_tmux_isolation_ok(justfile: &str) -> bool {
         "reap_sockets()",
         "reap_stale_lanes()",
         "reap_stale_lanes",
-        "mktemp -d \"${TMPDIR:-/tmp}/ae-rust-test.$$.XXXXXX\"",
+        "base=\"${AE_TEST_TMPDIR:-/tmp}\"",
+        "owned_root()",
+        "reap_registry()",
+        "reap_dead_scratch()",
+        "mktemp -d \"$base/ae-rust-test.$$.XXXXXX\"",
+        "reap_registry \"$test_tmux_tmp\" || true",
+        "export TMPDIR=\"$test_tmux_tmp/tmp\"",
+        "export NEXTEST_TEST_THREADS=$((cpus < 8 ? cpus : 8))",
         "TMUX_TMPDIR=\"$test_tmux_tmp\" env -u TMUX -u TMUX_PANE tmux -L ae kill-server",
         "rm -rf \"$test_tmux_tmp\"",
         "trap cleanup EXIT",
@@ -155,7 +162,7 @@ fn rust_test_tmux_isolation_ok(justfile: &str) -> bool {
         "cargo nextest run --locked --all-features",
         "cargo test --doc --locked --all-features",
         "cargo llvm-cov nextest --locked --all-features",
-        "cargo mutants --cargo-arg=--locked \"$@\"",
+        "cargo mutants --cargo-arg=--locked --jobs 1 \"$@\"",
     ];
     if required.iter().any(|needle| position(needle).is_none()) {
         return false;
@@ -181,6 +188,15 @@ fn rust_test_tmux_isolation_ok(justfile: &str) -> bool {
     let Some(doctest) = position("cargo test --doc") else {
         return false;
     };
+    // The lane reaps its own registry BEFORE it deletes it, and the temp dir
+    // is the lane's before any test runs.
+    let (Some(registry), Some(remove), Some(tmpdir)) = (
+        position("reap_registry \"$test_tmux_tmp\""),
+        position("rm -rf \"$test_tmux_tmp\""),
+        position("export TMPDIR="),
+    ) else {
+        return false;
+    };
     let callers = [
         ("rust-test:", "just _tmux-isolated test"),
         ("rust-cov:", "just _tmux-isolated cov"),
@@ -190,6 +206,9 @@ fn rust_test_tmux_isolation_ok(justfile: &str) -> bool {
         ),
     ];
     reap < mktemp
+        && registry < remove
+        && mktemp < tmpdir
+        && tmpdir < nextest
         && unset < sentry
         && sentry < nextest
         && nextest < doctest
@@ -319,9 +338,7 @@ fn stale_lane_owner_child() {
 
 #[test]
 fn stale_lane_sweep_reaps_a_nested_socket_owned_by_a_dead_lane() {
-    let scratch_root = PathBuf::from(format!("/tmp/ae-gate-stale-lane.{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&scratch_root);
-    std::fs::create_dir_all(&scratch_root).expect("a stale-lane parent root");
+    let scratch_root = super::cli::OwnedScratch::root("gate", "stale-lane").keep();
     let child = std::env::current_exe().expect("the integration test binary");
     let status = raw::run(
         &Invocation::new(child)
@@ -371,7 +388,8 @@ fn stale_lane_sweep_reaps_a_nested_socket_owned_by_a_dead_lane() {
         &Invocation::new("just")
             .arg("_tmux-isolated")
             .arg("unknown")
-            .env("TMPDIR", &scratch_root),
+            .env("TMPDIR", &scratch_root)
+            .env("AE_TEST_TMPDIR", &scratch_root),
         &root(),
         &scratch_root.join("sweep-out"),
         &scratch_root.join("sweep-err"),
@@ -383,6 +401,168 @@ fn stale_lane_sweep_reaps_a_nested_socket_owned_by_a_dead_lane() {
         "the next lane must kill nested stale sockets before it creates its own lane"
     );
     drop(fixture);
+}
+
+/// Whether both lanes cap their test threads in CONFIG (#159): nextest at most
+/// eight, every mutation run at most four.
+fn thread_caps_ok(nextest: &str, mutants: &str) -> bool {
+    let cap = |text: &str, key: &str, max: u32| {
+        text.lines().any(|line| {
+            line.trim()
+                .strip_prefix(key)
+                .and_then(|rest| rest.trim_end_matches(['"', ']']).parse::<u32>().ok())
+                .is_some_and(|threads| (1..=max).contains(&threads))
+        })
+    };
+    cap(nextest, "test-threads = ", 8)
+        && cap(
+            mutants,
+            "additional_cargo_test_args = [\"--test-threads=",
+            4,
+        )
+}
+
+#[test]
+fn the_lanes_cap_their_test_threads_in_config() {
+    assert!(thread_caps_ok(
+        &read(&root().join(".config/nextest.toml")),
+        &read(&root().join(".cargo/mutants.toml"))
+    ));
+    let mutants = "additional_cargo_test_args = [\"--test-threads=4\"]\n";
+    // RED — nextest's own default is every core; so is an explicit wide one.
+    assert!(!thread_caps_ok("[profile.default]\n", mutants));
+    assert!(!thread_caps_ok("test-threads = 18\n", mutants));
+    // RED — a mutation run with no cap of its own.
+    assert!(!thread_caps_ok(
+        "test-threads = 8\n",
+        "timeout_multiplier = 5.0\n"
+    ));
+    assert!(!thread_caps_ok(
+        "test-threads = 8\n",
+        "additional_cargo_test_args = [\"--test-threads=8\"]\n"
+    ));
+}
+
+/// The child half of the killed-test pins: a scratch root under the base the
+/// parent names, optionally holding a tmux server, then SIGKILL — no unwinding,
+/// so no destructor runs.
+#[test]
+fn scratch_sigkill_child() {
+    let Some(base) = std::env::var_os("AE_GATE_SCRATCH_KILL_BASE") else {
+        return;
+    };
+    let pid = std::process::id();
+    let root = PathBuf::from(base)
+        .join(format!("ae-it-{pid}"))
+        .join("killed");
+    std::fs::create_dir_all(&root).expect("the killed child's root");
+    let report = std::env::var_os("AE_GATE_SCRATCH_KILL_REPORT").expect("the report path");
+    std::fs::write(report, pid.to_string()).expect("the report");
+    if let Some(name) = std::env::var_os("AE_GATE_SCRATCH_KILL_SERVER") {
+        let started = raw::run(
+            &Invocation::new("tmux")
+                .arg("-f")
+                .arg("/dev/null")
+                .arg("-L")
+                .arg(name)
+                .arg("new-session")
+                .arg("-d"),
+            &root,
+            &root.join("start-out"),
+            &root.join("start-err"),
+        )
+        .expect("the killed child's server starts");
+        assert!(matches!(started.outcome(), ExitOutcome::Code(0)));
+    }
+    let _ = raw::run(
+        &Invocation::new("kill").arg("-KILL").arg(pid.to_string()),
+        &root,
+        &root.join("kill-out"),
+        &root.join("kill-err"),
+    );
+    panic!("SIGKILL must end the scratch child");
+}
+
+/// Run [`scratch_sigkill_child`] under `base`, its registry in `lane`; the
+/// dead child's pid.
+fn killed_scratch_child(base: &Path, lane: &Path, server: Option<&str>) -> String {
+    let report = base.join("child-pid");
+    let mut child = Invocation::new(
+        std::env::current_exe().unwrap_or_else(|why| panic!("the integration test binary: {why}")),
+    )
+    .arg("--exact")
+    .arg("gate::scratch_sigkill_child")
+    .env("AE_GATE_SCRATCH_KILL_BASE", base)
+    .env("AE_GATE_SCRATCH_KILL_REPORT", &report)
+    .env("TMUX_TMPDIR", lane);
+    if let Some(name) = server {
+        child = child.env("AE_GATE_SCRATCH_KILL_SERVER", name);
+    }
+    let status = raw::run(
+        &child,
+        base,
+        &base.join("child-out"),
+        &base.join("child-err"),
+    )
+    .unwrap_or_else(|why| panic!("the killed child starts: {why}"));
+    assert!(matches!(status.outcome(), ExitOutcome::Signalled));
+    read(&report).trim().to_owned()
+}
+
+/// A test killed by `SIGKILL` while it owns a scratch root and a tmux server leaves
+/// neither once the next lane has swept: the registered root is removed with
+/// its server, and an unregistered root of a dead owner goes too.
+#[test]
+fn a_killed_tests_scratch_and_server_are_swept_by_the_lane() {
+    let base = super::cli::OwnedScratch::root("gate", "sweep");
+    let name = format!("aeitkill{}", std::process::id());
+    let lane = base.join("lane");
+    std::fs::create_dir_all(&lane).expect("the killed child's lane");
+    let registered = killed_scratch_child(&base, &lane, Some(&name));
+    let unregistered = killed_scratch_child(&base, &base.join("no-lane"), None);
+    // The lane is named for a dead owner only now that one exists.
+    let stale = base.join(format!("ae-rust-test.{registered}.killed"));
+    std::fs::rename(&lane, &stale).expect("the dead lane");
+
+    let swept = raw::run(
+        &Invocation::new("just")
+            .arg("_tmux-isolated")
+            .arg("unknown")
+            .env("TMPDIR", &*base)
+            .env("AE_TEST_TMPDIR", &*base),
+        &root(),
+        &base.join("sweep-out"),
+        &base.join("sweep-err"),
+    )
+    .expect("the lane sweep runs");
+    let alive = raw::run(
+        &Invocation::new("pgrep").arg("-f").arg(&name),
+        &base,
+        &base.join("pgrep-out"),
+        &base.join("pgrep-err"),
+    )
+    .is_ok_and(|status| matches!(status.outcome(), ExitOutcome::Code(0)));
+    if alive {
+        let _ = raw::run(
+            &Invocation::new("pkill").arg("-f").arg(&name),
+            &base,
+            &base.join("pkill-out"),
+            &base.join("pkill-err"),
+        );
+    }
+    assert!(matches!(swept.outcome(), ExitOutcome::Code(2)));
+    assert!(
+        !alive,
+        "the killed test's tmux server -L {name} outlived the sweep"
+    );
+    for pid in [registered, unregistered] {
+        let owned = base.join(format!("ae-it-{pid}"));
+        assert!(
+            !owned.exists(),
+            "a dead test's scratch root outlived the sweep: {}",
+            owned.display()
+        );
+    }
 }
 
 /// Whether the `release` recipe refreshes the fuzz crate's lock inside the
@@ -1072,8 +1252,7 @@ fn in_fixture(dir: &Path, program: &str, args: &[&str], env: &[(&str, &str)]) ->
 #[test]
 fn just_bump_derives_the_next_sequence_from_the_tags_and_refuses_a_stale_recovery() {
     let root = root();
-    let dir = PathBuf::from(format!("/tmp/ae-gate-bump.{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = super::cli::OwnedScratch::root("gate", "bump").keep();
     assert!(
         std::fs::create_dir_all(dir.join("bin")).is_ok(),
         "a fixture"
@@ -1334,8 +1513,7 @@ fn as_strs(argv: &[String]) -> Vec<&str> {
 /// quoted `$skip` would produce is refused rather than silently accepted.
 #[test]
 fn the_changelog_skip_list_crosses_to_git_cliff_as_separate_arguments() {
-    let dir = PathBuf::from(format!("/tmp/ae-gate-cliff.{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = super::cli::OwnedScratch::root("gate", "cliff").keep();
     let justfile = read(&root().join("justfile"));
 
     // An EMPTY complement: the linear fixture emits no flag at all.

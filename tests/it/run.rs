@@ -55,8 +55,7 @@ struct Rig {
 impl Rig {
     fn new(tag: &str) -> Self {
         use std::os::unix::fs::PermissionsExt as _;
-        let scratch = PathBuf::from(format!("/tmp/aerun.{}.{tag}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&scratch);
+        let scratch = super::cli::OwnedScratch::root("run", tag).keep();
         let dir = scratch.join("sessions").join(tag);
         let project = scratch.join("project");
         let bin = scratch.join("bin");

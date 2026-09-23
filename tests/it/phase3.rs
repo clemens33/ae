@@ -912,8 +912,7 @@ fn describe(reference: &Reference) -> String {
 fn criterion_2_presentation_starts_from_one_completed_classified_snapshot() {
     // THE MARKER IS THE PRODUCTION ENTRY POINT, not a line this test appends
     // afterwards.
-    let root = std::env::temp_dir().join(format!("ae-p3-seq-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    let root = super::cli::OwnedScratch::root("p3", "seq").keep();
     for name in ["AlphaR", "ZetaR", "alpha10R"] {
         let dir = root.join("sessions").join(name);
         let written = std::fs::create_dir_all(&dir).and_then(|()| {
@@ -1087,8 +1086,7 @@ const WORLD_B: [ExternalFacts; 4] = [
 const ORDER_EXTRAS: [&str; 2] = ["AAA", "zzz"];
 
 fn c3_root(tag: &str) -> PathBuf {
-    let root = PathBuf::from(format!("/tmp/ae-p3-c3-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    let root = super::cli::OwnedScratch::root("p3", tag).keep();
     assert!(
         std::fs::create_dir_all(root.join("sessions")).is_ok(),
         "a scratch state root"
@@ -1522,9 +1520,7 @@ fn criterion_10_a_non_c_locale_collates_these_names_differently_and_output_does_
     // The product cannot consult a locale — Rust compares `str` by bytes — but
     // the arm is only meaningful if a locale that WOULD disagree exists and is
     // demonstrated to disagree on these exact names.
-    let scratch = std::env::temp_dir().join(format!("ae-p3-loc-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&scratch);
-    assert!(std::fs::create_dir_all(&scratch).is_ok(), "a scratch dir");
+    let scratch = super::cli::OwnedScratch::root("p3", "loc").keep();
     let names_file = scratch.join("names");
     let planted = C_ORDER
         .iter()
@@ -1605,8 +1601,8 @@ fn criterion_10_a_non_c_locale_collates_these_names_differently_and_output_does_
 fn world_reading_sites() -> Vec<(String, usize)> {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
-    let out = std::env::temp_dir().join(format!("ae-p3-clippy-{}", std::process::id()));
-    let err = out.with_extension("err");
+    let scratch = super::cli::OwnedScratch::root("p3", "clippy");
+    let (out, err) = (scratch.join("out"), scratch.join("err"));
     let invocation = Invocation::new(cargo)
         .arg("clippy")
         .arg("--quiet")
@@ -2050,8 +2046,7 @@ fn sc_017q_the_entry_point_reports_unknown_agents_rather_than_dead_ones() {
     // true the moment a real transport landed, while the test kept passing for
     // an entirely different reason and would have taught the next reader the
     // wrong one.
-    let root = std::env::temp_dir().join(format!("ae-p3-agents-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    let root = super::cli::OwnedScratch::root("p3", "agents").keep();
     let dir = root.join("sessions").join("AlphaR");
     let written = std::fs::create_dir_all(&dir).and_then(|()| {
         std::fs::write(

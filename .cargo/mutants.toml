@@ -16,3 +16,9 @@ minimum_test_timeout = 20.0
 # needs git and the repository history to be present") and the lane exited 4 before any
 # mutant ran. Copying the VCS directory keeps the control honest inside the copy.
 copy_vcs = true
+
+# One mutant at a time (`--jobs 1`, pinned in the justfile) and at most four
+# tests per run: the lane runs the whole suite once per mutant plus a baseline,
+# and a full-width suite per run is what took a laptop to load 26 (#159). This
+# reaches nextest for the baseline and every mutant alike.
+additional_cargo_test_args = ["--test-threads=4"]

@@ -87,10 +87,7 @@ impl Rig {
     /// `tools` names each fake agent to install, and whether it writes a
     /// `codex.<slot>.sid` handshake file into the session directory.
     fn new(tag: &str, tools: &[&str], sid_for: Option<&str>) -> Self {
-        let mut scratch = OwnedScratch::existing(PathBuf::from(format!(
-            "/tmp/aeln.{}.{tag}",
-            std::process::id()
-        )));
+        let mut scratch = OwnedScratch::root("ln", tag);
         let home = scratch.join("aehome");
         let project = scratch.join("project");
         assert!(std::fs::create_dir_all(&project).is_ok(), "a project dir");
@@ -497,10 +494,7 @@ fn tmux_present(scratch: &Path) -> bool {
 
 /// Guard: without tmux none of this proves anything.
 fn skip() -> bool {
-    let probe = PathBuf::from(format!("/tmp/aeln-probe.{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&probe);
-    let present = tmux_present(&probe);
-    let _ = std::fs::remove_dir_all(&probe);
+    let present = tmux_present(&super::cli::OwnedScratch::root("ln", "probe"));
     !present
 }
 

@@ -1,5 +1,13 @@
 # Test scheduling for the integration target.
 #
+# At most eight tests at once, whatever the core count: every one starts real
+# processes (tmux, fake tools, the product), and a fully parallel run on a big
+# machine measured load 26 and starved its own waits (#159). The isolated lane
+# lowers this to the core count on a smaller one; NEXTEST_TEST_THREADS or
+# --test-threads still overrides it for one run.
+[profile.default]
+test-threads = 8
+
 # The `menu` module drives a REAL tmux server and real attached clients, then
 # polls until a client renders. Every test in it starts one or two servers and
 # several clients, so a fully parallel run can starve a client the test is

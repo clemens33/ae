@@ -24,9 +24,7 @@ use std::time::Duration;
 struct Scratch(PathBuf);
 impl Scratch {
     fn new(tag: &str) -> Self {
-        let dir = std::env::temp_dir().join(format!("ae-gitfacts-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let dir = super::cli::OwnedScratch::root("git", tag).keep();
         Self(dir)
     }
     fn path(&self) -> &Path {

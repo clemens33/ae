@@ -185,7 +185,7 @@ pub(crate) mod capture {
                             complete = false;
                             continue;
                         };
-                        if !reap_fixture_servers(&scratch, &probe) {
+                        if !reap_fixture_root(owner, &scratch, &probe) {
                             complete = false;
                         }
                     }
@@ -239,6 +239,13 @@ pub(crate) mod capture {
             remember_fixture(cwd)
         }
 
+        /// Record a scratch root when a lane is present; outside one there is
+        /// no registry to write and nothing to reap it.
+        #[cfg(unix)]
+        pub(crate) fn register_owned_root(root: &Path) -> io::Result<()> {
+            lane_root().map_or(Ok(()), |_| remember_fixture(root))
+        }
+
         #[cfg(unix)]
         #[allow(
             clippy::disallowed_methods,
@@ -260,33 +267,62 @@ pub(crate) mod capture {
                 && fs::read_to_string(err).is_ok_and(|text| text.contains("No such process"))
         }
 
+        /// Kill every server under a dead owner's registered root, then delete
+        /// the root only when it is the suite's own (`scratch::owned_root`).
         #[cfg(unix)]
-        fn reap_fixture_servers(scratch: &Path, probe: &Path) -> bool {
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "the parity reaper asks whether a dead owner already removed its root"
+        )]
+        fn reap_fixture_root(owner: u32, scratch: &Path, probe: &Path) -> bool {
+            let gone = fs::symlink_metadata(scratch)
+                .is_err_and(|why| why.kind() == io::ErrorKind::NotFound);
+            // The owner's whole `ae-it-<owner>` when the grammar allows it, so a
+            // sibling root's server dies before its socket is unlinked.
+            let ours = crate::scratch::owned_root(owner, scratch);
+            let Some(walk) = ours.as_deref().or((!gone).then_some(scratch)) else {
+                return true;
+            };
             let mut sockets = Vec::new();
-            if !find_sockets(scratch, &mut sockets) {
+            if !find_sockets(walk, &mut sockets) || !kill_servers(&sockets, walk, probe) {
                 return false;
             }
+            ours.is_none_or(|root| fs::remove_dir_all(root).is_ok())
+        }
+
+        /// Kill every server under `root` and each `listed` socket, for an
+        /// owner about to remove `root`. Needs no lane: the owner's own Drop.
+        #[cfg(unix)]
+        pub(crate) fn kill_servers_under(root: &Path, listed: &[PathBuf]) {
+            let mut sockets = listed.to_vec();
+            let _ = find_sockets(root, &mut sockets);
+            sockets.sort();
+            sockets.dedup();
+            let _ = kill_servers(&sockets, root, root);
+        }
+
+        /// Whether every socket's server is gone. One whose server already
+        /// died (`no server running`) is gone, not a failure.
+        #[cfg(unix)]
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "the reaper reads its own kill stderr to tell a gone server from a live one"
+        )]
+        fn kill_servers(sockets: &[PathBuf], cwd: &Path, probe: &Path) -> bool {
+            let mut all = true;
             for (index, socket) in sockets.iter().enumerate() {
                 let out = probe.join(format!("tmux-{index}-out"));
                 let err = probe.join(format!("tmux-{index}-err"));
-                if !run_unreaped(
-                    &Invocation::new("tmux")
-                        .arg("-S")
-                        .arg(socket)
-                        .arg("kill-server"),
-                    scratch,
-                    &out,
-                    &err,
-                )
-                .is_ok_and(|status| matches!(status.outcome(), ExitOutcome::Code(0)))
-                {
-                    return false;
-                }
+                let kill = Invocation::new("tmux")
+                    .arg("-S")
+                    .arg(socket)
+                    .arg("kill-server");
+                all &= run_unreaped(&kill, cwd, &out, &err)
+                    .is_ok_and(|status| matches!(status.outcome(), ExitOutcome::Code(0)))
+                    || fs::read_to_string(&err)
+                        .is_ok_and(|text| text.contains("no server running"));
             }
-            if !sockets.is_empty() {
-                return fs::remove_dir_all(scratch).is_ok();
-            }
-            true
+            all
         }
 
         #[cfg(unix)]

@@ -29,8 +29,7 @@ struct Install {
 impl Install {
     /// Plant the three members `install` publishes, with a well-formed manifest.
     fn plant(tag: &str) -> Self {
-        let scratch = PathBuf::from(format!("/tmp/aeshape.{}.{tag}", std::process::id()));
-        let _ = remove(&scratch);
+        let scratch = super::cli::OwnedScratch::root("shape", tag).keep();
         let home = scratch.join("home");
         let version_dir = home.join(".ae").join("versions").join(ae::VERSION);
         assert!(

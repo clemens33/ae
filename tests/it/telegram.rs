@@ -510,10 +510,7 @@ fn the_daemon_drops_the_word_channel_before_it_joins_the_poller() {
 
 /// A short scratch dir — `/tmp` directly, for `sun_path`'s 104 bytes on macOS.
 fn tg_scratch(tag: &str) -> std::path::PathBuf {
-    let dir = std::path::PathBuf::from(format!("/tmp/ae-tg-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    assert!(std::fs::create_dir_all(&dir).is_ok(), "a short scratch dir");
-    dir
+    super::cli::OwnedScratch::root("tg", tag).keep()
 }
 
 /// Plant a session dir whose meta points at `socket`, and NO `send` helper — so

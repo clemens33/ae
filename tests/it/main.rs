@@ -38,6 +38,7 @@ mod reseat;
 mod reseat_carry;
 mod run;
 mod sanitize;
+mod scratch;
 mod seat_relaunch;
 mod session_launch;
 mod shape;

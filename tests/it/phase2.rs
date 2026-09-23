@@ -179,12 +179,7 @@ struct Scratch(PathBuf);
 
 impl Scratch {
     fn new(tag: &str) -> Self {
-        let dir = std::env::temp_dir().join(format!("ae-phase2-{}-{tag}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        assert!(
-            fs::create_dir_all(&dir).is_ok(),
-            "a scratch dir must be creatable"
-        );
+        let dir = super::cli::OwnedScratch::root("p2", tag).keep();
         Self(dir)
     }
 
@@ -1047,9 +1042,7 @@ fn criterion_20_typed_name_and_socket_routing_reach_two_different_real_servers()
     // arguments. A mock that received the right argv would prove the mapping;
     // this proves the mapping ARRIVES — each server answers with its own
     // sessions and neither can answer for the other.
-    let scratch = PathBuf::from(format!("/tmp/ae-p2-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&scratch);
-    assert!(fs::create_dir_all(&scratch).is_ok(), "a short scratch dir");
+    let scratch = super::cli::OwnedScratch::root("p2", "routing").keep();
 
     if !tmux_present(&scratch) {
         // STATED, never silent: this proof needs a real tmux, and an
@@ -1112,9 +1105,7 @@ fn criterion_20_typed_name_and_socket_routing_reach_two_different_real_servers()
 
 #[test]
 fn criterion_20_a_real_ownership_marker_round_trips_through_the_product_reader() {
-    let scratch = PathBuf::from(format!("/tmp/ae-p2m-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&scratch);
-    assert!(fs::create_dir_all(&scratch).is_ok(), "a short scratch dir");
+    let scratch = super::cli::OwnedScratch::root("p2", "m").keep();
     if !tmux_present(&scratch) {
         let _ = fs::remove_dir_all(&scratch);
         panic!("tmux is not runnable here, so the marker round trip cannot be proven");

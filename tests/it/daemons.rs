@@ -30,10 +30,7 @@ use super::phase2::{run_tmux, tmux_present};
 /// A scratch dir short enough to hold a socket path — `sun_path` is 104 bytes
 /// on macOS and the usual temp dir eats most of it.
 fn scratch(tag: &str) -> PathBuf {
-    let dir = PathBuf::from(format!("/tmp/ae-dl-{tag}-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&dir);
-    assert!(fs::create_dir_all(&dir).is_ok(), "a short scratch dir");
-    dir
+    super::cli::OwnedScratch::root("dmn", tag).keep()
 }
 
 fn socket_of(scratch: &Path) -> PathBuf {

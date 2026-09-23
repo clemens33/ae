@@ -29,8 +29,7 @@ use super::phase2::{run_tmux, tmux_present};
 
 /// A scratch state root, per-test.
 fn scratch(tag: &str) -> PathBuf {
-    let dir = PathBuf::from(format!("/tmp/ae-brief-{}-{tag}", std::process::id()));
-    let _ = fs::remove_dir_all(&dir);
+    let dir = super::cli::OwnedScratch::root("brief", tag).keep();
     assert!(
         fs::create_dir_all(dir.join("sessions")).is_ok(),
         "a scratch state root"
@@ -495,8 +494,7 @@ fn a_bare_brief_inside_a_session_cards_that_session_and_no_other() {
     //
     // A short scratch: `sun_path` is 104 bytes on macOS and the usual temp dir
     // eats most of it.
-    let dir = PathBuf::from(format!("/tmp/ae-brf-own-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&dir);
+    let dir = super::cli::OwnedScratch::root("brief", "own").keep();
     assert!(
         fs::create_dir_all(dir.join("sessions")).is_ok(),
         "a scratch"

@@ -127,9 +127,7 @@ fn the_recovery_commands_never_reach_the_gate() {
 /// this green there, and this is the test that says so when it does not.
 #[test]
 fn the_local_tmux_clears_the_floor_the_suite_launches_against() {
-    let scratch = PathBuf::from(format!("/tmp/ae-floor-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&scratch);
-    assert!(fs::create_dir_all(&scratch).is_ok(), "a scratch dir");
+    let scratch = super::cli::OwnedScratch::root("floor", "floor").keep();
     // No tmux at all is the ABSENCE the other arms already state for
     // themselves; this test is about a tmux that IS there and is too old.
     if !super::phase2::tmux_present(&scratch) {

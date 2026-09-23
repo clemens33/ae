@@ -26,10 +26,7 @@ use super::phase2::{current_world, run_tmux, tmux_present};
 
 /// A short-lived scratch directory, short enough to hold a socket path.
 fn scratch(tag: &str) -> PathBuf {
-    let dir = PathBuf::from(format!("/tmp/ae-tr-{tag}-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&dir);
-    assert!(fs::create_dir_all(&dir).is_ok(), "a short scratch dir");
-    dir
+    super::cli::OwnedScratch::root("tr", tag).keep()
 }
 
 /// Kill the test's private tmux server even when an assertion unwinds before

@@ -36,8 +36,7 @@ struct Rig {
 
 impl Rig {
     fn new(tag: &str) -> Self {
-        let scratch = PathBuf::from(format!("/tmp/aeinstall.{}.{tag}", std::process::id()));
-        let _ = remove(&scratch);
+        let scratch = super::cli::OwnedScratch::root("inst", tag).keep();
         let home = scratch.join("home");
         assert!(std::fs::create_dir_all(&home).is_ok(), "a fixture home");
         Self { scratch, home }
@@ -991,8 +990,7 @@ struct Bootstrap {
 
 impl Bootstrap {
     fn new() -> Self {
-        let scratch = PathBuf::from(format!("/tmp/aebootstrap.{}", std::process::id()));
-        let _ = remove(&scratch);
+        let scratch = super::cli::OwnedScratch::root("inst", "bootstrap").keep();
         let root = scratch.join("bundle").join(bundle_name());
         for dir in [
             &scratch.join("bin"),

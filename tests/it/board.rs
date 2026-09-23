@@ -28,9 +28,7 @@ const CLAUDE_ID: &str = "0199c0de-1234-4890-abcd-ef0123456789";
 const OTHER_ID: &str = "0199c0de-1234-4890-abcd-ef0123456790";
 
 fn rig(tag: &str) -> PathBuf {
-    let root = std::env::temp_dir().join(format!("ae-board-it-{}-{tag}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    root
+    super::cli::OwnedScratch::root("board", tag).keep()
 }
 
 /// One synthetic Claude user turn. Bodies are plain fixture prose; the helper

@@ -29,9 +29,7 @@ const AT: &str = "2026-08-28T10:00:00Z";
 struct Scratch(PathBuf);
 impl Scratch {
     fn new(tag: &str) -> Self {
-        let dir = std::env::temp_dir().join(format!("ae-pub-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let dir = super::cli::OwnedScratch::root("pub", tag).keep();
         Self(dir)
     }
     /// `<AE_HOME>` — the sessions live under it, the archive root beside them.

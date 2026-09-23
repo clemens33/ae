@@ -24,7 +24,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use super::cli::{ae, bounded};
+use super::cli::{OwnedScratch, ae, bounded};
 use super::parity::{Invocation, capture::ExitOutcome, capture::raw};
 use super::phase2::run_tmux;
 
@@ -42,9 +42,7 @@ struct Rig {
 impl Rig {
     /// A live session named `lc<tag>` whose meta points at this rig's socket.
     fn new(tag: &str) -> Self {
-        let home = PathBuf::from(format!("/tmp/aelc.{}.{tag}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&home);
-        std::fs::create_dir_all(&home).expect("a scratch AE_HOME");
+        let home = OwnedScratch::root("lc", tag).keep();
         let name = format!("lc{tag}");
         let dir = home.join("sessions").join(&name);
         std::fs::create_dir_all(&dir).expect("a session dir");
@@ -349,7 +347,9 @@ fn killed_fixture_home(probe: &Path, tag: &str) -> PathBuf {
         .trim()
         .parse::<u32>()
         .expect("the killed fixture pid is numeric");
-    PathBuf::from(format!("/tmp/aelc.{pid}.{tag}"))
+    super::scratch::base()
+        .join(format!("ae-it-{pid}"))
+        .join(format!("lc.{tag}"))
 }
 
 fn sigkill_fixture(probe: &Path, lane: &Path, tag: &str) -> PathBuf {
@@ -396,9 +396,7 @@ fn reap_from_fresh_test_process(probe: &Path, lane: &Path, path: Option<&str>) -
 
 #[test]
 fn the_next_tmux_call_reaps_a_server_left_by_sigkill() {
-    let probe = PathBuf::from(format!("/tmp/aelc-reap-probe.{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&probe);
-    std::fs::create_dir_all(&probe).expect("a reaper probe directory");
+    let probe = OwnedScratch::root("lc", "reap-probe");
     let lane = probe.join("lane");
     std::fs::create_dir_all(&lane).expect("a private reaper lane");
     let home = sigkill_fixture(&probe, &lane, "sigkillfixture");
@@ -422,9 +420,7 @@ fn reaper_liveness_probe_child() {
     if std::env::var_os("AE_LIFECYCLE_REAPER_PROBE_CHILD").is_none() {
         return;
     }
-    let scratch = PathBuf::from(format!("/tmp/ae-reaper-child.{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&scratch);
-    std::fs::create_dir_all(&scratch).expect("a reaper-child scratch directory");
+    let scratch = OwnedScratch::root("lc", "reaper-child");
     let _ = raw::run(
         &Invocation::new("tmux").arg("-V"),
         &scratch,
@@ -437,9 +433,7 @@ fn reaper_liveness_probe_child() {
 #[test]
 fn reaper_liveness_checks_never_write_to_a_live_fixture() {
     let rig = Rig::new("liveprobe");
-    let probe = PathBuf::from(format!("/tmp/aelc-reap-live.{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&probe);
-    std::fs::create_dir_all(&probe).expect("a live-probe directory");
+    let probe = OwnedScratch::root("lc", "reap-live");
     let status = raw::run(
         &Invocation::new(std::env::current_exe().expect("the integration test binary"))
             .arg("--exact")
@@ -465,8 +459,7 @@ fn reaper_liveness_checks_never_write_to_a_live_fixture() {
 
 #[test]
 fn an_ambiguous_owner_probe_leaves_the_fixture_untouched() {
-    let probe = PathBuf::from(format!("/tmp/aelc-reap-ambiguous.{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&probe);
+    let probe = OwnedScratch::root("lc", "reap-ambiguous");
     std::fs::create_dir_all(probe.join("bin")).expect("an ambiguous-probe directory");
     let lane = probe.join("lane");
     std::fs::create_dir_all(&lane).expect("a private reaper lane");
@@ -502,9 +495,7 @@ fn write_ahead_fixture_leaves_a_server_for_the_next_test_process_to_reap() {
         return;
     }
     let tag = "writeahead";
-    let home = PathBuf::from(format!("/tmp/aelc.{}.{tag}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&home);
-    std::fs::create_dir_all(&home).expect("a write-ahead fixture root");
+    let home = OwnedScratch::root("lc", tag).keep();
     if let Some(pid_file) = std::env::var_os("AE_LIFECYCLE_SIGKILL_PID_FILE") {
         std::fs::write(pid_file, std::process::id().to_string()).expect("the fixture pid file");
     }
@@ -526,9 +517,7 @@ fn write_ahead_fixture_leaves_a_server_for_the_next_test_process_to_reap() {
 
 #[test]
 fn a_write_ahead_registry_survives_sigkill_between_creation_and_return() {
-    let probe = PathBuf::from(format!("/tmp/aelc-reap-write-ahead.{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&probe);
-    std::fs::create_dir_all(&probe).expect("a write-ahead probe directory");
+    let probe = OwnedScratch::root("lc", "reap-write-ahead");
     let lane = probe.join("lane");
     std::fs::create_dir_all(&lane).expect("a private reaper lane");
     let child = std::env::current_exe().expect("the integration test binary");
@@ -1704,10 +1693,7 @@ fn compact_reads_the_roster_from_the_freeze_and_not_from_a_later_config() {
 
 #[test]
 fn end_refuses_a_target_it_does_not_know() {
-    let scratch = Scratch::new(PathBuf::from(format!(
-        "/tmp/aelc.{}.missing",
-        std::process::id()
-    )));
+    let scratch = Scratch::new(OwnedScratch::root("lc", "missing").keep());
     let home = &scratch.home;
     let mut cmd = ae();
     cmd.env("AE_HOME", home);
@@ -1801,8 +1787,7 @@ struct AmbientRig {
 
 impl AmbientRig {
     fn new(tag: &str) -> Self {
-        let home = PathBuf::from(format!("/tmp/aeamb.{}.{tag}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&home);
+        let home = OwnedScratch::root("amb", tag).keep();
         std::fs::create_dir_all(home.join("sessions")).expect("a scratch AE_HOME");
         Self { home }
     }

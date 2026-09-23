@@ -48,10 +48,7 @@ struct Rig {
 
 impl Rig {
     fn new(tag: &str) -> Self {
-        let mut scratch = OwnedScratch::existing(PathBuf::from(format!(
-            "/tmp/aeentry.{}.{tag}",
-            std::process::id()
-        )));
+        let mut scratch = OwnedScratch::root("entry", tag);
         let home = scratch.join("aehome");
         let project = scratch.join("project");
         assert!(std::fs::create_dir_all(&project).is_ok(), "a project dir");
@@ -312,12 +309,7 @@ impl Rig {
 
 /// Confirm that a rig's detached tmux command is gone after its Drop guard.
 fn assert_no_tmux_processes(scratch: &Path) {
-    let probe = PathBuf::from(format!("/tmp/aeentry-pgrep.{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&probe);
-    assert!(
-        std::fs::create_dir_all(&probe).is_ok(),
-        "a pgrep scratch dir"
-    );
+    let probe = super::cli::OwnedScratch::root("entry", "pgrep").keep();
     let out = probe.join("stdout");
     let err = probe.join("stderr");
     // Any process carrying this scratch path is a leak, including a fake agent
@@ -353,10 +345,7 @@ fn assert_agent_launched(marker: &Path, context: &str) {
 }
 
 fn skip() -> bool {
-    let probe = PathBuf::from(format!("/tmp/aeentry-probe.{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&probe);
-    let present = tmux_present(&probe);
-    let _ = std::fs::remove_dir_all(&probe);
+    let present = tmux_present(&super::cli::OwnedScratch::root("entry", "probe"));
     !present
 }
 

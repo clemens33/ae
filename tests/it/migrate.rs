@@ -37,8 +37,7 @@ struct Rig {
 
 impl Rig {
     fn new(tag: &str) -> Self {
-        let scratch = PathBuf::from(format!("/tmp/aemig.{}.{tag}", std::process::id()));
-        let _ = remove(&scratch);
+        let scratch = super::cli::OwnedScratch::root("mig", tag).keep();
         let home = scratch.join("home");
         assert!(fs::create_dir_all(&home).is_ok(), "a fixture home");
         Self { scratch, home }
@@ -968,10 +967,7 @@ fn a_checkout_run_whose_state_root_is_elsewhere_refuses_to_upgrade() {
 /// A scratch dir short enough to hold a socket path — `sun_path` is 104 bytes
 /// on macOS and the usual temp dir eats most of it.
 fn tmux_scratch(tag: &str) -> PathBuf {
-    let dir = PathBuf::from(format!("/tmp/ae-mg-{tag}-{}", std::process::id()));
-    let _ = remove(&dir);
-    assert!(fs::create_dir_all(&dir).is_ok(), "a short scratch dir");
-    dir
+    super::cli::OwnedScratch::root("mg", tag).keep()
 }
 
 /// Kill the arm's server and remove its scratch, WHATEVER ended the arm.
