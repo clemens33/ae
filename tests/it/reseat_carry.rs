@@ -402,9 +402,8 @@ fn a_running_seat_whose_carry_would_fail_is_refused_before_it_is_stopped() {
 
 #[test]
 fn a_carry_that_fails_only_once_it_writes_falls_back_loudly() {
-    // The pre-stop CHECK reads and compares the whole set and writes nothing,
-    // so a target ae may not WRITE into passes it and meets only the copy, past
-    // the stop: the one failure left to the seeded fallback.
+    // The pre-stop Check writes nothing, so a target ae may not WRITE into
+    // passes it and fails only the copy, past the stop: the seeded fallback.
     use std::os::unix::fs::PermissionsExt as _;
 
     let rig = Rig::new("rofall");
