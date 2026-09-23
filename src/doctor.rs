@@ -864,6 +864,21 @@ pub fn gather(root: &Path, global: Option<&Path>, local: Option<&Path>) -> Facts
     }
 }
 
+/// PURE: what doctor may call a seat's reading. A seat is COVERED only when
+/// the whole tree was read: a foreground that names a harness says nothing
+/// about a foreign one beneath it, so a missing pid or table is `Unknown`.
+fn seat_reading(
+    probe: Option<&crate::tmux::ObservedPaneProbe>,
+    table: Option<&[crate::procs::Proc]>,
+) -> crate::procs::Observed {
+    match (probe, table) {
+        (Some(probe), Some(rows)) if probe.pid.is_some() => {
+            crate::procs::observed_harness(&probe.command, probe.pid, Some(rows))
+        }
+        _ => crate::procs::Observed::Unknown,
+    }
+}
+
 /// Every live session's seats against their panes: ONE process table for the
 /// whole run, and one pane read per seat. Reads only — nothing here writes.
 fn seat_facts(root: &Path, sessions: &[SessionFacts]) -> Vec<SeatFacts> {
@@ -890,11 +905,9 @@ fn seat_facts(root: &Path, sessions: &[SessionFacts]) -> Vec<SeatFacts> {
             let observed = if pane.is_empty() {
                 Observed::Unknown
             } else {
-                crate::transport::observe_pane_probe(&session.server, &pane).map_or(
-                    Observed::Unknown,
-                    |probe| {
-                        crate::procs::observed_harness(&probe.command, probe.pid, table.as_deref())
-                    },
+                seat_reading(
+                    crate::transport::observe_pane_probe(&session.server, &pane).as_ref(),
+                    table.as_deref(),
                 )
             };
             out.push(SeatFacts {
@@ -1484,6 +1497,35 @@ mod tests {
             seats: Vec::new(),
             bindings: Vec::new(),
         }
+    }
+
+    #[test]
+    fn a_seat_is_covered_only_when_its_whole_tree_was_read() {
+        use crate::procs::{Observed, Proc};
+        use crate::tmux::ObservedPaneProbe;
+        let probe = |pid| ObservedPaneProbe {
+            command: "codex".to_owned(),
+            pid,
+        };
+        let table = [Proc {
+            pid: 100,
+            ppid: 1,
+            comm: "codex".to_owned(),
+        }];
+        assert_eq!(
+            seat_reading(Some(&probe(Some(100))), Some(&table)),
+            Observed::Harness(vec![crate::tool::ToolKind::Codex])
+        );
+        // A harness-named foreground over an UNREAD tree is not a check.
+        assert_eq!(
+            seat_reading(Some(&probe(None)), Some(&table)),
+            Observed::Unknown
+        );
+        assert_eq!(
+            seat_reading(Some(&probe(Some(100))), None),
+            Observed::Unknown
+        );
+        assert_eq!(seat_reading(None, Some(&table)), Observed::Unknown);
     }
 
     #[test]
