@@ -2237,6 +2237,7 @@ pub(crate) fn seat_pack(
     let work = entry.work_dir.as_deref().unwrap_or_default();
     let inputs = seatpack::Inputs {
         session: entry.name.clone(),
+        installed_head: run::has_installed_pane_head(),
         status: entry.status.as_str().to_owned(),
         goal: entry.goal.clone(),
         now,

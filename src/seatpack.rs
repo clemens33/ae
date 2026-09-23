@@ -21,9 +21,10 @@
 //!   [`crate::requests::Request::shown_to`]; ownership is
 //!   [`crate::session::Outstanding::spawns`] judged by
 //!   [`crate::watchdog::event_is_actor`] and
-//!   [`crate::watchdog::event_is_addressed_to`]; a reply command is
-//!   [`crate::tracked::reply_command`]. A second spelling of any of those would
-//!   be a second chance to disagree with the surface the human already reads.
+//!   [`crate::watchdog::event_is_addressed_to`]; a reply command's SPELLING is
+//!   [`crate::tracked::reply_command_for`], the same chooser the ask/review
+//!   footer asks. A second spelling of any of those would be a second chance
+//!   to disagree with the surface the human already reads.
 //! * **Agent-written text is DATA.** Every memo body, state reason, request
 //!   summary and carried first message passes through [`neutralise`] before it
 //!   is rendered or clipped, so a line that would otherwise arrive at the
@@ -234,6 +235,11 @@ pub struct Git {
 pub struct Inputs {
     /// The session's name.
     pub session: String,
+    /// Whether the process rendering this pack runs an installed ae whose
+    /// command link exists. The reply lines' spelling is not decided here: the
+    /// caller reads the shape fact and [`crate::tracked::reply_command_for`] —
+    /// the one chooser the ask/review footer also asks — judges it.
+    pub installed_head: bool,
     /// `running` / `unknown` / `stopped`.
     pub status: String,
     /// The session goal, in full.
@@ -842,19 +848,24 @@ fn push_requests(
             Some(kind) => {
                 // ONLY a grammar-proven id reaches this — `minted_requests`
                 // dropped the rest before the section began — which is what
-                // lets `reply_command`, shared with every ask envelope, keep
+                // lets the reply command, shared with every ask envelope, keep
                 // no quoting rules of its own.
                 let _ = writeln!(
                     out,
                     "    reply: {}",
-                    crate::tracked::reply_command(
+                    crate::tracked::reply_command_for(
                         &inputs.helpers_dir,
+                        // The session name is the caller's own directory name;
+                        // the chooser admits it to the short form only through
+                        // the canonical grammar.
+                        &inputs.session,
                         // The id is proven above; the NAME is not minted by
                         // anything, so it takes the one neutraliser like every
                         // other rendered field — identity on a legal name.
                         &neutralise(&inputs.seat_name),
                         &text(&request.id),
                         kind.reply_label(),
+                        inputs.installed_head,
                     )
                 );
             }
@@ -1203,6 +1214,7 @@ mod tests {
     fn base() -> Inputs {
         Inputs {
             session: "s1".to_owned(),
+            installed_head: false,
             status: "running".to_owned(),
             goal: Some("ship the seed pack".to_owned()),
             now: now(),
@@ -1591,6 +1603,61 @@ mod tests {
             )),
             "a review's label is its own, never the ask's: {rendered}"
         );
+    }
+
+    /// The pack is a second surface that TELLS an agent what to run, so its
+    /// reply lines answer to the same chooser the ask/review footer asks —
+    /// never to a second spelling rule of their own.
+    #[test]
+    fn an_installed_core_prints_the_short_reply_spelling_in_the_pack() {
+        let (container, events) = ledger(&[opening("ask", "ae-20260918T120000Z-0123abcd", 600)]);
+        let rendered = pack(&Inputs {
+            installed_head: true,
+            container,
+            events,
+            ..spawned()
+        });
+        assert!(
+            rendered.contains(concat!(
+                "  ae-20260918T120000Z-0123abcd  ask  from lead  10m\n",
+                "    ask body\n",
+                "    reply: ae @s1 reply --as \"scribe\" ",
+                "\"ae-20260918T120000Z-0123abcd\" \"<your reply>\"\n"
+            )),
+            "{rendered}"
+        );
+    }
+
+    /// The short form addresses a canonical name through the command link, so
+    /// the two facts that refuse it — a checkout shape, and a session RETAINED
+    /// from before the name grammar — keep the full helper path, exactly as the
+    /// footer's chooser decides them.
+    #[test]
+    fn a_checkout_core_or_a_retained_session_name_keeps_the_full_reply_path() {
+        let expected = concat!(
+            "    reply: /h/.ae/sessions/s1/reply --as \"scribe\" ",
+            "\"ae-20260918T120000Z-0123abcd\" \"<your reply>\"\n"
+        );
+        let (container, events) = ledger(&[opening("ask", "ae-20260918T120000Z-0123abcd", 600)]);
+        let checkout = pack(&Inputs {
+            container,
+            events,
+            ..spawned()
+        });
+        assert!(checkout.contains(expected), "{checkout}");
+        // The retained arm's ledger row must name that session itself, or the
+        // row is not this seat's inbox and no reply line renders to judge.
+        let (container, events) =
+            ledger(&[opening("ask", "ae-20260918T120000Z-0123abcd", 600)
+                .replace("\"s1\"", "\"old.name\"")]);
+        let retained = pack(&Inputs {
+            session: "old.name".to_owned(),
+            installed_head: true,
+            container,
+            events,
+            ..spawned()
+        });
+        assert!(retained.contains(expected), "{retained}");
     }
 
     #[test]

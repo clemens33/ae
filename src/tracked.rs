@@ -251,8 +251,10 @@ pub fn is_request_id(text: &str) -> bool {
         && hex(&stamp[17..25])
 }
 
-/// The exact reply command the footer carries:
-/// `<dir>/reply --as "<target>" "<id>" "<label>"`.
+/// The exact reply command in the full helper-path spelling:
+/// `<dir>/reply --as "<target>" "<id>" "<label>"`. Never chosen directly by a
+/// surface that tells an agent what to run — [`reply_command_for`] decides the
+/// spelling, and this is the fallback it picks.
 #[must_use]
 pub fn reply_command(dir: &Path, target_name: &str, req_id: &str, label: &str) -> String {
     format!(
@@ -261,7 +263,16 @@ pub fn reply_command(dir: &Path, target_name: &str, req_id: &str, label: &str) -
     )
 }
 
-fn reply_footer_command_for(
+/// The ONE chooser for how a reply command is spelled, wherever an agent is
+/// told what to run: the ask/review footer and the seat pack's section 5 both
+/// ask this, never a spelling rule of their own.
+///
+/// Two facts decide it, and the caller supplies BOTH — the renderer stays pure:
+/// an installed core whose command link exists (`installed_head`), and a
+/// session name the canonical grammar admits (`ae @<session> …` is
+/// canonical-name-only, so a retained pre-grammar name keeps the path).
+#[must_use]
+pub fn reply_command_for(
     dir: &Path,
     session: &str,
     target_name: &str,
@@ -283,7 +294,7 @@ fn reply_footer_command(
     req_id: &str,
     label: &str,
 ) -> String {
-    reply_footer_command_for(
+    reply_command_for(
         dir,
         session,
         target_name,
@@ -1932,7 +1943,7 @@ mod tests {
     }
 
     #[test]
-    fn reply_footer_uses_short_spelling_only_for_installed_canonical_sessions() {
+    fn the_reply_spelling_chooser_uses_the_short_form_only_for_installed_canonical_sessions() {
         let cases = [
             (
                 "/h/.ae/sessions/s",
@@ -1959,7 +1970,7 @@ mod tests {
                 "ae-1",
                 "cl:lead",
                 "question",
-                &super::reply_footer_command_for(
+                &super::reply_command_for(
                     std::path::Path::new(dir),
                     session,
                     "cl:w",

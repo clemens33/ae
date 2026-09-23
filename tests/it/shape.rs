@@ -727,6 +727,65 @@ fn a_published_core_refuses_a_foreign_home_instead_of_adopting_it() {
     );
 }
 
+/// The seat pack's reply lines are a surface that TELLS an agent what to run,
+/// so in the installed shape — where the command link exists and the session
+/// name is canonical — they must print the same short spelling the ask/review
+/// footer does. Only a process whose `current_exe()` sits in a version
+/// directory reads the installed arm at all, so this is the one place the
+/// shape fact reaches the pack end to end.
+#[test]
+fn an_installed_seat_pack_prints_the_short_reply_spelling() {
+    let rig = Install::plant("seatpack-spelling");
+    let dir = rig.home.join(".ae").join("sessions").join("demo");
+    assert!(std::fs::create_dir_all(&dir).is_ok(), "the session dir");
+    let server = rig.scratch.join("no-server.sock");
+    assert!(
+        !server.exists(),
+        "nothing may answer at {}",
+        server.display()
+    );
+    let work = rig.scratch.join("work");
+    assert!(
+        std::fs::create_dir_all(work.join(".git")).is_ok(),
+        "the work dir"
+    );
+    assert!(
+        std::fs::write(work.join(".git").join("HEAD"), "ref: refs/heads/demo\n").is_ok(),
+        "a HEAD to name the branch"
+    );
+    let meta = format!(
+        "mode=local\nmeta_version=2\nsession=demo\nae_version=2026.9.5\nwork_dir={}\n\
+         seat.main=lead\nprofile.main=cl\nseat.spawned.0=scribe\nprofile.spawned.0=cx\n\
+         tmux_server_kind=socket\ntmux_server={}\n",
+        work.display(),
+        server.display()
+    );
+    assert!(
+        std::fs::write(dir.join("meta"), meta).is_ok(),
+        "a planted meta"
+    );
+    // One pending ask addressed to the seat being packed: the row that makes
+    // the pack render a reply command at all.
+    let id = "ae-20260918T120000Z-0123abcd";
+    let ask = format!(
+        r#"{{"ts":"{}","actor":"lead","action":"ask","target":"scribe","ref":"{id}","actor_slot":"main","actor_session":"demo","target_slot":"spawned.0","target_session":"demo","summary":"which cap applies"}}"#,
+        ae::time::Timestamp::from_epoch(ae::time::Timestamp::now().epoch() - 600)
+    );
+    assert!(
+        std::fs::write(dir.join("events.jsonl"), format!("{ask}\n")).is_ok(),
+        "a planted ledger"
+    );
+
+    let (code, stdout, stderr) = rig.run(&[], &["brief", "demo", "--seat", "scribe"]);
+    assert_eq!(code, Some(0), "stderr: {stderr}");
+    assert!(
+        stdout.contains(&format!(
+            "    reply: ae @demo reply --as \"scribe\" \"{id}\" \"<your reply>\"\n"
+        )),
+        "{stdout}"
+    );
+}
+
 /// **B3.**
 #[test]
 fn only_shape_asks_the_os_where_this_binary_is() {
