@@ -170,7 +170,8 @@ then advises only the session's main and optional colead on threshold transition
 is retried once at the next quota observation; newer state, silence, expiry, or changed recipient
 identity cancels the old booking. A helper's `UNCONFIRMED` submit counts as delivered because the
 paste may have landed; only its explicit pre-submit-refusal marker permits a retry. No quota state
-survives a watchdog restart. When the session is quota-unaware (`[workspace] quota = off`), the
+survives a watchdog restart but the checkpoint ask's journal receipt below.
+When the session is quota-unaware (`[workspace] quota = off`), the
 due pass skips the quota observation entirely: no vendor-cache read, no advisory booking, no held
 observation for the throttle line below.
 
@@ -182,6 +183,23 @@ wants no reply and changes no state, and it rides the same guarded delivery, the
 marker and the same single retry as the advisory, under the action `quota-checkpoint`. Moving
 around inside the band asks nothing further; only a band that clears and is entered again asks
 again, and `classify`'s own hysteresis decides "cleared".
+
+A window the vendor scopes to one model family — Claude's weekly Fable bucket, say — asks only the
+seats not proven to run another family. A seat's live model is what its own pane drew in the
+composer, held for the current launch; a recognised family (`fable`, `opus`, `sonnet`, `haiku`)
+other than the window's skips the seat, and an unknown, unmodelled or expired reading asks. A seat
+that switches into the family while the window is still low is asked at the next quota pass, and a
+seat that joins the scope mid-episode is asked once. A seat that switches away before its booked
+ask is delivered has the ask withdrawn, journaled with no target as `quota-checkpoint-cancelled`, so
+no fold reads it as news about any seat. The live reading is one pass old: a switch inside one pass
+is caught at the next.
+
+The ask is once per episode across a restart too. A delivered or unconfirmed ask journals a receipt
+in its ref — a hash of the window, its reset and the seat's conversation — and a restarted daemon's
+first sight of a band it finds already entered skips every seat whose receipt is there. A real entry
+from headroom always asks again. The receipt is memory, not a guarantee: an abandoned or failed
+paste leaves none, so the restart asks again; a helper that dies after its paste asks once more; a
+64-bit hash collision costs one ask. Nothing here is exactly-once.
 
 A seat is on the scope when its recorded identity — the tool kind of `agent_bin.<slot>` plus the
 canonical `config_home.<slot>`, an `implicit:` home resolved through its recorded

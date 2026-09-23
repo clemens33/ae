@@ -1260,7 +1260,9 @@ own leadership seats,
 retries a refused paste once on the next quota sweep, and records cancelled retries as
 `quota-advisory-dropped`. Entering `low` or worse also sends every seat on that client scope one
 advisory `quota-checkpoint` ask — no request, no reply expected — whose cancelled retries are
-recorded as `quota-checkpoint-dropped`. A throttle event includes the worst current quota row only when the last
+recorded as `quota-checkpoint-dropped`. A window scoped to one model family asks only seats not proven
+to run another; an ask withdrawn because its seat switched family is recorded, addressed to
+nobody, as `quota-checkpoint-cancelled`. A throttle event includes the worst current quota row only when the last
 scheduled observation exactly matches that seat's recorded client source and, for Codex, rollout.
 It never performs an extra quota read for throttling.
 
