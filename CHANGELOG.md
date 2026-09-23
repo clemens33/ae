@@ -2,6 +2,36 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.161] - 2026-09-23
+- Give integration scratch one owner and reap it at lane exit (#159)
+- Retry the lane-exit scratch reap and keep a root whose server survived
+- Fail an otherwise green lane whose exit reap ran out of retries
+- Keep the menu arm's scratch when its server survives the cleanup
+- Document the scratch owner, the lane reap and the test load knobs
+- Qualify the lane reap and the scan exclusion in the docs
+- Run the lane's cargo in its own session with no controlling terminal (#149)
+- Wait for the give-up in the ledger before the damaged-record pin stops the daemon
+- Wait for the seat's fake to draw its frame before a reseat test reads it
+- Prove a menu refusal from the invoking client's own terminal record
+- Quote the terminal recorder's path for the shell tmux runs it with
+- Document that the test lane detaches cargo from the terminal
+- Read codex idle starfield dots as composer furniture
+- Name the abandon evidence and prove staged text before calling it staged
+- Pin the settle budget, the view grace and the codex placeholder edges
+- Document the abandon evidence and the proven staged text
+- Give the settle pin a budget no scheduler stall can spend
+- Refuse a seat whose pane runs another harness by name, and report it in doctor
+- Document the reseat tree refusal and the foreign-harness refusal
+- Count a doctor seat as checked only when its whole tree was read
+- Count a doctor seat only when the table holds its pane root
+- Refuse a reseat stop on every gap in the caller proof and on a harness ae cannot place
+- Leave a seat uncovered in doctor when its tree holds an unplaced harness
+- Pin the doctor summary when no live seat could be checked
+- Pin the compact dispatch claude queued behind a running turn on its real frames
+- Read a codex display-name footer as the id its flag takes, and claude's six-pointed spinner as busy
+- Read a paste-wrapped ae turn as the marker on its first inner line
+- Route seat-pack reply lines through the one spelling chooser (#158)
+
 ## [v2026.9.160] - 2026-09-23
 - Extend done re-ask to waiting-agent and blocked (#144 follow-up)
 
