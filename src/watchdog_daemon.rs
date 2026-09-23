@@ -499,6 +499,12 @@ enum QuotaAction {
         recipient: String,
         summary: String,
     },
+    /// A booked checkpoint ask cancelled before it was delivered, journaled as
+    /// the ask's own drop rather than the advisory's.
+    AskDropped {
+        recipient: String,
+        summary: String,
+    },
     /// A booked ask withdrawn because its seat now runs another model family,
     /// and the summary that names it. Journaled with NO target: see
     /// [`crate::quota::action::CHECKPOINT_CANCELLED`].
@@ -837,7 +843,7 @@ impl QuotaCarry {
             if predicate(&ask) {
                 self.settled
                     .retain(|(key, recipient)| !(*key == ask.key && *recipient == ask.recipient));
-                actions.push(QuotaAction::Dropped {
+                actions.push(QuotaAction::AskDropped {
                     recipient: ask.recipient.agent,
                     summary: format!("{reason}: {}", ask.advisory.checkpoint_ask(meta_dir)),
                 });
@@ -4349,6 +4355,14 @@ impl Cycle<'_> {
                         err,
                     )?;
                 }
+                QuotaAction::AskDropped { recipient, summary } => {
+                    self.emit(
+                        crate::quota::action::CHECKPOINT_DROPPED,
+                        &recipient,
+                        &summary,
+                        err,
+                    )?;
+                }
                 QuotaAction::Cancelled(summary) => {
                     // NO target: news to nobody, so no fold reads it.
                     self.emit(
@@ -7656,7 +7670,7 @@ mod tests {
             let dropped: Vec<String> = actions
                 .iter()
                 .filter_map(|action| match action {
-                    QuotaAction::Dropped { summary, .. } => summary
+                    QuotaAction::AskDropped { summary, .. } => summary
                         .split_once(": ")
                         .map(|(reason, _)| reason.to_owned()),
                     _ => None,
@@ -7938,6 +7952,39 @@ mod tests {
             };
             assert_eq!(wait(&after), wait(&before));
         }
+    }
+
+    #[test]
+    fn a_cancelled_checkpoint_retry_is_journaled_as_a_checkpoint_drop() {
+        let scratch = Scratch::new("quota-ask-cancelled");
+        let helper = SendHelper::for_session(&scratch.0);
+        let server = ServerId::Ambient;
+        let cycle = identity_cycle(&scratch, &helper, &server, "L1");
+        let roster = [claude_seat("main", "lead", CONVERSATION_A)];
+        let window = fable_window(&roster[0], "100", 9_900, None);
+        let here = candidates_running(&roster, &[None]);
+        let mut carry = QuotaCarry::default();
+        let booked = carry.reconcile_with_candidates(&window, &[], &here, &scratch.0);
+        let owed = checkpoint_asks(&booked)[0].clone();
+        let _ = carry.record_ask_delivery(&owed, QuotaDelivery::Retryable, &scratch.0);
+        // The seat is gone before the retry: the cancelled ask is the ask's news.
+        let gone = carry.reconcile_with_candidates(&window, &[], &[], &scratch.0);
+        assert!(
+            cycle
+                .apply_quota_actions(&mut carry, gone, 10_000, &mut Vec::new())
+                .is_ok()
+        );
+        let journaled: Vec<(String, Option<String>)> = read_events(&scratch.0)
+            .into_iter()
+            .map(|event| (event.action, event.target))
+            .collect();
+        assert_eq!(
+            journaled,
+            [(
+                crate::quota::action::CHECKPOINT_DROPPED.to_owned(),
+                Some("lead".to_owned())
+            )]
+        );
     }
 
     #[test]

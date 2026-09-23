@@ -787,11 +787,13 @@ pub(crate) struct RecordedIdentity {
 pub(crate) mod action {
     /// A lead-pair advisory delivery.
     pub(crate) const ADVISORY: &str = "quota-advisory";
-    /// A booked notice given up before it was delivered.
+    /// A booked advisory given up before it was delivered.
     pub(crate) const ADVISORY_DROPPED: &str = "quota-advisory-dropped";
     /// A checkpoint ask delivery. Its `ref` is the ask's receipt.
     pub(crate) const CHECKPOINT: &str = "quota-checkpoint";
-    /// A checkpoint ask whose delivery failed or was uncertain.
+    /// A booked checkpoint ask given up before it was delivered: its delivery
+    /// failed twice or was uncertain, or it was cancelled because its seat
+    /// left, its facts aged out or its window went silent.
     pub(crate) const CHECKPOINT_DROPPED: &str = "quota-checkpoint-dropped";
     /// A booked checkpoint ask withdrawn because its seat now runs another
     /// model family. Written with NO target, so no fold reads it as news to
