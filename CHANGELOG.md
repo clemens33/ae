@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.162] - 2026-09-23
+- Refuse a same-binary reseat before the stop when its carry would fail, and name what a tool change leaves behind
+- Say what a tool change would leave behind only as what the move does if it succeeds, and name every foreign conversation a re-run leaves
+- Document the pre-stop carry check and the tool-change note in the reseat order
+- Say in the reseat contract which carry failures refuse before the stop and which still fall back
+- Shorten the write-failure fallback pin's comment
+- Ask a checkpoint only of seats on the window's model family, once per low episode
+- Pin that a checkpoint receipt names the window's own reset
+- Pin that a checkpoint ask its seat left or outlived is dropped by name
+- Pin that a departed seat's cancelled ask clears only its own mark
+- Pin that a retried ask stays booked and a withdrawal clears only its own mark
+- Document the model-family checkpoint ask, its receipt and its withdrawal
+- Name the checkpoint receipt's unseen re-entry and the pass that owns the classification
+- Journal a cancelled checkpoint ask as the ask's own drop
+
 ## [v2026.9.161] - 2026-09-23
 - Give integration scratch one owner and reap it at lane exit (#159)
 - Retry the lane-exit scratch reap and keep a root whose server survived
