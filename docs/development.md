@@ -92,7 +92,11 @@ root 30 s later: then the lane fails and keeps itself, and the next lane retries
 `cli::no_test_file_rolls_its_own_scratch_root` refuses a root built by hand. Parallelism is
 config: nextest runs at most eight tests (`.config/nextest.toml`, lowered to the core count by
 the lane), `just rust-mutants` one mutant at a time on four (`.cargo/mutants.toml`).
-`NEXTEST_TEST_THREADS` overrides the first for one run. `doctor::doctor_refresh_republishes_the_shims_the_manifest_and_the_core_pin`
+`NEXTEST_TEST_THREADS` overrides the first for one run. The lane runs cargo in a session of
+its own, with no controlling terminal, so no test can take the terminal `just test` was typed
+in for a tmux pane it sits in (#149); a `cargo nextest` run straight from a terminal has no
+such guarantee. Ctrl-C still stops cargo, because the lane passes the signal on; Ctrl-Z
+suspends only `just`, never the detached cargo. `doctor::doctor_refresh_republishes_the_shims_the_manifest_and_the_core_pin`
 is the canary for the link set: it clobbers a helper, refreshes, and pins the link targets
 against what the core links at launch, so the refresh entry and the launch entry cannot
 drift. It asserts the set is EXACTLY the core's list, never `>= N`, so an artifact quietly
