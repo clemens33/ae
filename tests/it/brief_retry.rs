@@ -288,17 +288,16 @@ fn a_permanently_damaged_record_is_set_aside_and_named_in_the_ledger() {
     );
 
     let aside = rig.dir.join("brief-retry.spawned.1.rec.damaged");
-    let moved = rig.watch_until(|| aside.exists());
-    assert!(moved, "the damaged record was never set aside");
+    // The give-up is appended AFTER the rename, and the daemon dies the moment
+    // the wait holds: wait for the ledger too, or a kill between them loses it.
+    let ended = rig.watch_until(|| aside.exists() && rig.events().contains("brief-gave-up"));
+    let ledger = rig.events();
+    assert!(aside.exists(), "the damaged record was never set aside");
     assert!(
         !rig.record_path("spawned.1").exists(),
         "the damaged record is gone from the name a reader would use"
     );
-    let ledger = rig.events();
-    assert!(
-        ledger.contains("brief-gave-up"),
-        "the give-up was never recorded: {ledger}"
-    );
+    assert!(ended, "the give-up was never recorded: {ledger}");
     // THE ACTOR IS THE WATCHDOG, not a spawner: the record could not be read,
     // so there is no spawner to name and ae must not invent one.
     assert!(
