@@ -1,0 +1,10 @@
+✢ Crystallizing… (12s · ↓ 870 tokens · thinking with xhigh effort)                                                                                                                
+                                                                                                                                                                                    
+❯ /compact checkpoint ae-20260923T190939Z-0a5d2b92 saved; compact now, then re-read ae brief                                                                                        
+  ctrl+x ctrl+s to send now                                                                                                                                                         
+                                                                                                                                                                 ◉ xhigh · /effort
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ Press up to edit queued messages                                                                                                                           
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  🧠 Opus 5.5 (xhigh)  📁 seat  ctx 5%  $0.34  cache warm  5h 2%  7d 9%
+  ⏸ manual mode on · ← for agents

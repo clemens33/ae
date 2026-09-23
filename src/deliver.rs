@@ -2102,6 +2102,32 @@ mod tests {
         assert_eq!((spent, calls), (SubmitState::StillStaged, 1));
     }
 
+    /// `ae compact`'s own dispatch into a seat whose turn is still running,
+    /// two real captures 2 s apart (plain text: these verdicts read structure
+    /// and content, never colour).
+    pub(super) const COMPACT_STAGED: &str =
+        include_str!("../tests/fixtures/claude-composer/claude-compact-staged-2.1.280.txt");
+    pub(super) const COMPACT_QUEUED: &str =
+        include_str!("../tests/fixtures/claude-composer/claude-compact-queued-2.1.280.txt");
+    pub(super) const COMPACT_DISPATCH: &str = "/compact checkpoint ae-20260923T190939Z-0a5d2b92 saved; compact now, then re-read `ae brief`";
+
+    #[test]
+    fn a_compact_claude_queued_behind_its_turn_settles_as_submitted() {
+        let border = InputModel::BorderDelimited;
+        // The real sequence: still in the box, then queued. Submitted means
+        // claude took the text into its queue, not that it ran.
+        let mut reads = [COMPACT_STAGED, COMPACT_QUEUED].into_iter();
+        let queued = settle(Duration::from_secs(10), border, COMPACT_DISPATCH, || {
+            reads.next().map(str::to_owned)
+        });
+        assert_eq!(queued, SubmitState::Submitted);
+        // A budget that ends on the first frame is honest: the box holds it.
+        let staged = settle(Duration::ZERO, border, COMPACT_DISPATCH, || {
+            Some(COMPACT_STAGED.to_owned())
+        });
+        assert_eq!(staged, SubmitState::StillStaged);
+    }
+
     #[test]
     fn a_viewer_counts_only_on_the_pane_and_inside_the_grace() {
         let client = |pane: &str, activity: Option<u64>| crate::tmux::ObservedClient {

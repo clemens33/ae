@@ -857,6 +857,16 @@ mod tests {
         }
     }
 
+    #[test]
+    fn claudes_dispatch_is_the_text_its_real_compact_frames_carry() {
+        // deliver's COMPACT_DISPATCH, the paste the claude-compact fixtures hold.
+        let id = "ae-20260923T190939Z-0a5d2b92";
+        assert_eq!(
+            dispatch_text(Mode::Guided, ToolKind::Claude.adapter().compact, id),
+            format!("/compact checkpoint {id} saved; compact now, then re-read `ae brief`")
+        );
+    }
+
     /// (c) — R4's select: the verb cancels ONLY its own `ae:seats:` pending
     /// checkpoint. A foreign opener's stays pending, and the cancel carries the
     /// exact summary and the opener's own actor bytes.

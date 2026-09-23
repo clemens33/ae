@@ -1440,6 +1440,16 @@ mod tests {
     }
 
     #[test]
+    fn a_compact_dispatch_claude_queued_is_queued_and_never_held() {
+        use crate::deliver::tests::{COMPACT_DISPATCH, COMPACT_QUEUED, COMPACT_STAGED};
+        let border = InputModel::BorderDelimited;
+        assert!(holds_pasted(COMPACT_STAGED, border, COMPACT_DISPATCH));
+        assert!(!queued_submission(COMPACT_STAGED, border));
+        assert!(queued_submission(COMPACT_QUEUED, border));
+        assert!(!holds_pasted(COMPACT_QUEUED, border, COMPACT_DISPATCH));
+    }
+
+    #[test]
     fn a_muse_composer_that_refused_the_turn_still_reads_occupied() {
         // The real refusal: the box did NOT clear, so the EXISTING retry loop
         // (still_staged -> StillStaged -> another Enter) is what answers the
