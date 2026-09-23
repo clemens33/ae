@@ -181,6 +181,23 @@ pub struct SessionFacts {
     pub last_live: crate::tmux::Evidence,
 }
 
+/// One LIVE seat: what its records say, and what its pane was observed to run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SeatFacts {
+    /// The session the seat belongs to.
+    pub session: String,
+    /// `seat.<slot>`.
+    pub agent: String,
+    /// The pane stamped with the seat's slot, empty when none was found.
+    pub pane: String,
+    /// `agent_bin.<slot>`, empty when unrecorded.
+    pub binary: String,
+    /// `profile.<slot>`, empty when unrecorded.
+    pub profile: String,
+    /// The reading — `Unknown` when the pane could not be found or read.
+    pub observed: crate::procs::Observed,
+}
+
 /// One `[profiles]` entry, as the report needs it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProfileFacts {
@@ -242,6 +259,8 @@ pub struct Facts {
     pub worktrees_dir: PathBuf,
     /// Every durable session, in name order.
     pub sessions: Vec<SessionFacts>,
+    /// Every seat of a LIVE session, in session then roster order.
+    pub seats: Vec<SeatFacts>,
     /// The input-map verdict per ae-owned server that answered — empty when
     /// none did, which reads as one neutral row, never a warning.
     pub bindings: Vec<BindingsFacts>,
@@ -303,8 +322,96 @@ pub fn report(facts: &Facts) -> Report {
     let mut out = Report::default();
     install_rows(facts, &mut out);
     session_rows(facts, &mut out);
+    seat_identity_rows(&facts.seats, &mut out);
     bindings_rows(facts, &mut out);
     out
+}
+
+/// The `seat-identity` rows: every live seat's RECORDS against what its pane
+/// was observed to run.
+///
+/// DIAGNOSIS ONLY. A seat's identity is its records, which is what keeps a
+/// stop from ending a tool nobody proved; doctor never rewrites one. What it
+/// owes a human is the disagreement a verb would otherwise refuse without
+/// explaining — and the COVERAGE, because a seat it could not read is not a
+/// seat it checked.
+fn seat_identity_rows(seats: &[SeatFacts], out: &mut Report) {
+    use crate::procs::Observed;
+    if seats.is_empty() {
+        return;
+    }
+    let (mut matched, mut disagree) = (0_usize, 0_usize);
+    let mut uncovered: Vec<String> = Vec::new();
+    for seat in seats {
+        let name = format!("{}:{}", seat.session, seat.agent);
+        let tools = match &seat.observed {
+            Observed::Harness(tools) => tools,
+            Observed::Shell => {
+                uncovered.push(format!("{name} at a shell"));
+                continue;
+            }
+            Observed::Unrecognised(word) => {
+                uncovered.push(format!("{name} runs '{word}'"));
+                continue;
+            }
+            Observed::Unknown => {
+                uncovered.push(format!("{name} unreadable"));
+                continue;
+            }
+        };
+        let own = tools
+            .iter()
+            .any(|tool| crate::procs::name_matches(&seat.binary, tool.as_str()));
+        if own && tools.len() == 1 {
+            matched += 1;
+            continue;
+        }
+        disagree += 1;
+        let names: Vec<&str> = tools.iter().map(|tool| tool.as_str()).collect();
+        out.push(
+            Level::Warn,
+            "seat-identity",
+            &format!(
+                "{name} (pane {}) records {} ({}); its pane runs {}",
+                seat.pane,
+                blank(&seat.binary),
+                if seat.profile.is_empty() {
+                    "no profile".to_owned()
+                } else {
+                    format!("profile '{}'", seat.profile)
+                },
+                names.join(" and ")
+            ),
+        );
+    }
+    if disagree > 0 {
+        out.push(
+            Level::Warn,
+            "seat-identity-hint",
+            "records are a seat's identity and doctor never rewrites them: reseat and relaunch \
+             refuse such a seat — end the other tool in its pane, then reseat to the profile you \
+             want",
+        );
+    }
+    let verdict = match (matched + disagree, disagree) {
+        (0, _) => String::new(),
+        (_, 0) => "; every checked seat runs the tool it records".to_owned(),
+        _ => format!("; {matched} run(s) the tool it records, {disagree} disagree"),
+    };
+    let coverage = if uncovered.is_empty() {
+        String::new()
+    } else {
+        format!("; uncovered: {}", uncovered.join(", "))
+    };
+    out.push(
+        Level::Ok,
+        "seat-identity",
+        &format!(
+            "{} of {} live seat(s) checked{verdict}{coverage}",
+            matched + disagree,
+            seats.len()
+        ),
+    );
 }
 
 /// The rows about the INSTALL: the binary, its dependencies, its config.
@@ -717,6 +824,7 @@ pub fn gather(root: &Path, global: Option<&Path>, local: Option<&Path>) -> Facts
             Err(why) => (String::new(), Some(why)),
         };
     let sessions = session_facts(root);
+    let seats = seat_facts(root, &sessions);
     let bindings = bindings_facts(&sessions, root, &config, core.as_deref());
     Facts {
         version: crate::VERSION.to_owned(),
@@ -750,9 +858,56 @@ pub fn gather(root: &Path, global: Option<&Path>, local: Option<&Path>) -> Facts
         sessions_dir: roots.sessions().to_owned(),
         worktrees_dir: roots.worktrees().to_owned(),
         sessions,
+        seats,
         bindings,
         boot: crate::doors::boot_time(crate::shape::current()),
     }
+}
+
+/// Every live session's seats against their panes: ONE process table for the
+/// whole run, and one pane read per seat. Reads only — nothing here writes.
+fn seat_facts(root: &Path, sessions: &[SessionFacts]) -> Vec<SeatFacts> {
+    use crate::procs::Observed;
+    if !sessions.iter().any(|session| session.live) {
+        return Vec::new();
+    }
+    let dirs = discovered(root);
+    let table = crate::procs::snapshot();
+    let mut out = Vec::new();
+    for session in sessions.iter().filter(|session| session.live) {
+        let Some((_, dir)) = dirs.iter().find(|(name, _)| *name == session.name) else {
+            continue;
+        };
+        let bytes = crate::meta::read_bytes(dir).unwrap_or_default();
+        let slots =
+            crate::transport::observe_slots(&session.server, &session.name).unwrap_or_default();
+        for row in crate::meta::Meta::parse(&String::from_utf8_lossy(&bytes)).roster() {
+            let pane = slots
+                .iter()
+                .find(|stamped| stamped.slot == row.slot)
+                .map(|stamped| stamped.pane.clone())
+                .unwrap_or_default();
+            let observed = if pane.is_empty() {
+                Observed::Unknown
+            } else {
+                crate::transport::observe_pane_probe(&session.server, &pane).map_or(
+                    Observed::Unknown,
+                    |probe| {
+                        crate::procs::observed_harness(&probe.command, probe.pid, table.as_deref())
+                    },
+                )
+            };
+            out.push(SeatFacts {
+                session: session.name.clone(),
+                agent: row.name.clone(),
+                pane,
+                binary: row.binary.clone().unwrap_or_default(),
+                profile: row.profile.clone().unwrap_or_default(),
+                observed,
+            });
+        }
+    }
+    out
 }
 
 /// The rows behind a reboot refusal: when the host booted, and when each
@@ -1326,8 +1481,95 @@ mod tests {
             sessions_dir: PathBuf::from("/home/me/.ae/sessions"),
             worktrees_dir: PathBuf::from("/home/me/.ae/worktrees"),
             sessions: Vec::new(),
+            seats: Vec::new(),
             bindings: Vec::new(),
         }
+    }
+
+    #[test]
+    fn a_seat_whose_pane_runs_another_harness_is_named_and_uncovered_ones_are_counted() {
+        use crate::procs::Observed;
+        use crate::tool::ToolKind;
+        let seat = |agent: &str, binary: &str, observed| SeatFacts {
+            session: "infra".to_owned(),
+            agent: agent.to_owned(),
+            pane: format!("%{}", agent.len()),
+            binary: binary.to_owned(),
+            profile: format!("p-{agent}"),
+            observed,
+        };
+        let rows_of = |seats: &[SeatFacts]| {
+            let mut out = Report::default();
+            seat_identity_rows(seats, &mut out);
+            out.rows
+        };
+        // NO LIVE SEAT, NO ROW: nothing was there to check.
+        assert!(rows_of(&[]).is_empty());
+        let rows = rows_of(&[
+            seat("lead", "claude", Observed::Harness(vec![ToolKind::Claude])),
+            // THE INCIDENT: records codex, the pane runs claude.
+            seat("colead", "codex", Observed::Harness(vec![ToolKind::Claude])),
+            // Recorded and foreign together is never clean.
+            seat(
+                "w1",
+                "codex",
+                Observed::Harness(vec![ToolKind::Claude, ToolKind::Codex]),
+            ),
+            seat("w2", "grok", Observed::Shell),
+            seat("w3", "grok", Observed::Unrecognised("vim".to_owned())),
+            seat("w4", "grok", Observed::Unknown),
+        ]);
+        let found = |needle: &str| {
+            rows.iter()
+                .find(|row| row.detail.contains(needle))
+                .map(|row| (row.level, row.label.clone()))
+        };
+        assert_eq!(
+            found(
+                "infra:colead (pane %6) records codex (profile 'p-colead'); its pane runs claude"
+            ),
+            Some((Level::Warn, "seat-identity".to_owned())),
+            "{rows:?}"
+        );
+        assert_eq!(
+            found(
+                "infra:w1 (pane %2) records codex (profile 'p-w1'); its pane runs claude and codex"
+            ),
+            Some((Level::Warn, "seat-identity".to_owned())),
+            "{rows:?}"
+        );
+        assert!(
+            !rows.iter().any(|row| row.detail.contains("infra:lead")),
+            "a matching seat is counted, never listed: {rows:?}"
+        );
+        assert!(
+            rows.iter().any(|row| row.label == "seat-identity-hint"
+                && row.level == Level::Warn
+                && row.detail.contains("never rewrites")),
+            "{rows:?}"
+        );
+        assert_eq!(
+            found("3 of 6 live seat(s) checked"),
+            Some((Level::Ok, "seat-identity".to_owned())),
+            "{rows:?}"
+        );
+        assert!(
+            found("uncovered: infra:w2 at a shell, infra:w3 runs 'vim', infra:w4 unreadable")
+                .is_some(),
+            "{rows:?}"
+        );
+        // All covered and all matching: one quiet line, no hint.
+        let clean = rows_of(&[seat(
+            "lead",
+            "claude",
+            Observed::Harness(vec![ToolKind::Claude]),
+        )]);
+        assert_eq!(clean.len(), 1, "{clean:?}");
+        assert_eq!(clean[0].level, Level::Ok);
+        assert_eq!(
+            clean[0].detail,
+            "1 of 1 live seat(s) checked; every checked seat runs the tool it records"
+        );
     }
 
     #[test]

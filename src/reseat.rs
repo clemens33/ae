@@ -484,6 +484,44 @@ fn caller_standing(
     }
 }
 
+/// PURE: the refusal for a pane whose tree runs a harness the seat does NOT
+/// record beside the one it does — `None` when the tree holds only its own.
+///
+/// `respawn-pane -k` ends the pane's WHOLE tree, so a stop proven only for
+/// the recorded tool would end the other one too. Asked from the SAME snapshot
+/// the caller proof read, before the send-lock, the frame and the respawn, and
+/// no flag lifts it: `--stop-unknown` is about an unreadable frame, and this is
+/// a readable tree ae does not own whole.
+fn mixed_refusal(
+    rows: &[procs::Proc],
+    pane_pid: u32,
+    recorded: &crate::seat_relaunch::Recorded<'_>,
+    target: &Target,
+) -> Option<String> {
+    let foreign: Vec<String> = procs::harness_rows(rows, pane_pid)
+        .into_iter()
+        .filter(|(_, proc)| !procs::name_matches(&proc.comm, recorded.binary))
+        .map(|(tool, proc)| format!("{} (pid {}, parent {})", tool.as_str(), proc.pid, proc.ppid))
+        .collect();
+    if foreign.is_empty() {
+        return None;
+    }
+    let profile = if recorded.profile.is_empty() {
+        "no profile".to_owned()
+    } else {
+        format!("profile '{}'", recorded.profile)
+    };
+    Some(format!(
+        "Error: '{}' runs its recorded {} ({profile}) in pane {}, but that pane's tree also runs \
+         {} — a stop ends the whole tree, and ae ends only the tool a seat records, so nothing \
+         was stopped. Wait for it to exit, or end it yourself, then re-run the reseat.",
+        target.agent,
+        recorded.binary,
+        target.pane,
+        foreign.join(", ")
+    ))
+}
+
 /// PURE: is `probe` a pane back at an IDLE shell?
 ///
 /// The same two questions [`crate::seat_relaunch::prove_dead`] asks, asked of
@@ -587,7 +625,23 @@ fn stop_running_tool(
     // halves need the pid and the table, so a gap in either REFUSES: ae will
     // not kill a tool it cannot prove is not its own parent.
     match caller_standing(probe.pid, table.as_deref(), std::process::id()) {
-        CallerStanding::Clear => {}
+        CallerStanding::Clear => {
+            // Clear PROVES the pid and the table, so the tree is read from the
+            // very snapshot the caller proof just used.
+            if let (Some(pid), Some(rows)) = (probe.pid, table.as_deref()) {
+                let recorded = crate::seat_relaunch::Recorded {
+                    binary: &agent_bin,
+                    profile: &crate::lifecycle::meta_value(
+                        bytes,
+                        &format!("profile.{}", target.slot),
+                    ),
+                };
+                if let Some(line) = mixed_refusal(rows, pid, &recorded, target) {
+                    writeln!(err, "{line}")?;
+                    return Ok(Stop::Refused);
+                }
+            }
+        }
         CallerStanding::Under => {
             writeln!(
                 err,
@@ -1495,6 +1549,58 @@ mod tests {
         // than calling a pane it could not read idle.
         assert!(!super::pane_back_at_shell(&shell(None), Some(&empty)));
         assert!(!super::pane_back_at_shell(&shell(Some(10)), None));
+    }
+
+    #[test]
+    fn a_tree_running_a_harness_the_seat_does_not_record_is_never_stopped() {
+        use crate::procs::Proc;
+        use crate::seat_relaunch::{Recorded, Target};
+        let row = |pid, ppid, comm: &str| Proc {
+            pid,
+            ppid,
+            comm: comm.to_owned(),
+        };
+        let target = Target {
+            agent: "colead".to_owned(),
+            slot: "main".to_owned(),
+            pane: "%68".to_owned(),
+            server: crate::inventory::ServerId::Ambient,
+        };
+        let codex = Recorded {
+            binary: "codex",
+            profile: "opus5x",
+        };
+        // The recorded tool, its own helpers, and a harness under ANOTHER pane:
+        // the tree is the seat's alone, so the stop goes on exactly as before.
+        let own = vec![
+            row(100, 1, "sh"),
+            row(200, 100, "/opt/bin/codex"),
+            row(210, 200, "node"),
+            row(300, 1, "claude"),
+        ];
+        assert_eq!(super::mixed_refusal(&own, 100, &codex, &target), None);
+        // A foreign harness anywhere in the tree refuses, naming each by tool,
+        // pid and parent, and the records beside them.
+        let mixed = vec![
+            row(100, 1, "sh"),
+            row(200, 100, "/opt/bin/codex"),
+            row(210, 200, "/Users/x/.local/bin/claude"),
+            row(220, 100, "gemini"),
+        ];
+        let line = super::mixed_refusal(&mixed, 100, &codex, &target).unwrap_or_default();
+        for part in [
+            "'colead' runs its recorded codex (profile 'opus5x') in pane %68",
+            "claude (pid 210, parent 200), gemini (pid 220, parent 100)",
+            "nothing was stopped",
+            "Wait for it to exit, or end it yourself, then re-run the reseat",
+        ] {
+            assert!(line.contains(part), "{part:?} missing: {line}");
+        }
+        // The pane's OWN process is its tree too.
+        assert!(
+            super::mixed_refusal(&[row(100, 1, "grok")], 100, &codex, &target)
+                .is_some_and(|line| line.contains("grok (pid 100, parent 1)"))
+        );
     }
 
     #[test]

@@ -4,6 +4,8 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::tool::ToolKind;
+
 /// The fixed argv for the process-table snapshot, sealed the way
 /// [`crate::git::GitArgv`] is: the inner vector is private, so no other module
 /// can fabricate a `ps` command line and hand it to
@@ -190,6 +192,93 @@ pub fn descendancy(table: Option<&[Proc]>, pane_pid: u32, agent_bin: &str) -> De
             }
         }
     }
+}
+
+/// Which harness a pane is OBSERVED to run — for DIAGNOSIS only.
+///
+/// A seat's identity is its records, and nothing here may rewrite them or
+/// authorise a stop. What this answers is the question a refusal and `ae
+/// doctor` owe a human when the records and the pane disagree: WHAT runs
+/// there instead.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Observed {
+    /// A shell holds the foreground and the tree shows no known harness.
+    Shell,
+    /// Every known harness the foreground word or the pane's process tree
+    /// names, deduplicated and sorted by name.
+    Harness(Vec<ToolKind>),
+    /// A foreground that is no shell and names no harness, over a tree that
+    /// shows none — a human's editor, or a tool ae does not know.
+    Unrecognised(String),
+    /// The pid or the process table is missing, so the tree was never read.
+    Unknown,
+}
+
+/// THE ONE foreground-to-tool mapping, from the readings a caller already took.
+///
+/// Measured 2026-09-23 on macOS, Claude Code's native install: `claude` is a
+/// symlink to `versions/<version>`, so tmux's `pane_current_command` reads the
+/// VERSION (`2.1.280`) while `ps -o comm=` reads the invoked path
+/// (`…/bin/claude`). The tree carries the real name, so no version grammar is
+/// guessed at: a bare `2.1.274` with no table to corroborate it is
+/// [`Observed::Unrecognised`].
+#[must_use]
+pub(crate) fn observed_harness(
+    foreground: &str,
+    pane_pid: Option<u32>,
+    table: Option<&[Proc]>,
+) -> Observed {
+    let mut tools: Vec<ToolKind> = harness_of(foreground).into_iter().collect();
+    if let (Some(pid), Some(rows)) = (pane_pid, table) {
+        tools.extend(harness_rows(rows, pid).into_iter().map(|(tool, _)| tool));
+    }
+    tools.sort_by_key(|tool| tool.as_str());
+    tools.dedup();
+    if !tools.is_empty() {
+        return Observed::Harness(tools);
+    }
+    if pane_pid.is_none() || table.is_none() {
+        return Observed::Unknown;
+    }
+    if crate::watchdog::command_is_shell(foreground) {
+        Observed::Shell
+    } else {
+        Observed::Unrecognised(foreground.to_owned())
+    }
+}
+
+/// The known harness one process name belongs to — basename, `.exe` tolerant.
+fn harness_of(comm: &str) -> Option<ToolKind> {
+    let base = comm.rsplit('/').next().unwrap_or(comm);
+    ToolKind::from_known_binary_name(strip_exe(base))
+}
+
+/// Every row of the pane's tree — its own process and every descendant — that
+/// names a known harness, in pid order.
+///
+/// A visited set, because a damaged table can name a cycle.
+pub(crate) fn harness_rows(procs: &[Proc], pane_pid: u32) -> Vec<(ToolKind, &Proc)> {
+    let mut children: HashMap<u32, Vec<&Proc>> = HashMap::new();
+    for proc in procs {
+        children.entry(proc.ppid).or_default().push(proc);
+    }
+    let mut tree: Vec<&Proc> = procs.iter().filter(|proc| proc.pid == pane_pid).collect();
+    let mut visited: HashSet<u32> = HashSet::new();
+    let mut stack: Vec<u32> = vec![pane_pid];
+    while let Some(pid) = stack.pop() {
+        if !visited.insert(pid) {
+            continue;
+        }
+        for child in children.get(&pid).into_iter().flatten() {
+            tree.push(child);
+            stack.push(child.pid);
+        }
+    }
+    tree.sort_by_key(|proc| proc.pid);
+    tree.dedup_by_key(|proc| proc.pid);
+    tree.into_iter()
+        .filter_map(|proc| harness_of(&proc.comm).map(|tool| (tool, proc)))
+        .collect()
 }
 
 /// Basename compare tolerant of a trailing `.exe` on either operand — the ONE
@@ -489,5 +578,80 @@ mod tests {
         // what makes this terminate at all.
         let cycle = vec![row(10, 11), row(11, 10)];
         assert!(!super::is_descendant_of(&cycle, 99, 10));
+    }
+
+    #[test]
+    fn the_pane_names_the_harness_it_runs_by_its_tree_never_by_a_version_word() {
+        use super::{Observed, observed_harness};
+        use crate::tool::ToolKind;
+        let row = |pid, ppid, comm: &str| Proc {
+            pid,
+            ppid,
+            comm: comm.to_owned(),
+        };
+        // THE INCIDENT, as measured: tmux reads the version, `ps` the invoked
+        // path, and the tool runs under the pane's shell.
+        let incident = vec![
+            row(100, 1, "/opt/homebrew/bin/fish"),
+            row(200, 100, "/Users/x/.local/bin/claude"),
+            row(300, 1, "/usr/local/bin/codex"),
+        ];
+        assert_eq!(
+            observed_harness("2.1.274", Some(100), Some(&incident)),
+            Observed::Harness(vec![ToolKind::Claude]),
+            "the tree names claude; a harness under ANOTHER pane is not counted"
+        );
+        // No table to corroborate it: a version word is not a guess at claude.
+        assert_eq!(
+            observed_harness("2.1.274", Some(100), None),
+            Observed::Unknown
+        );
+        assert_eq!(
+            observed_harness("2.1.274", Some(300), Some(&[row(300, 1, "2.1.274")])),
+            Observed::Unrecognised("2.1.274".to_owned())
+        );
+        // A foreground that IS a harness name needs no tree at all.
+        assert_eq!(
+            observed_harness("codex", None, None),
+            Observed::Harness(vec![ToolKind::Codex])
+        );
+        // A tool exec'd AS the pane's own process is the pane's tree too.
+        assert_eq!(
+            observed_harness("x", Some(300), Some(&[row(300, 1, "/opt/grok")])),
+            Observed::Harness(vec![ToolKind::Grok])
+        );
+        // Mixed evidence is reported whole, deduplicated, sorted by name.
+        let mixed = vec![
+            row(100, 1, "fish"),
+            row(200, 100, "opencode.exe"),
+            row(210, 200, "claude"),
+            row(220, 200, "claude"),
+        ];
+        assert_eq!(
+            observed_harness("opencode", Some(100), Some(&mixed)),
+            Observed::Harness(vec![ToolKind::Claude, ToolKind::OpenCode])
+        );
+        // No harness anywhere: a shell is a shell, anything else is named.
+        let editor = vec![row(100, 1, "fish"), row(200, 100, "vim")];
+        assert_eq!(
+            observed_harness("fish", Some(100), Some(&[row(100, 1, "fish")])),
+            Observed::Shell
+        );
+        assert_eq!(
+            observed_harness("vim", Some(100), Some(&editor)),
+            Observed::Unrecognised("vim".to_owned())
+        );
+        // A tree ae could not read cannot rule a harness out, shell or not.
+        assert_eq!(
+            observed_harness("fish", None, Some(&editor)),
+            Observed::Unknown
+        );
+        assert_eq!(observed_harness("vim", Some(100), None), Observed::Unknown);
+        // A cycle in a damaged table terminates.
+        let cycle = vec![row(10, 11, "sh"), row(11, 10, "sh")];
+        assert_eq!(
+            observed_harness("sh", Some(10), Some(&cycle)),
+            Observed::Shell
+        );
     }
 }

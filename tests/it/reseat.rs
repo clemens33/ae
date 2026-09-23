@@ -605,3 +605,108 @@ fn a_seat_cannot_reseat_itself() {
     assert!(rig.tool_pid(&pane, "opencode").is_some(), "still running");
     assert!(rig.received().is_empty(), "{:?}", rig.received());
 }
+
+#[test]
+fn a_pane_running_another_harness_than_its_records_is_refused_by_name_and_doctor_names_it() {
+    // THE FIELD CASE (2026-09-20): the records say codex, Claude runs. Claude's
+    // native install is a symlink into `versions/`, which is how tmux came to
+    // read `2.1.274` while `ps` read `…/bin/claude` — the SAME layout here.
+    let rig = Rig::new("mismatch");
+    rig.seat_rows("worker.1", "w1", "codex", "codex");
+    let pane = rig.new_pane("worker.1", "w1");
+    let native = rig.scratch.join("native");
+    let version = native.join("versions/2.1.274");
+    assert!(std::fs::create_dir_all(native.join("bin")).is_ok());
+    assert!(std::fs::create_dir_all(native.join("versions")).is_ok());
+    assert!(std::fs::copy(rig.scratch.join("tools/claude"), &version).is_ok());
+    assert!(std::os::unix::fs::symlink(&version, native.join("bin/claude")).is_ok());
+    let hand = format!(
+        "{} {}",
+        native.join("bin/claude").display(),
+        rig.scratch.join("claude.pl").display()
+    );
+    assert!(rig.tmux(&["send-keys", "-t", &pane, &hand, "Enter"]).0);
+    for _ in 0..200 {
+        if rig.tool_pid(&pane, "claude").is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let meta = rig.meta();
+
+    let (code, out, err) = rig.run_top(
+        &rig.main_pane.clone(),
+        &["reseat", &rig.session, "w1", "--using", "fake-claude"],
+    );
+
+    assert_eq!(code, Some(1), "out={out} err={err}");
+    for part in [
+        "runs claude",
+        "but its records say codex (profile 'fake-codex')",
+        "so it did not stop claude and nothing was reseated",
+    ] {
+        assert!(err.contains(part), "{part:?} missing: {err}");
+    }
+    if cfg!(target_os = "macos") {
+        assert!(err.contains("('2.1.274' holds its foreground)"), "{err}");
+    }
+    assert!(!err.contains("Let it finish"), "{err}");
+    assert!(rig.tool_pid(&pane, "claude").is_some(), "claude still runs");
+    assert_eq!(rig.meta(), meta, "the records are untouched");
+    // Doctor names the same disagreement, and writes nothing either.
+    let (_, report, _) = rig.run_top(&rig.main_pane.clone(), &["doctor"]);
+    assert!(
+        report.contains("records codex (profile 'fake-codex'); its pane runs claude"),
+        "{report}"
+    );
+    assert_eq!(rig.meta(), meta, "doctor rewrote a record");
+}
+
+#[test]
+fn a_seat_whose_tree_also_runs_another_harness_is_never_stopped_even_with_the_flag() {
+    // A stop is `respawn-pane -k`, which ends the WHOLE tree: proving the
+    // recorded tool alone would end the other harness with it.
+    let rig = Rig::new("mixedmove");
+    rig.seat_rows("worker.1", "w1", "claude", "claude");
+    let pane = rig.new_pane("worker.1", "w1");
+    let foreign = format!(
+        "{} -e 'sleep 600' &",
+        rig.scratch.join("tools/codex").display()
+    );
+    assert!(rig.tmux(&["send-keys", "-t", &pane, &foreign, "Enter"]).0);
+    rig.start(&pane, "worker.1", "claude");
+    assert!(rig.tool_pid(&pane, "codex").is_some(), "a foreign harness");
+    let (pid, meta, events) = (
+        rig.pane_fact(&pane, "#{pane_pid}"),
+        rig.meta(),
+        rig.events(),
+    );
+
+    let (code, out, err) = rig.run_top(
+        &rig.main_pane.clone(),
+        &[
+            "reseat",
+            &rig.session,
+            "w1",
+            "--using",
+            "fake-grok",
+            "--stop-unknown",
+        ],
+    );
+
+    assert_eq!(code, Some(1), "out={out} err={err}");
+    for part in [
+        "'w1' runs its recorded claude (profile 'fake-claude')",
+        "codex (pid ",
+        "nothing was stopped",
+    ] {
+        assert!(err.contains(part), "{part:?} missing: {err}");
+    }
+    assert_eq!(rig.pane_fact(&pane, "#{pane_pid}"), pid, "no respawn");
+    assert!(rig.tool_pid(&pane, "claude").is_some(), "claude still runs");
+    assert_eq!(
+        (rig.meta(), rig.events()),
+        (meta, events),
+        "nothing written"
+    );
+}

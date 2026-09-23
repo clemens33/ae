@@ -360,6 +360,15 @@ pub(crate) fn prove_dead(
         )?;
         return Ok(None);
     }
+    let recorded = Recorded {
+        binary: &agent_bin,
+        profile: &crate::lifecycle::meta_value(&bytes, &format!("profile.{}", target.slot)),
+    };
+    let observed = procs::observed_harness(&probe.command, probe.pid, table.as_deref());
+    if let Some(line) = mismatch_refusal(&observed, &probe.command, &recorded, target, verb) {
+        writeln!(err, "{line}")?;
+        return Ok(None);
+    }
     if let Some(line) = busy_refusal(&probe, table.as_deref(), target, verb) {
         writeln!(err, "{line}")?;
         return Ok(None);
@@ -410,6 +419,69 @@ pub(crate) fn usable_work_dir(bytes: &[u8]) -> Result<String, String> {
         ));
     }
     Ok(work_dir)
+}
+
+/// The seat's records, as a refusal names them.
+pub(crate) struct Recorded<'a> {
+    /// `agent_bin.<slot>`.
+    pub(crate) binary: &'a str,
+    /// `profile.<slot>`, empty when the seat records none.
+    pub(crate) profile: &'a str,
+}
+
+/// THE MISMATCH REFUSAL: the pane runs a KNOWN harness that is not the one the
+/// seat records.
+///
+/// Measured in the field (2026-09-20): the records said codex while Claude
+/// ran, the stop skipped the unproven tool — rightly — and the seat was then
+/// refused as BUSY with "let it finish", which names nothing that can finish.
+/// This says what disagrees and what repairs it. It never authorises a stop:
+/// the observed tool is DIAGNOSIS, and only the recorded one is ever ended.
+#[must_use]
+pub(crate) fn mismatch_refusal(
+    observed: &procs::Observed,
+    foreground: &str,
+    recorded: &Recorded<'_>,
+    target: &Target,
+    verb: Verb,
+) -> Option<String> {
+    let procs::Observed::Harness(tools) = observed else {
+        return None;
+    };
+    if tools
+        .iter()
+        .any(|tool| procs::name_matches(recorded.binary, tool.as_str()))
+    {
+        return None;
+    }
+    let names = tools
+        .iter()
+        .map(|tool| tool.as_str())
+        .collect::<Vec<_>>()
+        .join(" and ");
+    // The foreground is quoted only when it says something the tool's name
+    // does not — the version word Claude's native install shows is the case.
+    let shown = if foreground.is_empty()
+        || tools
+            .iter()
+            .any(|tool| procs::name_matches(foreground, tool.as_str()))
+    {
+        String::new()
+    } else {
+        format!(" ('{foreground}' holds its foreground)")
+    };
+    let profile = if recorded.profile.is_empty() {
+        "no profile".to_owned()
+    } else {
+        format!("profile '{}'", recorded.profile)
+    };
+    Some(format!(
+        "Error: pane {} of '{}' runs {names}{shown}, but its records say {} ({profile}) — ae \
+         stops and replaces only the tool a seat records, so it did not stop {names} and nothing \
+         was {}. Quit {names} in that pane until its shell is back, then re-run the {}; `ae \
+         doctor` names every seat whose pane disagrees with its record.",
+        target.pane, target.agent, recorded.binary, verb.past, verb.imperative
+    ))
 }
 
 /// The BUSY refusals — a pane whose shell is not idle, in the two shapes that
@@ -756,5 +828,73 @@ mod tests {
             unproven_gap(Some(7), "bash", true).contains("'bash'"),
             "the gap NAMES the recorded tool it could not tell from a shell"
         );
+    }
+
+    #[test]
+    fn a_pane_running_another_harness_is_refused_by_name_and_never_as_busy() {
+        use super::{RELAUNCH_VERB, RESEAT_VERB, Recorded, Target, mismatch_refusal};
+        use crate::procs::Observed;
+        use crate::tool::ToolKind;
+        let target = Target {
+            agent: "colead".to_owned(),
+            slot: "main".to_owned(),
+            pane: "%68".to_owned(),
+            server: crate::inventory::ServerId::Ambient,
+        };
+        let codex = Recorded {
+            binary: "codex",
+            profile: "opus5x",
+        };
+        let claude = Observed::Harness(vec![ToolKind::Claude]);
+        // THE INCIDENT, byte for byte where it matters.
+        let line =
+            mismatch_refusal(&claude, "2.1.274", &codex, &target, RESEAT_VERB).unwrap_or_default();
+        for part in [
+            "Error: pane %68 of 'colead' runs claude ('2.1.274' holds its foreground)",
+            "but its records say codex (profile 'opus5x')",
+            "so it did not stop claude and nothing was reseated",
+            "Quit claude in that pane until its shell is back, then re-run the reseat",
+            "ae doctor",
+        ] {
+            assert!(line.contains(part), "{part:?} missing: {line}");
+        }
+        assert!(!line.contains("Let it finish"), "{line}");
+        // A foreground that already IS the tool's name is not repeated, a seat
+        // with no profile says so, and the verb is the caller's.
+        let bare = Recorded {
+            binary: "codex",
+            profile: "",
+        };
+        let two = Observed::Harness(vec![ToolKind::Claude, ToolKind::Gemini]);
+        let line =
+            mismatch_refusal(&two, "claude", &bare, &target, RELAUNCH_VERB).unwrap_or_default();
+        for part in [
+            "runs claude and gemini, but its records say codex (no profile)",
+            "nothing was relaunched",
+            "re-run the relaunch",
+        ] {
+            assert!(line.contains(part), "{part:?} missing: {line}");
+        }
+        // Every other reading is someone else's refusal to make.
+        let own = Recorded {
+            binary: "claude",
+            profile: "fable",
+        };
+        assert_eq!(
+            mismatch_refusal(&claude, "2.1.280", &own, &target, RESEAT_VERB),
+            None,
+            "the recorded tool among them is the running refusal's, not this one"
+        );
+        for other in [
+            Observed::Shell,
+            Observed::Unknown,
+            Observed::Unrecognised("vim".to_owned()),
+        ] {
+            assert_eq!(
+                mismatch_refusal(&other, "vim", &codex, &target, RESEAT_VERB),
+                None,
+                "{other:?}"
+            );
+        }
     }
 }
