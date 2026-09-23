@@ -1145,15 +1145,16 @@ _tmux-isolated lane *args:
     reap_stale_lanes
     test_tmux_tmp="$(mktemp -d "$base/ae-rust-test.$$.XXXXXX")"
     cleanup() {
+        local status=$? tries=30
         TMUX_TMPDIR="$test_tmux_tmp" env -u TMUX -u TMUX_PANE tmux -L ae kill-server >/dev/null 2>&1 || true
         reap_dead_scratch
         # A test's orphaned child (a real opencode) can write into its root for
-        # seconds after the test; past the bound the next lane start retries.
-        local tries=30
+        # seconds after the test; past the bound the lane fails, and the next
+        # lane start retries.
         until reap_registry "$test_tmux_tmp"; do
             if ((--tries == 0)); then
-                echo "warning: kept $test_tmux_tmp: a registered scratch root or its tmux server outlived the lane" >&2
-                return
+                echo "error: kept $test_tmux_tmp: a registered scratch root or its tmux server outlived the lane" >&2
+                exit $((status ? status : 1))
             fi
             sleep 1
         done
