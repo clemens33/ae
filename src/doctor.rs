@@ -865,14 +865,22 @@ pub fn gather(root: &Path, global: Option<&Path>, local: Option<&Path>) -> Facts
 }
 
 /// PURE: what doctor may call a seat's reading. A seat is COVERED only when
-/// the whole tree was read, its root included: a foreground naming a harness
-/// says nothing about a foreign one beneath it, so any gap is `Unknown`.
+/// the whole tree was read, its root included, and no harness is left that ae
+/// cannot place — the same readings a reseat's stop refuses on.
 fn seat_reading(
     probe: Option<&crate::tmux::ObservedPaneProbe>,
     table: Option<&[crate::procs::Proc]>,
 ) -> crate::procs::Observed {
-    match (probe, table) {
-        (Some(probe), Some(rows)) if rows.iter().any(|row| Some(row.pid) == probe.pid) => {
+    use crate::procs::{Lineage, harness_rows};
+    let placed = |rows: &[_], pid| {
+        !harness_rows(rows, pid)
+            .iter()
+            .any(|row| row.2 != Lineage::Under)
+    };
+    match (probe, table, probe.and_then(|probe| probe.pid)) {
+        (Some(probe), Some(rows), Some(pid))
+            if rows.iter().any(|row| row.pid == pid) && placed(rows, pid) =>
+        {
             crate::procs::observed_harness(&probe.command, probe.pid, Some(rows))
         }
         _ => crate::procs::Observed::Unknown,
@@ -1507,21 +1515,25 @@ mod tests {
             command: "codex".to_owned(),
             pid,
         };
-        let table = [Proc {
-            pid: 100,
-            ppid: 1,
-            comm: "codex".to_owned(),
-        }];
+        let row = |pid, ppid, comm: &str| Proc {
+            pid,
+            ppid,
+            comm: comm.to_owned(),
+        };
+        let table = [row(100, 1, "codex")];
+        let unplaced = [row(100, 1, "codex"), row(900, 850, "claude")];
         assert_eq!(
             seat_reading(Some(&probe(Some(100))), Some(&table)),
             Observed::Harness(vec![crate::tool::ToolKind::Codex])
         );
         // A harness-named foreground over an UNREAD tree is not a check — nor
-        // over a table that does not hold the pane's own root.
+        // over a table missing the pane's root, or holding a harness ae cannot
+        // place, which is exactly what a reseat's stop refuses on.
         for (probe, rows) in [
             (Some(probe(None)), Some(&table[..])),
             (Some(probe(Some(100))), None),
             (Some(probe(Some(100))), Some(&[][..])),
+            (Some(probe(Some(100))), Some(&unplaced[..])),
             (None, Some(&table[..])),
         ] {
             assert_eq!(seat_reading(probe.as_ref(), rows), Observed::Unknown);
