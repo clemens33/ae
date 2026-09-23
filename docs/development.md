@@ -87,8 +87,8 @@ transliteration of a 40-assertion bash section.
 `/tmp` — short, because a tmux socket beneath it must fit `sun_path` (104 bytes on macOS), and
 the owner refuses a root that leaves no room. The root is registered with the lane's reaper
 before any tmux starts there, and its `Drop` kills every server beneath it before removing it.
-A test killed outright is reaped when its lane exits. The lane waits up to 30 s for an orphaned
-child to let go; past that it fails, and it keeps itself for the next lane to reap.
+A test killed outright is reaped when its lane exits, unless an orphaned child still holds its
+root 30 s later: then the lane fails and keeps itself, and the next lane retries the reap.
 `cli::no_test_file_rolls_its_own_scratch_root` refuses a root built by hand. Parallelism is
 config: nextest runs at most eight tests (`.config/nextest.toml`, lowered to the core count by
 the lane), `just rust-mutants` one mutant at a time on four (`.cargo/mutants.toml`).
