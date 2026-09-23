@@ -291,18 +291,19 @@ pub(crate) mod capture {
         }
 
         /// Kill every server under `root` and each `listed` socket, for an
-        /// owner about to remove `root`. Needs no lane: the owner's own Drop.
+        /// owner about to remove `root`; whether all are gone. Needs no lane:
+        /// the owner's own Drop.
         #[cfg(unix)]
-        pub(crate) fn kill_servers_under(root: &Path, listed: &[PathBuf]) {
+        pub(crate) fn kill_servers_under(root: &Path, listed: &[PathBuf]) -> bool {
             let mut sockets = listed.to_vec();
-            let _ = find_sockets(root, &mut sockets);
+            let found = find_sockets(root, &mut sockets);
             sockets.sort();
             sockets.dedup();
-            let _ = kill_servers(&sockets, root, root);
+            kill_servers(&sockets, root, root) && found
         }
 
         /// Whether every socket's server is gone. One whose server already
-        /// died (`no server running`) is gone, not a failure.
+        /// died (`no server running`) or whose socket is gone is not a failure.
         #[cfg(unix)]
         #[allow(
             clippy::disallowed_methods,
@@ -319,8 +320,10 @@ pub(crate) mod capture {
                     .arg("kill-server");
                 all &= run_unreaped(&kill, cwd, &out, &err)
                     .is_ok_and(|status| matches!(status.outcome(), ExitOutcome::Code(0)))
-                    || fs::read_to_string(&err)
-                        .is_ok_and(|text| text.contains("no server running"));
+                    || fs::read_to_string(&err).is_ok_and(|text| {
+                        text.contains("no server running")
+                            || text.contains("(No such file or directory)")
+                    });
             }
             all
         }

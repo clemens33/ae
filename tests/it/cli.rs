@@ -395,7 +395,10 @@ impl Drop for OwnedScratch {
 
         // Every server beneath the root, not only the listed ones: a fixture
         // may start one under any `-L` name with `TMUX_TMPDIR` pointed here.
-        raw::kill_servers_under(&self.path, &self.tmux_servers);
+        // One that survives keeps the root, which the lane reaper retries.
+        if !raw::kill_servers_under(&self.path, &self.tmux_servers) {
+            return;
+        }
 
         // A pane's command can outlive the server's shutdown briefly. Stop
         // processes carrying this exact scratch path before waiting for them.

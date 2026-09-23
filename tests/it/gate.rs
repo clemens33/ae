@@ -150,7 +150,8 @@ fn rust_test_tmux_isolation_ok(justfile: &str) -> bool {
         "reap_registry()",
         "reap_dead_scratch()",
         "mktemp -d \"$base/ae-rust-test.$$.XXXXXX\"",
-        "reap_registry \"$test_tmux_tmp\" || true",
+        "until reap_registry \"$test_tmux_tmp\"; do",
+        "warning: kept $test_tmux_tmp",
         "export TMPDIR=\"$test_tmux_tmp/tmp\"",
         "export NEXTEST_TEST_THREADS=$((cpus < 8 ? cpus : 8))",
         "TMUX_TMPDIR=\"$test_tmux_tmp\" env -u TMUX -u TMUX_PANE tmux -L ae kill-server",
@@ -510,8 +511,9 @@ fn killed_scratch_child(base: &Path, lane: &Path, server: Option<&str>) -> Strin
 }
 
 /// A test killed by `SIGKILL` while it owns a scratch root and a tmux server leaves
-/// neither once the next lane has swept: the registered root is removed with
-/// its server, and an unregistered root of a dead owner goes too.
+/// neither: a dead lane's is swept when the next lane starts, the running
+/// lane's when it exits — waiting out an owner that outlives `cargo` — and an
+/// unregistered root of a dead owner goes too.
 #[test]
 fn a_killed_tests_scratch_and_server_are_swept_by_the_lane() {
     let base = super::cli::OwnedScratch::root("gate", "sweep");
@@ -519,15 +521,40 @@ fn a_killed_tests_scratch_and_server_are_swept_by_the_lane() {
     let lane = base.join("lane");
     std::fs::create_dir_all(&lane).expect("the killed child's lane");
     let registered = killed_scratch_child(&base, &lane, Some(&name));
-    let unregistered = killed_scratch_child(&base, &base.join("no-lane"), None);
+    killed_scratch_child(&base, &base.join("no-lane"), None);
     // The lane is named for a dead owner only now that one exists.
     let stale = base.join(format!("ae-rust-test.{registered}.killed"));
     std::fs::rename(&lane, &stale).expect("the dead lane");
+    // The lane's own `cargo`: the killed child again, registered in THIS lane,
+    // and a registered owner still alive when `cargo` returns.
+    let cargo = base.join("bin").join("cargo");
+    std::fs::create_dir_all(base.join("bin")).expect("the fake cargo's dir");
+    std::fs::write(
+        &cargo,
+        "#!/bin/sh\n[ \"$1\" = nextest ] || exit 0\n\
+         \"$AE_GATE_EXE\" --exact gate::scratch_sigkill_child >/dev/null 2>&1\n\
+         sleep 3 & late=$!\nroot=\"$AE_TEST_TMPDIR/ae-it-$late/late\"\n\
+         mkdir -p \"$root\" \"$TMUX_TMPDIR/.ae-parity-fixtures/$late\"\n\
+         ln -s \"$root\" \"$TMUX_TMPDIR/.ae-parity-fixtures/$late/0\"\n",
+    )
+    .expect("the fake cargo");
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&cargo, std::fs::Permissions::from_mode(0o755))
+            .expect("an executable fake cargo");
+    }
+    let path = std::env::var("PATH").unwrap_or_default();
+    let exe = std::env::current_exe().expect("the integration test binary");
 
     let swept = raw::run(
         &Invocation::new("just")
             .arg("_tmux-isolated")
-            .arg("unknown")
+            .arg("test")
+            .env("PATH", format!("{}:{path}", base.join("bin").display()))
+            .env("AE_GATE_EXE", exe)
+            .env("AE_GATE_SCRATCH_KILL_BASE", &*base)
+            .env("AE_GATE_SCRATCH_KILL_REPORT", base.join("exit-pid"))
+            .env("AE_GATE_SCRATCH_KILL_SERVER", format!("{name}-exit"))
             .env("TMPDIR", &*base)
             .env("AE_TEST_TMPDIR", &*base),
         &root(),
@@ -550,19 +577,22 @@ fn a_killed_tests_scratch_and_server_are_swept_by_the_lane() {
             &base.join("pkill-err"),
         );
     }
-    assert!(matches!(swept.outcome(), ExitOutcome::Code(2)));
+    assert!(matches!(swept.outcome(), ExitOutcome::Code(0)));
+    assert!(
+        !read(&base.join("exit-pid")).trim().is_empty(),
+        "the lane ran the killed child"
+    );
     assert!(
         !alive,
         "the killed test's tmux server -L {name} outlived the sweep"
     );
-    for pid in [registered, unregistered] {
-        let owned = base.join(format!("ae-it-{pid}"));
-        assert!(
-            !owned.exists(),
-            "a dead test's scratch root outlived the sweep: {}",
-            owned.display()
-        );
-    }
+    let left: Vec<String> = std::fs::read_dir(&*base)
+        .expect("the sweep base")
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|entry| entry.starts_with("ae-it-") || entry.starts_with("ae-rust-test."))
+        .collect();
+    assert!(left.is_empty(), "scratch outlived the lanes: {left:?}");
 }
 
 /// Whether the `release` recipe refreshes the fuzz crate's lock inside the

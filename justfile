@@ -1105,7 +1105,7 @@ _tmux-isolated lane *args:
                 fi
                 scratch="$(readlink "$entry")" || { failed=1; continue; }
                 if owned_root "$owner" "$scratch"; then
-                    if reap_sockets "$owned"; then rm -rf "$owned"; else failed=1; fi
+                    reap_sockets "$owned" && rm -rf "$owned" 2>/dev/null || failed=1
                 elif [[ -e "$scratch" ]]; then
                     reap_sockets "$scratch" || failed=1
                 fi
@@ -1146,8 +1146,17 @@ _tmux-isolated lane *args:
     test_tmux_tmp="$(mktemp -d "$base/ae-rust-test.$$.XXXXXX")"
     cleanup() {
         TMUX_TMPDIR="$test_tmux_tmp" env -u TMUX -u TMUX_PANE tmux -L ae kill-server >/dev/null 2>&1 || true
-        reap_registry "$test_tmux_tmp" || true
         reap_dead_scratch
+        # A test's orphaned child (a real opencode) can write into its root for
+        # seconds after the test; past the bound the next lane start retries.
+        local tries=30
+        until reap_registry "$test_tmux_tmp"; do
+            if ((--tries == 0)); then
+                echo "warning: kept $test_tmux_tmp: a registered scratch root or its tmux server outlived the lane" >&2
+                return
+            fi
+            sleep 1
+        done
         rm -rf "$test_tmux_tmp"
     }
     trap cleanup EXIT
