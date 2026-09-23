@@ -13954,10 +13954,9 @@ mod tests {
     fn journaling_helper(dir: &Path) -> SendHelper {
         use std::os::unix::fs::PermissionsExt;
         let send = dir.join(super::HELPER_NAME);
-        let script = format!(
-            "#!/bin/sh\nprintf '{{\"ts\":\"2026-09-23T00:00:00Z\",\"actor\":\"watchdog\",\"action\":\"%s\",\"summary\":\"%s\"}}\\n' \"$_AE_EVENT_ACTION\" \"$_AE_EVENT_SUMMARY\" >> '{}'\n",
-            dir.join("events.jsonl").display()
-        );
+        // The journal sits beside the helper, found through `$0`, so no path is
+        // spliced into the script.
+        let script = "#!/bin/sh\nprintf '{\"ts\":\"2026-09-23T00:00:00Z\",\"actor\":\"watchdog\",\"action\":\"%s\",\"summary\":\"%s\"}\\n' \"$_AE_EVENT_ACTION\" \"$_AE_EVENT_SUMMARY\" >> \"$(dirname \"$0\")/events.jsonl\"\n";
         std::fs::write(&send, script).expect("the fake helper");
         std::fs::set_permissions(&send, std::fs::Permissions::from_mode(0o755)).expect("exec");
         SendHelper::for_session(dir)

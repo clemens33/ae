@@ -1658,13 +1658,13 @@ mod tests {
         )
     }
 
-    /// A watchdog `nudge` — the action BOTH the stale nudge and the
-    /// orchestrator's sweep prompt carry, on ONE line, because a record that
-    /// spans two lines is skipped for being unframed rather than for being a
-    /// nudge, and a fixture that passes for that reason proves nothing.
-    fn nudge_event(ts: &str, summary: &str) -> String {
+    /// A watchdog `action` — the stale `nudge` or the orchestrator's
+    /// `sweep-nudge` — on ONE line, because a record that spans two lines is
+    /// skipped for being unframed rather than for being a nudge, and a fixture
+    /// that passes for that reason proves nothing.
+    fn nudge_event(ts: &str, action: &str, summary: &str) -> String {
         format!(
-            r#"{{"ts":"{ts}","actor":"watchdog","action":"nudge","target":"claude:lead","summary":"{summary}"}}"#
+            r#"{{"ts":"{ts}","actor":"watchdog","action":"{action}","target":"claude:lead","summary":"{summary}"}}"#
         )
     }
 
@@ -1994,15 +1994,14 @@ mod tests {
 
     #[test]
     fn a_sweep_nudge_is_not_forwarded_by_default() {
-        // The orchestrator's sweep prompt and the stale nudge are both the
-        // `nudge` action (only their summaries differ), and neither is in the
-        // default Telegram include.
+        // Neither the orchestrator's sweep prompt nor the stale nudge is in
+        // the default Telegram include.
         let temp = Temp::new("sweep");
         append(
             temp.path(),
             &[
-                nudge_event("2026-08-29T10:00:00Z", "sweep cadence"),
-                nudge_event("2026-08-29T10:00:01Z", "stale 900s"),
+                nudge_event("2026-08-29T10:00:00Z", "sweep-nudge", "sweep cadence"),
+                nudge_event("2026-08-29T10:00:01Z", "nudge", "stale 900s"),
                 chat_event("claude:lead", "this one is a say"),
             ],
         );

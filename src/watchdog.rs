@@ -532,8 +532,10 @@ pub(crate) const WAIT_CHALLENGE_ACTION: &str = "wait-challenge";
 
 /// Which proof challenge a watchdog record carries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Challenge {
+pub enum Challenge {
+    /// A `done-challenge`.
     Done,
+    /// A `wait-challenge` for this declared wait state.
     Wait(WaitState),
 }
 
@@ -553,7 +555,8 @@ pub(crate) fn challenge_summary(challenge: Challenge, number: u8, required: u8) 
 /// `[unconfirmed] ` head, and a refused-pre-paste tail
 /// ([`crate::send::REFUSED_PRE_PASTE`]) is cut off first. Exact: the digits
 /// are digits, and nothing may sit around the challenge in its clause.
-pub(crate) fn challenge_named(summary: &str) -> Option<Challenge> {
+#[must_use]
+pub fn challenge_named(summary: &str) -> Option<Challenge> {
     let body = summary
         .split_once(crate::send::REFUSED_PRE_PASTE)
         .map_or(summary, |(body, _)| body);

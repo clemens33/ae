@@ -180,3 +180,10 @@ path = "fuzz_targets/brief_retry_record.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "challenge_summary"
+path = "fuzz_targets/challenge_summary.rs"
+test = false
+doc = false
+bench = false
