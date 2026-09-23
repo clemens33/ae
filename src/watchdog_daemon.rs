@@ -7552,7 +7552,10 @@ mod tests {
         let meta = Path::new("/m");
         let mut first = QuotaCarry::default();
         let booked = first.reconcile_with_candidates(&window, &[], &candidates, meta);
-        let receipt = receipt_of(checkpoint_asks(&booked)[0]);
+        let asked = checkpoint_asks(&booked)[0];
+        // Spelled from the vendor's own reset, not from the advisory's report of it.
+        let receipt = ask_receipt(&asked.key, Some(13_600), &asked.recipient).expect("a receipt");
+        let last_week = ask_receipt(&asked.key, Some(13_600 - 604_800), &asked.recipient);
         let journal = [receipt.as_str()];
 
         let silent = quota_observation(Vec::new(), 10_000);
@@ -7568,6 +7571,12 @@ mod tests {
         assert!(restarted.settled.is_empty(), "so does an unaware cycle");
         // No receipt, nothing to recover from: everyone is asked.
         assert_eq!(pass(&mut restarted, &window, &[]), ["lead", "colead"]);
+        // Last week's receipt is not this week's.
+        let stale = [last_week.as_deref().expect("a receipt")];
+        assert_eq!(
+            pass(&mut QuotaCarry::default(), &window, &stale),
+            ["lead", "colead"]
+        );
     }
 
     #[test]

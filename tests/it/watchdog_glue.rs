@@ -574,8 +574,8 @@ fn a_seat_entering_the_quota_low_band_is_asked_to_checkpoint_exactly_once() {
     // quota-checkpoint event it writes for a delivered or unconfirmed paste.
     let receipt_ref = asks[1].rsplit_once(" ref=").map(|(_, reference)| reference);
     assert!(
-        receipt_ref.is_some_and(|reference| reference.len() == 26
-            && reference.starts_with("quota-ask-")),
+        receipt_ref
+            .is_some_and(|reference| reference.len() == 26 && reference.starts_with("quota-ask-")),
         "the ask carries its receipt: {}",
         asks[1]
     );
