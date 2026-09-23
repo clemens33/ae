@@ -12755,7 +12755,8 @@ mod tests {
     /// footprint filter. `watchdog.rs`'s `RAW_NUDGE` receipt exercises the
     /// pre-`waiting-agent` spelling only, so without this composition a
     /// deleted `strip_suffix(NUDGE_TAIL)` would leave every current-core nudge
-    /// counting as pane activity — a quiet hold that never arms.
+    /// counting as pane motion, so the nudge itself would keep its seat from
+    /// ever reading stale.
     ///
     /// `idle_nudge_text` is a DIFFERENT generator whose raw sentence the
     /// footprint filter has never recognized (pre-existing; named in
@@ -14494,7 +14495,7 @@ mod tests {
         assert_eq!(fresh.nudge_count, 0, "nor mid-way through its nudges");
         assert_eq!(fresh.undelivered_streak, 0);
         assert_eq!(fresh.throttle_streak, 0);
-        assert_eq!(fresh.prev_hash, None, "the quiet baseline re-arms");
+        assert_eq!(fresh.prev_hash, None, "the motion baseline starts over");
         assert_eq!(fresh.client_activity, None, "nor another seat's input");
         assert_eq!(
             fresh.sweep,
