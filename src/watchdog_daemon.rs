@@ -262,6 +262,9 @@ pub struct Observation {
     pub descendancy: Descendancy,
     /// Age of the newest event this agent is the ACTOR of.
     pub last_actor_event_age_secs: u64,
+    /// Age of this seat's newest declaration: what a `waiting-agent` ceiling
+    /// measures, the same age `ae list` reads.
+    pub declared_age_secs: u64,
     /// The orchestrator sweep reading, `Some` ONLY for the orchestrator main
     /// agent with the cadence enabled.
     pub sweep: Option<SweepObservation>,
@@ -383,12 +386,14 @@ pub enum Effect {
         required: u8,
         done_age_secs: u64,
     },
-    /// Deliver a wait proof challenge for the RAW declared `state`.
+    /// Deliver a wait proof challenge for the RAW declared `state`;
+    /// `escalated` is [`waiting_agent_escalates`]'s answer for this cycle.
     WaitChallenge {
         confirmations: u8,
         required: u8,
         wait_age_secs: u64,
         state: WaitState,
+        escalated: bool,
     },
     /// A line for the human, published with `display-message`.
     Notify(String),
@@ -1587,9 +1592,9 @@ fn book_stale(
 }
 
 /// The R4 escalation of a quiet `waiting-agent`, or `None` while its hold
-/// stands. The declaration's age is `seen.last_actor_event_age_secs` because
-/// the newest event the seat is the actor of IS the declaration the hold was
-/// armed from — any newer one ends the hold before this branch is reached.
+/// stands. The ceiling measures `seen.declared_age_secs`, the age of the
+/// declaration the hold was armed from: the seat's own later traffic leaves
+/// the hold standing, so the newest own event is not that declaration.
 ///
 /// Past the ceiling the seat becomes exactly `blocked`: the verdict published
 /// is `Quiet(Blocked)` — the attention half, on the same ceiling the read
@@ -1604,12 +1609,7 @@ fn book_waiting_agent_escalation(
     seen: &Observation,
     knobs: &Knobs,
 ) -> Option<Verdict> {
-    if seen.quiet != Some(QuietKind::WaitingAgent)
-        || !crate::watchdog::waiting_agent_escalated(
-            seen.last_actor_event_age_secs,
-            knobs.idle_nudge_secs,
-        )
-    {
+    if !waiting_agent_escalates(seen, knobs) {
         return None;
     }
     // An ACTIVE wait episode owns the next delivery: challenge, not nudge. A
@@ -1624,6 +1624,13 @@ fn book_waiting_agent_escalation(
         book_stale(prior, next, effects, knobs, seen.last_actor_event_age_secs);
     }
     Some(Verdict::Quiet(QuietKind::Blocked))
+}
+
+/// Whether this cycle's quiet `waiting-agent` is past its ceiling — the one
+/// answer the escalated verdict and the challenge text both read.
+fn waiting_agent_escalates(seen: &Observation, knobs: &Knobs) -> bool {
+    seen.quiet == Some(QuietKind::WaitingAgent)
+        && crate::watchdog::waiting_agent_escalated(seen.declared_age_secs, knobs.idle_nudge_secs)
 }
 
 /// The orchestrator main's sweep branch, or `None` when this pane is not it.
@@ -1853,6 +1860,7 @@ fn account_ordinary(
                 required,
                 wait_age_secs,
                 state: wait_state,
+                escalated: waiting_agent_escalates(seen, knobs),
             });
         } else if attempts == knobs.undelivered_max {
             effects.extend(unreachable_effects(attempts, &stale_display(wait_age_secs)));
@@ -1860,10 +1868,8 @@ fn account_ordinary(
     }
 
     // 6. A quiet declaration. A FRESH `waiting-agent` holds like the other
-    // quiet states; past its ceiling it escalates (see the helper). While the
-    // hold stands, the newest event this agent is the actor of IS its
-    // declaration: any newer one would have ended the quiet state in
-    // `resolve_quiet`.
+    // quiet states; past its ceiling, measured from the declaration itself,
+    // it escalates (see the helper).
     if let Some(kind) = seen.quiet {
         if let Some(verdict) =
             book_waiting_agent_escalation(prior, &mut next, &mut effects, seen, knobs)
@@ -2284,8 +2290,7 @@ pub fn age_secs(now_epoch: i64, at_epoch: i64) -> u64 {
 /// The age of the newest event this SEAT is the actor of — judged by the ONE
 /// routing-aware actor rule ([`crate::watchdog::event_is_actor`]), so a
 /// same-display event from another incarnation is not this seat's activity.
-/// The `waiting-agent` escalation measures its ceiling on this age: the
-/// declaration the quiet hold was armed from IS the newest own event.
+/// Staleness reads it; a `waiting-agent` ceiling reads [`declaration_age`].
 #[must_use]
 pub fn last_actor_event_age(
     events: &[Event],
@@ -2298,6 +2303,21 @@ pub fn last_actor_event_age(
         .iter()
         .rev()
         .find(|event| crate::watchdog::event_is_actor(event, session, slot, agent))
+        .map_or(NO_EVENT_AGE, |event| age_secs(now_epoch, event.ts.epoch()))
+}
+
+/// The age of this seat's newest declaration, or [`NO_EVENT_AGE`] when it has
+/// none — the declaration [`crate::session::latest_declaration_in`] finds for
+/// `ae list` too, so both surfaces escalate a wait on the same second.
+#[must_use]
+pub fn declaration_age(
+    events: &[Event],
+    session: &str,
+    slot: &str,
+    agent: &str,
+    now_epoch: i64,
+) -> u64 {
+    crate::session::latest_declaration_in(events, session, slot, agent)
         .map_or(NO_EVENT_AGE, |event| age_secs(now_epoch, event.ts.epoch()))
 }
 
@@ -4944,6 +4964,7 @@ impl Cycle<'_> {
                     agent,
                     now,
                 ),
+                declared_age_secs: declaration_age(&events, self.session, &slot, agent, now),
                 // Decided HERE, once, and the type carries the answer: a pane
                 // that is not the orchestrator main gets `None` and no sweep
                 // branch can reach it.
@@ -5630,12 +5651,8 @@ impl Cycle<'_> {
                 required,
                 wait_age_secs,
                 state,
+                escalated,
             } => {
-                let escalated = *state == WaitState::WaitingAgent
-                    && crate::watchdog::waiting_agent_escalated(
-                        on.seen.last_actor_event_age_secs,
-                        self.knobs.idle_nudge_secs,
-                    );
                 let text = wait_challenge_text(
                     self.goal.as_deref(),
                     self.meta_dir,
@@ -5643,7 +5660,7 @@ impl Cycle<'_> {
                     *confirmations,
                     *required,
                     *state,
-                    escalated,
+                    *escalated,
                 );
                 let num = confirmations.saturating_add(1);
                 let summary = format!("{} confirmation {num}/{required}", state.as_str());
@@ -6626,6 +6643,7 @@ mod tests {
             wait_progress: WaitProgress::None,
             descendancy: Descendancy::Present,
             last_actor_event_age_secs: 0,
+            declared_age_secs: 0,
             sweep: None,
             own_work: crate::session::OwnWork::default(),
         }
@@ -11848,7 +11866,7 @@ mod tests {
         let mut observed = seen();
         observed.quiet = Some(QuietKind::WaitingAgent);
 
-        observed.last_actor_event_age_secs = 1_199;
+        observed.declared_age_secs = 1_199;
         let fresh = account(&PaneState::default(), &observed, &knobs);
         assert_eq!(
             fresh.verdict,
@@ -11860,7 +11878,7 @@ mod tests {
             "the fresh half must not nudge"
         );
 
-        observed.last_actor_event_age_secs = 1_200;
+        observed.declared_age_secs = 1_200;
         let escalated = account(&PaneState::default(), &observed, &knobs);
         assert_eq!(
             escalated.verdict,
@@ -11884,6 +11902,86 @@ mod tests {
             "a zero knob switches off nudging, never the human marker"
         );
         assert!(!attention_only.effects.contains(&Effect::Nudge));
+    }
+
+    /// A `waiting-agent` ceiling is its DECLARATION's age on both surfaces.
+    /// The seat's own memo one second short of the ceiling leaves the wait
+    /// standing, so it must not restart the clock: the daemon publishes
+    /// `blocked` on the same second `ae list` does, from the same journal.
+    #[test]
+    fn a_waiting_agent_escalates_on_its_declarations_age_on_both_surfaces() {
+        let scratch = Scratch::new("wait-ceiling-both-surfaces");
+        let t0 = 1_780_000_000;
+        let ts = |epoch: i64| crate::time::Timestamp::from_epoch(epoch).to_string();
+        let lines = [
+            format!(
+                r#"{{"ts":"{}","actor":"lead","action":"state","ref":"waiting-agent","summary":"waiting on colead","actor_slot":"main","actor_session":"live"}}"#,
+                ts(t0)
+            ),
+            format!(
+                r#"{{"ts":"{}","actor":"lead","action":"memo","ref":"arch","summary":"still chasing","actor_slot":"main","actor_session":"live"}}"#,
+                ts(t0 + 1_199)
+            ),
+        ];
+        std::fs::write(
+            scratch.0.join("meta"),
+            "mode=local\norigin=/src\nwork_dir=/src\nseat.main=lead\nprofile.main=claude\n",
+        )
+        .expect("meta");
+        std::fs::write(scratch.0.join("events.jsonl"), lines.join("\n") + "\n").expect("events");
+        let events: Vec<Event> = lines
+            .iter()
+            .map(|line| Event::parse_line(line).expect("a journal line"))
+            .collect();
+        let found = crate::watchdog::latest_relevant_event(&events, "live", "main", "lead")
+            .expect("the declaration is relevant");
+        let mut observed = seen();
+        observed.quiet = crate::watchdog::quiet_reason(&found);
+        assert_eq!(observed.quiet, Some(QuietKind::WaitingAgent));
+        let runtime = crate::session::SessionRuntime::new(crate::digest::Status::Running);
+        for (now, verdict, reason) in [
+            (t0 + 1_199, QuietKind::WaitingAgent, None),
+            (
+                t0 + 1_200,
+                QuietKind::Blocked,
+                Some(crate::attention::Reason::Blocked),
+            ),
+        ] {
+            observed.now_epoch = now;
+            observed.declared_age_secs =
+                super::declaration_age(&events, "live", "main", "lead", now);
+            observed.last_actor_event_age_secs =
+                last_actor_event_age(&events, "live", "main", "lead", now);
+            assert_eq!(
+                account(&PaneState::default(), &observed, &Knobs::default()).verdict,
+                Verdict::Quiet(verdict),
+                "the daemon at {now}"
+            );
+            let listed = crate::session::entry_for(
+                &scratch.0,
+                "live",
+                &runtime,
+                crate::time::Timestamp::from_epoch(now),
+                crate::session::DEFAULT_UNANSWERED_SECS,
+            );
+            assert_eq!(listed.agents[0].reason, reason, "ae list at {now}");
+            let challenged = Observation {
+                wait_progress: wait_due(0),
+                ..observed.clone()
+            };
+            let pushed = account(&PaneState::default(), &challenged, &Knobs::default());
+            assert!(
+                pushed.effects.iter().any(|effect| matches!(
+                    effect,
+                    Effect::WaitChallenge { escalated, .. } if *escalated == reason.is_some()
+                )),
+                "the challenge text says blocked exactly when the verdict does, at {now}"
+            );
+        }
+        assert_eq!(
+            observed.last_actor_event_age_secs, 1,
+            "the newest own event is the memo, which is not what the ceiling ages"
+        );
     }
 
     #[test]
@@ -12368,11 +12466,11 @@ mod tests {
             confirmations: 0,
             required: 2,
         };
-        observed.last_actor_event_age_secs = 0;
+        observed.declared_age_secs = 0;
         let fresh = account(&PaneState::default(), &observed, &knobs);
         assert_eq!(fresh.verdict, Verdict::Quiet(QuietKind::WaitingAgent));
         assert!(fresh.effects.contains(&Effect::Nudge));
-        observed.last_actor_event_age_secs = 1200;
+        observed.declared_age_secs = 1200;
         let old = account(&PaneState::default(), &observed, &knobs);
         assert_eq!(old.verdict, Verdict::Quiet(QuietKind::Blocked));
         let nudges = old
