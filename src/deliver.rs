@@ -2084,10 +2084,10 @@ mod tests {
         let border = InputModel::BorderDelimited;
         // A box still staged on an early read, cleared once the budget is spent.
         let mut reads = vec![boxed(text), boxed("")].into_iter();
-        let late = settle(Duration::from_millis(40), border, text, || {
+        let late = settle(Duration::from_millis(500), border, text, || {
             let read = reads.next();
             if reads.len() == 0 {
-                std::thread::sleep(Duration::from_millis(60));
+                std::thread::sleep(Duration::from_millis(600));
             }
             read
         });
