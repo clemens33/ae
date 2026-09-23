@@ -54,11 +54,13 @@ Then, under `.lifecycle.<session>.lock`:
    refusing on it after a kill would be the worst order this verb could
    take); the caller proven not to be running UNDER the target, because the
    pane check at step 7 is only half that rule — a process the target's own
-   tool started carries no `$TMUX_PANE` to compare, so `procs::is_descendant_of`
-   walks the tree, and a missing pid or unusable table REFUSES; the TREE,
-   from that same snapshot: a known harness the seat does not record
-   anywhere in it (`procs::harness_rows`) REFUSES by tool, pid and parent,
-   because the respawn ends the whole tree, and no flag lifts it; the pane's
+   tool started carries no `$TMUX_PANE` to compare, so `procs::lineage`
+   walks the tree, and a missing pid, an unusable table, a missing row for the
+   pane or the caller, or an ancestry broken before either REFUSES by name; the
+   TREE, from that same snapshot: a known harness the seat does not record
+   anywhere in it, or one ae cannot place outside it (`procs::harness_rows`),
+   REFUSES by tool, pid and parent, because the respawn ends the whole tree,
+   and no flag lifts it; the pane's
    SEND-LOCK, asked with a short wait of its own because the lifecycle lock is
    already held; then the FRAME.
 

@@ -456,31 +456,40 @@ enum Stop {
 
 /// Where the caller stands relative to the seat whose tool is about to be
 /// ended — PURE, from the readings the stop already took.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum CallerStanding {
     /// The caller's process tree does not place it under the seat's pane.
     Clear,
     /// The caller runs BENEATH that pane: ending the tool would kill it.
     Under,
-    /// A reading is missing, so the two cannot be told apart.
-    Unprovable,
+    /// A reading is missing, so the two cannot be told apart — named.
+    Unprovable(String),
 }
 
-/// FAIL-CLOSED BY CONSTRUCTION: a pane with no readable pid, or a process
-/// table ae could not take, is [`CallerStanding::Unprovable`] and never
-/// permission to kill. `Clear` is the only answer the stop may act on.
+/// FAIL-CLOSED BY CONSTRUCTION: every gap — no pid, no table, no row for the
+/// pane or for this command, an ancestry broken before either — is
+/// [`CallerStanding::Unprovable`]. `Clear` is the only answer a stop acts on.
 fn caller_standing(
     pane_pid: Option<u32>,
     table: Option<&[procs::Proc]>,
     me: u32,
 ) -> CallerStanding {
     let (Some(pane_pid), Some(rows)) = (pane_pid, table) else {
-        return CallerStanding::Unprovable;
+        let gap = crate::seat_relaunch::unproven_gap(pane_pid, "", table.is_some());
+        return CallerStanding::Unprovable(gap);
     };
-    if procs::is_descendant_of(rows, pane_pid, me) {
-        CallerStanding::Under
-    } else {
-        CallerStanding::Clear
+    if !rows.iter().any(|row| row.pid == pane_pid) {
+        let gap = format!("the pane's own process (pid {pane_pid}) is not in the process table");
+        return CallerStanding::Unprovable(gap);
+    }
+    match procs::lineage(rows, pane_pid, me) {
+        procs::Lineage::Under => CallerStanding::Under,
+        procs::Lineage::Clear => CallerStanding::Clear,
+        procs::Lineage::Broken(at) => CallerStanding::Unprovable(if at == me {
+            format!("this command's own process (pid {me}) is not in the process table")
+        } else {
+            format!("this command's ancestry breaks at pid {at}, before the pane or pid 1")
+        }),
     }
 }
 
@@ -500,8 +509,15 @@ fn mixed_refusal(
 ) -> Option<String> {
     let foreign: Vec<String> = procs::harness_rows(rows, pane_pid)
         .into_iter()
-        .filter(|(_, proc)| !procs::name_matches(&proc.comm, recorded.binary))
-        .map(|(tool, proc)| format!("{} (pid {}, parent {})", tool.as_str(), proc.pid, proc.ppid))
+        .filter(|(_, proc, _)| !procs::name_matches(&proc.comm, recorded.binary))
+        .map(|(tool, proc, place)| match place {
+            procs::Lineage::Broken(at) => format!(
+                "{} (pid {}, which ae cannot place: its ancestry breaks at pid {at})",
+                tool.as_str(),
+                proc.pid
+            ),
+            _ => format!("{} (pid {}, parent {})", tool.as_str(), proc.pid, proc.ppid),
+        })
         .collect();
     if foreign.is_empty() {
         return None;
@@ -512,9 +528,10 @@ fn mixed_refusal(
         format!("profile '{}'", recorded.profile)
     };
     Some(format!(
-        "Error: '{}' runs its recorded {} ({profile}) in pane {}, but that pane's tree also runs \
-         {} — a stop ends the whole tree, and ae ends only the tool a seat records, so nothing \
-         was stopped. Wait for it to exit, or end it yourself, then re-run the reseat.",
+        "Error: '{}' runs its recorded {} ({profile}) in pane {}, but a harness it does not \
+         record runs in, or cannot be placed outside, that pane's tree: {} — a stop ends the \
+         whole tree, and ae ends only the tool a seat records, so nothing was stopped. Wait for \
+         it to exit, or end it yourself, then re-run the reseat.",
         target.agent,
         recorded.binary,
         target.pane,
@@ -652,14 +669,12 @@ fn stop_running_tool(
             )?;
             return Ok(Stop::Refused);
         }
-        CallerStanding::Unprovable => {
+        CallerStanding::Unprovable(gap) => {
             writeln!(
                 err,
                 "Error: '{}' is running in pane {} and ae cannot prove this command is not \
-                 running under it ({}) — nothing was stopped.",
-                target.agent,
-                target.pane,
-                crate::seat_relaunch::unproven_gap(probe.pid, &agent_bin, table.is_some())
+                 running under it ({gap}) — nothing was stopped.",
+                target.agent, target.pane
             )?;
             return Ok(Stop::Refused);
         }
@@ -1486,16 +1501,22 @@ mod tests {
             super::caller_standing(Some(10), Some(&rows), 40),
             CallerStanding::Clear
         );
-        // Either gap answers the same way, because ae may not end a tool it
-        // cannot prove is not its own parent.
-        assert_eq!(
-            super::caller_standing(None, Some(&rows), 40),
-            CallerStanding::Unprovable
-        );
-        assert_eq!(
-            super::caller_standing(Some(10), None, 40),
-            CallerStanding::Unprovable
-        );
+        // Every gap refuses, NAMED, because ae may not end a tool it cannot
+        // prove is not its own parent — a missing row included.
+        let (full, broken) = (&rows[..], &[row(10, 1), row(50, 60)][..]);
+        for (pane, table, me, gap) in [
+            (None, Some(full), 40, "no pid for the pane"),
+            (Some(10), None, 40, "table could not be read"),
+            (Some(99), Some(full), 40, "pane's own process (pid 99)"),
+            (Some(10), Some(full), 77, "own process (pid 77) is not"),
+            (Some(10), Some(broken), 50, "ancestry breaks at pid 60"),
+        ] {
+            let standing = super::caller_standing(pane, table, me);
+            assert!(
+                matches!(&standing, CallerStanding::Unprovable(why) if why.contains(gap)),
+                "{gap}: {standing:?}"
+            );
+        }
     }
 
     #[test]
@@ -1596,6 +1617,14 @@ mod tests {
         ] {
             assert!(line.contains(part), "{part:?} missing: {line}");
         }
+        // A harness ae cannot place outside the tree is not proven absent.
+        let unplaced = [row(100, 1, "sh"), row(900, 850, "claude")];
+        let line = super::mixed_refusal(&unplaced, 100, &codex, &target).unwrap_or_default();
+        assert!(
+            line.contains(
+                "claude (pid 900, which ae cannot place: its ancestry breaks at pid 850)"
+            )
+        );
         // The pane's OWN process is its tree too.
         assert!(
             super::mixed_refusal(&[row(100, 1, "grok")], 100, &codex, &target)

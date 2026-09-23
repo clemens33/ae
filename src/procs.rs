@@ -136,28 +136,43 @@ pub fn has_descendant_named(procs: &[Proc], pane_pid: u32, agent_bin: &str) -> b
     false
 }
 
-/// Whether `pid` runs BENEATH `ancestor` — the walk [`has_descendant_named`]
+/// Where `pid` stands relative to `ancestor` — the walk [`has_descendant_named`]
 /// makes downwards, made UPWARDS from one known pid.
 ///
 /// A seat cannot reseat itself, and the pane id is only half of that rule: a
 /// caller the target's own tool started may carry no `$TMUX_PANE` to compare,
 /// and the process tree is the other half. Walks up with a visited set,
 /// because a damaged table can name a cycle and this may not hang.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Lineage {
+    /// `ancestor` is on its way up.
+    Under,
+    /// The walk reached pid 1 or 0 without meeting `ancestor`.
+    Clear,
+    /// The walk stopped here: the table has no row for this pid, or a cycle.
+    Broken(u32),
+}
+
+/// THE upward walk. A gap is [`Lineage::Broken`], never clear: ae cannot place
+/// a process whose parent it never saw.
 #[must_use]
-pub(crate) fn is_descendant_of(procs: &[Proc], ancestor: u32, pid: u32) -> bool {
+pub(crate) fn lineage(procs: &[Proc], ancestor: u32, pid: u32) -> Lineage {
     let parents: HashMap<u32, u32> = procs.iter().map(|proc| (proc.pid, proc.ppid)).collect();
     let mut visited: HashSet<u32> = HashSet::new();
     let mut current = pid;
     while visited.insert(current) {
         let Some(&parent) = parents.get(&current) else {
-            return false;
+            return Lineage::Broken(current);
         };
         if parent == ancestor {
-            return true;
+            return Lineage::Under;
+        }
+        if parent <= 1 {
+            return Lineage::Clear;
         }
         current = parent;
     }
-    false
+    Lineage::Broken(current)
 }
 
 /// Whether ANY process at all runs beneath `pane_pid` — the question "is this
@@ -230,7 +245,12 @@ pub(crate) fn observed_harness(
 ) -> Observed {
     let mut tools: Vec<ToolKind> = harness_of(foreground).into_iter().collect();
     if let (Some(pid), Some(rows)) = (pane_pid, table) {
-        tools.extend(harness_rows(rows, pid).into_iter().map(|(tool, _)| tool));
+        let rows = harness_rows(rows, pid);
+        tools.extend(
+            rows.iter()
+                .filter(|row| row.2 == Lineage::Under)
+                .map(|row| row.0),
+        );
     }
     tools.sort_by_key(|tool| tool.as_str());
     tools.dedup();
@@ -253,31 +273,21 @@ fn harness_of(comm: &str) -> Option<ToolKind> {
     ToolKind::from_known_binary_name(strip_exe(base))
 }
 
-/// Every row of the pane's tree — its own process and every descendant — that
-/// names a known harness, in pid order.
-///
-/// A visited set, because a damaged table can name a cycle.
-pub(crate) fn harness_rows(procs: &[Proc], pane_pid: u32) -> Vec<(ToolKind, &Proc)> {
-    let mut children: HashMap<u32, Vec<&Proc>> = HashMap::new();
-    for proc in procs {
-        children.entry(proc.ppid).or_default().push(proc);
-    }
-    let mut tree: Vec<&Proc> = procs.iter().filter(|proc| proc.pid == pane_pid).collect();
-    let mut visited: HashSet<u32> = HashSet::new();
-    let mut stack: Vec<u32> = vec![pane_pid];
-    while let Some(pid) = stack.pop() {
-        if !visited.insert(pid) {
-            continue;
-        }
-        for child in children.get(&pid).into_iter().flatten() {
-            tree.push(child);
-            stack.push(child.pid);
-        }
-    }
-    tree.sort_by_key(|proc| proc.pid);
-    tree.dedup_by_key(|proc| proc.pid);
-    tree.into_iter()
-        .filter_map(|proc| harness_of(&proc.comm).map(|tool| (tool, proc)))
+/// Every row naming a known harness that is the pane's root, runs beneath it
+/// ([`Lineage::Under`]), or cannot be placed at all ([`Lineage::Broken`]) — in
+/// table order. A harness that provably runs elsewhere is left out.
+pub(crate) fn harness_rows(procs: &[Proc], pane_pid: u32) -> Vec<(ToolKind, &Proc, Lineage)> {
+    procs
+        .iter()
+        .filter_map(|proc| {
+            let tool = harness_of(&proc.comm)?;
+            let place = if proc.pid == pane_pid {
+                Lineage::Under
+            } else {
+                lineage(procs, pane_pid, proc.pid)
+            };
+            (place != Lineage::Clear).then_some((tool, proc, place))
+        })
         .collect()
 }
 
@@ -551,6 +561,7 @@ mod tests {
 
     #[test]
     fn a_caller_under_the_target_tool_is_found_and_a_cycle_does_not_hang() {
+        use super::Lineage::{Broken, Clear, Under};
         // Only the edges matter here, so the rows are built by one helper:
         // the walk asks about parentage and never about a command name.
         let row = |pid, ppid| Proc {
@@ -561,23 +572,18 @@ mod tests {
         // The pane's shell, the seat's tool, and a process the TOOL started —
         // which is what a `reseat` run from inside the seat would be.
         let procs = vec![row(100, 1), row(200, 100), row(300, 200), row(400, 1)];
-        assert!(super::is_descendant_of(&procs, 100, 300), "under the pane");
-        assert!(super::is_descendant_of(&procs, 200, 300), "under the tool");
-        assert!(
-            !super::is_descendant_of(&procs, 100, 400),
-            "a sibling shell"
-        );
-        assert!(
-            !super::is_descendant_of(&procs, 100, 100),
-            "not its own ancestor"
-        );
-        // A pid the table does not name cannot be placed: fail closed to false
-        // rather than walk off the end of a damaged snapshot.
-        assert!(!super::is_descendant_of(&procs, 100, 999));
+        assert_eq!(super::lineage(&procs, 100, 300), Under, "under the pane");
+        assert_eq!(super::lineage(&procs, 200, 300), Under, "under the tool");
+        assert_eq!(super::lineage(&procs, 100, 400), Clear, "a sibling");
+        assert_eq!(super::lineage(&procs, 100, 100), Clear, "not its own");
+        // A pid the table does not name cannot be placed: fail closed to a
+        // BREAK rather than walk off the end of a damaged snapshot.
+        assert_eq!(super::lineage(&procs, 100, 999), Broken(999));
+        assert_eq!(super::lineage(&[row(50, 60)], 100, 50), Broken(60));
         // A hand-edited or damaged table can name a cycle. The visited set is
         // what makes this terminate at all.
         let cycle = vec![row(10, 11), row(11, 10)];
-        assert!(!super::is_descendant_of(&cycle, 99, 10));
+        assert_eq!(super::lineage(&cycle, 99, 10), Broken(10));
     }
 
     #[test]
@@ -651,6 +657,13 @@ mod tests {
         let cycle = vec![row(10, 11, "sh"), row(11, 10, "sh")];
         assert_eq!(
             observed_harness("sh", Some(10), Some(&cycle)),
+            Observed::Shell
+        );
+        // A harness ae cannot place is never counted as the pane's: diagnosis
+        // claims only what it saw.
+        let unplaced = [row(10, 1, "sh"), row(900, 850, "claude")];
+        assert_eq!(
+            observed_harness("sh", Some(10), Some(&unplaced)),
             Observed::Shell
         );
     }
