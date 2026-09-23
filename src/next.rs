@@ -215,6 +215,7 @@ mod tests {
             observed: crate::harness_state::HarnessState::Unknown,
             state: None,
             done_progress: None,
+            wait_progress: None,
             reason,
             own_work: None,
             model_drift: crate::model_drift::ModelDrift::Quiet,

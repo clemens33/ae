@@ -20,9 +20,9 @@ use crate::tracked::{self, EventFields};
 use crate::transport;
 use crate::watchdog::{
     DoneProgress, QuietCycle, QuietKind, QuietPane, SweepAlert, SweepEffect, SweepKnobs,
-    SweepObservation, SweepState, SweepVerdict, Throttle, classify_dead, declaration_key,
-    is_sweep_target, latest_relevant_event, quiet_hash, quiet_pane_decision, quiet_reason,
-    quiet_stabilize, record_sweep, stale_composite, sweep_step, throttle_class,
+    SweepObservation, SweepState, SweepVerdict, Throttle, WaitProgress, WaitState, classify_dead,
+    declaration_key, is_sweep_target, latest_relevant_event, quiet_hash, quiet_pane_decision,
+    quiet_reason, quiet_stabilize, record_sweep, stale_composite, sweep_step, throttle_class,
 };
 
 /// The event actor every watchdog emission carries.
@@ -255,6 +255,9 @@ pub struct Observation {
     pub quiet: Option<QuietKind>,
     /// The shared journal-derived done episode verdict.
     pub done_progress: DoneProgress,
+    /// Wait episode verdict for the seat's CURRENT wait declaration; `None`
+    /// for every other state, including a pane-yielded wait.
+    pub wait_progress: WaitProgress,
     /// Whether a process named the agent binary runs under the pane.
     pub descendancy: Descendancy,
     /// Age of the newest event this agent is the ACTOR of.
@@ -379,6 +382,13 @@ pub enum Effect {
         confirmations: u8,
         required: u8,
         done_age_secs: u64,
+    },
+    /// Deliver a wait proof challenge for the RAW declared `state`.
+    WaitChallenge {
+        confirmations: u8,
+        required: u8,
+        wait_age_secs: u64,
+        state: WaitState,
     },
     /// A line for the human, published with `display-message`.
     Notify(String),
@@ -1164,6 +1174,50 @@ pub fn done_challenge_text(
     )
 }
 
+/// Proof challenge for a `waiting-agent`/`blocked` declaration, in the nudge's
+/// envelope shape so the footprint filter strips it. `escalated` names the read;
+/// the proof owed stays the RAW state, re-declared.
+#[must_use]
+pub fn wait_challenge_text(
+    goal: Option<&str>,
+    meta_dir: &Path,
+    age: u64,
+    confirmations: u8,
+    required: u8,
+    state: WaitState,
+    escalated: bool,
+) -> String {
+    let prefix = goal.map_or_else(String::new, |goal| format!("Session goal: {goal}. "));
+    let minutes = age / 60;
+    let (declared, proof, resolved) = match state {
+        WaitState::WaitingAgent => (
+            "Waiting-agent",
+            "name the agent, the result you need, when you last chased them",
+            "Unblocked",
+        ),
+        WaitState::Blocked => (
+            "Blocked",
+            "name the external blocker, who owns the unblock, what you last checked and when",
+            "Blocker gone",
+        ),
+    };
+    let ceiling = if escalated {
+        " It now reads as blocked: past the waiting ceiling."
+    } else {
+        ""
+    };
+    format!(
+        "{prefix}Continue the assigned work now. Do not re-plan or ask unless blocked. {declared} \
+         was declared {minutes}m ago; confirmation {} of {required}.{ceiling} Prove the wait still \
+         holds: {proof}. {resolved}: declare working and finish assigned work NOW. Otherwise \
+         re-declare {} with current reason and proof. Then declare state: {}/state \
+         <waiting-user|waiting-agent|blocked|done> \"<reason>\"",
+        confirmations.saturating_add(1),
+        state.as_str(),
+        meta_dir.display()
+    )
+}
+
 /// The same reminder for a seat whose OWN work is outstanding — it reached the
 /// deferral ceiling, so it is told WHAT ae thinks it is waiting on rather than
 /// being asked a question it already answered.
@@ -1325,11 +1379,12 @@ fn book_stale(
 /// the newest event the seat is the actor of IS the declaration the hold was
 /// armed from — any newer one ends the hold before this branch is reached.
 ///
-/// Past the ceiling the seat becomes exactly `blocked`: the ordinary nudge
-/// budget resumes (`book_stale`; the nudge half, off when `idle_nudge_secs` is
-/// zero like every nudge), and the verdict published is `Quiet(Blocked)` — the
-/// attention half, on the same ceiling the read surfaces derive from the same
-/// pin, so a human surface can never disagree with the pane.
+/// Past the ceiling the seat becomes exactly `blocked`: the verdict published
+/// is `Quiet(Blocked)` — the attention half, on the same ceiling the read
+/// surfaces derive from the same pin. The nudge budget resumes (`book_stale`,
+/// off when `idle_nudge_secs` is zero) UNLESS an active wait episode owns the
+/// next delivery — then the challenge is the one order; only a lapsed or
+/// untracked episode resumes the budget.
 fn book_waiting_agent_escalation(
     prior: &PaneState,
     next: &mut PaneState,
@@ -1345,7 +1400,15 @@ fn book_waiting_agent_escalation(
     {
         return None;
     }
-    if knobs.idle_nudge_secs > 0 {
+    // An ACTIVE wait episode owns the next delivery: challenge, not nudge. A
+    // lapsed or untracked episode resumes the ordinary budget instead.
+    let active = matches!(
+        seen.wait_progress,
+        WaitProgress::Provisional { .. }
+            | WaitProgress::ChallengeDue { .. }
+            | WaitProgress::Challenged { .. }
+    );
+    if knobs.idle_nudge_secs > 0 && !active {
         book_stale(prior, next, effects, knobs, seen.last_actor_event_age_secs);
     }
     Some(Verdict::Quiet(QuietKind::Blocked))
@@ -1555,6 +1618,35 @@ fn account_ordinary(
         }
     }
 
+    // The wait push, gated on the pane hold; the state comes from the hold
+    // itself, so the challenge always names the RAW declaration.
+    let wait_state = match seen.quiet {
+        Some(QuietKind::WaitingAgent) => Some(WaitState::WaitingAgent),
+        Some(QuietKind::Blocked) => Some(WaitState::Blocked),
+        _ => None,
+    };
+    if let (
+        Some(wait_state),
+        WaitProgress::ChallengeDue {
+            confirmations,
+            required,
+            wait_age_secs,
+            attempts,
+        },
+    ) = (wait_state, seen.wait_progress)
+    {
+        if attempts < knobs.undelivered_max {
+            effects.push(Effect::WaitChallenge {
+                confirmations,
+                required,
+                wait_age_secs,
+                state: wait_state,
+            });
+        } else if attempts == knobs.undelivered_max {
+            effects.extend(unreachable_effects(attempts, &stale_display(wait_age_secs)));
+        }
+    }
+
     // 6. A quiet declaration. A FRESH `waiting-agent` holds like the other
     // quiet states; past its ceiling it escalates (see the helper). While the
     // hold stands, the newest event this agent is the actor of IS its
@@ -1568,6 +1660,25 @@ fn account_ordinary(
                 next,
                 effects,
                 verdict,
+                moved: false,
+            };
+        }
+        // A lapsed wait keeps its verdict while the nudge budget resumes.
+        // Escalation returned above, so this arm books exactly once.
+        if matches!(kind, QuietKind::WaitingAgent | QuietKind::Blocked)
+            && matches!(seen.wait_progress, WaitProgress::Lapsed { .. })
+        {
+            book_stale(
+                prior,
+                &mut next,
+                &mut effects,
+                knobs,
+                seen.last_actor_event_age_secs,
+            );
+            return Accounting {
+                next,
+                effects,
+                verdict: Verdict::Quiet(kind),
                 moved: false,
             };
         }
@@ -4519,6 +4630,30 @@ impl Cycle<'_> {
                 self.knobs.idle_nudge_secs,
                 self.knobs.done_confirmations,
             );
+            let quiet = self.resolve_quiet(
+                &quiet_query(&events, agent, &slot, hash, index, &pane.pane_id),
+                carried,
+                &mut carry.quiet,
+                done_progress,
+            );
+            let wait_state = match quiet {
+                Some(QuietKind::WaitingAgent) => Some(WaitState::WaitingAgent),
+                Some(QuietKind::Blocked) => Some(WaitState::Blocked),
+                _ => None,
+            };
+            let wait_progress = wait_state.map_or(WaitProgress::None, |state| {
+                crate::watchdog::wait_progress(
+                    &events,
+                    self.session,
+                    &slot,
+                    agent,
+                    launch,
+                    Timestamp::from_epoch(now),
+                    self.knobs.idle_nudge_secs,
+                    self.knobs.done_confirmations,
+                    state,
+                )
+            });
             let seen = Observation {
                 now_epoch: now,
                 hash,
@@ -4533,13 +4668,9 @@ impl Cycle<'_> {
                     tool.adapter().input.composed,
                 ),
                 throttle_quota,
-                quiet: self.resolve_quiet(
-                    &quiet_query(&events, agent, &slot, hash, index, &pane.pane_id),
-                    carried,
-                    &mut carry.quiet,
-                    done_progress,
-                ),
+                quiet,
                 done_progress,
+                wait_progress,
                 descendancy,
                 last_actor_event_age_secs: last_actor_event_age(
                     &events,
@@ -5224,6 +5355,32 @@ impl Cycle<'_> {
                 let _ = self.deliver(agent, &text, "done-challenge", &summary, launch);
                 Ok(())
             }
+            Effect::WaitChallenge {
+                confirmations,
+                required,
+                wait_age_secs,
+                state,
+            } => {
+                let escalated = *state == WaitState::WaitingAgent
+                    && crate::watchdog::waiting_agent_escalated(
+                        on.seen.last_actor_event_age_secs,
+                        self.knobs.idle_nudge_secs,
+                    );
+                let text = wait_challenge_text(
+                    self.goal.as_deref(),
+                    self.meta_dir,
+                    *wait_age_secs,
+                    *confirmations,
+                    *required,
+                    *state,
+                    escalated,
+                );
+                let num = confirmations.saturating_add(1);
+                let summary = format!("{} confirmation {num}/{required}", state.as_str());
+                let launch = launch_id_for(&self.launch_ids, on.slot);
+                let _ = self.deliver(agent, &text, "wait-challenge", &summary, launch);
+                Ok(())
+            }
         }
     }
 
@@ -5884,7 +6041,7 @@ mod tests {
         quota_observation_due, quota_recipients, quota_seconds, read_events, rebind, record_nudge,
         restore_idle, run, session_name, slot_latched, slot_mark, stale_display,
         static_observe_cadence, sweep_effects, sweep_seconds, system_time_from_epoch,
-        throttle_quota_line, ticker_mode, window_agents_line,
+        throttle_quota_line, ticker_mode, wait_challenge_text, window_agents_line,
     };
     use super::{Look, Mark, PaneMark, session_mark};
     use crate::events::Event;
@@ -5897,8 +6054,8 @@ mod tests {
     use crate::session::OwnWork;
     use crate::tmux::StopProbe;
     use crate::watchdog::{
-        QuietKind, SweepAlert, SweepEffect, SweepObservation, SweepVerdict, Throttle, WedgeDetail,
-        declaration_key, quiet_filter, quiet_hash,
+        QuietKind, SweepAlert, SweepEffect, SweepObservation, SweepVerdict, Throttle, WaitProgress,
+        WaitState, WedgeDetail, declaration_key, quiet_filter, quiet_hash,
     };
     use std::io::ErrorKind;
     use std::path::{Path, PathBuf};
@@ -6195,6 +6352,7 @@ mod tests {
             throttle_quota: None,
             quiet: None,
             done_progress: DoneProgress::None,
+            wait_progress: WaitProgress::None,
             descendancy: Descendancy::Present,
             last_actor_event_age_secs: 0,
             sweep: None,
@@ -11213,6 +11371,144 @@ mod tests {
         );
     }
 
+    fn wait_due(attempts: u32) -> WaitProgress {
+        WaitProgress::ChallengeDue {
+            confirmations: 1,
+            required: 2,
+            wait_age_secs: 300,
+            attempts,
+        }
+    }
+
+    fn has_wait_challenge(effects: &[Effect]) -> bool {
+        effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::WaitChallenge { .. }))
+    }
+
+    #[test]
+    fn a_wait_challenge_pushes_until_its_attempt_bound() {
+        let knobs = Knobs::default();
+        let mut observed = seen();
+        observed.quiet = Some(QuietKind::Blocked);
+        observed.wait_progress = wait_due(0);
+        let pushed = account(&PaneState::default(), &observed, &knobs);
+        assert!(
+            has_wait_challenge(&pushed.effects),
+            "a due challenge pastes"
+        );
+        assert_eq!(pushed.verdict, Verdict::Quiet(QuietKind::Blocked));
+        assert!(pushed.effects.iter().any(|effect| matches!(
+            effect,
+            Effect::WaitChallenge {
+                state: WaitState::Blocked,
+                ..
+            }
+        )));
+        observed.wait_progress = wait_due(knobs.undelivered_max);
+        let capped = account(&PaneState::default(), &observed, &knobs);
+        assert_eq!(
+            emitted(&capped.effects),
+            vec![(
+                "alert",
+                "nudge unreachable/occupied — 3 undelivered attempts (idle 5m)"
+            )]
+        );
+        assert!(
+            !has_wait_challenge(&capped.effects),
+            "the capped challenge is not pasted"
+        );
+        observed.quiet = None;
+        observed.wait_progress = wait_due(0);
+        let yielded = account(&PaneState::default(), &observed, &knobs);
+        assert!(
+            !has_wait_challenge(&yielded.effects),
+            "a yielded pane is not challenged"
+        );
+    }
+
+    #[test]
+    fn a_lapsed_wait_keeps_its_verdict_while_the_nudge_budget_resumes() {
+        let knobs = Knobs::default();
+        let mut observed = seen();
+        observed.quiet = Some(QuietKind::Blocked);
+        observed.wait_progress = WaitProgress::Lapsed {
+            confirmations: 1,
+            required: 2,
+        };
+        observed.last_actor_event_age_secs = 900;
+        let prior = PaneState {
+            nudge_count: 1,
+            ..PaneState::default()
+        };
+        let booked = account(&prior, &observed, &knobs);
+        assert_eq!(booked.verdict, Verdict::Quiet(QuietKind::Blocked));
+        assert!(booked.effects.contains(&Effect::Nudge));
+        assert_eq!(
+            booked.next.nudge_count, 1,
+            "lapse resumes the budget, not resets it"
+        );
+        observed.wait_progress = WaitProgress::Provisional {
+            confirmations: 0,
+            required: 2,
+        };
+        let held = account(&prior, &observed, &knobs);
+        assert!(!held.effects.contains(&Effect::Nudge));
+        assert_eq!(held.next.nudge_count, 0);
+    }
+
+    #[test]
+    fn escalation_and_lapse_compose_on_a_waiting_agent() {
+        let knobs = Knobs::default();
+        let mut observed = seen();
+        observed.quiet = Some(QuietKind::WaitingAgent);
+        observed.wait_progress = WaitProgress::Lapsed {
+            confirmations: 0,
+            required: 2,
+        };
+        observed.last_actor_event_age_secs = 0;
+        let fresh = account(&PaneState::default(), &observed, &knobs);
+        assert_eq!(fresh.verdict, Verdict::Quiet(QuietKind::WaitingAgent));
+        assert!(fresh.effects.contains(&Effect::Nudge));
+        observed.last_actor_event_age_secs = 1200;
+        let old = account(&PaneState::default(), &observed, &knobs);
+        assert_eq!(old.verdict, Verdict::Quiet(QuietKind::Blocked));
+        let nudges = old
+            .effects
+            .iter()
+            .filter(|effect| matches!(effect, Effect::Nudge))
+            .count();
+        assert_eq!(nudges, 1, "escalation books once; lapse must not re-book");
+        observed.wait_progress = wait_due(0);
+        let due = account(&PaneState::default(), &observed, &knobs);
+        assert!(has_wait_challenge(&due.effects));
+        assert!(
+            !due.effects.contains(&Effect::Nudge),
+            "one delivery: challenge, not nudge"
+        );
+    }
+
+    #[test]
+    fn the_wait_challenge_names_the_raw_state_as_an_order() {
+        let meta = Path::new("/home/x/.ae/sessions/demo");
+        assert_eq!(
+            wait_challenge_text(None, meta, 300, 0, 2, WaitState::Blocked, false),
+            "Continue the assigned work now. Do not re-plan or ask unless blocked. Blocked was declared 5m ago; confirmation 1 of 2. Prove the wait still holds: name the external blocker, who owns the unblock, what you last checked and when. Blocker gone: declare working and finish assigned work NOW. Otherwise re-declare blocked with current reason and proof. Then declare state: /home/x/.ae/sessions/demo/state <waiting-user|waiting-agent|blocked|done> \"<reason>\""
+        );
+        assert_eq!(
+            wait_challenge_text(
+                Some("ship P4.1"),
+                meta,
+                600,
+                1,
+                2,
+                WaitState::WaitingAgent,
+                true
+            ),
+            "Session goal: ship P4.1. Continue the assigned work now. Do not re-plan or ask unless blocked. Waiting-agent was declared 10m ago; confirmation 2 of 2. It now reads as blocked: past the waiting ceiling. Prove the wait still holds: name the agent, the result you need, when you last chased them. Unblocked: declare working and finish assigned work NOW. Otherwise re-declare waiting-agent with current reason and proof. Then declare state: /home/x/.ae/sessions/demo/state <waiting-user|waiting-agent|blocked|done> \"<reason>\""
+        );
+    }
+
     #[test]
     fn the_counter_counts_deliveries_and_the_streak_counts_attempts() {
         let knobs = Knobs::default();
@@ -11285,6 +11581,22 @@ mod tests {
             (
                 "done-challenge",
                 done_challenge_text(Some("ship P4.1"), meta, 300, 0, 2),
+            ),
+            (
+                "wait-challenge",
+                wait_challenge_text(None, meta, 300, 0, 2, WaitState::Blocked, false),
+            ),
+            (
+                "wait-challenge-escalated",
+                wait_challenge_text(
+                    Some("ship P4.1"),
+                    meta,
+                    600,
+                    1,
+                    2,
+                    WaitState::WaitingAgent,
+                    true,
+                ),
             ),
         ] {
             assert_eq!(

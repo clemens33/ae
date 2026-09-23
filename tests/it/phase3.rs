@@ -2018,6 +2018,7 @@ fn sc_017q_an_unknown_agent_keeps_its_declared_state_and_reason() {
         observed: ae::harness_state::HarnessState::Unknown,
         state: Some("blocked".to_owned()),
         done_progress: None,
+        wait_progress: None,
         reason: Some(ae::attention::Reason::Blocked),
         session_id: Some("e795c9e9".to_owned()),
         own_work: None,

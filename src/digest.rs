@@ -64,6 +64,8 @@ pub struct AgentEntry {
     pub state: Option<String>,
     /// Done confirmation status, for the human table only.
     pub done_progress: Option<crate::watchdog::DoneProgress>,
+    /// Wait confirmation status, for the human table only.
+    pub wait_progress: Option<crate::watchdog::WaitProgress>,
     /// "each agent's `reason` is its own contribution" to the session marker.
     pub reason: Option<Reason>,
     /// What this agent is still owed by somebody else, when the event stream
@@ -567,6 +569,7 @@ mod tests {
                 observed: crate::harness_state::HarnessState::Unknown,
                 state: None,
                 done_progress: None,
+                wait_progress: None,
                 reason: None,
                 own_work: None,
                 model_drift: crate::model_drift::ModelDrift::Quiet,
@@ -600,6 +603,7 @@ mod tests {
             observed: crate::harness_state::HarnessState::Unknown,
             state: None,
             done_progress: None,
+            wait_progress: None,
             reason: None,
             own_work: None,
             model_drift: crate::model_drift::ModelDrift::Quiet,
@@ -648,6 +652,7 @@ mod tests {
             observed: crate::harness_state::HarnessState::Idle,
             state: Some("blocked".to_owned()),
             done_progress: None,
+            wait_progress: None,
             reason: Some(Reason::Blocked),
             own_work: None,
             model_drift: crate::model_drift::ModelDrift::Quiet,
@@ -974,6 +979,7 @@ mod tests {
             observed: crate::harness_state::HarnessState::Unknown,
             state: None,
             done_progress: None,
+            wait_progress: None,
             reason: None,
             own_work: None,
             model_drift: crate::model_drift::ModelDrift::Quiet,

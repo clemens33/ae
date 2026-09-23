@@ -130,6 +130,7 @@ pub enum RefMeaning<'a> {
     /// `recover` — the captured tool session id.
     CapturedSessionId(&'a str),
     /// `done-challenge` — the seat incarnation challenged.
+    /// `wait-challenge` — the seat incarnation challenged.
     LaunchId(&'a str),
     /// `state` — the declared work state (`working` / `waiting-user` /
     /// `waiting-agent` / `blocked` / `done`). The reader does not gate the
@@ -406,7 +407,7 @@ impl Event {
             "ask" | "review" | "reply" | "cancel" => RefMeaning::RequestId(value),
             "memo" => RefMeaning::MemoTopic(value),
             "recover" => RefMeaning::CapturedSessionId(value),
-            "done-challenge" => RefMeaning::LaunchId(value),
+            "done-challenge" | "wait-challenge" => RefMeaning::LaunchId(value),
             "state" => RefMeaning::DeclaredState(value),
             _ => RefMeaning::Undefined,
         }
@@ -942,6 +943,7 @@ mod tests {
             ("memo", RefMeaning::MemoTopic("r-1")),
             ("recover", RefMeaning::CapturedSessionId("r-1")),
             ("done-challenge", RefMeaning::LaunchId("r-1")),
+            ("wait-challenge", RefMeaning::LaunchId("r-1")),
             // `state` carries the declared work state.
             ("state", RefMeaning::DeclaredState("r-1")),
             // "Other actions — USUALLY absent"; a value that turns up anyway

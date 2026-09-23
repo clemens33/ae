@@ -1045,6 +1045,25 @@ fn agent_entries(
                     ))
                     .then_some(progress)
                 }),
+                wait_progress: read.and_then(|read| {
+                    let state = match declared_state {
+                        Some("waiting-agent") => Some(crate::watchdog::WaitState::WaitingAgent),
+                        Some("blocked") => Some(crate::watchdog::WaitState::Blocked),
+                        _ => None,
+                    }?;
+                    let progress = crate::watchdog::wait_progress(
+                        &read.events,
+                        session,
+                        &slot.slot,
+                        &reference,
+                        meta.launch_id(&slot.slot),
+                        now,
+                        idle_nudge_secs.unwrap_or(0),
+                        done_confirmations,
+                        state,
+                    );
+                    (!matches!(progress, crate::watchdog::WaitProgress::None)).then_some(progress)
+                }),
                 // This agent's OWN contribution, from the two evidence classes:
                 // ALERT-DERIVED dead/stale/throttled, and SELF-DECLARED
                 // waiting-user/waiting-agent/blocked.
@@ -2934,6 +2953,7 @@ mod tests {
 
         let fresh = declaration(&Scratch::new("waiting-agent-fresh"), 1_199);
         assert_eq!(fresh.agents[0].state.as_deref(), Some("waiting-agent"));
+        assert!(fresh.agents[0].wait_progress.is_some());
         assert_eq!(fresh.agents[0].reason, None, "fresh claims nobody");
         assert_eq!(fresh.attention, None, "and adds no session marker");
 
@@ -3047,12 +3067,17 @@ mod tests {
     #[test]
     fn challenge_and_abandonment_use_the_daemons_currency_rule_on_read_surfaces() {
         for action in ["done-challenge", "delivery-abandoned"] {
-            for (state, daemon) in [
-                ("done", Some(crate::watchdog::QuietKind::Done)),
-                ("waiting-user", None),
-                ("waiting-agent", None),
-                ("blocked", None),
-            ] {
+            for state in ["done", "waiting-user", "waiting-agent", "blocked"] {
+                // An abandoned delivery is a matching wait's own footprint;
+                // foreign to every other state, like a crossed challenge.
+                let daemon = match (action, state) {
+                    (_, "done") => Some(crate::watchdog::QuietKind::Done),
+                    ("delivery-abandoned", "waiting-agent") => {
+                        Some(crate::watchdog::QuietKind::WaitingAgent)
+                    }
+                    ("delivery-abandoned", "blocked") => Some(crate::watchdog::QuietKind::Blocked),
+                    _ => None,
+                };
                 let scratch = Scratch::new(&format!("currency-{action}-{state}"));
                 scratch.meta(&format!(
                     "{META}launch_id.main=launch-1\ndone_confirmations=2\n"
@@ -3082,7 +3107,13 @@ mod tests {
                 let entry = entry_for(&scratch.0, "live", &running(), NOW, DEFAULT_UNANSWERED_SECS);
                 assert_eq!(entry.agents[0].state.as_deref(), Some(state));
                 if state == "waiting-agent" {
-                    assert_eq!(entry.agents[0].reason, None, "read side consumes currency");
+                    // Abandoned preserves wait currency, so the over-age
+                    // declaration escalates; a crossed challenge still clears.
+                    let want = match action {
+                        "delivery-abandoned" => Some(Reason::Blocked),
+                        _ => None,
+                    };
+                    assert_eq!(entry.agents[0].reason, want, "read side consumes currency");
                 }
                 if state == "done" {
                     assert!(entry.agents[0].done_progress.is_some());
@@ -3112,6 +3143,40 @@ mod tests {
             crate::listing::table(&[&entry])
                 .contains("done (unconfirmed 0/2, lapsed) · observed:unknown")
         );
+    }
+
+    #[test]
+    fn a_wait_challenge_surfaces_wait_progress_on_the_read_side() {
+        let scratch = Scratch::new("wait-progress-read");
+        scratch.meta(&format!(
+            "{META}launch_id.main=launch-1\ndone_confirmations=2\n"
+        ));
+        scratch.events(&[
+            event(&at(2_000), "lead", "state", r#","ref":"blocked""#),
+            event(
+                &at(100),
+                "watchdog",
+                "wait-challenge",
+                r#","target":"lead","ref":"launch-1","target_slot":"main","target_session":"live","summary":"blocked confirmation 1/2""#,
+            ),
+        ]);
+        let entry = entry_for(&scratch.0, "live", &running(), NOW, DEFAULT_UNANSWERED_SECS);
+        assert!(matches!(
+            entry.agents[0].wait_progress,
+            Some(crate::watchdog::WaitProgress::Challenged { .. })
+        ));
+        assert!(crate::listing::table(&[&entry]).contains("blocked (unconfirmed 0/2)"));
+        assert_eq!(entry.agents[0].to_json().get("wait_progress"), None);
+
+        let later = Timestamp::from_epoch(NOW.epoch() + 400);
+        let entry = entry_for(
+            &scratch.0,
+            "live",
+            &running(),
+            later,
+            DEFAULT_UNANSWERED_SECS,
+        );
+        assert!(crate::listing::table(&[&entry]).contains("blocked (unconfirmed 0/2, lapsed)"));
     }
 
     /// BLOCKER 1, routing half: a rename-back history (live → oldname → live)

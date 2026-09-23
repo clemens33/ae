@@ -511,12 +511,31 @@ pub struct Relevant<'a> {
     pub looked_past_nudge: bool,
     /// Whether the walk stepped past a delivered done challenge.
     pub looked_past_done_challenge: bool,
+    /// Whether the walk stepped past a delivered wait challenge. Ignored for
+    /// a MATCHING wait declaration (the challenge is part of its episode) but
+    /// ends `waiting-user` currency, like every other crossed challenge.
+    pub looked_past_wait_challenge: bool,
     /// Whether the walk stepped past an abandoned watchdog delivery.
     pub looked_past_abandoned: bool,
 }
 
 pub const DEFAULT_DONE_CONFIRMATIONS: u8 = 2;
 const DONE_CHALLENGE_ACTION: &str = "done-challenge";
+/// The watchdog's proof challenge for a `waiting-agent`/`blocked` declaration.
+/// A NEW wire action (not `done-challenge` reused): the two folds match
+/// challenges by action, and sharing one would let a wait challenge arm a done
+/// confirmation. Both wait states share it, so the summary names the state.
+const WAIT_CHALLENGE_ACTION: &str = "wait-challenge";
+
+/// Whether a `wait-challenge` record names `state` (delivered, unconfirmed
+/// and delivery-abandoned summaries all carry the state word).
+fn wait_challenge_names(summary: Option<&str>, state: WaitState) -> bool {
+    let tag = match state {
+        WaitState::WaitingAgent => "waiting-agent confirmation",
+        WaitState::Blocked => "blocked confirmation",
+    };
+    summary.is_some_and(|text| text.contains(tag))
+}
 
 /// The newest event relevant to the seat at `slot`/`agent` in `session`, with
 /// the ownership verdict and whether the walk stepped past any of the
@@ -537,6 +556,7 @@ pub fn latest_relevant_event<'a>(
 ) -> Option<Relevant<'a>> {
     let mut looked_past_nudge = false;
     let mut looked_past_done_challenge = false;
+    let mut looked_past_wait_challenge = false;
     let mut looked_past_abandoned = false;
     for event in events.iter().rev() {
         let is_own = event_is_actor(event, session, slot, agent);
@@ -547,6 +567,7 @@ pub fn latest_relevant_event<'a>(
             match event.action.as_str() {
                 NUDGE_ACTION => looked_past_nudge = true,
                 DONE_CHALLENGE_ACTION => looked_past_done_challenge = true,
+                WAIT_CHALLENGE_ACTION => looked_past_wait_challenge = true,
                 crate::tracked::ABANDONED_ACTION => looked_past_abandoned = true,
                 _ => {
                     return Some(Relevant {
@@ -554,6 +575,7 @@ pub fn latest_relevant_event<'a>(
                         is_own,
                         looked_past_nudge,
                         looked_past_done_challenge,
+                        looked_past_wait_challenge,
                         looked_past_abandoned,
                     });
                 }
@@ -565,6 +587,7 @@ pub fn latest_relevant_event<'a>(
             is_own,
             looked_past_nudge,
             looked_past_done_challenge,
+            looked_past_wait_challenge,
             looked_past_abandoned,
         });
     }
@@ -619,10 +642,18 @@ pub fn declaration_current(relevant: &Relevant<'_>) -> bool {
     let Some(state) = relevant.event.declared_state() else {
         return false;
     };
+    // Each state's OWN challenge footprints — delivered or abandoned — are
+    // part of its episode and ignored; a CROSSED or foreign footprint ends
+    // currency, so the read side can never print a plain confirmed state over
+    // a challenge the fold already reset.
     if state == "done" {
-        !relevant.looked_past_nudge
+        !relevant.looked_past_nudge && !relevant.looked_past_wait_challenge
+    } else if state == "waiting-agent" || state == "blocked" {
+        !relevant.looked_past_done_challenge
     } else {
-        !relevant.looked_past_done_challenge && !relevant.looked_past_abandoned
+        !relevant.looked_past_done_challenge
+            && !relevant.looked_past_wait_challenge
+            && !relevant.looked_past_abandoned
     }
 }
 
@@ -771,6 +802,194 @@ pub fn done_progress(
         }
     } else {
         DoneProgress::Provisional {
+            confirmations,
+            required,
+        }
+    }
+}
+
+/// Which wait state a [`wait_progress`] episode tracks. STRICTLY one: a
+/// `waiting-agent` proof confirms only a `waiting-agent` episode, a `blocked`
+/// proof only a `blocked` one, and a declaration of the other state supersedes
+/// into a fresh episode of its own. Escalation never crosses this line — it
+/// changes the effective verdict, never the raw declaration's identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WaitState {
+    WaitingAgent,
+    Blocked,
+}
+
+impl WaitState {
+    /// The declared-state word this episode tracks.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::WaitingAgent => "waiting-agent",
+            Self::Blocked => "blocked",
+        }
+    }
+}
+
+/// Journal-derived proof progress for a `waiting-agent`/`blocked` declaration.
+///
+/// [`done_progress`]'s shape MINUS `Confirmed`: a wait is never terminally
+/// proven — the Nth proof re-arms a fresh episode, so a stale self-declared
+/// wait is challenged again rather than honoured forever. Disabled knobs
+/// (`required == 0` or `cadence == 0`) yield `None`: quiet as before, through
+/// the pane baseline alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WaitProgress {
+    /// No episode: no declaration, or superseded news.
+    None,
+    /// Declared, challenge not yet due.
+    Provisional { confirmations: u8, required: u8 },
+    /// Declared past the cadence with no outstanding challenge.
+    ChallengeDue {
+        confirmations: u8,
+        required: u8,
+        wait_age_secs: u64,
+        /// Failed challenge deliveries reconstructed from this episode's
+        /// journal, so a daemon restart cannot reopen the delivery budget.
+        attempts: u32,
+    },
+    /// A delivered challenge awaits proof.
+    Challenged { confirmations: u8, required: u8 },
+    /// The outstanding challenge went unanswered past a further cadence. The
+    /// seat KEEPS its quiet verdict — unlike a lapsed done — while the
+    /// ordinary nudge budget resumes beside it, so the daemon and `ae list`
+    /// never split on classification.
+    Lapsed { confirmations: u8, required: u8 },
+}
+
+/// Fold the wait episode for `state` over the existing parsed records.
+///
+/// The contract, beside [`done_progress`]: every appended same-state
+/// declaration line counts by APPEND ORDER — no `(ts, summary)` dedup, which
+/// exists only for done's dual legacy emit — and a re-declaration with no
+/// outstanding challenge refreshes the anchor without credit, while a
+/// declaration of the other wait state, `working`, `waiting-user` or `done`,
+/// and any own-or-inbound
+/// non-challenge news, supersede the episode. Watchdog nudge footprints and
+/// matching abandoned-challenge footprints are SKIPPED (the abandoned ones
+/// still count as attempts): a lapsed challenge's own nudge must not kill the
+/// re-ask it belongs to. A `done-challenge` record resets the episode, and a
+/// `wait-challenge` record resets a done episode — the safe direction for a
+/// pairing no consistent journal produces.
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+pub fn wait_progress(
+    events: &[Event],
+    session: &str,
+    slot: &str,
+    agent: &str,
+    launch: Option<&str>,
+    now: crate::time::Timestamp,
+    cadence: u64,
+    required: u8,
+    state: WaitState,
+) -> WaitProgress {
+    if required == 0 || cadence == 0 {
+        return WaitProgress::None;
+    }
+    let want = state.as_str();
+    let mut episode: Option<(
+        u8,
+        crate::time::Timestamp,
+        Option<crate::time::Timestamp>,
+        u32,
+    )> = None;
+    for event in events {
+        let own = event_is_actor(event, session, slot, agent);
+        let addressed = event_is_addressed_to(event, session, slot, agent);
+        if !own && !addressed {
+            continue;
+        }
+        if event.action == WAIT_CHALLENGE_ACTION && event.actor == WATCHDOG_ACTOR {
+            // Same journal bound as `done_progress`: only a pasted challenge
+            // (or its abandonment below) is durable; pre-paste refusals
+            // record nothing and the push repeats (#148).
+            if !wait_challenge_names(event.summary.as_deref(), state) {
+                continue; // another state's challenge: not ours, not news
+            }
+            let matching = launch.map_or(event.reference.is_none(), |id| {
+                event.reference.as_deref() == Some(id)
+            });
+            if !matching {
+                episode = None;
+                continue;
+            }
+            if crate::tracked::summary_is_unconfirmed(event.summary.as_deref()) {
+                if let Some((_, _, _, attempts)) = episode.as_mut() {
+                    *attempts = attempts.saturating_add(1);
+                }
+            } else if let Some((_, _, outstanding, _)) = episode.as_mut()
+                && outstanding.is_none()
+            {
+                *outstanding = Some(event.ts);
+            }
+            continue;
+        }
+        if event.actor == WATCHDOG_ACTOR && event.action == crate::tracked::ABANDONED_ACTION {
+            let matching = launch.map_or(event.reference.is_none(), |id| {
+                event.reference.as_deref() == Some(id)
+            }) && wait_challenge_names(event.summary.as_deref(), state);
+            if matching && let Some((_, _, _, attempts)) = episode.as_mut() {
+                *attempts = attempts.saturating_add(1);
+            }
+            continue;
+        }
+        if event.actor == WATCHDOG_ACTOR && event.action == NUDGE_ACTION {
+            continue;
+        }
+        if own && event.declared_state() == Some(want) {
+            let rearms = matches!(episode, Some((count, _, Some(_), _))
+                if count.saturating_add(1) >= required);
+            if rearms {
+                // The Nth proof re-arms a fresh episode anchored at this
+                // proof: waits are never terminally proven.
+                episode = Some((0, event.ts, None, 0));
+            } else {
+                match episode.as_mut() {
+                    Some((count, wait_at, outstanding @ Some(_), _)) => {
+                        *count = count.saturating_add(1);
+                        *wait_at = event.ts;
+                        *outstanding = None;
+                    }
+                    None => episode = Some((0, event.ts, None, 0)),
+                    // A proactive re-declaration refreshes the anchor only.
+                    Some((_, wait_at, None, _)) => *wait_at = event.ts,
+                }
+            }
+            continue;
+        }
+        episode = None;
+    }
+    let Some((confirmations, wait_at, outstanding, attempts)) = episode else {
+        return WaitProgress::None;
+    };
+    if let Some(challenged_at) = outstanding {
+        return if challenged_at.seconds_until(now).max(0).cast_unsigned() >= cadence {
+            WaitProgress::Lapsed {
+                confirmations,
+                required,
+            }
+        } else {
+            WaitProgress::Challenged {
+                confirmations,
+                required,
+            }
+        };
+    }
+    let age = wait_at.seconds_until(now).max(0).cast_unsigned();
+    if age >= cadence {
+        WaitProgress::ChallengeDue {
+            confirmations,
+            required,
+            wait_age_secs: age,
+            attempts,
+        }
+    } else {
+        WaitProgress::Provisional {
             confirmations,
             required,
         }
@@ -1385,16 +1604,17 @@ pub fn record_sweep(
 mod tests {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+    use super::WaitState::{Blocked, WaitingAgent};
     use super::{
         DEFAULT_IDLE_NUDGE_SECS, DoneProgress, HUMAN_PROMPT_WINDOW,
         OVERVIEW_HOLD_WHILE_WORKING_SECS, OWN_WORK_AGE_CAP, QuietCycle, QuietKind, QuietPane,
         SweepAlert, SweepEffect, SweepKnobs, SweepObservation, SweepState, SweepVerdict, Throttle,
-        WedgeDetail, classify_dead, command_is_shell, declaration_current, declaration_key,
-        done_progress, indented, is_echo, is_sweep_target, latest_relevant_event,
+        WaitProgress, WaitState, WedgeDetail, classify_dead, command_is_shell, declaration_current,
+        declaration_key, done_progress, indented, is_echo, is_sweep_target, latest_relevant_event,
         quiet_cursor_advance, quiet_filter, quiet_hash, quiet_pane_decision, quiet_reason,
         quiet_stabilize, quiet_stabilize_allowed, raw_nudge, record_sweep, shows_throttle,
-        stale_composite, submit_hdr, sweep_step, throttle_class, waiting_agent_cap_secs,
-        waiting_agent_escalated,
+        stale_composite, submit_hdr, sweep_step, throttle_class, wait_progress,
+        waiting_agent_cap_secs, waiting_agent_escalated,
     };
     use crate::events::Event;
     use crate::procs::Descendancy;
@@ -1706,6 +1926,227 @@ mod tests {
         );
     }
 
+    fn wprog(lines: &[&str], now: &str, state: WaitState) -> WaitProgress {
+        wprog_as(lines, now, 2, 60, state, Some("launch-1"))
+    }
+
+    fn wprog_as(
+        lines: &[&str],
+        now: &str,
+        required: u8,
+        cadence: u64,
+        state: WaitState,
+        launch: Option<&str>,
+    ) -> WaitProgress {
+        wait_progress(
+            &log(lines),
+            "aerewrite",
+            "main",
+            "opus5:builder",
+            launch,
+            Timestamp::parse(now).expect("test time"),
+            cadence,
+            required,
+            state,
+        )
+    }
+
+    /// One-line `WaitProgress` constructors: every case runs at required 2
+    /// except the zero-knob test, which asserts `None`.
+    fn prov(c: u8) -> WaitProgress {
+        WaitProgress::Provisional {
+            confirmations: c,
+            required: 2,
+        }
+    }
+    fn due(c: u8, age: u64, attempts: u32) -> WaitProgress {
+        WaitProgress::ChallengeDue {
+            confirmations: c,
+            required: 2,
+            wait_age_secs: age,
+            attempts,
+        }
+    }
+    fn chall(c: u8) -> WaitProgress {
+        WaitProgress::Challenged {
+            confirmations: c,
+            required: 2,
+        }
+    }
+    fn lapsed(c: u8) -> WaitProgress {
+        WaitProgress::Lapsed {
+            confirmations: c,
+            required: 2,
+        }
+    }
+
+    const BLOCKED_0: &str = r#"{"ts":"2026-08-29T04:00:00Z","actor":"opus5:builder","action":"state","ref":"blocked","summary":"dep down","actor_slot":"main","actor_session":"aerewrite"}"#;
+    const WCHALLENGE_1: &str = r#"{"ts":"2026-08-29T04:01:00Z","actor":"watchdog","action":"wait-challenge","target":"opus5:builder","ref":"launch-1","target_slot":"main","target_session":"aerewrite","summary":"blocked confirmation 1/2"}"#;
+    const BLOCKED_1: &str = r#"{"ts":"2026-08-29T04:01:30Z","actor":"opus5:builder","action":"state","ref":"blocked","summary":"dep still down","actor_slot":"main","actor_session":"aerewrite"}"#;
+    const WCHALLENGE_2: &str = r#"{"ts":"2026-08-29T04:02:30Z","actor":"watchdog","action":"wait-challenge","target":"opus5:builder","ref":"launch-1","target_slot":"main","target_session":"aerewrite","summary":"blocked confirmation 2/2"}"#;
+    const BLOCKED_2: &str = r#"{"ts":"2026-08-29T04:03:00Z","actor":"opus5:builder","action":"state","ref":"blocked","summary":"dep down, probe 2","actor_slot":"main","actor_session":"aerewrite"}"#;
+    const WAGENT_0: &str = r#"{"ts":"2026-08-29T04:00:00Z","actor":"opus5:builder","action":"state","ref":"waiting-agent","summary":"on colead","actor_slot":"main","actor_session":"aerewrite"}"#;
+    const DECL_USER: &str = r#"{"ts":"2026-08-29T04:00:00Z","actor":"opus5:builder","action":"state","ref":"waiting-user"}"#;
+    const DECL_WAGENT: &str = r#"{"ts":"2026-08-29T04:00:00Z","actor":"opus5:builder","action":"state","ref":"waiting-agent"}"#;
+    const DECL_BLOCKED: &str = r#"{"ts":"2026-08-29T04:00:00Z","actor":"opus5:builder","action":"state","ref":"blocked","summary":"dep"}"#;
+    const DECL_DONE: &str = r#"{"ts":"2026-08-29T04:00:00Z","actor":"opus5:builder","action":"state","ref":"done","summary":"shipped"}"#;
+    const DECL_WORKING: &str = r#"{"ts":"2026-08-29T04:00:00Z","actor":"opus5:builder","action":"state","ref":"working","summary":"on it"}"#;
+    const T00_30: &str = "2026-08-29T04:00:30Z";
+    const T00_59: &str = "2026-08-29T04:00:59Z";
+    const T01_00: &str = "2026-08-29T04:01:00Z";
+    const T01_59: &str = "2026-08-29T04:01:59Z";
+    const T02_00: &str = "2026-08-29T04:02:00Z";
+    const T02_30: &str = "2026-08-29T04:02:30Z";
+    const T03_30: &str = "2026-08-29T04:03:30Z";
+    const T04_00: &str = "2026-08-29T04:04:00Z";
+    const NEXT_DAY: &str = "2026-08-30T04:00:00Z";
+
+    #[test]
+    fn wait_is_challenged_twice_then_rearmed_never_confirmed() {
+        let b = Blocked;
+        assert_eq!(wprog(&[BLOCKED_0], T00_59, b), prov(0));
+        assert_eq!(wprog(&[BLOCKED_0], T01_00, b), due(0, 60, 0));
+        assert_eq!(wprog(&[BLOCKED_0, BLOCKED_1], T02_00, b), prov(0));
+        assert_eq!(wprog(&[BLOCKED_0, BLOCKED_1], T02_30, b), due(0, 60, 0));
+        assert_eq!(wprog(&[BLOCKED_0, WCHALLENGE_1], T01_59, b), chall(0));
+        let one = &[BLOCKED_0, WCHALLENGE_1, BLOCKED_1];
+        assert_eq!(wprog(one, T02_30, b), due(1, 60, 0));
+        // The Nth proof re-arms a fresh episode — waits are never terminally
+        // proven — and the re-ask recurs one cadence after that proof.
+        let full = &[BLOCKED_0, WCHALLENGE_1, BLOCKED_1, WCHALLENGE_2, BLOCKED_2];
+        assert_eq!(wprog(full, T03_30, b), prov(0));
+        assert_eq!(wprog(full, T04_00, b), due(0, 60, 0));
+    }
+
+    #[test]
+    fn an_unanswered_wait_challenge_lapses_and_late_proof_keeps_credit() {
+        let b = Blocked;
+        assert_eq!(wprog(&[BLOCKED_0, WCHALLENGE_1], T02_00, b), lapsed(0));
+        let late = BLOCKED_1.replace("04:01:30", "04:03:00");
+        assert_eq!(wprog(&[BLOCKED_0, WCHALLENGE_1, &late], T03_30, b), prov(1));
+    }
+
+    #[test]
+    fn wait_confirmation_is_strict_same_state() {
+        let wagent = WAGENT_0.replace("04:00:00", "04:01:30");
+        let stale = WCHALLENGE_1.replace("04:01:00", "04:02:00");
+        let legs = &[BLOCKED_0, WCHALLENGE_1, &wagent, &stale];
+        // The other wait state's declaration supersedes the blocked episode;
+        // a stale challenge for the old state leaves the new one alone.
+        assert_eq!(wprog(legs, T02_30, Blocked), WaitProgress::None);
+        assert_eq!(wprog(&legs[1..4], T02_00, WaitingAgent), prov(0));
+    }
+
+    #[test]
+    fn wait_counts_every_appended_line_without_dedup() {
+        // Identical declarations around a same-second challenge: append order
+        // rules, where done's legacy dedup would skip the second line.
+        let b = Blocked;
+        let challenge = WCHALLENGE_1.replace("04:01:00", "04:00:00");
+        assert_eq!(
+            wprog(&[BLOCKED_0, &challenge, BLOCKED_0], T00_30, b),
+            prov(1)
+        );
+    }
+
+    #[test]
+    fn wait_survives_nudge_and_abandoned_footprints() {
+        let b = Blocked;
+        let nudge = r#"{"ts":"2026-08-29T04:01:15Z","actor":"watchdog","action":"nudge","target":"opus5:builder","target_slot":"main","target_session":"aerewrite"}"#;
+        let legs = &[BLOCKED_0, WCHALLENGE_1, nudge, BLOCKED_1];
+        assert_eq!(wprog(legs, T02_30, b), due(1, 60, 0));
+        let unconfirmed = WCHALLENGE_1.replacen("blocked", "[unconfirmed] blocked", 1);
+        assert_eq!(wprog(&[BLOCKED_0, &unconfirmed], T02_00, b), due(0, 120, 1));
+        let abandoned = r#"{"ts":"2026-08-29T04:01:15Z","actor":"watchdog","action":"delivery-abandoned","target":"opus5:builder","ref":"launch-1","target_slot":"main","target_session":"aerewrite","summary":"refused: busy pane; blocked confirmation 1/2"}"#;
+        assert_eq!(
+            wprog(&[BLOCKED_0, abandoned, WCHALLENGE_1], T01_59, b),
+            chall(0)
+        );
+        let f = abandoned.replace("launch-1", "launch-9");
+        assert_eq!(wprog(&[BLOCKED_0, &f], T02_00, b), due(0, 120, 0));
+    }
+
+    #[test]
+    fn own_news_supersedes_a_wait_episode() {
+        let b = Blocked;
+        for state in ["working", "waiting-user", "done"] {
+            let news = BLOCKED_1
+                .replace("04:01:30", "04:02:00")
+                .replace("blocked", state);
+            let legs = &[BLOCKED_0, WCHALLENGE_1, &news];
+            assert_eq!(
+                wprog(legs, T02_30, b),
+                WaitProgress::None,
+                "{state} supersedes"
+            );
+        }
+        let inbound = r#"{"ts":"2026-08-29T04:02:00Z","actor":"lead","action":"send","target":"opus5:builder","target_slot":"main","target_session":"aerewrite"}"#;
+        let late = BLOCKED_1.replace("04:01:30", "04:03:00");
+        let legs = &[BLOCKED_0, WCHALLENGE_1, inbound, &late];
+        assert_eq!(wprog(legs, T03_30, b), prov(0));
+    }
+
+    #[test]
+    fn crossed_challenges_reset_the_other_episode() {
+        let done_challenge = WCHALLENGE_1.replace("wait-challenge", "done-challenge");
+        assert_eq!(
+            wprog(&[BLOCKED_0, &done_challenge], T02_00, Blocked),
+            WaitProgress::None
+        );
+        // A wait challenge resets a done episode: the safe direction, with no
+        // done-fold change.
+        assert_eq!(
+            progress(&[DONE_0, WCHALLENGE_1], T02_00, 2, 60),
+            DoneProgress::None
+        );
+    }
+
+    #[test]
+    fn zero_knobs_leave_waits_unchallenged() {
+        let l = Some("launch-1");
+        assert_eq!(
+            wprog_as(&[BLOCKED_0], NEXT_DAY, 0, 60, Blocked, l),
+            WaitProgress::None
+        );
+        assert_eq!(
+            wprog_as(&[WAGENT_0], NEXT_DAY, 2, 0, WaitingAgent, l),
+            WaitProgress::None
+        );
+    }
+
+    #[test]
+    fn a_wait_challenge_walked_past_keeps_matching_wait_currency_only() {
+        let cases = [
+            (DECL_USER, None),
+            (DECL_WAGENT, Some(QuietKind::WaitingAgent)),
+            (DECL_BLOCKED, Some(QuietKind::Blocked)),
+            (DECL_DONE, None),
+        ];
+        for (declaration, want) in cases {
+            let events = log(&[declaration, WCHALLENGE_1]);
+            let found = latest_relevant_event(&events, "aerewrite", "main", "opus5:builder")
+                .expect("the declaration stays selected under the challenge");
+            assert_eq!(quiet_reason(&found), want);
+        }
+        // `working` declares no quiet state, so the pin is on currency itself.
+        let events = log(&[DECL_WORKING, WCHALLENGE_1]);
+        let found = latest_relevant_event(&events, "aerewrite", "main", "opus5:builder")
+            .expect("the working declaration stays selected");
+        assert!(!declaration_current(&found));
+    }
+
+    #[test]
+    fn wait_launch_matching_mirrors_done() {
+        let b = Blocked;
+        let wrong = WCHALLENGE_1.replace("launch-1", "launch-2");
+        assert_eq!(wprog(&[BLOCKED_0, &wrong], T02_00, b), WaitProgress::None);
+        let refless = WCHALLENGE_1.replace(r#","ref":"launch-1""#, "");
+        assert_eq!(
+            wprog_as(&[BLOCKED_0, &refless], T01_59, 2, 60, b, None),
+            chall(0)
+        );
+    }
+
     #[test]
     fn zero_knobs_preserve_todays_done_without_challenges() {
         assert_eq!(
@@ -1944,7 +2385,7 @@ mod tests {
     }
 
     #[test]
-    fn challenge_and_abandonment_do_not_extend_other_quiet_states() {
+    fn challenge_and_abandonment_do_not_extend_foreign_states() {
         for action in ["done-challenge", "delivery-abandoned"] {
             for state in ["waiting-user", "waiting-agent", "blocked"] {
                 let declaration = format!(
@@ -1956,7 +2397,14 @@ mod tests {
                 let events = log(&[&declaration, &footprint]);
                 let found = latest_relevant_event(&events, "aerewrite", "main", "opus5:builder")
                     .expect("declaration is walked back to");
-                assert_eq!(quiet_reason(&found), None, "{action} after {state}");
+                // An abandoned delivery is the episode's own footprint for a
+                // matching wait, like a delivered challenge; foreign to rest.
+                let want = match (action, state) {
+                    ("delivery-abandoned", "waiting-agent") => Some(QuietKind::WaitingAgent),
+                    ("delivery-abandoned", "blocked") => Some(QuietKind::Blocked),
+                    _ => None,
+                };
+                assert_eq!(quiet_reason(&found), want, "{action} after {state}");
             }
         }
     }

@@ -7,12 +7,13 @@
 
 use std::fmt::Write as _;
 
-use crate::digest::{Digest, SessionEntry, Status};
+use crate::digest::{AgentEntry, Digest, SessionEntry, Status};
 use crate::filters::{ListArgs, Scope};
 use crate::inventory::FailedSource;
 use crate::liveness::Snapshot;
 use crate::session::SessionRuntime;
 use crate::time::Timestamp;
+use crate::watchdog::WaitProgress;
 
 /// The facts a listing needs that no session directory holds.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -269,6 +270,37 @@ pub fn table(sessions: &[&SessionEntry]) -> String {
     table_at(sessions, Timestamp::from_epoch(0))
 }
 
+/// The verdict cell for a `waiting-agent`/`blocked` declaration: raw state,
+/// qualified while its proof episode runs.
+fn wait_cell(agent: &AgentEntry, out: &mut String) {
+    let word = agent.state.as_deref().unwrap_or("blocked");
+    let Some(progress) = agent.wait_progress else {
+        return out.push_str(word);
+    };
+    let (c, r, lapsed) = match progress {
+        WaitProgress::Provisional {
+            confirmations,
+            required,
+        }
+        | WaitProgress::ChallengeDue {
+            confirmations,
+            required,
+            ..
+        }
+        | WaitProgress::Challenged {
+            confirmations,
+            required,
+        } => (confirmations, required, false),
+        WaitProgress::Lapsed {
+            confirmations,
+            required,
+        } => (confirmations, required, true),
+        WaitProgress::None => return out.push_str(word),
+    };
+    let tail = if lapsed { ", lapsed" } else { "" };
+    let _ = write!(out, "{word} (unconfirmed {c}/{r}{tail})");
+}
+
 /// The tabular view at the snapshot time that supplied `sessions`.
 #[must_use]
 pub fn table_at(sessions: &[&SessionEntry], now: Timestamp) -> String {
@@ -352,6 +384,10 @@ pub fn table_at(sessions: &[&SessionEntry], now: Timestamp) -> String {
                     }
                     _ => out.push_str("done"),
                 }
+            } else if session.agent_state_is_exact()
+                && matches!(agent.state.as_deref(), Some("waiting-agent" | "blocked"))
+            {
+                wait_cell(agent, &mut out);
             } else {
                 out.push_str(
                     match (session.agent_state_is_exact(), agent.state.as_deref()) {
@@ -546,6 +582,7 @@ mod tests {
             observed: crate::harness_state::HarnessState::Unknown,
             state: state.map(ToOwned::to_owned),
             done_progress: None,
+            wait_progress: None,
             reason: None,
             own_work: None,
             model_drift: crate::model_drift::ModelDrift::Quiet,
@@ -1735,6 +1772,7 @@ mod tests {
                 observed: crate::harness_state::HarnessState::Unknown,
                 state: Some("working".to_owned()),
                 done_progress: None,
+                wait_progress: None,
                 reason: None,
                 own_work: None,
                 model_drift: crate::model_drift::ModelDrift::Quiet,
@@ -1770,6 +1808,7 @@ mod tests {
                 observed: crate::harness_state::HarnessState::Unknown,
                 state: Some("working".to_owned()),
                 done_progress: None,
+                wait_progress: None,
                 reason: None,
                 own_work: None,
                 model_drift: crate::model_drift::ModelDrift::Quiet,
@@ -1821,6 +1860,7 @@ mod tests {
                 observed: crate::harness_state::HarnessState::Idle,
                 state: Some("working".to_owned()),
                 done_progress: None,
+                wait_progress: None,
                 reason: None,
                 own_work,
                 model_drift: crate::model_drift::ModelDrift::Quiet,
@@ -1870,6 +1910,7 @@ mod tests {
             observed: crate::harness_state::HarnessState::Idle,
             state: Some("blocked".to_owned()),
             done_progress: None,
+            wait_progress: None,
             reason: None,
             own_work: None,
             model_drift: crate::model_drift::ModelDrift::Quiet,
@@ -1899,6 +1940,7 @@ mod tests {
             observed: crate::harness_state::HarnessState::Unknown,
             state: Some("blocked".to_owned()),
             done_progress: None,
+            wait_progress: None,
             reason: None,
             own_work: None,
             model_drift: crate::model_drift::ModelDrift::Quiet,
@@ -1935,6 +1977,7 @@ mod tests {
                 observed: crate::harness_state::HarnessState::Busy,
                 state: Some("working".to_owned()),
                 done_progress: None,
+                wait_progress: None,
                 reason: None,
                 own_work: None,
                 model_drift: crate::model_drift::ModelDrift::Quiet,
@@ -1948,6 +1991,7 @@ mod tests {
                 observed: crate::harness_state::HarnessState::Idle,
                 state: Some("working".to_owned()),
                 done_progress: None,
+                wait_progress: None,
                 reason: None,
                 own_work: None,
                 model_drift: crate::model_drift::ModelDrift::Quiet,
