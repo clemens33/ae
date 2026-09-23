@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.160] - 2026-09-23
+- Extend done re-ask to waiting-agent and blocked (#144 follow-up)
+
 ## [v2026.9.159] - 2026-09-22
 - Add judge and cruncher delegation pattern
 - Show reseat records in the Activity dialog
