@@ -3131,7 +3131,7 @@ mod tests {
                         &at(10),
                         "watchdog",
                         action,
-                        r#","target":"lead","ref":"launch-1","target_slot":"main","target_session":"live""#,
+                        r#","target":"lead","ref":"launch-1","target_slot":"main","target_session":"live","summary":"refused: busy pane; confirmation 1/2""#,
                     ),
                 ]);
                 let events = SessionRead::open(&scratch.0).expect("events read").events;

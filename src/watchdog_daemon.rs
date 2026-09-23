@@ -5638,9 +5638,10 @@ impl Cycle<'_> {
                     *confirmations,
                     *required,
                 );
-                let summary = format!(
-                    "confirmation {}/{required}",
-                    confirmations.saturating_add(1)
+                let summary = crate::watchdog::challenge_summary(
+                    crate::watchdog::Challenge::Done,
+                    confirmations.saturating_add(1),
+                    *required,
                 );
                 let launch = launch_id_for(&self.launch_ids, on.slot);
                 let _ = self.deliver(agent, &text, "done-challenge", &summary, launch);
@@ -5663,7 +5664,11 @@ impl Cycle<'_> {
                     *escalated,
                 );
                 let num = confirmations.saturating_add(1);
-                let summary = format!("{} confirmation {num}/{required}", state.as_str());
+                let summary = crate::watchdog::challenge_summary(
+                    crate::watchdog::Challenge::Wait(*state),
+                    num,
+                    *required,
+                );
                 let launch = launch_id_for(&self.launch_ids, on.slot);
                 let _ = self.deliver(agent, &text, "wait-challenge", &summary, launch);
                 Ok(())
@@ -5702,7 +5707,13 @@ impl Cycle<'_> {
         // Delivery is CHECKED.
         let body = overview.body();
         let delivered = self
-            .deliver(on.agent, &body, "nudge", "fleet overview changed", None)
+            .deliver(
+                on.agent,
+                &body,
+                crate::watchdog::SWEEP_NUDGE_ACTION,
+                "fleet overview changed",
+                None,
+            )
             .code
             == Some(0);
         // This is intentionally AFTER the checked delivery. A deferred submit
@@ -7849,6 +7860,47 @@ mod tests {
             crate::events::RefMeaning::Undefined
         );
         assert!(crate::session::open_requests(&events, "demo").is_empty());
+    }
+
+    /// The waiting-user half (C3): an abandoned checkpoint ask, with its
+    /// receipt or without one, is the watchdog's own traffic and never a
+    /// challenge footprint — read on the REAL ask text.
+    #[test]
+    fn an_abandoned_checkpoint_ask_leaves_a_waiting_user_current() {
+        let roster = [codex_seat("main", "lead", "/tmp/cx")];
+        let panes = live_panes(&roster);
+        let candidates = quota_ask_candidates(&roster, &panes);
+        let meta = Path::new("/m");
+        let mut carry = QuotaCarry::default();
+        for (used, at) in [("70", 9_900), ("85", 9_901)] {
+            let scope = codex_scope(&roster[0], used, at);
+            let _ = carry.reconcile_with_candidates(&scope, &[], &candidates, meta);
+        }
+        let ask = &carry.asks[0];
+        let text = ask.advisory.checkpoint_ask(meta);
+        let receipt = ask_receipt(&ask.key, ask.advisory.resets_at(), &ask.recipient)
+            .expect("codex states its reset, so the ask carries a receipt");
+        let declared = parsed(&journal_line("lead", "state", "", "waiting-user", "why"));
+        for reference in [receipt.as_str(), ""] {
+            let summary = format!("refused: composer occupied; {text}");
+            let events = [
+                declared.clone(),
+                parsed(&journal_line(
+                    "watchdog",
+                    crate::tracked::ABANDONED_ACTION,
+                    "lead",
+                    reference,
+                    &summary,
+                )),
+            ];
+            let found = crate::watchdog::latest_relevant_event(&events, "demo", "main", "lead")
+                .expect("the declaration is walked back to");
+            assert_eq!(
+                crate::watchdog::quiet_reason(&found),
+                Some(QuietKind::WaitingUser),
+                "{reference:?}: {summary}"
+            );
+        }
     }
 
     #[test]
@@ -13895,6 +13947,134 @@ mod tests {
             }],
             "a clear is log-only — no display-message"
         );
+    }
+
+    /// A send helper that journals the action and summary it was handed, as
+    /// the real one does, so a test reads what a delivery booked.
+    fn journaling_helper(dir: &Path) -> SendHelper {
+        use std::os::unix::fs::PermissionsExt;
+        let send = dir.join(super::HELPER_NAME);
+        let script = format!(
+            "#!/bin/sh\nprintf '{{\"ts\":\"2026-09-23T00:00:00Z\",\"actor\":\"watchdog\",\"action\":\"%s\",\"summary\":\"%s\"}}\\n' \"$_AE_EVENT_ACTION\" \"$_AE_EVENT_SUMMARY\" >> '{}'\n",
+            dir.join("events.jsonl").display()
+        );
+        std::fs::write(&send, script).expect("the fake helper");
+        std::fs::set_permissions(&send, std::fs::Permissions::from_mode(0o755)).expect("exec");
+        SendHelper::for_session(dir)
+    }
+
+    fn booked(dir: &Path) -> Vec<(String, Option<String>)> {
+        let journal = crate::session::SessionRead::open(dir).expect("the helper ran");
+        let rows = journal.events.into_iter();
+        rows.map(|event| (event.action, event.summary)).collect()
+    }
+
+    fn demo_cycle<'a>(dir: &'a Path, helper: &'a SendHelper, server: &'a ServerId) -> Cycle<'a> {
+        Cycle {
+            knobs: Knobs::default(),
+            meta_dir: dir,
+            helper,
+            server,
+            session: "demo",
+            goal: None,
+            roster: Vec::new(),
+            local_config: None,
+            lead_pair: false,
+            fleet_order: crate::theme::FleetOrder::EMPTY,
+            meta_agent: true,
+            launch_ids: Vec::new(),
+        }
+    }
+
+    /// T2 (#145): the fleet-overview prompt books its OWN action, never the
+    /// idle nudge's, so a changed overview cannot lapse the orchestrator's
+    /// `done` (the walk's table pins that the action ends no state).
+    #[test]
+    fn the_sweep_prompt_books_its_own_action_not_the_idle_nudge() {
+        let scratch = Scratch::new("sweep-action");
+        let helper = journaling_helper(&scratch.0);
+        let server = ServerId::Ambient;
+        let reading = OverviewReading {
+            rendered: "WORKING\n  alpha lead ship".to_owned(),
+            hash: "0123456789abcdef".to_owned(),
+            checkpoint: crate::monitor::OverviewCheckpoint {
+                hash: None,
+                outstanding_since: None,
+                last_delivered_at: None,
+            },
+        };
+        let mut observed = seen();
+        observed.sweep = Some(SweepObservation::new(at(0), None));
+        let on = super::Acting {
+            agent: "lead",
+            slot: "main",
+            seen: &observed,
+            events: &[],
+            overview: Some(&reading),
+        };
+        demo_cycle(&scratch.0, &helper, &server)
+            .sweep_nudge(&on, &mut PaneState::default(), &mut Vec::new())
+            .expect("the prompt is delivered");
+        let actions: Vec<String> = booked(&scratch.0).into_iter().map(|row| row.0).collect();
+        assert_eq!(actions, [crate::watchdog::SWEEP_NUDGE_ACTION]);
+    }
+
+    /// The daemon's challenge formatter, read back by the ONE grammar: what
+    /// `apply` hands the helper for each kind is what the folds classify.
+    #[test]
+    fn the_daemons_challenges_book_what_the_one_grammar_reads() {
+        use crate::watchdog::{Challenge, DONE_CHALLENGE_ACTION, WAIT_CHALLENGE_ACTION};
+        let scratch = Scratch::new("challenge-summaries");
+        let helper = journaling_helper(&scratch.0);
+        let server = ServerId::Ambient;
+        let observed = seen();
+        let on = super::Acting {
+            agent: "lead",
+            slot: "main",
+            seen: &observed,
+            events: &[],
+            overview: None,
+        };
+        let cycle = demo_cycle(&scratch.0, &helper, &server);
+        let mut effects = vec![Effect::DoneChallenge {
+            confirmations: 0,
+            required: 2,
+            done_age_secs: 600,
+        }];
+        for state in [WaitState::WaitingAgent, WaitState::Blocked] {
+            effects.push(Effect::WaitChallenge {
+                confirmations: 1,
+                required: 2,
+                wait_age_secs: 600,
+                state,
+                escalated: false,
+            });
+        }
+        for effect in &effects {
+            cycle
+                .apply(effect, &on, &mut PaneState::default(), &mut Vec::new())
+                .expect("the challenge is delivered");
+        }
+        let want = [
+            (DONE_CHALLENGE_ACTION, Challenge::Done, "confirmation 1/2"),
+            (
+                WAIT_CHALLENGE_ACTION,
+                Challenge::Wait(WaitState::WaitingAgent),
+                "waiting-agent confirmation 2/2",
+            ),
+            (
+                WAIT_CHALLENGE_ACTION,
+                Challenge::Wait(WaitState::Blocked),
+                "blocked confirmation 2/2",
+            ),
+        ];
+        let rows = booked(&scratch.0);
+        assert_eq!(rows.len(), want.len());
+        for ((action, summary), (want_action, kind, spelled)) in rows.iter().zip(want) {
+            assert_eq!(action, want_action);
+            assert_eq!(summary.as_deref(), Some(spelled));
+            assert_eq!(crate::watchdog::challenge_named(spelled), Some(kind));
+        }
     }
 
     #[test]

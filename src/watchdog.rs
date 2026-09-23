@@ -442,6 +442,9 @@ pub fn quiet_hash(buf: &str) -> u64 {
 /// carries.
 pub const WATCHDOG_ACTOR: &str = "watchdog";
 const NUDGE_ACTION: &str = "nudge";
+/// The action the orchestrator's fleet-overview prompt carries: its own, so a
+/// changed overview is never read as the idle nudge that lapses a `done`.
+pub(crate) const SWEEP_NUDGE_ACTION: &str = "sweep-nudge";
 
 /// Whether `event`'s actor IS the seat at `slot` / `agent` in `session` — the
 /// ROUTING KEY when the record carries one, the display name ONLY for a
@@ -527,14 +530,53 @@ pub(crate) const DONE_CHALLENGE_ACTION: &str = "done-challenge";
 /// confirmation. Both wait states share it, so the summary names the state.
 pub(crate) const WAIT_CHALLENGE_ACTION: &str = "wait-challenge";
 
-/// Whether a `wait-challenge` record names `state` (delivered, unconfirmed
-/// and delivery-abandoned summaries all carry the state word).
-fn wait_challenge_names(summary: Option<&str>, state: WaitState) -> bool {
-    let tag = match state {
-        WaitState::WaitingAgent => "waiting-agent confirmation",
-        WaitState::Blocked => "blocked confirmation",
+/// Which proof challenge a watchdog record carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Challenge {
+    Done,
+    Wait(WaitState),
+}
+
+/// A challenge record's summary: `confirmation n/m`, behind the wait state's
+/// word for a wait challenge. [`challenge_named`] is the one reader.
+#[must_use]
+pub(crate) fn challenge_summary(challenge: Challenge, number: u8, required: u8) -> String {
+    match challenge {
+        Challenge::Done => format!("confirmation {number}/{required}"),
+        Challenge::Wait(state) => format!("{} confirmation {number}/{required}", state.as_str()),
+    }
+}
+
+/// The challenge a record's summary carries, or `None`: the ONE grammar. The
+/// challenge summary is the whole LAST `; ` clause — a delivery-abandoned
+/// record puts it after its refusal reason — optionally behind the
+/// `[unconfirmed] ` head, and a refused-pre-paste tail
+/// ([`crate::send::REFUSED_PRE_PASTE`]) is cut off first. Exact: the digits
+/// are digits, and nothing may sit around the challenge in its clause.
+pub(crate) fn challenge_named(summary: &str) -> Option<Challenge> {
+    let body = summary
+        .split_once(crate::send::REFUSED_PRE_PASTE)
+        .map_or(summary, |(body, _)| body);
+    let clause = body.rsplit_once("; ").map_or(body, |(_, clause)| clause);
+    let unconfirmed = crate::tracked::unconfirmed_summary("");
+    let clause = clause.strip_prefix(unconfirmed.as_str()).unwrap_or(clause);
+    let (challenge, count) = if let Some(count) = clause.strip_prefix("confirmation ") {
+        (Challenge::Done, count)
+    } else {
+        let (word, count) = clause.split_once(" confirmation ")?;
+        let state = [WaitState::WaitingAgent, WaitState::Blocked]
+            .into_iter()
+            .find(|state| state.as_str() == word)?;
+        (Challenge::Wait(state), count)
     };
-    summary.is_some_and(|text| text.contains(tag))
+    let (number, required) = count.split_once('/')?;
+    let digits = |part: &str| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit());
+    (digits(number) && digits(required)).then_some(challenge)
+}
+
+/// Whether a `wait-challenge` record, or its abandonment, names `state`.
+fn wait_challenge_names(summary: Option<&str>, state: WaitState) -> bool {
+    summary.and_then(challenge_named) == Some(Challenge::Wait(state))
 }
 
 /// The actor prefixes of the chat bridges: a delivery carrying one is a human
@@ -652,7 +694,13 @@ pub fn latest_relevant_event<'a>(
                 NUDGE_ACTION => looked_past_nudge = true,
                 DONE_CHALLENGE_ACTION => looked_past_done_challenge = true,
                 WAIT_CHALLENGE_ACTION => looked_past_wait_challenge = true,
-                crate::tracked::ABANDONED_ACTION => looked_past_abandoned = true,
+                // Only an abandoned CHALLENGE is a footprint; an abandoned
+                // nudge or quota ask is the watchdog's own traffic.
+                crate::tracked::ABANDONED_ACTION
+                    if event.summary.as_deref().and_then(challenge_named).is_some() =>
+                {
+                    looked_past_abandoned = true;
+                }
                 _ => {}
             }
             continue;
@@ -794,11 +842,10 @@ pub fn done_progress(
             continue;
         }
         if event.action == DONE_CHALLENGE_ACTION && event.actor == WATCHDOG_ACTOR {
-            // The journal can bound attempts only after a challenge was pasted:
-            // an unconfirmed done-challenge event and a delivery-abandoned event
-            // with this launch reference are durable. Pre-paste refusals (input
-            // not ready, a busy pane, or human typing) record nothing, so attempts
-            // stays zero and the push repeats each cycle; tracked as #148.
+            // Every failed push is durable with this launch reference: an
+            // unconfirmed done-challenge event (a refused-pre-paste one
+            // included) or a delivery-abandoned event, so attempts bound the
+            // pushes.
             let matching = launch.map_or(event.reference.is_none(), |id| {
                 event.reference.as_deref() == Some(id)
             });
@@ -1000,9 +1047,8 @@ pub fn wait_progress(
             own_requests.push(id);
         }
         if event.action == WAIT_CHALLENGE_ACTION && event.actor == WATCHDOG_ACTOR {
-            // Same journal bound as `done_progress`: only a pasted challenge
-            // (or its abandonment below) is durable; pre-paste refusals
-            // record nothing and the push repeats (#148).
+            // Same journal bound as `done_progress`: every failed push is an
+            // unconfirmed record here or its abandonment below.
             if !wait_challenge_names(event.summary.as_deref(), state) {
                 continue; // another state's challenge: not ours, not news
             }
@@ -2479,7 +2525,7 @@ mod tests {
 
     #[test]
     fn abandoned_delivery_is_walked_past_without_ending_done() {
-        let abandoned = r#"{"ts":"2026-08-29T04:01:00Z","actor":"watchdog","action":"delivery-abandoned","target":"opus5:builder","target_slot":"main","target_session":"aerewrite"}"#;
+        let abandoned = r#"{"ts":"2026-08-29T04:01:00Z","actor":"watchdog","action":"delivery-abandoned","target":"opus5:builder","target_slot":"main","target_session":"aerewrite","summary":"refused: busy pane; confirmation 1/2"}"#;
         let events = log(&[DONE_0, abandoned]);
         let found = latest_relevant_event(&events, "aerewrite", "main", "opus5:builder")
             .expect("done remains relevant");
@@ -2495,7 +2541,7 @@ mod tests {
                     r#"{{"ts":"2026-08-29T04:00:00Z","actor":"opus5:builder","action":"state","ref":"{state}"}}"#
                 );
                 let footprint = format!(
-                    r#"{{"ts":"2026-08-29T04:01:00Z","actor":"watchdog","action":"{action}","target":"opus5:builder","ref":"launch-1"}}"#
+                    r#"{{"ts":"2026-08-29T04:01:00Z","actor":"watchdog","action":"{action}","target":"opus5:builder","ref":"launch-1","summary":"refused: busy pane; confirmation 1/2"}}"#
                 );
                 let events = log(&[&declaration, &footprint]);
                 let found = latest_relevant_event(&events, "aerewrite", "main", "opus5:builder")
@@ -3082,10 +3128,11 @@ mod tests {
             "throttled",
             "throttle-cleared",
             "recover",
-            "quota-advisory",
-            "quota-advisory-dropped",
-            "quota-checkpoint",
-            "quota-checkpoint-dropped",
+            super::SWEEP_NUDGE_ACTION,
+            crate::quota::action::ADVISORY,
+            crate::quota::action::ADVISORY_DROPPED,
+            crate::quota::action::CHECKPOINT,
+            crate::quota::action::CHECKPOINT_DROPPED,
         ] {
             rows.push((after_declaration("watchdog", action, ""), [false; 4], true));
         }
@@ -3130,6 +3177,135 @@ mod tests {
         let working = after_declaration(me, "state", r#","ref":"working""#);
         lines.push(&working);
         assert_eq!(reason(&lines), None, "the seat moved on");
+    }
+
+    /// Every summary ae writes for a challenge reads back as that challenge
+    /// through the ONE grammar: as written, unconfirmed, refused before its
+    /// paste, and abandoned — by the real abandoned-delivery writer, under
+    /// every hold it can name.
+    #[test]
+    fn one_grammar_reads_back_every_challenge_summary_ae_writes() {
+        use super::{Challenge, challenge_named, challenge_summary};
+        use crate::deliver::DeferHeld;
+        let dir = std::env::temp_dir().join(format!("ae-wd-grammar-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("the scratch ledger");
+        let holds = [
+            DeferHeld::ComposerOccupied,
+            DeferHeld::ComposerUnreadable,
+            DeferHeld::Viewed,
+            DeferHeld::OccupiedAndViewed,
+            DeferHeld::UnreadableAndViewed,
+        ];
+        let mut expected = Vec::new();
+        for kind in [
+            Challenge::Done,
+            Challenge::Wait(WaitingAgent),
+            Challenge::Wait(Blocked),
+        ] {
+            for (number, required) in [(1, 2), (2, 2), (10, 12)] {
+                let written = challenge_summary(kind, number, required);
+                let refused = format!("{written}{}dead pane", crate::send::REFUSED_PRE_PASTE);
+                for summary in [
+                    written.clone(),
+                    crate::tracked::unconfirmed_summary(&written),
+                    crate::tracked::unconfirmed_summary(&refused),
+                ] {
+                    assert_eq!(challenge_named(&summary), Some(kind), "{summary}");
+                }
+                for held in holds {
+                    let fields = crate::tracked::EventFields {
+                        ts: Timestamp::parse("2026-08-29T04:01:00Z").expect("test time"),
+                        actor: "watchdog",
+                        action: "wait-challenge",
+                        target: "opus5:builder",
+                        reference: "launch-1",
+                        actor_slot: "",
+                        actor_session: "aerewrite",
+                        target_slot: "main",
+                        target_session: "aerewrite",
+                        target_server: "",
+                        target_pane: "",
+                        target_session_uuid: "",
+                        caller_server: "",
+                        caller_pane: "",
+                        caller_session_uuid: "",
+                        identity_gap: "",
+                        summary: &written,
+                        body_file: "",
+                    };
+                    crate::tracked::record_abandoned_delivery(&dir, &fields, held, &mut Vec::new())
+                        .expect("the refusal is recorded");
+                    expected.push(kind);
+                }
+            }
+        }
+        let events = crate::session::SessionRead::open(&dir)
+            .expect("the ledger reads")
+            .events;
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(events.len(), expected.len());
+        for (event, kind) in events.iter().zip(expected) {
+            let summary = event.summary.as_deref();
+            assert_eq!(summary.and_then(challenge_named), Some(kind), "{summary:?}");
+            for state in [WaitingAgent, Blocked] {
+                assert_eq!(
+                    super::wait_challenge_names(summary, state),
+                    kind == Challenge::Wait(state)
+                );
+            }
+        }
+    }
+
+    /// C3 (#145): only an abandoned CHALLENGE is a footprint that ends a
+    /// `waiting-user`. The watchdog's other abandoned traffic — an idle nudge,
+    /// a quota ask with its receipt or without — leaves it standing, and so
+    /// does a challenge's words anywhere but the whole last clause.
+    #[test]
+    fn only_an_abandoned_challenge_ends_a_waiting_user() {
+        let abandoned = |reference: &str, summary: &str| {
+            let reference = if reference.is_empty() {
+                String::new()
+            } else {
+                format!(r#","ref":"{reference}""#)
+            };
+            after_declaration(
+                "watchdog",
+                crate::tracked::ABANDONED_ACTION,
+                &format!(r#"{reference},"summary":"refused: busy pane; {summary}""#),
+            )
+        };
+        for (reference, summary) in [
+            ("", "idle 5m, harness waiting at input"),
+            (
+                "quota-ask-0123456789abcdef",
+                "quota claude · Fable — low at 85%",
+            ),
+            ("", "quota claude · Fable — low at 85%"),
+            ("", "quota text asking confirmation 1/2 of a checkpoint"),
+            ("launch-1", "waiting-user confirmation 1/2"),
+            ("launch-1", "confirmation 1/2 extra"),
+            ("launch-1", "blocked confirmation 1/2/3"),
+            ("launch-1", "confirmation 1/x"),
+            ("launch-1", "confirmation /2"),
+        ] {
+            let record = abandoned(reference, summary);
+            assert!(stands_after("waiting-user", &record, false), "{summary}");
+        }
+        let lookalike = abandoned("", "idle 5m").replace("busy pane", "confirmation 1/2");
+        assert!(
+            stands_after("waiting-user", &lookalike, false),
+            "{lookalike}"
+        );
+        for (reference, summary) in [
+            ("launch-1", "confirmation 1/2"),
+            ("", "confirmation 2/2"),
+            ("", "waiting-agent confirmation 1/2"),
+            ("launch-1", "blocked confirmation 1/2"),
+        ] {
+            let record = abandoned(reference, summary);
+            assert!(!stands_after("waiting-user", &record, false), "{summary}");
+        }
     }
 
     // ---- Quiet detection --------------------------------------------------

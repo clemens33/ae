@@ -949,6 +949,7 @@ mod tests {
             // "Other actions — USUALLY absent"; a value that turns up anyway
             // has no meaning the table defines, so neither do we.
             ("nudge", RefMeaning::Undefined),
+            ("sweep-nudge", RefMeaning::Undefined),
         ];
         for (action, expected) in cases {
             let line = format!(
@@ -2005,7 +2006,16 @@ mod tests {
         // and both record an outcome in prose, so a reader that classified
         // summaries by action would read a seat move as a verdict about it.
         for action in [
-            "state", "send", "nudge", "ask", "reply", "memo", "recover", "reseat", "relaunch",
+            "state",
+            "send",
+            "nudge",
+            "sweep-nudge",
+            "ask",
+            "reply",
+            "memo",
+            "recover",
+            "reseat",
+            "relaunch",
         ] {
             assert_eq!(
                 event(action, Some("agent process dead — dropped to shell")).alert_meaning(),
