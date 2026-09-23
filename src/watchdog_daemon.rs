@@ -7491,19 +7491,29 @@ mod tests {
 
     #[test]
     fn a_switch_into_the_family_is_asked_and_a_switch_away_withdraws_the_owed_ask() {
-        let roster = [claude_seat("main", "lead", CONVERSATION_A)];
+        // The colead stays on Fable throughout; only the lead switches.
+        let roster = [
+            claude_seat("main", "lead", CONVERSATION_A),
+            claude_seat("worker.0", "colead", CONVERSATION_B),
+        ];
         let window = fable_window(&roster[0], "100", 9_900, None);
         let meta = Path::new("/m");
         let pass = |carry: &mut QuotaCarry, live: &str| {
             carry.reconcile_with_candidates(
                 &window,
                 &[],
-                &candidates_running(&roster, &[Some(live)]),
+                &candidates_running(&roster, &[Some(live), Some("Fable 5.1")]),
                 meta,
             )
         };
         let mut carry = QuotaCarry::default();
-        assert!(pass(&mut carry, "Opus 5.5").is_empty(), "Opus is not asked");
+        assert_eq!(
+            asked_agents(&pass(&mut carry, "Opus 5.5")),
+            ["colead"],
+            "Opus is not asked"
+        );
+        let taken = carry.asks[0].clone();
+        let _ = carry.record_ask_delivery(&taken, QuotaDelivery::Delivered, meta);
         // (d) The window is already critical: no entry will come, and the
         // switch alone asks.
         assert_eq!(asked_agents(&pass(&mut carry, "Fable 5.1")), ["lead"]);
@@ -7514,6 +7524,10 @@ mod tests {
                 .is_none(),
             "refused before submit: still owed"
         );
+        // Still on Fable at the retry: retried, never withdrawn.
+        let retried = pass(&mut carry, "Fable 5.1");
+        assert_eq!(asked_agents(&retried), ["lead"]);
+        assert!(withdrawn(&retried).is_empty(), "{retried:?}");
         // (e) Switched away before the retry: withdrawn, named, never pasted.
         let switched = pass(&mut carry, "Opus 5.5");
         assert!(asked_agents(&switched).is_empty(), "{switched:?}");
@@ -7525,7 +7539,8 @@ mod tests {
             names[0]
         );
         assert!(carry.asks.is_empty(), "nothing stays booked");
-        // The withdrawn booking never reached the seat, so switching back asks.
+        // The withdrawn booking never reached the seat, so switching back asks;
+        // the colead keeps the mark its delivered ask left.
         assert_eq!(asked_agents(&pass(&mut carry, "Fable 5.1")), ["lead"]);
         let owed = carry.asks[0].clone();
         let _ = carry.record_ask_delivery(&owed, QuotaDelivery::Delivered, meta);
