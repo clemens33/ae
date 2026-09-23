@@ -2980,29 +2980,35 @@ mod tests {
         assert_eq!(entry.attention, Some(Reason::Blocked));
     }
 
-    /// BLOCKER 1: the daemon honours `waiting-agent` only while the
-    /// declaration is still the LATEST RELEVANT EVENT (a peer reply or the
-    /// agent's own later event ends the hold), so the read side must not age a
-    /// superseded declaration into a human claim. The raw state stays visible;
-    /// the attention contribution does not.
+    /// BLOCKER 1: the daemon honours `waiting-agent` only while nothing newer
+    /// ENDS it (the reply to one of the agent's own asks, the human, or its own
+    /// re-declaration), so the read side must not age a superseded declaration
+    /// into a human claim. The raw state stays visible; the attention
+    /// contribution does not.
     #[test]
     fn a_superseded_waiting_agent_never_escalates() {
         let scratch = Scratch::new("waiting-agent-superseded");
         scratch.meta(META);
         scratch.events(&[
             event(
+                &at(2_100),
+                "lead",
+                "ask",
+                r#","ref":"ae-20260829T040000Z-0000c0de","target":"colead""#,
+            ),
+            event(
                 &at(2_000),
                 "lead",
                 "state",
                 r#","ref":"waiting-agent","summary":"waiting on colead's re-review""#,
             ),
-            // A newer relevant event: colead answers. The daemon yields its
-            // quiet hold on exactly this, whatever the declaration's age.
+            // A newer relevant event: colead answers that ask. The daemon ends
+            // its quiet hold on exactly this, whatever the declaration's age.
             event(
                 &at(10),
                 "colead",
-                "send",
-                r#","target":"lead","summary":"answered, go on""#,
+                "reply",
+                r#","ref":"ae-20260829T040000Z-0000c0de","target":"lead","summary":"answered, go on""#,
             ),
         ]);
         let entry = entry_for(&scratch.0, "live", &running(), NOW, DEFAULT_UNANSWERED_SECS);
@@ -3017,7 +3023,7 @@ mod tests {
         );
         assert_eq!(entry.attention, None, "and adds no session marker");
 
-        // The agent's OWN later event supersedes too, not only an inbound one.
+        // The agent's OWN later chasing ends nothing: it still escalates.
         let own = Scratch::new("waiting-agent-own-event");
         own.meta(META);
         own.events(&[
@@ -3035,8 +3041,8 @@ mod tests {
             ),
         ]);
         let entry = entry_for(&own.0, "live", &running(), NOW, DEFAULT_UNANSWERED_SECS);
-        assert_eq!(entry.agents[0].reason, None);
-        assert_eq!(entry.attention, None);
+        assert_eq!(entry.agents[0].reason, Some(Reason::Blocked));
+        assert_eq!(entry.attention, Some(Reason::Blocked));
 
         // A watchdog nudge is a FOOTPRINT, not news: it is walked past, so the
         // declaration it was asking about still escalates.
@@ -3062,6 +3068,38 @@ mod tests {
             Some(Reason::Blocked),
             "a nudge must not end the hold it was asking about"
         );
+    }
+
+    /// A peer's message leaves `waiting-agent` standing, so it still
+    /// escalates; the human through a chat bridge and the agent's own
+    /// re-declaration end it.
+    #[test]
+    fn a_waiting_agent_outlives_its_peers_but_not_the_human_or_itself() {
+        for (tag, actor, action, extra, attention) in [
+            (
+                "peer",
+                "colead",
+                "send",
+                r#","target":"lead""#,
+                Some(Reason::Blocked),
+            ),
+            ("human", "telegram:42", "send", r#","target":"lead""#, None),
+            ("redeclared", "lead", "state", r#","ref":"working""#, None),
+        ] {
+            let scratch = Scratch::new(&format!("waiting-agent-{tag}"));
+            scratch.meta(META);
+            scratch.events(&[
+                event(
+                    &at(2_000),
+                    "lead",
+                    "state",
+                    r#","ref":"waiting-agent","summary":"waiting on colead's re-review""#,
+                ),
+                event(&at(10), actor, action, extra),
+            ]);
+            let entry = entry_for(&scratch.0, "live", &running(), NOW, DEFAULT_UNANSWERED_SECS);
+            assert_eq!(entry.attention, attention, "{tag}");
+        }
     }
 
     #[test]

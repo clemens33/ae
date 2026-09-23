@@ -537,11 +537,79 @@ fn wait_challenge_names(summary: Option<&str>, state: WaitState) -> bool {
     summary.is_some_and(|text| text.contains(tag))
 }
 
+/// The actor prefixes of the chat bridges: a delivery carrying one is a human
+/// writing to the seat from outside the terminal.
+const HUMAN_BRIDGE_ACTORS: [&str; 2] = ["telegram:", "discord:"];
+
+/// Whether `event`, relevant to the seat and NEWER than its `state`
+/// declaration, ends that declaration — the ONE table the currency walk and
+/// both episode folds read, so the daemon and `ae list` cannot split.
+///
+/// - the watchdog's own records never end one: it is neither the seat nor the
+///   human, and its challenge footprints are judged by the `looked_past_*`
+///   flags instead;
+/// - the seat's own newer declaration always does;
+/// - a human through a chat bridge always does;
+/// - `waiting-user` and `blocked` hold through everything else — the seat's
+///   own chasing, a peer's message, pane churn;
+/// - `waiting-agent` also ends on a reply to one of the seat's OWN asks or
+///   reviews (`own_requests`, their request ids) — the answer it waits for;
+/// - `done`, and every state that quiets nothing, end on any other record.
+#[must_use]
+pub fn ends_quiet(state: &str, event: &Event, is_own: bool, own_requests: &[&str]) -> bool {
+    if event.actor == WATCHDOG_ACTOR {
+        return false;
+    }
+    if is_own && event.declared_state().is_some() {
+        return true;
+    }
+    if !is_own
+        && HUMAN_BRIDGE_ACTORS
+            .iter()
+            .any(|prefix| event.actor.starts_with(prefix))
+    {
+        return true;
+    }
+    match state {
+        "waiting-user" | "blocked" => false,
+        "waiting-agent" => {
+            !is_own
+                && event.action == crate::reply::ACTION
+                && event
+                    .reference
+                    .as_deref()
+                    .is_some_and(|id| own_requests.contains(&id))
+        }
+        _ => true,
+    }
+}
+
+/// Whether `event` is one of the watchdog's challenges. A fold judges its own
+/// kind above and a CROSSED one resets the episode (#144), so a fold asks
+/// this before [`ends_quiet`], which leaves every watchdog record standing.
+fn is_challenge(event: &Event) -> bool {
+    event.actor == WATCHDOG_ACTOR
+        && (event.action == DONE_CHALLENGE_ACTION || event.action == WAIT_CHALLENGE_ACTION)
+}
+
+/// Whether `event` is the seat's own ask or review, whose request id a reply
+/// answers.
+fn is_own_request(event: &Event, is_own: bool) -> bool {
+    is_own
+        && (event.action == crate::tracked::Kind::Ask.action()
+            || event.action == crate::tracked::Kind::Review.action())
+}
+
 /// The newest event relevant to the seat at `slot`/`agent` in `session`, with
 /// the ownership verdict and whether the walk stepped past any of the
 /// watchdog's own nudges to reach it — the SELECTION half of the quiet
 /// decision that [`quiet_reason`] then classifies, and the read side's
 /// currency proof.
+///
+/// The walk is STATE-AWARE: it steps past every record newer than the seat's
+/// own newest declaration that [`ends_quiet`] says leaves that declaration
+/// standing, so what it returns is the declaration itself or the record that
+/// ended it. The watchdog's own records are never returned.
 ///
 /// ONE owner: the daemon and `session::agent_entries` both call this, with the
 /// same routing key the declaration itself is matched by. The verdict is part
@@ -554,6 +622,22 @@ pub fn latest_relevant_event<'a>(
     slot: &str,
     agent: &str,
 ) -> Option<Relevant<'a>> {
+    let declared = events
+        .iter()
+        .rev()
+        .find(|event| {
+            event.declared_state().is_some() && event_is_actor(event, session, slot, agent)
+        })
+        .and_then(Event::declared_state);
+    let own_requests: Vec<&str> = if declared == Some("waiting-agent") {
+        events
+            .iter()
+            .filter(|event| is_own_request(event, event_is_actor(event, session, slot, agent)))
+            .filter_map(|event| event.reference.as_deref())
+            .collect()
+    } else {
+        Vec::new()
+    };
     let mut looked_past_nudge = false;
     let mut looked_past_done_challenge = false;
     let mut looked_past_wait_challenge = false;
@@ -569,17 +653,11 @@ pub fn latest_relevant_event<'a>(
                 DONE_CHALLENGE_ACTION => looked_past_done_challenge = true,
                 WAIT_CHALLENGE_ACTION => looked_past_wait_challenge = true,
                 crate::tracked::ABANDONED_ACTION => looked_past_abandoned = true,
-                _ => {
-                    return Some(Relevant {
-                        event,
-                        is_own,
-                        looked_past_nudge,
-                        looked_past_done_challenge,
-                        looked_past_wait_challenge,
-                        looked_past_abandoned,
-                    });
-                }
+                _ => {}
             }
+            continue;
+        }
+        if declared.is_some_and(|state| !ends_quiet(state, event, is_own, &own_requests)) {
             continue;
         }
         return Some(Relevant {
@@ -687,7 +765,11 @@ pub enum DoneProgress {
 /// Fold existing parsed records. Without a launch witness, only ref-less
 /// challenges count; lifecycle/inbound boundaries still prevent inheritance.
 #[must_use]
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "one forward fold keeps the episode, its challenges and what ends it in one pass"
+)]
 pub fn done_progress(
     events: &[Event],
     session: &str,
@@ -768,6 +850,9 @@ pub fn done_progress(
                 None => episode = Some((0, event.ts, None, 0)),
                 _ => {}
             }
+            continue;
+        }
+        if !is_challenge(event) && !ends_quiet("done", event, own, &[]) {
             continue;
         }
         episode = None;
@@ -868,15 +953,19 @@ pub enum WaitProgress {
 /// exists only for done's dual legacy emit — and a re-declaration with no
 /// outstanding challenge refreshes the anchor without credit, while a
 /// declaration of the other wait state, `working`, `waiting-user` or `done`,
-/// and any own-or-inbound
-/// non-challenge news, supersede the episode. Watchdog nudge footprints and
+/// and any other record [`ends_quiet`] says ends the wait, supersede the
+/// episode. Watchdog nudge footprints and
 /// matching abandoned-challenge footprints are SKIPPED (the abandoned ones
 /// still count as attempts): a lapsed challenge's own nudge must not kill the
 /// re-ask it belongs to. A `done-challenge` record resets the episode, and a
 /// `wait-challenge` record resets a done episode — the safe direction for a
 /// pairing no consistent journal produces.
 #[must_use]
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "one forward fold keeps the episode, its challenges and what ends it in one pass"
+)]
 pub fn wait_progress(
     events: &[Event],
     session: &str,
@@ -898,11 +987,17 @@ pub fn wait_progress(
         Option<crate::time::Timestamp>,
         u32,
     )> = None;
+    let mut own_requests: Vec<&str> = Vec::new();
     for event in events {
         let own = event_is_actor(event, session, slot, agent);
         let addressed = event_is_addressed_to(event, session, slot, agent);
         if !own && !addressed {
             continue;
+        }
+        if is_own_request(event, own)
+            && let Some(id) = event.reference.as_deref()
+        {
+            own_requests.push(id);
         }
         if event.action == WAIT_CHALLENGE_ACTION && event.actor == WATCHDOG_ACTOR {
             // Same journal bound as `done_progress`: only a pasted challenge
@@ -960,6 +1055,9 @@ pub fn wait_progress(
                     Some((_, wait_at, None, _)) => *wait_at = event.ts,
                 }
             }
+            continue;
+        }
+        if !is_challenge(event) && !ends_quiet(want, event, own, &own_requests) {
             continue;
         }
         episode = None;
@@ -2080,10 +2178,15 @@ mod tests {
                 "{state} supersedes"
             );
         }
-        let inbound = r#"{"ts":"2026-08-29T04:02:00Z","actor":"lead","action":"send","target":"opus5:builder","target_slot":"main","target_session":"aerewrite"}"#;
+        // Inbound, only a human through a chat bridge ends a `blocked` wait: a
+        // peer's message leaves the episode, and its challenge, standing.
+        let human = r#"{"ts":"2026-08-29T04:02:00Z","actor":"telegram:42","action":"send","target":"opus5:builder","target_slot":"main","target_session":"aerewrite"}"#;
         let late = BLOCKED_1.replace("04:01:30", "04:03:00");
-        let legs = &[BLOCKED_0, WCHALLENGE_1, inbound, &late];
+        let legs = &[BLOCKED_0, WCHALLENGE_1, human, &late];
         assert_eq!(wprog(legs, T03_30, b), prov(0));
+        let peer = human.replace("telegram:42", "lead");
+        let legs = &[BLOCKED_0, WCHALLENGE_1, &peer, &late];
+        assert_eq!(wprog(legs, T03_30, b), prov(1));
     }
 
     #[test]
@@ -2781,19 +2884,21 @@ mod tests {
 
     #[test]
     fn only_the_watchdogs_own_nudges_are_walked_past() {
-        // A watchdog ALERT is news and stops the walk.
+        // A watchdog ALERT is walked past without a footprint: the watchdog
+        // is neither the seat nor the human.
         let alerted = log(&[
-            r#"{"ts":"2026-08-29T04:00:00Z","actor":"opus5:builder","action":"state","ref":"waiting-user"}"#,
+            r#"{"ts":"2026-08-29T04:00:00Z","actor":"opus5:builder","action":"state","ref":"done"}"#,
             r#"{"ts":"2026-08-29T04:05:00Z","actor":"watchdog","action":"alert","target":"opus5:builder","summary":"stale"}"#,
         ]);
         let found = latest_relevant_event(&alerted, "aerewrite", "main", "opus5:builder")
-            .expect("the alert is relevant");
-        assert_eq!(found.event.action, "alert");
-        assert!(!found.is_own, "the watchdog is not the seat");
+            .expect("the declaration is relevant");
+        assert_eq!(found.event.action, "state");
+        assert!(found.is_own);
         assert!(!found.looked_past_nudge);
-        // A `nudge` from a PEER is not the watchdog's, and is news.
+        assert_eq!(quiet_reason(&found), Some(QuietKind::Done));
+        // A `nudge` from a PEER is not the watchdog's, and is news to done.
         let peer = log(&[
-            r#"{"ts":"2026-08-29T04:00:00Z","actor":"opus5:builder","action":"state","ref":"waiting-user"}"#,
+            r#"{"ts":"2026-08-29T04:00:00Z","actor":"opus5:builder","action":"state","ref":"done"}"#,
             r#"{"ts":"2026-08-29T04:05:00Z","actor":"fable5:lead","action":"nudge","target":"opus5:builder"}"#,
         ]);
         let found = latest_relevant_event(&peer, "aerewrite", "main", "opus5:builder")
@@ -2804,7 +2909,7 @@ mod tests {
         assert_eq!(
             quiet_reason(&found),
             None,
-            "a peer writing to the agent is news, and news ends a quiet state"
+            "a peer writing to a done agent is news, and news ends done"
         );
     }
 
@@ -2824,7 +2929,7 @@ mod tests {
         // OLDER timestamp than the one before it (clock skew, or a container
         // stitched from two generations).
         let events = log(&[
-            r#"{"ts":"2026-08-29T04:09:00Z","actor":"opus5:builder","action":"state","ref":"waiting-user"}"#,
+            r#"{"ts":"2026-08-29T04:09:00Z","actor":"opus5:builder","action":"state","ref":"done"}"#,
             r#"{"ts":"2026-08-29T04:00:00Z","actor":"fable5:lead","action":"send","target":"opus5:builder","summary":"answered"}"#,
         ]);
         let found = latest_relevant_event(&events, "aerewrite", "main", "opus5:builder")
@@ -2833,6 +2938,198 @@ mod tests {
             found.event.actor, "fable5:lead",
             "the LAST APPENDED relevant event wins, whatever its ts says"
         );
+    }
+
+    /// One record the table below stamps after every declaration it makes:
+    /// the seat's own when `actor` is the seat, else one addressed to it.
+    fn after_declaration(actor: &str, action: &str, extra: &str) -> String {
+        let routing = if actor == "opus5:builder" {
+            r#""actor_slot":"main","actor_session":"aerewrite""#
+        } else {
+            r#""target":"opus5:builder","target_slot":"main","target_session":"aerewrite""#
+        };
+        format!(
+            r#"{{"ts":"2026-08-29T04:05:00Z","actor":"{actor}","action":"{action}",{routing}{extra}}}"#
+        )
+    }
+
+    /// Whether the seat's `state` declaration is still current after `record`:
+    /// the walk's verdict, and — for a record [`ends_quiet`] judges — the
+    /// episode fold's, which must agree with it.
+    fn stands_after(state: &str, record: &str, fold: bool) -> bool {
+        let own_ask = r#"{"ts":"2026-08-29T03:59:00Z","actor":"opus5:builder","action":"ask","ref":"ae-1","target":"colead","actor_slot":"main","actor_session":"aerewrite"}"#;
+        let declaration = format!(
+            r#"{{"ts":"2026-08-29T04:00:00Z","actor":"opus5:builder","action":"state","ref":"{state}","actor_slot":"main","actor_session":"aerewrite"}}"#
+        );
+        let events = log(&[own_ask, &declaration, record]);
+        let current = latest_relevant_event(&events, "aerewrite", "main", "opus5:builder")
+            .is_some_and(|found| {
+                declaration_current(&found) && found.event.declared_state() == Some(state)
+            });
+        if fold {
+            let now = Timestamp::parse("2026-08-29T04:05:30Z").expect("test time");
+            let (session, slot, agent, launch) =
+                ("aerewrite", "main", "opus5:builder", Some("launch-1"));
+            let episode = match state {
+                "done" => {
+                    done_progress(&events, session, slot, agent, launch, now, 60, 2)
+                        != DoneProgress::None
+                }
+                "waiting-agent" | "blocked" => {
+                    let want = if state == "blocked" {
+                        WaitState::Blocked
+                    } else {
+                        WaitState::WaitingAgent
+                    };
+                    wait_progress(&events, session, slot, agent, launch, now, 60, 2, want)
+                        != WaitProgress::None
+                }
+                _ => current,
+            };
+            assert_eq!(episode, current, "{state} after {record}: fold vs walk");
+        }
+        current
+    }
+
+    /// T1: every record a quiet seat can see after its declaration, against
+    /// every quiet state, both ways. `ends` reads done, waiting-user,
+    /// waiting-agent, blocked; `fold` marks the records [`ends_quiet`] judges,
+    /// where the episode fold must agree — the watchdog's challenge footprints
+    /// keep their own episode rules (#144), so only the walk is pinned there.
+    #[test]
+    fn what_ends_each_quiet_state_is_one_table() {
+        const STATES: [&str; 4] = ["done", "waiting-user", "waiting-agent", "blocked"];
+        for (record, ends, fold) in &quiet_rows() {
+            for (state, ends) in STATES.iter().zip(ends) {
+                assert_eq!(
+                    stands_after(state, record, *fold),
+                    !ends,
+                    "{state} after {record}"
+                );
+            }
+        }
+    }
+
+    /// T1's rows: a record, whether it ends done, waiting-user, waiting-agent
+    /// and blocked, and whether the episode fold is pinned beside the walk.
+    fn quiet_rows() -> Vec<(String, [bool; 4], bool)> {
+        const DONE_ONLY: [bool; 4] = [true, false, false, false];
+        let me = "opus5:builder";
+        let judged = [
+            (me, "state", r#","ref":"working""#, [true; 4]),
+            (me, "memo", r#","ref":"arch""#, DONE_ONLY),
+            (me, "send", r#","target":"colead""#, DONE_ONLY),
+            (me, "ask", r#","ref":"ae-2","target":"colead""#, DONE_ONLY),
+            (me, "reply", r#","ref":"ae-7","target":"lead""#, DONE_ONLY),
+            (
+                "lead",
+                "reply",
+                r#","ref":"ae-1""#,
+                [true, false, true, false],
+            ),
+            ("lead", "reply", r#","ref":"ae-9""#, DONE_ONLY),
+            ("telegram:42", "send", "", [true; 4]),
+            ("discord:42", "send", "", [true; 4]),
+            ("ae:compact:0199c0de", "ask", r#","ref":"ae-3""#, DONE_ONLY),
+        ];
+        let blocked_tag = r#","ref":"launch-1","summary":"blocked confirmation 1/2""#;
+        let footprints = [
+            ("nudge", "", DONE_ONLY),
+            (
+                "done-challenge",
+                r#","ref":"launch-1""#,
+                [false, true, true, true],
+            ),
+            ("wait-challenge", blocked_tag, [true, true, false, false]),
+            (
+                "delivery-abandoned",
+                blocked_tag,
+                [false, true, false, false],
+            ),
+        ];
+        let mut rows: Vec<(String, [bool; 4], bool)> = judged
+            .iter()
+            .map(|(actor, action, extra, ends)| {
+                (after_declaration(actor, action, extra), *ends, true)
+            })
+            .collect();
+        rows.extend(footprints.iter().map(|(action, extra, ends)| {
+            (after_declaration("watchdog", action, extra), *ends, false)
+        }));
+        // Every other peer delivery, and the brief records its spawner writes.
+        for action in [
+            "send",
+            "ask",
+            "review",
+            "interrupt",
+            "brief-delivered",
+            "brief-gave-up",
+        ] {
+            rows.push((
+                after_declaration("lead", action, r#","ref":"ae-8""#),
+                DONE_ONLY,
+                true,
+            ));
+        }
+        // Every record the watchdog writes about the seat that is no footprint.
+        for action in [
+            "alert",
+            "alert-cleared",
+            "dead-cleared",
+            "human-prompt",
+            "human-prompt-cleared",
+            "limit",
+            "throttled",
+            "throttle-cleared",
+            "recover",
+            "quota-advisory",
+            "quota-advisory-dropped",
+            "quota-checkpoint",
+            "quota-checkpoint-dropped",
+        ] {
+            rows.push((after_declaration("watchdog", action, ""), [false; 4], true));
+        }
+        rows
+    }
+
+    /// T1's footprint rows, by position: a challenge footprint OLDER than the
+    /// declaration never counts, and one NEWER counts even when the walk had
+    /// to step past a record the wait outlives to reach the declaration.
+    #[test]
+    fn a_footprint_counts_only_between_the_declaration_and_now() {
+        let crossed = r#"{"ts":"2026-08-29T03:58:00Z","actor":"watchdog","action":"done-challenge","target":"opus5:builder","ref":"launch-1","target_slot":"main","target_session":"aerewrite"}"#;
+        let peer = r#"{"ts":"2026-08-29T04:05:00Z","actor":"lead","action":"send","target":"opus5:builder","target_slot":"main","target_session":"aerewrite"}"#;
+        let current = |lines: &[&str]| {
+            latest_relevant_event(&log(lines), "aerewrite", "main", "opus5:builder")
+                .is_some_and(|found| declaration_current(&found))
+        };
+        assert!(current(&[crossed, BLOCKED_0, peer]));
+        let newer = crossed.replace("03:58:00", "04:02:00");
+        assert!(!current(&[BLOCKED_0, &newer, peer]));
+    }
+
+    /// T5 (#115): a `waiting-user` outlives the seat's own chasing and its
+    /// peers' traffic together, and only the human or the seat ends it.
+    #[test]
+    fn a_waiting_user_outlives_its_own_chasing_and_its_peers() {
+        let me = "opus5:builder";
+        let own_reply = after_declaration(me, "reply", r#","ref":"ae-7","target":"lead""#);
+        let own_send = after_declaration(me, "send", r#","target":"lead""#);
+        let peer = after_declaration("lead", "send", "");
+        let nudge = after_declaration("watchdog", "nudge", "");
+        let mut lines = vec![DECL_USER, &own_reply, &peer, &own_send, &nudge, &peer];
+        let reason = |lines: &[&str]| {
+            latest_relevant_event(&log(lines), "aerewrite", "main", me)
+                .and_then(|found| quiet_reason(&found))
+        };
+        assert_eq!(reason(&lines), Some(QuietKind::WaitingUser));
+        let human = after_declaration("telegram:42", "send", "");
+        lines.push(&human);
+        assert_eq!(reason(&lines), None, "the human answered");
+        lines.pop();
+        let working = after_declaration(me, "state", r#","ref":"working""#);
+        lines.push(&working);
+        assert_eq!(reason(&lines), None, "the seat moved on");
     }
 
     // ---- Quiet detection --------------------------------------------------

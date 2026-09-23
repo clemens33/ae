@@ -1110,7 +1110,8 @@ mod tests {
     /// The card consumes the SESSION's classification instead of recomputing the
     /// ceiling: current-and-over-cap is a `blocked` need even though its age is
     /// the only arithmetic the card could see, and the SAME declaration superseded
-    /// by a later relevant event is no need at all (BLOCKER 1).
+    /// by the answer to its own ask is no need at all (BLOCKER 1), while a
+    /// peer's message leaves it current.
     #[test]
     fn the_card_takes_escalation_from_the_session_classification_not_its_own_math() {
         use crate::digest::Status;
@@ -1129,19 +1130,27 @@ mod tests {
             )
         };
 
+        let inbound = |action: &str, reference: &str| {
+            format!(
+                "{{\"ts\":\"{}\",\"actor\":\"colead\",\"action\":\"{action}\",\"ref\":\"{reference}\",\"target\":\"lead\",\"summary\":\"answer\"}}\n",
+                stamp(10)
+            )
+        };
+        let asked = format!(
+            "{{\"ts\":\"{}\",\"actor\":\"lead\",\"action\":\"ask\",\"ref\":\"ae-1\",\"target\":\"colead\"}}\n",
+            stamp(2_100)
+        );
         for (tag, body, expected) in [
             ("current", declaration(2_000), true),
             (
                 "superseded",
-                format!(
-                    "{}{}",
-                    declaration(2_000),
-                    format_args!(
-                        "{{\"ts\":\"{}\",\"actor\":\"colead\",\"action\":\"send\",\"target\":\"lead\",\"summary\":\"answer\"}}\n",
-                        stamp(10)
-                    )
-                ),
+                format!("{asked}{}{}", declaration(2_000), inbound("reply", "ae-1")),
                 false,
+            ),
+            (
+                "held",
+                format!("{}{}", declaration(2_000), inbound("send", "ae-1")),
+                true,
             ),
         ] {
             let dir = std::env::temp_dir().join(format!("ae-brief-{}-{tag}", std::process::id()));
