@@ -399,7 +399,8 @@ fn claude_input_frame(lines: &[Cow<'_, str>], prompt_index: usize) -> bool {
 
 fn claude_spinner(line: &str) -> bool {
     let mut chars = line.chars();
-    matches!(chars.next(), Some('✻' | '✽' | '✳' | '✢' | '·')) && chars.as_str().contains("… (")
+    matches!(chars.next(), Some('✻' | '✽' | '✶' | '✳' | '✢' | '·'))
+        && chars.as_str().contains("… (")
 }
 
 fn claude_done(line: &str) -> bool {
@@ -516,15 +517,28 @@ fn codex_footer_parts(line: &str) -> Option<(&str, &str, &str)> {
     (words.next().is_none() && !path.is_empty()).then_some((model, effort, path))
 }
 
+/// The model ids codex's `-m` takes. A CLOSED list with the same STANDING
+/// OBLIGATION as [`CLAUDE_MODELS`]. codex 0.156 draws a known id by its catalog
+/// name (`GPT-6-Sol`), which its API refuses as a model, and codex's
+/// observation is replayed into `-m` — so a footer model is matched ignoring
+/// ASCII case and read as THIS list's spelling, never as drawn.
+const CODEX_MODELS: [&str; 6] = [
+    "gpt-5.6-luna",
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-6-astra",
+    "gpt-6-luna",
+    "gpt-6-sol",
+];
+
 fn parse_codex_identity(line: &str) -> HarnessIdentity {
     let Some((model_token, effort_token, _path)) = codex_footer_parts(line) else {
         return HarnessIdentity::default();
     };
-    let model = matches!(
-        model_token,
-        "gpt-5.6-luna" | "gpt-5.6-sol" | "gpt-5.6-terra" | "gpt-6-astra"
-    )
-    .then(|| model_token.to_owned());
+    let model = CODEX_MODELS
+        .iter()
+        .find(|id| id.eq_ignore_ascii_case(model_token))
+        .map(|id| (*id).to_owned());
     let effort = valid_effort(effort_token).then(|| effort_token.to_owned());
     HarnessIdentity { model, effort }
 }
@@ -1429,6 +1443,85 @@ mod tests {
         assert_eq!(classify(other, ToolKind::Codex), HarnessState::Unknown);
         let effort = "› Ask Codex to do anything\n\n  GPT-6-Astra turbo · ~/ae\n";
         assert_eq!(classify(effort, ToolKind::Codex), HarnessState::Unknown);
+    }
+
+    #[test]
+    fn a_codex_display_name_reads_as_the_id_its_flag_takes() {
+        // Measured on 0.156.1: `-m <id>` draws the catalog name, and the API
+        // refuses that name as a model (400 on the first turn).
+        let footer = |drawn: &str| {
+            format!(
+                "› Ask Codex to do anything\n\n  {drawn} xhigh · ~/projects/clemens33/ae · main\n"
+            )
+        };
+        for (drawn, id) in [
+            ("GPT-6-Sol", "gpt-6-sol"),
+            ("GPT-6-Luna", "gpt-6-luna"),
+            ("GPT-6-Astra", "gpt-6-astra"),
+            ("GPT-5.6-Sol", "gpt-5.6-sol"),
+            ("GPT-5.6-Luna", "gpt-5.6-luna"),
+            ("GPT-5.6-Terra", "gpt-5.6-terra"),
+            ("GPT-6-SOL", "gpt-6-sol"),
+            ("gpt-6-luna", "gpt-6-luna"),
+        ] {
+            assert_eq!(
+                current_identity(&footer(drawn), ToolKind::Codex),
+                HarnessIdentity {
+                    model: Some(id.to_owned()),
+                    effort: Some("xhigh".to_owned())
+                },
+                "{drawn}"
+            );
+        }
+        // An id codex does not know is drawn raw; near misses are no model.
+        for drawn in ["gpt-6-nosuchmodel", "GPT-6-Astral", "GPT-6", "GPT‐6‐Sol"] {
+            assert_eq!(
+                current_identity(&footer(drawn), ToolKind::Codex).model,
+                None,
+                "{drawn}"
+            );
+        }
+        for (capture, drawn) in [
+            (
+                include_str!("../tests/fixtures/harness-state/codex-idle-0.155.1-200x40.txt"),
+                "gpt-6-astra",
+            ),
+            (
+                include_str!("../tests/fixtures/harness-state/codex-idle-0.156.1-200x40.txt"),
+                "GPT-6-Astra",
+            ),
+        ] {
+            assert!(capture.contains(&format!("  {drawn} low · ")), "{drawn}");
+            let identity = current_identity(capture, ToolKind::Codex);
+            assert_eq!(identity.model.as_deref(), Some("gpt-6-astra"), "{drawn}");
+            // The profile's lowercase pin is satisfied: no drift row is written.
+            assert_eq!(
+                crate::model_drift::decide(
+                    &identity,
+                    Some("gpt-6-astra"),
+                    crate::tool::PinMatch::Exact
+                ),
+                crate::model_drift::Decision::Retire,
+                "{drawn}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_six_pointed_star_is_claudes_spinner_too() {
+        // Measured rows, Claude Code 2.1.280 (ctxprobe compact-002..004).
+        for row in [
+            "✶ Crystallizing… (2s · thinking with xhigh effort)",
+            "✶ Crystallizing… (4s · thinking with xhigh effort)",
+            "✶ Crystallizing… (6s · ↓ 113 tokens · thought for 4s)",
+        ] {
+            assert!(super::claude_spinner(row), "{row}");
+            let frame = format!(
+                "{row}\n\n────\n❯\n────\n  🧠 Opus 5.5 (xhigh)  📁 seat\n  ⏵⏵ bypass permissions on\n"
+            );
+            assert_eq!(classify(&frame, ToolKind::Claude), HarnessState::Busy);
+        }
+        assert!(!super::claude_spinner("✶ Crystallizing…"));
     }
 
     #[test]
