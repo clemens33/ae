@@ -7,6 +7,8 @@
 //! it takes a capture and answers a question about it, so the whole model is
 //! unit-testable against recorded frames.
 
+use std::collections::BTreeSet;
+
 use crate::tool::{Composed, ComposerAnchor, DialogSig, InputModel};
 
 /// The foreground a captured run is painted in, when the capture names one.
@@ -346,20 +348,47 @@ fn content_end(segments: &[Segment], prompt_line: usize, stop_at: StopAt) -> usi
     end
 }
 
+/// What the live composer holds.
+struct Gathered {
+    /// The box's content, its placeholder excluded.
+    text: String,
+    /// The rows content cells sit on.
+    rows: BTreeSet<usize>,
+    /// Whether the row is inside a DRAWN box: codex's live style proves it;
+    /// claude and muse need a rule directly above the row and the bottom
+    /// border below it, which a transcript echo of the same text never has.
+    boxed: bool,
+}
+
+impl Gathered {
+    fn push(&mut self, text: &str, line: usize) {
+        if !squeezed(text).is_empty() {
+            self.rows.insert(line);
+        }
+        self.text.push_str(text);
+    }
+}
+
 /// Gather everything the LIVE composer holds, or `None` when the frame names no
-/// live prompt ae can read. The ONE owner of "what the box contains": occupancy
-/// and the staged-chip question both read it, so a later change to what counts
-/// as content cannot make one of them drift from the other.
-fn gather(segments: &[Segment], model: InputModel) -> Option<String> {
+/// live prompt ae can read. The ONE owner of "what the box contains": occupancy,
+/// the staged-chip question and the pasted-text proof all read it, so a later
+/// change to what counts as content cannot make one of them drift.
+fn gather(segments: &[Segment], model: InputModel) -> Option<Gathered> {
     match model {
         InputModel::StyleDelimited => {
             // The live prompt is the bottom-most row whose first non-blank cell
             // is `›` in BOLD-and-NOT-DIM state; a submitted transcript echo is
             // the same ornament bold AND dim.
             let found = prompt(segments, true, &["›"])?;
-            let end = content_end(segments, segments[found.index].line, StopAt::Blank);
+            let composer = segments[found.index].line;
+            let end = content_end(segments, composer, StopAt::Blank);
             // Content is everything after the ANCHOR ornament only.
-            let mut text = after_first(&found.tail, '›');
+            let mut gathered = Gathered {
+                text: String::new(),
+                rows: BTreeSet::new(),
+                boxed: true,
+            };
+            gathered.push(&after_first(&found.tail, '›'), composer);
             for seg in &segments[found.index + 1..] {
                 if seg.line >= end {
                     break;
@@ -367,9 +396,9 @@ fn gather(segments: &[Segment], model: InputModel) -> Option<String> {
                 if seg.dim {
                     continue; // the placeholder suggestion, not user content
                 }
-                text.push_str(&seg.text);
+                gathered.push(&seg.text, seg.line);
             }
-            Some(text)
+            Some(gathered)
         }
         InputModel::BorderDelimited => {
             // STRUCTURE, because styling cannot identify claude's live prompt:
@@ -388,11 +417,27 @@ fn gather(segments: &[Segment], model: InputModel) -> Option<String> {
                 .iter()
                 .find(|seg| seg.line == end && !is_blank(&seg.text))
                 .and_then(|seg| seg.fg);
-            let mut text = found
-                .tail
-                .strip_prefix(found.ornament)
-                .unwrap_or(&found.tail)
-                .to_owned();
+            let fenced = composer.checked_sub(1).is_some_and(|above| {
+                let row: String = segments
+                    .iter()
+                    .filter(|seg| seg.line == above)
+                    .map(|seg| seg.text.as_str())
+                    .collect();
+                let row = trim_posix(&row);
+                row.starts_with('─') && row.ends_with('─')
+            });
+            let mut gathered = Gathered {
+                text: String::new(),
+                rows: BTreeSet::new(),
+                boxed: fenced && segments.last().is_some_and(|last| end <= last.line),
+            };
+            gathered.push(
+                found
+                    .tail
+                    .strip_prefix(found.ornament)
+                    .unwrap_or(&found.tail),
+                composer,
+            );
             // Continuation rows of a multiline draft sit BELOW the prompt row,
             // including below the edit cursor, and are real unsent input. Only
             // the composer row itself can carry a placeholder.
@@ -403,9 +448,9 @@ fn gather(segments: &[Segment], model: InputModel) -> Option<String> {
                 if seg.line == composer && !seg.bold && seg.fg.is_some() && seg.fg == chrome {
                     continue;
                 }
-                text.push_str(&seg.text);
+                gathered.push(&seg.text, seg.line);
             }
-            Some(text)
+            Some(gathered)
         }
         // No grammar for this box: ae read NOTHING, so it claims nothing. Idle
         // would be a claim it cannot honour. The callers that decide whether a
@@ -417,16 +462,63 @@ fn gather(segments: &[Segment], model: InputModel) -> Option<String> {
     }
 }
 
+/// One reading of the input box: the verdict, and how much content decided it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Reading {
+    /// What the box holds.
+    pub occupancy: Occupancy,
+    /// Content cells: every cell but blanks and braille.
+    pub cells: usize,
+    /// The rows those cells sit on.
+    pub rows: usize,
+}
+
 /// Read `region` as `tool`'s input box — `_input_region_occupied`.
 #[must_use]
+pub fn read(region: &str, model: InputModel) -> Reading {
+    let found = if region.is_empty() {
+        None
+    } else {
+        gather(&parse(region), model)
+    };
+    match found {
+        Some(found) => {
+            let cells = squeezed(&found.text).chars().count();
+            Reading {
+                occupancy: if cells == 0 {
+                    Occupancy::Idle
+                } else {
+                    Occupancy::Occupied
+                },
+                cells,
+                rows: found.rows.len(),
+            }
+        }
+        None => Reading {
+            occupancy: Occupancy::Unreadable,
+            cells: 0,
+            rows: 0,
+        },
+    }
+}
+
+/// The verdict alone of [`read`].
+#[must_use]
 pub fn occupancy(region: &str, model: InputModel) -> Occupancy {
-    if region.is_empty() {
-        return Occupancy::Unreadable;
-    }
-    match gather(&parse(region), model) {
-        Some(text) => verdict(&text),
-        None => Occupancy::Unreadable,
-    }
+    read(region, model).occupancy
+}
+
+/// Does the LIVE composer POSITIVELY hold `pasted` — ae's own paste, unsent?
+///
+/// The row must sit inside a drawn box (see `Gathered::boxed`), so a
+/// transcript echo of the same text is never it, and hold `pasted` cell for
+/// cell once blanks and braille are dropped — a wrap only moves cells — or a
+/// lone staged chip standing in for it.
+#[must_use]
+pub fn holds_pasted(region: &str, model: InputModel, pasted: &str) -> bool {
+    gather(&parse(region), model).is_some_and(|found| {
+        found.boxed && (is_staged_chip(&found.text) || squeezed(&found.text) == squeezed(pasted))
+    })
 }
 
 /// Does the composer hold nothing but a staged bracketed-paste chip?
@@ -439,7 +531,7 @@ pub fn staged_paste(region: &str, model: InputModel) -> bool {
     if region.is_empty() {
         return false;
     }
-    gather(&parse(region), model).is_some_and(|text| is_staged_chip(&text))
+    gather(&parse(region), model).is_some_and(|found| is_staged_chip(&found.text))
 }
 
 /// Whether `text` is exactly one bracketed-paste chip token.
@@ -833,19 +925,16 @@ fn is_empty_prompt_row(row: &str) -> bool {
 ///
 /// The phrase is an affordance the TUI draws after a mid-turn submit, not
 /// draft text. It must therefore never make submit verification retry Enter.
+/// It is the box's WHOLE content, read as occupancy reads it: claude draws it
+/// after an NBSP in its own dim run (measured, 2.1.280).
 #[must_use]
 pub fn queued_submission(region: &str, model: InputModel) -> bool {
     if model != InputModel::BorderDelimited {
         return false;
     }
-    let segments = parse(region);
-    let Some(found) = prompt(&segments, false, &["❯", ">", "▌"]) else {
-        return false;
-    };
-    found
-        .tail
-        .strip_prefix(found.ornament)
-        .is_some_and(|text| text.trim_start_matches(is_space) == "Press up to edit queued messages")
+    gather(&parse(region), model).is_some_and(|found| {
+        trim_posix(&found.text.replace('\u{a0}', " ")) == "Press up to edit queued messages"
+    })
 }
 
 /// Everything after the first `needle` in `text`, or all of it when there is
@@ -857,21 +946,14 @@ fn after_first(text: &str, needle: char) -> String {
     }
 }
 
-/// Whether what was gathered from the box counts as content. Braille dots are
-/// never content: a run of them and blanks alone is furniture (codex's idle
-/// starfield and its placeholder shimmer), while any other cell beside them is
-/// still a draft.
-fn verdict(text: &str) -> Occupancy {
-    let stripped: String = text
-        .replace('\u{a0}', " ")
-        .chars()
-        .filter(|ch| !matches!(ch, '\n' | '\t' | ' ') && !is_braille(*ch))
-        .collect();
-    if stripped.is_empty() {
-        Occupancy::Idle
-    } else {
-        Occupancy::Occupied
-    }
+/// The content cells of what was gathered from the box. Braille dots are never
+/// content: a run of them and blanks alone is furniture (codex's idle starfield
+/// and its placeholder shimmer), while any other cell beside them is still a
+/// draft.
+fn squeezed(text: &str) -> String {
+    text.chars()
+        .filter(|ch| !is_space(*ch) && *ch != '\u{a0}' && !is_braille(*ch))
+        .collect()
 }
 
 /// Is `capture` a codex that is PROVABLY still starting up —
@@ -971,8 +1053,8 @@ fn digits(text: &str) -> (usize, &str) {
 #[cfg(test)]
 mod tests {
     use super::{
-        Fg, Occupancy, Segment, composed_ui, initializing, occupancy, parse, prompt,
-        queued_submission, staged_paste,
+        Fg, Occupancy, Reading, Segment, composed_ui, holds_pasted, initializing, occupancy, parse,
+        prompt, queued_submission, read, staged_paste,
     };
     use crate::tool::{Composed, ComposerAnchor, DialogSig, InputModel, ToolKind};
 
@@ -1338,6 +1420,23 @@ mod tests {
             InputModel::BorderDelimited
         ));
         assert!(!queued_submission(MUSE_IDLE, InputModel::BorderDelimited));
+    }
+
+    #[test]
+    fn a_turn_claude_queued_while_busy_is_submitted_however_the_row_is_styled() {
+        // Measured: `❯` NBSP, then the phrase in its OWN dim segment.
+        const QUEUED: &str =
+            include_str!("../../tests/fixtures/claude-composer/claude-queued-busy.esc");
+        assert!(queued_submission(QUEUED, InputModel::BorderDelimited));
+        assert!(queued_submission(
+            &claude_frame("Press up to edit queued messages"),
+            InputModel::BorderDelimited
+        ));
+        assert!(!queued_submission(
+            &claude_frame("Press up to edit queued messages, then this draft"),
+            InputModel::BorderDelimited
+        ));
+        assert!(!queued_submission(QUEUED, InputModel::StyleDelimited));
     }
 
     #[test]
@@ -1860,5 +1959,74 @@ mod tests {
             ),
             Occupancy::Idle
         );
+    }
+
+    #[test]
+    fn a_reading_counts_content_cells_and_their_rows_never_the_furniture() {
+        let rule = "─".repeat(60);
+        let draft = format!("t\n\u{1b}[1m❯\u{1b}[0m\u{a0}ab ⠁\n  c\u{a0}d\n{rule}\n  m\n");
+        let reading = |occupancy, cells, rows| Reading {
+            occupancy,
+            cells,
+            rows,
+        };
+        assert_eq!(
+            read(&draft, InputModel::BorderDelimited),
+            reading(Occupancy::Occupied, 4, 2)
+        );
+        assert_eq!(
+            read(&claude_frame("⠁ ⠈"), InputModel::BorderDelimited),
+            reading(Occupancy::Idle, 0, 0)
+        );
+        assert_eq!(
+            read("", InputModel::BorderDelimited),
+            reading(Occupancy::Unreadable, 0, 0)
+        );
+    }
+
+    #[test]
+    fn only_a_drawn_box_positively_holds_the_pasted_text() {
+        let text = "/compact checkpoint ae-x saved; compact now, then re-read `ae brief`";
+        let rule = "─".repeat(100);
+        let border = InputModel::BorderDelimited;
+        let boxed = |body: &str| {
+            format!("transcript\n{rule}\n\u{1b}[1m❯\u{1b}[0m\u{a0}{body}\n{rule}\n  model\n")
+        };
+        assert!(holds_pasted(&boxed(text), border, text));
+        // Wrapped at a word boundary, as claude draws it (probe 2026-09-23).
+        let wrapped =
+            boxed("/compact checkpoint ae-x saved; compact now, then re-read `ae\n  brief`");
+        assert!(holds_pasted(&wrapped, border, text));
+        assert!(!holds_pasted(&boxed(""), border, text));
+        assert!(!holds_pasted(&boxed("a human draft"), border, text));
+        assert!(!holds_pasted(
+            &boxed(&format!("{text} and more")),
+            border,
+            text
+        ));
+        // The transcript echo of the SAME text with no box drawn around it —
+        // compaction chrome below, or a blank row above — is never the box.
+        let echo = format!("\u{1b}[1m❯\u{1b}[0m {text}\n\n✳ Compacting conversation…\n  ▱▱▱ 0%\n");
+        assert!(!holds_pasted(&echo, border, text));
+        let unfenced = format!("t\n\n\u{1b}[1m❯\u{1b}[0m {text}\n{rule}\n  model\n");
+        assert!(!holds_pasted(&unfenced, border, text));
+        // Muse fences its box with a TITLED rule; a lone chip stands in.
+        assert!(holds_pasted(MUSE_OCCUPIED, border, text));
+        assert!(!holds_pasted(
+            MUSE_ACCEPTED,
+            border,
+            "[Pasted Content 1766 chars]"
+        ));
+        // codex: the live style is the box.
+        let codex = |input: &str| codex_frame("\u{1b}[1m›\u{1b}[0m ", input);
+        let style = InputModel::StyleDelimited;
+        assert!(holds_pasted(&codex(text), style, text));
+        assert!(holds_pasted(
+            &codex("[Pasted Content 70 chars] ⠁"),
+            style,
+            text
+        ));
+        assert!(!holds_pasted(&codex(""), style, text));
+        assert!(!holds_pasted(&boxed(text), InputModel::Unmodelled, text));
     }
 }

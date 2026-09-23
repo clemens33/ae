@@ -508,6 +508,11 @@ mod tests {
         let unknown = outcome(SubmitState::Unknown(Unverifiable::PaneUnparseable));
         assert_eq!(unknown.unverifiable(), Some("unparseable-input"));
         assert!(!unknown.word().contains("unparseable-input"));
+        // A box that never cleared but did not POSITIVELY hold the paste.
+        let unconfirmed = outcome(SubmitState::Unknown(Unverifiable::Unconfirmed));
+        assert_eq!(unconfirmed.word(), DISPATCHED);
+        assert_eq!(unconfirmed.unverifiable(), Some("unconfirmed-input"));
+        assert_eq!(unconfirmed.remedy(), None);
     }
 
     #[test]

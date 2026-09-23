@@ -161,6 +161,9 @@ pub enum Unverifiable {
     CaptureUnreadable,
     /// A capture arrived, but it did not contain a readable live input box.
     PaneUnparseable,
+    /// The box never cleared, but what it held was not POSITIVELY the paste —
+    /// a redraw, an echo of the submitted text, or someone else's draft.
+    Unconfirmed,
 }
 
 impl Unverifiable {
@@ -171,6 +174,7 @@ impl Unverifiable {
             Self::Unmodelled => "unmodelled-input",
             Self::CaptureUnreadable => "unreadable-capture",
             Self::PaneUnparseable => "unparseable-input",
+            Self::Unconfirmed => "unconfirmed-input",
         }
     }
 }
@@ -711,6 +715,56 @@ impl DeferHeld {
     }
 }
 
+/// One quiet-gate snapshot: what held, plus the evidence the operator's abandon
+/// line names. The journal, the relay audit and the compact word keep
+/// [`DeferHeld`]'s own words; only the stderr line carries the evidence, and
+/// it never carries a cell of the box's text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Snapshot {
+    held: DeferHeld,
+    /// The composer read, or `None` when no capture came back.
+    reading: Option<region::Reading>,
+    /// Seconds since a viewing client's last input, inside [`VIEW_GRACE`].
+    viewed_ago: Option<i64>,
+}
+
+impl Snapshot {
+    /// `None` is quiet — the same verdict as [`DeferHeld::of`].
+    fn of(reading: Option<region::Reading>, viewed_ago: Option<i64>) -> Option<Self> {
+        let occupancy = reading.map_or(Occupancy::Unreadable, |read| read.occupancy);
+        DeferHeld::of(occupancy, viewed_ago.is_some()).map(|held| Self {
+            held,
+            reading,
+            viewed_ago,
+        })
+    }
+
+    /// The operator's clause: each held half with what was observed.
+    fn evidence(self) -> String {
+        let plural = |count: usize| if count == 1 { "" } else { "s" };
+        let mut halves = Vec::new();
+        if self.held.composer_held() {
+            halves.push(match self.reading {
+                None => "composer unreadable: no capture".to_owned(),
+                Some(read) if read.occupancy == Occupancy::Occupied => format!(
+                    "composer occupied: {} content cell{} on {} row{}",
+                    read.cells,
+                    plural(read.cells),
+                    read.rows,
+                    plural(read.rows)
+                ),
+                Some(_) => "composer unreadable: no live prompt row".to_owned(),
+            });
+        }
+        if let Some(age) = self.viewed_ago {
+            halves.push(format!(
+                "human input or attention on the pane: client active {age}s ago"
+            ));
+        }
+        format!("target stayed busy ({})", halves.join(" and "))
+    }
+}
+
 /// Wait until the target's input box is safe to paste into, or give up.
 ///
 /// A box busy ONLY because of an ae-staged paste chip is not a human draft:
@@ -721,18 +775,19 @@ impl DeferHeld {
 /// the observed halves so the operator can pick a workaround: a draft wants
 /// waiting, while the attention half holds only while a client keeps the
 /// pane active within its grace window.
-fn wait_for_quiet(request: &Request<'_>, model: InputModel) -> Option<DeferHeld> {
+fn wait_for_quiet(request: &Request<'_>, model: InputModel) -> Option<Snapshot> {
     let started = Instant::now();
     let mut flushed = false;
     loop {
-        let held = quiet_held(request.server, request.pane, model)?;
+        let snapshot = quiet_held(request.server, request.pane, model)?;
+        let held = snapshot.held;
         if held.composer_held() && !flushed && !held.viewed() {
             flushed = true;
             let budget = request.defer.saturating_sub(started.elapsed());
             let _ = flush_staged_chip(request.server, request.pane, model, budget);
         }
         if started.elapsed() >= request.defer {
-            return Some(held);
+            return Some(snapshot);
         }
         std::thread::sleep(DEFER_POLL);
     }
@@ -743,13 +798,17 @@ fn wait_for_quiet(request: &Request<'_>, model: InputModel) -> Option<DeferHeld>
 /// two reads that can disagree. `None` is quiet. An unmodelled tool has no
 /// grammar to read, so its composer half never holds — exactly as
 /// [`input_busy`] answers for it.
-fn quiet_held(server: &ServerId, pane: &str, model: InputModel) -> Option<DeferHeld> {
-    let occupancy = if model.is_modelled() {
-        read_occupancy(server, pane, model)
+fn quiet_held(server: &ServerId, pane: &str, model: InputModel) -> Option<Snapshot> {
+    let reading = if model.is_modelled() {
+        read_composer(server, pane, model)
     } else {
-        Occupancy::Idle
+        Some(region::Reading {
+            occupancy: Occupancy::Idle,
+            cells: 0,
+            rows: 0,
+        })
     };
-    DeferHeld::of(occupancy, recently_viewed(server, pane))
+    Snapshot::of(reading, recently_viewed(server, pane))
 }
 
 /// Is the composer holding NOTHING but a staged paste chip ae can own?
@@ -823,31 +882,32 @@ pub fn still_staged(server: &ServerId, pane: &str, model: InputModel) -> SubmitS
     }
 }
 
-/// Capture and read the pane's input box.
-fn read_occupancy(server: &ServerId, pane: &str, model: InputModel) -> Occupancy {
-    match transport::capture_screen(server, pane, Styling::Escapes) {
-        Some(region) => region::occupancy(&region, model),
-        None => Occupancy::Unreadable,
-    }
+/// Capture and read the pane's input box: `None` when no capture came back.
+fn read_composer(server: &ServerId, pane: &str, model: InputModel) -> Option<region::Reading> {
+    transport::capture_screen(server, pane, Styling::Escapes)
+        .map(|region| region::read(&region, model))
 }
 
-/// Is an attached client LOOKING AT this pane with recent input —
-/// `_pane_recently_viewed`?
-fn recently_viewed(server: &ServerId, pane: &str) -> bool {
-    let Some(clients) = transport::observe_clients(server) else {
-        return false;
-    };
-    let now = match SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
-        Ok(since) => i64::try_from(since.as_secs()).unwrap_or(i64::MAX),
-        Err(_) => return false,
-    };
-    clients.iter().any(|client| {
-        client.pane == pane
-            && client
-                .activity
-                .and_then(|epoch| i64::try_from(epoch).ok())
-                .is_some_and(|epoch| now - epoch < VIEW_GRACE)
-    })
+/// Capture and read the pane's input box's verdict.
+fn read_occupancy(server: &ServerId, pane: &str, model: InputModel) -> Occupancy {
+    read_composer(server, pane, model).map_or(Occupancy::Unreadable, |read| read.occupancy)
+}
+
+/// How long ago an attached client LOOKING AT this pane gave input, when that
+/// is inside [`VIEW_GRACE`] — `_pane_recently_viewed`.
+fn recently_viewed(server: &ServerId, pane: &str) -> Option<i64> {
+    let clients = transport::observe_clients(server)?;
+    let since = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .ok()?;
+    let now = i64::try_from(since.as_secs()).unwrap_or(i64::MAX);
+    clients
+        .iter()
+        .filter(|client| client.pane == pane)
+        .filter_map(|client| client.activity.and_then(|epoch| i64::try_from(epoch).ok()))
+        .map(|epoch| now - epoch)
+        .filter(|age| *age < VIEW_GRACE)
+        .min()
 }
 
 /// Is this tool provably still starting up — `_spawn_input_ready`'s first
@@ -980,16 +1040,18 @@ fn quiet_or_abandoned(
     if !matches!(request.shape, Shape::Send | Shape::Relay) {
         return Ok(Ok(()));
     }
-    if let Some(held) = wait_for_quiet(request, model) {
+    if let Some(snapshot) = wait_for_quiet(request, model) {
         writeln!(
             err,
             "ae: {} to {} ABANDONED — {}; not clear within {}s (AE_SEND_DEFER_SEC overrides). Re-send.",
             request.action,
             request.logged_target,
-            held.describe(),
+            snapshot.evidence(),
             request.defer.as_secs()
         )?;
-        return Ok(Err(Failure::Abandoned { held }));
+        return Ok(Err(Failure::Abandoned {
+            held: snapshot.held,
+        }));
     }
     Ok(Ok(()))
 }
@@ -1318,7 +1380,8 @@ pub struct EnterFailed;
 /// instant delivery-safety variants — one pane probe, one busy snapshot, no
 /// loop, no file, no process; (4) the paste ([`stage_and_paste`]) and the
 /// BOUNDED submit ([`submit_bounded`]); (5) the lifecycle lock drops, (6) then
-/// the send-lock.
+/// the send-lock. A RAW still-staged verdict is the caller's to settle
+/// ([`settle_staged`]), after both locks are gone.
 ///
 /// What step (1) deliberately OMITS from [`deliver()`]: the envelope (the
 /// bytes paste verbatim), the recovery-body store (the caller's checkpoint is
@@ -1370,8 +1433,10 @@ pub fn deliver_guarded(
     };
     // (1c) The full busy/human-input deferral — the `wait_for_quiet` owner,
     // OUTSIDE the lifecycle lock.
-    if let Some(held) = wait_for_quiet(&view, request.model) {
-        return Ok(Outcome::Skipped(Leg::Busy { held }));
+    if let Some(snapshot) = wait_for_quiet(&view, request.model) {
+        return Ok(Outcome::Skipped(Leg::Busy {
+            held: snapshot.held,
+        }));
     }
     // (2) The caller's proof: the lifecycle lock, then identity. A leg skips
     // with the send-lock released by the scope.
@@ -1385,6 +1450,61 @@ pub fn deliver_guarded(
     drop(lifecycle_lock);
     drop(send_lock);
     outcome
+}
+
+/// How long a submit that still reads staged is re-read before its verdict:
+/// a redraw such as claude's compaction view must not read as text left in
+/// the box.
+const STAGED_SETTLE: Duration = Duration::from_secs(2);
+
+/// Settle a RAW [`SubmitState::StillStaged`] from [`deliver_guarded`] into its
+/// verdict, with no lock held: re-read the box until it clears or
+/// [`STAGED_SETTLE`] is spent. `pasted` is the exact text the operation pasted.
+#[must_use]
+pub fn settle_staged(
+    server: &ServerId,
+    pane: &str,
+    model: InputModel,
+    pasted: &str,
+) -> SubmitState {
+    let started = Instant::now();
+    loop {
+        std::thread::sleep(VERIFY_POLL);
+        let capture = transport::capture_screen(server, pane, Styling::Escapes);
+        let last = started.elapsed() >= STAGED_SETTLE;
+        if let Some(state) = staged_after_settle(capture.as_deref(), model, pasted, last) {
+            return state;
+        }
+    }
+}
+
+/// One settle read's verdict; `None` keeps reading. A cleared or queued box
+/// ends it at once. At the budget's end only a box POSITIVELY holding the
+/// paste ([`region::holds_pasted`]) is staged; anything else was submitted as
+/// far as ae can tell, and says why it could not prove it.
+fn staged_after_settle(
+    capture: Option<&str>,
+    model: InputModel,
+    pasted: &str,
+    last: bool,
+) -> Option<SubmitState> {
+    if let Some(region) = capture
+        && (region::queued_submission(region, model)
+            || region::occupancy(region, model) == Occupancy::Idle)
+    {
+        return Some(SubmitState::Submitted);
+    }
+    if !last {
+        return None;
+    }
+    Some(match capture {
+        None => SubmitState::Unknown(Unverifiable::CaptureUnreadable),
+        Some(region) if region::holds_pasted(region, model, pasted) => SubmitState::StillStaged,
+        Some(region) if region::occupancy(region, model) == Occupancy::Unreadable => {
+            SubmitState::Unknown(Unverifiable::PaneUnparseable)
+        }
+        Some(_) => SubmitState::Unknown(Unverifiable::Unconfirmed),
+    })
 }
 
 /// Steps (3)+(4) under the caller-held lifecycle lock: the instant re-proof —
@@ -1402,8 +1522,10 @@ fn under_lock(request: &GuardedRequest<'_>) -> Result<Outcome, EnterFailed> {
     }
     // (3) One busy snapshot, no loop — the same `quiet_held` owner as the
     // pre-lock wait, so the reported halves are one observation.
-    if let Some(held) = quiet_held(request.server, request.pane, request.model) {
-        return Ok(Outcome::Skipped(Leg::Busy { held }));
+    if let Some(snapshot) = quiet_held(request.server, request.pane, request.model) {
+        return Ok(Outcome::Skipped(Leg::Busy {
+            held: snapshot.held,
+        }));
     }
     // (4) The paste, then the bounded submit under the same lock.
     if stage_and_paste(
@@ -1639,11 +1761,12 @@ pub(crate) fn lock_target(dir: &Path, pane: &str, wait: Duration) -> Option<std:
 #[cfg(test)]
 mod tests {
     use super::{
-        DeferHeld, Failure, LivenessRefusal, Occupancy, PaneLiveness, Request, Shape, TargetInput,
-        UNVERIFIED, VERIFY_POLL, buffer_name, choose_input, frame, instant_alive, is_name_safe,
-        observed_liveness, pane_settled, refuses_as_dead, settle_for, store_body,
-        under_lock_refusal, unmodelled_ready,
+        DeferHeld, Failure, LivenessRefusal, Occupancy, PaneLiveness, Request, Shape, Snapshot,
+        SubmitState, TargetInput, UNVERIFIED, Unverifiable, VERIFY_POLL, buffer_name, choose_input,
+        frame, instant_alive, is_name_safe, observed_liveness, pane_settled, refuses_as_dead,
+        settle_for, staged_after_settle, store_body, under_lock_refusal, unmodelled_ready,
     };
+    use crate::deliver::region::Reading;
     use crate::inventory::ServerId;
     use crate::tool::{Composed, InputModel, ToolKind};
     use std::time::Duration;
@@ -1830,9 +1953,111 @@ mod tests {
     }
 
     #[test]
+    fn the_abandon_line_names_the_evidence_behind_each_half_and_no_draft_text() {
+        let occupied = Reading {
+            occupancy: Occupancy::Occupied,
+            cells: 41,
+            rows: 2,
+        };
+        let seen = |reading, viewed_ago| Snapshot::of(reading, viewed_ago).map(Snapshot::evidence);
+        assert_eq!(
+            seen(Some(occupied), None).as_deref(),
+            Some("target stayed busy (composer occupied: 41 content cells on 2 rows)")
+        );
+        let one = Reading {
+            cells: 1,
+            rows: 1,
+            ..occupied
+        };
+        assert_eq!(
+            seen(Some(one), Some(2)).as_deref(),
+            Some(
+                "target stayed busy (composer occupied: 1 content cell on 1 row and human input or attention on the pane: client active 2s ago)"
+            )
+        );
+        assert_eq!(
+            seen(None, None).as_deref(),
+            Some("target stayed busy (composer unreadable: no capture)")
+        );
+        let unreadable = Reading {
+            occupancy: Occupancy::Unreadable,
+            cells: 0,
+            rows: 0,
+        };
+        assert_eq!(
+            seen(Some(unreadable), None).as_deref(),
+            Some("target stayed busy (composer unreadable: no live prompt row)")
+        );
+        let idle = Reading {
+            occupancy: Occupancy::Idle,
+            ..unreadable
+        };
+        assert_eq!(
+            seen(Some(idle), Some(0)).as_deref(),
+            Some("target stayed busy (human input or attention on the pane: client active 0s ago)")
+        );
+        assert_eq!(seen(Some(idle), None), None);
+        // The held value the journal, the audit and the compact word read is
+        // the same observation.
+        assert_eq!(
+            Snapshot::of(Some(one), Some(2)).map(|snapshot| snapshot.held),
+            Some(DeferHeld::OccupiedAndViewed)
+        );
+    }
+
+    #[test]
+    fn a_staged_read_is_staged_only_when_the_box_positively_holds_the_paste() {
+        let text = "/compact checkpoint ae-x saved; compact now";
+        let rule = "─".repeat(60);
+        let boxed =
+            |body: &str| format!("t\n{rule}\n\u{1b}[1m❯\u{1b}[0m\u{a0}{body}\n{rule}\n  model\n");
+        let border = InputModel::BorderDelimited;
+        let verdict =
+            |capture: Option<&str>, last| staged_after_settle(capture, border, text, last);
+        // A cleared or queued box ends the settle at once.
+        assert_eq!(
+            verdict(Some(&boxed("")), false),
+            Some(SubmitState::Submitted)
+        );
+        let queued = boxed("Press up to edit queued messages");
+        assert_eq!(verdict(Some(&queued), false), Some(SubmitState::Submitted));
+        // Anything else keeps reading until the budget is spent.
+        assert_eq!(verdict(Some(&boxed(text)), false), None);
+        assert_eq!(verdict(None, false), None);
+        assert_eq!(
+            verdict(Some(&boxed(text)), true),
+            Some(SubmitState::StillStaged)
+        );
+        let other = boxed("a human draft");
+        assert_eq!(
+            verdict(Some(&other), true),
+            Some(SubmitState::Unknown(Unverifiable::Unconfirmed))
+        );
+        // The echo of the same text above claude's compaction, no box drawn.
+        let echo = format!("\u{1b}[1m❯\u{1b}[0m {text}\n\n✳ Compacting conversation…\n");
+        assert_eq!(
+            verdict(Some(&echo), true),
+            Some(SubmitState::Unknown(Unverifiable::Unconfirmed))
+        );
+        assert_eq!(
+            verdict(Some("no prompt at all\n"), true),
+            Some(SubmitState::Unknown(Unverifiable::PaneUnparseable))
+        );
+        assert_eq!(
+            verdict(None, true),
+            Some(SubmitState::Unknown(Unverifiable::CaptureUnreadable))
+        );
+        assert_eq!(
+            Unverifiable::Unconfirmed.event_marker(),
+            "unconfirmed-input"
+        );
+    }
+
+    #[test]
     fn the_held_halves_render_for_the_operator_and_the_audit() {
-        // The operator line and the relay audit share the clause; the compact
-        // skip composes the atom under its own head.
+        // The journal and the relay audit carry the clause (the operator line
+        // adds its evidence, `Snapshot::evidence`); the compact skip composes
+        // the atom under its own head.
         assert_eq!(
             DeferHeld::ComposerOccupied.describe(),
             "target stayed busy (composer occupied)"

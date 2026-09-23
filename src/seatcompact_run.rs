@@ -287,6 +287,12 @@ fn run_seat(
         judge_viewer(&seen, &resolved.pane, &carried)?;
         Ok(guard)
     }) {
+        // A RAW staged read is settled before it is called staged: only a box
+        // positively still holding the paste is `staged text` (#151).
+        Ok(deliver::Outcome::Sent(deliver::SubmitState::StillStaged)) => {
+            let state = deliver::settle_staged(&server, &resolved.pane, request.model, &paste);
+            Outcome::from_verdict(Verdict::State(state), &resolved.pane)
+        }
         Ok(deliver::Outcome::Sent(state)) => {
             Outcome::from_verdict(Verdict::State(state), &resolved.pane)
         }

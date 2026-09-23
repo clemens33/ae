@@ -1390,6 +1390,8 @@ mod tests {
         let dots = frame("›⠁  ⠈ ⠂");
         assert!(!has_human_draft(&dots, ToolKind::Codex));
         assert_eq!(classify(&dots, ToolKind::Codex), HarnessState::Unknown);
+        // An empty box is no draft either (it read as one before the dots).
+        assert!(!has_human_draft(&frame("›"), ToolKind::Codex));
         let short = frame("›⠁Ask Codex");
         assert_eq!(classify(&short, ToolKind::Codex), HarnessState::Unknown);
         assert!(has_human_draft(&short, ToolKind::Codex));

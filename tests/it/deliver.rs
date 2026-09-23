@@ -724,7 +724,7 @@ fn a_send_defers_while_the_input_box_holds_a_draft_and_abandons_loudly() {
     assert_eq!(code, Some(1), "{stderr}");
     assert_eq!(
         stderr,
-        "ae: send to tui ABANDONED — target stayed busy (composer occupied); not clear within 1s (AE_SEND_DEFER_SEC overrides). Re-send.\n"
+        "ae: send to tui ABANDONED — target stayed busy (composer occupied: 13 content cells on 1 row); not clear within 1s (AE_SEND_DEFER_SEC overrides). Re-send.\n"
     );
     assert!(
         rig.submitted().is_empty(),
@@ -824,7 +824,8 @@ fn a_promptless_pane_abandons_as_unreadable_never_occupied() {
     );
     assert_eq!(code, Some(1), "{stderr}");
     assert!(
-        stderr.contains("ABANDONED — target stayed busy (composer unreadable);"),
+        stderr
+            .contains("ABANDONED — target stayed busy (composer unreadable: no live prompt row);"),
         "{stderr}"
     );
     let events = rig.events();
@@ -863,7 +864,9 @@ fn a_watched_idle_composer_abandons_on_the_attention_half() {
     );
     assert_eq!(code, Some(1), "{stderr}");
     assert!(
-        stderr.contains("ABANDONED — target stayed busy (human input or attention on the pane);"),
+        stderr.contains(
+            "ABANDONED — target stayed busy (human input or attention on the pane: client active "
+        ),
         "{stderr}"
     );
     let events = rig.events();
@@ -912,7 +915,9 @@ fn a_draft_under_a_watchers_eye_names_both_halves() {
     );
     assert_eq!(code, Some(1), "{stderr}");
     assert!(
-        stderr.contains("composer occupied and human input or attention on the pane"),
+        stderr.contains(
+            "composer occupied: 13 content cells on 1 row and human input or attention on the pane: client active "
+        ),
         "{stderr}"
     );
     let events = rig.events();
@@ -948,7 +953,9 @@ fn an_orchestrator_relay_to_a_busy_target_audits_which_half_held() {
     let (code, stderr) = caller.run_with_env(&named, "human words", &[("AE_SEND_DEFER_SEC", "1")]);
     assert_eq!(code, Some(1), "{stderr}");
     assert!(
-        stderr.contains("ABANDONED — target stayed busy (composer occupied);"),
+        stderr.contains(
+            "ABANDONED — target stayed busy (composer occupied: 13 content cells on 1 row);"
+        ),
         "{stderr}"
     );
     assert!(target.submitted().is_empty());
