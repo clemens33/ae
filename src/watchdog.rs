@@ -3007,10 +3007,13 @@ mod tests {
     /// episode fold's, which must agree with it.
     fn stands_after(state: &str, record: &str, fold: bool) -> bool {
         let own_ask = r#"{"ts":"2026-08-29T03:59:00Z","actor":"opus5:builder","action":"ask","ref":"ae-1","target":"colead","actor_slot":"main","actor_session":"aerewrite"}"#;
+        let own_review = r#"{"ts":"2026-08-29T03:59:10Z","actor":"opus5:builder","action":"review","ref":"review-1","target":"colead","actor_slot":"main","actor_session":"aerewrite"}"#;
+        // Another seat's ask: a reply to it is no answer to this seat.
+        let peers_ask = r#"{"ts":"2026-08-29T03:59:30Z","actor":"colead","action":"ask","ref":"ae-9","target":"lead"}"#;
         let declaration = format!(
             r#"{{"ts":"2026-08-29T04:00:00Z","actor":"opus5:builder","action":"state","ref":"{state}","actor_slot":"main","actor_session":"aerewrite"}}"#
         );
-        let events = log(&[own_ask, &declaration, record]);
+        let events = log(&[own_ask, own_review, peers_ask, &declaration, record]);
         let current = latest_relevant_event(&events, "aerewrite", "main", "opus5:builder")
             .is_some_and(|found| {
                 declaration_current(&found) && found.event.declared_state() == Some(state)
@@ -3077,6 +3080,12 @@ mod tests {
                 [true, false, true, false],
             ),
             ("lead", "reply", r#","ref":"ae-9""#, DONE_ONLY),
+            (
+                "lead",
+                "reply",
+                r#","ref":"review-1""#,
+                [true, false, true, false],
+            ),
             ("telegram:42", "send", "", [true; 4]),
             ("discord:42", "send", "", [true; 4]),
             ("ae:compact:0199c0de", "ask", r#","ref":"ae-3""#, DONE_ONLY),
