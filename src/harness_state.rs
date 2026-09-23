@@ -143,21 +143,26 @@ fn classify_model(capture: &str, model: InputModel) -> HarnessState {
 #[must_use]
 pub fn has_human_draft(capture: &str, tool: ToolKind) -> bool {
     let model = tool.input_model();
-    let lines = clean_lines(capture);
     match model {
         InputModel::StyleDelimited => {
-            let Some((before, [prompt, footer])) = lines.as_slice().split_last_chunk::<2>() else {
+            let Some(frame) = codex_frame(capture) else {
                 return false;
             };
-            codex_footer(footer)
-                && !before.last().is_some_and(|line| codex_modal(line))
-                && prompt.starts_with('›')
-                && *prompt != "› Ask Codex to do anything"
+            codex_footer(&frame.footer)
+                && !frame.above.as_deref().is_some_and(codex_modal)
+                && !codex_placeholder(&frame.prompt)
+                && frame
+                    .prompt
+                    .strip_prefix('›')
+                    .is_some_and(|input| !crate::deliver::region::is_furniture(input))
         }
-        InputModel::BorderDelimited => lines
-            .iter()
-            .rposition(|line| line.starts_with('❯'))
-            .is_some_and(|index| claude_input_frame(&lines, index) && lines[index] != "❯"),
+        InputModel::BorderDelimited => {
+            let lines = clean_lines(capture);
+            lines
+                .iter()
+                .rposition(|line| line.starts_with('❯'))
+                .is_some_and(|index| claude_input_frame(&lines, index) && lines[index] != "❯")
+        }
         InputModel::Unmodelled => false,
     }
 }
@@ -273,24 +278,81 @@ fn last_ink(rows: &[Cow<'_, str>]) -> Option<usize> {
 }
 
 fn classify_codex(capture: &str) -> HarnessState {
-    let lines = clean_lines(capture);
-    let Some((before, [prompt, footer])) = lines.as_slice().split_last_chunk::<2>() else {
+    let Some(frame) = codex_frame(capture) else {
         return HarnessState::Unknown;
     };
-    if *prompt != "› Ask Codex to do anything" || !codex_footer(footer) {
+    let above = frame.above.as_deref();
+    if !codex_placeholder(&frame.prompt)
+        || !codex_footer(&frame.footer)
+        || above.is_some_and(codex_modal)
+    {
         return HarnessState::Unknown;
     }
-    if before.last().is_some_and(|line| codex_modal(line)) {
-        return HarnessState::Unknown;
-    }
-    if before
-        .last()
+    if above
         .is_some_and(|line| line.starts_with("• Working (") && line.ends_with("esc to interrupt)"))
     {
         HarnessState::Busy
     } else {
         HarnessState::Idle
     }
+}
+
+/// The codex composer's placeholder, which it draws only while the box is empty.
+const CODEX_PLACEHOLDER: &str = "› Ask Codex to do anything";
+
+/// Codex's last two inked rows, read as its composer and footer, and the row
+/// above the composer.
+struct CodexFrame {
+    above: Option<String>,
+    prompt: String,
+    footer: String,
+}
+
+/// Read `capture` as a codex frame — the one owner of how its rows are cut.
+///
+/// Codex's idle starfield paints braille dots over the rows around its
+/// composer: a row of dots alone is dropped, and dots on the row above and on
+/// the footer read as blanks, so neither the Working line nor the footer parse
+/// can be broken by one. The composer row stays RAW, because a dot there may
+/// stand in for a placeholder letter ([`codex_placeholder`]).
+fn codex_frame(capture: &str) -> Option<CodexFrame> {
+    let lines: Vec<Cow<'_, str>> = clean_lines(capture)
+        .into_iter()
+        .filter(|line| !crate::deliver::region::is_furniture(line))
+        .collect();
+    let (before, [prompt, footer]) = lines.as_slice().split_last_chunk::<2>()?;
+    Some(CodexFrame {
+        above: before.last().map(|line| braille_blanked(line)),
+        prompt: prompt.to_string(),
+        footer: braille_blanked(footer),
+    })
+}
+
+/// `row` with every braille cell drawn as a blank, edges trimmed.
+fn braille_blanked(row: &str) -> String {
+    let blanked: String = row
+        .chars()
+        .map(|ch| {
+            if crate::deliver::region::is_braille(ch) {
+                ' '
+            } else {
+                ch
+            }
+        })
+        .collect();
+    normalized_row(&blanked).into_owned()
+}
+
+/// Whether `row` is the codex placeholder, cell for cell, where a braille cell
+/// may stand in for any placeholder cell but the `›` (the letter shimmer), and
+/// anything after it is braille and blanks.
+fn codex_placeholder(row: &str) -> bool {
+    let mut cells = row.chars();
+    CODEX_PLACEHOLDER.chars().enumerate().all(|(at, expected)| {
+        cells.next().is_some_and(|cell| {
+            cell == expected || (at > 0 && crate::deliver::region::is_braille(cell))
+        })
+    }) && crate::deliver::region::is_furniture(cells.as_str())
 }
 
 fn codex_modal(line: &str) -> bool {
@@ -360,7 +422,12 @@ fn codex_footer(line: &str) -> bool {
     let Some((model, effort, path)) = codex_footer_parts(line) else {
         return false;
     };
-    model.starts_with("gpt-") && valid_effort(effort) && !path.is_empty()
+    // codex 0.156 capitalises the model it draws (`GPT-6-Astra`).
+    model
+        .get(..4)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("gpt-"))
+        && valid_effort(effort)
+        && !path.is_empty()
 }
 
 fn current_claude_identity(capture: &str) -> HarnessIdentity {
@@ -429,17 +496,16 @@ pub(crate) fn is_claude_model_label(value: &str) -> bool {
 }
 
 fn current_codex_identity(capture: &str) -> HarnessIdentity {
-    let lines = clean_lines(capture);
-    let Some((before, [prompt, footer])) = lines.as_slice().split_last_chunk::<2>() else {
+    let Some(frame) = codex_frame(capture) else {
         return HarnessIdentity::default();
     };
-    if *prompt != "› Ask Codex to do anything"
-        || codex_footer_parts(footer).is_none()
-        || before.last().is_some_and(|line| codex_modal(line))
+    if !codex_placeholder(&frame.prompt)
+        || codex_footer_parts(&frame.footer).is_none()
+        || frame.above.as_deref().is_some_and(codex_modal)
     {
         return HarnessIdentity::default();
     }
-    parse_codex_identity(footer)
+    parse_codex_identity(&frame.footer)
 }
 
 fn codex_footer_parts(line: &str) -> Option<(&str, &str, &str)> {
@@ -1288,6 +1354,60 @@ mod tests {
             ToolKind::Codex
         ));
         assert!(!has_human_draft("❯ draft", ToolKind::Grok));
+    }
+
+    /// Codex's idle starfield, as measured (provenance beside the fixture).
+    const CODEX_STARFIELD: &str =
+        include_str!("../tests/fixtures/harness-state/codex-starfield-216x6.txt");
+
+    #[test]
+    fn a_codex_starfield_is_furniture_to_the_frame_grammar() {
+        assert_eq!(
+            classify(CODEX_STARFIELD, ToolKind::Codex),
+            HarnessState::Idle
+        );
+        assert!(!has_human_draft(CODEX_STARFIELD, ToolKind::Codex));
+        let busy = CODEX_STARFIELD.replace(
+            "  Worked for 14m 51s · done 12:00 PM",
+            "• Working (9s • esc to interrupt)  ⠁ ⠈",
+        );
+        assert_eq!(classify(&busy, ToolKind::Codex), HarnessState::Busy);
+        // A dot where a footer space was, and dots trailing it.
+        let footer = CODEX_STARFIELD.replace("gpt-6-astra xhigh ·", "gpt-6-astra⠁xhigh ·  ⠂");
+        assert_eq!(classify(&footer, ToolKind::Codex), HarnessState::Idle);
+        let frame = |composer: &str| {
+            format!("• ok\n ⠈   ⠁\n{composer}\n   ⠐  ⠄\n  gpt-6-astra xhigh · ~/ae\n")
+        };
+        // The letter shimmer swaps placeholder cells for dots.
+        let shimmer = frame("›⠁Ask Codex to do a⠈yth⢀ng  ⠂");
+        assert_eq!(classify(&shimmer, ToolKind::Codex), HarnessState::Idle);
+        assert!(!has_human_draft(&shimmer, ToolKind::Codex));
+        let draft = frame("› fix the bug ⠁  ⠈");
+        assert!(has_human_draft(&draft, ToolKind::Codex));
+        assert_eq!(classify(&draft, ToolKind::Codex), HarnessState::Unknown);
+        // Dots alone after the ornament are no draft, and no placeholder
+        // either: the frame stays unrecognised rather than guessed idle.
+        let dots = frame("›⠁  ⠈ ⠂");
+        assert!(!has_human_draft(&dots, ToolKind::Codex));
+        assert_eq!(classify(&dots, ToolKind::Codex), HarnessState::Unknown);
+        let short = frame("›⠁Ask Codex");
+        assert_eq!(classify(&short, ToolKind::Codex), HarnessState::Unknown);
+        assert!(has_human_draft(&short, ToolKind::Codex));
+    }
+
+    #[test]
+    fn codex_0_156_capitalises_its_footer_model_and_still_classifies() {
+        for capture in [
+            include_str!("../tests/fixtures/harness-state/codex-idle-0.155.1-200x40.txt"),
+            include_str!("../tests/fixtures/harness-state/codex-idle-0.156.1-200x40.txt"),
+        ] {
+            assert_eq!(classify(capture, ToolKind::Codex), HarnessState::Idle);
+            let busy = capture.replace("  12:50", "• Working (3s • esc to interrupt)");
+            let busy = busy.replace("  done 12:53 PM", "• Working (3s • esc to interrupt)");
+            assert_eq!(classify(&busy, ToolKind::Codex), HarnessState::Busy);
+        }
+        let other = "› Ask Codex to do anything\n\n  claude-x high · ~/ae\n";
+        assert_eq!(classify(other, ToolKind::Codex), HarnessState::Unknown);
     }
 
     #[test]

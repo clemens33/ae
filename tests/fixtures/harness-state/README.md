@@ -17,3 +17,6 @@ redactions while TUI suffixes, line breaks, and recorded pane geometry were kept
 | `codex-idle-112x20.txt` | Codex 0.153.4 | idle, plain short crop | 112x20 | final 20 visible rows of `%338` |
 | `codex-idle-wrapped-112x40.txt` | Codex 0.153.4 | narrow joined wrap | 112x40 | `%338` |
 | `codex-modal-112x40.txt` | Codex 0.153.4 grammar | modal/unknown | 112x40 | live suffix with modal text substituted |
+| `codex-idle-0.155.1-200x40.txt` | Codex 0.155.1 | idle, lowercase footer model | 200x40 | 2026-09-23, private tmux server; plain twin of `../codex-composer/codex-idle-0.155.1-200x40.esc` |
+| `codex-idle-0.156.1-200x40.txt` | Codex 0.156.1 | idle, footer model `GPT-6-Astra` | 200x40 | 2026-09-23, private tmux server; plain twin of `../codex-composer/codex-idle-0.156.1-200x40.esc` |
+| `codex-starfield-216x6.txt` | Codex 0.155.1 | idle starfield: braille rows above and below the composer, dots on the composer row | 216 wide | 2026-09-22, session `aedev`, agent `archaudit`: plain capture suffix, `Worked for` row through footer, unedited |

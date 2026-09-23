@@ -320,7 +320,10 @@ fn content_end(segments: &[Segment], prompt_line: usize, stop_at: StopAt) -> usi
         if seg.line <= prompt_line || seg.line >= end {
             continue;
         }
-        if is_blank(&seg.text) {
+        // A row of braille dots alone is furniture — codex's idle starfield
+        // paints its blank separator above the footer — so it still ends the
+        // box.
+        if is_furniture(&seg.text) {
             continue;
         }
         if let Some(flag) = nonblank.get_mut(seg.line) {
@@ -441,8 +444,13 @@ pub fn staged_paste(region: &str, model: InputModel) -> bool {
 
 /// Whether `text` is exactly one bracketed-paste chip token.
 fn is_staged_chip(text: &str) -> bool {
-    // The separator is a regular space in Muse's capture, an NBSP in claude's.
-    let normalized = text.replace('\u{a0}', " ");
+    // The separator is a regular space in Muse's capture, an NBSP in claude's;
+    // a braille dot beside the chip is furniture.
+    let normalized: String = text
+        .replace('\u{a0}', " ")
+        .chars()
+        .filter(|ch| !is_braille(*ch))
+        .collect();
     let Some(inner) = trim_posix(&normalized).strip_prefix("[Pasted Content ") else {
         return false;
     };
@@ -849,12 +857,15 @@ fn after_first(text: &str, needle: char) -> String {
     }
 }
 
-/// Whether what was gathered from the box counts as content.
+/// Whether what was gathered from the box counts as content. Braille dots are
+/// never content: a run of them and blanks alone is furniture (codex's idle
+/// starfield and its placeholder shimmer), while any other cell beside them is
+/// still a draft.
 fn verdict(text: &str) -> Occupancy {
     let stripped: String = text
         .replace('\u{a0}', " ")
         .chars()
-        .filter(|ch| !matches!(ch, '\n' | '\t' | ' '))
+        .filter(|ch| !matches!(ch, '\n' | '\t' | ' ') && !is_braille(*ch))
         .collect();
     if stripped.is_empty() {
         Occupancy::Idle
@@ -931,6 +942,17 @@ fn is_space(ch: char) -> bool {
 /// Whether every character is a POSIX space.
 pub(super) fn is_blank(text: &str) -> bool {
     text.chars().all(is_space)
+}
+
+/// A braille-pattern cell, U+2800 to U+28FF: drawn decoration on every
+/// harness ae models, never typed text.
+pub(crate) fn is_braille(ch: char) -> bool {
+    ('\u{2800}'..='\u{28ff}').contains(&ch)
+}
+
+/// Whether `text` holds nothing but POSIX spaces and braille cells.
+pub(crate) fn is_furniture(text: &str) -> bool {
+    text.chars().all(|ch| is_space(ch) || is_braille(ch))
 }
 
 /// `text` with POSIX spaces trimmed from both ends.
@@ -1761,5 +1783,82 @@ mod tests {
         // Prefix, not equality: the suggestion rotates per launch.
         let other = "  ┃\n  ┃  Ask anything… \"Another task\"\n  ┃\n  ┃  Build · m · max\n  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n";
         assert!(composed_ui(other, OPENCODE));
+    }
+
+    /// Codex's idle starfield (provenance beside the fixture): braille dots on
+    /// the row above the composer, on the composer row, and on the blank
+    /// separator above the NON-dim footer. Beside it, the measured idle frames
+    /// it must agree with.
+    const CODEX_STARFIELD: &str =
+        include_str!("../../tests/fixtures/codex-composer/codex-starfield-216.esc");
+    const CODEX_IDLE_155: &str =
+        include_str!("../../tests/fixtures/codex-composer/codex-idle-0.155.1-200x40.esc");
+    const CODEX_IDLE_156: &str =
+        include_str!("../../tests/fixtures/codex-composer/codex-idle-0.156.1-200x40.esc");
+
+    #[test]
+    fn a_codex_starfield_is_furniture_and_its_footer_stays_outside_the_box() {
+        for frame in [CODEX_STARFIELD, CODEX_IDLE_155, CODEX_IDLE_156] {
+            assert_eq!(
+                occupancy(frame, InputModel::StyleDelimited),
+                Occupancy::Idle
+            );
+        }
+        // Every styling a dot may carry, on every row the field paints.
+        let footer = "\u{1b}[38;2;246;226;183mgpt-6-astra xhigh\u{1b}[39m · ~/x";
+        for dot in [
+            "⠁",
+            "\u{1b}[1m⢀\u{1b}[0m",
+            "\u{1b}[2m⠐\u{1b}[0m",
+            "\u{1b}[38;2;165;165;165m⡀\u{1b}[39m",
+        ] {
+            let frame = |composer: &str| {
+                format!("  ⠈ {dot}\n\u{1b}[1m›\u{1b}[0m{composer}\n {dot}   ⠂\n  {footer}\n")
+            };
+            let idle = frame(&format!(
+                "{dot}\u{1b}[2mAsk Codex to do anything\u{1b}[0m {dot}"
+            ));
+            assert_eq!(
+                occupancy(&idle, InputModel::StyleDelimited),
+                Occupancy::Idle
+            );
+            // The letter shimmer: one placeholder cell swapped for a bright dot.
+            let shimmer = frame(&format!(
+                " \u{1b}[2mAsk Codex to do a\u{1b}[0m{dot}\u{1b}[2mything\u{1b}[0m"
+            ));
+            assert_eq!(
+                occupancy(&shimmer, InputModel::StyleDelimited),
+                Occupancy::Idle
+            );
+            let draft = frame(&format!(" fix the bug {dot}"));
+            assert_eq!(
+                occupancy(&draft, InputModel::StyleDelimited),
+                Occupancy::Occupied,
+                "a dot beside real text never hides the text"
+            );
+            let chip = frame(&format!(" [Pasted Content 1469 chars] {dot}"));
+            assert!(staged_paste(&chip, InputModel::StyleDelimited));
+        }
+    }
+
+    #[test]
+    fn a_braille_only_box_is_empty_on_every_modelled_composer() {
+        // The accepted residual: a run of braille and blanks alone is never
+        // typed text, whoever drew it.
+        assert_eq!(
+            occupancy(&claude_frame("⠁ ⠈  ⢀"), InputModel::BorderDelimited),
+            Occupancy::Idle
+        );
+        assert_eq!(
+            occupancy(&claude_frame("⠁ half a que ⠈"), InputModel::BorderDelimited),
+            Occupancy::Occupied
+        );
+        assert_eq!(
+            occupancy(
+                &codex_frame("\u{1b}[1m›\u{1b}[0m ", "⠁  ⠈"),
+                InputModel::StyleDelimited
+            ),
+            Occupancy::Idle
+        );
     }
 }
