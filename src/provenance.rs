@@ -6,6 +6,16 @@
 //! human's signature (rule 8b, whose text lives in `render.rs::RULES`). `relay`
 //! is deliberately bare — it carries human authority and IS the human.
 //!
+//! EMISSION and PRESENTATION are different facts, and only the first is this
+//! module's. ae emits the marker on line 1 of every turn it injects; a
+//! paste-driven harness may then PRESENT a multi-line turn to the model inside
+//! a `<pasted_content …>` block that opens on the turn's first non-blank line
+//! (sometimes after blank lines), putting the marker on a later line. Rule 8b
+//! teaches the MODEL to read a wrapper's first inner line; nothing here — or
+//! anywhere in ae — unwraps, strips or recognizes a wrapper. [`is_ae_turn`] is
+//! line-1-only and every caller passes line 1, so a wrapped turn still reads as
+//! a human row to every Rust reader, the `ae board` filter included.
+//!
 //! This is the ONE owner of the spellings and of the first-line renderer.
 //! Every emission site calls it; no site spells a marker by hand. The verbs are
 //! DISTINCT on purpose: the peer envelope already does double duty (provenance
@@ -80,7 +90,10 @@ pub fn first_line(marker: &str, body: &str) -> String {
 /// THE ae-turn recognizer: true iff `first_line` — the turn's FIRST line and
 /// nothing else — carries one of this owner's own spellings. `relay` is bare
 /// and therefore never matches, by design. Callers pass line 1 only; a marker
-/// pasted into the body is prose and must not reach this function.
+/// pasted into the body is prose and must not reach this function. A
+/// harness-wrapped turn puts blank lines or the wrapper's line at line 1 and
+/// never matches either — that reading is the model's rule 8b, not a Rust
+/// unwrap.
 #[must_use]
 pub fn is_ae_turn(first_line: &str) -> bool {
     first_line.starts_with(PEER_PREFIX)
