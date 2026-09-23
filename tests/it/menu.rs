@@ -5165,7 +5165,9 @@ fn nested_client(socket: &Path, scratch: &Path, session: &str, viewer: &str) -> 
 /// since expired is still in it.
 fn record_client(socket: &Path, scratch: &Path, viewer: &str) -> PathBuf {
     let record = scratch.join(format!("{viewer}.terminal"));
-    let pipe = format!("cat >> '{}'", record.display());
+    // Single-quoted for the shell tmux runs it with, so no base path breaks it.
+    let quoted = record.display().to_string().replace('\'', r"'\''");
+    let pipe = format!("cat >> '{quoted}'");
     assert!(
         tmux(socket, scratch, &["pipe-pane", "-o", "-t", viewer, &pipe]).0,
         "a recorder on {viewer}"
