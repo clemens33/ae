@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.163] - 2026-09-23
+- End a quiet state only on what one table names: waits outlive their own and their peers' traffic
+- Record a watchdog challenge refused before its paste as an attempt the folds count
+- Age a waiting-agent's ceiling from its own declaration, as ae list does
+- Read a watchdog challenge by one grammar and give the fleet overview its own action
+- Fuzz the watchdog challenge grammar and make it the public entry the target calls
+- Name a human-only prompt once under a declaration, and pin the list's currency and the journal-fed challenge bound
+- Document what ends each quiet state, the overview prompt's own action and the challenge refused before its paste
+- Pin that only the seat's own asks and reviews are answered in the quiet table
+
 ## [v2026.9.162] - 2026-09-23
 - Refuse a same-binary reseat before the stop when its carry would fail, and name what a tool change leaves behind
 - Say what a tool change would leave behind only as what the move does if it succeeds, and name every foreign conversation a re-run leaves
