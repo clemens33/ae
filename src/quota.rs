@@ -780,6 +780,60 @@ pub(crate) struct RecordedIdentity {
     pub(crate) source: PathBuf,
 }
 
+/// Every journal action the watchdog's quota pass writes, spelled once.
+///
+/// The wire names are a contract with every reader of the journal, so they
+/// stay byte-identical; a reader that matches on one takes it from here.
+pub(crate) mod action {
+    /// A lead-pair advisory delivery.
+    pub(crate) const ADVISORY: &str = "quota-advisory";
+    /// A booked notice given up before it was delivered.
+    pub(crate) const ADVISORY_DROPPED: &str = "quota-advisory-dropped";
+    /// A checkpoint ask delivery. Its `ref` is the ask's receipt.
+    pub(crate) const CHECKPOINT: &str = "quota-checkpoint";
+    /// A checkpoint ask whose delivery failed or was uncertain.
+    pub(crate) const CHECKPOINT_DROPPED: &str = "quota-checkpoint-dropped";
+    /// A booked checkpoint ask withdrawn because its seat now runs another
+    /// model family. Written with NO target, so no fold reads it as news to
+    /// the seat; the summary names the agent.
+    pub(crate) const CHECKPOINT_CANCELLED: &str = "quota-checkpoint-cancelled";
+}
+
+/// The Claude model families a window can be scoped to, in the versionless
+/// form the family rule accepts as its first argument.
+///
+/// CLOSED on purpose: a qualifier or a model label outside this list proves
+/// nothing, and an unproven family never silences an ask.
+const CLAUDE_FAMILIES: [&str; 4] = ["fable", "opus", "sonnet", "haiku"];
+
+/// The recognized model family `text` names, for a tool whose windows can be
+/// model-scoped at all. Decided by [`crate::model_drift::satisfies`], the one
+/// family rule the drift mark already uses.
+fn model_family(tool: ToolKind, text: &str) -> Option<&'static str> {
+    if tool != ToolKind::Claude {
+        return None;
+    }
+    CLAUDE_FAMILIES.into_iter().find(|family| {
+        crate::model_drift::satisfies(family, text, crate::tool::PinMatch::FamilyVersion)
+    })
+}
+
+/// Whether a window scoped to `qualifier` is PROVEN not to bind a seat whose
+/// own frame last showed `live`.
+///
+/// True only when both name a recognized family and the families differ. An
+/// account-wide window, an unknown qualifier, a plan name, an unknown label
+/// and no observed model all answer false: the seat is asked.
+pub(crate) fn scoped_elsewhere(
+    tool: ToolKind,
+    qualifier: Option<&str>,
+    live: Option<&str>,
+) -> bool {
+    let window = qualifier.and_then(|text| model_family(tool, text));
+    let seat = live.and_then(|text| model_family(tool, text));
+    matches!((window, seat), (Some(window), Some(seat)) if window != seat)
+}
+
 /// Sanitized, bounded quota facts retained across a deferred advisory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Advisory {
@@ -822,6 +876,11 @@ const CHECKPOINT_ASK: &str = "{facts}. This seat may lose its voice. Checkpoint 
 pub(crate) const CHECKPOINT_ASK_MAX: usize = 600;
 
 impl Advisory {
+    /// When the window these facts describe resets, when the vendor said.
+    pub(crate) const fn resets_at(&self) -> Option<i64> {
+        self.resets_at
+    }
+
     pub(crate) fn current_at(&self, now: i64) -> bool {
         matches!(
             freshness(self.observed_at, self.resets_at, now),
@@ -3240,9 +3299,55 @@ mod tests {
         classify, codex_groups, codex_rollout_dirs, configured_scopes, credits_label, derived,
         effective, find_codex_rollout, freshness, merge_declaration, order_located_rollouts,
         percent_label, placeholder, profiles_label, read_bounded_tail, read_claude, render_at,
-        render_table, rows_or_placeholder, sanitize_cell, settings_same_scope, vendor_timestamp,
+        render_table, rows_or_placeholder, sanitize_cell, scoped_elsewhere, settings_same_scope,
+        vendor_timestamp,
     };
     use crate::tool::ToolKind;
+
+    #[test]
+    fn only_two_recognized_and_different_families_prove_a_window_binds_elsewhere() {
+        let claude = ToolKind::Claude;
+        for (window, live) in [
+            ("Fable", "Opus 5.5"),
+            ("Fable", "Opus 5 (1M context)"),
+            ("Opus", "claude-haiku-4-5-20251001"),
+            ("Sonnet", "Fable 5.1"),
+            ("Haiku", "Sonnet 5"),
+            ("Fable 5.1", "Opus 5"),
+        ] {
+            assert!(
+                scoped_elsewhere(claude, Some(window), Some(live)),
+                "{window} vs {live}"
+            );
+        }
+        for (window, live) in [
+            (Some("Fable"), Some("Fable 5.1")),
+            (Some("fable"), Some("Fable")),
+            (Some("Fable"), None),
+            (None, Some("Opus 5.5")),
+            (Some("Fable"), Some("Mystery 9")),
+            (Some("Fable"), Some("Opus X 5")),
+            (Some("Fable"), Some("")),
+            (Some("Mystery"), Some("Opus 5")),
+        ] {
+            assert!(
+                !scoped_elsewhere(claude, window, live),
+                "{window:?} vs {live:?}"
+            );
+        }
+        // Only Claude scopes a window to a model family; a Codex qualifier is
+        // its plan.
+        assert!(!scoped_elsewhere(
+            ToolKind::Codex,
+            Some("Fable"),
+            Some("Opus 5")
+        ));
+        assert!(!scoped_elsewhere(
+            ToolKind::Codex,
+            Some("pro"),
+            Some("gpt-6-sol")
+        ));
+    }
 
     #[test]
     fn freshness_boundaries_are_exact() {

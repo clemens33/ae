@@ -485,6 +485,9 @@ struct PendingAsk {
 struct QuotaAskCandidate {
     recipient: QuotaRecipient,
     identity: crate::quota::RecordedIdentity,
+    /// The model the seat's own frame last proved, from [`live_model`];
+    /// `None` when nothing current proves one.
+    live: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -496,6 +499,10 @@ enum QuotaAction {
         recipient: String,
         summary: String,
     },
+    /// A booked ask withdrawn because its seat now runs another model family,
+    /// and the summary that names it. Journaled with NO target: see
+    /// [`crate::quota::action::CHECKPOINT_CANCELLED`].
+    Cancelled(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -515,6 +522,11 @@ struct QuotaCarry {
     /// recipients are every seat on the scope, and neither set may widen the
     /// other.
     asks: Vec<PendingAsk>,
+    /// The seats already asked about a window in its CURRENT low episode,
+    /// booked or delivered. A real entry into the band clears the window's
+    /// marks, and so does every cancellation before delivery: a booking is
+    /// not a delivery.
+    settled: Vec<(QuotaKey, QuotaRecipient)>,
     last_observation: Option<crate::quota::Observation>,
 }
 
@@ -650,9 +662,102 @@ fn quota_ask_candidates(
                     binary: entry.binary.clone(),
                 },
                 identity: crate::quota::recorded_identity(entry)?,
+                live: None,
             })
         })
         .collect()
+}
+
+/// The model this seat's own frame last proved, as [`Cycle::resolve_identity`]
+/// holds it for the picker: launch-bound, composer-gated and bounded by
+/// [`HOLD_MAX_CYCLES`]. Never the profile's pin.
+///
+/// The quota pass runs before the pane loop, so this is the PREVIOUS cycle's
+/// hold. A carry that belongs to another seat generation, a hold from another
+/// launch, or a seat with no launch id at all answers `None`, which asks.
+fn live_model(
+    recipient: &QuotaRecipient,
+    panes: &[crate::tmux::WatchPane],
+    carried: &[(String, PaneState)],
+    launch_ids: &[(String, String)],
+) -> Option<String> {
+    let launch = launch_id_for(launch_ids, &recipient.slot)?;
+    let generation = quiet_hash(&format!("{}\n{}", recipient.slot, recipient.agent));
+    panes
+        .iter()
+        .filter(|pane| pane.slot.as_deref() == Some(recipient.slot.as_str()))
+        .find_map(|pane| {
+            let (_, state) = carried.iter().find(|(id, _)| *id == pane.pane_id)?;
+            let hold = state.held_identity.as_ref()?;
+            (state.identity == Some(generation)
+                && hold.launch == launch
+                && hold.age < HOLD_MAX_CYCLES)
+                .then(|| hold.identity.model.clone())
+                .flatten()
+        })
+}
+
+/// The RECEIPT a delivered checkpoint ask leaves in the journal: the `ref` of
+/// its `quota-checkpoint` event, which the send helper writes only when the
+/// paste was delivered or left unconfirmed.
+///
+/// An IDENTITY, compared by exact equality and never decoded: FNV-1a 64 over a
+/// version tag and the window, its reset and the seat's conversation, each
+/// field length-prefixed so no two tuples share bytes. `None` — no receipt, so
+/// a recovered first sight asks again — when the vendor stated no reset or the
+/// seat has no recorded conversation.
+fn ask_receipt(
+    key: &QuotaKey,
+    resets_at: Option<i64>,
+    recipient: &QuotaRecipient,
+) -> Option<String> {
+    let resets = resets_at?.to_le_bytes();
+    let conversation = crate::meta::prior_parts(recipient.harness_session.as_deref()?)?.id;
+    let window = key.window_minutes.map(u32::to_le_bytes);
+    let mut bytes = b"ae-quota-ask-v1".to_vec();
+    for field in [
+        Some(key.source.as_os_str().as_encoded_bytes()),
+        Some(key.bucket.as_bytes()),
+        key.qualifier.as_deref().map(str::as_bytes),
+        window.as_ref().map(<[u8; 4]>::as_slice),
+        Some(resets.as_slice()),
+        Some(conversation.as_bytes()),
+    ] {
+        match field {
+            None => bytes.push(0),
+            Some(value) => {
+                bytes.push(1);
+                bytes.extend(u64::try_from(value.len()).unwrap_or(u64::MAX).to_le_bytes());
+                bytes.extend_from_slice(value);
+            }
+        }
+    }
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in bytes {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    Some(format!("quota-ask-{hash:016x}"))
+}
+
+/// Every checkpoint-ask receipt the journal holds: the `ref` of a
+/// `quota-checkpoint` event this daemon's actor wrote. A `delivery-abandoned`
+/// record carries the same ref and is NOT one — nothing reached the seat.
+fn delivered_receipts(events: &[Event]) -> Vec<&str> {
+    events
+        .iter()
+        .filter(|event| event.action == crate::quota::action::CHECKPOINT && event.actor == ACTOR)
+        .filter_map(|event| event.reference.as_deref())
+        .collect()
+}
+
+/// What one quota pass reads beside its own carry.
+struct QuotaInputs<'a> {
+    panes: &'a [crate::tmux::WatchPane],
+    /// The pane carry, for each seat's held live model.
+    held: &'a [(String, PaneState)],
+    /// This cycle's journal, for the checkpoint asks' receipts.
+    events: &'a [Event],
 }
 
 fn quota_sweep_count(knobs: &Knobs) -> Option<u64> {
@@ -688,8 +793,10 @@ impl QuotaCarry {
         self.tracked.clear();
         self.pending.clear();
         // An ask is held quota knowledge too: while unaware nothing may stay
-        // booked to fire the moment awareness returns.
+        // booked to fire the moment awareness returns. So is a mark: a later
+        // first sight must consult the journal, not a memory from before.
         self.asks.clear();
+        self.settled.clear();
         self.last_observation = None;
     }
 
@@ -716,7 +823,8 @@ impl QuotaCarry {
     }
 
     /// The ask's own cancellation, kept apart from the advisory's so that
-    /// neither recipient set can reach the other's bookings.
+    /// neither recipient set can reach the other's bookings. A cancelled
+    /// booking leaves no mark: it never reached the seat.
     fn cancel_asks_where(
         &mut self,
         predicate: impl Fn(&PendingAsk) -> bool,
@@ -727,6 +835,8 @@ impl QuotaCarry {
         let mut retained = Vec::new();
         for ask in self.asks.drain(..) {
             if predicate(&ask) {
+                self.settled
+                    .retain(|(key, recipient)| !(*key == ask.key && *recipient == ask.recipient));
                 actions.push(QuotaAction::Dropped {
                     recipient: ask.recipient.agent,
                     summary: format!("{reason}: {}", ask.advisory.checkpoint_ask(meta_dir)),
@@ -738,32 +848,117 @@ impl QuotaCarry {
         self.asks = retained;
     }
 
-    /// Book ONE checkpoint ask per seat on the scope this window belongs to.
+    /// Book ONE checkpoint ask for every seat on a scope whose window sits in
+    /// the band, unless that seat is already settled for this episode or its
+    /// live model is proven to be of another family than the window's.
     ///
-    /// Called only from an ENTRY into the band. A seat that already holds an
-    /// undelivered ask for this key has it REPLACED rather than doubled: a band
+    /// Run every pass, not only at an entry, so a seat that switches INTO the
+    /// window's family mid-episode is asked too. A seat that already holds an
+    /// undelivered ask for the key has it REPLACED rather than doubled: a band
     /// that cleared and was entered again while the first ask was still
     /// deferred must still produce exactly one ask, carrying the newer facts.
     fn book_asks(
         &mut self,
+        observation: &crate::quota::Observation,
+        samples: &[QuotaSample<'_>],
+        candidates: &[QuotaAskCandidate],
+    ) {
+        for sample in samples {
+            let Some(held) = self
+                .tracked
+                .iter()
+                .find(|tracked| tracked.key == sample.key)
+                .map(|tracked| tracked.classified.clone())
+                .filter(|held| matches!(held.level(), QuotaLevel::Low | QuotaLevel::Critical))
+            else {
+                continue;
+            };
+            let key = &sample.key;
+            let unasked: Vec<&QuotaAskCandidate> = candidates
+                .iter()
+                .filter(|candidate| {
+                    candidate.identity.tool == sample.group.tool
+                        && candidate.identity.source == key.source
+                        && !self
+                            .settled
+                            .contains(&(key.clone(), candidate.recipient.clone()))
+                        && !crate::quota::scoped_elsewhere(
+                            candidate.identity.tool,
+                            key.qualifier.as_deref(),
+                            candidate.live.as_deref(),
+                        )
+                })
+                .collect();
+            for candidate in unasked {
+                self.asks
+                    .retain(|ask| !(ask.key == *key && ask.recipient == candidate.recipient));
+                self.asks.push(PendingAsk {
+                    key: key.clone(),
+                    observed_at: held.observed_at(),
+                    recipient: candidate.recipient.clone(),
+                    advisory: observation.transition(sample.group, &held),
+                    attempts: 0,
+                });
+                self.settled
+                    .push((key.clone(), candidate.recipient.clone()));
+            }
+        }
+    }
+
+    /// Withdraw every booked ask whose seat's live model is now PROVEN to be
+    /// of another family than its window, clearing the mark so a switch back
+    /// is asked again. Named, and journaled with no target.
+    ///
+    /// The live model is the previous cycle's hold, so a switch inside one
+    /// pass cannot be seen here: this reaches a DEFERRED ask, one pass later.
+    fn withdraw_switched(
+        &mut self,
+        candidates: &[QuotaAskCandidate],
+        meta_dir: &Path,
+        actions: &mut Vec<QuotaAction>,
+    ) {
+        let mut retained = Vec::new();
+        for ask in self.asks.drain(..) {
+            let switched = candidates.iter().find(|candidate| {
+                candidate.recipient == ask.recipient
+                    && crate::quota::scoped_elsewhere(
+                        candidate.identity.tool,
+                        ask.key.qualifier.as_deref(),
+                        candidate.live.as_deref(),
+                    )
+            });
+            let Some(live) = switched.and_then(|candidate| candidate.live.as_deref()) else {
+                retained.push(ask);
+                continue;
+            };
+            self.settled
+                .retain(|(key, recipient)| !(*key == ask.key && *recipient == ask.recipient));
+            actions.push(QuotaAction::Cancelled(format!(
+                "{}: checkpoint seat now runs {live}, not {}: {}",
+                ask.recipient.agent,
+                ask.key.qualifier.as_deref().unwrap_or_default(),
+                ask.advisory.checkpoint_ask(meta_dir)
+            )));
+        }
+        self.asks = retained;
+    }
+
+    /// Mark every seat on a window's scope whose receipt the journal already
+    /// holds, at a FIRST sight inside the band: a restart or a recovery from
+    /// silence inside an episode that seat was already asked about.
+    fn recover_settled(
+        &mut self,
         key: &QuotaKey,
-        held: &crate::quota::Classified,
         advisory: &crate::quota::Advisory,
         candidates: &[QuotaAskCandidate],
-        group: &crate::quota::Group,
+        receipts: &[&str],
     ) {
         for candidate in candidates.iter().filter(|candidate| {
-            candidate.identity.tool == group.tool && candidate.identity.source == key.source
+            ask_receipt(key, advisory.resets_at(), &candidate.recipient)
+                .is_some_and(|receipt| receipts.contains(&receipt.as_str()))
         }) {
-            self.asks
-                .retain(|ask| !(ask.key == *key && ask.recipient == candidate.recipient));
-            self.asks.push(PendingAsk {
-                key: key.clone(),
-                observed_at: held.observed_at(),
-                recipient: candidate.recipient.clone(),
-                advisory: advisory.clone(),
-                attempts: 0,
-            });
+            self.settled
+                .push((key.clone(), candidate.recipient.clone()));
         }
     }
 
@@ -798,11 +993,19 @@ impl QuotaCarry {
         );
     }
 
-    fn reconcile_with_candidates(
+    /// One quota pass. `receipts` are the journal's [`delivered_receipts`],
+    /// consulted ONLY at a window's first sight inside the band.
+    ///
+    /// The order is load-bearing: stale asks are cancelled first, so a seat
+    /// that is eligible again is booked afresh by the same pass; the sample
+    /// loop then decides entries and recoveries; a switched seat's deferred
+    /// ask is withdrawn; and only then are the unasked seats booked.
+    fn reconcile_pass(
         &mut self,
         observation: &crate::quota::Observation,
         recipients: &[QuotaRecipient],
         candidates: &[QuotaAskCandidate],
+        receipts: &[&str],
         meta_dir: &Path,
     ) -> Vec<QuotaAction> {
         let mut actions = Vec::new();
@@ -825,7 +1028,7 @@ impl QuotaCarry {
         let samples = quota_samples(observation);
         self.drop_silent_keys(&samples, meta_dir, observation.now, &mut actions);
 
-        for sample in samples {
+        for sample in &samples {
             let previous = self
                 .tracked
                 .iter()
@@ -833,23 +1036,20 @@ impl QuotaCarry {
             let Some(index) = previous else {
                 // The first sight of a window is classified and SILENT: there
                 // is no transition to report yet.
-                let classified = crate::quota::Classified::first(sample.reading);
+                let classified = crate::quota::Classified::first(sample.reading.clone());
                 // The ASK is not silent here, and that is the whole point: a
                 // daemon that starts with the scope already Low has seats which
                 // may never get another transition to be warned by. The
-                // advisory's own first-sight silence above is untouched.
+                // advisory's own first-sight silence above is untouched. A
+                // first sight may also be a RECOVERY — a restart, or a window
+                // back from silence — inside an episode a seat was already
+                // asked about; its receipt in the journal says so.
                 if entered_low(None, classified.level()) {
                     let advisory = observation.transition(sample.group, &classified);
-                    self.book_asks(
-                        &sample.key,
-                        &classified,
-                        &advisory,
-                        candidates,
-                        sample.group,
-                    );
+                    self.recover_settled(&sample.key, &advisory, candidates, receipts);
                 }
                 self.tracked.push(QuotaTracked {
-                    key: sample.key,
+                    key: sample.key.clone(),
                     classified,
                 });
                 continue;
@@ -884,14 +1084,15 @@ impl QuotaCarry {
             // under cannot be another sample's.
             let held = self.tracked[index].classified.clone();
             let advisory = observation.transition(sample.group, &held);
-            // ENTERING the band asks every seat on the scope once. Moving
-            // around inside it does not, and neither does leaving it; only a
-            // re-entry after `classify`'s hysteresis let the window clear asks
-            // again. A declaration change re-derives the held row and reaches
-            // here the same way, so a withdrawn reset re-arms the ask exactly
-            // as it re-arms the advisory.
+            // ENTERING the band opens a new episode: every seat on the scope is
+            // asked once more. Moving around inside it does not, and neither
+            // does leaving it; only a re-entry after `classify`'s hysteresis
+            // let the window clear asks again. A declaration change re-derives
+            // the held row and reaches here the same way, so a withdrawn reset
+            // re-arms the ask exactly as it re-arms the advisory. A real entry
+            // never consults the journal.
             if entered_low(Some(before), after) {
-                self.book_asks(&sample.key, &held, &advisory, candidates, sample.group);
+                self.settled.retain(|(key, _)| *key != sample.key);
             }
             for recipient in recipients {
                 self.pending.push(PendingAdvisory {
@@ -904,6 +1105,8 @@ impl QuotaCarry {
                 });
             }
         }
+        self.withdraw_switched(candidates, meta_dir, &mut actions);
+        self.book_asks(observation, &samples, candidates);
 
         actions.extend(
             self.pending
@@ -941,6 +1144,9 @@ impl QuotaCarry {
             .collect();
         self.tracked
             .retain(|tracked| live_keys.contains(&tracked.key));
+        // Its marks go with it: the window's return is a first sight, and a
+        // first sight answers to the journal alone.
+        self.settled.retain(|(key, _)| live_keys.contains(key));
         self.cancel_where(
             |pending| silent_keys.contains(&pending.key),
             "quota observation went silent",
@@ -4091,12 +4297,12 @@ impl Cycle<'_> {
         &self,
         requested: bool,
         carry: &mut QuotaCarry,
-        panes: &[crate::tmux::WatchPane],
+        inputs: &QuotaInputs<'_>,
         now: i64,
         err: &mut impl Write,
     ) -> crate::Result<()> {
         if requested && self.knobs.quota_aware {
-            self.refresh_quota(carry, panes, now, err)?;
+            self.refresh_quota(carry, inputs, now, err)?;
         }
         Ok(())
     }
@@ -4136,33 +4342,64 @@ impl Cycle<'_> {
         for action in actions {
             match action {
                 QuotaAction::Dropped { recipient, summary } => {
-                    self.emit("quota-advisory-dropped", &recipient, &summary, err)?;
+                    self.emit(
+                        crate::quota::action::ADVISORY_DROPPED,
+                        &recipient,
+                        &summary,
+                        err,
+                    )?;
+                }
+                QuotaAction::Cancelled(summary) => {
+                    // NO target: news to nobody, so no fold reads it.
+                    self.emit(
+                        crate::quota::action::CHECKPOINT_CANCELLED,
+                        "",
+                        &summary,
+                        err,
+                    )?;
                 }
                 QuotaAction::Deliver(pending) => {
                     let text = pending.advisory.render(self.meta_dir, now);
                     let delivery = self.deliver(
                         &pending.recipient.agent,
                         &text,
-                        "quota-advisory",
+                        crate::quota::action::ADVISORY,
                         &text,
                         None,
                     );
                     if let Some(QuotaAction::Dropped { recipient, summary }) = carry
                         .record_delivery(&pending, quota_delivery(&delivery), self.meta_dir, now)
                     {
-                        self.emit("quota-advisory-dropped", &recipient, &summary, err)?;
+                        self.emit(
+                            crate::quota::action::ADVISORY_DROPPED,
+                            &recipient,
+                            &summary,
+                            err,
+                        )?;
                     }
                 }
                 QuotaAction::Ask(ask) => {
                     // The SAME sender as the advisory — one delivery owner, so
-                    // the seat reads one marker, written by `provenance`.
+                    // the seat reads one marker, written by `provenance`. The
+                    // receipt rides the event the helper writes on delivery.
                     let text = ask.advisory.checkpoint_ask(self.meta_dir);
-                    let delivery =
-                        self.deliver(&ask.recipient.agent, &text, "quota-checkpoint", &text, None);
+                    let receipt = ask_receipt(&ask.key, ask.advisory.resets_at(), &ask.recipient);
+                    let delivery = self.deliver(
+                        &ask.recipient.agent,
+                        &text,
+                        crate::quota::action::CHECKPOINT,
+                        &text,
+                        receipt.as_deref(),
+                    );
                     if let Some(QuotaAction::Dropped { recipient, summary }) =
                         carry.record_ask_delivery(&ask, quota_delivery(&delivery), self.meta_dir)
                     {
-                        self.emit("quota-checkpoint-dropped", &recipient, &summary, err)?;
+                        self.emit(
+                            crate::quota::action::CHECKPOINT_DROPPED,
+                            &recipient,
+                            &summary,
+                            err,
+                        )?;
                     }
                 }
             }
@@ -4173,7 +4410,7 @@ impl Cycle<'_> {
     fn refresh_quota(
         &self,
         carry: &mut QuotaCarry,
-        panes: &[crate::tmux::WatchPane],
+        inputs: &QuotaInputs<'_>,
         now: i64,
         err: &mut impl Write,
     ) -> crate::Result<()> {
@@ -4182,11 +4419,20 @@ impl Cycle<'_> {
                 let recipients = quota_recipients(&self.roster, self.lead_pair);
                 // TWO sets, never one: the advisory's lead pair above, and
                 // every seat proven to sit on a readable scope below.
-                let candidates = quota_ask_candidates(&self.roster, panes);
-                let actions = carry.reconcile_with_candidates(
+                let mut candidates = quota_ask_candidates(&self.roster, inputs.panes);
+                for candidate in &mut candidates {
+                    candidate.live = live_model(
+                        &candidate.recipient,
+                        inputs.panes,
+                        inputs.held,
+                        &self.launch_ids,
+                    );
+                }
+                let actions = carry.reconcile_pass(
                     &observation,
                     &recipients,
                     &candidates,
+                    &delivered_receipts(inputs.events),
                     self.meta_dir,
                 );
                 let summary = Self::observed_summary(&observation, actions.len());
@@ -4464,13 +4710,13 @@ impl Cycle<'_> {
     fn run_quota_cadence(
         &self,
         carry: &mut QuotaCarry,
-        panes: &[crate::tmux::WatchPane],
+        inputs: &QuotaInputs<'_>,
         now: i64,
         err: &mut impl Write,
     ) -> crate::Result<()> {
         if quota_observation_due(carry, &self.knobs) {
             if self.knobs.quota_aware {
-                self.refresh_quota(carry, panes, now, err)?;
+                self.refresh_quota(carry, inputs, now, err)?;
             } else {
                 Self::trace_quota("skipped");
             }
@@ -4575,7 +4821,12 @@ impl Cycle<'_> {
         };
         // ONE cadence, one counter: `quota_every_secs` paces the periodic
         // quota pass, and zero disables it.
-        self.run_quota_cadence(&mut carry.quota, &observed, now, err)?;
+        let inputs = QuotaInputs {
+            panes: &observed,
+            held: &carry.panes,
+            events: &events,
+        };
+        self.run_quota_cadence(&mut carry.quota, &inputs, now, err)?;
 
         let seats = held_seats(&observed, table.as_deref(), &|slot| self.agent_bin(slot));
         let outstanding = crate::session::Outstanding::read(&events, self.session, &seats);
@@ -4722,7 +4973,12 @@ impl Cycle<'_> {
             });
         }
         carry.quiet.end(index);
-        self.refresh_after_limit_release(quota_refresh, &mut carry.quota, &observed, now, err)?;
+        let inputs = QuotaInputs {
+            panes: &observed,
+            held: &carry.panes,
+            events: &events,
+        };
+        self.refresh_after_limit_release(quota_refresh, &mut carry.quota, &inputs, now, err)?;
         self.retry_briefs(&mut carry.brief_cursor, &by_slot, now, err)?;
         self.close(
             carry,
@@ -6029,19 +6285,20 @@ mod tests {
         Continuation, Cycle, DETACHED_MOTION_TICK, DoneProgress, Effect, FactRung, HOLD_MAX_CYCLES,
         HarnessObservation, Journal, Knobs, MissingState, MotionState, MotionVerdict, Observation,
         OverviewReading, PaneState, PendingAdvisory, PendingAsk, QuietCycle, QuietQuery,
-        QuotaAction, QuotaCarry, QuotaDelivery, QuotaLevel, QuotaRecipient, Rebind,
-        ResolveIdentity, SeatIdentity, SendHelper, TickerMode, UNKNOWN_ALERT_CYCLES, Verdict,
-        WatchdogPresence, account, adopt_server, adoption_due, adoption_from, adoption_writes,
-        age_secs, agents_fact, bar_glyph, continuation, deferred, done_challenge_text, entry_mut,
-        fact_at, fleet_rows, held_seats, holds_seat, idle_nudge_seconds, idle_nudge_text,
-        idle_nudge_text_waiting, is_meta_agent, last_actor_event_age, last_done_event_at,
-        last_working_declaration_at, launch_id_for, motion_cadence, motion_failure,
-        motion_observation_due, motion_publish_failure, motion_ticker_enabled, nudge_text,
-        observed_option, proven_ownership, quota_ask_candidates, quota_delivery,
-        quota_observation_due, quota_recipients, quota_seconds, read_events, rebind, record_nudge,
-        restore_idle, run, session_name, slot_latched, slot_mark, stale_display,
-        static_observe_cadence, sweep_effects, sweep_seconds, system_time_from_epoch,
-        throttle_quota_line, ticker_mode, wait_challenge_text, window_agents_line,
+        QuotaAction, QuotaAskCandidate, QuotaCarry, QuotaDelivery, QuotaLevel, QuotaRecipient,
+        Rebind, ResolveIdentity, SeatIdentity, SendHelper, TickerMode, UNKNOWN_ALERT_CYCLES,
+        Verdict, WatchdogPresence, account, adopt_server, adoption_due, adoption_from,
+        adoption_writes, age_secs, agents_fact, ask_receipt, bar_glyph, continuation, deferred,
+        delivered_receipts, done_challenge_text, entry_mut, fact_at, fleet_rows, held_seats,
+        holds_seat, idle_nudge_seconds, idle_nudge_text, idle_nudge_text_waiting, is_meta_agent,
+        last_actor_event_age, last_done_event_at, last_working_declaration_at, launch_id_for,
+        live_model, motion_cadence, motion_failure, motion_observation_due, motion_publish_failure,
+        motion_ticker_enabled, nudge_text, observed_option, proven_ownership, quota_ask_candidates,
+        quota_delivery, quota_observation_due, quota_recipients, quota_seconds, read_events,
+        rebind, record_nudge, restore_idle, run, session_name, slot_latched, slot_mark,
+        stale_display, static_observe_cadence, sweep_effects, sweep_seconds,
+        system_time_from_epoch, throttle_quota_line, ticker_mode, wait_challenge_text,
+        window_agents_line,
     };
     use super::{Look, Mark, PaneMark, session_mark};
     use crate::events::Event;
@@ -6363,10 +6620,9 @@ mod tests {
     impl QuotaCarry {
         /// Reconcile with no ask candidates — the ADVISORY path alone.
         ///
-        /// Production always calls
-        /// [`QuotaCarry::reconcile_with_candidates`]; this shape keeps every
-        /// test that only ever cared about advisories saying exactly that, and
-        /// booking no ask.
+        /// Production always calls [`QuotaCarry::reconcile_pass`]; this shape
+        /// keeps every test that only ever cared about advisories saying
+        /// exactly that, and booking no ask.
         ///
         /// It lives HERE, in the test module, rather than carrying a
         /// `#[cfg(test)]` beside its sibling: the structural pins of this file
@@ -6379,6 +6635,17 @@ mod tests {
             meta_dir: &Path,
         ) -> Vec<QuotaAction> {
             self.reconcile_with_candidates(observation, recipients, &[], meta_dir)
+        }
+
+        /// A pass with an EMPTY journal: no receipt to recover from.
+        fn reconcile_with_candidates(
+            &mut self,
+            observation: &crate::quota::Observation,
+            recipients: &[QuotaRecipient],
+            candidates: &[QuotaAskCandidate],
+            meta_dir: &Path,
+        ) -> Vec<QuotaAction> {
+            self.reconcile_pass(observation, recipients, candidates, &[], meta_dir)
         }
     }
 
@@ -6494,7 +6761,7 @@ mod tests {
             .iter()
             .filter_map(|action| match action {
                 QuotaAction::Deliver(pending) => Some(pending.as_ref()),
-                QuotaAction::Ask(_) | QuotaAction::Dropped { .. } => None,
+                _ => None,
             })
             .collect()
     }
@@ -6505,7 +6772,7 @@ mod tests {
             .iter()
             .filter_map(|action| match action {
                 QuotaAction::Ask(ask) => Some(ask.as_ref()),
-                QuotaAction::Deliver(_) | QuotaAction::Dropped { .. } => None,
+                _ => None,
             })
             .collect()
     }
@@ -7124,6 +7391,519 @@ mod tests {
         );
     }
 
+    const CONVERSATION_A: &str = "11111111-1111-4111-8111-111111111111";
+    const CONVERSATION_B: &str = "22222222-2222-4222-8222-222222222222";
+
+    /// A Claude seat on `/tmp/cc` with a recorded conversation.
+    fn claude_seat(slot: &str, name: &str, conversation: &str) -> RosterEntry {
+        ask_entry(
+            slot,
+            name,
+            "claude",
+            RecordedConfigHome::Path(PathBuf::from("/tmp/cc")),
+            RecordedConfigHomeBase::Missing,
+            Some(conversation),
+        )
+    }
+
+    /// That seat's Fable-scoped weekly window, judged under `resets`.
+    fn fable_window(
+        on: &RosterEntry,
+        used: &str,
+        observed_at: i64,
+        resets: Option<u8>,
+    ) -> crate::quota::Observation {
+        let identity = crate::quota::recorded_identity(on).expect("a recorded Claude identity");
+        let row = quota_row(
+            "weekly_scoped",
+            Some("Fable"),
+            used,
+            observed_at,
+            crate::quota::Status::Fresh,
+        );
+        let mut group = quota_scope_group(
+            &identity.source,
+            None,
+            None,
+            vec![row],
+            resets,
+            crate::quota::Account::default(),
+        );
+        group.tool = crate::tool::ToolKind::Claude;
+        quota_observation(vec![group], 10_000)
+    }
+
+    /// The candidates of `roster` whose frames last showed `live`, in order.
+    fn candidates_running(roster: &[RosterEntry], live: &[Option<&str>]) -> Vec<QuotaAskCandidate> {
+        let mut candidates = quota_ask_candidates(roster, &live_panes(roster));
+        for (candidate, model) in candidates.iter_mut().zip(live) {
+            candidate.live = model.map(str::to_owned);
+        }
+        candidates
+    }
+
+    /// The summaries of the asks one pass withdrew.
+    fn withdrawn(actions: &[QuotaAction]) -> Vec<&str> {
+        actions
+            .iter()
+            .filter_map(|action| match action {
+                QuotaAction::Cancelled(summary) => Some(summary.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn receipt_of(ask: &PendingAsk) -> String {
+        ask_receipt(&ask.key, ask.advisory.resets_at(), &ask.recipient).expect("a receipt")
+    }
+
+    #[test]
+    fn a_model_scoped_window_asks_every_seat_not_proven_to_run_another_family() {
+        // (a) Opus is not asked about Fable, (b) Fable is, (c) no model and an
+        // unrecognized label prove nothing and are asked.
+        let roster = [
+            claude_seat("main", "opus", CONVERSATION_A),
+            claude_seat("worker.0", "fable", CONVERSATION_B),
+            claude_seat("worker.1", "unseen", CONVERSATION_A),
+            claude_seat("worker.2", "odd", CONVERSATION_B),
+        ];
+        let candidates = candidates_running(
+            &roster,
+            &[Some("Opus 5.5"), Some("Fable 5.1"), None, Some("Mystery 9")],
+        );
+        let meta = Path::new("/m");
+        let scoped = QuotaCarry::default().reconcile_with_candidates(
+            &fable_window(&roster[0], "100", 9_900, None),
+            &[],
+            &candidates,
+            meta,
+        );
+        assert_eq!(asked_agents(&scoped), ["fable", "unseen", "odd"]);
+        // An account-wide window binds whatever the seat runs.
+        let all = QuotaCarry::default().reconcile_with_candidates(
+            &quota_observation(vec![claude_group(&roster[0], "100", 9_900)], 10_000),
+            &[],
+            &candidates,
+            meta,
+        );
+        assert_eq!(asked_agents(&all), ["opus", "fable", "unseen", "odd"]);
+    }
+
+    #[test]
+    fn a_switch_into_the_family_is_asked_and_a_switch_away_withdraws_the_owed_ask() {
+        let roster = [claude_seat("main", "lead", CONVERSATION_A)];
+        let window = fable_window(&roster[0], "100", 9_900, None);
+        let meta = Path::new("/m");
+        let pass = |carry: &mut QuotaCarry, live: &str| {
+            carry.reconcile_with_candidates(
+                &window,
+                &[],
+                &candidates_running(&roster, &[Some(live)]),
+                meta,
+            )
+        };
+        let mut carry = QuotaCarry::default();
+        assert!(pass(&mut carry, "Opus 5.5").is_empty(), "Opus is not asked");
+        // (d) The window is already critical: no entry will come, and the
+        // switch alone asks.
+        assert_eq!(asked_agents(&pass(&mut carry, "Fable 5.1")), ["lead"]);
+        let owed = carry.asks[0].clone();
+        assert!(
+            carry
+                .record_ask_delivery(&owed, QuotaDelivery::Retryable, meta)
+                .is_none(),
+            "refused before submit: still owed"
+        );
+        // (e) Switched away before the retry: withdrawn, named, never pasted.
+        let switched = pass(&mut carry, "Opus 5.5");
+        assert!(asked_agents(&switched).is_empty(), "{switched:?}");
+        let names = withdrawn(&switched);
+        assert_eq!(names.len(), 1, "{switched:?}");
+        assert!(
+            names[0].starts_with("lead: checkpoint seat now runs Opus 5.5, not Fable: "),
+            "{}",
+            names[0]
+        );
+        assert!(carry.asks.is_empty(), "nothing stays booked");
+        // The withdrawn booking never reached the seat, so switching back asks.
+        assert_eq!(asked_agents(&pass(&mut carry, "Fable 5.1")), ["lead"]);
+        let owed = carry.asks[0].clone();
+        let _ = carry.record_ask_delivery(&owed, QuotaDelivery::Delivered, meta);
+        assert!(pass(&mut carry, "Fable 5.1").is_empty(), "asked once");
+        assert!(
+            pass(&mut carry, "Opus 5.5").is_empty(),
+            "a delivered ask has nothing to withdraw"
+        );
+        assert!(
+            pass(&mut carry, "Fable 5.1").is_empty(),
+            "and a round trip after delivery is still the same episode"
+        );
+    }
+
+    #[test]
+    fn a_recovered_first_sight_asks_only_the_seats_with_no_receipt_in_the_journal() {
+        // (f) A restart, and a window back from silence, inside one episode.
+        let roster = [
+            claude_seat("main", "lead", CONVERSATION_A),
+            claude_seat("worker.0", "colead", CONVERSATION_B),
+        ];
+        let candidates = candidates_running(&roster, &[None, None]);
+        let window = fable_window(&roster[0], "100", 9_900, None);
+        let meta = Path::new("/m");
+        let mut first = QuotaCarry::default();
+        let booked = first.reconcile_with_candidates(&window, &[], &candidates, meta);
+        let receipt = receipt_of(checkpoint_asks(&booked)[0]);
+        let journal = [receipt.as_str()];
+
+        let silent = quota_observation(Vec::new(), 10_000);
+        let mut restarted = QuotaCarry::default();
+        let pass = |carry: &mut QuotaCarry, observation, journal: &[&str]| {
+            asked_agents(&carry.reconcile_pass(observation, &[], &candidates, journal, meta))
+        };
+        assert_eq!(pass(&mut restarted, &window, &journal), ["colead"]);
+        let _ = pass(&mut restarted, &silent, &journal);
+        assert!(restarted.settled.is_empty(), "silence forgets its marks");
+        assert_eq!(pass(&mut restarted, &window, &journal), ["colead"]);
+        restarted.clear_held();
+        assert!(restarted.settled.is_empty(), "so does an unaware cycle");
+        // No receipt, nothing to recover from: everyone is asked.
+        assert_eq!(pass(&mut restarted, &window, &[]), ["lead", "colead"]);
+    }
+
+    #[test]
+    fn a_real_entry_asks_again_whatever_the_journal_holds() {
+        let roster = [claude_seat("main", "lead", CONVERSATION_A)];
+        let candidates = candidates_running(&roster, &[Some("Fable 5.1")]);
+        let meta = Path::new("/m");
+        let mut carry = QuotaCarry::default();
+        let mut journal: Vec<String> = Vec::new();
+        let mut pass = |carry: &mut QuotaCarry, used: &str, at: i64, resets: Option<u8>| {
+            let receipts: Vec<&str> = journal.iter().map(String::as_str).collect();
+            let actions = carry.reconcile_pass(
+                &fable_window(&roster[0], used, at, resets),
+                &[],
+                &candidates,
+                &receipts,
+                meta,
+            );
+            let asked = asked_agents(&actions);
+            for ask in checkpoint_asks(&actions) {
+                journal.push(receipt_of(ask));
+                let _ = carry.record_ask_delivery(ask, QuotaDelivery::Delivered, meta);
+            }
+            asked
+        };
+        assert_eq!(pass(&mut carry, "85", 9_900, None), ["lead"]);
+        assert!(
+            pass(&mut carry, "86", 9_901, None).is_empty(),
+            "one episode"
+        );
+        // (g) Out to headroom and in again, under the SAME reset: a new episode.
+        assert!(pass(&mut carry, "50", 9_902, None).is_empty());
+        assert_eq!(pass(&mut carry, "88", 9_903, None), ["lead"]);
+        // (h) Declaring a reset clears the band; withdrawing it re-enters.
+        assert!(pass(&mut carry, "88", 9_903, Some(1)).is_empty());
+        assert_eq!(pass(&mut carry, "88", 9_903, None), ["lead"]);
+    }
+
+    #[test]
+    fn a_receipt_names_one_window_one_reset_and_one_conversation() {
+        let key = super::QuotaKey {
+            source: PathBuf::from("/tmp/cc/.claude.json"),
+            bucket: "weekly_scoped".to_owned(),
+            qualifier: Some("Fable".to_owned()),
+            window_minutes: Some(10_080),
+        };
+        let seat = |conversation: Option<&str>| QuotaRecipient {
+            harness_session: conversation.map(str::to_owned),
+            ..quota_recipient("main", "lead")
+        };
+        let receipt = ask_receipt(&key, Some(13_600), &seat(Some(CONVERSATION_A)))
+            .expect("a reset and a conversation");
+        assert_eq!(receipt.len(), "quota-ask-".len() + 16, "{receipt}");
+        assert!(receipt.starts_with("quota-ask-"), "{receipt}");
+        let tagged = format!("claude:{CONVERSATION_A}");
+        assert_eq!(
+            ask_receipt(&key, Some(13_600), &seat(Some(&tagged))).as_deref(),
+            Some(receipt.as_str()),
+            "the tagged spelling names the same conversation"
+        );
+        let moved = |edit: fn(&mut super::QuotaKey)| {
+            let mut other = key.clone();
+            edit(&mut other);
+            ask_receipt(&other, Some(13_600), &seat(Some(CONVERSATION_A)))
+        };
+        for other in [
+            ask_receipt(&key, Some(13_601), &seat(Some(CONVERSATION_A))),
+            ask_receipt(&key, Some(13_600), &seat(Some(CONVERSATION_B))),
+            moved(|key| key.source = PathBuf::from("/tmp/cc-mic/.claude.json")),
+            moved(|key| key.bucket = "weekly_all".to_owned()),
+            moved(|key| key.qualifier = None),
+            moved(|key| key.window_minutes = None),
+        ] {
+            assert_ne!(other.as_deref(), Some(receipt.as_str()));
+        }
+        // Length-prefixed: bytes cannot move between two fields unnoticed.
+        let split = |bucket: &str, qualifier: &str| {
+            let mut other = key.clone();
+            other.bucket = bucket.to_owned();
+            other.qualifier = Some(qualifier.to_owned());
+            ask_receipt(&other, Some(13_600), &seat(Some(CONVERSATION_A)))
+        };
+        assert_ne!(split("ab", "c"), split("a", "bc"));
+        for none in [
+            ask_receipt(&key, None, &seat(Some(CONVERSATION_A))),
+            ask_receipt(&key, Some(13_600), &seat(Some("pending"))),
+            ask_receipt(&key, Some(13_600), &seat(None)),
+        ] {
+            assert_eq!(none, None, "no reset or no conversation: no receipt");
+        }
+    }
+
+    /// One journal line, the way `tracked` renders it.
+    fn journal_line(
+        actor: &str,
+        action: &str,
+        target: &str,
+        reference: &str,
+        summary: &str,
+    ) -> String {
+        crate::tracked::event_line(&crate::tracked::EventFields {
+            ts: crate::time::Timestamp::from_epoch(1_789_000_000),
+            actor,
+            action,
+            target,
+            reference,
+            actor_slot: "",
+            actor_session: "",
+            target_slot: "",
+            target_session: "",
+            target_server: "",
+            target_pane: "",
+            target_session_uuid: "",
+            caller_server: "",
+            caller_pane: "",
+            caller_session_uuid: "",
+            identity_gap: "",
+            summary,
+            body_file: "",
+        })
+    }
+
+    fn parsed(line: &str) -> Event {
+        Event::parse_line(line).expect("a journal line")
+    }
+
+    #[test]
+    fn only_a_delivered_or_unconfirmed_checkpoint_leaves_a_receipt() {
+        let checkpoint = crate::quota::action::CHECKPOINT;
+        let unconfirmed = crate::tracked::unconfirmed_summary("ask");
+        let events = [
+            parsed(&journal_line(
+                "watchdog",
+                checkpoint,
+                "lead",
+                "quota-ask-1",
+                "ask",
+            )),
+            parsed(&journal_line(
+                "watchdog",
+                checkpoint,
+                "lead",
+                "quota-ask-2",
+                &unconfirmed,
+            )),
+            parsed(&journal_line(
+                "watchdog",
+                crate::tracked::ABANDONED_ACTION,
+                "lead",
+                "quota-ask-3",
+                "refused: busy; ask",
+            )),
+            parsed(&journal_line(
+                "lead",
+                checkpoint,
+                "lead",
+                "quota-ask-4",
+                "forged",
+            )),
+            parsed(&journal_line(
+                "watchdog",
+                "quota-advisory",
+                "lead",
+                "quota-ask-5",
+                "x",
+            )),
+        ];
+        assert_eq!(delivered_receipts(&events), ["quota-ask-1", "quota-ask-2"]);
+        // An identity, never a request id: no request opens on it.
+        assert_eq!(
+            events[0].ref_meaning(),
+            crate::events::RefMeaning::Undefined
+        );
+        assert!(crate::session::open_requests(&events, "demo").is_empty());
+    }
+
+    #[test]
+    fn an_abandoned_checkpoint_ask_is_no_done_challenge_attempt() {
+        // Lead ruling: in no-launch-witness mode a ref-LESS abandonment counts
+        // as a challenge attempt; the ask's receipt takes it out of that fold.
+        let receipt = "quota-ask-0123456789abcdef";
+        let declared = |state: &str| parsed(&journal_line("lead", "state", "", state, "why"));
+        let abandoned = |reference: &str, what: &str| {
+            parsed(&journal_line(
+                "watchdog",
+                crate::tracked::ABANDONED_ACTION,
+                "lead",
+                reference,
+                &format!("refused: composer occupied; {what}"),
+            ))
+        };
+        let now = crate::time::Timestamp::from_epoch(1_789_000_600);
+        let done_attempts =
+            |events: &[Event], launch: Option<&str>| match crate::watchdog::done_progress(
+                events, "demo", "main", "lead", launch, now, 300, 2,
+            ) {
+                DoneProgress::ChallengeDue { attempts, .. } => attempts,
+                other => panic!("{other:?}"),
+            };
+        let ask = abandoned(receipt, "quota claude · Fable");
+        assert_eq!(done_attempts(&[declared("done"), ask.clone()], None), 0);
+        assert_eq!(
+            done_attempts(&[declared("done"), ask.clone()], Some("L1")),
+            0
+        );
+        let challenge = abandoned("", "done confirmation");
+        assert_eq!(done_attempts(&[declared("done"), challenge], None), 1);
+        let this_launch = abandoned("L1", "done confirmation");
+        assert_eq!(
+            done_attempts(&[declared("done"), this_launch], Some("L1")),
+            1
+        );
+        // The wait arm never counted a quota ask, receipt or not.
+        for reference in [receipt, ""] {
+            let waiting = [
+                declared("waiting-agent"),
+                abandoned(reference, "quota claude"),
+            ];
+            assert_eq!(
+                crate::watchdog::wait_progress(
+                    &waiting,
+                    "demo",
+                    "main",
+                    "lead",
+                    None,
+                    now,
+                    300,
+                    2,
+                    crate::watchdog::WaitState::WaitingAgent,
+                ),
+                crate::watchdog::WaitProgress::ChallengeDue {
+                    confirmations: 0,
+                    required: 2,
+                    wait_age_secs: 600,
+                    attempts: 0,
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn a_withdrawn_ask_is_journaled_as_news_to_no_fold() {
+        let scratch = Scratch::new("quota-withdrawn");
+        let helper = SendHelper::for_session(&scratch.0);
+        let server = ServerId::Ambient;
+        let cycle = identity_cycle(&scratch, &helper, &server, "L1");
+        let now = crate::time::Timestamp::from_epoch(1_789_000_600);
+        for state in ["done", "waiting-agent"] {
+            let _ = std::fs::remove_file(scratch.0.join("events.jsonl"));
+            let declared = journal_line("lead", "state", "", state, "why");
+            assert!(
+                crate::store::open(&scratch.0)
+                    .append_event(&declared)
+                    .is_ok()
+            );
+            let before = read_events(&scratch.0);
+            let mut carry = QuotaCarry::default();
+            let withdrawn = vec![QuotaAction::Cancelled(
+                "lead: checkpoint seat now runs Opus 5.5, not Fable: ask".to_owned(),
+            )];
+            assert!(
+                cycle
+                    .apply_quota_actions(&mut carry, withdrawn, 0, &mut Vec::new())
+                    .is_ok()
+            );
+            let after = read_events(&scratch.0);
+            assert_eq!(after.len(), 2, "{after:?}");
+            assert_eq!(after[1].action, crate::quota::action::CHECKPOINT_CANCELLED);
+            assert_eq!(after[1].target, None, "addressed to nobody");
+            let relevant = crate::watchdog::latest_relevant_event(&after, "demo", "main", "lead")
+                .expect("the declaration");
+            assert_eq!(relevant.event.declared_state(), Some(state));
+            assert!(crate::watchdog::declaration_current(&relevant));
+            for events in [&before, &after] {
+                assert!(crate::session::open_requests(events, "demo").is_empty());
+            }
+            let done = |events: &[Event]| {
+                crate::watchdog::done_progress(events, "demo", "main", "lead", None, now, 300, 2)
+            };
+            assert_eq!(done(&after), done(&before));
+            let wait = |events: &[Event]| {
+                crate::watchdog::wait_progress(
+                    events,
+                    "demo",
+                    "main",
+                    "lead",
+                    None,
+                    now,
+                    300,
+                    2,
+                    crate::watchdog::WaitState::WaitingAgent,
+                )
+            };
+            assert_eq!(wait(&after), wait(&before));
+        }
+    }
+
+    #[test]
+    fn the_live_model_is_the_seats_own_launch_bound_hold_and_nothing_else() {
+        let recipient = quota_recipient("main", "lead");
+        let panes = [ask_pane(Some("main"), "lead", "node")];
+        let launch = [("main".to_owned(), "L1".to_owned())];
+        let held = |launch: &str, age: u32, seat: &str| {
+            let mut state = PaneState {
+                identity: Some(crate::watchdog::quiet_hash(seat)),
+                ..PaneState::default()
+            };
+            state.held_identity = Some(super::IdentityHold {
+                launch: launch.to_owned(),
+                age,
+                identity: SeatIdentity {
+                    model: Some("Opus 5.5".to_owned()),
+                    ..SeatIdentity::default()
+                },
+            });
+            vec![(panes[0].pane_id.clone(), state)]
+        };
+        let proven = held("L1", HOLD_MAX_CYCLES - 1, "main\nlead");
+        assert_eq!(
+            live_model(&recipient, &panes, &proven, &launch).as_deref(),
+            Some("Opus 5.5")
+        );
+        for unproven in [
+            held("L0", 0, "main\nlead"),
+            held("L1", HOLD_MAX_CYCLES, "main\nlead"),
+            held("L1", 0, "main\nsomeone-else"),
+        ] {
+            assert_eq!(live_model(&recipient, &panes, &unproven, &launch), None);
+        }
+        assert_eq!(
+            live_model(&recipient, &panes, &proven, &[]),
+            None,
+            "no launch id"
+        );
+    }
+
     #[test]
     fn throttle_quota_respects_cached_row_reset_boundary() {
         let rollout = "018f1f70-7b2c-7000-8000-000000000001";
@@ -7323,7 +8103,7 @@ mod tests {
             .iter()
             .filter_map(|action| match action {
                 QuotaAction::Dropped { summary, .. } => Some(summary),
-                QuotaAction::Ask(_) | QuotaAction::Deliver(_) => None,
+                _ => None,
             })
             .collect();
         assert_eq!(

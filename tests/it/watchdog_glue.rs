@@ -410,7 +410,7 @@ fn send_helper_refusing_the_first_ask(meta_dir: &Path) {
         fs::write(
             &send,
             "#!/bin/sh\ndir=\"$(dirname \"$0\")\"\n\
-             printf '%s %s %s %s\\n' \"${AE_SENDER_OVERRIDE:-none}\" \"${_AE_EVENT_ACTION:-none}\" \"$1\" \"$2\" >> \"$dir/delivered\"\n\
+             printf '%s %s %s %s ref=%s\\n' \"${AE_SENDER_OVERRIDE:-none}\" \"${_AE_EVENT_ACTION:-none}\" \"$1\" \"$2\" \"${_AE_EVENT_REF:-none}\" >> \"$dir/delivered\"\n\
              if [ \"${_AE_EVENT_ACTION:-none}\" = \"quota-checkpoint\" ] && [ ! -f \"$dir/ask-refused\" ]; then\n\
              \t: > \"$dir/ask-refused\"\n\
              \techo 'ae-send: retryable-before-submit'\n\
@@ -480,7 +480,8 @@ fn a_seat_entering_the_quota_low_band_is_asked_to_checkpoint_exactly_once() {
         fs::write(
             meta_dir.join("meta"),
             format!(
-                "{meta}quota_every_secs=1\nquota=on\nconfig_home.main={}\n",
+                "{meta}quota_every_secs=1\nquota=on\nconfig_home.main={}\n\
+                 harness_session.main=11111111-1111-4111-8111-111111111111\n",
                 canonical_home.display()
             )
         )
@@ -567,6 +568,15 @@ fn a_seat_entering_the_quota_low_band_is_asked_to_checkpoint_exactly_once() {
     assert!(
         asks[1].contains("memo add --topic"),
         "and names the exact command that answers it: {}",
+        asks[1]
+    );
+    // The delivery carries its receipt, which the real helper journals on the
+    // quota-checkpoint event it writes for a delivered or unconfirmed paste.
+    let receipt_ref = asks[1].rsplit_once(" ref=").map(|(_, reference)| reference);
+    assert!(
+        receipt_ref.is_some_and(|reference| reference.len() == 26
+            && reference.starts_with("quota-ask-")),
+        "the ask carries its receipt: {}",
         asks[1]
     );
     // The ADVISORY recipients did not widen: the lead pair still owns that
