@@ -1391,7 +1391,9 @@ not a guessed runtime path.
 
 **Autostart.** A launch may start the configured Telegram bridge. The
 orchestrator is started explicitly with `ae orchestrator`; it is never a
-background companion. `AE_NO_AUTOSTART=1` suppresses the Telegram bridge.
+background companion. `AE_NO_AUTOSTART=1` starts no companion for that launch:
+neither the watchdog nor the Telegram bridge. It is never persisted, so a later
+launch without it starts what the settings ask for.
 
 To talk to the orchestrator from your phone, run the [Telegram bridge](telegram.md):
 plain messages route to the running orchestrator automatically (no `/use` setup), and
