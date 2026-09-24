@@ -35,3 +35,11 @@ One line per seat (`<word> <slot> (<elapsed>)`, plus the composer remedy when
 a paste may sit staged), then the `compact by hand:` line when any seat was
 skipped for unmodelled input. Every record-derived field is projected; the
 pasted bodies are verbatim after the R15 strip, never projected.
+
+## Readiness frame
+
+`harness_state::classify` reads a Claude frame as `Idle` when the row nearest
+above its empty box is exactly `⎿  Compacted (ctrl+o to see full summary)`.
+That says the frame looks ready, never that compaction happened: a mid-turn
+auto-compaction may draw the same row (unmeasured), and a manual-mode footer
+(`⏸`) still reads `Unknown`. The watchdog and `ae reseat` read it the same way.

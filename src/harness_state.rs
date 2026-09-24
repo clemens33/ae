@@ -377,6 +377,7 @@ fn classify_claude(capture: &str) -> HarnessState {
     match current {
         Some(line) if claude_spinner(line) => HarnessState::Busy,
         Some(line) if claude_done(line) => HarnessState::Idle,
+        Some(line) if claude_compacted(line) => HarnessState::Idle,
         None => HarnessState::Idle,
         _ => HarnessState::Unknown,
     }
@@ -405,6 +406,12 @@ fn claude_spinner(line: &str) -> bool {
 
 fn claude_done(line: &str) -> bool {
     line.starts_with("✻ ") && line.contains(" · done ")
+}
+
+/// The row Claude Code draws above the box after `/compact`, matched exactly: it
+/// reads the frame as ready, never as proof that compaction happened.
+fn claude_compacted(line: &str) -> bool {
+    line == "⎿  Compacted (ctrl+o to see full summary)"
 }
 
 fn claude_chrome(line: &str) -> bool {
@@ -745,9 +752,9 @@ fn valid_effort(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        HarnessIdentity, HarnessState, IdleCarry, classify, clean_lines, current_identity,
-        decode_idle, encode_idle, has_human_draft, is_effort_word, observed_from_option,
-        observed_identity,
+        HarnessIdentity, HarnessState, IdleCarry, classify, claude_input_frame, clean_lines,
+        current_identity, decode_idle, encode_idle, has_human_draft, is_effort_word,
+        observed_from_option, observed_identity,
     };
     use crate::tool::ToolKind;
 
@@ -805,6 +812,105 @@ mod tests {
         let capture =
             include_str!("../tests/fixtures/harness-state/claude-resumed-idle-149x37.txt");
         assert_eq!(classify(capture, ToolKind::Claude), HarnessState::Idle);
+    }
+
+    const COMPACTED: &str =
+        include_str!("../tests/fixtures/harness-state/claude-compacted-2.1.280.txt");
+    const ROW: &str = "⎿  Compacted (ctrl+o to see full summary)";
+
+    /// `frame` with its one exact `needle` replaced once.
+    fn swap_once(frame: &str, needle: &str, with: &str) -> String {
+        assert_eq!(frame.matches(needle).count(), 1, "one needle: {needle}");
+        frame.replacen(needle, with, 1)
+    }
+
+    /// SYNTHETIC: the frame's one manual `⏸` footer row, which
+    /// `claude_input_frame` rejects, swapped once for this module's bypass footer.
+    fn bypass(frame: &str) -> String {
+        let manual: Vec<&str> = frame
+            .lines()
+            .filter(|row| row.trim_start().starts_with('⏸'))
+            .collect();
+        assert_eq!(manual.len(), 1, "exactly one manual footer row");
+        swap_once(frame, manual[0], "  ⏵⏵ bypass permissions on")
+    }
+
+    /// The premise: a valid input frame around the bare prompt.
+    fn gate(frame: &str) -> bool {
+        let lines = clean_lines(frame);
+        let prompt = lines.iter().rposition(|line| *line == "❯");
+        prompt.is_some_and(|at| claude_input_frame(&lines, at))
+    }
+
+    #[test]
+    fn a_compacted_frame_with_a_passing_footer_is_idle() {
+        let capture = bypass(COMPACTED);
+        assert!(gate(&capture), "premise: a valid input frame");
+        assert_eq!(classify(&capture, ToolKind::Claude), HarnessState::Idle);
+    }
+
+    #[test]
+    fn only_an_exact_nearest_compacted_row_is_idle() {
+        let capture = bypass(COMPACTED);
+        for (nearest, want) in [
+            (format!("{ROW}\n✶ Thinking… (2s)"), HarnessState::Busy),
+            (format!("{ROW}\nan unfamiliar row"), HarnessState::Unknown),
+            (ROW.replace("full", "the"), HarnessState::Unknown),
+            (format!("Note: {ROW}"), HarnessState::Unknown),
+            (format!("{ROW} again"), HarnessState::Unknown),
+        ] {
+            let frame = swap_once(&capture, ROW, &nearest);
+            assert!(gate(&frame), "premise: {nearest}");
+            assert_eq!(classify(&frame, ToolKind::Claude), want, "{nearest}");
+        }
+    }
+
+    #[test]
+    fn a_compacting_frame_is_not_idle() {
+        let capture = bypass(include_str!(
+            "../tests/fixtures/harness-state/claude-compacting-2.1.280.txt"
+        ));
+        assert!(gate(&capture), "premise: a valid input frame");
+        assert_eq!(classify(&capture, ToolKind::Claude), HarnessState::Unknown);
+    }
+
+    #[test]
+    fn a_dispatch_left_in_or_queued_above_the_box_is_not_idle() {
+        for landed in [
+            include_str!("../tests/fixtures/claude-composer/claude-compact-staged-2.1.280.txt"),
+            include_str!("../tests/fixtures/claude-composer/claude-compact-queued-2.1.280.txt"),
+        ] {
+            let frame = bypass(landed);
+            let row = frame
+                .lines()
+                .rfind(|line| line.starts_with('❯'))
+                .expect("a box row");
+            assert!(gate(&swap_once(&frame, row, "❯")), "premise: {row}");
+            assert_eq!(classify(&frame, ToolKind::Claude), HarnessState::Unknown);
+            assert!(has_human_draft(&frame, ToolKind::Claude), "{row}");
+        }
+    }
+
+    #[test]
+    fn a_compacted_frame_in_manual_mode_stays_unknown() {
+        let lines = clean_lines(COMPACTED);
+        let prompt = lines.iter().rposition(|line| *line == "❯");
+        let nearest = &lines[prompt.expect("a bare prompt") - 2];
+        assert!(super::claude_compacted(nearest), "premise: {nearest}");
+        assert!(!gate(COMPACTED), "the manual footer fails the frame");
+        assert_eq!(classify(COMPACTED, ToolKind::Claude), HarnessState::Unknown);
+    }
+
+    #[test]
+    fn the_compacted_row_changes_neither_identity_nor_draft() {
+        let compacted = bypass(COMPACTED);
+        let done = swap_once(&compacted, ROW, "✻ Worked for 2s · done 9:10 PM");
+        let identity = current_identity(&compacted, ToolKind::Claude);
+        assert_eq!(identity.effort.as_deref(), Some("xhigh"), "premise: read");
+        assert_eq!(identity, current_identity(&done, ToolKind::Claude));
+        let draft = has_human_draft(&compacted, ToolKind::Claude);
+        assert!(!draft, "premise: an empty box");
+        assert_eq!(draft, has_human_draft(&done, ToolKind::Claude));
     }
 
     #[test]
