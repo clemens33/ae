@@ -175,7 +175,8 @@ fn reported(question: crate::tool::Question, row: &str) -> String {
 }
 
 /// Whether a `title` row sits ABOVE the question at `question`, directly under
-/// a rule of `─` at least as wide as every row from it to the window's end —
+/// a rule of `─` at least as wide as every row from it to the window's end,
+/// the title row included, so a blank row is never that rule —
 /// the modal's own frame, which a transcript quoting its prose does not draw.
 /// The rows ABOVE the rule do not count: a watchdog capture joins a wrapped
 /// launch line into one row wider than the pane.
@@ -184,7 +185,6 @@ fn titled(window: &[&str], question: usize, title: &str) -> bool {
         let rule = window[at - 1];
         let width = rule.chars().count();
         window[at].trim_start().starts_with(title)
-            && width > 0
             && rule.chars().all(|ch| ch == '─')
             && window[at..].iter().all(|row| row.chars().count() <= width)
     })
