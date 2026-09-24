@@ -3512,38 +3512,59 @@ tail line
     /// #172 invariant 2: the ended-wait note rides INSIDE the nudge body —
     /// between the nudge sentence and the declaration invitation — so the live
     /// footprint filter strips a noted nudge exactly when it strips the plain
-    /// one, goal or no goal. The note's own words come from the renderer, so
-    /// the pin is on the bytes ae really delivers.
+    /// one, goal or no goal. Both `note_slot` callers are covered: `nudge_text`
+    /// is the generator the filter recognizes, and `idle_nudge_text` is one it
+    /// recognizes only THROUGH A GOAL — its bare sentence has never been a
+    /// footprint (pre-existing, out of scope) — so the note must not move
+    /// EITHER verdict. The note's own words come from the renderer, so the pin
+    /// is on the bytes ae really delivers.
     #[test]
     fn a_noted_nudge_is_a_footprint_exactly_when_the_plain_one_is() {
-        use crate::watchdog_daemon::{WaitEnded, nudge_text, nudge_words};
+        use crate::watchdog_daemon::{WaitEnded, idle_nudge_text, nudge_text, nudge_words};
         let meta = std::path::Path::new("/Users/ckriech/.ae/sessions/aerewrite");
         let ended = WaitEnded {
             kind: QuietKind::WaitingUser,
             input_age_secs: 300,
         };
         for goal in [None, Some("ship P4.1")] {
-            let plain = nudge_text(goal, meta, None);
-            let (noted, _) = nudge_words(goal, meta, None, "idle 449m", None, Some(ended));
-            assert_ne!(plain, noted, "{goal:?}: the note is really there");
-            assert!(
-                raw_nudge(&plain),
-                "{goal:?}: the plain nudge is a footprint"
-            );
-            assert!(
-                raw_nudge(&noted),
-                "{goal:?}: a noted nudge is a footprint exactly when the plain one is"
-            );
-            assert_eq!(
-                quiet_filter(&format!("live output\n{noted}\n")),
-                quiet_filter(&format!("live output\n{plain}\n")),
-                "{goal:?}: the capture filter strips both or neither"
-            );
-            assert_eq!(
-                quiet_filter(&format!("live output\n{noted}\n")),
-                "live output\n",
-                "{goal:?}: the noted nudge is stripped"
-            );
+            for (label, plain, noted, footprint) in [
+                (
+                    "status",
+                    nudge_text(goal, meta, None),
+                    nudge_words(goal, meta, None, "idle 449m", None, Some(ended)).0,
+                    true,
+                ),
+                (
+                    "idle",
+                    idle_nudge_text(goal, meta, None),
+                    nudge_words(goal, meta, Some(300), "idle 5m", None, Some(ended)).0,
+                    goal.is_some(),
+                ),
+            ] {
+                assert_ne!(plain, noted, "{label}/{goal:?}: the note is really there");
+                let stripped =
+                    |text: &str| quiet_filter(&format!("live output\n{text}\n")) == "live output\n";
+                assert_eq!(
+                    raw_nudge(&plain),
+                    footprint,
+                    "{label}/{goal:?}: the plain verdict"
+                );
+                assert_eq!(
+                    raw_nudge(&noted),
+                    raw_nudge(&plain),
+                    "{label}/{goal:?}: the note changes no verdict"
+                );
+                assert_eq!(
+                    stripped(&plain),
+                    footprint,
+                    "{label}/{goal:?}: the capture filter agrees on the plain nudge"
+                );
+                assert_eq!(
+                    stripped(&noted),
+                    stripped(&plain),
+                    "{label}/{goal:?}: the note changes no verdict in the capture filter"
+                );
+            }
         }
     }
 
