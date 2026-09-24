@@ -447,6 +447,36 @@ stateDiagram-v2
 
 There is no repeat-alert. Once an agent has been alerted for a streak, it stays in `Alerted` silently until the pattern clears. This is deliberate — paging once per streak is informative; paging every minute would be spam.
 
+## Human-only prompts
+
+A modal only the human may answer is NAMED and never answered: no key reaches it, and ae writes
+no tool's trust list or config. `watchdog::human_prompt_class` is the one detector, pure over a
+frame and the seat's binary name; the shape comes from that tool's adapter row
+(`tool::PromptSpec`), so a tool with no row, or a renamed binary, reads as no prompt.
+
+| Tool | Question row | Anchor | Selected | Key hint | Window |
+|---|---|---|---|---|---|
+| `agy` | ends in `?` | none | `>` | `enter Confirm` or `↑/↓ Navigate` | 15 rows |
+| `claude` | starts `Quick safety check:` | `Accessing workspace:` under a `─` rule no row below is wider than | `❯` | `to confirm · ` | 20 rows |
+
+The claude row is claude 2.1.281's folder-trust modal, measured at 80×24 and 200×50, bare and
+under `--permission-mode bypassPermissions` (byte-identical); provenance in
+`tests/fixtures/claude-trust/`. A window where the tool's own composer is drawn
+(`deliver::region::composer_drawn`) is never a prompt, and readiness reads the modal as occupied.
+
+A launch turn waits on it too (`session_launch::deliver_launch_turn`). `reseat` and `relaunch`
+fail FAST: the same question on two consecutive reads ends the turn `Blocked`, exit 1, naming the
+prompt, the pane and the hand-send of the kept seed. A session launch keeps its full 45 s wait,
+because a human there can answer and the turn still lands; it names the prompt only if it is still
+up at the end. Readiness wins whenever the prompt clears.
+
+Named residuals: claude's accessible `Enter y/n:` branch, a project-settings warning block and
+panes narrower than about 65 columns are unmeasured and can push the modal out of the window, so
+they degrade to the generic "never landed" text; a fresh home's bypass-acceptance screen is
+unmeasured; the trust key's meaning is unmeasured by rule (Yes is never pressed), so a reseat does
+not refuse on a guess before it stops a tool — measured only: "No, exit" writes no project entry;
+a human who answers after the fail-fast sends the seed by hand.
+
 ## What the watchdog cannot do
 
 - **Restart a dead agent.** Marks it dead and stops checking.
