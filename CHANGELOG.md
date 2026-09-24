@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.168] - 2026-09-24
+- Keep a cleanup race from failing an all-green test lane
+- Name the harness shadow from the adapter table, not a second list
+- Hold the launch stamp open only as the node its lstat saw
+- Read the row a frame verdict was judged by, and fold compact readiness from it
+- Pin every alert_meaning arm with a table-driven test
+- Start no watchdog when AE_NO_AUTOSTART suppresses companion autostart
+- Document that AE_NO_AUTOSTART starts no companion for that launch
+- Record the brief give-up before the rename
+- Report a say line as queued and name a bridge proven stopped
+
 ## [v2026.9.167] - 2026-09-24
 - Read the measured Opus 5.5 (1M context) label from a claude seat
 - Strip every delivered nudge shape as its own footprint
