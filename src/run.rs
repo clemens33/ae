@@ -54,6 +54,8 @@ pub struct Plan {
     config_home_notice: Option<String>,
     /// What a resumed seat says about a recorded manual model.
     model_notice: Option<String>,
+    /// What a fresh-start resume says about the conversation it refuses.
+    resume_notice: Option<String>,
     /// The conversation a resume FALLBACK abandoned; recorded before the exec,
     /// never part of `render()`.
     abandoned_session: Option<String>,
@@ -323,6 +325,10 @@ pub fn run(
         writeln!(err, "{notice}")?;
         err.flush()?;
     }
+    if let Some(notice) = &plan.resume_notice {
+        writeln!(err, "{notice}")?;
+        err.flush()?;
+    }
     // BEFORE the exec, because after it there is no "after" — and REFUSING when
     // it cannot be written.
     let marker = started_marker(dir, slot);
@@ -473,8 +479,8 @@ fn build_with_snapshot(
                 identity.current.shown()
             )
         });
-    let (composed, abandoned_session) = compose(dir, slot, &seat, &ctx, mode, &identity.effective)?;
-    let words = crate::words::split_words(&composed, &env_lookup)?;
+    let composed = compose(dir, slot, &seat, &ctx, mode, &identity.effective)?;
+    let words = crate::words::split_words(&composed.cmd, &env_lookup)?;
     let (mut prefix, mut argv) = peel_env(words)?;
     if let Some((mut inner, binary_at)) = nested_env_prefix(&argv) {
         reconcile_config_home(&mut inner, seat.tool, &current, &identity);
@@ -493,7 +499,8 @@ fn build_with_snapshot(
         config_home_base_row: identity.new_base_row,
         config_home_notice,
         model_notice,
-        abandoned_session,
+        resume_notice: composed.notice,
+        abandoned_session: composed.abandoned,
     })
 }
 
@@ -807,6 +814,14 @@ fn prove_implicit_store(
     ))
 }
 
+/// What a compose decided: the command line, the conversation a resume
+/// FALLBACK starts away from, and what the operator is told about it.
+struct Composed {
+    cmd: String,
+    abandoned: Option<String>,
+    notice: Option<String>,
+}
+
 /// The composed shell command line, in builder order — and the conversation a
 /// resume FALLBACK abandons: a recorded, probeable id it starts away from.
 fn compose(
@@ -816,11 +831,15 @@ fn compose(
     ctx: &str,
     mode: Mode,
     config_home: &crate::launch_cmd::Resolved,
-) -> Result<(String, Option<String>), String> {
+) -> Result<Composed, String> {
     if mode == Mode::Resume {
         let (resume_form, fallback_form) =
             resume_forms(seat.command.as_str(), seat.tool, &seat.harness_session);
         // DECIDE, THEN INJECT.
+        let exact_only = matches!(
+            seat.tool.adapter().resume.form,
+            ResumeForm::ExactOnly { .. }
+        );
         let exact = resumable(seat.tool, &seat.harness_session, config_home);
         let form = if exact { resume_form } else { fallback_form };
         let cmd = if resume_keeps_context(seat.tool, exact) {
@@ -830,9 +849,20 @@ fn compose(
         };
         let abandoned = (!exact && launch::id_probeable(&seat.harness_session))
             .then(|| seat.harness_session.clone());
+        let notice = (!exact && exact_only).then(|| {
+            format!(
+                "ae: seat {slot}: no proven {} conversation — fresh start instead of \
+                 --continue (an unproven resume could join another seat's conversation)",
+                seat.tool.as_str()
+            )
+        });
         // A resume carries no inline first message: codex's is delivered once
         // its UI returns, and no other tool has one.
-        return Ok((launch::build_launch_command(&cmd, ""), abandoned));
+        return Ok(Composed {
+            cmd: launch::build_launch_command(&cmd, ""),
+            abandoned,
+            notice,
+        });
     }
     let pre = launch::inject_session_id(seat.command.as_str(), &seat.harness_session);
     let prompt = read_prompt(dir, slot);
@@ -873,10 +903,11 @@ fn compose(
     } else {
         prompt.unwrap_or_else(|| launch::initial_prompt_for(seat.tool, dir, slot))
     };
-    Ok((
-        launch::build_launch_command(&injected.cmd, &prompt_text),
-        None,
-    ))
+    Ok(Composed {
+        cmd: launch::build_launch_command(&injected.cmd, &prompt_text),
+        abandoned: None,
+        notice: None,
+    })
 }
 
 /// Whether an EXACT resume may keep the inline context turn.
@@ -1082,6 +1113,7 @@ pub fn resume_forms(cmd: &str, tool: ToolKind, session_id: &str) -> (String, Str
             let clean = launch::strip_session_grammar(cmd, grammar);
             (format!("{clean} {command} {session_id}"), clean)
         }
+        ResumeForm::ExactOnly { exact } => (format!("{cmd} {exact} {session_id}"), cmd.to_owned()),
         ResumeForm::None => (cmd.to_owned(), cmd.to_owned()),
     }
 }
@@ -2084,6 +2116,7 @@ mod tests {
             config_home_base_row: None,
             config_home_notice: None,
             model_notice: None,
+            resume_notice: None,
             abandoned_session: None,
         };
         let line = plan.render();
@@ -2231,6 +2264,7 @@ mod tests {
             config_home_base_row: None,
             config_home_notice: None,
             model_notice: None,
+            resume_notice: None,
             abandoned_session: None,
         };
         assert!(

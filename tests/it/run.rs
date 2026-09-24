@@ -824,8 +824,9 @@ fn a_nul_in_the_recorded_first_message_refuses_loud_before_any_marker() {
 #[test]
 fn a_recorded_id_is_the_resume_target_for_every_tool() {
     // The resume form each tool's capability row promises, and the fallback it
-    // offers when there is no id to resume BY. codex's fallback is its plain
-    // command — there is no word to look for, so its absence is the assertion.
+    // offers when there is no id to resume BY. codex's and opencode's fallback
+    // is the plain command — there is no word to look for, so its absence is
+    // the assertion.
     for (tool, exact, fallback) in [
         ("claude", &["--resume", "u-9"][..], &["--continue"][..]),
         ("codex", &["resume", "u-9"][..], &[][..]),
@@ -837,7 +838,7 @@ fn a_recorded_id_is_the_resume_target_for_every_tool() {
         ("agy", &["--conversation", "u-9"][..], &["--continue"][..]),
         ("grok", &["--resume", "u-9"][..], &["--continue"][..]),
         ("muse", &["resume", "u-9"][..], &[][..]),
-        ("opencode", &["--session", "u-9"][..], &["--continue"][..]),
+        ("opencode", &["--session", "u-9"][..], &[][..]),
     ] {
         // WITH an id: the exact form, for every tool. grok, gemini and opencode
         // have no probe to pass, and that is not a reason to refuse their own
@@ -876,7 +877,67 @@ fn a_recorded_id_is_the_resume_target_for_every_tool() {
                 "codex with no id starts fresh: {argv:?}"
             );
         }
+        if tool == "opencode" {
+            assert!(
+                !argv
+                    .iter()
+                    .any(|word| word == "--session" || word == "--continue"),
+                "opencode with no id starts fresh: {argv:?}"
+            );
+        }
     }
+}
+
+/// #56 R5: a pending opencode seat resumes fresh, never `--continue`: the
+/// newest session of the project is not provably its own.
+#[test]
+fn a_pending_opencode_seat_resumes_fresh_never_continue() {
+    let rig = Rig::new("oc-fresh");
+    rig.seat("opencode", "");
+    rig.started();
+    let argv = rig.planned_argv();
+    assert!(
+        !argv.iter().any(|word| word == "--continue"),
+        "a pending opencode seat must never --continue: {argv:?}"
+    );
+    assert!(
+        !argv.iter().any(|word| word == "--session"),
+        "a pending opencode seat names no session: {argv:?}"
+    );
+    assert_eq!(argv[0], rig.tool("opencode"), "{argv:?}");
+}
+
+/// #56 R5 (notice): the fresh resume names the unproven conversation on
+/// stderr, before the exec.
+#[test]
+fn a_fresh_opencode_resume_names_the_unproven_conversation() {
+    let rig = Rig::new("oc-fresh-say");
+    rig.seat("opencode", "");
+    rig.started();
+    let (argv, stderr) = rig.exec();
+    assert!(
+        !argv.iter().any(|word| word == "--continue"),
+        "a pending opencode seat must never --continue: {argv:?}"
+    );
+    assert!(
+        stderr.contains("no proven opencode conversation"),
+        "the fresh start is named: {stderr}"
+    );
+}
+
+/// #56 B1: an opencode seat WITH a recorded id resumes exactly and stays
+/// silent — the fresh-start notice fires only on the unproven path.
+#[test]
+fn a_recorded_opencode_resume_prints_no_fresh_start_notice() {
+    let rig = Rig::new("oc-exact-say");
+    rig.seat("opencode", "ses_mine");
+    rig.started();
+    let (argv, stderr) = rig.exec();
+    assert!(argv.contains(&"--session".to_owned()), "{argv:?}");
+    assert!(
+        !stderr.contains("no proven"),
+        "an exact resume stays silent: {stderr}"
+    );
 }
 
 #[test]
@@ -1194,6 +1255,9 @@ fn a_first_run_creates_a_second_resumes_and_the_marker_is_the_difference() {
     // conversation — which is the whole reason the marker exists.
     let (argv, said) = rig.exec();
     assert!(said.contains(ae::run::RESUMING), "{said}");
+    // #56 B1: a non-ExactOnly fallback stays silent — the fresh-start notice
+    // fires on the ExactOnly form alone.
+    assert!(!said.contains("no proven"), "{said}");
     assert!(
         !argv.contains(&"--session-id".to_owned()),
         "a re-run must not collide on a create-once id: {argv:?}"

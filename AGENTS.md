@@ -277,7 +277,7 @@ Name resolution takes the exact name, `%pane-id`, or `session:agent` / `@session
 | **Session id at launch** | `--session-id UUID` | none | none | none | `--session-id UUID` | none | none |
 | **Id capture** | immediate | post-launch: sid file verified by launch-token rollout born at/after the pre-exec capture floor, then token scan. A token miss stays `pending`; cwd/TUI are legacy no-token fallbacks and may never replace an id | post-launch chat-history scan | post-launch: `<id>.db` bytes with a token, else `cli-*.log`. A token miss stays `pending` | immediate | post-launch: launch-token scan of the dated `session.jsonl` store; the token-proven directory basename is the id. A token miss stays `pending` | post-launch `session list --format json` |
 | **Exact resume** | `--resume UUID` | `resume UUID` (subcommand) | `--resume UUID` | `--conversation UUID` | `--resume UUID` | `resume UUID` (subcommand; no positional context turn) | `--session ID` |
-| **Resume fallback** | `--continue` | fresh start | `--resume latest` | `--continue` | `--continue` | fresh start | `--continue` |
+| **Resume fallback** | `--continue` | fresh start | `--resume latest` | `--continue` | `--continue` | fresh start | fresh start |
 | **TUI modelled for delivery** | yes | yes | no | no | no | yes | no |
 | **`_run` re-run** | exact resume when the recorded id passes the tool's store probe (or the tool has no probe); a gone conversation takes the fallback above; the installed pane line names the command link, so the re-run survives `ae upgrade`. The `relaunch` helper is that re-run performed FOR a proven-dead seat, under the lifecycle lock | same | same | same | same | same | same |
 

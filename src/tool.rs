@@ -127,6 +127,10 @@ pub(crate) enum ResumeForm {
         grammar: SessionFlags,
         command: &'static str,
     },
+    /// Append an exact flag/id pair, and use the bare command as fallback: an
+    /// unproven seat starts fresh rather than resuming a conversation ae
+    /// cannot prove is its own.
+    ExactOnly { exact: &'static str },
     /// Preserve the command for both forms.
     None,
 }
@@ -952,10 +956,9 @@ const OPENCODE: ToolAdapter = ToolAdapter {
         initial_turn: InitialTurn::None,
     },
     resume: ResumeSpec {
-        form: ResumeForm::Flags {
-            exact: "--session",
-            fallback: "--continue",
-        },
+        // #56: opencode's list is project-scoped by caller cwd, so `--continue`
+        // is never provably the seat's own — an unproven seat starts fresh.
+        form: ResumeForm::ExactOnly { exact: "--session" },
         probe: StoreProbe::RecordedId,
     },
     carry: CarrySpec::NotPortable,
@@ -1663,10 +1666,7 @@ mod tests {
                         initial_turn: InitialTurn::None,
                     },
                     resume: ResumeSpec {
-                        form: ResumeForm::Flags {
-                            exact: "--session",
-                            fallback: "--continue",
-                        },
+                        form: ResumeForm::ExactOnly { exact: "--session" },
                         probe: StoreProbe::RecordedId,
                     },
                     carry: CarrySpec::NotPortable,

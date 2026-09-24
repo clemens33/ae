@@ -392,7 +392,7 @@ The full helper catalog lives in `workspace.md`, which the prompt points at.
 | Gemini | Post-launch scan of `~/.gemini/tmp/<project>/chats/session-*.json` by launch token. |
 | Grok Build | ae generates the UUID up-front and passes it via `--session-id UUID`. Immediate — same as Claude Code, no post-launch scan. |
 | Muse Code | Post-launch raw-byte launch-token scan of `~/.local/share/muse/sessions/YYYY/MM/DD/<id>/session.jsonl` from its capture floor. The directory basename is the id; ae does not decode the nested JSON records. A token miss stays pending. |
-| OpenCode | Post-launch `opencode session list --format json` filtered by CWD. |
+| OpenCode | Post-launch `opencode session list --format json` attributed to one seat only: recorded ids are invisible and no pending sibling's window may cover the candidate, rechecked under the meta lock at commit. |
 
 Every scan is filtered by `capture_floor.<slot>`, published before the tool starts. A retained
 exact conversation keeps its original floor across resume; a still-pending seat gets a fresh
