@@ -3302,6 +3302,7 @@ mod tests {
     /// does a challenge's words anywhere but the whole last clause.
     #[test]
     fn only_an_abandoned_challenge_ends_a_waiting_user() {
+        use super::challenge_named;
         let abandoned = |reference: &str, summary: &str| {
             let reference = if reference.is_empty() {
                 String::new()
@@ -3314,8 +3315,28 @@ mod tests {
                 &format!(r#"{reference},"summary":"refused: busy pane; {summary}""#),
             )
         };
+        // #172: the nudge that follows a wait ended on input carries this
+        // clause, and it must never read back as a challenge.
+        let ended = crate::watchdog_daemon::WaitEnded {
+            kind: QuietKind::WaitingUser,
+            input_age_secs: 120,
+        };
+        let (_, noted) = crate::watchdog_daemon::nudge_words(
+            None,
+            std::path::Path::new("/m"),
+            None,
+            "idle 5m",
+            None,
+            Some(ended),
+        );
+        assert_eq!(
+            challenge_named(&noted),
+            None,
+            "the ended-wait clause is no challenge: {noted}"
+        );
         for (reference, summary) in [
             ("", "idle 5m, harness waiting at input"),
+            ("", noted.as_str()),
             (
                 "quota-ask-0123456789abcdef",
                 "quota claude · Fable — low at 85%",
@@ -3485,6 +3506,44 @@ tail line
             "Status check: if you have more work, continue.".to_owned(),
         ] {
             assert!(!raw_nudge(&other), "{other:?} is not a raw nudge");
+        }
+    }
+
+    /// #172 invariant 2: the ended-wait note rides INSIDE the nudge body —
+    /// between the nudge sentence and the declaration invitation — so the live
+    /// footprint filter strips a noted nudge exactly when it strips the plain
+    /// one, goal or no goal. The note's own words come from the renderer, so
+    /// the pin is on the bytes ae really delivers.
+    #[test]
+    fn a_noted_nudge_is_a_footprint_exactly_when_the_plain_one_is() {
+        use crate::watchdog_daemon::{WaitEnded, nudge_text, nudge_words};
+        let meta = std::path::Path::new("/Users/ckriech/.ae/sessions/aerewrite");
+        let ended = WaitEnded {
+            kind: QuietKind::WaitingUser,
+            input_age_secs: 300,
+        };
+        for goal in [None, Some("ship P4.1")] {
+            let plain = nudge_text(goal, meta, None);
+            let (noted, _) = nudge_words(goal, meta, None, "idle 449m", None, Some(ended));
+            assert_ne!(plain, noted, "{goal:?}: the note is really there");
+            assert!(
+                raw_nudge(&plain),
+                "{goal:?}: the plain nudge is a footprint"
+            );
+            assert!(
+                raw_nudge(&noted),
+                "{goal:?}: a noted nudge is a footprint exactly when the plain one is"
+            );
+            assert_eq!(
+                quiet_filter(&format!("live output\n{noted}\n")),
+                quiet_filter(&format!("live output\n{plain}\n")),
+                "{goal:?}: the capture filter strips both or neither"
+            );
+            assert_eq!(
+                quiet_filter(&format!("live output\n{noted}\n")),
+                "live output\n",
+                "{goal:?}: the noted nudge is stripped"
+            );
         }
     }
 

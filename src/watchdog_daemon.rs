@@ -253,6 +253,9 @@ pub struct Observation {
     /// The RESOLVED quiet suppression: `Done` always, `WaitingUser`/`Blocked`
     /// only while their baseline holds.
     pub quiet: Option<QuietKind>,
+    /// The wait THIS cycle ended on the human's input in the pane, if any —
+    /// the fact the nudge that follows names, from the SAME resolution.
+    pub ended_wait: Option<WaitEnded>,
     /// The shared journal-derived done episode verdict.
     pub done_progress: DoneProgress,
     /// Wait episode verdict for the seat's CURRENT wait declaration; `None`
@@ -1340,16 +1343,24 @@ pub fn stale_display(event_age_secs: u64) -> String {
     }
 }
 
+/// The ended-wait note's slot in a nudge: one leading space and the note, or
+/// nothing at all — the ONE insertion, between the nudge sentence and the
+/// declaration invitation, so a noted nudge is the plain one plus a clause.
+fn note_slot(note: Option<&str>) -> String {
+    note.map_or_else(String::new, |note| format!(" {note}"))
+}
+
 /// The nudge: the session goal when the meta carries one, then the status
 /// sentence, then the path to this session's own `state` helper.
 ///
 /// The invitation spells the SAME tail `watchdog::raw_nudge` strips from a
 /// pane baseline, so the two can never disagree about what a nudge looks like.
 #[must_use]
-pub fn nudge_text(goal: Option<&str>, meta_dir: &Path) -> String {
+pub fn nudge_text(goal: Option<&str>, meta_dir: &Path, note: Option<&str>) -> String {
     let prefix = goal.map_or_else(String::new, |goal| format!("Session goal: {goal}. "));
+    let note = note_slot(note);
     format!(
-        "{prefix}Continue the assigned work now. Do not re-plan or ask unless blocked. Then \
+        "{prefix}Continue the assigned work now. Do not re-plan or ask unless blocked.{note} Then \
          declare state: {}/state <waiting-user|waiting-agent|blocked|done> \"<reason>\"",
         meta_dir.display()
     )
@@ -1358,11 +1369,12 @@ pub fn nudge_text(goal: Option<&str>, meta_dir: &Path) -> String {
 /// The idle reminder uses the same delivery path but names the positive
 /// observation that started its independent clock.
 #[must_use]
-pub fn idle_nudge_text(goal: Option<&str>, meta_dir: &Path) -> String {
+pub fn idle_nudge_text(goal: Option<&str>, meta_dir: &Path, note: Option<&str>) -> String {
     let prefix = goal.map_or_else(String::new, |goal| format!("Session goal: {goal}. "));
+    let note = note_slot(note);
     format!(
         "{prefix}You look idle. Continue the assigned work now. Do not re-plan or ask unless \
-         blocked. Then declare state: {}/state \
+         blocked.{note} Then declare state: {}/state \
          <waiting-user|waiting-agent|blocked|done> \"<reason>\"",
         meta_dir.display()
     )
@@ -1439,11 +1451,72 @@ pub fn wait_challenge_text(
 /// deferral ceiling, so it is told WHAT ae thinks it is waiting on rather than
 /// being asked a question it already answered.
 #[must_use]
-pub fn idle_nudge_text_waiting(goal: Option<&str>, meta_dir: &Path, reason: &str) -> String {
+pub fn idle_nudge_text_waiting(
+    goal: Option<&str>,
+    meta_dir: &Path,
+    reason: &str,
+    note: Option<&str>,
+) -> String {
     format!(
         "{} ae still shows you {reason} — chase them, or declare state.",
-        idle_nudge_text(goal, meta_dir)
+        idle_nudge_text(goal, meta_dir, note)
     )
+}
+
+/// The ended wait's own clause: `waiting-user ended on input in the pane 2m
+/// ago`. The journal summary carries it verbatim.
+#[must_use]
+fn wait_ended_clause(ended: WaitEnded) -> String {
+    format!(
+        "{} ended on input in the pane {}m ago",
+        ended.state_word(),
+        ended.input_age_secs / 60
+    )
+}
+
+/// The mid-nudge note for a wait this cycle ended on input: WHAT ended, WHEN
+/// the input came, that input is all ae saw (never an answer), and the next
+/// step while the wait still holds.
+#[must_use]
+fn wait_ended_note(ended: WaitEnded) -> String {
+    let state = ended.state_word();
+    format!(
+        "Input in your pane ended your {state} {}m ago (a tmux client viewing it gave a keypress, \
+         click, scroll or switch — not proof of an answer). If you are still waiting, re-declare \
+         {state} with the current reason.",
+        ended.input_age_secs / 60
+    )
+}
+
+/// The text and the journal summary of one nudge: which of the three
+/// generators speaks, and the ended-wait note that rides it. ONE owner, so
+/// what the seat reads and what the journal keeps cannot disagree about why
+/// it was nudged.
+#[must_use]
+pub fn nudge_words(
+    goal: Option<&str>,
+    meta_dir: &Path,
+    idle_age: Option<u64>,
+    display: &str,
+    waiting: Option<&str>,
+    ended: Option<WaitEnded>,
+) -> (String, String) {
+    let note = ended.map(wait_ended_note);
+    let text = match (idle_age.is_some(), waiting) {
+        (true, Some(reason)) => idle_nudge_text_waiting(goal, meta_dir, reason, note.as_deref()),
+        (true, None) => idle_nudge_text(goal, meta_dir, note.as_deref()),
+        (false, _) => nudge_text(goal, meta_dir, note.as_deref()),
+    };
+    let summary = match (idle_age.is_some(), waiting) {
+        (true, Some(reason)) => format!("{display}, {reason}"),
+        (true, None) => format!("{display}, harness waiting at input"),
+        (false, _) => format!("{display}, no recent ae activity"),
+    };
+    let summary = match ended {
+        Some(ended) => format!("{summary}; {}", wait_ended_clause(ended)),
+        None => summary,
+    };
+    (text, summary)
 }
 
 /// Count consecutive unusable process snapshots, and say so once.
@@ -4189,6 +4262,46 @@ struct MissingState {
     alerted: bool,
 }
 
+/// A wait the cycle's quiet resolution ENDED on the human's input in the pane:
+/// the state that ended and the age of that input. [`Cycle::resolve_quiet`] is
+/// the ONE reader of client activity that produces it, and the nudge that
+/// follows names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WaitEnded {
+    /// The wait state the declaration named.
+    pub kind: QuietKind,
+    /// The age, in seconds, of the input that ended it.
+    pub input_age_secs: u64,
+}
+
+impl WaitEnded {
+    /// The state word the note and the summary both name — the SAME word the
+    /// pane border and the `state` helper use.
+    #[must_use]
+    fn state_word(self) -> &'static str {
+        Verdict::Quiet(self.kind).reason()
+    }
+}
+
+/// What one pane's quiet resolution answered for a cycle: the suppression that
+/// HOLDS, and the wait THIS cycle ended on input in the pane. Both come from
+/// ONE reading of client activity, so no consumer derives either itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QuietResolution {
+    /// The declaration that holds, if any.
+    pub quiet: Option<QuietKind>,
+    /// The wait this cycle ended on input, if any.
+    pub ended: Option<WaitEnded>,
+}
+
+impl QuietResolution {
+    /// Nothing resolved: no declaration, or one that is not current.
+    const NONE: Self = Self {
+        quiet: None,
+        ended: None,
+    };
+}
+
 /// What one pane's quiet resolution needs, gathered so the call reads as one
 /// question.
 struct QuietQuery<'a> {
@@ -4201,6 +4314,9 @@ struct QuietQuery<'a> {
     slot: &'a str,
     /// The newest input a client viewing the pane gave, epoch seconds.
     activity: Option<u64>,
+    /// This cycle's wall clock, epoch seconds: what an input's age is
+    /// measured from.
+    now: i64,
 }
 
 /// The newest input any client viewing `pane` gave, or `None` when none did
@@ -4921,8 +5037,10 @@ impl Cycle<'_> {
                 agent,
                 slot: &slot,
                 activity: carried.client_activity.map(|(_, at)| at),
+                now,
             };
-            let quiet = self.resolve_quiet(&query, done_progress);
+            let resolved = self.resolve_quiet(&query, done_progress);
+            let quiet = resolved.quiet;
             let wait_state = match quiet {
                 Some(QuietKind::WaitingAgent) => Some(WaitState::WaitingAgent),
                 Some(QuietKind::Blocked) => Some(WaitState::Blocked),
@@ -4955,6 +5073,7 @@ impl Cycle<'_> {
                 ),
                 throttle_quota,
                 quiet,
+                ended_wait: resolved.ended,
                 done_progress,
                 wait_progress,
                 descendancy,
@@ -5500,20 +5619,31 @@ impl Cycle<'_> {
     }
 
     /// The RESOLVED quiet suppression for one pane: `done` while its episode
-    /// is live, a wait until the human's own input in the pane ends it.
+    /// is live, a wait until the human's own input in the pane ends it. A wait
+    /// that ended THIS cycle is returned with the suppression's absence, so
+    /// the nudge that follows can name it.
     fn resolve_quiet(
         &self,
         query: &QuietQuery<'_>,
         done_progress: DoneProgress,
-    ) -> Option<QuietKind> {
-        let relevant = latest_relevant_event(query.events, self.session, query.slot, query.agent)?;
-        let kind = quiet_reason(&relevant)?;
+    ) -> QuietResolution {
+        let Some(relevant) =
+            latest_relevant_event(query.events, self.session, query.slot, query.agent)
+        else {
+            return QuietResolution::NONE;
+        };
+        let Some(kind) = quiet_reason(&relevant) else {
+            return QuietResolution::NONE;
+        };
         if kind == QuietKind::Done {
-            return (!matches!(
-                done_progress,
-                DoneProgress::None | DoneProgress::Lapsed { .. }
-            ))
-            .then_some(kind);
+            return QuietResolution {
+                quiet: (!matches!(
+                    done_progress,
+                    DoneProgress::None | DoneProgress::Lapsed { .. }
+                ))
+                .then_some(kind),
+                ended: None,
+            };
         }
         let delivered = crate::watchdog::last_watchdog_delivery(
             query.events,
@@ -5521,9 +5651,23 @@ impl Cycle<'_> {
             query.slot,
             query.agent,
         );
-        let ended =
-            crate::watchdog::human_input_ends_wait(query.activity, relevant.event.ts, delivered);
-        (!ended).then_some(kind)
+        if crate::watchdog::human_input_ends_wait(query.activity, relevant.event.ts, delivered) {
+            let input_age_secs = query
+                .activity
+                .and_then(|epoch| i64::try_from(epoch).ok())
+                .map_or(0, |epoch| age_secs(query.now, epoch));
+            return QuietResolution {
+                quiet: None,
+                ended: Some(WaitEnded {
+                    kind,
+                    input_age_secs,
+                }),
+            };
+        }
+        QuietResolution {
+            quiet: Some(kind),
+            ended: None,
+        }
     }
 
     /// Perform one effect.
@@ -5565,18 +5709,14 @@ impl Cycle<'_> {
                     .flatten();
                 let display = stale_display(idle_age.unwrap_or(on.seen.last_actor_event_age_secs));
                 let waiting = on.seen.own_work.reason();
-                let text = match (idle_age.is_some(), waiting.as_deref()) {
-                    (true, Some(reason)) => {
-                        idle_nudge_text_waiting(self.goal.as_deref(), self.meta_dir, reason)
-                    }
-                    (true, None) => idle_nudge_text(self.goal.as_deref(), self.meta_dir),
-                    (false, _) => nudge_text(self.goal.as_deref(), self.meta_dir),
-                };
-                let summary = match (idle_age.is_some(), waiting.as_deref()) {
-                    (true, Some(reason)) => format!("{display}, {reason}"),
-                    (true, None) => format!("{display}, harness waiting at input"),
-                    (false, _) => format!("{display}, no recent ae activity"),
-                };
+                let (text, summary) = nudge_words(
+                    self.goal.as_deref(),
+                    self.meta_dir,
+                    idle_age,
+                    &display,
+                    waiting.as_deref(),
+                    on.seen.ended_wait,
+                );
                 let delivered = self.deliver(agent, &text, "nudge", &summary, None).code == Some(0);
                 for effect in record_nudge(state, delivered, &self.knobs, &display) {
                     self.apply(&effect, on, state, err)?;
@@ -6625,6 +6765,7 @@ mod tests {
             capture_ok: true,
             throttle_quota: None,
             quiet: None,
+            ended_wait: None,
             done_progress: DoneProgress::None,
             wait_progress: WaitProgress::None,
             descendancy: Descendancy::Present,
@@ -11357,7 +11498,7 @@ mod tests {
 
         let reason = observed.own_work.reason().expect("outstanding work");
         assert_eq!(reason, "waiting on 2 requests, 1 spawn");
-        let text = idle_nudge_text_waiting(None, Path::new("/m"), &reason);
+        let text = idle_nudge_text_waiting(None, Path::new("/m"), &reason, None);
         assert!(text.contains(&reason), "the reminder names it: {text}");
         assert!(
             text.contains("You look idle"),
@@ -12069,27 +12210,42 @@ mod tests {
     }
 
     /// P1 through the resolver (T4): a wait ends on input newer than both its
-    /// declaration and the watchdog's last delivery; a `done` never does. A
-    /// challenge refused before its paste painted nothing and raises no bound.
+    /// declaration and the watchdog's last delivery, and the resolution NAMES
+    /// the ended state with the input's own age; a `done` never ends. A
+    /// challenge refused before its paste painted nothing and raises no bound,
+    /// a delivery re-arms the hold, and a later input gives a later age.
     #[test]
     fn the_humans_input_in_the_pane_ends_a_wait_but_never_a_done() {
+        use super::{QuietResolution, WaitEnded};
         let scratch = Scratch::new("p1-resolve");
         let helper = SendHelper::for_session(&scratch.0);
         let server = ServerId::Ambient;
         let cycle = demo_cycle(&scratch.0, &helper, &server);
         let at = 1_789_000_000;
-        let resolve = |events: &[Event], activity: i64| {
+        let resolve = |events: &[Event], activity: i64, now: i64| {
             let query = QuietQuery {
                 events,
                 agent: "lead",
                 slot: "main",
                 activity: u64::try_from(activity).ok(),
+                now,
             };
             let live = DoneProgress::Provisional {
                 confirmations: 0,
                 required: 2,
             };
             cycle.resolve_quiet(&query, live)
+        };
+        let holds = |kind| QuietResolution {
+            quiet: Some(kind),
+            ended: None,
+        };
+        let ended = |kind, input_age_secs| QuietResolution {
+            quiet: None,
+            ended: Some(WaitEnded {
+                kind,
+                input_age_secs,
+            }),
         };
         for (state, kind) in [
             ("waiting-user", QuietKind::WaitingUser),
@@ -12098,15 +12254,37 @@ mod tests {
         ] {
             let declared = format!(r#","ref":"{state}""#);
             let mut events = vec![demo_event(at, "lead", "state", &declared)];
-            assert_eq!(resolve(&events, at), Some(kind), "{state}: input at it");
-            assert_eq!(resolve(&events, at + 1), None, "{state}: input after it");
+            assert_eq!(
+                resolve(&events, at, at),
+                holds(kind),
+                "{state}: input at it"
+            );
+            assert_eq!(
+                resolve(&events, at + 1, at + 61),
+                ended(kind, 60),
+                "{state}: the note names the state and the input's age"
+            );
             events.push(demo_event(at + 60, "watchdog", "nudge", ""));
             assert_eq!(
-                resolve(&events, at + 30),
-                Some(kind),
+                resolve(&events, at + 30, at + 30),
+                holds(kind),
                 "{state}: before the nudge"
             );
-            assert_eq!(resolve(&events, at + 61), None, "{state}: after the nudge");
+            assert_eq!(
+                resolve(&events, at + 61, at + 61),
+                ended(kind, 0),
+                "{state}: after the nudge"
+            );
+            assert_eq!(
+                resolve(&events, at + 1, at + 90),
+                holds(kind),
+                "{state}: the noted nudge re-arms the hold"
+            );
+            assert_eq!(
+                resolve(&events, at + 120, at + 130),
+                ended(kind, 10),
+                "{state}: a later input gives a later age"
+            );
         }
         let refused = format!(
             r#","summary":"[unconfirmed] blocked confirmation 1/2{}dead pane""#,
@@ -12117,8 +12295,8 @@ mod tests {
             demo_event(at + 60, "watchdog", "wait-challenge", &refused),
         ];
         assert_eq!(
-            resolve(&blocked, at + 30),
-            None,
+            resolve(&blocked, at + 30, at + 30),
+            ended(QuietKind::Blocked, 0),
             "a refused challenge painted nothing"
         );
         blocked[1] = demo_event(
@@ -12128,14 +12306,14 @@ mod tests {
             r#","summary":"blocked confirmation 1/2""#,
         );
         assert_eq!(
-            resolve(&blocked, at + 30),
-            Some(QuietKind::Blocked),
+            resolve(&blocked, at + 30, at + 30),
+            holds(QuietKind::Blocked),
             "a pasted one did"
         );
         let done = [demo_event(at, "lead", "state", r#","ref":"done""#)];
         assert_eq!(
-            resolve(&done, at + 9_999),
-            Some(QuietKind::Done),
+            resolve(&done, at + 9_999, at + 9_999),
+            holds(QuietKind::Done),
             "input never ends done"
         );
     }
@@ -12165,11 +12343,12 @@ mod tests {
             agent: "lead",
             slot: "main",
             activity: None,
+            now: at,
         };
         let mut state = PaneState::default();
         for turn in 1..=3 {
             let mut observed = seen();
-            observed.quiet = cycle.resolve_quiet(&query, DoneProgress::None);
+            observed.quiet = cycle.resolve_quiet(&query, DoneProgress::None).quiet;
             observed.hash = 100 + turn;
             observed.now_epoch = at + 600 * i64::try_from(turn).expect("small");
             observed.last_actor_event_age_secs = 10_000;
@@ -12214,6 +12393,7 @@ mod tests {
             agent: "opus5:builder",
             slot: "main",
             activity: None,
+            now: 1_789_000_000,
         };
         for (progress, expected) in [
             (DoneProgress::None, None),
@@ -12250,7 +12430,7 @@ mod tests {
             (DoneProgress::Confirmed, Some(QuietKind::Done)),
         ] {
             assert_eq!(
-                cycle.resolve_quiet(&query, progress),
+                cycle.resolve_quiet(&query, progress).quiet,
                 expected,
                 "{progress:?}"
             );
@@ -12737,16 +12917,163 @@ mod tests {
     fn the_nudge_names_this_sessions_own_state_helper() {
         let meta = Path::new("/home/x/.ae/sessions/demo");
         assert_eq!(
-            nudge_text(None, meta),
+            nudge_text(None, meta, None),
             "Continue the assigned work now. Do not re-plan or ask unless blocked. Then declare state: /home/x/.ae/sessions/demo/state <waiting-user|waiting-agent|blocked|done> \"<reason>\""
         );
         assert_eq!(
-            idle_nudge_text(Some("ship P4.1"), meta),
+            idle_nudge_text(Some("ship P4.1"), meta, None),
             "Session goal: ship P4.1. You look idle. Continue the assigned work now. Do not re-plan or ask unless blocked. Then declare state: /home/x/.ae/sessions/demo/state <waiting-user|waiting-agent|blocked|done> \"<reason>\""
+        );
+        assert_eq!(
+            idle_nudge_text_waiting(None, meta, "waiting on 1 request", None),
+            "You look idle. Continue the assigned work now. Do not re-plan or ask unless blocked. Then declare state: /home/x/.ae/sessions/demo/state <waiting-user|waiting-agent|blocked|done> \"<reason>\" ae still shows you waiting on 1 request — chase them, or declare state."
         );
         assert_eq!(
             done_challenge_text(Some("ship P4.1"), meta, 300, 0, 2),
             "Session goal: ship P4.1. Continue the assigned work now. Do not re-plan or ask unless blocked. Done was declared 5m ago; confirmation 1 of 2. Re-read your brief and goal. State how each deliverable was verified. Anything unverified: declare working and finish assigned work NOW. Worker awaiting owner review: invent no scope; do not commit or edit solely for this challenge. Otherwise re-declare done with completed work and proof, including any held review. This is self-attestation, not owner approval. Then declare state: /home/x/.ae/sessions/demo/state <waiting-user|waiting-agent|blocked|done> \"<reason>\""
+        );
+    }
+
+    /// #172: a nudge that follows a wait THIS cycle ended on input in the pane
+    /// names the ended state, the input's age and the fact that input — never
+    /// an answer — is all ae saw, and it says what to do while the wait still
+    /// holds. All three generators carry the note, in the one slot between the
+    /// nudge sentence and the declaration invitation; the journal summary
+    /// carries the same clause.
+    #[test]
+    fn a_nudge_that_follows_a_wait_ended_on_input_names_it() {
+        use super::{WaitEnded, nudge_words};
+        let meta = Path::new("/home/x/.ae/sessions/demo");
+        for (kind, state) in [
+            (QuietKind::WaitingUser, "waiting-user"),
+            (QuietKind::WaitingAgent, "waiting-agent"),
+            (QuietKind::Blocked, "blocked"),
+        ] {
+            let ended = Some(WaitEnded {
+                kind,
+                input_age_secs: 300,
+            });
+            for (label, (text, summary)) in [
+                (
+                    "plain",
+                    nudge_words(None, meta, None, "idle 449m", None, ended),
+                ),
+                (
+                    "idle",
+                    nudge_words(None, meta, Some(300), "idle 5m", None, ended),
+                ),
+                (
+                    "idle-waiting",
+                    nudge_words(
+                        None,
+                        meta,
+                        Some(300),
+                        "idle 5m",
+                        Some("waiting on 1 request"),
+                        ended,
+                    ),
+                ),
+            ] {
+                assert!(
+                    text.contains(&format!("ended your {state} 5m ago")),
+                    "{state}/{label}: the text names the state and the input's age: {text}"
+                );
+                assert!(
+                    text.contains(&format!("re-declare {state} with the current reason")),
+                    "{state}/{label}: the text names the next step: {text}"
+                );
+                assert!(
+                    text.contains(
+                        "a tmux client viewing it gave a keypress, click, scroll or switch"
+                    ),
+                    "{state}/{label}: the text names the input: {text}"
+                );
+                assert!(
+                    !text.contains("answered") && !text.contains("the human"),
+                    "{state}/{label}: input is never called an answer: {text}"
+                );
+                let note_at = text
+                    .find("Input in your pane ended your")
+                    .expect("the note");
+                let invite_at = text.find("Then declare state:").expect("the invitation");
+                let sentence_at = text
+                    .find("Do not re-plan or ask unless blocked.")
+                    .expect("the nudge sentence");
+                assert!(
+                    sentence_at < note_at && note_at < invite_at,
+                    "{state}/{label}: the note sits between the sentence and the invitation: {text}"
+                );
+                assert!(
+                    summary.contains(&format!("{state} ended on input in the pane 5m ago")),
+                    "{state}/{label}: the summary names the state and the age: {summary}"
+                );
+                assert!(
+                    !summary.contains("confirmation"),
+                    "{state}/{label}: the summary clause is no challenge: {summary}"
+                );
+            }
+        }
+    }
+
+    /// #172 invariant 1: without an ended wait, every generator and every
+    /// summary keeps today's routing and today's bytes, so no other nudge path
+    /// moves. The builders' exact bytes are pinned by
+    /// [`the_nudge_names_this_sessions_own_state_helper`].
+    #[test]
+    fn a_nudge_without_an_ended_wait_keeps_todays_text_and_summary() {
+        use super::nudge_words;
+        let meta = Path::new("/home/x/.ae/sessions/demo");
+        let (text, summary) = nudge_words(None, meta, None, "idle 449m", None, None);
+        assert_eq!(text, nudge_text(None, meta, None));
+        assert_eq!(summary, "idle 449m, no recent ae activity");
+        let (text, summary) = nudge_words(None, meta, Some(300), "idle 5m", None, None);
+        assert_eq!(text, idle_nudge_text(None, meta, None));
+        assert_eq!(summary, "idle 5m, harness waiting at input");
+        let reason = "waiting on 1 request";
+        let (text, summary) = nudge_words(None, meta, Some(300), "idle 5m", Some(reason), None);
+        assert_eq!(text, idle_nudge_text_waiting(None, meta, reason, None));
+        assert_eq!(summary, "idle 5m, waiting on 1 request");
+    }
+
+    /// #172 end to end through the Nudge arm: what the daemon BOOKS carries the
+    /// ended wait, so the wiring from the resolution to the delivery is pinned
+    /// and not only the renderer.
+    #[test]
+    fn the_nudge_after_an_ended_wait_books_the_ended_state_in_its_summary() {
+        use super::WaitEnded;
+        let scratch = Scratch::new("ended-nudge");
+        let helper = journaling_helper(&scratch.0);
+        let server = ServerId::Ambient;
+        let mut observed = seen();
+        observed.harness.frame = crate::harness_state::HarnessState::Idle;
+        observed.now_epoch = 1_789_000_000;
+        observed.ended_wait = Some(WaitEnded {
+            kind: QuietKind::WaitingUser,
+            input_age_secs: 300,
+        });
+        let on = super::Acting {
+            agent: "lead",
+            slot: "main",
+            seen: &observed,
+            events: &[],
+            overview: None,
+        };
+        let mut state = PaneState {
+            identity: Some(observed.identity),
+            idle_since_epoch: Some(observed.now_epoch - 300),
+            ..PaneState::default()
+        };
+        demo_cycle(&scratch.0, &helper, &server)
+            .apply(&Effect::Nudge, &on, &mut state, &mut Vec::new())
+            .expect("the nudge is delivered");
+        let rows = booked(&scratch.0);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].0, "nudge");
+        assert_eq!(
+            rows[0].1.as_deref(),
+            Some(
+                "idle 5m, harness waiting at input; waiting-user ended on input in the pane 5m ago"
+            )
         );
     }
 
@@ -12765,8 +13092,8 @@ mod tests {
     fn a_current_nudge_is_stripped_by_the_live_footprint_filter() {
         let meta = Path::new("/home/x/.ae/sessions/demo");
         for (label, text) in [
-            ("status", nudge_text(None, meta)),
-            ("status-goaled", nudge_text(Some("ship P4.1"), meta)),
+            ("status", nudge_text(None, meta, None)),
+            ("status-goaled", nudge_text(Some("ship P4.1"), meta, None)),
             (
                 "done-challenge",
                 done_challenge_text(Some("ship P4.1"), meta, 300, 0, 2),
