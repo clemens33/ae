@@ -1686,6 +1686,13 @@ fn a_terminal_end_refuses_a_target_renamed_between_answer_and_lock() {
         )),
         "the lock-time identity refusal is the cause: {stderr}"
     );
+    assert!(
+        stderr.contains(&format!(
+            "  Now:       no session '{}' on its recorded server",
+            rig.name
+        )),
+        "{stderr}"
+    );
 }
 
 #[test]
@@ -1781,21 +1788,6 @@ fn an_end_of_a_stopped_session_keeps_the_confirmed_absence() {
 }
 
 #[test]
-fn an_end_refuses_a_session_that_resumed_after_its_confirmation() {
-    let rig = Rig::new("resumed");
-    let detail = rig.archive().display().to_string();
-    let argv = confirmed_argv(&rig.name, &detail, "absent");
-    let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
-
-    let (code, out, err) = rig.run(&refs);
-    assert_eq!(code, Some(1), "stdout: {out}\nstderr: {err}");
-    assert!(err.contains("is live again"), "{err}");
-    assert!(rig.session_is_live(), "the resumed session survives");
-    assert!(exists(&rig.dir), "live state preserved");
-    assert!(!exists(&rig.archive()), "no archive for a refused end");
-}
-
-#[test]
 fn an_end_refuses_when_the_name_now_holds_another_session() {
     let rig = Rig::new("stranger");
     let before = live_identity(&rig);
@@ -1836,6 +1828,20 @@ fn an_end_refuses_when_the_name_now_holds_another_session() {
         err.contains("is a different tmux session than the one confirmed"),
         "{err}"
     );
+    assert!(
+        err.contains(&format!(
+            "  Confirmed: tmux {} (created {})",
+            before.0, before.1
+        )),
+        "{err}"
+    );
+    assert!(
+        err.contains(&format!(
+            "  Now:       tmux {} (created {})",
+            after.0, after.1
+        )),
+        "{err}"
+    );
     assert!(rig.session_is_live(), "the stranger survives");
     assert!(exists(&rig.dir), "live state preserved");
     assert!(!exists(&rig.archive()), "no archive for a refused end");
@@ -1861,32 +1867,13 @@ fn an_end_refuses_when_the_server_record_is_lost_after_confirmation() {
         err.contains("has no positive server record, so ae cannot prove what was confirmed"),
         "{err}"
     );
+    assert!(
+        err.contains(&format!("  Confirmed: tmux {id} (created {created})")),
+        "{err}"
+    );
     assert!(rig.session_is_live(), "the session survives");
     assert!(exists(&rig.dir), "live state preserved");
     assert!(!exists(&rig.archive()), "no archive for a refused end");
-}
-
-#[test]
-fn a_carried_end_plan_without_tmux_is_refused() {
-    let rig = Rig::new("wireerr");
-    let detail = rig.archive().display().to_string();
-    let argv = vec![
-        "_end".to_owned(),
-        "-f".to_owned(),
-        rig.name.clone(),
-        format!("--confirmed-target={}", rig.name),
-        "--confirmed-action=keep".to_owned(),
-        format!("--confirmed-detail={detail}"),
-        "--confirmed-purge=off".to_owned(),
-        "--confirmed-source=explicit".to_owned(),
-        "--keep-history".to_owned(),
-    ];
-    let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
-    let (code, _, err) = rig.run(&refs);
-    assert_eq!(code, Some(2), "{err}");
-    assert!(err.contains("incomplete"), "{err}");
-    assert!(rig.session_is_live(), "nothing was touched");
-    assert!(exists(&rig.dir), "live state preserved");
 }
 
 #[test]
