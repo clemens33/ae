@@ -460,22 +460,28 @@ frame and the seat's binary name; the shape comes from that tool's adapter row
 | `claude` | starts `Quick safety check:` | `Accessing workspace:` under a `─` rule no row below is wider than | `❯` | `to confirm · ` | 20 rows |
 
 The claude row is claude 2.1.281's folder-trust modal, measured at 80×24 and 200×50, bare and
-under `--permission-mode bypassPermissions` (byte-identical); provenance in
-`tests/fixtures/claude-trust/`. A window where the tool's own composer is drawn
-(`deliver::region::composer_drawn`) is never a prompt, and readiness reads the modal as occupied.
+under `--permission-mode bypassPermissions` (the modal rows below the launch line are
+byte-identical); provenance in `tests/fixtures/claude-trust/`. A window where the tool's own
+composer is drawn (`deliver::region::composer_drawn`) is never a prompt, and readiness reads the
+modal as occupied.
 
-A launch turn waits on it too (`session_launch::deliver_launch_turn`). `reseat` and `relaunch`
-fail FAST: the same question on two consecutive reads ends the turn `Blocked`, exit 1, naming the
-prompt, the pane and the hand-send of the kept seed. A session launch keeps its full 45 s wait,
-because a human there can answer and the turn still lands; it names the prompt only if it is still
-up at the end. Readiness wins whenever the prompt clears.
+A turn ae PASTES reads it while it waits (`session_launch::deliver_launch_turn`). `reseat` and
+`relaunch` fail FAST: the same question on two consecutive reads ends the turn `Blocked`, exit 1,
+naming the prompt and the pane; a reseat then prints the hand-send of its kept seed, a relaunch
+says to re-send its turn. A session launch keeps its full 45 s wait, because a human there can
+answer and the turn still lands; it names the prompt only if it is still up at the end. Readiness
+wins whenever the prompt clears. Only a pasted turn reads it: claude takes its context on the argv,
+so a fresh launch, a relaunch and a reseat that carries its conversation paste nothing to a claude
+seat and exit without looking; the watchdog names the modal there, and a spawn brief waits in the
+brief retry, which refuses while the prompt is up.
 
 Named residuals: claude's accessible `Enter y/n:` branch, a project-settings warning block and
 panes narrower than about 65 columns are unmeasured and can push the modal out of the window, so
 they degrade to the generic "never landed" text; a fresh home's bypass-acceptance screen is
 unmeasured; the trust key's meaning is unmeasured by rule (Yes is never pressed), so a reseat does
 not refuse on a guess before it stops a tool — measured only: "No, exit" writes no project entry;
-a human who answers after the fail-fast sends the seed by hand.
+a human who answers after the fail-fast sends the seed by hand; a turnless relaunch and a carried
+reseat exit by their ordinary rules while the seat may sit on the modal, left to the watchdog.
 
 ## What the watchdog cannot do
 
