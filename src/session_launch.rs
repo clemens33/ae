@@ -45,6 +45,9 @@ const LAUNCH_READY_POLLS: u32 = 90;
 /// human-only prompt.
 const READY_CHUNK: u32 = 2;
 
+/// How many chunks the chunked wait takes: the whole launch budget.
+const READY_CHUNKS: u32 = LAUNCH_READY_POLLS / READY_CHUNK;
+
 /// How many polls the tool-process wait takes.
 const START_POLLS: u32 = 10;
 
@@ -4352,7 +4355,7 @@ fn wait_ready(server: &ServerId, pane: &str, tool: ToolKind, on: OnHumanPrompt) 
             Readiness::NotReady
         };
     }
-    let reads = (0..LAUNCH_READY_POLLS / READY_CHUNK).map(|_| {
+    let reads = (0..READY_CHUNKS).map(|_| {
         if polled(chunk_polls(input.model)) {
             return ReadyRead::Ready;
         }
@@ -6872,7 +6875,7 @@ mod tests {
         // `deliver::wait_input_ready` sleeps once per poll for a modelled pane
         // and once per poll after the seed capture for an unmodelled one: both
         // prompt rows' tools must wait the unchunked `LAUNCH_READY_POLLS`.
-        let chunks = super::LAUNCH_READY_POLLS / super::READY_CHUNK;
+        let chunks = super::READY_CHUNKS;
         for tool in [crate::tool::ToolKind::Claude, crate::tool::ToolKind::Agy] {
             let model = tool.adapter().input.model;
             let polls = super::chunk_polls(model);
