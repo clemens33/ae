@@ -1649,6 +1649,8 @@ mod tests {
         "opusbare = \"claude --permission-mode bypassPermissions --model opus --effort xhigh\"";
     const OPUSALT: &str =
         "opusalt = \"claude --permission-mode bypassPermissions --model opus-5 --effort xhigh\"";
+    const OPUS55X: &str = "opus55x = \"claude --permission-mode bypassPermissions --model claude-opus-5-5 --effort xhigh\"";
+    const OPUS55ALT: &str = "opus55alt = \"claude --permission-mode bypassPermissions --model opus-5-5 --effort xhigh\"";
     const MICFABLE: &str =
         "claude-mic = \"cc-mic --permission-mode bypassPermissions --model fable --effort xhigh\"";
     const MICOPUS: &str = "opus5x-mic = \"cc-mic --permission-mode bypassPermissions --model claude-opus-5 --effort xhigh\"";
@@ -1697,6 +1699,47 @@ mod tests {
                 "{observed:?}"
             );
         }
+    }
+
+    #[test]
+    fn an_opus_5_5_label_follows_its_own_version_and_never_opus_5() {
+        // The context suffix normalizes away as it does for Opus 5, so each
+        // label follows the pin of its own version beside the other's row.
+        let rows = [FABLEX, OPUS5X, OPUS55X];
+        for (observed, want) in [
+            ("Opus 5.5 (1M context)", "claude-opus-5-5"),
+            ("Opus 5.5", "claude-opus-5-5"),
+            ("Opus 5 (1M context)", "claude-opus-5"),
+        ] {
+            assert_eq!(
+                follow(&rows, CLAUDE_SEAT, ToolKind::Claude, observed),
+                Ok(want.to_owned()),
+                "{observed:?}"
+            );
+        }
+        // No 5.5 row: the 5 pin is never borrowed.
+        assert_eq!(
+            follow(
+                &[FABLEX, OPUS5X],
+                CLAUDE_SEAT,
+                ToolKind::Claude,
+                "Opus 5.5 (1M context)"
+            ),
+            Err(FollowRefusal::NoCandidate)
+        );
+        // Two 5.5 spellings are refused rather than chosen.
+        assert_eq!(
+            follow(
+                &[FABLEX, OPUS55X, OPUS55ALT],
+                CLAUDE_SEAT,
+                ToolKind::Claude,
+                "Opus 5.5 (1M context)"
+            ),
+            Err(FollowRefusal::Ambiguous(vec![
+                "claude-opus-5-5".to_owned(),
+                "opus-5-5".to_owned()
+            ]))
+        );
     }
 
     #[test]

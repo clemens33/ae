@@ -470,7 +470,7 @@ fn parse_claude_identity(line: &str) -> HarnessIdentity {
         };
     }
     // Past an exact label, only ` (<effort>)` may follow a model. Any other
-    // suffix is a variant nobody measured (`(1M context)`), so it proves NO
+    // suffix is a variant nobody measured (`(2M context)`), so it proves NO
     // model: reading its base would let a follow pin the wrong model.
     let Some((model_text, effort)) = identity.rsplit_once(" (").and_then(|(model, suffix)| {
         let effort = suffix
@@ -495,12 +495,13 @@ fn parse_claude_identity(line: &str) -> HarnessIdentity {
 /// manual choice is never followed. STANDING OBLIGATION, like a toolchain pin —
 /// add the label when a new claude model ships, or it stays silently
 /// unfollowable.
-const CLAUDE_MODELS: [&str; 5] = [
+const CLAUDE_MODELS: [&str; 6] = [
     "Fable 5.1",
     "Opus 4.8",
     "Opus 5 (1M context)",
     "Opus 5",
     "Opus 5.5",
+    "Opus 5.5 (1M context)",
 ];
 
 /// Is this the spelling a display-label harness's own footer draws? Because the
@@ -934,6 +935,20 @@ mod tests {
     }
 
     #[test]
+    fn a_measured_opus_5_5_1m_frame_reads_its_model_and_effort() {
+        assert_eq!(
+            current_identity(
+                include_str!("../tests/fixtures/harness-state/claude-opus55-1m-2.1.280.txt"),
+                ToolKind::Claude
+            ),
+            HarnessIdentity {
+                model: Some("Opus 5.5 (1M context)".to_owned()),
+                effort: Some("max".to_owned())
+            }
+        );
+    }
+
+    #[test]
     fn a_fresh_claude_empty_box_is_idle_but_a_prompt_alone_is_not() {
         let border = "────────────────────────────────────────────────────────────────";
         let fresh = format!(
@@ -1178,8 +1193,11 @@ mod tests {
         for (drawn, model, effort) in [
             ("Fable 5.1 (1M context)", None, None),
             ("Opus 5.5", Some("Opus 5.5"), None),
-            ("Opus 5.5 (1M context)", None, None),
-            ("Opus 5.5 (1M context) (xhigh)", None, Some("xhigh")),
+            ("Opus 5.5 (1M context)", Some("Opus 5.5 (1M context)"), None),
+            ("Opus 5.5 (2M context) (xhigh)", None, Some("xhigh")),
+            ("Opus 5.5 (2M context)", None, None),
+            ("Opus 5.5 (1m context) (max)", None, Some("max")),
+            ("Opus 5.5 (1M context)(max)", None, None),
             ("Opus 5.50 (high)", None, Some("high")),
             ("opus 5.5 (high)", None, Some("high")),
         ] {

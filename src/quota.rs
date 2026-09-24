@@ -3312,6 +3312,7 @@ mod tests {
         for (window, live) in [
             ("Fable", "Opus 5.5"),
             ("Fable", "Opus 5 (1M context)"),
+            ("Fable", "Opus 5.5 (1M context)"),
             ("Opus", "claude-haiku-4-5-20251001"),
             ("Sonnet", "Fable 5.1"),
             ("Haiku", "Sonnet 5"),

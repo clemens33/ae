@@ -267,6 +267,7 @@ mod tests {
             ("fable", "Fable 5.1"),
             ("claude-opus-5", "Opus 5"),
             ("claude-opus-5", "Opus 5 (1M context)"),
+            ("claude-opus-5-5", "Opus 5.5 (1M context)"),
             ("opus", "Opus 5"),
             ("claude-haiku-4-5-20251001", "Haiku 4.5"),
         ] {
@@ -274,6 +275,7 @@ mod tests {
         }
         for (pin, drawn) in [
             ("claude-opus-5", "Opus 5.1"),
+            ("claude-opus-5", "Opus 5.5 (1M context)"),
             ("fable", "Opus 5 (1M context)"),
             ("claude-opus-5", "Sonnet 5"),
             // Families compare exactly, never by prefix, in either direction.
@@ -320,6 +322,14 @@ mod tests {
                 model: "Opus 5 (1M context)".to_owned(),
                 pin: Some("fable".to_owned())
             }
+        );
+        assert_eq!(
+            decide(
+                &frame("Opus 5.5 (1M context)"),
+                Some("claude-opus-5-5"),
+                PinMatch::FamilyVersion
+            ),
+            Decision::Retire
         );
     }
 
