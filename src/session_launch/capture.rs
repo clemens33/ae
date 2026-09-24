@@ -149,24 +149,33 @@ pub fn run(dir: &Path, slot: &str, pane: &str, server: &ServerId) -> u8 {
         CaptureSpec::HandshakeRolloutOrTui => {
             let config_home = codex_config_home(&facts, home.as_deref());
             capture_codex(dir, slot, pane, server, config_home.as_deref(), &facts)
+                .map(|id| Captured::new(&facts, id))
         }
-        CaptureSpec::SessionList => capture_opencode(&facts),
+        CaptureSpec::SessionList => born_captured(&facts, capture_opencode(dir, slot, &facts)),
         CaptureSpec::ChatHistory => home
             .as_deref()
-            .and_then(|home| capture_gemini(home, &facts)),
-        CaptureSpec::ConversationDatabaseOrLog => {
-            home.as_deref().and_then(|home| capture_agy(home, &facts))
-        }
-        CaptureSpec::MuseDatedSessions => {
-            home.as_deref().and_then(|home| capture_muse(home, &facts))
-        }
+            .and_then(|home| capture_gemini(home, &facts))
+            .map(|id| Captured::new(&facts, id)),
+        CaptureSpec::ConversationDatabaseOrLog => home
+            .as_deref()
+            .and_then(|home| capture_agy(home, &facts))
+            .map(|id| Captured::new(&facts, id)),
+        CaptureSpec::MuseDatedSessions => home
+            .as_deref()
+            .and_then(|home| capture_muse(home, &facts))
+            .map(|id| Captured::new(&facts, id)),
         CaptureSpec::None => None,
     };
-    if let Some(id) = captured {
-        let captured = Captured::new(&facts, id);
+    if let Some(captured) = captured {
         let _ = commit(dir, slot, &captured);
     }
     0
+}
+
+/// Wrap an attributed opencode find: shared by the launch capture and the
+/// watchdog re-scan, so one pin set covers both arms.
+fn born_captured(facts: &Facts, found: Option<(String, i64)>) -> Option<Captured> {
+    found.map(|(id, born)| Captured::with_born(facts, id, born))
 }
 
 // ---------------------------------------------------------------------------
@@ -193,6 +202,9 @@ pub struct Captured {
     launch_id: String,
     work_dir: String,
     provenance: crate::meta::SeatProvenance,
+    /// The candidate's immutable birth (milliseconds), opencode only: the
+    /// commit recheck compares it against the siblings' floors.
+    born_ms: Option<i64>,
 }
 
 impl Captured {
@@ -204,6 +216,15 @@ impl Captured {
             launch_id: facts.launch_id.clone(),
             work_dir: facts.work_dir.clone(),
             provenance: facts.provenance,
+            born_ms: None,
+        }
+    }
+
+    /// An opencode capture with the candidate's birth attached.
+    fn with_born(facts: &Facts, id: String, born: i64) -> Self {
+        Self {
+            born_ms: Some(born),
+            ..Self::new(facts, id)
         }
     }
 
@@ -243,24 +264,34 @@ fn is_pending(id: Option<&str>) -> bool {
 /// not that row, even when its current occupant already has a capturable id.
 #[must_use]
 pub fn attempt(dir: &Path, pending: &Pending) -> Option<Captured> {
-    let facts = facts(dir, &pending.slot)?;
+    let bytes = crate::meta::read_bytes(dir).ok()?;
+    let facts = facts_from(&bytes, &pending.slot)?;
     if facts.agent != pending.agent || facts.tool != pending.tool {
         return None;
     }
     let home = home_dir();
-    let id = match facts.tool.adapter().capture {
+    match facts.tool.adapter().capture {
         CaptureSpec::HandshakeRolloutOrTui => codex_config_home(&facts, home.as_deref())
             .as_deref()
-            .and_then(|config_home| scan_codex(config_home, &facts)),
-        CaptureSpec::ChatHistory => home.as_deref().and_then(|home| scan_gemini(home, &facts)),
-        CaptureSpec::ConversationDatabaseOrLog => {
-            home.as_deref().and_then(|home| scan_agy(home, &facts))
+            .and_then(|config_home| scan_codex(config_home, &facts))
+            .map(|id| Captured::new(&facts, id)),
+        CaptureSpec::ChatHistory => home
+            .as_deref()
+            .and_then(|home| scan_gemini(home, &facts))
+            .map(|id| Captured::new(&facts, id)),
+        CaptureSpec::ConversationDatabaseOrLog => home
+            .as_deref()
+            .and_then(|home| scan_agy(home, &facts))
+            .map(|id| Captured::new(&facts, id)),
+        CaptureSpec::MuseDatedSessions => home
+            .as_deref()
+            .and_then(|home| scan_muse(home, &facts))
+            .map(|id| Captured::new(&facts, id)),
+        CaptureSpec::SessionList => {
+            born_captured(&facts, scan_opencode(&bytes, &pending.slot, &facts))
         }
-        CaptureSpec::MuseDatedSessions => home.as_deref().and_then(|home| scan_muse(home, &facts)),
-        CaptureSpec::SessionList => scan_opencode(&facts),
         CaptureSpec::None => None,
-    }?;
-    Some(Captured::new(&facts, id))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -291,10 +322,16 @@ struct Facts {
 /// Read one seat's capture facts, or nothing when the meta cannot be read.
 fn facts(dir: &Path, slot: &str) -> Option<Facts> {
     let bytes = crate::meta::read_bytes(dir).ok()?;
-    let (work_dir, provenance) = crate::meta::effective_seat_dir(&bytes, slot).ok()?;
-    let parsed = crate::meta::Meta::parse(&String::from_utf8_lossy(&bytes));
+    facts_from(&bytes, slot)
+}
+
+/// Read one seat's capture facts from meta bytes the caller already holds, so
+/// the facts and the sibling set below come from ONE snapshot.
+fn facts_from(bytes: &[u8], slot: &str) -> Option<Facts> {
+    let (work_dir, provenance) = crate::meta::effective_seat_dir(bytes, slot).ok()?;
+    let parsed = crate::meta::Meta::parse(&String::from_utf8_lossy(bytes));
     let value = |key: &str| {
-        crate::meta::first_value(&bytes, key)
+        crate::meta::first_value(bytes, key)
             .map(|raw| String::from_utf8_lossy(raw).into_owned())
             .unwrap_or_default()
     };
@@ -313,13 +350,13 @@ fn facts(dir: &Path, slot: &str) -> Option<Facts> {
         // from metadata predating the row gets an unbounded floor: its token or
         // recorded id is stronger evidence than a later resume timestamp. A
         // still-pending legacy seat keeps the old launch-time safety floor.
-        capture_floor: crate::meta::first_value(&bytes, &format!("capture_floor.{slot}"))
+        capture_floor: crate::meta::first_value(bytes, &format!("capture_floor.{slot}"))
             .map_or_else(
                 || {
                     if entry.is_some_and(|entry| !is_pending(entry.harness_session.as_deref())) {
                         0
                     } else {
-                        crate::meta::first_value(&bytes, &format!("launch_time.{slot}"))
+                        crate::meta::first_value(bytes, &format!("launch_time.{slot}"))
                             .map_or(0, epoch_or_zero)
                     }
                 },
@@ -331,6 +368,51 @@ fn facts(dir: &Path, slot: &str) -> Option<Facts> {
             .map(|entry| entry.config_home.clone())
             .unwrap_or_default(),
     })
+}
+
+/// Every OTHER pending seat of this session whose tool shares the list
+/// capture: the rival claimants a candidate must not also cover. Read from the
+/// same bytes as the seat's own facts, never from a second snapshot. Each
+/// sibling's window comes from its own facts — one floor owner — and a seat
+/// whose facts cannot be read fails closed to covering everything.
+fn siblings_from(bytes: &[u8], slot: &str) -> Vec<Sibling> {
+    let parsed = crate::meta::Meta::parse(&String::from_utf8_lossy(bytes));
+    parsed
+        .roster()
+        .iter()
+        .filter(|entry| entry.slot != slot)
+        .filter(|entry| is_pending(entry.harness_session.as_deref()))
+        .filter(|entry| {
+            ToolKind::from_binary_name(entry.binary.as_deref().unwrap_or_default())
+                .adapter()
+                .capture
+                == CaptureSpec::SessionList
+        })
+        .map(|entry| {
+            facts_from(bytes, &entry.slot).map_or(
+                Sibling {
+                    dir: None,
+                    floor_ms: 0,
+                },
+                |seat| Sibling {
+                    dir: Some(canonical(&seat.work_dir)),
+                    floor_ms: seat.capture_floor.saturating_mul(1000),
+                },
+            )
+        })
+        .collect()
+}
+
+/// Every id this session already records, any tool: a candidate carrying one
+/// is invisible to the attribution. Pending rows record nothing.
+fn excluded_from(bytes: &[u8]) -> Vec<String> {
+    let parsed = crate::meta::Meta::parse(&String::from_utf8_lossy(bytes));
+    parsed
+        .roster()
+        .iter()
+        .filter_map(|entry| entry.harness_session.clone())
+        .filter(|id| !is_pending(Some(id)))
+        .collect()
 }
 
 /// An invalid persisted epoch removes the lower bound rather than inventing
@@ -430,6 +512,11 @@ fn commit_inner(dir: &Path, slot: &str, captured: &Captured, may_replace: bool) 
     if current_launch != captured.launch_id {
         return false;
     }
+    if matches!(captured.tool.adapter().capture, CaptureSpec::SessionList)
+        && !opencode_recheck(text.as_bytes(), slot, captured)
+    {
+        return false;
+    }
     // Writer A: an authoritative capture may REPLACE a live id. The replaced id
     // becomes the seat's newest predecessor and both rows land in ONE
     // publication — unless it is `pending`/empty, not a lowercase UUID, or the
@@ -462,6 +549,24 @@ fn commit_inner(dir: &Path, slot: &str, captured: &Captured, may_replace: bool) 
         let _ = std::fs::remove_file(sid_file(dir, slot));
     }
     published
+}
+
+/// The opencode attribution rechecked under the meta lock: the scan's snapshot
+/// is stale by the time the list returns, so no other slot may record this id
+/// and no other pending opencode sibling's window may cover its birth. One
+/// owner with the scan: the same sibling set and the same covers predicate. A
+/// capture without a birth refuses: there is nothing to compare.
+fn opencode_recheck(bytes: &[u8], slot: &str, captured: &Captured) -> bool {
+    let Some(born) = captured.born_ms else {
+        return false;
+    };
+    if excluded_from(bytes).iter().any(|held| held == &captured.id) {
+        return false;
+    }
+    let target = canonical(&captured.work_dir);
+    !siblings_from(bytes, slot)
+        .iter()
+        .any(|sibling| sibling.covers(&target, born))
 }
 
 // ---------------------------------------------------------------------------
@@ -1245,21 +1350,28 @@ fn file_facts(path: &Path) -> Option<(bool, u64)> {
 // opencode
 // ---------------------------------------------------------------------------
 
-/// Poll `opencode session list` for a session in this working directory.
-fn capture_opencode(facts: &Facts) -> Option<String> {
+/// Poll `opencode session list` for a session attributable to this seat alone.
+fn capture_opencode(dir: &Path, slot: &str, facts: &Facts) -> Option<(String, i64)> {
     for attempt in 0..POLLS {
         if attempt > 0 {
             std::thread::sleep(POLL);
         }
-        if let Some(id) = scan_opencode(facts) {
-            return Some(id);
+        // Each poll re-reads the meta: a sibling that captured since the last
+        // look drops out of the next attribution.
+        let Ok(bytes) = crate::meta::read_bytes(dir) else {
+            return None;
+        };
+        if let Some(found) = scan_opencode(&bytes, slot, facts) {
+            return Some(found);
         }
     }
     None
 }
 
-/// One `opencode session list`, read for a session in this working directory.
-fn scan_opencode(facts: &Facts) -> Option<String> {
+/// One `opencode session list`, read for a session attributable to this seat
+/// alone: recorded ids are invisible and no pending sibling's window may cover
+/// it. Without the sibling set there is no attribution, only a refusal.
+fn scan_opencode(bytes: &[u8], slot: &str, facts: &Facts) -> Option<(String, i64)> {
     if facts.work_dir.is_empty() {
         return None;
     }
@@ -1271,17 +1383,19 @@ fn scan_opencode(facts: &Facts) -> Option<String> {
     if !ran {
         return None;
     }
-    pick_opencode_session(&listed, &facts.work_dir, since)
+    attribute_opencode(
+        &listed,
+        &facts.work_dir,
+        since,
+        &siblings_from(bytes, slot),
+        &excluded_from(bytes),
+    )
 }
 
-/// The newest-born session in `listed` whose `directory` is `work_dir` and
-/// whose immutable `created` timestamp is at or after `since` (milliseconds).
-/// `created` is both the launch-safety proof and rank, so last-touched time
-/// cannot influence identity; an equal birth timestamp breaks by greatest id.
-#[must_use]
-pub(crate) fn pick_opencode_session(listed: &str, work_dir: &str, since: i64) -> Option<String> {
-    let target = canonical(work_dir);
-    let mut best: Option<(i64, String)> = None;
+/// Every listed session with an id, a directory and an immutable birth, in
+/// list order. The attribution judges them; this only extracts.
+fn opencode_candidates(listed: &str) -> Vec<(String, String, i64)> {
+    let mut out = Vec::new();
     for record in json_records(listed) {
         let Some(id) = first_string_field(record, "id") else {
             continue;
@@ -1292,7 +1406,57 @@ pub(crate) fn pick_opencode_session(listed: &str, work_dir: &str, since: i64) ->
         let Some(created) = first_num_field(record, "created") else {
             continue;
         };
+        out.push((id, directory, created));
+    }
+    out
+}
+
+/// Another pending opencode seat of this session — a rival claimant.
+struct Sibling {
+    /// Canonical work dir, or `None` when the row is unusable: an unusable
+    /// sibling is assumed to share this seat's dir (fail closed).
+    dir: Option<String>,
+    /// The oldest birth this sibling may accept, in milliseconds.
+    floor_ms: i64,
+}
+
+impl Sibling {
+    /// Whether this sibling's window covers a candidate born at `born` in the
+    /// seat's own canonical dir.
+    fn covers(&self, target: &str, born: i64) -> bool {
+        self.dir.as_deref().is_none_or(|dir| dir == target) && self.floor_ms <= born
+    }
+}
+
+/// The newest-born session in `listed` attributable to this seat alone: its
+/// `directory` is `work_dir`, its immutable `created` is at or after `since`
+/// (milliseconds), no recorded id excludes it, and no pending opencode
+/// sibling's window covers it. `created` is both the launch-safety proof and
+/// rank, so last-touched time cannot influence identity; an equal birth
+/// timestamp breaks by greatest id. Excluded candidates are invisible to both
+/// the attribution and the ambiguity: a seat whose every covering candidate is
+/// recorded elsewhere, or also covered, captures nothing.
+#[must_use]
+fn attribute_opencode(
+    listed: &str,
+    work_dir: &str,
+    since: i64,
+    siblings: &[Sibling],
+    excluded: &[String],
+) -> Option<(String, i64)> {
+    let target = canonical(work_dir);
+    let mut best: Option<(i64, String)> = None;
+    for (id, directory, created) in opencode_candidates(listed) {
         if created < since || canonical(&directory) != target {
+            continue;
+        }
+        if excluded.iter().any(|held| held == &id) {
+            continue;
+        }
+        if siblings
+            .iter()
+            .any(|sibling| sibling.covers(&target, created))
+        {
             continue;
         }
         if best.as_ref().is_none_or(|(seen, best_id)| {
@@ -1301,7 +1465,7 @@ pub(crate) fn pick_opencode_session(listed: &str, work_dir: &str, since: i64) ->
             best = Some((created, id));
         }
     }
-    best.map(|(_, id)| id)
+    best.map(|(born, id)| (id, born))
 }
 
 /// Split a JSON array of objects into its records, on the `},{` boundary.
@@ -1803,8 +1967,17 @@ mod tests {
         );
     }
 
+    /// One rival claimant: a pending opencode sibling in `dir` with a floor
+    /// in milliseconds, or an unusable row when `dir` is `None`.
+    fn sibling(dir: Option<&str>, floor_ms: i64) -> Sibling {
+        Sibling {
+            dir: dir.map(canonical),
+            floor_ms,
+        }
+    }
+
     #[test]
-    fn an_opencode_list_picks_the_newest_session_in_this_directory() {
+    fn an_opencode_attribution_picks_the_newest_session_in_this_directory() {
         let dir = scratch("oc");
         let work = dir.display().to_string();
         let listed = format!(
@@ -1814,37 +1987,365 @@ mod tests {
                {{"id":"ses_newest_tie","directory":"{work}","created":2000,"updated":3000}},
                {{"id":"ses_elsewhere","directory":"/nowhere","created":3000,"updated":9999}}]"#
         );
+        // A lone seat with nothing recorded captures exactly as before: newest
+        // birth, greatest id breaking the tie.
         assert_eq!(
-            pick_opencode_session(&listed, &work, 1000).as_deref(),
-            Some("ses_newest_tie")
+            attribute_opencode(&listed, &work, 1000, &[], &[]),
+            Some(("ses_newest_tie".to_owned(), 2000))
         );
         // The launch-time floor excludes a session born before it even when
         // that old session was touched after it.
-        assert_eq!(pick_opencode_session(&listed, &work, 3500), None);
+        assert_eq!(attribute_opencode(&listed, &work, 3500, &[], &[]), None);
         // A record missing immutable birth evidence is never captured.
         assert_eq!(
-            pick_opencode_session(
+            attribute_opencode(
                 &format!(r#"[{{"id":"ses_missing_created","directory":"{work}","updated":9999}}]"#),
                 &work,
                 1000,
+                &[],
+                &[],
             ),
             None
         );
         // A record for another directory is never captured.
         assert_eq!(
-            pick_opencode_session(
+            attribute_opencode(
                 r#"[{"id":"ses_elsewhere","directory":"/nowhere","created":3000,"updated":9999}]"#,
                 &work,
                 0,
+                &[],
+                &[],
             ),
             None
         );
         // Nothing parseable is nothing captured, never a panic.
-        assert_eq!(pick_opencode_session("", &work, 0), None);
+        assert_eq!(attribute_opencode("", &work, 0, &[], &[]), None);
         assert_eq!(
-            pick_opencode_session("opencode: not logged in", &work, 0),
+            attribute_opencode("opencode: not logged in", &work, 0, &[], &[]),
             None
         );
+    }
+
+    /// #56 G1: two seats converge. S's floor is 100 ms, T's 200; S's own
+    /// session covers only S's window, so the first pass attributes it while
+    /// T's stays covered by both. Once S records (no longer a rival), the next
+    /// pass attributes T's.
+    #[test]
+    fn two_pending_seats_converge_one_session_per_pass() {
+        let dir = scratch("oc-g1");
+        let work = dir.display().to_string();
+        let listed = format!(
+            r#"[{{"id":"ses_s","directory":"{work}","created":150,"updated":150}},
+               {{"id":"ses_t","directory":"{work}","created":250,"updated":250}}]"#
+        );
+        assert_eq!(
+            attribute_opencode(&listed, &work, 100, &[sibling(Some(&work), 200)], &[]),
+            Some(("ses_s".to_owned(), 150))
+        );
+        assert_eq!(
+            attribute_opencode(&listed, &work, 200, &[sibling(Some(&work), 100)], &[]),
+            None
+        );
+        assert_eq!(
+            attribute_opencode(&listed, &work, 200, &[], &["ses_s".to_owned()]),
+            Some(("ses_t".to_owned(), 250))
+        );
+    }
+
+    /// #56 G2: the tie-break survives the attribution — an equal birth breaks
+    /// by greatest id, and a recorded rival for the winner falls through to
+    /// the next attributable candidate rather than to nothing.
+    #[test]
+    fn an_attribution_breaks_equal_births_by_greatest_id() {
+        let dir = scratch("oc-g2");
+        let work = dir.display().to_string();
+        let listed = format!(
+            r#"[{{"id":"ses_a","directory":"{work}","created":2000,"updated":2000}},
+               {{"id":"ses_b","directory":"{work}","created":2000,"updated":2000}}]"#
+        );
+        assert_eq!(
+            attribute_opencode(&listed, &work, 1000, &[], &[]),
+            Some(("ses_b".to_owned(), 2000))
+        );
+        assert_eq!(
+            attribute_opencode(&listed, &work, 1000, &[], &["ses_b".to_owned()]),
+            Some(("ses_a".to_owned(), 2000))
+        );
+    }
+
+    /// #56 G3': one candidate covering two pending windows is attributable to
+    /// neither — the seat stays pending, and an excluded-only covering set
+    /// reads the same as no candidate at all.
+    #[test]
+    fn a_session_covering_two_pending_windows_is_captured_by_neither() {
+        let dir = scratch("oc-g3");
+        let work = dir.display().to_string();
+        let listed = format!(
+            r#"[{{"id":"ses_shared","directory":"{work}","created":5000,"updated":5000}}]"#
+        );
+        assert_eq!(
+            attribute_opencode(&listed, &work, 1000, &[sibling(Some(&work), 4000)], &[]),
+            None
+        );
+        assert_eq!(
+            attribute_opencode(&listed, &work, 1000, &[], &["ses_shared".to_owned()]),
+            None
+        );
+    }
+
+    /// #56 G4: a sibling whose directory row is unusable is assumed to share
+    /// this seat's dir — it blocks, never silently drops out — while its floor
+    /// still bounds what it covers. A sibling proven to be in another
+    /// directory covers nothing.
+    #[test]
+    fn an_unusable_sibling_directory_covers_every_candidate() {
+        let dir = scratch("oc-g4");
+        let work = dir.display().to_string();
+        let listed =
+            format!(r#"[{{"id":"ses_own","directory":"{work}","created":5000,"updated":5000}}]"#);
+        assert_eq!(
+            attribute_opencode(&listed, &work, 1000, &[sibling(None, 0)], &[]),
+            None
+        );
+        assert_eq!(
+            attribute_opencode(&listed, &work, 1000, &[sibling(None, 999_999)], &[]),
+            Some(("ses_own".to_owned(), 5000))
+        );
+        assert_eq!(
+            attribute_opencode(&listed, &work, 1000, &[sibling(Some("/nowhere"), 0)], &[],),
+            Some(("ses_own".to_owned(), 5000))
+        );
+    }
+
+    /// #56 G7: a recorded id excludes whatever tool recorded it — a codex
+    /// seat's uuid and an opencode seat's ses_ id alike.
+    #[test]
+    fn a_recorded_id_excludes_whatever_tool_recorded_it() {
+        let dir = scratch("oc-g7");
+        let work = dir.display().to_string();
+        let listed = format!(
+            r#"[{{"id":"ses_held","directory":"{work}","created":5000,"updated":5000}},
+               {{"id":"ses_free","directory":"{work}","created":4000,"updated":4000}}]"#
+        );
+        assert_eq!(
+            attribute_opencode(&listed, &work, 1000, &[], &["ses_held".to_owned()]),
+            Some(("ses_free".to_owned(), 4000))
+        );
+    }
+
+    /// #56 G9 (attribute): a birth exactly on the sibling's floor is covered —
+    /// the `<=` the boundary mutant would flip to `<`.
+    #[test]
+    fn a_birth_on_the_sibling_floor_is_covered() {
+        let dir = scratch("oc-g9a");
+        let work = dir.display().to_string();
+        let listed =
+            format!(r#"[{{"id":"ses_edge","directory":"{work}","created":4000,"updated":4000}}]"#);
+        assert_eq!(
+            attribute_opencode(&listed, &work, 1000, &[sibling(Some(&work), 4000)], &[]),
+            None
+        );
+        assert_eq!(
+            attribute_opencode(&listed, &work, 1000, &[sibling(Some(&work), 4001)], &[]),
+            Some(("ses_edge".to_owned(), 4000))
+        );
+    }
+
+    /// One scratch session meta with the given seat rows, under a project dir
+    /// the seats inherit.
+    fn meta_dir(tag: &str, seats: &str) -> PathBuf {
+        let dir = scratch(tag);
+        let project = dir.join("project");
+        std::fs::create_dir_all(&project).expect("a project dir");
+        write(
+            &dir.join("meta"),
+            &format!(
+                "session=cap\nwork_dir={}\nmode=local\nschema=2\n{seats}",
+                project.display()
+            ),
+        );
+        dir
+    }
+
+    /// #56 R3: a commit refuses an id another slot already records. The lock
+    /// serializes concurrent captures, so the recheck under it closes the race
+    /// the scan's snapshot leaves open. RED on base; on green this birthless
+    /// capture refuses via the born-None rule (G8), and G10 proves the
+    /// recorded-id check itself with a birth attached.
+    #[test]
+    fn a_commit_refuses_an_id_another_slot_already_records() {
+        let dir = meta_dir(
+            "oc-r3",
+            "seat.main=lead\nprofile.main=tool\nagent_bin.main=opencode\n\
+             harness_session.main=ses_recorded\nlaunch_time.main=1\ncapture_floor.main=1\n\
+             launch_id.main=tok-1\nseat.worker.1=w1\nprofile.worker.1=tool\n\
+             agent_bin.worker.1=opencode\nharness_session.worker.1=pending\n\
+             launch_time.worker.1=1\ncapture_floor.worker.1=1\nlaunch_id.worker.1=tok-2\n",
+        );
+        let seat_facts = facts(&dir, "worker.1").expect("facts");
+        let captured = Captured::new(&seat_facts, "ses_recorded".to_owned());
+        assert!(
+            !commit(&dir, "worker.1", &captured),
+            "another slot's recorded id was committed"
+        );
+    }
+
+    /// #56 R-commit: a commit refuses a session a pending sibling also covers.
+    /// Both seats pending in one dir, one candidate covering both windows: on
+    /// base the commit checks its own slot only and records it. On green this
+    /// birthless capture refuses via the born-None rule (G8); G5 proves the
+    /// sibling-floor check with a birth attached.
+    #[test]
+    fn a_commit_refuses_a_session_a_pending_sibling_also_covers() {
+        let dir = meta_dir(
+            "oc-rc",
+            "seat.main=lead\nprofile.main=tool\nagent_bin.main=opencode\n\
+             harness_session.main=pending\nlaunch_time.main=1\ncapture_floor.main=1\n\
+             launch_id.main=tok-1\nseat.worker.1=w1\nprofile.worker.1=tool\n\
+             agent_bin.worker.1=opencode\nharness_session.worker.1=pending\n\
+             launch_time.worker.1=4\ncapture_floor.worker.1=4\nlaunch_id.worker.1=tok-2\n",
+        );
+        let seat_facts = facts(&dir, "main").expect("facts");
+        let captured = Captured::new(&seat_facts, "ses_shared".to_owned());
+        assert!(
+            !commit(&dir, "main", &captured),
+            "a session a pending sibling also covers was committed"
+        );
+    }
+
+    /// Two pending opencode seats in one dir, floors 1 s and 4 s — the arena
+    /// the commit isolation pins share.
+    fn two_pending(tag: &str) -> PathBuf {
+        meta_dir(
+            tag,
+            "seat.main=lead\nprofile.main=tool\nagent_bin.main=opencode\n\
+             harness_session.main=pending\nlaunch_time.main=1\ncapture_floor.main=1\n\
+             launch_id.main=tok-1\nseat.worker.1=w1\nprofile.worker.1=tool\n\
+             agent_bin.worker.1=opencode\nharness_session.worker.1=pending\n\
+             launch_time.worker.1=4\ncapture_floor.worker.1=4\nlaunch_id.worker.1=tok-2\n",
+        )
+    }
+
+    /// #56 G5: the commit rechecks the sibling floor with the birth attached —
+    /// a birth the sibling covers refuses even though the id is recorded
+    /// nowhere.
+    #[test]
+    fn a_commit_rechecks_the_sibling_floor_with_the_birth() {
+        let dir = two_pending("oc-g5");
+        let seat_facts = facts(&dir, "main").expect("facts");
+        let captured = Captured::with_born(&seat_facts, "ses_new".to_owned(), 5000);
+        assert!(
+            !commit(&dir, "main", &captured),
+            "a birth the pending sibling covers was committed"
+        );
+    }
+
+    /// #56 G10: the recorded-id check with a birth attached — no rival at
+    /// all, the recorded id alone refuses.
+    #[test]
+    fn a_commit_refuses_a_recorded_id_with_a_birth_attached() {
+        let dir = meta_dir(
+            "oc-g10",
+            "seat.main=lead\nprofile.main=tool\nagent_bin.main=opencode\n\
+             harness_session.main=ses_recorded\nlaunch_time.main=1\ncapture_floor.main=1\n\
+             launch_id.main=tok-1\nseat.worker.1=w1\nprofile.worker.1=tool\n\
+             agent_bin.worker.1=opencode\nharness_session.worker.1=pending\n\
+             launch_time.worker.1=1\ncapture_floor.worker.1=1\nlaunch_id.worker.1=tok-2\n",
+        );
+        let seat_facts = facts(&dir, "worker.1").expect("facts");
+        let captured = Captured::with_born(&seat_facts, "ses_recorded".to_owned(), 9000);
+        assert!(
+            !commit(&dir, "worker.1", &captured),
+            "a recorded id with a birth attached was committed"
+        );
+    }
+
+    /// #56 G8: a birthless opencode capture refuses on its own — no rival, no
+    /// recorded id, still nothing published.
+    #[test]
+    fn a_birthless_opencode_capture_refuses_alone() {
+        let dir = meta_dir(
+            "oc-g8",
+            "seat.main=lead\nprofile.main=tool\nagent_bin.main=opencode\n\
+             harness_session.main=pending\nlaunch_time.main=1\ncapture_floor.main=1\n\
+             launch_id.main=tok-1\n",
+        );
+        let seat_facts = facts(&dir, "main").expect("facts");
+        let captured = Captured::new(&seat_facts, "ses_new".to_owned());
+        assert!(
+            !commit(&dir, "main", &captured),
+            "a birthless capture was committed"
+        );
+    }
+
+    /// #56 G9 (commit): the boundary, under the lock — a birth exactly on the
+    /// sibling's floor refuses, one millisecond below it commits.
+    #[test]
+    fn a_commit_covers_a_birth_on_the_sibling_floor() {
+        let dir = two_pending("oc-g9c");
+        let seat_facts = facts(&dir, "main").expect("facts");
+        let edge = Captured::with_born(&seat_facts, "ses_edge".to_owned(), 4000);
+        assert!(
+            !commit(&dir, "main", &edge),
+            "a birth on the sibling floor was committed"
+        );
+        let dir = two_pending("oc-g9c2");
+        let seat_facts = facts(&dir, "main").expect("facts");
+        let past = Captured::with_born(&seat_facts, "ses_past".to_owned(), 3999);
+        assert!(
+            commit(&dir, "main", &past),
+            "a birth below the sibling floor refused"
+        );
+    }
+
+    /// #56 A2: a legacy pending sibling with `launch_time` but no
+    /// `capture_floor` row keeps its launch-time floor — one floor owner with
+    /// its own capture — so it does not cover a birth before its launch.
+    #[test]
+    fn a_legacy_sibling_without_a_floor_row_keeps_its_launch_time() {
+        let dir = meta_dir(
+            "oc-a2",
+            "seat.main=lead\nprofile.main=tool\nagent_bin.main=opencode\n\
+             harness_session.main=pending\nlaunch_time.main=1\ncapture_floor.main=1\n\
+             launch_id.main=tok-1\nseat.worker.1=w1\nprofile.worker.1=tool\n\
+             agent_bin.worker.1=opencode\nharness_session.worker.1=pending\n\
+             launch_time.worker.1=4\nlaunch_id.worker.1=tok-2\n",
+        );
+        let bytes = std::fs::read(dir.join("meta")).expect("meta");
+        let siblings = siblings_from(&bytes, "main");
+        assert_eq!(siblings.len(), 1);
+        let target = canonical(&dir.join("project").display().to_string());
+        assert!(
+            !siblings[0].covers(&target, 3999),
+            "a birth before the sibling's launch is not covered"
+        );
+        assert!(
+            siblings[0].covers(&target, 4000),
+            "a birth on the sibling's launch is covered"
+        );
+    }
+
+    /// The recheck's `true` path: a lone pending seat commits its attributed
+    /// birth. A pending codex seat beside it in the same dir is no rival: only
+    /// the list capture shares candidates (N1).
+    #[test]
+    fn a_lone_pending_seat_commits_its_attributed_birth() {
+        let dir = meta_dir(
+            "oc-lone",
+            "seat.main=lead\nprofile.main=tool\nagent_bin.main=opencode\n\
+             harness_session.main=pending\nlaunch_time.main=1\ncapture_floor.main=1\n\
+             launch_id.main=tok-1\nseat.worker.9=w9\nprofile.worker.9=tool\n\
+             agent_bin.worker.9=codex\nharness_session.worker.9=pending\n\
+             launch_time.worker.9=1\ncapture_floor.worker.9=1\nlaunch_id.worker.9=tok-9\n",
+        );
+        let seat_facts = facts(&dir, "main").expect("facts");
+        let captured = Captured::with_born(&seat_facts, "ses_new".to_owned(), 5000);
+        assert!(
+            commit(&dir, "main", &captured),
+            "a lone seat's attribution refused"
+        );
+        let meta = std::fs::read_to_string(dir.join("meta")).expect("meta");
+        assert!(meta.contains("harness_session.main=ses_new\n"), "{meta}");
     }
 
     #[test]
@@ -2247,6 +2748,7 @@ mod tests {
             launch_id: "retired-token".to_owned(),
             work_dir: String::new(),
             provenance: crate::meta::SeatProvenance::Inherited,
+            born_ms: None,
         };
 
         assert!(
@@ -2266,6 +2768,7 @@ mod tests {
             launch_id: "current-token".to_owned(),
             work_dir: String::new(),
             provenance: crate::meta::SeatProvenance::Inherited,
+            born_ms: None,
         };
         assert!(
             !commit(&dir, "spawned.0", &current),

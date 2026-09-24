@@ -88,12 +88,17 @@ impl Rig {
 
     /// Run the real `_capture-sid` child with this rig's `HOME` and `PATH`.
     fn capture(&self) -> (Option<i32>, String) {
+        self.capture_slot("main")
+    }
+
+    /// Run the real `_capture-sid` child for one slot.
+    fn capture_slot(&self, slot: &str) -> (Option<i32>, String) {
         let path = std::env::var("PATH").unwrap_or_default();
         let out = ae()
             .env("HOME", &self.home)
             .env("PATH", format!("{}:{path}", self.bin.display()))
             .arg(ae::cli::CAPTURE_SID)
-            .args([&self.session.display().to_string(), "main", "%0"])
+            .args([&self.session.display().to_string(), slot, "%0"])
             .output()
             .unwrap_or_else(|why| panic!("the ae binary should run: {why}"));
         (
@@ -294,6 +299,73 @@ fn an_opencode_seat_captures_the_newest_session_in_its_own_directory() {
     assert!(
         !meta.contains("ses_elsewhere") && !meta.contains("ses_old"),
         "the wrong session was captured:\n{meta}"
+    );
+}
+
+/// #56 R1: a pending seat never captures an id another seat already records.
+/// The recorded newest session is invisible to the pending seat; its own older
+/// session is the only attributable candidate.
+#[test]
+fn a_pending_opencode_seat_never_captures_another_seats_recorded_session() {
+    let rig = Rig::new("oc-r1", "opencode", 1);
+    rig.write(
+        &rig.session.join("meta"),
+        &format!(
+            "session=cap\nwork_dir={project}\nmode=local\nschema=2\nseat.main=lead\n\
+             profile.main=tool\nagent_bin.main=opencode\nharness_session.main=ses_new\n\
+             launch_time.main=1\ncapture_floor.main=1\nlaunch_id.main=tok-1\n\
+             seat.worker.1=w1\nprofile.worker.1=tool\nagent_bin.worker.1=opencode\n\
+             harness_session.worker.1=pending\nlaunch_time.worker.1=1\n\
+             capture_floor.worker.1=1\nlaunch_id.worker.1=tok-2\n",
+            project = rig.project.display()
+        ),
+    );
+    rig.fake_opencode(&format!(
+        r#"[{{"id":"ses_new","directory":"{project}","created":9000,"updated":9000}},
+  {{"id":"ses_old","directory":"{project}","created":2000,"updated":3000}}]"#,
+        project = rig.project.display()
+    ));
+
+    let (code, stderr) = rig.capture_slot("worker.1");
+    assert_eq!((code, stderr.as_str()), (Some(0), ""));
+    let meta = rig.meta();
+    assert!(
+        meta.contains("harness_session.worker.1=ses_old\n"),
+        "the pending seat captured another seat's recorded session:\n{meta}"
+    );
+}
+
+/// #56 R2': a long-pending seat re-scanned after a pending sibling's session
+/// exists takes its own older session, never the sibling's newer one. The
+/// sibling's session covers two pending windows, so it is attributable to
+/// neither; the older session covers only this seat.
+#[test]
+fn a_rescanned_pending_seat_takes_its_own_session_not_its_siblings() {
+    let rig = Rig::new("oc-r2", "opencode", 1);
+    rig.write(
+        &rig.session.join("meta"),
+        &format!(
+            "session=cap\nwork_dir={project}\nmode=local\nschema=2\nseat.main=lead\n\
+             profile.main=tool\nagent_bin.main=opencode\nharness_session.main=pending\n\
+             launch_time.main=1\ncapture_floor.main=1\nlaunch_id.main=tok-1\n\
+             seat.worker.1=w1\nprofile.worker.1=tool\nagent_bin.worker.1=opencode\n\
+             harness_session.worker.1=pending\nlaunch_time.worker.1=4\n\
+             capture_floor.worker.1=4\nlaunch_id.worker.1=tok-2\n",
+            project = rig.project.display()
+        ),
+    );
+    rig.fake_opencode(&format!(
+        r#"[{{"id":"ses_sibling","directory":"{project}","created":5000,"updated":5000}},
+  {{"id":"ses_own","directory":"{project}","created":2000,"updated":3000}}]"#,
+        project = rig.project.display()
+    ));
+
+    let (code, stderr) = rig.capture_slot("main");
+    assert_eq!((code, stderr.as_str()), (Some(0), ""));
+    let meta = rig.meta();
+    assert!(
+        meta.contains("harness_session.main=ses_own\n"),
+        "the rescanned seat captured its sibling's session:\n{meta}"
     );
 }
 
