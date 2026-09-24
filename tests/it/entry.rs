@@ -1978,6 +1978,33 @@ fn the_no_autostart_door_starts_neither_companion() {
         !windows.lines().any(|line| line.contains("watchdog")),
         "the door suppressed the companion the config asked for: {windows}"
     );
+    // The watchdog is a PANE inside the monitor window, never a window of its
+    // own, so the window listing above cannot see it: this is the assertion.
+    let (ok, panes) = rig.tmux(&["list-panes", "-s", "-t", "quiet", "-F", "#{@ae_agent}"]);
+    assert!(ok, "{panes}");
+    assert!(
+        !panes.lines().any(|line| line == "_watchdog"),
+        "the door suppressed the companion the config asked for: {panes}"
+    );
+    // And the observable is EXACTLY a `watchdog = false` launch's: the cell a
+    // health segment would fill says nothing is measuring this session.
+    let (ok, status) = rig.tmux(&[
+        "show-options",
+        "-v",
+        "-t",
+        "quiet",
+        ae::tmux::WATCHDOG_STATUS_OPTION,
+    ]);
+    assert!(ok, "{status}");
+    assert_eq!(
+        status.trim(),
+        ae::theme::watchdog_off_segment(&ae::theme::Look::DEFAULT),
+        "the suppressed launch writes the off mark"
+    );
+    assert!(
+        !rig.sessions().join("quiet").join(".watchdog.pid").exists(),
+        "no daemon: the suppressed launch leaves no pidfile"
+    );
 }
 
 // ---------------------------------------------------------------------------

@@ -448,7 +448,8 @@ pub struct Env {
     pub core: Option<PathBuf>,
     /// The version the resolved core reported, when the caller measured it.
     pub core_version: Option<String>,
-    /// `--no-autostart`: suppress the Telegram bridge.
+    /// `--no-autostart`: start no companion — neither the watchdog nor the
+    /// Telegram bridge.
     pub no_autostart: bool,
     /// Internal debug-build test seam: publish [`TEST_PRE_LOCK_MARKER`] after
     /// preflight and immediately before waiting for the lifecycle lock.
@@ -3333,7 +3334,7 @@ fn build(
     // panes cannot orphan.
     let events_pane = ensure_events_pane(&server, &shape.name, &dir);
     if let Some(anchor) = &events_pane {
-        start_watchdog_pane(shape, &dir, &server, anchor);
+        start_watchdog_pane(shape, &dir, &server, anchor, env.no_autostart);
     }
 
     // ---- the per-window half of the look ----
@@ -4673,7 +4674,31 @@ fn mark_plumbing_window(server: &ServerId, pane: &str) {
 
 /// The watchdog pane, split ABOVE the events pane so the visual order stays
 /// watchdog-on-top / events-below.
-fn start_watchdog_pane(shape: &Session, dir: &Path, server: &ServerId, anchor: &str) {
+///
+/// `no_autostart` is the operator's `AE_NO_AUTOSTART=1`: it suppresses the
+/// companion for THIS launch alone, because the variable is never persisted. A
+/// daemon already in the pane keeps its verdicts — the off mark is for a
+/// session nothing measures, and claiming a measured one is off would be a
+/// false observable.
+fn start_watchdog_pane(
+    shape: &Session,
+    dir: &Path,
+    server: &ServerId,
+    anchor: &str,
+    no_autostart: bool,
+) {
+    if no_autostart {
+        if monitor_pane(server, &shape.name, "_watchdog").is_none() {
+            let _ = transport::publish_option(
+                server,
+                tmux::OptionScope::Session,
+                &shape.name,
+                tmux::WATCHDOG_STATUS_OPTION,
+                &crate::theme::watchdog_off_segment(&shape.look),
+            );
+        }
+        return;
+    }
     if !watchdog_enabled_for_session(dir) {
         // Nothing will measure this session, so the cell a health segment would
         // fill says that instead of staying blank — a blank one reads like a

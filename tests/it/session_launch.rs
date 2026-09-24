@@ -199,7 +199,19 @@ impl Rig {
     }
 
     fn launch_command_with_server(&self, kind: &str, value: &str, tail: &[&str]) -> Runner {
-        self.launch_command_with_server_options(kind, value, tail, false)
+        self.launch_command_with_server_options(kind, value, tail, &[])
+    }
+
+    /// The same launch with the internal `--no-autostart` flag: the public
+    /// entry turns the operator's `AE_NO_AUTOSTART=1` into this flag, and
+    /// `_launch` itself never reads the variable.
+    fn launch_command_no_autostart(&self, tail: &[&str]) -> Runner {
+        self.launch_command_with_server_options(
+            "socket",
+            &self.sock.display().to_string(),
+            tail,
+            &["--no-autostart"],
+        )
     }
 
     fn launch_command_with_server_options(
@@ -207,7 +219,7 @@ impl Rig {
         kind: &str,
         value: &str,
         tail: &[&str],
-        pre_lock_marker: bool,
+        extra_flags: &[&str],
     ) -> Runner {
         let mut command = ae();
         command
@@ -232,8 +244,8 @@ impl Rig {
                 value,
                 "--no-attach",
             ]);
-        if pre_lock_marker {
-            command.arg("--test-pre-lock-marker");
+        for flag in extra_flags {
+            command.arg(*flag);
         }
         command.arg("--").args(tail);
         command
@@ -255,7 +267,7 @@ impl Rig {
             "socket",
             &self.sock.display().to_string(),
             tail,
-            true,
+            &["--test-pre-lock-marker"],
         );
         command
             .stdin(Stdio::null())
@@ -7146,6 +7158,96 @@ fn a_launch_with_no_watchdog_says_nothing_is_watching_the_session() {
             "{option} must carry the launch seed"
         );
     }
+}
+
+/// `AE_NO_AUTOSTART=1` is ENV-SCOPED: it suppresses the watchdog for the launch
+/// that carries it and is never persisted, so the next build of the same
+/// session starts the watchdog its settings ask for.
+///
+/// And the suppressed launch, back against the NOW-running session, must not
+/// paint the off mark over the live daemon — that is a false observable, and
+/// the pane a daemon already owns keeps its verdicts.
+#[test]
+fn a_resume_without_autostart_starts_the_watchdog_the_settings_ask_for() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("lnnoautoresume");
+    assert!(
+        std::fs::write(
+            &rig.config,
+            "[profiles]\nidle = \"sleep 600\"\n\n[roster]\nlead = idle\n\n\
+             [workspace]\nmain = lead\nlayout = vertical\nwatchdog = true\n",
+        )
+        .is_ok(),
+        "a config that ASKS for the watchdog"
+    );
+    let dir = rig.home.join("sessions").join("lnnoautoresume");
+
+    // The launch the operator suppressed: no watchdog pane, no daemon.
+    let mut suppressed = rig.launch_command_no_autostart(&["--local", "lnnoautoresume"]);
+    let out = suppressed
+        .output()
+        .unwrap_or_else(|why| panic!("the ae binary should run: {why}"));
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !rig.panes("lnnoautoresume")
+            .iter()
+            .any(|(_, _, agent)| agent == "_watchdog"),
+        "setup: the suppressed launch starts no watchdog"
+    );
+
+    // A stopped session is what a resume REBUILDS; a running one reattaches.
+    stop(&rig, "lnnoautoresume");
+
+    // The same launch, without the variable: the settings decide again.
+    let (code, stdout, stderr) = rig.launch(&["--local", "lnnoautoresume"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        rig.panes("lnnoautoresume")
+            .iter()
+            .any(|(_, _, agent)| agent == "_watchdog"),
+        "a resume without the variable starts the watchdog the settings ask for"
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while ae::watchdog_glue::read_pid(&dir).is_none() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(
+        ae::watchdog_glue::read_pid(&dir).is_some(),
+        "the watchdog daemon published its pid"
+    );
+
+    // Back WITH the suppression against the running session: the live daemon
+    // keeps its verdicts.
+    let mut again = rig.launch_command_no_autostart(&["--local", "lnnoautoresume"]);
+    let out = again
+        .output()
+        .unwrap_or_else(|why| panic!("the ae binary should run: {why}"));
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let (ok, status) = rig.tmux(&[
+        "show-options",
+        "-v",
+        "-t",
+        "lnnoautoresume",
+        ae::tmux::WATCHDOG_STATUS_OPTION,
+    ]);
+    assert!(ok, "{status}");
+    assert_ne!(
+        status.trim(),
+        ae::theme::watchdog_off_segment(&ae::theme::Look::DEFAULT),
+        "a suppressed re-launch must not claim a live watchdog is off: {status}"
+    );
 }
 
 #[test]
