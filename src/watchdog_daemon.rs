@@ -13023,16 +13023,34 @@ mod tests {
     fn a_nudge_without_an_ended_wait_keeps_todays_text_and_summary() {
         use super::nudge_words;
         let meta = Path::new("/home/x/.ae/sessions/demo");
-        let (text, summary) = nudge_words(None, meta, None, "idle 449m", None, None);
-        assert_eq!(text, nudge_text(None, meta, None));
-        assert_eq!(summary, "idle 449m, no recent ae activity");
-        let (text, summary) = nudge_words(None, meta, Some(300), "idle 5m", None, None);
-        assert_eq!(text, idle_nudge_text(None, meta, None));
-        assert_eq!(summary, "idle 5m, harness waiting at input");
         let reason = "waiting on 1 request";
-        let (text, summary) = nudge_words(None, meta, Some(300), "idle 5m", Some(reason), None);
-        assert_eq!(text, idle_nudge_text_waiting(None, meta, reason, None));
-        assert_eq!(summary, "idle 5m, waiting on 1 request");
+        let cases = [
+            (None, None, "idle 449m", nudge_text(None, meta, None)),
+            (
+                Some(300),
+                None,
+                "idle 5m",
+                idle_nudge_text(None, meta, None),
+            ),
+            (
+                Some(300),
+                Some(reason),
+                "idle 5m",
+                idle_nudge_text_waiting(None, meta, reason, None),
+            ),
+        ];
+        let summaries = [
+            "idle 449m, no recent ae activity",
+            "idle 5m, harness waiting at input",
+            "idle 5m, waiting on 1 request",
+        ];
+        for ((idle_age, waiting, display, text), summary) in cases.into_iter().zip(summaries) {
+            assert_eq!(
+                nudge_words(None, meta, idle_age, display, waiting, None),
+                (text, summary.to_owned()),
+                "{display}/{waiting:?}"
+            );
+        }
     }
 
     /// #172 end to end through the Nudge arm: what the daemon BOOKS carries the

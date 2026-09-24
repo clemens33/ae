@@ -3317,17 +3317,16 @@ mod tests {
         };
         // #172: the nudge that follows a wait ended on input carries this
         // clause, and it must never read back as a challenge.
-        let ended = crate::watchdog_daemon::WaitEnded {
-            kind: QuietKind::WaitingUser,
-            input_age_secs: 120,
-        };
         let (_, noted) = crate::watchdog_daemon::nudge_words(
             None,
             std::path::Path::new("/m"),
             None,
             "idle 5m",
             None,
-            Some(ended),
+            Some(crate::watchdog_daemon::WaitEnded {
+                kind: QuietKind::WaitingUser,
+                input_age_secs: 120,
+            }),
         );
         assert_eq!(
             challenge_named(&noted),
