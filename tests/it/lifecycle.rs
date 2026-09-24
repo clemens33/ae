@@ -1581,6 +1581,315 @@ fn review_end_confirmation_must_not_silently_change_keep_to_purge() {
 }
 
 #[test]
+fn an_end_refuses_a_target_renamed_while_its_confirmation_was_open() {
+    let rig = Rig::new("renwin");
+    let (controller_pane, _client) = rig.attach_client();
+    let moved = format!("{}moved", rig.name);
+    let (code, out, err) = std::thread::scope(|scope| {
+        let waiting = scope.spawn(|| rig.run_inside(&["end"]));
+        let mut shown = false;
+        for _ in 0..200 {
+            let (_, screen) = rig.tmux(&["capture-pane", "-p", "-t", &controller_pane]);
+            if screen.contains("Archives, then deletes its state. (y/n)") {
+                shown = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        assert!(shown, "the client displays the prompt");
+        assert!(
+            rig.tmux(&["rename-session", "-t", &format!("={}", rig.name), &moved])
+                .0,
+            "the rename lands while the prompt waits"
+        );
+        assert!(rig.tmux(&["send-keys", "-t", &controller_pane, "y"]).0);
+        waiting.join().expect("caller")
+    });
+    assert_eq!(code, Some(0), "{out} {err}");
+    let mut events = String::new();
+    for _ in 0..400 {
+        events = std::fs::read_to_string(rig.dir.join("events.jsonl")).unwrap_or_default();
+        if !exists(&rig.dir) || events.contains("\"action\":\"end-result\"") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    let (_, names) = rig.tmux(&["list-sessions", "-F", "#{session_name}"]);
+    assert!(
+        names.lines().any(|name| name == moved),
+        "the renamed session lives: {names:?}"
+    );
+    assert!(exists(&rig.dir), "a refused end preserves live state");
+    assert!(!exists(&rig.archive()), "no archive for a refused end");
+    assert!(events.contains("\"action\":\"end-result\""), "{events}");
+    assert!(
+        events.contains(&format!(
+            "the tmux session confirmed for '{}' is gone",
+            rig.name
+        )),
+        "the lock-time identity refusal is the cause: {events}"
+    );
+}
+
+#[test]
+fn a_terminal_end_refuses_a_target_renamed_between_answer_and_lock() {
+    let rig = Rig::new("termren");
+    let moved = format!("{}moved", rig.name);
+    let lock = rig
+        .home
+        .join("sessions")
+        .join(format!(".lifecycle.{}.lock", rig.name));
+    let held = ae::store::lock(&lock, Duration::ZERO).expect("the fixture holds the lock");
+    let stdin_path = rig.home.join("stdin");
+    let stderr_path = rig.home.join("stderr");
+    std::fs::write(&stdin_path, b"y\n").expect("the answer");
+    let mut cmd = ae();
+    cmd.env("AE_HOME", &rig.home);
+    cmd.env_remove("TMUX");
+    cmd.env_remove("TMUX_PANE");
+    cmd.args(["_end", rig.name.as_str()]);
+    cmd.stdin(std::fs::File::open(&stdin_path).expect("the answer file"));
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::fs::File::create(&stderr_path).expect("the stderr file"));
+    let child = cmd.spawn().expect("the ae binary should run");
+    let mut prompted = false;
+    for _ in 0..400 {
+        let seen = std::fs::read_to_string(&stderr_path).unwrap_or_default();
+        if seen.contains("Continue? [y/N]") {
+            prompted = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert!(prompted, "the prompt is printed before the lock");
+    assert!(
+        rig.tmux(&["rename-session", "-t", &format!("={}", rig.name), &moved])
+            .0,
+        "the rename lands between the answer and the lock"
+    );
+    drop(held);
+    let out = bounded(child, Duration::from_secs(30)).expect("the core returned");
+    // The child's stderr went to the file, so the reaped output carries none.
+    let stderr = std::fs::read_to_string(&stderr_path).unwrap_or_default();
+    let (_, names) = rig.tmux(&["list-sessions", "-F", "#{session_name}"]);
+    assert!(
+        names.lines().any(|name| name == moved),
+        "the renamed session lives: {names:?}"
+    );
+    assert!(exists(&rig.dir), "a refused end preserves live state");
+    assert!(!exists(&rig.archive()), "no archive for a refused end");
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains(&format!(
+            "the tmux session confirmed for '{}' is gone",
+            rig.name
+        )),
+        "the lock-time identity refusal is the cause: {stderr}"
+    );
+}
+
+#[test]
+fn an_end_refuses_when_the_prompt_could_not_see_tmux_and_the_name_is_absent() {
+    let rig = Rig::new("sightun");
+    assert!(
+        rig.tmux(&["kill-server"]).0,
+        "the recorded server goes away"
+    );
+    std::fs::remove_file(&rig.sock).ok();
+    let lock = rig
+        .home
+        .join("sessions")
+        .join(format!(".lifecycle.{}.lock", rig.name));
+    let held = ae::store::lock(&lock, Duration::ZERO).expect("the fixture holds the lock");
+    let (code, out, err) = rig.run(&["_end", "--handoff", &rig.name]);
+    assert_eq!(code, Some(0), "stdout: {out}\nstderr: {err}");
+    assert!(
+        rig.tmux(&["-f", "/dev/null", "new-session", "-d", "-s", "other", "sh"])
+            .0,
+        "a new server answers at the same socket path"
+    );
+    drop(held);
+    let mut events = String::new();
+    for _ in 0..400 {
+        events = std::fs::read_to_string(rig.dir.join("events.jsonl")).unwrap_or_default();
+        if !exists(&rig.dir) || events.contains("\"action\":\"end-result\"") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert!(exists(&rig.dir), "a refused end preserves live state");
+    assert!(!exists(&rig.archive()), "no archive for a refused end");
+    assert!(events.contains("\"action\":\"end-result\""), "{events}");
+    assert!(
+        events.contains("could not see its tmux server when it was confirmed"),
+        "the lock-time unobservable refusal is the cause: {events}"
+    );
+}
+
+/// Hand-built carried plans: the supervisor's own inner shape (`-f` plus the
+/// confirmed flags), for pinning the re-proof matrix deterministically.
+fn confirmed_argv(name: &str, detail: &str, tmux: &str) -> Vec<String> {
+    vec![
+        "_end".to_owned(),
+        "-f".to_owned(),
+        name.to_owned(),
+        format!("--confirmed-target={name}"),
+        "--confirmed-action=keep".to_owned(),
+        format!("--confirmed-detail={detail}"),
+        "--confirmed-purge=off".to_owned(),
+        "--confirmed-source=explicit".to_owned(),
+        format!("--confirmed-tmux={tmux}"),
+        "--keep-history".to_owned(),
+    ]
+}
+
+fn live_identity(rig: &Rig) -> (String, String) {
+    let (_, listed) = rig.tmux(&[
+        "list-sessions",
+        "-F",
+        "#{session_id} | #{session_created} | #{session_name}",
+    ]);
+    listed
+        .lines()
+        .find_map(|line| {
+            let mut fields = line.split(" | ");
+            let id = fields.next()?;
+            let created = fields.next()?;
+            let held = fields.next()?;
+            (held == rig.name).then(|| (id.to_owned(), created.to_owned()))
+        })
+        .expect("the live identity")
+}
+
+#[test]
+fn an_end_of_a_stopped_session_keeps_the_confirmed_absence() {
+    let rig = Rig::new("stopabs");
+    let (code, _, err) = rig.run(&["_stop", &rig.name]);
+    assert_eq!(code, Some(0), "{err}");
+    assert!(!rig.session_is_live());
+
+    let (code, out, err) = rig.run(&["_end", "--handoff", &rig.name]);
+    assert_eq!(code, Some(0), "stdout: {out}\nstderr: {err}");
+    for _ in 0..200 {
+        if exists(&rig.archive()) && !exists(&rig.dir) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert!(exists(&rig.archive()), "the archive is published");
+    assert!(!exists(&rig.dir), "the live state is gone");
+}
+
+#[test]
+fn an_end_refuses_a_session_that_resumed_after_its_confirmation() {
+    let rig = Rig::new("resumed");
+    let detail = rig.archive().display().to_string();
+    let argv = confirmed_argv(&rig.name, &detail, "absent");
+    let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
+
+    let (code, out, err) = rig.run(&refs);
+    assert_eq!(code, Some(1), "stdout: {out}\nstderr: {err}");
+    assert!(err.contains("is live again"), "{err}");
+    assert!(rig.session_is_live(), "the resumed session survives");
+    assert!(exists(&rig.dir), "live state preserved");
+    assert!(!exists(&rig.archive()), "no archive for a refused end");
+}
+
+#[test]
+fn an_end_refuses_when_the_name_now_holds_another_session() {
+    let rig = Rig::new("stranger");
+    let before = live_identity(&rig);
+    assert!(
+        rig.tmux(&["kill-session", "-t", &format!("={}", rig.name)])
+            .0,
+        "the confirmed session dies"
+    );
+    // Any 1.1 s interval crosses an epoch-second boundary, so `created`
+    // differs deterministically.
+    std::thread::sleep(Duration::from_millis(1100));
+    assert!(
+        rig.tmux(&[
+            "-f",
+            "/dev/null",
+            "new-session",
+            "-d",
+            "-s",
+            &rig.name,
+            "sh"
+        ])
+        .0,
+        "a stranger takes the name"
+    );
+    let after = live_identity(&rig);
+    assert_eq!(
+        before.0, after.0,
+        "the $id is reused, so created carries the proof"
+    );
+    assert_ne!(before.1, after.1, "created differs");
+    let detail = rig.archive().display().to_string();
+    let argv = confirmed_argv(&rig.name, &detail, &format!("{}|{}", before.0, before.1));
+    let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
+
+    let (code, out, err) = rig.run(&refs);
+    assert_eq!(code, Some(1), "stdout: {out}\nstderr: {err}");
+    assert!(
+        err.contains("is a different tmux session than the one confirmed"),
+        "{err}"
+    );
+    assert!(rig.session_is_live(), "the stranger survives");
+    assert!(exists(&rig.dir), "live state preserved");
+    assert!(!exists(&rig.archive()), "no archive for a refused end");
+}
+
+#[test]
+fn an_end_refuses_when_the_server_record_is_lost_after_confirmation() {
+    let rig = Rig::new("reclost");
+    let (id, created) = live_identity(&rig);
+    let meta = std::fs::read_to_string(rig.dir.join("meta")).expect("meta");
+    let kept: Vec<&str> = meta
+        .lines()
+        .filter(|line| !line.starts_with("tmux_server"))
+        .collect();
+    std::fs::write(rig.dir.join("meta"), kept.join("\n") + "\n").expect("record removed");
+    let detail = rig.archive().display().to_string();
+    let argv = confirmed_argv(&rig.name, &detail, &format!("{id}|{created}"));
+    let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
+
+    let (code, out, err) = rig.run(&refs);
+    assert_eq!(code, Some(1), "stdout: {out}\nstderr: {err}");
+    assert!(
+        err.contains("has no positive server record, so ae cannot prove what was confirmed"),
+        "{err}"
+    );
+    assert!(rig.session_is_live(), "the session survives");
+    assert!(exists(&rig.dir), "live state preserved");
+    assert!(!exists(&rig.archive()), "no archive for a refused end");
+}
+
+#[test]
+fn a_carried_end_plan_without_tmux_is_refused() {
+    let rig = Rig::new("wireerr");
+    let detail = rig.archive().display().to_string();
+    let argv = vec![
+        "_end".to_owned(),
+        "-f".to_owned(),
+        rig.name.clone(),
+        format!("--confirmed-target={}", rig.name),
+        "--confirmed-action=keep".to_owned(),
+        format!("--confirmed-detail={detail}"),
+        "--confirmed-purge=off".to_owned(),
+        "--confirmed-source=explicit".to_owned(),
+        "--keep-history".to_owned(),
+    ];
+    let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let (code, _, err) = rig.run(&refs);
+    assert_eq!(code, Some(2), "{err}");
+    assert!(err.contains("incomplete"), "{err}");
+    assert!(rig.session_is_live(), "nothing was touched");
+    assert!(exists(&rig.dir), "live state preserved");
+}
+
+#[test]
 fn self_is_a_claim_about_one_session_and_cannot_be_combined_with_all() {
     let mut cmd = ae();
     cmd.env("AE_HOME", "/tmp");

@@ -21,7 +21,7 @@ use crate::transport;
 
 use super::{
     ClientPrompt, DetachedArgv, all_sessions, announce_to_clients, confirm_on_client, dir_exists,
-    emit_lifecycle_event, handoff_clients_before_kill, kill_verified, live_id, lock, meta_value,
+    emit_lifecycle_event, handoff_clients_before_kill, kill_verified, lock, meta_value,
     name_is_usable, path_exists, recorded_server, server_of, sessions_dir, worktrees_dir,
 };
 
@@ -82,6 +82,9 @@ struct ConfirmedPlan {
     /// The history choice came from config, so config remains part of the
     /// changed-plan check under the lifecycle lock.
     from_default: bool,
+    /// The tmux incarnation observed in the same resolution that rendered the
+    /// prompt, re-proven under the lifecycle lock.
+    tmux: FrozenTmux,
 }
 
 #[derive(Default)]
@@ -91,6 +94,193 @@ struct ConfirmedParts {
     detail: Option<String>,
     purge: Option<bool>,
     from_default: Option<bool>,
+    tmux: Option<FrozenTmux>,
+}
+
+/// One tmux look at a positively recorded server — the ONE reading helper the
+/// prompt resolution and the under-lock re-proof share, in today's read shape:
+/// a listing hit IS presence; only a miss pays for the strict probe.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TmuxSight {
+    Live { id: String, created: String },
+    Absent,
+    Unknown,
+}
+
+fn sight(server: &ServerId, name: &str) -> TmuxSight {
+    if let Some(identity) = transport::observe_session_identity(server, name) {
+        return TmuxSight::Live {
+            id: identity.id,
+            created: identity.created,
+        };
+    }
+    if transport::verify_session_absent(server, name) == StopProbe::Absent {
+        TmuxSight::Absent
+    } else {
+        TmuxSight::Unknown
+    }
+}
+
+/// The prompt-time tmux reading, frozen with the plan and re-proven under the
+/// lifecycle lock. `Unobserved` promises nothing: no positive server record at
+/// the prompt, or `-f`, which freezes nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum FrozenTmux {
+    Live { id: String, created: String },
+    Absent,
+    Unknown,
+    Unobserved,
+}
+
+impl FrozenTmux {
+    /// The prompt saw a positively recorded server, so the lock must re-prove
+    /// against one; a lost record is a refusal, not a sweep.
+    fn had_record(&self) -> bool {
+        !matches!(self, Self::Unobserved)
+    }
+
+    /// The `Confirmed:` line of a refusal.
+    fn describe(&self) -> String {
+        match self {
+            Self::Live { id, created } => describe_live(id, created),
+            Self::Absent => "no tmux session (observed absent)".to_owned(),
+            Self::Unknown => "tmux unobservable (server unreachable)".to_owned(),
+            Self::Unobserved => "nothing (no tmux promise)".to_owned(),
+        }
+    }
+
+    /// Parse the `--confirmed-tmux=` word: `absent`, `unknown`,
+    /// `unobserved`, or `$<n>|<created>`.
+    fn from_word(word: &str) -> Option<Self> {
+        match word {
+            "absent" => Some(Self::Absent),
+            "unknown" => Some(Self::Unknown),
+            "unobserved" => Some(Self::Unobserved),
+            live => {
+                let (id, created) = live.split_once('|')?;
+                if !crate::tmux::session_id_is_valid(id) || !crate::tmux::is_decimal(created) {
+                    return None;
+                }
+                Some(Self::Live {
+                    id: id.to_owned(),
+                    created: created.to_owned(),
+                })
+            }
+        }
+    }
+
+    /// The `--confirmed-tmux=` word.
+    fn word(&self) -> String {
+        match self {
+            Self::Absent => "absent".to_owned(),
+            Self::Unknown => "unknown".to_owned(),
+            Self::Unobserved => "unobserved".to_owned(),
+            Self::Live { id, created } => format!("{id}|{created}"),
+        }
+    }
+}
+
+impl TmuxSight {
+    /// The `Now:` line of a refusal.
+    fn describe(&self, name: &str) -> String {
+        match self {
+            Self::Live { id, created } => describe_live(id, created),
+            Self::Absent => format!("no session '{name}' on its recorded server"),
+            Self::Unknown => "recorded tmux server unreachable".to_owned(),
+        }
+    }
+}
+
+fn describe_live(id: &str, created: &str) -> String {
+    format!("tmux {id} (created {created})")
+}
+
+/// What the re-proof found — PURE, table-tested: every frozen × seen cell.
+enum Reproof {
+    /// Proceed exactly as today: a match, nothing promised, or an unreachable
+    /// server the existing assume-stopped rule still governs.
+    Proceed,
+    /// Refuse; the first line of the refusal, naming the mismatch.
+    Refuse(String),
+}
+
+/// Re-prove the frozen incarnation against the under-lock sight. A target
+/// that no longer matches is refused with both versions; nothing is touched.
+fn reprove(name: &str, frozen: &FrozenTmux, seen: &TmuxSight) -> Reproof {
+    match (frozen, seen) {
+        (
+            FrozenTmux::Live { id, created },
+            TmuxSight::Live {
+                id: now,
+                created: born,
+            },
+        ) if id == now && created == born => Reproof::Proceed,
+        (FrozenTmux::Live { .. }, TmuxSight::Live { .. }) => Reproof::Refuse(format!(
+            "'{name}' is a different tmux session than the one confirmed."
+        )),
+        (FrozenTmux::Live { .. }, TmuxSight::Absent) => {
+            Reproof::Refuse(format!("the tmux session confirmed for '{name}' is gone."))
+        }
+        (FrozenTmux::Absent, TmuxSight::Live { .. }) => Reproof::Refuse(format!(
+            "'{name}' is live again, but it was absent when confirmed."
+        )),
+        (FrozenTmux::Unknown, TmuxSight::Live { .. }) => Reproof::Refuse(format!(
+            "'{name}' holds a tmux session ae could not see when it was confirmed."
+        )),
+        (FrozenTmux::Unknown, TmuxSight::Absent) => Reproof::Refuse(format!(
+            "'{name}' is absent, but ae could not see its tmux server when it was confirmed."
+        )),
+        (FrozenTmux::Absent, TmuxSight::Absent)
+        | (FrozenTmux::Unobserved, _)
+        | (_, TmuxSight::Unknown) => Reproof::Proceed,
+    }
+}
+
+/// One target's frozen question: the plan the prompt rendered plus the tmux
+/// incarnation observed in that same resolution.
+struct FrozenTarget {
+    name: String,
+    plan: Plan,
+    tmux: FrozenTmux,
+}
+
+/// One target's frozen question: the carried plan when one rode in, else the
+/// freshly resolved plan plus the tmux reading — unless `-f`, which freezes
+/// nothing because nothing was promised.
+fn freeze_target(root: &Path, args: &Args, name: &str) -> FrozenTarget {
+    if let Some(confirmed) = confirmed_for(args, name) {
+        FrozenTarget {
+            name: name.to_owned(),
+            plan: confirmed.plan.clone(),
+            tmux: confirmed.tmux.clone(),
+        }
+    } else {
+        let plan = resolve_plan(root, name, args.purge_cli);
+        let tmux = if args.force {
+            FrozenTmux::Unobserved
+        } else {
+            freeze_tmux(root, name)
+        };
+        FrozenTarget {
+            name: name.to_owned(),
+            plan,
+            tmux,
+        }
+    }
+}
+
+/// The prompt-time tmux reading for `name` on its positively recorded server,
+/// or `Unobserved` when there is no record to observe on.
+fn freeze_tmux(root: &Path, name: &str) -> FrozenTmux {
+    let bytes = meta::read_bytes(&sessions_dir(root).join(name)).unwrap_or_default();
+    let ServerSelector::Positive(selector) = server_of(&bytes) else {
+        return FrozenTmux::Unobserved;
+    };
+    match sight(&ServerId::Selected(selector), name) {
+        TmuxSight::Live { id, created } => FrozenTmux::Live { id, created },
+        TmuxSight::Absent => FrozenTmux::Absent,
+        TmuxSight::Unknown => FrozenTmux::Unknown,
+    }
 }
 
 impl Plan {
@@ -237,15 +427,9 @@ pub(crate) fn run(
 
     // ONE resolution: the prompt renders from these fields and the frozen
     // contract is built from the same ones.
-    let frozen: Vec<(String, Plan)> = targets
+    let frozen: Vec<FrozenTarget> = targets
         .iter()
-        .map(|name| {
-            let plan = confirmed_for(&args, name).map_or_else(
-                || resolve_plan(root, name, args.purge_cli),
-                |confirmed| confirmed.plan.clone(),
-            );
-            (name.clone(), plan)
-        })
+        .map(|name| freeze_target(root, &args, name))
         .collect();
 
     if args.mode == RunMode::Handoff {
@@ -347,12 +531,12 @@ pub(crate) fn run(
 
     // EXACTLY the list the human was shown.
     let mut failures = 0_u32;
-    for (name, plan) in &frozen {
+    for target in &frozen {
         // `-f` freezes nothing, because nothing was promised.
-        let contract = confirmed_for(&args, name)
-            .map(|confirmed| &confirmed.plan)
-            .or_else(|| (!args.force).then_some(plan));
-        if !end_one(root, name, &args, contract, out, err)? {
+        let contract = confirmed_for(&args, &target.name)
+            .map(|confirmed| (&confirmed.plan, &confirmed.tmux))
+            .or_else(|| (!args.force).then_some((&target.plan, &target.tmux)));
+        if !end_one(root, &target.name, &args, contract, out, err)? {
             failures += 1;
         }
     }
@@ -366,6 +550,10 @@ pub(crate) fn run(
     Ok(0)
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the six confirmed-* flags share one argv shape; splitting the match would put the wire grammar in two places"
+)]
 fn parse(tail: &[String]) -> Result<Args, String> {
     let mut args = Args {
         target: String::new(),
@@ -430,6 +618,13 @@ fn parse(tail: &[String]) -> Result<Args, String> {
                 };
                 last_confirmed(&mut confirmed, flag)?.from_default = Some(from_default);
             }
+            flag if flag.starts_with("--confirmed-tmux=") => {
+                let word = flag.strip_prefix("--confirmed-tmux=").unwrap_or_default();
+                let Some(tmux) = FrozenTmux::from_word(word) else {
+                    return Err(format!("Error: invalid carried tmux identity '{word}'."));
+                };
+                last_confirmed(&mut confirmed, flag)?.tmux = Some(tmux);
+            }
             flag if flag.starts_with('-') => {
                 return Err(format!(
                     "Error: unknown flag '{flag}'. Use -f, --purge-history, --keep-history, --assume-stopped."
@@ -447,9 +642,13 @@ fn parse(tail: &[String]) -> Result<Args, String> {
     args.confirmed = confirmed
         .into_iter()
         .map(|parts| {
-            let (Some(action), Some(detail), Some(purge), Some(from_default)) =
-                (parts.action, parts.detail, parts.purge, parts.from_default)
-            else {
+            let (Some(action), Some(detail), Some(purge), Some(from_default), Some(tmux)) = (
+                parts.action,
+                parts.detail,
+                parts.purge,
+                parts.from_default,
+                parts.tmux,
+            ) else {
                 return Err(format!(
                     "Error: carried end plan for '{}' is incomplete.",
                     parts.name
@@ -463,6 +662,7 @@ fn parse(tail: &[String]) -> Result<Args, String> {
                     purge,
                 },
                 from_default,
+                tmux,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -484,23 +684,24 @@ fn confirmed_for<'a>(args: &'a Args, name: &str) -> Option<&'a ConfirmedPlan> {
         .find(|confirmed| confirmed.name == name)
 }
 
-fn confirmed_plans(args: &Args, frozen: &[(String, Plan)]) -> Vec<ConfirmedPlan> {
+fn confirmed_plans(args: &Args, frozen: &[FrozenTarget]) -> Vec<ConfirmedPlan> {
     if !args.confirmed.is_empty() {
         return args.confirmed.clone();
     }
     frozen
         .iter()
-        .map(|(name, plan)| ConfirmedPlan {
-            name: name.clone(),
-            plan: plan.clone(),
+        .map(|target| ConfirmedPlan {
+            name: target.name.clone(),
+            plan: target.plan.clone(),
             from_default: args.purge_cli.is_none(),
+            tmux: target.tmux.clone(),
         })
         .collect()
 }
 
-fn end_prompt(name: &str, frozen: &[(String, Plan)]) -> String {
-    let has_purge = frozen.iter().any(|(_, plan)| plan.purge);
-    let has_keep = frozen.iter().any(|(_, plan)| !plan.purge);
+fn end_prompt(name: &str, frozen: &[FrozenTarget]) -> String {
+    let has_purge = frozen.iter().any(|target| target.plan.purge);
+    let has_keep = frozen.iter().any(|target| !target.plan.purge);
     let consequence = match (has_keep, has_purge) {
         (true, false) => "Archives, then deletes its state.",
         (false, true) => "Deletes its state and purges the agent history.",
@@ -529,6 +730,7 @@ fn push_confirmed(command: &mut Vec<String>, confirmed: &ConfirmedPlan) {
             "explicit"
         }
     ));
+    command.push(format!("--confirmed-tmux={}", confirmed.tmux.word()));
     command.push(
         if confirmed.plan.purge {
             "--purge-history"
@@ -568,7 +770,7 @@ fn supervisor_args(core: String, args: &Args, confirmed: &ConfirmedPlan) -> Deta
 
 /// The short-lived tmux job's exact argv. It records intent, starts the
 /// detached worker and exits before the target session is killed.
-fn handoff_argv(args: &Args, frozen: &[(String, Plan)]) -> Option<DetachedArgv> {
+fn handoff_argv(args: &Args, frozen: &[FrozenTarget]) -> Option<DetachedArgv> {
     let own = crate::shape::resolved_exe()?;
     let mut command = vec![
         own.to_string_lossy().into_owned(),
@@ -703,14 +905,14 @@ fn run_supervised(
 fn handoff(
     root: &Path,
     args: &Args,
-    frozen: &[(String, Plan)],
+    frozen: &[FrozenTarget],
     caller_session: Option<&str>,
     report_start: bool,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> io::Result<u8> {
     let carried = confirmed_plans(args, frozen);
-    let mut ordered: Vec<&String> = frozen.iter().map(|(name, _)| name).collect();
+    let mut ordered: Vec<&String> = frozen.iter().map(|target| &target.name).collect();
     ordered.sort_by_key(|name| u8::from(caller_session == Some(name.as_str())));
     let Some(supervisors) = ordered
         .iter()
@@ -731,10 +933,10 @@ fn handoff(
         return Ok(EXIT_FAILED);
     };
     let requested = request_summary(args.pane.as_deref());
-    for (name, _) in frozen {
+    for target in frozen {
         emit_lifecycle_event(
-            &sessions_dir(root).join(name),
-            name,
+            &sessions_dir(root).join(&target.name),
+            &target.name,
             END_REQUEST_ACTION,
             &requested,
         );
@@ -792,7 +994,7 @@ fn read_reply() -> Option<String> {
 fn confirm_body(
     root: &Path,
     args: &Args,
-    frozen: &[(String, Plan)],
+    frozen: &[FrozenTarget],
     err: &mut impl Write,
 ) -> io::Result<()> {
     if args.target == "all" {
@@ -800,8 +1002,8 @@ fn confirm_body(
     } else {
         writeln!(err, "This will END the session:")?;
     }
-    for (name, plan) in frozen {
-        writeln!(err, "{}", plan.line(name))?;
+    for target in frozen {
+        writeln!(err, "{}", target.plan.line(&target.name))?;
     }
     if frozen.is_empty() {
         writeln!(err, "  (none)")?;
@@ -967,7 +1169,7 @@ fn end_one(
     root: &Path,
     name: &str,
     args: &Args,
-    contract: Option<&Plan>,
+    contract: Option<(&Plan, &FrozenTmux)>,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> io::Result<bool> {
@@ -1000,16 +1202,16 @@ fn end_one(
     //        nothing, or
     //    (c) the target's POSITIVE record names a server that verifiably lacks
     //        the session.
+    let frozen_tmux = contract.map(|(_, tmux)| tmux);
     let selector = server_of(&bytes);
     let mut session_id: Option<String> = None;
     let mut server = None;
+    let mut seen: Option<TmuxSight> = None;
     match selector {
         ServerSelector::Positive(sel) => {
             let id = ServerId::Selected(sel);
-            session_id = live_id(&id, name);
-            if session_id.is_none()
-                && transport::verify_session_absent(&id, name) == StopProbe::Unknown
-            {
+            let reading = sight(&id, name);
+            if reading == TmuxSight::Unknown {
                 if args.assume_stopped && boot_proved_stopped(&dir, &id, name) {
                     writeln!(
                         out,
@@ -1023,9 +1225,30 @@ fn end_one(
                     return Ok(false);
                 }
             }
+            if let TmuxSight::Live { id: live, .. } = &reading {
+                session_id = Some(live.clone());
+            }
+            seen = Some(reading);
             server = Some(id);
         }
         ServerSelector::Missing | ServerSelector::Ambiguous => {
+            // The prompt saw a positively recorded server, so the lock must
+            // re-prove against one; a lost record is a refusal, never a sweep.
+            if let Some(tmux) = frozen_tmux
+                && tmux.had_record()
+            {
+                writeln!(
+                    err,
+                    "Error: '{name}' has no positive server record, so ae cannot prove what was confirmed."
+                )?;
+                writeln!(err, "  Confirmed: {}", tmux.describe())?;
+                writeln!(err, "  Now:       no positive server record")?;
+                writeln!(
+                    err,
+                    "  Nothing was stopped and nothing was deleted. Re-run 'ae end {name}' to see the current plan."
+                )?;
+                return Ok(false);
+            }
             // No positive ownership record.
             match sweep(root, name) {
                 Sweep::Found(where_) => {
@@ -1099,10 +1322,24 @@ fn end_one(
         )?;
         return Ok(false);
     }
+    // The frozen incarnation no longer matches what the lock sees: refuse
+    // before anything is stopped, with both versions.
+    if let (Some(tmux), Some(reading)) = (frozen_tmux, seen.as_ref())
+        && let Reproof::Refuse(first) = reprove(name, tmux, reading)
+    {
+        writeln!(err, "Error: {first}")?;
+        writeln!(err, "  Confirmed: {}", tmux.describe())?;
+        writeln!(err, "  Now:       {}", reading.describe(name))?;
+        writeln!(
+            err,
+            "  Nothing was stopped and nothing was deleted. Re-run 'ae end {name}' to see the current plan."
+        )?;
+        return Ok(false);
+    }
     // A contract that no longer matches the one confirmed is caught here too,
     // not only at the archive step: the step is the backstop under the lock,
     // but by then the session has been stopped.
-    if let Some(frozen) = contract
+    if let Some((frozen, _)) = contract
         && *frozen != plan
     {
         writeln!(
@@ -2018,33 +2255,32 @@ fn socket_dir(root: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Action, ConfirmedPlan, Plan, end_prompt, parse, path_exists, purge_conversation_files,
-        sanitize_branch_name, supervisor_args,
+        Action, ConfirmedPlan, FrozenTarget, FrozenTmux, Plan, Reproof, TmuxSight, end_prompt,
+        freeze_target, parse, path_exists, purge_conversation_files, reprove, sanitize_branch_name,
+        supervisor_args,
     };
     use std::path::{Path, PathBuf};
 
+    fn frozen(name: &str, purge: bool) -> FrozenTarget {
+        FrozenTarget {
+            name: name.to_owned(),
+            plan: Plan {
+                action: if purge { Action::Purge } else { Action::Keep },
+                detail: "/archive/id".to_owned(),
+                purge,
+            },
+            tmux: FrozenTmux::Unobserved,
+        }
+    }
+
     #[test]
     fn the_in_pane_end_prompt_names_the_session_and_the_consequence() {
-        let keep = vec![(
-            "inside".to_owned(),
-            Plan {
-                action: Action::Keep,
-                detail: "/archive/id".to_owned(),
-                purge: false,
-            },
-        )];
+        let keep = vec![frozen("inside", false)];
         assert_eq!(
             end_prompt("inside", &keep),
             "End 'inside'? Archives, then deletes its state. (y/n)"
         );
-        let purge = vec![(
-            "inside".to_owned(),
-            Plan {
-                action: Action::Purge,
-                detail: "/archive/id".to_owned(),
-                purge: true,
-            },
-        )];
+        let purge = vec![frozen("inside", true)];
         assert_eq!(
             end_prompt("inside", &purge),
             "End 'inside'? Deletes its state and purges the agent history. (y/n)"
@@ -2063,6 +2299,10 @@ mod tests {
                 purge: false,
             },
             from_default: true,
+            tmux: FrozenTmux::Live {
+                id: "$3".to_owned(),
+                created: "1789100001".to_owned(),
+            },
         };
         assert_eq!(
             supervisor_args("/core".to_owned(), &args, &confirmed).as_args(),
@@ -2076,10 +2316,131 @@ mod tests {
                 "--confirmed-detail=/archive/id",
                 "--confirmed-purge=off",
                 "--confirmed-source=default",
+                "--confirmed-tmux=$3|1789100001",
                 "--keep-history",
                 "--assume-stopped",
             ]
         );
+    }
+
+    #[test]
+    fn a_forced_freeze_promises_no_tmux_reading() {
+        let root = std::env::temp_dir().join(format!("ae-end-force-freeze-{}", std::process::id()));
+        let dir = root.join("sessions").join("inside");
+        std::fs::create_dir_all(&dir).expect("a session dir");
+        // A positive record on a socket that cannot exist: the unforced
+        // freeze reads Unknown here, so `-f` reading Unobserved proves the
+        // flag skips the observation rather than the record missing it.
+        std::fs::write(
+            dir.join("meta"),
+            "schema=2\ntmux_server_kind=socket\ntmux_server=/nonexistent-ae-socket\n",
+        )
+        .expect("a meta with an unreachable record");
+        let forced = parse(&["-f".to_owned(), "inside".to_owned()]).expect("valid end args");
+        assert_eq!(
+            freeze_target(&root, &forced, "inside").tmux,
+            FrozenTmux::Unobserved
+        );
+        let asked = parse(&["inside".to_owned()]).expect("valid end args");
+        assert_eq!(
+            freeze_target(&root, &asked, "inside").tmux,
+            FrozenTmux::Unknown
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_carried_tmux_identity_round_trips_and_rejects_garbage() {
+        for (word, expected) in [
+            ("absent", FrozenTmux::Absent),
+            ("unknown", FrozenTmux::Unknown),
+            ("unobserved", FrozenTmux::Unobserved),
+            (
+                "$3|1789100001",
+                FrozenTmux::Live {
+                    id: "$3".to_owned(),
+                    created: "1789100001".to_owned(),
+                },
+            ),
+        ] {
+            let parsed = FrozenTmux::from_word(word).expect("a valid word");
+            assert_eq!(parsed, expected);
+            assert_eq!(parsed.word(), word);
+        }
+        for word in [
+            "",
+            "live",
+            "$3",
+            "1789100001",
+            "3|1789100001",
+            "$3|yesterday",
+            "$3|1|2",
+            "absent|x",
+        ] {
+            assert_eq!(FrozenTmux::from_word(word), None, "{word}");
+        }
+    }
+
+    #[test]
+    fn a_carried_plan_without_tmux_is_incomplete_not_a_weaker_proof() {
+        let tail = [
+            "inside",
+            "--confirmed-target=inside",
+            "--confirmed-action=keep",
+            "--confirmed-detail=/archive/id",
+            "--confirmed-purge=off",
+            "--confirmed-source=explicit",
+        ]
+        .map(ToOwned::to_owned);
+        let err = parse(&tail)
+            .err()
+            .expect("a plan without tmux is incomplete");
+        assert!(err.contains("incomplete"), "{err}");
+        let mut tail = tail.to_vec();
+        tail.push("--confirmed-tmux=bogus".to_owned());
+        let err = parse(&tail).err().expect("a bogus tmux word is refused");
+        assert!(err.contains("invalid carried tmux identity"), "{err}");
+    }
+
+    #[test]
+    fn the_reproof_table_covers_every_frozen_by_seen_cell() {
+        let live = |id: &str, created: &str| FrozenTmux::Live {
+            id: id.to_owned(),
+            created: created.to_owned(),
+        };
+        let seen = |id: &str, created: &str| TmuxSight::Live {
+            id: id.to_owned(),
+            created: created.to_owned(),
+        };
+        // (frozen, seen, proceeds?)
+        let rows = [
+            (live("$3", "1"), seen("$3", "1"), true),
+            (live("$3", "1"), seen("$3", "2"), false),
+            (live("$3", "1"), seen("$4", "1"), false),
+            (live("$3", "1"), TmuxSight::Absent, false),
+            (live("$3", "1"), TmuxSight::Unknown, true),
+            (FrozenTmux::Absent, seen("$3", "1"), false),
+            (FrozenTmux::Absent, TmuxSight::Absent, true),
+            (FrozenTmux::Absent, TmuxSight::Unknown, true),
+            (FrozenTmux::Unknown, seen("$3", "1"), false),
+            (FrozenTmux::Unknown, TmuxSight::Absent, false),
+            (FrozenTmux::Unknown, TmuxSight::Unknown, true),
+            (FrozenTmux::Unobserved, seen("$3", "1"), true),
+            (FrozenTmux::Unobserved, TmuxSight::Absent, true),
+            (FrozenTmux::Unobserved, TmuxSight::Unknown, true),
+        ];
+        for (frozen, seen, proceeds) in rows {
+            match reprove("zzq9", &frozen, &seen) {
+                Reproof::Proceed => assert!(proceeds, "{frozen:?} x {seen:?}"),
+                Reproof::Refuse(first) => {
+                    assert!(!proceeds, "{frozen:?} x {seen:?}");
+                    assert!(
+                        first.contains("'zzq9'"),
+                        "the refusal names the target: {first}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
