@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.166] - 2026-09-24
+- Read Opus 5.5 from a claude seat, and no model from a variant ae never measured
+- Name the ended wait in the nudge that follows input in the pane
+- Pin the note's footprint verdict for both nudge generators
+- Keep the no-note and challenge-parse pins lean
+- Say in the docs that the nudge names the ended wait
+
 ## [v2026.9.165] - 2026-09-24
 - Read Claude's exact post-/compact row above an empty box as idle
 - Name claude's folder-trust modal as a human-only prompt through an adapter row
