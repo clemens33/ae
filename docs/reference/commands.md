@@ -1973,7 +1973,10 @@ those are named for hand compaction), then a fresh durable checkpoint opened as
 request id, both bound to its live incarnation. Only when both facts land is the
 seat's compaction command pasted through the guarded deliver operation, which
 re-proves identity under the lifecycle lock first. Every outcome advances; the
-report carries one line per seat plus the hand-compaction line.
+report carries one line per seat, then `no seat admitted` when no seat passed
+the gate, then the hand-compaction line. A seat running `ae compact` itself is
+skipped `initiating seat` before its checkpoint, because it cannot answer while
+its tool waits on the run: run the verb from a shell outside every seat.
 
 `dispatched` means attempted: the command was pasted and Enter was sent; it is
 never proof of submission. `not dispatched (staged text)` means the seat's drawn
@@ -1982,6 +1985,16 @@ before any send. A box holding anything else then reads `dispatched`, its record
 marked `unconfirmed-input`. Any destructive
 flag (`-f`, `--force`, `--keep-history`, `--digest-only`, `--exec-plan`) on
 `ae compact` is refused with a pointer to the verb that owns it (`ae reboot`).
+
+After a dispatch the run watches the seat within a 10-minute polling budget: a
+sample already in flight at the deadline may finish past it, but is never accepted.
+`dispatched (observed idle)` means the seat's own frame read idle twice after the
+dispatch; it is never proof of compaction. `dispatched (unobserved: <reason>)`
+names why readiness was not seen: no launch stamp when the baseline is taken reads
+`guard unavailable`, which proves nothing about the session's age, and a held
+stamp that later disappears or changes reads `relaunched`. The run exits 1 when
+any admitted seat was not observed idle, including one skipped before its
+dispatch, and 0 when every admitted seat was, or none was admitted.
 
 ## `ae reboot [name]`
 

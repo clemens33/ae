@@ -615,3 +615,22 @@ fn a_writerless_fifo_swapped_in_after_lstat_is_refused_without_blocking() {
         "refused promptly"
     );
 }
+
+/// D4: a NONEMPTY roster whose every seat the gate refuses — the spawned gate,
+/// before any tmux read — says so on its own line and exits 0.
+#[test]
+fn a_run_that_admits_no_seat_says_so_and_exits_zero() {
+    let s = Scratch::new("none-admitted");
+    let dir = s.0.join("sessions").join("sess");
+    std::fs::create_dir_all(&dir).unwrap();
+    let meta = format!("session_id={UUID}\nseat.spawned.0=w\nagent_bin.spawned.0=claude\n");
+    std::fs::write(dir.join("meta"), meta).unwrap();
+
+    let out = public_with(&s, &["compact", "sess"], false);
+
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(
+        stdout(&out),
+        "skipped (spawned) spawned.0 (0s)\nno seat admitted\n"
+    );
+}

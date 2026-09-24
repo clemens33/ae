@@ -35,7 +35,7 @@ use super::phase2::run_tmux;
 const FAKE_TUI: &str = r#"#!/usr/bin/perl
 use strict;
 use warnings;
-my ($out, $enters, $cols, $kind, $marker_secs, $mode) = @ARGV;
+my ($out, $enters, $cols, $kind, $marker_secs, $mode, $control) = @ARGV;
 $cols ||= 400;
 $marker_secs ||= 0;
 $mode ||= '';
@@ -51,6 +51,14 @@ my $border = "\xe2\x94\x80" x $cols;              # U+2500, as bytes
 my $ornament = ($kind eq 'codex') ? "\xe2\x80\xba" : "\xe2\x9d\xaf";
 my $nbsp = "\xc2\xa0";
 my $started = time();
+# `compact`: Claude's frame, borders on both sides of the box and its footer
+# rows below; the row above the box is whatever the control file last said.
+my $above = "fake tui transcript";
+sub draw_claude {
+    my ($content) = @_;
+    print "\e[H\e[2J$above\r\n$border\r\n$ornament$nbsp$content\r\n$border\r\n";
+    print "\xf0\x9f\xa7\xa0 fake context\r\n\xe2\x8f\xb5\xe2\x8f\xb5 bypass permissions on\r\n";
+}
 sub markers {
     # The measured NOT-ready rows, at COLUMN 0, as the TUI draws them.
     print "\e[H\e[2J";
@@ -60,6 +68,7 @@ sub markers {
 sub draw {
     my ($content) = @_;
     $content =~ s/[\r\n]/ /g;
+    return draw_claude($content) if $mode eq 'compact';
     print "\e[H\e[2J";
     print "fake tui transcript\r\n";
     print "\e[1m$ornament\e[0m$nbsp$content\r\n";
@@ -81,6 +90,12 @@ while (1) {
     if ($marker_secs > 0 && time() - $started >= $marker_secs) {
         $marker_secs = 0;
         draw($buf);
+    }
+    if ($mode eq 'compact' && open(my $said, '<', $control)) {
+        my $row = <$said> // '';
+        close($said);
+        exit 0 if $row eq 'exit';
+        if ($row ne '' && $row ne $above) { $above = $row; draw($buf); }
     }
     my $ready = '';
     vec($ready, fileno(STDIN), 1) = 1;
@@ -185,10 +200,11 @@ impl Rig {
             enters,
         };
         let command = format!(
-            "exec perl {} {} {} 400 {tool} {marker_secs} {mode}",
+            "exec perl {} {} {} 400 {tool} {marker_secs} {mode} {}",
             script.display(),
             rig.received.display(),
             rig.enters.display(),
+            scratch.join("control").display(),
         );
         assert!(
             rig.tmux(&[
@@ -308,6 +324,289 @@ impl Rig {
     pub(crate) fn events(&self) -> String {
         std::fs::read_to_string(self.dir.join("events.jsonl")).unwrap_or_default()
     }
+
+    /// A claude seat `ae compact` admits: the Claude-shaped fake, the meta's
+    /// session id, the session's UUID option and a launch stamp to hold.
+    fn compact(tag: &str) -> Self {
+        let rig = Self::with_mode(tag, "claude", 0, "compact");
+        let set = [
+            "set-option",
+            "-t",
+            &rig.session,
+            "@ae_session_uuid",
+            COMPACT_UUID,
+        ];
+        assert!(rig.tmux(&set).0, "setup: the session UUID option");
+        let read = ["show-options", "-v", "-t", &rig.session, "@ae_session_uuid"];
+        assert_eq!(rig.tmux(&read).1.trim(), COMPACT_UUID, "setup: A1 option");
+        let meta = std::fs::read_to_string(rig.dir.join("meta")).unwrap_or_default();
+        let meta = format!("{meta}session_id={COMPACT_UUID}\n");
+        assert!(
+            std::fs::write(rig.dir.join("meta"), &meta).is_ok(),
+            "setup: the incarnation rows"
+        );
+        for key in [
+            "session_id=",
+            "seat.main=",
+            "agent_bin.main=",
+            "launch_id.main=",
+        ] {
+            assert_eq!(meta.matches(key).count(), 1, "setup: A1 {key} once");
+        }
+        rig.restamp("1789000000");
+        rig.await_frame("fake tui transcript");
+        assert!(
+            !deliver::input_busy(&rig.server(), &rig.pane, InputModel::BorderDelimited),
+            "setup: A2 an empty composer"
+        );
+        rig
+    }
+
+    /// Poll, bounded, until the PRODUCTION grammar judges the fake's frame by
+    /// `row`: a frame it cannot read fails here, as setup, never as behaviour.
+    fn await_frame(&self, row: &str) -> ae::harness_state::FrameReading {
+        for _ in 0..600 {
+            let frame =
+                ae::transport::capture_pane(&self.server(), &self.pane).and_then(|capture| {
+                    ae::harness_state::read_frame(&capture, ae::tool::ToolKind::Claude)
+                });
+            if let Some(frame) = frame.filter(|frame| frame.current.as_deref() == Some(row)) {
+                return frame;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        panic!("setup: no frame judged by {row}");
+    }
+
+    /// Take the launch stamp away, as a seat recorded before stamps existed.
+    fn unstamp(&self) {
+        let stamp = self.dir.join(ae::store::LAUNCH_ATTEMPT);
+        assert!(std::fs::remove_file(stamp).is_ok(), "setup: no stamp");
+    }
+
+    /// Write the launch stamp as a launch does: a new node renamed over it.
+    fn restamp(&self, epoch: &str) {
+        let temp = self.dir.join("stamp.tmp");
+        assert!(std::fs::write(&temp, epoch).is_ok(), "a stamp");
+        let stamp = self.dir.join(ae::store::LAUNCH_ATTEMPT);
+        assert!(
+            std::fs::rename(&temp, stamp).is_ok(),
+            "the stamp renamed in"
+        );
+    }
+
+    /// Tell the fake which row to draw above its box (`exit` ends it).
+    fn control(&self, row: &str) {
+        let temp = self.scratch.join("control.tmp");
+        assert!(std::fs::write(&temp, row).is_ok(), "a control row");
+        assert!(std::fs::rename(&temp, self.scratch.join("control")).is_ok());
+    }
+
+    /// `ae compact` from an external shell, the way a human runs it.
+    fn compact_run(&self) -> super::cli::OwnedChild {
+        let mut command = ae();
+        command.env_remove("TMUX").env_remove("TMUX_PANE");
+        self.compact_with(command)
+    }
+
+    /// `ae compact` from the seat's own pane, the way its harness runs it.
+    fn compact_inside(&self) -> super::cli::OwnedChild {
+        let mut command = ae();
+        command
+            .env("TMUX", format!("{},0,0", self.sock.display()))
+            .env("TMUX_PANE", &self.pane);
+        self.compact_with(command)
+    }
+
+    fn compact_with(&self, mut command: super::cli::Runner) -> super::cli::OwnedChild {
+        command
+            .env("AE_HOME", &self.scratch)
+            .env("AE_NO_AUTOSTART", "1")
+            .args(["compact", &self.session])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap_or_else(|why| panic!("ae compact should start: {why}"))
+    }
+
+    /// The first ledger line carrying `needle`, bounded: a broken fake fails
+    /// here, and no sleep ever picks a mode.
+    fn await_event(&self, needle: &str) -> String {
+        for _ in 0..600 {
+            if let Some(line) = self.events().lines().find(|line| line.contains(needle)) {
+                return line.to_owned();
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        panic!("setup: no event with {needle}: {}", self.events());
+    }
+
+    /// The seat's half of the checkpoint, from this pane so both records carry
+    /// its caller triple: a memo naming the ref, then the reply.
+    fn answer(&self, ask: &str) {
+        let reference = ask
+            .split("\"ref\":\"")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .unwrap_or_default();
+        let memo = format!("{reference} re-read the brief");
+        for args in [
+            ["memo", "add", "--topic", "checkpoint", memo.as_str()].as_slice(),
+            ["reply", reference, "saved"].as_slice(),
+        ] {
+            let out = ae()
+                .env("AE_HOME", &self.scratch)
+                .env("TMUX", format!("{},0,0", self.sock.display()))
+                .env("TMUX_PANE", &self.pane)
+                .arg(format!("@{}", self.session))
+                .args(args)
+                .output()
+                .unwrap_or_else(|why| panic!("the helper should run: {why}"));
+            assert!(
+                out.status.success(),
+                "setup: A3 {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+    }
+}
+
+const COMPACT_UUID: &str = "33333333-3333-3333-3333-333333333333";
+const COMPACTED: &str = "⎿  Compacted (ctrl+o to see full summary)";
+
+/// Drive `ae compact` to its dispatch, gated on events, never on time: the
+/// checkpoint answered, the `seat-compact` record written, the command
+/// received exactly once.
+fn dispatched(rig: &Rig) -> super::cli::OwnedChild {
+    let child = rig.compact_run();
+    let ask = rig.await_event("\"action\":\"ask\"");
+    rig.answer(&ask);
+    let record = rig.await_event("\"action\":\"seat-compact\"");
+    assert!(
+        record.contains("\"summary\":\"dispatched main\""),
+        "setup: A4 {record}"
+    );
+    assert!(!record.contains("unverifiable"), "setup: A4 {record}");
+    assert_eq!(
+        rig.submitted().matches("/compact checkpoint ").count(),
+        1,
+        "setup: A4 one receipt"
+    );
+    child
+}
+
+/// The run's exit code and report.
+fn finished(child: super::cli::OwnedChild) -> (Option<i32>, String) {
+    let out = super::cli::bounded(child, Duration::from_mins(1))
+        .unwrap_or_else(|| panic!("ae compact returned"));
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    (out.status.code(), stdout)
+}
+
+#[test]
+fn a_seat_read_idle_twice_on_a_new_row_after_its_dispatch_is_observed_idle() {
+    let rig = Rig::compact("cidle");
+    let child = dispatched(&rig);
+    rig.control(COMPACTED);
+    let (code, stdout) = finished(child);
+    assert!(
+        stdout.starts_with("dispatched (observed idle) main ("),
+        "{stdout}"
+    );
+    assert!(
+        !stdout.contains("compacted"),
+        "never a compaction claim: {stdout}"
+    );
+    assert_eq!(code, Some(0), "every admitted seat observed idle: {stdout}");
+    let events = rig.events();
+    let dispatch = events.find("\"action\":\"seat-compact\"");
+    let observed = events.find("\"summary\":\"observed idle main\"");
+    assert!(dispatch.is_some() && observed > dispatch, "{events}");
+}
+
+#[test]
+fn a_seat_gone_after_its_dispatch_is_unobserved_and_fails_the_run() {
+    let rig = Rig::compact("cexit");
+    let child = dispatched(&rig);
+    rig.control("exit");
+    let (code, stdout) = finished(child);
+    assert!(stdout.starts_with("dispatched (unobserved: "), "{stdout}");
+    assert!(rig.events().contains("\"summary\":\"unobserved main\""));
+    assert_eq!(
+        code,
+        Some(1),
+        "an admitted seat not observed idle: {stdout}"
+    );
+}
+
+#[test]
+fn a_launch_stamp_rewritten_after_the_dispatch_reads_as_relaunched() {
+    let rig = Rig::compact("cstamp");
+    let child = dispatched(&rig);
+    rig.restamp("1789000001");
+    rig.control(COMPACTED);
+    let (code, stdout) = finished(child);
+    assert!(
+        stdout.starts_with("dispatched (unobserved: relaunched) main ("),
+        "{stdout}"
+    );
+    assert_eq!(code, Some(1), "{stdout}");
+}
+
+#[test]
+fn a_launch_stamp_removed_after_the_dispatch_reads_as_relaunched() {
+    let rig = Rig::compact("cunlink");
+    let child = dispatched(&rig);
+    rig.unstamp();
+    rig.control(COMPACTED);
+    let (code, stdout) = finished(child);
+    assert!(
+        stdout.starts_with("dispatched (unobserved: relaunched) main ("),
+        "{stdout}"
+    );
+    assert_eq!(code, Some(1), "{stdout}");
+}
+
+#[test]
+fn a_seat_with_no_launch_stamp_is_still_dispatched_and_reads_guard_unavailable() {
+    let rig = Rig::compact("cnostamp");
+    rig.unstamp();
+    let child = dispatched(&rig);
+    let (code, stdout) = finished(child);
+    assert!(
+        stdout.starts_with("dispatched (unobserved: guard unavailable) main ("),
+        "{stdout}"
+    );
+    assert_eq!(code, Some(1), "{stdout}");
+}
+
+#[test]
+fn a_seat_running_compact_itself_is_skipped_before_its_checkpoint_and_fails_the_run() {
+    let rig = Rig::compact("cinit");
+    let (code, stdout) = finished(rig.compact_inside());
+    let line = stdout.lines().next().unwrap_or_default();
+    assert!(
+        line.starts_with("skipped (initiating seat) main ("),
+        "{stdout}"
+    );
+    assert!(line.ends_with("from a shell outside every seat to compact it"));
+    assert!(!rig.events().contains("\"action\":\"ask\""), "no ask");
+    assert!(!rig.submitted().contains("/compact"), "nothing pasted");
+    assert_eq!(code, Some(1), "admitted, never observed idle: {stdout}");
+}
+
+#[test]
+fn the_compact_fake_reaches_the_production_dispatch_on_a_recognised_frame() {
+    let rig = Rig::compact("csetup");
+    let child = dispatched(&rig);
+    rig.control(COMPACTED);
+    let frame = rig.await_frame(COMPACTED);
+    assert_eq!(
+        frame.state,
+        ae::harness_state::HarnessState::Idle,
+        "setup: A5"
+    );
+    assert!(finished(child).0.is_some(), "setup: the run returned");
 }
 
 impl Drop for Rig {

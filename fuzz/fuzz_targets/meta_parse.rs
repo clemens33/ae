@@ -32,6 +32,12 @@ fuzz_target!(|data: &[u8]| {
     for slot in ["main", "worker.0", "spawned.1"] {
         let _ = std::hint::black_box(ae::meta::raw_seat_work_dir(data, slot));
     }
+    // A seat's incarnation is judged from these same RAW bytes before and
+    // after every sample `ae compact` reads: presence, bareness, duplication
+    // and the required/optional split are byte-level verdicts of its own.
+    for slot in ["main", "worker.0", "spawned.1"] {
+        let _ = std::hint::black_box(ae::seatcompact::incarnation(data, slot));
+    }
     // The seat-dir resolvers and the selection/containment policy run over the
     // PARSED document: the string resolve, the typed resolve against a FIXED
     // synthetic session canonical, and containment of any resolved place

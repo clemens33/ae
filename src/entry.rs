@@ -273,6 +273,11 @@ Usage:
                          Compact every fixed seat of a session in place: checkpoint
                          each seat's durable state, then paste its compaction command.
                          dispatched means attempted: the command was pasted and Enter was sent; it is never proof of submission
+                         observed idle means the seat's own frame read idle twice after the dispatch; it is never proof of compaction
+                         Exits 1 when any admitted seat was not observed idle; a run that
+                         admits no seat says 'no seat admitted' and exits 0.
+                         A seat running it is skipped as 'initiating seat': it cannot
+                         answer its own checkpoint, so run it from a shell outside every seat.
   ae reboot [-f] [--keep-history] [--digest-only] [name]
                          Hand this session over to a fresh one: freeze the roster, archive
                          the memory, end it, and relaunch the same agents against that
@@ -1010,6 +1015,19 @@ mod tests {
             HELP.contains(crate::seatcompact::DISPATCH_DEFINITION),
             "the help carries the R5 definition"
         );
+        assert!(
+            HELP.contains(crate::seatcompact::OBSERVED_DEFINITION),
+            "the help carries the observed-idle definition"
+        );
+        assert!(HELP.contains("Exits 1 when any admitted seat was not observed idle;"));
+        assert!(HELP.contains(&format!(
+            "says '{}' and exits 0.",
+            crate::seatcompact::NO_SEAT_ADMITTED
+        )));
+        assert!(HELP.contains(&format!(
+            "skipped as '{}': it cannot",
+            crate::seatcompact::INITIATING_SEAT
+        )));
         assert!(HELP.contains(
             "  ae init [--yes]        Discover installed harnesses and propose a global config\n"
         ));

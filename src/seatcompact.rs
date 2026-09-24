@@ -32,10 +32,18 @@ pub const FRAME_NOT_MODELLED: &str = "frame not modelled";
 pub const BASELINE_UNKNOWN: &str = "baseline unknown";
 pub const RELAUNCHED: &str = "relaunched";
 pub const TIMEOUT: &str = "timeout";
+pub const GUARD_UNAVAILABLE: &str = "guard unavailable";
+/// The line a run prints when the gate admitted no seat (D4).
+pub const NO_SEAT_ADMITTED: &str = "no seat admitted";
+/// The skip of the seat running this verb: its tool is blocked on the run.
+pub const INITIATING_SEAT: &str = "initiating seat";
 
 /// What `dispatched` claims, and what it never claims. The help text asserts
 /// this sentence.
 pub const DISPATCH_DEFINITION: &str = "dispatched means attempted: the command was pasted and Enter was sent; it is never proof of submission";
+/// What `observed idle` claims, and what it never claims. The help text
+/// asserts this sentence.
+pub const OBSERVED_DEFINITION: &str = "observed idle means the seat's own frame read idle twice after the dispatch; it is never proof of compaction";
 
 /// One refusal leg of the R1 boundary. The offending VALUE is never printed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -156,6 +164,9 @@ impl Outcome {
                 "clear the composer of {} before any send",
                 cell(pane)
             )),
+            Self::Skipped { reason } if reason == INITIATING_SEAT => {
+                Some("run ae compact from a shell outside every seat to compact it".to_owned())
+            }
             _ => None,
         }
     }
@@ -576,12 +587,77 @@ pub fn report(lines: &[SeatLine<'_>]) -> String {
             let _ = writeln!(out, "  note: earlier checkpoint {}", cell(reference));
         }
     }
+    if !lines.iter().any(|line| matches!(line.gate, Gate::Admit(_))) {
+        out.push_str(NO_SEAT_ADMITTED);
+        out.push('\n');
+    }
     let gates: Vec<(&str, &str, Gate)> = lines.iter().map(|l| (l.slot, l.tool, l.gate)).collect();
     if let Some(hand) = hand_remedy_line(&gates) {
         out.push_str(&hand);
         out.push('\n');
     }
     out
+}
+
+/// D3: the run fails when any seat the gate admitted was not observed idle —
+/// skipped, not dispatched, or dispatched and unobserved alike.
+#[must_use]
+pub fn exit_code(lines: &[SeatLine<'_>]) -> u8 {
+    let failed = lines.iter().any(|line| {
+        matches!(line.gate, Gate::Admit(_)) && line.observation != Some(&Observation::Idle)
+    });
+    if failed { crate::state::EXIT_FAILED } else { 0 }
+}
+
+/// The incarnation rows, in order, each the value it was recorded with or
+/// `None` where an optional row is absent.
+pub type Incarnation = Vec<Option<Vec<u8>>>;
+
+/// A seat's incarnation (plan §3 I0) from the meta's RAW bytes, compared
+/// byte for byte and never interpreted. Each row is judged by the byte scan
+/// [`crate::meta::raw_seat_work_dir`] uses: a line with the key and no `=` is
+/// BARE, a second line is DOUBLED, and neither is ever read as its first
+/// spelling. REQUIRED, present once and nonempty: `session_id` and
+/// `seat.<slot>`, which every writer publishes. OPTIONAL: `agent_bin` and
+/// `harness_session` (the roster writes them only when known), `launch_id`
+/// (written only nonempty) and `launch_time` (a post-exec rewrite). An absent
+/// optional row is a state the snapshot compares like any value, so a legacy
+/// seat stays observable; a present one is judged once and never bare. `None`
+/// is damage: a required row absent or empty, or any row bare or doubled.
+#[must_use]
+pub fn incarnation(meta: &[u8], slot: &str) -> Option<Incarnation> {
+    let rows = [
+        ("session_id".to_owned(), true),
+        (format!("seat.{slot}"), true),
+        (format!("agent_bin.{slot}"), false),
+        (format!("launch_id.{slot}"), false),
+        (format!("harness_session.{slot}"), false),
+        (format!("launch_time.{slot}"), false),
+    ];
+    rows.iter()
+        .map(|(key, required)| {
+            let mut found: Option<&[u8]> = None;
+            for line in meta.split(|byte| *byte == b'\n') {
+                let line = line.strip_suffix(b"\r").unwrap_or(line);
+                let Some(rest) = line.strip_prefix(key.as_bytes()) else {
+                    continue;
+                };
+                let value = match rest.split_first() {
+                    Some((b'=', value)) => value,
+                    Some(_) => continue, // a longer key sharing this prefix
+                    None => return None, // bare: the key and nothing else
+                };
+                if found.replace(value).is_some() {
+                    return None; // doubled: the record does not say one thing
+                }
+            }
+            match found {
+                Some(value) if !(*required && value.is_empty()) => Some(Some(value.to_vec())),
+                None if !required => Some(None),
+                _ => None,
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -938,6 +1014,7 @@ mod tests {
         let dispatched = outcome(SubmitState::Submitted);
         let staged = outcome(SubmitState::StillStaged);
         let hand = Outcome::skipped(INPUT_NOT_MODELLED);
+        let initiator = Outcome::skipped(INITIATING_SEAT);
         let idle = Observation::Idle;
         let timeout = Observation::unobserved(TIMEOUT);
         let guided = classify(GUIDED, InputModel::BorderDelimited, false);
@@ -956,6 +1033,7 @@ mod tests {
                 observation: Some(&timeout),
                 ..entry("w6", "codex", bare, &dispatched, 600, None)
             },
+            entry("w7", "claude", guided, &initiator, 0, None),
         ]);
         assert_eq!(
             rendered,
@@ -966,8 +1044,70 @@ mod tests {
              skipped (input not modelled) w4 (2s)\n\
              dispatched (observed idle) w5 (40s)\n\
              dispatched (unobserved: timeout) w6 (10m)\n\
+             skipped (initiating seat) w7 (0s) — run ae compact from a shell outside every seat to compact it\n\
              compact by hand: w4 (opencode: input not modelled)\n"
         );
+    }
+
+    #[test]
+    fn an_admitted_seat_not_observed_idle_fails_the_run_even_when_skipped_before_dispatch() {
+        let admitted = classify(GUIDED, InputModel::BorderDelimited, false);
+        let spawned = classify(GUIDED, InputModel::BorderDelimited, true);
+        let busy = Outcome::skipped(BUSY);
+        let staged = outcome(SubmitState::StillStaged);
+        let dispatched = outcome(SubmitState::Submitted);
+        let idle = Observation::Idle;
+        let timeout = Observation::unobserved(TIMEOUT);
+        let seen = |observation| SeatLine {
+            observation,
+            ..entry("w1", "claude", admitted, &dispatched, 0, None)
+        };
+        for (seats, code) in [
+            (vec![entry("w1", "claude", admitted, &busy, 0, None)], 1),
+            (vec![entry("w1", "claude", admitted, &staged, 0, None)], 1),
+            (vec![seen(Some(&timeout))], 1),
+            (vec![seen(None)], 1),
+            (vec![seen(Some(&idle))], 0),
+            (vec![entry("w1", "claude", spawned, &busy, 0, None)], 0),
+            (
+                vec![
+                    seen(Some(&idle)),
+                    entry("w2", "claude", admitted, &busy, 0, None),
+                ],
+                1,
+            ),
+        ] {
+            assert_eq!(exit_code(&seats), code, "{seats:?}");
+        }
+    }
+
+    #[test]
+    fn an_incarnation_tells_an_absent_optional_row_from_a_bare_or_doubled_one() {
+        let full = "session_id=S\nseat.main=a\nagent_bin.main=claude\nlaunch_id.main=L\n\
+                    harness_session.main=pending\nlaunch_time.main=1\n";
+        let read = |text: &str| incarnation(text.as_bytes(), "main");
+        let held = read(full).expect("usable");
+        assert_eq!(held.iter().flatten().count(), 6, "every row read");
+        for (at, row) in full.lines().enumerate() {
+            let (key, _) = row.split_once('=').expect("a row");
+            let required = at < 2;
+            let drifted = read(&full.replacen(row, &format!("{row}x"), 1));
+            assert!(drifted.is_some_and(|rows| rows != held), "{key} drift");
+            let absent = read(&full.replacen(&format!("{row}\n"), "", 1));
+            assert_eq!(
+                absent.map(|rows| rows[at].is_none()),
+                (!required).then_some(true)
+            );
+            let emptied = read(&full.replacen(row, &format!("{key}="), 1)).is_some();
+            assert_eq!(emptied, !required, "{key} empty");
+            for damage in [format!("{full}{row}\n"), full.replacen(row, key, 1)] {
+                assert_eq!(read(&damage), None, "{key} doubled or bare: {damage}");
+            }
+        }
+        let crlf = full.replace('\n', "\r\n");
+        assert_eq!(read(&crlf), Some(held), "a CR is not part of a value");
+        let longer = format!("{full}seat.main2=b\nlaunch_time.main.x\n");
+        assert!(read(&longer).is_some(), "a longer key is another row");
     }
 
     const BEFORE: &str = "✻ Worked for 2s · done";

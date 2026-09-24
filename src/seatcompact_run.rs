@@ -7,7 +7,7 @@ use crate::deliver::{self, GuardedRequest};
 use crate::error::Result;
 use crate::lifecycle;
 use crate::meta::{self, Meta};
-use crate::seatcompact::{self, GapLeg, Gate, Mode, Outcome, Verdict};
+use crate::seatcompact::{self, GapLeg, Gate, Mode, Observation, Outcome, Sample, Verdict, Watch};
 use crate::state;
 use crate::store;
 use crate::time::Timestamp;
@@ -21,8 +21,10 @@ use std::time::{Duration, Instant};
 pub(crate) const LOCK_NAME: &str = "seatcompact.lock";
 /// The bounded settle between a dispatch and the next seat's first step.
 pub(crate) const SEAT_SETTLE: Duration = Duration::from_mins(1);
-/// The checkpoint-wait poll.
+/// The checkpoint-wait poll, and the gap between two observation samples.
 const WAIT_POLL: Duration = Duration::from_secs(2);
+/// The observation's polling budget: checked between samples, never a wall.
+const OBSERVE_CEILING: Duration = Duration::from_mins(10);
 /// The R13 actor namespace this verb opens checkpoint requests as.
 const ACTOR_PREFIX: &str = "ae:seats:";
 /// The skip word for a checkpoint that never closed.
@@ -67,6 +69,9 @@ pub(crate) fn run(
         return Ok(state::EXIT_FAILED);
     }
     let actor = format!("{ACTOR_PREFIX}{uuid}");
+    // The seat running this verb cannot answer its own checkpoint: its tool is
+    // blocked on the run. A caller ae cannot place is never guessed at.
+    let caller = tracked::observe_caller(&dir).ok();
     let storage = store::open(&dir);
     for line in seatcompact::audit_warning(&storage.container(), &actor, Timestamp::now()) {
         writeln!(err, "{line}")?;
@@ -83,8 +88,7 @@ pub(crate) fn run(
     let total = roster.len();
     for (index, entry) in roster.iter().enumerate() {
         let started = Instant::now();
-        let mut seat = run_seat(root, name, &dir, &actor, entry, err)?;
-        seat.elapsed = i64::try_from(started.elapsed().as_secs()).unwrap_or(i64::MAX);
+        let mut seat = run_seat(root, name, &dir, &actor, caller.as_ref(), entry, err)?;
         append(
             &storage,
             &seatcompact::seat_record(&seatcompact::SeatRecord {
@@ -99,6 +103,10 @@ pub(crate) fn run(
             }),
         )?;
         let dispatched = matches!(seat.outcome, Outcome::Dispatched { .. });
+        if dispatched {
+            watch_dispatched(&storage, &dir, &actor, &run, name, &mut seat)?;
+        }
+        seat.elapsed = i64::try_from(started.elapsed().as_secs()).unwrap_or(i64::MAX);
         outcomes.push(seat);
         if dispatched && index + 1 < total {
             std::thread::sleep(SEAT_SETTLE);
@@ -117,11 +125,42 @@ pub(crate) fn run(
             outcome: &seat.outcome,
             elapsed: seat.elapsed,
             earlier_checkpoint: None,
-            observation: None,
+            observation: seat.observation.as_ref(),
         })
         .collect();
     write!(out, "{}", seatcompact::report(&lines))?;
-    Ok(0)
+    Ok(seatcompact::exit_code(&lines))
+}
+
+/// Watch one dispatched seat and record what was seen. The dispatch record is
+/// already durable: a run killed while it watches leaves today's one-note
+/// trail, never an observed line.
+fn watch_dispatched(
+    storage: &store::SessionStore,
+    dir: &Path,
+    actor: &str,
+    run: &str,
+    name: &str,
+    seat: &mut SeatOutcome,
+) -> Result<()> {
+    let seen = seat.watched.take().map_or_else(
+        || Observation::unobserved(seatcompact::BASELINE_UNKNOWN),
+        |watched| observe(dir, &watched),
+    );
+    append(
+        storage,
+        &seatcompact::observed_record(&seatcompact::ObservedRecord {
+            ts: Timestamp::now(),
+            actor,
+            run,
+            request: &seat.request,
+            slot: &seat.slot,
+            session: name,
+            observation: &seen,
+        }),
+    )?;
+    seat.observation = Some(seen);
+    Ok(())
 }
 
 /// One seat's turn.
@@ -133,6 +172,8 @@ struct SeatOutcome {
     elapsed: i64,
     request: String,
     sanitized: usize,
+    watched: Option<Watched>,
+    observation: Option<Observation>,
 }
 
 /// Gate, checkpoint, dispatch for one seat: every arm advances or skips.
@@ -145,11 +186,13 @@ fn run_seat(
     name: &str,
     dir: &Path,
     actor: &str,
+    caller: Option<&tracked::IdentityTriple>,
     entry: &meta::RosterEntry,
     err: &mut impl Write,
 ) -> Result<SeatOutcome> {
     let binary = entry.binary.clone().unwrap_or_default();
-    let adapter = ToolKind::from_binary_name(&binary).adapter();
+    let tool = ToolKind::from_binary_name(&binary);
+    let adapter = tool.adapter();
     let spec = adapter.compact;
     let gate = seatcompact::classify(
         spec,
@@ -164,6 +207,8 @@ fn run_seat(
         elapsed: 0,
         request: String::new(),
         sanitized: 0,
+        watched: None,
+        observation: None,
     };
     let mode = match gate {
         Gate::Admit(mode) => mode,
@@ -183,6 +228,10 @@ fn run_seat(
             return Ok(seat);
         }
     };
+    if caller.is_some_and(|caller| tracked::caller_matches_live(caller, &triple)) {
+        seat.outcome = Outcome::skipped(seatcompact::INITIATING_SEAT);
+        return Ok(seat);
+    }
     let storage = store::open(dir);
     cancel_own_pending(&storage, actor, &entry.slot, name)?;
     let goal = storage.goal()?.unwrap_or_default();
@@ -279,6 +328,11 @@ fn run_seat(
         reply,
         memo: memo_caller,
     };
+    // The baseline is the LAST read before the paste: taken inside the proof,
+    // after the quiet wait, under the send-lock and the lifecycle lock, then
+    // proven again, so a seat that changed between the two is refused before
+    // any byte reaches it. Only a proof that passed hands the baseline out.
+    let mut pre = None;
     // MATCHED into the vocabulary, never `?`: `EnterFailed` is an outcome.
     seat.outcome = match deliver::deliver_guarded(&request, || {
         let guard = lifecycle::lock(root, name).map_err(|_| deliver::Leg::LifecycleLocked)?;
@@ -286,6 +340,20 @@ fn run_seat(
             return Err(deliver::Leg::Unreadable);
         };
         judge_viewer(&seen, &resolved.pane, &carried)?;
+        let mut taken = take_baseline(dir, &server, &resolved.pane, &entry.slot, tool);
+        let viewer = crate::transport::observe_viewer(&server, &resolved.pane)
+            .ok_or(deliver::Leg::Unreadable)
+            .and_then(|seen| judge_viewer(&seen, &resolved.pane, &carried));
+        let reread = post_proof(
+            viewer,
+            &taken.rows,
+            incarnation(dir, &entry.slot),
+            taken.hold.as_ref().ok().map(store::StampHold::matches),
+        )?;
+        if !reread {
+            taken.rows = Err(RowGap::Unreadable);
+        }
+        pre = Some(taken);
         Ok(guard)
     }) {
         // A RAW staged read is settled before it is called staged: only a box
@@ -300,7 +368,218 @@ fn run_seat(
         Ok(deliver::Outcome::Skipped(leg)) => skipped_leg(leg),
         Err(deliver::EnterFailed) => Outcome::from_verdict(Verdict::EnterFailed, &resolved.pane),
     };
+    // Only a dispatch is watched; every other outcome drops the held stamp here.
+    if matches!(seat.outcome, Outcome::Dispatched { .. }) {
+        seat.watched = pre.map(|baseline| Watched {
+            server,
+            pane: resolved.pane,
+            pane_slot: resolved.slot,
+            tool,
+            carried,
+            baseline,
+        });
+    }
     Ok(seat)
+}
+
+/// The seat's incarnation rows (plan §3 I0), as [`seatcompact::incarnation`]
+/// reads them.
+type Rows = seatcompact::Incarnation;
+
+/// Why the incarnation rows cannot serve as a guard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RowGap {
+    /// The meta could not be read at all.
+    Unreadable,
+    /// The meta was read and its rows are damage (see
+    /// [`seatcompact::incarnation`]): never guessed past.
+    Unusable,
+}
+
+/// What the proof read under both locks: the frame the dispatch must change,
+/// the held launch stamp and the seat's meta rows.
+struct Baseline {
+    frame: Option<crate::harness_state::FrameReading>,
+    hold: std::result::Result<store::StampHold, store::StampGap>,
+    rows: std::result::Result<Rows, RowGap>,
+}
+
+/// A dispatched seat's watch: where to read it and what it must still be.
+struct Watched {
+    server: crate::inventory::ServerId,
+    pane: String,
+    pane_slot: String,
+    tool: ToolKind,
+    carried: Carried,
+    baseline: Baseline,
+}
+
+/// Take the baseline in the plan's order: the incarnation rows, the stamp
+/// hold, then the one capture they bracket.
+fn take_baseline(
+    dir: &Path,
+    server: &crate::inventory::ServerId,
+    pane: &str,
+    slot: &str,
+    tool: ToolKind,
+) -> Baseline {
+    let rows = incarnation(dir, slot);
+    let hold = store::open(dir)
+        .stamp_node()
+        .and_then(store::StampNode::open);
+    let frame = crate::transport::capture_pane(server, pane)
+        .and_then(|capture| crate::harness_state::read_frame(&capture, tool));
+    Baseline { frame, hold, rows }
+}
+
+/// The proof's second half, under both locks and before the paste. The
+/// viewer is judged again by the landed proof's own rule. Only a guard the
+/// baseline HAD is proven again, and only PROVEN drift refuses: rows that read
+/// differently, or read as damage where they were usable, and a held stamp
+/// that no longer matches, as `Mismatch`. Everything unproven refuses
+/// nothing: a guard the baseline never had, and rows that could not be read
+/// again — `Ok(false)`, the dispatch goes ahead and its observation ends.
+fn post_proof(
+    viewer: std::result::Result<(), deliver::Leg>,
+    held: &std::result::Result<Rows, RowGap>,
+    now: std::result::Result<Rows, RowGap>,
+    stamp: Option<bool>,
+) -> std::result::Result<bool, deliver::Leg> {
+    viewer?;
+    if stamp == Some(false) {
+        return Err(deliver::Leg::Mismatch);
+    }
+    let Ok(held) = held else {
+        return Ok(true);
+    };
+    match now {
+        Ok(now) if now == *held => Ok(true),
+        Ok(_) | Err(RowGap::Unusable) => Err(deliver::Leg::Mismatch),
+        Err(RowGap::Unreadable) => Ok(false),
+    }
+}
+
+/// Watch one dispatched seat until two new idle frames, a guard, or the
+/// ceiling. A tool whose frame is not modelled, a guard the baseline could
+/// not take and a baseline no grammar recognized end at once.
+fn observe(dir: &Path, watched: &Watched) -> Observation {
+    if !crate::harness_state::observable(watched.tool) {
+        return Observation::unobserved(seatcompact::FRAME_NOT_MODELLED);
+    }
+    let rows = match &watched.baseline.rows {
+        Ok(rows) => rows,
+        Err(RowGap::Unusable) => return Observation::unobserved(seatcompact::GUARD_UNAVAILABLE),
+        Err(RowGap::Unreadable) => return Observation::identity_gap(GapLeg::Unreadable),
+    };
+    let hold = match &watched.baseline.hold {
+        Ok(hold) => hold,
+        Err(store::StampGap::Unavailable | store::StampGap::Absent) => {
+            return Observation::unobserved(seatcompact::GUARD_UNAVAILABLE);
+        }
+        Err(store::StampGap::Unreadable) => return Observation::identity_gap(GapLeg::Unreadable),
+    };
+    let watch = match Watch::new(watched.baseline.frame.clone()) {
+        Ok(watch) => watch,
+        Err(end) => return end,
+    };
+    watch_until(
+        watch,
+        Instant::now() + OBSERVE_CEILING,
+        Instant::now,
+        || std::thread::sleep(WAIT_POLL),
+        || sample(dir, watched, hold, rows),
+    )
+}
+
+/// Feed samples until the watch ends or the ceiling passes. The ceiling is
+/// read after every wait AND after every sample, so a sample that finished
+/// at or past it is never accepted, however idle it read.
+fn watch_until(
+    mut watch: Watch,
+    ceiling: Instant,
+    mut now: impl FnMut() -> Instant,
+    mut wait: impl FnMut(),
+    mut sample: impl FnMut() -> Sample,
+) -> Observation {
+    loop {
+        wait();
+        if now() >= ceiling {
+            break;
+        }
+        let taken = sample();
+        if now() >= ceiling {
+            break;
+        }
+        if let Some(end) = watch.feed(taken) {
+            return end;
+        }
+    }
+    Observation::unobserved(seatcompact::TIMEOUT)
+}
+
+/// One sample: the guards, liveness, one capture, then the guards again, so
+/// a frame is judged only when the same seat was proven on both sides of it.
+fn sample(dir: &Path, watched: &Watched, hold: &store::StampHold, rows: &Rows) -> Sample {
+    if let Some(end) = guard(dir, watched, hold, rows) {
+        return Sample::Ended(end);
+    }
+    match deliver::observe_pane_liveness(&watched.server, dir, &watched.pane, &watched.pane_slot) {
+        deliver::PaneLiveness::Dead => {
+            return Sample::Ended(Observation::unobserved(seatcompact::DEAD));
+        }
+        deliver::PaneLiveness::Unproven => return Sample::Blind,
+        deliver::PaneLiveness::Alive => {}
+    }
+    let Some(capture) = crate::transport::capture_pane(&watched.server, &watched.pane) else {
+        return Sample::Blind;
+    };
+    if let Some(end) = guard(dir, watched, hold, rows) {
+        return Sample::Ended(end);
+    }
+    Sample::Frame(crate::harness_state::read_frame(&capture, watched.tool))
+}
+
+/// The identity guards after the dispatch: the viewer proof, then the seat's
+/// rows and the held stamp — any change there means some launch happened.
+fn guard(
+    dir: &Path,
+    watched: &Watched,
+    hold: &store::StampHold,
+    rows: &Rows,
+) -> Option<Observation> {
+    let Some(seen) = crate::transport::observe_viewer(&watched.server, &watched.pane) else {
+        return Some(Observation::identity_gap(GapLeg::Unreadable));
+    };
+    if let Err(leg) = judge_viewer(&seen, &watched.pane, &watched.carried) {
+        return Some(Observation::identity_gap(viewer_leg(leg)));
+    }
+    match incarnation(dir, &watched.carried.slot) {
+        Err(RowGap::Unreadable) => Some(Observation::identity_gap(GapLeg::Unreadable)),
+        Ok(now) if now == *rows && hold.matches() => None,
+        Ok(_) | Err(RowGap::Unusable) => Some(Observation::unobserved(seatcompact::RELAUNCHED)),
+    }
+}
+
+/// The viewer proof's four legs onto the gap vocabulary.
+fn viewer_leg(leg: deliver::Leg) -> GapLeg {
+    match leg {
+        deliver::Leg::Vacant => GapLeg::Vacant,
+        deliver::Leg::Mismatch => GapLeg::Mismatch,
+        deliver::Leg::Live => GapLeg::Live,
+        deliver::Leg::Unreadable
+        | deliver::Leg::Dead
+        | deliver::Leg::Busy { .. }
+        | deliver::Leg::TargetLocked
+        | deliver::Leg::LifecycleLocked
+        | deliver::Leg::PasteFailed => GapLeg::Unreadable,
+    }
+}
+
+/// The seat's incarnation rows from its meta NOW: an unreadable meta and
+/// damaged rows are two different gaps.
+fn incarnation(dir: &Path, slot: &str) -> std::result::Result<Rows, RowGap> {
+    let bytes = meta::read_bytes(dir).map_err(|_| RowGap::Unreadable)?;
+    seatcompact::incarnation(&bytes, slot).ok_or(RowGap::Unusable)
 }
 
 /// The exact dispatch text one admitted seat receives: the R11 command leads
@@ -1013,6 +1292,90 @@ mod tests {
         assert!(
             body.contains(&format!("\n{}\n", sanitize::over_cap_marker(1))),
             "{body}"
+        );
+    }
+
+    #[test]
+    fn the_runner_tells_an_unreadable_meta_from_damaged_rows() {
+        let scratch = Scratch::new("incarnation");
+        let meta = store::open(scratch.0.as_path()).meta_path();
+        let rows = "session_id=S\nseat.main=a\n";
+        std::fs::write(&meta, rows).expect("plant");
+        let usable = seatcompact::incarnation(rows.as_bytes(), "main").ok_or(RowGap::Unusable);
+        assert_eq!(incarnation(scratch.0.as_path(), "main"), usable);
+        std::fs::write(&meta, "seat.main=a\n").expect("plant");
+        let damaged = incarnation(scratch.0.as_path(), "main");
+        assert_eq!(damaged, Err(RowGap::Unusable), "no session id");
+        std::fs::remove_file(&meta).expect("unplant");
+        let gone = incarnation(scratch.0.as_path(), "main");
+        assert_eq!(gone, Err(RowGap::Unreadable), "no meta");
+    }
+
+    #[test]
+    fn the_second_proof_refuses_proven_drift_and_passes_a_guard_it_never_had() {
+        use RowGap::{Unreadable as Unread, Unusable};
+        use deliver::Leg::{Live, Mismatch, Unreadable, Vacant};
+        let row = |value: &str| Ok(vec![Some(value.as_bytes().to_vec())]);
+        let held = row("S");
+        for (viewer, rows, now, stamp, want) in [
+            (Ok(()), &held, row("S"), Some(true), Ok(true)),
+            (Err(Vacant), &held, row("S"), Some(true), Err(Vacant)),
+            (
+                Err(Unreadable),
+                &held,
+                row("S"),
+                Some(true),
+                Err(Unreadable),
+            ),
+            (Err(Live), &held, row("S"), Some(true), Err(Live)),
+            (Ok(()), &held, row("T"), Some(true), Err(Mismatch)),
+            (Ok(()), &held, Err(Unusable), Some(true), Err(Mismatch)),
+            (Ok(()), &held, Err(Unread), Some(true), Ok(false)),
+            (Ok(()), &held, row("S"), Some(false), Err(Mismatch)),
+            (Ok(()), &held, row("S"), None, Ok(true)),
+            (Ok(()), &Err(Unusable), row("T"), None, Ok(true)),
+            (Ok(()), &Err(Unread), row("T"), Some(true), Ok(true)),
+        ] {
+            let got = post_proof(viewer, rows, now, stamp);
+            assert_eq!(got, want, "{rows:?} {stamp:?}");
+        }
+    }
+
+    #[test]
+    fn a_sample_that_finishes_at_or_past_the_ceiling_is_never_accepted() {
+        use crate::harness_state::{FrameReading, HarnessState};
+        let start = Instant::now();
+        let frame = |row: &str| FrameReading {
+            state: HarnessState::Idle,
+            current: Some(row.to_owned()),
+        };
+        // Clock readings in order: after wait 1, sample 1, wait 2, sample 2.
+        let run = |clock: [u64; 4]| {
+            let mut ticks = clock.into_iter();
+            let mut sampled = 0;
+            let end = watch_until(
+                Watch::new(Some(frame("old"))).expect("a baseline"),
+                start + Duration::from_secs(10),
+                || start + Duration::from_secs(ticks.next().unwrap_or(99)),
+                || {},
+                || {
+                    sampled += 1;
+                    Sample::Frame(Some(frame("new")))
+                },
+            );
+            (end, sampled)
+        };
+        let timeout = Observation::unobserved(seatcompact::TIMEOUT);
+        assert_eq!(run([1, 2, 3, 4]), (Observation::Idle, 2), "inside");
+        assert_eq!(
+            run([1, 2, 3, 10]),
+            (timeout.clone(), 2),
+            "second idle at the ceiling"
+        );
+        assert_eq!(
+            run([1, 2, 10, 11]),
+            (timeout, 1),
+            "a wait at the ceiling samples nothing"
         );
     }
 }

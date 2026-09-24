@@ -560,7 +560,10 @@ const HOLD_FLAGS: Option<i32> = None;
 pub enum StampGap {
     /// This target has no spelled flag pair.
     Unavailable,
-    /// Absent, not a regular file, replaced before the open, or not a
+    /// No stamp at the initial `lstat`: nothing to hold. It proves nothing about
+    /// the session.
+    Absent,
+    /// Not a regular file, unreadable, replaced before the open, or not a
     /// positive epoch.
     Unreadable,
 }
@@ -586,8 +589,8 @@ impl SessionStore {
     ///
     /// # Errors
     ///
-    /// [`StampGap::Unreadable`] when the stamp is absent, unreadable or not a
-    /// regular file.
+    /// [`StampGap::Absent`] when the lstat finds no stamp; [`StampGap::Unreadable`]
+    /// when it is unreadable or not a regular file.
     pub fn stamp_node(&self) -> Result<StampNode, StampGap> {
         let path = self.launch_attempt_path();
         #[allow(
@@ -601,6 +604,8 @@ impl SessionStore {
                 ino: meta.ino(),
                 path,
             }),
+            // The ONE benign absence, as `launch_attempt` reads it.
+            Err(why) if why.kind() == io::ErrorKind::NotFound => Err(StampGap::Absent),
             _ => Err(StampGap::Unreadable),
         }
     }
@@ -1264,12 +1269,9 @@ mod tests {
         std::os::unix::fs::symlink(&aside, &path).unwrap();
         assert_eq!(node.open().err(), Some(StampGap::Unreadable), "a link");
         std::fs::remove_file(&path).unwrap();
-        // Absent, a link, a directory: no node at all.
-        assert_eq!(
-            store.stamp_node().err(),
-            Some(StampGap::Unreadable),
-            "absent"
-        );
+        // No stamp at the lstat is nothing to hold; a link or a directory is no
+        // node at all.
+        assert_eq!(store.stamp_node().err(), Some(StampGap::Absent), "absent");
         std::os::unix::fs::symlink(&aside, &path).unwrap();
         assert_eq!(
             store.stamp_node().err(),
@@ -1282,6 +1284,24 @@ mod tests {
             store.stamp_node().err(),
             Some(StampGap::Unreadable),
             "a directory"
+        );
+        std::fs::remove_dir(&path).unwrap();
+        // Present at the lstat, gone by the open: damage, never an absence.
+        store.stamp_launch_attempt(1_789_105_855).unwrap();
+        let node = store.stamp_node().unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(
+            node.open().err(),
+            Some(StampGap::Unreadable),
+            "gone by the open"
+        );
+        // A parent that is not a directory: damage, never an absence.
+        let file = dir.join("not-a-dir");
+        std::fs::write(&file, b"").unwrap();
+        assert_eq!(
+            open(&file).stamp_node().err(),
+            Some(StampGap::Unreadable),
+            "ENOTDIR"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
