@@ -1298,6 +1298,7 @@ fn finish(
             &target.pane,
             tool,
             &prompt,
+            crate::session_launch::OnHumanPrompt::FailFast,
             err,
         )?)
     };
@@ -1314,6 +1315,7 @@ fn finish(
             &target.pane,
             tool,
             seed,
+            crate::session_launch::OnHumanPrompt::FailFast,
             err,
         )?),
         None => None,
@@ -1370,20 +1372,44 @@ fn finish(
     );
     record(dir, at, target, &line, Mentions::Conversation);
     if !launch_ok || !seed_ok {
-        writeln!(err, "Error: {line} — a turn never landed.")?;
-        if seed.is_some() {
-            writeln!(
-                err,
-                "  the seat is up; send its seed by hand: {}/send {} \"$(cat {})\"",
-                dir.display(),
-                target.agent,
-                seed_file(dir, &target.agent).display()
-            )?;
-        }
+        let blocked =
+            [launch_turn, seed_turn].contains(&Some(crate::session_launch::TurnOutcome::Blocked));
+        write!(
+            err,
+            "{}",
+            never_landed(dir, target, &line, blocked, seed.is_some())
+        )?;
         return Ok(EXIT_FAILED);
     }
     writeln!(out, "{line}")?;
     Ok(0)
+}
+
+/// What a move whose turn never landed tells the human. A turn a human-only
+/// prompt blocked says so, and the next step starts with the answer only the
+/// human can give; a kept seed is then re-sent by hand either way.
+fn never_landed(dir: &Path, target: &Target, line: &str, blocked: bool, seeded: bool) -> String {
+    let (why, first) = if blocked {
+        (
+            format!(
+                ": pane {} waits on the prompt named above, which only the human may answer",
+                target.pane
+            ),
+            format!("answer it in pane {}, then", target.pane),
+        )
+    } else {
+        (String::new(), "the seat is up;".to_owned())
+    };
+    let head = format!("Error: {line} — a turn never landed{why}.\n");
+    if !seeded {
+        return head;
+    }
+    format!(
+        "{head}  {first} send its seed by hand: {}/send {} \"$(cat {})\"\n",
+        dir.display(),
+        target.agent,
+        seed_file(dir, &target.agent).display()
+    )
 }
 
 /// What every `reseat` record carries besides its outcome: WHO asked, and the
@@ -1862,5 +1888,36 @@ mod tests {
         let escaped = super::seed_file(Path::new("/s/work"), "../../etc/x");
         assert_eq!(escaped, Path::new("/s/work/seed..._.._etc_x.md"));
         assert_eq!(escaped.parent(), Some(Path::new("/s/work")));
+    }
+
+    /// The two failure texts. A blocked turn names the pane and the answer
+    /// first; an unblocked one keeps the plain hand-send line; a move with no
+    /// kept seed prints no hand-send at all.
+    #[test]
+    fn a_turn_a_human_prompt_blocked_starts_its_next_step_with_the_answer() {
+        let target = crate::seat_relaunch::Target {
+            agent: "scout".to_owned(),
+            slot: "spawned.0".to_owned(),
+            pane: "%7".to_owned(),
+            server: crate::inventory::ServerId::Ambient,
+        };
+        let dir = Path::new("/s/work");
+        let send = "send its seed by hand: /s/work/send scout \"$(cat /s/work/seed.scout.md)\"";
+        assert_eq!(
+            super::never_landed(dir, &target, "moved", true, true),
+            format!(
+                "Error: moved — a turn never landed: pane %7 waits on the prompt named above, \
+                 which only the human may answer.\n  answer it in pane %7, then {send}\n"
+            )
+        );
+        assert_eq!(
+            super::never_landed(dir, &target, "moved", false, true),
+            format!("Error: moved — a turn never landed.\n  the seat is up; {send}\n")
+        );
+        assert_eq!(
+            super::never_landed(dir, &target, "moved", true, false),
+            "Error: moved — a turn never landed: pane %7 waits on the prompt named above, \
+             which only the human may answer.\n"
+        );
     }
 }

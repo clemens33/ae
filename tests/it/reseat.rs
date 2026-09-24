@@ -755,3 +755,109 @@ fn a_seat_whose_tree_also_runs_another_harness_is_never_stopped_even_with_the_fl
         "nothing written"
     );
 }
+
+/// claude's REAL folder-trust modal, drawn by a fake that does nothing else:
+/// the frozen frame, then it only LISTENS, logging every byte the pane is sent.
+/// Nothing may answer it — not the fake, and not ae.
+const TRUST_FAKE: &str = r#"#!/usr/bin/perl
+use strict;
+use warnings;
+sub bye { system("stty sane 2>/dev/null"); exit 0; }
+system("stty raw -echo 2>/dev/null");
+binmode(STDIN, ':raw');
+binmode(STDOUT, ':raw');
+$| = 1;
+open(my $frame, '<', "__FRAME__") or die;
+print "\e[H\e[2J";
+while (my $row = <$frame>) { $row =~ s/\n\z//; print "$row\r\n"; }
+close($frame);
+while (1) {
+    bye() if -e "__EXIT__";
+    my $ready = '';
+    vec($ready, fileno(STDIN), 1) = 1;
+    if (select($ready, undef, undef, 0.05) > 0) {
+        my $chunk = '';
+        sysread(STDIN, $chunk, 4096);
+        open(my $fh, '>>', "__RECEIVED__") or die;
+        print $fh $chunk;
+        close($fh);
+    }
+}
+"#;
+
+#[test]
+fn a_seed_blocked_by_claudes_folder_trust_prompt_fails_fast_naming_it_and_the_next_step() {
+    let rig = Rig::new("trust");
+    rig.seat_rows("spawned.0", "scout", "grok", "grok");
+    let pane = rig.new_pane("spawned.0", "scout");
+    rig.start(&pane, "spawned.0", "grok");
+    rig.kill_tools(&pane);
+    // The modal fake, under the claude interpreter copy the rig already built,
+    // added to the rig's own `[profiles]` block.
+    let script = rig.scratch.join("trust.pl");
+    let received = rig.scratch.join("trust-received");
+    let body = TRUST_FAKE
+        .replace(
+            "__FRAME__",
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/claude-trust/claude-trust-modal-80x24.txt"
+            ),
+        )
+        .replace(
+            "__EXIT__",
+            &rig.scratch.join("__EXIT__").display().to_string(),
+        )
+        .replace("__RECEIVED__", &received.display().to_string());
+    assert!(std::fs::write(&script, body).is_ok(), "the modal fake");
+    let config = rig.scratch.join("config");
+    let text = std::fs::read_to_string(&config).unwrap_or_default();
+    let profile = format!(
+        "fake-claude-trust = \"{} {}\"\n\n[workspace]",
+        rig.scratch.join("tools").join("claude").display(),
+        script.display()
+    );
+    assert!(
+        std::fs::write(&config, text.replacen("\n[workspace]", &profile, 1)).is_ok(),
+        "the profile"
+    );
+
+    let started = std::time::Instant::now();
+    let (code, out, err) = rig.run_top(
+        &rig.main_pane.clone(),
+        &[
+            "reseat",
+            &rig.session,
+            "scout",
+            "--using",
+            "fake-claude-trust",
+        ],
+    );
+    let took = started.elapsed();
+
+    assert_eq!(code, Some(1), "out={out} err={err}");
+    for part in [
+        "Quick safety check: Is this a project you created or one you trust?",
+        "Enter to confirm · Esc to cancel",
+        "only the human",
+        &format!("answer it in pane {pane}"),
+        "send scout",
+        "seed.scout.md",
+    ] {
+        assert!(err.contains(part), "{part:?} missing: {err}");
+    }
+    assert!(
+        took < std::time::Duration::from_secs(20),
+        "it gave the pane back, not the whole 45 s readiness wait: {took:?}"
+    );
+    assert!(
+        rig.tool_pid(&pane, "claude").is_some(),
+        "the seat is up, waiting on the human"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&received).unwrap_or_default(),
+        "",
+        "not one byte reached the modal"
+    );
+    assert!(rig.dir.join("seed.scout.md").exists(), "the seed is kept");
+}

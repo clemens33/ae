@@ -41,6 +41,10 @@ const SHELL_SETTLE: Duration = Duration::from_millis(300);
 /// How many polls the launch prompt's readiness wait takes.
 const LAUNCH_READY_POLLS: u32 = 90;
 
+/// How many readiness polls one chunk takes before the pane is read for a
+/// human-only prompt.
+const READY_CHUNK: u32 = 2;
+
 /// How many polls the tool-process wait takes.
 const START_POLLS: u32 = 10;
 
@@ -3352,6 +3356,7 @@ fn build(
             &agent.pane,
             agent.tool,
             &prompt,
+            OnHumanPrompt::Wait,
             err,
         )?;
     }
@@ -4258,6 +4263,92 @@ pub(crate) enum TurnOutcome {
     Unconfirmed,
     /// The turn never landed. The text is preserved and the failure recorded.
     Undelivered,
+    /// The turn never landed because the seat shows a prompt only the HUMAN
+    /// may answer, named in the recorded failure; the text is preserved.
+    Blocked,
+}
+
+/// What a launch turn does when its seat shows a prompt only the human may
+/// answer — the CALLER's choice, because only the caller knows whether a human
+/// is there to answer it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OnHumanPrompt {
+    /// Keep the whole readiness wait: a human at a fresh launch answers the
+    /// prompt, and the turn must still land by itself.
+    Wait,
+    /// Give the pane back once the SAME prompt holds on two consecutive reads:
+    /// a single-seat verb's caller is often an agent, which cannot answer it
+    /// and needs control back to tell the human.
+    FailFast,
+}
+
+/// One readiness chunk: the input became ready, or it did not and the pane
+/// showed this human-only prompt, if any.
+enum ReadyRead {
+    Ready,
+    Unready(Option<crate::watchdog::HumanPrompt>),
+}
+
+/// Where the launch turn's readiness wait ended.
+#[derive(Debug, PartialEq, Eq)]
+enum Readiness {
+    Ready,
+    Blocked(crate::watchdog::HumanPrompt),
+    NotReady,
+}
+
+/// Fold the readiness chunks, in order, into where the wait ends — pure, so
+/// the caller's choice is pinnable without a pane. A prompt is STABLE when the
+/// same question held on two consecutive reads, never one, and readiness wins
+/// the moment it comes, a prompt the human answered included. `FailFast` stops
+/// at the first stable prompt; `Wait` reads every chunk and names the prompt
+/// only when it is still stable at the end.
+fn settle(reads: impl IntoIterator<Item = ReadyRead>, on: OnHumanPrompt) -> Readiness {
+    let mut previous: Option<crate::watchdog::HumanPrompt> = None;
+    let mut stable = None;
+    for read in reads {
+        let ReadyRead::Unready(current) = read else {
+            return Readiness::Ready;
+        };
+        stable = match (previous.take(), &current) {
+            (Some(before), Some(now)) if before.question == now.question => Some(now.clone()),
+            _ => None,
+        };
+        if on == OnHumanPrompt::FailFast
+            && let Some(prompt) = &stable
+        {
+            return Readiness::Blocked(prompt.clone());
+        }
+        previous = current;
+    }
+    stable.map_or(Readiness::NotReady, Readiness::Blocked)
+}
+
+/// The launch turn's readiness wait. A tool whose adapter row names a
+/// human-only prompt is waited on in chunks, its pane read for that prompt
+/// between them through the same capture door readiness uses; every other
+/// tool waits exactly as before, in one piece.
+fn wait_ready(server: &ServerId, pane: &str, tool: ToolKind, on: OnHumanPrompt) -> Readiness {
+    let input = tool.adapter().input;
+    let polled =
+        |polls| deliver::wait_input_ready(server, pane, input.model, input.composed, polls);
+    if tool.adapter().prompt.is_none() {
+        return if polled(LAUNCH_READY_POLLS) {
+            Readiness::Ready
+        } else {
+            Readiness::NotReady
+        };
+    }
+    let reads = (0..LAUNCH_READY_POLLS / READY_CHUNK).map(|_| {
+        if polled(READY_CHUNK) {
+            return ReadyRead::Ready;
+        }
+        ReadyRead::Unready(
+            transport::capture_screen(server, pane, tmux::Styling::Plain)
+                .and_then(|frame| crate::watchdog::human_prompt_class(&frame, tool.adapter().name)),
+        )
+    });
+    settle(reads, on)
 }
 
 /// The gated, loud, DURABLE launch-turn delivery, for ONE seat.
@@ -4265,6 +4356,10 @@ pub(crate) enum TurnOutcome {
 /// The side effects are unchanged and unconditional: a failure preserves the
 /// text, records the event and says so on stderr. The RETURN is the addition —
 /// the launch throws it away, a single-slot caller reads it.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one seat's delivery facts plus the caller's prompt choice, spelled out"
+)]
 pub(crate) fn deliver_launch_turn(
     dir: &Path,
     server: &ServerId,
@@ -4272,11 +4367,13 @@ pub(crate) fn deliver_launch_turn(
     pane: &str,
     tool: ToolKind,
     prompt: &str,
+    on_prompt: OnHumanPrompt,
     err: &mut impl Write,
 ) -> io::Result<TurnOutcome> {
     let model = tool.adapter().input.model;
-    let composed = tool.adapter().input.composed;
-    let reason = if deliver::wait_input_ready(server, pane, model, composed, LAUNCH_READY_POLLS) {
+    let mut outcome = TurnOutcome::Undelivered;
+    let reason = match wait_ready(server, pane, tool, on_prompt) {
+        Readiness::Ready => {
         // NO select-pane: `paste-buffer -t` writes to the NAMED pane, and
         // selecting mid-send routes the human's in-flight keystrokes into the
         // target — acute under lead-pair, where two agents share window 0.
@@ -4300,8 +4397,15 @@ pub(crate) fn deliver_launch_turn(
             },
             Err(failure) => format!("submit UNCONFIRMED ({failure:?}) — it may be staged unsent"),
         }
-    } else {
-        "input never reached a confirmed-ready state within 45s (still initializing, busy, modal, or unreadable)".to_owned()
+        }
+        Readiness::Blocked(asked) => {
+            outcome = TurnOutcome::Blocked;
+            format!(
+                "a prompt only the human may answer is up: \"{}\" — press: {}; ae never answers it",
+                asked.question, asked.keys
+            )
+        }
+        Readiness::NotReady => "input never reached a confirmed-ready state within 45s (still initializing, busy, modal, or unreadable)".to_owned(),
     };
     let file = dir.join(format!("undelivered.launch-{slot}.txt"));
     let preserved = write_private(&file, prompt).is_ok();
@@ -4337,7 +4441,7 @@ pub(crate) fn deliver_launch_turn(
     if preserved {
         writeln!(err, "ae: the text is preserved at {}", file.display())?;
     }
-    Ok(TurnOutcome::Undelivered)
+    Ok(outcome)
 }
 
 /// Wait, briefly, for the tool's process to replace the pane's shell. `launched`
@@ -6682,5 +6786,71 @@ mod tests {
                 && line.contains("not an absolute path"),
             "{line:?}"
         );
+    }
+
+    /// One read showing the human-only prompt asking `question`.
+    fn asking(question: &str) -> super::ReadyRead {
+        super::ReadyRead::Unready(Some(crate::watchdog::HumanPrompt {
+            question: question.to_owned(),
+            keys: "Enter to confirm · Esc to cancel".to_owned(),
+        }))
+    }
+
+    /// Fold `reads`, counting how many the wait actually TOOK: the whole
+    /// difference between the two callers is how far it reads.
+    fn settled(
+        reads: Vec<super::ReadyRead>,
+        on: super::OnHumanPrompt,
+    ) -> (super::Readiness, usize) {
+        let taken = std::cell::Cell::new(0);
+        let counted = reads.into_iter().inspect(|_| taken.set(taken.get() + 1));
+        let verdict = super::settle(counted, on);
+        (verdict, taken.get())
+    }
+
+    fn blocked(question: &str) -> super::Readiness {
+        super::Readiness::Blocked(crate::watchdog::HumanPrompt {
+            question: question.to_owned(),
+            keys: "Enter to confirm · Esc to cancel".to_owned(),
+        })
+    }
+
+    /// The caller's choice: a single-seat verb gives the pane back on the
+    /// second identical read; a launch reads every chunk and names the prompt
+    /// only when it still holds at the end.
+    #[test]
+    fn fail_fast_stops_on_the_second_same_prompt_and_wait_reads_every_chunk() {
+        use super::OnHumanPrompt::{FailFast, Wait};
+        let five = || (0..5).map(|_| asking("trust?")).collect::<Vec<_>>();
+        assert_eq!(settled(five(), FailFast), (blocked("trust?"), 2));
+        assert_eq!(settled(five(), Wait), (blocked("trust?"), 5));
+        // Held mid-wait, gone at the end: a launch names nothing.
+        let mut cleared = five();
+        cleared.push(super::ReadyRead::Unready(None));
+        assert_eq!(settled(cleared, Wait), (super::Readiness::NotReady, 6));
+    }
+
+    /// STABLE is the same question on two CONSECUTIVE reads, never one; and
+    /// readiness wins whenever it comes, a prompt the human answered included.
+    #[test]
+    fn only_the_same_prompt_twice_in_a_row_is_stable_and_readiness_always_wins() {
+        use super::OnHumanPrompt::{FailFast, Wait};
+        use super::ReadyRead::{Ready, Unready};
+        for on in [FailFast, Wait] {
+            assert_eq!(
+                settled(vec![asking("a?")], on).0,
+                super::Readiness::NotReady
+            );
+            let gap = vec![asking("a?"), Unready(None), asking("a?")];
+            assert_eq!(settled(gap, on).0, super::Readiness::NotReady, "{on:?}");
+            let other = vec![asking("a?"), asking("b?")];
+            assert_eq!(settled(other, on).0, super::Readiness::NotReady, "{on:?}");
+            let answered = vec![asking("a?"), Ready, asking("a?"), asking("a?")];
+            assert_eq!(
+                settled(answered, on),
+                (super::Readiness::Ready, 2),
+                "{on:?}"
+            );
+        }
     }
 }

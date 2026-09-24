@@ -85,6 +85,7 @@ pub(crate) const fn turn_verdict(outcome: TurnOutcome) -> (bool, &'static str) {
         TurnOutcome::Submitted => (true, "submitted"),
         TurnOutcome::Unconfirmed => (true, "unconfirmed"),
         TurnOutcome::Undelivered => (false, "undelivered"),
+        TurnOutcome::Blocked => (false, "blocked"),
     }
 }
 
@@ -653,6 +654,7 @@ fn finish(
             &target.pane,
             tool,
             &prompt,
+            crate::session_launch::OnHumanPrompt::FailFast,
             err,
         )?)
     };
@@ -796,6 +798,7 @@ mod tests {
             turn_verdict(TurnOutcome::Undelivered),
             (false, "undelivered")
         );
+        assert_eq!(turn_verdict(TurnOutcome::Blocked), (false, "blocked"));
     }
 
     #[test]
