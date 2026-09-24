@@ -65,6 +65,18 @@ just docs             # serve the docs site locally on http://localhost:8000
 just docs-build       # build the static site into ./site
 ```
 
+**The gate on real Linux, locally.** `just rust-linux` runs `just rust-setup` and
+`just test` inside a local Linux container, natively arm64. The checkout is bound
+read-only, the CARGO_HOME/RUSTUP_HOME/CARGO_TARGET_DIR caches live in named
+volumes (`ae-linux-arm64-*`; remove them by name for a cold run), the container
+runs non-root as the invoking uid, and everything it creates carries the
+`ae.lane=linux` label. The base image and the two host-fetched binaries are
+digest-pinned in the justfile. `just rust-linux-smoke` executes the x86_64 musl
+bundle from `./dist` in an amd64 container — the run proof `just bundles` cannot
+make on an arm64 macOS host, where its byte search is the degraded form. (An amd64 GATE
+was tried and dropped: under QEMU user emulation `rust-setup` cannot build
+cargo-nextest, whose aws-lc-sys build script segfaults.)
+
 ## Tests
 
 **The whole test surface is Rust.** `just rust-check` is format, lint, `cargo nextest` over

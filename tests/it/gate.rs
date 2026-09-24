@@ -935,6 +935,192 @@ fn the_fuzz_lane_bounds_every_duration_it_hands_libfuzzer() {
     ));
 }
 
+/// Whether the Linux container lanes keep their safety shape.
+///
+/// `rust-linux` runs THE GATE on real Linux (native arm64) inside a local
+/// container, and its hazards are the ones a container gate can quietly grow: a
+/// moving base image tag, a writable checkout mount, a tty that lets a test
+/// take the lane (#149), a root container whose mode-bit tests lie, a rebuilt
+/// image whose uid no longer matches the volumes it is handed, a rustup-init
+/// fetched from the moving dist URL whose digest changes with every release,
+/// and an arch parameter that would silently promise `x86_64` evidence the
+/// dropped amd64 path could never deliver. The smoke recipe must keep proving
+/// the RELEASED musl bundle without growing a per-release download pin.
+fn linux_lanes_ok(justfile: &str) -> bool {
+    let lines = recipe_text(justfile, "rust-linux:");
+    let contains = |needle: &str| lines.iter().any(|line| line.contains(needle));
+    // The recipe takes NO parameter: an arch flag would promise amd64 evidence
+    // the QEMU path cannot produce (the smoke covers the bundle instead).
+    if !recipe_text(justfile, "rust-linux arch=").is_empty()
+        || lines.iter().any(|line| line.contains("amd64"))
+    {
+        return false;
+    }
+    // The base image is a digest pin, and the build's FROM is that pin — never
+    // a tag a remote can move under us.
+    if !justfile.contains("LINUX_IMAGE := \"ubuntu:24.04@sha256:")
+        || !contains("FROM {{ LINUX_IMAGE }}")
+    {
+        return false;
+    }
+    // rustup-init comes from the versioned archive URL, whose digests hold.
+    if !justfile.contains("RUSTUP_VERSION := \"")
+        || !contains("rustup/archive/{{ RUSTUP_VERSION }}/")
+    {
+        return false;
+    }
+    // Caches are named volumes carrying the arch they serve, on every mount.
+    // Counted as occurrences, because the recipe's folded continuations put
+    // several mounts on one line.
+    if lines
+        .iter()
+        .map(|line| line.matches("ae-linux-arm64-").count())
+        .sum::<usize>()
+        < 4
+    {
+        return false;
+    }
+    // The image is built with the HOST's uid: without the build arg it rebuilds
+    // as the default 1000 (ubuntu 24.04's own user) and cannot write its volumes.
+    if !contains("--build-arg UID=\"$(id -u)\"") {
+        return false;
+    }
+    // --init: the gate's bash is PID 1 without it — the kernel drops SIGTERM to
+    // a PID 1 with no handler, so docker stop waits 10 s and then SIGKILLs, and
+    // orphaned test processes reparent to a bash that may not reap them, so a
+    // zombie still answers ps and kill -0 to a liveness proof. (Measured: a
+    // Ctrl-C on the docker CLI ends the run in NEITHER configuration.)
+    if !contains("--init") {
+        return false;
+    }
+    // The container lane runs the WHOLE suite on the bounded linux profile:
+    // fail-fast off, so one run lists every Linux-only failure, and the hang
+    // bound ends what would otherwise stall the lane forever.
+    if !contains("-e NEXTEST_PROFILE=linux") {
+        return false;
+    }
+    // No tty on a run (docker build's -t is its tag flag, not a terminal): a
+    // test must not be able to take the lane's terminal (#149). The checkout is
+    // bound READ-ONLY and the container does not run as root — mode-bit tests
+    // would lie.
+    let has_tty = lines.iter().any(|line| {
+        line.contains("docker run")
+            && line
+                .split_whitespace()
+                .any(|word| matches!(word, "-t" | "-it" | "--tty"))
+    });
+    if has_tty || !contains(":$repo:ro") || !contains("USER \"$UID\"") {
+        return false;
+    }
+    // No second copy of the gate: the recipe calls the repo's own recipes.
+    if !contains("just rust-setup") || !contains("just test") {
+        return false;
+    }
+    // The smoke runs the RELEASED bundle from ./dist, verified against the
+    // manifest `just bundles` wrote — it fetches nothing, so it never needs a
+    // per-release digest pin, and a missing bundle names its builder.
+    let smoke = recipe_text(justfile, "rust-linux-smoke:");
+    let smoke_has = |needle: &str| smoke.iter().any(|line| line.contains(needle));
+    smoke_has("dist/SHA256SUMS")
+        && smoke_has("just bundles")
+        && smoke_has("--platform linux/amd64")
+        && smoke_has("just version")
+        && !smoke
+            .iter()
+            .any(|line| line.contains("https://") || line.contains("curl"))
+}
+
+#[test]
+fn the_linux_container_lanes_are_digest_pinned_read_only_and_non_root() {
+    let green = concat!(
+        "LINUX_IMAGE := \"ubuntu:24.04@sha256:008173\"\n",
+        "RUSTUP_VERSION := \"1.29.1\"\n",
+        "rust-linux:\n",
+        "    for v in cargo rustup target; do docker volume create \"ae-linux-arm64-$v\" >/dev/null; done\n",
+        "    curl -o \"$lane/rustup-init\" https://static.rust-lang.org/rustup/archive/{{ RUSTUP_VERSION }}/rustup-init\n",
+        "    repo=\"$PWD\"\n",
+        "    mounts=(-v \"$repo:$repo:ro\")\n",
+        "    docker build --build-arg UID=\"$(id -u)\" -t ae-linux-arm64 - <<'DOCKERFILE'\n",
+        "    FROM {{ LINUX_IMAGE }}\n",
+        "    USER \"$UID\"\n",
+        "    DOCKERFILE\n",
+        "    docker run --rm --init \"${mounts[@]}\" -v \"ae-linux-arm64-cargo:/c\" \\\n",
+        "        -v \"ae-linux-arm64-rustup:/r\" -v \"ae-linux-arm64-target:/t\" -e NEXTEST_PROFILE=linux \\\n",
+        "        ae-linux-arm64 \\\n",
+        "        bash -c 'just rust-setup\n",
+        "        just test'\n",
+        "\n",
+        "rust-linux-smoke:\n",
+        "    version=\"$(just version)\"\n",
+        "    line=\"$(grep -F \" ae-$version-linux-x86_64-musl.tar.gz\" dist/SHA256SUMS)\"\n",
+        "    [ -f \"dist/ae-$version-linux-x86_64-musl.tar.gz\" ] || { echo \"run: just bundles\" >&2; exit 1; }\n",
+        "    out=\"$(docker run --rm --platform linux/amd64 ae-smoke /run/ae-core --version)\"\n",
+        "    [ \"$out\" = \"ae $version\" ]\n",
+    );
+    assert!(
+        linux_lanes_ok(green),
+        "the synthetic green lane must satisfy every rule, so each red below is one rule"
+    );
+
+    // RED — the base image pinned by tag: a remote can move it under the gate.
+    assert!(!linux_lanes_ok(&green.replace(
+        "LINUX_IMAGE := \"ubuntu:24.04@sha256:008173\"",
+        "LINUX_IMAGE := \"ubuntu:24.04\""
+    )));
+    // RED — a tty on the gate run: a test could take the lane's terminal (#149).
+    assert!(!linux_lanes_ok(&green.replace(
+        "docker run --rm --init \"${mounts[@]}\"",
+        "docker run --rm --init -t \"${mounts[@]}\""
+    )));
+    // RED — the checkout mount made writable: a run could touch the live tree.
+    assert!(!linux_lanes_ok(&green.replace(
+        "mounts=(-v \"$repo:$repo:ro\")",
+        "mounts=(-v \"$repo:$repo\")"
+    )));
+    // RED — a root container: root ignores mode bits, so ae's 0555/0444 and
+    // permission-refusal tests would lie.
+    assert!(!linux_lanes_ok(&green.replace("    USER \"$UID\"\n", "")));
+    // RED — the gate steps inlined into the recipe: a second copy of the gate
+    // drifts from `just test` and the pin block stops being the one source.
+    assert!(!linux_lanes_ok(&green.replace(
+        "bash -c 'just rust-setup\n        just test'",
+        "bash -c 'cargo fmt --all --check && cargo nextest run'"
+    )));
+    // RED — no --init: the gate's bash is PID 1 and swallows signals and orphans.
+    assert!(!linux_lanes_ok(&green.replace(
+        "docker run --rm --init \"${mounts[@]}\"",
+        "docker run --rm \"${mounts[@]}\""
+    )));
+    // RED — the unbounded default profile: fail-fast would again hide every
+    // Linux-only failure behind the first, and a hang would stall the lane.
+    assert!(!linux_lanes_ok(&green.replace(
+        "-e NEXTEST_PROFILE=linux",
+        "-e NEXTEST_PROFILE=default"
+    )));
+    // RED — volumes without the arch they serve, or a build without the host
+    // uid: the run cannot write its own cache, or shares it with a foreign arch.
+    assert!(!linux_lanes_ok(
+        &green.replace("ae-linux-arm64-", "ae-linux-")
+    ));
+    assert!(!linux_lanes_ok(&green.replace(
+        "docker build --build-arg UID=\"$(id -u)\"",
+        "docker build"
+    )));
+    // RED — an arch parameter is back: it would promise amd64 evidence the
+    // dropped QEMU path cannot produce.
+    assert!(!linux_lanes_ok(
+        &green.replace("rust-linux:\n", "rust-linux arch=\"arm64\":\n")
+    ));
+    // RED — a smoke that downloads a pinned release: the digest goes stale at
+    // every release and the pin becomes a lie.
+    assert!(!linux_lanes_ok(&green.replace(
+        "line=\"$(grep -F \" ae-$version-linux-x86_64-musl.tar.gz\" dist/SHA256SUMS)\"",
+        "curl -o /tmp/ae.tar.gz https://example.com/ae.tar.gz"
+    )));
+
+    assert!(linux_lanes_ok(&read(&root().join("justfile"))));
+}
+
 /// The joined, comment-free text the portability rules read.
 fn installer_lines(source: &str) -> Vec<String> {
     let mut out = Vec::new();

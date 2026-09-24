@@ -935,6 +935,17 @@ VET_VERSION := "0.10.2"
 # like every other dev tool.
 GIT_CLIFF_VERSION := "2.13.1"
 
+# The local Linux gate (`just rust-linux`) fetches two binaries onto the host and
+# runs everything else inside a container. The base image is pinned by its
+# MANIFEST DIGEST — --platform selects the arm64/amd64 variant out of the same
+# list — and both fetched binaries are digest-checked on the way in. rustup-init
+# comes from the VERSIONED archive URL, never the moving dist one, so the
+# digests below keep holding.
+LINUX_IMAGE := "ubuntu:24.04@sha256:008173c23f95b170204355c12626cb5a965d779a7e1283b09e9cffbb1bf33ca3"
+RUSTUP_VERSION := "1.29.1"
+LINUX_JUST_SHA_ARM64 := "f225044a81adea6e0b3a8b9370aaf374e6af76c8735ae263ac993df55fd137ec"
+LINUX_RUSTUP_SHA_ARM64 := "15f6e4ce9f583b929c996c91562bad6d4454f3281de858b02cdfdef615fac433"
+
 # The foreign target. musl, not gnu — ae ships a STATIC binary with no host
 # runtime dependency, and gnu is not that (see rust-toolchain.toml for the NSS caveat).
 # It is LINKED here now, by `just bundles`, which builds the Linux release half
@@ -1374,6 +1385,165 @@ rust-build-release:
     cargo build --release --locked
     @echo "==> native binary: target/release/ae"
     @./target/release/ae --version
+
+# ── Linux container gate (local; CI stays off) ───────────────────────
+
+# THE GATE ON REAL LINUX, on this machine, NATIVE arm64. `just rust-linux` runs
+# the whole gate (`just rust-setup`, then `just test`) inside a local Linux
+# container. An amd64 gate was tried and DROPPED (under QEMU user emulation
+# rust-setup cannot build cargo-nextest — aws-lc-sys's cc segfaults — and six
+# more tools would compile at ~6x); the smoke below still proves the shipped
+# amd64 bundle under QEMU. The checkout is bound READ-ONLY, so a run cannot
+# touch the live tree, and CARGO_HOME, RUSTUP_HOME and CARGO_TARGET_DIR
+# live in named volumes (`ae-linux-arm64-*`), so the host target/ is never
+# written and a warm run skips the toolchain and the seven tool builds. The
+# container runs NON-ROOT, as a user whose uid IS the invoking user's: root
+# ignores mode bits, so ae's 0555/0444 and permission-refusal tests would lie.
+# Every container, volume and image this recipe makes carries the
+# `ae.lane=linux` label, and the volumes are caches: nothing here removes one
+# (remove by name, e.g. `docker volume rm ae-linux-arm64-cargo
+# ae-linux-arm64-rustup ae-linux-arm64-target`, for a cold run). The recipe
+# itself takes no lock; on a shared machine the batch rule serialises test
+# lanes outside it.
+rust-linux:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # The gate is a NATIVE arm64 container. On a non-arm64 daemon the fetched
+    # aarch64 binaries would die in a cryptic exec format error, so the daemon
+    # is probed first and anything else refuses with the reason.
+    daemon_arch="$(docker run --rm --label ae.lane=linux {{ LINUX_IMAGE }} uname -m)"
+    if [ "$daemon_arch" != aarch64 ]; then
+        echo "Error: rust-linux runs a native arm64 container; this Docker daemon is $daemon_arch; on a Linux host, just test is already the Linux gate" >&2
+        exit 1
+    fi
+    sums() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$@"; else shasum -a 256 "$@"; fi; }
+    uid="$(id -u)"
+    lane="$(mktemp -d "${TMPDIR:-/tmp}/ae-linux-lane.XXXXXX")"
+    # Cleanup makes the lane writable before removing it (C83): an archive
+    # member extracted 0555 refuses its own unlink.
+    trap 'chmod -R u+w "$lane" 2>/dev/null || true; rm -rf "$lane"' EXIT
+    # just and rustup-init are fetched on the HOST and digest-checked here, then
+    # bind-mounted read-only: the container needs no curl and fetches nothing
+    # beyond what cargo and rustup themselves fetch.
+    curl -fsSL --retry 3 -o "$lane/just.tar.gz" \
+        "https://github.com/casey/just/releases/download/{{ JUST_VERSION }}/just-{{ JUST_VERSION }}-aarch64-unknown-linux-musl.tar.gz"
+    printf '%s  %s\n' "{{ LINUX_JUST_SHA_ARM64 }}" "$lane/just.tar.gz" | sums -c - >/dev/null
+    tar -xzf "$lane/just.tar.gz" -C "$lane" just
+    curl -fsSL --retry 3 -o "$lane/rustup-init" \
+        "https://static.rust-lang.org/rustup/archive/{{ RUSTUP_VERSION }}/aarch64-unknown-linux-gnu/rustup-init"
+    printf '%s  %s\n' "{{ LINUX_RUSTUP_SHA_ARM64 }}" "$lane/rustup-init" | sums -c - >/dev/null
+    chmod 0755 "$lane/rustup-init"
+    # The volumes ARE the warm-run cache; creation and the ownership one-shot are
+    # idempotent, and the chown runs only on a volume that is not already the
+    # invoking uid, so a warm run never walks its tree again.
+    for v in cargo rustup target; do
+        docker volume create --label ae.lane=linux "ae-linux-arm64-$v" >/dev/null
+        docker run --rm --label ae.lane=linux -v "ae-linux-arm64-$v:/own" {{ LINUX_IMAGE }} \
+            sh -c "[ \"\$(stat -c %u /own)\" = $uid ] || chown -R $uid:$uid /own"
+    done
+    # The image builds from an EMPTY context — the Dockerfile arrives on stdin —
+    # so the checkout (whose target/ alone is gigabytes) is never sent to the daemon.
+    # The in-container uid comes from the HOST: without the build arg the recipe
+    # would rebuild as the default 1000, which ubuntu 24.04 already ships as the
+    # `ubuntu` user — the run then cannot write its own volumes (rc=1 in seconds).
+    docker build --build-arg UID="$(id -u)" -t ae-linux-arm64 - <<'DOCKERFILE'
+    FROM {{ LINUX_IMAGE }}
+    LABEL ae.lane=linux
+    RUN apt-get update \
+            && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+                build-essential tmux git perl procps ca-certificates locales \
+            && rm -rf /var/lib/apt/lists/*
+    # en_US.UTF-8 serves the collation arm (the non-C locale test is
+    # INCONCLUSIVE without it); the glyph trio turns green from LANG=C.UTF-8 on
+    # the run, which stops ae's chooser degrading to the ASCII fallback.
+    RUN locale-gen en_US.UTF-8
+    # The in-container uid IS the invoking user's, so git accepts the bind-mounted
+    # checkout as its own and no safe.directory override is needed. ubuntu 24.04
+    # already ships a uid-1000 user, so a taken uid falls through to that one and
+    # USER stays numeric; the name never matters (HOME is set on docker run).
+    ARG UID=1000
+    RUN useradd --create-home --uid "$UID" --user-group ae || true
+    USER "$UID"
+    DOCKERFILE
+    repo="$(pwd -P)"
+    # A worktree's .git is a FILE naming an absolute gitdir in the main checkout,
+    # so tests that read history need that directory mounted at its own path too.
+    gitdir="$(git rev-parse --git-common-dir)"
+    case "$gitdir" in /*) ;; *) gitdir="$repo/$gitdir" ;; esac
+    mounts=(-v "$repo:$repo:ro")
+    [ "$gitdir" = "$repo/.git" ] || mounts+=(-v "$gitdir:$gitdir:ro")
+    # Inside the container <repo>/target IS the arm64 target volume: the clippy
+    # force-warn probes write under it (the checkout is :ro, and a read-only
+    # bind cannot grow a mountpoint, so the directory is created on the host
+    # first — gitignored). The host's own target/ is shadowed and never written;
+    # a fresh worktree without one gets an empty directory to mount over.
+    mkdir -p "$repo/target"
+    mounts+=(-v "ae-linux-arm64-target:$repo/target")
+    echo "==> ae-linux gate: started $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    start=$SECONDS
+    rc=0
+    # --init: without it the bash below is PID 1 — the kernel drops SIGTERM to
+    # a PID 1 with no handler, so docker stop waits 10 s and then SIGKILLs, and
+    # orphaned test processes (tmux servers, ae daemons) reparent to a bash that
+    # may not reap them, so a zombie still answers ps and kill -0 to a liveness
+    # proof. (Measured: a Ctrl-C on the docker CLI ends this run in NEITHER
+    # configuration; a run is stopped with docker stop.)
+    docker run --rm --init --label ae.lane=linux --cpus 4 --memory 8g \
+        -v "$lane:/stage:ro" \
+        "${mounts[@]}" \
+        -v "ae-linux-arm64-cargo:/home/ae/.cargo" \
+        -v "ae-linux-arm64-rustup:/home/ae/.rustup" \
+        -e HOME=/home/ae \
+        -e CARGO_HOME=/home/ae/.cargo -e RUSTUP_HOME=/home/ae/.rustup \
+        -e CARGO_BUILD_JOBS=4 \
+        -e NEXTEST_TEST_THREADS=4 \
+        -e NEXTEST_PROFILE=linux \
+        -e LANG=C.UTF-8 \
+        -w "$repo" \
+        ae-linux-arm64 \
+        bash -c 'set -euo pipefail
+            export PATH="/stage:/home/ae/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+            # Idempotent bootstrap: rustup proxies land in the cargo volume and no
+            # default toolchain is set — rust-toolchain.toml, read by rust-setup,
+            # decides what is installed. A warm run re-probes and installs nothing.
+            /stage/rustup-init -y --no-modify-path --profile minimal --default-toolchain none
+            just rust-setup
+            just test' || rc=$?
+    echo "==> ae-linux gate: rc=$rc wall=$((SECONDS - start))s"
+    exit "$rc"
+
+# THE x86_64 MUSL RELEASE BUNDLE EXECUTES ON REAL LINUX. `just bundles` can only
+# byte-search a foreign-architecture core ("version proven by byte search, not
+# by running it"); this smoke runs the bundle's ae-core in an amd64 container and
+# compares `--version` with this tree's own version, derived at run time — never
+# a pinned release. Emulation is the Docker VM's ambient QEMU binfmt; when it is
+# missing the run FAILS LOUDLY below instead of passing silently. The bundle
+# comes from ./dist and is verified against the SHA256SUMS `just bundles` wrote.
+rust-linux-smoke:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    version="$(just version)"
+    tarball="dist/ae-$version-linux-x86_64-musl.tar.gz"
+    [ -f "$tarball" ] || { echo "Error: $tarball is missing — run: just bundles" >&2; exit 1; }
+    sums() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$@"; else shasum -a 256 "$@"; fi; }
+    line="$(grep -F " ae-$version-linux-x86_64-musl.tar.gz" dist/SHA256SUMS)" || {
+        echo "Error: dist/SHA256SUMS has no entry for $tarball — rebuild: just bundles" >&2
+        exit 1
+    }
+    lane="$(mktemp -d "${TMPDIR:-/tmp}/ae-linux-smoke.XXXXXX")"
+    trap 'chmod -R u+w "$lane" 2>/dev/null || true; rm -rf "$lane"' EXIT
+    printf '%s\n' "$line" | ( cd dist && sums -c - ) >/dev/null
+    tar -xzf "$tarball" -C "$lane"
+    if ! out="$(docker run --rm --label ae.lane=linux --platform linux/amd64 \
+            -v "$lane:/bundle:ro" {{ LINUX_IMAGE }} \
+            "/bundle/ae-$version-linux-x86_64-musl/ae-core" --version 2>&1)"; then
+        echo "Error: the amd64 container could not run the musl core — amd64 emulation (QEMU binfmt) is missing in this Docker VM" >&2
+        printf '%s\n' "$out" >&2
+        exit 1
+    fi
+    got="${out%%$'\n'*}"
+    [ "$got" = "ae $version" ] || { echo "Error: --version printed '$got', want 'ae $version'" >&2; exit 1; }
+    echo "==> amd64 smoke ok: $got"
 
 # bacon is deliberately NOT installed by rust-setup: a personal dev loop is not
 # part of the bootstrap contract.
