@@ -14,6 +14,7 @@ use super::parity::Invocation;
 use super::parity::capture::ExitOutcome;
 use super::parity::capture::raw;
 use crate::phase2::run_tmux;
+use ae::tool::ToolKind;
 
 /// ae's own doors that a hermetic run must NOT inherit.
 ///
@@ -79,15 +80,39 @@ fn isolated_tmux_tmpdir() -> &'static std::path::Path {
     .as_path()
 }
 
-/// Every harness binary name the adapter table knows (`src/tool.rs` `KNOWN`).
+/// The harness binaries the shadow covers, each named by its OWNER
+/// (`ToolKind::as_str`) — never by a second list beside the adapter rows.
 ///
-/// A new adapter row adds its name here. The product runs `opencode` by FIXED
-/// program name from PATH (the id capture, the board export) and a launch pastes
-/// the profile's own command into a pane, so a runner that inherited the
-/// developer's PATH would start their real CLI under the hermetic HOME.
-const HARNESS_NAMES: [&str; 7] = [
-    "claude", "codex", "gemini", "agy", "grok", "muse", "opencode",
-];
+/// The product runs `opencode` by FIXED program name from PATH (the id capture,
+/// the board export) and a launch pastes the profile's own command into a pane,
+/// so a runner that inherited the developer's PATH would start their real CLI
+/// under the hermetic HOME. The `match` is WILDCARD-FREE on purpose: a new
+/// `ToolKind` variant stops this compiling until the shadow covers it.
+fn shadowed_harnesses() -> Vec<&'static str> {
+    [
+        ToolKind::Claude,
+        ToolKind::Codex,
+        ToolKind::Gemini,
+        ToolKind::Agy,
+        ToolKind::Grok,
+        ToolKind::Muse,
+        ToolKind::OpenCode,
+    ]
+    .into_iter()
+    .filter_map(|kind| match kind {
+        ToolKind::Claude
+        | ToolKind::Codex
+        | ToolKind::Gemini
+        | ToolKind::Agy
+        | ToolKind::Grok
+        | ToolKind::Muse
+        | ToolKind::OpenCode => Some(kind.as_str()),
+        // The classifier's failure arm names no harness; a NEW variant must
+        // join the array and an arm above before this compiles again.
+        ToolKind::Unknown => None,
+    })
+    .collect()
+}
 
 /// A PATH directory whose harness binaries refuse before doing anything.
 ///
@@ -107,7 +132,7 @@ fn no_real_harness() -> &'static std::path::Path {
             std::fs::create_dir_all(&dir).is_ok(),
             "the harness shadow directory"
         );
-        for name in HARNESS_NAMES {
+        for name in shadowed_harnesses() {
             let fake = dir.join(name);
             assert!(
                 std::fs::write(&fake, "#!/bin/sh\nexit 1\n").is_ok(),
@@ -644,14 +669,15 @@ fn the_harness_shadow_is_first_and_never_hides_a_fixtures_fake() {
             .expect("the probe runs");
         String::from_utf8_lossy(&out.stdout).trim().to_owned()
     };
+    let probed = ToolKind::OpenCode.as_str();
     assert_eq!(
-        probe("command -v opencode", None),
-        no_real_harness().join("opencode").display().to_string(),
+        probe(&format!("command -v {probed}"), None),
+        no_real_harness().join(probed).display().to_string(),
         "an untouched PATH resolves the shadow"
     );
     let fake = dir.join("bin");
     assert!(std::fs::create_dir_all(&fake).is_ok(), "the fixture bin");
-    let opencode = fake.join("opencode");
+    let opencode = fake.join(probed);
     assert!(std::fs::write(&opencode, "#!/bin/sh\nexit 1\n").is_ok());
     {
         use std::os::unix::fs::PermissionsExt as _;
@@ -661,7 +687,7 @@ fn the_harness_shadow_is_first_and_never_hides_a_fixtures_fake() {
     }
     assert_eq!(
         probe(
-            "command -v opencode",
+            &format!("command -v {probed}"),
             Some(format!("{}:/usr/bin:/bin", fake.display()))
         ),
         opencode.display().to_string(),
