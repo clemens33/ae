@@ -168,7 +168,8 @@ pub fn has_human_draft(capture: &str, tool: ToolKind) -> bool {
 }
 
 /// Extract model and effort independently from the positively bounded current
-/// frame. This never searches transcript text or historical rows.
+/// frame, except that a claude suffix which is no effort proves no model. This
+/// never searches transcript text or historical rows.
 #[must_use]
 pub fn current_identity(capture: &str, tool: ToolKind) -> HarnessIdentity {
     match tool.adapter().identity {
@@ -468,22 +469,24 @@ fn parse_claude_identity(line: &str) -> HarnessIdentity {
             effort: None,
         };
     }
-    let (model_text, effort) =
-        identity
-            .rsplit_once(" (")
-            .map_or((identity, None), |(model, effort)| {
-                (
-                    model,
-                    effort.strip_suffix(')').filter(|value| valid_effort(value)),
-                )
-            });
+    // Past an exact label, only ` (<effort>)` may follow a model. Any other
+    // suffix is a variant nobody measured (`(1M context)`), so it proves NO
+    // model: reading its base would let a follow pin the wrong model.
+    let Some((model_text, effort)) = identity.rsplit_once(" (").and_then(|(model, suffix)| {
+        let effort = suffix
+            .strip_suffix(')')
+            .filter(|value| valid_effort(value))?;
+        Some((model, effort))
+    }) else {
+        return HarnessIdentity::default();
+    };
     let model = CLAUDE_MODELS
         .iter()
         .find(|candidate| **candidate == model_text)
         .map(|candidate| (*candidate).to_owned());
     HarnessIdentity {
         model,
-        effort: effort.map(str::to_owned),
+        effort: Some(effort.to_owned()),
     }
 }
 
@@ -492,7 +495,13 @@ fn parse_claude_identity(line: &str) -> HarnessIdentity {
 /// manual choice is never followed. STANDING OBLIGATION, like a toolchain pin —
 /// add the label when a new claude model ships, or it stays silently
 /// unfollowable.
-const CLAUDE_MODELS: [&str; 4] = ["Fable 5.1", "Opus 4.8", "Opus 5 (1M context)", "Opus 5"];
+const CLAUDE_MODELS: [&str; 5] = [
+    "Fable 5.1",
+    "Opus 4.8",
+    "Opus 5 (1M context)",
+    "Opus 5",
+    "Opus 5.5",
+];
 
 /// Is this the spelling a display-label harness's own footer draws? Because the
 /// list above is CLOSED, a `false` here PROVES the value was not read from such
@@ -914,6 +923,17 @@ mod tests {
     }
 
     #[test]
+    fn a_real_opus_5_5_frame_reads_its_model_and_effort() {
+        assert_eq!(
+            current_identity(&bypass(COMPACTED), ToolKind::Claude),
+            HarnessIdentity {
+                model: Some("Opus 5.5".to_owned()),
+                effort: Some("xhigh".to_owned())
+            }
+        );
+    }
+
+    #[test]
     fn a_fresh_claude_empty_box_is_idle_but_a_prompt_alone_is_not() {
         let border = "────────────────────────────────────────────────────────────────";
         let fresh = format!(
@@ -1045,8 +1065,10 @@ mod tests {
                 ),
                 ToolKind::Claude
             ),
+            // `(bespoke)` is no effort, so this is a variant nobody measured:
+            // no model, never its base.
             HarnessIdentity {
-                model: Some("Opus 5".to_owned()),
+                model: None,
                 effort: None
             }
         );
@@ -1149,6 +1171,30 @@ mod tests {
                 effort: None
             }
         );
+    }
+
+    #[test]
+    fn a_suffix_that_is_no_effort_leaves_the_model_unknown() {
+        for (drawn, model, effort) in [
+            ("Fable 5.1 (1M context)", None, None),
+            ("Opus 5.5", Some("Opus 5.5"), None),
+            ("Opus 5.5 (1M context)", None, None),
+            ("Opus 5.5 (1M context) (xhigh)", None, Some("xhigh")),
+            ("Opus 5.50 (high)", None, Some("high")),
+            ("opus 5.5 (high)", None, Some("high")),
+        ] {
+            let capture =
+                format!("────\n❯\n────\n  🧠 {drawn}  📁 ae\n  ⏵⏵ bypass permissions on\n");
+            let expected = HarnessIdentity {
+                model: model.map(str::to_owned),
+                effort: effort.map(str::to_owned),
+            };
+            assert_eq!(
+                current_identity(&capture, ToolKind::Claude),
+                expected,
+                "{drawn}"
+            );
+        }
     }
 
     #[test]
