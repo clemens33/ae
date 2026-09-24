@@ -1,0 +1,50 @@
+probe$ printf "CCD=%s PWD=%s\n" "${CLAUDE_CONFIG_DIR-unset}" "$PWD"
+CCD=unset PWD=/tmp/claude-trust-probe
+probe$ env -u CLAUDE_CONFIG_DIR claude --version
+2.1.281 (Claude Code)
+probe$ env -u CLAUDE_CONFIG_DIR claude
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Accessing workspace:
+
+ /tmp/claude-trust-probe
+
+ Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source project, or work from your team). If not, take a moment to review what's in this
+ folder first.
+
+ Claude Code'll be able to read, edit, and execute files here.
+
+ Security guide
+
+ ❯ No, exit
+   Yes, I trust this folder
+
+ Enter to confirm · Esc to cancel
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

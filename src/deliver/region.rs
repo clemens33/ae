@@ -358,6 +358,9 @@ struct Gathered {
     /// claude and muse need a rule directly above the row and the bottom
     /// border below it, which a transcript echo of the same text never has.
     boxed: bool,
+    /// The first half of `boxed`: the live prompt row sits directly under a
+    /// rule (codex's live style proves it outright).
+    fenced: bool,
 }
 
 impl Gathered {
@@ -387,6 +390,7 @@ fn gather(segments: &[Segment], model: InputModel) -> Option<Gathered> {
                 text: String::new(),
                 rows: BTreeSet::new(),
                 boxed: true,
+                fenced: true,
             };
             gathered.push(&after_first(&found.tail, '›'), composer);
             for seg in &segments[found.index + 1..] {
@@ -430,6 +434,7 @@ fn gather(segments: &[Segment], model: InputModel) -> Option<Gathered> {
                 text: String::new(),
                 rows: BTreeSet::new(),
                 boxed: fenced && segments.last().is_some_and(|last| end <= last.line),
+                fenced,
             };
             gathered.push(
                 found
@@ -550,6 +555,23 @@ fn is_staged_chip(text: &str) -> bool {
         return false;
     };
     !count.is_empty() && count.chars().all(|ch| ch.is_ascii_digit())
+}
+
+/// Whether a LIVE composer is drawn in `capture` — the guard that keeps a
+/// human-only prompt from being read out of a transcript that quotes one.
+///
+/// A modelled composer answers through its own grammar: the live prompt row
+/// found the way occupancy finds it, fenced (`Gathered::fenced`). Not
+/// `boxed`: that also wants the border below to be the frame's widest row, and a
+/// real claude composer fails it once a status row outgrows its rule. An
+/// unmodelled composer answers through its composed markers ([`composed_ui`]).
+#[must_use]
+pub(crate) fn composer_drawn(capture: &str, model: InputModel, composed: Composed) -> bool {
+    if model.is_modelled() {
+        gather(&parse(capture), model).is_some_and(|found| found.fenced)
+    } else {
+        composed_ui(capture, composed)
+    }
 }
 
 /// Does `capture` show a COMPOSED input carrying one of the bundled markers?
@@ -1053,8 +1075,8 @@ fn digits(text: &str) -> (usize, &str) {
 #[cfg(test)]
 mod tests {
     use super::{
-        Fg, Occupancy, Reading, Segment, composed_ui, holds_pasted, initializing, occupancy, parse,
-        prompt, queued_submission, read, staged_paste,
+        Fg, Occupancy, Reading, Segment, composed_ui, composer_drawn, holds_pasted, initializing,
+        occupancy, parse, prompt, queued_submission, read, staged_paste,
     };
     use crate::tool::{Composed, ComposerAnchor, DialogSig, InputModel, ToolKind};
 
@@ -1731,6 +1753,45 @@ mod tests {
         assert!(composed_ui(&clean, AGY));
         assert!(composed_ui(&padded, AGY), "trailing blanks are empty");
         assert!(!composed_ui(&drafted, AGY));
+    }
+
+    /// The REAL claude folder-trust modal, escapes included as delivery reads
+    /// it, at both measured sizes (provenance beside the files).
+    const CLAUDE_TRUST: &str =
+        include_str!("../../tests/fixtures/claude-trust/claude-trust-modal-80x24.esc");
+    const CLAUDE_TRUST_WIDE: &str =
+        include_str!("../../tests/fixtures/claude-trust/claude-trust-modal-200x50.esc");
+    /// A REAL idle claude composer whose status row (98 cells) outgrows its
+    /// 80-cell rule, so the width-bound `boxed` reads it as no box.
+    const CLAUDE_IDLE_WIDE_STATUS: &str =
+        include_str!("../../tests/fixtures/harness-state/claude-resumed-idle-149x37.txt");
+
+    /// The modal's `❯ No, exit` is the bottom-most ornament row, so the box
+    /// reading finds TEXT there — never an idle composer to paste into — and
+    /// no rule sits over it, so no composer is DRAWN either: the human-prompt
+    /// guard lets the modal through. A real composer is drawn whatever its
+    /// status row's width; codex's is proven by its live style, agy's by its
+    /// composed markers.
+    #[test]
+    fn the_claude_trust_modal_is_never_an_idle_composer_nor_a_drawn_one() {
+        let border = InputModel::BorderDelimited;
+        for modal in [CLAUDE_TRUST, CLAUDE_TRUST_WIDE] {
+            assert!(modal.contains("Accessing"), "modal load-bearing");
+            assert_eq!(occupancy(modal, border), Occupancy::Occupied);
+            assert!(!composer_drawn(modal, border, Composed::NONE));
+        }
+        assert!(composer_drawn(
+            CLAUDE_IDLE_WIDE_STATUS,
+            border,
+            Composed::NONE
+        ));
+        let style = InputModel::StyleDelimited;
+        let live = codex_frame("\u{1b}[1m›\u{1b}[0m ", "");
+        assert!(composer_drawn(&live, style, Composed::NONE));
+        let echo_only = "\u{1b}[1;2m› \u{1b}[0man earlier, submitted line\n";
+        assert!(!composer_drawn(echo_only, style, Composed::NONE));
+        assert!(composer_drawn(AGY_COMPOSED, InputModel::Unmodelled, AGY));
+        assert!(!composer_drawn(AGY_MODAL, InputModel::Unmodelled, AGY));
     }
 
     #[test]

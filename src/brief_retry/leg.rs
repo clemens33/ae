@@ -156,8 +156,7 @@ fn run_with_wait(
     // bool — so a pane ae cannot see right now is one it must not paste into.
     let human_prompt =
         crate::transport::capture_pane(&server, &resolved.pane).is_none_or(|frame| {
-            crate::watchdog::human_prompt_class(&frame, seat.tool.adapter().name, input.composed)
-                .is_some()
+            crate::watchdog::human_prompt_class(&frame, seat.tool.adapter().name).is_some()
         });
     let facts = Facts {
         meta_name: seat.name.as_deref(),

@@ -78,49 +78,36 @@ pub struct HumanPrompt {
     pub keys: String,
 }
 
-/// How far up from the last non-blank row a human-only prompt must sit, in
-/// ROWS. A fixed window, not a trailing run of non-blank rows: agy's modal
-/// carries blank rows between its parts and ends on a status line, so a
-/// contiguous run degenerates to that one line. Height-independent, and it
-/// covers the fresh-pane modal and a mid-session one the same way.
-const HUMAN_PROMPT_WINDOW: usize = 15;
-
-/// Literals that mark an agy modal's KEY-HINT row, MEASURED from the frozen
-/// frame (`tests/fixtures/agy-composer/agy-trust-modal-frame.txt`). One
-/// version's UI text, the same inherited drift hazard as its composer markers.
-const HUMAN_PROMPT_KEYS: &[&str] = &["enter Confirm", "↑/↓ Navigate"];
-
 /// Whether `buf` shows a prompt only the HUMAN may answer, for `agent_bin` —
 /// the ONE detector, pure, and it NEVER sends a key.
 ///
-/// The gate is an exact binary name, like [`throttle_class`]: a renamed agy
-/// binary reads as no prompt, which degrades SAFE (no notify, and readiness
-/// still refuses an unmodelled tool). Everything else must hold together,
-/// inside a window at the BOTTOM of the frame: a question row, a selected
-/// option row with at least one sibling, a key-hint row after them, and NO
-/// composer — that last read by the composer's own owner rather than a second
-/// copy of its fence, so the two cannot drift apart. That spec is handed IN
-/// rather than looked up here: naming a tool variant outside `src/tool.rs` is
-/// a per-tool decision in the wrong half, which `tests/it/doors.rs` refuses.
-/// The gate and the phrases stay HERE while agy is the only tool with a
-/// human-only prompt; the day a SECOND one grows one, they earn a row in the
-/// adapter table instead of a second branch in this function.
+/// The gate is an exact binary name, like [`throttle_class`], looked up in the
+/// adapter table: a tool's row names its prompt (`tool::PromptSpec`)
+/// and its composer, so a second tool is a second ROW, never a second branch
+/// here, and no tool is named in this half. A renamed binary, or a tool with
+/// no prompt measured, reads as no prompt, which degrades SAFE (no notify, and
+/// readiness still refuses what it cannot prove). The window is a fixed count
+/// of ROWS up from the last non-blank row, not a trailing run of non-blank
+/// rows: a modal carries blank rows between its parts, and agy's ends on a
+/// status line, so a run degenerates to that one line. Height-independent, it
+/// covers a fresh-pane modal and a mid-session one the same way. Everything
+/// must hold together inside it: a question row, a selected option row with
+/// at least one sibling, a key-hint row after them, the row's title under its
+/// rule where it names one, and NO composer — that last read by the
+/// composer's own owner rather than a second copy of its fence, so the two
+/// cannot drift apart.
 #[must_use]
-pub fn human_prompt_class(
-    buf: &str,
-    agent_bin: &str,
-    composed: crate::tool::Composed,
-) -> Option<HumanPrompt> {
-    if agent_bin != "agy" || buf.is_empty() {
-        return None;
-    }
+pub fn human_prompt_class(buf: &str, agent_bin: &str) -> Option<HumanPrompt> {
+    let adapter = crate::tool::ToolKind::from_known_binary_name(agent_bin)?.adapter();
+    let spec = adapter.prompt?;
     let rows: Vec<&str> = buf.lines().collect();
     let last = rows.iter().rposition(|row| !row.trim().is_empty())?;
-    let window = &rows[last.saturating_sub(HUMAN_PROMPT_WINDOW - 1)..=last];
+    let window = &rows[last.saturating_sub(spec.window.saturating_sub(1))..=last];
     // Scoped to the WINDOW, not the buffer: a modal drawn BELOW a composer is
     // the case this must still catch. The inverse — a draft whose own text is
     // shaped like a modal, with the fence above the window — is accepted.
-    if crate::deliver::region::composed_ui(&window.join("\n"), composed) {
+    let input = adapter.input;
+    if crate::deliver::region::composer_drawn(&window.join("\n"), input.model, input.composed) {
         return None;
     }
     // EVERY question row is tried, top-down, and the first COMPLETE shape wins.
@@ -134,12 +121,18 @@ pub fn human_prompt_class(
     window
         .iter()
         .enumerate()
-        .filter(|(_, row)| row.trim_end().ends_with('?'))
+        .filter(|(_, row)| asks(spec.question, row))
         .find_map(|(question, _)| {
+            if spec
+                .title
+                .is_some_and(|title| !titled(window, question, title))
+            {
+                return None;
+            }
             let after = &window[question + 1..];
             let keys = after
                 .iter()
-                .position(|row| HUMAN_PROMPT_KEYS.iter().any(|key| row.contains(key)))?;
+                .position(|row| spec.keys.iter().any(|key| row.contains(key)))?;
             // TWO option rows at least, and one of them SELECTED: a lone
             // paragraph between a question and a hint is prose, not a choice.
             // The sibling may sit on EITHER side of the selected row — the
@@ -148,16 +141,53 @@ pub fn human_prompt_class(
             let options = &after[..keys];
             let selected = options
                 .iter()
-                .position(|row| row.trim_start().starts_with('>'))?;
+                .position(|row| row.trim_start().starts_with(spec.selected))?;
             let sibling = |rows: &[&str]| rows.iter().any(|row| !row.trim().is_empty());
             if !sibling(&options[..selected]) && !sibling(&options[selected + 1..]) {
                 return None;
             }
             Some(HumanPrompt {
-                question: window[question].trim().to_owned(),
+                question: reported(spec.question, window[question]),
                 keys: after[keys].trim().to_owned(),
             })
         })
+}
+
+/// Whether `row` is the prompt's question row.
+fn asks(question: crate::tool::Question, row: &str) -> bool {
+    match question {
+        crate::tool::Question::EndsWith(end) => row.trim_end().ends_with(end),
+        crate::tool::Question::StartsWith(start) => row.trim_start().starts_with(start),
+    }
+}
+
+/// The question as the human is told it: the whole row, or — for one that
+/// runs on past its question — the row through its first `?`, which reads the
+/// same at every width that keeps the `?` on the row.
+fn reported(question: crate::tool::Question, row: &str) -> String {
+    let row = row.trim();
+    match question {
+        crate::tool::Question::EndsWith(_) => row.to_owned(),
+        crate::tool::Question::StartsWith(_) => {
+            row.split_inclusive('?').next().unwrap_or(row).to_owned()
+        }
+    }
+}
+
+/// Whether a `title` row sits ABOVE the question at `question`, directly under
+/// a rule of `─` at least as wide as every row from it to the window's end —
+/// the modal's own frame, which a transcript quoting its prose does not draw.
+/// The rows ABOVE the rule do not count: a watchdog capture joins a wrapped
+/// launch line into one row wider than the pane.
+fn titled(window: &[&str], question: usize, title: &str) -> bool {
+    (1..question).any(|at| {
+        let rule = window[at - 1];
+        let width = rule.chars().count();
+        window[at].trim_start().starts_with(title)
+            && width > 0
+            && rule.chars().all(|ch| ch == '─')
+            && window[at..].iter().all(|row| row.chars().count() <= width)
+    })
 }
 
 /// Which class of upstream trouble `buf` shows for `agent_bin`, if any — the
@@ -1696,14 +1726,13 @@ mod tests {
 
     use super::WaitState::{Blocked, WaitingAgent};
     use super::{
-        DEFAULT_IDLE_NUDGE_SECS, DoneProgress, HUMAN_PROMPT_WINDOW,
-        OVERVIEW_HOLD_WHILE_WORKING_SECS, OWN_WORK_AGE_CAP, QuietKind, SweepAlert, SweepEffect,
-        SweepKnobs, SweepObservation, SweepState, SweepVerdict, Throttle, WaitProgress, WaitState,
-        WedgeDetail, classify_dead, command_is_shell, declaration_current, declaration_key,
-        done_progress, indented, is_echo, is_sweep_target, latest_relevant_event, quiet_filter,
-        quiet_hash, quiet_reason, raw_nudge, record_sweep, shows_throttle, stale_composite,
-        submit_hdr, sweep_step, throttle_class, wait_progress, waiting_agent_cap_secs,
-        waiting_agent_escalated,
+        DEFAULT_IDLE_NUDGE_SECS, DoneProgress, OVERVIEW_HOLD_WHILE_WORKING_SECS, OWN_WORK_AGE_CAP,
+        QuietKind, SweepAlert, SweepEffect, SweepKnobs, SweepObservation, SweepState, SweepVerdict,
+        Throttle, WaitProgress, WaitState, WedgeDetail, classify_dead, command_is_shell,
+        declaration_current, declaration_key, done_progress, indented, is_echo, is_sweep_target,
+        latest_relevant_event, quiet_filter, quiet_hash, quiet_reason, raw_nudge, record_sweep,
+        shows_throttle, stale_composite, submit_hdr, sweep_step, throttle_class, wait_progress,
+        waiting_agent_cap_secs, waiting_agent_escalated,
     };
     use crate::events::Event;
     use crate::procs::Descendancy;
@@ -4283,14 +4312,15 @@ tail line
         "Gemini 3.8 Flash · high",
     ];
 
-    /// The detector, with agy's own composed spec — the caller supplies it in
-    /// production too, so the tests bind the same pairing.
+    /// agy's window, read from its own adapter row.
+    const HUMAN_PROMPT_WINDOW: usize = match crate::tool::ToolKind::Agy.adapter().prompt {
+        Some(spec) => spec.window,
+        None => 0,
+    };
+
+    /// The detector as the watchdog calls it.
     fn classify(buf: &str, agent_bin: &str) -> Option<super::HumanPrompt> {
-        super::human_prompt_class(
-            buf,
-            agent_bin,
-            crate::tool::ToolKind::Agy.adapter().input.composed,
-        )
+        super::human_prompt_class(buf, agent_bin)
     }
 
     fn buffer(rows: &[&str]) -> String {
@@ -4480,5 +4510,157 @@ tail line
         let found = classify(&buffer(&rows), "agy");
         let found = found.expect("the modal below the chatter still classifies");
         assert_eq!(found.keys, "↑/↓ Navigate · enter Confirm");
+    }
+
+    /// A claude frame from the repository: the measured trust modal, or a
+    /// harness frame whose composer is drawn.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "a fixture read in TEST code; the capability boundary in \
+                  tests/it/phase3.rs inventories PRODUCT lines only"
+    )]
+    fn claude_frame(path: &str) -> String {
+        std::fs::read_to_string(format!("tests/fixtures/{path}"))
+            .unwrap_or_else(|why| panic!("the {path} fixture should be readable: {why}"))
+    }
+
+    /// The detector as the watchdog calls it for a claude seat.
+    fn claude(buf: &str) -> Option<super::HumanPrompt> {
+        super::human_prompt_class(buf, "claude")
+    }
+
+    /// claude's window, read from its own adapter row.
+    const CLAUDE_WINDOW: usize = match crate::tool::ToolKind::Claude.adapter().prompt {
+        Some(spec) => spec.window,
+        None => 0,
+    };
+
+    /// The REAL claude frames at both measured sizes. The question row runs on
+    /// into the next sentence wherever the width wraps it, so what is reported
+    /// is the question through its `?`, the same at every width.
+    #[test]
+    fn the_real_claude_trust_modal_is_named_at_both_measured_sizes() {
+        for name in ["80x24", "200x50"] {
+            let frame = claude_frame(&format!("claude-trust/claude-trust-modal-{name}.txt"));
+            let found = claude(&frame).unwrap_or_else(|| panic!("{name} should classify"));
+            assert_eq!(
+                found.question,
+                "Quick safety check: Is this a project you created or one you trust?",
+                "{name}"
+            );
+            assert_eq!(found.keys, "Enter to confirm · Esc to cancel", "{name}");
+        }
+    }
+
+    /// The TOOL GATE both ways: claude's modal under any other binary, and
+    /// agy's modal under claude, are not prompts.
+    #[test]
+    fn the_claude_modal_is_named_only_for_the_claude_binary() {
+        let modal = claude_frame("claude-trust/claude-trust-modal-80x24.txt");
+        assert!(claude(&modal).is_some(), "claude does");
+        for other in [
+            "agy", "codex", "gemini", "opencode", "grok", "muse", "claude-2", "",
+        ] {
+            assert_eq!(
+                super::human_prompt_class(&modal, other),
+                None,
+                "{other} must not classify the identical buffer"
+            );
+        }
+        assert_eq!(claude(&fixture("agy-trust-modal-frame")), None);
+    }
+
+    /// Composed claude frames, idle and busy: a composer is not a prompt.
+    #[test]
+    fn no_composed_claude_frame_is_read_as_a_human_only_prompt() {
+        for name in [
+            "claude-idle-167x40",
+            "claude-resumed-idle-149x37",
+            "claude-busy-167x40",
+            "claude-busy-nbsp-tip-101x41",
+        ] {
+            assert_eq!(
+                claude(&claude_frame(&format!("harness-state/{name}.txt"))),
+                None,
+                "{name}"
+            );
+        }
+    }
+
+    /// The whole modal, anchor included, QUOTED above a live claude composer.
+    /// Only the composer guard stands between this and a named seat.
+    #[test]
+    fn the_claude_modal_quoted_above_a_live_composer_is_not_a_prompt() {
+        let rule = "─".repeat(80);
+        let modal = [
+            rule.as_str(),
+            " Accessing workspace:",
+            " Quick safety check: Is this a project you created or one you trust?",
+            " ❯ No, exit",
+            "   Yes, I trust this folder",
+            " Enter to confirm · Esc to cancel",
+        ];
+        let composer = [rule.as_str(), "❯ ", rule.as_str(), "  🧠 Opus 5.5 (xhigh)"];
+        assert!(claude(&buffer(&modal)).is_some(), "the modal alone is one");
+        let quoted: Vec<&str> = modal.iter().chain(composer.iter()).copied().collect();
+        assert_eq!(claude(&buffer(&quoted)), None);
+    }
+
+    /// The ANCHOR. Question, selection, sibling and hint are all prose a
+    /// transcript can carry with no composer under it; the title directly
+    /// under a full-width rule is the modal's own. Each case breaks it once.
+    #[test]
+    fn a_claude_modal_without_its_title_under_a_full_width_rule_is_not_a_prompt() {
+        let rule = "─".repeat(80);
+        let indented = format!("  {}", "─".repeat(78));
+        let short = "─".repeat(40);
+        let title = " Accessing workspace:";
+        let body = [
+            " Quick safety check: Is this a project you created or one you trust? (Like your",
+            " ❯ No, exit",
+            "   Yes, I trust this folder",
+            "",
+            " Enter to confirm · Esc to cancel",
+        ];
+        let with = |head: &[&str]| {
+            let rows: Vec<&str> = head.iter().chain(body.iter()).copied().collect();
+            claude(&buffer(&rows))
+        };
+        assert!(with(&[&rule, title]).is_some(), "the anchored shape is one");
+        assert_eq!(with(&[]), None, "no title and no rule");
+        assert_eq!(with(&[title]), None, "a title under no rule");
+        assert_eq!(with(&[&rule]), None, "a rule with no title");
+        assert_eq!(with(&[&rule, "", title]), None, "a rule not DIRECTLY above");
+        assert_eq!(with(&[&indented, title]), None, "an indented rule");
+        assert_eq!(with(&[&short, title]), None, "a rule narrower than a row");
+        let below = [body[0], &rule, title, body[1], body[2], body[4]];
+        assert_eq!(claude(&buffer(&below)), None, "a title below the question");
+    }
+
+    /// claude's WINDOW, measured: rule to hint is 17 rows at 80x24, and the
+    /// rule — the anchor's top — must sit inside the window. At its first row
+    /// it latches; one row further up it does not.
+    #[test]
+    fn a_claude_modal_whose_rule_is_on_the_window_edge_latches_and_one_row_past_it_does_not() {
+        let frame = claude_frame("claude-trust/claude-trust-modal-80x24.txt");
+        let rows: Vec<&str> = frame.lines().collect();
+        let rule = rows.iter().position(|row| row.starts_with('─'));
+        let hint = rows.iter().rposition(|row| !row.trim().is_empty());
+        let (Some(rule), Some(hint)) = (rule, hint) else {
+            panic!("the fixture carries a rule and a hint");
+        };
+        assert_eq!(hint - rule + 1, 17, "the measured span");
+        let pad = |extra: usize| {
+            let mut modal = rows[rule..=hint].to_vec();
+            while modal.len() < CLAUDE_WINDOW + extra {
+                modal.push("status row");
+            }
+            buffer(&modal)
+        };
+        assert!(
+            claude(&pad(0)).is_some(),
+            "the rule on the window's first row"
+        );
+        assert_eq!(claude(&pad(1)), None, "one row further up it is out");
     }
 }

@@ -4952,7 +4952,6 @@ impl Cycle<'_> {
                 human_prompt: crate::watchdog::human_prompt_class(
                     &capture,
                     agent_bin.as_deref().unwrap_or_default(),
-                    tool.adapter().input.composed,
                 ),
                 throttle_quota,
                 quiet,

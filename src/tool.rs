@@ -474,6 +474,38 @@ pub enum CompactSpec {
     },
 }
 
+/// How a harness draws a prompt only the HUMAN may answer — data only; the
+/// ONE detector that reads it is [`crate::watchdog::human_prompt_class`].
+/// MEASURED per tool from a frozen frame: one version's UI text, the same
+/// inherited drift hazard as the composer markers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PromptSpec {
+    /// Which row asks the question.
+    pub(crate) question: Question,
+    /// A row the modal draws ABOVE its question, directly under a rule of `─`
+    /// as wide as every row of the window. The modal's own anchor where its
+    /// question, options and hint are prose a transcript could carry; `None`
+    /// asks for none.
+    pub(crate) title: Option<&'static str>,
+    /// The glyph a SELECTED option row starts with.
+    pub(crate) selected: char,
+    /// Literals, one of which the KEY-HINT row carries.
+    pub(crate) keys: &'static [&'static str],
+    /// How far up from the last non-blank row the whole shape must sit, in
+    /// ROWS: from the title's rule when there is a title, else the question.
+    pub(crate) window: usize,
+}
+
+/// How a human-only prompt's question row is recognised, once trimmed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Question {
+    /// A row that ENDS with this text: the whole row is the question.
+    EndsWith(&'static str),
+    /// A row that STARTS with this text: the question runs on past it, so it
+    /// is reported through its first `?`.
+    StartsWith(&'static str),
+}
+
 /// Everything ae needs to know about one agent harness.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ToolAdapter {
@@ -513,6 +545,8 @@ pub(crate) struct ToolAdapter {
     pub(crate) capture: CaptureSpec,
     /// Input observation and first-turn delivery behaviour.
     pub(crate) input: InputSpec,
+    /// The prompt only the human may answer, where one is measured.
+    pub(crate) prompt: Option<PromptSpec>,
     /// Which pane grammar proves this harness's live identity, if any.
     pub(crate) identity: IdentitySpec,
     /// In-place compaction capability (R11).
@@ -569,6 +603,20 @@ const CLAUDE: ToolAdapter = ToolAdapter {
         wait_for_process: true,
         paste_initial_on_resume: false,
     },
+    // MEASURED on claude 2.1.281 (2026-09-24, private probe panes, 80x24 and
+    // 200x50, bare and bypassPermissions alike): the folder-trust modal in a
+    // never-trusted directory (`tests/fixtures/claude-trust/`). A full-width
+    // rule, "Accessing workspace:", the path, then a question Ink wraps with
+    // its `?` mid-row, and the selection `❯` on "No, exit". Rule to hint is
+    // 17 rows at 80x24 and 16 at 200x50; the window's spare rows are for a
+    // narrower pane wrapping the question further.
+    prompt: Some(PromptSpec {
+        question: Question::StartsWith("Quick safety check:"),
+        title: Some("Accessing workspace:"),
+        selected: '❯',
+        keys: &["to confirm · "],
+        window: 20,
+    }),
     identity: IdentitySpec::BorderComposer,
     model: ModelSpec::ReportOnly(&["--model"]),
     pin_match: PinMatch::FamilyVersion,
@@ -617,6 +665,7 @@ const CODEX: ToolAdapter = ToolAdapter {
         wait_for_process: true,
         paste_initial_on_resume: true,
     },
+    prompt: None,
     identity: IdentitySpec::StyleFooter,
     model: ModelSpec::Replayable(&["-m", "--model"]),
     pin_match: PinMatch::Exact,
@@ -665,6 +714,7 @@ const GEMINI: ToolAdapter = ToolAdapter {
         wait_for_process: false,
         paste_initial_on_resume: false,
     },
+    prompt: None,
     identity: IdentitySpec::Unmodelled,
     model: ModelSpec::Unobserved,
     pin_match: PinMatch::Exact,
@@ -731,6 +781,14 @@ const AGY: ToolAdapter = ToolAdapter {
         wait_for_process: false,
         paste_initial_on_resume: false,
     },
+    // MEASURED on agy 1.2.6: `tests/fixtures/agy-composer/agy-trust-modal-frame.txt`.
+    prompt: Some(PromptSpec {
+        question: Question::EndsWith("?"),
+        title: None,
+        selected: '>',
+        keys: &["enter Confirm", "↑/↓ Navigate"],
+        window: 15,
+    }),
     identity: IdentitySpec::TrailingLabel,
     model: ModelSpec::Unobserved,
     pin_match: PinMatch::Exact,
@@ -802,6 +860,7 @@ const GROK: ToolAdapter = ToolAdapter {
         wait_for_process: false,
         paste_initial_on_resume: false,
     },
+    prompt: None,
     identity: IdentitySpec::BorderText,
     model: ModelSpec::Unobserved,
     pin_match: PinMatch::Exact,
@@ -858,6 +917,7 @@ const MUSE: ToolAdapter = ToolAdapter {
         wait_for_process: false,
         paste_initial_on_resume: false,
     },
+    prompt: None,
     identity: IdentitySpec::RuleFooter,
     model: ModelSpec::Unobserved,
     pin_match: PinMatch::Exact,
@@ -937,6 +997,7 @@ const OPENCODE: ToolAdapter = ToolAdapter {
         wait_for_process: true,
         paste_initial_on_resume: false,
     },
+    prompt: None,
     identity: IdentitySpec::RailStatus,
     model: ModelSpec::Unobserved,
     pin_match: PinMatch::Exact,
@@ -982,6 +1043,7 @@ const UNKNOWN: ToolAdapter = ToolAdapter {
         wait_for_process: false,
         paste_initial_on_resume: false,
     },
+    prompt: None,
     identity: IdentitySpec::Unmodelled,
     model: ModelSpec::Unobserved,
     pin_match: PinMatch::Exact,
@@ -1302,6 +1364,13 @@ mod tests {
                         wait_for_process: true,
                         paste_initial_on_resume: false,
                     },
+                    prompt: Some(PromptSpec {
+                        question: Question::StartsWith("Quick safety check:"),
+                        title: Some("Accessing workspace:"),
+                        selected: '❯',
+                        keys: &["to confirm · "],
+                        window: 20,
+                    }),
                     identity: IdentitySpec::BorderComposer,
                     model: ModelSpec::ReportOnly(&["--model"]),
                     pin_match: PinMatch::FamilyVersion,
@@ -1349,6 +1418,7 @@ mod tests {
                         wait_for_process: true,
                         paste_initial_on_resume: true,
                     },
+                    prompt: None,
                     identity: IdentitySpec::StyleFooter,
                     model: ModelSpec::Replayable(&["-m", "--model"]),
                     pin_match: PinMatch::Exact,
@@ -1396,6 +1466,7 @@ mod tests {
                         wait_for_process: false,
                         paste_initial_on_resume: false,
                     },
+                    prompt: None,
                     identity: IdentitySpec::Unmodelled,
                     model: ModelSpec::Unobserved,
                     pin_match: PinMatch::Exact,
@@ -1448,6 +1519,13 @@ mod tests {
                         wait_for_process: false,
                         paste_initial_on_resume: false,
                     },
+                    prompt: Some(PromptSpec {
+                        question: Question::EndsWith("?"),
+                        title: None,
+                        selected: '>',
+                        keys: &["enter Confirm", "↑/↓ Navigate"],
+                        window: 15,
+                    }),
                     identity: IdentitySpec::TrailingLabel,
                     model: ModelSpec::Unobserved,
                     pin_match: PinMatch::Exact,
@@ -1503,6 +1581,7 @@ mod tests {
                         wait_for_process: false,
                         paste_initial_on_resume: false,
                     },
+                    prompt: None,
                     identity: IdentitySpec::BorderText,
                     model: ModelSpec::Unobserved,
                     pin_match: PinMatch::Exact,
@@ -1550,6 +1629,7 @@ mod tests {
                         wait_for_process: false,
                         paste_initial_on_resume: false,
                     },
+                    prompt: None,
                     identity: IdentitySpec::RuleFooter,
                     model: ModelSpec::Unobserved,
                     pin_match: PinMatch::Exact,
@@ -1605,6 +1685,7 @@ mod tests {
                         wait_for_process: true,
                         paste_initial_on_resume: false,
                     },
+                    prompt: None,
                     identity: IdentitySpec::RailStatus,
                     model: ModelSpec::Unobserved,
                     pin_match: PinMatch::Exact,
@@ -1657,6 +1738,7 @@ mod tests {
                     wait_for_process: false,
                     paste_initial_on_resume: false,
                 },
+                prompt: None,
                 identity: IdentitySpec::Unmodelled,
                 model: ModelSpec::Unobserved,
                 pin_match: PinMatch::Exact,
