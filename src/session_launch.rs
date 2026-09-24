@@ -4324,6 +4324,19 @@ fn settle(reads: impl IntoIterator<Item = ReadyRead>, on: OnHumanPrompt) -> Read
     stable.map_or(Readiness::NotReady, Readiness::Blocked)
 }
 
+/// How many polls one chunk takes to wait `READY_CHUNK` poll intervals, for
+/// either input model. A modelled wait sleeps once per poll; an unmodelled one
+/// spends its first poll on the capture it compares against
+/// (`deliver::wait_input_ready`), so its chunk takes one poll more to wait as
+/// long, and the chunked wait keeps the whole launch budget for both.
+const fn chunk_polls(model: crate::tool::InputModel) -> u32 {
+    if model.is_modelled() {
+        READY_CHUNK
+    } else {
+        READY_CHUNK + 1
+    }
+}
+
 /// The launch turn's readiness wait. A tool whose adapter row names a
 /// human-only prompt is waited on in chunks, its pane read for that prompt
 /// between them through the same capture door readiness uses; every other
@@ -4340,7 +4353,7 @@ fn wait_ready(server: &ServerId, pane: &str, tool: ToolKind, on: OnHumanPrompt) 
         };
     }
     let reads = (0..LAUNCH_READY_POLLS / READY_CHUNK).map(|_| {
-        if polled(READY_CHUNK) {
+        if polled(chunk_polls(input.model)) {
             return ReadyRead::Ready;
         }
         ReadyRead::Unready(
@@ -6851,6 +6864,24 @@ mod tests {
                 (super::Readiness::Ready, 2),
                 "{on:?}"
             );
+        }
+    }
+
+    #[test]
+    fn a_chunked_wait_keeps_the_whole_launch_budget_for_either_input_model() {
+        // `deliver::wait_input_ready` sleeps once per poll for a modelled pane
+        // and once per poll after the seed capture for an unmodelled one: both
+        // prompt rows' tools must wait the unchunked `LAUNCH_READY_POLLS`.
+        let chunks = super::LAUNCH_READY_POLLS / super::READY_CHUNK;
+        for tool in [crate::tool::ToolKind::Claude, crate::tool::ToolKind::Agy] {
+            let model = tool.adapter().input.model;
+            let polls = super::chunk_polls(model);
+            let sleeps = if model.is_modelled() {
+                polls
+            } else {
+                polls - 1
+            };
+            assert_eq!(chunks * sleeps, super::LAUNCH_READY_POLLS, "{tool:?}");
         }
     }
 }
