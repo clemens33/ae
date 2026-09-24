@@ -1885,7 +1885,8 @@ id is simply present, and its presence alone cannot say who put it there.
 
 **What you confirm is what happens.** The plan is resolved from configuration, and
 configuration can change while the prompt waits — so ae resolves each target once,
-freezes exactly what it showed you, and re-proves it under the lifecycle lock. `ae end
+freezes exactly what it showed you and the tmux session it found, and re-proves both
+under the lifecycle lock. `ae end
 all` ends exactly the sessions it listed: one that appears after the prompt is not part
 of what you agreed to. If it no longer matches,
 the end refuses and prints both versions rather than carrying out an action you never
