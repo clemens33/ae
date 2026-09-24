@@ -424,3 +424,97 @@ fn a_marked_word_never_becomes_a_launch() {
         );
     }
 }
+
+/// #161: `say` reports what happened — the line was QUEUED — and names a
+/// bridge it can PROVE is stopped. A record naming no server is unknown, and
+/// unknown adds nothing: only a real `ae-telegram` session on this session's
+/// own recorded server reads as running.
+#[test]
+fn say_reports_a_queued_line_and_a_bridge_it_can_prove_stopped() {
+    let root = scratch("say-queued");
+    let demo = plant(&root, "demo");
+    let queued = "Queued for Telegram bridge (chat): hello\n";
+
+    // No recorded server: nothing can be said about the bridge.
+    let (code, stdout, stderr) = run(&root, &["@demo", "say", "hello"]);
+    assert_eq!((code, stdout.as_str()), (Some(0), queued), "{stderr}");
+
+    assert!(
+        super::phase2::tmux_present(&root),
+        "tmux is not runnable here, so the stopped/running split cannot be proven"
+    );
+    let socket = root.join("s.sock");
+    let server = ae::inventory::ServerId::Selected(ae::meta::Selector::Socket(socket.clone()));
+    let row = format!(
+        "session=demo\ntmux_server_kind=socket\ntmux_server={}\n",
+        socket.display()
+    );
+    assert!(
+        fs::write(demo.join("meta"), row).is_ok(),
+        "a recorded server"
+    );
+    let tmux = |args: &[&str]| {
+        let mut argv = ae::tmux::server_args(&server);
+        argv.extend(args.iter().map(|arg| String::from(*arg)));
+        super::phase2::run_tmux(&argv, &root).0
+    };
+    assert!(
+        tmux(&["new-session", "-d", "-s", "elsewhere"]),
+        "the fixture server must start"
+    );
+
+    // A server that answers and holds no bridge: the line says so.
+    let (code, stdout, stderr) = run(&root, &["@demo", "say", "hello"]);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert_eq!(
+        stdout,
+        "Queued for Telegram bridge (chat): hello\nThe Telegram bridge is not running \
+         (tmux session ae-telegram) — nothing goes out until it starts; start it with \
+         `ae telegram start`.\n"
+    );
+
+    // The bridge's own session, and the same line reports the queue alone.
+    assert!(
+        tmux(&["new-session", "-d", "-s", "ae-telegram"]),
+        "the bridge session must start"
+    );
+    let (code, stdout, stderr) = run(&root, &["@demo", "say", "hello"]);
+    assert_eq!((code, stdout.as_str()), (Some(0), queued), "{stderr}");
+
+    // The 60-character cliff, on the queued line itself.
+    for (len, tail) in [(60, ""), (61, "…")] {
+        let text = "x".repeat(len);
+        let (_, stdout, _) = run(&root, &["@demo", "say", text.as_str()]);
+        assert_eq!(
+            stdout,
+            format!(
+                "Queued for Telegram bridge (chat): {}{tail}\n",
+                "x".repeat(60)
+            )
+        );
+    }
+
+    assert!(tmux(&["kill-server"]), "the fixture server must go");
+    let _ = fs::remove_dir_all(&root);
+}
+
+/// #161: a spool that FAILED is exit 1 with the reason, and nothing on stdout
+/// claims a line was queued.
+#[test]
+fn a_failed_spool_is_reported_and_claims_nothing_on_stdout() {
+    let root = scratch("say-failed");
+    let demo = plant(&root, "demo");
+    // The events container is a DIRECTORY, so the append cannot open it.
+    assert!(
+        fs::create_dir_all(demo.join("events.jsonl")).is_ok(),
+        "a blocked container"
+    );
+    let (code, stdout, stderr) = run(&root, &["@demo", "say", "hello"]);
+    assert_eq!(code, Some(1), "{stdout}{stderr}");
+    assert!(
+        stdout.is_empty(),
+        "a failed spool wrote to stdout: {stdout}"
+    );
+    assert!(stderr.contains("the line was not queued"), "{stderr}");
+    let _ = fs::remove_dir_all(&root);
+}

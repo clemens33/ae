@@ -1952,7 +1952,7 @@ fn run_say(
         return Ok(state::EXIT_USAGE);
     }
     let viewer = calling_viewer(dir);
-    let _ = store::open(dir).append_event(&tracked::event_line(&tracked::EventFields {
+    let queued = store::open(dir).append_event(&tracked::event_line(&tracked::EventFields {
         ts: time::Timestamp::now(),
         actor: &viewer.display,
         action: "chat",
@@ -1972,10 +1972,43 @@ fn run_say(
         summary: &text,
         body_file: "",
     }));
+    if let Err(why) = queued {
+        writeln!(err, "ae: say: the line was not queued ({why}).")?;
+        return Ok(state::EXIT_FAILED);
+    }
+    write!(out, "{}", say_report(&text, bridge_liveness(dir)))?;
+    Ok(0)
+}
+
+/// The `say` report: a line that was QUEUED for the bridge, never one that was
+/// sent — only the bridge's own forward is a send — plus the one liveness
+/// reading when it names a stopped bridge. `None` (tmux did not answer, or the
+/// session records no usable server) adds nothing: unknown is not stopped.
+fn say_report(text: &str, bridge: Option<bool>) -> String {
     let head: String = text.chars().take(60).collect();
     let ellipsis = if text.chars().count() > 60 { "…" } else { "" };
-    writeln!(out, "Sent to Telegram bridge (chat): {head}{ellipsis}")?;
-    Ok(0)
+    let queued = format!("Queued for Telegram bridge (chat): {head}{ellipsis}");
+    match bridge {
+        Some(false) => format!(
+            "{queued}\nThe Telegram bridge is not running (tmux session {}) — nothing goes out \
+             until it starts; start it with `ae telegram start`.\n",
+            telegram_lifecycle::TMUX_SESSION
+        ),
+        Some(true) | None => format!("{queued}\n"),
+    }
+}
+
+/// Whether the bridge that forwards this session's events is running: its own
+/// RECORDED server, read the one way the core reads it, and the one existing
+/// liveness probe. No usable record yields no reading, never an ambient guess.
+fn bridge_liveness(dir: &std::path::Path) -> Option<bool> {
+    let bytes = meta::read_bytes(dir).ok()?;
+    match meta::Meta::parse(&String::from_utf8_lossy(&bytes)).server_selector() {
+        meta::ServerSelector::Positive(selector) => {
+            telegram_lifecycle::daemon_running(&inventory::ServerId::Selected(selector))
+        }
+        meta::ServerSelector::Missing | meta::ServerSelector::Ambiguous => None,
+    }
 }
 
 /// The `_state` arm.
