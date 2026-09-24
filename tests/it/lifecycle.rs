@@ -1640,8 +1640,10 @@ fn a_terminal_end_refuses_a_target_renamed_between_answer_and_lock() {
         .join("sessions")
         .join(format!(".lifecycle.{}.lock", rig.name));
     let held = ae::store::lock(&lock, Duration::ZERO).expect("the fixture holds the lock");
-    let stdin_path = rig.home.join("stdin");
-    let stderr_path = rig.home.join("stderr");
+    // NOT `stderr`: run_tmux writes its own stdout/stderr pair into the rig
+    // home and would truncate the child's stream mid-run.
+    let stdin_path = rig.home.join("prompt-stdin");
+    let stderr_path = rig.home.join("prompt-stderr");
     std::fs::write(&stdin_path, b"y\n").expect("the answer");
     let mut cmd = ae();
     cmd.env("AE_HOME", &rig.home);
@@ -1692,6 +1694,14 @@ fn a_terminal_end_refuses_a_target_renamed_between_answer_and_lock() {
             rig.name
         )),
         "{stderr}"
+    );
+    assert!(
+        stderr.contains("This will END the session:"),
+        "the prompt names the question: {stderr}"
+    );
+    assert!(
+        stderr.contains(&format!("  - {}: archive -> ", rig.name)),
+        "the prompt names the plan: {stderr}"
     );
 }
 
