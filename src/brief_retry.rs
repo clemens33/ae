@@ -743,41 +743,75 @@ fn decide(record: &Record, facts: &Facts<'_>) -> Decision {
     Decision::Deliver
 }
 
-/// Move a damaged record aside so it can never be read as one again, keeping
-/// whatever was moved aside FIRST: the plain name is tried before the dated
-/// one, and a collision never overwrites, because the first forensics are the
-/// ones worth keeping.
+/// The name a set-aside for `slot` takes: the plain name while it is free,
+/// else the DATED name suffixed with the record's own mtime — the same value
+/// every cycle, so the give-up event's ref names a destination a later cycle
+/// recomputes exactly. A record with no usable stamp fails closed: plain
+/// only, and a taken plain name is the caller's "left alone" error.
 ///
 /// # Errors
 ///
-/// Both names taken, or the rename failed — the caller reports and skips, and
-/// never loops on it.
-pub(crate) fn mark_damaged(dir: &Path, slot: &str, now: i64) -> Result<PathBuf, String> {
-    let from = path(dir, slot);
+/// Plain taken with no usable stamp, or both names taken — the caller reports
+/// and leaves the record alone, and never loops on it.
+pub(crate) fn destination(dir: &Path, slot: &str, stamp: Option<i64>) -> Result<PathBuf, String> {
     let plain = damaged_path(dir, slot);
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: the keep-first check classifies the destination WITHOUT following a link to it — see `destination`"
+    )]
+    let plain_free = std::fs::symlink_metadata(&plain).is_err();
+    if plain_free {
+        return Ok(plain);
+    }
+    let Some(stamp) = stamp else {
+        return Err(format!(
+            "{} is damaged, its set-aside name is taken and the record has no usable stamp; it was left alone",
+            plain.display()
+        ));
+    };
     let dated = {
         let mut name = plain.clone().into_os_string();
-        name.push(format!(".{now}"));
+        name.push(format!(".{stamp}"));
         PathBuf::from(name)
     };
-    for candidate in [plain, dated] {
-        #[allow(
-            clippy::disallowed_methods,
-            reason = "a door: the keep-first check classifies the destination WITHOUT following a link to it — see `mark_damaged`"
-        )]
-        let taken = std::fs::symlink_metadata(&candidate).is_ok();
-        if taken {
-            continue;
-        }
-        return match std::fs::rename(&from, &candidate) {
-            Ok(()) => Ok(candidate),
-            Err(why) => Err(format!("could not set {} aside: {why}", from.display())),
-        };
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: the keep-first check classifies the destination WITHOUT following a link to it — see `destination`"
+    )]
+    let dated_free = std::fs::symlink_metadata(&dated).is_err();
+    if !dated_free {
+        return Err(format!(
+            "{} is damaged and both set-aside names are taken; it was left alone",
+            path(dir, slot).display()
+        ));
     }
-    Err(format!(
-        "{} is damaged and both set-aside names are taken; it was left alone",
-        from.display()
-    ))
+    Ok(dated)
+}
+
+/// Move the damaged record at `slot`'s name to `to`, never overwriting: a
+/// destination that appears between the choice and the rename is refused,
+/// because the first forensics are the ones worth keeping and a POSIX rename
+/// would silently replace them.
+///
+/// # Errors
+///
+/// The destination name is taken, or the rename failed — the caller reports,
+/// the record stays where it is, and the next cycle retries.
+pub(crate) fn move_aside(dir: &Path, slot: &str, to: &Path) -> Result<(), String> {
+    let from = path(dir, slot);
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: the never-overwrite refusal classifies the destination WITHOUT following a link to it — see `move_aside`"
+    )]
+    let taken = std::fs::symlink_metadata(to).is_ok();
+    if taken {
+        return Err(format!(
+            "{} is already taken; nothing was overwritten",
+            to.display()
+        ));
+    }
+    std::fs::rename(&from, to)
+        .map_err(|why| format!("could not set {} aside: {why}", from.display()))
 }
 
 /// Write `next` over `slot`'s record, or DELETE it when `next` is `None`, only
@@ -836,8 +870,8 @@ pub use leg::{DELIVERED_ACTION, GAVE_UP_ACTION, RETRY_ACTION, run};
 mod tests {
     use super::{
         AGE_BOUND_SECS, Damage, Damaged, Decision, FUTURE_SKEW_SECS, Facts, LAUNCH_ID_CAP,
-        MAX_ATTEMPTS, PANE_CAP, Phase, RECORD_CAP, Record, SLOT_CAP, damaged_path, decide, parse,
-        path, publish, read, remove, render, should_destroy,
+        MAX_ATTEMPTS, PANE_CAP, Phase, RECORD_CAP, Record, SLOT_CAP, damaged_path, decide,
+        destination, move_aside, parse, path, publish, read, remove, render, should_destroy,
     };
     use std::path::PathBuf;
 
@@ -1231,6 +1265,86 @@ mod tests {
             Some(dir.as_path()),
             "a sanitized name never leaves the session directory"
         );
+    }
+
+    /// The set-aside destination is keep-first and STABLE: plain while free,
+    /// else the record's own mtime as the dated suffix — the same name every
+    /// cycle, so the give-up event's ref cannot drift between the append and
+    /// the rename. No usable stamp fails closed to plain-only.
+    #[test]
+    fn the_destination_is_keep_first_and_stable_across_cycles() {
+        let dir = scratch("destination");
+        let plain = damaged_path(&dir, "spawned.1");
+        let stamp = 1_789_105_855;
+        assert_eq!(
+            destination(&dir, "spawned.1", Some(stamp)),
+            Ok(plain.clone()),
+            "plain is free: it is the destination"
+        );
+        std::fs::write(&plain, b"forensics").expect("the plain name taken");
+        let dated = PathBuf::from(format!("{}.{}", plain.display(), stamp));
+        assert_eq!(
+            destination(&dir, "spawned.1", Some(stamp)),
+            Ok(dated),
+            "plain taken: the record's own mtime dates the fallback"
+        );
+        std::fs::write(
+            PathBuf::from(format!("{}.{}", plain.display(), stamp)),
+            b"more forensics",
+        )
+        .expect("the dated name taken");
+        assert!(
+            destination(&dir, "spawned.1", Some(stamp)).is_err(),
+            "both names taken: the record is left alone"
+        );
+        // A stampless record never gets an unstable dated name: plain-only,
+        // and a taken plain name is the caller's "left alone" error.
+        std::fs::write(damaged_path(&dir, "spawned.2"), b"forensics").expect("taken");
+        assert!(destination(&dir, "spawned.2", None).is_err());
+        assert_eq!(
+            destination(&dir, "spawned.3", None),
+            Ok(damaged_path(&dir, "spawned.3")),
+            "no stamp and a free plain name is still the plain destination"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The rename half keeps the never-overwrite refusal: a destination that
+    /// appears between the choice and the rename is refused, not replaced —
+    /// the first forensics are the ones worth keeping.
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a fixture inspecting the bytes it just built; the boundary is over what PRODUCT code may reach"
+    )]
+    fn the_rename_never_overwrites_a_destination_that_appeared() {
+        let dir = scratch("move-aside");
+        let from = path(&dir, "spawned.1");
+        let to = damaged_path(&dir, "spawned.1");
+        std::fs::write(&from, b"damaged record").expect("the record");
+        assert_eq!(move_aside(&dir, "spawned.1", &to), Ok(()));
+        assert!(!from.exists(), "the record moved");
+        assert_eq!(
+            std::fs::read(&to).expect("the moved record"),
+            b"damaged record"
+        );
+        std::fs::write(&from, b"another damaged record").expect("the record again");
+        let taken = dir.join("brief-retry.spawned.1.rec.damaged.1789105855");
+        std::fs::write(&taken, b"first forensics").expect("a destination that appeared");
+        assert!(
+            move_aside(&dir, "spawned.1", &taken).is_err(),
+            "a taken destination is refused, never replaced"
+        );
+        assert_eq!(
+            std::fs::read(&taken).expect("the forensics"),
+            b"first forensics"
+        );
+        assert_eq!(
+            std::fs::read(&from).expect("the record"),
+            b"another damaged record",
+            "the record stays where it is"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A seat that is present, alive and idle, so every gate arm asserted

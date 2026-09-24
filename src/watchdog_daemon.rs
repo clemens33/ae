@@ -3997,6 +3997,26 @@ impl Journal<'_> {
         summary: &str,
         err: &mut impl Write,
     ) -> crate::Result<()> {
+        if let Err(why) = self.append_referring(action, target, reference, summary) {
+            writeln!(
+                err,
+                "ae: watchdog: {action} for {target} not recorded: {why}"
+            )?;
+        }
+        Ok(())
+    }
+
+    /// [`Self::record_referring`], but the append outcome is RETURNED: the
+    /// give-up path must not rename before its event is proven durable, so it
+    /// is the one caller that sees a failed append. Every other caller keeps
+    /// the swallow above. The ONE owner of the watchdog's event-line shape.
+    fn append_referring(
+        &self,
+        action: &str,
+        target: &str,
+        reference: &str,
+        summary: &str,
+    ) -> Result<(), store::Error> {
         let line = tracked::event_line(&EventFields {
             ts: Timestamp::now(),
             actor: ACTOR,
@@ -4017,13 +4037,7 @@ impl Journal<'_> {
             summary,
             body_file: "",
         });
-        if let Err(why) = store::open(self.meta_dir).append_event(&line) {
-            writeln!(
-                err,
-                "ae: watchdog: {action} for {target} not recorded: {why}"
-            )?;
-        }
-        Ok(())
+        store::open(self.meta_dir).append_event(&line)
     }
 }
 
@@ -5131,7 +5145,7 @@ impl Cycle<'_> {
             events: &events,
         };
         self.refresh_after_limit_release(quota_refresh, &mut carry.quota, &inputs, now, err)?;
-        self.retry_briefs(&mut carry.brief_cursor, &by_slot, now, err)?;
+        self.retry_briefs(&mut carry.brief_cursor, &by_slot, &events, now, err)?;
         self.close(
             carry,
             &counts,
@@ -5890,6 +5904,7 @@ impl Cycle<'_> {
         &self,
         cursor: &mut Option<String>,
         verdicts: &[(String, Verdict)],
+        events: &[Event],
         now: i64,
         err: &mut impl Write,
     ) -> crate::Result<()> {
@@ -5908,7 +5923,7 @@ impl Cycle<'_> {
             match reading {
                 Ok(record) => ready.push((record.created, entry.slot.clone(), entry.name.clone())),
                 Err(damaged) => {
-                    self.set_damaged_aside(&entry.name, &entry.slot, damaged, now, err)?;
+                    self.set_damaged_aside(&entry.name, &entry.slot, damaged, events, now, err)?;
                 }
             }
         }
@@ -5952,11 +5967,19 @@ impl Cycle<'_> {
     /// passing `EMFILE`, and the next cycle may read it perfectly well, so it
     /// is left exactly where it is until its own mtime proves it was never
     /// going to be read.
+    ///
+    /// THE ORDER IS THE PROOF: the give-up is durable BEFORE the rename. A
+    /// daemon killed between the two leaves the record in place WITH its
+    /// event — the next cycle's dedupe finds the ref, skips the append and
+    /// only renames, so nothing is silent and nothing is repeated. A failed
+    /// append likewise leaves the record where it is, said on stderr, for the
+    /// next cycle to retry.
     fn set_damaged_aside(
         &self,
         name: &str,
         slot: &str,
         damaged: crate::brief_retry::Damaged,
+        events: &[Event],
         now: i64,
         err: &mut impl Write,
     ) -> crate::Result<()> {
@@ -5968,21 +5991,48 @@ impl Cycle<'_> {
             )?;
             return Ok(());
         }
-        match crate::brief_retry::mark_damaged(self.meta_dir, slot, now) {
-            Ok(moved) => {
-                self.emit(
-                    crate::brief_retry::GAVE_UP_ACTION,
-                    name,
-                    &format!(
-                        "brief record damaged ({}) — set aside at {}; the brief is preserved at undelivered.{name}.txt",
-                        damaged.kind,
-                        moved.display()
-                    ),
-                    err,
-                )?;
+        // THE DESTINATION IS STABLE: the record's own mtime dates the fallback
+        // name, so the ref the event carries names a destination every later
+        // cycle recomputes exactly — the dedupe below cannot drift into a
+        // second event. No usable stamp fails closed to plain-only.
+        let destination =
+            match crate::brief_retry::destination(self.meta_dir, slot, damaged.modified) {
+                Ok(destination) => destination,
+                // Never a loop: it says so once per cycle and changes nothing.
+                Err(why) => {
+                    writeln!(err, "ae: watchdog: {why}")?;
+                    return Ok(());
+                }
+            };
+        let destination_ref = destination.display().to_string();
+        if !announced(events, &destination_ref) {
+            // THE REF IS THE IDEMPOTENCE KEY: it names the destination, is
+            // written uncapped, and the next cycle matches it exactly.
+            let appended = Journal {
+                meta_dir: self.meta_dir,
+                session: self.session,
             }
-            // Never a loop: it says so once per cycle and changes nothing.
-            Err(why) => writeln!(err, "ae: watchdog: {why}")?,
+            .append_referring(
+                crate::brief_retry::GAVE_UP_ACTION,
+                name,
+                &destination_ref,
+                &format!(
+                    "brief record damaged ({}) — given up; the record goes to {}; the brief is \
+                     preserved at undelivered.{name}.txt",
+                    damaged.kind, destination_ref
+                ),
+            );
+            if let Err(why) = appended {
+                writeln!(
+                    err,
+                    "ae: watchdog: brief-gave-up for {name} not recorded: {why} — the record \
+                     stays in place",
+                )?;
+                return Ok(());
+            }
+        }
+        if let Err(why) = crate::brief_retry::move_aside(self.meta_dir, slot, &destination) {
+            writeln!(err, "ae: watchdog: {why}")?;
         }
         Ok(())
     }
@@ -6360,6 +6410,17 @@ fn read_events(meta_dir: &Path) -> Vec<Event> {
         .collect()
 }
 
+/// Whether a give-up whose `ref` names `destination` exactly is already in the
+/// ledger — the idempotence that makes the give-up's two steps (append, then
+/// rename) safe to interrupt: the ref is written uncapped and matched exactly,
+/// never through the capped summary.
+fn announced(events: &[Event], destination: &str) -> bool {
+    events.iter().any(|event| {
+        event.action == crate::brief_retry::GAVE_UP_ACTION
+            && event.reference.as_deref() == Some(destination)
+    })
+}
+
 /// Whether the meta declares this session the fleet orchestrator.
 fn is_meta_agent(meta_bytes: &[u8]) -> bool {
     crate::meta::meta_agent_role(meta_bytes) == crate::meta::MetaAgentRole::Role
@@ -6425,9 +6486,9 @@ mod tests {
         QuotaAskCandidate, QuotaCarry, QuotaDelivery, QuotaLevel, QuotaRecipient, Rebind,
         ResolveIdentity, SeatIdentity, SendHelper, TickerMode, UNKNOWN_ALERT_CYCLES, Verdict,
         WatchdogPresence, account, adopt_server, adoption_due, adoption_from, adoption_writes,
-        age_secs, agents_fact, ask_receipt, bar_glyph, continuation, deferred, delivered_receipts,
-        done_challenge_text, entry_mut, fact_at, fleet_rows, held_seats, holds_seat,
-        idle_nudge_seconds, idle_nudge_text, idle_nudge_text_waiting, is_meta_agent,
+        age_secs, agents_fact, announced, ask_receipt, bar_glyph, continuation, deferred,
+        delivered_receipts, done_challenge_text, entry_mut, fact_at, fleet_rows, held_seats,
+        holds_seat, idle_nudge_seconds, idle_nudge_text, idle_nudge_text_waiting, is_meta_agent,
         last_actor_event_age, last_done_event_at, last_working_declaration_at, launch_id_for,
         live_model, motion_cadence, motion_failure, motion_observation_due, motion_publish_failure,
         motion_ticker_enabled, nudge_text, observed_option, proven_ownership, quota_ask_candidates,
@@ -15205,5 +15266,40 @@ mod tests {
             dir,
         );
         assert_eq!(control.tracked[0].classified.level(), QuotaLevel::Headroom);
+    }
+
+    /// The give-up dedupe matches the destination EXACTLY through the ref: a
+    /// foreign action, a foreign ref or a missing ref accounts nothing, so a
+    /// capped or hostile summary can never suppress a real give-up — and a
+    /// plain destination is never mistaken for its dated sibling.
+    #[test]
+    fn the_give_up_dedupe_matches_only_the_exact_destination_ref() {
+        let dest = "/tmp/ae/sessions/fixture/brief-retry.spawned.1.rec.damaged";
+        let line = |fields: &str| {
+            Event::parse_line(&format!(
+                r#"{{"ts":"2026-09-24T12:00:00Z","actor":"watchdog","action":{fields}}}"#
+            ))
+            .expect("the fixture line parses")
+        };
+        assert!(!announced(&[], dest), "an empty ledger announces nothing");
+        let mine = vec![line(&format!(r#""brief-gave-up","ref":"{dest}""#))];
+        assert!(announced(&mine, dest), "the exact ref is the dedupe");
+        let foreign_action = vec![line(&format!(r#""send","ref":"{dest}""#))];
+        assert!(!announced(&foreign_action, dest), "only a give-up accounts");
+        let foreign_ref = vec![line(r#""brief-gave-up","ref":"other""#)];
+        assert!(
+            !announced(&foreign_ref, dest),
+            "only the exact ref accounts"
+        );
+        let no_ref = vec![line(r#""brief-gave-up""#)];
+        assert!(
+            !announced(&no_ref, dest),
+            "a ref-less give-up accounts nothing"
+        );
+        let dated = format!("{dest}.1789105855");
+        assert!(
+            !announced(&mine, &dated),
+            "a plain ref is not its dated sibling"
+        );
     }
 }

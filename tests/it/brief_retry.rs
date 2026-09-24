@@ -576,3 +576,100 @@ fn the_real_leg_pastes_the_record_verbatim_under_the_spawners_own_authority() {
         "the forged actor must not reach the ledger either: {events}"
     );
 }
+
+/// THE APPEND AND THE RENAME ARE TWO STEPS. A give-up whose `ref` names the
+/// destination the cycle is ABOUT to choose is the durable proof the record
+/// was already announced: the append is skipped and only the rename happens.
+/// The pin plants exactly that state — a damaged record at the live name and
+/// a give-up with ref = the plain destination — and requires the record to be
+/// renamed with the event count UNCHANGED. On the unfixed tree the rename and
+/// a second, ref-less emit both happen, so the count goes to 2: RED.
+#[test]
+fn a_give_up_already_recorded_for_a_destination_is_not_repeated() {
+    let rig = Rig::new("giveup-once");
+    let pane = rig.pane();
+    rig.seat(&pane, "tok-1");
+    rig.recording_send();
+    let dest = rig.dir.join("brief-retry.spawned.1.rec.damaged");
+    assert!(
+        fs::write(rig.record_path("spawned.1"), "not a record at all\n").is_ok(),
+        "a damaged record at the live name"
+    );
+    let referred = format!("\"ref\":\"{}\"", dest.display());
+    let accounted = format!(
+        "{{\"ts\":\"2026-09-24T12:00:00Z\",\"actor\":\"watchdog\",\"action\":\"brief-gave-up\",\
+         \"target\":\"scribe\",\"ref\":\"{}\",\
+         \"summary\":\"brief record damaged (record does not begin with its version line) — \
+         given up; the record goes to {}; the brief is preserved at undelivered.scribe.txt\"}}\n",
+        dest.display(),
+        dest.display()
+    );
+    assert!(
+        fs::write(rig.dir.join("events.jsonl"), accounted).is_ok(),
+        "the give-up the killed cycle appended before its rename"
+    );
+
+    let moved = rig.watch_until(|| dest.exists() && !rig.record_path("spawned.1").exists());
+    let ledger = rig.events();
+    assert!(moved, "the announced record was never renamed: {ledger}");
+    assert_eq!(
+        ledger.matches("\"action\":\"brief-gave-up\"").count(),
+        1,
+        "the announced destination carries exactly one give-up: {ledger}"
+    );
+    assert!(
+        ledger.contains(&referred),
+        "the give-up names the destination: {ledger}"
+    );
+}
+
+/// THE ORDER IS THE PROOF: the give-up is durable BEFORE the rename. With the
+/// ledger made unappendable (chmod 0444; the container read still works), a
+/// correct cycle cannot record the give-up and therefore must NOT rename: the
+/// record stays at the live name for the next cycle to retry, and the failure
+/// is said on stderr. On the unfixed tree the rename happens FIRST and the
+/// swallowed emit then fails after it — exactly the silent give-up of #164.
+#[test]
+fn a_failed_append_leaves_the_record_where_it_is() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let rig = Rig::new("giveup-order");
+    let pane = rig.pane();
+    rig.seat(&pane, "tok-1");
+    rig.recording_send();
+    assert!(
+        fs::write(rig.record_path("spawned.1"), "not a record at all\n").is_ok(),
+        "a damaged record at the live name"
+    );
+    let events = rig.dir.join("events.jsonl");
+    assert!(fs::write(&events, "").is_ok(), "an empty ledger");
+    assert!(
+        fs::set_permissions(&events, fs::Permissions::from_mode(0o444)).is_ok(),
+        "an unappendable ledger"
+    );
+
+    let said = rig.watch_until(|| {
+        fs::read_to_string(rig.scratch.join("daemon-err"))
+            .unwrap_or_default()
+            .contains("not recorded")
+    });
+    let _ = fs::set_permissions(&events, fs::Permissions::from_mode(0o644));
+    let daemon_err = fs::read_to_string(rig.scratch.join("daemon-err")).unwrap_or_default();
+    let ledger = rig.events();
+    assert!(
+        said,
+        "the failed append was never said out loud: {daemon_err}"
+    );
+    assert!(
+        rig.record_path("spawned.1").exists(),
+        "the record must stay at the live name when the give-up could not be recorded: {ledger}"
+    );
+    assert!(
+        !rig.dir.join("brief-retry.spawned.1.rec.damaged").exists(),
+        "nothing may be renamed before its give-up is durable: {ledger}"
+    );
+    assert!(
+        !ledger.contains("brief-gave-up"),
+        "a failed append must not leave an event: {ledger}"
+    );
+}
