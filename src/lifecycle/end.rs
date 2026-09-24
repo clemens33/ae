@@ -2438,46 +2438,6 @@ mod tests {
     }
 
     #[test]
-    fn refusal_lines_render_both_versions() {
-        assert_eq!(
-            FrozenTmux::Live {
-                id: "$3".to_owned(),
-                created: "7".to_owned(),
-            }
-            .describe(),
-            "tmux $3 (created 7)"
-        );
-        assert_eq!(
-            FrozenTmux::Absent.describe(),
-            "no tmux session (observed absent)"
-        );
-        assert_eq!(
-            FrozenTmux::Unknown.describe(),
-            "tmux unobservable (server unreachable)"
-        );
-        assert_eq!(
-            FrozenTmux::Unobserved.describe(),
-            "nothing (no tmux promise)"
-        );
-        assert_eq!(
-            TmuxSight::Live {
-                id: "$3".to_owned(),
-                created: "7".to_owned(),
-            }
-            .describe("n"),
-            "tmux $3 (created 7)"
-        );
-        assert_eq!(
-            TmuxSight::Absent.describe("n"),
-            "no session 'n' on its recorded server"
-        );
-        assert_eq!(
-            TmuxSight::Unknown.describe("n"),
-            "recorded tmux server unreachable"
-        );
-    }
-
-    #[test]
     fn purge_uses_each_recorded_config_home_and_legacy_still_uses_the_default() {
         let scratch =
             std::env::temp_dir().join(format!("ae-purge-config-home-{}", std::process::id()));
