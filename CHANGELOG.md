@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.169] - 2026-09-24
+- Box the rollout source to avoid the GNU Linux enum size lint
+- Freeze the confirmed tmux incarnation across the end handoffs
+- Pin both refusal versions and trim to the harm cells
+- Drop the redundant describe unit test
+- Name the frozen tmux session in the end contract
+- Pin the terminal confirmation body
+- Attribute opencode sessions to one seat only, recheck under lock
+- Resume unproven opencode seats fresh, never continue
+
 ## [v2026.9.168] - 2026-09-24
 - Keep a cleanup race from failing an all-green test lane
 - Name the harness shadow from the adapter table, not a second list
