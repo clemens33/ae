@@ -1397,7 +1397,7 @@ impl RolloutFile {
 }
 
 enum RolloutSource {
-    File(RolloutFile),
+    File(Box<RolloutFile>),
     Missing,
     Failed,
 }
@@ -2390,7 +2390,7 @@ fn locate_rollouts<'a>(
         };
         let source = match sessions {
             Some(sessions) => match find_codex_rollout(sessions, &rollout.id, budget) {
-                Ok(Bounded::Ready(Some(file))) => RolloutSource::File(file),
+                Ok(Bounded::Ready(Some(file))) => RolloutSource::File(Box::new(file)),
                 Ok(Bounded::Ready(None)) => RolloutSource::Missing,
                 Ok(Bounded::Truncated) => {
                     *truncated = true;
