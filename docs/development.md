@@ -89,6 +89,8 @@ the owner refuses a root that leaves no room. The root is registered with the la
 before any tmux starts there, and its `Drop` kills every server beneath it before removing it.
 A test killed outright is reaped when its lane exits, unless an orphaned child still holds its
 root 30 s later: then the lane fails and keeps itself, and the next lane retries the reap.
+A root the sweep cannot delete because a child is still writing into it is named (`note:
+kept …`) and left for the next lane: that transient race never turns an all-green lane red.
 `cli::no_test_file_rolls_its_own_scratch_root` refuses a root built by hand. Parallelism is
 config: nextest runs at most eight tests (`.config/nextest.toml`, lowered to the core count by
 the lane), `just rust-mutants` one mutant at a time on four (`.cargo/mutants.toml`).

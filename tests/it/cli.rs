@@ -79,6 +79,58 @@ fn isolated_tmux_tmpdir() -> &'static std::path::Path {
     .as_path()
 }
 
+/// Every harness binary name the adapter table knows (`src/tool.rs` `KNOWN`).
+///
+/// A new adapter row adds its name here. The product runs `opencode` by FIXED
+/// program name from PATH (the id capture, the board export) and a launch pastes
+/// the profile's own command into a pane, so a runner that inherited the
+/// developer's PATH would start their real CLI under the hermetic HOME.
+const HARNESS_NAMES: [&str; 7] = [
+    "claude", "codex", "gemini", "agy", "grok", "muse", "opencode",
+];
+
+/// A PATH directory whose harness binaries refuse before doing anything.
+///
+/// A real `opencode` reached through the id capture keeps writing its state
+/// under the hermetic HOME for seconds after the test — it raced the lane
+/// reaper and made an all-green `just test` exit 1 (#165). Every hermetic
+/// child's PATH starts here; a fixture that wants its OWN fake replaces the
+/// PATH outright (`run_with_path`, `capture.rs`), so the shadow never hides it.
+fn no_real_harness() -> &'static std::path::Path {
+    static DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        let parent = std::env::var_os("TMUX_TMPDIR")
+            .filter(|path| !path.is_empty())
+            .map_or_else(std::env::temp_dir, std::path::PathBuf::from);
+        let dir = parent.join(format!("ae-it-shadow-{}", std::process::id()));
+        assert!(
+            std::fs::create_dir_all(&dir).is_ok(),
+            "the harness shadow directory"
+        );
+        for name in HARNESS_NAMES {
+            let fake = dir.join(name);
+            assert!(
+                std::fs::write(&fake, "#!/bin/sh\nexit 1\n").is_ok(),
+                "the shadow {name}"
+            );
+            assert!(
+                std::fs::set_permissions(
+                    &fake,
+                    std::os::unix::fs::PermissionsExt::from_mode(0o755)
+                )
+                .is_ok(),
+                "an executable shadow {name}"
+            );
+        }
+        assert!(
+            raw::register_fixture_root(&dir).is_ok(),
+            "the shadow directory enters the reaper registry"
+        );
+        dir
+    })
+    .as_path()
+}
+
 /// Remove every legacy `/tmp/ae-hermetic-*` scratch older than [`STALE_AFTER`].
 fn sweep_stale_scratches() {
     let Ok(entries) = std::fs::read_dir("/tmp") else {
@@ -533,7 +585,9 @@ fn isolated(mut command: Runner, dir: &std::path::Path) -> Runner {
     for name in ambient() {
         command.env_remove(name);
     }
+    let path = std::env::var("PATH").unwrap_or_default();
     command
+        .env("PATH", format!("{}:{path}", no_real_harness().display()))
         .env("HOME", dir)
         .env("AE_HOME", dir.join(".ae"))
         .env("TMUX_TMPDIR", isolated_tmux_tmpdir())
@@ -569,6 +623,50 @@ fn no_test_file_rolls_its_own_scratch_root() {
         "the guard scanned {scanned} files; it did not run"
     );
     assert!(found.is_empty(), "use OwnedScratch::root: {found:?}");
+}
+
+/// The harness shadow is FIRST in a hermetic child's PATH, and a fixture that
+/// brings its own fake still wins: such a fixture REPLACES the PATH, and the
+/// shadow lives only in the PATH [`isolated`] builds.
+#[test]
+fn the_harness_shadow_is_first_and_never_hides_a_fixtures_fake() {
+    let scratch = OwnedScratch::absent(run_scratch());
+    let dir = scratch.path().to_owned();
+    let probe = |command: &str, path: Option<String>| -> String {
+        let mut probe = isolated(Runner::new(Command::new("/bin/sh"), None), &dir);
+        if let Some(path) = path {
+            probe.env("PATH", path);
+        }
+        let out = probe
+            .arg("-c")
+            .arg(command)
+            .output()
+            .expect("the probe runs");
+        String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    };
+    assert_eq!(
+        probe("command -v opencode", None),
+        no_real_harness().join("opencode").display().to_string(),
+        "an untouched PATH resolves the shadow"
+    );
+    let fake = dir.join("bin");
+    assert!(std::fs::create_dir_all(&fake).is_ok(), "the fixture bin");
+    let opencode = fake.join("opencode");
+    assert!(std::fs::write(&opencode, "#!/bin/sh\nexit 1\n").is_ok());
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        assert!(
+            std::fs::set_permissions(&opencode, std::fs::Permissions::from_mode(0o755)).is_ok()
+        );
+    }
+    assert_eq!(
+        probe(
+            "command -v opencode",
+            Some(format!("{}:/usr/bin:/bin", fake.display()))
+        ),
+        opencode.display().to_string(),
+        "a replaced PATH keeps the fixture's own fake first"
+    );
 }
 
 /// The child half of the panic pin: a scratch owner holding a tmux server

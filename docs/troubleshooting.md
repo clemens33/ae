@@ -223,6 +223,8 @@ with `NEXTEST_TEST_THREADS=4 just test`.
 
 A lane that fails with `error: kept …` left a scratch root or a tmux server that outlived it;
 the next `just test` retries the reap, which succeeds once the process holding it has exited.
+A `note: kept …` line is the softer case: the sweep could not delete a root (a child was
+still writing into it) and left it for the next lane — the lane's own verdict was unaffected.
 Most roots from before the single scratch owner (`/tmp/ae*.<pid>.<tag>` and
 `tmux -S /tmp/ae…/sock` servers) are never swept: remove them once, with no test running.
 

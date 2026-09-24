@@ -1113,6 +1113,14 @@ _tmux-isolated lane *args:
         done
         return "$failed"
     }
+    # The lane sweep's ONE deletion rule: a transient writer race (a test's
+    # orphaned child still writing) never fails the lane — the root is NAMED and
+    # kept, and the next lane start retries. Only the registry reap's 30-try
+    # bound may fail the lane: a root still there after 30 s is a leak of THIS
+    # lane, not a race.
+    keep_or_remove() {
+        rm -rf "$1" 2>/dev/null || echo "note: kept $1: could not be deleted (a writer may still hold it); the next lane start retries" >&2
+    }
     reap_stale_lanes() {
         local root stale name owner
         for root in "$base" "$legacy"; do
@@ -1124,7 +1132,7 @@ _tmux-isolated lane *args:
                 owner_is_dead "$owner" || continue
                 reap_registry "$stale" || continue
                 reap_sockets "$stale" || continue
-                rm -rf "$stale"
+                keep_or_remove "$stale"
             done
             [[ "$legacy" != "$base" ]] || break
         done
@@ -1139,7 +1147,7 @@ _tmux-isolated lane *args:
             [[ "$owner" =~ ^[0-9]+$ ]] || continue
             [[ -z "$(find "$dir" -prune -newer "$test_tmux_tmp")" ]] || continue
             owner_is_dead "$owner" || continue
-            if reap_sockets "$dir"; then rm -rf "$dir"; fi
+            if reap_sockets "$dir"; then keep_or_remove "$dir"; fi
         done
     }
     reap_stale_lanes
@@ -1158,7 +1166,7 @@ _tmux-isolated lane *args:
             fi
             sleep 1
         done
-        rm -rf "$test_tmux_tmp"
+        keep_or_remove "$test_tmux_tmp"
     }
     trap cleanup EXIT
     # Cargo runs in a session of its own with no controlling terminal, so no

@@ -149,6 +149,9 @@ fn rust_test_tmux_isolation_ok(justfile: &str) -> bool {
         "owned_root()",
         "reap_registry()",
         "reap_dead_scratch()",
+        "keep_or_remove()",
+        "kept $1: could not be deleted (a writer may still hold it)",
+        "then keep_or_remove \"$dir\"; fi",
         "mktemp -d \"$base/ae-rust-test.$$.XXXXXX\"",
         "until reap_registry \"$test_tmux_tmp\"; do",
         "error: kept $test_tmux_tmp",
@@ -156,7 +159,7 @@ fn rust_test_tmux_isolation_ok(justfile: &str) -> bool {
         "export TMPDIR=\"$test_tmux_tmp/tmp\"",
         "export NEXTEST_TEST_THREADS=$((cpus < 8 ? cpus : 8))",
         "TMUX_TMPDIR=\"$test_tmux_tmp\" env -u TMUX -u TMUX_PANE tmux -L ae kill-server",
-        "rm -rf \"$test_tmux_tmp\"",
+        "keep_or_remove \"$test_tmux_tmp\"",
         "trap cleanup EXIT",
         "export TMUX_TMPDIR=\"$test_tmux_tmp\"",
         "unset TMUX TMUX_PANE",
@@ -194,7 +197,7 @@ fn rust_test_tmux_isolation_ok(justfile: &str) -> bool {
     // is the lane's before any test runs.
     let (Some(registry), Some(remove), Some(tmpdir)) = (
         position("reap_registry \"$test_tmux_tmp\""),
-        position("rm -rf \"$test_tmux_tmp\""),
+        position("keep_or_remove \"$test_tmux_tmp\""),
         position("export TMPDIR="),
     ) else {
         return false;
@@ -594,6 +597,82 @@ fn a_killed_tests_scratch_and_server_are_swept_by_the_lane() {
         .filter(|entry| entry.starts_with("ae-it-") || entry.starts_with("ae-rust-test."))
         .collect();
     assert!(left.is_empty(), "scratch outlived the lanes: {left:?}");
+}
+
+/// The cleanup-race pin's own unwritable directories, released even on a panic:
+/// without the chmod a `remove_dir_all` fails, and every later lane would name
+/// the same residue forever.
+struct Unwritable(Vec<PathBuf>);
+
+impl Drop for Unwritable {
+    fn drop(&mut self) {
+        for root in &self.0 {
+            let _ = raw::run(
+                &Invocation::new("chmod").arg("-R").arg("u+w").arg(root),
+                root.parent().unwrap_or(root),
+                &root.join("chmod-out"),
+                &root.join("chmod-err"),
+            );
+            let _ = std::fs::remove_dir_all(root);
+        }
+    }
+}
+
+/// #165: a cleanup race never fails an all-green lane. Two DEAD owners hold a
+/// root `rm -rf` cannot empty — a stale lane dir (the start sweep) and an
+/// unregistered scratch root (the exit reap) — and a fake `cargo` is the lane's
+/// only verdict, green. Both roots are NAMED and kept, and the lane still ends
+/// 0; the unfixed recipe died at the first failed rm.
+#[test]
+fn a_cleanup_race_never_fails_an_all_green_lane() {
+    let base = super::cli::OwnedScratch::root("gate", "race");
+    let owner = killed_scratch_child(&base, &base.join("no-lane"), None);
+    let dead = base.join(format!("ae-it-{owner}"));
+    let stale = base.join(format!("ae-rust-test.{owner}.stale"));
+    // The child's own `killed` dir and the stale lane's `late`, each holding a
+    // byte no `rm -rf` can unlink — a live writer's effect, every run.
+    for held in [dead.join("killed"), stale.join("late")] {
+        std::fs::create_dir_all(&held).expect("the held directory");
+        std::fs::write(held.join("held"), "a writer's byte").expect("the held byte");
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&held, std::fs::Permissions::from_mode(0o555))
+                .expect("an unwritable directory");
+        }
+    }
+    let _guard = Unwritable(vec![dead.clone(), stale.clone()]);
+    let cargo = base.join("bin").join("cargo");
+    std::fs::create_dir_all(base.join("bin")).expect("the fake cargo's dir");
+    std::fs::write(&cargo, "#!/bin/sh\nexit 0\n").expect("the fake cargo");
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&cargo, std::fs::Permissions::from_mode(0o755))
+            .expect("an executable fake cargo");
+    }
+    let path = std::env::var("PATH").unwrap_or_default();
+    let swept = raw::run(
+        &Invocation::new("just")
+            .arg("_tmux-isolated")
+            .arg("test")
+            .env("PATH", format!("{}:{path}", base.join("bin").display()))
+            .env("TMPDIR", &*base)
+            .env("AE_TEST_TMPDIR", &*base),
+        &root(),
+        &base.join("race-out"),
+        &base.join("race-err"),
+    )
+    .expect("the lane runs");
+    let stderr = read(&base.join("race-err"));
+    assert!(
+        matches!(swept.outcome(), ExitOutcome::Code(0)),
+        "a cleanup race must not fail an all-green lane: {stderr}"
+    );
+    for kept in [&dead, &stale] {
+        assert!(
+            stderr.contains(&format!("note: kept {}", kept.display())),
+            "the kept root must be named: {stderr}"
+        );
+    }
 }
 
 /// A fake `cargo` in `<base>/bin` for the terminal pin; the `PATH` that finds it
