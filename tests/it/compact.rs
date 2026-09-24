@@ -595,3 +595,23 @@ fn the_watchdog_ledger_reader_reads_an_answered_seat_checkpoint_as_closed() {
         read.pending
     );
 }
+
+/// D1: the stamp hold refuses a writerless FIFO swapped in between its `lstat`
+/// and its open, PROMPTLY: `O_NONBLOCK` keeps the open from waiting for a
+/// writer. A lost bit hangs here, and `.config/nextest.toml` ends that.
+#[test]
+fn a_writerless_fifo_swapped_in_after_lstat_is_refused_without_blocking() {
+    let s = Scratch::new("stamp-fifo");
+    let store = ae::store::open(&s.0);
+    store.stamp_launch_attempt(1_789_105_855).unwrap();
+    let node = store.stamp_node().expect("a regular stamp");
+    let fifo = s.0.join("fifo");
+    crate::cli::mkfifo(&fifo);
+    std::fs::rename(&fifo, store.launch_attempt_path()).unwrap();
+    let started = std::time::Instant::now();
+    assert_eq!(node.open().err(), Some(ae::store::StampGap::Unreadable));
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "refused promptly"
+    );
+}

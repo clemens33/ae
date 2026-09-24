@@ -23,6 +23,7 @@
 //! to nothing and costs nothing.
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{self, Write};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -538,6 +539,125 @@ impl SessionStore {
     }
 }
 
+/// `O_NONBLOCK | O_NOFOLLOW` for the stamp hold's open, spelled per target
+/// because ae carries no `libc`: a FIFO swapped in is opened without waiting
+/// for a writer and then refused, a link is refused instead of followed.
+/// macOS aarch64: SDK `sys/fcntl.h` `0x0004`, `0x0100`. Linux `x86_64`, glibc and
+/// musl alike: `asm-generic/fcntl.h` `0o4000`, `0o400000`.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+const HOLD_FLAGS: Option<i32> = Some(0x0004 | 0x0100);
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const HOLD_FLAGS: Option<i32> = Some(0o4000 | 0o400_000);
+/// Any other target: no spelled pair, so the hold is unavailable there.
+#[cfg(not(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(target_os = "linux", target_arch = "x86_64")
+)))]
+const HOLD_FLAGS: Option<i32> = None;
+
+/// Why the launch stamp could not be held.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StampGap {
+    /// This target has no spelled flag pair.
+    Unavailable,
+    /// Absent, not a regular file, replaced before the open, or not a
+    /// positive epoch.
+    Unreadable,
+}
+
+/// The launch stamp's node as `lstat` saw it: a regular file, by identity.
+#[derive(Debug)]
+pub struct StampNode {
+    path: PathBuf,
+    dev: u64,
+    ino: u64,
+}
+
+/// A held launch stamp. The open file keeps its inode from being reused while
+/// the hold lives, so [`StampHold::matches`] can compare identities.
+#[derive(Debug)]
+pub struct StampHold {
+    node: StampNode,
+    _file: File,
+}
+
+impl SessionStore {
+    /// Step 1 of the stamp hold: `lstat` the stamp and keep its identity.
+    ///
+    /// # Errors
+    ///
+    /// [`StampGap::Unreadable`] when the stamp is absent, unreadable or not a
+    /// regular file.
+    pub fn stamp_node(&self) -> Result<StampNode, StampGap> {
+        let path = self.launch_attempt_path();
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "a door: the stamp's own node, never followed — see `LAUNCH_ATTEMPT`"
+        )]
+        let probe = std::fs::symlink_metadata(&path);
+        match probe {
+            Ok(meta) if meta.is_file() => Ok(StampNode {
+                dev: meta.dev(),
+                ino: meta.ino(),
+                path,
+            }),
+            _ => Err(StampGap::Unreadable),
+        }
+    }
+}
+
+impl StampNode {
+    /// Step 2: open the SAME node without following a link or waiting on a
+    /// FIFO, prove it is still that regular file, and read a positive epoch.
+    ///
+    /// # Errors
+    ///
+    /// [`StampGap::Unavailable`] on a target with no flag pair; otherwise
+    /// [`StampGap::Unreadable`]: the open refused, a replacement, or bytes
+    /// that are not a positive epoch.
+    pub fn open(self) -> Result<StampHold, StampGap> {
+        let flags = HOLD_FLAGS.ok_or(StampGap::Unavailable)?;
+        let opened = OpenOptions::new()
+            .read(true)
+            .custom_flags(flags)
+            .open(&self.path);
+        let mut file = opened.map_err(|_| StampGap::Unreadable)?;
+        let meta = file.metadata().map_err(|_| StampGap::Unreadable)?;
+        if !meta.is_file() || (meta.dev(), meta.ino()) != (self.dev, self.ino) {
+            return Err(StampGap::Unreadable);
+        }
+        let mut body = Vec::new();
+        io::Read::read_to_end(
+            &mut io::Read::take(&mut file, LAUNCH_ATTEMPT_CAP + 1),
+            &mut body,
+        )
+        .map_err(|_| StampGap::Unreadable)?;
+        match parse_launch_attempt(&body) {
+            crate::tmux::Evidence::At(_) => Ok(StampHold {
+                node: self,
+                _file: file,
+            }),
+            _ => Err(StampGap::Unreadable),
+        }
+    }
+}
+
+impl StampHold {
+    /// Whether the stamp path still names the held regular file. `lstat`, so a
+    /// link swapped in over it does not match, and a restamp is a new inode.
+    #[must_use]
+    pub fn matches(&self) -> bool {
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "a door: the stamp's own node, never followed — see `LAUNCH_ATTEMPT`"
+        )]
+        let probe = std::fs::symlink_metadata(&self.node.path);
+        probe.is_ok_and(|meta| {
+            meta.is_file() && (meta.dev(), meta.ino()) == (self.node.dev, self.node.ino)
+        })
+    }
+}
+
 /// Append `bytes` to `path` under `<path>.lock`: the lock is the file's own
 /// `.lock` sibling, taken as the exclusive advisory lock bounded by
 /// [`LOCK_WAIT`] and held through the append.
@@ -572,8 +692,8 @@ fn append_locked(path: &Path, bytes: &[u8]) -> Result<(), Error> {
 /// write that state directly. The atomic form is `OpenOptionsExt::custom_flags`
 /// with `O_NOFOLLOW` and `O_NONBLOCK`; it needs the raw platform flag
 /// integers, which differ between macOS and Linux and which ae, carrying no
-/// `libc`, cannot assert at compile time. That is the upgrade path if the
-/// threat model changes.
+/// `libc`, cannot assert at compile time. `HOLD_FLAGS` spells that pair for the
+/// stamp hold; reusing it here is the upgrade path if the threat model changes.
 fn refuse_nonregular_lock_path(path: &Path) -> io::Result<()> {
     #[allow(
         clippy::disallowed_methods,
@@ -688,7 +808,7 @@ fn commit(sink: &mut impl Sink, bytes: &[u8]) -> io::Result<()> {
     reason = "tests read back what the door wrote; the boundary is on product code — see clippy.toml"
 )]
 mod tests {
-    use super::{EVENTS, LOCK_WAIT, MEMO, META, Sink, commit, lock, lock_path, open};
+    use super::{EVENTS, LOCK_WAIT, MEMO, META, Sink, StampGap, commit, lock, lock_path, open};
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
     use std::time::Duration;
@@ -1121,5 +1241,91 @@ mod tests {
         assert_eq!(sink.held, b"line\n");
         assert!(sink.truncated_to.is_empty());
         assert_eq!(sink.syncs, 1, "one sync, for the write");
+    }
+
+    #[test]
+    fn the_stamp_hold_refuses_what_its_lstat_did_not_see() {
+        let dir = scratch("hold-open");
+        let store = open(&dir);
+        let path = store.launch_attempt_path();
+        let aside = dir.join("aside");
+        // A regular replacement with the SAME bytes: identity, not content.
+        store.stamp_launch_attempt(1_789_105_855).unwrap();
+        let node = store.stamp_node().unwrap();
+        store.stamp_launch_attempt(1_789_105_855).unwrap();
+        assert_eq!(
+            node.open().err(),
+            Some(StampGap::Unreadable),
+            "a replacement"
+        );
+        // A link to the SAME inode: only O_NOFOLLOW refuses it.
+        let node = store.stamp_node().unwrap();
+        std::fs::rename(&path, &aside).unwrap();
+        std::os::unix::fs::symlink(&aside, &path).unwrap();
+        assert_eq!(node.open().err(), Some(StampGap::Unreadable), "a link");
+        std::fs::remove_file(&path).unwrap();
+        // Absent, a link, a directory: no node at all.
+        assert_eq!(
+            store.stamp_node().err(),
+            Some(StampGap::Unreadable),
+            "absent"
+        );
+        std::os::unix::fs::symlink(&aside, &path).unwrap();
+        assert_eq!(
+            store.stamp_node().err(),
+            Some(StampGap::Unreadable),
+            "a link"
+        );
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert_eq!(
+            store.stamp_node().err(),
+            Some(StampGap::Unreadable),
+            "a directory"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_stamp_hold_takes_only_a_positive_epoch() {
+        let dir = scratch("hold-bytes");
+        let store = open(&dir);
+        for body in [&b"0\n"[..], b"-5\n", &[b'1'; 65], b"\xff\xfe", b"soon\n"] {
+            std::fs::write(store.launch_attempt_path(), body).unwrap();
+            let node = store.stamp_node().unwrap();
+            assert_eq!(node.open().err(), Some(StampGap::Unreadable), "{body:?}");
+        }
+        let padded = format!("{:<65}", 1_789_105_855);
+        std::fs::write(store.launch_attempt_path(), &padded).unwrap();
+        let node = store.stamp_node().unwrap();
+        assert_eq!(node.open().err(), Some(StampGap::Unreadable), "{padded:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_held_stamp_matches_until_its_path_names_another_node() {
+        let dir = scratch("hold-matches");
+        let store = open(&dir);
+        let path = store.launch_attempt_path();
+        let aside = dir.join("aside");
+        let acquire = |store: &super::SessionStore| {
+            store.stamp_launch_attempt(1_789_105_855).unwrap();
+            store.stamp_node().unwrap().open().unwrap()
+        };
+        let held = acquire(&store);
+        for _ in 0..3 {
+            assert!(held.matches(), "untouched");
+        }
+        store.stamp_launch_attempt(1_789_105_855).unwrap();
+        assert!(!held.matches(), "a restamp with the same epoch");
+        let held = acquire(&store);
+        std::fs::rename(&path, &aside).unwrap();
+        std::os::unix::fs::symlink(&aside, &path).unwrap();
+        assert!(!held.matches(), "a link to the same inode");
+        std::fs::remove_file(&path).unwrap();
+        let held = acquire(&store);
+        std::fs::remove_file(&path).unwrap();
+        assert!(!held.matches(), "unlinked");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
