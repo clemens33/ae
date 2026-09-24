@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.165] - 2026-09-24
+- Read Claude's exact post-/compact row above an empty box as idle
+- Name claude's folder-trust modal as a human-only prompt through an adapter row
+- Fail a reseat or relaunch turn fast on a human-only prompt and name it with the next step
+- Document claude's folder-trust modal as a named human-only prompt and the fail-fast split
+- Keep the whole launch readiness budget when an unmodelled wait is chunked
+- Say the fail-fast reads only a pasted turn and leaves turnless paths to the watchdog
+- Name the chunked wait's chunk count once so its budget pin reads the value the loop runs
+- Drop the rule-width guard the title row already implies
+
 ## [v2026.9.164] - 2026-09-23
 - End a wait on the human's input in its pane instead of pane churn, and retire the churn yield
 - Document that a wait ends on the human's input in its pane, and name what that reading cannot see
