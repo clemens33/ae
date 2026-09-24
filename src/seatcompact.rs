@@ -4,6 +4,7 @@
 
 use crate::deliver::SubmitState;
 use crate::event_text::{self as text, extract, read_lines};
+use crate::harness_state::{FrameReading, HarnessState};
 use crate::json::Value;
 use crate::state::{event_line, summary_of};
 use crate::time::Timestamp;
@@ -25,6 +26,12 @@ pub const BUSY: &str = "busy";
 pub const TARGET_LOCKED: &str = "target locked";
 pub const LIFECYCLE_LOCKED: &str = "lifecycle locked";
 pub const PASTE_FAILED: &str = "paste failed";
+pub const OBSERVED_IDLE: &str = "observed idle";
+pub const UNOBSERVED: &str = "unobserved";
+pub const FRAME_NOT_MODELLED: &str = "frame not modelled";
+pub const BASELINE_UNKNOWN: &str = "baseline unknown";
+pub const RELAUNCHED: &str = "relaunched";
+pub const TIMEOUT: &str = "timeout";
 
 /// What `dispatched` claims, and what it never claims. The help text asserts
 /// this sentence.
@@ -151,6 +158,95 @@ impl Outcome {
             )),
             _ => None,
         }
+    }
+}
+
+/// What the frames after a dispatch showed: readiness, never proof that the
+/// command ran, or why readiness was not observed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Observation {
+    Idle,
+    Unobserved { reason: String },
+}
+
+impl Observation {
+    /// An unobserved end with a constant reason.
+    #[must_use]
+    pub fn unobserved(reason: &str) -> Self {
+        Self::Unobserved {
+            reason: reason.to_owned(),
+        }
+    }
+
+    /// An identity gap that ended the watch, named by its leg.
+    #[must_use]
+    pub fn identity_gap(leg: GapLeg) -> Self {
+        Self::Unobserved {
+            reason: format!("identity gap: {}", leg.as_str()),
+        }
+    }
+
+    /// The words the report puts in parentheses after `dispatched`.
+    #[must_use]
+    pub fn word(&self) -> String {
+        match self {
+            Self::Idle => OBSERVED_IDLE.to_owned(),
+            Self::Unobserved { reason } => format!("{UNOBSERVED}: {reason}"),
+        }
+    }
+}
+
+/// One post-dispatch sample, already judged against the guards.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Sample {
+    /// A guard ended the watch: identity, stamp, liveness or the ceiling.
+    Ended(Observation),
+    /// A read that proves nothing: liveness unproven or no capture.
+    Blind,
+    /// The frame, `None` when its grammar recognized none.
+    Frame(Option<FrameReading>),
+}
+
+/// The fold: two CONSECUTIVE idle frames whose judged row differs from the
+/// one read before the dispatch prove idle; any other sample restarts the pair.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Watch {
+    baseline: Option<String>,
+    streak: u8,
+}
+
+impl Watch {
+    /// Start from the frame read before the dispatch.
+    ///
+    /// # Errors
+    ///
+    /// [`BASELINE_UNKNOWN`] when no grammar recognized that frame: nothing
+    /// after it could be told apart from it.
+    pub fn new(baseline: Option<FrameReading>) -> Result<Self, Observation> {
+        match baseline {
+            Some(frame) => Ok(Self {
+                baseline: frame.current,
+                streak: 0,
+            }),
+            None => Err(Observation::unobserved(BASELINE_UNKNOWN)),
+        }
+    }
+
+    /// Fold one sample; `Some` ends the watch.
+    pub fn feed(&mut self, sample: Sample) -> Option<Observation> {
+        let qualifying = match sample {
+            Sample::Ended(end) => return Some(end),
+            Sample::Blind | Sample::Frame(None) => false,
+            Sample::Frame(Some(frame)) => {
+                frame.state == HarnessState::Idle && frame.current != self.baseline
+            }
+        };
+        self.streak = if qualifying {
+            self.streak.saturating_add(1)
+        } else {
+            0
+        };
+        (self.streak >= 2).then_some(Observation::Idle)
     }
 }
 
@@ -315,6 +411,58 @@ pub fn run_record(ts: Timestamp, actor: &str, run: &str, phase: &str) -> String 
     event_line(ts, actor, RUN_ACTION, run, phase)
 }
 
+/// The observation's audit action, appended after the seat's `seat-compact`
+/// record and never in its place.
+pub const OBSERVED_ACTION: &str = "seat-compact-observed";
+
+/// One seat's observation record: the seat record's binding facts with the
+/// observation in the outcome's place. It names no `target`, so it addresses
+/// no seat and ends no quiet state.
+#[derive(Debug, Clone, Copy)]
+pub struct ObservedRecord<'a> {
+    pub ts: Timestamp,
+    pub actor: &'a str,
+    pub run: &'a str,
+    pub request: &'a str,
+    pub slot: &'a str,
+    pub session: &'a str,
+    pub observation: &'a Observation,
+}
+
+/// The `seat-compact-observed` event line.
+#[must_use]
+pub fn observed_record(record: &ObservedRecord<'_>) -> String {
+    let word = match record.observation {
+        Observation::Idle => OBSERVED_IDLE,
+        Observation::Unobserved { .. } => UNOBSERVED,
+    };
+    let mut members = vec![
+        ("ts".to_owned(), Value::Str(record.ts.to_string())),
+        ("actor".to_owned(), Value::Str(record.actor.to_owned())),
+        ("action".to_owned(), Value::Str(OBSERVED_ACTION.to_owned())),
+    ];
+    if !record.request.is_empty() {
+        members.push(("ref".to_owned(), Value::Str(record.request.to_owned())));
+    }
+    let summary = summary_of(&format!("{word} {}", record.slot));
+    members.push(("summary".to_owned(), Value::Str(summary)));
+    for (key, text) in [
+        ("run", record.run),
+        ("target_slot", record.slot),
+        ("target_session", record.session),
+    ] {
+        if !text.is_empty() {
+            members.push((key.to_owned(), Value::Str(text.to_owned())));
+        }
+    }
+    if let Observation::Unobserved { reason } = record.observation {
+        members.push(("reason".to_owned(), Value::Str(reason.clone())));
+    }
+    let mut line = Value::Obj(members).render();
+    line.push('\n');
+    line
+}
+
 /// A compact elapsed span (`59s`, `3m`, `2h`, `4d`); a negative delta reads
 /// `0s`.
 #[must_use]
@@ -397,7 +545,7 @@ fn dispatch_age(line: &[u8], now: Timestamp) -> Option<String> {
 
 /// One seat's report entry: what the hand line names, the gate verdict the
 /// caller already took, the outcome, the elapsed seconds, and R4's cancelled
-/// earlier checkpoint, if any.
+/// earlier checkpoint, if any, and what was observed after a dispatch.
 #[derive(Debug, Clone, Copy)]
 pub struct SeatLine<'a> {
     pub slot: &'a str,
@@ -406,6 +554,7 @@ pub struct SeatLine<'a> {
     pub outcome: &'a Outcome,
     pub elapsed: i64,
     pub earlier_checkpoint: Option<&'a str>,
+    pub observation: Option<&'a Observation>,
 }
 
 /// The P1 report: one line per seat, then the `compact by hand:` line. Every
@@ -414,13 +563,11 @@ pub struct SeatLine<'a> {
 pub fn report(lines: &[SeatLine<'_>]) -> String {
     let mut out = String::new();
     for line in lines {
-        let _ = write!(
-            out,
-            "{} {} ({})",
-            cell(&line.outcome.word()),
-            cell(line.slot),
-            span(line.elapsed)
-        );
+        out.push_str(&cell(&line.outcome.word()));
+        if let Some(seen) = line.observation {
+            let _ = write!(out, " ({})", cell(&seen.word()));
+        }
+        let _ = write!(out, " {} ({})", cell(line.slot), span(line.elapsed));
         if let Some(remedy) = line.outcome.remedy() {
             let _ = write!(out, " — {remedy}");
         }
@@ -649,6 +796,7 @@ mod tests {
         );
         for wrapped in [
             "cell(&line.outcome.word())",
+            "cell(&seen.word())",
             "cell(line.slot)",
             "cell(reference)",
             "cell(pane)",
@@ -780,6 +928,7 @@ mod tests {
             outcome,
             elapsed,
             earlier_checkpoint: checkpoint,
+            observation: None,
         }
     }
 
@@ -789,6 +938,8 @@ mod tests {
         let dispatched = outcome(SubmitState::Submitted);
         let staged = outcome(SubmitState::StillStaged);
         let hand = Outcome::skipped(INPUT_NOT_MODELLED);
+        let idle = Observation::Idle;
+        let timeout = Observation::unobserved(TIMEOUT);
         let guided = classify(GUIDED, InputModel::BorderDelimited, false);
         let bare = classify(BARE, InputModel::StyleDelimited, false);
         let unmodelled = classify(BARE, InputModel::Unmodelled, false);
@@ -797,6 +948,14 @@ mod tests {
             entry("w2", "codex", bare, &dispatched, 3, None),
             entry("w3", "codex", bare, &staged, 61, Some(REQUEST)),
             entry("w4", "opencode", unmodelled, &hand, 2, None),
+            SeatLine {
+                observation: Some(&idle),
+                ..entry("w5", "claude", guided, &dispatched, 40, None)
+            },
+            SeatLine {
+                observation: Some(&timeout),
+                ..entry("w6", "codex", bare, &dispatched, 600, None)
+            },
         ]);
         assert_eq!(
             rendered,
@@ -805,7 +964,126 @@ mod tests {
              not dispatched (staged text) w3 (1m) — clear the composer of %3 before any send\n  \
              note: earlier checkpoint ae-20260917T120000Z-00000001\n\
              skipped (input not modelled) w4 (2s)\n\
+             dispatched (observed idle) w5 (40s)\n\
+             dispatched (unobserved: timeout) w6 (10m)\n\
              compact by hand: w4 (opencode: input not modelled)\n"
+        );
+    }
+
+    const BEFORE: &str = "✻ Worked for 2s · done";
+    const AFTER: &str = "⎿  Compacted (ctrl+o to see full summary)";
+
+    fn frame(state: HarnessState, row: Option<&str>) -> FrameReading {
+        FrameReading {
+            state,
+            current: row.map(ToOwned::to_owned),
+        }
+    }
+
+    fn seen(state: HarnessState, row: &str) -> Sample {
+        Sample::Frame(Some(frame(state, Some(row))))
+    }
+
+    #[test]
+    fn only_two_consecutive_new_idle_frames_prove_idle() {
+        let baseline = frame(HarnessState::Idle, Some(BEFORE));
+        let mut watch = Watch::new(Some(baseline)).expect("a recognized baseline");
+        for _ in 0..5 {
+            let old = seen(HarnessState::Idle, BEFORE);
+            assert_eq!(watch.feed(old), None, "the frame before the dispatch");
+        }
+        assert_eq!(watch.feed(seen(HarnessState::Idle, AFTER)), None, "one");
+        for reset in [
+            Sample::Blind,
+            Sample::Frame(None),
+            seen(HarnessState::Busy, "✶ Compacting… (3s)"),
+            seen(HarnessState::Unknown, "an unfamiliar row"),
+            seen(HarnessState::Idle, BEFORE),
+        ] {
+            let why = format!("{reset:?}");
+            assert_eq!(watch.feed(reset), None, "{why}");
+            let again = watch.feed(seen(HarnessState::Idle, AFTER));
+            assert_eq!(again, None, "{why} restarted the pair");
+        }
+        let second = watch.feed(seen(HarnessState::Idle, AFTER));
+        assert_eq!(second, Some(Observation::Idle));
+    }
+
+    #[test]
+    fn a_rowless_baseline_needs_a_row_and_an_unrecognized_one_observes_nothing() {
+        let empty = frame(HarnessState::Idle, None);
+        let mut watch = Watch::new(Some(empty.clone())).expect("a recognized baseline");
+        for _ in 0..3 {
+            assert_eq!(watch.feed(Sample::Frame(Some(empty.clone()))), None);
+        }
+        assert_eq!(watch.feed(seen(HarnessState::Idle, AFTER)), None);
+        let second = watch.feed(seen(HarnessState::Idle, AFTER));
+        assert_eq!(second, Some(Observation::Idle));
+        let unknown = Observation::unobserved(BASELINE_UNKNOWN);
+        assert_eq!(Watch::new(None), Err(unknown));
+    }
+
+    #[test]
+    fn a_guard_ends_the_watch_at_once_even_mid_pair() {
+        for end in [
+            Observation::unobserved(RELAUNCHED),
+            Observation::unobserved(DEAD),
+            Observation::unobserved(TIMEOUT),
+            Observation::identity_gap(GapLeg::Mismatch),
+        ] {
+            let baseline = frame(HarnessState::Idle, Some(BEFORE));
+            let mut watch = Watch::new(Some(baseline)).expect("a recognized baseline");
+            assert_eq!(watch.feed(seen(HarnessState::Idle, AFTER)), None);
+            assert_eq!(watch.feed(Sample::Ended(end.clone())), Some(end));
+        }
+    }
+
+    fn observed(observation: &Observation, request: &str) -> String {
+        observed_record(&ObservedRecord {
+            ts: TS,
+            actor: ACTOR,
+            run: "run-1",
+            request,
+            slot: "w1",
+            session: "s",
+            observation,
+        })
+    }
+
+    #[test]
+    fn an_observed_record_binds_the_run_and_addresses_no_seat() {
+        let idle = observed(&Observation::Idle, REQUEST);
+        let gap = observed(&Observation::identity_gap(GapLeg::Unreadable), "");
+        for (line, summary, reason) in [
+            (&idle, "observed idle w1", None),
+            (&gap, "unobserved w1", Some("identity gap: unreadable")),
+        ] {
+            let bytes = line.as_bytes();
+            assert_eq!(extract(bytes, "action"), OBSERVED_ACTION.as_bytes());
+            assert_eq!(extract(bytes, "summary"), summary.as_bytes());
+            assert_eq!(extract(bytes, "run"), b"run-1");
+            assert_eq!(extract(bytes, "target_slot"), b"w1");
+            assert_eq!(extract(bytes, "target_session"), b"s");
+            assert_eq!(line.contains("\"reason\""), reason.is_some(), "{line}");
+            if let Some(reason) = reason {
+                assert_eq!(extract(bytes, "reason"), reason.as_bytes());
+            }
+            let event = crate::events::Event::parse_line(line.trim_end()).expect("an event");
+            assert!(event.target_identity().is_none(), "it addresses no seat");
+        }
+        assert_eq!(extract(idle.as_bytes(), "ref"), REQUEST.as_bytes());
+        assert!(!gap.contains("\"ref\""));
+    }
+
+    #[test]
+    fn an_observed_record_neither_warns_nor_silences_a_dispatch() {
+        let dispatched = Outcome::from_verdict(Verdict::State(SubmitState::Submitted), "%1");
+        let seat = record(ACTOR, &dispatched, REQUEST, 0);
+        let start = run_record(TS, ACTOR, "run-1", RUN_START);
+        let idle = observed(&Observation::Idle, REQUEST);
+        assert_eq!(
+            audit_warning(&audit(&[start, seat, idle]), ACTOR, NOW),
+            ["note: w1 was dispatched 5m ago by a run that did not end"]
         );
     }
 

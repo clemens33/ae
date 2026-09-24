@@ -125,18 +125,40 @@ fn decode_carry(value: &str) -> Option<(HarnessState, IdleCarry)> {
     (fields.next().is_none() && carry.since_epoch >= 0).then_some((frame, carry))
 }
 
+/// A positively recognized frame: its verdict, and the row the verdict was
+/// judged by — claude's nearest non-chrome row above the box, codex's row
+/// above the composer — `None` when the frame has no such row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrameReading {
+    pub state: HarnessState,
+    pub current: Option<String>,
+}
+
 /// Classify only a positively recognized current harness frame.
 #[must_use]
 pub fn classify(capture: &str, tool: ToolKind) -> HarnessState {
-    classify_model(capture, tool.input_model())
+    read_frame(capture, tool).map_or(HarnessState::Unknown, |frame| frame.state)
 }
 
-fn classify_model(capture: &str, model: InputModel) -> HarnessState {
-    match model {
-        InputModel::BorderDelimited => classify_claude(capture),
-        InputModel::StyleDelimited => classify_codex(capture),
-        InputModel::Unmodelled => HarnessState::Unknown,
+/// The frame [`classify`] judges, or `None` when its grammar recognizes none.
+#[must_use]
+pub fn read_frame(capture: &str, tool: ToolKind) -> Option<FrameReading> {
+    match tool.input_model() {
+        InputModel::BorderDelimited => read_claude(capture),
+        InputModel::StyleDelimited => read_codex(capture),
+        InputModel::Unmodelled => None,
     }
+}
+
+/// Whether the grammar [`classify`] routes this tool to is the frame the tool
+/// draws. Muse is routed to claude's grammar and draws its own frame.
+#[must_use]
+pub fn observable(tool: ToolKind) -> bool {
+    matches!(
+        (tool.input_model(), tool.adapter().identity),
+        (InputModel::BorderDelimited, IdentitySpec::BorderComposer)
+            | (InputModel::StyleDelimited, IdentitySpec::StyleFooter)
+    )
 }
 
 /// Whether the current modeled input box contains a human draft.
@@ -278,24 +300,26 @@ fn last_ink(rows: &[Cow<'_, str>]) -> Option<usize> {
     rows.iter().rposition(|row| !row.is_empty())
 }
 
-fn classify_codex(capture: &str) -> HarnessState {
-    let Some(frame) = codex_frame(capture) else {
-        return HarnessState::Unknown;
-    };
+fn read_codex(capture: &str) -> Option<FrameReading> {
+    let frame = codex_frame(capture)?;
     let above = frame.above.as_deref();
     if !codex_placeholder(&frame.prompt)
         || !codex_footer(&frame.footer)
         || above.is_some_and(codex_modal)
     {
-        return HarnessState::Unknown;
+        return None;
     }
-    if above
+    let state = if above
         .is_some_and(|line| line.starts_with("• Working (") && line.ends_with("esc to interrupt)"))
     {
         HarnessState::Busy
     } else {
         HarnessState::Idle
-    }
+    };
+    Some(FrameReading {
+        state,
+        current: frame.above,
+    })
 }
 
 /// The codex composer's placeholder, which it draws only while the box is empty.
@@ -363,25 +387,27 @@ fn codex_modal(line: &str) -> bool {
         || line.contains("trust this")
 }
 
-fn classify_claude(capture: &str) -> HarnessState {
+fn read_claude(capture: &str) -> Option<FrameReading> {
     let lines = clean_lines(capture);
-    let Some(prompt_index) = lines.iter().rposition(|line| *line == "❯") else {
-        return HarnessState::Unknown;
-    };
+    let prompt_index = lines.iter().rposition(|line| *line == "❯")?;
     if !claude_input_frame(&lines, prompt_index) {
-        return HarnessState::Unknown;
+        return None;
     }
     let current = lines[..prompt_index]
         .iter()
         .rev()
         .find(|line| !claude_chrome(line));
-    match current {
+    let state = match current {
         Some(line) if claude_spinner(line) => HarnessState::Busy,
         Some(line) if claude_done(line) => HarnessState::Idle,
         Some(line) if claude_compacted(line) => HarnessState::Idle,
         None => HarnessState::Idle,
         _ => HarnessState::Unknown,
-    }
+    };
+    Some(FrameReading {
+        state,
+        current: current.map(ToString::to_string),
+    })
 }
 
 fn claude_input_frame(lines: &[Cow<'_, str>], prompt_index: usize) -> bool {
@@ -763,10 +789,32 @@ fn valid_effort(value: &str) -> bool {
 mod tests {
     use super::{
         HarnessIdentity, HarnessState, IdleCarry, classify, claude_input_frame, clean_lines,
-        current_identity, decode_idle, encode_idle, has_human_draft, is_effort_word,
-        observed_from_option, observed_identity,
+        current_identity, decode_idle, encode_idle, has_human_draft, is_effort_word, observable,
+        observed_from_option, observed_identity, read_frame,
     };
     use crate::tool::ToolKind;
+
+    const TOOLS: [ToolKind; 8] = [
+        ToolKind::Claude,
+        ToolKind::Codex,
+        ToolKind::Gemini,
+        ToolKind::Agy,
+        ToolKind::Grok,
+        ToolKind::Muse,
+        ToolKind::OpenCode,
+        ToolKind::Unknown,
+    ];
+
+    /// PARITY: the two return paths no other pin reaches — claude's grammar
+    /// with no bare prompt, codex's with fewer than two rows — for every tool.
+    #[test]
+    fn a_capture_with_no_frame_is_unknown_for_every_tool() {
+        for tool in TOOLS {
+            for capture in ["", "one row\n"] {
+                assert_eq!(classify(capture, tool), HarnessState::Unknown, "{tool:?}");
+            }
+        }
+    }
 
     #[test]
     fn a_live_codex_working_frame_is_busy() {
@@ -872,6 +920,70 @@ mod tests {
             let frame = swap_once(&capture, ROW, &nearest);
             assert!(gate(&frame), "premise: {nearest}");
             assert_eq!(classify(&frame, ToolKind::Claude), want, "{nearest}");
+        }
+    }
+
+    #[test]
+    fn a_frame_reading_names_the_row_its_verdict_was_judged_by() {
+        let unfamiliar = swap_once(&bypass(COMPACTED), ROW, "an unfamiliar row");
+        let compacted = bypass(COMPACTED);
+        for (capture, tool, state, row) in [
+            (
+                compacted.as_str(),
+                ToolKind::Claude,
+                HarnessState::Idle,
+                ROW,
+            ),
+            (
+                include_str!("../tests/fixtures/harness-state/claude-idle-167x40.txt"),
+                ToolKind::Claude,
+                HarnessState::Idle,
+                "✻ Crunched for 16s · done 4:01 PM",
+            ),
+            (
+                include_str!("../tests/fixtures/harness-state/claude-busy-167x40.txt"),
+                ToolKind::Claude,
+                HarnessState::Busy,
+                "✻ Enchanting… (1m 2s · ↓ 2.9k tokens · still thinking with xhigh effort)",
+            ),
+            (
+                include_str!("../tests/fixtures/harness-state/codex-busy-280x40.txt"),
+                ToolKind::Codex,
+                HarnessState::Busy,
+                "• Working (5m 03s • esc to interrupt)",
+            ),
+            (
+                unfamiliar.as_str(),
+                ToolKind::Claude,
+                HarnessState::Unknown,
+                "an unfamiliar row",
+            ),
+        ] {
+            let frame = read_frame(capture, tool).expect("a recognized frame");
+            assert_eq!((frame.state, frame.current.as_deref()), (state, Some(row)));
+            assert_eq!(classify(capture, tool), state, "one parse, one verdict");
+        }
+    }
+
+    #[test]
+    fn a_frame_no_grammar_recognizes_reads_as_none() {
+        let muse = include_str!("../tests/fixtures/runtime-identity/muse-idle-plain-80x24.txt");
+        for (capture, tool) in [
+            (muse, ToolKind::Muse),
+            (muse, ToolKind::OpenCode),
+            (COMPACTED, ToolKind::Claude),
+            ("", ToolKind::Claude),
+            ("", ToolKind::Codex),
+        ] {
+            assert_eq!(read_frame(capture, tool), None, "{tool:?}");
+        }
+    }
+
+    #[test]
+    fn only_a_tool_drawing_the_grammar_it_is_routed_to_is_observable() {
+        for tool in TOOLS {
+            let drawn = matches!(tool, ToolKind::Claude | ToolKind::Codex);
+            assert_eq!(observable(tool), drawn, "{tool:?}");
         }
     }
 

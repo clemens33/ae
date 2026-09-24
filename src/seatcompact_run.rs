@@ -117,6 +117,7 @@ pub(crate) fn run(
             outcome: &seat.outcome,
             elapsed: seat.elapsed,
             earlier_checkpoint: None,
+            observation: None,
         })
         .collect();
     write!(out, "{}", seatcompact::report(&lines))?;
