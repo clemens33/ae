@@ -19,10 +19,11 @@ use crate::tmux::{self, OptionScope, StopProbe};
 use crate::tracked::{self, EventFields};
 use crate::transport;
 use crate::watchdog::{
-    DoneProgress, QuietKind, SweepAlert, SweepEffect, SweepKnobs, SweepObservation, SweepState,
-    SweepVerdict, Throttle, WaitProgress, WaitState, classify_dead, declaration_key,
-    is_sweep_target, latest_relevant_event, quiet_hash, quiet_reason, record_sweep,
-    stale_composite, sweep_step, throttle_class,
+    DoneProgress, NUDGE_GOAL_PREFIX, NUDGE_IDLE_PREFIX, NUDGE_SENTENCE, NUDGE_TAIL,
+    NUDGE_WAITING_CLOSE, NUDGE_WAITING_OPEN, QuietKind, SweepAlert, SweepEffect, SweepKnobs,
+    SweepObservation, SweepState, SweepVerdict, Throttle, WaitProgress, WaitState, classify_dead,
+    declaration_key, is_sweep_target, latest_relevant_event, quiet_hash, quiet_reason,
+    record_sweep, stale_composite, sweep_step, throttle_class,
 };
 
 /// The event actor every watchdog emission carries.
@@ -1353,15 +1354,16 @@ fn note_slot(note: Option<&str>) -> String {
 /// The nudge: the session goal when the meta carries one, then the status
 /// sentence, then the path to this session's own `state` helper.
 ///
-/// The invitation spells the SAME tail `watchdog::raw_nudge` strips from a
-/// pane baseline, so the two can never disagree about what a nudge looks like.
+/// The sentence, the goal prefix and the invitation are spelled through the
+/// same constants `watchdog::raw_nudge` strips from a pane baseline, so the
+/// delivered bytes and the footprint grammar can never disagree about what a
+/// nudge looks like.
 #[must_use]
 pub fn nudge_text(goal: Option<&str>, meta_dir: &Path, note: Option<&str>) -> String {
-    let prefix = goal.map_or_else(String::new, |goal| format!("Session goal: {goal}. "));
+    let prefix = goal.map_or_else(String::new, |goal| format!("{NUDGE_GOAL_PREFIX}{goal}. "));
     let note = note_slot(note);
     format!(
-        "{prefix}Continue the assigned work now. Do not re-plan or ask unless blocked.{note} Then \
-         declare state: {}/state <waiting-user|waiting-agent|blocked|done> \"<reason>\"",
+        "{prefix}{NUDGE_SENTENCE}{note} Then declare state: {}{NUDGE_TAIL}",
         meta_dir.display()
     )
 }
@@ -1370,12 +1372,10 @@ pub fn nudge_text(goal: Option<&str>, meta_dir: &Path, note: Option<&str>) -> St
 /// observation that started its independent clock.
 #[must_use]
 pub fn idle_nudge_text(goal: Option<&str>, meta_dir: &Path, note: Option<&str>) -> String {
-    let prefix = goal.map_or_else(String::new, |goal| format!("Session goal: {goal}. "));
+    let prefix = goal.map_or_else(String::new, |goal| format!("{NUDGE_GOAL_PREFIX}{goal}. "));
     let note = note_slot(note);
     format!(
-        "{prefix}You look idle. Continue the assigned work now. Do not re-plan or ask unless \
-         blocked.{note} Then declare state: {}/state \
-         <waiting-user|waiting-agent|blocked|done> \"<reason>\"",
+        "{prefix}{NUDGE_IDLE_PREFIX}{NUDGE_SENTENCE}{note} Then declare state: {}{NUDGE_TAIL}",
         meta_dir.display()
     )
 }
@@ -1388,16 +1388,15 @@ pub fn done_challenge_text(
     confirmations: u8,
     required: u8,
 ) -> String {
-    let prefix = goal.map_or_else(String::new, |goal| format!("Session goal: {goal}. "));
+    let prefix = goal.map_or_else(String::new, |goal| format!("{NUDGE_GOAL_PREFIX}{goal}. "));
     let minutes = age / 60;
     format!(
-        "{prefix}Continue the assigned work now. Do not re-plan or ask unless blocked. Done was \
+        "{prefix}{NUDGE_SENTENCE} Done was \
          declared {minutes}m ago; confirmation {} of {required}. Re-read your brief and goal. State how \
          each deliverable was verified. Anything unverified: declare working and finish assigned \
          work NOW. Worker awaiting owner review: invent no scope; do not commit or edit solely for \
          this challenge. Otherwise re-declare done with completed work and proof, including any \
-         held review. This is self-attestation, not owner approval. Then declare state: {}/state \
-         <waiting-user|waiting-agent|blocked|done> \"<reason>\"",
+         held review. This is self-attestation, not owner approval. Then declare state: {}{NUDGE_TAIL}",
         confirmations.saturating_add(1),
         meta_dir.display()
     )
@@ -1416,7 +1415,7 @@ pub fn wait_challenge_text(
     state: WaitState,
     escalated: bool,
 ) -> String {
-    let prefix = goal.map_or_else(String::new, |goal| format!("Session goal: {goal}. "));
+    let prefix = goal.map_or_else(String::new, |goal| format!("{NUDGE_GOAL_PREFIX}{goal}. "));
     let minutes = age / 60;
     let (declared, proof, resolved) = match state {
         WaitState::WaitingAgent => (
@@ -1436,11 +1435,10 @@ pub fn wait_challenge_text(
         ""
     };
     format!(
-        "{prefix}Continue the assigned work now. Do not re-plan or ask unless blocked. {declared} \
+        "{prefix}{NUDGE_SENTENCE} {declared} \
          was declared {minutes}m ago; confirmation {} of {required}.{ceiling} Prove the wait still \
          holds: {proof}. {resolved}: declare working and finish assigned work NOW. Otherwise \
-         re-declare {} with current reason and proof. Then declare state: {}/state \
-         <waiting-user|waiting-agent|blocked|done> \"<reason>\"",
+         re-declare {} with current reason and proof. Then declare state: {}{NUDGE_TAIL}",
         confirmations.saturating_add(1),
         state.as_str(),
         meta_dir.display()
@@ -1458,7 +1456,7 @@ pub fn idle_nudge_text_waiting(
     note: Option<&str>,
 ) -> String {
     format!(
-        "{} ae still shows you {reason} — chase them, or declare state.",
+        "{}{NUDGE_WAITING_OPEN}{reason}{NUDGE_WAITING_CLOSE}",
         idle_nudge_text(goal, meta_dir, note)
     )
 }
@@ -12932,6 +12930,22 @@ mod tests {
             done_challenge_text(Some("ship P4.1"), meta, 300, 0, 2),
             "Session goal: ship P4.1. Continue the assigned work now. Do not re-plan or ask unless blocked. Done was declared 5m ago; confirmation 1 of 2. Re-read your brief and goal. State how each deliverable was verified. Anything unverified: declare working and finish assigned work NOW. Worker awaiting owner review: invent no scope; do not commit or edit solely for this challenge. Otherwise re-declare done with completed work and proof, including any held review. This is self-attestation, not owner approval. Then declare state: /home/x/.ae/sessions/demo/state <waiting-user|waiting-agent|blocked|done> \"<reason>\""
         );
+        // The #172 note's insertion point, byte-exact: the invitation's own
+        // leading space separates the sentence when no note rides, and the
+        // note supplies its own leading space — so the note must not move a
+        // single byte of what precedes or follows it.
+        let ended = super::WaitEnded {
+            kind: QuietKind::WaitingUser,
+            input_age_secs: 300,
+        };
+        assert_eq!(
+            super::nudge_words(None, meta, None, "idle 449m", None, Some(ended)).0,
+            "Continue the assigned work now. Do not re-plan or ask unless blocked. Input in your pane ended your waiting-user 5m ago (a tmux client viewing it gave a keypress, click, scroll or switch — not proof of an answer). If you are still waiting, re-declare waiting-user with the current reason. Then declare state: /home/x/.ae/sessions/demo/state <waiting-user|waiting-agent|blocked|done> \"<reason>\""
+        );
+        assert_eq!(
+            super::nudge_words(None, meta, Some(300), "idle 5m", None, Some(ended)).0,
+            "You look idle. Continue the assigned work now. Do not re-plan or ask unless blocked. Input in your pane ended your waiting-user 5m ago (a tmux client viewing it gave a keypress, click, scroll or switch — not proof of an answer). If you are still waiting, re-declare waiting-user with the current reason. Then declare state: /home/x/.ae/sessions/demo/state <waiting-user|waiting-agent|blocked|done> \"<reason>\""
+        );
     }
 
     /// #172: a nudge that follows a wait THIS cycle ended on input in the pane
@@ -13095,23 +13109,33 @@ mod tests {
         );
     }
 
-    /// IMPORTANT 4: the CURRENT generator's exact bytes must survive the LIVE
-    /// footprint filter. `watchdog.rs`'s `RAW_NUDGE` receipt exercises the
-    /// pre-`waiting-agent` spelling only, so without this composition a
-    /// deleted `strip_suffix(NUDGE_TAIL)` would leave every current-core nudge
-    /// counting as pane motion, so the nudge itself would keep its seat from
-    /// ever reading stale.
-    ///
-    /// `idle_nudge_text` is a DIFFERENT generator whose raw sentence the
-    /// footprint filter has never recognized (pre-existing; named in
-    /// `.local/waitagent-sites.md`), so this receipt pins the status generator
-    /// the review named, in both its goal and no-goal forms.
+    /// IMPORTANT 4: every CURRENT generator's exact bytes must survive the
+    /// LIVE footprint filter — all five, goal and no goal. `watchdog.rs`'s
+    /// `RAW_NUDGE` receipt exercises the pre-`waiting-agent` spelling only, so
+    /// without this composition a deleted `strip_suffix(NUDGE_TAIL)` would
+    /// leave every current-core nudge counting as pane motion, so the nudge
+    /// itself would keep its seat from ever reading stale. The generators'
+    /// own table lives beside `watchdog::raw_nudge`; this receipt holds the
+    /// daemon side of the same contract.
     #[test]
     fn a_current_nudge_is_stripped_by_the_live_footprint_filter() {
         let meta = Path::new("/home/x/.ae/sessions/demo");
         for (label, text) in [
             ("status", nudge_text(None, meta, None)),
             ("status-goaled", nudge_text(Some("ship P4.1"), meta, None)),
+            ("idle", idle_nudge_text(None, meta, None)),
+            (
+                "idle-goaled",
+                idle_nudge_text(Some("ship P4.1"), meta, None),
+            ),
+            (
+                "idle-waiting",
+                idle_nudge_text_waiting(None, meta, "waiting on 1 request", None),
+            ),
+            (
+                "idle-waiting-goaled",
+                idle_nudge_text_waiting(Some("ship P4.1"), meta, "waiting on 1 request", None),
+            ),
             (
                 "done-challenge",
                 done_challenge_text(Some("ship P4.1"), meta, 300, 0, 2),

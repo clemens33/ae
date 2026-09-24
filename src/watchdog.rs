@@ -258,21 +258,33 @@ fn nudge_envelope() -> String {
     crate::provenance::peer(WATCHDOG_ACTOR)
 }
 
-/// The nudge's own sentence, for the panes that render it unornamented.
-const NUDGE_SENTENCE: &str =
-    "Continue the assigned work now. Do not re-plan or ask unless blocked. ";
-const NUDGE_SENTENCE_LEGACY: &str = "Status check: if you have more work, continue. \
+/// The nudge's own sentence, for the panes that render it unornamented. The
+/// generators spell it through THIS constant, so the delivered bytes and the
+/// bytes the footprint filter strips can never drift apart.
+pub(crate) const NUDGE_SENTENCE: &str =
+    "Continue the assigned work now. Do not re-plan or ask unless blocked.";
+pub(crate) const NUDGE_SENTENCE_LEGACY: &str = "Status check: if you have more work, continue. \
      Otherwise declare your state so I stop nudging: ";
 
 /// The invitation the nudge ends with, in the current vocabulary.
-const NUDGE_TAIL: &str = "/state <waiting-user|waiting-agent|blocked|done> \"<reason>\"";
+pub(crate) const NUDGE_TAIL: &str = "/state <waiting-user|waiting-agent|blocked|done> \"<reason>\"";
 
 /// The pre-`waiting-agent` invitation. A pane can still carry the nudge the
 /// previous core delivered, so the footprint filter strips BOTH spellings.
 const NUDGE_TAIL_LEGACY: &str = "/state <waiting-user|blocked|done> \"<reason>\"";
 
 /// The optional prefix a nudge carries when the session has a goal.
-const NUDGE_GOAL_PREFIX: &str = "Session goal: ";
+pub(crate) const NUDGE_GOAL_PREFIX: &str = "Session goal: ";
+
+/// The idle reminder's own opening, before the sentence — the spelling
+/// `idle_nudge_text` delivers and the one branch the filter must accept.
+pub(crate) const NUDGE_IDLE_PREFIX: &str = "You look idle. ";
+
+/// The outstanding-own-work reminder's clause — an opening, an arbitrary
+/// reason, a closing — appended AFTER the invitation. Both halves are shared
+/// with `idle_nudge_text_waiting`, so the reason stays the only free text.
+pub(crate) const NUDGE_WAITING_OPEN: &str = " ae still shows you ";
+pub(crate) const NUDGE_WAITING_CLOSE: &str = " — chase them, or declare state.";
 
 /// The state words a `state` echo can name — the alternation in the awk's
 /// `is_echo`, and NOT the quiet set: `working` echoes are footprints too. It
@@ -314,30 +326,43 @@ fn indented(line: &str) -> bool {
 /// The nudge as DELIVERED text, with no origin envelope above it.
 fn raw_nudge(line: &str) -> bool {
     let body = trim_end_space(line);
+    // The outstanding-own-work reminder appends its own clause AFTER the
+    // invitation, and the reason between the clause's two halves is arbitrary:
+    // every opening that leaves a plain nudge in front of it is tried, so no
+    // reason text can make a delivered reminder read as output.
+    let Some(head) = body.strip_suffix(NUDGE_WAITING_CLOSE) else {
+        return raw_nudge_plain(body);
+    };
+    head.match_indices(NUDGE_WAITING_OPEN)
+        .any(|(at, _)| raw_nudge_plain(&head[..at]))
+}
+
+/// The plain nudge: the invitation ENDS the line, and the body opens with the
+/// nudge sentence — directly, behind the idle reminder's own opening, or after
+/// a `Session goal: … . ` whose `". "` split the goal branch backtracks over.
+fn raw_nudge_plain(body: &str) -> bool {
     let Some(body) = body
         .strip_suffix(NUDGE_TAIL)
         .or_else(|| body.strip_suffix(NUDGE_TAIL_LEGACY))
     else {
         return false;
     };
-    if [NUDGE_SENTENCE, NUDGE_SENTENCE_LEGACY]
-        .iter()
-        .any(|sentence| body.starts_with(sentence))
-    {
+    if nudge_sentence(body) {
         return true;
     }
-    // `(Session goal: .*\. )?` — any goal text, ending at a `". "` the sentence
-    // then follows.
     let Some(goal) = body.strip_prefix(NUDGE_GOAL_PREFIX) else {
         return false;
     };
-    goal.match_indices(". ").any(|(at, sep)| {
-        goal.get(at + sep.len()..).is_some_and(|tail| {
-            [NUDGE_SENTENCE, NUDGE_SENTENCE_LEGACY]
-                .iter()
-                .any(|sentence| tail.starts_with(sentence))
-        })
-    })
+    goal.match_indices(". ")
+        .any(|(at, sep)| goal.get(at + sep.len()..).is_some_and(nudge_sentence))
+}
+
+/// The nudge sentence, directly or behind the idle reminder's opening.
+fn nudge_sentence(rest: &str) -> bool {
+    let rest = rest.strip_prefix(NUDGE_IDLE_PREFIX).unwrap_or(rest);
+    [NUDGE_SENTENCE, NUDGE_SENTENCE_LEGACY]
+        .iter()
+        .any(|sentence| rest.starts_with(sentence))
 }
 
 /// The envelope ALONE on its line — an unmodeled pane's pair form, where the
@@ -1726,13 +1751,14 @@ mod tests {
 
     use super::WaitState::{Blocked, WaitingAgent};
     use super::{
-        DEFAULT_IDLE_NUDGE_SECS, DoneProgress, OVERVIEW_HOLD_WHILE_WORKING_SECS, OWN_WORK_AGE_CAP,
-        QuietKind, SweepAlert, SweepEffect, SweepKnobs, SweepObservation, SweepState, SweepVerdict,
-        Throttle, WaitProgress, WaitState, WedgeDetail, classify_dead, command_is_shell,
-        declaration_current, declaration_key, done_progress, indented, is_echo, is_sweep_target,
-        latest_relevant_event, quiet_filter, quiet_hash, quiet_reason, raw_nudge, record_sweep,
-        shows_throttle, stale_composite, submit_hdr, sweep_step, throttle_class, wait_progress,
-        waiting_agent_cap_secs, waiting_agent_escalated,
+        DEFAULT_IDLE_NUDGE_SECS, DoneProgress, NUDGE_IDLE_PREFIX, NUDGE_SENTENCE, NUDGE_TAIL,
+        NUDGE_WAITING_CLOSE, NUDGE_WAITING_OPEN, OVERVIEW_HOLD_WHILE_WORKING_SECS,
+        OWN_WORK_AGE_CAP, QuietKind, SweepAlert, SweepEffect, SweepKnobs, SweepObservation,
+        SweepState, SweepVerdict, Throttle, WaitProgress, WaitState, WedgeDetail, classify_dead,
+        command_is_shell, declaration_current, declaration_key, done_progress, indented, is_echo,
+        is_sweep_target, latest_relevant_event, quiet_filter, quiet_hash, quiet_reason, raw_nudge,
+        record_sweep, shows_throttle, stale_composite, submit_hdr, sweep_step, throttle_class,
+        wait_progress, waiting_agent_cap_secs, waiting_agent_escalated,
     };
     use crate::events::Event;
     use crate::procs::Descendancy;
@@ -3508,15 +3534,110 @@ tail line
         }
     }
 
+    /// #174: every nudge the watchdog delivers is a footprint in its raw
+    /// one-line form — all five generators, goal and no goal, with and without
+    /// the #172 note, and the outstanding-own-work clause with an arbitrary
+    /// reason. ONE table over the generators themselves, so a generator whose
+    /// shape the matcher cannot strip fails HERE rather than as pane motion.
+    #[test]
+    fn every_delivered_nudge_is_a_footprint_in_its_raw_one_line_form() {
+        use crate::watchdog_daemon::{
+            WaitEnded, done_challenge_text, idle_nudge_text, idle_nudge_text_waiting, nudge_text,
+            nudge_words, wait_challenge_text,
+        };
+        let meta = std::path::Path::new("/Users/ckriech/.ae/sessions/demo");
+        let ended = WaitEnded {
+            kind: QuietKind::WaitingUser,
+            input_age_secs: 300,
+        };
+        let check = |label: &str, text: &str| {
+            assert!(
+                raw_nudge(text),
+                "{label}: the raw one-line form is a footprint: {text}"
+            );
+            assert_eq!(quiet_filter(text), "", "{label}: stripped from the capture");
+            assert_eq!(
+                quiet_hash(&format!("live output\n{text}\n")),
+                quiet_hash("live output\n"),
+                "{label}: the delivery must not move the pane hash"
+            );
+        };
+        let reason = "waiting on 1 request";
+        for (goal_label, goal) in [("", None), ("goal ", Some("ship P4.1"))] {
+            for (label, text) in [
+                ("nudge", nudge_text(goal, meta, None)),
+                (
+                    "nudge noted",
+                    nudge_words(goal, meta, None, "idle 449m", None, Some(ended)).0,
+                ),
+                ("idle", idle_nudge_text(goal, meta, None)),
+                (
+                    "idle noted",
+                    nudge_words(goal, meta, Some(300), "idle 5m", None, Some(ended)).0,
+                ),
+                (
+                    "idle waiting",
+                    idle_nudge_text_waiting(goal, meta, reason, None),
+                ),
+                (
+                    "idle waiting noted",
+                    nudge_words(goal, meta, Some(300), "idle 5m", Some(reason), Some(ended)).0,
+                ),
+                ("done", done_challenge_text(goal, meta, 300, 0, 2)),
+                (
+                    "wait blocked",
+                    wait_challenge_text(goal, meta, 300, 0, 2, WaitState::Blocked, false),
+                ),
+                (
+                    "wait escalated",
+                    wait_challenge_text(goal, meta, 600, 1, 2, WaitState::WaitingAgent, true),
+                ),
+            ] {
+                check(&format!("{goal_label}{label}"), &text);
+            }
+        }
+        // The reason is free text: sentence punctuation and the clause's own
+        // words inside it must not break the match.
+        for reason in [
+            "waiting on 1 request",
+            "waiting on 2 requests. ae still shows you things — done?",
+        ] {
+            for goal in [None, Some("ship P4.1")] {
+                check(
+                    &format!("waiting reason {reason:?}"),
+                    &idle_nudge_text_waiting(goal, meta, reason, None),
+                );
+                check(
+                    &format!("waiting reason {reason:?} noted"),
+                    &nudge_words(goal, meta, Some(300), "idle 5m", Some(reason), Some(ended)).0,
+                );
+            }
+        }
+    }
+
+    /// #174 invariant 4: the fixed shapes must not widen the filter. A
+    /// transcript that quotes the reminder — the sentence without the
+    /// invitation, or the whole shape with foreign text in front, or the
+    /// waiting clause with no nudge before it — is real pane content.
+    #[test]
+    fn an_idle_or_waiting_lookalike_stays_output() {
+        for line in [
+            format!("{NUDGE_IDLE_PREFIX}{NUDGE_SENTENCE} and then I replied"),
+            format!("I was asked: {NUDGE_IDLE_PREFIX}{NUDGE_SENTENCE} Next steps: /x{NUDGE_TAIL}"),
+            format!("you{NUDGE_WAITING_OPEN}things{NUDGE_WAITING_CLOSE}"),
+        ] {
+            assert!(!raw_nudge(&line), "{line:?} is not a raw nudge");
+            assert_eq!(quiet_filter(&format!("{line}\n")), format!("{line}\n"));
+        }
+    }
+
     /// #172 invariant 2: the ended-wait note rides INSIDE the nudge body —
     /// between the nudge sentence and the declaration invitation — so the live
     /// footprint filter strips a noted nudge exactly when it strips the plain
-    /// one, goal or no goal. Both `note_slot` callers are covered: `nudge_text`
-    /// is the generator the filter recognizes, and `idle_nudge_text` is one it
-    /// recognizes only THROUGH A GOAL — its bare sentence has never been a
-    /// footprint (pre-existing, out of scope) — so the note must not move
-    /// EITHER verdict. The note's own words come from the renderer, so the pin
-    /// is on the bytes ae really delivers.
+    /// one, goal or no goal. Both `note_slot` callers are covered, and BOTH are
+    /// footprints in both goal forms: the note must not move either verdict.
+    /// The note's own words come from the renderer, so the pin is on the bytes
+    /// ae really delivers.
     #[test]
     fn a_noted_nudge_is_a_footprint_exactly_when_the_plain_one_is() {
         use crate::watchdog_daemon::{WaitEnded, idle_nudge_text, nudge_text, nudge_words};
@@ -3526,37 +3647,30 @@ tail line
             input_age_secs: 300,
         };
         for goal in [None, Some("ship P4.1")] {
-            for (label, plain, noted, footprint) in [
+            for (label, plain, noted) in [
                 (
                     "status",
                     nudge_text(goal, meta, None),
                     nudge_words(goal, meta, None, "idle 449m", None, Some(ended)).0,
-                    true,
                 ),
                 (
                     "idle",
                     idle_nudge_text(goal, meta, None),
                     nudge_words(goal, meta, Some(300), "idle 5m", None, Some(ended)).0,
-                    goal.is_some(),
                 ),
             ] {
                 assert_ne!(plain, noted, "{label}/{goal:?}: the note is really there");
                 let stripped =
                     |text: &str| quiet_filter(&format!("live output\n{text}\n")) == "live output\n";
-                assert_eq!(
-                    raw_nudge(&plain),
-                    footprint,
-                    "{label}/{goal:?}: the plain verdict"
-                );
+                assert!(raw_nudge(&plain), "{label}/{goal:?}: the plain verdict");
                 assert_eq!(
                     raw_nudge(&noted),
                     raw_nudge(&plain),
                     "{label}/{goal:?}: the note changes no verdict"
                 );
-                assert_eq!(
+                assert!(
                     stripped(&plain),
-                    footprint,
-                    "{label}/{goal:?}: the capture filter agrees on the plain nudge"
+                    "{label}/{goal:?}: the plain nudge is stripped"
                 );
                 assert_eq!(
                     stripped(&noted),
