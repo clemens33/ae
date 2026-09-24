@@ -2058,6 +2058,76 @@ mod tests {
         }
     }
 
+    /// #147: the whole `alert_meaning` mapping as ONE table — one row per
+    /// action the watchdog records plus each retraction — so deleting any arm
+    /// leaves rows holding a verdict the deleted arm used to spell, and the
+    /// suite turns red. The rows keep passing only while every arm exists.
+    #[test]
+    fn sc_147_every_watchdog_action_carries_its_pinned_alert_meaning() {
+        use crate::brief_retry::{DELIVERED_ACTION, GAVE_UP_ACTION, RETRY_ACTION};
+        use crate::quota::action::{
+            ADVISORY, ADVISORY_DROPPED, CHECKPOINT, CHECKPOINT_CANCELLED, CHECKPOINT_DROPPED,
+        };
+        use crate::tracked::ABANDONED_ACTION;
+        use crate::watchdog::{DONE_CHALLENGE_ACTION, SWEEP_NUDGE_ACTION, WAIT_CHALLENGE_ACTION};
+        // Actions with an owner constant are spelled by that constant, never a
+        // second literal copy. The `alert_meaning` arm actions and `recover`
+        // have no constant anywhere, and `nudge`, `watchdog-start` and
+        // `watchdog-stop` are private to their modules: there a literal, as
+        // production itself spells them.
+        const DEAD: &str = "agent process dead — dropped to shell";
+        const TABLE: &[(&str, Option<&str>, AlertMeaning)] = &[
+            // The `alert` arm classifies BY SUMMARY.
+            ("alert", Some(DEAD), AlertMeaning::Raised(Reason::Dead)),
+            (
+                "alert",
+                Some("meta-agent not sweeping — heartbeat stopped (may be stuck)"),
+                AlertMeaning::Raised(Reason::Stale),
+            ),
+            (
+                "alert",
+                Some("throttled for 10s — may need attention"),
+                AlertMeaning::Raised(Reason::Throttled),
+            ),
+            // Each retraction: the ACTION decides, never the summary — every
+            // row quotes the dead alert it retracts and must still read
+            // Cleared.
+            ("alert-cleared", Some(DEAD), AlertMeaning::Cleared),
+            ("throttle-cleared", Some(DEAD), AlertMeaning::Cleared),
+            ("dead-cleared", Some(DEAD), AlertMeaning::Cleared),
+            ("human-prompt-cleared", Some(DEAD), AlertMeaning::Cleared),
+            // Carriers: the action alone, no summary consulted.
+            ("throttled", None, AlertMeaning::Raised(Reason::Throttled)),
+            ("limit", None, AlertMeaning::Raised(Reason::Limit)),
+            ("human-prompt", None, AlertMeaning::Raised(Reason::Blocked)),
+            // Verdict-less actions the watchdog records: a verdict-shaped
+            // summary never classifies them.
+            (GAVE_UP_ACTION, Some(DEAD), AlertMeaning::Undefined),
+            (RETRY_ACTION, Some(DEAD), AlertMeaning::Undefined),
+            (DELIVERED_ACTION, Some(DEAD), AlertMeaning::Undefined),
+            (ABANDONED_ACTION, Some(DEAD), AlertMeaning::Undefined),
+            (SWEEP_NUDGE_ACTION, Some(DEAD), AlertMeaning::Undefined),
+            (DONE_CHALLENGE_ACTION, Some(DEAD), AlertMeaning::Undefined),
+            (WAIT_CHALLENGE_ACTION, Some(DEAD), AlertMeaning::Undefined),
+            (ADVISORY, Some(DEAD), AlertMeaning::Undefined),
+            (ADVISORY_DROPPED, Some(DEAD), AlertMeaning::Undefined),
+            (CHECKPOINT, Some(DEAD), AlertMeaning::Undefined),
+            (CHECKPOINT_DROPPED, Some(DEAD), AlertMeaning::Undefined),
+            (CHECKPOINT_CANCELLED, Some(DEAD), AlertMeaning::Undefined),
+            ("recover", Some(DEAD), AlertMeaning::Undefined),
+            ("nudge", Some(DEAD), AlertMeaning::Undefined),
+            ("watchdog-start", Some(DEAD), AlertMeaning::Undefined),
+            ("watchdog-stop", Some(DEAD), AlertMeaning::Undefined),
+        ];
+        for (action, summary, want) in TABLE {
+            assert_eq!(
+                event(action, *summary).alert_meaning(),
+                *want,
+                "{action}: an arm of `alert_meaning` changed under it"
+            );
+        }
+    }
+
     #[test]
     fn sc_510c_an_alert_ref_is_not_pressed_into_service_as_a_typed_reason() {
         // Typed key is unnamed by any row, so `ref` on an alert stays
