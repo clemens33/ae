@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.167] - 2026-09-24
+- Read the measured Opus 5.5 (1M context) label from a claude seat
+- Strip every delivered nudge shape as its own footprint
+
 ## [v2026.9.166] - 2026-09-24
 - Read Opus 5.5 from a claude seat, and no model from a variant ae never measured
 - Name the ended wait in the nudge that follows input in the pane
