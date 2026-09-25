@@ -2564,10 +2564,10 @@ fn claude_and_grok_contexts_are_byte_identical_with_a_meta_only_launch_id() {
         let resumed_with = rig.plan();
         if tool == "claude" {
             // The rig plants no transcript, so the resumed arm takes the
-            // fresh-start fallback — and each `--print` mints the id the real
-            // run would record, an illustrative mint that differs per print.
-            // What is pinned here is everything BUT that word: each plan's
-            // own mint is asserted for shape, then normalized away.
+            // fresh-start fallback — and each `--print` shows an illustrative
+            // mint (the real run mints its own), so two prints differ in that
+            // one word. What is pinned here is everything BUT that word: each
+            // plan's own mint is asserted for shape, then normalized away.
             let without = illustrative_mint(&resumed_without, id);
             let with = illustrative_mint(&resumed_with, id);
             assert_eq!(
