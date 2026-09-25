@@ -189,6 +189,44 @@ fn raw(b: &[u8], i: usize) -> Option<(usize, usize)> {
     (b.get(r + 1 + hashes) == Some(&b'"')).then_some((r + 2 + hashes, hashes))
 }
 
+/// The bytes a char literal at `i` spans: an escape, or one UTF-8 char between
+/// its apostrophes. An apostrophe that is a lifetime or a label consumes
+/// itself only, because a fixed three-byte skip lands on the closing quote of
+/// any longer char, re-opens there and eats the bytes after it — a `//` comment
+/// can lose its opener and the quote pairing inverts.
+fn char_len(b: &[u8], i: usize) -> usize {
+    match b.get(i + 1) {
+        Some(b'\\') => match b.get(i + 2) {
+            Some(b'x') => 6,
+            Some(b'u') if b.get(i + 3) == Some(&b'{') => b[i + 4..]
+                .iter()
+                .position(|&c| c == b'}')
+                .map_or(2, |off| off + 6),
+            _ => 4,
+        },
+        Some(&c) if c < 0x80 => {
+            if b.get(i + 2) == Some(&b'\'') {
+                3
+            } else {
+                1
+            }
+        }
+        Some(&c) => {
+            let width = match c {
+                0xc0..=0xdf => 2,
+                0xe0..=0xef => 3,
+                _ => 4,
+            };
+            if b.get(i + 1 + width) == Some(&b'\'') {
+                1 + width + 1
+            } else {
+                1
+            }
+        }
+        None => 1,
+    }
+}
+
 /// Every string literal in `text`: comments and char literals are skipped, a
 /// raw body is consumed whole, and `\` escapes the byte after it, so a quote
 /// in prose, a `'"'` char or one inside `r#"…"#` opens or ends no literal.
@@ -208,7 +246,7 @@ fn lits(text: &str) -> Vec<Lit<'_>> {
                 i += if open || close { 2 } else { 1 };
             }
         } else if b[i] == b'\'' {
-            i += 3;
+            i += char_len(b, i);
         } else if let Some((start, hashes)) = raw(b, i) {
             let end = (start..b.len())
                 .find(|&j| b[j] == b'"' && (0..hashes).all(|h| b.get(j + 1 + h) == Some(&b'#')))
@@ -319,12 +357,40 @@ fn product_head<'a>(text: &'a str, name: &str) -> Result<&'a str, String> {
 /// (`concat!`, `format!`), escapes the scan.
 #[test]
 fn no_tmux_format_literal_in_src_carries_a_control_character() {
-    let cases = [r##""#{a}\t#{b}""##, r##""#{a}\\t""##, "r\"#{a}\t#{b}\""];
-    let verdicts: Vec<bool> = cases
+    let cases = [
+        r##""#{a}\t#{b}""##,
+        r##""#{a}\\t""##,
+        "r\"#{a}\t#{b}\"",
+        "r#\"#{a}\t#{b}\"#",
+        "'\\n' // \"x\"\n\"#{a}\\t\"",
+        "'é' // \"x\"\n\"#{a}\\t\"",
+        "'\\u{41}' // \"x\"\n\"#{a}\\t\"",
+        "&'a str = \"#{a}\\t\";",
+    ];
+    let verdicts: Vec<(usize, bool)> = cases
         .iter()
-        .map(|s| lits(s).first().is_some_and(|l| control(l.0, l.1)))
+        .map(|s| {
+            let found = lits(s);
+            (
+                found.len(),
+                found.first().is_some_and(|l| control(l.0, l.1)),
+            )
+        })
         .collect();
-    assert_eq!(verdicts, [true, false, true], "scanner self-check");
+    assert_eq!(
+        verdicts,
+        [
+            (1, true),
+            (1, false),
+            (1, true),
+            (1, true),
+            (1, true),
+            (1, true),
+            (1, true),
+            (1, true)
+        ],
+        "scanner self-check"
+    );
     let module = "const A: u8 = 1;\n#[cfg(test)]\nmod tests {\n    fn t() {}\n}\n";
     assert_eq!(
         product_head(module, "self").ok(),
