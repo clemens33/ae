@@ -958,6 +958,18 @@ mod tests {
             Settings::off(Vec::new()),
             "no file, no move"
         );
+        assert!(
+            std::fs::create_dir_all(path).is_ok(),
+            "a directory in the file's place"
+        );
+        let unreadable = settings(Some(path));
+        let _ = std::fs::remove_dir_all(path);
+        assert_eq!(unreadable.switch, Switch::Off);
+        assert!(
+            matches!(&unreadable.notes[..], [note]
+                if note.starts_with("auto reseat stays off: could not read global config: ")),
+            "an unreadable file is named, never read as absent: {unreadable:?}"
+        );
         assert_eq!(settings(None), Settings::off(Vec::new()));
     }
 
