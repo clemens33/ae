@@ -1254,11 +1254,12 @@ needs nothing after a stop; the daemon publishes over it on its way up.
 
 `stop` refuses rather than lies: when the ownership-checked kill of the
 `_watchdog` pane — or of a legacy `_shepherd`/`_loop` pane — is refused, that
-daemon keeps its pidfile and its bars, `stop` audits `refused: …` and exits 1,
-because the daemon may still be running. Each registration follows its own
-verdict: a daemon that did die is cleared and retracted just the same, while
-the session facts (meta flag, unwatched seed, `stopped` line) wait for zero
-refusals anywhere. A lookup that never answers refuses the same way; a pane
+daemon may still be running, so `stop` audits `refused: …` and exits 1. A
+refused `_watchdog` kill keeps its pidfile and its bars; each registration
+otherwise follows its own verdict: a daemon that did die is cleared and
+retracted just the same, while the session facts (meta flag, unwatched seed,
+`stopped` line) wait for zero refusals anywhere. A lookup that never answers
+refuses the same way; a pane
 that vanished between the two reads stops what remains with one `ae:` note.
 `start` aborts with exit 1 when a legacy watchdog it found could not be
 killed, rather than run two side by side.
