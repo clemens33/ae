@@ -126,9 +126,8 @@ fn open(server: &ServerId, source: &str) -> Option<String> {
         },
     ));
     let reader = interpret_pane_id(succeeded, &stdout)?;
-    // The stamp is what makes the pane findable. If it cannot land, the split
-    // is undone and the refusal reported: an unstamped pane would be one the
-    // toggle can never find.
+    // An unstamped pane is one the toggle can never find: undo the split and
+    // report the refusal.
     if !transport::publish_option(
         server,
         OptionScope::Pane,
