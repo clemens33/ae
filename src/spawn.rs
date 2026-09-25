@@ -337,10 +337,11 @@ fn run_spawn_inner(
     // session id, the create-vs-resume decision — is composed by `_run` IN the
     // pane, from this session's own state.
     if let Err(why) = crate::run::clear_slot(dir, slot) {
-        rollback(dir, facts, slot, &pane, &parsed.name, err)?;
+        let verdict = rollback(dir, facts, slot, &pane, &parsed.name, err)?;
+        let tail = rollback_tail(&verdict, &pane, &parsed.name, &facts.session);
         writeln!(
             err,
-            "Error: '{}' could not claim slot {slot} ({why}) — spawn rolled back.",
+            "Error: '{}' could not claim slot {slot} ({why}) {tail}",
             parsed.name
         )?;
         return Ok(EXIT_FAILED);
@@ -373,10 +374,11 @@ fn run_spawn_inner(
         let stored = deliver::store_body(dir, &format!("spawn-{slot}"), SPAWN_ACTION, &initial)
             .and_then(|_| crate::run::publish_prompt(dir, slot, &initial));
         if let Err(why) = stored {
-            rollback(dir, facts, slot, &pane, &parsed.name, err)?;
+            let verdict = rollback(dir, facts, slot, &pane, &parsed.name, err)?;
+            let tail = rollback_tail(&verdict, &pane, &parsed.name, &facts.session);
             writeln!(
                 err,
-                "Error: '{}' task body could not be stored ({why}) — spawn rolled back.",
+                "Error: '{}' task body could not be stored ({why}) {tail}",
                 parsed.name
             )?;
             return Ok(EXIT_FAILED);
@@ -403,11 +405,9 @@ fn run_spawn_inner(
     };
     // RESOLVED, never raw.
     let Some(core) = crate::shape::resolved_exe() else {
-        rollback(dir, facts, slot, &pane, &parsed.name, err)?;
-        writeln!(
-            err,
-            "Error: the core could not name its own binary — spawn rolled back."
-        )?;
+        let verdict = rollback(dir, facts, slot, &pane, &parsed.name, err)?;
+        let tail = rollback_tail(&verdict, &pane, &parsed.name, &facts.session);
+        writeln!(err, "Error: the core could not name its own binary {tail}")?;
         return Ok(EXIT_FAILED);
     };
     // The pane command is pasted into a SHELL, which is the one delivery in ae
@@ -737,11 +737,29 @@ pub(crate) enum RollbackMode {
     Preserve,
 }
 
-fn preserve_teardown(dir: &Path, staged: &StagedSeat, pane: &str, err: &mut impl Write) {
+/// The preserve refusal's pane clause: what the teardown could not remove.
+/// Nothing on a clean kill or an unwritable err.
+fn preserve_clause(
+    outcome: Option<&watchdog_glue::KillOutcome>,
+    pane: &str,
+    name: &str,
+    session: &str,
+) -> Option<String> {
+    let outcome = outcome?;
+    watchdog_glue::refusal_short(outcome, session, Some(name))
+        .map(|short| format!(" The pane {pane} could not be removed ({short})."))
+}
+
+fn preserve_teardown(
+    dir: &Path,
+    staged: &StagedSeat,
+    pane: &str,
+    err: &mut impl Write,
+) -> Option<watchdog_glue::KillOutcome> {
     drop_launch_artifacts(dir, &staged.slot);
     let server = &staged.session.server;
     let session = &staged.session.session;
-    let _ = watchdog_glue::kill_owned_pane(server, pane, session, Some(&staged.argv.name), err);
+    watchdog_glue::kill_owned_pane(server, pane, session, Some(&staged.argv.name), err).ok()
 }
 
 /// One snapshot: fresh dir + provenance + launch id, or a worded failure.
@@ -836,7 +854,7 @@ fn store_brief_or_fallback(
         let stored = deliver::store_body(dir, &reference, SPAWN_ACTION, framed)
             .and_then(|_| crate::run::publish_prompt(dir, &staged.slot, framed));
         if let Err(why) = stored {
-            rollback(
+            let verdict = rollback(
                 dir,
                 &staged.session,
                 &staged.slot,
@@ -844,10 +862,11 @@ fn store_brief_or_fallback(
                 &staged.argv.name,
                 err,
             )?;
+            let tail = rollback_tail(&verdict, pane, &staged.argv.name, &staged.session.session);
             return Ok(Err(CtxFailure {
                 mode: RollbackMode::Full,
                 message: format!(
-                    "Error: '{}' task body could not be stored ({why}) — spawn rolled back.",
+                    "Error: '{}' task body could not be stored ({why}) {tail}",
                     staged.argv.name
                 ),
             }));
@@ -890,11 +909,21 @@ fn spawn_launch_turn_branch(
     );
     let prep = match derive_branch_prep(dir, staged, held) {
         Ok(prep) => prep,
-        Err(failure) => {
+        Err(mut failure) => {
             if failure.mode == RollbackMode::Full {
-                rollback(dir, &staged.session, &staged.slot, pane, name, err)?;
+                let verdict = rollback(dir, &staged.session, &staged.slot, pane, name, err)?;
+                if verdict != RollbackVerdict::Done {
+                    let tail = rollback_tail(&verdict, pane, name, &staged.session.session);
+                    failure.message.push(' ');
+                    failure.message.push_str(&tail);
+                }
             } else {
-                preserve_teardown(dir, staged, pane, err);
+                let outcome = preserve_teardown(dir, staged, pane, err);
+                if let Some(clause) =
+                    preserve_clause(outcome.as_ref(), pane, name, &staged.session.session)
+                {
+                    failure.message.push_str(&clause);
+                }
             }
             return Ok(Err(failure));
         }
@@ -1399,7 +1428,51 @@ fn write_private(path: &Path, text: &str) -> io::Result<()> {
     file.set_permissions(std::fs::Permissions::from_mode(0o600))
 }
 
-/// Undo a spawn whose agent never launched.
+/// What a spawn rollback left behind: the pane verdict AND the seat, so a
+/// leftover never reads as "rolled back".
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RollbackVerdict {
+    /// The pane is gone and the seat is removed.
+    Done,
+    /// The pane is gone but the seat could not be removed (carries the why).
+    SeatKept(String),
+    /// The pane kill was refused, so the seat is kept for a later retire.
+    PaneKept(watchdog_glue::KillOutcome),
+}
+
+/// The rollback's tail line from its verdict: success reads exactly as it
+/// always did, and any leftover reads as NOT fully rolled back — naming the
+/// pane and, on a stamp mismatch, the by-hand remedy instead of a retire
+/// that could not take the pane.
+fn rollback_tail(verdict: &RollbackVerdict, pane: &str, name: &str, session: &str) -> String {
+    match verdict {
+        RollbackVerdict::Done => "— spawn rolled back.".to_owned(),
+        RollbackVerdict::SeatKept(why) => format!(
+            "— spawn failed and was NOT fully rolled back; the pane is gone but the seat of '{name}' is kept ({why}) — remove it with 'retire {name}'."
+        ),
+        RollbackVerdict::PaneKept(outcome) => {
+            let short = watchdog_glue::refusal_short(outcome, session, Some(name))
+                .unwrap_or_else(|| "it could not be removed".to_owned());
+            let head = format!(
+                "— spawn failed and was NOT fully rolled back; pane {pane} could not be removed ({short})."
+            );
+            if matches!(
+                outcome,
+                watchdog_glue::KillOutcome::WrongAgent(_)
+                    | watchdog_glue::KillOutcome::WrongSession(_)
+            ) {
+                format!("{head} The seat is kept; remove the pane by hand, then 'retire {name}'.")
+            } else {
+                format!(
+                    "{head} The seat is kept so 'retire {name}' can retry the removal, and a resume relaunches it until then."
+                )
+            }
+        }
+    }
+}
+
+/// Undo a spawn whose agent never launched: kill first, always drop the
+/// launch artifacts, and remove the seat only when the pane is gone.
 fn rollback(
     dir: &Path,
     facts: &Facts,
@@ -1407,17 +1480,20 @@ fn rollback(
     pane: &str,
     name: &str,
     err: &mut impl Write,
-) -> io::Result<()> {
-    if crate::identity::remove_seat_slot(dir, name).is_err() {
-        writeln!(
-            err,
-            "ae: spawn rollback could not remove the seat of '{name}' ({slot}) — remove it with 'retire'."
-        )?;
-    }
+) -> io::Result<RollbackVerdict> {
+    let outcome =
+        watchdog_glue::kill_owned_pane(&facts.server, pane, &facts.session, Some(name), err)
+            .map_err(|why| std::io::Error::other(why.to_string()))?;
     drop_launch_artifacts(dir, slot);
-    let _ = watchdog_glue::kill_owned_pane(&facts.server, pane, &facts.session, Some(name), err);
+    let verdict = if watchdog_glue::refusal_short(&outcome, &facts.session, Some(name)).is_some() {
+        RollbackVerdict::PaneKept(outcome)
+    } else if let Err(why) = crate::identity::remove_seat_slot(dir, name) {
+        RollbackVerdict::SeatKept(why)
+    } else {
+        RollbackVerdict::Done
+    };
     facts.regenerate_manifest(dir);
-    Ok(())
+    Ok(verdict)
 }
 
 /// The slot's start marker and recorded first message — dead weight once the
@@ -1627,6 +1703,127 @@ mod tests {
             super::retire_remove_failure("", "scout", "cannot take the meta lock: busy"),
             "Error: cannot take the meta lock: busy"
         );
+    }
+
+    // #194 T4: a rollback over a refused kill keeps the seat but still drops
+    // the launch artifacts; the tail names the pane. A dead socket reads
+    // Unreadable with no tmux.
+    #[test]
+    fn rollback_over_a_refused_kill_keeps_the_seat_and_drops_artifacts() {
+        let dir =
+            std::path::PathBuf::from(format!("/tmp/ae-rollbackref.{}.t4", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch dir");
+        std::fs::write(dir.join("meta"), "seat.spawned.0=scout\n").expect("a meta");
+        std::fs::write(dir.join("brief-retry.spawned.0.rec"), "held").expect("a retry record");
+        crate::run::publish_prompt(&dir, "spawned.0", "held brief").expect("a prompt file");
+        let facts = super::Facts {
+            session: "ours".to_owned(),
+            work_dir: String::new(),
+            origin: String::new(),
+            mode: String::new(),
+            main_pane: String::new(),
+            server: crate::inventory::ServerId::Selected(crate::meta::Selector::Socket(
+                dir.join("no-such-socket"),
+            )),
+            global: None,
+            local: None,
+        };
+        let mut err = Vec::new();
+        let verdict = super::rollback(&dir, &facts, "spawned.0", "%99", "scout", &mut err)
+            .expect("a verdict");
+        assert!(
+            matches!(verdict, super::RollbackVerdict::PaneKept(_)),
+            "{verdict:?}"
+        );
+        let meta = std::fs::read_to_string(dir.join("meta")).unwrap_or_default();
+        assert!(meta.contains("seat.spawned.0=scout"), "{meta}");
+        assert!(
+            !crate::run::prompt_file(&dir, "spawned.0").exists(),
+            "the prompt file is dropped"
+        );
+        assert!(
+            !dir.join("brief-retry.spawned.0.rec").exists(),
+            "the retry record is dropped"
+        );
+        let tail = super::rollback_tail(&verdict, "%99", "scout", "ours");
+        assert!(
+            tail.contains("%99") && tail.contains("NOT fully rolled back"),
+            "{tail}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // #194 I4 + N-2: the tail names what the rollback left behind — never
+    // "rolled back" over a leftover, and no retire promise on a stamp
+    // mismatch (an unstamped pane is not retire's to take).
+    #[test]
+    fn rollback_tail_names_what_the_rollback_left_behind() {
+        use super::RollbackVerdict;
+        use crate::watchdog_glue::KillOutcome;
+        let tail = |verdict: &RollbackVerdict| super::rollback_tail(verdict, "%9", "scout", "ours");
+        assert_eq!(tail(&RollbackVerdict::Done), "— spawn rolled back.");
+        for (label, verdict, needles, banned) in [
+            (
+                "seat",
+                RollbackVerdict::SeatKept("locked".to_owned()),
+                vec![
+                    "NOT fully rolled back",
+                    "pane is gone",
+                    "seat of 'scout' is kept",
+                    "locked",
+                    "'retire scout'",
+                ],
+                vec![],
+            ),
+            (
+                "unreadable",
+                RollbackVerdict::PaneKept(KillOutcome::Unreadable),
+                vec![
+                    "NOT fully rolled back",
+                    "%9",
+                    "its owner could not be read",
+                    "retry the removal",
+                ],
+                vec![],
+            ),
+            (
+                "session",
+                RollbackVerdict::PaneKept(KillOutcome::WrongSession("theirs".to_owned())),
+                vec!["theirs", "not 'ours'", "by hand"],
+                vec!["retry the removal"],
+            ),
+            (
+                "agent",
+                RollbackVerdict::PaneKept(KillOutcome::WrongAgent(String::new())),
+                vec!["<unstamped>", "by hand"],
+                vec!["retry the removal"],
+            ),
+        ] {
+            let tail = tail(&verdict);
+            for needle in needles {
+                assert!(tail.contains(needle), "{label}: {tail}");
+            }
+            for ban in banned {
+                assert!(!tail.contains(ban), "{label}: {tail}");
+            }
+        }
+    }
+
+    // #194 N-3: a preserve teardown over a refused kill appends the pane
+    // clause; a clean kill appends nothing.
+    #[test]
+    fn preserve_clause_names_a_refused_pane_only() {
+        use crate::watchdog_glue::KillOutcome;
+        assert_eq!(
+            super::preserve_clause(Some(&KillOutcome::Unreadable), "%9", "scout", "ours"),
+            Some(" The pane %9 could not be removed (its owner could not be read).".to_owned())
+        );
+        assert_eq!(
+            super::preserve_clause(Some(&KillOutcome::Killed), "%9", "scout", "ours"),
+            None
+        );
+        assert_eq!(super::preserve_clause(None, "%9", "scout", "ours"), None);
     }
 
     /// A scratch session dir whose meta carries `token` as the slot's launch
@@ -2593,6 +2790,15 @@ mod tests {
         let (pane, _spelling, held) =
             super::start_spawned_pane(&rig.dir, &staged, "", Timestamp::now(), &mut out, &mut err)
                 .expect("pane starts");
+        // Spawn stamps before the branch; the rig must too, or the kill-first
+        // teardown refuses a pane that was never stamped.
+        super::stamp_pane(
+            &rig.server(),
+            &pane,
+            "scout",
+            &staged.slot,
+            &staged.argv.profile,
+        );
         (rig, staged, held, pane)
     }
 
