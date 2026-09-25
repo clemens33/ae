@@ -1720,3 +1720,72 @@ fn a_failed_body_store_names_the_fallback_file_without_an_empty_body_claim() {
         "and the fallback file is named: {stderr}"
     );
 }
+
+/// #194 B1(a): retiring what is not a spawned seat refuses before any kill —
+/// a fixed worker seat, the monitor panes by id, an unstamped pane by id.
+/// GREEN on main by design: the pins guard the kill-first reorder.
+#[test]
+fn a_retire_of_what_is_not_a_spawned_seat_kills_nothing() {
+    let present = tmux_present(&super::cli::OwnedScratch::root("sp", "probe-b1"));
+    if !present {
+        return;
+    }
+    let rig = Rig::new("retireb1");
+    let (code, _, stderr) = rig.run(ae::cli::SPAWN, &["worker", "--using", "fake", "--", "hi"]);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(
+        ae::meta::rewrite(&rig.dir, "seat.worker.0", Some("fixed")).is_ok(),
+        "a fixed worker seat"
+    );
+    let run = |tail: &[&str]| rig.tmux(tail);
+    let (watchdog, _) = super::refusal_rig::stamped(&run, &rig.session, "_watchdog");
+    let (events, _) = super::refusal_rig::stamped(&run, &rig.session, "_events");
+    let bare = run(&[
+        "split-window",
+        "-d",
+        "-t",
+        &rig.session,
+        "-P",
+        "-F",
+        "#{pane_id}",
+        "sleep",
+        "60",
+    ])
+    .1
+    .trim()
+    .to_owned();
+    assert!(!bare.is_empty(), "the unstamped pane has an id");
+    let panes_before = rig.panes().len();
+    let windows_before = rig.windows().len();
+    let events_before = rig.events();
+    for (target, needle) in [
+        ("fixed", "launch seat"),
+        (watchdog.as_str(), "no seat is named '_watchdog'"),
+        (events.as_str(), "no seat is named '_events'"),
+        (bare.as_str(), "no seat is named ''"),
+    ] {
+        let (code, stdout, stderr) = rig.run(ae::cli::RETIRE, &[target]);
+        assert_eq!(code, Some(1), "retire {target}: {stdout}\n{stderr}");
+        assert!(stderr.contains(needle), "retire {target}: {stderr}");
+        assert_eq!(
+            rig.panes().len(),
+            panes_before,
+            "retire {target} kills nothing"
+        );
+        assert_eq!(
+            rig.windows().len(),
+            windows_before,
+            "retire {target} closes nothing"
+        );
+    }
+    for pane in [&watchdog, &events, &bare] {
+        assert!(
+            rig.panes().iter().any(|row| &row.0 == pane),
+            "pane {pane} survives"
+        );
+    }
+    let meta = rig.meta();
+    assert!(meta.contains("seat.spawned.0=worker"), "{meta}");
+    assert!(meta.contains("seat.worker.0=fixed"), "{meta}");
+    assert_eq!(rig.events(), events_before, "no retire event");
+}

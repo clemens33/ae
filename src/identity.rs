@@ -868,16 +868,14 @@ fn remove_seat(
     }
 }
 
-/// Drop every line the seat named `name` owns and return its slot — the
-/// decision half of `remove-seat`, as a value.
+/// Prove the seat named `name` may be removed and return its slot — pure,
+/// so a kill-first retire asks it before any mutation. Only a spawned seat
+/// is removable; a launch seat belongs to `ae end`.
 ///
 /// # Errors
 ///
-/// The refusal: an unknown name, a launch seat, an unwritable meta.
-pub fn remove_seat_slot(dir: &Path, name: &str) -> Result<String, String> {
-    let _held = meta::lock(dir).map_err(|why| format!("cannot take the meta lock: {why}"))?;
-    let text = text_of(dir)?;
-    let current = Meta::parse(&text);
+/// The refusal: an unknown name or a launch seat.
+pub fn removable_slot(current: &Meta, name: &str) -> Result<String, String> {
     let Some(slot) = current
         .roster()
         .iter()
@@ -891,6 +889,20 @@ pub fn remove_seat_slot(dir: &Path, name: &str) -> Result<String, String> {
             "cannot retire '{name}' ({slot}) — it is a launch seat the workspace promised, not a spawned one; use 'ae end' to end the session."
         ));
     }
+    Ok(slot)
+}
+
+/// Drop every line the seat named `name` owns and return its slot — the
+/// decision half of `remove-seat`, as a value.
+///
+/// # Errors
+///
+/// The refusal: an unknown name, a launch seat, an unwritable meta.
+pub fn remove_seat_slot(dir: &Path, name: &str) -> Result<String, String> {
+    let _held = meta::lock(dir).map_err(|why| format!("cannot take the meta lock: {why}"))?;
+    let text = text_of(dir)?;
+    let current = Meta::parse(&text);
+    let slot = removable_slot(&current, name)?;
     let suffix = format!(".{slot}");
     let mut next = String::new();
     for row in records(&text) {
@@ -2295,5 +2307,37 @@ mod tests {
                 .to_owned()
         );
         assert_eq!(scratch.meta(), before, "the meta moved on a refusal");
+    }
+
+    // #194 B1(a): only a spawned seat is removable; the proof is pure so the
+    // kill-first retire asks it before any mutation.
+    #[test]
+    fn removable_slot_proves_only_spawned_seats() {
+        let meta =
+            crate::meta::Meta::parse("seat.main=lead\nseat.worker.0=fixed\nseat.spawned.1=scout\n");
+        for (name, want) in [
+            ("scout", Ok("spawned.1")),
+            ("ghost", Err("no seat is named 'ghost' in this session.")),
+            (
+                "lead",
+                Err(
+                    "cannot retire 'lead' (main) — it is a launch seat the workspace promised, \
+                     not a spawned one; use 'ae end' to end the session.",
+                ),
+            ),
+            (
+                "fixed",
+                Err(
+                    "cannot retire 'fixed' (worker.0) — it is a launch seat the workspace promised, \
+                     not a spawned one; use 'ae end' to end the session.",
+                ),
+            ),
+        ] {
+            assert_eq!(
+                super::removable_slot(&meta, name),
+                want.map(str::to_owned).map_err(str::to_owned),
+                "row {name}"
+            );
+        }
     }
 }
