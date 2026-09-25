@@ -5548,10 +5548,24 @@ fn a_replaced_managed_work_refuses_the_retry() {
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
 
     kill_at_boundary(&rig, old, new, "after-work-move");
-    // Swap the moved tree for a same-spelling replacement.
+    // Swap the moved tree for a same-spelling replacement. The replacement is
+    // built as a sibling while the original lives, so its identity provably
+    // differs: two live directories under one parent, never one (dev, ino).
+    // (#191: the (dev, ino) witness itself is recyclable on Linux once the
+    // original is gone, so a remove-then-create plants no certain replacement.)
+    let spare = rig.home.join("worktrees").join(format!("{new}-spare"));
+    assert!(std::fs::create_dir_all(&spare).is_ok());
+    assert!(std::fs::write(spare.join("replacement"), "not the session\n").is_ok());
+    let moved = std::fs::metadata(&new_work).expect("the moved work stats");
+    let replacement = std::fs::metadata(&spare).expect("the replacement stats");
+    assert_eq!(moved.dev(), replacement.dev(), "same parent, same device");
+    assert_ne!(
+        moved.ino(),
+        replacement.ino(),
+        "the replacement is a distinct directory"
+    );
     assert!(std::fs::remove_dir_all(&new_work).is_ok());
-    assert!(std::fs::create_dir_all(&new_work).is_ok());
-    assert!(std::fs::write(new_work.join("replacement"), "not the session\n").is_ok());
+    assert!(std::fs::rename(&spare, &new_work).is_ok());
 
     let (code, _, stderr) = public(&rig, &[ae::cli::RENAME, old, new]);
     assert_eq!(code, Some(1), "{stderr}");
