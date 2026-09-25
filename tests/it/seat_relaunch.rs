@@ -457,6 +457,17 @@ impl Rig {
         self.mark(pane, "__LIMIT__", "hit your session limit");
     }
 
+    /// Take the limit row away again, and the frames above it: a redraw leaves
+    /// the old frame in the pane's history, where the watchdog would still
+    /// read the row.
+    pub fn unmark_limited(&self, pane: &str) {
+        assert!(std::fs::remove_file(self.scratch.join("__LIMIT__")).is_ok());
+        let pid = self.tool_pid(pane, "claude");
+        let pid = pid.unwrap_or_else(|| panic!("the frame-drawing fake runs in {pane}"));
+        self.wait_drawn(pane, pid, Some("done (0s)"));
+        assert!(self.tmux(&["clear-history", "-t", pane]).0);
+    }
+
     /// The same, for a human's half-typed draft in the box.
     pub fn mark_draft(&self, pane: &str) {
         self.mark(pane, "__DRAFT__", "half a sentence");

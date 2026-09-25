@@ -12212,8 +12212,8 @@ mod tests {
     /// While an auto reseat attempt runs, its respawn leaves a shell where the
     /// seat's tool was. That shell is the move, not a death and not a cleared
     /// limit: the verdict stays `limit`, nothing is booked, the latch holds —
-    /// and a limit row still drawn books no second `limit`. Out of flight the
-    /// same frames read as they always have.
+    /// and a limit row still drawn books no second `limit`. A restarted daemon
+    /// latches it again. Out of flight the same frames read as they always have.
     #[test]
     fn a_seat_mid_auto_reseat_keeps_its_limit_through_the_shell_the_move_leaves() {
         let knobs = Knobs::default();
@@ -12243,6 +12243,19 @@ mod tests {
             assert_eq!(cycle.next.limit_since, Some(since), "the latch holds");
             assert!(!cycle.next.dead_latched, "no death latched");
         }
+        // A daemon restarted mid-move holds no latch: the journal's open
+        // attempt is what it reads, so the shell latches the limit again.
+        let restarted = account(
+            &PaneState::default(),
+            &Observation {
+                auto_in_flight: true,
+                ..shell.clone()
+            },
+            &knobs,
+        );
+        assert_eq!(restarted.verdict, Verdict::Limit);
+        assert_eq!(actions(&restarted.effects), ["limit"]);
+        assert!(!restarted.next.dead_latched, "no death latched");
         let dead = account(&latched, &shell, &knobs);
         assert_eq!(dead.verdict, Verdict::Dead);
         assert_eq!(actions(&dead.effects), ["alert"]);

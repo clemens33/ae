@@ -12,6 +12,7 @@
 )]
 
 use std::io::Write as _;
+use std::time::{Duration, Instant};
 
 use ae::autoreseat::{
     ATTEMPT_ACTION, DONE_ACTION, Decision, FAILED_ACTION, Frame, HELD_ACTION, Outcome, Pane,
@@ -61,11 +62,16 @@ fn configure(rig: &Rig, switch: &str, to: &str) {
 
 /// Append one watchdog record addressed to the seat, stamped [`KEY`].
 fn journal(rig: &Rig, action: &str, reference: Option<&str>) {
+    journal_at(rig, KEY, action, reference);
+}
+
+/// The same, stamped `ts`.
+fn journal_at(rig: &Rig, ts: &str, action: &str, reference: Option<&str>) {
     let reference = reference
         .map(|value| format!(r#","ref":"{value}""#))
         .unwrap_or_default();
     let line = format!(
-        r#"{{"ts":"{KEY}","actor":"watchdog","action":"{action}","target":"scout","target_slot":"spawned.0","target_session":"{}"{reference}}}"#,
+        r#"{{"ts":"{ts}","actor":"watchdog","action":"{action}","target":"scout","target_slot":"spawned.0","target_session":"{}"{reference}}}"#,
         rig.session
     );
     let appended = std::fs::OpenOptions::new()
@@ -319,4 +325,258 @@ fn a_switch_turned_off_between_the_legs_holds_and_the_retry_moves_once_it_is_on(
     );
     assert_eq!(rig.meta_row("profile.spawned.0"), "fake-opencode");
     one_outcome(&rig, DONE_ACTION);
+}
+
+/// How long one live daemon run may take before the pin fails rather than hangs.
+const BUDGET: Duration = Duration::from_secs(60);
+
+/// The global config that turns the path on with no grace, so a seat is due at
+/// its limit's first sight.
+const ON_NOW: &str = "on\nauto_reseat_grace_secs = 0";
+
+/// Run the session's REAL watchdog until `done` holds, delivering through the
+/// session's real `send` link. Its HOME is the scratch's own, so nothing it
+/// reads is a real account.
+fn watch_until(rig: &Rig, done: impl Fn() -> bool) -> bool {
+    let send = rig.dir.join("send");
+    if !send.exists() {
+        assert!(
+            std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_ae"), &send).is_ok(),
+            "the send link"
+        );
+    }
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(rig.scratch.join("daemon-err"));
+    let mut runner = super::cli::ae();
+    runner
+        .arg("_watchdog-run")
+        .arg(&rig.dir)
+        .args(["--interval", "1", "--stale-secs", "999999"])
+        .args(["--tg-supervise-secs", "0"])
+        .env("HOME", rig.scratch.join("home"))
+        .env("AE_HOME", &rig.scratch)
+        .env("CONFIG_FILE", rig.scratch.join("config"))
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
+        .env_remove("AE_SENDER_OVERRIDE")
+        .stdout(std::process::Stdio::null());
+    if let Ok(log) = log {
+        runner.stderr(log);
+    }
+    let _daemon = runner.spawn().expect("the daemon starts");
+    let deadline = Instant::now() + BUDGET;
+    while Instant::now() < deadline {
+        if done() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    false
+}
+
+/// What the daemons said on their error stream, for a failure message.
+fn daemon_err(rig: &Rig) -> String {
+    std::fs::read_to_string(rig.scratch.join("daemon-err")).unwrap_or_default()
+}
+
+/// The seat's own records, in journal order.
+fn seat_records(rig: &Rig) -> Vec<Event> {
+    records(rig)
+        .into_iter()
+        .filter(|event| {
+            ae::watchdog::event_is_addressed_to(event, &rig.session, "spawned.0", "scout")
+        })
+        .collect()
+}
+
+/// How many `action` records the seat has.
+fn booked(rig: &Rig, action: &str) -> usize {
+    with_action(&seat_records(rig), action).len()
+}
+
+/// The seat's records of the auto path, as `(action, ref)`.
+fn auto_path(rig: &Rig) -> Vec<(String, String)> {
+    seat_records(rig)
+        .into_iter()
+        .filter(|event| event.action.starts_with(ATTEMPT_ACTION))
+        .map(|event| (event.action, event.reference.unwrap_or_default()))
+        .collect()
+}
+
+/// THE PATH END TO END: the watchdog books the seat's limit and triggers
+/// through the one `send`; the trigger opens ONE attempt and starts the leg;
+/// the leg moves the seat. The shell the move leaves is no death and no release.
+#[test]
+fn a_seat_on_its_limit_is_moved_once_by_the_watchdog_with_no_death_between() {
+    let rig = Rig::new("automove");
+    configure(&rig, ON_NOW, "fake-opencode");
+    let pane = rig.seat("spawned.0", "scout", "claude");
+    rig.mark_limited(&pane);
+
+    let moved = watch_until(&rig, || booked(&rig, DONE_ACTION) == 1);
+
+    assert!(moved, "no move: {}\n{}", rig.events(), daemon_err(&rig));
+    assert_eq!(rig.meta_row("profile.spawned.0"), "fake-opencode");
+    assert!(rig.tool_pid(&pane, "opencode").is_some(), "moved in place");
+    let ours = seat_records(&rig);
+    let at = |action: &str| ours.iter().position(|event| event.action == action);
+    let (Some(limit), Some(attempt), Some(done)) =
+        (at("limit"), at(ATTEMPT_ACTION), at(DONE_ACTION))
+    else {
+        panic!("limit, attempt and move: {}", rig.events());
+    };
+    assert!(limit < attempt && attempt < done, "{}", rig.events());
+    assert_eq!(booked(&rig, ATTEMPT_ACTION), 1, "one attempt");
+    assert_eq!(ours[attempt].actor, "watchdog");
+    assert_eq!(
+        ours[attempt].reference.as_deref(),
+        Some(ours[limit].ts.to_string().as_str()),
+        "the attempt names its episode"
+    );
+    assert_eq!(
+        ours[attempt].summary.as_deref(),
+        Some("from fake-claude to fake-opencode")
+    );
+    let between: Vec<&str> = ours[attempt..done]
+        .iter()
+        .map(|event| event.action.as_str())
+        .collect();
+    assert!(
+        !between.contains(&"alert") && !between.contains(&"alert-cleared"),
+        "{between:?}"
+    );
+}
+
+/// OFF IS INERT: with the switch absent, and then written `off`, the watchdog
+/// books and releases a limit exactly as it always has, and nothing of the
+/// auto path runs — no record, no lock, no move.
+#[test]
+fn with_the_switch_absent_or_off_a_limit_is_booked_and_released_as_it_always_was() {
+    let rig = Rig::new("autooff");
+    let pane = rig.seat("spawned.0", "scout", "claude");
+    for (round, switch) in [(1, None), (2, Some("off\nauto_reseat_grace_secs = 0"))] {
+        if let Some(switch) = switch {
+            configure(&rig, switch, "fake-opencode");
+        }
+        rig.mark_limited(&pane);
+        let since = Instant::now();
+        let shown = std::cell::Cell::new(true);
+        let released = watch_until(&rig, || {
+            if shown.get()
+                && booked(&rig, "limit") == round
+                && since.elapsed() > Duration::from_secs(4)
+            {
+                rig.unmark_limited(&pane);
+                shown.set(false);
+            }
+            booked(&rig, "alert-cleared") == round
+        });
+        assert!(
+            released,
+            "round {round}: {}\n{}",
+            rig.events(),
+            daemon_err(&rig)
+        );
+    }
+    assert!(auto_path(&rig).is_empty(), "{}", rig.events());
+    assert!(
+        !rig.dir.join("auto-reseat.spawned.0.lock").exists(),
+        "no writer of the path ran"
+    );
+    untouched(&rig, &pane);
+}
+
+/// A refusal ends the episode's auto path for good: a second daemon on the
+/// same journal books the limit again, and attempts and refuses nothing more.
+#[test]
+fn a_refused_episode_stays_refused_across_a_daemon_restart() {
+    let rig = Rig::new("autorefuse");
+    configure(&rig, ON_NOW, "ghost");
+    let pane = rig.seat("spawned.0", "scout", "claude");
+    rig.mark_limited(&pane);
+    let refused = watch_until(&rig, || booked(&rig, REFUSED_ACTION) == 1);
+    assert!(refused, "{}\n{}", rig.events(), daemon_err(&rig));
+
+    let since = Instant::now();
+    let rebooked = watch_until(&rig, || {
+        booked(&rig, "limit") == 2 && since.elapsed() > Duration::from_secs(4)
+    });
+
+    assert!(rebooked, "{}\n{}", rig.events(), daemon_err(&rig));
+    let key = seat_records(&rig)
+        .iter()
+        .find(|event| event.action == "limit")
+        .map(|event| event.ts.to_string())
+        .unwrap_or_default();
+    assert_eq!(
+        auto_path(&rig),
+        [(REFUSED_ACTION.to_owned(), key)],
+        "no attempt, one refusal"
+    );
+    untouched(&rig, &pane);
+}
+
+/// An attempt in flight belongs to its leg, even across a daemon restart: the
+/// shell its respawn leaves is neither a death nor a release, and nothing is
+/// attempted or held beside it.
+#[test]
+fn an_attempt_in_flight_survives_a_daemon_restart_with_no_death_and_no_repeat() {
+    let rig = Rig::new("autoflight");
+    configure(&rig, ON_NOW, "fake-opencode");
+    let pane = rig.seat("spawned.0", "scout", "claude");
+    let key = Timestamp::now().to_string();
+    journal_at(&rig, &key, "limit", None);
+    journal_at(&rig, &key, ATTEMPT_ACTION, Some(&key));
+    rig.kill_tools(&pane);
+
+    let since = Instant::now();
+    let watched = watch_until(&rig, || since.elapsed() > Duration::from_secs(5));
+
+    assert!(watched);
+    assert_eq!(booked(&rig, "alert"), 0, "no death: {}", rig.events());
+    assert_eq!(booked(&rig, "alert-cleared"), 0, "no release");
+    assert_eq!(booked(&rig, "limit"), 2, "the limit latched again");
+    assert_eq!(auto_path(&rig), [(ATTEMPT_ACTION.to_owned(), key)]);
+}
+
+/// A forged trigger does only what the watchdog would do now: a seat not on
+/// its limit, or a switch that is off, declines, and nothing is written, sent
+/// or moved.
+#[test]
+fn a_forged_trigger_moves_nothing_the_watchdog_would_not() {
+    let rig = Rig::new("autoforge");
+    configure(&rig, ON_NOW, "fake-opencode");
+    let pane = rig.seat("spawned.0", "scout", "claude");
+    let forge = || {
+        let at = format!("@{}", rig.session);
+        let out = super::cli::ae()
+            .args([at.as_str(), "send", "scout", "auto reseat"])
+            .env("TMUX", format!("{},0,0", rig.sock.display()))
+            .env("TMUX_PANE", &rig.main_pane)
+            .env("AE_HOME", &rig.scratch)
+            .env("AE_SENDER_OVERRIDE", "watchdog")
+            .env("_AE_EVENT_ACTION", ATTEMPT_ACTION)
+            .output()
+            .expect("the ae binary runs");
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    let before = rig.events();
+    let (code, err) = forge();
+    assert_eq!(code, Some(1), "{err}");
+    assert_eq!(rig.events(), before, "not on its limit: nothing written");
+
+    rig.mark_limited(&pane);
+    journal(&rig, "limit", None);
+    configure(&rig, "off", "fake-opencode");
+    let before = rig.events();
+    let (code, err) = forge();
+    assert_eq!(code, Some(1), "{err}");
+    assert_eq!(rig.events(), before, "switched off: nothing written");
+    assert!(!rig.received().contains("auto reseat"), "nothing sent");
+    untouched(&rig, &pane);
 }
