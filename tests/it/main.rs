@@ -8,6 +8,7 @@ mod archive;
 mod archive_from;
 mod archive_publish;
 mod archive_purge;
+mod autoreseat;
 mod board;
 mod brief;
 mod brief_retry;
