@@ -1738,6 +1738,9 @@ fn a_retire_of_what_is_not_a_spawned_seat_kills_nothing() {
         "a fixed worker seat"
     );
     let run = |tail: &[&str]| rig.tmux(tail);
+    // b1-1: the fixed seat holds a live pane, so the pin discriminates the
+    // proof-before-kill order (no proof → this pane dies).
+    let (fixed_pane, _) = super::refusal_rig::stamped(&run, &rig.session, "fixed");
     let (watchdog, _) = super::refusal_rig::stamped(&run, &rig.session, "_watchdog");
     let (events, _) = super::refusal_rig::stamped(&run, &rig.session, "_events");
     let bare = run(&[
@@ -1778,7 +1781,7 @@ fn a_retire_of_what_is_not_a_spawned_seat_kills_nothing() {
             "retire {target} closes nothing"
         );
     }
-    for pane in [&watchdog, &events, &bare] {
+    for pane in [&fixed_pane, &watchdog, &events, &bare] {
         assert!(
             rig.panes().iter().any(|row| &row.0 == pane),
             "pane {pane} survives"
@@ -1788,4 +1791,85 @@ fn a_retire_of_what_is_not_a_spawned_seat_kills_nothing() {
     assert!(meta.contains("seat.spawned.0=worker"), "{meta}");
     assert!(meta.contains("seat.worker.0=fixed"), "{meta}");
     assert_eq!(rig.events(), events_before, "no retire event");
+}
+
+/// #194 T5 + residual 5 (ruling 1g I-0): a retire over a refused kill exits 1
+/// with the seat intact, and a retire that cannot enumerate its panes refuses
+/// before any mutation. RED on main: exit 0 + `Retired`.
+#[test]
+fn a_retire_over_a_refused_kill_or_a_silent_server_keeps_its_seat() {
+    let present = tmux_present(&super::cli::OwnedScratch::root("sp", "probe-t5"));
+    if !present {
+        return;
+    }
+    // Phase 1: the worker window linked into a later session, so the
+    // ownership probe answers `t5theirs` and the kill refuses WrongSession.
+    let rig = Rig::new("retiret5");
+    let (code, _, stderr) = rig.run(ae::cli::SPAWN, &["worker", "--using", "fake", "--", "hi"]);
+    assert_eq!(code, Some(0), "{stderr}");
+    let worker_pane = rig
+        .panes()
+        .into_iter()
+        .find(|(_, slot, _)| slot == "spawned.0")
+        .map(|row| row.0)
+        .unwrap_or_default();
+    assert!(!worker_pane.is_empty(), "the worker pane");
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    assert!(
+        rig.tmux(&["new-session", "-d", "-s", "t5theirs", "sleep", "60"])
+            .0,
+        "the later session"
+    );
+    let window = format!("{}:worker", rig.session);
+    assert!(
+        rig.tmux(&["link-window", "-d", "-s", &window, "-t", "t5theirs:"])
+            .0,
+        "link {window}"
+    );
+    let panes_before = rig.panes().len();
+    let meta_before = rig.meta();
+    let events_before = rig.events();
+    let (code, stdout, stderr) = rig.run(ae::cli::RETIRE, &["worker"]);
+    assert_eq!(code, Some(1), "phase 1 retire worker: {stdout}\n{stderr}");
+    assert!(
+        stderr.contains(&worker_pane) && stderr.contains("t5theirs"),
+        "phase 1 retire worker: {stderr}"
+    );
+    assert!(
+        stderr.contains("seat is kept"),
+        "phase 1 retire worker: {stderr}"
+    );
+    assert!(!stdout.contains("Retired"), "{stdout}");
+    assert_eq!(rig.panes().len(), panes_before, "the refused pane lives");
+    assert_eq!(rig.meta(), meta_before, "the seat rows stay");
+    assert_eq!(rig.events(), events_before, "no retire event");
+    // Phase 2: the session gone with the server up — the enumeration fails
+    // and the retire refuses before touching roster or artifacts.
+    let rig = Rig::new("retirei0");
+    let (code, _, stderr) = rig.run(ae::cli::SPAWN, &["worker", "--using", "fake", "--", "hi"]);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(
+        rig.tmux(&["new-session", "-d", "-s", "i0keeper", "sleep", "60"])
+            .0,
+        "the keeper session"
+    );
+    assert!(
+        rig.tmux(&["kill-session", "-t", &rig.session]).0,
+        "the session dies"
+    );
+    ae::run::publish_prompt(&rig.dir, "spawned.0", "a held brief").expect("a prompt file");
+    let prompt = ae::run::prompt_file(&rig.dir, "spawned.0");
+    let meta_before = rig.meta();
+    let events_before = rig.events();
+    let (code, stdout, stderr) = rig.run(ae::cli::RETIRE, &["worker"]);
+    assert_eq!(code, Some(1), "phase 2 retire worker: {stdout}\n{stderr}");
+    assert!(
+        stderr.contains(&rig.session) && stderr.contains("nothing was retired"),
+        "phase 2 retire worker: {stderr}"
+    );
+    assert!(stderr.contains("resume"), "phase 2 retire worker: {stderr}");
+    assert!(!stdout.contains("Retired"), "{stdout}");
+    assert_eq!(rig.meta(), meta_before, "the roster stays");
+    assert_eq!(rig.events(), events_before, "no retire event");
+    assert!(prompt.is_file(), "the prompt file stays");
 }

@@ -892,6 +892,18 @@ pub fn removable_slot(current: &Meta, name: &str) -> Result<String, String> {
     Ok(slot)
 }
 
+/// Prove the seat named `name` may be removed — the lockless read half of
+/// [`remove_seat_slot`], for a kill-first retire to ask before any mutation.
+/// Reads what [`remove_seat_slot`] reads and words failures the same way.
+///
+/// # Errors
+///
+/// The refusal: an unknown name, a launch seat, an unreadable meta.
+pub fn prove_removable(dir: &Path, name: &str) -> Result<String, String> {
+    let text = text_of(dir)?;
+    removable_slot(&Meta::parse(&text), name)
+}
+
 /// Drop every line the seat named `name` owns and return its slot — the
 /// decision half of `remove-seat`, as a value.
 ///

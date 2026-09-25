@@ -1432,6 +1432,58 @@ fn drop_launch_artifacts(dir: &Path, slot: &str) {
 
 // ---- retire ---------------------------------------------------------------
 
+/// The session's pane listing for a retire — or the refusal when the
+/// enumeration failed, which exits before any mutation.
+fn retire_listing(
+    facts: &Facts,
+    target: &str,
+    err: &mut impl Write,
+) -> io::Result<Option<Vec<crate::tmux::ObservedAgent>>> {
+    let Some(panes) = transport::observe_agents(&facts.server, &facts.session) else {
+        writeln!(
+            err,
+            "Error: could not enumerate the panes of '{}' — nothing was retired and its pane may still be running; resume the session, then retry 'retire {target}'.",
+            facts.session
+        )?;
+        return Ok(None);
+    };
+    Ok(Some(panes))
+}
+
+/// Kill the retire target's pane: true when the kill was refused and
+/// reported, so the caller keeps the seat and exits.
+fn kill_retire_pane(
+    facts: &Facts,
+    pane: &str,
+    agent: &str,
+    err: &mut impl Write,
+) -> io::Result<bool> {
+    let outcome =
+        watchdog_glue::kill_owned_pane(&facts.server, pane, &facts.session, Some(agent), err)
+            .map_err(|why| std::io::Error::other(why.to_string()))?;
+    if let Some(short) = watchdog_glue::refusal_short(&outcome, &facts.session, Some(agent)) {
+        writeln!(
+            err,
+            "Error: could not remove pane {pane} ({short}) — the seat is kept, retry 'retire {agent}'."
+        )?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+/// The line when the seat removal failed after its pane was already Killed:
+/// the reader must know the pane is gone. With no pane there is nothing to
+/// say beyond the failure itself.
+fn retire_remove_failure(pane: &str, name: &str, why: &str) -> String {
+    if pane.is_empty() {
+        format!("Error: {why}")
+    } else {
+        format!(
+            "Error: pane {pane} was removed but the seat of '{name}' was not ({why}) — remove it with 'retire {name}'."
+        )
+    }
+}
+
 /// `_retire <meta-dir> <name|%pane>`.
 ///
 /// # Errors
@@ -1458,7 +1510,9 @@ pub fn run_retire(
             return Ok(EXIT_FAILED);
         }
     };
-    let panes = transport::observe_agents(&facts.server, &facts.session).unwrap_or_default();
+    let Some(panes) = retire_listing(&facts, target, err)? else {
+        return Ok(EXIT_FAILED);
+    };
     let (resolved, agent) = if let Some(pane) = target.strip_prefix('%') {
         let id = format!("%{pane}");
         let Some(found) = panes.iter().find(|row| row.pane == id) else {
@@ -1490,22 +1544,20 @@ pub fn run_retire(
             .find(|entry| entry.name == agent)
             .cloned()
     });
+    if let Err(why) = crate::identity::prove_removable(dir, &agent) {
+        writeln!(err, "Error: {why}")?;
+        return Ok(EXIT_FAILED);
+    }
+    if !resolved.is_empty() && kill_retire_pane(&facts, &resolved, &agent, err)? {
+        return Ok(EXIT_FAILED);
+    }
     let slot = match crate::identity::remove_seat_slot(dir, &agent) {
         Ok(slot) => slot,
         Err(why) => {
-            writeln!(err, "Error: {why}")?;
+            writeln!(err, "{}", retire_remove_failure(&resolved, &agent, &why))?;
             return Ok(EXIT_FAILED);
         }
     };
-    if !resolved.is_empty() {
-        let _ = watchdog_glue::kill_owned_pane(
-            &facts.server,
-            &resolved,
-            &facts.session,
-            Some(&agent),
-            err,
-        );
-    }
     drop_launch_artifacts(dir, &slot);
     // No layout rebalance: the worker lived in its own window, so killing the
     // pane closed that window and the main window's layout was never touched.
@@ -1561,6 +1613,21 @@ mod tests {
     use super::{BriefRecovery, Undelivered, drop_launch_artifacts, record_for_retry};
     use crate::time::Timestamp;
     use std::os::unix::fs::PermissionsExt as _;
+
+    // #194 I-2: after a Killed pane, a seat-removal failure must say the pane
+    // is gone; with no pane there is nothing to say beyond the failure.
+    #[test]
+    fn retire_remove_failure_names_the_gone_pane() {
+        assert_eq!(
+            super::retire_remove_failure("%7", "scout", "cannot take the meta lock: busy"),
+            "Error: pane %7 was removed but the seat of 'scout' was not (cannot take the meta \
+             lock: busy) — remove it with 'retire scout'."
+        );
+        assert_eq!(
+            super::retire_remove_failure("", "scout", "cannot take the meta lock: busy"),
+            "Error: cannot take the meta lock: busy"
+        );
+    }
 
     /// A scratch session dir whose meta carries `token` as the slot's launch
     /// id, or no token row at all when it is empty.
