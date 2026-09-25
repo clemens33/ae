@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.171] - 2026-09-25
+- Rebuild the ae package before the Linux container gate runs (#190)
+- Use --locked clean and rewrap the Linux lane sentence (#190)
+- Drop apostrophes inside the Linux lane container quote (#190)
+- Gate the stamp-hold tests on the shipped target pair (#188)
+- Expect the exec-fallback tmux in the no-environment version test (#186)
+- Parse list-keys through the product reader in the binding tests (#186)
+- Plant a provably distinct replacement in the retry test (#186)
+- Nest the uuid guard for the tmux 3.4 floor (#186)
+- Read the usage limit only from the tool's own notice row
+- Let a usage limit first seen after a quiet declaration take the bar
+- Let a standing usage limit replace the declared reason in ae list
+- Document where the usage limit is read and when it outranks a declaration
+- Name the usage-limit notice row and its declaration rule in AGENTS.md
+- Pin that a seat back from the dead starts a new limit episode
+
 ## [v2026.9.170] - 2026-09-25
 - Run the gate in a local Linux container
 - Watch each dispatched seat until its frame reads idle, and skip the seat running compact itself
