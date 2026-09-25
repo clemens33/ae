@@ -369,9 +369,22 @@ fn the_doors_carry_the_facts_and_the_argv_is_the_users_alone() {
     assert!(!rig.config().exists(), "a version query created state");
 }
 
+/// Whether `path` is an executable file the exec search could run.
+fn is_runnable(path: &Path) -> bool {
+    std::fs::metadata(path).is_ok_and(|meta| meta.is_file() && meta.mode() & 0o111 != 0)
+}
+
 /// `version` answers AHEAD of every gate, including the doors themselves.
 #[test]
 fn version_answers_with_no_environment_at_all() {
+    // With no PATH the exec search falls back to libc's default path, which
+    // HOLDS a tmux on Ubuntu (glibc confstr _CS_PATH `/bin:/usr/bin`) but not
+    // on macOS (default `/usr/bin:/bin`, Homebrew lives elsewhere — and
+    // `/usr/local/bin` is musl's default, which macOS execvp skips). Probe in
+    // confstr order so the found branch names the binary the child finds.
+    let fallback = ["/bin", "/usr/bin"]
+        .into_iter()
+        .find(|dir| is_runnable(&Path::new(dir).join("tmux")));
     for word in ["version", "--version", "-V"] {
         let out = ae()
             .env_clear()
@@ -384,17 +397,42 @@ fn version_answers_with_no_environment_at_all() {
             stdout.starts_with(&format!("{}\n", ae::version_line())),
             "{word}: {stdout}"
         );
-        // No PATH at all, so no tmux can be run: the floor line reports that
-        // rather than failing the word that has to answer everywhere.
+        let Some(dir) = fallback else {
+            // No PATH at all, so no tmux can be run: the floor line reports that
+            // rather than failing the word that has to answer everywhere.
+            assert!(
+                stdout
+                    .lines()
+                    .nth(1)
+                    .unwrap_or_default()
+                    .starts_with("tmux not found"),
+                "{word}: {stdout}"
+            );
+            assert!(out.stderr.is_empty(), "{word}");
+            continue;
+        };
+        let probed = ae()
+            .env_clear()
+            .env("PATH", dir)
+            .arg(word)
+            .output()
+            .unwrap_or_else(|why| panic!("the ae binary should run: {why}"));
+        let probed_stdout = String::from_utf8_lossy(&probed.stdout).into_owned();
+        let bare = stdout.lines().nth(1).unwrap_or_default();
+        let via_path = probed_stdout.lines().nth(1).unwrap_or_default();
+        assert_eq!(
+            bare, via_path,
+            "{word}: no PATH must find the same tmux as PATH={dir}"
+        );
+        let version = bare.split_whitespace().nth(1).unwrap_or_default();
         assert!(
-            stdout
-                .lines()
-                .nth(1)
-                .unwrap_or_default()
-                .starts_with("tmux not found"),
+            bare == ae::tmux_floor::summary(&ae::tmux_floor::Probe::Executable(version.to_owned()))
+                || bare
+                    == ae::tmux_floor::summary(&ae::tmux_floor::Probe::Server(version.to_owned())),
             "{word}: {stdout}"
         );
         assert!(out.stderr.is_empty(), "{word}");
+        assert!(probed.stderr.is_empty(), "{word}");
     }
 }
 
