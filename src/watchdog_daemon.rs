@@ -12572,6 +12572,13 @@ mod tests {
         ];
         let episode = auto_acts(&on, &busy[..1], &next, ("dev", false), 480, &mut named);
         assert_eq!(episode, [held(HoldReason::Busy, 260)], "a new episode");
+        // Two seats held in two episodes: naming one forgets nothing of the other.
+        let both_busy = [busy[0].clone(), seat("spawned.2", "two", Frame::Busy)];
+        let mut named = Vec::new();
+        let first = auto_acts(&on, &both_busy, &limits, ("dev", false), 300, &mut named);
+        assert_eq!(first.len(), 2, "each named: {first:?}");
+        let again = auto_acts(&on, &both_busy, &limits, ("dev", false), 360, &mut named);
+        assert!(again.is_empty(), "each named once: {again:?}");
         // An open attempt: in flight inside its bound, overdue past it.
         let open = [
             record(200, "limit", "one", ""),
