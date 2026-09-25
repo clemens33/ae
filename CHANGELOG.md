@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.174] - 2026-09-25
+- Name every refused pane kill and report what the legacy reap decided
+- Refuse watchdog stop and start over a kill the ownership check would not allow
+- Pin the stop fold and start aborts arm by arm
+- Document the refused-stop behaviour
+- Scope the refused-stop docs per registration
+- Pin the refused-legacy plus killed-main fold row
+- Scope the refused-stop keep-claim to the watchdog pane
+- Pin the start registration-timeout abort
+
 ## [v2026.9.173] - 2026-09-25
 - Read the transient throttle only from the tool's own error row (#193)
 - Document the transient throttle's own-row rule (#193)
