@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.184] - 2026-09-25
+- Grace fresh launches in the dead branch and clear the latch on own journal activity
+
 ## [v2026.9.183] - 2026-09-25
 - Document the landed auto reseat path
 - Re-ask a stop verify that lands mid-exit
