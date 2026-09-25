@@ -906,7 +906,7 @@ fn an_unpinned_daemon_follows_live_config_flips_both_directions() {
                 "send-keys",
                 "-t",
                 "quota-flips",
-                "429 Too Many Requests",
+                "⏺ API Error: Server is temporarily limiting requests (not your usage limit)",
                 "Enter"
             ]
         )

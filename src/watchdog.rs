@@ -35,23 +35,29 @@ pub enum Throttle {
     LimitReached,
 }
 
-/// The TRANSIENT throttle phrases keyed by agent BINARY, at MODULE level rather
-/// than inside [`throttle_class`]: a `const` declared after that function's
-/// empty-buffer guard is `clippy::items_after_statements`, and this crate gates
-/// on `-D warnings`.
-const CLAUDE: &[&str] = &[
-    "Server is temporarily limiting requests",
+/// The TRANSIENT heads keyed by agent BINARY, MEASURED from each tool's own
+/// error row, and kept when an older version drew them. Each is a START of the
+/// row's text: claude 2.1.281 classifies an API error by its `API Error`
+/// prefix, and codex 0.156.1 draws its error's Display string. A 429, a 503
+/// and an overload book; a 500 does not.
+const CLAUDE_TRANSIENT: &[&str] = &[
+    "API Error: Server is temporarily limiting requests",
+    "API Error: Request rejected (429)",
+    "API Error: Repeated 529 Overloaded errors",
+    "API Error: 503 Service Unavailable",
     "API Error: Overloaded",
-    "Anthropic API error",
 ];
-const CODEX: &[&str] = &[
+const CODEX_TRANSIENT: &[&str] = &[
+    "rate limit exceeded",
+    "exceeded retry limit, last status: 429 Too Many Requests",
+    "exceeded retry limit, last status: 503 Service Unavailable",
+    "unexpected status 429 Too Many Requests",
+    "unexpected status 503 Service Unavailable",
+    "Selected model is at capacity",
     "Rate limit exceeded",
     "RateLimitError",
     "ratelimit_exceeded",
 ];
-const GEMINI: &[&str] = &["RESOURCE_EXHAUSTED", "Quota exceeded"];
-/// The pair that applies to EVERY tool — an unknown binary matches only these.
-const GENERIC: &[&str] = &["429 Too Many Requests", "503 Service Unavailable"];
 
 /// The USAGE-LIMIT phrases keyed by agent BINARY, MEASURED from each tool's own
 /// strings. No measurement, no phrase, and a phrase an older version drew is
@@ -74,15 +80,16 @@ const CODEX_LIMIT: &[&str] = &[
     "Quota exceeded. Check your plan",
 ];
 
-/// How a tool draws its OWN usage-limit notice — data only; the one reader is
-/// [`limit_notice`]. A notice row starts with `marker` at column 0 exactly,
-/// sits within `window` rows of the capture's last non-blank row, and after
-/// the marker and its blanks its text starts with one of `phrases`. A
-/// transcript quoting the same words is indented under the tool's own
-/// furniture, so it never starts at the marker's column. A tool without a
-/// measured notice row has no `Banner` and books no limit.
+/// How a tool draws one of its OWN rows — its usage-limit notice or its
+/// transient error — data only; the one reader is [`newest_row`]. The row
+/// starts with one of `markers` at column 0 exactly, sits within `window` rows
+/// of the capture's last non-blank row, and after the marker and its blanks
+/// its text starts with one of `phrases`. A transcript quoting the same words
+/// is indented under the tool's own furniture, or says something first, so it
+/// never matches. A tool without a measured row has no `Banner` for it and
+/// books nothing of that class.
 struct Banner {
-    marker: &'static str,
+    markers: &'static [&'static str],
     window: usize,
     phrases: &'static [&'static str],
 }
@@ -91,16 +98,30 @@ struct Banner {
 /// NBSP, with up to four dim rows below it; measured chrome puts the row about
 /// 8 rows up, and 20 is claude's own prompt window over the same chrome.
 const CLAUDE_BANNER: Banner = Banner {
-    marker: "  ⎿",
+    markers: &["  ⎿"],
     window: 20,
     phrases: CLAUDE_LIMIT,
 };
 /// Codex 0.156.1 draws an error cell with `■` at column 0, measured 7 rows up
 /// from its footer; the rest is room for a wrapped cell and a draft.
 const CODEX_BANNER: Banner = Banner {
-    marker: "■",
+    markers: &["■"],
     window: 16,
     phrases: CODEX_LIMIT,
+};
+/// Claude 2.1.281 draws an API error as a message row whose glyph sits at
+/// column 0 — `⏺` on macOS, `●` elsewhere — with its wrap at column 2; the
+/// row sits over the same chrome as its notice.
+const CLAUDE_ERROR: Banner = Banner {
+    markers: &["⏺", "●"],
+    window: 20,
+    phrases: CLAUDE_TRANSIENT,
+};
+/// Codex 0.156.1 draws every turn error in the same `■` cell as its limit.
+const CODEX_ERROR: Banner = Banner {
+    markers: &["■"],
+    window: 16,
+    phrases: CODEX_TRANSIENT,
 };
 
 /// The widest a notice is quoted in a journal summary or a Notify line.
@@ -246,16 +267,41 @@ fn banner_for(agent_bin: &str) -> Option<&'static Banner> {
     }
 }
 
-/// The text after the marker when `row` is `banner`'s notice row.
-fn notice_text<'a>(banner: &Banner, row: &'a str) -> Option<&'a str> {
-    let text = row
-        .strip_prefix(banner.marker)?
+/// The measured error row of the tool whose binary is `agent_bin`.
+fn error_row_for(agent_bin: &str) -> Option<&'static Banner> {
+    match agent_bin {
+        "claude" => Some(&CLAUDE_ERROR),
+        "codex" => Some(&CODEX_ERROR),
+        _ => None,
+    }
+}
+
+/// The text after the marker when `row` is `banner`'s row.
+fn row_text<'a>(banner: &Banner, row: &'a str) -> Option<&'a str> {
+    let text = banner
+        .markers
+        .iter()
+        .find_map(|marker| row.strip_prefix(marker))?
         .trim_start_matches([' ', '\u{a0}']);
     banner
         .phrases
         .iter()
         .any(|phrase| text.starts_with(phrase))
         .then_some(text)
+}
+
+/// `banner`'s bottom window of `buf`, and the newest row in it that is
+/// `banner`'s row, by its index there and its text — the ONE row reader both
+/// halves of [`throttle_class`] share.
+fn newest_row<'a>(buf: &'a str, banner: &Banner) -> Option<(Vec<&'a str>, usize, &'a str)> {
+    let window = bottom_window(buf, banner.window)?;
+    let (at, text) = window
+        .iter()
+        .copied()
+        .enumerate()
+        .rev()
+        .find_map(|(at, row)| Some((at, row_text(banner, row)?)))?;
+    Some((window, at, text))
 }
 
 /// The vendor's OWN usage-limit notice `buf` shows for `agent_bin`, or `None`
@@ -266,13 +312,7 @@ fn notice_text<'a>(banner: &Banner, row: &'a str) -> Option<&'a str> {
 /// codex wraps that onto the next row.
 #[must_use]
 pub fn limit_notice(buf: &str, agent_bin: &str) -> Option<String> {
-    let banner = banner_for(agent_bin)?;
-    let window = bottom_window(buf, banner.window)?;
-    let (at, text) = window
-        .iter()
-        .enumerate()
-        .rev()
-        .find_map(|(at, row)| Some((at, notice_text(banner, row)?)))?;
+    let (window, at, text) = newest_row(buf, banner_for(agent_bin)?)?;
     let cell = std::iter::once(text.trim())
         .chain(
             window[at + 1..]
@@ -286,9 +326,11 @@ pub fn limit_notice(buf: &str, agent_bin: &str) -> Option<String> {
 }
 
 /// Which class of upstream trouble `buf` shows for `agent_bin`, if any — the
-/// ONE classifier, of which [`shows_throttle`] is the union answer. The tool's
-/// own usage-limit notice ([`limit_notice`]) wins: the limit outlives the
-/// cycle. The transient phrases still match anywhere in the capture.
+/// ONE classifier, of which [`shows_throttle`] is the union answer. Both
+/// classes are read from the tool's OWN rows alone, by one reader: its
+/// usage-limit notice ([`limit_notice`]) wins, because the limit outlives the
+/// cycle, then its transient error row. A tool with no measured row books
+/// nothing of that class, and a transcript quoting one never matches it.
 #[must_use]
 pub fn throttle_class(buf: &str, agent_bin: &str) -> Option<Throttle> {
     if buf.is_empty() {
@@ -297,21 +339,9 @@ pub fn throttle_class(buf: &str, agent_bin: &str) -> Option<Throttle> {
     if limit_notice(buf, agent_bin).is_some() {
         return Some(Throttle::LimitReached);
     }
-    // opencode is the union — refactor here, never duplicate, so the branches
-    // cannot drift.
-    let transient: &[&[&str]] = match agent_bin {
-        "claude" => &[CLAUDE],
-        "codex" => &[CODEX],
-        "gemini" => &[GEMINI],
-        "opencode" => &[CLAUDE, CODEX, GEMINI],
-        _ => &[],
-    };
-    transient
-        .iter()
-        .flat_map(|set| set.iter())
-        .chain(GENERIC)
-        .any(|pattern| buf.contains(pattern))
-        .then_some(Throttle::Throttled)
+    error_row_for(agent_bin)
+        .and_then(|banner| newest_row(buf, banner))
+        .map(|_| Throttle::Throttled)
 }
 
 /// Whether the captured pane buffer shows upstream throttling of EITHER class
@@ -1844,14 +1874,14 @@ mod tests {
 
     use super::WaitState::{Blocked, WaitingAgent};
     use super::{
-        CLAUDE_LIMIT, CODEX_LIMIT, DEFAULT_IDLE_NUDGE_SECS, DoneProgress, NUDGE_IDLE_PREFIX,
-        NUDGE_SENTENCE, NUDGE_TAIL, NUDGE_WAITING_CLOSE, NUDGE_WAITING_OPEN,
-        OVERVIEW_HOLD_WHILE_WORKING_SECS, OWN_WORK_AGE_CAP, QuietKind, SweepAlert, SweepEffect,
-        SweepKnobs, SweepObservation, SweepState, SweepVerdict, Throttle, WaitProgress, WaitState,
-        WedgeDetail, classify_dead, command_is_shell, declaration_current, declaration_key,
-        done_progress, indented, is_echo, is_sweep_target, latest_relevant_event, limit_notice,
-        quiet_filter, quiet_hash, quiet_reason, raw_nudge, record_sweep, shows_throttle,
-        stale_composite, submit_hdr, sweep_step, throttle_class, wait_progress,
+        CLAUDE_LIMIT, CLAUDE_TRANSIENT, CODEX_LIMIT, CODEX_TRANSIENT, DEFAULT_IDLE_NUDGE_SECS,
+        DoneProgress, NUDGE_IDLE_PREFIX, NUDGE_SENTENCE, NUDGE_TAIL, NUDGE_WAITING_CLOSE,
+        NUDGE_WAITING_OPEN, OVERVIEW_HOLD_WHILE_WORKING_SECS, OWN_WORK_AGE_CAP, QuietKind,
+        SweepAlert, SweepEffect, SweepKnobs, SweepObservation, SweepState, SweepVerdict, Throttle,
+        WaitProgress, WaitState, WedgeDetail, classify_dead, command_is_shell, declaration_current,
+        declaration_key, done_progress, indented, is_echo, is_sweep_target, latest_relevant_event,
+        limit_notice, quiet_filter, quiet_hash, quiet_reason, raw_nudge, record_sweep,
+        shows_throttle, stale_composite, submit_hdr, sweep_step, throttle_class, wait_progress,
         waiting_agent_cap_secs, waiting_agent_escalated,
     };
     use crate::events::Event;
@@ -2728,52 +2758,18 @@ mod tests {
 
     #[test]
     fn throttle_matches_the_right_catalog_per_binary() {
-        assert!(shows_throttle(
-            "... Server is temporarily limiting requests ...",
-            "claude"
-        ));
-        assert!(shows_throttle("boom RateLimitError happened", "codex"));
-        assert!(shows_throttle("RESOURCE_EXHAUSTED now", "gemini"));
-        // A claude phrase must NOT trip a codex pane (per-tool catalogs).
+        let claude = "⏺ API Error: Server is temporarily limiting requests";
+        assert!(shows_throttle(claude, "claude"));
+        assert!(shows_throttle("■ RateLimitError happened", "codex"));
         assert!(
-            !shows_throttle("Server is temporarily limiting requests", "codex"),
-            "claude's phrase is not codex's"
+            !shows_throttle("RESOURCE_EXHAUSTED now", "gemini"),
+            "gemini draws no measured error row"
         );
-    }
-
-    #[test]
-    fn opencode_is_the_union_of_every_provider_catalog() {
-        for phrase in [
-            "Server is temporarily limiting requests", // claude
-            "ratelimit_exceeded",                      // codex
-            "Quota exceeded",                          // gemini
-        ] {
-            assert!(
-                shows_throttle(phrase, "opencode"),
-                "opencode union misses {phrase:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn the_generic_pair_applies_to_every_tool_including_unknown_ones() {
-        for bin in [
-            "claude",
-            "codex",
-            "gemini",
-            "opencode",
-            "grok",
-            "somethingelse",
-        ] {
-            assert!(
-                shows_throttle("HTTP 429 Too Many Requests", bin),
-                "{bin} misses 429"
-            );
-            assert!(
-                shows_throttle("got 503 Service Unavailable", bin),
-                "{bin} misses 503"
-            );
-        }
+        // A claude row must NOT trip a codex pane (per-tool rows).
+        assert!(
+            !shows_throttle(claude, "codex"),
+            "claude's row is not codex's"
+        );
     }
 
     #[test]
@@ -2783,10 +2779,10 @@ mod tests {
             !shows_throttle("working on the task, all normal here, no errors", "claude"),
             "ordinary prose is not throttling"
         );
-        // An unknown binary sees only the generics, so a tool-specific phrase misses.
+        // A tool with no measured error row books no transient, whatever it shows.
         assert!(
             !shows_throttle("RateLimitError", "grok"),
-            "unknown bin sees only generics"
+            "grok draws no measured error row"
         );
     }
 
@@ -2812,26 +2808,34 @@ mod tests {
             );
             assert_eq!(throttle_class(&row, "claude"), None, "{phrase}");
         }
-        // gemini's OWN transient phrase is a prefix of codex's — still a
-        // transient claim.
-        assert_eq!(
-            throttle_class("Quota exceeded. Check your plan", "gemini"),
-            Some(Throttle::Throttled)
-        );
-        // Every existing transient phrase keeps its class.
+        // Every measured transient head books on its tool's OWN error row, and
+        // misses the other tool.
+        for head in CLAUDE_TRANSIENT {
+            let row = format!("⏺ {head} · this may be a temporary capacity issue.");
+            assert_eq!(
+                throttle_class(&row, "claude"),
+                Some(Throttle::Throttled),
+                "{head}"
+            );
+            assert_eq!(throttle_class(&row, "codex"), None, "{head}");
+        }
+        for head in CODEX_TRANSIENT {
+            let row = format!("■ {head}: try again later");
+            assert_eq!(
+                throttle_class(&row, "codex"),
+                Some(Throttle::Throttled),
+                "{head}"
+            );
+            assert_eq!(throttle_class(&row, "claude"), None, "{head}");
+        }
+        // A tool with no measured row books no transient, a bare phrase least of all.
         for (phrase, bin) in [
-            ("Server is temporarily limiting requests", "claude"),
-            ("API Error: Overloaded", "claude"),
-            ("Anthropic API error", "claude"),
-            ("Rate limit exceeded", "codex"),
-            ("RateLimitError", "codex"),
-            ("ratelimit_exceeded", "codex"),
+            ("Quota exceeded. Check your plan", "gemini"),
             ("RESOURCE_EXHAUSTED", "gemini"),
-            ("Quota exceeded", "gemini"),
             ("HTTP 429 Too Many Requests", "grok"),
             ("503 Service Unavailable", "somethingelse"),
         ] {
-            assert_eq!(throttle_class(phrase, bin), Some(Throttle::Throttled));
+            assert_eq!(throttle_class(phrase, bin), None, "{bin}: {phrase}");
         }
         for bin in ["claude", "codex", "gemini", "opencode", "grok"] {
             assert_eq!(throttle_class("", bin), None, "{bin}: empty buffer");
@@ -2843,25 +2847,18 @@ mod tests {
         }
     }
 
-    /// opencode draws neither vendor's notice row, so no borrowed limit books
-    /// on it. Its transient union still reads the WHOLE capture — #189's named
-    /// residual: a quoted quota row throttles, and never books a limit.
+    /// opencode draws neither vendor's rows, and its own error box is drawn
+    /// like its user box, so no borrowed row books either class on it.
     #[test]
-    fn opencode_books_no_borrowed_limit_and_keeps_its_transient_union() {
+    fn opencode_books_neither_class_from_borrowed_rows() {
         for row in [
             "  ⎿  You've hit your session limit · resets 3pm",
             "  ⎿  You're out of usage credits",
             "■ You’ve hit your usage limit.",
+            "■ Quota exceeded. Check your plan and billing details.",
         ] {
             assert_eq!(throttle_class(row, "opencode"), None, "{row}");
         }
-        assert_eq!(
-            throttle_class(
-                "■ Quota exceeded. Check your plan and billing details.",
-                "opencode"
-            ),
-            Some(Throttle::Throttled)
-        );
     }
 
     /// The notice counts only inside the bottom window, measured up from the
@@ -3038,6 +3035,186 @@ credits or try again at Sep 26th, 2026 10:11 AM.";
             throttle_class(&frame, "claude"),
             Some(Throttle::LimitReached)
         );
+    }
+
+    /// #193's false positive: a claude transcript quoting a transient head —
+    /// mid-row on its own prose, in a tool result, in a pasted prompt — is not
+    /// a throttled seat.
+    #[test]
+    fn a_transient_quoted_in_a_claude_transcript_books_nothing() {
+        let frame = format!(
+            "\
+⏺ Bash(peek colead 20)
+  ⎿  ⏺ API Error: Server is temporarily limiting requests (not your usage limit)
+     ⏺ API Error: Repeated 529 Overloaded errors. The API is at capacity
+       ■ exceeded retry limit, last status: 429 Too Many Requests
+⏺ colead reads API Error: Request rejected (429) and API Error: Overloaded,
+  then API Error: 503 Service Unavailable and Anthropic API error.
+❯ ⏺ API Error: Server is temporarily limiting requests (a pasted log)
+
+{CLAUDE_CHROME}"
+        );
+        assert_eq!(throttle_class(&frame, "claude"), None);
+    }
+
+    /// The same for codex: only codex's own cell draws `■` at column 0.
+    #[test]
+    fn a_transient_quoted_in_a_codex_transcript_books_nothing() {
+        let frame = format!(
+            "\
+› ■ rate limit exceeded: a pasted log line
+  ■ Selected model is at capacity. Please try a different model.
+
+• Ran peek colead
+  └ ■ exceeded retry limit, last status: 503 Service Unavailable
+    ■ unexpected status 429 Too Many Requests: busy
+
+• colead reads Rate limit exceeded, RateLimitError and ratelimit_exceeded.
+{CODEX_BOTTOM}"
+        );
+        assert_eq!(throttle_class(&frame, "codex"), None);
+    }
+
+    /// No measured error row, no transient: a bare phrase, a status text and
+    /// a borrowed claude or codex row book nothing on any other tool.
+    #[test]
+    fn a_tool_without_a_measured_error_row_books_no_transient() {
+        for bin in ["opencode", "gemini", "muse", "agy", "grok", "somethingelse"] {
+            for buf in [
+                "Server is temporarily limiting requests",
+                "RateLimitError",
+                "RESOURCE_EXHAUSTED",
+                "Quota exceeded",
+                "HTTP 429 Too Many Requests",
+                "got 503 Service Unavailable",
+                "⏺ API Error: Server is temporarily limiting requests (not your usage limit)",
+                "■ rate limit exceeded: try again later",
+            ] {
+                assert_eq!(throttle_class(buf, bin), None, "{bin}: {buf}");
+            }
+        }
+    }
+
+    /// The heads claude 2.1.281 and codex 0.156.1 draw that no old phrase
+    /// spelled: the 429 and overload rows book on their own tool's row.
+    #[test]
+    fn the_newly_measured_transient_heads_book_throttled() {
+        for (row, bin) in [
+            (
+                "⏺ API Error: Request rejected (429) · this may be a temporary capacity issue.",
+                "claude",
+            ),
+            (
+                "⏺ API Error: Repeated 529 Overloaded errors. The API is at capacity",
+                "claude",
+            ),
+            ("■ rate limit exceeded: try again later", "codex"),
+            (
+                "■ Selected model is at capacity. Please try a different model.",
+                "codex",
+            ),
+        ] {
+            assert_eq!(throttle_class(row, bin), Some(Throttle::Throttled), "{row}");
+        }
+    }
+
+    /// Claude's own API error row, wrapped under its glyph above its chrome,
+    /// books — `⏺` on macOS, `●` elsewhere — and so does codex's own cell. The
+    /// limit half reads first: a transient row NEWER than a notice keeps the
+    /// limit.
+    #[test]
+    fn a_tool_s_own_transient_error_row_books_throttled() {
+        for row in [
+            "⏺ API Error: Server is temporarily limiting requests (not your usage limit) · this may be\n  \
+             a temporary capacity issue. If it persists, check https://status.claude.com.",
+            "● API Error: Server is temporarily limiting requests (not your usage limit)",
+            "⏺ API Error: 503 Service Unavailable. This is a server-side issue, usually temporary — try\n  \
+             again in a moment.",
+        ] {
+            let frame = format!("❯ a synthetic prompt\n\n{row}\n\n{CLAUDE_CHROME}");
+            assert_eq!(
+                throttle_class(&frame, "claude"),
+                Some(Throttle::Throttled),
+                "{row}"
+            );
+        }
+        let codex = format!(
+            "› a synthetic message\n\n■ exceeded retry limit, last status: 429 Too Many Requests, \
+             request id: req_synthetic{CODEX_BOTTOM}"
+        );
+        assert_eq!(throttle_class(&codex, "codex"), Some(Throttle::Throttled));
+        for (frame, bin) in [
+            (
+                format!(
+                    "  ⎿  You've hit your session limit\n⏺ API Error: Overloaded\n\n{CLAUDE_CHROME}"
+                ),
+                "claude",
+            ),
+            (
+                format!("■ You’ve hit your usage limit.\n■ rate limit exceeded: x{CODEX_BOTTOM}"),
+                "codex",
+            ),
+        ] {
+            assert_eq!(throttle_class(&frame, bin), Some(Throttle::LimitReached));
+        }
+    }
+
+    /// The transient row counts only inside its window, measured up from the
+    /// last non-blank row, like the limit notice.
+    #[test]
+    fn a_transient_row_counts_only_inside_the_bottom_window() {
+        let under = |row: &str, rows: usize| format!("{row}\n{}\n\n", "ink\n".repeat(rows));
+        for (bin, row, window) in [
+            ("codex", "■ rate limit exceeded: try again later", 16),
+            ("claude", "⏺ API Error: Overloaded", 20),
+        ] {
+            assert_eq!(
+                throttle_class(&under(row, window - 1), bin),
+                Some(Throttle::Throttled),
+                "{bin}: the window's top row"
+            );
+            assert_eq!(
+                throttle_class(&under(row, window), bin),
+                None,
+                "{bin}: one row above the window"
+            );
+        }
+    }
+
+    /// The marker is column-exact, and the text after it STARTS with a head:
+    /// the head decides, so a bare status text, a 500 and codex's high-demand
+    /// cell book nothing.
+    #[test]
+    fn a_transient_row_is_column_exact_and_starts_with_its_head() {
+        for (row, bin, books) in [
+            ("⏺ API Error: Overloaded", "claude", true),
+            ("● API Error: Overloaded", "claude", true),
+            (" ⏺ API Error: Overloaded", "claude", false),
+            (
+                "⏺ The row reads API Error: Server is temporarily limiting requests",
+                "claude",
+                false,
+            ),
+            ("⏺ Anthropic API errors are retried", "claude", false),
+            ("⏺ 429 Too Many Requests", "claude", false),
+            (
+                "⏺ API Error: 500 Internal Server Error. This is a server-side issue, usually \
+                 temporary — try again in a moment.",
+                "claude",
+                false,
+            ),
+            ("■ rate limit exceeded: x", "codex", true),
+            ("  ■ rate limit exceeded: x", "codex", false),
+            ("■ Failed: rate limit exceeded", "codex", false),
+            ("■ 503 Service Unavailable", "codex", false),
+            (
+                "■ We’re currently experiencing high demand, which may cause temporary errors.",
+                "codex",
+                false,
+            ),
+        ] {
+            assert_eq!(shows_throttle(row, bin), books, "{row:?}");
+        }
     }
 
     /// The container as APPEND ORDER gives it: oldest first, the way every
