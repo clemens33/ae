@@ -1511,9 +1511,9 @@ rust-linux:
             # decides what is installed. A warm run re-probes and installs nothing.
             /stage/rustup-init -y --no-modify-path --profile minimal --default-toolchain none
             just rust-setup
-            # The target volume is shared by every checkout and cargo's
+            # The target volume is shared by every checkout, but the cargo
             # fingerprint does not see the checkout path (#190): without this
-            # the gate could test another tree's build. Deps stay warm.
+            # the gate could test the wrong tree build. Deps stay warm.
             cargo clean --locked -p ae
             just test' || rc=$?
     echo "==> ae-linux gate: rc=$rc wall=$((SECONDS - start))s"
