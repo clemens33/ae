@@ -446,8 +446,27 @@ pub(crate) fn work_tree_dirty(wdir: &[u8]) -> bool {
 /// The TRACKED paths one `git status --porcelain --untracked-files=no` output
 /// names, each as git wrote it past its two status columns.
 pub(crate) fn changed_paths(porcelain: &str) -> Vec<String> {
-    let _ = porcelain;
-    Vec::new()
+    porcelain
+        .lines()
+        .filter_map(|line| line.get(3..))
+        .filter(|path| !path.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+/// The tracked paths the work tree at `wdir` has changed, read through the
+/// query [`work_tree_dirty`] asks.
+pub(crate) fn tracked_changes(wdir: &[u8]) -> Vec<String> {
+    if wdir.is_empty() {
+        return Vec::new();
+    }
+    let wdir = OsStr::from_bytes(wdir);
+    let (succeeded, out) = crate::transport::run_git(&argv(wdir, &Query::PorcelainStatus));
+    if succeeded {
+        changed_paths(&out)
+    } else {
+        Vec::new()
+    }
 }
 
 // ---- the end path's git leg ------------------------------------------------

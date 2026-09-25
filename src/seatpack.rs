@@ -68,6 +68,9 @@ const TURN_BYTES: usize = 2 * 1024;
 /// cannot push the RECORD sections out of the pack a clip at a time.
 const TURNS_BYTES: usize = 8 * 1024;
 
+/// How many changed paths section 8 names before it counts the rest.
+const CHANGED_SHOWN: usize = 20;
+
 /// A memo topic is RECENT, and so carries its body, strictly under this age.
 const RECENT_SECS: i64 = 48 * 3_600;
 
@@ -752,9 +755,9 @@ fn push_state(out: &mut String, inputs: &Inputs) {
         .find(|agent| agent.name == inputs.seat_name)
     {
         Some(agent) => {
-            let _ = write!(
+            let _ = writeln!(
                 out,
-                "state: {}  ({})\nreason: {}\n\n",
+                "state: {}  ({})\nreason: {}",
                 neutralise(&agent.state),
                 crate::brief::age(agent.age_secs),
                 if agent.reason.is_empty() {
@@ -763,6 +766,12 @@ fn push_state(out: &mut String, inputs: &Inputs) {
                     neutralise(&agent.reason)
                 }
             );
+            // An age is read only off a declaration that agrees with the
+            // world's cell, and that declaration now stands for the successor.
+            if agent.age_secs.is_some() {
+                out.push_str("ae reads this as YOUR declaration until you re-declare\n");
+            }
+            out.push('\n');
         }
         None => out.push_str("state: none declared\n\n"),
     }
@@ -1015,6 +1024,16 @@ fn push_git(out: &mut String, inputs: &Inputs) {
         if git.dirty { "yes" } else { "no" },
         neutralise(git.tag.as_deref().unwrap_or("none"))
     );
+    if !git.changed.is_empty() {
+        out.push_str("changed, not committed:\n");
+        for path in git.changed.iter().take(CHANGED_SHOWN) {
+            let _ = writeln!(out, "  - {}", neutralise(path));
+        }
+        let more = git.changed.len().saturating_sub(CHANGED_SHOWN);
+        if more > 0 {
+            let _ = writeln!(out, "  … +{more} more");
+        }
+    }
     out.push_str("recent commits:\n");
     if git.subjects.is_empty() {
         out.push_str("  none recorded\n");
@@ -1395,11 +1414,17 @@ mod tests {
             "{}",
             pack(&base())
         );
+        // A seat that never declared is still listed, with the world's `-` and
+        // no declaration behind it.
         let mut undeclared = base();
-        undeclared.agents.retain(|agent| agent.name != "lead");
+        undeclared.agents[0] = AgentLine {
+            age_secs: None,
+            ..agent("lead", "fablex", "-", 0, "")
+        };
         let rendered = pack(&undeclared);
         assert!(
-            rendered.contains("## 3. declared state\nstate: none declared\n\n"),
+            rendered
+                .contains("## 3. declared state\nstate: -  (-)\nreason: no reason recorded\n\n"),
             "{rendered}"
         );
         assert!(!rendered.contains(OWN), "{rendered}");

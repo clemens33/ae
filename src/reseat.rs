@@ -92,10 +92,19 @@ struct Parsed {
     session: String,
     agent: String,
     profile: String,
-    /// `--stop-unknown`: stop a tool whose frame ae cannot read. It lifts the
-    /// UNKNOWN refusal and nothing else — a frame that reads BUSY is refused
-    /// with or without it.
-    stop_unknown: bool,
+    stop: StopPolicy,
+}
+
+/// Which frames the stop may end a running tool on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StopPolicy {
+    /// A frame proven idle, or proven on the vendor's usage limit over an
+    /// empty box, on both readings.
+    Proven,
+    /// `--stop-unknown`: a frame ae cannot read too. It lifts the UNKNOWN
+    /// refusal and nothing else — a frame that reads BUSY is refused with or
+    /// without it.
+    Unknown,
 }
 
 /// Parse `<session> <agent> --using <profile>`.
@@ -106,12 +115,12 @@ struct Parsed {
 fn parse(tail: &[String]) -> Result<Parsed, String> {
     let mut names: Vec<&str> = Vec::new();
     let mut profile = String::new();
-    let mut stop_unknown = false;
+    let mut stop = StopPolicy::Proven;
     let mut words = tail.iter();
     while let Some(word) = words.next() {
         match word.as_str() {
             // Anywhere, like `--using`, because that is where a hand puts it.
-            "--stop-unknown" => stop_unknown = true,
+            "--stop-unknown" => stop = StopPolicy::Unknown,
             "--using" => {
                 let Some(value) = words.next() else {
                     return Err("Error: --using needs a profile name.".to_owned());
@@ -147,7 +156,7 @@ fn parse(tail: &[String]) -> Result<Parsed, String> {
         session: (*session).to_owned(),
         agent: (*agent).to_owned(),
         profile,
-        stop_unknown,
+        stop,
     })
 }
 
@@ -461,9 +470,12 @@ enum Stop {
     /// The tool was stopped and the pane is back at an idle shell, carrying
     /// the binary that was stopped for the record.
     Stopped(String),
-    /// A refusal was printed. Nothing was killed: every arm that reaches this
-    /// is decided BEFORE the respawn, except the bounded wait, which says so.
-    Refused,
+    /// A refusal was printed and nothing was killed. A `transient` cause — a
+    /// delivery in flight or a running turn — may pass on a retry.
+    Refused { transient: bool },
+    /// A refusal was printed and the machinery is what refused: tmux would not
+    /// respawn the pane, or the pane was not back at a shell after the kill.
+    Failed,
 }
 
 /// Where the caller stands relative to the seat whose tool is about to be
@@ -592,21 +604,33 @@ fn stop_timeout_advice(probe: Option<&ObservedPaneProbe>) -> (String, &'static s
     )
 }
 
-/// The seat's current harness frame, fail-closed.
+/// Whether one capture PROVES the seat sits on its vendor's usage limit over an
+/// empty input box.
+///
+/// The limit is the vendor's own row, read by the watchdog's one reader. The
+/// EMPTY box is the frame grammar's own recognition: it reads a frame only
+/// when the prompt row holds nothing, so a draft reads no frame at all. A
+/// tool with neither grammar proves nothing.
+fn limit_proven(capture: &str, agent_bin: &str, tool: ToolKind) -> bool {
+    crate::watchdog::limit_notice(capture, agent_bin).is_some()
+        && crate::harness_state::read_frame(capture, tool).is_some()
+}
+
+/// The seat's current harness frame, fail-closed, and whether that SAME
+/// capture proves the seat sits on its usage limit.
 ///
 /// A capture ae could not take is [`HarnessState::Unknown`], never idle: the
 /// absence of a reading is not evidence that a turn is not running.
-/// Whether one capture PROVES the seat sits on its vendor's usage limit over an
-/// empty input box.
-fn limit_proven(capture: &str, agent_bin: &str, tool: ToolKind) -> bool {
-    let _ = (capture, agent_bin, tool);
-    false
-}
-
-fn frame(target: &Target, tool: ToolKind) -> HarnessState {
-    transport::capture_pane(&target.server, &target.pane).map_or(HarnessState::Unknown, |capture| {
-        crate::harness_state::classify(&capture, tool)
-    })
+fn frame(target: &Target, tool: ToolKind, agent_bin: &str) -> (HarnessState, bool) {
+    transport::capture_pane(&target.server, &target.pane).map_or(
+        (HarnessState::Unknown, false),
+        |capture| {
+            (
+                crate::harness_state::classify(&capture, tool),
+                limit_proven(&capture, agent_bin, tool),
+            )
+        },
+    )
 }
 
 /// STOP THE SEAT'S TOOL, in place. Runs UNDER the lifecycle lock, BEFORE the
@@ -625,7 +649,7 @@ fn stop_running_tool(
     dir: &Path,
     target: &Target,
     bytes: &[u8],
-    stop_unknown: bool,
+    policy: StopPolicy,
     err: &mut impl Write,
 ) -> io::Result<Stop> {
     let agent_bin = crate::deliver::recorded_binary(dir, &target.slot);
@@ -652,7 +676,7 @@ fn stop_running_tool(
         Ok(work_dir) => work_dir,
         Err(line) => {
             writeln!(err, "{line}")?;
-            return Ok(Stop::Refused);
+            return Ok(Stop::Refused { transient: false });
         }
     };
     // NOT FROM UNDER THE SEAT ITSELF. The pane check upstream catches a caller
@@ -674,7 +698,7 @@ fn stop_running_tool(
                 };
                 if let Some(line) = mixed_refusal(rows, pid, &recorded, target) {
                     writeln!(err, "{line}")?;
-                    return Ok(Stop::Refused);
+                    return Ok(Stop::Refused { transient: false });
                 }
             }
         }
@@ -686,7 +710,7 @@ fn stop_running_tool(
                  shell.",
                 target.agent, target.pane
             )?;
-            return Ok(Stop::Refused);
+            return Ok(Stop::Refused { transient: false });
         }
         CallerStanding::Unprovable(gap) => {
             writeln!(
@@ -695,7 +719,7 @@ fn stop_running_tool(
                  running under it ({gap}) — nothing was stopped.",
                 target.agent, target.pane
             )?;
-            return Ok(Stop::Refused);
+            return Ok(Stop::Refused { transient: false });
         }
     }
     // THE PANE'S SEND-LOCK, so no delivery can land a turn between the frame
@@ -709,7 +733,7 @@ fn stop_running_tool(
              finishes.",
             target.pane, target.agent
         )?;
-        return Ok(Stop::Refused);
+        return Ok(Stop::Refused { transient: true });
     };
     // THE FRAME. Only a POSITIVELY proven idle box may be stopped, and it is
     // proven TWICE: `Busy` short-circuits on the first reading, and a seat
@@ -726,26 +750,30 @@ fn stop_running_tool(
             target.agent
         )
     };
-    let first = frame(target, tool);
+    let (first, first_limited) = frame(target, tool, &agent_bin);
     if first == HarnessState::Busy {
         busy(err)?;
-        return Ok(Stop::Refused);
+        return Ok(Stop::Refused { transient: true });
     }
     std::thread::sleep(FRAME_GAP);
-    let second = frame(target, tool);
+    let (second, second_limited) = frame(target, tool, &agent_bin);
     if second == HarnessState::Busy {
         busy(err)?;
-        return Ok(Stop::Refused);
+        return Ok(Stop::Refused { transient: true });
     }
+    // A seat on its usage limit draws the vendor's row where a finished turn
+    // would sit, so its frame never reads idle. That row over an EMPTY box,
+    // on both readings, is the other proof a stop may act on.
     let proven_idle = first == HarnessState::Idle && second == HarnessState::Idle;
-    if !proven_idle && !stop_unknown {
+    let proven_limited = first_limited && second_limited;
+    if !proven_idle && !proven_limited && policy == StopPolicy::Proven {
         writeln!(
             err,
             "Error: ae cannot read '{}'s frame in pane {} of '{}', so it cannot tell a running \
              turn from an idle box — pass --stop-unknown to stop it anyway. Nothing was reseated.",
             agent_bin, target.pane, target.agent
         )?;
-        return Ok(Stop::Refused);
+        return Ok(Stop::Refused { transient: false });
     }
 
     // THE ONLY WRITE. A tmux that refuses the argv leaves the tool running,
@@ -765,7 +793,7 @@ fn stop_running_tool(
              nothing was reseated.",
             target.pane, target.agent
         )?;
-        return Ok(Stop::Refused);
+        return Ok(Stop::Failed);
     }
     for _ in 0..STOP_POLLS {
         std::thread::sleep(STOP_POLL);
@@ -791,7 +819,7 @@ fn stop_running_tool(
         (STOP_POLL * STOP_POLLS).as_secs(),
         target.agent
     )?;
-    Ok(Stop::Refused)
+    Ok(Stop::Failed)
 }
 
 /// `ae reseat <session> <agent> --using <profile> [--stop-unknown]`.
@@ -799,7 +827,6 @@ fn stop_running_tool(
 /// # Errors
 ///
 /// Only a failure to write `out` or `err`. Every refusal is an exit code.
-#[allow(clippy::too_many_lines, reason = "the frozen order, kept in one place")]
 pub(crate) fn run(
     root: &Path,
     world: Option<&crate::listing::World>,
@@ -818,6 +845,75 @@ pub(crate) fn run(
             return Ok(EXIT_USAGE);
         }
     };
+    let caller = caller_of(&parsed.session);
+    Ok(
+        match run_parsed(root, world, &parsed, caller, now, out, err)? {
+            Ended::Moved { .. } => 0,
+            Ended::Refused { .. } | Ended::Failed => EXIT_FAILED,
+        },
+    )
+}
+
+/// Move `agent` of `session` to `profile` AS THE WATCHDOG: both `reseat`
+/// records name it, and a running tool is stopped only on a proven frame.
+///
+/// No caller rule: the leg that asks is ae's own, run from the watchdog.
+///
+/// # Errors
+///
+/// Only a failure to write `out` or `err`.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the verb's own inputs, spelled out rather than bundled"
+)]
+pub(crate) fn run_as_watchdog(
+    root: &Path,
+    world: Option<&crate::listing::World>,
+    session: &str,
+    agent: &str,
+    profile: &str,
+    now: Timestamp,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> io::Result<Ended> {
+    let parsed = Parsed {
+        session: session.to_owned(),
+        agent: agent.to_owned(),
+        profile: profile.to_owned(),
+        stop: StopPolicy::Proven,
+    };
+    let caller = Caller {
+        pane: crate::doors::calling_pane_id(),
+        display: crate::watchdog::WATCHDOG_ACTOR.to_owned(),
+    };
+    run_parsed(root, world, &parsed, Ok(caller), now, out, err)
+}
+
+/// Whether profile `profile` resolves for the seat whose session dir is `dir`,
+/// exactly as a reseat to it would resolve it.
+pub(crate) fn resolves(dir: &Path, profile: &str) -> bool {
+    let bytes = crate::meta::read_bytes(dir).unwrap_or_default();
+    resolve_profile(dir, &bytes, profile, "").is_ok()
+}
+
+/// The move itself, from a parsed argv and the caller rule's verdict. Every
+/// ending says what became of the seat.
+#[allow(clippy::too_many_lines, reason = "the frozen order, kept in one place")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the verb's own inputs, spelled out rather than bundled"
+)]
+fn run_parsed(
+    root: &Path,
+    world: Option<&crate::listing::World>,
+    parsed: &Parsed,
+    caller: Result<Caller, String>,
+    now: Timestamp,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> io::Result<Ended> {
+    // Nothing of the seat has changed on any refusal before the stop.
+    let refused = Ended::Refused { transient: false };
     // The seed is built from the world the caller already enumerated, so the
     // pack a successor is handed is the one `ae brief --seat` prints this
     // instant — and an incomplete enumeration refuses rather than packs a
@@ -833,16 +929,16 @@ pub(crate) fn run(
             "Error: no session named '{}' that ae could read.",
             parsed.session
         )?;
-        return Ok(EXIT_FAILED);
+        return Ok(refused);
     };
     let dir = crate::inventory::Roots::under(root)
         .sessions()
         .join(&parsed.session);
-    let caller = match caller_of(&parsed.session) {
+    let caller = match caller {
         Ok(caller) => caller,
         Err(line) => {
             writeln!(err, "{line}")?;
-            return Ok(EXIT_FAILED);
+            return Ok(refused);
         }
     };
     // THE ROSTER FIRST, and tmux only after it. Everything a typo gets wrong —
@@ -864,7 +960,7 @@ pub(crate) fn run(
                 roster.join(", ")
             }
         )?;
-        return Ok(EXIT_FAILED);
+        return Ok(refused);
     };
     let (slot, recorded) = (
         seated.slot.clone(),
@@ -886,20 +982,20 @@ pub(crate) fn run(
              brings it back on the same profile.",
             parsed.agent, parsed.profile, parsed.agent
         )?;
-        return Ok(EXIT_FAILED);
+        return Ok(refused);
     }
     let moving = match resolve_profile(&dir, &bytes, &parsed.profile, &parsed.agent) {
         Ok(moving) => moving,
         Err(why) => {
             writeln!(err, "Error: {why}. Nothing was reseated.")?;
-            return Ok(EXIT_FAILED);
+            return Ok(refused);
         }
     };
     let target = match resolve(&dir, &parsed.agent, &parsed.session) {
         Ok(target) => target,
         Err(line) => {
             writeln!(err, "{line}")?;
-            return Ok(EXIT_FAILED);
+            return Ok(refused);
         }
     };
     // NOT YOUR OWN SEAT. The dead proof would refuse a live caller anyway, so
@@ -913,7 +1009,7 @@ pub(crate) fn run(
              command is the one that would be replaced. Ask another seat, or run it from a shell.",
             target.agent
         )?;
-        return Ok(EXIT_FAILED);
+        return Ok(refused);
     }
     // The pane's own stamp against the roster. They disagree only when a stamp
     // is stale or a meta was hand-edited, and the move would then be published
@@ -925,7 +1021,7 @@ pub(crate) fn run(
              stop and resume the session.",
             target.pane, target.slot, parsed.session, parsed.agent
         )?;
-        return Ok(EXIT_FAILED);
+        return Ok(refused);
     }
 
     // THE LOCK, taken the way every lifecycle writer takes it: the dead proof,
@@ -938,7 +1034,7 @@ pub(crate) fn run(
              once that finishes.",
             parsed.session
         )?;
-        return Ok(EXIT_FAILED);
+        return Ok(Ended::Refused { transient: true });
     };
     // What the records say NOW, under the lock: the stop reads the working copy
     // from it, and the audit line reads the conversation the predecessor holds.
@@ -974,7 +1070,7 @@ pub(crate) fn run(
             from.display(),
             to.display()
         )?;
-        return Ok(EXIT_FAILED);
+        return Ok(refused);
     }
     // A TOOL CHANGE says what it costs before anything happens, a dead pane
     // included: the successor cannot read the old tool's store, and ae looks
@@ -998,22 +1094,29 @@ pub(crate) fn run(
         )?;
     }
     // THE STOP, before the dead proof and before anything durable is written.
-    match stop_running_tool(&dir, &target, &locked, parsed.stop_unknown, err)? {
-        Stop::Refused => return Ok(EXIT_FAILED),
+    let stopped = match stop_running_tool(&dir, &target, &locked, parsed.stop, err)? {
+        Stop::Refused { transient } => return Ok(Ended::Refused { transient }),
+        Stop::Failed => return Ok(Ended::Failed),
         // The record goes in only once the pane is PROVEN back at its shell:
         // an audit line claiming a stop that did not finish would outlive
         // every refusal above it.
-        Stop::Stopped(binary) => record(
-            &dir,
-            &at,
-            &target,
-            &format!("stopped {binary} in place (pane {})", target.pane),
-            Mentions::NothingOfIt,
-        ),
-        Stop::NotRunning => {}
-    }
+        Stop::Stopped(binary) => {
+            record(
+                &dir,
+                &at,
+                &target,
+                &format!("stopped {binary} in place (pane {})", target.pane),
+                Mentions::NothingOfIt,
+            );
+            true
+        }
+        Stop::NotRunning => false,
+    };
+    // Past the stop, a refusal leaves a stopped tool behind, or a dead seat
+    // exactly as it was.
+    let broke = if stopped { Ended::Failed } else { refused };
     let Some(before) = crate::seat_relaunch::prove_dead(&dir, &target, RESEAT_VERB, err)? else {
-        return Ok(EXIT_FAILED);
+        return Ok(broke);
     };
     // DOES THE CONVERSATION TRAVEL? Asked here, past the dead proof and before
     // anything is removed, so a refusal costs only the reading. Every arm that
@@ -1038,7 +1141,7 @@ pub(crate) fn run(
             "Error: {why} — nothing was reseated and '{}' still records {was}.",
             target.agent
         )?;
-        return Ok(EXIT_FAILED);
+        return Ok(broke);
     }
     let planned = plan.is_some();
     let carried = match plan {
@@ -1102,14 +1205,14 @@ pub(crate) fn run(
             Ok(pack) => crate::provenance::first_line(&crate::provenance::ctx(), &pack),
             Err(why) => {
                 writeln!(err, "Error: {why}. Nothing was reseated.")?;
-                return Ok(EXIT_FAILED);
+                return Ok(broke);
             }
         };
         if let Err(why) =
             crate::launch::publish_data(&seed_file(&dir, &target.agent), pack.as_bytes())
         {
             writeln!(err, "Error: {why}. Nothing was reseated.")?;
-            return Ok(EXIT_FAILED);
+            return Ok(broke);
         }
         Some(pack)
     };
@@ -1140,7 +1243,7 @@ pub(crate) fn run(
              moved and '{}' still records {was}.{note}",
             target.slot, target.agent
         )?;
-        return Ok(EXIT_FAILED);
+        return Ok(broke);
     }
     // THE RESUME MARKER, PUT BACK. `clear_slot` removes it with the rest of the
     // slot's launch files, and `_run` reads exactly that file to decide between
@@ -1171,7 +1274,7 @@ pub(crate) fn run(
                 marker.display(),
                 target.agent
             )?;
-            return Ok(EXIT_FAILED);
+            return Ok(broke);
         }
     }
     let conversation = if crate::launch::takes_launch_session_id(moving.tool) {
@@ -1213,7 +1316,7 @@ pub(crate) fn run(
             why.cause(),
             target.slot
         )?;
-        return Ok(EXIT_FAILED);
+        return Ok(broke);
     }
     // Re-read: the command, the tool and the conversation are the NEW profile's
     // now, and `start` pastes what `read_seat` composes from the moved rows.
@@ -1235,7 +1338,7 @@ pub(crate) fn run(
                  `relaunch {}` finishes the move once the profile reads.",
                 target.agent, parsed.profile, target.agent
             )?;
-            return Ok(EXIT_FAILED);
+            return Ok(Ended::Failed);
         }
     };
     let started = crate::seat_relaunch::start(&dir, &target, &after, now, RESEAT_VERB, err)?;
@@ -1251,7 +1354,7 @@ pub(crate) fn run(
                 "  '{}' records profile '{}' now — `relaunch {}` starts it.",
                 target.agent, parsed.profile, target.agent
             )?;
-            Ok(EXIT_FAILED)
+            Ok(Ended::Failed)
         }
         Started::NotSeen => {
             record(
@@ -1267,14 +1370,14 @@ pub(crate) fn run(
                  `relaunch {}` finishes the move once it is back at a shell.",
                 target.agent, parsed.profile, target.agent
             )?;
-            Ok(EXIT_FAILED)
+            Ok(Ended::Failed)
         }
         Started::Running { resuming_seat } => finish(
             &dir,
             &target,
             &after,
             resuming_seat,
-            &parsed,
+            parsed,
             seed.as_deref(),
             &at,
             out,
@@ -1299,7 +1402,7 @@ fn finish(
     at: &Record<'_>,
     out: &mut impl Write,
     err: &mut impl Write,
-) -> io::Result<u8> {
+) -> io::Result<Ended> {
     let tool = proven.seat.tool;
     // The tool's OWN launch turn first, where its adapter has one: codex's
     // rollout does not exist until a user turn, and the registration handshake
@@ -1370,7 +1473,7 @@ fn finish(
             "Error: '{}' started on '{}' and is gone again (pane {}) — look at the pane.",
             target.agent, parsed.profile, target.pane
         )?;
-        return Ok(EXIT_FAILED);
+        return Ok(Ended::Failed);
     }
     let (launch_ok, launch_word) =
         launch_turn.map_or((true, ""), crate::seat_relaunch::turn_verdict);
@@ -1398,10 +1501,12 @@ fn finish(
             "{}",
             never_landed(dir, target, &line, blocked, seed.is_some())
         )?;
-        return Ok(EXIT_FAILED);
+        return Ok(Ended::Failed);
     }
     writeln!(out, "{line}")?;
-    Ok(0)
+    Ok(Ended::Moved {
+        carried: at.carry == Carried::Yes,
+    })
 }
 
 /// What a move whose turn never landed tells the human. A turn a human-only
@@ -1551,11 +1656,11 @@ mod tests {
             &["--stop-unknown", "work", "lead", "--using", "lunam"][..],
         ] {
             let parsed = super::parse(&argv(words)).expect("a valid argv");
-            assert!(parsed.stop_unknown, "{words:?}");
+            assert_eq!(parsed.stop, super::StopPolicy::Unknown, "{words:?}");
             assert_eq!(parsed.agent, "lead", "{words:?}");
         }
         let plain = super::parse(&argv(&["work", "lead", "--using", "lunam"])).expect("valid");
-        assert!(!plain.stop_unknown, "the flag is opt-in");
+        assert_eq!(plain.stop, super::StopPolicy::Proven, "the flag is opt-in");
         // And it is not a name: a seat called `--stop-unknown` cannot exist,
         // and the ladder must not swallow the word as one.
         assert_eq!(

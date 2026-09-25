@@ -6446,7 +6446,7 @@ fn descendancy_of(
 }
 
 /// The session's events in APPEND ORDER, oldest first.
-fn read_events(meta_dir: &Path) -> Vec<Event> {
+pub(crate) fn read_events(meta_dir: &Path) -> Vec<Event> {
     let bytes = store::open(meta_dir).container();
     crate::event_text::read_lines(&bytes)
         .into_iter()

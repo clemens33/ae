@@ -216,6 +216,10 @@ pub const RENAME: &str = "rename";
 /// profile in place. Validated by [`crate::reseat`].
 pub const RESEAT: &str = "reseat";
 
+/// The watchdog's own leg that moves a seat stuck on its usage limit:
+/// `_auto-reseat <dir> <slot> <key>`. Validated by [`crate::autoreseat`].
+pub const AUTO_RESEAT: &str = "_auto-reseat";
+
 /// The launch prelude's hard-dependency gate: `_check-deps [--bash-major <n>]`.
 pub const CHECK_DEPS: &str = "_check-deps";
 
@@ -694,6 +698,11 @@ pub enum Request {
         /// Everything after the subcommand, as typed.
         tail: Vec<String>,
     },
+    /// `_auto-reseat <dir> <slot> <key>` — validated by [`crate::autoreseat`].
+    AutoReseat {
+        /// Everything after the subcommand, as typed.
+        tail: Vec<String>,
+    },
     /// `_check-deps [--bash-major <n>]` — validated by [`crate::doctor`].
     CheckDeps {
         /// Everything after the subcommand, as typed.
@@ -895,6 +904,9 @@ impl Request {
                 tail: args[1..].to_vec(),
             },
             Some(RESEAT) => Self::Reseat {
+                tail: args[1..].to_vec(),
+            },
+            Some(AUTO_RESEAT) => Self::AutoReseat {
                 tail: args[1..].to_vec(),
             },
             Some(CHECK_DEPS) => Self::CheckDeps {
@@ -1396,6 +1408,7 @@ impl Request {
             | Self::Init { .. }
             | Self::Rename { .. }
             | Self::Reseat { .. }
+            | Self::AutoReseat { .. }
             | Self::CheckDeps { .. }
             | Self::Install { .. }
             | Self::Autoupgrade { .. }

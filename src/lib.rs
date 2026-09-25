@@ -2305,7 +2305,7 @@ pub(crate) fn seat_pack(
             branch: git::branch_head(work.as_bytes()),
             head: git::head(work.as_bytes()),
             dirty: git::work_tree_dirty(work.as_bytes()),
-            changed: Vec::new(),
+            changed: git::tracked_changes(work.as_bytes()),
             subjects: git::recent_subjects(work.as_bytes()),
             tag: git::latest_tag(work.as_bytes()),
         },
@@ -3258,6 +3258,14 @@ pub fn run_with(
         cli::Request::Rename { tail } => {
             if let Some(root) = state_root() {
                 rename::run(&root, tail, out, err)?
+            } else {
+                writeln!(err, "ae: {NO_STATE_ROOT}")?;
+                EXIT_UNAVAILABLE
+            }
+        }
+        cli::Request::AutoReseat { tail } => {
+            if let Some(root) = state_root() {
+                autoreseat::leg::run(&root, tail, time::Timestamp::now(), err)?
             } else {
                 writeln!(err, "ae: {NO_STATE_ROOT}")?;
                 EXIT_UNAVAILABLE
