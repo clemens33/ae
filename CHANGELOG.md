@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.180] - 2026-09-25
+- Forward _tmux-isolated test args to nextest, skip doctests on filtered runs
+- Pin the auto reseat trigger decisions, its in-flight hold on the limit latch and the settings text entry
+- Pin the auto reseat path end to end under a live watchdog, and its switch off
+- Pin that each writer of the auto reseat path backs off while another holds the seat, and every class the switch admits mints the leg
+- Move a seat stuck on its usage limit through the watchdog when auto reseat is on
+- Pin that the auto reseat trigger acts only for a seat of its own session
+- Pin that an unreadable global config is refused rather than read as absent
+- Pin that an unreadable global config keeps auto reseat off and says why
+- Pin that naming one held seat forgets nothing of another
+- Pin that the watchdog says when a trigger did not start, and only then
+
 ## [v2026.9.179] - 2026-09-25
 - Pin the reader toggle, wheel, dead-source and doctor arms with failing tests
 - Open a reader pane over a source and keep the keyboard in the source
