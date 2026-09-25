@@ -248,7 +248,9 @@ impl Rig {
                 // EXPLICIT: the pane shell must not be inherited from $SHELL,
                 // or a pin that turns on the recorded tool being read as a
                 // shell would depend on the developer's own login shell.
-                "/bin/sh",
+                // The `exec` collapses tmux's `$SHELL -c` wrapper, which dash
+                // would otherwise keep as the pane pid.
+                "exec /bin/sh",
             ])
             .0,
             "the session starts"
@@ -357,7 +359,11 @@ impl Rig {
 
     /// The same pane, with the START command named: `respawn-pane` re-runs it,
     /// which is how a pin can decide what comes back after a stop.
+    /// The `exec` collapses tmux's `$SHELL -c` wrapper — dash would keep it
+    /// as the pane pid — so the pane pid IS the command, as on a production
+    /// seat pane (which starts with no command at all).
     pub fn new_pane_running(&self, slot: &str, name: &str, command: &str) -> String {
+        let start = format!("exec {command}");
         let (ok, pane) = self.tmux(&[
             "new-window",
             "-d",
@@ -366,7 +372,7 @@ impl Rig {
             "-P",
             "-F",
             "#{pane_id}",
-            command,
+            &start,
         ]);
         assert!(ok, "a pane for {slot}");
         let pane = pane.trim().to_owned();
@@ -518,6 +524,10 @@ impl Rig {
             .parse()
             .ok()?;
         let table = ae::procs::snapshot()?;
+        // A DIRECT child, because that is the structure production has:
+        // production seat panes start with NO pane command, so the pane pid
+        // IS the shell and the tool its direct child. Every rig pane below
+        // starts its command with `exec` so the same holds here.
         table
             .iter()
             .find(|proc| proc.ppid == pid && proc.comm.rsplit('/').next() == Some(name))
@@ -726,6 +736,8 @@ fn a_pane_that_carries_no_slot_is_not_a_seat_and_is_refused() {
     // A monitor pane carries `@ae_agent` and no `@ae_slot`. It is not a seat,
     // and the refusal says so rather than reporting a missing meta row.
     let rig = Rig::new("monitor");
+    // `exec` collapses tmux's `$SHELL -c` wrapper, which dash would otherwise
+    // keep as the pane pid.
     let (ok, pane) = rig.tmux(&[
         "new-window",
         "-d",
@@ -734,7 +746,7 @@ fn a_pane_that_carries_no_slot_is_not_a_seat_and_is_refused() {
         "-P",
         "-F",
         "#{pane_id}",
-        "/bin/sh",
+        "exec /bin/sh",
     ]);
     assert!(ok);
     let pane = pane.trim().to_owned();
@@ -760,7 +772,9 @@ fn a_seat_of_another_session_is_refused_because_relaunch_is_own_session_only() {
     let other = rig.scratch.join("sessions").join("rlother");
     assert!(std::fs::create_dir_all(&other).is_ok());
     assert!(
-        rig.tmux(&["new-session", "-d", "-s", "rlother", "/bin/sh"])
+        // `exec` collapses tmux's `$SHELL -c` wrapper, which dash would
+        // otherwise keep as the pane pid.
+        rig.tmux(&["new-session", "-d", "-s", "rlother", "exec /bin/sh"])
             .0,
         "the second session starts"
     );

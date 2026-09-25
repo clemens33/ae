@@ -493,7 +493,10 @@ fn a_seat_entering_the_quota_low_band_is_asked_to_checkpoint_exactly_once() {
         tmux(
             &socket,
             &scratch,
-            &["new-session", "-d", "-s", "ckpt-ask", "cat"]
+            // `exec`: without it dash (the test door's SHELL=/bin/sh on Linux)
+            // keeps its `sh -c` wrapper as the pane's foreground, and the
+            // pane would read as a shell instead of a listening seat.
+            &["new-session", "-d", "-s", "ckpt-ask", "exec cat"]
         )
         .0,
         "the watched session"
@@ -823,7 +826,9 @@ fn an_unpinned_daemon_follows_live_config_flips_both_directions() {
         tmux(
             &socket,
             &scratch,
-            &["new-session", "-d", "-s", "quota-flips", "cat"]
+            // `exec`: without it dash keeps its `sh -c` wrapper as the pane's
+            // foreground on Linux, and the pane would read as a dead shell.
+            &["new-session", "-d", "-s", "quota-flips", "exec cat"]
         )
         .0,
         "the watched session"
@@ -957,7 +962,9 @@ fn leaving_the_usage_limit_runs_exactly_one_quota_pass() {
         "a disabled cadence"
     );
     let send = |words: &[&str]| assert!(tmux(&socket, &scratch, words).0, "tmux {words:?}");
-    send(&["new-session", "-d", "-s", "limit", "cat"]);
+    // `exec`: without it dash keeps its `sh -c` wrapper as the pane's
+    // foreground on Linux, and the pane would read as a dead shell.
+    send(&["new-session", "-d", "-s", "limit", "exec cat"]);
     stamp_agent(&socket, &scratch, "limit");
     let await_event = |needle: &str, want: usize| {
         let deadline = Instant::now() + BUDGET;
@@ -1023,7 +1030,9 @@ fn a_stale_pane_is_nudged_by_a_pane_running_only_the_core() {
         tmux(
             &socket,
             &scratch,
-            &["new-session", "-d", "-s", "nudged", "cat"]
+            // `exec`: without it dash keeps its `sh -c` wrapper as the pane's
+            // foreground on Linux, and the pane would read as a dead shell.
+            &["new-session", "-d", "-s", "nudged", "exec cat"]
         )
         .0,
         "the watched session"

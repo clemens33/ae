@@ -595,7 +595,10 @@ fn sc_017p_the_list_route_answers_each_seat_from_the_live_panes_and_the_publishe
     // the not-alive set — so the alive arm needs a pane running something else.
     let shell = only_pane_id(&socket, &scratch, "live");
     mark_pane(&socket, &scratch, &shell, "spawned.0");
-    let agent = split(&socket, &scratch, "live", Some("sleep 60"));
+    // `exec`: tmux runs the pane command as `$SHELL -c <cmd>`, and dash
+    // (the test door's SHELL=/bin/sh on Linux) keeps that wrapper as the
+    // pane's foreground — so the pane would report `sh`, never `sleep`.
+    let agent = split(&socket, &scratch, "live", Some("exec sleep 60"));
     mark_pane(&socket, &scratch, &agent, "main");
     wait_for_pane_command(&socket, &scratch, &agent, "sleep");
     publish_branch(&socket, &scratch, "live", "feature/runtime");
