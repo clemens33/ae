@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.176] - 2026-09-25
+- Pin that the by-name removal takes a moved successor
+- Remove the retire slot the proof named, refusing a moved name
+- Pin that an unlisted legacy reap keeps its artifacts
+- Name an unlisted legacy reap and keep its artifacts
+- Name the spawn rig window so automatic rename cannot move it
+- Pin the suffixed admin id with three failing rename tests
+- Resolve the rename admin dir from git instead of the leaf
+- Pin the git-dir answer grammar at unit level
+- Name the forged-gitdir residual and pin the empty work guard
+- Pin fresh-start resume fallback for claude, grok, agy, gemini
+- Resume fallback starts fresh and mints the new conversation id
+- Document fresh-start resume fallback for every tool
+- Pin the duplicate launch id guard arm
+- Normalize the illustrative mint in the meta-only launch id compare
+- Word the illustrative mint compare as illustrative
+
 ## [v2026.9.175] - 2026-09-25
 - Pin #191 witness behavior with failing retry tests
 - Couple rename intent version to the witness key
