@@ -12488,6 +12488,17 @@ mod tests {
                 &format!("[workspace]\nauto_reseat = {switch}\n[auto_reseat]\nsol6x = opus55x\n"),
             )
         };
+        let entry = |slot: &str, name: &str| RosterEntry {
+            slot: slot.to_owned(),
+            name: name.to_owned(),
+            profile: Some("sol6x".to_owned()),
+            client: RecordedClient::Missing,
+            harness_session: None,
+            config_home: RecordedConfigHome::Missing,
+            config_home_base: RecordedConfigHomeBase::Missing,
+            binary: Some("codex".to_owned()),
+            work_dir: crate::meta::RecordedWorkDir::Missing,
+        };
         let cycle = |auto| Cycle {
             knobs: Knobs::default(),
             meta_dir: &scratch.0,
@@ -12495,17 +12506,7 @@ mod tests {
             server: &server,
             session: "demo",
             goal: None,
-            roster: vec![RosterEntry {
-                slot: "spawned.3".to_owned(),
-                name: "builder".to_owned(),
-                profile: Some("sol6x".to_owned()),
-                client: RecordedClient::Missing,
-                harness_session: None,
-                config_home: RecordedConfigHome::Missing,
-                config_home_base: RecordedConfigHomeBase::Missing,
-                binary: Some("codex".to_owned()),
-                work_dir: crate::meta::RecordedWorkDir::Missing,
-            }],
+            roster: vec![entry("main", "lead"), entry("spawned.3", "builder")],
             local_config: None,
             lead_pair: false,
             fleet_order: crate::theme::FleetOrder::EMPTY,
@@ -12521,6 +12522,11 @@ mod tests {
         );
         assert_eq!(
             cycle(switched("off")).auto_deadline(&quota, &[], seat, 1_000),
+            None
+        );
+        // The same map row, but the main seat moves only when the switch is `all`.
+        assert_eq!(
+            cycle(switched("on")).auto_deadline(&quota, &[], ("main", "lead"), 1_000),
             None
         );
     }

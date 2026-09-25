@@ -34,9 +34,14 @@ const USAGE: &str = "_auto-reseat <dir> <slot> <key>";
 /// the watchdog leaves behind when it hands the seat to the leg. The global
 /// config is switched `switch` and maps `fake-claude` to `to`.
 fn limited(tag: &str, switch: &str, to: &str) -> (Rig, String) {
+    limited_on(tag, "claude", switch, to)
+}
+
+/// The same seat on the profile `fake-<on>`, which the map row is keyed by.
+fn limited_on(tag: &str, on: &str, switch: &str, to: &str) -> (Rig, String) {
     let rig = Rig::new(tag);
-    configure(&rig, switch, to);
-    rig.seat_rows("spawned.0", "scout", "claude", "claude");
+    configure_from(&rig, switch, &format!("fake-{on}"), to);
+    rig.seat_rows("spawned.0", "scout", on, "claude");
     let pane = rig.new_pane("spawned.0", "scout");
     rig.start(&pane, "spawned.0", "claude");
     rig.mark_limited(&pane);
@@ -47,16 +52,37 @@ fn limited(tag: &str, switch: &str, to: &str) -> (Rig, String) {
 
 /// Rewrite the global config's auto reseat switch and its one map row.
 fn configure(rig: &Rig, switch: &str, to: &str) {
+    configure_from(rig, switch, "fake-claude", to);
+}
+
+fn configure_from(rig: &Rig, switch: &str, from: &str, to: &str) {
     let path = rig.scratch.join("config");
     let text = std::fs::read_to_string(&path).unwrap_or_default();
     let base = text.split("auto_reseat = ").next().unwrap_or_default();
     assert!(
         std::fs::write(
             &path,
-            format!("{base}auto_reseat = {switch}\n[auto_reseat]\nfake-claude = {to}\n"),
+            format!("{base}auto_reseat = {switch}\n[auto_reseat]\n{from} = {to}\n"),
         )
         .is_ok(),
         "a config"
+    );
+}
+
+/// The claude account at the scratch's `home`, as its own quota cache reports
+/// it NOW: its one window spent.
+fn spend(rig: &Rig, home: &str) {
+    let dir = rig.scratch.join(home);
+    let now = Timestamp::now().epoch();
+    let cache = format!(
+        "{{\"cachedUsageUtilization\":{{\"fetchedAtMs\":{},\"utilization\":{{\"limits\":[{{\"kind\":\"session\",\"group\":\"session\",\"percent\":100,\"resets_at\":\"{}\",\"scope\":null}}]}}}}}}\n",
+        now * 1_000,
+        Timestamp::from_epoch(now + 7_200),
+    );
+    assert!(std::fs::create_dir_all(&dir).is_ok(), "an account home");
+    assert!(
+        std::fs::write(dir.join(".claude.json"), cache).is_ok(),
+        "a spent account"
     );
 }
 
@@ -96,9 +122,45 @@ fn with_action<'e>(events: &'e [Event], action: &str) -> Vec<&'e Event> {
         .collect()
 }
 
-/// Run the leg on the seat at `slot`, handed `key`.
+/// Run the leg on the seat at `slot`, handed `key`, from the lead's pane and
+/// with the scratch's own HOME, so no quota it reads is a real account.
 fn leg(rig: &Rig, slot: &str, key: &str) -> (Option<i32>, String, String) {
-    rig.run("_auto-reseat", &[slot, key])
+    let out = super::cli::ae()
+        .env("TMUX", format!("{},0,0", rig.sock.display()))
+        .env("TMUX_PANE", &rig.main_pane)
+        .env("AE_HOME", &rig.scratch)
+        .env("HOME", rig.scratch.join("home"))
+        .env_remove("AE_SENDER_OVERRIDE")
+        .arg("_auto-reseat")
+        .arg(&rig.dir)
+        .args([slot, key])
+        .output()
+        .unwrap_or_else(|why| panic!("the ae binary should run: {why}"));
+    (
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+/// The session's real `send` link, which every notice is delivered through.
+fn link_send(rig: &Rig) {
+    let send = rig.dir.join("send");
+    if !send.exists() {
+        assert!(
+            std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_ae"), &send).is_ok(),
+            "the send link"
+        );
+    }
+}
+
+/// The watchdog's target-less `chat` records: what the human's chat was told.
+fn said(rig: &Rig) -> Vec<Event> {
+    records(rig)
+        .into_iter()
+        .filter(|event| event.action == "chat")
+        .inspect(|event| assert_eq!((event.actor.as_str(), &event.target), ("watchdog", &None)))
+        .collect()
 }
 
 /// The one outcome record the leg journaled for the seat at `slot`, which the
@@ -179,6 +241,7 @@ fn a_bad_argv_reads_nothing_and_a_stale_or_closed_attempt_moves_nothing() {
     let refused = one_outcome(&rig, REFUSED_ACTION);
     assert_eq!(refused.reference.as_deref(), Some(stale), "{refused:?}");
     untouched(&rig, &pane);
+    assert!(said(&rig).is_empty(), "no open attempt, nothing said");
 
     // An attempt the watchdog already closed, booked failed past its bound, is
     // not the leg's to act on, and nothing is left for it to close — asked
@@ -204,6 +267,7 @@ fn a_seat_gone_never_limited_or_busy_is_not_moved() {
     assert_eq!(code, Some(1), "out={out} err={err}");
     let quiet = outcome_at(&rig, REFUSED_ACTION, "spawned.1");
     assert_eq!(quiet.reference.as_deref(), Some(KEY), "{quiet:?}");
+    assert!(said(&rig).is_empty(), "no open attempt, nothing said");
 
     // A running turn is a hold, never a refusal: the episode keeps its retry.
     rig.mark_busy(&pane);
@@ -218,6 +282,7 @@ fn a_seat_gone_never_limited_or_busy_is_not_moved() {
         "{held:?}"
     );
     untouched(&rig, &pane);
+    assert_eq!(said(&rig).len(), 1, "the hold is said once");
 }
 
 #[test]
@@ -257,6 +322,84 @@ fn a_seat_on_its_limit_moves_to_its_declared_candidate_and_the_watchdog_owns_eve
         episode(&events, &rig.session, "spawned.0", "scout").map(|found| found.terminal),
         Some(Some(Outcome::Done))
     );
+}
+
+/// A move is said once and told to the lead, as the watchdog and after its
+/// outcome; the seat that moved is not told of its own move.
+#[test]
+fn a_move_is_said_once_and_told_to_the_lead_after_its_outcome() {
+    let (rig, _pane) = limited("legtell", "on", "fake-opencode");
+    link_send(&rig);
+    rig.start(&rig.main_pane.clone(), "main", "opencode");
+
+    let (code, out, err) = leg(&rig, "spawned.0", KEY);
+
+    assert_eq!(code, Some(0), "out={out} err={err}");
+    let events = records(&rig);
+    let tail: Vec<(&str, &str, Option<&str>)> = events
+        .iter()
+        .skip_while(|event| event.action != DONE_ACTION)
+        .map(|event| {
+            (
+                event.action.as_str(),
+                event.actor.as_str(),
+                event.target.as_deref(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        tail,
+        [
+            (DONE_ACTION, "watchdog", Some("scout")),
+            ("chat", "watchdog", None),
+            ("auto-reseat-notice", "watchdog", Some("lead")),
+        ],
+        "{}",
+        rig.events()
+    );
+    let chat = said(&rig).remove(0).summary.unwrap_or_default();
+    assert!(
+        chat.starts_with(
+            "auto reseat: scout moved fake-claude -> fake-opencode (tool claude -> opencode"
+        ),
+        "{chat}"
+    );
+    assert!(
+        rig.received().contains(&chat),
+        "the lead is told the same line: {}",
+        rig.received()
+    );
+}
+
+/// A candidate whose account its own cache reports spent is passed over by
+/// name, and the next declared candidate takes the seat. The seat runs on a
+/// scratch account, so no move this row could make reaches a real one.
+#[test]
+fn a_candidate_on_a_spent_account_is_passed_over_for_the_next_declared_one() {
+    for (tag, to) in [
+        ("legspent", "fake-claude-a, fake-opencode"),
+        ("legspentall", "fake-claude-a"),
+    ] {
+        let (rig, pane) = limited_on(tag, "claude-b", "on", to);
+        spend(&rig, "home-a");
+
+        let (code, out, err) = leg(&rig, "spawned.0", KEY);
+
+        if to.ends_with("fake-opencode") {
+            assert_eq!(code, Some(0), "{tag}: out={out} err={err}");
+            assert_eq!(rig.meta_row("profile.spawned.0"), "fake-opencode");
+        } else {
+            assert_eq!(code, Some(1), "{tag}: out={out} err={err}");
+            let refused = one_outcome(&rig, REFUSED_ACTION);
+            assert_eq!(
+                refused.summary.as_deref(),
+                Some("refused: no usable candidate: fake-claude-a (exhausted)"),
+                "{refused:?}"
+            );
+            assert!(rig.tool_pid(&pane, "claude").is_some(), "still running");
+            assert_eq!(rig.meta_row("profile.spawned.0"), "fake-claude-b");
+        }
+    }
 }
 
 #[test]
@@ -341,13 +484,7 @@ const ON_NOW: &str = "on\nauto_reseat_grace_secs = 0";
 /// session's real `send` link. Its HOME is the scratch's own, so nothing it
 /// reads is a real account.
 fn watch_until(rig: &Rig, done: impl Fn() -> bool) -> bool {
-    let send = rig.dir.join("send");
-    if !send.exists() {
-        assert!(
-            std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_ae"), &send).is_ok(),
-            "the send link"
-        );
-    }
+    link_send(rig);
     let log = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -526,6 +663,13 @@ fn a_refused_episode_stays_refused_across_a_daemon_restart() {
         "no attempt, one refusal"
     );
     untouched(&rig, &pane);
+    let chats = said(&rig);
+    assert_eq!(chats.len(), 1, "the refusal is said once: {}", rig.events());
+    assert!(
+        chats[0].summary.as_deref().is_some_and(|line| line
+            .starts_with("auto reseat: scout not moved — refused: no usable candidate: ghost")),
+        "{chats:?}"
+    );
 }
 
 /// An attempt in flight belongs to its leg, even across a daemon restart: the
