@@ -72,10 +72,15 @@ fn configure_from(rig: &Rig, switch: &str, from: &str, to: &str) {
 /// The claude account at the scratch's `home`, as its own quota cache reports
 /// it NOW: its one window spent.
 fn spend(rig: &Rig, home: &str) {
+    spend_at(rig, home, 100);
+}
+
+/// The same account with its one window at `percent`.
+fn spend_at(rig: &Rig, home: &str, percent: u8) {
     let dir = rig.scratch.join(home);
     let now = Timestamp::now().epoch();
     let cache = format!(
-        "{{\"cachedUsageUtilization\":{{\"fetchedAtMs\":{},\"utilization\":{{\"limits\":[{{\"kind\":\"session\",\"group\":\"session\",\"percent\":100,\"resets_at\":\"{}\",\"scope\":null}}]}}}}}}\n",
+        "{{\"cachedUsageUtilization\":{{\"fetchedAtMs\":{},\"utilization\":{{\"limits\":[{{\"kind\":\"session\",\"group\":\"session\",\"percent\":{percent},\"resets_at\":\"{}\",\"scope\":null}}]}}}}}}\n",
         now * 1_000,
         Timestamp::from_epoch(now + 7_200),
     );
@@ -84,6 +89,29 @@ fn spend(rig: &Rig, home: &str) {
         std::fs::write(dir.join(".claude.json"), cache).is_ok(),
         "a spent account"
     );
+}
+
+/// Replace the meta's `key` row with `value`. REPLACED, never appended: ae
+/// reads a key that appears twice as no value at all.
+fn rebind(rig: &Rig, key: &str, value: &str) {
+    let path = rig.dir.join("meta");
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let prefix = format!("{key}=");
+    assert!(
+        text.lines().any(|line| line.starts_with(&prefix)),
+        "a {key} row: {text}"
+    );
+    let text: String = text
+        .lines()
+        .map(|line| {
+            if line.starts_with(&prefix) {
+                format!("{prefix}{value}\n")
+            } else {
+                format!("{line}\n")
+            }
+        })
+        .collect();
+    assert!(std::fs::write(&path, text).is_ok(), "the {key} row");
 }
 
 /// Append one watchdog record addressed to the seat, stamped [`KEY`].
@@ -288,6 +316,10 @@ fn a_seat_gone_never_limited_or_busy_is_not_moved() {
 #[test]
 fn a_seat_on_its_limit_moves_to_its_declared_candidate_and_the_watchdog_owns_every_record() {
     let (rig, pane) = limited("legmove", "on", "fake-opencode");
+    // The lead on the moving seat's OLD tool, so a notice that read another
+    // seat's binary as the successor's would say so.
+    rebind(&rig, "profile.main", "fake-claude");
+    rebind(&rig, "agent_bin.main", "claude");
 
     let (code, out, err) = leg(&rig, "spawned.0", KEY);
 
@@ -322,6 +354,64 @@ fn a_seat_on_its_limit_moves_to_its_declared_candidate_and_the_watchdog_owns_eve
         episode(&events, &rig.session, "spawned.0", "scout").map(|found| found.terminal),
         Some(Some(Outcome::Done))
     );
+    let chat = said(&rig).remove(0).summary.unwrap_or_default();
+    assert!(
+        chat.starts_with(
+            "auto reseat: scout moved fake-claude -> fake-opencode (tool claude -> opencode, model "
+        ),
+        "the successor's own tool: {chat}"
+    );
+    assert!(
+        chat.contains("), seeded; work tree "),
+        "a target with no quota reading is not called critical: {chat}"
+    );
+}
+
+/// A move onto an account already judged critical, and still usable, says so.
+/// The seat records no conversation, so the move between the two accounts is
+/// seeded rather than carried.
+#[test]
+fn a_move_onto_a_critical_account_is_said_to_be_one() {
+    let (rig, _pane) = limited_on("legcrit", "claude-b", "on", "fake-claude-a");
+    spend_at(&rig, "home-a", 97);
+
+    let (code, out, err) = leg(&rig, "spawned.0", KEY);
+
+    assert_eq!(code, Some(0), "out={out} err={err}\n{}", rig.events());
+    assert_eq!(rig.meta_row("profile.spawned.0"), "fake-claude-a");
+    let chat = said(&rig).remove(0).summary.unwrap_or_default();
+    assert!(
+        chat.starts_with(
+            "auto reseat: scout moved fake-claude-b -> fake-claude-a (tool claude -> claude"
+        ),
+        "{chat}"
+    );
+    assert!(
+        chat.contains("), seeded, target already critical; work tree "),
+        "{chat}"
+    );
+}
+
+/// The colead of a lead-pair session is told of a move; a worker of any other
+/// layout is not.
+#[test]
+fn a_move_is_told_to_the_colead_only_in_a_lead_pair_session() {
+    for (tag, layout, told) in [("legpair", "lead-pair", 1), ("legvert", "vertical", 0)] {
+        let (rig, _pane) = limited(tag, "on", "fake-opencode");
+        link_send(&rig);
+        rebind(&rig, "layout", layout);
+        rig.seat("worker.0", "colead", "opencode");
+
+        let (code, out, err) = leg(&rig, "spawned.0", KEY);
+
+        assert_eq!(code, Some(0), "{tag}: out={out} err={err}");
+        let events = records(&rig);
+        let to_colead = with_action(&events, "auto-reseat-notice")
+            .into_iter()
+            .filter(|event| event.target.as_deref() == Some("colead"))
+            .count();
+        assert_eq!(to_colead, told, "{tag}: {}", rig.events());
+    }
 }
 
 /// A move is said once and told to the lead, as the watchdog and after its
@@ -593,6 +683,91 @@ fn a_seat_on_its_limit_is_moved_once_by_the_watchdog_with_no_death_between() {
     assert!(
         !between.contains(&"alert") && !between.contains(&"alert-cleared"),
         "{between:?}"
+    );
+}
+
+/// Attach one real client to the rig's session, from a pane of a second
+/// session on the same private server: a notice is drawn only for an attached
+/// client, and the server's message log is where the pin reads it back.
+fn attach_viewer(rig: &Rig) {
+    let attach = format!(
+        "env -u TMUX tmux -S '{}' attach-session -t '={}'",
+        rig.sock.display(),
+        rig.session
+    );
+    assert!(
+        rig.tmux(&[
+            "new-session",
+            "-d",
+            "-s",
+            "viewer",
+            "-x",
+            "200",
+            "-y",
+            "40",
+            &attach
+        ])
+        .0,
+        "a viewer session"
+    );
+    let target = format!("={}", rig.session);
+    let deadline = Instant::now() + BUDGET;
+    while Instant::now() < deadline {
+        let (_, clients) = rig.tmux(&["list-clients", "-t", &target, "-F", "#{client_tty}"]);
+        if !clients.trim().is_empty() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    panic!("a client should attach to {}", rig.session);
+}
+
+/// The watchdog's limit notices the attached client was shown, one line each.
+/// The log also holds each `display-message` command; only a shown message
+/// counts.
+fn limit_notices(rig: &Rig) -> Vec<String> {
+    rig.tmux(&["show-messages"])
+        .1
+        .lines()
+        .filter(|line| {
+            line.contains(" message: [ae watchdog] ") && line.contains("hit its vendor usage limit")
+        })
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The limit's first-sight notice forecasts the move for a seat the path would
+/// move, and for that seat alone.
+#[test]
+fn the_first_sight_limit_notice_forecasts_the_move_of_a_seat_the_path_would_move() {
+    let rig = Rig::new("autoforecast");
+    configure(&rig, "on", "fake-opencode");
+    attach_viewer(&rig);
+    let scout = rig.seat("spawned.0", "scout", "claude");
+    rig.seat_rows("spawned.1", "other", "claude-b", "claude");
+    let other = rig.new_pane("spawned.1", "other");
+    rig.start(&other, "spawned.1", "claude");
+    rig.mark_limited(&scout);
+
+    let shown = watch_until(&rig, || limit_notices(&rig).len() >= 2);
+
+    let notices = limit_notices(&rig);
+    assert!(shown, "{notices:?}\n{}\n{}", rig.events(), daemon_err(&rig));
+    let of = |agent: &str| -> Vec<&String> {
+        notices
+            .iter()
+            .filter(|line| line.contains(&format!("[ae watchdog] {agent} hit")))
+            .collect()
+    };
+    let (scouts, others) = (of("scout"), of("other"));
+    assert_eq!((scouts.len(), others.len()), (1, 1), "{notices:?}");
+    assert!(
+        scouts[0].ends_with("; ae will move scout to fake-opencode in 10m"),
+        "{notices:?}"
+    );
+    assert!(
+        !others[0].contains("ae will move") && !others[0].contains("ae cannot move"),
+        "{notices:?}"
     );
 }
 
