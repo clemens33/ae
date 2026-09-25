@@ -90,19 +90,26 @@ fn with_action<'e>(events: &'e [Event], action: &str) -> Vec<&'e Event> {
         .collect()
 }
 
-/// The one outcome record the leg journaled, which the watchdog owns and which
-/// the seat's episode fold reads.
-fn one_outcome(rig: &Rig, action: &str) -> Event {
+/// Run the leg on the seat at `slot`, handed `key`.
+fn leg(rig: &Rig, slot: &str, key: &str) -> (Option<i32>, String, String) {
+    rig.run("_auto-reseat", &[slot, key])
+}
+
+/// The one outcome record the leg journaled for the seat at `slot`, which the
+/// watchdog owns and which the seat's episode fold reads.
+fn outcome_at(rig: &Rig, action: &str, slot: &str) -> Event {
     let events = records(rig);
-    let found = with_action(&events, action);
-    assert_eq!(found.len(), 1, "one {action}: {}", rig.events());
-    let outcome = found[0].clone();
-    assert_eq!(outcome.actor, "watchdog", "{outcome:?}");
-    assert!(
-        ae::watchdog::event_is_addressed_to(&outcome, &rig.session, "spawned.0", "scout"),
-        "{outcome:?}"
-    );
-    outcome
+    let found: Vec<&Event> = with_action(&events, action)
+        .into_iter()
+        .filter(|event| ae::watchdog::event_is_addressed_to(event, &rig.session, slot, "scout"))
+        .collect();
+    assert_eq!(found.len(), 1, "one {action} for {slot}: {}", rig.events());
+    assert_eq!(found[0].actor, "watchdog", "{:?}", found[0]);
+    found[0].clone()
+}
+
+fn one_outcome(rig: &Rig, action: &str) -> Event {
+    outcome_at(rig, action, "spawned.0")
 }
 
 /// Nothing of the seat changed: its tool runs, its profile stands, and no
@@ -116,6 +123,16 @@ fn untouched(rig: &Rig, pane: &str) {
         rig.events()
     );
     assert!(!rig.dir.join("seed.scout.md").exists(), "no seed");
+}
+
+/// The leg exits 1 on the seat, says `why`, journals nothing and moves nothing.
+fn silent(rig: &Rig, pane: &str, why: &str) {
+    let before = rig.events();
+    let (code, out, err) = leg(rig, "spawned.0", KEY);
+    assert_eq!(code, Some(1), "out={out} err={err}");
+    assert!(err.contains(why), "{err}");
+    assert_eq!(rig.events(), before, "journaled nothing");
+    untouched(rig, pane);
 }
 
 #[test]
@@ -151,19 +168,49 @@ fn a_bad_argv_reads_nothing_and_a_stale_or_closed_attempt_moves_nothing() {
     // The episode the watchdog handed over is no longer the seat's: the leg
     // closes the attempt it was handed, under the key it was handed.
     let stale = "2026-09-25T09:00:00Z";
-    let (code, out, err) = rig.run("_auto-reseat", &["spawned.0", stale]);
+    let (code, out, err) = leg(&rig, "spawned.0", stale);
     assert_eq!(code, Some(1), "out={out} err={err}");
     let refused = one_outcome(&rig, REFUSED_ACTION);
     assert_eq!(refused.reference.as_deref(), Some(stale), "{refused:?}");
     untouched(&rig, &pane);
 
     // An attempt the watchdog already closed, booked failed past its bound, is
-    // not the leg's to act on, and nothing is left for it to close.
+    // not the leg's to act on, and nothing is left for it to close — asked
+    // before the switch, which is off here.
     journal(&rig, FAILED_ACTION, Some(KEY));
-    let before = rig.events();
-    let (code, out, err) = rig.run("_auto-reseat", &["spawned.0", KEY]);
+    configure(&rig, "off", "fake-opencode");
+    silent(&rig, &pane, "already ended");
+}
+
+#[test]
+fn a_seat_gone_never_limited_or_busy_is_not_moved() {
+    let (rig, pane) = limited("leggone", "on", "fake-opencode");
+
+    // No seat at the slot: the refusal is routed by slot and session.
+    let (code, out, err) = leg(&rig, "spawned.7", KEY);
     assert_eq!(code, Some(1), "out={out} err={err}");
-    assert_eq!(rig.events(), before, "journaled nothing");
+    let gone = outcome_at(&rig, REFUSED_ACTION, "spawned.7");
+    assert_eq!(gone.reference.as_deref(), Some(KEY), "{gone:?}");
+
+    // A seat whose journal holds no limit episode at all.
+    rig.seat_rows("spawned.1", "quiet", "claude", "claude");
+    let (code, out, err) = leg(&rig, "spawned.1", KEY);
+    assert_eq!(code, Some(1), "out={out} err={err}");
+    let quiet = outcome_at(&rig, REFUSED_ACTION, "spawned.1");
+    assert_eq!(quiet.reference.as_deref(), Some(KEY), "{quiet:?}");
+
+    // A running turn is a hold, never a refusal: the episode keeps its retry.
+    rig.mark_busy(&pane);
+    let (code, out, err) = leg(&rig, "spawned.0", KEY);
+    assert_eq!(code, Some(1), "out={out} err={err}");
+    let held = one_outcome(&rig, HELD_ACTION);
+    assert_eq!(held.reference.as_deref(), Some(KEY), "{held:?}");
+    assert!(
+        held.summary
+            .as_deref()
+            .is_some_and(|summary| summary.contains("BUSY")),
+        "{held:?}"
+    );
     untouched(&rig, &pane);
 }
 
@@ -171,7 +218,7 @@ fn a_bad_argv_reads_nothing_and_a_stale_or_closed_attempt_moves_nothing() {
 fn a_seat_on_its_limit_moves_to_its_declared_candidate_and_the_watchdog_owns_every_record() {
     let (rig, pane) = limited("legmove", "on", "fake-opencode");
 
-    let (code, out, err) = rig.run("_auto-reseat", &["spawned.0", KEY]);
+    let (code, out, err) = leg(&rig, "spawned.0", KEY);
 
     assert_eq!(
         code,
@@ -210,7 +257,7 @@ fn a_seat_on_its_limit_moves_to_its_declared_candidate_and_the_watchdog_owns_eve
 fn a_seat_with_no_usable_candidate_is_refused_where_it_stands() {
     let (rig, pane) = limited("legnone", "on", "ghost");
 
-    let (code, out, err) = rig.run("_auto-reseat", &["spawned.0", KEY]);
+    let (code, out, err) = leg(&rig, "spawned.0", KEY);
 
     assert_eq!(code, Some(1), "out={out} err={err}");
     let refused = one_outcome(&rig, REFUSED_ACTION);
@@ -229,7 +276,7 @@ fn a_seat_with_no_usable_candidate_is_refused_where_it_stands() {
 fn a_switch_turned_off_between_the_legs_holds_and_the_retry_moves_once_it_is_on() {
     let (rig, pane) = limited("legflip", "off", "fake-opencode");
 
-    let (code, out, err) = rig.run("_auto-reseat", &["spawned.0", KEY]);
+    let (code, out, err) = leg(&rig, "spawned.0", KEY);
 
     assert_eq!(code, Some(1), "out={out} err={err}");
     let held = one_outcome(&rig, HELD_ACTION);
@@ -258,16 +305,14 @@ fn a_switch_turned_off_between_the_legs_holds_and_the_retry_moves_once_it_is_on(
     );
 
     // The leg moves only under an attempt the watchdog opened, so no call can
-    // move the seat ahead of the watchdog's own decision.
+    // move the seat ahead of the watchdog's own decision — asked before the
+    // switch, off or on.
+    silent(&rig, &pane, "no open attempt");
     configure(&rig, "on", "fake-opencode");
-    let before = rig.events();
-    let (code, out, err) = rig.run("_auto-reseat", &["spawned.0", KEY]);
-    assert_eq!(code, Some(1), "no open attempt: out={out} err={err}");
-    assert_eq!(rig.events(), before, "journaled nothing");
-    untouched(&rig, &pane);
+    silent(&rig, &pane, "no open attempt");
 
     journal(&rig, ATTEMPT_ACTION, Some(KEY));
-    let (code, out, err) = rig.run("_auto-reseat", &["spawned.0", KEY]);
+    let (code, out, err) = leg(&rig, "spawned.0", KEY);
     assert_eq!(
         code,
         Some(0),
