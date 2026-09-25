@@ -792,6 +792,8 @@ mod tests {
             // The frame outranks the prompt, and the prompt the input.
             (pane(Frame::Busy, true, Some(100)), HoldReason::Busy),
             (pane(Frame::Clear, true, Some(100)), HoldReason::HumanPrompt),
+            (pane(Frame::Draft, true, None), HoldReason::Draft),
+            (pane(Frame::Unread, true, None), HoldReason::Unread),
         ] {
             assert_eq!(at(&limit, &pane, 650), Decision::Hold(reason), "{pane:?}");
         }
@@ -980,6 +982,8 @@ mod tests {
             vec![window(20.0, false, 4_000, Status::Fresh)],
             // Read since, but still critical or still at the limit.
             vec![window(99.0, true, 6_000, Status::Fresh)],
+            // A later number ae cannot use is no reading at all.
+            vec![window(20.0, false, 6_000, Status::Unknown)],
             vec![
                 window(20.0, false, 6_000, Status::Fresh),
                 window(100.0, true, 6_000, Status::Stale),
@@ -988,6 +992,8 @@ mod tests {
             let choice = choose(&[left(windows)], NOW);
             assert_eq!(choice.skipped, [("sol6x".to_owned(), Skip::LeftOnLimit)]);
         }
+        let stale = left(vec![window(20.0, false, 6_000, Status::Stale)]);
+        assert_eq!(pick(&[stale]), Some(("sol6x".to_owned(), Tier::Unknown)));
         let headroom = left(vec![window(20.0, false, 6_000, Status::Fresh)]);
         assert_eq!(
             pick(&[headroom]),
