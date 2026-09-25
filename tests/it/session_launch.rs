@@ -5585,6 +5585,373 @@ fn a_replaced_managed_work_refuses_the_retry() {
     );
 }
 
+/// The rename identity witness file (#191): ae writes it into the managed work
+/// root on the fresh path and re-proves it on every retry. Test-local spelling
+/// (the product owns the real constant); b1 compiles against main, where no
+/// witness exists yet.
+const WITNESS_NAME: &str = ".ae-rename-witness";
+
+/// Remove every child of `dir`, keeping the dir itself — and therefore its
+/// `(device, inode)` — while its content becomes foreign. The deterministic
+/// stand-in for Linux inode reuse: emptying keeps the dir inode on every
+/// filesystem, so the retry observes exactly what a same-path recreation
+/// observes there. `keep` names children (e.g. `.git`) that survive. Self-checks
+/// the identity it preserves: the test would be vacuous otherwise.
+#[allow(
+    clippy::expect_used,
+    reason = "fixture setup: a gutting that cannot read or remove must fail loudly, like the #[test] caller it feeds"
+)]
+fn gut_work_dir(dir: &Path, keep: &[&str]) {
+    let before = std::fs::metadata(dir).expect("the work dir stats");
+    let entries: Vec<_> = std::fs::read_dir(dir)
+        .expect("read the work dir")
+        .collect::<Result<_, _>>()
+        .expect("read every child");
+    for entry in entries {
+        if keep.iter().any(|name| entry.file_name() == **name) {
+            continue;
+        }
+        // DirEntry::file_type never follows: a symlink to a dir is not a dir.
+        let kind = entry.file_type().expect("a child type");
+        if kind.is_dir() {
+            std::fs::remove_dir_all(entry.path()).expect("remove a child dir");
+        } else {
+            // Plain files, symlinks, FIFOs: remove_file takes the name itself.
+            std::fs::remove_file(entry.path()).expect("remove a child");
+        }
+    }
+    let after = std::fs::metadata(dir).expect("the gutted dir stats");
+    assert_eq!(
+        (before.dev(), before.ino()),
+        (after.dev(), after.ino()),
+        "emptying keeps the dir identity: this IS the reuse observation"
+    );
+}
+
+/// The identity refusal every #191 retry pins: exit 1 naming the unproved
+/// directory. Byte-identical to the pre-fix text (the fix adds a conjunct, not
+/// a message).
+fn assert_identity_refusal(code: Option<i32>, stderr: &str) {
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(
+        stderr.contains("does not match the recorded identity")
+            && stderr.contains("refusing to move an unproved directory"),
+        "{stderr}"
+    );
+}
+
+/// A committed one-file origin for the #191 git tests.
+fn committed_origin(rig: &Rig) {
+    git_in(&rig.project, &["init", "-q"]);
+    git_in(&rig.project, &["config", "user.email", "t@t"]);
+    git_in(&rig.project, &["config", "user.name", "t"]);
+    assert!(std::fs::write(rig.project.join("f"), "x\n").is_ok());
+    git_in(&rig.project, &["add", "-A"]);
+    git_in(&rig.project, &["commit", "-qm", "base"]);
+}
+
+/// Launch a managed session and stop it: the stopped source every #191 test
+/// starts from. Beside `stopped_local_source`, which covers local mode.
+fn launch_and_stop(rig: &Rig, flag: &str, old: &str) {
+    let (code, stdout, stderr) = rig.launch(&[flag, old]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let (code, stdout, stderr) = public(rig, &["stop", old]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+}
+
+/// No intent carrier past a refusal that fires before the publish.
+fn assert_no_carrier(rig: &Rig, old: &str, new: &str) {
+    assert!(
+        !rig.home
+            .join("sessions")
+            .join(format!(".rename.{old}.{new}.intent"))
+            .exists(),
+        "no carrier past a pre-write refusal"
+    );
+}
+
+/// #191 T1: gutting the moved work in place refuses the retry instead of
+/// binding the replacement — same `(device, inode)` by construction, foreign
+/// content. RED on main (it converges, exit 0); the nonce refuses after the fix.
+#[test]
+fn a_gutted_managed_work_refuses_the_retry() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("gutted-work");
+    let old = "gwold";
+    let new = "gwnew";
+    launch_and_stop(&rig, "--copy", old);
+    let new_work = rig.home.join("worktrees").join(new);
+
+    kill_at_boundary(&rig, old, new, "after-work-move");
+    gut_work_dir(&new_work, &[]);
+    assert!(std::fs::write(new_work.join("replacement"), "not the session\n").is_ok());
+
+    let (code, _, stderr) = public(&rig, &[ae::cli::RENAME, old, new]);
+    assert_identity_refusal(code, &stderr);
+    assert!(
+        !rig.dir(new).exists(),
+        "no state publication past the refusal"
+    );
+    assert_eq!(
+        std::fs::read(new_work.join("replacement")).unwrap_or_default(),
+        b"not the session\n",
+        "the planted entry is preserved"
+    );
+}
+
+/// #191 T2: gutting the managed source in place refuses BEFORE the move — the
+/// `do_work_move` pre-move re-proof sees the same `(device, inode)` with
+/// foreign content. RED on main (it moves the gutted dir, exit 0).
+#[test]
+fn a_gutted_managed_source_refuses_before_the_move() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("gutted-source");
+    let old = "gsold";
+    let new = "gsnew";
+    launch_and_stop(&rig, "--copy", old);
+    let old_work = rig.home.join("worktrees").join(old);
+    let new_work = rig.home.join("worktrees").join(new);
+
+    kill_at_boundary(&rig, old, new, "after-intent");
+    gut_work_dir(&old_work, &[]);
+    assert!(std::fs::write(old_work.join("replacement"), "not the session\n").is_ok());
+
+    let (code, _, stderr) = public(&rig, &[ae::cli::RENAME, old, new]);
+    assert_identity_refusal(code, &stderr);
+    assert_eq!(
+        std::fs::read(old_work.join("replacement")).unwrap_or_default(),
+        b"not the session\n",
+        "the source never moved"
+    );
+    assert!(!new_work.exists(), "no destination past a pre-move refusal");
+    assert!(
+        !rig.dir(new).exists(),
+        "no state publication past the refusal"
+    );
+}
+
+/// #191 T4: the witness alone decides — deleting ONLY it from a genuine moved
+/// tree refuses the retry (fail-closed). RED on main (it converges: no witness
+/// exists yet, so the deletion is a no-op).
+#[test]
+fn a_missing_witness_refuses_the_retry() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("missing-witness");
+    let old = "mwold";
+    let new = "mwnew";
+    launch_and_stop(&rig, "--copy", old);
+    let new_work = rig.home.join("worktrees").join(new);
+
+    kill_at_boundary(&rig, old, new, "after-work-move");
+    assert!(std::fs::write(new_work.join("marker"), "mine\n").is_ok());
+    let _ = std::fs::remove_file(new_work.join(WITNESS_NAME));
+
+    let (code, _, stderr) = public(&rig, &[ae::cli::RENAME, old, new]);
+    assert_identity_refusal(code, &stderr);
+    assert!(
+        !rig.dir(new).exists(),
+        "no state publication past the refusal"
+    );
+    assert_eq!(
+        std::fs::read(new_work.join("marker")).unwrap_or_default(),
+        b"mine\n",
+        "the rest of the tree is intact: only the witness is missing"
+    );
+}
+
+/// #191 T5 (git): gutting the moved worktree in place refuses the retry. The
+/// worktree-side `.git` pointer stays (I5: the realistic restored-link shape),
+/// so the refusal attributes to the nonce leg alone. RED on main (exit 0).
+#[test]
+fn a_gutted_git_worktree_refuses_the_retry() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("gutted-git");
+    committed_origin(&rig);
+
+    let old = "gtold";
+    let new = "gtnew";
+    launch_and_stop(&rig, "--worktree", old);
+    let new_work = rig.home.join("worktrees").join(new);
+
+    kill_at_boundary(&rig, old, new, "after-work-move");
+    gut_work_dir(&new_work, &[".git"]);
+    assert!(std::fs::write(new_work.join("replacement"), "not the session\n").is_ok());
+    let canonical_new = std::fs::canonicalize(&new_work).expect("canonical new work");
+    let porcelain = git_in(&rig.project, &["worktree", "list", "--porcelain"]);
+    let registered = porcelain
+        .lines()
+        .filter_map(|line| line.strip_prefix("worktree "))
+        .filter(|path| std::fs::canonicalize(path).is_ok_and(|listed| listed == canonical_new))
+        .count();
+    assert_eq!(
+        registered, 1,
+        "the gutted tree stays registered once: {porcelain}"
+    );
+
+    let (code, _, stderr) = public(&rig, &[ae::cli::RENAME, old, new]);
+    assert_identity_refusal(code, &stderr);
+    assert!(
+        !rig.dir(new).exists(),
+        "no state publication past the refusal"
+    );
+    assert_eq!(
+        std::fs::read(new_work.join("replacement")).unwrap_or_default(),
+        b"not the session\n",
+        "the planted entry is preserved"
+    );
+}
+
+/// #191 T3 CONTROL (green on main and after the fix): foreign content with an
+/// intact witness still converges — content is not the witness. Guards a future
+/// content-hash "fix".
+#[test]
+fn foreign_content_with_an_intact_witness_still_converges() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("foreign-content");
+    let old = "fcold";
+    let new = "fcnew";
+    launch_and_stop(&rig, "--copy", old);
+    let new_work = rig.home.join("worktrees").join(new);
+
+    kill_at_boundary(&rig, old, new, "after-work-move");
+    assert!(std::fs::write(new_work.join("foreign"), "someone else\n").is_ok());
+
+    retry_rename(&rig, old, new);
+    assert_eq!(
+        std::fs::read(new_work.join("foreign")).unwrap_or_default(),
+        b"someone else\n",
+        "the foreign file rides the converged move"
+    );
+}
+
+/// #191 I2 (git): a completed rename leaves no witness behind — not even when
+/// the completing drive died at `after-result`. Kill there: the witness is
+/// still present (removal runs after the cut); the re-run converges AND cleans
+/// it, so `git status` stays clean. RED on main (no witness is ever written).
+#[test]
+fn a_completed_rename_cleans_the_witness_on_rerun() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("completed-witness");
+    committed_origin(&rig);
+
+    let old = "cwold";
+    let new = "cwnew";
+    launch_and_stop(&rig, "--worktree", old);
+    let new_work = rig.home.join("worktrees").join(new);
+
+    kill_at_boundary(&rig, old, new, "after-result");
+    assert!(
+        new_work.join(WITNESS_NAME).is_file(),
+        "the witness survives the parked completing drive"
+    );
+
+    retry_rename(&rig, old, new);
+    assert!(
+        !new_work.join(WITNESS_NAME).exists(),
+        "the re-run of a completion cleans the witness"
+    );
+    let status = git_in(&new_work, &["status", "--porcelain"]);
+    assert!(
+        !status.contains(WITNESS_NAME),
+        "git status stays clean of the witness: {status}"
+    );
+}
+
+/// #191 I4 (git): a symlinked managed source refuses BEFORE any write — the
+/// witness gate lstats `old_work` itself in preflight (rename.rs:1589 covers
+/// every managed mode). Main's RED splits by environment: on Linux the intent
+/// publishes first and the move refuses, so it is RED on "no carrier"; on mac
+/// the symlinked TMPDIR makes registration miss first, so the RED is
+/// message-only. Nothing is ever written through the link.
+#[test]
+fn a_symlinked_managed_source_refuses_before_any_write() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("linked-source");
+    committed_origin(&rig);
+
+    let old = "swold";
+    let new = "swnew";
+    launch_and_stop(&rig, "--worktree", old);
+    let old_work = rig.home.join("worktrees").join(old);
+
+    let target = rig.home.join("link-target");
+    assert!(std::fs::create_dir_all(&target).is_ok());
+    assert!(std::fs::write(target.join("marker"), "mine\n").is_ok());
+    assert!(std::fs::remove_dir_all(&old_work).is_ok());
+    std::os::unix::fs::symlink(&target, &old_work).expect("a symlinked source");
+
+    let (code, _, stderr) = public(&rig, &[ae::cli::RENAME, old, new]);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(stderr.contains("symlink"), "{stderr}");
+    assert_no_carrier(&rig, old, new);
+    assert!(
+        !target.join(WITNESS_NAME).exists(),
+        "nothing written through the link"
+    );
+    assert_eq!(
+        std::fs::read(target.join("marker")).unwrap_or_default(),
+        b"mine\n",
+        "the link target is untouched"
+    );
+}
+
+/// #191 I7 (full): a read-only managed copy refuses the rename with a named
+/// remedy — the witness cannot be written. NEW user-visible refusal. RED on
+/// main (it renames: nothing needs the write there).
+#[test]
+fn a_read_only_managed_copy_refuses_the_rename() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("read-only");
+    let old = "roold";
+    let new = "ronew";
+    launch_and_stop(&rig, "--copy", old);
+    let old_work = rig.home.join("worktrees").join(old);
+
+    assert!(std::fs::write(old_work.join("marker"), "mine\n").is_ok());
+    let mut perms = std::fs::metadata(&old_work)
+        .expect("the source stats")
+        .permissions();
+    perms.set_mode(0o555);
+    std::fs::set_permissions(&old_work, perms).expect("a read-only source");
+
+    let (code, _, stderr) = public(&rig, &[ae::cli::RENAME, old, new]);
+    // Restore before any assert: a 0555 root would leak the scratch (the
+    // reaper cannot unlink children inside it). Suite idiom.
+    let mut perms = std::fs::metadata(&old_work)
+        .expect("the refused root stats")
+        .permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&old_work, perms).expect("the root back to 0755");
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(stderr.contains("witness"), "{stderr}");
+    assert_no_carrier(&rig, old, new);
+    assert!(
+        !old_work.join(WITNESS_NAME).exists(),
+        "no witness in a directory that refuses the write"
+    );
+    assert_eq!(
+        std::fs::read(old_work.join("marker")).unwrap_or_default(),
+        b"mine\n",
+        "the refused root is untouched"
+    );
+}
+
 /// BLOCKER (r2-2): a dangling symlink at the managed destination refuses
 /// before any write — it is an occupant entry, and `rename(2)` would
 /// overwrite it. The link itself is preserved.
