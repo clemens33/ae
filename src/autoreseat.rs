@@ -24,6 +24,7 @@ use std::path::Path;
 
 use crate::config::SectionEntry;
 use crate::events::Event;
+use crate::quota::Status;
 use crate::time::Timestamp;
 use crate::watchdog::{WATCHDOG_ACTOR, event_is_addressed_to};
 
@@ -50,6 +51,12 @@ pub const DEFAULT_GRACE_SECS: u64 = 600;
 const LIMIT_ACTION: &str = "limit";
 const CLEARED_ACTION: &str = "alert-cleared";
 const SPAWN_ACTION: &str = "spawn";
+
+/// A judged window at or past this percentage has no headroom left.
+const EXHAUSTED_PERCENT: f64 = 100.0;
+
+/// How every note that turns the path off begins.
+const OFF: &str = "auto reseat stays off: ";
 
 /// The global `[workspace] auto_reseat` switch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,32 +97,144 @@ impl Settings {
     /// The candidates declared for `profile`, in order.
     #[must_use]
     pub fn candidates(&self, profile: &str) -> Option<&[String]> {
-        let _ = profile;
-        None
+        self.map
+            .iter()
+            .find(|(key, _)| key == profile)
+            .map(|(_, list)| list.as_slice())
     }
 }
 
 /// Read the GLOBAL config now. A project overlay never steers spend, and the
 /// switch is read on every decision, so turning it off stops the next move.
+/// Nothing past an off switch is read or judged.
 #[must_use]
 pub fn settings(global: Option<&Path>) -> Settings {
-    let _ = global;
-    Settings::off(Vec::new())
+    let Some(file) = global else {
+        return Settings::off(Vec::new());
+    };
+    let read = |key| crate::config::read_global_workspace_key(file, key);
+    match parse_switch(read("auto_reseat")) {
+        Ok(Switch::Off) => Settings::off(Vec::new()),
+        Err(note) => Settings::off(vec![note]),
+        Ok(switch) => settle(
+            switch,
+            read("auto_reseat_sessions"),
+            read("auto_reseat_grace_secs"),
+            crate::config::read_global_section(file, "auto_reseat"),
+        ),
+    }
 }
 
+/// Judge the knobs behind a switch that is on. A knob ae cannot use turns the
+/// whole path off with its one note: a move is spend, and a guess is not a
+/// ruling. An entry it cannot use is dropped with a note of its own.
 fn settle(
     switch: Switch,
     sessions: Result<Option<String>, String>,
     grace: Result<Option<String>, String>,
     map: Result<Vec<SectionEntry>, String>,
 ) -> Settings {
-    let _ = (switch, sessions, grace, map);
-    Settings::off(Vec::new())
+    let refused = |why: String| Settings::off(vec![format!("{OFF}{why}")]);
+    let mut notes = Vec::new();
+    let sessions = match sessions {
+        Err(why) => return refused(why),
+        Ok(None) => None,
+        Ok(Some(raw)) => {
+            let (names, ignored) = crate::config::fleet_order_entries(&raw);
+            notes.extend(ignored.iter().map(|entry| {
+                format!(
+                    "auto_reseat_sessions: {entry:?} ignored: not a session name, or named twice"
+                )
+            }));
+            Some(names)
+        }
+    };
+    let grace_secs = match grace {
+        Err(why) => return refused(why),
+        Ok(None) => DEFAULT_GRACE_SECS,
+        Ok(Some(raw)) => match raw.trim().parse::<u64>() {
+            Ok(secs) => secs,
+            Err(_) => {
+                return refused(format!(
+                    "auto_reseat_grace_secs = {raw:?} is not a whole number of seconds"
+                ));
+            }
+        },
+    };
+    let map = match map {
+        Err(why) => return refused(why),
+        Ok(entries) => candidate_map(&entries, &mut notes),
+    };
+    Settings {
+        switch,
+        sessions,
+        grace_secs,
+        map,
+        notes,
+    }
 }
 
+/// The `[auto_reseat]` rows ae can use, each ignored entry named in `notes`.
+/// A profile keyed twice keeps its later row, in that row's place.
+fn candidate_map(entries: &[SectionEntry], notes: &mut Vec<String>) -> Vec<(String, Vec<String>)> {
+    let mut map: Vec<(String, Vec<String>)> = Vec::new();
+    for entry in entries {
+        let at = format!("[auto_reseat] line {}", entry.line);
+        let key = entry.key.as_str();
+        if !crate::config::is_config_key(key) {
+            notes.push(format!("{at}: {key:?} is not a profile name, ignored"));
+            continue;
+        }
+        let Some(value) = entry.value.as_deref() else {
+            notes.push(format!("{at}: {key} names no candidate list, ignored"));
+            continue;
+        };
+        let mut list: Vec<String> = Vec::new();
+        for word in value
+            .split(',')
+            .map(str::trim)
+            .filter(|word| !word.is_empty())
+        {
+            let why = if !crate::config::is_config_key(word) {
+                "is not a profile name"
+            } else if word == key {
+                "is the profile itself"
+            } else if list.iter().any(|taken| taken == word) {
+                "is named twice"
+            } else {
+                list.push(word.to_owned());
+                continue;
+            };
+            notes.push(format!("{at}: {key} candidate {word:?} {why}, ignored"));
+        }
+        if list.is_empty() {
+            notes.push(format!("{at}: {key} keeps no usable candidate, ignored"));
+            continue;
+        }
+        if let Some(earlier) = map.iter().position(|(taken, _)| taken == key) {
+            map.remove(earlier);
+            notes.push(format!("{at}: {key} is keyed twice, this line wins"));
+        }
+        map.push((key.to_owned(), list));
+    }
+    map
+}
+
+/// The switch as written, or the note that keeps the path off. A value is
+/// echoed escaped, so a note carries no control byte into the pane it lands in.
 fn parse_switch(raw: Result<Option<String>, String>) -> Result<Switch, String> {
-    let _ = raw;
-    Ok(Switch::Off)
+    match raw
+        .map_err(|why| format!("{OFF}{why}"))?
+        .as_deref()
+        .map(str::trim)
+    {
+        None | Some("off") => Ok(Switch::Off),
+        Some("on") => Ok(Switch::On),
+        Some("all") => Ok(Switch::All),
+        Some(other) => Err(format!(
+            "{OFF}auto_reseat = {other:?} is not off, on or all"
+        )),
+    }
 }
 
 /// What a roster slot is, for the switch.
@@ -130,8 +249,16 @@ impl SeatClass {
     /// The class of a routing slot, or `None` for anything else.
     #[must_use]
     pub fn of(slot: &str) -> Option<Self> {
-        let _ = slot;
-        None
+        if !crate::requests::is_slot(slot) {
+            return None;
+        }
+        Some(if slot == "main" {
+            Self::Main
+        } else if slot.starts_with("worker.") {
+            Self::Fixed
+        } else {
+            Self::Spawned
+        })
     }
 }
 
@@ -165,18 +292,35 @@ pub enum Ineligible {
 ///
 /// The reason the seat is not eligible.
 pub fn eligible<'s>(settings: &'s Settings, seat: &Seat<'_>) -> Result<&'s [String], Ineligible> {
-    let _ = (settings, seat);
-    Err(Ineligible::Off)
+    if settings.switch == Switch::Off {
+        return Err(Ineligible::Off);
+    }
+    if seat.orchestrator {
+        return Err(Ineligible::Orchestrator);
+    }
+    if settings
+        .sessions
+        .as_ref()
+        .is_some_and(|names| !names.iter().any(|name| name == seat.session))
+    {
+        return Err(Ineligible::Session);
+    }
+    match (SeatClass::of(seat.slot), settings.switch) {
+        (None, _) => return Err(Ineligible::Slot),
+        (Some(SeatClass::Main), Switch::On) => return Err(Ineligible::Class),
+        _ => {}
+    }
+    settings
+        .candidates(seat.profile)
+        .ok_or(Ineligible::Unmapped)
 }
 
-/// What an attempt came to.
+/// What ended an episode's auto path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
     Done,
     Refused,
     Failed,
-    /// A transient refusal: the episode may try once more.
-    Held,
 }
 
 /// One limit episode of one seat, as the journal records it.
@@ -200,13 +344,79 @@ impl Episode {
     pub fn reference(&self) -> &str {
         &self.reference
     }
+
+    fn opened(key: Timestamp) -> Self {
+        Self {
+            key,
+            reference: key.to_string(),
+            attempts: 0,
+            open: None,
+            terminal: None,
+            held: false,
+        }
+    }
+
+    /// Fold one of the watchdog's records addressed to the seat. A record
+    /// whose `ref` is not this episode's key belongs to another episode, except
+    /// `auto-reseat-done`, which names the profile left and ends the path
+    /// whenever it lands: the seat moved.
+    fn absorb(&mut self, event: &Event) {
+        let ours = event.reference.as_deref() == Some(self.reference.as_str());
+        match event.action.as_str() {
+            ATTEMPT_ACTION if ours => {
+                self.attempts = self.attempts.saturating_add(1);
+                self.open = Some(event.ts);
+                self.held = false;
+            }
+            HELD_ACTION if ours => {
+                self.open = None;
+                self.held = true;
+            }
+            DONE_ACTION => self.close(Outcome::Done),
+            REFUSED_ACTION if ours => self.close(Outcome::Refused),
+            FAILED_ACTION if ours => self.close(Outcome::Failed),
+            _ => {}
+        }
+    }
+
+    /// The first terminal outcome wins; a later one closes nothing new.
+    fn close(&mut self, outcome: Outcome) {
+        self.open = None;
+        self.held = false;
+        self.terminal.get_or_insert(outcome);
+    }
 }
 
 /// The episode the seat is in now, or `None` when it has none.
 #[must_use]
 pub fn episode(events: &[Event], session: &str, slot: &str, agent: &str) -> Option<Episode> {
-    let _ = (events, session, slot, agent);
-    None
+    let mut current: Option<Episode> = None;
+    for event in events {
+        if !event_is_addressed_to(event, session, slot, agent) {
+            continue;
+        }
+        if event.action == SPAWN_ACTION {
+            current = None;
+            continue;
+        }
+        if event.actor != WATCHDOG_ACTOR {
+            continue;
+        }
+        match event.action.as_str() {
+            CLEARED_ACTION => current = None,
+            LIMIT_ACTION => {
+                if current.is_none() {
+                    current = Some(Episode::opened(event.ts));
+                }
+            }
+            _ => {
+                if let Some(open) = current.as_mut() {
+                    open.absorb(event);
+                }
+            }
+        }
+    }
+    current
 }
 
 /// Each profile this seat left by auto reseat since its newest `spawn`, with
@@ -218,8 +428,24 @@ pub fn left_profiles(
     slot: &str,
     agent: &str,
 ) -> Vec<(String, Timestamp)> {
-    let _ = (events, session, slot, agent);
-    Vec::new()
+    let mut left: Vec<(String, Timestamp)> = Vec::new();
+    for event in events {
+        if !event_is_addressed_to(event, session, slot, agent) {
+            continue;
+        }
+        if event.action == SPAWN_ACTION {
+            left.clear();
+            continue;
+        }
+        if event.actor != WATCHDOG_ACTOR || event.action != DONE_ACTION {
+            continue;
+        }
+        if let Some(profile) = event.reference.as_deref() {
+            left.retain(|(taken, _)| taken != profile);
+            left.push((profile.to_owned(), event.ts));
+        }
+    }
+    left
 }
 
 /// What the latest capture of the seat's pane proved.
@@ -286,10 +512,43 @@ pub enum Decision {
 }
 
 /// Decide for one seat whose limit latch stands.
+///
+/// An open attempt is judged before the spent count, so the second attempt
+/// keeps its bound; the grace is judged before the pane, so nothing about the
+/// pane is read into a hold while the human still has time to react.
 #[must_use]
 pub fn decide(episode: Option<&Episode>, grace_secs: u64, pane: &Pane, now: i64) -> Decision {
-    let _ = (episode, grace_secs, pane, now);
-    Decision::Rest
+    let Some(episode) = episode.filter(|found| found.terminal.is_none()) else {
+        return Decision::Rest;
+    };
+    if let Some(started) = episode.open {
+        return if now.saturating_sub(started.epoch()) < IN_FLIGHT_SECS {
+            Decision::InFlight
+        } else {
+            Decision::Overdue
+        };
+    }
+    if episode.attempts >= MAX_ATTEMPTS {
+        return Decision::Rest;
+    }
+    let grace = i64::try_from(grace_secs).unwrap_or(i64::MAX);
+    let key = episode.key.epoch();
+    let due_at = key.saturating_add(grace);
+    if now < due_at {
+        return Decision::Wait { due_at };
+    }
+    let touched = pane
+        .client_input
+        .is_some_and(|at| at > key && now < at.saturating_add(grace));
+    let reason = match pane.frame {
+        Frame::Unread => Some(HoldReason::Unread),
+        Frame::Busy => Some(HoldReason::Busy),
+        Frame::Draft => Some(HoldReason::Draft),
+        Frame::Clear if pane.human_prompt => Some(HoldReason::HumanPrompt),
+        Frame::Clear if touched => Some(HoldReason::ClientInput),
+        Frame::Clear => None,
+    };
+    reason.map_or(Decision::Attempt, Decision::Hold)
 }
 
 /// A candidate's standing, best first.
@@ -311,7 +570,7 @@ pub struct Window {
     pub critical: bool,
     pub observed_at: i64,
     pub resets_at: Option<i64>,
-    pub status: crate::quota::Status,
+    pub status: Status,
 }
 
 /// What the leg knows about one declared candidate.
@@ -346,17 +605,90 @@ pub struct Choice {
 /// Take the first usable candidate of the best tier, in declared order.
 #[must_use]
 pub fn choose(candidates: &[Candidate], now: i64) -> Choice {
-    let _ = (candidates, now);
+    let mut skipped = Vec::new();
+    let mut best: Option<(&Candidate, Tier)> = None;
+    for candidate in candidates {
+        if let Some(skip) = passed_over(candidate, now) {
+            skipped.push((candidate.profile.clone(), skip));
+            continue;
+        }
+        let tier = tier(&candidate.windows);
+        if best.is_none_or(|(_, held)| tier < held) {
+            best = Some((candidate, tier));
+        }
+    }
     Choice {
-        pick: None,
-        skipped: Vec::new(),
+        pick: best.map(|(candidate, tier)| (candidate.profile.clone(), tier)),
+        skipped,
+    }
+}
+
+/// Why `candidate` cannot be taken now, if it cannot.
+///
+/// A profile the seat left on its limit waits for a window read after the move
+/// that proves relief — a usable reading below critical, or a reset that has
+/// passed — and for no usable reading after the move to still sit at critical:
+/// a move back onto a nearly spent account would only move the seat again. A
+/// number ae cannot use proves nothing either way. A spend cap needs no rule
+/// of its own, because it judges as exhausted.
+fn passed_over(candidate: &Candidate, now: i64) -> Option<Skip> {
+    if !candidate.configured {
+        return Some(Skip::Unconfigured);
+    }
+    if candidate.peer_latched {
+        return Some(Skip::PeerLatched);
+    }
+    if let Some(left) = candidate.left_at {
+        let mut relieved = false;
+        for window in candidate
+            .windows
+            .iter()
+            .filter(|window| window.observed_at > left)
+        {
+            if window.resets_at.is_some_and(|at| at <= now) {
+                relieved = true;
+            } else if usable(window) {
+                if window.critical {
+                    return Some(Skip::LeftOnLimit);
+                }
+                relieved = true;
+            }
+        }
+        if !relieved {
+            return Some(Skip::LeftOnLimit);
+        }
+    }
+    candidate
+        .windows
+        .iter()
+        .filter(|window| usable(window))
+        .any(|window| window.judged >= EXHAUSTED_PERCENT)
+        .then_some(Skip::Exhausted)
+}
+
+/// A window whose number still stands: read before its reset.
+fn usable(window: &Window) -> bool {
+    matches!(window.status, Status::Fresh | Status::Stale)
+}
+
+/// The tier a candidate's windows put it in. Only a fresh window is known.
+fn tier(windows: &[Window]) -> Tier {
+    let mut fresh = windows
+        .iter()
+        .filter(|window| window.status == Status::Fresh)
+        .peekable();
+    if fresh.peek().is_none() {
+        Tier::Unknown
+    } else if fresh.any(|window| window.critical) {
+        Tier::Critical
+    } else {
+        Tier::BelowCritical
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::quota::Status;
 
     const SESSION: &str = "aedev";
     const SLOT: &str = "spawned.3";
