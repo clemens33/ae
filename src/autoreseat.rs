@@ -420,7 +420,7 @@ pub fn episode(events: &[Event], session: &str, slot: &str, agent: &str) -> Opti
 }
 
 /// Each profile this seat left by auto reseat since its newest `spawn`, with
-/// the time of the newest such move.
+/// the time of the newest such move, ordered by that move, oldest first.
 #[must_use]
 pub fn left_profiles(
     events: &[Event],
@@ -537,9 +537,11 @@ pub fn decide(episode: Option<&Episode>, grace_secs: u64, pane: &Pane, now: i64)
     if now < due_at {
         return Decision::Wait { due_at };
     }
+    // Input at or before the key has aged past the grace by the time the seat
+    // is due, so only input after the limit can still hold it.
     let touched = pane
         .client_input
-        .is_some_and(|at| at > key && now < at.saturating_add(grace));
+        .is_some_and(|at| now < at.saturating_add(grace));
     let reason = match pane.frame {
         Frame::Unread => Some(HoldReason::Unread),
         Frame::Busy => Some(HoldReason::Busy),
@@ -666,7 +668,8 @@ fn passed_over(candidate: &Candidate, now: i64) -> Option<Skip> {
         .then_some(Skip::Exhausted)
 }
 
-/// A window whose number still stands: read before its reset.
+/// A window whose number still stands: read before its reset. The status
+/// carries that, because `quota::freshness` reads a passed reset as unknown.
 fn usable(window: &Window) -> bool {
     matches!(window.status, Status::Fresh | Status::Stale)
 }
@@ -1020,9 +1023,15 @@ mod tests {
             limit(),
             routed(600, ATTEMPT_ACTION, OTHER_KEY),
             routed(601, REFUSED_ACTION, OTHER_KEY),
+            routed(602, ATTEMPT_ACTION, KEY),
+            routed(603, HELD_ACTION, OTHER_KEY),
+            routed(604, FAILED_ACTION, OTHER_KEY),
         ];
         let found = fold(&stale).expect("an episode");
-        assert_eq!((found.attempts, found.terminal), (0, None));
+        assert_eq!(
+            (found.attempts, found.open, found.terminal, found.held),
+            (1, Some(after_key(602)), None, false)
+        );
     }
 
     #[test]
@@ -1060,11 +1069,15 @@ mod tests {
 
     #[test]
     fn left_profiles_names_each_profile_left_since_the_seats_spawn_newest_move_each() {
+        let forged = record(-900, AGENT, DONE_ACTION, AGENT, r#","ref":"astrax""#);
         let events = [
             routed(-10_800, DONE_ACTION, "fablex"),
             spawned(-7200),
             routed(-3600, DONE_ACTION, "sol6x"),
             routed(-1800, DONE_ACTION, "opus55x"),
+            // Only the watchdog's own done names a profile left.
+            forged,
+            routed(-600, ATTEMPT_ACTION, KEY),
             routed(0, DONE_ACTION, "sol6x"),
         ];
         assert_eq!(
@@ -1129,6 +1142,20 @@ mod tests {
         ] {
             assert_eq!(at(&limit, &pane, 650), Decision::Hold(reason), "{pane:?}");
         }
+        // Each reason reads as its own hold in the record that names it.
+        let summaries = [
+            HoldReason::Unread,
+            HoldReason::Busy,
+            HoldReason::Draft,
+            HoldReason::HumanPrompt,
+            HoldReason::ClientInput,
+        ]
+        .map(HoldReason::summary);
+        for (index, summary) in summaries.iter().enumerate() {
+            assert!(summary.len() > "held: ".len(), "{summary:?}");
+            assert!(summary.starts_with("held: "), "{summary:?}");
+            assert!(!summaries[..index].contains(summary), "{summary:?}");
+        }
         // Only input strictly after the key is a human reacting to this limit,
         // and it holds until the grace has passed since that input.
         for (input, now) in [(-5, 650), (0, 650), (100, 700)] {
@@ -1172,6 +1199,15 @@ mod tests {
         assert_eq!(at(&events, &CLEAR, 900), Decision::Rest);
         let refused = [limit(), routed(600, REFUSED_ACTION, KEY)];
         assert_eq!(at(&refused, &CLEAR, 900), Decision::Rest);
+        // The latch never broke, so a limit booked after the move is the same
+        // episode: the move ended its auto path, and nothing chains.
+        let moved = [
+            limit(),
+            routed(600, ATTEMPT_ACTION, KEY),
+            routed(700, DONE_ACTION, "sol6x"),
+            watchdog(900, LIMIT_ACTION, None),
+        ];
+        assert_eq!(at(&moved, &CLEAR, 2_000), Decision::Rest);
     }
 
     #[test]
@@ -1309,9 +1345,10 @@ mod tests {
             ..candidate("sol6x", windows)
         };
         for windows in [
-            // Nothing read since the move, or only before it.
+            // Nothing read since the move, or only before it or in its second.
             Vec::new(),
             vec![window(20.0, false, 4_000, Status::Fresh)],
+            vec![window(20.0, false, 5_000, Status::Fresh)],
             // Read since, but still critical or still at the limit.
             vec![window(99.0, true, 6_000, Status::Fresh)],
             // A later number ae cannot use is no reading at all.
