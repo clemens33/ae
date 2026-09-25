@@ -6476,6 +6476,143 @@ fn a_suffixed_rename_retries_past_a_removed_foreign_worktree_after_the_move() {
     retry_rename(&rig, old, new);
 }
 
+/// Rewrite one `u64` row of a rename intent document.
+fn rewrite_intent_row(intent: &str, key: &str, value: u64) -> String {
+    intent
+        .lines()
+        .map(|line| {
+            if line.starts_with(&format!("{key}=")) {
+                format!("{key}={value}")
+            } else {
+                line.to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n"
+}
+
+/// #196 I5: a repo-selecting `GIT_DIR` in the environment cannot smuggle a
+/// foreign git dir past the containment — the plan-time fingerprint refuses
+/// before any write. Smallest defeating mutation: skip the containment.
+#[test]
+fn a_git_dir_env_cannot_smuggle_a_foreign_git_dir_into_the_fingerprint() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("gitdir-env");
+    git_in(&rig.project, &["init", "-q"]);
+    git_in(&rig.project, &["config", "user.email", "t@t"]);
+    git_in(&rig.project, &["config", "user.name", "t"]);
+    assert!(std::fs::write(rig.project.join("f"), "x\n").is_ok());
+    git_in(&rig.project, &["add", "-A"]);
+    git_in(&rig.project, &["commit", "-qm", "base"]);
+    let (code, stdout, stderr) = rig.launch(&["--worktree", "gdold"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let old_work = rig.home.join("worktrees").join("gdold");
+    let new_work = rig.home.join("worktrees").join("gdnew");
+    let (code, stdout, stderr) = public(&rig, &["stop", "gdold"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+
+    let out = ae()
+        .env("HOME", &rig.scratch)
+        .env("AE_HOME", &rig.home)
+        .env("TMUX_TMPDIR", &rig.scratch)
+        .env("GIT_DIR", rig.project.join(".git"))
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
+        .args([ae::cli::RENAME, "gdold", "gdnew"])
+        .output()
+        .unwrap_or_else(|why| panic!("the rename should run: {why}"));
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+    assert!(stderr.contains("cannot be fingerprinted"), "{stderr}");
+    assert!(
+        !rig.home
+            .join("sessions")
+            .join(".rename.gdold.gdnew.intent")
+            .exists(),
+        "no intent is published"
+    );
+    assert!(old_work.is_dir(), "the old path is intact");
+    assert!(!new_work.exists(), "no destination appears");
+    assert!(!rig.dir("gdnew").exists(), "no state move");
+    let porcelain = git_in(&rig.project, &["worktree", "list", "--porcelain"]);
+    assert!(
+        porcelain_has(&porcelain, &old_work) && !porcelain_has(&porcelain, &new_work),
+        "old registered once, new absent: {porcelain}"
+    );
+}
+
+/// #196 I6: the POST-move leg discriminates — a carrier whose admin
+/// fingerprint no longer describes the moved worktree refuses the retry.
+/// Smallest defeating mutation: `admin_holds -> true` at the post-move site.
+#[test]
+fn a_post_move_admin_mismatch_refuses_the_retry() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("admin-postmove");
+    git_in(&rig.project, &["init", "-q"]);
+    git_in(&rig.project, &["config", "user.email", "t@t"]);
+    git_in(&rig.project, &["config", "user.name", "t"]);
+    assert!(std::fs::write(rig.project.join("f"), "x\n").is_ok());
+    git_in(&rig.project, &["add", "-A"]);
+    git_in(&rig.project, &["commit", "-qm", "base"]);
+    let (code, stdout, stderr) = rig.launch(&["--worktree", "apold"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let (code, stdout, stderr) = public(&rig, &["stop", "apold"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+
+    kill_at_boundary(&rig, "apold", "apnew", "after-work-move");
+    let intent_path = rig.home.join("sessions").join(".rename.apold.apnew.intent");
+    let intent = std::fs::read_to_string(&intent_path).unwrap_or_default();
+    let real = intent_row(&intent, "admin_ino");
+    assert!(real != 0, "the carrier records a whole admin witness");
+    assert!(
+        std::fs::write(
+            &intent_path,
+            rewrite_intent_row(&intent, "admin_ino", real + 1)
+        )
+        .is_ok()
+    );
+
+    let (code, _, stderr) = public(&rig, &[ae::cli::RENAME, "apold", "apnew"]);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(
+        stderr.contains("does not match the recorded identity"),
+        "{stderr}"
+    );
+    assert!(!rig.dir("apnew").exists(), "no state move past the refusal");
+}
+
+/// #196 I7: a .175-shaped carrier — own nonce and witness, FOREIGN admin
+/// recording — still converges. Built from a real suffixed run, so the
+/// bytes are exactly what the old core published. Not RED on main (main
+/// converges here too); it kills a mutant dropping the legacy arm.
+#[test]
+fn a_legacy_suffixed_carrier_converges() {
+    if skip() {
+        return;
+    }
+    let old = "s4old";
+    let new = "s4new";
+    let rig = suffixed_git_source("suffixed-legacy", old);
+
+    kill_at_boundary(&rig, old, new, "after-intent");
+    let intent_path = rig
+        .home
+        .join("sessions")
+        .join(format!(".rename.{old}.{new}.intent"));
+    let intent = std::fs::read_to_string(&intent_path).unwrap_or_default();
+    let foreign = std::fs::metadata(rig.project.join(".git").join("worktrees").join(old))
+        .expect("the live foreign admin dir");
+    let backdated = rewrite_intent_row(&intent, "admin_dev", foreign.dev());
+    let backdated = rewrite_intent_row(&backdated, "admin_ino", foreign.ino());
+    assert!(std::fs::write(&intent_path, &backdated).is_ok());
+    retry_rename(&rig, old, new);
+}
+
 /// Sweep ADD: a link planted at the new state address during the cut refuses
 /// the retry — at the under-lock recheck — before `rename(2)` can overwrite
 /// the unowned entry. The link and the old state are preserved. Smallest

@@ -2,11 +2,12 @@
 //! [`crate::transport::run_git`], the fixed-program git leg of the one process
 //! door.
 //!
-//! Four consumers, one door: the archive preview's range and HEAD facts, the
-//! `ae end` path's commit and push, the watchdog's branch-and-dirty segment, and
+//! Five consumers, one door: the archive preview's range and HEAD facts, the
+//! `ae end` path's commit and push, the watchdog's branch-and-dirty segment,
 //! `ae brief`'s dirty marker — which is the watchdog's [`work_tree_dirty`], read
 //! a second time rather than spelled a second way, so the `*` on a card and the
-//! `*` on a status line can never disagree.
+//! `*` on a status line can never disagree — and the stopped rename's worktree
+//! registration and admin dir.
 //!
 //! A non-local (`worktree`/`copy`) preview runs these in the session's work dir.
 //! Two properties are structural, not incidental:
@@ -49,6 +50,10 @@ enum Query<'a> {
     /// `worktree list --porcelain` — the managed-worktree registration the
     /// stopped rename proves ownership and destination absence against.
     WorktreeList,
+    /// `rev-parse --absolute-git-dir` — the worktree's OWN git dir, which the
+    /// stopped rename asks per attempt instead of spelling the admin id from
+    /// the leaf git suffixes on collision (#196).
+    AbsoluteGitDir,
     /// `worktree move <old> <new>` — the stopped rename's managed git move,
     /// run with `-C <origin>`. Git itself refuses a main worktree, a locked
     /// one and a populated-submodule one before moving anything.
@@ -155,6 +160,10 @@ fn argv(wdir: &OsStr, query: &Query) -> GitArgv {
             args.push("worktree".into());
             args.push("list".into());
             args.push("--porcelain".into());
+        }
+        Query::AbsoluteGitDir => {
+            args.push("rev-parse".into());
+            args.push("--absolute-git-dir".into());
         }
         Query::WorktreeMove { worktree, new_path } => {
             args.push("worktree".into());
@@ -317,6 +326,19 @@ pub(crate) fn worktree_list(origin: &[u8]) -> Option<String> {
     let origin = OsStr::from_bytes(origin);
     let (succeeded, listed) = crate::transport::run_git(&argv(origin, &Query::WorktreeList));
     succeeded.then_some(listed)
+}
+
+/// `git -C <work> rev-parse --absolute-git-dir` — the worktree's OWN git dir
+/// as git spells it, or `None` when git itself fails there. The stopped
+/// rename's admin leg asks this per attempt; the caller containment-checks
+/// the answer before trusting it.
+pub(crate) fn absolute_git_dir(work: &[u8]) -> Option<String> {
+    if work.is_empty() {
+        return None;
+    }
+    let work = OsStr::from_bytes(work);
+    let (succeeded, dir) = crate::transport::run_git(&argv(work, &Query::AbsoluteGitDir));
+    succeeded.then_some(dir)
 }
 
 /// `git -C <origin> worktree move <old> <new>` — move one managed worktree's
@@ -605,6 +627,11 @@ mod tests {
                 }
             )),
             ["-C", "/origin", "worktree", "move", "/wt/old", "/wt/new"]
+        );
+        let wt = OsString::from("/wt/old");
+        assert_eq!(
+            strs(&argv(&wt, &Query::AbsoluteGitDir)),
+            ["-C", "/wt/old", "rev-parse", "--absolute-git-dir"]
         );
     }
 }

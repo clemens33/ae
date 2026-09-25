@@ -1852,15 +1852,73 @@ fn remove_witness(work: &Path, intent: &Intent) {
     }
 }
 
-/// The git administrative directory for a managed work path: origin's
-/// `.git/worktrees/<leaf>`, which `git worktree move` preserves (name and
-/// identity) while repointing its `gitdir` file.
+/// The LEGACY git administrative directory for a managed work path: origin's
+/// `.git/worktrees/<leaf>`. Git suffixes the admin id on collision (#196), so
+/// this spells a foreign dir for a suffixed worktree; it survives only as the
+/// legacy arm of [`admin_holds`], for intent documents a ≤v2026.9.175 core
+/// fingerprinted. New fingerprints resolve through [`resolve_admin_dir`].
 fn admin_dir(origin: &str, work: &str) -> PathBuf {
     let leaf = Path::new(work)
         .file_name()
         .map(std::ffi::OsStr::to_owned)
         .unwrap_or_default();
     Path::new(origin).join(".git/worktrees").join(leaf)
+}
+
+/// One `rev-parse --absolute-git-dir` answer, judged: exactly one trailing
+/// newline stripped (never trimmed — an origin path may end in a space), and
+/// empty, relative, interior-newline or NUL answers refused. A non-UTF-8
+/// origin refuses here too (the door hands lossy stdout) — parity with
+/// `worktree_list`/`registered_spot`, which cannot match such paths either.
+fn parse_git_dir_answer(out: &str) -> Option<PathBuf> {
+    let line = out.strip_suffix('\n').unwrap_or(out);
+    if line.is_empty() || line.contains(['\n', '\0']) {
+        return None;
+    }
+    let path = PathBuf::from(line);
+    if path.is_relative() {
+        return None;
+    }
+    Some(path)
+}
+
+/// The session's OWN git administrative directory for `work`, asked from git
+/// per attempt: the leaf spelling breaks when git suffixes the admin id
+/// (#196). `None` unless the answer parses AND canonicalizes to a direct
+/// child of `<origin>/.git/worktrees/` — a main-repo or walk-up answer, or an
+/// origin whose `.git` is a file (separate-git-dir, submodule), fails closed
+/// here and the caller refuses.
+fn resolve_admin_dir(origin: &str, work: &str) -> Option<PathBuf> {
+    let answer = parse_git_dir_answer(&crate::git::absolute_git_dir(work.as_bytes())?)?;
+    let admins = canonical(&Path::new(origin).join(".git/worktrees"))?;
+    let dir = canonical(&answer)?;
+    if dir.parent() == Some(admins.as_path()) {
+        Some(dir)
+    } else {
+        None
+    }
+}
+
+/// Whether the admin directory re-proves `intent` from the work address that
+/// exists now (`old_work` before the move, `new_work` after): the resolved own
+/// dir matches the recording — or, for an intent a ≤v2026.9.175 core recorded
+/// against a suffixed id, the OLD-leaf-derived one does (`git worktree move`
+/// keeps the admin id, so the old core's recording always names the old leaf,
+/// before and after the move). That second arm cannot mask a real replacement
+/// of a NEW recording: while own and foreign are both live their inodes
+/// differ, so it accepts only after the own admin died and its inode was
+/// reused by the foreign — and then the pre-move registration or the post-move
+/// porcelain leg still refuses. (The zero recording is refused by the caller
+/// in `work_moved`; `do_work_move` relies on the grammar, which demands a
+/// whole admin witness in git mode.)
+fn admin_holds(intent: &Intent, work: &str) -> bool {
+    let recorded = (intent.admin_dev, intent.admin_ino);
+    if let Some(own) = resolve_admin_dir(&intent.origin, work)
+        && dir_id(&own) == recorded
+    {
+        return true;
+    }
+    dir_id(&admin_dir(&intent.origin, &intent.old_work)) == recorded
 }
 
 /// Whether `porcelain` registers the `name` child of `parent`: a literal hit,
@@ -1929,8 +1987,8 @@ fn git_recovery_check(root: &Path, intent: &Intent) -> Result<(), String> {
     if old_gone {
         if news.len() != 1 || !olds.is_empty() {
             return Err(format!(
-                "'{}' is not coherently registered at '{}' after the recorded move — refusing (restore the registration or end the session)",
-                intent.new_work, intent.origin
+                "'{}' is not coherently registered at '{}' after the recorded move — refusing (run 'git -C '{}' worktree repair' or end the session)",
+                intent.new_work, intent.origin, intent.new_work
             ));
         }
         return Ok(());
@@ -2048,10 +2106,7 @@ fn work_moved(root: &Path, intent: &Intent) -> bool {
     // the nonce-bearing work beside it, and the porcelain below proves one
     // admin still points at the work. Manual admin surgery on an
     // inode-reusing filesystem stays a named residual.
-    if (intent.admin_dev, intent.admin_ino) == (0, 0)
-        || dir_id(&admin_dir(&intent.origin, &intent.old_work))
-            != (intent.admin_dev, intent.admin_ino)
-    {
+    if (intent.admin_dev, intent.admin_ino) == (0, 0) || !admin_holds(intent, &intent.new_work) {
         return false;
     }
     let Some(listed) = crate::git::worktree_list(intent.origin.as_bytes()) else {
@@ -2093,10 +2148,7 @@ fn do_work_move(root: &Path, intent: &Intent) -> Result<(), String> {
     }
     // The admin re-proof stays `(device, inode)`-only (N4): the work nonce
     // above already refuses every git-shaped replacement of the pair.
-    if intent.mode == WorkMode::Git
-        && dir_id(&admin_dir(&intent.origin, &intent.old_work))
-            != (intent.admin_dev, intent.admin_ino)
-    {
+    if intent.mode == WorkMode::Git && !admin_holds(intent, &intent.old_work) {
         return Err(format!(
             "the git administrative directory for '{}' does not match the recorded identity — refusing to move an unproved worktree",
             intent.old_work
@@ -2903,7 +2955,9 @@ fn stopped_fresh(
         _ => dir_id(Path::new(&plan.old_work)),
     };
     let (admin_dev, admin_ino) = match plan.mode {
-        WorkMode::Git => dir_id(&admin_dir(&plan.origin, &plan.old_work)),
+        WorkMode::Git => {
+            resolve_admin_dir(&plan.origin, &plan.old_work).map_or((0, 0), |dir| dir_id(&dir))
+        }
         _ => (0, 0),
     };
     if plan.mode != WorkMode::Local && (work_dev, work_ino) == (0, 0) {
