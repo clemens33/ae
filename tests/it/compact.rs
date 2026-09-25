@@ -601,6 +601,18 @@ fn the_watchdog_ledger_reader_reads_an_answered_seat_checkpoint_as_closed() {
 /// writer. A lost bit hangs here, and `.config/nextest.toml` ends that.
 #[test]
 fn a_writerless_fifo_swapped_in_after_lstat_is_refused_without_blocking() {
+    // The target list `HOLD_FLAGS` spells, duplicated on purpose (#188): the pair
+    // reaches the FIFO and refuses it; elsewhere the open is never reached.
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64")
+    ))]
+    let refusal = ae::store::StampGap::Unreadable;
+    #[cfg(not(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64")
+    )))]
+    let refusal = ae::store::StampGap::Unavailable;
     let s = Scratch::new("stamp-fifo");
     let store = ae::store::open(&s.0);
     store.stamp_launch_attempt(1_789_105_855).unwrap();
@@ -609,7 +621,7 @@ fn a_writerless_fifo_swapped_in_after_lstat_is_refused_without_blocking() {
     crate::cli::mkfifo(&fifo);
     std::fs::rename(&fifo, store.launch_attempt_path()).unwrap();
     let started = std::time::Instant::now();
-    assert_eq!(node.open().err(), Some(ae::store::StampGap::Unreadable));
+    assert_eq!(node.open().err(), Some(refusal));
     assert!(
         started.elapsed() < Duration::from_secs(5),
         "refused promptly"

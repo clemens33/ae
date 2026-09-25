@@ -818,6 +818,12 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::time::Duration;
 
+    /// Refused with `Unreadable` where `HOLD_FLAGS` spells a pair, else `Unavailable`.
+    const REFUSED: StampGap = match super::HOLD_FLAGS {
+        Some(_) => StampGap::Unreadable,
+        None => StampGap::Unavailable,
+    };
+
     fn scratch(tag: &str) -> PathBuf {
         let dir = PathBuf::from(format!("/tmp/ae-store-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1258,16 +1264,12 @@ mod tests {
         store.stamp_launch_attempt(1_789_105_855).unwrap();
         let node = store.stamp_node().unwrap();
         store.stamp_launch_attempt(1_789_105_855).unwrap();
-        assert_eq!(
-            node.open().err(),
-            Some(StampGap::Unreadable),
-            "a replacement"
-        );
+        assert_eq!(node.open().err(), Some(REFUSED), "a replacement");
         // A link to the SAME inode: only O_NOFOLLOW refuses it.
         let node = store.stamp_node().unwrap();
         std::fs::rename(&path, &aside).unwrap();
         std::os::unix::fs::symlink(&aside, &path).unwrap();
-        assert_eq!(node.open().err(), Some(StampGap::Unreadable), "a link");
+        assert_eq!(node.open().err(), Some(REFUSED), "a link");
         std::fs::remove_file(&path).unwrap();
         // No stamp at the lstat is nothing to hold; a link or a directory is no
         // node at all.
@@ -1290,11 +1292,7 @@ mod tests {
         store.stamp_launch_attempt(1_789_105_855).unwrap();
         let node = store.stamp_node().unwrap();
         std::fs::remove_file(&path).unwrap();
-        assert_eq!(
-            node.open().err(),
-            Some(StampGap::Unreadable),
-            "gone by the open"
-        );
+        assert_eq!(node.open().err(), Some(REFUSED), "gone by the open");
         // A parent that is not a directory: damage, never an absence.
         let file = dir.join("not-a-dir");
         std::fs::write(&file, b"").unwrap();
@@ -1313,12 +1311,12 @@ mod tests {
         for body in [&b"0\n"[..], b"-5\n", &[b'1'; 65], b"\xff\xfe", b"soon\n"] {
             std::fs::write(store.launch_attempt_path(), body).unwrap();
             let node = store.stamp_node().unwrap();
-            assert_eq!(node.open().err(), Some(StampGap::Unreadable), "{body:?}");
+            assert_eq!(node.open().err(), Some(REFUSED), "{body:?}");
         }
         let padded = format!("{:<65}", 1_789_105_855);
         std::fs::write(store.launch_attempt_path(), &padded).unwrap();
         let node = store.stamp_node().unwrap();
-        assert_eq!(node.open().err(), Some(StampGap::Unreadable), "{padded:?}");
+        assert_eq!(node.open().err(), Some(REFUSED), "{padded:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1328,6 +1326,14 @@ mod tests {
         let store = open(&dir);
         let path = store.launch_attempt_path();
         let aside = dir.join("aside");
+        if super::HOLD_FLAGS.is_none() {
+            // No flag pair here: the hold cannot be taken at all.
+            store.stamp_launch_attempt(1_789_105_855).unwrap();
+            let open = store.stamp_node().unwrap().open();
+            assert_eq!(open.err(), Some(REFUSED), "no hold");
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
         let acquire = |store: &super::SessionStore| {
             store.stamp_launch_attempt(1_789_105_855).unwrap();
             store.stamp_node().unwrap().open().unwrap()

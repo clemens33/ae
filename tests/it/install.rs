@@ -948,15 +948,22 @@ fn installed_doctor_warns_when_the_last_successful_check_is_stale() {
 
 /// The platform `install` resolves for THIS host, spelled the way its `uname`
 /// case spells it. ae publishes two bundles and the two CI legs are both of
-/// them, so a host outside the pair has no bundle to fetch and nothing here to
-/// prove — it is a stated failure rather than a silent skip, because a test
-/// that quietly stops running is the failure this project keeps meeting.
+/// them, so a host outside the pair has no bundle to fetch; the test asserts the refusal.
 const BOOTSTRAP_PLATFORM: &str = if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
     "darwin-arm64"
 } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
     "linux-x86_64-musl"
 } else {
     ""
+};
+
+/// The refusal `install` owes a host outside the pair; duplicated on purpose.
+const UNSUPPORTED_HOST: &str = if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
+    "Intel macOS is unsupported; use an Apple Silicon Mac."
+} else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
+    "Linux ARM is unsupported; use a Linux x86_64 machine."
+} else {
+    "unsupported platform: "
 };
 
 /// The version the fixture release carries.
@@ -1249,12 +1256,15 @@ fn archive_name() -> String {
 /// PROVEN first.
 #[test]
 fn the_bootstrap_proves_the_bundle_then_hands_the_extracted_root_to_the_core() {
-    assert!(
-        !BOOTSTRAP_PLATFORM.is_empty(),
-        "ae publishes bundles for darwin-arm64 and linux-x86_64-musl; this host is neither, \
-         so `install` would refuse before doing anything this test could assert"
-    );
     let fixture = Bootstrap::new();
+    if BOOTSTRAP_PLATFORM.is_empty() {
+        // Outside the published pair: the bootstrap refuses by name first.
+        let (code, stderr) = fixture.run(&Entry::File, None);
+        assert_eq!(code, Some(1), "refused: {stderr}");
+        assert!(stderr.contains(UNSUPPORTED_HOST), "host: {stderr}");
+        assert!(!present(&fixture.reached()), "no core may run here");
+        return;
+    }
 
     // THE FILE ENTRY, taking the latest release: the version is not given, so
     // the release manifest is what names it.

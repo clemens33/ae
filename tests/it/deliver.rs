@@ -503,12 +503,34 @@ fn finished(child: super::cli::OwnedChild) -> (Option<i32>, String) {
     (out.status.code(), stdout)
 }
 
+/// Where `HOLD_FLAGS` spells no pair no stamp can be held (#188).
+#[cfg(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(target_os = "linux", target_arch = "x86_64")
+))]
+fn no_hold_ends(_: &str, _: Option<i32>) -> bool {
+    false
+}
+#[cfg(not(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(target_os = "linux", target_arch = "x86_64")
+)))]
+fn no_hold_ends(stdout: &str, code: Option<i32>) -> bool {
+    let end = "dispatched (unobserved: guard unavailable) main (";
+    assert!(stdout.starts_with(end), "{stdout}");
+    assert_eq!(code, Some(1), "no hold, so no observation: {stdout}");
+    true
+}
+
 #[test]
 fn a_seat_read_idle_twice_on_a_new_row_after_its_dispatch_is_observed_idle() {
     let rig = Rig::compact("cidle");
     let child = dispatched(&rig);
     rig.control(COMPACTED);
     let (code, stdout) = finished(child);
+    if no_hold_ends(&stdout, code) {
+        return;
+    }
     assert!(
         stdout.starts_with("dispatched (observed idle) main ("),
         "{stdout}"
@@ -546,6 +568,9 @@ fn a_launch_stamp_rewritten_after_the_dispatch_reads_as_relaunched() {
     rig.restamp("1789000001");
     rig.control(COMPACTED);
     let (code, stdout) = finished(child);
+    if no_hold_ends(&stdout, code) {
+        return;
+    }
     assert!(
         stdout.starts_with("dispatched (unobserved: relaunched) main ("),
         "{stdout}"
@@ -560,6 +585,9 @@ fn a_launch_stamp_removed_after_the_dispatch_reads_as_relaunched() {
     rig.unstamp();
     rig.control(COMPACTED);
     let (code, stdout) = finished(child);
+    if no_hold_ends(&stdout, code) {
+        return;
+    }
     assert!(
         stdout.starts_with("dispatched (unobserved: relaunched) main ("),
         "{stdout}"
