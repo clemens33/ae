@@ -4151,6 +4151,32 @@ mod tests {
         assert!(parse_worktree_porcelain("").is_empty());
     }
 
+    #[test]
+    fn the_git_dir_answer_strips_one_newline_and_refuses_the_rest() {
+        assert_eq!(
+            parse_git_dir_answer("/a\n"),
+            Some(PathBuf::from("/a")),
+            "the git spelling parses"
+        );
+        assert_eq!(
+            parse_git_dir_answer("/a"),
+            Some(PathBuf::from("/a")),
+            "a missing newline is tolerated"
+        );
+        assert_eq!(
+            parse_git_dir_answer("/a \n"),
+            Some(PathBuf::from("/a ")),
+            "a trailing space survives: never trimmed"
+        );
+        for bad in ["", "\n", "/a\n\n", "a\n", "/a\0b\n", "/a\n/b\n"] {
+            assert_eq!(
+                parse_git_dir_answer(bad),
+                None,
+                "refused without a single absolute line: {bad:?}"
+            );
+        }
+    }
+
     /// I8: the production ceiling stays 60 seconds and terminal, proved
     /// without sleeping: the deadline constructor pins the seconds, and an
     /// already-spent deadline exits `EXIT_FAILED` with both diagnostics and
