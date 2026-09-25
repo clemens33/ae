@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.175] - 2026-09-25
+- Pin #191 witness behavior with failing retry tests
+- Couple rename intent version to the witness key
+- Witness managed renames with a nonce file
+- Seed and document the rename witness
+- Name rename as init exclusive-publication caller
+- Fix witness caller comment accuracy
+- Prove the removable slot before the retire kill
+- Retire proves the seat, kills first, and refuses a silent server
+- Roll back a failed spawn without claiming its leftovers
+- Document the refused-kill seat-kept retire
+- Narrow the seat-kept AGENTS claim to refused kills
+- Pin that a clean branch-prep rollback appends no tail
+
 ## [v2026.9.174] - 2026-09-25
 - Name every refused pane kill and report what the legacy reap decided
 - Refuse watchdog stop and start over a kill the ownership check would not allow
