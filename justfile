@@ -1457,8 +1457,8 @@ rust-linux:
                 build-essential tmux git perl procps ca-certificates locales \
             && rm -rf /var/lib/apt/lists/*
     # en_US.UTF-8 serves the collation arm (the non-C locale test is
-    # INCONCLUSIVE without it); the glyph trio turns green from LANG=C.UTF-8 on
-    # the run, which stops ae's chooser degrading to the ASCII fallback.
+    # INCONCLUSIVE without it). The run sets no LANG, so every run proves the
+    # POSIX locale: ae and the fixtures start their tmux clients `-u` (#187).
     RUN locale-gen en_US.UTF-8
     # The in-container uid IS the invoking user's, so git accepts the bind-mounted
     # checkout as its own and no safe.directory override is needed. ubuntu 24.04
@@ -1501,7 +1501,6 @@ rust-linux:
         -e CARGO_BUILD_JOBS=4 \
         -e NEXTEST_TEST_THREADS=4 \
         -e NEXTEST_PROFILE=linux \
-        -e LANG=C.UTF-8 \
         -w "$repo" \
         ae-linux-arm64 \
         bash -c 'set -euo pipefail

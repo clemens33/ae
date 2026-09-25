@@ -57,7 +57,7 @@ slow-timeout = { period = "5s", terminate-after = 2 }
 # The Linux container lane runs the WHOLE suite with a bound: fail-fast off, so
 # one run lists every Linux-only failure instead of hiding the ~1830 tests
 # behind the first two, and a hard terminate-after for the three menu-client
-# waits that never end inside a container (the host's slowest menu test is
+# waits that hung in a container until #187 (the host's slowest menu test is
 # 7.7 s, so 30 s x 2 is generous). Per nexte.st/config per-test-overrides, a
 # selected profile's overrides are checked FIRST and profile.default.overrides
 # SECOND, per setting — so the default profile's test-group overrides

@@ -335,7 +335,7 @@ fn stage(socket: &Path, main: &Path) -> Staged {
     }
     // A real CLIENT, whose terminal is another pane on the same server: a menu
     // is drawn on a client, and there is no client without a terminal.
-    let attach = format!("env -u TMUX tmux -S {} attach -t home", socket.display());
+    let attach = format!("env -u TMUX tmux -u -S {} attach -t home", socket.display());
     for viewer in ["viewer", "other-viewer"] {
         assert!(
             tmux(
@@ -1819,7 +1819,7 @@ fn direct_terminal_client(
     record: &Path,
 ) -> (String, OwnedChild) {
     let command = format!(
-        "stty cols {width} rows {height}; exec tmux -S {} attach-session -t ={session}",
+        "stty cols {width} rows {height}; exec tmux -u -S {} attach-session -t ={session}",
         socket.display()
     );
     // The clients attached BEFORE this one, so the client this call adds is
@@ -5120,8 +5120,11 @@ fn prefix_a_opens_the_picker_on_only_its_nested_client_with_punctuation_paths() 
 }
 
 fn nested_client(socket: &Path, scratch: &Path, session: &str, viewer: &str) -> String {
+    // `-u`, here and at every client these tests attach: they assert what the
+    // client draws, which presupposes a UTF-8 terminal. With `$TMUX` unset,
+    // tmux otherwise takes that from the locale, and a POSIX one draws `_`.
     let attach = format!(
-        "env -u TMUX tmux -S {} attach -t {session}",
+        "env -u TMUX tmux -u -S {} attach -t {session}",
         socket.display()
     );
     assert!(
@@ -5660,7 +5663,10 @@ fn stage_status_menu_target(socket: &Path, main: &Path) -> (String, String) {
     ] {
         assert!(tmux(socket, main, words).0, "setting up: {words:?}");
     }
-    let attach = format!("env -u TMUX tmux -S {} attach -t viewed", socket.display());
+    let attach = format!(
+        "env -u TMUX tmux -u -S {} attach -t viewed",
+        socket.display()
+    );
     assert!(
         tmux(
             socket,

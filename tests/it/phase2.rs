@@ -1011,9 +1011,10 @@ fn criterion_22_phase_2_contacts_only_servers_the_phase_1_facts_named() {
 // ---- criterion 20: typed routing reaches the intended REAL server ----------
 
 /// Run `tmux` with `args` through the harness's pinned process door, returning
-/// `(succeeded, stdout)`.
+/// `(succeeded, stdout)`. The client is UTF-8 (`-u`), as ae's own are (#187):
+/// a fixture reading back a glyph must not depend on the host's locale.
 pub(crate) fn run_tmux(args: &[String], scratch: &Path) -> (bool, String) {
-    let mut invocation = Invocation::new("tmux");
+    let mut invocation = Invocation::new("tmux").arg("-u");
     for arg in args {
         invocation = invocation.arg(arg);
     }
