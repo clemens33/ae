@@ -765,8 +765,9 @@ above the calling agent's pane — a frozen snapshot of that pane's history in
 copy mode — and a second press closes the window's reader. The reader never
 takes the keyboard, so typing still lands in the agent's input box; the mouse
 wheel scrolls it because the four `copy-mode`/`copy-mode-vi` wheel bindings are
-asserted without tmux's stock `select-pane`, and `q` or Escape in a focused
-reader closes it. A reader opened for another pane retargets the one reader in
+asserted without tmux's stock `select-pane`, and `q` in a focused reader closes
+it (`Escape` too, except that under `mode-keys vi` the first Escape only clears
+the selection). A reader opened for another pane retargets the one reader in
 that window.
 
 The distinct `ae-settings` range carries the same client identity. On both
