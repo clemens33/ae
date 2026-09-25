@@ -203,9 +203,11 @@ pub struct PaneState {
     pub nudge_count: u32,
     /// Consecutive throttled cycles.
     pub throttle_streak: u32,
-    /// The usage-limit latch. Its ONE release is a cycle judged at all that
-    /// no longer shows the phrase: it retracts the verdict, requests recovery.
-    pub limit_latched: bool,
+    /// The usage-limit latch, as the epoch of the episode's FIRST sight — the
+    /// instant of its one `limit` record, which a quiet declaration is judged
+    /// against. Its ONE release is a cycle judged at all that no longer shows
+    /// the notice: it retracts the verdict, requests recovery.
+    pub limit_since: Option<i64>,
     /// Consecutive cycles showing a human-only prompt. It lives HERE, in the
     /// carry, so a dead seat's reset clears it for free and a restart begins
     /// again — exactly like the two latches above it. There is NO separate
@@ -242,6 +244,9 @@ pub struct Observation {
     pub is_dead: bool,
     /// [`crate::watchdog::throttle_class`]'s answer — which trouble, if any.
     pub throttle: Option<Throttle>,
+    /// [`crate::watchdog::limit_notice`]'s answer: the vendor's own limit
+    /// cell, which holds the reset time the named notice quotes.
+    pub limit_notice: Option<String>,
     /// Whether THIS cycle's pane capture SUCCEEDED. A failed read is an
     /// absence of evidence: the usage-limit latch may not clear on it, exactly
     /// as the dead latch may not.
@@ -1569,8 +1574,6 @@ fn book_throttle(
     next.nudge_count = 0;
 }
 
-/// The usage-limit branch: throttling's nudge suppression, plus ONE durable
-/// `limit` event per episode — the word `ae list` reads.
 /// Whether THIS cycle judged `slot` to be waiting on a human-only prompt —
 /// channel two of the retry's two, and pure so it can be pinned without a pane.
 /// A slot the cycle did not judge at all is not latched: absence of a verdict
@@ -1618,13 +1621,30 @@ fn book_human_prompt(
     Some(Verdict::HumanPrompt)
 }
 
+/// Whether this cycle is inside a usage-limit episode: the notice is on
+/// screen, or a latched seat's capture FAILED — no reading is not a clearing.
+fn limited(prior: &PaneState, seen: &Observation) -> bool {
+    seen.throttle == Some(Throttle::LimitReached)
+        || (prior.limit_since.is_some() && !seen.capture_ok)
+}
+
+/// The usage-limit branch: throttling's nudge suppression, plus ONE durable
+/// `limit` event — the word `ae list` reads — and ONE named notice per
+/// episode, both at its first sight and both quoting the vendor's own cell.
 fn book_limit(next: &mut PaneState, effects: &mut Vec<Effect>, seen: &Observation) {
-    if !next.limit_latched {
-        next.limit_latched = true;
+    if next.limit_since.is_none() {
+        next.limit_since = Some(seen.now_epoch);
+        let cell = seen.limit_notice.as_deref();
+        let quoted = cell.map(|cell| format!(": {cell}")).unwrap_or_default();
         effects.push(Effect::Emit {
             action: "limit",
-            summary: "vendor usage limit reached — waits for a reset or a re-login".to_owned(),
+            summary: format!(
+                "vendor usage limit reached — waits for a reset or a re-login{quoted}"
+            ),
         });
+        effects.push(Effect::Notify(format!(
+            "hit its vendor usage limit{quoted}"
+        )));
     }
     // The limit episode ends any transient streak: a return to plain
     // throttling is news again, not a continuation.
@@ -1753,7 +1773,7 @@ fn clear_death_latch(
         nudge_count: 0,
         undelivered_streak: 0,
         throttle_streak: 0,
-        limit_latched: false,
+        limit_since: None,
         human_prompt_streak: 0,
         ..next.clone()
     })
@@ -1867,8 +1887,11 @@ fn account_ordinary(
     //     and the phrase is gone, so the verdict is retracted and recovery
     //     requested. A FAILED capture is an absence of evidence, not evidence
     //     of absence: the latch holds and the verdict stays `limit` below.
-    if prior.limit_latched && seen.capture_ok && seen.throttle != Some(Throttle::LimitReached) {
-        next.limit_latched = false;
+    if prior.limit_since.is_some()
+        && seen.capture_ok
+        && seen.throttle != Some(Throttle::LimitReached)
+    {
+        next.limit_since = None;
         effects.push(Effect::Emit {
             action: "alert-cleared",
             summary: "usage limit cleared — pane no longer shows it".to_owned(),
@@ -1945,6 +1968,23 @@ fn account_ordinary(
     // per episode, so a seat stuck on a modal still summons the human.
     if let Some(kind) = seen.quiet {
         book_human_prompt(prior, &mut next, &mut effects, seen, knobs);
+        // A usage limit FIRST SEEN no earlier than the declaration outranks it
+        // and ends nothing: its release hands the bar straight back. One that
+        // was already showing when the seat declared stays under it. A tie
+        // goes to the human.
+        if limited(prior, seen)
+            && age_secs(seen.now_epoch, prior.limit_since.unwrap_or(seen.now_epoch))
+                <= seen.declared_age_secs
+        {
+            book_limit(&mut next, &mut effects, seen);
+            next.undelivered_streak = 0;
+            return Accounting {
+                next,
+                effects,
+                verdict: Verdict::Limit,
+                moved: false,
+            };
+        }
         if let Some(verdict) =
             book_waiting_agent_escalation(prior, &mut next, &mut effects, seen, knobs)
         {
@@ -1988,7 +2028,7 @@ fn account_ordinary(
     // 7. The vendor's usage limit outranks a transient throttle. A latched seat
     //    whose capture FAILED this cycle keeps the verdict too: no reading is
     //    not a clearing.
-    if seen.throttle == Some(Throttle::LimitReached) || (prior.limit_latched && !seen.capture_ok) {
+    if limited(prior, seen) {
         book_limit(&mut next, &mut effects, seen);
         return Accounting {
             next,
@@ -5078,6 +5118,10 @@ impl Cycle<'_> {
                 identity,
                 is_dead: classify_dead(&pane.current_command, descendancy),
                 throttle,
+                limit_notice: crate::watchdog::limit_notice(
+                    &capture,
+                    agent_bin.as_deref().unwrap_or_default(),
+                ),
                 capture_ok,
                 human_prompt: crate::watchdog::human_prompt_class(
                     &capture,
@@ -6820,6 +6864,7 @@ mod tests {
             identity: 1,
             is_dead: false,
             throttle: None,
+            limit_notice: None,
             human_prompt: None,
             capture_ok: true,
             throttle_quota: None,
@@ -11933,7 +11978,7 @@ mod tests {
                 "vendor usage limit reached — waits for a reset or a re-login"
             )]
         );
-        assert!(first.next.limit_latched);
+        assert_eq!(first.next.limit_since, Some(observed.now_epoch));
         let second = account(&first.next, &observed, &knobs);
         assert_eq!(second.verdict, Verdict::Limit);
         assert!(emitted(&second.effects).is_empty(), "one limit event");
@@ -11943,7 +11988,7 @@ mod tests {
         dying.is_dead = true;
         let dead = account(&PaneState::default(), &dying, &knobs);
         assert_eq!(dead.verdict, Verdict::Dead);
-        assert!(!dead.next.limit_latched, "no limit episode was entered");
+        assert_eq!(dead.next.limit_since, None, "no limit episode was entered");
     }
 
     #[test]
@@ -11962,7 +12007,7 @@ mod tests {
             )]
         );
         assert!(released.effects.contains(&Effect::QuotaRefresh), "one pass");
-        assert!(!released.next.limit_latched);
+        assert_eq!(released.next.limit_since, None);
         // Two consecutive clear cycles: no second retraction, no second pass.
         let again = account(&released.next, &seen(), &knobs);
         assert!(emitted(&again.effects).is_empty(), "one retraction");
@@ -11998,7 +12043,7 @@ mod tests {
         failed.capture_ok = false;
         let held = account(&limited.next, &failed, &knobs);
         assert_eq!(held.verdict, Verdict::Limit, "no reading is not a clearing");
-        assert!(held.next.limit_latched);
+        assert!(held.next.limit_since.is_some());
         assert!(emitted(&held.effects).is_empty(), "no retraction");
         assert!(!held.effects.contains(&Effect::QuotaRefresh), "no pass");
 
@@ -12012,6 +12057,137 @@ mod tests {
         let released = account(&again.next, &seen(), &knobs);
         assert_eq!(released.verdict, Verdict::Active);
         assert!(released.effects.contains(&Effect::QuotaRefresh), "one pass");
+    }
+
+    fn notices(effects: &[Effect]) -> Vec<&str> {
+        effects
+            .iter()
+            .filter_map(|effect| match effect {
+                Effect::Notify(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// #189: a usage limit FIRST SEEN after the seat's current quiet
+    /// declaration outranks it on the bar and is named once. It ends nothing:
+    /// the clear cycle hands the bar straight back to the declaration.
+    #[test]
+    fn a_limit_first_seen_after_a_quiet_declaration_outranks_it_and_ends_nothing() {
+        let knobs = Knobs::default();
+        let past_ceiling = knobs.idle_nudge_secs * 4 + 180;
+        for (kind, age) in [
+            (QuietKind::Done, 180),
+            (QuietKind::WaitingUser, 180),
+            (QuietKind::WaitingAgent, 180),
+            (QuietKind::WaitingAgent, past_ceiling),
+            (QuietKind::Blocked, 180),
+        ] {
+            let at = |offset: i64, limited: bool| Observation {
+                now_epoch: seen().now_epoch + offset,
+                quiet: Some(kind),
+                declared_age_secs: age + offset.unsigned_abs(),
+                throttle: limited.then_some(Throttle::LimitReached),
+                ..seen()
+            };
+            let first = account(&PaneState::default(), &at(0, true), &knobs);
+            assert_eq!(first.verdict, Verdict::Limit, "{kind:?} {age}");
+            assert_eq!(actions(&first.effects), ["limit"], "{kind:?} {age}");
+            assert_eq!(notices(&first.effects).len(), 1, "{kind:?}: one summons");
+            let second = account(&first.next, &at(60, true), &knobs);
+            assert_eq!(second.verdict, Verdict::Limit, "{kind:?} {age}: held");
+            for cycle in [&first, &second] {
+                assert!(!cycle.effects.contains(&Effect::Nudge), "{kind:?}");
+            }
+            assert!(actions(&second.effects).is_empty(), "{kind:?}: once");
+            assert!(notices(&second.effects).is_empty(), "{kind:?}: once");
+            let cleared = account(&second.next, &at(120, false), &knobs);
+            let unlimited = account(&PaneState::default(), &at(120, false), &knobs);
+            assert_eq!(cleared.verdict, unlimited.verdict, "{kind:?}: bar back");
+            assert_eq!(actions(&cleared.effects), ["alert-cleared"], "{kind:?}");
+            assert!(cleared.effects.contains(&Effect::QuotaRefresh), "{kind:?}");
+        }
+    }
+
+    /// Outside a declaration the first sight is named too, once per episode.
+    #[test]
+    fn a_limit_is_named_once_at_its_first_sight() {
+        let knobs = Knobs::default();
+        let limited = Observation {
+            throttle: Some(Throttle::LimitReached),
+            ..seen()
+        };
+        let first = account(&PaneState::default(), &limited, &knobs);
+        assert_eq!(notices(&first.effects), ["hit its vendor usage limit"]);
+        let second = account(&first.next, &limited, &knobs);
+        assert!(notices(&second.effects).is_empty(), "one per episode");
+        // The vendor's own cell carries the reset time: both quote it.
+        let cell = "You’ve hit your usage limit. Try again at 3:00 PM.";
+        let quoting = Observation {
+            limit_notice: Some(cell.to_owned()),
+            ..limited
+        };
+        let named = account(&PaneState::default(), &quoting, &knobs);
+        let record =
+            format!("vendor usage limit reached — waits for a reset or a re-login: {cell}");
+        assert_eq!(emitted(&named.effects), [("limit", record.as_str())]);
+        let notice = format!("hit its vendor usage limit: {cell}");
+        assert_eq!(notices(&named.effects), [notice.as_str()]);
+    }
+
+    /// A limit already showing when the seat declared stays UNDER the
+    /// declaration, whatever the capture does; one first seen at or after it
+    /// outranks it, a failed read included. The same second goes to the human.
+    #[test]
+    fn a_limit_outranks_a_declaration_only_when_first_seen_at_or_after_it() {
+        let knobs = Knobs::default();
+        let now = seen().now_epoch;
+        let blocked = Verdict::Quiet(QuietKind::Blocked);
+        for (since, read, expected) in [
+            (600, true, blocked),
+            (600, false, blocked),
+            (301, true, blocked),
+            (300, true, Verdict::Limit),
+            (100, false, Verdict::Limit),
+        ] {
+            let latched = PaneState {
+                identity: Some(seen().identity),
+                limit_since: Some(now - since),
+                ..PaneState::default()
+            };
+            let quiet = Observation {
+                quiet: Some(QuietKind::Blocked),
+                declared_age_secs: 300,
+                throttle: read.then_some(Throttle::LimitReached),
+                capture_ok: read,
+                ..seen()
+            };
+            let cycle = account(&latched, &quiet, &knobs);
+            assert_eq!(cycle.verdict, expected, "first sight {since}s ago, {read}");
+            assert!(actions(&cycle.effects).is_empty(), "no second record");
+            assert_eq!(cycle.next.limit_since, Some(now - since), "latch holds");
+        }
+    }
+
+    /// A modal and a limit in ONE quiet cycle: both are booked, the prompt
+    /// first, and the limit takes the bar — the journal's newest record agrees.
+    #[test]
+    fn a_modal_and_a_limit_in_one_quiet_cycle_book_both_and_show_the_limit() {
+        let knobs = Knobs::default();
+        let prior = PaneState {
+            identity: Some(seen().identity),
+            human_prompt_streak: knobs.human_prompt_cycles - 1,
+            ..PaneState::default()
+        };
+        let both = Observation {
+            quiet: Some(QuietKind::Blocked),
+            declared_age_secs: 180,
+            throttle: Some(Throttle::LimitReached),
+            ..on_a_modal()
+        };
+        let cycle = account(&prior, &both, &knobs);
+        assert_eq!(cycle.verdict, Verdict::Limit);
+        assert_eq!(actions(&cycle.effects), ["human-prompt", "limit"]);
     }
 
     #[test]
