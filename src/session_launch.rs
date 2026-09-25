@@ -2894,6 +2894,15 @@ fn launch_session_id(stored: Option<String>, resuming: bool, tool: ToolKind) -> 
     }
 }
 
+/// The stored conversation id a resume reuses for `slot`: an absent, empty
+/// or `pending` row is no conversation at all, never a name.
+fn stored_session_id(dir: &Path, slot: &str, resuming: bool) -> Option<String> {
+    resuming
+        .then(|| meta_value(dir, &format!("harness_session.{slot}")))
+        .flatten()
+        .filter(|id| !id.is_empty() && id != PENDING)
+}
+
 #[allow(
     clippy::too_many_lines,
     clippy::too_many_arguments,
@@ -3137,11 +3146,7 @@ fn build(
         } else {
             carried
         };
-        let stored = shape
-            .resuming
-            .then(|| meta_value(&dir, &format!("harness_session.{}", seat.slot)))
-            .flatten()
-            .filter(|id| !id.is_empty() && id != PENDING);
+        let stored = stored_session_id(&dir, &seat.slot, shape.resuming);
         let session_id = launch_session_id(stored, shape.resuming, seat.tool);
         let launch_id = launch_token(
             seat.tool,
@@ -5943,6 +5948,37 @@ mod tests {
                 "every seat gets a meta guard: {tool:?}"
             );
         }
+    }
+
+    /// An empty `harness_session` row resumes like a `pending` one: only a
+    /// stored id survives the filter, so a hand-emptied row re-captures
+    /// instead of naming a conversation that does not exist.
+    #[test]
+    fn an_empty_harness_session_row_resumes_like_a_pending_one() {
+        let dir = scratch("empty-harness-row");
+        for (row, want) in [
+            ("harness_session.main=\n", None),
+            ("harness_session.main=pending\n", None),
+            ("schema=2\n", None),
+            (
+                "harness_session.main=0199c0de-1234-4890-abcd-ef0123456789\n",
+                Some("0199c0de-1234-4890-abcd-ef0123456789".to_owned()),
+            ),
+        ] {
+            std::fs::write(dir.join("meta"), row).unwrap();
+            assert_eq!(
+                super::stored_session_id(&dir, "main", true),
+                want,
+                "{row:?}"
+            );
+        }
+        std::fs::write(dir.join("meta"), "harness_session.main=sid\n").unwrap();
+        assert_eq!(
+            super::stored_session_id(&dir, "main", false),
+            None,
+            "a fresh launch reads no row"
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// A resume caps `events.jsonl` at its NEWEST lines, and the cut falls
