@@ -2926,19 +2926,22 @@ mod tests {
     fn the_auto_reseat_argv_is_fixed_and_only_a_routing_slot_mints_one() {
         let dir = Path::new("/state/sessions/aedev");
         let key = crate::time::Timestamp::parse("2026-09-25T10:00:00Z").expect("a key");
-        assert_eq!(
-            auto_reseat_argv(dir, "spawned.3", key).map(|argv| argv.as_args().to_vec()),
-            Some(
-                [
-                    crate::cli::AUTO_RESEAT,
-                    "/state/sessions/aedev",
-                    "spawned.3",
-                    "2026-09-25T10:00:00Z"
-                ]
-                .map(ToOwned::to_owned)
-                .to_vec()
-            )
-        );
+        // Every class `auto_reseat = all` admits mints one.
+        for slot in ["spawned.3", "main", "worker.0"] {
+            assert_eq!(
+                auto_reseat_argv(dir, slot, key).map(|argv| argv.as_args().to_vec()),
+                Some(
+                    [
+                        crate::cli::AUTO_RESEAT,
+                        "/state/sessions/aedev",
+                        slot,
+                        "2026-09-25T10:00:00Z"
+                    ]
+                    .map(ToOwned::to_owned)
+                    .to_vec()
+                )
+            );
+        }
         for bad in [
             "",
             "spawned",

@@ -1490,6 +1490,10 @@ mod tests {
             watchdog(600, ATTEMPT_ACTION, Some(KEY)),
             watchdog(610, REFUSED_ACTION, Some(KEY)),
         ]);
+        assert_eq!(
+            lock_path(Path::new("/s/aedev"), SLOT),
+            Path::new("/s/aedev/auto-reseat.spawned.3.lock")
+        );
         let inside = key_epoch() + 600 + IN_FLIGHT_SECS - 1;
         let past = inside + 1;
         for (found, at, overdue, now, still) in [
@@ -1530,6 +1534,7 @@ mod tests {
             "[workspace]\nauto_reseat = on\nauto_reseat_grace_secs = soon\n",
             "[workspace]\nauto_reseat = on\n[auto_reseat]\nsol6x = opus55x\nsol6x = astrax\n",
             "[auto_reseat]\nsol6x = opus55x\n[workspace]\nauto_reseat = on\n",
+            "[workspace]\nauto_reseat on\n",
         ] {
             std::fs::write(path, text).expect("write config");
             assert_eq!(settings_in(path, text), settings(Some(path)), "{text:?}");

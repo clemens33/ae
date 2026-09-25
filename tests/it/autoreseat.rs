@@ -580,3 +580,96 @@ fn a_forged_trigger_moves_nothing_the_watchdog_would_not() {
     assert!(!rig.received().contains("auto reseat"), "nothing sent");
     untouched(&rig, &pane);
 }
+
+/// The seat's lock, which every writer of the auto path takes first.
+fn hold_seat_lock(rig: &Rig) -> std::fs::File {
+    let lock = rig.dir.join("auto-reseat.spawned.0.lock");
+    ae::store::lock(&lock, Duration::ZERO).expect("the test holds the seat's lock")
+}
+
+/// The trigger writes nothing while another writer holds the seat, and does
+/// exactly what the watchdog would do once it is free: one attempt, one move.
+#[test]
+fn a_trigger_backs_off_while_another_writer_holds_the_seat() {
+    let rig = Rig::new("autotriglock");
+    configure(&rig, ON_NOW, "fake-opencode");
+    let pane = rig.seat("spawned.0", "scout", "claude");
+    rig.mark_limited(&pane);
+    journal(&rig, "limit", None);
+    let trigger = || {
+        let at = format!("@{}", rig.session);
+        let out = super::cli::ae()
+            .args([at.as_str(), "send", "scout", "auto reseat"])
+            .env("AE_HOME", &rig.scratch)
+            .env("AE_SENDER_OVERRIDE", "watchdog")
+            .env("_AE_EVENT_ACTION", ATTEMPT_ACTION)
+            .env_remove("TMUX")
+            .env_remove("TMUX_PANE")
+            .output()
+            .expect("the ae binary runs");
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    let held = hold_seat_lock(&rig);
+    let before = rig.events();
+    let (code, err) = trigger();
+    assert_eq!(code, Some(1), "{err}");
+    assert_eq!(rig.events(), before, "held: nothing written");
+    untouched(&rig, &pane);
+
+    drop(held);
+    let (code, err) = trigger();
+    assert_eq!(code, Some(0), "{err}");
+    let attempt = one_outcome(&rig, ATTEMPT_ACTION);
+    assert_eq!(attempt.reference.as_deref(), Some(KEY), "{attempt:?}");
+    assert_eq!(
+        attempt.summary.as_deref(),
+        Some("from fake-claude to fake-opencode")
+    );
+    let deadline = Instant::now() + BUDGET;
+    while booked(&rig, DONE_ACTION) == 0 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert_eq!(
+        rig.meta_row("profile.spawned.0"),
+        "fake-opencode",
+        "{}",
+        rig.events()
+    );
+}
+
+/// A daemon writer writes nothing while another writer holds the seat, and
+/// closes an attempt past its bound once it is free.
+#[test]
+fn a_daemon_writer_backs_off_while_another_writer_holds_the_seat() {
+    let rig = Rig::new("autodaemonlock");
+    configure(&rig, ON_NOW, "fake-opencode");
+    let pane = rig.seat("spawned.0", "scout", "claude");
+    rig.mark_limited(&pane);
+    let key = Timestamp::from_epoch(Timestamp::now().epoch() - 300).to_string();
+    let opened = Timestamp::from_epoch(Timestamp::now().epoch() - 200).to_string();
+    journal_at(&rig, &key, "limit", None);
+    journal_at(&rig, &opened, ATTEMPT_ACTION, Some(&key));
+
+    let held = hold_seat_lock(&rig);
+    let since = Instant::now();
+    assert!(watch_until(&rig, || since.elapsed() > Duration::from_secs(4)));
+    assert_eq!(booked(&rig, FAILED_ACTION), 0, "held: {}", rig.events());
+
+    drop(held);
+    let closed = watch_until(&rig, || booked(&rig, FAILED_ACTION) == 1);
+    assert!(closed, "{}\n{}", rig.events(), daemon_err(&rig));
+    let failed = one_outcome(&rig, FAILED_ACTION);
+    assert_eq!(
+        failed.reference.as_deref(),
+        Some(key.as_str()),
+        "{failed:?}"
+    );
+    assert_eq!(
+        failed.summary.as_deref(),
+        Some("failed: no outcome recorded")
+    );
+    untouched(&rig, &pane);
+}

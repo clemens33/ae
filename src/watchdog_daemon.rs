@@ -12238,7 +12238,7 @@ mod tests {
                 ..frame.clone()
             };
             let cycle = account(&latched, &moving, &knobs);
-            assert_eq!(cycle.verdict, Verdict::Limit, "{frame:?}");
+            assert_eq!(cycle.verdict, Verdict::Limit, "{moving:?}");
             assert!(cycle.effects.is_empty(), "{:?}", cycle.effects);
             assert_eq!(cycle.next.limit_since, Some(since), "the latch holds");
             assert!(!cycle.next.dead_latched, "no death latched");
@@ -12405,6 +12405,27 @@ mod tests {
             record(200, "limit", "one", ""),
             record(210, ATTEMPT_ACTION, "one", &key(200).to_string()),
         ];
+        // A seat waiting out its grace, or with an attempt in flight, takes
+        // nothing from the one due beside it.
+        let later = [
+            record(250, "limit", "one", ""),
+            record(100, "limit", "two", ""),
+        ];
+        let grace = Settings {
+            grace_secs: 100,
+            ..on.clone()
+        };
+        assert_eq!(
+            acts(&grace, &both, &later, 300),
+            trigger("two"),
+            "one waits"
+        );
+        let flying = [
+            record(200, "limit", "one", ""),
+            record(210, ATTEMPT_ACTION, "one", &key(200).to_string()),
+            record(250, "limit", "two", ""),
+        ];
+        assert_eq!(acts(&on, &both, &flying, 300), trigger("two"), "one flies");
         let bound = 210 + IN_FLIGHT_SECS;
         assert!(
             acts(&on, &busy[..1], &open, bound - 1).is_empty(),
