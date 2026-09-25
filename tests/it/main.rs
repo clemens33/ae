@@ -35,6 +35,7 @@ mod parity;
 mod phase2;
 mod phase3;
 mod quota;
+mod reader;
 mod refusal_rig;
 mod reseat;
 mod reseat_carry;
