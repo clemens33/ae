@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.172] - 2026-09-25
+- Start every tmux client ae reads as UTF-8 (#187)
+- Split the pane owner reading at its last field separator (#187)
+- Run the fixtures' tmux clients as UTF-8 and the Linux lane without LANG (#187)
+- Name the UTF-8 tmux client rule in AGENTS.md (#187)
+- Pin that spawn hands a captured tmux leg -u (#187)
+- Name the wiring pin in the UTF-8 client row (#187)
+
 ## [v2026.9.171] - 2026-09-25
 - Rebuild the ae package before the Linux container gate runs (#190)
 - Use --locked clean and rewrap the Linux lane sentence (#190)
