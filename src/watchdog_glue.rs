@@ -140,7 +140,7 @@ pub struct PaneOwner {
     pub agent: String,
 }
 
-/// `display-message -p -t <pane> '#{session_name}\t#{@ae_agent}'`.
+/// `display-message -p -t <pane> '#{session_name} | #{@ae_agent}'`.
 #[must_use]
 pub fn pane_owner_args(server: &ServerId, pane: &str) -> Vec<String> {
     let mut args = tmux::server_args(server);
@@ -150,7 +150,7 @@ pub fn pane_owner_args(server: &ServerId, pane: &str) -> Vec<String> {
             "-p",
             "-t",
             pane,
-            "#{session_name}\t#{@ae_agent}",
+            "#{session_name} | #{@ae_agent}",
         ]
         .map(ToOwned::to_owned),
     );
@@ -158,15 +158,21 @@ pub fn pane_owner_args(server: &ServerId, pane: &str) -> Vec<String> {
 }
 
 /// What a completed ownership probe means.
+///
+/// The line splits at its LAST separator. No agent name ae stamps holds one,
+/// but a session name can: a foreign session on the same server, or a retained
+/// pre-grammar name. Split at the first, `ae1 | x` would read as session `ae1`.
 #[must_use]
 pub fn interpret_pane_owner(succeeded: bool, stdout: &str) -> Option<PaneOwner> {
     if !succeeded {
         return None;
     }
     let line = stdout.lines().next().unwrap_or_default();
-    // With no tab, BOTH halves are the whole string: a tabless reading is kept
-    // faithfully rather than reinterpreted here.
-    let (session, agent) = line.split_once('\t').unwrap_or((line, line));
+    // With no separator, BOTH halves are the whole string: such a reading is
+    // kept faithfully rather than reinterpreted here.
+    let (session, agent) = line
+        .rsplit_once(tmux::FIELD_SEPARATOR)
+        .unwrap_or((line, line));
     if session.is_empty() {
         return None;
     }
@@ -531,6 +537,13 @@ mod tests {
         ServerId::Selected(Selector::Name(name.to_owned()))
     }
 
+    fn owner(session: &str, agent: &str) -> PaneOwner {
+        PaneOwner {
+            session: session.to_owned(),
+            agent: agent.to_owned(),
+        }
+    }
+
     #[test]
     fn a_branch_at_the_cap_is_kept_whole_and_one_over_it_is_marked() {
         let exact = "a".repeat(BRANCH_DISPLAY_MAX);
@@ -551,25 +564,38 @@ mod tests {
 
     #[test]
     fn the_ownership_probe_refuses_every_reading_that_names_no_owner() {
-        // Measured 2026-09-03: an unknown pane answers rc 0 with "\t", an
-        // unknown server rc 1.
-        assert_eq!(interpret_pane_owner(false, "demo\t_watchdog\n"), None);
-        assert_eq!(interpret_pane_owner(true, "\t"), None);
+        // Measured 2026-09-25 on tmux 3.4 and 3.7b: an unknown pane answers
+        // rc 0 with " | ", an unknown server rc 1.
+        assert_eq!(interpret_pane_owner(false, "demo | _watchdog\n"), None);
+        assert_eq!(interpret_pane_owner(true, " | "), None);
         assert_eq!(interpret_pane_owner(true, ""), None);
         assert_eq!(
-            interpret_pane_owner(true, "demo\t_watchdog\n"),
-            Some(PaneOwner {
-                session: "demo".to_owned(),
-                agent: "_watchdog".to_owned(),
-            })
+            interpret_pane_owner(true, "demo | _watchdog\n"),
+            Some(owner("demo", "_watchdog"))
         );
         assert_eq!(
-            interpret_pane_owner(true, "demo\t\n"),
-            Some(PaneOwner {
-                session: "demo".to_owned(),
-                agent: String::new(),
-            }),
+            interpret_pane_owner(true, "demo | \n"),
+            Some(owner("demo", "")),
             "an unstamped pane still names its session"
+        );
+    }
+
+    #[test]
+    fn a_session_name_holding_the_separator_comes_back_whole() {
+        // A foreign `ae1 | x` must not read as the ae session `ae1`.
+        assert_eq!(
+            interpret_pane_owner(true, "ae1 | x | \n"),
+            Some(owner("ae1 | x", ""))
+        );
+        assert_eq!(
+            interpret_pane_owner(true, "old | name | a\n"),
+            Some(owner("old | name", "a"))
+        );
+        // What a client tmux did not judge UTF-8 got before #187: no
+        // separator, so the caller refuses it as a session naming the answer.
+        assert_eq!(
+            interpret_pane_owner(true, "s__watchdog\n"),
+            Some(owner("s__watchdog", "s__watchdog"))
         );
     }
 
@@ -585,7 +611,7 @@ mod tests {
                 "-p".to_owned(),
                 "-t".to_owned(),
                 "%3".to_owned(),
-                "#{session_name}\t#{@ae_agent}".to_owned(),
+                "#{session_name} | #{@ae_agent}".to_owned(),
             ]
         );
         assert_eq!(

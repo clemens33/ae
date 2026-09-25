@@ -26,8 +26,8 @@ pub(crate) fn session_target(name: &str) -> String {
 }
 
 /// The separator every multi-field format in this module renders between its
-/// fields.
-const FIELD_SEPARATOR: &str = " | ";
+/// fields, and so does `watchdog_glue`'s ownership probe.
+pub(crate) const FIELD_SEPARATOR: &str = " | ";
 
 /// The ae-ownership marker, read from a session's own tmux environment.
 pub const OWNERSHIP_VARIABLE: &str = "AE_SESSION";
@@ -4508,7 +4508,8 @@ mod tests {
     /// Every format this module hands tmux is read back by splitting on the
     /// bytes it asked for, and tmux 3.4 does not hand control characters back
     /// unchanged: measured on tmux 3.4 and tmux 3.7b, `\x1f` returns as the
-    /// four literal bytes `\037` and a TAB returns as `_`.
+    /// four literal bytes `\037`, and to a client tmux does not judge UTF-8 a
+    /// TAB returns as `_` (#187).
     #[test]
     fn no_tmux_format_carries_a_control_character() {
         use super::{
