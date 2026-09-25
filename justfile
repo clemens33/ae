@@ -1397,6 +1397,9 @@ rust-build-release:
 # touch the live tree, and CARGO_HOME, RUSTUP_HOME and CARGO_TARGET_DIR
 # live in named volumes (`ae-linux-arm64-*`), so the host target/ is never
 # written and a warm run skips the toolchain and the seven tool builds. The
+# target volume is shared by EVERY checkout, so the container rebuilds the
+# `ae` package from the mounted tree before the gate (#190) while the
+# dependency artifacts stay warm. The
 # container runs NON-ROOT, as a user whose uid IS the invoking user's: root
 # ignores mode bits, so ae's 0555/0444 and permission-refusal tests would lie.
 # Every container, volume and image this recipe makes carries the
@@ -1508,6 +1511,10 @@ rust-linux:
             # decides what is installed. A warm run re-probes and installs nothing.
             /stage/rustup-init -y --no-modify-path --profile minimal --default-toolchain none
             just rust-setup
+            # The target volume is shared by every checkout and cargo's
+            # fingerprint does not see the checkout path (#190): without this
+            # the gate could test another tree's build. Deps stay warm.
+            cargo clean -p ae
             just test' || rc=$?
     echo "==> ae-linux gate: rc=$rc wall=$((SECONDS - start))s"
     exit "$rc"

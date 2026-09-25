@@ -71,7 +71,7 @@ read-only, the CARGO_HOME/RUSTUP_HOME/CARGO_TARGET_DIR caches live in named
 volumes (`ae-linux-arm64-*`; remove them by name for a cold run), the container
 runs non-root as the invoking uid, and everything it creates carries the
 `ae.lane=linux` label. The base image and the two host-fetched binaries are
-digest-pinned in the justfile. `just rust-linux-smoke` executes the x86_64 musl
+digest-pinned in the justfile. The target volume is shared by every checkout, so the container rebuilds the `ae` package from the mounted tree (`cargo clean -p ae`) before the gate runs — without it, one checkout could test another's build (#190). `just rust-linux-smoke` executes the x86_64 musl
 bundle from `./dist` in an amd64 container — the run proof `just bundles` cannot
 make on an arm64 macOS host, where its byte search is the degraded form. (An amd64 GATE
 was tried and dropped: under QEMU user emulation `rust-setup` cannot build
