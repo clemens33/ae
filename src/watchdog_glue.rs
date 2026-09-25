@@ -344,9 +344,18 @@ pub fn reap_legacy(
     meta_dir: &Path,
     err: &mut impl Write,
 ) -> crate::Result<Vec<LegacyReap>> {
-    // ONE enumeration for both names: two `list-panes` runs could disagree, and
-    // an enumeration that FAILED is not evidence that anything is gone.
-    let observed = transport::observe_agents(server, session).unwrap_or_default();
+    // ONE enumeration for both names: two `list-panes` runs could disagree.
+    // A FAILED enumeration is not evidence that anything is gone: it is not
+    // "no legacy pane", so the artifacts stay (fail closed, as a refused kill
+    // keeps its pidfile) and the gap is named.
+    let Some(observed) = transport::observe_agents(server, session) else {
+        writeln!(
+            err,
+            "ae: could not list the panes of '{session}' — a legacy watchdog cannot be ruled \
+             out; the legacy pidfile and status are kept."
+        )?;
+        return Ok(Vec::new());
+    };
     let mut found = Vec::new();
     for name in LEGACY_WATCHDOG_NAMES {
         let stamp = format!("_{name}");
