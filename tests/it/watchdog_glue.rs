@@ -939,8 +939,9 @@ fn an_unpinned_daemon_follows_live_config_flips_both_directions() {
 
 #[test]
 fn leaving_the_usage_limit_runs_exactly_one_quota_pass() {
-    // The cadence is OFF: every `observed` line is the recovery pass.
-    const PHRASE: &str = "You've hit your 5-hour limit";
+    // The cadence is OFF: every `observed` line is the recovery pass. The
+    // phrase is typed as claude draws it, on its own `  ⎿` notice row.
+    const PHRASE: &str = "  ⎿  You've hit your 5-hour limit";
     let scratch = scratch("limit");
     require_tmux(&scratch);
     let socket = scratch.join("s");

@@ -54,19 +54,57 @@ const GEMINI: &[&str] = &["RESOURCE_EXHAUSTED", "Quota exceeded"];
 const GENERIC: &[&str] = &["429 Too Many Requests", "503 Service Unavailable"];
 
 /// The USAGE-LIMIT phrases keyed by agent BINARY, MEASURED from each tool's own
-/// strings (provenance: `.local/limitstate-evidence.md`). No measurement, no
-/// phrase. `You've hit your` is the vendor's own `_nr` prefix matcher.
+/// strings. No measurement, no phrase, and a phrase an older version drew is
+/// kept rather than dropped. Each is a START of the notice's text: claude
+/// 2.1.281 classifies its own limit messages by exactly these prefixes
+/// (`You've hit your` covers every limit name it composes), and codex
+/// 0.156.1 spells `You’ve` with U+2019 where older builds wrote an ASCII `'`.
 const CLAUDE_LIMIT: &[&str] = &[
     "You've hit your",
+    "You've reached your",
     "You're out of usage credits",
     "Your org is out of usage",
     "usage limit reached",
 ];
 const CODEX_LIMIT: &[&str] = &[
+    "You’ve hit your usage limit",
     "You've hit your usage limit",
     "You've reached your usage limit",
+    "Usage limit reached. You've reached your usage limit",
     "Quota exceeded. Check your plan",
 ];
+
+/// How a tool draws its OWN usage-limit notice — data only; the one reader is
+/// [`limit_notice`]. A notice row starts with `marker` at column 0 exactly,
+/// sits within `window` rows of the capture's last non-blank row, and after
+/// the marker and its blanks its text starts with one of `phrases`. A
+/// transcript quoting the same words is indented under the tool's own
+/// furniture, so it never starts at the marker's column. A tool without a
+/// measured notice row has no `Banner` and books no limit.
+struct Banner {
+    marker: &'static str,
+    window: usize,
+    phrases: &'static [&'static str],
+}
+
+/// Claude 2.1.281 draws the message under its response marker `  ⎿` and
+/// NBSP, with up to four dim rows below it; measured chrome puts the row about
+/// 8 rows up, and 20 is claude's own prompt window over the same chrome.
+const CLAUDE_BANNER: Banner = Banner {
+    marker: "  ⎿",
+    window: 20,
+    phrases: CLAUDE_LIMIT,
+};
+/// Codex 0.156.1 draws an error cell with `■` at column 0, measured 7 rows up
+/// from its footer; the rest is room for a wrapped cell and a draft.
+const CODEX_BANNER: Banner = Banner {
+    marker: "■",
+    window: 16,
+    phrases: CODEX_LIMIT,
+};
+
+/// The widest a notice is quoted in a journal summary or a Notify line.
+const NOTICE_CELLS: usize = 160;
 
 /// A prompt only the HUMAN may answer, and what it takes to answer it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,9 +138,8 @@ pub struct HumanPrompt {
 pub fn human_prompt_class(buf: &str, agent_bin: &str) -> Option<HumanPrompt> {
     let adapter = crate::tool::ToolKind::from_known_binary_name(agent_bin)?.adapter();
     let spec = adapter.prompt?;
-    let rows: Vec<&str> = buf.lines().collect();
-    let last = rows.iter().rposition(|row| !row.trim().is_empty())?;
-    let window = &rows[last.saturating_sub(spec.window.saturating_sub(1))..=last];
+    let rows = bottom_window(buf, spec.window)?;
+    let window = rows.as_slice();
     // Scoped to the WINDOW, not the buffer: a modal drawn BELOW a composer is
     // the case this must still catch. The inverse — a draft whose own text is
     // shaped like a modal, with the fence above the window — is accepted.
@@ -190,35 +227,91 @@ fn titled(window: &[&str], question: usize, title: &str) -> bool {
     })
 }
 
+/// The bottom `height` rows of `buf`, ending at its last non-blank row, or
+/// `None` for a buffer with no ink — the ONE window cut both pane detectors
+/// read ([`human_prompt_class`] and [`limit_notice`]). Measured up from the
+/// ink, so it is independent of the pane's height.
+fn bottom_window(buf: &str, height: usize) -> Option<Vec<&str>> {
+    let rows: Vec<&str> = buf.lines().collect();
+    let last = rows.iter().rposition(|row| !row.trim().is_empty())?;
+    Some(rows[last.saturating_sub(height.saturating_sub(1))..=last].to_vec())
+}
+
+/// The measured notice row of the tool whose binary is `agent_bin`.
+fn banner_for(agent_bin: &str) -> Option<&'static Banner> {
+    match agent_bin {
+        "claude" => Some(&CLAUDE_BANNER),
+        "codex" => Some(&CODEX_BANNER),
+        _ => None,
+    }
+}
+
+/// The text after the marker when `row` is `banner`'s notice row.
+fn notice_text<'a>(banner: &Banner, row: &'a str) -> Option<&'a str> {
+    let text = row
+        .strip_prefix(banner.marker)?
+        .trim_start_matches([' ', '\u{a0}']);
+    banner
+        .phrases
+        .iter()
+        .any(|phrase| text.starts_with(phrase))
+        .then_some(text)
+}
+
+/// The vendor's OWN usage-limit notice `buf` shows for `agent_bin`, or `None`
+/// — the limit half of [`throttle_class`]. The newest notice row inside the
+/// bottom window decides, and the notice is that row's text plus the rows its
+/// cell continues on up to the first blank row, joined and projected through
+/// the one menu-text cutter: the part a human needs is when it resets, and
+/// codex wraps that onto the next row.
+#[must_use]
+pub fn limit_notice(buf: &str, agent_bin: &str) -> Option<String> {
+    let banner = banner_for(agent_bin)?;
+    let window = bottom_window(buf, banner.window)?;
+    let (at, text) = window
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(at, row)| Some((at, notice_text(banner, row)?)))?;
+    let cell = std::iter::once(text.trim())
+        .chain(
+            window[at + 1..]
+                .iter()
+                .map(|row| row.trim())
+                .take_while(|row| !row.is_empty()),
+        )
+        .collect::<Vec<_>>()
+        .join(" ");
+    Some(crate::event_text::display_column(&cell, NOTICE_CELLS))
+}
+
 /// Which class of upstream trouble `buf` shows for `agent_bin`, if any — the
-/// ONE classifier, of which [`shows_throttle`] is the union answer. A
-/// `LimitReached` phrase wins: the usage limit outlives the cycle.
+/// ONE classifier, of which [`shows_throttle`] is the union answer. The tool's
+/// own usage-limit notice ([`limit_notice`]) wins: the limit outlives the
+/// cycle. The transient phrases still match anywhere in the capture.
 #[must_use]
 pub fn throttle_class(buf: &str, agent_bin: &str) -> Option<Throttle> {
     if buf.is_empty() {
         return None;
     }
-    // opencode is the union — refactor here, never duplicate, so the branches
-    // cannot drift.
-    let (transient, limit): (&[&[&str]], &[&[&str]]) = match agent_bin {
-        "claude" => (&[CLAUDE], &[CLAUDE_LIMIT]),
-        "codex" => (&[CODEX], &[CODEX_LIMIT]),
-        "gemini" => (&[GEMINI], &[]),
-        "opencode" => (&[CLAUDE, CODEX, GEMINI], &[CLAUDE_LIMIT, CODEX_LIMIT]),
-        _ => (&[], &[]),
-    };
-    let shows = |sets: &[&[&str]]| {
-        sets.iter()
-            .flat_map(|set| set.iter())
-            .any(|pattern| buf.contains(pattern))
-    };
-    if shows(limit) {
+    if limit_notice(buf, agent_bin).is_some() {
         return Some(Throttle::LimitReached);
     }
-    if shows(transient) || GENERIC.iter().any(|pattern| buf.contains(pattern)) {
-        return Some(Throttle::Throttled);
-    }
-    None
+    // opencode is the union — refactor here, never duplicate, so the branches
+    // cannot drift.
+    let transient: &[&[&str]] = match agent_bin {
+        "claude" => &[CLAUDE],
+        "codex" => &[CODEX],
+        "gemini" => &[GEMINI],
+        "opencode" => &[CLAUDE, CODEX, GEMINI],
+        _ => &[],
+    };
+    transient
+        .iter()
+        .flat_map(|set| set.iter())
+        .chain(GENERIC)
+        .any(|pattern| buf.contains(pattern))
+        .then_some(Throttle::Throttled)
 }
 
 /// Whether the captured pane buffer shows upstream throttling of EITHER class
@@ -1751,14 +1844,15 @@ mod tests {
 
     use super::WaitState::{Blocked, WaitingAgent};
     use super::{
-        DEFAULT_IDLE_NUDGE_SECS, DoneProgress, NUDGE_IDLE_PREFIX, NUDGE_SENTENCE, NUDGE_TAIL,
-        NUDGE_WAITING_CLOSE, NUDGE_WAITING_OPEN, OVERVIEW_HOLD_WHILE_WORKING_SECS,
-        OWN_WORK_AGE_CAP, QuietKind, SweepAlert, SweepEffect, SweepKnobs, SweepObservation,
-        SweepState, SweepVerdict, Throttle, WaitProgress, WaitState, WedgeDetail, classify_dead,
-        command_is_shell, declaration_current, declaration_key, done_progress, indented, is_echo,
-        is_sweep_target, latest_relevant_event, quiet_filter, quiet_hash, quiet_reason, raw_nudge,
-        record_sweep, shows_throttle, stale_composite, submit_hdr, sweep_step, throttle_class,
-        wait_progress, waiting_agent_cap_secs, waiting_agent_escalated,
+        CLAUDE_LIMIT, CODEX_LIMIT, DEFAULT_IDLE_NUDGE_SECS, DoneProgress, NUDGE_IDLE_PREFIX,
+        NUDGE_SENTENCE, NUDGE_TAIL, NUDGE_WAITING_CLOSE, NUDGE_WAITING_OPEN,
+        OVERVIEW_HOLD_WHILE_WORKING_SECS, OWN_WORK_AGE_CAP, QuietKind, SweepAlert, SweepEffect,
+        SweepKnobs, SweepObservation, SweepState, SweepVerdict, Throttle, WaitProgress, WaitState,
+        WedgeDetail, classify_dead, command_is_shell, declaration_current, declaration_key,
+        done_progress, indented, is_echo, is_sweep_target, latest_relevant_event, limit_notice,
+        quiet_filter, quiet_hash, quiet_reason, raw_nudge, record_sweep, shows_throttle,
+        stale_composite, submit_hdr, sweep_step, throttle_class, wait_progress,
+        waiting_agent_cap_secs, waiting_agent_escalated,
     };
     use crate::events::Event;
     use crate::procs::Descendancy;
@@ -2698,49 +2792,32 @@ mod tests {
 
     #[test]
     fn throttle_classes_split_measured_limit_phrases_from_transient_ones() {
-        // Measured phrases, claude 2.1.274 then codex 0.154.0.
-        for phrase in [
-            "You've hit your 5-hour limit \u{b7} resets in 2h",
-            "You're out of usage credits. /model to switch models.",
-            "Your org is out of usage \u{b7} contact your admin",
-            "Goal paused \u{b7} usage limit reached \u{b7} send a message",
-        ] {
+        // Every measured limit phrase books when the tool draws it on its OWN
+        // notice row, and misses a binary that never measured it.
+        for phrase in CLAUDE_LIMIT {
+            let row = format!("  ⎿  {phrase} · resets 3pm");
             assert_eq!(
-                throttle_class(phrase, "claude"),
-                Some(Throttle::LimitReached)
+                throttle_class(&row, "claude"),
+                Some(Throttle::LimitReached),
+                "{phrase}"
             );
+            assert_eq!(throttle_class(&row, "codex"), None, "{phrase}");
         }
-        for phrase in [
-            "You've hit your usage limit. Upgrade to Pro to continue",
-            "You've reached your usage limit",
-            "Quota exceeded. Check your plan and billing details.",
-        ] {
+        for phrase in CODEX_LIMIT {
+            let row = format!("■ {phrase}.");
             assert_eq!(
-                throttle_class(phrase, "codex"),
-                Some(Throttle::LimitReached)
+                throttle_class(&row, "codex"),
+                Some(Throttle::LimitReached),
+                "{phrase}"
             );
+            assert_eq!(throttle_class(&row, "claude"), None, "{phrase}");
         }
-        // A phrase of one catalog misses a binary that never measured it;
         // gemini's OWN transient phrase is a prefix of codex's — still a
-        // transient claim — and opencode is the union of both limit catalogs.
-        assert_eq!(throttle_class("You're out of usage credits", "codex"), None);
-        assert_eq!(
-            throttle_class("Quota exceeded. Check your plan", "claude"),
-            None
-        );
+        // transient claim.
         assert_eq!(
             throttle_class("Quota exceeded. Check your plan", "gemini"),
             Some(Throttle::Throttled)
         );
-        for phrase in [
-            "You're out of usage credits",
-            "Quota exceeded. Check your plan",
-        ] {
-            assert_eq!(
-                throttle_class(phrase, "opencode"),
-                Some(Throttle::LimitReached)
-            );
-        }
         // Every existing transient phrase keeps its class.
         for (phrase, bin) in [
             ("Server is temporarily limiting requests", "claude"),
@@ -2764,6 +2841,203 @@ mod tests {
                 "{bin}: prose"
             );
         }
+    }
+
+    /// opencode draws neither vendor's notice row, so no borrowed limit books
+    /// on it. Its transient union still reads the WHOLE capture — #189's named
+    /// residual: a quoted quota row throttles, and never books a limit.
+    #[test]
+    fn opencode_books_no_borrowed_limit_and_keeps_its_transient_union() {
+        for row in [
+            "  ⎿  You've hit your session limit · resets 3pm",
+            "  ⎿  You're out of usage credits",
+            "■ You’ve hit your usage limit.",
+        ] {
+            assert_eq!(throttle_class(row, "opencode"), None, "{row}");
+        }
+        assert_eq!(
+            throttle_class(
+                "■ Quota exceeded. Check your plan and billing details.",
+                "opencode"
+            ),
+            Some(Throttle::Throttled)
+        );
+    }
+
+    /// The notice counts only inside the bottom window, measured up from the
+    /// last non-blank row: trailing blank rows move nothing.
+    #[test]
+    fn a_limit_notice_counts_only_inside_the_bottom_window() {
+        let under = |row: &str, rows: usize| format!("{row}\n{}\n\n", "ink\n".repeat(rows));
+        for (bin, row, window) in [
+            ("codex", "■ You’ve hit your usage limit.", 16),
+            ("claude", "  ⎿  You've hit your session limit", 20),
+        ] {
+            assert!(
+                limit_notice(&under(row, window - 1), bin).is_some(),
+                "{bin}: the window's top row"
+            );
+            assert!(
+                limit_notice(&under(row, window), bin).is_none(),
+                "{bin}: one row above the window"
+            );
+        }
+    }
+
+    /// The marker is column-exact, and the text after it STARTS with a phrase:
+    /// a quote is indented, and a phrase mid-row is somebody's prose.
+    #[test]
+    fn a_limit_notice_is_column_exact_and_starts_with_its_phrase() {
+        for (row, bin, books) in [
+            ("  ⎿  You've hit your session limit", "claude", true),
+            ("  ⎿ \u{a0}You've hit your session limit", "claude", true),
+            ("   ⎿  You've hit your session limit", "claude", false),
+            (" ⎿  You've hit your session limit", "claude", false),
+            ("       ⎿  You've hit your session limit", "claude", false),
+            ("  ⎿  60:    \"You've hit your\",", "claude", false),
+            ("■ You’ve hit your usage limit.", "codex", true),
+            (" ■ You’ve hit your usage limit.", "codex", false),
+            ("  └ ■ You’ve hit your usage limit.", "codex", false),
+            (
+                "■ stream error: You’ve hit your usage limit",
+                "codex",
+                false,
+            ),
+        ] {
+            assert_eq!(limit_notice(row, bin).is_some(), books, "{row:?}");
+        }
+        for bin in ["gemini", "grok", "muse", "agy", "somethingelse"] {
+            assert_eq!(limit_notice("■ You’ve hit your usage limit.", bin), None);
+        }
+    }
+
+    /// The notice is the NEWEST cell in the window, joined across its wrapped
+    /// rows up to the first blank row and projected through the one menu-text
+    /// cutter — the reset time codex wraps onto the next row included.
+    #[test]
+    fn a_limit_notice_quotes_the_newest_vendor_cell() {
+        let frame =
+            format!("{CODEX_BANNER}\n\n› a synthetic message\n\n{CODEX_BANNER}{CODEX_BOTTOM}");
+        assert_eq!(
+            limit_notice(&frame, "codex").as_deref(),
+            Some(
+                "You?ve hit your usage limit. Visit https://chatgpt.com/codex/settings/usage \
+                 to purchase more credits or try again at Sep 26th, 2026 10:11 AM."
+            )
+        );
+        let older = format!(
+            "  ⎿  You've hit your weekly limit\n\n  ⎿  You've hit your session limit\n     \
+             /upgrade to increase your usage limit.\n\n{CLAUDE_CHROME}"
+        );
+        assert_eq!(
+            limit_notice(&older, "claude").as_deref(),
+            Some("You've hit your session limit /upgrade to increase your usage limit.")
+        );
+        let long = format!("■ You’ve hit your usage limit. {}", "x".repeat(300));
+        let clipped = limit_notice(&long, "codex").unwrap_or_default();
+        assert_eq!(clipped.chars().count(), 160);
+        assert!(clipped.ends_with('…'));
+    }
+
+    /// Claude Code 2.1.281's bottom chrome, measured on a live pane
+    /// (2026-09-25): the composer's two rules around its prompt, then the
+    /// status and mode rows. The status row's content is synthetic.
+    const CLAUDE_CHROME: &str = "\
+────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────
+  🧠 Opus 5.5 (xhigh)  📁 repo  🌿 main
+  ⏵⏵ bypass permissions on (shift+tab to cycle)";
+
+    /// Codex 0.156.1's usage-limit cell, verbatim from a live pane
+    /// (2026-09-25): `■` at column 0, `You’ve` with U+2019, and the reset
+    /// time on the hard-wrapped row below it.
+    const CODEX_BANNER: &str = "\
+■ You’ve hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more
+credits or try again at Sep 26th, 2026 10:11 AM.";
+
+    /// The rows codex 0.156.1 draws below its last cell, verbatim from the
+    /// same pane: two blank rows, the empty composer, a blank row, the footer.
+    const CODEX_BOTTOM: &str = "
+
+
+› Ask Codex to do anything
+
+  gpt-6-astra medium · ~/projects/clemens33/ae · main · Context 51% used · weekly 0% left";
+
+    /// #189's false positive: a claude seat whose TRANSCRIPT quotes a limit
+    /// banner — its own prose, a tool result peeking another seat, a pasted
+    /// log — is not a seat at its limit, whichever tool the quote came from.
+    #[test]
+    fn a_limit_quoted_in_a_claude_transcript_books_nothing() {
+        let frame = format!(
+            "\
+⏺ Bash(peek colead 20)
+  ⎿  › ⟦ae:msg from lead⟧
+       a synthetic peer message
+     {CODEX_BANNER}
+       ⎿  You've hit your session limit · resets 3pm
+⏺ colead is at its limit: the pane reads You've hit your usage limit, and it
+  You've hit your usage limit stays until the reset.
+❯ You've hit your usage limit (a pasted log)
+
+{CLAUDE_CHROME}"
+        );
+        assert_eq!(throttle_class(&frame, "claude"), None);
+    }
+
+    /// The same for codex: a quote in a user cell or in command output is
+    /// indented, and only codex's own cell draws `■` at column 0.
+    #[test]
+    fn a_limit_quoted_in_a_codex_transcript_books_nothing() {
+        let frame = format!(
+            "\
+› ■ You've hit your usage limit. Upgrade to Pro to continue
+  a pasted log line
+
+• Ran peek colead
+  └ {CODEX_BANNER}
+
+• colead reads You've hit your usage limit and will not answer.
+{CODEX_BOTTOM}"
+        );
+        assert_eq!(throttle_class(&frame, "codex"), None);
+    }
+
+    /// #189's false negative, the half branch order alone cannot fix: codex
+    /// 0.156.1 spells `You’ve` with U+2019, and its own cell must book.
+    #[test]
+    fn codex_s_own_limit_cell_books_the_limit() {
+        let frame = format!(
+            "\
+› ⟦ae:msg from lead⟧
+  a synthetic peer message
+
+
+{CODEX_BANNER}{CODEX_BOTTOM}"
+        );
+        assert_eq!(
+            throttle_class(&frame, "codex"),
+            Some(Throttle::LimitReached)
+        );
+    }
+
+    /// Claude's own limit message, drawn under its `  ⎿  ` response marker
+    /// with a dim hint row below it (claude 2.1.281's own rendering).
+    #[test]
+    fn claude_s_own_limit_row_books_the_limit() {
+        let frame = format!(
+            "\
+❯ a synthetic prompt
+  ⎿  You've hit your session limit · resets 3pm (Europe/Vienna)
+     /upgrade to increase your usage limit.
+
+{CLAUDE_CHROME}"
+        );
+        assert_eq!(
+            throttle_class(&frame, "claude"),
+            Some(Throttle::LimitReached)
+        );
     }
 
     /// The container as APPEND ORDER gives it: oldest first, the way every
