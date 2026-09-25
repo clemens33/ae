@@ -1,0 +1,16 @@
+rename_intent=2
+session_id=e795c9e9-1234-4890-abcd-ef0123456789
+old=sfullold
+new=sfullnew
+mode=full
+old_work=/tmp/ae/worktrees/sfullold
+new_work=/tmp/ae/worktrees/sfullnew
+origin=/tmp/ae/project
+server_kind=name
+server_value=ae-test
+phase=prepared
+work_dev=16777230
+work_ino=100666701
+admin_dev=0
+admin_ino=0
+work_nonce=not-a-uuid

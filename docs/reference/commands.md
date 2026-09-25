@@ -1458,9 +1458,13 @@ durable result. An interrupted rename reports the committed facts and the proved
 re-run the same `ae rename <old> <new>` to converge forward; `doctor` reports a pending
 transaction with the same retry. The rename refuses before any write when the source is
 unknown, the destination is occupied, the work identity is unprovable, a request is
-pending, or an explicit config home would lose exact resume at the new path. An
-implicit-home session renames with a warning: the later resume re-proves the
-conversation with existing provider behavior.
+pending, or an explicit config home would lose exact resume at the new path. A
+managed rename writes a hidden `.ae-rename-witness` file into the working copy
+while the transaction is pending (removed when it completes; a stale one is
+replaced, never followed) — expect a `??` line in `git status` until the retry
+converges. A managed directory ae cannot write refuses with the remedy instead
+of renaming. An implicit-home session renames with a warning: the later resume
+re-proves the conversation with existing provider behavior.
 
 A LIVE session keeps the previous behavior: the tmux session, state directory, meta,
 monitors, and manifest are renamed in place, and a git worktree or full-copy directory
