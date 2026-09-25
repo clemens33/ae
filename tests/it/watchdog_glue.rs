@@ -1560,6 +1560,50 @@ fn the_legacy_reap_takes_the_pane_it_does_own_and_its_artifacts_with_it() {
 }
 
 #[test]
+fn the_legacy_reap_keeps_its_artifacts_when_the_panes_cannot_be_listed() {
+    // #197.2: a listing that never answered is not "no legacy pane". The reap
+    // keeps `<name>.pid`/`.status` (fail closed, as a refused kill keeps its
+    // pidfile) and names the gap, or a silent server would leave legacy panes
+    // running without a note.
+    let scratch = scratch("reapunlisted");
+    require_tmux(&scratch);
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup::new(&socket, &scratch);
+    let server = server_of(&socket);
+    let root = scratch.join("home");
+    let meta_dir = plant(&root, "ours", &socket, None);
+    // NO server is started: the enumeration cannot answer.
+    assert!(fs::write(meta_dir.join(".loop.pid"), "4242\n").is_ok());
+    assert!(fs::write(meta_dir.join(".loop.status"), "stale\n").is_ok());
+
+    let mut err = Vec::new();
+    let reaped = watchdog_glue::reap_legacy(&server, "ours", &meta_dir, &mut err);
+    let diagnostics = String::from_utf8_lossy(&err).into_owned();
+    let pid_survives = fs::read_to_string(meta_dir.join(".loop.pid")).is_ok();
+    let status_survives = fs::read_to_string(meta_dir.join(".loop.status")).is_ok();
+    kill_server(&socket, &scratch);
+    let _ = fs::remove_dir_all(&scratch);
+
+    assert_eq!(
+        reaped.ok(),
+        Some(Vec::new()),
+        "nothing may be reported reaped on a listing that never answered"
+    );
+    assert!(
+        diagnostics.contains("could not list the panes"),
+        "the listing gap is named: {diagnostics}"
+    );
+    assert!(
+        pid_survives,
+        "the legacy pidfile is kept when the panes cannot be listed"
+    );
+    assert!(
+        status_survives,
+        "the legacy status is kept when the panes cannot be listed"
+    );
+}
+
+#[test]
 fn an_unreadable_pane_is_refused_rather_than_taken_on_faith() {
     // The FAIL-CLOSED half, and the one a mock cannot exhibit: measured on a
     // real server, an unknown pane answers rc 0 with an empty session and an
