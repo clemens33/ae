@@ -2101,6 +2101,29 @@ mod tests {
         assert_eq!(section_entries(file, text, "absent").expect("readable"), []);
     }
 
+    /// PIN: only a missing file reads as no config; a file that is there and
+    /// cannot be read is a refusal, never mistaken for an absent one.
+    #[test]
+    fn an_unreadable_global_config_is_refused_and_only_a_missing_one_is_absent() {
+        let dir = std::env::temp_dir().join(format!("ae-config-unreadable-{}", std::process::id()));
+        assert!(
+            std::fs::create_dir_all(&dir).is_ok(),
+            "a directory in the file's place"
+        );
+        let unreadable = read_global_text(&dir);
+        let key = read_global_workspace_key(&dir, "fleet_order");
+        let absent = read_global_text(&dir.join("absent"));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            unreadable
+                .as_ref()
+                .is_err_and(|why| why.starts_with("could not read global config: ")),
+            "{unreadable:?}"
+        );
+        assert!(key.is_err(), "{key:?}");
+        assert_eq!(absent, Ok(None));
+    }
+
     /// PIN: a typo costs the human their entry, never their status line. An
     /// illegal name and a repeat are dropped and REPORTED; the rest still order.
     #[test]
