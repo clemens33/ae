@@ -444,6 +444,83 @@ fn a_start_with_a_legacy_pane_it_could_not_kill_aborts() {
     );
 }
 
+/// A start whose pane never publishes refuses after the registration bound:
+/// exit 1, the bound message, a `refused:` audit, and the fresh pane gone.
+#[test]
+fn a_start_whose_pane_never_publishes_refuses_after_the_bound() {
+    let scratch = scratch("wdnopub");
+    require_tmux(&scratch);
+    let socket = socket_of(&scratch);
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let root = scratch.join("home");
+    let meta_dir = plant_session(&root, "ours", &socket);
+    // The watchdog helper never publishes: start must time out waiting. It
+    // leaves a marker first, so the gone-pane assert cannot hold vacuously
+    // for a pane that never ran.
+    let _ = fs::remove_file(meta_dir.join("watchdog"));
+    plant_script(
+        &meta_dir.join("watchdog"),
+        "#!/bin/sh\ntouch \"$(dirname \"$0\")/.watchdog-ran\"\nexec sleep 60\n",
+    );
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &["new-session", "-d", "-s", "ours", "sleep", "60"]
+        )
+        .0,
+        "the session the watchdog would watch"
+    );
+    let before = tmux(
+        &socket,
+        &scratch,
+        &["list-panes", "-s", "-t", "ours", "-F", "#{pane_id}"],
+    )
+    .1
+    .lines()
+    .count();
+
+    let (code, out, err) = watchdog(&root, &["start", "ours"]);
+
+    let stamps = tmux(
+        &socket,
+        &scratch,
+        &["list-panes", "-s", "-t", "ours", "-F", "#{@ae_agent}"],
+    )
+    .1;
+    let events = events_of(&meta_dir);
+    assert_eq!(code, 1, "the unregistered start exits 1: {out} {err}");
+    assert!(
+        err.contains("did not publish a pidfile within the start bound; start aborted."),
+        "the bound message: {err}"
+    );
+    assert!(
+        events.iter().any(|line| line.contains("watchdog-start")
+            && line.contains("refused: watchdog did not publish a pidfile within the start bound")),
+        "one refused audit with the exact bound text: {events:?}"
+    );
+    assert!(
+        meta_dir.join(".watchdog-ran").exists(),
+        "the helper ran before start gave up"
+    );
+    assert_eq!(
+        stamps.lines().count(),
+        before + 1,
+        "start added exactly the events pane: {stamps:?}"
+    );
+    assert!(
+        stamps.lines().any(|line| line == "_events"),
+        "the added pane is the events tail: {stamps:?}"
+    );
+    assert!(
+        !stamps.lines().any(|line| line == "_watchdog"),
+        "the fresh pane is gone: {stamps:?}"
+    );
+}
+
 /// I2: a refused legacy kill does not lock out the main stop. Each
 /// registration follows its own verdict (the main pane dies, its pidfile is
 /// cleared), while the session facts wait for zero refusals: exit 1, no
