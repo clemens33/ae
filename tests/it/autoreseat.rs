@@ -330,6 +330,9 @@ fn a_switch_turned_off_between_the_legs_holds_and_the_retry_moves_once_it_is_on(
 /// How long one live daemon run may take before the pin fails rather than hangs.
 const BUDGET: Duration = Duration::from_mins(1);
 
+/// The daemon's line for a trigger that did not start.
+const NOT_STARTED: &str = "ae: watchdog: auto reseat of scout not started this cycle";
+
 /// The global config that turns the path on with no grace, so a seat is due at
 /// its limit's first sight.
 const ON_NOW: &str = "on\nauto_reseat_grace_secs = 0";
@@ -420,6 +423,11 @@ fn a_seat_on_its_limit_is_moved_once_by_the_watchdog_with_no_death_between() {
     let moved = watch_until(&rig, || booked(&rig, DONE_ACTION) == 1);
 
     assert!(moved, "no move: {}\n{}", rig.events(), daemon_err(&rig));
+    assert!(
+        !daemon_err(&rig).contains(NOT_STARTED),
+        "{}",
+        daemon_err(&rig)
+    );
     assert_eq!(rig.meta_row("profile.spawned.0"), "fake-opencode");
     assert!(rig.tool_pid(&pane, "opencode").is_some(), "moved in place");
     let ours = seat_records(&rig);
@@ -675,4 +683,26 @@ fn a_daemon_writer_backs_off_while_another_writer_holds_the_seat() {
         Some("failed: no outcome recorded")
     );
     untouched(&rig, &pane);
+}
+
+/// A trigger the seat refuses is said on the daemon's error stream and opens
+/// nothing; the next cycle asks again, and the seat moves once it is free.
+#[test]
+fn a_trigger_the_seat_refuses_is_said_and_asked_again_until_it_moves() {
+    let rig = Rig::new("autodaemontrig");
+    configure(&rig, ON_NOW, "fake-opencode");
+    let pane = rig.seat("spawned.0", "scout", "claude");
+    rig.mark_limited(&pane);
+
+    let held = hold_seat_lock(&rig);
+    let said = watch_until(&rig, || daemon_err(&rig).contains(NOT_STARTED));
+    assert!(said, "{}\n{}", rig.events(), daemon_err(&rig));
+    assert_eq!(booked(&rig, ATTEMPT_ACTION), 0, "held: {}", rig.events());
+    untouched(&rig, &pane);
+
+    drop(held);
+    let moved = watch_until(&rig, || booked(&rig, DONE_ACTION) == 1);
+    assert!(moved, "{}\n{}", rig.events(), daemon_err(&rig));
+    assert_eq!(booked(&rig, ATTEMPT_ACTION), 1, "one attempt");
+    assert_eq!(rig.meta_row("profile.spawned.0"), "fake-opencode");
 }
