@@ -6357,6 +6357,125 @@ fn a_mismatched_admin_witness_refuses_before_the_move() {
     assert!(!rig.dir("wanew").exists(), "no state move");
 }
 
+/// A stopped `--worktree` source whose admin id git SUFFIXED: a same-basename
+/// worktree exists before the launch, so the session owns `<old>1` while the
+/// leaf names the foreign `<old>`. Both admin dirs stay live, so their
+/// (device, inode) provably differ on every filesystem.
+fn suffixed_git_source(tag: &str, old: &str) -> Rig {
+    let rig = Rig::idle(tag);
+    git_in(&rig.project, &["init", "-q"]);
+    git_in(&rig.project, &["config", "user.email", "t@t"]);
+    git_in(&rig.project, &["config", "user.name", "t"]);
+    assert!(std::fs::write(rig.project.join("f"), "x\n").is_ok());
+    git_in(&rig.project, &["add", "-A"]);
+    git_in(&rig.project, &["commit", "-qm", "base"]);
+    git_in(
+        &rig.project,
+        &[
+            "worktree",
+            "add",
+            "--detach",
+            &format!("other/{old}"),
+            "HEAD",
+        ],
+    );
+    let (code, stdout, stderr) = rig.launch(&["--worktree", old]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let (code, stdout, stderr) = public(&rig, &["stop", old]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    rig
+}
+
+/// One `u64` row out of a rename intent document.
+fn intent_row(intent: &str, key: &str) -> u64 {
+    intent
+        .lines()
+        .find_map(|line| line.strip_prefix(&format!("{key}=")))
+        .unwrap_or_default()
+        .parse()
+        .unwrap_or_default()
+}
+
+/// #196 T1: the plan-time fingerprint names the session's OWN admin dir, not
+/// the foreign one the leaf spells when git suffixed the id. Smallest
+/// defeating mutation: derive the admin dir from the leaf.
+#[test]
+fn a_suffixed_rename_fingerprints_its_own_admin_dir() {
+    if skip() {
+        return;
+    }
+    let old = "s1old";
+    let new = "s1new";
+    let rig = suffixed_git_source("suffixed-own", old);
+    let admins = rig.project.join(".git").join("worktrees");
+    let own = admins.join(format!("{old}1"));
+    let foreign = admins.join(old);
+    assert!(own.is_dir() && foreign.is_dir(), "the id is suffixed");
+
+    kill_at_boundary(&rig, old, new, "after-intent");
+    let intent = std::fs::read_to_string(
+        rig.home
+            .join("sessions")
+            .join(format!(".rename.{old}.{new}.intent")),
+    )
+    .unwrap_or_default();
+    let recorded = (
+        intent_row(&intent, "admin_dev"),
+        intent_row(&intent, "admin_ino"),
+    );
+    let id_of = |dir: &std::path::Path| {
+        let meta = std::fs::metadata(dir).expect("a live admin dir");
+        (meta.dev(), meta.ino())
+    };
+    assert_ne!(id_of(&own), id_of(&foreign), "both admin dirs are live");
+    assert_eq!(
+        recorded,
+        id_of(&own),
+        "the intent fingerprints the own admin dir: {intent}"
+    );
+}
+
+/// #196 T2: removing the FOREIGN same-basename worktree between intent and
+/// retry does not refuse the healthy pre-move retry. Smallest defeating
+/// mutation: derive the admin dir from the leaf.
+#[test]
+fn a_suffixed_rename_retries_past_a_removed_foreign_worktree() {
+    if skip() {
+        return;
+    }
+    let old = "s2old";
+    let new = "s2new";
+    let rig = suffixed_git_source("suffixed-retry", old);
+
+    kill_at_boundary(&rig, old, new, "after-intent");
+    git_in(
+        &rig.project,
+        &["worktree", "remove", "--force", &format!("other/{old}")],
+    );
+    retry_rename(&rig, old, new);
+}
+
+/// #196 T3: the post-move leg re-proves the own admin dir through the new
+/// work address, so a foreign removal past the move does not refuse the
+/// retry either. Smallest defeating mutation: derive the admin dir from the
+/// leaf at the post-move site.
+#[test]
+fn a_suffixed_rename_retries_past_a_removed_foreign_worktree_after_the_move() {
+    if skip() {
+        return;
+    }
+    let old = "s3old";
+    let new = "s3new";
+    let rig = suffixed_git_source("suffixed-moved", old);
+
+    kill_at_boundary(&rig, old, new, "after-work-move");
+    git_in(
+        &rig.project,
+        &["worktree", "remove", "--force", &format!("other/{old}")],
+    );
+    retry_rename(&rig, old, new);
+}
+
 /// Sweep ADD: a link planted at the new state address during the cut refuses
 /// the retry — at the under-lock recheck — before `rename(2)` can overwrite
 /// the unowned entry. The link and the old state are preserved. Smallest
