@@ -290,6 +290,10 @@ decision elsewhere, a broken host — and names what blocks, who or what unblock
 you tried, and a long-form path. `unanswered` flags an `ask`/`review`
 whose target never replied within 1800 seconds (30 minutes) — the lowest-severity reason.)
 
+A seat on its usage limit whose auto reseat episode has an attempt open reads
+`limit · auto-reseat in flight` on its agent line; a terminal outcome — or none —
+reads plain `limit`.
+
 By default it shows **running sessions only** — stopped sessions are usually the
 bulk of the list and just noise for monitoring. Flags:
 
@@ -2136,8 +2140,9 @@ its cleanup is live session state only.
 Everything ae does is one core operation reached through a `_`-prefixed entry: `_launch`,
 `_stop`, `_end`, `_compact`, `_spawn`, `_retire`, `_send`, `_relay`, `_ask`, `_review`, `_reply`,
 `_requests`, `_state`, `_goal`, `_memo`, `_say`, `_peek`, `_agents`, `_focus`, `_interrupt`,
-`_watchdog`, `_telegram`, and the two daemon bodies `_watchdog-run` and `_telegram-run`.
+`_watchdog`, `_telegram`, `_auto-reseat`, and the two daemon bodies `_watchdog-run` and `_telegram-run`.
 The public words above and the session helpers are thin routes to them.
+`_auto-reseat <dir> <slot> <key>` is the detached leg the auto reseat trigger spawns to move a seat off its usage limit — never run it by hand.
 
 Don't call them directly — the core refuses any `_`-prefixed word it does not serve, with
 exit 2 and before any side effect, so a typo cannot quietly become a session name.

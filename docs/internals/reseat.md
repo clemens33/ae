@@ -339,3 +339,73 @@ proven back at its shell — BEFORE the verdict exists — so any word it chose
 would be a guess, and `prior` would be the wrong one. Deferring the record until
 the verdict is not open: a stop that finished must be on the record whatever
 happens next.
+
+## Automatic reseat
+
+The watchdog moves a seat PROVEN stuck on its vendor usage limit the same way,
+through the same verb: the only difference is who types it. The decisions live
+in `src/autoreseat.rs`, the legs in `src/autoreseat/leg.rs`, the daemon step in
+`src/watchdog_daemon.rs::auto_reseat`. The config is `[workspace] auto_reseat`
+(`off` by default), `auto_reseat_sessions`, `auto_reseat_grace_secs`, and the
+`[auto_reseat]` map; see [Configuration](../getting-started/config.md).
+
+One episode is the journal suffix starting at the first `limit` the watchdog
+booked for a seat after its newest `alert-cleared` or `spawn`; its KEY is that
+record's timestamp. A `reseat` record is no boundary, because the move itself
+writes one before its outcome. Every record of the path carries the key as its
+`ref`, except `auto-reseat-done`, whose `ref` is the profile the seat LEFT —
+the next episode's chooser reads that row. A restarted daemon re-books `limit`
+for the same key: the fold ignores a second `limit` while the episode stands,
+so the key survives the restart.
+
+Past the grace the daemon hands at most one due seat per cycle to the trigger,
+through the session's own `send` helper with the action `auto-reseat` — the
+trigger re-derives the whole decision under the seat's lock, so a forged call
+does exactly what the daemon would do now. The trigger journals `auto-reseat`
+BEFORE it spawns the detached `_auto-reseat <dir> <slot> <key>` leg; a leg that
+could not start closes the attempt `failed` at once. The leg recomputes the
+key: a seat gone, or an episode that is not the key's, REFUSES; an attempt
+already closed, or none open, is not its to act on and journals nothing. It
+re-chooses from the global config, then moves through `reseat::run_as_watchdog`
+with `StopPolicy::Proven` — a running tool is stopped only on a frame proven
+idle, or proven on the vendor's usage limit over an empty box, on both
+readings — and journals ONE outcome. The first terminal outcome wins; a later
+one closes nothing new. An episode gets at most two attempts: one, and one more
+after a transient hold; an attempt still open past 180 s is booked `failed` by
+the daemon.
+
+The chooser takes the first usable candidate of the best tier, in declared
+order. A candidate is judged by its EFFECTIVE percentage, never the raw
+window: a reached spend cap judges 100 and reads exhausted, and only a FRESH
+window places a tier — below critical first, then unknown, then critical. A
+window scoped to another model family binds no one else, while a pinless
+candidate stays bound. Another seat of the session still on its limit passes
+over the candidate's account — the moving seat's own latch is left out, because
+its limit may bind only its model family. A profile the seat left on its limit
+waits for a window read after the move that proves relief: a usable reading
+below critical, or a reset that has passed. Residual, named not fixed: a capped
+account with no usable window reads Unknown.
+
+Every writer of the path's records takes the seat's lock WITHOUT waiting, and
+takes it BEFORE the journal is re-read and appended to, never after. A writer
+that finds it held skips, and the next cycle asks again.
+
+Each ending is said once on the human's chat and told to the lead pair minus
+the moved seat, plus the seat's spawner when that names another roster seat not
+told already — each through the session's own `send` helper, as the watchdog,
+which ends no declaration. Refusals and failures the trigger closes itself are
+chat-only; the two endings a forged argv can reach journal their record and say
+nothing further.
+
+The records are `auto-reseat` (the attempt, quoting from and to),
+`auto-reseat-held` (a hold before an attempt, or a transient refusal of one),
+`auto-reseat-done` (the seat moved, `ref` the profile left),
+`auto-reseat-refused` and `auto-reseat-failed` (no further attempt this
+episode), and `auto-reseat-notice` (one per delivery). A move interrupted
+between the stop and the tool starting is finished the same way a manual one
+is: `relaunch <agent>` — the failed notice says so by name.
+
+A seeded successor is handed the seat pack, whose declared-state section reads
+`ae reads this as YOUR declaration until you re-declare`: the predecessor's
+last declaration stands for the successor until it declares its own. A carried
+seat gets no pack — it continues its own conversation.

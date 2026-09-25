@@ -186,10 +186,13 @@ Old seat files that still carry `[profiles]`/`[roster]` are ignored for identity
 | `layout`  | `lead-pair` (lead and colead each get 50% in window 0, other workers in window 1), `lead-solo` (lead alone in window 0, workers in window 1), `vertical` (side-by-side splits), `horizontal` (stacked splits) | `lead-pair`   |
 | `copy`    | Working directory mode (see below)                   | `local`       |
 | `watchdog`    | Auto-start the watchdog (`true` / `false`)            | `true`        |
-| `quota` | Whether ae acts on vendor quota at all (`on` / `off`); absent means `on`. When `off`, agents are never told about quota, the watchdog books no quota advisory, sends no checkpoint ask and renders no quota throttle line, and the settings menu carries no quota entry. While `on`, a scope entering `low` or worse asks every seat on it, once, to write a durable checkpoint before its subscription runs dry. `ae quota` works identically in both states. `off` wins over `quota_every_secs` | `on` |
+| `quota` | Whether ae acts on vendor quota at all (`on` / `off`); absent means `on`. When `off`, agents are never told about quota, the watchdog books no quota advisory, sends no checkpoint ask and renders no quota throttle line, and the settings menu carries no quota entry. While `on`, a scope entering `low` or worse asks every seat on it, once, to write a durable checkpoint before its subscription runs dry. `ae quota` works identically in both states. `off` wins over `quota_every_secs`; the auto reseat chooser then reads no vendor numbers and moves in declared order | `on` |
 | `quota_every_secs` | Watchdog cadence in seconds for the quota observation, rounded to whole watchdog cycles (`0` disables it) | `300` |
 | `idle_nudge_secs` | Continuous positively observed empty-input time before the watchdog reminds the seat (`0` disables) | `300` |
 | `done_confirmations` | Delivered proof challenges a later `done`/`waiting-agent`/`blocked` must answer (`waiting-user` never challenged; `0` disables; range `0`–`9`) | `2` |
+| `auto_reseat` | Which seats the watchdog may move off a vendor usage limit (`off` / `on` / `all`); absent means `off`. `on` moves fixed non-main and spawned seats, `all` moves the main seat too; an orchestrator session's seats never move. Global config only | `off` |
+| `auto_reseat_sessions` | Comma-separated sessions auto reseat acts in; absent means every session. An entry that is not a session name, or is named twice, is ignored with a note | every session |
+| `auto_reseat_grace_secs` | Whole seconds a usage-limit episode waits before its seat may move. `0` is legal: the first cycle past the latch is due, the client-input hold retires, and a Draft or Busy frame still holds | `600` |
 | `orchestrator` | Mark this session as the fleet overview seat (`true`); grants its panes the bare human-authority `relay` helper | `false`       |
 | `sweep` | Persist this orchestrator's changed-overview minimum spacing in seconds (`0` disables; positive values below `60` become `60`) | `AE_WATCHDOG_SWEEP_SEC`, then `120` |
 | `auto_upgrade` | Let an installed ae quietly check for and apply strictly newer releases (`on` / `off`); global config only | `on` |
@@ -239,6 +242,30 @@ automatic upgrades disabled until corrected. Checkout builds never
 auto-upgrade, and `AE_NO_AUTOSTART=1` suppresses scheduling along with the other
 companions. `ae version` and `ae doctor` report policy plus last check/result;
 they never trigger a check.
+
+### Auto reseat
+
+When a seat is proven stuck on its vendor usage limit, the watchdog can move it
+in place to another profile — the same move `ae reseat` makes by hand, decided
+from the journal and the live quota readings. The three knobs above are
+global-config only: a project overlay never steers spend, and the switch is
+read on every decision, so turning it off stops the next move. A knob ae cannot
+use turns the whole path off with its one note, beginning
+`auto reseat stays off: `.
+
+The `[auto_reseat]` map names where each profile may move, in order:
+
+```toml
+[auto_reseat]
+sol6x = opus55x-mic, opus55x, spark13cm
+```
+
+The key is the seat's current profile; the value is its candidates,
+comma-separated, best first. An entry ae cannot use is ignored with a note of
+its own: a key that is not a profile name, a key with no candidate list, a
+candidate that is not a profile name, the profile itself, or a repeat; a
+profile left with no usable candidate is ignored too. A profile keyed twice
+keeps its later row.
 
 Names show in pane borders and are how agents address each other. Each window
 keeps its first agent's name as its stable tmux routing name; later splits do

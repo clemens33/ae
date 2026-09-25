@@ -457,6 +457,41 @@ stateDiagram-v2
 
 There is no repeat-alert. Once an agent has been alerted for a streak, it stays in `Alerted` silently until the pattern clears. This is deliberate — paging once per streak is informative; paging every minute would be spam.
 
+## Auto reseat
+
+A seat proven stuck on its vendor usage limit can be moved to another profile
+in place — the same move `ae reseat` makes. The decisions are `src/autoreseat.rs`'s;
+this daemon contributes one step per cycle plus the forecast below. The full
+path is [Moving a seat](reseat.md#automatic-reseat).
+
+After the brief retry, the cycle's auto reseat step decides every latched seat
+the switch admits, journals each hold and each overdue failure under that
+seat's lock, and hands at most ONE due seat to the trigger through the one
+exec site — the oldest episode, the slot breaking a tie. A hold is named once
+per episode and reason; an attempt still open past 180 s is closed `failed`
+with `failed: no outcome recorded`. The trigger re-derives the decision from a
+fresh capture, so it may decline what this cycle's read decided; the cycle then
+logs `ae: watchdog: auto reseat of <agent> not started this cycle` and the
+next cycle asks again. This budget is the step's own, beside the brief-retry
+rotation's one delivery per cycle.
+
+An attempt in flight holds the limit latch: the shell the move leaves is no
+release, so no `alert-cleared` is booked for it, the verdict stays `limit`,
+and the dead branch reads that shell as the move, not a death. A daemon that
+restarted mid-move re-latches the seat on the same key and re-books `limit`.
+
+At a limit's first sight the Notify gains one forecast line, and only then: the
+`limit` record itself is byte-identical. `ae will move <agent> to <to> in
+<grace>` names the candidate the chooser ranks first over this cycle's held
+quota observation; `, target already critical` is appended when that candidate
+is already critical; `ae cannot move <agent>: <why>` names each declared
+candidate passed over and why. It is a forecast — the legs choose again when
+they act — and a seat the switch does not admit gets no line at all.
+
+With `auto_reseat` absent or `off`, the path is inert: the daemon books no
+auto-reseat record, takes no seat lock, execs no leg, and `alert-cleared`
+behaves exactly as without the feature.
+
 ## Human-only prompts
 
 A modal only the human may answer is NAMED and never answered: no key reaches it, and ae writes
