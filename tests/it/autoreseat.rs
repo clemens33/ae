@@ -14,8 +14,8 @@
 use std::io::Write as _;
 
 use ae::autoreseat::{
-    ATTEMPT_ACTION, DONE_ACTION, Decision, Frame, HELD_ACTION, Outcome, Pane, REFUSED_ACTION,
-    decide, episode,
+    ATTEMPT_ACTION, DONE_ACTION, Decision, FAILED_ACTION, Frame, HELD_ACTION, Outcome, Pane,
+    REFUSED_ACTION, decide, episode,
 };
 use ae::events::Event;
 use ae::time::Timestamp;
@@ -119,7 +119,7 @@ fn untouched(rig: &Rig, pane: &str) {
 }
 
 #[test]
-fn a_bad_argv_reads_nothing_and_a_stale_key_is_refused() {
+fn a_bad_argv_reads_nothing_and_a_stale_or_closed_attempt_moves_nothing() {
     let (rig, pane) = limited("legstale", "on", "fake-opencode");
     let before = rig.events();
     for tail in [
@@ -155,6 +155,15 @@ fn a_bad_argv_reads_nothing_and_a_stale_key_is_refused() {
     assert_eq!(code, Some(1), "out={out} err={err}");
     let refused = one_outcome(&rig, REFUSED_ACTION);
     assert_eq!(refused.reference.as_deref(), Some(stale), "{refused:?}");
+    untouched(&rig, &pane);
+
+    // An attempt the watchdog already closed, booked failed past its bound, is
+    // not the leg's to act on, and nothing is left for it to close.
+    journal(&rig, FAILED_ACTION, Some(KEY));
+    let before = rig.events();
+    let (code, out, err) = rig.run("_auto-reseat", &["spawned.0", KEY]);
+    assert_eq!(code, Some(1), "out={out} err={err}");
+    assert_eq!(rig.events(), before, "journaled nothing");
     untouched(&rig, &pane);
 }
 
@@ -248,7 +257,15 @@ fn a_switch_turned_off_between_the_legs_holds_and_the_retry_moves_once_it_is_on(
         "{found:?}"
     );
 
+    // The leg moves only under an attempt the watchdog opened, so no call can
+    // move the seat ahead of the watchdog's own decision.
     configure(&rig, "on", "fake-opencode");
+    let before = rig.events();
+    let (code, out, err) = rig.run("_auto-reseat", &["spawned.0", KEY]);
+    assert_eq!(code, Some(1), "no open attempt: out={out} err={err}");
+    assert_eq!(rig.events(), before, "journaled nothing");
+    untouched(&rig, &pane);
+
     journal(&rig, ATTEMPT_ACTION, Some(KEY));
     let (code, out, err) = rig.run("_auto-reseat", &["spawned.0", KEY]);
     assert_eq!(
