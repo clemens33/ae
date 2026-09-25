@@ -5462,7 +5462,7 @@ mod tests {
                     "-t",
                     "%0",
                     "window-resized",
-                    "if-shell -F -t %0 '#{==:#{window_zoomed_flag},0}' 'select-layout -t %0 main-vertical'"
+                    "if-shell -F -t %0 '#{&&:#{==:#{window_zoomed_flag},0},#{==:#{P:#{@ae_reader_src}},}}' 'select-layout -t %0 main-vertical'"
                 ],
             ]
         );
