@@ -1845,6 +1845,55 @@ pub fn fleet_order_entries(raw: &str) -> (Vec<String>, Vec<String>) {
     (names, ignored)
 }
 
+/// One `key = value` line of a section, as written: the key it claims, its
+/// value (`None` when the value is not in the entry grammar) and its 1-based
+/// line number.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SectionEntry {
+    pub key: String,
+    pub value: Option<String>,
+    pub line: usize,
+}
+
+/// Every entry of the GLOBAL `[section]`, in file order, through the bounded
+/// config door. A commented-out entry claims nothing; the caller judges each
+/// key and value, so nothing here is dropped silently.
+///
+/// # Errors
+///
+/// The file could not be read as config text.
+pub fn read_global_section(file: &Path, section: &str) -> Result<Vec<SectionEntry>, String> {
+    let text = read_selected(file).map_err(|why| why.to_string())?;
+    section_entries(file, &text, section)
+}
+
+/// [`read_global_section`] over text already read.
+fn section_entries(file: &Path, text: &str, wanted: &str) -> Result<Vec<SectionEntry>, String> {
+    let mut section = String::new();
+    let mut entries = Vec::new();
+    for item in config_lines(file, text) {
+        let ConfigLine::Plain(line, raw) = item.map_err(|why| why.to_string())? else {
+            continue;
+        };
+        let trimmed = raw.trim();
+        if let Some(name) = section_header(trimmed) {
+            section = name;
+            continue;
+        }
+        if section != wanted {
+            continue;
+        }
+        if let Some(key) = key_claim(trimmed) {
+            entries.push(SectionEntry {
+                key: key.to_owned(),
+                value: entry_value(trimmed),
+                line,
+            });
+        }
+    }
+    Ok(entries)
+}
+
 /// Read `[workspace]` keys and report whether the local file carries legacy
 /// identity sections. The latter are metadata for compatibility notices only:
 /// callers that own identity globally must not parse or overlay those rows.
@@ -2008,6 +2057,38 @@ mod tests {
         let (names, ignored) = fleet_order_entries(&global_fleet_order(Some(file.path())));
         assert_eq!(names, ["aedev", "thinking", "infra"]);
         assert!(ignored.is_empty(), "{ignored:?}");
+    }
+
+    /// PIN: a section is read as written — every claimed key in file order,
+    /// a malformed value kept as `None` beside its line, comments and other
+    /// sections claiming nothing — so the caller can judge and name each row.
+    #[test]
+    fn a_global_section_is_read_entry_by_entry_as_written() {
+        let file = NamedTemp::new(
+            "section",
+            "[workspace]\nsol6x = elsewhere\n[auto_reseat]\n# fable = off\nsol6x = opus55x, spark13cm\n\
+             bad key = x\nempty =\nquoted = \"a, b\"\n[profiles]\nsol6x = codex\n[auto_reseat]\nlate = y\n",
+        );
+        let entries = read_global_section(file.path(), "auto_reseat").expect("readable");
+        let rows: Vec<(&str, Option<&str>, usize)> = entries
+            .iter()
+            .map(|entry| (entry.key.as_str(), entry.value.as_deref(), entry.line))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("sol6x", Some("opus55x, spark13cm"), 5),
+                ("bad key", Some("x"), 6),
+                ("empty", None, 7),
+                ("quoted", Some("a, b"), 8),
+                ("late", Some("y"), 12),
+            ]
+        );
+        assert_eq!(
+            read_global_section(file.path(), "absent").expect("readable"),
+            []
+        );
+        assert!(read_global_section(Path::new("/nonexistent/ae-config"), "auto_reseat").is_err());
     }
 
     /// PIN: a typo costs the human their entry, never their status line. An

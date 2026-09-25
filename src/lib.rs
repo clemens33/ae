@@ -11,6 +11,7 @@
 
 pub mod archive;
 pub mod attention;
+pub mod autoreseat;
 pub mod autoupgrade;
 pub mod board;
 pub mod brief;
