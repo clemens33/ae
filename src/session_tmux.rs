@@ -21,9 +21,9 @@ use crate::inventory::ServerId;
 use crate::meta::Selector;
 use crate::tmux::{
     MOUSE_DOWN_STATUS_MENU_ACTION, MOUSE_STATUS_PICKER, MOUSE_STATUS_SESSION,
-    MOUSE_STATUS_SETTINGS, MOUSE_STATUS_WINDOW, hotkey_picker_shell, mouse_dispatch_literal,
-    server_args, session_target, status_picker_command, status_settings_command,
-    tmux_current_format_double_quote,
+    MOUSE_STATUS_SETTINGS, MOUSE_STATUS_WINDOW, hotkey_picker_shell, hotkey_reader_shell,
+    mouse_dispatch_literal, server_args, session_target, status_picker_command,
+    status_settings_command, tmux_current_format_double_quote,
 };
 
 /// The `-P -F` format every pane-creating call here prints.
@@ -39,13 +39,26 @@ const STOCK_RIGHT_CLICK_MENU_KEYS: [&str; 5] = [
 /// The main layout must never collapse a zoomed pane back into its window.
 const LEAD_PAIR_NOT_ZOOMED: &str = "#{==:#{window_zoomed_flag},0}";
 
+/// The resize hook's second guard: no pane in the target window carries the
+/// reader stamp. `P:` loops the window's panes, so the loop is empty exactly
+/// while no reader exists — and a reader pane's stamp is the only fact read.
+const LEAD_PAIR_NO_READER: &str = "#{==:#{P:#{@ae_reader_src}},}";
+
 fn lead_pair_layout_command(pane: &str) -> String {
     format!("select-layout -t {pane} main-vertical")
 }
 
+/// The resize hook's condition: unzoomed AND no reader in the window, so a
+/// resize can never reflow the reader into the main pane (and closing the
+/// reader lets the next resize restore the plain pair).
+fn lead_pair_resize_condition() -> String {
+    format!("#{{&&:{LEAD_PAIR_NOT_ZOOMED},{LEAD_PAIR_NO_READER}}}")
+}
+
 fn lead_pair_layout_if_unzoomed_command(pane: &str) -> String {
     format!(
-        "if-shell -F -t {pane} '{LEAD_PAIR_NOT_ZOOMED}' '{}'",
+        "if-shell -F -t {pane} '{}' '{}'",
+        lead_pair_resize_condition(),
         lead_pair_layout_command(pane)
     )
 }
@@ -187,6 +200,24 @@ pub(crate) enum Op<'a> {
     UnbindRootKey { key: &'a str },
     /// Bind the fleet picker to mnemonic `prefix a` on an ae-owned server.
     BindPickerHotkey { shell: &'a str },
+    /// `split-window -v -b -d -l <size> -t <source> -P -F '#{pane_id}'` — the
+    /// READER pane: above its source, detached so the source keeps the
+    /// keyboard, no command so the pane's own shell stays under the read-only
+    /// snapshot.
+    SplitReader { source: &'a str, size: &'a str },
+    /// `copy-mode -s <source> -t <target>` — the target shows a frozen
+    /// snapshot of the source's screen and history.
+    CopyModeFrom { source: &'a str, target: &'a str },
+    /// `bind-key -T <table> Wheel{Up,Down}Pane send-keys -X -N 5
+    /// scroll-{up,down}` — the ONE no-select mode-table wheel map, replacing
+    /// stock's `select-pane; send-keys -X -N 5 scroll-*` pair so a wheel over
+    /// a scrolled pane never moves the keyboard.
+    BindModeWheel { table: &'a str, up: bool },
+    /// `set-hook -p -t <reader> pane-mode-changed '<kill when the mode ends>'`
+    /// — `q`/Escape in a focused reader closes it instead of leaving a shell.
+    SetReaderCloseHook { reader: &'a str },
+    /// Bind the reader toggle to mnemonic `prefix v` on an ae-owned server.
+    BindReaderHotkey { shell: &'a str },
     /// `rename-session -t <target> <name>` — `ae rename`'s tmux half.
     RenameSession { target: &'a str, name: &'a str },
     /// `set-window-option -t <target> <name> <value>` — the monitor window's
@@ -387,6 +418,54 @@ pub(crate) fn argv(server: &ServerId, op: &Op<'_>) -> TmuxArgv {
         Op::BindPickerHotkey { shell } => {
             args.extend(
                 ["bind-key", "-T", "prefix", "a", "run-shell", "-b", shell].map(ToOwned::to_owned),
+            );
+        }
+        Op::SplitReader { source, size } => {
+            args.extend(
+                [
+                    "split-window",
+                    "-v",
+                    "-b",
+                    "-d",
+                    "-l",
+                    size,
+                    "-t",
+                    source,
+                    "-P",
+                    "-F",
+                    PANE_ID_FORMAT,
+                ]
+                .map(ToOwned::to_owned),
+            );
+        }
+        Op::CopyModeFrom { source, target } => {
+            args.extend(["copy-mode", "-s", source, "-t", target].map(ToOwned::to_owned));
+        }
+        Op::BindModeWheel { table, up } => {
+            args.extend(["bind-key", "-T", table].map(ToOwned::to_owned));
+            args.extend(
+                [
+                    if up { "WheelUpPane" } else { "WheelDownPane" },
+                    "send-keys",
+                    "-X",
+                    "-N",
+                    "5",
+                    if up { "scroll-up" } else { "scroll-down" },
+                ]
+                .map(ToOwned::to_owned),
+            );
+        }
+        Op::SetReaderCloseHook { reader } => {
+            args.extend(
+                ["set-hook", "-p", "-t", reader, "pane-mode-changed"].map(ToOwned::to_owned),
+            );
+            args.push(format!(
+                "if-shell -F -t {reader} '#{{==:#{{pane_in_mode}},0}}' 'kill-pane -t {reader}'"
+            ));
+        }
+        Op::BindReaderHotkey { shell } => {
+            args.extend(
+                ["bind-key", "-T", "prefix", "v", "run-shell", "-b", shell].map(ToOwned::to_owned),
             );
         }
         Op::RenameSession { target, name } => {
@@ -715,6 +794,21 @@ pub(crate) fn status_bindings_argv(
             bindings.extend(
                 STOCK_RIGHT_CLICK_MENU_KEYS.map(|key| argv(server, &Op::UnbindRootKey { key })),
             );
+            // The mode-table wheel map and the reader toggle ride the SAME
+            // server-global input map: launch and upgrade assert them, and
+            // doctor judges them, all from this one list. Identical on both
+            // capabilities — the no-select wheels do not differ by tmux floor.
+            let reader_hotkey = hotkey_reader_shell(launcher);
+            for table in ["copy-mode", "copy-mode-vi"] {
+                bindings.push(argv(server, &Op::BindModeWheel { table, up: true }));
+                bindings.push(argv(server, &Op::BindModeWheel { table, up: false }));
+            }
+            bindings.push(argv(
+                server,
+                &Op::BindReaderHotkey {
+                    shell: &reader_hotkey,
+                },
+            ));
             bindings
         }
     }
@@ -734,6 +828,11 @@ pub(crate) struct ExpectedBinding {
     /// launcher-less entry (the 3.4 Down pair, navigation only) is
     /// presence-checked; only a launcher-naming one can read as foreign.
     pub names_launcher: bool,
+    /// The exact command ae binds, for a launcher-less entry whose command IS
+    /// the whole contract: the mode-table wheel map. Doctor matches it exactly,
+    /// so stock tmux's `select-pane` pair reads as not-ae instead of Intact.
+    /// `None` keeps the presence-only rule.
+    pub exact_command: Option<String>,
 }
 
 /// The launcher word the expected-set derivation binds with. Distinctive on
@@ -774,6 +873,7 @@ pub(crate) fn expected_status_bindings(menu_mouse: bool) -> Vec<ExpectedBinding>
                 key,
                 absent: true,
                 names_launcher: false,
+                exact_command: None,
             });
         }
     }
@@ -795,15 +895,24 @@ fn key_entries(argv: &[TmuxArgv]) -> (Vec<ExpectedBinding>, KeyPairs) {
                 continue;
             }
             if verb == "bind-key" {
-                let names_launcher = words
+                let command = words
                     .iter()
                     .skip(at + 4)
-                    .any(|word| word.contains(SENTINEL_LAUNCHER));
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let names_launcher = command.contains(SENTINEL_LAUNCHER);
+                // The mode tables carry ae's whole command as the contract, so
+                // their entries are matched exactly; everything else keeps the
+                // launcher/presence rules above.
+                let exact_command =
+                    (table.starts_with("copy-mode") && !names_launcher).then(|| command);
                 bound.push(ExpectedBinding {
                     table: table.clone(),
                     key: key.clone(),
                     absent: false,
                     names_launcher,
+                    exact_command,
                 });
             } else if verb == "unbind-key" {
                 unbound.push((table.clone(), key.clone()));
@@ -979,7 +1088,111 @@ mod tests {
                 "-t",
                 "%9",
                 "window-resized",
-                "if-shell -F -t %9 '#{==:#{window_zoomed_flag},0}' 'select-layout -t %9 main-vertical'"
+                "if-shell -F -t %9 '#{&&:#{==:#{window_zoomed_flag},0},#{==:#{P:#{@ae_reader_src}},}}' 'select-layout -t %9 main-vertical'"
+            ]
+        );
+    }
+
+    /// The LAUNCH apply stays byte-identical: only the resize hook carries the
+    /// reader guard, so a launch can never be blocked by a reader (ruling 1c).
+    #[test]
+    fn the_lead_pair_apply_is_unchanged_and_only_the_resize_hook_guards_the_reader() {
+        assert_eq!(
+            words(&Op::SelectLeadPairLayout { pane: "%9" }),
+            vec![
+                "if-shell",
+                "-F",
+                "-t",
+                "%9",
+                "#{==:#{window_zoomed_flag},0}",
+                "select-layout -t %9 main-vertical"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_reader_ops_mint_the_exact_split_snapshot_wheel_and_hook_argv() {
+        assert_eq!(
+            words(&Op::SplitReader {
+                source: "%3",
+                size: "60%"
+            }),
+            vec![
+                "split-window",
+                "-v",
+                "-b",
+                "-d",
+                "-l",
+                "60%",
+                "-t",
+                "%3",
+                "-P",
+                "-F",
+                "#{pane_id}"
+            ]
+        );
+        assert_eq!(
+            words(&Op::CopyModeFrom {
+                source: "%3",
+                target: "%7"
+            }),
+            vec!["copy-mode", "-s", "%3", "-t", "%7"]
+        );
+        assert_eq!(
+            words(&Op::BindModeWheel {
+                table: "copy-mode",
+                up: true
+            }),
+            vec![
+                "bind-key",
+                "-T",
+                "copy-mode",
+                "WheelUpPane",
+                "send-keys",
+                "-X",
+                "-N",
+                "5",
+                "scroll-up"
+            ]
+        );
+        assert_eq!(
+            words(&Op::BindModeWheel {
+                table: "copy-mode-vi",
+                up: false
+            }),
+            vec![
+                "bind-key",
+                "-T",
+                "copy-mode-vi",
+                "WheelDownPane",
+                "send-keys",
+                "-X",
+                "-N",
+                "5",
+                "scroll-down"
+            ]
+        );
+        assert_eq!(
+            words(&Op::SetReaderCloseHook { reader: "%7" }),
+            vec![
+                "set-hook",
+                "-p",
+                "-t",
+                "%7",
+                "pane-mode-changed",
+                "if-shell -F -t %7 '#{==:#{pane_in_mode},0}' 'kill-pane -t %7'"
+            ]
+        );
+        assert_eq!(
+            words(&Op::BindReaderHotkey { shell: "'/opt/ae'" }),
+            vec![
+                "bind-key",
+                "-T",
+                "prefix",
+                "v",
+                "run-shell",
+                "-b",
+                "'/opt/ae'"
             ]
         );
     }
@@ -994,8 +1207,8 @@ mod tests {
         let bindings = status_bindings_argv(&server, &["/opt/ae".to_owned()], true);
         assert_eq!(
             bindings.len(),
-            10,
-            "mouse-aware servers assert Down bindings and remove every stock right-click menu"
+            15,
+            "mouse-aware servers assert Down bindings, remove every stock right-click menu, and carry the wheel map plus the reader hotkey"
         );
         assert_eq!(
             bindings[0].as_args(),
@@ -1071,7 +1284,7 @@ mod tests {
             bindings[4].as_args(),
             ["-L", "ae", "unbind-key", "-T", "root", "MouseUp3Status"]
         );
-        for (binding, key) in bindings[5..].iter().zip([
+        for (binding, key) in bindings[5..10].iter().zip([
             "MouseDown3Pane",
             "M-MouseDown3Pane",
             "MouseDown3StatusLeft",
@@ -1084,11 +1297,53 @@ mod tests {
                 "remove the stock right-click menu for {key}"
             );
         }
+        for (index, (table, key, direction)) in [
+            ("copy-mode", "WheelUpPane", "scroll-up"),
+            ("copy-mode", "WheelDownPane", "scroll-down"),
+            ("copy-mode-vi", "WheelUpPane", "scroll-up"),
+            ("copy-mode-vi", "WheelDownPane", "scroll-down"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            assert_eq!(
+                bindings[10 + index].as_args(),
+                [
+                    "-L",
+                    "ae",
+                    "bind-key",
+                    "-T",
+                    table,
+                    key,
+                    "send-keys",
+                    "-X",
+                    "-N",
+                    "5",
+                    direction
+                ],
+                "the no-select wheel map for {table} {key}"
+            );
+        }
+        assert_eq!(
+            bindings[14].as_args(),
+            [
+                "-L",
+                "ae",
+                "bind-key",
+                "-T",
+                "prefix",
+                "v",
+                "run-shell",
+                "-b",
+                "'/opt/ae' '_reader' '--client' #{q:client_name}",
+            ],
+            "the reader hotkey rides the same launcher boundary as the picker"
+        );
         let keyboard = status_bindings_argv(&server, &["/opt/ae".to_owned()], false);
         assert_eq!(
             keyboard.len(),
-            10,
-            "keyboard-driven servers bind release and remove every stock right-click menu"
+            15,
+            "keyboard-driven servers bind release, remove every stock right-click menu, and carry the wheel map plus the reader hotkey"
         );
         assert_eq!(
             keyboard[0].as_args(),
@@ -1181,7 +1436,7 @@ mod tests {
                 "'/opt/ae' 'orchestrator' '--popup' '--client' #{q:client_name}",
             ]
         );
-        for (binding, key) in keyboard[5..].iter().zip([
+        for (binding, key) in keyboard[5..10].iter().zip([
             "MouseDown3Pane",
             "M-MouseDown3Pane",
             "MouseDown3StatusLeft",
@@ -1194,6 +1449,21 @@ mod tests {
                 "remove the stock right-click menu for {key}"
             );
         }
+        assert_eq!(
+            keyboard[14].as_args(),
+            [
+                "-L",
+                "ae",
+                "bind-key",
+                "-T",
+                "prefix",
+                "v",
+                "run-shell",
+                "-b",
+                "'/opt/ae' '_reader' '--client' #{q:client_name}",
+            ],
+            "the reader hotkey is identical on both capabilities"
+        );
         assert!(
             status_bindings_argv(&ServerId::Ambient, &["/opt/ae".to_owned()], true).is_empty(),
             "an ambient server's root table belongs to its user"
@@ -1419,6 +1689,14 @@ mod tests {
             key: key.to_owned(),
             absent,
             names_launcher,
+            exact_command: None,
+        };
+        let wheel = |table: &str, key: &str, direction: &str| ExpectedBinding {
+            table: table.to_owned(),
+            key: key.to_owned(),
+            absent: false,
+            names_launcher: false,
+            exact_command: Some(format!("send-keys -X -N 5 {direction}")),
         };
         assert_eq!(
             expected_status_bindings(true),
@@ -1426,6 +1704,11 @@ mod tests {
                 entry("root", "MouseDown1Status", false, true),
                 entry("root", "MouseDown3Status", false, true),
                 entry("prefix", "a", false, true),
+                wheel("copy-mode", "WheelUpPane", "scroll-up"),
+                wheel("copy-mode", "WheelDownPane", "scroll-down"),
+                wheel("copy-mode-vi", "WheelUpPane", "scroll-up"),
+                wheel("copy-mode-vi", "WheelDownPane", "scroll-down"),
+                entry("prefix", "v", false, true),
                 entry("root", "MouseUp1Status", true, false),
                 entry("root", "MouseUp3Status", true, false),
             ]
@@ -1438,6 +1721,11 @@ mod tests {
                 entry("root", "MouseUp1Status", false, true),
                 entry("root", "MouseUp3Status", false, true),
                 entry("prefix", "a", false, true),
+                wheel("copy-mode", "WheelUpPane", "scroll-up"),
+                wheel("copy-mode", "WheelDownPane", "scroll-down"),
+                wheel("copy-mode-vi", "WheelUpPane", "scroll-up"),
+                wheel("copy-mode-vi", "WheelDownPane", "scroll-down"),
+                entry("prefix", "v", false, true),
             ]
         );
     }

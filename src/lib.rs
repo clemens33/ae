@@ -58,6 +58,7 @@ pub mod panes;
 pub mod procs;
 pub mod provenance;
 pub mod quota;
+mod reader;
 pub mod relay;
 pub mod rename;
 pub mod render;
@@ -3227,6 +3228,7 @@ pub fn run_with(
                 EXIT_UNAVAILABLE
             }
         }
+        cli::Request::Reader { tail } => reader::run(tail, out, err)?,
         cli::Request::Compact { tail } => {
             if let Some(root) = state_root() {
                 lifecycle::compaction::run(&root, tail, out, err)?

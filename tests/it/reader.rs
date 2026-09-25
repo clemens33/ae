@@ -3,10 +3,10 @@
 //! A unit argv pin cannot hold tmux's pane geometry, copy mode or mouse
 //! routing. This arm opens the reader over a live source, proves the keyboard
 //! stays with the source while the wheel scrolls the reader, and proves the
-//! toggle, the retarget and the source-death close. The byte-exact argv the
-//! launch and upgrade assert is pinned beside the code in `src/session_tmux.rs`;
-//! the wheel fixtures here install the SAME command that pin fixes, so the arm
-//! holds the semantics and the unit pin holds the spelling.
+//! toggle, the retarget and the source-death close. The wheel fixtures install
+//! the no-select command the launch asserts; its byte-exact argv is pinned
+//! beside the code in `src/session_tmux.rs`, so a drift in that pin is where
+//! the spelling breaks first.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -503,9 +503,14 @@ fn a_dead_source_leaves_a_reader_the_toggle_still_closes() {
         "the toggle closes the window's reader: {}",
         String::from_utf8_lossy(&out.stderr)
     );
+    let (listed, _) = tmux(
+        &socket,
+        &scratch,
+        &["list-panes", "-t", "s", "-F", "#{pane_id}"],
+    );
     assert!(
-        reader_pane(&socket, &scratch).is_none(),
-        "the dead-source reader is gone"
+        !listed,
+        "the reader was the last pane, so its window and session are gone with it"
     );
 }
 
@@ -532,7 +537,11 @@ fn doctor_names_the_mode_table_wheel_bindings_it_expects() {
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(
         stdout.contains("copy-mode WheelUpPane"),
-        "a server whose mode-table wheels are still stock NAMES the entry: {stdout}"
+        "a server whose copy-mode wheels are still stock NAMES the entry: {stdout}"
+    );
+    assert!(
+        stdout.contains("copy-mode-vi WheelUpPane"),
+        "the vi table is judged too, or a one-table defect passes: {stdout}"
     );
 
     install_wheel_map(&socket, &scratch);
@@ -544,7 +553,7 @@ fn doctor_names_the_mode_table_wheel_bindings_it_expects() {
         .expect("the ae binary should run");
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(
-        !stdout.contains("copy-mode WheelUpPane"),
-        "the asserted map clears the mode-table entry: {stdout}"
+        !stdout.contains("copy-mode WheelUpPane") && !stdout.contains("copy-mode-vi WheelUpPane"),
+        "the asserted map clears both mode-table entries: {stdout}"
     );
 }

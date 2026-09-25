@@ -140,6 +140,11 @@ pub const STOP: &str = "_stop";
 /// Internal — a status binding runs it, never a helper and never a human.
 pub const SESSION_MENU: &str = "_session-menu";
 
+/// The pane reader toggle: `_reader [--client <name>]`. Internal — the
+/// server-global `prefix v` binding runs it, and a shell inside a pane may run
+/// it with `$TMUX_PANE` instead of a client.
+pub const READER: &str = "_reader";
+
 /// The whole `compact` operation: `_compact [-f] [--keep-history]
 /// [--digest-only] <session-name> [--exec-plan <path>]`.
 pub const COMPACT: &str = "_compact";
@@ -251,6 +256,11 @@ pub enum Request {
     },
     /// `orchestrator` with the flags its tail named.
     Orchestrator {
+        /// Everything after the subcommand, as typed.
+        tail: Vec<String>,
+    },
+    /// `_reader [--client <name>]` — the pane reader toggle, as typed.
+    Reader {
         /// Everything after the subcommand, as typed.
         tail: Vec<String>,
     },
@@ -1282,6 +1292,9 @@ impl Request {
             Some(SESSION_MENU) => Self::SessionMenu {
                 tail: args[1..].to_vec(),
             },
+            Some(READER) => Self::Reader {
+                tail: args[1..].to_vec(),
+            },
             Some(COMPACT) => Self::Compact {
                 tail: args[1..].to_vec(),
             },
@@ -1453,6 +1466,7 @@ impl Request {
             | Self::End { .. }
             | Self::Stop { .. }
             | Self::SessionMenu { .. }
+            | Self::Reader { .. }
             | Self::Compact { .. }
             | Self::ManifestRender { .. }
             | Self::Context { .. } => None,

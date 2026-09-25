@@ -639,8 +639,20 @@ fn compare_bindings(
                     None => problems.push(format!("{name} is bound to a foreign command")),
                 }
             }
-            // A present launcher-less entry (the 3.4 Down pair) is
-            // presence-checked: its command names no launcher by design.
+            // A launcher-less entry whose command IS the contract (the
+            // mode-table wheel map): matched exactly, so stock tmux's own
+            // `select-pane` pair reads as not-ae rather than Intact.
+            (Some(command), false)
+                if entry
+                    .exact_command
+                    .as_deref()
+                    .is_some_and(|expected| expected != command) =>
+            {
+                problems.push(format!("{name} is bound to a foreign command"));
+            }
+            // A present launcher-less entry with no exact command (the 3.4
+            // Down pair) is presence-checked: its command names no launcher by
+            // design.
             (Some(_), false) | (None, true) => {}
             (None, false) => problems.push(format!("missing {name}")),
         }
@@ -1994,6 +2006,7 @@ mod tests {
             key: key.to_owned(),
             absent,
             names_launcher,
+            exact_command: None,
         };
         let bound = |key: &str, command: &str| KeyBinding {
             key: key.to_owned(),
@@ -2061,6 +2074,8 @@ mod tests {
             let mut tables: Vec<(String, Vec<KeyBinding>)> = vec![
                 ("root".to_owned(), Vec::new()),
                 ("prefix".to_owned(), Vec::new()),
+                ("copy-mode".to_owned(), Vec::new()),
+                ("copy-mode-vi".to_owned(), Vec::new()),
             ];
             for binding in status_bindings_argv(&server, &launcher, menu_mouse) {
                 let words = binding.as_args();
@@ -2073,7 +2088,7 @@ mod tests {
                 tables
                     .iter_mut()
                     .find(|(name, _)| name == table)
-                    .expect("the owner binds root and prefix only")
+                    .expect("the owner binds root, prefix and the two mode tables")
                     .1
                     .push(KeyBinding {
                         key: key.clone(),
@@ -2187,6 +2202,7 @@ mod tests {
             key: "MouseDown1Status".to_owned(),
             absent: false,
             names_launcher: true,
+            exact_command: None,
         }];
         let listed = |command: &str| {
             vec![(
