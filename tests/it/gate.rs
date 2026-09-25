@@ -158,7 +158,7 @@ fn rust_test_tmux_isolation_ok(justfile: &str) -> bool {
         "exit $((status ? status : 1))",
         "export TMPDIR=\"$test_tmux_tmp/tmp\"",
         "export NEXTEST_TEST_THREADS=$((cpus < 8 ? cpus : 8))",
-        "TMUX_TMPDIR=\"$test_tmux_tmp\" env -u TMUX -u TMUX_PANE tmux -L ae kill-server",
+        "env -u TMUX -u TMUX_PANE tmux -S \"$test_tmux_tmp/tmux-$(id -u)/ae\" kill-server",
         "keep_or_remove \"$test_tmux_tmp\"",
         "trap cleanup EXIT",
         "export TMUX_TMPDIR=\"$test_tmux_tmp\"",
