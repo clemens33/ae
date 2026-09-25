@@ -844,4 +844,47 @@ mod tests {
         assert_eq!(started.ok(), Some(0));
         assert_eq!(journal(), [attempt]);
     }
+    /// The trigger acts only for a seat of its OWN session: `@session:agent`
+    /// resolves across sessions, and a foreign seat — or a pane with no slot —
+    /// declines with the one line before the lock is taken or anything read.
+    #[test]
+    fn a_trigger_aimed_outside_its_own_session_declines_before_the_lock() {
+        let root = Root(std::env::temp_dir().join(format!("ae-leg-own-{}", std::process::id())));
+        let dir = root.0.join("aedev");
+        assert!(std::fs::create_dir_all(&dir).is_ok(), "a session dir");
+        let meta = "seat.spawned.3=scout\nprofile.spawned.3=sol6x\n";
+        assert!(std::fs::write(dir.join(crate::store::META), meta).is_ok());
+        for (target, session, slot) in [
+            ("@other:scout", "other", "spawned.3"),
+            ("scout", "aedev", ""),
+        ] {
+            crate::tracked::set_test_resolve(
+                crate::tracked::Resolved {
+                    pane: "%7".to_owned(),
+                    agent: target.to_owned(),
+                    slot: slot.to_owned(),
+                    session: session.to_owned(),
+                },
+                crate::inventory::ServerId::Ambient,
+            );
+            let mut err = Vec::new();
+            let now = Timestamp::parse(KEY).expect("the key parses");
+            let code = trigger(&dir, target, "aedev", now, &mut err);
+            crate::tracked::clear_test_hooks();
+            assert_eq!(code.ok(), Some(crate::state::EXIT_FAILED), "{target}");
+            assert_eq!(
+                String::from_utf8_lossy(&err),
+                format!("ae: auto reseat: {target} declined: not a seat of this session\n")
+            );
+            let lock = std::fs::remove_file(crate::autoreseat::lock_path(&dir, "spawned.3"));
+            assert!(
+                lock.is_err_and(|why| why.kind() == io::ErrorKind::NotFound),
+                "{target}: no lock taken"
+            );
+            assert!(
+                crate::watchdog_daemon::read_events(&dir).is_empty(),
+                "{target}: nothing journaled"
+            );
+        }
+    }
 }

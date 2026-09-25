@@ -457,9 +457,9 @@ impl Rig {
         self.mark(pane, "__LIMIT__", "hit your session limit");
     }
 
-    /// Take the limit row away again, and the frames above it: a redraw leaves
-    /// the old frame in the pane's history, where the watchdog would still
-    /// read the row.
+    /// Take the limit row away again, and the frames above it: the fake clears
+    /// its screen with `\e[2J`, which tmux copies into the pane's history above
+    /// the new frame, where the watchdog's capture would still read the row.
     pub fn unmark_limited(&self, pane: &str) {
         assert!(std::fs::remove_file(self.scratch.join("__LIMIT__")).is_ok());
         let pid = self.tool_pid(pane, "claude");
