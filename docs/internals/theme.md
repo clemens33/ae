@@ -27,7 +27,8 @@ The launch also stamps a session-scoped `client-session-changed` hook that
 selects the lead window and pane by pane id; it is a focus rule, not a look
 option, and is present when `theme = off` too. Input rules cannot be
 session-scoped: on a positively selected ae-owned server, launch binds
-`prefix a` and installs one capability-canonical status map. tmux 3.5+ uses
+`prefix a` and `prefix v` and installs one capability-canonical status map
+plus the no-select `copy-mode`/`copy-mode-vi` wheel map. tmux 3.5+ uses
 `MouseDown1Status` and `MouseDown3Status` for menus and removes stale Up
 bindings. On either capability, ae removes tmux's stock right-click pane,
 window, and session menus, while keeping its own `MouseDown3Status` action.

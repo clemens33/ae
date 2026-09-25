@@ -760,6 +760,15 @@ capability-specific status mouse actions. Each picker action captures
 watch the same pane. An ambient server keeps all of the user's bindings
 untouched.
 
+The same map carries `<prefix> v` (default `C-b v`): it opens a READER pane
+above the calling agent's pane — a frozen snapshot of that pane's history in
+copy mode — and a second press closes the window's reader. The reader never
+takes the keyboard, so typing still lands in the agent's input box; the mouse
+wheel scrolls it because the four `copy-mode`/`copy-mode-vi` wheel bindings are
+asserted without tmux's stock `select-pane`, and `q` or Escape in a focused
+reader closes it. A reader opened for another pane retargets the one reader in
+that window.
+
 The distinct `ae-settings` range carries the same client identity. On both
 buttons it opens settings rather than the fleet picker or Flip menu.
 
