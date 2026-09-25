@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.181] - 2026-09-25
+- Refuse short -L destructive tmux verbs in the justfile
+- Name the explicit-socket rule and remove the socket test node
+- Point the lane isolation pin at the explicit-socket cleanup
+
 ## [v2026.9.180] - 2026-09-25
 - Forward _tmux-isolated test args to nextest, skip doctests on filtered runs
 - Pin the auto reseat trigger decisions, its in-flight hold on the limit latch and the settings text entry
