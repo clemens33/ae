@@ -2768,7 +2768,9 @@ fn observed_cells_are_coherent(client: &str, model: &str, effort: &str, drift: &
 fn picker_agent_mark(state: &str) -> Option<Mark> {
     match state {
         "dead" => Some(Mark::Dead),
-        "waiting-user" | "blocked" | "throttled" | "limit" | "wedged" => Some(Mark::NeedsYou),
+        "waiting-user" | "blocked" | "throttled" | "limit" | "wedged" | "prompt" => {
+            Some(Mark::NeedsYou)
+        }
         // A FRESH `waiting-agent` is quiet with its own seventh mark. An
         // ESCALATED one reaches this map as `blocked` above.
         "waiting-agent" => Some(Mark::WaitingAgent),
@@ -5117,6 +5119,7 @@ mod tests {
             Verdict::Quiet(QuietKind::Blocked),
             Verdict::Throttled,
             Verdict::Limit,
+            Verdict::HumanPrompt,
             Verdict::Idle,
             Verdict::Stale,
             Verdict::Active,
@@ -5124,6 +5127,29 @@ mod tests {
             Verdict::Meta(SweepVerdict::MetaWedged),
             Verdict::Meta(SweepVerdict::MetaStarting),
         ] {
+            // Beside the list: an exhaustive match with NO wildcard. A new
+            // `Verdict` variant — or a new `QuietKind` or `SweepVerdict` —
+            // fails to compile here, forcing its word into the list above.
+            match verdict {
+                Verdict::Dead
+                | Verdict::Quiet(
+                    QuietKind::Done
+                    | QuietKind::WaitingUser
+                    | QuietKind::WaitingAgent
+                    | QuietKind::Blocked,
+                )
+                | Verdict::Throttled
+                | Verdict::Limit
+                | Verdict::HumanPrompt
+                | Verdict::Idle
+                | Verdict::Stale
+                | Verdict::Active
+                | Verdict::Meta(
+                    SweepVerdict::MetaSweeping
+                    | SweepVerdict::MetaWedged
+                    | SweepVerdict::MetaStarting,
+                ) => {}
+            }
             let word = verdict.reason();
             assert_eq!(
                 super::picker_agent_mark(word),
