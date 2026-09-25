@@ -268,7 +268,7 @@ session's agents, by severity:
 | `attn:waiting-user` | an agent declared it's waiting on you |
 | `attn:blocked` | an agent declared it's blocked on an external dep |
 | `attn:limit` | an agent's tool draws its own usage-limit notice (rank 3, exactly `blocked`'s); outranks a declaration it came after; clears when the notice leaves a live pane's bottom rows |
-| `attn:throttled` | an agent is being rate-limited upstream |
+| `attn:throttled` | an agent's tool draws its own transient rate-limit or overload error row |
 | `attn:unanswered` | an inter-agent `ask`/`review` went unanswered past the fixed 1800-second (30-minute) threshold |
 
 (`dead`/`stale`/`throttled`/`limit` reuse the watchdog's own alert events;

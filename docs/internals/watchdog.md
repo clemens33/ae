@@ -304,7 +304,7 @@ flowchart TD
     Done -- yes --> SkipDone[skip — honor quiet<br/>done: event-only<br/>waits: until the human's input in the pane<br/>waiting-agent/blocked: proof challenge per cadence, same-state re-declare<br/>lapsed: verdict kept, nudge budget resumes<br/>waiting-agent past ceiling: as blocked<br/>limit first seen after it: limit on top]
     Done -- no --> Limit{Tool's own limit<br/>notice in pane?}
     Limit -- yes --> SkipLimit[skip + emit limit once per episode<br/>clear on release + refresh quota]
-    Limit -- no --> Throttled{Throttle phrase<br/>in pane?}
+    Limit -- no --> Throttled{Tool's own error<br/>row in pane?}
     Throttled -- yes --> SkipThrottle[skip + emit throttled<br/>escalate after N cycles]
     Throttled -- no --> Frame{Current harness frame}
     Frame -- Busy --> MarkActive[working — clear stale alert]
@@ -330,7 +330,7 @@ In source order:
 2. **Orchestrator main** — use overview-sweep accounting; no harness-idle reminder competes with it.
 3. **Declared quiet state** — agent's latest relevant event is its own `state` declaration of `done`, `waiting-user`, `waiting-agent`, or `blocked` (`mark-done`/`done` events count as `done`), AND nothing newer ends it (see *Quiet states* below). A human-only prompt on a declared seat keeps the declaration on the bar but is still booked under it: named once per episode, with its `human-prompt` record and one Notify. `done` is event-only: the shared journal fold challenges it once per cadence until N later declarations confirm it; an unanswered challenge lapses into today's bounded idle path, while late proof keeps its credit. `waiting-user` is never challenged; all three waits end on the human's input in the pane (see *Quiet states* below), and `waiting-agent`/`blocked` are challenged like `done` (strict same-state proofs, re-armed forever, never terminally confirmed): lapsed waits keep their verdict while the nudge budget resumes beside them. `waiting-agent` is the quiet fifth state: it means the seat waits on ANOTHER ae agent, claims no human while fresh, and — once its declaration has aged past `idle_nudge_secs * OWN_WORK_AGE_CAP` nudge periods (the same multiplier as the own-work deferral, with ONE deliberate exception: at `idle_nudge_secs = 0` the deferral is vacuous — there is no nudge to defer — while the attention ceiling scales from the documented default 300 s, so 1200 s, because zero keeps the marker and only suppresses the nudge) — it stops holding and is judged exactly as `blocked`: the verdict published is `blocked` (the attention half), and the nudge budget resumes (the nudge half, off when `idle_nudge_secs = 0` like every nudge) unless an active wait episode owns the seat's next delivery — then the challenge is the one order, and only a lapsed or untracked episode resumes the budget. The ceiling is measured from the declaration's own timestamp and has ONE owner (`watchdog::waiting_agent_escalated`), shared by the daemon and the read surfaces, so they cannot disagree about escalation: `session::declared_reason` asks it AND the daemon's currency rule, and every human surface consumes that answer through `AgentEntry.reason` rather than recomputing any arithmetic. Currency itself is judged by the ONE routing-aware relevance owner (`watchdog::latest_relevant_event`, over `event_is_actor`/`event_is_addressed_to`), called by BOTH the daemon and `session::agent_entries` with the same routing key the declaration is matched by, so a rename-back history cannot make one selection routing-aware and the other display-only. ONE daemon-only reading is named rather than faked: the daemon also ends a wait on client input in the pane, which a directory read cannot see, so a wait the daemon has ended that way can still read as current on the human-marker surfaces (the pane border follows the daemon). A usage limit (branch 4) FIRST SEEN no earlier than the declaration outranks it and ends nothing: it is booked and named as in branch 4, the bar and `ae list` read `limit` (`session::agent_entries` lets a standing `limit` alert, which the journal fold keeps only while it is newer than the seat's own record, replace the declared half of the reason instead of losing the rank-3 tie to `blocked`), and its release hands the bar straight back. One already showing when the seat declared stays under the declaration. The latch carries its first sight's epoch — the instant of its one `limit` record — and the daemon compares it with the declaration's age, a tie going to the human.
 4. **Usage limit** — the tool's OWN notice row, inside the capture's bottom window, starts with a phrase from the vendor's usage-limit catalog for the agent's binary (measured per tool; see below). A transcript row quoting a banner never books one (#189). Outranks the transient branch: skip the nudge like throttling, emit ONE durable `limit` event per episode, and publish the verdict word `limit` (the existing NeedsYou mark, attention rank 3 — exactly `blocked`'s). When a later cycle judges the pane and the phrase is gone, the latch releases with one `alert-cleared` and the quota recovery pass runs once (see below). Dead wins: a pane whose process is gone is never judged here.
-5. **Throttled** — the current capture contains a known upstream rate-limit / overload phrase for the agent's binary. Skip nudge, emit `throttled` event first time per streak, escalate to `alert` after `THROTTLE_ALERT_CYCLES` continuous cycles.
+5. **Throttled** — the tool's OWN error row, inside the capture's bottom window, starts with a measured upstream rate-limit / overload head for the agent's binary (see below). A transcript row quoting one never books it (#193). Skip nudge, emit `throttled` event first time per streak, escalate to `alert` after `THROTTLE_ALERT_CYCLES` continuous cycles.
 6. **Busy frame** — positively recognized execution. Mark working, reset idle and reminder state, and clear a durable stale alert.
 7. **Idle frame** — positively recognized empty input. Mark idle immediately; after `idle_nudge_secs`, send `you look idle: declare state or continue` through the existing `send` path. At the normal maximum, emit the same durable stale alert and keep it across daemon restarts until real Busy recovery.
    - **Outstanding own work DEFERS that reminder.** A seat with a request it SENT that the ledger has not closed, or an agent it SPAWNED that still holds a seat here, is not idle — it is the thing everybody else is waiting on. The empty input box is the right reading of the pixels and the wrong reading of the facts. Both are facts ae already owns: [`session::Outstanding`](../../src/session.rs) reads them from the pending-request sensor and the spawn/retire ledger, and nothing new is persisted, captured or published for them. Requests RECEIVED never count — answering one is the seat's own job.
@@ -378,21 +378,21 @@ Concretely:
 
 Tool-specific patterns inside the watchdog body, split into the two classes: **transient** throttling (upstream recovers on its own) and the vendor's **usage limit** (persists until a window reset or a re-login). One classifier reads both, and a usage-limit phrase wins when both appear. Narrow phrases only — false positives compound badly.
 
-Transient phrases:
+Both classes are MEASURED from each tool's own strings (claude 2.1.281, codex 0.156.1; a tool
+with no measurement has no row, never a guess), and count ONLY on the tool's own row: inside the
+bottom window (claude 20 rows, codex 16, up from the last non-blank row), starting at column 0
+with one of the tool's markers, and — past spaces and NBSP — starting with a phrase. A transcript
+row quoting one never books it (#189, #193).
 
-| Tool | Patterns |
-|---|---|
-| `claude` | `Server is temporarily limiting requests`, `API Error: Overloaded`, `Anthropic API error` |
-| `codex` | `Rate limit exceeded`, `RateLimitError`, `ratelimit_exceeded` |
-| `gemini` | `RESOURCE_EXHAUSTED`, `Quota exceeded` |
-| `opencode` | Union of the three above (TUI wraps configurable providers) |
-| generic | `429 Too Many Requests`, `503 Service Unavailable` |
+Transient heads — a 429, a 503 and an overload book; a 500 does not:
 
-Usage-limit phrases, MEASURED from each tool's own strings (claude 2.1.281, codex 0.156.1;
-a tool with no measurement ships an empty list, never a guess). They count ONLY on the tool's own
-notice row: inside the bottom window (claude 20 rows, codex 16, up from the last non-blank row),
-starting at column 0 with the tool's marker, and — past spaces and NBSP — starting with a phrase.
-The transient phrases above still match anywhere in the capture (a named residual).
+| Tool | Error row | Heads |
+|---|---|---|
+| `claude` | `⏺` (macOS), `●` | `API Error: Server is temporarily limiting requests`, `API Error: Request rejected (429)`, `API Error: Repeated 529 Overloaded errors`, `API Error: 503 Service Unavailable`, `API Error: Overloaded` |
+| `codex` | `■` | `rate limit exceeded`, `exceeded retry limit, last status: 429 Too Many Requests` (and `503 Service Unavailable`), `unexpected status 429 Too Many Requests` (and `503 Service Unavailable`), `Selected model is at capacity`, `Rate limit exceeded`, `RateLimitError`, `ratelimit_exceeded` |
+| `gemini`, `opencode`, others | *(none measured; opencode draws its error box like its user box)* | *(none)* |
+
+Usage-limit phrases:
 
 | Tool | Notice row | Patterns |
 |---|---|---|
@@ -400,12 +400,12 @@ The transient phrases above still match anywhere in the capture (a named residua
 | `codex` | `■` | `You’ve hit your usage limit` (U+2019, as 0.156.1 draws it), `You've hit your usage limit`, `You've reached your usage limit`, `Usage limit reached. You've reached your usage limit`, `Quota exceeded. Check your plan` |
 | `gemini`, `opencode`, others | *(none measured)* | *(none)* |
 
-When a transient phrase is detected:
+When a transient row is detected:
 
 1. Skip the nudge. Reset nudge counter (so a previously stale agent's count doesn't carry over).
 2. First detection of a streak → emit `throttled` event.
 3. After `THROTTLE_ALERT_CYCLES` consecutive throttled cycles → emit `alert` event + tmux banner. Once.
-4. When the pattern no longer matches → emit `throttle-cleared` event, reset streak.
+4. When the row no longer matches → emit `throttle-cleared` event, reset streak.
 
 When a usage-limit phrase is detected:
 
