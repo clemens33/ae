@@ -11991,6 +11991,28 @@ mod tests {
         assert_eq!(dead.next.limit_since, None, "no limit episode was entered");
     }
 
+    /// A seat that died while limited and came back runs a NEW episode: the
+    /// resurrection clears the latch with the rest of the carry, so a banner
+    /// still on screen is booked and named again at its new first sight.
+    #[test]
+    fn a_seat_back_from_the_dead_starts_a_new_limit_episode() {
+        let knobs = Knobs::default();
+        let limited = Observation {
+            throttle: Some(Throttle::LimitReached),
+            ..seen()
+        };
+        let dead = PaneState {
+            identity: Some(limited.identity),
+            dead_latched: true,
+            limit_since: Some(limited.now_epoch - 600),
+            ..PaneState::default()
+        };
+        let back = account(&dead, &limited, &knobs);
+        assert_eq!(back.verdict, Verdict::Limit);
+        assert_eq!(actions(&back.effects), ["dead-cleared", "limit"]);
+        assert_eq!(back.next.limit_since, Some(limited.now_epoch));
+    }
+
     #[test]
     fn the_limit_release_retracts_once_and_requests_one_quota_pass() {
         let knobs = Knobs::default();
