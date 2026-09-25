@@ -993,7 +993,7 @@ mod tests {
 
     #[test]
     fn the_stop_fold_refuses_per_arm() {
-        use crate::watchdog_glue::KillOutcome::{WrongAgent, WrongSession};
+        use crate::watchdog_glue::KillOutcome::{Killed, WrongAgent, WrongSession};
         const LEGACY: &str =
             "pane %7 could not be killed (it belongs to session 'theirs', not 'ours')";
         const MAIN: &str = "pane %5 could not be killed (it is stamped 'lead', not '_watchdog')";
@@ -1002,6 +1002,7 @@ mod tests {
         let (legacy_err, legacy_audit) = refused_lines(&[LEGACY], false);
         let (main_err, main_audit) = refused_lines(&[MAIN], true);
         let (silent_err, _) = refused_lines(&[SILENT_ERR], true);
+        let (combo_err, combo_audit) = refused_lines(&[LEGACY], false);
         check_stop_rows(vec![
             StopRow {
                 label: "legacy-refused",
@@ -1046,6 +1047,24 @@ mod tests {
                     out: None,
                     err: silent_err,
                     audit: format!("refused: {SILENT_AUDIT}"),
+                },
+            },
+            // u-1: the main daemon died (cleared + retracted) while a legacy
+            // pane survived: exit 1, and the line must NOT say the pidfile
+            // was kept.
+            StopRow {
+                label: "legacy-refused-main-killed",
+                legacy: vec![reap("shepherd", "%7", WrongSession("theirs".to_owned()))],
+                running: true,
+                second: Some(PaneLook::Present("%5".to_owned())),
+                main: Some(Killed),
+                want: StopDecision {
+                    main_gone: true,
+                    settle: false,
+                    exit: 1,
+                    out: None,
+                    err: combo_err,
+                    audit: combo_audit,
                 },
             },
         ]);
