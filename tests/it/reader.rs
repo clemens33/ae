@@ -561,11 +561,26 @@ fn a_dead_source_leaves_a_reader_the_toggle_still_closes() {
         scratch: scratch.clone(),
     };
     let source = stage_source(&socket, &scratch);
+    // A THIRD pane shares the window, so the toggle can be called from a pane
+    // that is neither the reader nor its source — live when the source is not,
+    // which is the arm that closes a reader whose source is gone.
+    let split = [
+        "split-window",
+        "-v",
+        "-d",
+        "-t",
+        &source,
+        "-P",
+        "-F",
+        "#{pane_id}",
+    ];
+    let (_, out) = tmux(&socket, &scratch, &split);
+    let third = out.trim().to_owned();
     let out = reader_from_pane(&socket, &source)
         .output()
         .expect("the ae binary should run");
     assert_eq!(out.status.code(), Some(0));
-    let (reader, _, _, mode, _) = reader_pane(&socket, &scratch).expect("a reader pane");
+    let (_reader, _, _, mode, _) = reader_pane(&socket, &scratch).expect("a reader pane");
     assert_eq!(mode, "1");
 
     assert!(
@@ -577,23 +592,24 @@ fn a_dead_source_leaves_a_reader_the_toggle_still_closes() {
     assert_eq!(mode, "1", "the snapshot is still shown");
     assert_eq!(marked, source, "its stamp is inert data, not a lookup");
 
-    let out = reader_from_pane(&socket, &reader)
+    let out = reader_from_pane(&socket, &third)
         .output()
         .expect("the ae binary should run");
     assert_eq!(
         out.status.code(),
         Some(0),
-        "the toggle closes the window's reader: {}",
+        "the toggle closes the stale reader: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let (listed, _) = tmux(
-        &socket,
-        &scratch,
-        &["list-panes", "-t", "s", "-F", "#{pane_id}"],
+    let rows = panes(&socket, &scratch);
+    assert_eq!(
+        rows.len(),
+        1,
+        "no new reader replaces the stale one: {rows:?}"
     );
-    assert!(
-        !listed,
-        "the reader was the last pane, so its window and session are gone with it"
+    assert_eq!(
+        rows[0].0, third,
+        "the calling pane is the one that survives"
     );
 }
 
