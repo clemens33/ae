@@ -2887,6 +2887,11 @@ mod tests {
         };
         assert_eq!(failure.mode, super::RollbackMode::Full);
         assert!(failure.message.contains("spawned.0"), "{}", failure.message);
+        assert!(
+            !failure.message.contains("rolled back"),
+            "Done appends no tail: {}",
+            failure.message
+        );
         assert!(!rig.meta().contains("spawned.0="), "seat removed");
         assert!(
             !rig.dir.join("brief-retry.spawned.0.rec").exists(),
