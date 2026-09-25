@@ -267,7 +267,7 @@ session's agents, by severity:
 | `attn:stale` | the watchdog gave up nudging an idle agent (max nudges) |
 | `attn:waiting-user` | an agent declared it's waiting on you |
 | `attn:blocked` | an agent declared it's blocked on an external dep |
-| `attn:limit` | an agent's pane shows the vendor's own usage limit (rank 3, exactly `blocked`'s); clears when the phrase leaves a live pane |
+| `attn:limit` | an agent's tool draws its own usage-limit notice (rank 3, exactly `blocked`'s); outranks a declaration it came after; clears when the notice leaves a live pane's bottom rows |
 | `attn:throttled` | an agent is being rate-limited upstream |
 | `attn:unanswered` | an inter-agent `ask`/`review` went unanswered past the fixed 1800-second (30-minute) threshold |
 
