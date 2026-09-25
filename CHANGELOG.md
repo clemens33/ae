@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.170] - 2026-09-25
+- Run the gate in a local Linux container
+- Watch each dispatched seat until its frame reads idle, and skip the seat running compact itself
+- Start every rig pane command with exec
+
 ## [v2026.9.169] - 2026-09-24
 - Box the rollout source to avoid the GNU Linux enum size lint
 - Freeze the confirmed tmux incarnation across the end handoffs
