@@ -1011,7 +1011,7 @@ fn agent_entries(
             } else {
                 crate::model_drift::ModelDrift::Unknown
             };
-            AgentEntry {
+            let mut entry = AgentEntry {
                 reference: reference.clone(),
                 // Schema 2 keeps publishing `alias`; for a v2 row that is the profile.
                 alias: slot.profile.clone().unwrap_or_default(),
@@ -1106,7 +1106,15 @@ fn agent_entries(
                     }),
                 model_drift,
                 auto_reseat_open: false,
-            }
+            };
+            // Read only for a seat whose standing reason is its limit: the
+            // suffix says the move off it is under way.
+            entry.auto_reseat_open = entry.reason == Some(Reason::Limit)
+                && read.is_some_and(|read| {
+                    crate::autoreseat::episode(&read.events, session, &slot.slot, &reference)
+                        .is_some_and(|found| found.terminal.is_none() && found.open.is_some())
+                });
+            entry
         })
         .collect()
 }

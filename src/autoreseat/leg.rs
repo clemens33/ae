@@ -26,6 +26,9 @@ const USAGE: &str = "Usage: ae _auto-reseat <dir> <slot> <key>";
 /// The widest a record's summary may be, in characters.
 const SUMMARY_CHARS: usize = 160;
 
+/// A tool or model the records do not name.
+const UNKNOWN: &str = "unknown";
+
 /// The argv, proven before anything is read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Argv {
@@ -127,19 +130,105 @@ pub(crate) fn candidates(
     latched: &[crate::quota::RecordedIdentity],
     now: i64,
 ) -> Vec<Candidate> {
-    let _ = (quota, latched, now);
+    let groups = quota.map_or(&[][..], |seen| seen.groups.as_slice());
     list.iter()
-        .map(|profile| Candidate {
-            profile: profile.clone(),
-            configured: resolve(profile).is_some(),
-            peer_latched: false,
-            windows: Vec::new(),
-            left_at: left
+        .map(|profile| {
+            let resolved = resolve(profile);
+            let pin = resolved.as_ref().and_then(|found| found.pin.as_deref());
+            // Every reading of the candidate's account, rollouts together: one
+            // that does not bind its model family is no reading of it.
+            let accounts: Vec<(&crate::quota::Group, &std::path::PathBuf)> = groups
                 .iter()
-                .find(|(taken, _)| taken == profile)
-                .map(|(_, at)| at.epoch()),
+                .filter(|group| group.profiles.iter().any(|named| named == profile))
+                .filter_map(|group| group.source.as_ref().map(|source| (group, source)))
+                .collect();
+            Candidate {
+                profile: profile.clone(),
+                configured: resolved.is_some(),
+                peer_latched: accounts.iter().any(|(group, source)| {
+                    latched
+                        .iter()
+                        .any(|seat| seat.tool == group.tool && &seat.source == *source)
+                }),
+                windows: accounts
+                    .iter()
+                    .flat_map(|(group, _)| {
+                        group
+                            .rows
+                            .iter()
+                            .filter(|row| {
+                                !crate::quota::scoped_elsewhere(
+                                    group.tool,
+                                    row.qualifier.as_deref(),
+                                    pin,
+                                )
+                            })
+                            .filter_map(|row| window(group, row, now))
+                    })
+                    .collect(),
+                left_at: left
+                    .iter()
+                    .find(|(taken, _)| taken == profile)
+                    .map(|(_, at)| at.epoch()),
+            }
         })
         .collect()
+}
+
+/// One row as the quota module judges it: the effective percentage, the one
+/// classifier's level, and whether the number still stands at `now`.
+fn window(group: &crate::quota::Group, row: &crate::quota::Row, now: i64) -> Option<super::Window> {
+    let reading = crate::quota::Reading::of(group.policy.clone(), row.clone())?;
+    let judged = crate::quota::Classified::first(reading);
+    let status = match row.status {
+        crate::quota::Status::Fresh | crate::quota::Status::Stale => {
+            crate::quota::freshness(row.observed_at, row.resets_at, now)
+        }
+        other => other,
+    };
+    Some(super::Window {
+        judged: judged.judged(),
+        critical: judged.level() == crate::quota::QuotaLevel::Critical,
+        observed_at: judged.observed_at(),
+        resets_at: row.resets_at,
+        status,
+    })
+}
+
+/// The quota readings the chooser judges by, read as the session's own
+/// `quota` helper reads them. None when the session is not quota-aware, since
+/// `quota = off` says ae must not act on vendor numbers, and when the read
+/// fails: every candidate is then unknown and taken in declared order.
+pub(crate) fn read_quota(
+    dir: &Path,
+    inputs: &crate::quota::Inputs<'_>,
+) -> Option<crate::quota::Observation> {
+    crate::session_quota_aware(dir, inputs.global, inputs.local)
+        .then(|| crate::quota::observe(inputs).ok())
+        .flatten()
+}
+
+/// [`read_quota`] for the session at `dir` under the state root `root`.
+fn read_quota_at(
+    root: &Path,
+    dir: &Path,
+    meta: &crate::meta::Meta,
+    now: Timestamp,
+) -> Option<crate::quota::Observation> {
+    let global = crate::doors::config_file(crate::shape::current(), root);
+    let local = meta
+        .origin()
+        .and_then(|origin| crate::config::local_overlay(dir, origin));
+    let home = crate::doors::home();
+    let roots = crate::inventory::Roots::under(root);
+    let inputs = crate::quota::Inputs {
+        home: home.as_deref(),
+        global: Some(&global),
+        local: local.as_deref(),
+        sessions: Some(roots.sessions()),
+        now: now.epoch(),
+    };
+    read_quota(dir, &inputs)
 }
 
 /// Why a candidate was passed over, as a record says it.
@@ -175,6 +264,10 @@ fn bounded(text: &str) -> String {
 /// # Errors
 ///
 /// Only a failure to write `err`.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the order is the contract, kept in one place"
+)]
 pub(crate) fn run(
     root: &Path,
     tail: &[String],
@@ -232,25 +325,52 @@ pub(crate) fn run(
         profile: &profile,
         orchestrator,
     };
-    let held = |why| (HELD_ACTION, ineligible_summary(why));
+    // Every ending from here on is under the attempt the watchdog opened, so
+    // each one is also said and told.
+    let told = (
+        meta.roster(),
+        crate::lifecycle::meta_value(&bytes, "layout") == "lead-pair",
+        super::spawner(&events, &argv.session, &argv.slot, &agent),
+    );
+    let notice = |ending| super::notice(&argv.session, &agent, &ending);
     let list = match super::eligible(&settings, &asked) {
         Ok(list) => list,
-        Err(why) => return close(&argv, &agent, now, held(why), err),
+        Err(why) => {
+            let summary = ineligible_summary(why);
+            let code = close(&argv, &agent, now, (HELD_ACTION, summary), err)?;
+            tell(&argv, now, told, &notice(super::Ending::Held(summary)));
+            return Ok(code);
+        }
     };
     let left = super::left_profiles(&events, &argv.session, &argv.slot, &agent);
+    let quota = read_quota_at(root, dir, &meta, now);
+    let latched = super::latched_identities(meta.roster(), &events, &argv.session, &argv.slot);
     let judged = candidates(
         list,
         |to| crate::reseat::resolved(dir, to),
         &left,
-        None,
-        &[],
+        quota.as_ref(),
+        &latched,
         now.epoch(),
     );
     let choice = super::choose(&judged, now.epoch());
-    let Some((pick, _)) = choice.pick else {
+    let Some((pick, tier)) = choice.pick else {
         let why = no_candidate(&choice.skipped);
-        return close(&argv, &agent, now, (REFUSED_ACTION, &why), err);
+        let code = close(&argv, &agent, now, (REFUSED_ACTION, &why), err)?;
+        tell(&argv, now, told, &notice(super::Ending::Refused(&why)));
+        return Ok(code);
     };
+    // What the move changes, as the notice names it: the tool and model before
+    // it, read now, and the model the target pins.
+    let pin = |profile: &str| crate::reseat::resolved(dir, profile).and_then(|found| found.pin);
+    let unknown = || UNKNOWN.to_owned();
+    let tool_before = seat.binary.clone().unwrap_or_else(unknown);
+    let model_before = meta
+        .observed_model(&argv.slot)
+        .map(ToOwned::to_owned)
+        .or_else(|| pin(&profile))
+        .unwrap_or_else(unknown);
+    let model_after = pin(&pick).unwrap_or_else(unknown);
     let (_, world) = crate::current_world(root);
     let mut said = Vec::new();
     let ended = crate::reseat::run_as_watchdog(
@@ -272,6 +392,33 @@ pub(crate) fn run(
         &String::from_utf8_lossy(&said),
     );
     record(&argv, &agent, now, action, &reference, &summary);
+    let text = match ended {
+        Ended::Moved { carried } => {
+            let after = crate::meta::read_bytes(dir).unwrap_or_default();
+            let after = crate::meta::Meta::parse(&String::from_utf8_lossy(&after));
+            let tool_after = after
+                .roster()
+                .iter()
+                .find(|row| row.slot == argv.slot)
+                .and_then(|row| row.binary.clone())
+                .unwrap_or_else(unknown);
+            let dirty = crate::meta::resolve_seat_dir(&after, &argv.slot)
+                .is_ok_and(|wdir| crate::git::work_tree_dirty(wdir.as_bytes()));
+            notice(super::Ending::Moved(super::Move {
+                from: &profile,
+                to: &pick,
+                tool: (&tool_before, &tool_after),
+                model: (&model_before, &model_after),
+                carried,
+                critical: tier == super::Tier::Critical,
+                dirty,
+            }))
+        }
+        Ended::Refused { transient: true } => notice(super::Ending::Held(&summary)),
+        Ended::Refused { transient: false } => notice(super::Ending::Refused(&summary)),
+        Ended::Failed => notice(super::Ending::Failed(&summary)),
+    };
+    tell(&argv, now, told, &text);
     Ok(if matches!(ended, Ended::Moved { .. }) {
         0
     } else {
@@ -339,27 +486,69 @@ pub(crate) fn plan(
 
 /// The refusal that names each declared candidate passed over, and why.
 fn no_candidate(skipped: &[(String, Skip)]) -> String {
+    format!("refused: {}", unusable(skipped))
+}
+
+fn unusable(skipped: &[(String, Skip)]) -> String {
     let named: Vec<String> = skipped
         .iter()
         .map(|(to, skip)| format!("{to} ({})", skip_word(*skip)))
         .collect();
-    format!("refused: no usable candidate: {}", named.join(", "))
+    format!("no usable candidate: {}", named.join(", "))
 }
 
 /// The line a seat's first-sight limit notice gains when auto reseat may move
 /// it: where to and when, or that nothing declared is usable. A forecast: the
 /// legs choose again when they act.
 pub(crate) fn deadline(agent: &str, choice: &super::Choice, grace_secs: u64) -> String {
-    let _ = (agent, choice, grace_secs);
-    String::new()
+    let Some((to, tier)) = &choice.pick else {
+        return format!("ae cannot move {agent}: {}", unusable(&choice.skipped));
+    };
+    let grace = crate::brief::age(Some(i64::try_from(grace_secs).unwrap_or(i64::MAX)));
+    let critical = if *tier == super::Tier::Critical {
+        ", target already critical"
+    } else {
+        ""
+    };
+    format!("ae will move {agent} to {to} in {grace}{critical}")
 }
 
 /// The environment of every notice delivery, whole. The leg runs under the
 /// trigger's own environment, whose action is the attempt: a notice that did
 /// not name its own would be taken for another trigger.
 pub(crate) fn notice_env(summary: &str) -> [(&'static str, &str); 3] {
-    let _ = summary;
-    [("", ""), ("", ""), ("", "")]
+    [
+        ("AE_SENDER_OVERRIDE", WATCHDOG_ACTOR),
+        ("_AE_EVENT_ACTION", super::NOTICE_ACTION),
+        ("_AE_EVENT_SUMMARY", summary),
+    ]
+}
+
+/// Say how the attempt under `argv` ended on the human's chat: ONE target-less
+/// line, written as the watchdog.
+fn said(argv: &Argv, now: Timestamp, text: &str) {
+    let _ = crate::store::open(&argv.dir).append_event(&crate::chat_line(
+        now,
+        WATCHDOG_ACTOR,
+        "",
+        text,
+    ));
+}
+
+/// Who is told: the roster, whether it is a lead pair, and the seat's spawner.
+type Told<'a> = (&'a [crate::meta::RosterEntry], bool, Option<&'a str>);
+
+/// Tell how the attempt under `argv` ended: the chat line, then the lead pair
+/// and the seat's spawner, each through the session's own send helper. A
+/// recipient that is busy or gone is the helper's to refuse; the outcome is
+/// already durable.
+fn tell(argv: &Argv, now: Timestamp, told: Told<'_>, text: &str) {
+    let (roster, lead_pair, spawner) = told;
+    said(argv, now, text);
+    let send = argv.dir.join("send");
+    for recipient in super::recipients(roster, lead_pair, &argv.slot, spawner) {
+        let _ = crate::transport::deliver(&send, &recipient, text, false, &notice_env(text));
+    }
 }
 
 /// Journal the attempt, THEN start the leg: the leg acts only under an attempt
@@ -385,7 +574,13 @@ fn commit(
         return Ok(0);
     }
     let why = "failed: the move could not be started";
-    close(argv, agent, now, (FAILED_ACTION, why), err)
+    let code = close(argv, agent, now, (FAILED_ACTION, why), err)?;
+    said(
+        argv,
+        now,
+        &super::notice(&argv.session, agent, &super::Ending::Failed(why)),
+    );
+    Ok(code)
 }
 
 /// `send` under the attempt action: the daemon's trigger. It re-derives the
@@ -450,13 +645,16 @@ pub(crate) fn trigger(
         orchestrator: crate::meta::meta_agent_role(&bytes) == crate::meta::MetaAgentRole::Role,
     };
     let events = crate::watchdog_daemon::read_events(dir);
+    // Read only once the plan reaches the chooser.
     let gather = |list: &[String], left: &[(String, Timestamp)]| {
+        let quota = crate::state_root().and_then(|root| read_quota_at(&root, dir, &meta, now));
+        let latched = super::latched_identities(meta.roster(), &events, own_session, slot);
         candidates(
             list,
             |to| crate::reseat::resolved(dir, to),
             left,
-            None,
-            &[],
+            quota.as_ref(),
+            &latched,
             now.epoch(),
         )
     };
@@ -475,7 +673,13 @@ pub(crate) fn trigger(
         now,
     ) {
         Plan::Decline(why) => decline(err, &why),
-        Plan::Refuse { key, why } => close(&argv(key), &row.name, now, (REFUSED_ACTION, &why), err),
+        Plan::Refuse { key, why } => {
+            let argv = argv(key);
+            let code = close(&argv, &row.name, now, (REFUSED_ACTION, &why), err)?;
+            let ending = super::Ending::Refused(&why);
+            said(&argv, now, &super::notice(own_session, &row.name, &ending));
+            Ok(code)
+        }
         Plan::Attempt { key, to } => {
             let exe = crate::shape::resolved_exe();
             let leg = crate::session_launch::capture::auto_reseat_argv(dir, slot, key);
@@ -659,7 +863,7 @@ mod tests {
         .expect("a well-formed record");
         let left = left_profiles(&[done], "aedev", "spawned.3", "scout");
         let list = words(&["ghost", "sol6x", "opus55x", "astrax"]);
-        let resolve = |profile: &str| (profile != "ghost").then(|| Resolved { pin: None });
+        let resolve = |profile: &str| (profile != "ghost").then_some(Resolved { pin: None });
         let choice = choose(&candidates(&list, resolve, &left, None, &[], 0), 0);
         assert_eq!(choice.pick, Some(("opus55x".to_owned(), Tier::Unknown)));
         assert_eq!(
@@ -745,6 +949,10 @@ mod tests {
         )
     }
 
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "compared against a pick, which is optional"
+    )]
     fn picked(name: &str, tier: Tier) -> Option<(String, Tier)> {
         Some((name.to_owned(), tier))
     }
@@ -977,6 +1185,46 @@ mod tests {
             deadline("scout", &none, 600),
             "ae cannot move scout: no usable candidate: opus55x (exhausted), ghost (not configured here)"
         );
+    }
+
+    /// `quota = off` says ae must not act on vendor numbers: the chooser reads
+    /// none, so a spent account is taken in declared order like any unknown.
+    #[test]
+    fn with_quota_off_a_spent_account_is_judged_unknown_in_declared_order() {
+        let root = Root(std::env::temp_dir().join(format!("ae-leg-quota-{}", std::process::id())));
+        let dir = root.0.join("aedev");
+        assert!(std::fs::create_dir_all(&dir).is_ok(), "a session dir");
+        let now = Timestamp::now().epoch();
+        let spent = format!(
+            "{{\"cachedUsageUtilization\":{{\"fetchedAtMs\":{},\"utilization\":{{\"limits\":[{{\"kind\":\"session\",\"group\":\"session\",\"percent\":100,\"resets_at\":\"{}\",\"scope\":null}}]}}}}}}\n",
+            now * 1_000,
+            Timestamp::from_epoch(now + 7_200),
+        );
+        assert!(std::fs::write(root.0.join(".claude.json"), spent).is_ok());
+        let config = root.0.join("config");
+        for (switch, pick, skipped) in [
+            ("on", None, passed(&[("spent", Skip::Exhausted)])),
+            ("off", picked("spent", Tier::Unknown), Vec::new()),
+        ] {
+            let text = format!("[workspace]\nquota = {switch}\n[profiles]\nspent = claude\n");
+            assert!(std::fs::write(&config, text).is_ok(), "a config");
+            let inputs = crate::quota::Inputs {
+                home: Some(&root.0),
+                global: Some(&config),
+                local: None,
+                sessions: None,
+                now,
+            };
+            let quota = read_quota(&dir, &inputs);
+            let resolve = |_: &str| Some(Resolved { pin: None });
+            let judged = candidates(&words(&["spent"]), resolve, &[], quota.as_ref(), &[], now);
+            let choice = choose(&judged, now);
+            assert_eq!(
+                (choice.pick, choice.skipped),
+                (pick, skipped),
+                "quota = {switch}"
+            );
+        }
     }
 
     /// The leg inherits the trigger's environment, whose action is the

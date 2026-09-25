@@ -355,7 +355,7 @@ pub fn table_at(sessions: &[&SessionEntry], now: Timestamp) -> String {
             // here — the pane fact is what needs the human, and the JSON digest
             // keeps the declaration under its own `state` key.
             if agent.reason == Some(crate::attention::Reason::Limit) {
-                out.push_str("limit");
+                out.push_str(limit_cell(agent));
             } else if session.agent_state_is_exact() && agent.state.as_deref() == Some("done") {
                 match agent.done_progress {
                     Some(
@@ -423,6 +423,16 @@ pub fn table_at(sessions: &[&SessionEntry], now: Timestamp) -> String {
         }
     }
     out
+}
+
+/// The verdict cell of a seat on its usage limit: the move off it, while an
+/// auto reseat attempt is open.
+const fn limit_cell(agent: &AgentEntry) -> &'static str {
+    if agent.auto_reseat_open {
+        "limit · auto-reseat in flight"
+    } else {
+        "limit"
+    }
 }
 
 /// Append the session summary line.

@@ -775,15 +775,24 @@ pub(crate) fn latched_identities(
     session: &str,
     moving: &str,
 ) -> Vec<crate::quota::RecordedIdentity> {
-    let _ = (roster, events, session, moving);
-    Vec::new()
+    roster
+        .iter()
+        .filter(|entry| entry.slot != moving)
+        .filter(|entry| episode(events, session, &entry.slot, &entry.name).is_some())
+        .filter_map(crate::quota::recorded_identity)
+        .collect()
 }
 
 /// Who opened the seat: the actor of the newest `spawn` record addressed to it.
 #[must_use]
 pub fn spawner<'e>(events: &'e [Event], session: &str, slot: &str, agent: &str) -> Option<&'e str> {
-    let _ = (events, session, slot, agent);
-    None
+    events
+        .iter()
+        .rev()
+        .find(|event| {
+            event.action == SPAWN_ACTION && event_is_addressed_to(event, session, slot, agent)
+        })
+        .map(|event| event.actor.as_str())
 }
 
 /// Who is told how an attempt ended: the lead pair without the seat at
@@ -796,8 +805,17 @@ pub fn recipients(
     moved: &str,
     spawner: Option<&str>,
 ) -> Vec<String> {
-    let _ = (roster, lead_pair, moved, spawner);
-    Vec::new()
+    let mut told: Vec<String> = roster
+        .iter()
+        .filter(|entry| entry.slot != moved)
+        .filter(|entry| crate::watchdog_daemon::in_lead_pair(&entry.slot, lead_pair))
+        .map(|entry| entry.name.clone())
+        .collect();
+    let by = spawner.and_then(|name| roster.iter().find(|entry| entry.name == name));
+    if let Some(by) = by.filter(|by| by.slot != moved && !told.contains(&by.name)) {
+        told.push(by.name.clone());
+    }
+    told
 }
 
 /// How one ending of the auto path is told.
@@ -833,8 +851,47 @@ pub const NOTICE_CHARS: usize = 400;
 /// The ONE line every recipient and the chat are told for `ending`.
 #[must_use]
 pub fn notice(session: &str, agent: &str, ending: &Ending<'_>) -> String {
-    let _ = (session, agent, ending);
-    String::new()
+    let line = match ending {
+        Ending::Moved(moved) => format!(
+            "{agent} moved {} -> {} (tool {} -> {}, model {} -> {}), {}{}; work tree {}. If \
+             {agent} is half of a review pair, re-check its gate provider. Next: {}.",
+            moved.from,
+            moved.to,
+            moved.tool.0,
+            moved.tool.1,
+            moved.model.0,
+            moved.model.1,
+            if moved.carried { "carried" } else { "seeded" },
+            if moved.critical {
+                ", target already critical"
+            } else {
+                ""
+            },
+            if moved.dirty { "dirty" } else { "clean" },
+            if moved.carried {
+                "nothing, it continues its conversation"
+            } else {
+                "check it picked up its seat pack"
+            },
+        ),
+        Ending::Held(why) => {
+            format!("{agent} not moved yet — {why}. Next: ae tries once more if it stays eligible.")
+        }
+        Ending::Refused(why) => format!(
+            "{agent} not moved — {why}. Next: move it by hand (ae reseat {session} {agent} \
+             --using <profile>) or wait for the reset."
+        ),
+        Ending::Failed(why) => format!(
+            "{agent} move failed — {why}. Next: relaunch {agent} if its pane sits at a shell, \
+             else reseat it by hand."
+        ),
+    };
+    crate::state::summary_of(&crate::seatpack::neutralise(&format!(
+        "auto reseat: {line}"
+    )))
+    .chars()
+    .take(NOTICE_CHARS)
+    .collect()
 }
 
 #[cfg(test)]

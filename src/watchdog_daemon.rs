@@ -627,10 +627,16 @@ fn quota_samples(observation: &crate::quota::Observation) -> Vec<QuotaSample<'_>
     quota_samples_at(observation, observation.now)
 }
 
+/// Whether the seat at `slot` is one of the lead pair: the main seat, and
+/// worker.0 in a lead-pair layout.
+pub(crate) fn in_lead_pair(slot: &str, lead_pair: bool) -> bool {
+    slot == "main" || (lead_pair && slot == "worker.0")
+}
+
 fn quota_recipients(roster: &[RosterEntry], lead_pair: bool) -> Vec<QuotaRecipient> {
     roster
         .iter()
-        .filter(|entry| entry.slot == "main" || (lead_pair && entry.slot == "worker.0"))
+        .filter(|entry| in_lead_pair(&entry.slot, lead_pair))
         .map(|entry| QuotaRecipient {
             slot: entry.slot.clone(),
             agent: entry.name.clone(),
@@ -1648,8 +1654,13 @@ fn book_limit(next: &mut PaneState, effects: &mut Vec<Effect>, seen: &Observatio
                 "vendor usage limit reached — waits for a reset or a re-login{quoted}"
             ),
         });
+        let forecast = seen
+            .auto_deadline
+            .as_deref()
+            .map(|line| format!("; {line}"))
+            .unwrap_or_default();
         effects.push(Effect::Notify(format!(
-            "hit its vendor usage limit{quoted}"
+            "hit its vendor usage limit{quoted}{forecast}"
         )));
     }
     // The limit episode ends any transient streak: a return to plain
@@ -5025,8 +5036,33 @@ impl Cycle<'_> {
         (slot, agent): (&str, &str),
         now: i64,
     ) -> Option<String> {
-        let _ = (quota, events, slot, agent, now);
-        None
+        let profile = self.seat_profile(slot);
+        let seat = crate::autoreseat::Seat {
+            session: self.session,
+            slot,
+            agent,
+            profile: &profile,
+            orchestrator: self.meta_agent,
+        };
+        let list = crate::autoreseat::eligible(&self.auto, &seat).ok()?;
+        let left = crate::autoreseat::left_profiles(events, self.session, slot, agent);
+        let latched =
+            crate::autoreseat::latched_identities(&self.roster, events, self.session, slot);
+        // `quota = off` holds no observation here: `QuotaCarry::clear_held`.
+        let judged = crate::autoreseat::leg::candidates(
+            list,
+            |to| crate::reseat::resolved(self.meta_dir, to),
+            &left,
+            quota.last_observation.as_ref(),
+            &latched,
+            now,
+        );
+        let choice = crate::autoreseat::choose(&judged, now);
+        Some(crate::autoreseat::leg::deadline(
+            agent,
+            &choice,
+            self.auto.grace_secs,
+        ))
     }
 
     /// One quota-cadence pass: the vendor-quota observation and advisory
@@ -5281,7 +5317,12 @@ impl Cycle<'_> {
                     (self.session, &slot, agent),
                     now,
                 ),
-                auto_deadline: None,
+                // Forecast once, at the limit's first sight: the Notify that
+                // carries it is booked only then.
+                auto_deadline: (throttle == Some(Throttle::LimitReached)
+                    && carried.limit_since.is_none())
+                .then(|| self.auto_deadline(&carry.quota, &events, (&slot, agent), now))
+                .flatten(),
             };
             let acting = Acting {
                 agent,

@@ -800,7 +800,7 @@ fn run_orchestrator(tail: &[String], err: &mut impl Write) -> Result<u8> {
 /// means ON — exactly today's behaviour — for sessions that pre-date the knob
 /// and when the state cannot be read (a menu that cannot prove unawareness
 /// keeps today's surface rather than hiding it).
-fn session_quota_aware(
+pub(crate) fn session_quota_aware(
     session_dir: &std::path::Path,
     global: Option<&std::path::Path>,
     local: Option<&std::path::Path>,
@@ -1954,26 +1954,12 @@ fn run_say(
         return Ok(state::EXIT_USAGE);
     }
     let viewer = calling_viewer(dir);
-    let queued = store::open(dir).append_event(&tracked::event_line(&tracked::EventFields {
-        ts: time::Timestamp::now(),
-        actor: &viewer.display,
-        action: "chat",
-        target: "",
-        reference: "",
-        actor_slot: &viewer.slot,
-        actor_session: "",
-        target_slot: "",
-        target_session: "",
-        target_server: "",
-        target_pane: "",
-        target_session_uuid: "",
-        caller_server: "",
-        caller_pane: "",
-        caller_session_uuid: "",
-        identity_gap: "",
-        summary: &text,
-        body_file: "",
-    }));
+    let queued = store::open(dir).append_event(&chat_line(
+        time::Timestamp::now(),
+        &viewer.display,
+        &viewer.slot,
+        &text,
+    ));
     if let Err(why) = queued {
         writeln!(err, "ae: say: the line was not queued ({why}).")?;
         return Ok(state::EXIT_FAILED);
@@ -1985,8 +1971,26 @@ fn run_say(
 /// The ONE `chat` record: a line the Telegram bridge forwards, written by
 /// `actor`, addressed to no seat.
 pub(crate) fn chat_line(ts: time::Timestamp, actor: &str, actor_slot: &str, text: &str) -> String {
-    let _ = (ts, actor, actor_slot, text);
-    String::new()
+    tracked::event_line(&tracked::EventFields {
+        ts,
+        actor,
+        action: "chat",
+        target: "",
+        reference: "",
+        actor_slot,
+        actor_session: "",
+        target_slot: "",
+        target_session: "",
+        target_server: "",
+        target_pane: "",
+        target_session_uuid: "",
+        caller_server: "",
+        caller_pane: "",
+        caller_session_uuid: "",
+        identity_gap: "",
+        summary: text,
+        body_file: "",
+    })
 }
 
 /// The `say` report: a line that was QUEUED for the bridge, never one that was
