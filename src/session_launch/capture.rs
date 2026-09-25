@@ -2533,6 +2533,7 @@ mod tests {
         let listener = std::os::unix::net::UnixListener::bind(&socket).expect("a socket node");
         assert!(!file_contains(&socket, marker));
         drop(listener);
+        std::fs::remove_file(&socket).expect("the socket node leaves with the test");
 
         // The control: the same call on a REGULAR file with the same content
         // still answers yes, so the guard is refusing the node and not the
