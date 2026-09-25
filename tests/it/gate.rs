@@ -1026,7 +1026,7 @@ fn linux_lanes_ok(justfile: &str) -> bool {
     };
     let container = &joined[container_at..];
     match (
-        container.find("cargo clean -p ae"),
+        container.find("cargo clean --locked -p ae"),
         container.find("just test"),
     ) {
         (Some(clean), Some(test)) if clean < test => {}
@@ -1064,7 +1064,7 @@ fn the_linux_container_lanes_are_digest_pinned_read_only_and_non_root() {
         "        -v \"ae-linux-arm64-rustup:/r\" -v \"ae-linux-arm64-target:/t\" -e NEXTEST_PROFILE=linux \\\n",
         "        ae-linux-arm64 \\\n",
         "        bash -c 'just rust-setup\n",
-        "        cargo clean -p ae\n",
+        "        cargo clean --locked -p ae\n",
         "        just test'\n",
         "\n",
         "rust-linux-smoke:\n",
@@ -1100,7 +1100,7 @@ fn the_linux_container_lanes_are_digest_pinned_read_only_and_non_root() {
     // RED — the gate steps inlined into the recipe: a second copy of the gate
     // drifts from `just test` and the pin block stops being the one source.
     assert!(!linux_lanes_ok(&green.replace(
-        "bash -c 'just rust-setup\n        cargo clean -p ae\n        just test'",
+        "bash -c 'just rust-setup\n        cargo clean --locked -p ae\n        just test'",
         "bash -c 'cargo fmt --all --check && cargo nextest run'"
     )));
     // RED — no --init: the gate's bash is PID 1 and swallows signals and orphans.
@@ -1137,17 +1137,17 @@ fn the_linux_container_lanes_are_digest_pinned_read_only_and_non_root() {
     // RED — no clean of the ae package: the shared target volume could serve
     // another checkout's build (#190).
     assert!(!linux_lanes_ok(
-        &green.replace("        cargo clean -p ae\n", "")
+        &green.replace("        cargo clean --locked -p ae\n", "")
     ));
     // RED — the clean after the gate: the suite already ran on stale binaries.
     assert!(!linux_lanes_ok(&green.replace(
-        "        cargo clean -p ae\n        just test'",
-        "        just test'\n        cargo clean -p ae"
+        "        cargo clean --locked -p ae\n        just test'",
+        "        just test'\n        cargo clean --locked -p ae"
     )));
     // RED — the clean on the host side: it must run inside the container.
     assert!(!linux_lanes_ok(&green.replace(
-        "        bash -c 'just rust-setup\n        cargo clean -p ae",
-        "        cargo clean -p ae\n        bash -c 'just rust-setup"
+        "        bash -c 'just rust-setup\n        cargo clean --locked -p ae",
+        "        cargo clean --locked -p ae\n        bash -c 'just rust-setup"
     )));
 
     assert!(linux_lanes_ok(&read(&root().join("justfile"))));

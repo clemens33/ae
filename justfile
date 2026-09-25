@@ -1514,7 +1514,7 @@ rust-linux:
             # The target volume is shared by every checkout and cargo's
             # fingerprint does not see the checkout path (#190): without this
             # the gate could test another tree's build. Deps stay warm.
-            cargo clean -p ae
+            cargo clean --locked -p ae
             just test' || rc=$?
     echo "==> ae-linux gate: rc=$rc wall=$((SECONDS - start))s"
     exit "$rc"
