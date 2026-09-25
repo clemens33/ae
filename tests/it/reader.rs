@@ -490,6 +490,65 @@ fn a_tail_the_reader_does_not_own_is_a_usage_error() {
 }
 
 #[test]
+fn the_reader_toggles_off_from_its_own_pane_and_an_unstampable_split_is_undone() {
+    let scratch = scratch("selftoggle");
+    if !tmux_present(&scratch) {
+        let _ = fs::remove_dir_all(&scratch);
+        panic!("tmux is not runnable here, so the reader self-close cannot be proven");
+    }
+    let socket = scratch.join("sock");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let source = stage_source(&socket, &scratch);
+    let out = reader_from_pane(&socket, &source)
+        .output()
+        .expect("the ae binary should run");
+    assert_eq!(out.status.code(), Some(0));
+    let (reader, _, _, mode, _) = reader_pane(&socket, &scratch).expect("a reader pane");
+    assert_eq!(mode, "1");
+
+    // The human clicked into the reader and pressed the key: the calling pane
+    // IS the window's reader, so the toggle closes it like any other press.
+    let out = reader_from_pane(&socket, &reader)
+        .output()
+        .expect("the ae binary should run");
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+    assert!(stderr.is_empty(), "nothing on stderr: {stderr}");
+    let rows = panes(&socket, &scratch);
+    assert_eq!(rows.len(), 1, "the reader alone closed: {rows:?}");
+    assert_eq!(rows[0].0, source, "the source is the window's only pane");
+    assert_eq!(rows[0].2, "1", "the source keeps the keyboard");
+
+    // Kill every new pane right after its split, so the reader's stamp cannot
+    // land. The toggle never guesses an unstamped pane, so the refusal is the
+    // only honest answer and no stray pane may survive it.
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &["set-hook", "-g", "after-split-window", "kill-pane"]
+        )
+        .0,
+        "the stamp-failure hook"
+    );
+    let out = reader_from_pane(&socket, &source)
+        .output()
+        .expect("the ae binary should run");
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "a reader that cannot be stamped is a refusal: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let rows = panes(&socket, &scratch);
+    assert_eq!(rows.len(), 1, "no unstamped stray pane: {rows:?}");
+    assert_eq!(rows[0].0, source);
+}
+
+#[test]
 fn a_dead_source_leaves_a_reader_the_toggle_still_closes() {
     let scratch = scratch("dead");
     if !tmux_present(&scratch) {
