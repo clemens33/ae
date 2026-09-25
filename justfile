@@ -1165,7 +1165,8 @@ _tmux-isolated lane *args:
     test_tmux_tmp="$(mktemp -d "$base/ae-rust-test.$$.XXXXXX")"
     cleanup() {
         local status=$? tries=30
-        TMUX_TMPDIR="$test_tmux_tmp" env -u TMUX -u TMUX_PANE tmux -L ae kill-server >/dev/null 2>&1 || true
+        # Explicit socket, never a short -L: outside this directory that name is the live fleet server.
+        env -u TMUX -u TMUX_PANE tmux -S "$test_tmux_tmp/tmux-$(id -u)/ae" kill-server >/dev/null 2>&1 || true
         reap_dead_scratch
         # A test's orphaned child (a real opencode) can write into its root for
         # seconds after the test; past the bound the lane fails, and the next

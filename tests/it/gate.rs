@@ -253,6 +253,84 @@ fn test_arm_forwards_filter_args(justfile: &str) -> bool {
     order.windows(2).all(|pair| pair[0] < pair[1]) && arm[note].contains(">&2")
 }
 
+/// Whether no destructive tmux verb in the justfile names its server with a
+/// short `-L`: outside a set-and-existing `TMUX_TMPDIR` that name is the live
+/// fleet server, so a lane cleanup through it kills developers' sessions.
+/// Continuations fold before the scan; full-line comments are not commands.
+/// The shell word a justfile token carries: past any assignment or command
+/// substitution opener, stripped of surrounding punctuation.
+fn word_core(word: &str) -> &str {
+    word.rsplit(['=', '$', '(', '`', '"', '\''])
+        .next()
+        .unwrap_or(word)
+        .trim_matches(|c: char| {
+            !(c.is_ascii_alphanumeric() || c == '/' || c == '-' || c == '_' || c == '.')
+        })
+}
+
+fn no_short_l_destructive_tmux(justfile: &str) -> bool {
+    const VERBS: [&str; 4] = ["kill-server", "kill-session", "kill-pane", "respawn-pane"];
+    justfile.replace("\\\n", " ").lines().all(|line| {
+        let line = line.trim_start();
+        if line.is_empty() || line.starts_with('#') {
+            return true;
+        }
+        let words: Vec<&str> = line.split_whitespace().map(word_core).collect();
+        let Some(start) = words
+            .iter()
+            .position(|word| *word == "tmux" || word.ends_with("/tmux"))
+        else {
+            return true;
+        };
+        let tail = &words[start + 1..];
+        let short = tail
+            .iter()
+            .position(|word| *word == "-L" || word.starts_with("-L") && word.len() > 2);
+        let verb = tail.iter().position(|word| VERBS.contains(word));
+        !matches!((short, verb), (Some(l), Some(v)) if l < v)
+    })
+}
+
+#[test]
+fn the_justfile_names_no_destructive_tmux_server_with_a_short_l() {
+    assert!(
+        no_short_l_destructive_tmux(&read(&root().join("justfile"))),
+        "a destructive tmux verb must name its server with -S, never a short -L"
+    );
+
+    // RED — every destructive verb through a short -L is refused.
+    for verb in ["kill-server", "kill-session", "kill-pane", "respawn-pane"] {
+        assert!(
+            !no_short_l_destructive_tmux(&format!("cleanup:\n    tmux -L ae {verb}\n")),
+            "{verb} through -L must be refused"
+        );
+    }
+    // RED — the lane-cleanup shape: env and flags before tmux change nothing.
+    assert!(!no_short_l_destructive_tmux(
+        "cleanup:\n    TMUX_TMPDIR=\"$t\" env -u TMUX -u TMUX_PANE tmux -L ae kill-server >/dev/null 2>&1 || true\n"
+    ));
+    // RED — a folded spelling is still one command, and a command
+    // substitution does not hide the verb either.
+    assert!(!no_short_l_destructive_tmux(
+        "cleanup:\n    tmux -L ae \\\n        kill-server\n"
+    ));
+    assert!(!no_short_l_destructive_tmux(
+        "cleanup:\n    error=\"$(tmux -L ae kill-server 2>&1)\"\n"
+    ));
+    // GREEN — the explicit socket is the fix; the sentry's new-session is
+    // not destructive; a comment is not a command and a file test is not
+    // a flag.
+    assert!(no_short_l_destructive_tmux(
+        "cleanup:\n    tmux -S \"$t/tmux-$(id -u)/ae\" kill-server\n"
+    ));
+    assert!(no_short_l_destructive_tmux(
+        "lane:\n    tmux -f /dev/null -L ae new-session -d -s foreign-review-sentry\n"
+    ));
+    assert!(no_short_l_destructive_tmux(
+        "lane:\n    # tmux -L ae kill-server\n    [[ -d \"$d\" && ! -L \"$d\" ]] || continue\n"
+    ));
+}
+
 #[test]
 fn the_lint_recipe_protects_shellchecks_stdin() {
     assert!(
