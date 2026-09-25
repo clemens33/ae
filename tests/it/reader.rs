@@ -355,6 +355,10 @@ fn a_reader_retargets_one_per_window_and_never_stacks() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one real client rig proves the wheel and the typing together, which is the whole ask"
+)]
 fn the_wheel_scrolls_the_reader_and_typing_reaches_the_source() {
     let scratch = scratch("wheel");
     if !tmux_present(&scratch) {
