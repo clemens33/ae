@@ -470,6 +470,26 @@ fn the_wheel_scrolls_the_reader_and_typing_reaches_the_source() {
 }
 
 #[test]
+fn a_tail_the_reader_does_not_own_is_a_usage_error() {
+    // Parsed before any tmux read, so the hermetic runner is enough: a foreign
+    // flag with an operand and a bare --client are both refused, never taken
+    // as a client name.
+    for tail in [&["--bogus", "x"][..], &["--client"][..], &["extra"][..]] {
+        let out = ae()
+            .arg("_reader")
+            .args(tail)
+            .output()
+            .expect("the ae binary should run");
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "{tail:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+#[test]
 fn a_dead_source_leaves_a_reader_the_toggle_still_closes() {
     let scratch = scratch("dead");
     if !tmux_present(&scratch) {
