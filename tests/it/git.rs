@@ -75,9 +75,18 @@ fn session(scratch: &Scratch, name: &str, mode: &str, work_dir: &str, git_base: 
 
 /// The four git lines of a preview, as `(base, final, range, count)`.
 fn git_facts(dir: &Path) -> (String, String, String, String) {
-    let child = crate::cli::ae()
-        .arg("_archive-preview")
-        .arg(dir)
+    git_facts_env(dir, &[])
+}
+
+/// [`git_facts`], with extra environment on the preview child — the
+/// hostile-environment pins set a `GIT_*` variable here.
+fn git_facts_env(dir: &Path, extra: &[(&str, &Path)]) -> (String, String, String, String) {
+    let mut preview = crate::cli::ae();
+    preview.arg("_archive-preview").arg(dir);
+    for (key, value) in extra {
+        preview.env(*key, *value);
+    }
+    let child = preview
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -217,6 +226,25 @@ fn a_missing_repo_yields_dash_final_and_range() {
     assert_eq!(f, "-", "no HEAD for a missing repo");
     assert_eq!(r, "-");
     assert_eq!(c, "-");
+}
+
+#[test]
+fn a_callers_git_dir_does_not_steal_the_preview_repo() {
+    // A hook — or an exporting shell — sets GIT_DIR; the preview must still
+    // answer from its own `-C` repository, never the caller's.
+    let scratch = Scratch::new("gitdir");
+    let (repo_a, shas_a) = repo_with_commits(&scratch, "a", 2);
+    let (repo_b, shas_b) = repo_with_commits(&scratch, "b", 3);
+    assert_ne!(shas_a[1], shas_b[2], "the two repos must disagree");
+    let dir = session(
+        &scratch,
+        "gd",
+        "worktree",
+        &repo_a.to_string_lossy(),
+        &shas_a[0],
+    );
+    let (_, f, _, _) = git_facts_env(&dir, &[("GIT_DIR", &repo_b.join(".git"))]);
+    assert_eq!(f, shas_a[1], "GIT_DIR pointed the query at the wrong repo");
 }
 
 #[test]

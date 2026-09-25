@@ -267,6 +267,12 @@ fn spawn<A: AsRef<std::ffi::OsStr>>(
     command.envs(envs.iter().copied());
     // `AE_VERSION` is the TARGET PIN of `ae upgrade` and nothing else's input.
     command.env_remove("AE_VERSION");
+    if program == "git" {
+        // A hook's caller environment would otherwise re-aim every query.
+        for var in GIT_LOCAL_ENV_VARS {
+            command.env_remove(var);
+        }
+    }
     if matches!(streams, Streams::InheritStderr) {
         command.stderr(std::process::Stdio::inherit());
     }
@@ -440,6 +446,27 @@ fn run_captured(program: &str, args: &[String]) -> (bool, String, String) {
         None => (false, String::new(), String::new()),
     }
 }
+
+/// The repository-selecting variables git reads before `-C`, as
+/// `git rev-parse --local-env-vars` lists them (git 2.55.0): the git leg
+/// scrubs every one so a query names its repository with `-C` alone.
+const GIT_LOCAL_ENV_VARS: &[&str] = &[
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CONFIG",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_COUNT",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_GRAFT_FILE",
+    "GIT_INDEX_FILE",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_PREFIX",
+    "GIT_SHALLOW_FILE",
+    "GIT_COMMON_DIR",
+];
 
 /// The git leg of the one process door — the ONLY way product code runs `git`,
 /// and the program is FIXED here so a caller chooses the arguments, never the
@@ -1286,7 +1313,9 @@ pub(crate) fn spawn_detached(
 
 #[cfg(test)]
 mod tests {
-    use super::{CaptureScratch, PROGRAM, Streams, Tmux, declares_utf8, run, spawn};
+    use super::{
+        CaptureScratch, GIT_LOCAL_ENV_VARS, PROGRAM, Streams, Tmux, declares_utf8, run, spawn,
+    };
     use crate::inventory::{Discovery, QueryFailed, ServerId};
     use crate::meta::Selector;
     use std::path::PathBuf;
@@ -1347,6 +1376,22 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let stdout = output.expect("the fake tmux ran").stdout;
         assert_eq!(String::from_utf8_lossy(&stdout), "-u\nlist-sessions\n");
+    }
+
+    /// The scrub list is the literal `git rev-parse --local-env-vars` set —
+    /// a dropped name silently re-aims every query at the caller's repository.
+    #[test]
+    fn the_git_scrub_list_is_the_literal_local_env_vars() {
+        assert_eq!(GIT_LOCAL_ENV_VARS.len(), 15);
+        for var in [
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_PREFIX",
+            "GIT_INDEX_FILE",
+            "GIT_COMMON_DIR",
+        ] {
+            assert!(GIT_LOCAL_ENV_VARS.contains(&var), "the scrub lost {var}");
+        }
     }
 
     #[test]
