@@ -32,7 +32,7 @@ use std::time::{Duration, Instant};
 use ae::inventory::ServerId;
 use ae::meta::Selector;
 use ae::watchdog_daemon::{Knobs, run};
-use ae::watchdog_glue::{self, KillOutcome};
+use ae::watchdog_glue::{self, KillOutcome, LegacyReap};
 
 use super::parity::Invocation;
 use super::parity::capture::ExitOutcome;
@@ -1535,8 +1535,12 @@ fn the_legacy_reap_takes_the_pane_it_does_own_and_its_artifacts_with_it() {
 
     assert_eq!(
         reaped.ok(),
-        Some(vec!["shepherd"]),
-        "the reap reports which legacy watchdog it found"
+        Some(vec![LegacyReap {
+            name: "shepherd",
+            pane: legacy.clone(),
+            outcome: KillOutcome::Killed,
+        }]),
+        "the reap reports which legacy watchdog it found, on which pane, and that the kill ran"
     );
     assert!(
         !panes.contains(&legacy),
@@ -1559,7 +1563,8 @@ fn the_legacy_reap_takes_the_pane_it_does_own_and_its_artifacts_with_it() {
 fn an_unreadable_pane_is_refused_rather_than_taken_on_faith() {
     // The FAIL-CLOSED half, and the one a mock cannot exhibit: measured on a
     // real server, an unknown pane answers rc 0 with an empty session and an
-    // unknown server answers rc 1.
+    // unknown server answers rc 1. Every refusal names itself (#194): silence
+    // let callers report success over a kill that never ran.
     let scratch = scratch("unread");
     require_tmux(&scratch);
     let socket = scratch.join("s");
@@ -1576,10 +1581,13 @@ fn an_unreadable_pane_is_refused_rather_than_taken_on_faith() {
 
     assert_eq!(missing.ok(), Some(KillOutcome::Unreadable));
     assert_eq!(unreachable.ok(), Some(KillOutcome::Unreadable));
-    assert!(
-        String::from_utf8_lossy(&err).is_empty(),
-        "a pane that is not there is nothing to kill, and nothing to complain about"
-    );
+    let diagnostics = String::from_utf8_lossy(&err).into_owned();
+    for pane in ["%999", "%0"] {
+        assert!(
+            diagnostics.contains(&format!("refusing to kill pane {pane}")),
+            "an unreadable pane names itself ({pane}): {diagnostics}"
+        );
+    }
     let _ = fs::remove_dir_all(&scratch);
 }
 

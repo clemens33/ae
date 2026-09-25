@@ -201,8 +201,60 @@ pub enum KillOutcome {
     WrongSession(String),
     /// The pane carries a different `@ae_agent` stamp.
     WrongAgent(String),
-    /// A positive match on every fact the caller named; `kill-pane` was run.
+    /// `kill-pane` failed after a positive probe, and the pane could not be
+    /// proven gone; carries the short reason. A refusal, never success.
+    KillFailed(String),
+    /// A positive match on every fact the caller named, and the pane is gone:
+    /// `kill-pane` succeeded, or it failed and a re-enumeration proved the
+    /// pane absent.
     Killed,
+}
+
+/// The refusal's short why-phrase, or `None` when there was no refusal.
+///
+/// Every lifecycle caller folds its message through this one function, so a
+/// refused kill reads the same everywhere it is reported.
+#[must_use]
+pub fn refusal_short(
+    outcome: &KillOutcome,
+    want_session: &str,
+    want_agent: Option<&str>,
+) -> Option<String> {
+    match outcome {
+        KillOutcome::Nothing | KillOutcome::Killed => None,
+        KillOutcome::Unreadable => Some("its owner could not be read".to_owned()),
+        KillOutcome::WrongSession(have) => {
+            let wanted = if want_session.is_empty() {
+                "<unknown>"
+            } else {
+                want_session
+            };
+            Some(format!("it belongs to session '{have}', not '{wanted}'"))
+        }
+        KillOutcome::WrongAgent(have) => {
+            let stamped = if have.is_empty() { "<unstamped>" } else { have };
+            let wanted = want_agent.unwrap_or_default();
+            Some(format!("it is stamped '{stamped}', not '{wanted}'"))
+        }
+        KillOutcome::KillFailed(why) => Some(format!("kill-pane failed and {why}")),
+    }
+}
+
+/// What a failed `kill-pane` means, from a fresh enumeration of the session.
+///
+/// Pure: the listing is the caller's reading, so each arm pins without tmux.
+/// Absence is positive (the same reading `stamped_pane` trusts); a listing
+/// that still holds the pane, or no listing at all, is a refusal.
+#[must_use]
+pub fn after_failed_kill(
+    listing: Option<&[crate::tmux::ObservedAgent]>,
+    pane: &str,
+) -> KillOutcome {
+    match listing {
+        Some(rows) if !rows.iter().any(|row| row.pane == pane) => KillOutcome::Killed,
+        Some(_) => KillOutcome::KillFailed("the pane is still listed".to_owned()),
+        None => KillOutcome::KillFailed("its session could not be enumerated".to_owned()),
+    }
 }
 
 /// Kill `pane` ONLY if it is still the pane the caller means.
@@ -221,6 +273,11 @@ pub fn kill_owned_pane(
         return Ok(KillOutcome::Nothing);
     }
     let Some(have) = transport::observe_pane_owner(server, pane) else {
+        writeln!(
+            err,
+            "ae: refusing to kill pane {pane}: its owner could not be read (the pane is gone \
+             or its server did not answer).",
+        )?;
         return Ok(KillOutcome::Unreadable);
     };
     if want_session.is_empty() || have.session != want_session {
@@ -252,8 +309,37 @@ pub fn kill_owned_pane(
         )?;
         return Ok(KillOutcome::WrongAgent(have.agent));
     }
-    let _ = transport::kill_pane(server, pane);
-    Ok(KillOutcome::Killed)
+    if transport::kill_pane(server, pane) {
+        return Ok(KillOutcome::Killed);
+    }
+    // Measured on tmux 3.7b: `kill-pane` answers rc 1 with "can't find pane"
+    // for a pane that vanished — but a child that never ran answers false too
+    // with the pane untouched, so a bare false must not read as Killed. Only
+    // on this path, re-enumerate and let the listing decide.
+    let listing = transport::observe_agents(server, want_session);
+    let outcome = after_failed_kill(listing.as_deref(), pane);
+    if outcome != KillOutcome::Killed
+        && let Some(short) = refusal_short(&outcome, want_session, want_agent)
+    {
+        writeln!(
+            err,
+            "ae: refusing to report pane {pane} killed: {short}; it may still be running.",
+        )?;
+    }
+    Ok(outcome)
+}
+
+/// One legacy watchdog the reap found: which name, which pane, and what the
+/// ownership-checked kill decided. A found pane that was NOT killed must not
+/// read as reaped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LegacyReap {
+    /// Which pre-rename name was found.
+    pub name: &'static str,
+    /// The pane it was found on.
+    pub pane: String,
+    /// What [`kill_owned_pane`] decided for it.
+    pub outcome: KillOutcome,
 }
 
 /// Reap any pre-rename watchdog still running under legacy artifacts.
@@ -266,7 +352,7 @@ pub fn reap_legacy(
     session: &str,
     meta_dir: &Path,
     err: &mut impl Write,
-) -> crate::Result<Vec<&'static str>> {
+) -> crate::Result<Vec<LegacyReap>> {
     // ONE enumeration for both names: two `list-panes` runs could disagree, and
     // an enumeration that FAILED is not evidence that anything is gone.
     let observed = transport::observe_agents(server, session).unwrap_or_default();
@@ -278,12 +364,16 @@ pub fn reap_legacy(
             .find(|seen| seen.agent == stamp)
             .map(|seen| seen.pane.clone());
         if let Some(pane) = pane {
-            found.push(name);
             // The recorded pid is deliberately NOT signalled here: the
             // pre-rename daemon IS the process in that pane, so the ownership-checked
             // `kill-pane` takes it with the pane, and a bare kill of a recorded
             // pid is the stranger-kill this module exists to refuse.
-            kill_owned_pane(server, &pane, session, Some(&stamp), err)?;
+            let outcome = kill_owned_pane(server, &pane, session, Some(&stamp), err)?;
+            found.push(LegacyReap {
+                name,
+                pane,
+                outcome,
+            });
         }
         let _ = std::fs::remove_file(meta_dir.join(format!(".{name}.pid")));
         let _ = std::fs::remove_file(meta_dir.join(format!(".{name}.status")));
@@ -526,8 +616,9 @@ pub fn clear_pid(meta_dir: &Path, pid: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        BRANCH_DISPLAY_MAX, Deferred, PaneOwner, Recovered, interpret_pane_owner, kill_pane_args,
-        pane_owner_args, recover, recovered_summary, supervise_due, trim_display,
+        BRANCH_DISPLAY_MAX, Deferred, KillOutcome, PaneOwner, Recovered, after_failed_kill,
+        interpret_pane_owner, kill_pane_args, pane_owner_args, recover, recovered_summary,
+        refusal_short, supervise_due, trim_display,
     };
     use crate::inventory::ServerId;
     use crate::meta::Selector;
@@ -769,5 +860,71 @@ mod tests {
             "a stale recovery wrote through slot reuse: {meta}"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn every_refusal_folds_to_one_short_phrase_and_success_to_none() {
+        let rows: &[(&str, KillOutcome, Option<&str>)] = &[
+            ("nothing", KillOutcome::Nothing, None),
+            ("killed", KillOutcome::Killed, None),
+            (
+                "unreadable",
+                KillOutcome::Unreadable,
+                Some("its owner could not be read"),
+            ),
+            (
+                "wrong-session",
+                KillOutcome::WrongSession("theirs".to_owned()),
+                Some("it belongs to session 'theirs', not 'ours'"),
+            ),
+            (
+                "wrong-agent",
+                KillOutcome::WrongAgent("lead".to_owned()),
+                Some("it is stamped 'lead', not '_watchdog'"),
+            ),
+            (
+                "unstamped",
+                KillOutcome::WrongAgent(String::new()),
+                Some("it is stamped '<unstamped>', not '_watchdog'"),
+            ),
+            (
+                "kill-failed",
+                KillOutcome::KillFailed("the pane is still listed".to_owned()),
+                Some("kill-pane failed and the pane is still listed"),
+            ),
+        ];
+        for (label, outcome, want) in rows {
+            assert_eq!(
+                refusal_short(outcome, "ours", Some("_watchdog")).as_deref(),
+                *want,
+                "row {label}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_failed_kill_reads_the_fresh_listing_and_nothing_else() {
+        let seen = |pane: &str, agent: &str| crate::tmux::ObservedAgent {
+            pane: pane.to_owned(),
+            agent: agent.to_owned(),
+        };
+        let without = [seen("%6", "lead")];
+        let with = [seen("%5", "_watchdog"), seen("%6", "lead")];
+        let rows: &[(&str, Option<&[crate::tmux::ObservedAgent]>, KillOutcome)] = &[
+            ("absent", Some(&without[..]), KillOutcome::Killed),
+            (
+                "listed",
+                Some(&with[..]),
+                KillOutcome::KillFailed("the pane is still listed".to_owned()),
+            ),
+            (
+                "no-listing",
+                None,
+                KillOutcome::KillFailed("its session could not be enumerated".to_owned()),
+            ),
+        ];
+        for (label, listing, want) in rows {
+            assert_eq!(&after_failed_kill(*listing, "%5"), want, "row {label}");
+        }
     }
 }
