@@ -1065,9 +1065,13 @@ fn agent_entries(
                 }),
                 // This agent's OWN contribution, from the two evidence classes:
                 // ALERT-DERIVED dead/stale/throttled, and SELF-DECLARED
-                // waiting-user/waiting-agent/blocked.
-                reason: Reason::rollup(
-                    runtime_agent
+                // waiting-user/waiting-agent/blocked. A standing usage limit
+                // is NEWER than the declaration — the journal drops one the
+                // seat's own record came after, and the watchdog raises one
+                // over a declaration only when it is — so it REPLACES the
+                // declared half rather than losing the tie to `blocked`.
+                reason: {
+                    let alerts: Vec<Reason> = runtime_agent
                         .and_then(|agent| agent.alert)
                         .into_iter()
                         .chain(read.and_then(|read| {
@@ -1078,12 +1082,15 @@ fn agent_entries(
                                 started_epoch,
                             )
                         }))
-                        .chain(declared_state.zip(declared_age_secs).and_then(
-                            |(state, age_secs)| {
-                                declared_reason(state, age_secs, idle_nudge_secs, declared_current)
-                            },
-                        )),
-                ),
+                        .collect();
+                    let declared = declared_state
+                        .zip(declared_age_secs)
+                        .filter(|_| !alerts.contains(&Reason::Limit))
+                        .and_then(|(state, age_secs)| {
+                            declared_reason(state, age_secs, idle_nudge_secs, declared_current)
+                        });
+                    Reason::rollup(alerts.into_iter().chain(declared))
+                },
                 // A seat that is gone is waiting for nothing: its open requests
                 // are somebody else's problem now, and the line would only be
                 // noise on a stopped session.
@@ -4209,6 +4216,56 @@ mod tests {
                 Some(Reason::Dead),
                 "{actor}/{action}"
             );
+        }
+    }
+
+    /// #189: a usage limit the watchdog raised AFTER the seat's declaration
+    /// replaces the declared half, so `blocked` — or a `waiting-agent` past
+    /// its ceiling — cannot hide it; one the declaration came after is gone.
+    #[test]
+    fn a_limit_newer_than_the_declaration_replaces_it_and_an_older_one_does_not() {
+        let limit = |ago: i64| {
+            let summary = "vendor usage limit reached — waits for a reset or a re-login";
+            let extra = format!(r#","target":"lead","summary":"{summary}""#);
+            event(&at(ago), "_watchdog", "limit", &extra)
+        };
+        let state = |ago: i64, state: &str| {
+            event(&at(ago), "lead", "state", &format!(r#","ref":"{state}""#))
+        };
+        let read = |lines: &[String], alert: Option<Reason>| {
+            let scratch = Scratch::new("limit-over-declared");
+            scratch.meta(META);
+            scratch.events(lines);
+            let mut runtime = running();
+            runtime.agents = vec![AgentRuntime {
+                slot: "main".to_owned(),
+                alive: Some(true),
+                alert,
+                observed: crate::harness_state::HarnessState::Unknown,
+            }];
+            entry_for(&scratch.0, "live", &runtime, NOW, DEFAULT_UNANSWERED_SECS)
+        };
+        for (lines, alert, want) in [
+            (
+                vec![state(7_200, "waiting-agent"), limit(7_050)],
+                None,
+                Reason::Limit,
+            ),
+            (
+                vec![state(600, "blocked")],
+                Some(Reason::Limit),
+                Reason::Limit,
+            ),
+            (
+                vec![limit(900), state(600, "blocked")],
+                None,
+                Reason::Blocked,
+            ),
+        ] {
+            let entry = read(&lines, alert);
+            assert_eq!(entry.agents[0].reason, Some(want), "{lines:?} {alert:?}");
+            let table = crate::listing::table(&[&entry]);
+            assert_eq!(table.contains(" limit"), want == Reason::Limit, "{table}");
         }
     }
 
