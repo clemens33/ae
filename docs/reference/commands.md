@@ -1252,6 +1252,14 @@ it. Its own status line says `◌ watchdog off` (`? watchdog off` with
 session launched with `watchdog = false` carries that from the start. `start`
 needs nothing after a stop; the daemon publishes over it on its way up.
 
+`stop` refuses rather than lies: when the ownership-checked kill of the
+`_watchdog` pane — or of a legacy `_shepherd`/`_loop` pane — is refused, `stop`
+keeps the pidfile, keeps the bars, audits `refused: …` and exits 1, because the
+daemon may still be running. A lookup that never answers refuses the same way;
+a pane that vanished between the two reads stops what remains with one `ae:`
+note. `start` aborts with exit 1 when a legacy watchdog it found could not be
+killed, rather than run two side by side.
+
 The watchdog also observes the same local quota caches as `ae quota` on its persisted
 `[workspace] quota_every_secs` cadence — unless the session is quota-unaware
 (`[workspace] quota = off`, pinned at launch), in which case it books no quota

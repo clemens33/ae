@@ -76,6 +76,12 @@ exactly one server. It does NOT when the session is proven gone, and not on the
 server a daemon is LEAVING after a rebind: neither is a session this state root
 still owns, and a rank left on a stranger would put it on every ae strip.
 
+A stop whose pane kill the ownership check refuses settles nothing: the
+pidfile, the bars, the meta flag and the unwatched seed all stay as they were,
+the audit reads `refused: …`, and the exit is 1. Each registration follows its
+own verdict — a main daemon that died is cleared and retracted even when a
+legacy pane survived — but the session facts wait for zero refusals anywhere.
+
 ## Adopting a watchdog-less peer's fleet strip
 
 Every value the fleet line carries has one publisher: the session's own watchdog. So a session
