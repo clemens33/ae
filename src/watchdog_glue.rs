@@ -281,33 +281,26 @@ pub fn kill_owned_pane(
         return Ok(KillOutcome::Unreadable);
     };
     if want_session.is_empty() || have.session != want_session {
-        let wanted = if want_session.is_empty() {
-            "<unknown>"
-        } else {
-            want_session
-        };
-        writeln!(
-            err,
-            "ae: refusing to kill pane {pane}: it belongs to session '{}', not '{wanted}' \
-             (stale pane id).",
-            have.session
-        )?;
-        return Ok(KillOutcome::WrongSession(have.session));
+        let outcome = KillOutcome::WrongSession(have.session);
+        if let Some(short) = refusal_short(&outcome, want_session, want_agent) {
+            writeln!(
+                err,
+                "ae: refusing to kill pane {pane}: {short} (stale pane id)."
+            )?;
+        }
+        return Ok(outcome);
     }
     if let Some(want_agent) = want_agent.filter(|name| !name.is_empty())
         && have.agent != want_agent
     {
-        let stamped = if have.agent.is_empty() {
-            "<unstamped>"
-        } else {
-            have.agent.as_str()
-        };
-        writeln!(
-            err,
-            "ae: refusing to kill pane {pane}: it is stamped '{stamped}', not '{want_agent}' \
-             (stale pane id).",
-        )?;
-        return Ok(KillOutcome::WrongAgent(have.agent));
+        let outcome = KillOutcome::WrongAgent(have.agent);
+        if let Some(short) = refusal_short(&outcome, want_session, Some(want_agent)) {
+            writeln!(
+                err,
+                "ae: refusing to kill pane {pane}: {short} (stale pane id)."
+            )?;
+        }
+        return Ok(outcome);
     }
     if transport::kill_pane(server, pane) {
         return Ok(KillOutcome::Killed);
@@ -318,9 +311,7 @@ pub fn kill_owned_pane(
     // on this path, re-enumerate and let the listing decide.
     let listing = transport::observe_agents(server, want_session);
     let outcome = after_failed_kill(listing.as_deref(), pane);
-    if outcome != KillOutcome::Killed
-        && let Some(short) = refusal_short(&outcome, want_session, want_agent)
-    {
+    if let Some(short) = refusal_short(&outcome, want_session, want_agent) {
         writeln!(
             err,
             "ae: refusing to report pane {pane} killed: {short}; it may still be running.",

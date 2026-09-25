@@ -297,6 +297,78 @@ fn status(
 }
 
 /// `watchdog start` — reap, serialize, spawn the pane, wait for registration.
+/// Abort `start` with one `Error` line and one `refused:` audit. Both abort
+/// branches share it; only the composed lines differ.
+fn abort_start(
+    meta_dir: &Path,
+    caller: &Caller,
+    err: &mut impl Write,
+    err_line: &str,
+    audit: &str,
+) -> crate::Result<u8> {
+    writeln!(err, "{err_line}")?;
+    caller.audit(meta_dir, audit, err);
+    Ok(EXIT_FAILED)
+}
+
+/// Reap a pre-rename watchdog before the check-and-spawn, and abort when the
+/// reap found one it could not take. `Some` exits `start`; `None` proceeds.
+fn abort_on_live_legacy(
+    server: &ServerId,
+    session: &str,
+    meta_dir: &Path,
+    caller: &Caller,
+    err: &mut impl Write,
+) -> crate::Result<Option<u8>> {
+    let legacy = watchdog_glue::reap_legacy(server, session, meta_dir, err)?;
+    let refused = legacy_refusals(session, &legacy);
+    if refused.is_empty() {
+        return Ok(None);
+    }
+    // Unlike the cannot-rule-out arm in `start` (an unanswerable server exits
+    // 0 because the daemon may not exist), this FOUND a live watchdog it
+    // could not take: starting beside it would run two side by side.
+    let joined = refused.join("; ");
+    abort_start(
+        meta_dir,
+        caller,
+        err,
+        &format!(
+            "Error: a legacy watchdog of '{session}' may still be running: {joined}. Start aborted; remove it by hand, then retry."
+        ),
+        &format!("refused: {joined}"),
+    )
+    .map(Some)
+}
+
+/// Abort `start` when the fresh pane published nothing in bounds: tear the
+/// pane down (a refused teardown may still run an unregistered watchdog) and
+/// refuse.
+fn abort_on_missing_registration(
+    server: &ServerId,
+    session: &str,
+    meta_dir: &Path,
+    caller: &Caller,
+    pane: &str,
+    err: &mut impl Write,
+) -> crate::Result<u8> {
+    let kill = watchdog_glue::kill_owned_pane(server, pane, session, Some(AGENT_STAMP), err)?;
+    let base = "watchdog did not publish a pidfile within the start bound";
+    let (err_line, audit) = match watchdog_glue::refusal_short(&kill, session, Some(AGENT_STAMP)) {
+        Some(short) => (
+            format!(
+                "Error: {base}; its pane {pane} could not be removed ({short}) and may still run an unregistered watchdog. Start aborted."
+            ),
+            format!("refused: {base}; its pane {pane} could not be removed ({short})"),
+        ),
+        None => (
+            format!("Error: {base}; start aborted."),
+            format!("refused: {base}"),
+        ),
+    };
+    abort_start(meta_dir, caller, err, &err_line, &audit)
+}
+
 fn start(
     server: &ServerId,
     session: &str,
@@ -309,7 +381,9 @@ fn start(
     // A pre-rename watchdog can outlive a `doctor --refresh` (helpers are
     // rewritten, a running daemon is not restarted), so it is reaped before the
     // check-and-spawn — never two watchdogs side by side.
-    watchdog_glue::reap_legacy(server, session, meta_dir, err)?;
+    if let Some(exit) = abort_on_live_legacy(server, session, meta_dir, caller, err)? {
+        return Ok(exit);
+    }
     // SINGLE-STARTER MUTUAL EXCLUSION.
     let held = crate::store::lock(&meta_dir.join(START_LOCK), START_LOCK_WAIT);
     let Ok(_held) = held else {
@@ -393,14 +467,7 @@ fn start(
     if await_running(server, session, meta_dir).is_none() {
         // Nothing live-but-unregistered may be left for the next starter to
         // duplicate, and the lock is still held while we tear our own pane down.
-        watchdog_glue::kill_owned_pane(server, &pane, session, Some(AGENT_STAMP), err)?;
-        writeln!(
-            err,
-            "Error: watchdog did not publish a pidfile within the start bound; start aborted."
-        )?;
-        let outcome = "refused: watchdog did not publish a pidfile within the start bound";
-        caller.audit(meta_dir, outcome, err);
-        return Ok(EXIT_FAILED);
+        return abort_on_missing_registration(server, session, meta_dir, caller, &pane, err);
     }
     let _ = meta::rewrite(meta_dir, "watchdog", Some("true"));
     writeln!(
@@ -423,6 +490,169 @@ pub(crate) fn await_running(server: &ServerId, session: &str, meta_dir: &Path) -
     None
 }
 
+/// What `stop` does with its readings. Pure: every arm pins without tmux.
+///
+/// `Presence::Unknown` never reaches the fold: `stop` keeps its existing early
+/// return. `second`/`main` are `None` when stopped; under a running daemon the
+/// caller always looks up and, on `Present`, always attempts the kill — the
+/// `None`s there are unreachable and fail closed.
+#[derive(Debug, PartialEq, Eq)]
+struct StopDecision {
+    /// The main daemon is proven gone: clear its pidfile and retract its bars.
+    main_gone: bool,
+    /// Zero refusals anywhere: seed unwatched, write meta false, report stopped.
+    settle: bool,
+    /// Exit code.
+    exit: u8,
+    /// The stdout line, if any.
+    out: Option<String>,
+    /// The stderr lines, in order.
+    err: Vec<String>,
+    /// The audit outcome.
+    audit: String,
+}
+
+/// Every refused legacy pane as `pane %N could not be killed (…)` fragments,
+/// in reap order. Start and the stop fold share it.
+fn legacy_refusals(session: &str, legacy: &[watchdog_glue::LegacyReap]) -> Vec<String> {
+    legacy
+        .iter()
+        .filter_map(|reap| {
+            let stamp = format!("_{}", reap.name);
+            watchdog_glue::refusal_short(&reap.outcome, session, Some(&stamp))
+                .map(|short| format!("pane {} could not be killed ({short})", reap.pane))
+        })
+        .collect()
+}
+
+/// One refused stop: the `Error` line plus its audit, naming every refused
+/// pane. `pid_kept` says whether the main pidfile survived (it did exactly
+/// when the main kill was refused or never answered).
+fn refused_decision(
+    session: &str,
+    err_frags: &[String],
+    audit_frags: &[String],
+    pid_kept: bool,
+    main_gone: bool,
+) -> StopDecision {
+    let mut line = format!(
+        "Error: the watchdog of '{session}' may still be running: {}",
+        err_frags.join("; ")
+    );
+    if pid_kept {
+        line.push_str(". The pidfile was kept");
+    }
+    line.push_str("; retry 'ae watchdog stop ");
+    line.push_str(session);
+    line.push_str("'.");
+    StopDecision {
+        main_gone,
+        settle: false,
+        exit: EXIT_FAILED,
+        out: None,
+        err: vec![line],
+        audit: format!("refused: {}", audit_frags.join("; ")),
+    }
+}
+
+/// The main daemon is gone (killed, or its pane already was): its own
+/// registration follows its own verdict, while the session facts wait for
+/// zero refusals anywhere.
+fn main_gone_decision(session: &str, err_frags: &[String], audit_frags: &[String]) -> StopDecision {
+    if err_frags.is_empty() {
+        StopDecision {
+            main_gone: true,
+            settle: true,
+            exit: 0,
+            out: Some("Watchdog stopped.".to_owned()),
+            err: vec![],
+            audit: "stopped".to_owned(),
+        }
+    } else {
+        refused_decision(session, err_frags, audit_frags, false, true)
+    }
+}
+
+/// Fold `stop`'s readings into one decision: the legacy verdicts, whether the
+/// main daemon runs, the second lookup and the main kill's outcome.
+fn stop_decision(
+    session: &str,
+    legacy: &[watchdog_glue::LegacyReap],
+    main_running: bool,
+    second: Option<&PaneLook>,
+    main: Option<&watchdog_glue::KillOutcome>,
+) -> StopDecision {
+    // Every refused pane, legacy first in reap order. The pane fragments read
+    // the same on err and in the audit; the server-silence fragment does not.
+    let pane_frags = legacy_refusals(session, legacy);
+    let mut err_frags = pane_frags.clone();
+    let mut audit_frags = pane_frags;
+    if !main_running {
+        return if err_frags.is_empty() {
+            let stopped = !legacy.is_empty();
+            StopDecision {
+                main_gone: false,
+                settle: true,
+                exit: 0,
+                out: Some(
+                    if stopped {
+                        "Watchdog stopped."
+                    } else {
+                        "Watchdog is not running."
+                    }
+                    .to_owned(),
+                ),
+                err: vec![],
+                audit: (if stopped { "stopped" } else { "not running" }).to_owned(),
+            }
+        } else {
+            refused_decision(session, &err_frags, &audit_frags, false, false)
+        };
+    }
+    match second {
+        Some(PaneLook::Present(pane)) => {
+            let short = main.and_then(|outcome| {
+                watchdog_glue::refusal_short(outcome, session, Some(AGENT_STAMP))
+            });
+            match (main, short) {
+                (Some(_), Some(short)) => {
+                    let frag = format!("pane {pane} could not be killed ({short})");
+                    err_frags.push(frag.clone());
+                    audit_frags.push(frag);
+                    refused_decision(session, &err_frags, &audit_frags, true, false)
+                }
+                (Some(_), None) => main_gone_decision(session, &err_frags, &audit_frags),
+                // Unreachable: the caller always attempts the kill on
+                // Present. Fail closed.
+                (None, _) => {
+                    let frag = format!("pane {pane} could not be confirmed killed");
+                    err_frags.push(frag.clone());
+                    audit_frags.push(frag);
+                    refused_decision(session, &err_frags, &audit_frags, true, false)
+                }
+            }
+        }
+        Some(PaneLook::Absent) => {
+            let mut decision = main_gone_decision(session, &err_frags, &audit_frags);
+            decision.err.insert(
+                0,
+                format!(
+                    "ae: the watchdog pane of '{session}' was already gone; stopping what remains."
+                ),
+            );
+            decision
+        }
+        // A lookup that never answered, or (unreachable) never ran: one
+        // arm, fail closed.
+        Some(PaneLook::Unanswered) | None => {
+            err_frags
+                .push("its server stopped answering before the pane could be killed".to_owned());
+            audit_frags.push("server stopped answering before the pane could be killed".to_owned());
+            refused_decision(session, &err_frags, &audit_frags, true, false)
+        }
+    }
+}
+
 /// `watchdog stop` — reap, kill the pane, retract the registration and the bar.
 fn stop(
     root: &Path,
@@ -434,49 +664,74 @@ fn stop(
     err: &mut impl Write,
 ) -> crate::Result<u8> {
     let legacy = watchdog_glue::reap_legacy(server, session, meta_dir, err)?;
-    let mut stopped = false;
-    match presence(server, session, meta_dir) {
-        Presence::Running(pid) => {
-            // The daemon is the pane's process: killing the pane kills it.
-            if let PaneLook::Present(pane) = stamped_pane(server, session, AGENT_STAMP) {
-                watchdog_glue::kill_owned_pane(server, &pane, session, Some(AGENT_STAMP), err)?;
-            }
-            let _ = watchdog_glue::clear_pid(meta_dir, pid);
-            // A pane killed by SIGHUP does not run the daemon's own cleanup, so
-            // the bars are retracted here — otherwise a stopped watchdog keeps
-            // asserting a health it is no longer measuring.
-            let _ = watchdog_daemon::clear_published(server, session);
-            stopped = true;
-        }
-        Presence::Unknown => {
-            writeln!(
-                err,
-                "Error: tmux did not answer — the watchdog could not be stopped and may still be running."
-            )?;
-            let outcome = "refused: tmux did not answer";
-            caller.audit(meta_dir, outcome, err);
-            return Ok(EXIT_FAILED);
-        }
-        Presence::Stopped => {}
+    let seen = presence(server, session, meta_dir);
+    if seen == Presence::Unknown {
+        writeln!(
+            err,
+            "Error: tmux did not answer — the watchdog could not be stopped and may still be running."
+        )?;
+        let outcome = "refused: tmux did not answer";
+        caller.audit(meta_dir, outcome, err);
+        return Ok(EXIT_FAILED);
     }
-    // Past the match, so it covers BOTH arms that get here: the daemon this
-    // stop killed, and one that had already died and left its last verdict
-    // standing. Either way nothing measures this session now, and the session
-    // itself is still running — it keeps the launch seed's Stale rank so every
-    // fleet strip and the picker still list it, and its own bar says why. The
-    // unanswerable server returns above rather than reaching this: a watchdog
-    // that may still be running must not be described as absent.
-    let _ = watchdog_daemon::seed_unwatched(server, session, root);
-    let outcome = if stopped || !legacy.is_empty() {
-        writeln!(out, "Watchdog stopped.")?;
-        "stopped"
+    let main_running = matches!(seen, Presence::Running(_));
+    // The main stop is always attempted: each registration follows its own
+    // verdict, and the fold assembles the session facts only when no refusal
+    // stands anywhere. The daemon is the pane's process: killing the pane
+    // kills it.
+    let (second, main) = if main_running {
+        let second = stamped_pane(server, session, AGENT_STAMP);
+        let main = match &second {
+            PaneLook::Present(pane) => Some(watchdog_glue::kill_owned_pane(
+                server,
+                pane,
+                session,
+                Some(AGENT_STAMP),
+                err,
+            )?),
+            PaneLook::Absent | PaneLook::Unanswered => None,
+        };
+        (Some(second), main)
     } else {
-        writeln!(out, "Watchdog is not running.")?;
-        "not running"
+        (None, None)
     };
-    caller.audit(meta_dir, outcome, err);
-    let _ = meta::rewrite(meta_dir, "watchdog", Some("false"));
-    Ok(0)
+    let decision = stop_decision(
+        session,
+        &legacy,
+        main_running,
+        second.as_ref(),
+        main.as_ref(),
+    );
+    if decision.main_gone {
+        if let Presence::Running(pid) = seen {
+            let _ = watchdog_glue::clear_pid(meta_dir, pid);
+        }
+        // A pane killed by SIGHUP does not run the daemon's own cleanup, so
+        // the bars are retracted here — otherwise a stopped watchdog keeps
+        // asserting a health it is no longer measuring.
+        let _ = watchdog_daemon::clear_published(server, session);
+    }
+    for line in &decision.err {
+        writeln!(err, "{line}")?;
+    }
+    // The seed covers every settled arm: the daemon this stop killed, and one
+    // that had already died and left its last verdict standing. Either way
+    // nothing measures this session now, and the session itself is still
+    // running — it keeps the launch seed's Stale rank so every fleet strip
+    // and the picker still list it, and its own bar says why. A refusal or an
+    // unanswerable server never reaches this: a watchdog that may still be
+    // running must not be described as absent.
+    if decision.settle {
+        let _ = watchdog_daemon::seed_unwatched(server, session, root);
+    }
+    if let Some(line) = &decision.out {
+        writeln!(out, "{line}")?;
+    }
+    caller.audit(meta_dir, &decision.audit, err);
+    if decision.settle {
+        let _ = meta::rewrite(meta_dir, "watchdog", Some("false"));
+    }
+    Ok(decision.exit)
 }
 
 /// The argv the watchdog pane runs.

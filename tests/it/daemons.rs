@@ -292,6 +292,223 @@ fn a_stop_from_a_shell_without_a_utf8_locale_still_kills_the_watchdog_pane() {
     );
 }
 
+/// A stop over a refused kill keeps the pidfile and exits 1 (#194). The
+/// linked pane reads as ours in the listing (presence is Running) but as
+/// theirs in the ownership probe, so the kill refuses over a live daemon.
+#[test]
+fn a_stop_over_a_refused_kill_keeps_its_pidfile_and_exits_1() {
+    let scratch = scratch("wdref");
+    require_tmux(&scratch);
+    let socket = socket_of(&scratch);
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let root = scratch.join("home");
+    let meta_dir = plant_session(&root, "ours", &socket);
+    let run = |words: &[&str]| tmux(&socket, &scratch, words);
+    let pane = super::refusal_rig::linked(&run, "ours", "theirs", "ae-monitor", "_watchdog");
+    super::refusal_rig::own(&run, "ours", &root);
+    // The pane's own live pid makes presence Running.
+    let pid = super::refusal_rig::pid_of(&run, &pane);
+    assert!(
+        fs::write(meta_dir.join(".watchdog.pid"), format!("{pid}\n")).is_ok(),
+        "a live pidfile"
+    );
+
+    let (code, out, err) = watchdog(&root, &["stop", "ours"]);
+
+    let panes = tmux(&socket, &scratch, &["list-panes", "-a", "-F", "#{pane_id}"]).1;
+    let events = events_of(&meta_dir);
+    let meta = fs::read_to_string(meta_dir.join("meta")).unwrap_or_default();
+    let (shown, _) = tmux(
+        &socket,
+        &scratch,
+        &["show-options", "-v", "-t", "ours", "@ae_watchdog_status"],
+    );
+    assert_eq!(code, 1, "a refused stop exits 1: {out} {err}");
+    assert!(
+        !out.contains("Watchdog stopped."),
+        "no success over a live daemon: {out}"
+    );
+    assert!(
+        err.contains(&format!("refusing to kill pane {pane}"))
+            && err.contains(&format!("pane {pane} could not be killed")),
+        "both lines name the pane: {err}"
+    );
+    assert!(panes.contains(&pane), "the refused pane is alive: {panes}");
+    assert_eq!(
+        fs::read_to_string(meta_dir.join(".watchdog.pid")).unwrap_or_default(),
+        format!("{pid}\n"),
+        "the pidfile still names the live daemon"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|line| line.contains("watchdog-stop") && line.contains("refused:")),
+        "one refused audit: {events:?}"
+    );
+    assert!(
+        !meta.contains("watchdog=false"),
+        "meta keeps no false flag: {meta}"
+    );
+    assert!(!shown, "no watchdog-off seed over a running daemon");
+}
+
+/// A legacy watchdog the reap found but could not kill counts as refused,
+/// never as stopped (#194). The refused audit AND err name the pane id and
+/// its short reason.
+#[test]
+fn a_stop_with_a_legacy_pane_it_could_not_kill_refuses() {
+    let scratch = scratch("wdlegref");
+    require_tmux(&scratch);
+    let socket = socket_of(&scratch);
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let root = scratch.join("home");
+    let meta_dir = plant_session(&root, "ours", &socket);
+    let run = |words: &[&str]| tmux(&socket, &scratch, words);
+    let pane = super::refusal_rig::linked(&run, "ours", "theirs", "ae-monitor", "_shepherd");
+    // No pidfile: no running main daemon.
+
+    let (code, out, err) = watchdog(&root, &["stop", "ours"]);
+
+    let panes = tmux(&socket, &scratch, &["list-panes", "-a", "-F", "#{pane_id}"]).1;
+    let events = events_of(&meta_dir);
+    assert_eq!(code, 1, "a refused legacy reap exits 1: {out} {err}");
+    assert!(
+        !out.contains("Watchdog stopped."),
+        "a found-but-live legacy is not stopped: {out}"
+    );
+    assert!(
+        err.contains(&pane) && err.contains("it belongs to session"),
+        "err names the pane id and its short reason: {err}"
+    );
+    assert!(
+        events.iter().any(|line| line.contains("watchdog-stop")
+            && line.contains("refused:")
+            && line.contains(&pane)
+            && line.contains("it belongs to session")),
+        "the refused audit names the pane id and its short reason: {events:?}"
+    );
+    assert!(panes.contains(&pane), "the legacy pane is alive: {panes}");
+}
+
+/// I2: a refused legacy kill does not lock out the main stop. Each
+/// registration follows its own verdict (the main pane dies, its pidfile is
+/// cleared), while the session facts wait for zero refusals: exit 1, no
+/// "Watchdog stopped.", no off seed.
+#[test]
+fn a_stop_with_a_refused_legacy_kill_still_stops_a_killable_main() {
+    let scratch = scratch("wdlegmain");
+    require_tmux(&scratch);
+    let socket = socket_of(&scratch);
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let root = scratch.join("home");
+    let meta_dir = plant_session(&root, "ours", &socket);
+    let run = |words: &[&str]| tmux(&socket, &scratch, words);
+    let legacy = super::refusal_rig::linked(&run, "ours", "theirs", "ae-monitor", "_shepherd");
+    super::refusal_rig::own(&run, "ours", &root);
+    // A live main watchdog, built by hand (a lifecycle start would abort on
+    // the refused legacy reap).
+    let (main, pid) = super::refusal_rig::stamped(&run, "ours", "_watchdog");
+    assert!(
+        fs::write(meta_dir.join(".watchdog.pid"), format!("{pid}\n")).is_ok(),
+        "a live pidfile"
+    );
+
+    let (code, out, err) = watchdog(&root, &["stop", "ours"]);
+
+    let panes = tmux(&socket, &scratch, &["list-panes", "-a", "-F", "#{pane_id}"]).1;
+    let events = events_of(&meta_dir);
+    let meta = fs::read_to_string(meta_dir.join("meta")).unwrap_or_default();
+    let (shown, _) = tmux(
+        &socket,
+        &scratch,
+        &["show-options", "-v", "-t", "ours", "@ae_watchdog_status"],
+    );
+    assert_eq!(code, 1, "any refusal exits 1: {out} {err}");
+    assert!(
+        !out.contains("Watchdog stopped."),
+        "no stopped line with a refusal outstanding: {out}"
+    );
+    assert!(
+        !panes.contains(&main),
+        "the killable main pane is gone: {panes}"
+    );
+    assert!(panes.contains(&legacy), "the legacy pane lives: {panes}");
+    assert!(
+        fs::read_to_string(meta_dir.join(".watchdog.pid")).is_err(),
+        "the main pidfile is cleared with its daemon"
+    );
+    assert!(
+        events.iter().any(|line| line.contains("watchdog-stop")
+            && line.contains("refused:")
+            && line.contains(&legacy)),
+        "one refused audit naming the legacy pane: {events:?}"
+    );
+    assert!(
+        !meta.contains("watchdog=false"),
+        "meta keeps no false flag: {meta}"
+    );
+    assert!(!shown, "no watchdog-off seed with a refusal outstanding");
+}
+
+/// Positive control for the no-seed asserts above: in this same rig shape, a
+/// stop that settles DOES publish the watchdog-off seed, so those asserts
+/// would fail on the buggy path.
+#[test]
+fn a_settling_stop_seeds_the_session_it_watched() {
+    let scratch = scratch("wdseedctl");
+    require_tmux(&scratch);
+    let socket = socket_of(&scratch);
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let root = scratch.join("home");
+    let meta_dir = plant_session(&root, "ours", &socket);
+    assert!(
+        tmux(
+            &socket,
+            &scratch,
+            &["new-session", "-d", "-s", "ours", "sleep", "60"]
+        )
+        .0,
+        "the session the watchdog watches"
+    );
+    let run = |words: &[&str]| tmux(&socket, &scratch, words);
+    super::refusal_rig::own(&run, "ours", &root);
+    let (_, pid) = super::refusal_rig::stamped(&run, "ours", "_watchdog");
+    assert!(
+        fs::write(meta_dir.join(".watchdog.pid"), format!("{pid}\n")).is_ok(),
+        "a live pidfile"
+    );
+
+    let (code, out, err) = watchdog(&root, &["stop", "ours"]);
+    assert_eq!(code, 0, "the settling stop: {out} {err}");
+    let (shown, value) = tmux(
+        &socket,
+        &scratch,
+        &[
+            "show-options",
+            "-v",
+            "-t",
+            "ours",
+            ae::tmux::WATCHDOG_STATUS_OPTION,
+        ],
+    );
+    assert!(
+        shown && value.contains("watchdog off"),
+        "the seed is visible: rc={shown} {value:?}"
+    );
+}
+
 /// The audit ledger's lines, oldest first.
 fn events_of(meta_dir: &Path) -> Vec<String> {
     match fs::read_to_string(meta_dir.join("events.jsonl")) {
