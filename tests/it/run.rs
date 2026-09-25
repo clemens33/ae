@@ -2562,9 +2562,58 @@ fn claude_and_grok_contexts_are_byte_identical_with_a_meta_only_launch_id() {
         let resumed_without = rig.plan();
         rig.seat_with_launch_id(tool, id, Some("meta-only-token"));
         let resumed_with = rig.plan();
-        assert_eq!(
-            resumed_with, resumed_without,
-            "a resumed {tool} context must ignore its meta-only launch id"
-        );
+        if tool == "claude" {
+            // The rig plants no transcript, so the resumed arm takes the
+            // fresh-start fallback — and each `--print` mints the id the real
+            // run would record, an illustrative mint that differs per print.
+            // What is pinned here is everything BUT that word: each plan's
+            // own mint is asserted for shape, then normalized away.
+            let without = illustrative_mint(&resumed_without, id);
+            let with = illustrative_mint(&resumed_with, id);
+            assert_eq!(
+                resumed_with.replace(&with, MINT_PLACEHOLDER),
+                resumed_without.replace(&without, MINT_PLACEHOLDER),
+                "a resumed claude context must ignore its meta-only launch id"
+            );
+        } else {
+            // Grok resumes exactly on its recorded id, which is byte-stable.
+            assert_eq!(
+                resumed_with, resumed_without,
+                "a resumed {tool} context must ignore its meta-only launch id"
+            );
+        }
     }
+}
+
+/// The placeholder a normalized plan carries where its own illustrative
+/// mint was, every occurrence.
+const MINT_PLACEHOLDER: &str = "00000000-0000-4000-8000-000000000000";
+
+/// The single illustrative mint a fallback plan carries: exactly one
+/// `--session-id` pair, its value a lowercase uuid, and not the recorded id.
+fn illustrative_mint(plan: &str, recorded: &str) -> String {
+    assert_eq!(
+        plan.matches("\"--session-id\"").count(),
+        1,
+        "one session-id pair: {plan}"
+    );
+    let at = plan
+        .find("\"--session-id\",\"")
+        .unwrap_or_else(|| panic!("a session-id value: {plan}"))
+        + "\"--session-id\",\"".len();
+    let mint = plan[at..]
+        .split('"')
+        .next()
+        .unwrap_or_else(|| panic!("a terminated value: {plan}"));
+    assert!(
+        mint.len() == 36
+            && mint.bytes().enumerate().all(|(at, byte)| {
+                let dash = matches!(at, 8 | 13 | 18 | 23);
+                (dash && byte == b'-')
+                    || (!dash && byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            }),
+        "a lowercase uuid: {mint}"
+    );
+    assert_ne!(mint, recorded, "the mint is not the recorded id");
+    mint.to_owned()
 }
