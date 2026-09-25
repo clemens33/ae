@@ -633,6 +633,22 @@ fn frame(target: &Target, tool: ToolKind, agent_bin: &str) -> (HarnessState, boo
     )
 }
 
+/// Whether two readings of a seat's frame, neither of them `Busy`, let a stop
+/// act under `policy`. An idle box on BOTH is one proof. A seat on its usage
+/// limit draws the vendor's row where a finished turn would sit, so its frame
+/// never reads idle: that row over an EMPTY box on BOTH is the other. One
+/// reading is never enough, because a seat handed work between the two reads
+/// differently the second time. `--stop-unknown` lifts the rest.
+fn may_stop(
+    (first, first_limited): (HarnessState, bool),
+    (second, second_limited): (HarnessState, bool),
+    policy: StopPolicy,
+) -> bool {
+    let proven_idle = first == HarnessState::Idle && second == HarnessState::Idle;
+    let proven_limited = first_limited && second_limited;
+    proven_idle || proven_limited || policy == StopPolicy::Unknown
+}
+
 /// STOP THE SEAT'S TOOL, in place. Runs UNDER the lifecycle lock, BEFORE the
 /// dead proof and before anything durable is written.
 ///
@@ -761,12 +777,7 @@ fn stop_running_tool(
         busy(err)?;
         return Ok(Stop::Refused { transient: true });
     }
-    // A seat on its usage limit draws the vendor's row where a finished turn
-    // would sit, so its frame never reads idle. That row over an EMPTY box,
-    // on both readings, is the other proof a stop may act on.
-    let proven_idle = first == HarnessState::Idle && second == HarnessState::Idle;
-    let proven_limited = first_limited && second_limited;
-    if !proven_idle && !proven_limited && policy == StopPolicy::Proven {
+    if !may_stop((first, first_limited), (second, second_limited), policy) {
         writeln!(
             err,
             "Error: ae cannot read '{}'s frame in pane {} of '{}', so it cannot tell a running \
@@ -2119,6 +2130,33 @@ mod tests {
                 super::limit_proven(&capture, bin, tool),
                 proven,
                 "{bin}\n{capture}"
+            );
+        }
+    }
+
+    /// Each proof must hold on BOTH readings: a seat that reads idle or
+    /// limited once and anything else the second time may have been handed
+    /// work in between. Only `--stop-unknown` stops without a proof.
+    #[test]
+    fn a_stop_acts_only_on_a_proof_both_readings_agree_on() {
+        use super::{HarnessState::Idle, HarnessState::Unknown, StopPolicy};
+        for (first, second, proven) in [
+            ((Idle, false), (Idle, false), true),
+            ((Idle, false), (Unknown, false), false),
+            ((Unknown, false), (Idle, false), false),
+            ((Unknown, true), (Unknown, true), true),
+            ((Unknown, true), (Unknown, false), false),
+            ((Unknown, false), (Unknown, true), false),
+            ((Unknown, false), (Unknown, false), false),
+        ] {
+            assert_eq!(
+                super::may_stop(first, second, StopPolicy::Proven),
+                proven,
+                "{first:?} then {second:?}"
+            );
+            assert!(
+                super::may_stop(first, second, StopPolicy::Unknown),
+                "{first:?} then {second:?} under --stop-unknown"
             );
         }
     }
