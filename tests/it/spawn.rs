@@ -210,6 +210,13 @@ impl Rig {
                 "400",
                 "-y",
                 "40",
+                // The name at creation turns automatic-rename OFF for this
+                // window (tmux(1)), so `windows()` reads one name however the
+                // pane's foreground command changes: a window that started as
+                // `sh` was seen renaming itself to `bash` between two reads
+                // under the shared-process runner (#198).
+                "-n",
+                "main",
                 "-s",
                 &session,
                 "sh",
