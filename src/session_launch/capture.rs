@@ -122,6 +122,19 @@ fn argv(dir: &Path, target: &Target) -> CaptureArgv {
     ])
 }
 
+/// The SECOND spelling of the detached argv: `_auto-reseat <dir> <slot> <key>`,
+/// the leg that moves a seat off its usage limit. `None` for a slot outside the
+/// routing grammar, so the door is never handed a word ae did not judge.
+#[must_use]
+pub(crate) fn auto_reseat_argv(
+    dir: &Path,
+    slot: &str,
+    key: crate::time::Timestamp,
+) -> Option<CaptureArgv> {
+    let _ = (dir, slot, key);
+    None
+}
+
 /// Start one DETACHED capture per target that needs one.
 pub(crate) fn start(dir: &Path, targets: &[Target]) {
     // RESOLVED, never raw: this becomes a detached child's `argv[0]`, and on
@@ -2907,6 +2920,35 @@ mod tests {
             assert!(!is_opencode_session_id(bad), "{bad:?}");
         }
         assert!(is_opencode_session_id("ses_a1B2"));
+    }
+
+    #[test]
+    fn the_auto_reseat_argv_is_fixed_and_only_a_routing_slot_mints_one() {
+        let dir = Path::new("/state/sessions/aedev");
+        let key = crate::time::Timestamp::parse("2026-09-25T10:00:00Z").expect("a key");
+        assert_eq!(
+            auto_reseat_argv(dir, "spawned.3", key).map(|argv| argv.as_args().to_vec()),
+            Some(
+                [
+                    crate::cli::AUTO_RESEAT,
+                    "/state/sessions/aedev",
+                    "spawned.3",
+                    "2026-09-25T10:00:00Z"
+                ]
+                .map(ToOwned::to_owned)
+                .to_vec()
+            )
+        );
+        for bad in [
+            "",
+            "spawned",
+            "spawned.x",
+            "-spawned.3",
+            "spawned.3 main",
+            "lead",
+        ] {
+            assert!(auto_reseat_argv(dir, bad, key).is_none(), "{bad:?}");
+        }
     }
 
     /// One attempt-time capture result via the production snapshot owner.

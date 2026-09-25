@@ -280,6 +280,9 @@ pub struct Observation {
     /// What this seat is still owed by somebody else: requests it SENT that
     /// nobody answered, agents it SPAWNED that still hold a seat.
     pub own_work: crate::session::OwnWork,
+    /// An auto reseat attempt runs for this latched seat inside its bound: the
+    /// shell its respawn leaves is the move, not a death and not a release.
+    pub auto_in_flight: bool,
 }
 
 /// Related facts derived without another pane capture or transcript read.
@@ -4394,6 +4397,53 @@ fn remember_input(
     kept.max(observed).map(|at| (identity, at))
 }
 
+/// One seat whose usage-limit latch stands after this cycle's accounting, as
+/// the auto reseat step reads it.
+#[derive(Debug, Clone)]
+struct AutoSeat {
+    slot: String,
+    agent: String,
+    profile: String,
+    pane: crate::autoreseat::Pane,
+}
+
+/// What the auto reseat step does this cycle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AutoAct {
+    /// Hand `agent` to the trigger.
+    Trigger { agent: String },
+    /// Name why the due seat is not moved, once per episode and reason.
+    Held {
+        slot: String,
+        agent: String,
+        key: Timestamp,
+        reason: crate::autoreseat::HoldReason,
+    },
+    /// Close an attempt that passed its bound with no outcome.
+    Overdue {
+        slot: String,
+        agent: String,
+        key: Timestamp,
+    },
+}
+
+/// The auto reseat step's decisions, PURE: every latched seat the switch
+/// admits is decided by [`crate::autoreseat::decide`], each hold is named once
+/// per episode and reason (`named` is that memory), and at most ONE seat is
+/// triggered — the oldest episode, the slot breaking a tie.
+#[allow(dead_code, reason = "RED stub")]
+fn auto_acts(
+    settings: &crate::autoreseat::Settings,
+    seats: &[AutoSeat],
+    events: &[Event],
+    (session, orchestrator): (&str, bool),
+    now: i64,
+    named: &mut Vec<(String, Timestamp, crate::autoreseat::HoldReason)>,
+) -> Vec<AutoAct> {
+    let _ = (settings, seats, events, session, orchestrator, now, named);
+    Vec::new()
+}
+
 /// Everything one cycle needs that does not change within it.
 struct Cycle<'a> {
     knobs: Knobs,
@@ -5146,6 +5196,7 @@ impl Cycle<'_> {
                 // branch can reach it.
                 sweep: self.sweep_observation(&slot, agent, &events, overview.as_ref(), now),
                 own_work: outstanding.of(Seat::new(self.session, &slot, agent)),
+                auto_in_flight: false,
             };
             let acting = Acting {
                 agent,
@@ -6877,6 +6928,7 @@ mod tests {
             declared_age_secs: 0,
             sweep: None,
             own_work: crate::session::OwnWork::default(),
+            auto_in_flight: false,
         }
     }
 
@@ -12155,6 +12207,212 @@ mod tests {
         assert_eq!(emitted(&named.effects), [("limit", record.as_str())]);
         let notice = format!("hit its vendor usage limit: {cell}");
         assert_eq!(notices(&named.effects), [notice.as_str()]);
+    }
+
+    /// While an auto reseat attempt runs, its respawn leaves a shell where the
+    /// seat's tool was. That shell is the move, not a death and not a cleared
+    /// limit: the verdict stays `limit`, nothing is booked, the latch holds —
+    /// and a limit row still drawn books no second `limit`. Out of flight the
+    /// same frames read as they always have.
+    #[test]
+    fn a_seat_mid_auto_reseat_keeps_its_limit_through_the_shell_the_move_leaves() {
+        let knobs = Knobs::default();
+        let since = seen().now_epoch - 700;
+        let latched = PaneState {
+            identity: Some(seen().identity),
+            limit_since: Some(since),
+            ..PaneState::default()
+        };
+        let shell = Observation {
+            is_dead: true,
+            descendancy: Descendancy::Absent,
+            ..seen()
+        };
+        let row = Observation {
+            throttle: Some(Throttle::LimitReached),
+            ..seen()
+        };
+        for frame in [&shell, &seen(), &row] {
+            let moving = Observation {
+                auto_in_flight: true,
+                ..frame.clone()
+            };
+            let cycle = account(&latched, &moving, &knobs);
+            assert_eq!(cycle.verdict, Verdict::Limit, "{frame:?}");
+            assert!(cycle.effects.is_empty(), "{:?}", cycle.effects);
+            assert_eq!(cycle.next.limit_since, Some(since), "the latch holds");
+            assert!(!cycle.next.dead_latched, "no death latched");
+        }
+        let dead = account(&latched, &shell, &knobs);
+        assert_eq!(dead.verdict, Verdict::Dead);
+        assert_eq!(actions(&dead.effects), ["alert"]);
+        let cleared = account(&latched, &seen(), &knobs);
+        assert_eq!(actions(&cleared.effects), ["alert-cleared"]);
+        assert!(cleared.effects.contains(&Effect::QuotaRefresh));
+    }
+
+    /// The auto reseat step's decisions, one table: nothing while the switch is
+    /// off or the seat is not eligible, ONE trigger a cycle for the oldest due
+    /// episode (the slot breaks a tie), each hold named once per episode and
+    /// reason, and an attempt past its bound closed as overdue.
+    #[test]
+    #[allow(clippy::too_many_lines, reason = "one table of the step's rows")]
+    fn the_auto_reseat_step_triggers_one_due_seat_and_names_each_hold_once() {
+        use super::{AutoAct, AutoSeat, auto_acts};
+        use crate::autoreseat::{
+            ATTEMPT_ACTION, Frame, HoldReason, IN_FLIGHT_SECS, Pane, Settings, Switch,
+        };
+        let record = |at: i64, action: &str, agent: &str, reference: &str| {
+            Event::parse_line(&format!(
+                r#"{{"ts":"{}","actor":"{ACTOR}","action":"{action}","target":"{agent}","ref":"{reference}"}}"#,
+                crate::time::Timestamp::from_epoch(at)
+            ))
+            .expect("a journal line")
+        };
+        let key = |at: i64| crate::time::Timestamp::from_epoch(at);
+        let seat = |slot: &str, agent: &str, frame: Frame| AutoSeat {
+            slot: slot.to_owned(),
+            agent: agent.to_owned(),
+            profile: "sol6x".to_owned(),
+            pane: Pane {
+                frame,
+                human_prompt: false,
+                client_input: None,
+            },
+        };
+        let on = Settings {
+            switch: Switch::On,
+            sessions: Some(vec!["dev".to_owned()]),
+            grace_secs: 0,
+            map: vec![("sol6x".to_owned(), vec!["opus55x".to_owned()])],
+            notes: Vec::new(),
+        };
+        let (one, two) = (
+            seat("spawned.1", "one", Frame::Clear),
+            seat("spawned.2", "two", Frame::Clear),
+        );
+        let both = [one.clone(), two.clone()];
+        let limits = [
+            record(200, "limit", "one", ""),
+            record(100, "limit", "two", ""),
+        ];
+        let acts = |settings: &Settings, seats: &[AutoSeat], events: &[Event], now: i64| {
+            auto_acts(
+                settings,
+                seats,
+                events,
+                ("dev", false),
+                now,
+                &mut Vec::new(),
+            )
+        };
+        let trigger = |agent: &str| {
+            vec![AutoAct::Trigger {
+                agent: agent.to_owned(),
+            }]
+        };
+        assert_eq!(
+            acts(&on, &both, &limits, 300),
+            trigger("two"),
+            "oldest episode"
+        );
+        let tied = [
+            record(100, "limit", "one", ""),
+            record(100, "limit", "two", ""),
+        ];
+        assert_eq!(
+            acts(&on, &both, &tied, 300),
+            trigger("one"),
+            "slot breaks a tie"
+        );
+        let off = Settings {
+            switch: Switch::Off,
+            ..on.clone()
+        };
+        let unmapped = Settings {
+            map: Vec::new(),
+            ..on.clone()
+        };
+        let elsewhere = Settings {
+            sessions: Some(vec!["other".to_owned()]),
+            ..on.clone()
+        };
+        for settings in [&off, &unmapped, &elsewhere] {
+            assert!(
+                acts(settings, &both, &limits, 300).is_empty(),
+                "{settings:?}"
+            );
+        }
+        let main = [seat("main", "one", Frame::Clear)];
+        assert!(
+            acts(&on, &main, &limits, 300).is_empty(),
+            "on moves no main"
+        );
+        let orchestrator = auto_acts(&on, &both, &limits, ("dev", true), 300, &mut Vec::new());
+        assert!(
+            orchestrator.is_empty(),
+            "an orchestrator's seat never moves"
+        );
+        let waiting = Settings {
+            grace_secs: 600,
+            ..on.clone()
+        };
+        assert!(
+            acts(&waiting, &both, &limits, 300).is_empty(),
+            "inside the grace"
+        );
+        // A busy seat is held, and the idle one behind it still triggers.
+        let busy = [seat("spawned.1", "one", Frame::Busy), two.clone()];
+        let held = |reason, at| AutoAct::Held {
+            slot: "spawned.1".to_owned(),
+            agent: "one".to_owned(),
+            key: key(at),
+            reason,
+        };
+        let mut named = Vec::new();
+        let first = auto_acts(&on, &busy, &limits, ("dev", false), 300, &mut named);
+        assert_eq!(
+            first,
+            [held(HoldReason::Busy, 200), trigger("two").remove(0)]
+        );
+        let again = auto_acts(&on, &busy[..1], &limits, ("dev", false), 360, &mut named);
+        assert!(again.is_empty(), "named once: {again:?}");
+        let draft = [seat("spawned.1", "one", Frame::Draft)];
+        let reason = auto_acts(&on, &draft, &limits, ("dev", false), 420, &mut named);
+        assert_eq!(reason, [held(HoldReason::Draft, 200)], "a new reason");
+        let next = [
+            record(200, "limit", "one", ""),
+            record(250, "alert-cleared", "one", ""),
+            record(260, "limit", "one", ""),
+        ];
+        let episode = auto_acts(&on, &busy[..1], &next, ("dev", false), 480, &mut named);
+        assert_eq!(episode, [held(HoldReason::Busy, 260)], "a new episode");
+        // An open attempt: in flight inside its bound, overdue past it.
+        let open = [
+            record(200, "limit", "one", ""),
+            record(210, ATTEMPT_ACTION, "one", &key(200).to_string()),
+        ];
+        let bound = 210 + IN_FLIGHT_SECS;
+        assert!(
+            acts(&on, &busy[..1], &open, bound - 1).is_empty(),
+            "in flight"
+        );
+        assert_eq!(
+            acts(&on, &busy[..1], &open, bound),
+            [AutoAct::Overdue {
+                slot: "spawned.1".to_owned(),
+                agent: "one".to_owned(),
+                key: key(200),
+            }]
+        );
+        let refused = [
+            record(200, "limit", "one", ""),
+            record(210, "auto-reseat-refused", "one", &key(200).to_string()),
+        ];
+        assert!(
+            acts(&on, &[one], &refused, 300).is_empty(),
+            "an ended episode rests"
+        );
     }
 
     /// A limit already showing when the seat declared stays UNDER the

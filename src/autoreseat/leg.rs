@@ -272,6 +272,76 @@ pub(crate) fn run(
     })
 }
 
+/// What the trigger's own fresh reading of the seat's pane proved.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Sight {
+    pub pane: super::Pane,
+    /// The vendor's limit row is drawn in that same capture.
+    pub limited: bool,
+}
+
+/// What the trigger does for one seat.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Plan {
+    /// Nothing, and nothing is written: why, for the trigger's error stream.
+    Decline(String),
+    /// Close the episode keyed `key`: nothing declared is usable.
+    Refuse { key: Timestamp, why: String },
+    /// Open an attempt under `key` and start the leg that moves the seat to `to`.
+    Attempt { key: Timestamp, to: String },
+}
+
+/// Decide the trigger from the records and one fresh sight, by the daemon's
+/// own rule: the seat is eligible, the limit row is drawn, and its episode
+/// decides [`super::Decision::Attempt`] NOW.
+#[allow(dead_code, reason = "RED stub")]
+pub(crate) fn plan(
+    settings: &super::Settings,
+    seat: &Seat<'_>,
+    sight: &Sight,
+    events: &[crate::events::Event],
+    resolves: impl Fn(&str) -> bool,
+    now: Timestamp,
+) -> Plan {
+    let _ = (settings, seat, sight, events, resolves(""), now);
+    Plan::Decline(String::new())
+}
+
+/// Journal the attempt, THEN start the leg: the leg acts only under an attempt
+/// it can read. A leg that could not start closes the attempt at once.
+#[allow(dead_code, reason = "RED stub")]
+fn commit(
+    argv: &Argv,
+    agent: &str,
+    (from, to): (&str, &str),
+    now: Timestamp,
+    spawn: impl FnOnce() -> bool,
+    err: &mut impl Write,
+) -> io::Result<u8> {
+    let _ = (argv, agent, from, to, now, spawn, err);
+    Ok(EXIT_FAILED)
+}
+
+/// `send` under the attempt action: the daemon's trigger. It re-derives the
+/// whole decision under the seat's lock, so a forged call does exactly what the
+/// daemon would do now; anything else declines with one line and writes
+/// nothing.
+///
+/// # Errors
+///
+/// Only a failure to write `err`.
+#[allow(dead_code, reason = "RED stub")]
+pub(crate) fn trigger(
+    dir: &Path,
+    target: &str,
+    own_session: &str,
+    now: Timestamp,
+    err: &mut impl Write,
+) -> io::Result<u8> {
+    let _ = (dir, target, own_session, now, err);
+    Ok(EXIT_FAILED)
+}
+
 /// Close the attempt under `argv`'s key with `(action, summary)`, and say so.
 fn close(
     argv: &Argv,
@@ -465,5 +535,192 @@ mod tests {
                 "{err:?}"
             );
         }
+    }
+
+    /// The trigger decides by the daemon's own rule over its OWN fresh sight:
+    /// anything short of an eligible seat, drawing its limit, due NOW, declines
+    /// and writes nothing; a due seat with nothing usable is refused; otherwise
+    /// one attempt to the first usable candidate.
+    #[test]
+    fn the_trigger_attempts_only_what_the_daemon_would_attempt_now() {
+        use crate::autoreseat::{ATTEMPT_ACTION, Frame, Pane, Settings, Switch};
+        let key = Timestamp::parse(KEY).expect("the key parses");
+        let record = |since: i64, action: &str, reference: &str| {
+            Event::parse_line(&format!(
+                r#"{{"ts":"{}","actor":"watchdog","action":"{action}","target":"scout","ref":"{reference}"}}"#,
+                Timestamp::from_epoch(key.epoch() + since)
+            ))
+            .expect("a well-formed record")
+        };
+        let limit = [record(0, "limit", "")];
+        let open = [record(0, "limit", ""), record(5, ATTEMPT_ACTION, KEY)];
+        let ended = [record(0, "limit", ""), record(5, REFUSED_ACTION, KEY)];
+        let on = |grace_secs| Settings {
+            switch: Switch::On,
+            sessions: None,
+            grace_secs,
+            map: vec![("sol6x".to_owned(), vec!["opus55x".to_owned()])],
+            notes: Vec::new(),
+        };
+        let seat = Seat {
+            session: "aedev",
+            slot: "spawned.3",
+            agent: "scout",
+            profile: "sol6x",
+            orchestrator: false,
+        };
+        let sight = |frame, human_prompt, client_input, limited| Sight {
+            pane: Pane {
+                frame,
+                human_prompt,
+                client_input,
+            },
+            limited,
+        };
+        let clear = sight(Frame::Clear, false, None, true);
+        let now = Timestamp::from_epoch(key.epoch() + 700);
+        let attempt = Plan::Attempt {
+            key,
+            to: "opus55x".to_owned(),
+        };
+        let plan_of = |settings: &Settings, sight: &Sight, events: &[Event]| {
+            plan(settings, &seat, sight, events, |_| true, now)
+        };
+        assert_eq!(plan_of(&on(600), &clear, &limit), attempt);
+        let touched = |ago: i64| sight(Frame::Clear, false, Some(now.epoch() - ago), true);
+        assert_eq!(
+            plan_of(&on(600), &touched(600), &limit),
+            attempt,
+            "input aged out"
+        );
+        assert_eq!(
+            plan_of(&on(0), &touched(1), &limit),
+            attempt,
+            "no grace, no input hold"
+        );
+        let off = Settings {
+            switch: Switch::Off,
+            ..on(600)
+        };
+        let unmapped = Settings {
+            map: Vec::new(),
+            ..on(600)
+        };
+        for (settings, sight, events, why) in [
+            (&off, clear, &limit[..], "off"),
+            (&unmapped, clear, &limit[..], "unmapped"),
+            (
+                &on(600),
+                sight(Frame::Clear, false, None, false),
+                &limit[..],
+                "no limit row",
+            ),
+            (
+                &on(600),
+                sight(Frame::Busy, false, None, true),
+                &limit[..],
+                "busy",
+            ),
+            (
+                &on(600),
+                sight(Frame::Draft, false, None, true),
+                &limit[..],
+                "draft",
+            ),
+            (
+                &on(600),
+                sight(Frame::Unread, false, None, true),
+                &limit[..],
+                "unread",
+            ),
+            (
+                &on(600),
+                sight(Frame::Clear, true, None, true),
+                &limit[..],
+                "human prompt",
+            ),
+            (&on(600), touched(599), &limit[..], "input inside the grace"),
+            (&on(800), clear, &limit[..], "not due"),
+            (&on(600), clear, &open[..], "an attempt is open"),
+            (&on(600), clear, &ended[..], "the episode ended"),
+            (&on(600), clear, &[][..], "no episode"),
+        ] {
+            assert!(
+                matches!(plan_of(settings, &sight, events), Plan::Decline(_)),
+                "{why}"
+            );
+        }
+        assert_eq!(
+            plan(&on(600), &seat, &clear, &limit, |_| false, now),
+            Plan::Refuse {
+                key,
+                why: "refused: no usable candidate: opus55x (not configured here)".to_owned()
+            }
+        );
+    }
+
+    /// The attempt is DURABLE before the leg starts, because the leg acts only
+    /// under an attempt it can read; a leg that could not start closes the
+    /// attempt at once instead of leaving it to age out.
+    #[test]
+    fn the_attempt_is_journaled_before_the_leg_starts_and_a_leg_that_cannot_start_closes_it() {
+        use crate::autoreseat::ATTEMPT_ACTION;
+        let root = Root(std::env::temp_dir().join(format!("ae-leg-commit-{}", std::process::id())));
+        let dir = root.0.join("aedev");
+        assert!(std::fs::create_dir_all(&dir).is_ok(), "a session dir");
+        let argv = Argv {
+            session: "aedev".to_owned(),
+            dir: dir.clone(),
+            slot: "spawned.3".to_owned(),
+            key: Timestamp::parse(KEY).expect("the key parses"),
+        };
+        let journal = || {
+            crate::watchdog_daemon::read_events(&dir)
+                .into_iter()
+                .map(|event| {
+                    (
+                        event.action,
+                        event.reference.unwrap_or_default(),
+                        event.summary.unwrap_or_default(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let now = Timestamp::from_epoch(argv.key.epoch() + 700);
+        let mut before = Vec::new();
+        let mut err = Vec::new();
+        let code = commit(
+            &argv,
+            "scout",
+            ("sol6x", "opus55x"),
+            now,
+            || {
+                before = journal();
+                false
+            },
+            &mut err,
+        );
+        let attempt = (
+            ATTEMPT_ACTION.to_owned(),
+            KEY.to_owned(),
+            "from sol6x to opus55x".to_owned(),
+        );
+        assert_eq!(before, [attempt.clone()], "durable before the start");
+        assert_eq!(code.ok(), Some(EXIT_FAILED));
+        assert_eq!(
+            journal(),
+            [
+                attempt.clone(),
+                (
+                    FAILED_ACTION.to_owned(),
+                    KEY.to_owned(),
+                    "failed: the move could not be started".to_owned()
+                ),
+            ]
+        );
+        let _ = std::fs::remove_file(dir.join(crate::store::EVENTS));
+        let started = commit(&argv, "scout", ("sol6x", "opus55x"), now, || true, &mut err);
+        assert_eq!(started.ok(), Some(0));
+        assert_eq!(journal(), [attempt]);
     }
 }

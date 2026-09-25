@@ -24,6 +24,7 @@ use std::path::Path;
 
 use crate::config::SectionEntry;
 use crate::events::Event;
+use crate::harness_state::HarnessState;
 use crate::quota::Status;
 use crate::time::Timestamp;
 use crate::watchdog::{WATCHDOG_ACTOR, event_is_addressed_to};
@@ -104,6 +105,14 @@ impl Settings {
             .find(|(key, _)| key == profile)
             .map(|(_, list)| list.as_slice())
     }
+}
+
+/// [`settings`] over the text of `file`, already read: the one parser, and the
+/// entry the config fuzz target drives. `file` only names the text in a note.
+#[must_use]
+pub fn settings_in(file: &Path, text: &str) -> Settings {
+    let _ = (file, text);
+    Settings::off(Vec::new())
 }
 
 /// Read the GLOBAL config now. A project overlay never steers spend, and the
@@ -553,6 +562,36 @@ pub fn decide(episode: Option<&Episode>, grace_secs: u64, pane: &Pane, now: i64)
         Frame::Clear => None,
     };
     reason.map_or(Decision::Attempt, Decision::Hold)
+}
+
+/// The frame one capture proves: a read that failed proves nothing, a running
+/// turn is busy, and a human's text in the box is theirs.
+#[must_use]
+pub fn frame_of(read: bool, state: HarnessState, draft: bool) -> Frame {
+    let _ = (read, state, draft);
+    Frame::Clear
+}
+
+/// Whether an attempt of `episode` runs inside its bound while the switch is on.
+#[must_use]
+pub fn in_flight(settings: &Settings, episode: Option<&Episode>, now: i64) -> bool {
+    let _ = (settings, episode, now);
+    false
+}
+
+/// Whether a hold (or, with `overdue`, an overdue failure) is still owed to the
+/// episode keyed `key`, as the journal reads NOW: under the seat's lock, the
+/// last check before the record is written.
+#[must_use]
+pub fn owed(episode: Option<&Episode>, key: Timestamp, overdue: bool, now: i64) -> bool {
+    let _ = (episode, key, overdue, now);
+    true
+}
+
+/// The lock every writer of this path's records takes for `slot`.
+#[must_use]
+pub fn lock_path(dir: &Path, slot: &str) -> std::path::PathBuf {
+    dir.join(format!("auto-reseat.{slot}.lock"))
 }
 
 /// A candidate's standing, best first.
@@ -1378,5 +1417,122 @@ mod tests {
             pick(&[left(vec![reset])]),
             Some(("sol6x".to_owned(), Tier::Unknown))
         );
+    }
+
+    /// A frame is judged in the order a hold is: a read that failed first, then
+    /// a running turn, then a human's draft. A seat on its limit draws the
+    /// vendor's row where a finished turn would sit, so an unrecognised frame
+    /// with an empty box is as clear as an idle one; the move proves its own stop.
+    #[test]
+    fn a_capture_proves_a_clear_frame_only_when_read_and_free_of_turns_and_drafts() {
+        use HarnessState::{Busy, Idle, Unknown};
+        for (read, state, draft, frame) in [
+            (false, Idle, false, Frame::Unread),
+            (false, Busy, true, Frame::Unread),
+            (true, Busy, true, Frame::Busy),
+            (true, Busy, false, Frame::Busy),
+            (true, Idle, true, Frame::Draft),
+            (true, Unknown, true, Frame::Draft),
+            (true, Idle, false, Frame::Clear),
+            (true, Unknown, false, Frame::Clear),
+        ] {
+            assert_eq!(
+                frame_of(read, state, draft),
+                frame,
+                "{read} {state:?} {draft}"
+            );
+        }
+    }
+
+    /// An attempt is in flight from its record until its bound, and only while
+    /// the switch is on: off, the watchdog reads the pane as it always has.
+    #[test]
+    fn an_attempt_is_in_flight_only_inside_its_bound_and_only_while_the_switch_is_on() {
+        let on = with_map(Switch::On);
+        let fold = |events: &[Event]| episode(events, SESSION, SLOT, AGENT);
+        let open = fold(&[limit(), watchdog(600, ATTEMPT_ACTION, Some(KEY))]);
+        let done = fold(&[
+            limit(),
+            watchdog(600, ATTEMPT_ACTION, Some(KEY)),
+            routed(620, DONE_ACTION, "sol6x"),
+        ]);
+        let started = key_epoch() + 600;
+        for (settings, found, now, flying) in [
+            (&on, &open, started, true),
+            (&on, &open, started + IN_FLIGHT_SECS - 1, true),
+            (&on, &open, started + IN_FLIGHT_SECS, false),
+            (&with_map(Switch::Off), &open, started + 1, false),
+            (&on, &done, started + 1, false),
+            (&on, &fold(&[limit()]), started + 1, false),
+            (&on, &None, started + 1, false),
+        ] {
+            assert_eq!(
+                in_flight(settings, found.as_ref(), now),
+                flying,
+                "{found:?} at {now}"
+            );
+        }
+    }
+
+    /// The last check before a hold or an overdue failure is written, under the
+    /// seat's lock: the journal as it reads NOW must still owe it. An attempt
+    /// opened meanwhile owes no hold, one inside its bound owes no failure, and
+    /// an ended episode, or another one, owes nothing.
+    #[test]
+    fn a_hold_or_an_overdue_failure_is_written_only_while_the_journal_still_owes_it() {
+        let key = Timestamp::parse(KEY).expect("the key parses");
+        let other = Timestamp::parse(OTHER_KEY).expect("the key parses");
+        let fold = |events: &[Event]| episode(events, SESSION, SLOT, AGENT);
+        let bare = fold(&[limit()]);
+        let open = fold(&[limit(), watchdog(600, ATTEMPT_ACTION, Some(KEY))]);
+        let ended = fold(&[
+            limit(),
+            watchdog(600, ATTEMPT_ACTION, Some(KEY)),
+            watchdog(610, REFUSED_ACTION, Some(KEY)),
+        ]);
+        let inside = key_epoch() + 600 + IN_FLIGHT_SECS - 1;
+        let past = inside + 1;
+        for (found, at, overdue, now, still) in [
+            (&bare, key, false, past, true),
+            (&bare, key, true, past, false),
+            (&open, key, false, inside, false),
+            (&open, key, true, inside, false),
+            (&open, key, true, past, true),
+            (&ended, key, false, past, false),
+            (&ended, key, true, past, false),
+            (&bare, other, false, past, false),
+            (&None, key, false, past, false),
+        ] {
+            assert_eq!(
+                owed(found.as_ref(), at, overdue, now),
+                still,
+                "{found:?} {at} overdue={overdue} at {now}"
+            );
+        }
+    }
+
+    /// The text entry the config fuzz target drives IS the parser the path read
+    /// uses: over every shape the knobs take, the two agree.
+    #[test]
+    fn the_text_entry_judges_exactly_what_the_path_read_judges() {
+        let file = Scratch(
+            std::env::temp_dir().join(format!("ae-autoreseat-text-{}", std::process::id())),
+        );
+        let path = file.0.as_path();
+        for text in [
+            "",
+            "[workspace]\nauto_reseat = on\n",
+            "[workspace]\nauto_reseat = off\n[auto_reseat]\nsol6x = opus55x\n",
+            "[workspace]\nauto_reseat = maybe\n",
+            "[workspace]\nauto_reseat = all\nauto_reseat_sessions = aedev, bad name, aedev\n\
+             auto_reseat_grace_secs = 0\n[auto_reseat]\nsol6x = opus55x, sol6x, opus55x\n\
+             bad key = x\nfablex =\n",
+            "[workspace]\nauto_reseat = on\nauto_reseat_grace_secs = soon\n",
+            "[workspace]\nauto_reseat = on\n[auto_reseat]\nsol6x = opus55x\nsol6x = astrax\n",
+            "[auto_reseat]\nsol6x = opus55x\n[workspace]\nauto_reseat = on\n",
+        ] {
+            std::fs::write(path, text).expect("write config");
+            assert_eq!(settings_in(path, text), settings(Some(path)), "{text:?}");
+        }
     }
 }
