@@ -273,8 +273,13 @@ fn same_name_noop(
 // so no compatibility migration is needed for readers. Writers serialize on
 // the same two lifecycle locks the rename holds throughout.
 
-/// The intent document version this core writes and reads.
-const INTENT_VERSION: &str = "1";
+/// The intent document versions: `1` carries no witness (local mode, or a
+/// managed intent published before #191 — the legacy shape, still resumable on
+/// the old rule); `2` carries `work_nonce` and nothing else changes. The
+/// version is COUPLED to the key — `2` ⟺ present — so a truncation that drops
+/// the row reads as damage, never as a silent legacy downgrade.
+const INTENT_VERSION_V1: &str = "1";
+const INTENT_VERSION_V2: &str = "2";
 
 /// The most an intent document may be: a hostile file of any length must be
 /// refused rather than parsed into an allocation it sizes.
@@ -389,6 +394,12 @@ pub struct Intent {
     /// preserves it). `0/0` outside git mode.
     admin_dev: u64,
     admin_ino: u64,
+    /// Managed-work nonce witness (#191): the UUID ae wrote into the work
+    /// root as `.ae-rename-witness` on the fresh path. `Some` ⟺ version 2.
+    /// `None` is local mode (no work moves) or a legacy managed intent, which
+    /// stays resumable on the `(device, inode)` rule and is never upgraded
+    /// mid-flight (minting at retry time would bind a replacement).
+    nonce: Option<String>,
 }
 
 impl Intent {
@@ -468,12 +479,13 @@ pub fn parse_intent(data: &[u8]) -> Result<Intent, String> {
         match *key {
             "rename_intent" | "session_id" | "old" | "new" | "mode" | "old_work" | "new_work"
             | "origin" | "server_kind" | "server_value" | "phase" | "work_dev" | "work_ino"
-            | "admin_dev" | "admin_ino" => {}
+            | "admin_dev" | "admin_ino" | "work_nonce" => {}
             _ => return Err(format!("rename intent has an unknown key '{key}'")),
         }
     }
-    if value_of("rename_intent")? != INTENT_VERSION {
-        return Err("rename intent version is not 1".to_owned());
+    let version = value_of("rename_intent")?;
+    if version != INTENT_VERSION_V1 && version != INTENT_VERSION_V2 {
+        return Err("rename intent version is not 1 or 2".to_owned());
     }
     let uuid = value_of("session_id")?;
     if crate::archive::canonical_uuid(&uuid).is_empty() {
@@ -531,14 +543,31 @@ pub fn parse_intent(data: &[u8]) -> Result<Intent, String> {
         witness("admin_dev")?,
         witness("admin_ino")?,
     );
+    let nonce = rows
+        .iter()
+        .find_map(|(key, value)| (*key == "work_nonce").then(|| (*value).to_owned()));
+    if nonce
+        .as_deref()
+        .is_some_and(|nonce| nonce.is_empty() || crate::archive::canonical_uuid(nonce) != nonce)
+    {
+        return Err("rename intent carries a non-canonical work_nonce".to_owned());
+    }
+    // The version is coupled to the key — v2 ⟺ present — so a truncation that
+    // drops the row is damage, never a silent legacy downgrade.
+    if (version == INTENT_VERSION_V2) != nonce.is_some() {
+        return Err("rename intent mismatches its version and its work_nonce".to_owned());
+    }
     // Witness shape follows the mode: local moves nothing, full moves the
-    // work alone, git moves both. A carrier claiming otherwise (including a
-    // managed carrier with a zero fingerprint, or a half fingerprint) is
-    // damage, not a transaction.
+    // work alone, git moves both. A managed carrier without a nonce is the
+    // legacy shape (resumable on the old rule); local never carries one. A
+    // carrier claiming otherwise (including a managed carrier with a zero
+    // fingerprint, or a half fingerprint) is damage, not a transaction.
     let whole = |dev: u64, ino: u64| dev != 0 && ino != 0;
     let empty = |dev: u64, ino: u64| dev == 0 && ino == 0;
     let shaped = match mode {
-        WorkMode::Local => empty(work_dev, work_ino) && empty(admin_dev, admin_ino),
+        WorkMode::Local => {
+            empty(work_dev, work_ino) && empty(admin_dev, admin_ino) && nonce.is_none()
+        }
         WorkMode::Full => whole(work_dev, work_ino) && empty(admin_dev, admin_ino),
         WorkMode::Git => whole(work_dev, work_ino) && whole(admin_dev, admin_ino),
     };
@@ -560,14 +589,21 @@ pub fn parse_intent(data: &[u8]) -> Result<Intent, String> {
         work_ino,
         admin_dev,
         admin_ino,
+        nonce,
     })
 }
 
-/// Render an intent as its canonical document.
+/// Render an intent as its canonical document. The version derives from the
+/// witness: a nonce renders v2 with its row, `None` renders the legacy v1
+/// byte-identical — so advancing a legacy carrier re-records its own shape.
 fn intent_document(intent: &Intent) -> String {
-    format!(
-        "rename_intent={}\nsession_id={}\nold={}\nnew={}\nmode={}\nold_work={}\nnew_work={}\norigin={}\nserver_kind={}\nserver_value={}\nphase={}\nwork_dev={}\nwork_ino={}\nadmin_dev={}\nadmin_ino={}\n",
-        INTENT_VERSION,
+    let version = if intent.nonce.is_some() {
+        INTENT_VERSION_V2
+    } else {
+        INTENT_VERSION_V1
+    };
+    let mut doc = format!(
+        "rename_intent={version}\nsession_id={}\nold={}\nnew={}\nmode={}\nold_work={}\nnew_work={}\norigin={}\nserver_kind={}\nserver_value={}\nphase={}\nwork_dev={}\nwork_ino={}\nadmin_dev={}\nadmin_ino={}\n",
         intent.uuid,
         intent.old,
         intent.new,
@@ -582,7 +618,13 @@ fn intent_document(intent: &Intent) -> String {
         intent.work_ino,
         intent.admin_dev,
         intent.admin_ino,
-    )
+    );
+    if let Some(nonce) = intent.nonce.as_deref() {
+        doc.push_str("work_nonce=");
+        doc.push_str(nonce);
+        doc.push('\n');
+    }
+    doc
 }
 
 /// The intent file for one rename pair: the live carrier a retry reads.
@@ -2741,6 +2783,9 @@ fn stopped_fresh(
         work_ino,
         admin_dev,
         admin_ino,
+        // Legacy shape until the witness write lands: the mint and the file
+        // publish together, never one without the other.
+        nonce: None,
     };
     if let Err(why) = publish_intent(root, &intent) {
         writeln!(err, "Error: {why}. Nothing was renamed.")?;
@@ -3561,6 +3606,80 @@ mod tests {
         );
     }
 
+    /// A known-canonical witness UUID for v2 fixtures (distinct from the
+    /// session id, so a swapped-field mutant cannot hide).
+    const NONCE_UUID: &str = "0199c0de-1234-4890-abcd-ef0123456789";
+
+    /// The v2 shape: the canonical doc with the version coupled to its
+    /// witness row.
+    fn valid_intent_doc_v2() -> String {
+        valid_intent_doc().replace("rename_intent=1\n", "rename_intent=2\n")
+            + &format!("work_nonce={NONCE_UUID}\n")
+    }
+
+    /// I1: each version parses with its own witness shape and re-renders
+    /// byte-identical — v2 with its nonce row, legacy v1 without (resumable on
+    /// the old rule, never upgraded mid-flight).
+    #[test]
+    fn the_intent_version_couples_to_its_nonce() {
+        for (doc, nonce) in [
+            (valid_intent_doc(), None),
+            (valid_intent_doc_v2(), Some(NONCE_UUID)),
+        ] {
+            let intent = parse_intent(doc.as_bytes()).expect("the doc");
+            assert_eq!(intent.nonce.as_deref(), nonce);
+            assert_eq!(intent_document(&intent), doc);
+        }
+    }
+
+    /// I1: the version is coupled to the key — v1 with a row, v2 without its
+    /// row, a malformed nonce and a local nonce are all damage, never a
+    /// silent legacy downgrade.
+    #[test]
+    fn the_version_nonce_coupling_refuses_every_mismatch() {
+        let v1 = valid_intent_doc();
+        let v2 = valid_intent_doc_v2();
+        let local = "rename_intent=1\n\
+            session_id=e795c9e9-1234-4890-abcd-ef0123456789\n\
+            old=sold\nnew=snew\nmode=local\n\
+            old_work=/tmp/ae/project\nnew_work=/tmp/ae/project\n\
+            origin=/tmp/ae/project\nserver_kind=socket\nserver_value=/tmp/ae/sock\n\
+            phase=prepared\nwork_dev=0\nwork_ino=0\nadmin_dev=0\nadmin_ino=0\n";
+        assert!(
+            parse_intent(local.as_bytes())
+                .expect("local v1")
+                .nonce
+                .is_none()
+        );
+        for bad in [
+            v1.clone() + &format!("work_nonce={NONCE_UUID}\n"),
+            v2.replace(&format!("work_nonce={NONCE_UUID}\n"), ""),
+            v2.replace(NONCE_UUID, "not-a-uuid"),
+            v2.replace(NONCE_UUID, ""),
+            local.to_owned() + &format!("work_nonce={NONCE_UUID}\n"),
+            local.replace("rename_intent=1\n", "rename_intent=2\n")
+                + &format!("work_nonce={NONCE_UUID}\n"),
+        ] {
+            assert!(parse_intent(bad.as_bytes()).is_err(), "{bad:?}");
+        }
+    }
+
+    /// F8: advancing a legacy carrier re-records its own v1 shape — the
+    /// recover normalization republishes on every phase correction, and a
+    /// rewrite as v2-without-nonce would fail its own read-back.
+    #[test]
+    fn advancing_a_legacy_carrier_keeps_the_v1_shape() {
+        let root = scratch("legacy-advance");
+        let mut intent = parse_intent(valid_intent_doc().as_bytes()).expect("legacy");
+        advance(&root, &mut intent, PHASE_WORK_MOVED).expect("advance");
+        let back = std::fs::read(intent_path(&root, "sold", "snew")).expect("the carrier");
+        let text = String::from_utf8_lossy(&back);
+        assert!(text.starts_with("rename_intent=1\n"), "{text}");
+        assert!(!text.contains("work_nonce"), "{text}");
+        assert!(text.contains("phase=work-moved\n"), "{text}");
+        assert_eq!(parse_intent(&back).expect("reparse"), intent);
+    }
+
     #[test]
     fn the_intent_validator_refuses_every_non_canonical_shape() {
         let good = valid_intent_doc();
@@ -3600,7 +3719,7 @@ mod tests {
                 "old_work=/tmp/ae/worktrees/sold\n",
                 "old_work=relative/path\n",
             ),
-            mutate("rename_intent", "2"),
+            mutate("rename_intent", "3"),
             mutate("new", "sold"),
             mutate("work_dev", "abc"),
             mutate("admin_ino", "-1"),
@@ -3753,6 +3872,7 @@ mod tests {
             work_ino: 0,
             admin_dev: 0,
             admin_ino: 0,
+            nonce: None,
         };
         let mut err = Vec::new();
         let end = complete_transaction_until(
@@ -3981,6 +4101,7 @@ mod tests {
             work_ino: 0,
             admin_dev: 0,
             admin_ino: 0,
+            nonce: None,
         };
         std::os::unix::fs::symlink("/nonexistent-target-under-test", sessions.join("snew"))
             .unwrap();
