@@ -111,8 +111,17 @@ impl Settings {
 /// entry the config fuzz target drives. `file` only names the text in a note.
 #[must_use]
 pub fn settings_in(file: &Path, text: &str) -> Settings {
-    let _ = (file, text);
-    Settings::off(Vec::new())
+    let read = |key| crate::config::workspace_key_in(file, text, key);
+    match parse_switch(read("auto_reseat")) {
+        Ok(Switch::Off) => Settings::off(Vec::new()),
+        Err(note) => Settings::off(vec![note]),
+        Ok(switch) => settle(
+            switch,
+            read("auto_reseat_sessions"),
+            read("auto_reseat_grace_secs"),
+            crate::config::section_entries(file, text, "auto_reseat"),
+        ),
+    }
 }
 
 /// Read the GLOBAL config now. A project overlay never steers spend, and the
@@ -123,16 +132,10 @@ pub fn settings(global: Option<&Path>) -> Settings {
     let Some(file) = global else {
         return Settings::off(Vec::new());
     };
-    let read = |key| crate::config::read_global_workspace_key(file, key);
-    match parse_switch(read("auto_reseat")) {
-        Ok(Switch::Off) => Settings::off(Vec::new()),
-        Err(note) => Settings::off(vec![note]),
-        Ok(switch) => settle(
-            switch,
-            read("auto_reseat_sessions"),
-            read("auto_reseat_grace_secs"),
-            crate::config::read_global_section(file, "auto_reseat"),
-        ),
+    match crate::config::read_global_text(file) {
+        Ok(Some(text)) => settings_in(file, &text),
+        Ok(None) => Settings::off(Vec::new()),
+        Err(why) => Settings::off(vec![format!("{OFF}{why}")]),
     }
 }
 
@@ -568,15 +571,39 @@ pub fn decide(episode: Option<&Episode>, grace_secs: u64, pane: &Pane, now: i64)
 /// turn is busy, and a human's text in the box is theirs.
 #[must_use]
 pub fn frame_of(read: bool, state: HarnessState, draft: bool) -> Frame {
-    let _ = (read, state, draft);
-    Frame::Clear
+    if !read {
+        Frame::Unread
+    } else if state == HarnessState::Busy {
+        Frame::Busy
+    } else if draft {
+        Frame::Draft
+    } else {
+        Frame::Clear
+    }
 }
 
-/// Whether an attempt of `episode` runs inside its bound while the switch is on.
+/// Whether the seat's episode in `events` has an attempt running inside its
+/// bound. Off, nothing is folded and nothing is in flight.
 #[must_use]
-pub fn in_flight(settings: &Settings, episode: Option<&Episode>, now: i64) -> bool {
-    let _ = (settings, episode, now);
-    false
+pub fn in_flight(
+    settings: &Settings,
+    events: &[Event],
+    (session, slot, agent): (&str, &str, &str),
+    now: i64,
+) -> bool {
+    // The attempt is judged before the pane, so no pane is read into it.
+    let unread = Pane {
+        frame: Frame::Unread,
+        human_prompt: false,
+        client_input: None,
+    };
+    settings.switch != Switch::Off
+        && decide(
+            episode(events, session, slot, agent).as_ref(),
+            settings.grace_secs,
+            &unread,
+            now,
+        ) == Decision::InFlight
 }
 
 /// Whether a hold (or, with `overdue`, an overdue failure) is still owed to the
@@ -584,11 +611,17 @@ pub fn in_flight(settings: &Settings, episode: Option<&Episode>, now: i64) -> bo
 /// last check before the record is written.
 #[must_use]
 pub fn owed(episode: Option<&Episode>, key: Timestamp, overdue: bool, now: i64) -> bool {
-    let _ = (episode, key, overdue, now);
-    true
+    episode
+        .filter(|found| found.key == key && found.terminal.is_none())
+        .is_some_and(|found| match found.open {
+            None => !overdue,
+            Some(started) => overdue && now.saturating_sub(started.epoch()) >= IN_FLIGHT_SECS,
+        })
 }
 
-/// The lock every writer of this path's records takes for `slot`.
+/// The lock every writer of this path's records takes for `slot`, without
+/// waiting: a writer that finds it held skips, and the next cycle asks again.
+/// It is taken BEFORE the journal is re-read and appended to, never after.
 #[must_use]
 pub fn lock_path(dir: &Path, slot: &str) -> std::path::PathBuf {
     dir.join(format!("auto-reseat.{slot}.lock"))
@@ -1449,27 +1482,26 @@ mod tests {
     #[test]
     fn an_attempt_is_in_flight_only_inside_its_bound_and_only_while_the_switch_is_on() {
         let on = with_map(Switch::On);
-        let fold = |events: &[Event]| episode(events, SESSION, SLOT, AGENT);
-        let open = fold(&[limit(), watchdog(600, ATTEMPT_ACTION, Some(KEY))]);
-        let done = fold(&[
+        let open = [limit(), watchdog(600, ATTEMPT_ACTION, Some(KEY))];
+        let done = [
             limit(),
             watchdog(600, ATTEMPT_ACTION, Some(KEY)),
             routed(620, DONE_ACTION, "sol6x"),
-        ]);
+        ];
         let started = key_epoch() + 600;
-        for (settings, found, now, flying) in [
-            (&on, &open, started, true),
-            (&on, &open, started + IN_FLIGHT_SECS - 1, true),
-            (&on, &open, started + IN_FLIGHT_SECS, false),
-            (&with_map(Switch::Off), &open, started + 1, false),
-            (&on, &done, started + 1, false),
-            (&on, &fold(&[limit()]), started + 1, false),
-            (&on, &None, started + 1, false),
+        for (settings, events, now, flying) in [
+            (&on, &open[..], started, true),
+            (&on, &open[..], started + IN_FLIGHT_SECS - 1, true),
+            (&on, &open[..], started + IN_FLIGHT_SECS, false),
+            (&with_map(Switch::Off), &open[..], started + 1, false),
+            (&on, &done[..], started + 1, false),
+            (&on, &[limit()][..], started + 1, false),
+            (&on, &[][..], started + 1, false),
         ] {
             assert_eq!(
-                in_flight(settings, found.as_ref(), now),
+                in_flight(settings, events, (SESSION, SLOT, AGENT), now),
                 flying,
-                "{found:?} at {now}"
+                "{events:?} at {now}"
             );
         }
     }

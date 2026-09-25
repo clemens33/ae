@@ -1753,18 +1753,40 @@ pub fn read_workspace_keys(
 /// The selected file could not be read, or an explicit occurrence of `key`
 /// does not use the shared config entry grammar.
 pub fn read_global_workspace_key(file: &Path, key: &str) -> Result<Option<String>, String> {
+    match read_global_text(file)? {
+        Some(text) => workspace_key_in(file, &text, key),
+        None => Ok(None),
+    }
+}
+
+/// The global config's text, or `None` when there is no file.
+///
+/// # Errors
+///
+/// The file exists and could not be read.
+pub fn read_global_text(file: &Path) -> Result<Option<String>, String> {
     #[allow(
         clippy::disallowed_methods,
         reason = "a door: reads the same selected global INI config as the frozen config parser — see clippy.toml"
     )]
-    let text = match std::fs::read_to_string(file) {
-        Ok(text) => text,
-        Err(why) if why.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(why) => return Err(format!("could not read global config: {why}")),
-    };
+    let read = std::fs::read_to_string(file);
+    match read {
+        Ok(text) => Ok(Some(text)),
+        Err(why) if why.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(why) => Err(format!("could not read global config: {why}")),
+    }
+}
+
+/// [`read_global_workspace_key`] over text already read; `file` names it in a
+/// refusal.
+///
+/// # Errors
+///
+/// An explicit occurrence of `key` does not use the shared entry grammar.
+pub fn workspace_key_in(file: &Path, text: &str, key: &str) -> Result<Option<String>, String> {
     let mut section = String::new();
     let mut found = None;
-    for item in config_lines(file, &text) {
+    for item in config_lines(file, text) {
         let ConfigLine::Plain(_, raw) = item.map_err(|why| why.to_string())? else {
             continue;
         };
@@ -1855,20 +1877,14 @@ pub struct SectionEntry {
     pub line: usize,
 }
 
-/// Every entry of the GLOBAL `[section]`, in file order, through the bounded
-/// config door. A commented-out entry claims nothing; the caller judges each
-/// key and value, so nothing here is dropped silently.
+/// Every entry of `[section]` in config text already read, in file order. A
+/// commented-out entry claims nothing; the caller judges each key and value,
+/// so nothing here is dropped silently. `file` names the text in a refusal.
 ///
 /// # Errors
 ///
-/// The file could not be read as config text.
-pub fn read_global_section(file: &Path, section: &str) -> Result<Vec<SectionEntry>, String> {
-    let text = read_selected(file).map_err(|why| why.to_string())?;
-    section_entries(file, &text, section)
-}
-
-/// [`read_global_section`] over text already read.
-fn section_entries(file: &Path, text: &str, wanted: &str) -> Result<Vec<SectionEntry>, String> {
+/// The text is not config text.
+pub fn section_entries(file: &Path, text: &str, wanted: &str) -> Result<Vec<SectionEntry>, String> {
     let mut section = String::new();
     let mut entries = Vec::new();
     for item in config_lines(file, text) {
@@ -2064,12 +2080,10 @@ mod tests {
     /// sections claiming nothing — so the caller can judge and name each row.
     #[test]
     fn a_global_section_is_read_entry_by_entry_as_written() {
-        let file = NamedTemp::new(
-            "section",
-            "[workspace]\nsol6x = elsewhere\n[auto_reseat]\n# fable = off\nsol6x = opus55x, spark13cm\n\
-             bad key = x\nempty =\nquoted = \"a, b\"\n[profiles]\nsol6x = codex\n[auto_reseat]\nlate = y\n",
-        );
-        let entries = read_global_section(file.path(), "auto_reseat").expect("readable");
+        let text = "[workspace]\nsol6x = elsewhere\n[auto_reseat]\n# fable = off\nsol6x = opus55x, spark13cm\n\
+             bad key = x\nempty =\nquoted = \"a, b\"\n[profiles]\nsol6x = codex\n[auto_reseat]\nlate = y\n";
+        let file = Path::new("config");
+        let entries = section_entries(file, text, "auto_reseat").expect("readable");
         let rows: Vec<(&str, Option<&str>, usize)> = entries
             .iter()
             .map(|entry| (entry.key.as_str(), entry.value.as_deref(), entry.line))
@@ -2084,11 +2098,7 @@ mod tests {
                 ("late", Some("y"), 12),
             ]
         );
-        assert_eq!(
-            read_global_section(file.path(), "absent").expect("readable"),
-            []
-        );
-        assert!(read_global_section(Path::new("/nonexistent/ae-config"), "auto_reseat").is_err());
+        assert_eq!(section_entries(file, text, "absent").expect("readable"), []);
     }
 
     /// PIN: a typo costs the human their entry, never their status line. An

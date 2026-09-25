@@ -16,7 +16,8 @@ use crate::tracked::EventFields;
 use crate::watchdog::WATCHDOG_ACTOR;
 
 use super::{
-    Candidate, DONE_ACTION, FAILED_ACTION, HELD_ACTION, Ineligible, REFUSED_ACTION, Seat, Skip,
+    ATTEMPT_ACTION, Candidate, DONE_ACTION, FAILED_ACTION, HELD_ACTION, Ineligible, REFUSED_ACTION,
+    Seat, Skip,
 };
 
 /// The usage line.
@@ -236,12 +237,7 @@ pub(crate) fn run(
     let judged = candidates(list, |to| crate::reseat::resolves(dir, to), &left);
     let choice = super::choose(&judged, now.epoch());
     let Some((pick, _)) = choice.pick else {
-        let skipped: Vec<String> = choice
-            .skipped
-            .iter()
-            .map(|(to, skip)| format!("{to} ({})", skip_word(*skip)))
-            .collect();
-        let why = format!("refused: no usable candidate: {}", skipped.join(", "));
+        let why = no_candidate(&choice.skipped);
         return close(&argv, &agent, now, (REFUSED_ACTION, &why), err);
     };
     let (_, world) = crate::current_world(root);
@@ -294,7 +290,6 @@ pub(crate) enum Plan {
 /// Decide the trigger from the records and one fresh sight, by the daemon's
 /// own rule: the seat is eligible, the limit row is drawn, and its episode
 /// decides [`super::Decision::Attempt`] NOW.
-#[allow(dead_code, reason = "RED stub")]
 pub(crate) fn plan(
     settings: &super::Settings,
     seat: &Seat<'_>,
@@ -303,13 +298,45 @@ pub(crate) fn plan(
     resolves: impl Fn(&str) -> bool,
     now: Timestamp,
 ) -> Plan {
-    let _ = (settings, seat, sight, events, resolves(""), now);
-    Plan::Decline(String::new())
+    let list = match super::eligible(settings, seat) {
+        Ok(list) => list,
+        Err(why) => return Plan::Decline(format!("not eligible ({why:?})")),
+    };
+    if !sight.limited {
+        return Plan::Decline("no usage limit is drawn".to_owned());
+    }
+    let found = super::episode(events, seat.session, seat.slot, seat.agent);
+    let decision = super::decide(
+        found.as_ref(),
+        settings.grace_secs,
+        &sight.pane,
+        now.epoch(),
+    );
+    let (Some(found), super::Decision::Attempt) = (found, decision) else {
+        return Plan::Decline(format!("not due ({decision:?})"));
+    };
+    let left = super::left_profiles(events, seat.session, seat.slot, seat.agent);
+    let choice = super::choose(&candidates(list, resolves, &left), now.epoch());
+    match choice.pick {
+        Some((to, _)) => Plan::Attempt { key: found.key, to },
+        None => Plan::Refuse {
+            key: found.key,
+            why: no_candidate(&choice.skipped),
+        },
+    }
+}
+
+/// The refusal that names each declared candidate passed over, and why.
+fn no_candidate(skipped: &[(String, Skip)]) -> String {
+    let named: Vec<String> = skipped
+        .iter()
+        .map(|(to, skip)| format!("{to} ({})", skip_word(*skip)))
+        .collect();
+    format!("refused: no usable candidate: {}", named.join(", "))
 }
 
 /// Journal the attempt, THEN start the leg: the leg acts only under an attempt
 /// it can read. A leg that could not start closes the attempt at once.
-#[allow(dead_code, reason = "RED stub")]
 fn commit(
     argv: &Argv,
     agent: &str,
@@ -318,8 +345,20 @@ fn commit(
     spawn: impl FnOnce() -> bool,
     err: &mut impl Write,
 ) -> io::Result<u8> {
-    let _ = (argv, agent, from, to, now, spawn, err);
-    Ok(EXIT_FAILED)
+    let key = argv.key.to_string();
+    record(
+        argv,
+        agent,
+        now,
+        ATTEMPT_ACTION,
+        &key,
+        &format!("from {from} to {to}"),
+    );
+    if spawn() {
+        return Ok(0);
+    }
+    let why = "failed: the move could not be started";
+    close(argv, agent, now, (FAILED_ACTION, why), err)
 }
 
 /// `send` under the attempt action: the daemon's trigger. It re-derives the
@@ -330,7 +369,6 @@ fn commit(
 /// # Errors
 ///
 /// Only a failure to write `err`.
-#[allow(dead_code, reason = "RED stub")]
 pub(crate) fn trigger(
     dir: &Path,
     target: &str,
@@ -338,8 +376,83 @@ pub(crate) fn trigger(
     now: Timestamp,
     err: &mut impl Write,
 ) -> io::Result<u8> {
-    let _ = (dir, target, own_session, now, err);
-    Ok(EXIT_FAILED)
+    let decline = |err: &mut dyn Write, why: &str| -> io::Result<u8> {
+        writeln!(err, "ae: auto reseat: {target} declined: {why}")?;
+        Ok(EXIT_FAILED)
+    };
+    let (resolved, server) = match crate::tracked::resolve_on(target, own_session, dir) {
+        Ok(found) if found.0.session == own_session && !found.0.slot.is_empty() => found,
+        _ => return decline(err, "not a seat of this session"),
+    };
+    let slot = resolved.slot.as_str();
+    let Ok(_held) = crate::store::lock(&super::lock_path(dir, slot), std::time::Duration::ZERO)
+    else {
+        return decline(err, "another writer holds the seat");
+    };
+    let bytes = crate::meta::read_bytes(dir).unwrap_or_default();
+    let meta = crate::meta::Meta::parse(&String::from_utf8_lossy(&bytes));
+    let Some(row) = meta.roster().iter().find(|row| row.slot == slot) else {
+        return decline(err, "no seat at its slot");
+    };
+    let bin = row.binary.clone().unwrap_or_default();
+    let tool = crate::tool::ToolKind::from_binary_name(&bin);
+    let capture = crate::transport::capture_pane(&server, &resolved.pane);
+    let text = capture.as_deref().unwrap_or_default();
+    let clients = crate::transport::observe_clients(&server);
+    let input = crate::watchdog_daemon::viewing_input(clients.as_deref(), &resolved.pane);
+    let sight = Sight {
+        pane: super::Pane {
+            frame: super::frame_of(
+                capture.is_some(),
+                crate::harness_state::classify(text, tool),
+                crate::harness_state::has_human_draft(text, tool),
+            ),
+            human_prompt: crate::watchdog::human_prompt_class(text, &bin).is_some(),
+            client_input: input.and_then(|at| i64::try_from(at).ok()),
+        },
+        limited: crate::watchdog::limit_notice(text, &bin).is_some(),
+    };
+    let config =
+        crate::state_root().map(|root| crate::doors::config_file(crate::shape::current(), &root));
+    let profile = row.profile.clone().unwrap_or_default();
+    let seat = Seat {
+        session: own_session,
+        slot,
+        agent: &row.name,
+        profile: &profile,
+        orchestrator: crate::meta::meta_agent_role(&bytes) == crate::meta::MetaAgentRole::Role,
+    };
+    let events = crate::watchdog_daemon::read_events(dir);
+    let usable = |to: &str| crate::reseat::resolves(dir, to);
+    let argv = |key| Argv {
+        session: own_session.to_owned(),
+        dir: dir.to_path_buf(),
+        slot: slot.to_owned(),
+        key,
+    };
+    match plan(
+        &super::settings(config.as_deref()),
+        &seat,
+        &sight,
+        &events,
+        usable,
+        now,
+    ) {
+        Plan::Decline(why) => decline(err, &why),
+        Plan::Refuse { key, why } => close(&argv(key), &row.name, now, (REFUSED_ACTION, &why), err),
+        Plan::Attempt { key, to } => {
+            let exe = crate::shape::resolved_exe();
+            let leg = crate::session_launch::capture::auto_reseat_argv(dir, slot, key);
+            // No core path, no argv (unreachable here: eligibility asked the
+            // same slot grammar) and a refused spawn are one failure: the
+            // attempt is journaled, then closed `failed`, and the verb exits 1.
+            let spawn = || {
+                exe.zip(leg)
+                    .is_some_and(|(exe, leg)| crate::transport::spawn_detached(&exe, &leg))
+            };
+            commit(&argv(key), &row.name, (&profile, &to), now, spawn, err)
+        }
+    }
 }
 
 /// Close the attempt under `argv`'s key with `(action, summary)`, and say so.
@@ -542,6 +655,10 @@ mod tests {
     /// and writes nothing; a due seat with nothing usable is refused; otherwise
     /// one attempt to the first usable candidate.
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one table of trigger rows against one seat, read top to bottom"
+    )]
     fn the_trigger_attempts_only_what_the_daemon_would_attempt_now() {
         use crate::autoreseat::{ATTEMPT_ACTION, Frame, Pane, Settings, Switch};
         let key = Timestamp::parse(KEY).expect("the key parses");
@@ -705,7 +822,11 @@ mod tests {
             KEY.to_owned(),
             "from sol6x to opus55x".to_owned(),
         );
-        assert_eq!(before, [attempt.clone()], "durable before the start");
+        assert_eq!(
+            before,
+            std::slice::from_ref(&attempt),
+            "durable before the start"
+        );
         assert_eq!(code.ok(), Some(EXIT_FAILED));
         assert_eq!(
             journal(),

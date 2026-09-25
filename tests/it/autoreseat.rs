@@ -328,7 +328,7 @@ fn a_switch_turned_off_between_the_legs_holds_and_the_retry_moves_once_it_is_on(
 }
 
 /// How long one live daemon run may take before the pin fails rather than hangs.
-const BUDGET: Duration = Duration::from_secs(60);
+const BUDGET: Duration = Duration::from_mins(1);
 
 /// The global config that turns the path on with no grace, so a seat is due at
 /// its limit's first sight.
@@ -365,7 +365,9 @@ fn watch_until(rig: &Rig, done: impl Fn() -> bool) -> bool {
     if let Ok(log) = log {
         runner.stderr(log);
     }
-    let _daemon = runner.spawn().expect("the daemon starts");
+    let _daemon = runner
+        .spawn()
+        .unwrap_or_else(|why| panic!("the daemon should start: {why}"));
     let deadline = Instant::now() + BUDGET;
     while Instant::now() < deadline {
         if done() {
@@ -584,7 +586,8 @@ fn a_forged_trigger_moves_nothing_the_watchdog_would_not() {
 /// The seat's lock, which every writer of the auto path takes first.
 fn hold_seat_lock(rig: &Rig) -> std::fs::File {
     let lock = rig.dir.join("auto-reseat.spawned.0.lock");
-    ae::store::lock(&lock, Duration::ZERO).expect("the test holds the seat's lock")
+    ae::store::lock(&lock, Duration::ZERO)
+        .unwrap_or_else(|why| panic!("the test should hold the seat's lock: {why}"))
 }
 
 /// The trigger writes nothing while another writer holds the seat, and does

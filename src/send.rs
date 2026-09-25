@@ -264,7 +264,7 @@ fn is_brief_retry(env: &Env) -> bool {
 )]
 #[allow(
     clippy::too_many_lines,
-    reason = "the helper's straight-line order, one step per paragraph; the brief-retry leg is a single branch at its head"
+    reason = "the helper's straight-line order, one step per paragraph; the brief-retry leg and the auto reseat trigger are single branches at its head"
 )]
 pub fn run(
     dir: &Path,
@@ -284,6 +284,11 @@ pub fn run(
     };
     if is_brief_retry(env) {
         return crate::brief_retry::run(dir, &parsed.target, own_session, now, out, err);
+    }
+    // The auto reseat trigger, answered here for the brief retry's reason: the
+    // action selects the trigger, which re-derives every fact it acts on.
+    if env.action.as_deref() == Some(crate::autoreseat::ATTEMPT_ACTION) {
+        return crate::autoreseat::leg::trigger(dir, &parsed.target, own_session, now, err);
     }
     if tracked::is_blank(&parsed.message) {
         write!(err, "{}", tracked::refusal(ACTION))?;

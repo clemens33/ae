@@ -57,8 +57,8 @@ pub(crate) struct Target {
     pub(crate) pane: String,
 }
 
-/// A capture argv minted ONLY by [`argv`], so the detached process door cannot
-/// be handed an arbitrary command line.
+/// A detached argv minted ONLY by [`argv`] and [`auto_reseat_argv`], so the
+/// detached process door cannot be handed an arbitrary command line.
 pub struct CaptureArgv(Vec<String>);
 
 impl CaptureArgv {
@@ -131,8 +131,14 @@ pub(crate) fn auto_reseat_argv(
     slot: &str,
     key: crate::time::Timestamp,
 ) -> Option<CaptureArgv> {
-    let _ = (dir, slot, key);
-    None
+    crate::requests::is_slot(slot).then(|| {
+        CaptureArgv(vec![
+            crate::cli::AUTO_RESEAT.to_owned(),
+            dir.display().to_string(),
+            slot.to_owned(),
+            key.to_string(),
+        ])
+    })
 }
 
 /// Start one DETACHED capture per target that needs one.
