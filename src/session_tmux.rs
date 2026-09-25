@@ -906,7 +906,7 @@ fn key_entries(argv: &[TmuxArgv]) -> (Vec<ExpectedBinding>, KeyPairs) {
                 // their entries are matched exactly; everything else keeps the
                 // launcher/presence rules above.
                 let exact_command =
-                    (table.starts_with("copy-mode") && !names_launcher).then(|| command);
+                    (table.starts_with("copy-mode") && !names_launcher).then_some(command);
                 bound.push(ExpectedBinding {
                     table: table.clone(),
                     key: key.clone(),
