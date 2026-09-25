@@ -3383,7 +3383,7 @@ mod tests {
         // launches unnamed instead.
         let mint = Some("0199c0de-aaaa-4890-abcd-ef0123456789");
         let gone = "0199c0de-1234-4890-abcd-ef0123456789";
-        for (tag, agent, tool, launch, read, minted) in [
+        for (tag, agent, tool, launch, read, minted, extra) in [
             (
                 "agent",
                 "hand",
@@ -3391,6 +3391,7 @@ mod tests {
                 "L1",
                 gone,
                 mint,
+                "",
             ),
             (
                 "tool",
@@ -3399,6 +3400,7 @@ mod tests {
                 "L1",
                 gone,
                 mint,
+                "",
             ),
             (
                 "launch",
@@ -3407,6 +3409,7 @@ mod tests {
                 "L2",
                 gone,
                 mint,
+                "",
             ),
             (
                 "read",
@@ -3415,6 +3418,7 @@ mod tests {
                 "L1",
                 "0199c0de-ffff-4890-abcd-ef0123456789",
                 mint,
+                "",
             ),
             (
                 "mint-bad",
@@ -3423,6 +3427,7 @@ mod tests {
                 "L1",
                 gone,
                 Some("not-a-uuid"),
+                "",
             ),
             (
                 "mint-pending",
@@ -3431,6 +3436,7 @@ mod tests {
                 "L1",
                 gone,
                 Some("pending"),
+                "",
             ),
             (
                 "mint-empty",
@@ -3439,6 +3445,7 @@ mod tests {
                 "L1",
                 gone,
                 Some(""),
+                "",
             ),
             (
                 "no-launch",
@@ -3447,13 +3454,23 @@ mod tests {
                 "",
                 gone,
                 mint,
+                "",
+            ),
+            (
+                "dup-launch",
+                "lead",
+                crate::tool::ToolKind::Claude,
+                "L1",
+                gone,
+                mint,
+                "launch_id.main=L1\n",
             ),
         ] {
             let dir =
                 std::env::temp_dir().join(format!("ae-meta-guard-{tag}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).expect("scratch");
-            fallback_meta(&dir, "claude", "L1", gone, "");
+            fallback_meta(&dir, "claude", "L1", gone, extra);
             let before = std::fs::read_to_string(dir.join("meta")).unwrap();
             let refused =
                 super::record_fallback_fresh(&dir, "main", agent, tool, launch, read, minted);
