@@ -1325,6 +1325,30 @@ mod tests {
         }
     }
 
+    /// The rule above is WIRED: `spawn` itself puts `-u` in front of a tmux
+    /// leg's words. A fake `tmux` first on the child's PATH echoes its argv.
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test: plants and removes its own fake tmux"
+    )]
+    fn spawn_hands_a_captured_tmux_leg_u_before_its_words() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = std::env::temp_dir().join(format!("ae-transport-u-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("the scratch dir");
+        let fake = dir.join(PROGRAM);
+        std::fs::write(&fake, "#!/bin/sh\nprintf '%s\\n' \"$@\"\n").expect("the fake tmux");
+        let mode = std::fs::Permissions::from_mode(0o755);
+        std::fs::set_permissions(&fake, mode).expect("the fake tmux is executable");
+        let path = dir.display().to_string();
+        let envs = [("PATH", path.as_str())];
+        let output = spawn(PROGRAM, &["list-sessions"], &envs, Streams::Captured, None);
+        let _ = std::fs::remove_dir_all(&dir);
+        let stdout = output.expect("the fake tmux ran").stdout;
+        assert_eq!(String::from_utf8_lossy(&stdout), "-u\nlist-sessions\n");
+    }
+
     #[test]
     #[allow(
         clippy::disallowed_methods,
