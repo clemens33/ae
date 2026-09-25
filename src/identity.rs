@@ -2224,6 +2224,36 @@ mod tests {
         assert!(!scratch.meta().contains("work_dir."), "{}", scratch.meta());
     }
 
+    // #197.5: the kill-first retire PROVES a slot before the kill. When the
+    // name is retired and re-spawned under the same name in between, the
+    // removal must not follow the name onto the successor's slot.
+    #[test]
+    fn a_removal_that_follows_a_moved_name_does_not_take_the_successor() {
+        let scratch = local_core_dirs("moved-name");
+        let target = scratch.dir().join("repo");
+        std::fs::create_dir(&target).unwrap();
+        let state = scratch.dir().join("state");
+        let proven =
+            add_explicit(&scratch, "scout", &target, Some(state.as_path())).expect("a seat");
+        assert_eq!(
+            super::prove_removable(scratch.dir(), "scout").expect("a proven seat"),
+            proven
+        );
+        // Retired and re-spawned under the same name: every row moved to a new
+        // slot while the proof still names the old one.
+        let moved = scratch.meta().replace(&proven, "spawned.9");
+        super::publish(scratch.dir(), &moved).expect("the moved meta");
+
+        let removal = super::remove_seat_slot(scratch.dir(), "scout");
+        assert!(
+            removal.is_err(),
+            "the removal followed the name onto the successor: {removal:?}"
+        );
+        let kept = scratch.meta();
+        assert!(kept.contains("seat.spawned.9=scout"), "{kept}");
+        assert!(kept.contains("work_dir.spawned.9="), "{kept}");
+    }
+
     // B2-spawn U8: managed/legacy refuses atomically, record order kept.
     #[test]
     fn core_refuses_managed_without_a_partial_seat() {
