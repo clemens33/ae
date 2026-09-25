@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.173] - 2026-09-25
+- Read the transient throttle only from the tool's own error row (#193)
+- Document the transient throttle's own-row rule (#193)
+- Name the transient throttle's own row in AGENTS.md (#193)
+- Pin every tmux format literal in src against control bytes (#195)
+- Skip char literals by their proven span, not three bytes (#195)
+- Name the tree-wide format pin in the tmux-format invariant (#195)
+
 ## [v2026.9.172] - 2026-09-25
 - Start every tmux client ae reads as UTF-8 (#187)
 - Split the pane owner reading at its last field separator (#187)
