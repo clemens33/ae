@@ -224,6 +224,8 @@ pub struct Git {
     pub head: String,
     /// Whether the tree has tracked modifications.
     pub dirty: bool,
+    /// The tracked paths git names as changed, as git wrote them.
+    pub changed: Vec<String>,
     /// The last commit subjects, newest first.
     pub subjects: Vec<String>,
     /// The nearest tag reachable from HEAD.
@@ -1250,6 +1252,7 @@ mod tests {
                 branch: Some("main".to_owned()),
                 head: "0123456789abcdef0123456789abcdef01234567".to_owned(),
                 dirty: false,
+                changed: Vec::new(),
                 subjects: vec!["land the pack".to_owned()],
                 tag: Some("v2026.9.121".to_owned()),
             },
@@ -1307,7 +1310,8 @@ mod tests {
                 "session: s1 (running)\nagent: lead\nslot: main (main)\n",
                 "profile: fablex\ntool: claude\n\n",
                 "## 2. session goal\nship the seed pack\n\n",
-                "## 3. declared state\nstate: working  (1m)\nreason: driving S1\n\n",
+                "## 3. declared state\nstate: working  (1m)\nreason: driving S1\n",
+                "ae reads this as YOUR declaration until you re-declare\n\n",
                 "## 4. memos\nnone recorded\n\n",
                 "## 5. requests\n",
                 "pending, addressed to this seat:\n  none recorded\n",
@@ -1338,6 +1342,70 @@ mod tests {
                 "4. Continue at the parking note in section 4.\n",
             )
         );
+    }
+
+    /// Section 8 of `base` with `changed` as the tree's tracked changes.
+    fn git_section(changed: &[String]) -> String {
+        let mut inputs = base();
+        inputs.git.dirty = !changed.is_empty();
+        inputs.git.changed = changed.to_vec();
+        let rendered = pack(&inputs);
+        let from = rendered.find("## 8. git\n").unwrap_or(0);
+        let to = rendered.find("recent commits:\n").unwrap_or(rendered.len());
+        rendered.get(from..to).unwrap_or_default().to_owned()
+    }
+
+    #[test]
+    fn a_dirty_tree_names_its_changed_paths_and_a_long_list_is_counted() {
+        let head = concat!(
+            "## 8. git\n",
+            "work dir: ~/projects/ae\nbranch: main\n",
+            "HEAD: 0123456789abcdef0123456789abcdef01234567\n",
+        );
+        assert_eq!(
+            git_section(&[]),
+            format!("{head}dirty: no\nlatest tag: v2026.9.121\n")
+        );
+        let three = ["src/a.rs", "b", "\"sp ace\""].map(str::to_owned);
+        assert_eq!(
+            git_section(&three),
+            format!(
+                "{head}dirty: yes\nlatest tag: v2026.9.121\n\
+                 changed, not committed:\n  - src/a.rs\n  - b\n  - \"sp ace\"\n"
+            )
+        );
+        let many: Vec<String> = (0..25).map(|n| format!("f{n}")).collect();
+        let long = git_section(&many);
+        assert_eq!(long.matches("\n  - f").count(), 20, "{long}");
+        assert!(long.contains("\n  - f19\n  … +5 more\n"), "{long}");
+        assert!(!long.contains("f20"), "{long}");
+        let hostile = git_section(&["\u{1b}[31mred\u{7}".to_owned()]);
+        assert!(hostile.contains("\n  - "), "{hostile}");
+        assert!(
+            !hostile.chars().any(|ch| ch.is_control() && ch != '\n'),
+            "{hostile:?}"
+        );
+    }
+
+    #[test]
+    fn a_declaration_is_named_as_the_successors_own_until_it_re_declares() {
+        const OWN: &str = "ae reads this as YOUR declaration until you re-declare\n";
+        assert!(
+            pack(&base()).contains(&format!("reason: driving S1\n{OWN}\n")),
+            "{}",
+            pack(&base())
+        );
+        let mut undeclared = base();
+        undeclared.agents.retain(|agent| agent.name != "lead");
+        let rendered = pack(&undeclared);
+        assert!(
+            rendered.contains("## 3. declared state\nstate: none declared\n\n"),
+            "{rendered}"
+        );
+        assert!(!rendered.contains(OWN), "{rendered}");
+        let mut damaged = base();
+        damaged.journal = Journal::Damaged;
+        assert!(!pack(&damaged).contains(OWN));
     }
 
     #[test]
@@ -2188,6 +2256,7 @@ mod tests {
             branch: Some(HOSTILE.to_owned()),
             head: HOSTILE.to_owned(),
             dirty: true,
+            changed: vec![HOSTILE.to_owned()],
             subjects: vec![HOSTILE.to_owned()],
             tag: Some(HOSTILE.to_owned()),
         };

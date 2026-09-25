@@ -28,6 +28,8 @@ use crate::quota::Status;
 use crate::time::Timestamp;
 use crate::watchdog::{WATCHDOG_ACTOR, event_is_addressed_to};
 
+pub(crate) mod leg;
+
 /// An attempt: the trigger leg is about to start the move. `ref` = the key.
 pub const ATTEMPT_ACTION: &str = "auto-reseat";
 /// A hold before an attempt, or a transient refusal of one. `ref` = the key.

@@ -443,6 +443,13 @@ pub(crate) fn work_tree_dirty(wdir: &[u8]) -> bool {
     succeeded && out.lines().any(|line| !line.is_empty())
 }
 
+/// The TRACKED paths one `git status --porcelain --untracked-files=no` output
+/// names, each as git wrote it past its two status columns.
+pub(crate) fn changed_paths(porcelain: &str) -> Vec<String> {
+    let _ = porcelain;
+    Vec::new()
+}
+
 // ---- the end path's git leg ------------------------------------------------
 //
 // `ae end` commits and pushes a managed session's work before anything is
@@ -549,7 +556,7 @@ pub(crate) fn worktree_add_detached(origin: &[u8], worktree: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{GitArgv, Query, argv, is_count, is_hex40};
+    use super::{GitArgv, Query, argv, changed_paths, is_count, is_hex40};
     use std::ffi::OsString;
 
     fn strs(args: &GitArgv) -> Vec<String> {
@@ -557,6 +564,26 @@ mod tests {
             .iter()
             .map(|a| a.to_string_lossy().into_owned())
             .collect()
+    }
+
+    #[test]
+    fn a_porcelain_row_names_its_path_verbatim_and_a_short_row_names_none() {
+        let porcelain = concat!(
+            " M src/a.rs\n",
+            "M  b\n",
+            "R  old -> new\n",
+            "M  \"sp ace\"\n",
+            "\n",
+            "x\n",
+            "M \n",
+            "abé\n",
+            "MM é\n",
+        );
+        assert_eq!(
+            changed_paths(porcelain),
+            ["src/a.rs", "b", "old -> new", "\"sp ace\"", "é"]
+        );
+        assert!(changed_paths("").is_empty());
     }
 
     #[test]

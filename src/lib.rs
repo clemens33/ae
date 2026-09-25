@@ -2305,6 +2305,7 @@ pub(crate) fn seat_pack(
             branch: git::branch_head(work.as_bytes()),
             head: git::head(work.as_bytes()),
             dirty: git::work_tree_dirty(work.as_bytes()),
+            changed: Vec::new(),
             subjects: git::recent_subjects(work.as_bytes()),
             tag: git::latest_tag(work.as_bytes()),
         },

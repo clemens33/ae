@@ -438,6 +438,18 @@ fn account_of(
     })
 }
 
+/// How one reseat ended, for a caller that must journal it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Ended {
+    /// The seat runs its new profile; `carried` when its conversation came too.
+    Moved { carried: bool },
+    /// Nothing of the seat changed. A `transient` cause may pass on a retry.
+    Refused { transient: bool },
+    /// Something was stopped or written and the move did not finish, or the
+    /// machinery itself refused.
+    Failed,
+}
+
 /// What the stop step concluded.
 enum Stop {
     /// The seat's tool was not running. NOTHING was read beyond the pane, and
