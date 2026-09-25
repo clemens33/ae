@@ -1105,6 +1105,7 @@ fn agent_entries(
                         })
                     }),
                 model_drift,
+                auto_reseat_open: false,
             }
         })
         .collect()
@@ -4266,6 +4267,54 @@ mod tests {
             assert_eq!(entry.agents[0].reason, Some(want), "{lines:?} {alert:?}");
             let table = crate::listing::table(&[&entry]);
             assert_eq!(table.contains(" limit"), want == Reason::Limit, "{table}");
+        }
+    }
+
+    /// The limit cell names an auto reseat attempt still open in the seat's
+    /// current episode, and nothing once that attempt has ended.
+    #[test]
+    fn a_limited_seat_says_so_while_its_auto_reseat_attempt_is_open() {
+        let key = at(900);
+        let limit = event(&key, "watchdog", "limit", r#","target":"lead""#);
+        let watchdog = |ago: i64, action: &str| {
+            event(
+                &at(ago),
+                "watchdog",
+                action,
+                &format!(r#","target":"lead","ref":"{key}""#),
+            )
+        };
+        let attempt = watchdog(600, "auto-reseat");
+        for (lines, open) in [
+            (vec![limit.clone(), attempt.clone()], true),
+            (
+                vec![
+                    limit.clone(),
+                    attempt.clone(),
+                    watchdog(500, "auto-reseat-failed"),
+                ],
+                false,
+            ),
+            (vec![limit.clone()], false),
+        ] {
+            let scratch = Scratch::new("auto-reseat-open");
+            scratch.meta(META);
+            scratch.events(&lines);
+            let mut runtime = running();
+            runtime.agents = vec![AgentRuntime {
+                slot: "main".to_owned(),
+                alive: Some(true),
+                alert: Some(Reason::Limit),
+                observed: crate::harness_state::HarnessState::Unknown,
+            }];
+            let entry = entry_for(&scratch.0, "live", &runtime, NOW, DEFAULT_UNANSWERED_SECS);
+            assert_eq!(entry.agents[0].auto_reseat_open, open, "{lines:?}");
+            let table = crate::listing::table(&[&entry]);
+            assert_eq!(
+                table.contains("limit · auto-reseat in flight"),
+                open,
+                "{table}"
+            );
         }
     }
 

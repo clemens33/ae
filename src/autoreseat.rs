@@ -763,6 +763,80 @@ fn tier(windows: &[Window]) -> Tier {
     }
 }
 
+/// The quota identity of every OTHER seat of `session` still on its limit: a
+/// `limit` record since its last clear, whatever became of its auto path.
+///
+/// The seat being moved is left out. Its own limit may bind only its model
+/// family, and a window that binds its whole account still reads exhausted on
+/// the candidate itself.
+pub(crate) fn latched_identities(
+    roster: &[crate::meta::RosterEntry],
+    events: &[Event],
+    session: &str,
+    moving: &str,
+) -> Vec<crate::quota::RecordedIdentity> {
+    let _ = (roster, events, session, moving);
+    Vec::new()
+}
+
+/// Who opened the seat: the actor of the newest `spawn` record addressed to it.
+#[must_use]
+pub fn spawner<'e>(events: &'e [Event], session: &str, slot: &str, agent: &str) -> Option<&'e str> {
+    let _ = (events, session, slot, agent);
+    None
+}
+
+/// Who is told how an attempt ended: the lead pair without the seat at
+/// `moved`, then `spawner` when it names another seat of the roster that is not
+/// told already.
+#[must_use]
+pub fn recipients(
+    roster: &[crate::meta::RosterEntry],
+    lead_pair: bool,
+    moved: &str,
+    spawner: Option<&str>,
+) -> Vec<String> {
+    let _ = (roster, lead_pair, moved, spawner);
+    Vec::new()
+}
+
+/// How one ending of the auto path is told.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ending<'a> {
+    Moved(Move<'a>),
+    /// Held, quoting the record's summary.
+    Held(&'a str),
+    Refused(&'a str),
+    Failed(&'a str),
+}
+
+/// What a move changed, as its notice names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Move<'a> {
+    pub from: &'a str,
+    pub to: &'a str,
+    /// The tool before and after.
+    pub tool: (&'a str, &'a str),
+    /// The model before and after.
+    pub model: (&'a str, &'a str),
+    /// The conversation went with the seat.
+    pub carried: bool,
+    /// The target was already critical when it was chosen.
+    pub critical: bool,
+    /// The seat's work tree has tracked changes.
+    pub dirty: bool,
+}
+
+/// The widest a notice may be, in characters.
+pub const NOTICE_CHARS: usize = 400;
+
+/// The ONE line every recipient and the chat are told for `ending`.
+#[must_use]
+pub fn notice(session: &str, agent: &str, ending: &Ending<'_>) -> String {
+    let _ = (session, agent, ending);
+    String::new()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1557,6 +1631,181 @@ mod tests {
                 "{found:?} {at} overdue={overdue} at {now}"
             );
         }
+    }
+
+    fn roster_seat(slot: &str, name: &str) -> crate::meta::RosterEntry {
+        crate::meta::RosterEntry {
+            slot: slot.to_owned(),
+            name: name.to_owned(),
+            profile: None,
+            client: crate::meta::RecordedClient::Missing,
+            harness_session: None,
+            config_home: crate::meta::RecordedConfigHome::Missing,
+            config_home_base: crate::meta::RecordedConfigHomeBase::Missing,
+            binary: None,
+            work_dir: crate::meta::RecordedWorkDir::Missing,
+        }
+    }
+
+    /// A codex seat whose recorded account is `home`: an identity the quota
+    /// join can prove.
+    fn codex_seat(slot: &str, name: &str, home: &Path) -> crate::meta::RosterEntry {
+        crate::meta::RosterEntry {
+            harness_session: Some("018f1f70-7b2c-7000-8000-000000000001".to_owned()),
+            config_home: crate::meta::RecordedConfigHome::Path(home.to_path_buf()),
+            binary: Some("codex".to_owned()),
+            ..roster_seat(slot, name)
+        }
+    }
+
+    #[test]
+    fn a_seat_still_on_its_limit_since_its_last_clear_is_latched_and_the_moving_seat_is_not() {
+        let root = Scratch(std::env::temp_dir().join(format!("ae-latched-{}", std::process::id())));
+        let home = |name: &str| {
+            let path = root.0.join(name);
+            std::fs::create_dir_all(path.join("sessions")).expect("an account home");
+            path
+        };
+        let roster = [
+            codex_seat("main", "lead", &home("a")),
+            codex_seat("spawned.1", "peer", &home("b")),
+            codex_seat("spawned.2", "stuck", &home("c")),
+            codex_seat("spawned.4", "cleared", &home("d")),
+            codex_seat(SLOT, AGENT, &home("a")),
+        ];
+        let on_limit = |name: &str| record(0, WATCHDOG_ACTOR, LIMIT_ACTION, name, "");
+        let events = [
+            on_limit("peer"),
+            on_limit("stuck"),
+            record(
+                60,
+                WATCHDOG_ACTOR,
+                REFUSED_ACTION,
+                "stuck",
+                &format!(r#","ref":"{KEY}""#),
+            ),
+            on_limit("cleared"),
+            record(60, WATCHDOG_ACTOR, CLEARED_ACTION, "cleared", ""),
+            on_limit(AGENT),
+        ];
+        let identity =
+            |at: usize| crate::quota::recorded_identity(&roster[at]).expect("a recorded identity");
+        assert_eq!(
+            latched_identities(&roster, &events, SESSION, SLOT),
+            [identity(1), identity(2)],
+            "a refused path leaves its seat on its limit; a clear ends it; the moving seat is not counted"
+        );
+        assert!(latched_identities(&roster, &[], SESSION, SLOT).is_empty());
+    }
+
+    #[test]
+    fn the_spawner_is_the_actor_of_the_newest_spawn_addressed_to_the_seat() {
+        let events = [
+            record(10, "lead", SPAWN_ACTION, AGENT, ""),
+            record(20, "colead", SPAWN_ACTION, AGENT, ""),
+            record(30, "other", SPAWN_ACTION, "someone-else", ""),
+        ];
+        assert_eq!(spawner(&events, SESSION, SLOT, AGENT), Some("colead"));
+        assert_eq!(spawner(&events[2..], SESSION, SLOT, AGENT), None);
+    }
+
+    #[test]
+    fn the_lead_pair_without_the_moved_seat_and_its_spawner_once_are_told() {
+        let roster = [
+            roster_seat("main", "lead"),
+            roster_seat("worker.0", "colead"),
+            roster_seat("spawned.1", "scout"),
+            roster_seat(SLOT, AGENT),
+        ];
+        let told = |pair: bool, moved: &str, by: Option<&str>| recipients(&roster, pair, moved, by);
+        assert_eq!(told(false, SLOT, None), ["lead"], "solo: the main seat");
+        assert_eq!(told(true, SLOT, None), ["lead", "colead"], "lead-pair");
+        assert_eq!(told(true, SLOT, Some("scout")), ["lead", "colead", "scout"]);
+        assert_eq!(
+            told(true, SLOT, Some("lead")),
+            ["lead", "colead"],
+            "told once"
+        );
+        assert_eq!(
+            told(true, SLOT, Some(AGENT)),
+            ["lead", "colead"],
+            "not itself"
+        );
+        assert_eq!(
+            told(true, SLOT, Some("ghost")),
+            ["lead", "colead"],
+            "not on the roster"
+        );
+        assert_eq!(
+            told(true, "main", None),
+            ["colead"],
+            "all moved main in a lead pair"
+        );
+        assert!(
+            told(false, "main", None).is_empty(),
+            "a solo main that moved"
+        );
+    }
+
+    #[test]
+    fn each_ending_is_told_in_one_bounded_line_and_only_a_move_warns_the_pair() {
+        let moved = Move {
+            from: "sol6x",
+            to: "opus55x",
+            tool: ("codex", "claude"),
+            model: ("gpt-6-sol", "opus"),
+            carried: true,
+            critical: false,
+            dirty: false,
+        };
+        assert_eq!(
+            notice(SESSION, AGENT, &Ending::Moved(moved)),
+            "auto reseat: builder moved sol6x -> opus55x (tool codex -> claude, model gpt-6-sol -> \
+             opus), carried; work tree clean. If builder is half of a review pair, re-check its gate \
+             provider. Next: nothing, it continues its conversation."
+        );
+        let seeded = Move {
+            carried: false,
+            critical: true,
+            dirty: true,
+            ..moved
+        };
+        assert_eq!(
+            notice(SESSION, AGENT, &Ending::Moved(seeded)),
+            "auto reseat: builder moved sol6x -> opus55x (tool codex -> claude, model gpt-6-sol -> \
+             opus), seeded, target already critical; work tree dirty. If builder is half of a review \
+             pair, re-check its gate provider. Next: check it picked up its seat pack."
+        );
+        for (ending, want) in [
+            (
+                Ending::Held("held: auto reseat is off"),
+                "auto reseat: builder not moved yet — held: auto reseat is off. Next: ae tries once \
+                 more if it stays eligible.",
+            ),
+            (
+                Ending::Refused("refused: no usable candidate: opus55x (exhausted)"),
+                "auto reseat: builder not moved — refused: no usable candidate: opus55x (exhausted). \
+                 Next: move it by hand (ae reseat aedev builder --using <profile>) or wait for the \
+                 reset.",
+            ),
+            (
+                Ending::Failed("Error: the pane never came back"),
+                "auto reseat: builder move failed — Error: the pane never came back. Next: relaunch \
+                 builder if its pane sits at a shell, else reseat it by hand.",
+            ),
+        ] {
+            let said = notice(SESSION, AGENT, &ending);
+            assert_eq!(said, want);
+            assert!(!said.contains("review pair"), "{said}");
+        }
+        let hostile = format!("Error: {}\u{1b}[2J\nsecond line", "x".repeat(NOTICE_CHARS));
+        let said = notice(SESSION, AGENT, &Ending::Failed(&hostile));
+        assert!(
+            said.chars().count() <= NOTICE_CHARS,
+            "{}",
+            said.chars().count()
+        );
+        assert!(!said.chars().any(char::is_control), "{said:?}");
     }
 
     /// The text entry the config fuzz target drives IS the parser the path read

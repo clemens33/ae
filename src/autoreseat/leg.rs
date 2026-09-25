@@ -9,7 +9,7 @@ use std::ffi::OsStr;
 use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
 
-use crate::reseat::Ended;
+use crate::reseat::{Ended, Resolved};
 use crate::state::{EXIT_FAILED, EXIT_USAGE};
 use crate::time::Timestamp;
 use crate::tracked::EventFields;
@@ -116,18 +116,22 @@ pub(crate) const fn ineligible_summary(why: Ineligible) -> &'static str {
     }
 }
 
-/// The declared candidates as the chooser judges them. No quota window and no
-/// peer latch is read here, so every usable candidate judges `Unknown` and the
-/// declared order decides.
+/// The declared candidates as the chooser judges them, joined with `quota`:
+/// the windows that bind each one's account and whether another seat of the
+/// session is latched on it.
 pub(crate) fn candidates(
     list: &[String],
-    resolves: impl Fn(&str) -> bool,
+    resolve: impl Fn(&str) -> Option<Resolved>,
     left: &[(String, Timestamp)],
+    quota: Option<&crate::quota::Observation>,
+    latched: &[crate::quota::RecordedIdentity],
+    now: i64,
 ) -> Vec<Candidate> {
+    let _ = (quota, latched, now);
     list.iter()
         .map(|profile| Candidate {
             profile: profile.clone(),
-            configured: resolves(profile),
+            configured: resolve(profile).is_some(),
             peer_latched: false,
             windows: Vec::new(),
             left_at: left
@@ -234,7 +238,14 @@ pub(crate) fn run(
         Err(why) => return close(&argv, &agent, now, held(why), err),
     };
     let left = super::left_profiles(&events, &argv.session, &argv.slot, &agent);
-    let judged = candidates(list, |to| crate::reseat::resolves(dir, to), &left);
+    let judged = candidates(
+        list,
+        |to| crate::reseat::resolved(dir, to),
+        &left,
+        None,
+        &[],
+        now.epoch(),
+    );
     let choice = super::choose(&judged, now.epoch());
     let Some((pick, _)) = choice.pick else {
         let why = no_candidate(&choice.skipped);
@@ -295,7 +306,7 @@ pub(crate) fn plan(
     seat: &Seat<'_>,
     sight: &Sight,
     events: &[crate::events::Event],
-    resolves: impl Fn(&str) -> bool,
+    gather: impl Fn(&[String], &[(String, Timestamp)]) -> Vec<Candidate>,
     now: Timestamp,
 ) -> Plan {
     let list = match super::eligible(settings, seat) {
@@ -316,7 +327,7 @@ pub(crate) fn plan(
         return Plan::Decline(format!("not due ({decision:?})"));
     };
     let left = super::left_profiles(events, seat.session, seat.slot, seat.agent);
-    let choice = super::choose(&candidates(list, resolves, &left), now.epoch());
+    let choice = super::choose(&gather(list, &left), now.epoch());
     match choice.pick {
         Some((to, _)) => Plan::Attempt { key: found.key, to },
         None => Plan::Refuse {
@@ -333,6 +344,22 @@ fn no_candidate(skipped: &[(String, Skip)]) -> String {
         .map(|(to, skip)| format!("{to} ({})", skip_word(*skip)))
         .collect();
     format!("refused: no usable candidate: {}", named.join(", "))
+}
+
+/// The line a seat's first-sight limit notice gains when auto reseat may move
+/// it: where to and when, or that nothing declared is usable. A forecast: the
+/// legs choose again when they act.
+pub(crate) fn deadline(agent: &str, choice: &super::Choice, grace_secs: u64) -> String {
+    let _ = (agent, choice, grace_secs);
+    String::new()
+}
+
+/// The environment of every notice delivery, whole. The leg runs under the
+/// trigger's own environment, whose action is the attempt: a notice that did
+/// not name its own would be taken for another trigger.
+pub(crate) fn notice_env(summary: &str) -> [(&'static str, &str); 3] {
+    let _ = summary;
+    [("", ""), ("", ""), ("", "")]
 }
 
 /// Journal the attempt, THEN start the leg: the leg acts only under an attempt
@@ -423,7 +450,16 @@ pub(crate) fn trigger(
         orchestrator: crate::meta::meta_agent_role(&bytes) == crate::meta::MetaAgentRole::Role,
     };
     let events = crate::watchdog_daemon::read_events(dir);
-    let usable = |to: &str| crate::reseat::resolves(dir, to);
+    let gather = |list: &[String], left: &[(String, Timestamp)]| {
+        candidates(
+            list,
+            |to| crate::reseat::resolved(dir, to),
+            left,
+            None,
+            &[],
+            now.epoch(),
+        )
+    };
     let argv = |key| Argv {
         session: own_session.to_owned(),
         dir: dir.to_path_buf(),
@@ -435,7 +471,7 @@ pub(crate) fn trigger(
         &seat,
         &sight,
         &events,
-        usable,
+        gather,
         now,
     ) {
         Plan::Decline(why) => decline(err, &why),
@@ -623,13 +659,336 @@ mod tests {
         .expect("a well-formed record");
         let left = left_profiles(&[done], "aedev", "spawned.3", "scout");
         let list = words(&["ghost", "sol6x", "opus55x", "astrax"]);
-        let choice = choose(&candidates(&list, |profile| profile != "ghost", &left), 0);
+        let resolve = |profile: &str| (profile != "ghost").then(|| Resolved { pin: None });
+        let choice = choose(&candidates(&list, resolve, &left, None, &[], 0), 0);
         assert_eq!(choice.pick, Some(("opus55x".to_owned(), Tier::Unknown)));
         assert_eq!(
             choice.skipped,
             [
                 ("ghost".to_owned(), Skip::Unconfigured),
                 ("sol6x".to_owned(), Skip::LeftOnLimit),
+            ]
+        );
+    }
+
+    const NOW: i64 = 1_800_000_000;
+
+    /// One Claude weekly window, observed `ago` seconds before [`NOW`] and
+    /// resetting `resets_in` seconds after it.
+    fn row(qualifier: Option<&str>, used: &str, ago: i64, resets_in: i64) -> crate::quota::Row {
+        crate::quota::Row {
+            bucket: "weekly".to_owned(),
+            qualifier: qualifier.map(ToOwned::to_owned),
+            window_minutes: Some(10_080),
+            used_percent: Some(used.to_owned()),
+            resets_at: Some(NOW + resets_in),
+            observed_at: Some(NOW - ago),
+            status: crate::quota::Status::Fresh,
+        }
+    }
+
+    fn plain() -> crate::quota::Policy {
+        crate::quota::Policy::for_tests(None, crate::quota::Account::default())
+    }
+
+    /// The account at `source` that `profiles` launch on, read as `rows`.
+    fn account(
+        profiles: &[&str],
+        source: &str,
+        policy: crate::quota::Policy,
+        rows: Vec<crate::quota::Row>,
+    ) -> crate::quota::Group {
+        crate::quota::Group {
+            profiles: words(profiles),
+            tool: crate::tool::ToolKind::Claude,
+            home: None,
+            source: Some(PathBuf::from(source)),
+            clients: Vec::new(),
+            rollout: None,
+            owner: None,
+            rows,
+            hint: None,
+            summary: None,
+            policy,
+            notes: Vec::new(),
+        }
+    }
+
+    fn observed(groups: Vec<crate::quota::Group>) -> crate::quota::Observation {
+        crate::quota::Observation {
+            groups,
+            rendered: Vec::new(),
+            home: None,
+            now: NOW,
+        }
+    }
+
+    /// Choose among `list` over `quota`, each candidate pinned as `pins` says.
+    fn judge(
+        quota: &crate::quota::Observation,
+        list: &[&str],
+        pins: &[(&str, &str)],
+        latched: &[crate::quota::RecordedIdentity],
+        left: &[(String, Timestamp)],
+    ) -> crate::autoreseat::Choice {
+        let resolve = |profile: &str| {
+            Some(Resolved {
+                pin: pins
+                    .iter()
+                    .find(|(named, _)| *named == profile)
+                    .map(|(_, pin)| (*pin).to_owned()),
+            })
+        };
+        choose(
+            &candidates(&words(list), resolve, left, Some(quota), latched, NOW),
+            NOW,
+        )
+    }
+
+    fn picked(name: &str, tier: Tier) -> Option<(String, Tier)> {
+        Some((name.to_owned(), tier))
+    }
+
+    fn passed(rows: &[(&str, Skip)]) -> Vec<(String, Skip)> {
+        rows.iter()
+            .map(|(name, skip)| ((*name).to_owned(), *skip))
+            .collect()
+    }
+
+    #[test]
+    fn a_candidate_is_judged_by_its_effective_percentage_and_a_spend_cap_exhausts_it() {
+        let capped = crate::quota::Account {
+            spend_control_reached: Some(true),
+            spend_observed_at: Some(NOW - 60),
+            ..crate::quota::Account::default()
+        };
+        let declared = crate::quota::Policy::for_tests(Some(1), crate::quota::Account::default());
+        let quota = observed(vec![
+            account(
+                &["declared"],
+                "/a",
+                declared,
+                vec![row(None, "100", 60, 3600)],
+            ),
+            account(&["plain"], "/b", plain(), vec![row(None, "100", 60, 3600)]),
+            account(
+                &["capped"],
+                "/c",
+                crate::quota::Policy::for_tests(None, capped),
+                vec![row(None, "10", 60, 3600)],
+            ),
+        ]);
+        let choice = judge(&quota, &["plain", "capped", "declared"], &[], &[], &[]);
+        assert_eq!(
+            choice.pick,
+            picked("declared", Tier::BelowCritical),
+            "raw 100 over 1+1 declared resets judges 50"
+        );
+        assert_eq!(
+            choice.skipped,
+            passed(&[("plain", Skip::Exhausted), ("capped", Skip::Exhausted)])
+        );
+    }
+
+    #[test]
+    fn a_window_scoped_to_another_family_binds_nobody_else_and_a_pinless_candidate_is_bound() {
+        let quota = observed(vec![account(
+            &["fable-x", "bare", "opus-x"],
+            "/a",
+            plain(),
+            vec![
+                row(Some("Fable"), "100", 60, 3600),
+                row(None, "10", 60, 3600),
+            ],
+        )]);
+        let pins = [("fable-x", "fable"), ("opus-x", "opus")];
+        let choice = judge(&quota, &["fable-x", "bare", "opus-x"], &pins, &[], &[]);
+        assert_eq!(choice.pick, picked("opus-x", Tier::BelowCritical));
+        assert_eq!(
+            choice.skipped,
+            passed(&[("fable-x", Skip::Exhausted), ("bare", Skip::Exhausted)])
+        );
+    }
+
+    /// Another seat latched on an account passes it over; the moving seat's
+    /// own account, left out of the latch, still reads exhausted from its own
+    /// window when the whole account is spent.
+    #[test]
+    fn another_latched_seat_passes_its_account_over_and_a_spent_account_stays_exhausted() {
+        let quota = observed(vec![
+            account(&["shared"], "/a", plain(), vec![row(None, "10", 60, 3600)]),
+            account(&["own"], "/b", plain(), vec![row(None, "100", 60, 3600)]),
+            account(
+                &["elsewhere"],
+                "/c",
+                plain(),
+                vec![row(None, "10", 60, 3600)],
+            ),
+        ]);
+        let on = |tool, source: &str| crate::quota::RecordedIdentity {
+            tool,
+            source: PathBuf::from(source),
+        };
+        let latched = [
+            on(crate::tool::ToolKind::Claude, "/a"),
+            on(crate::tool::ToolKind::Codex, "/c"),
+        ];
+        let choice = judge(&quota, &["shared", "own", "elsewhere"], &[], &latched, &[]);
+        assert_eq!(
+            choice.pick,
+            picked("elsewhere", Tier::BelowCritical),
+            "another tool on the same path is another account"
+        );
+        assert_eq!(
+            choice.skipped,
+            passed(&[("shared", Skip::PeerLatched), ("own", Skip::Exhausted)])
+        );
+    }
+
+    #[test]
+    fn only_a_fresh_reading_places_a_tier_and_critical_is_the_classifiers() {
+        let quota = observed(vec![
+            account(&["hot"], "/a", plain(), vec![row(None, "95", 60, 3600)]),
+            account(&["warm"], "/b", plain(), vec![row(None, "94", 60, 3600)]),
+            account(
+                &["stale"],
+                "/c",
+                plain(),
+                vec![row(None, "10", 20 * 60, 3600)],
+            ),
+            crate::quota::Group {
+                source: None,
+                ..account(
+                    &["sourceless"],
+                    "/d",
+                    plain(),
+                    vec![row(None, "100", 60, 3600)],
+                )
+            },
+        ]);
+        let all = ["hot", "stale", "sourceless", "warm"];
+        let choice = judge(&quota, &all, &[], &[], &[]);
+        assert_eq!(choice.pick, picked("warm", Tier::BelowCritical));
+        assert!(choice.skipped.is_empty(), "{:?}", choice.skipped);
+        let pick = |list: &[&str]| judge(&quota, list, &[], &[], &[]).pick;
+        assert_eq!(
+            pick(&["hot", "stale"]),
+            picked("stale", Tier::Unknown),
+            "stale places no tier"
+        );
+        assert_eq!(pick(&["hot"]), picked("hot", Tier::Critical));
+        assert_eq!(
+            pick(&["sourceless"]),
+            picked("sourceless", Tier::Unknown),
+            "an account with no source joins nothing"
+        );
+    }
+
+    /// Several rollouts report one Codex account. Their rows are judged
+    /// together, so the union must never be more permissive than one reading.
+    #[test]
+    fn a_rollout_row_from_a_window_already_reset_never_counts_and_an_exhausted_one_always_does() {
+        let rollout = |rows| crate::quota::Group {
+            tool: crate::tool::ToolKind::Codex,
+            ..account(&["sol"], "/a", plain(), rows)
+        };
+        let previous = row(None, "100", 3 * 3600, -60);
+        let current = row(None, "40", 60, 3600);
+        for groups in [
+            vec![
+                rollout(vec![previous.clone()]),
+                rollout(vec![current.clone()]),
+            ],
+            vec![
+                rollout(vec![current.clone()]),
+                rollout(vec![previous.clone()]),
+            ],
+        ] {
+            let choice = judge(&observed(groups), &["sol"], &[], &[], &[]);
+            assert_eq!(
+                choice.pick,
+                picked("sol", Tier::BelowCritical),
+                "the reset row is gone"
+            );
+        }
+        let spent = row(None, "100", 120, 3600);
+        for groups in [
+            vec![rollout(vec![spent.clone()]), rollout(vec![current.clone()])],
+            vec![rollout(vec![current.clone()]), rollout(vec![spent.clone()])],
+        ] {
+            let choice = judge(&observed(groups), &["sol"], &[], &[], &[]);
+            assert_eq!(choice.skipped, passed(&[("sol", Skip::Exhausted)]));
+        }
+    }
+
+    /// A profile left on its limit waits for a window read after the move:
+    /// the stamps and the reset the gather carries are the ones the rule reads.
+    #[test]
+    fn a_profile_left_on_its_limit_is_relieved_only_by_a_reading_after_it_left() {
+        let left = [("sol".to_owned(), Timestamp::from_epoch(NOW - 600))];
+        let before = observed(vec![account(
+            &["sol"],
+            "/a",
+            plain(),
+            vec![row(None, "10", 900, 3600)],
+        )]);
+        let after = observed(vec![account(
+            &["sol"],
+            "/a",
+            plain(),
+            vec![row(None, "10", 60, 3600)],
+        )]);
+        let reset = observed(vec![account(
+            &["sol"],
+            "/a",
+            plain(),
+            vec![row(None, "100", 300, -10)],
+        )]);
+        let skip =
+            |quota: &crate::quota::Observation| judge(quota, &["sol"], &[], &[], &left).skipped;
+        assert_eq!(skip(&before), passed(&[("sol", Skip::LeftOnLimit)]));
+        assert!(skip(&after).is_empty());
+        assert!(skip(&reset).is_empty(), "its window reset after it left");
+    }
+
+    #[test]
+    fn the_first_sight_line_names_the_target_and_the_grace_or_why_nothing_is_usable() {
+        let to = |tier| crate::autoreseat::Choice {
+            pick: picked("opus55x", tier),
+            skipped: Vec::new(),
+        };
+        assert_eq!(
+            deadline("scout", &to(Tier::BelowCritical), 600),
+            "ae will move scout to opus55x in 10m"
+        );
+        assert_eq!(
+            deadline("scout", &to(Tier::Unknown), 0),
+            "ae will move scout to opus55x in 0s"
+        );
+        assert_eq!(
+            deadline("scout", &to(Tier::Critical), 90),
+            "ae will move scout to opus55x in 1m, target already critical"
+        );
+        let none = crate::autoreseat::Choice {
+            pick: None,
+            skipped: passed(&[("opus55x", Skip::Exhausted), ("ghost", Skip::Unconfigured)]),
+        };
+        assert_eq!(
+            deadline("scout", &none, 600),
+            "ae cannot move scout: no usable candidate: opus55x (exhausted), ghost (not configured here)"
+        );
+    }
+
+    /// The leg inherits the trigger's environment, whose action is the
+    /// attempt: every notice names its own, and its actor, whole.
+    #[test]
+    fn every_notice_names_its_own_action_and_the_watchdog_as_its_sender() {
+        assert_eq!(
+            notice_env("told"),
+            [
+                ("AE_SENDER_OVERRIDE", "watchdog"),
+                ("_AE_EVENT_ACTION", "auto-reseat-notice"),
+                ("_AE_EVENT_SUMMARY", "told"),
             ]
         );
     }
@@ -700,8 +1059,11 @@ mod tests {
             key,
             to: "opus55x".to_owned(),
         };
+        let usable = |list: &[String], left: &[(String, Timestamp)]| {
+            candidates(list, |_| Some(Resolved { pin: None }), left, None, &[], 0)
+        };
         let plan_of = |settings: &Settings, sight: &Sight, events: &[Event]| {
-            plan(settings, &seat, sight, events, |_| true, now)
+            plan(settings, &seat, sight, events, usable, now)
         };
         assert_eq!(plan_of(&on(600), &clear, &limit), attempt);
         let touched = |ago: i64| sight(Frame::Clear, false, Some(now.epoch() - ago), true);
@@ -768,7 +1130,14 @@ mod tests {
             );
         }
         assert_eq!(
-            plan(&on(600), &seat, &clear, &limit, |_| false, now),
+            plan(
+                &on(600),
+                &seat,
+                &clear,
+                &limit,
+                |list, left| candidates(list, |_| None, left, None, &[], 0),
+                now
+            ),
             Plan::Refuse {
                 key,
                 why: "refused: no usable candidate: opus55x (not configured here)".to_owned()
@@ -828,16 +1197,29 @@ mod tests {
             "durable before the start"
         );
         assert_eq!(code.ok(), Some(EXIT_FAILED));
+        let why = "failed: the move could not be started";
         assert_eq!(
             journal(),
             [
                 attempt.clone(),
+                (FAILED_ACTION.to_owned(), KEY.to_owned(), why.to_owned()),
                 (
-                    FAILED_ACTION.to_owned(),
-                    KEY.to_owned(),
-                    "failed: the move could not be started".to_owned()
+                    "chat".to_owned(),
+                    String::new(),
+                    crate::autoreseat::notice(
+                        "aedev",
+                        "scout",
+                        &crate::autoreseat::Ending::Failed(why)
+                    ),
                 ),
             ]
+        );
+        let told = crate::watchdog_daemon::read_events(&dir);
+        let chat = told.last().expect("the chat line");
+        assert_eq!(chat.actor, WATCHDOG_ACTOR, "{chat:?}");
+        assert!(
+            chat.target.as_deref().unwrap_or_default().is_empty(),
+            "target-less: {chat:?}"
         );
         let _ = std::fs::remove_file(dir.join(crate::store::EVENTS));
         let started = commit(&argv, "scout", ("sol6x", "opus55x"), now, || true, &mut err);

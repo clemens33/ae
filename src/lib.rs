@@ -1982,6 +1982,13 @@ fn run_say(
     Ok(0)
 }
 
+/// The ONE `chat` record: a line the Telegram bridge forwards, written by
+/// `actor`, addressed to no seat.
+pub(crate) fn chat_line(ts: time::Timestamp, actor: &str, actor_slot: &str, text: &str) -> String {
+    let _ = (ts, actor, actor_slot, text);
+    String::new()
+}
+
 /// The `say` report: a line that was QUEUED for the bridge, never one that was
 /// sent — only the bridge's own forward is a send — plus the one liveness
 /// reading when it names a stopped bridge. `None` (tmux did not answer, or the
@@ -3466,6 +3473,45 @@ pub fn run_with(
 
 #[cfg(test)]
 mod tests {
+
+    /// `say`'s record is the builder's, byte for byte, and the watchdog's
+    /// chat line addresses no seat.
+    #[test]
+    fn the_chat_record_say_writes_is_the_one_builder_byte_for_byte() {
+        let ts = Timestamp::parse("2026-09-25T10:00:00Z").expect("a timestamp");
+        let today = crate::tracked::event_line(&crate::tracked::EventFields {
+            ts,
+            actor: "lead",
+            action: "chat",
+            target: "",
+            reference: "",
+            actor_slot: "main",
+            actor_session: "",
+            target_slot: "",
+            target_session: "",
+            target_server: "",
+            target_pane: "",
+            target_session_uuid: "",
+            caller_server: "",
+            caller_pane: "",
+            caller_session_uuid: "",
+            identity_gap: "",
+            summary: "hi there",
+            body_file: "",
+        });
+        assert_eq!(super::chat_line(ts, "lead", "main", "hi there"), today);
+        let told = crate::events::Event::parse_line(&super::chat_line(ts, "watchdog", "", "moved"))
+            .expect("a well-formed record");
+        assert_eq!(
+            (
+                told.actor.as_str(),
+                told.action.as_str(),
+                told.target,
+                told.summary.as_deref()
+            ),
+            ("watchdog", "chat", None, Some("moved"))
+        );
+    }
     use super::{
         EXIT_UNAVAILABLE, Error, NO_LAUNCHER, NO_STATE_ROOT, help_text, listing::World, run,
         run_with, version_line,

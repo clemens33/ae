@@ -372,6 +372,7 @@ fn resolve_profile(dir: &Path, bytes: &[u8], profile: &str, agent: &str) -> Resu
     Ok(Moving {
         account: account_of(&command, parsed.tool(), home.as_deref()),
         tool: parsed.tool(),
+        pin: crate::launch_cmd::model_flag_value(command.as_str(), parsed.tool()),
         binary: parsed.binary,
     })
 }
@@ -379,6 +380,8 @@ fn resolve_profile(dir: &Path, bytes: &[u8], profile: &str, agent: &str) -> Resu
 /// The new profile's recorded facts.
 struct Moving {
     tool: ToolKind,
+    /// The model its `--model` flag pins, when it pins one.
+    pin: Option<String>,
     binary: String,
     /// Where this profile's conversations live, when ae can say.
     account: Option<Account>,
@@ -900,11 +903,20 @@ pub(crate) fn run_as_watchdog(
     run_parsed(root, world, &parsed, Ok(caller), now, out, err)
 }
 
-/// Whether profile `profile` resolves for the seat whose session dir is `dir`,
-/// exactly as a reseat to it would resolve it.
-pub(crate) fn resolves(dir: &Path, profile: &str) -> bool {
+/// A profile as a reseat to it would launch it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Resolved {
+    /// The model its `--model` flag pins, when it pins one.
+    pub(crate) pin: Option<String>,
+}
+
+/// Profile `profile` for the seat whose session dir is `dir`, resolved exactly
+/// as a reseat to it would resolve it, or `None` when it does not resolve.
+pub(crate) fn resolved(dir: &Path, profile: &str) -> Option<Resolved> {
     let bytes = crate::meta::read_bytes(dir).unwrap_or_default();
-    resolve_profile(dir, &bytes, profile, "").is_ok()
+    resolve_profile(dir, &bytes, profile, "")
+        .ok()
+        .map(|moving| Resolved { pin: moving.pin })
 }
 
 /// The move itself, from a parsed argv and the caller rule's verdict. Every

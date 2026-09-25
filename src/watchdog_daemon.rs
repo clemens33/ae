@@ -283,6 +283,9 @@ pub struct Observation {
     /// An auto reseat attempt runs for this latched seat inside its bound: the
     /// shell its respawn leaves is the move, not a death and not a release.
     pub auto_in_flight: bool,
+    /// Where and when auto reseat will move this seat, for the notice of its
+    /// limit's first sight; `None` when auto reseat may not move it.
+    pub auto_deadline: Option<String>,
 }
 
 /// Related facts derived without another pane capture or transcript read.
@@ -5013,6 +5016,19 @@ impl Cycle<'_> {
         )
     }
 
+    /// The line the first-sight notice of `agent`'s limit gains when auto
+    /// reseat may move it, ranked over this cycle's held quota observation.
+    fn auto_deadline(
+        &self,
+        quota: &QuotaCarry,
+        events: &[Event],
+        (slot, agent): (&str, &str),
+        now: i64,
+    ) -> Option<String> {
+        let _ = (quota, events, slot, agent, now);
+        None
+    }
+
     /// One quota-cadence pass: the vendor-quota observation and advisory
     /// booking, and only when aware. `quota = off` WINS over
     /// `quota_every_secs`: no quota read is even attempted unaware, while the
@@ -5265,6 +5281,7 @@ impl Cycle<'_> {
                     (self.session, &slot, agent),
                     now,
                 ),
+                auto_deadline: None,
             };
             let acting = Acting {
                 agent,
@@ -7099,6 +7116,7 @@ mod tests {
             sweep: None,
             own_work: crate::session::OwnWork::default(),
             auto_in_flight: false,
+            auto_deadline: None,
         }
     }
 
@@ -12379,6 +12397,18 @@ mod tests {
         assert_eq!(emitted(&named.effects), [("limit", record.as_str())]);
         let notice = format!("hit its vendor usage limit: {cell}");
         assert_eq!(notices(&named.effects), [notice.as_str()]);
+        // A seat auto reseat may move is told where and when, in the notice
+        // alone: the record is the one every reader already reads.
+        let due = Observation {
+            auto_deadline: Some("ae will move scout to opus55x in 10m".to_owned()),
+            ..quoting
+        };
+        let forecast = account(&PaneState::default(), &due, &knobs);
+        assert_eq!(emitted(&forecast.effects), [("limit", record.as_str())]);
+        let told = format!("{notice}; ae will move scout to opus55x in 10m");
+        assert_eq!(notices(&forecast.effects), [told.as_str()]);
+        let held = account(&forecast.next, &due, &knobs);
+        assert!(notices(&held.effects).is_empty(), "one per episode");
     }
 
     /// While an auto reseat attempt runs, its respawn leaves a shell where the
@@ -12434,6 +12464,65 @@ mod tests {
         let cleared = account(&latched, &seen(), &knobs);
         assert_eq!(actions(&cleared.effects), ["alert-cleared"]);
         assert!(cleared.effects.contains(&Effect::QuotaRefresh));
+    }
+
+    /// The cycle's own reader of the first-sight line: the seat auto reseat
+    /// may move is told where to and when, from the live settings and the
+    /// profiles the session's config resolves; a switch turned off tells
+    /// nothing.
+    #[test]
+    fn the_cycle_forecasts_a_move_only_for_a_seat_auto_reseat_may_move() {
+        let scratch = Scratch::new("auto-deadline");
+        let config = scratch.0.join("config");
+        std::fs::write(&config, "[profiles]\nopus55x = claude --model opus\n").expect("config");
+        std::fs::write(
+            scratch.0.join("meta"),
+            format!("session=demo\nconfig={}\n", config.display()),
+        )
+        .expect("meta");
+        let helper = SendHelper::for_session(&scratch.0);
+        let server = ServerId::Ambient;
+        let switched = |switch: &str| {
+            crate::autoreseat::settings_in(
+                &config,
+                &format!("[workspace]\nauto_reseat = {switch}\n[auto_reseat]\nsol6x = opus55x\n"),
+            )
+        };
+        let cycle = |auto| Cycle {
+            knobs: Knobs::default(),
+            meta_dir: &scratch.0,
+            helper: &helper,
+            server: &server,
+            session: "demo",
+            goal: None,
+            roster: vec![RosterEntry {
+                slot: "spawned.3".to_owned(),
+                name: "builder".to_owned(),
+                profile: Some("sol6x".to_owned()),
+                client: RecordedClient::Missing,
+                harness_session: None,
+                config_home: RecordedConfigHome::Missing,
+                config_home_base: RecordedConfigHomeBase::Missing,
+                binary: Some("codex".to_owned()),
+                work_dir: crate::meta::RecordedWorkDir::Missing,
+            }],
+            local_config: None,
+            lead_pair: false,
+            fleet_order: crate::theme::FleetOrder::EMPTY,
+            auto,
+            meta_agent: false,
+            launch_ids: Vec::new(),
+        };
+        let seat = ("spawned.3", "builder");
+        let quota = QuotaCarry::default();
+        assert_eq!(
+            cycle(switched("on")).auto_deadline(&quota, &[], seat, 1_000),
+            Some("ae will move builder to opus55x in 10m".to_owned())
+        );
+        assert_eq!(
+            cycle(switched("off")).auto_deadline(&quota, &[], seat, 1_000),
+            None
+        );
     }
 
     /// The auto reseat step's decisions, one table: nothing while the switch is

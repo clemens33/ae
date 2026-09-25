@@ -586,6 +586,7 @@ mod tests {
             reason: None,
             own_work: None,
             model_drift: crate::model_drift::ModelDrift::Quiet,
+            auto_reseat_open: false,
         }
     }
 
@@ -1218,6 +1219,17 @@ mod tests {
         );
         // …and stands even with nothing declared.
         assert!(render(None, Some(Reason::Limit)).contains("limit · observed:"));
+        // An open auto reseat attempt is named on the limit cell alone.
+        let moving = |reason: Reason| {
+            let mut session = SessionEntry::new("solo", Status::Running);
+            let mut entry = agent("lead", Some(true), None);
+            entry.reason = Some(reason);
+            entry.auto_reseat_open = true;
+            session.agents = vec![entry];
+            table(&[&session])
+        };
+        assert!(moving(Reason::Limit).contains("limit · auto-reseat in flight · observed:"));
+        assert!(!moving(Reason::Dead).contains("auto-reseat"));
         // Every other reason, and none, leaves the cell exactly as it was.
         for reason in [Some(Reason::Throttled), Some(Reason::Dead), None] {
             assert!(render(None, reason).contains("- · observed:unknown"));
@@ -1776,6 +1788,7 @@ mod tests {
                 reason: None,
                 own_work: None,
                 model_drift: crate::model_drift::ModelDrift::Quiet,
+                auto_reseat_open: false,
             }];
             let rendered = table(&[&session]);
             assert!(
@@ -1812,6 +1825,7 @@ mod tests {
                 reason: None,
                 own_work: None,
                 model_drift: crate::model_drift::ModelDrift::Quiet,
+                auto_reseat_open: false,
             }];
             row_fields(&table(&[&session]), "fake:lead")
         };
@@ -1864,6 +1878,7 @@ mod tests {
                 reason: None,
                 own_work,
                 model_drift: crate::model_drift::ModelDrift::Quiet,
+                auto_reseat_open: false,
             }];
             let rendered = table(&[&session]);
             rendered
@@ -1914,6 +1929,7 @@ mod tests {
             reason: None,
             own_work: None,
             model_drift: crate::model_drift::ModelDrift::Quiet,
+            auto_reseat_open: false,
         }];
         let rendered = table(&[&session]);
         let row = rendered
@@ -1944,6 +1960,7 @@ mod tests {
             reason: None,
             own_work: None,
             model_drift: crate::model_drift::ModelDrift::Quiet,
+            auto_reseat_open: false,
         }];
         // The short session id now sits between the reference and the semantic
         // fields, on every status, because frozen rendered it on both grammars
@@ -1981,6 +1998,7 @@ mod tests {
                 reason: None,
                 own_work: None,
                 model_drift: crate::model_drift::ModelDrift::Quiet,
+                auto_reseat_open: false,
             },
             AgentEntry {
                 reference: "colead".to_owned(),
@@ -1995,6 +2013,7 @@ mod tests {
                 reason: None,
                 own_work: None,
                 model_drift: crate::model_drift::ModelDrift::Quiet,
+                auto_reseat_open: false,
             },
         ];
 

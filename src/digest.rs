@@ -75,6 +75,9 @@ pub struct AgentEntry {
     pub own_work: Option<crate::session::OwnWork>,
     /// The seat's observed model drift. TABLE only, same rule as `own_work`.
     pub model_drift: crate::model_drift::ModelDrift,
+    /// An auto reseat attempt is open in the seat's current limit episode.
+    /// TABLE only, same rule as `own_work`.
+    pub auto_reseat_open: bool,
 }
 
 /// Frozen's placeholder for an agent whose session id is absent or unresolved.
@@ -573,6 +576,7 @@ mod tests {
                 reason: None,
                 own_work: None,
                 model_drift: crate::model_drift::ModelDrift::Quiet,
+                auto_reseat_open: false,
             };
             assert_eq!(agent.display_session_id(), want, "{why}");
             // The RAW field is untouched: resume and capture logic still need it.
@@ -607,6 +611,7 @@ mod tests {
             reason: None,
             own_work: None,
             model_drift: crate::model_drift::ModelDrift::Quiet,
+            auto_reseat_open: false,
         };
         let short = agent.display_session_id();
         assert_eq!(
@@ -656,6 +661,7 @@ mod tests {
             reason: Some(Reason::Blocked),
             own_work: None,
             model_drift: crate::model_drift::ModelDrift::Quiet,
+            auto_reseat_open: false,
         }];
         Digest::new(
             Timestamp::parse("2026-05-29T14:00:00Z").expect("the documented stamp"),
@@ -983,6 +989,7 @@ mod tests {
             reason: None,
             own_work: None,
             model_drift: crate::model_drift::ModelDrift::Quiet,
+            auto_reseat_open: false,
         }
         .to_json();
         let json::Value::Obj(fields) = &value else {
