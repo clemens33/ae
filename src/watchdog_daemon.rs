@@ -37,6 +37,21 @@ const NON_AGENT_PANES: [&str; 5] = ["(null)", "_watchdog", "_events", "_shepherd
 /// so.
 const UNKNOWN_ALERT_CYCLES: u32 = 5;
 
+/// Launch-settle grace in cycles: 120s at the 60s default, 20x over the
+/// spawn overhead and tool startup it covers.
+const LAUNCH_GRACE_CYCLES: u64 = 2;
+
+/// Whether the launch still settles: a young `.launch-attempt` means a seat
+/// starting. Absent, damaged, future or aged out all judge.
+#[must_use]
+fn launch_grace(stamp: crate::tmux::Evidence, now_epoch: i64, interval_secs: u64) -> bool {
+    let crate::tmux::Evidence::At(at) = stamp else {
+        return false;
+    };
+    let bound = i64::try_from(LAUNCH_GRACE_CYCLES.saturating_mul(interval_secs.max(1))).ok();
+    bound.is_some_and(|bound| at <= now_epoch && now_epoch - at < bound)
+}
+
 /// Motion cadence while at least one client can see the session.
 const ATTACHED_MOTION_TICK: Duration = Duration::from_millis(100);
 
@@ -186,10 +201,10 @@ pub struct PaneState {
     pub held_identity: Option<IdentityHold>,
     /// Dead is LATCHED once alerted, and the latch ends exactly once: on a
     /// POSITIVE process reading that shows the seat's harness back under the
-    /// pane (a re-run in place), which alerts nothing further and clears it
-    /// with one `dead-cleared`. A probe gap is not evidence of life, so an
-    /// UNKNOWN snapshot keeps the latch. A seat that dies again after a clear
-    /// is alerted again.
+    /// pane (a re-run in place), or on the seat's own later journal activity
+    /// — which alerts nothing further and clears it with one `dead-cleared`.
+    /// A probe gap is not evidence of life, so an UNKNOWN snapshot keeps the
+    /// latch. A seat that dies again after a clear is alerted again.
     pub dead_latched: bool,
     /// The previous cycle's filtered pane hash; `None` before the first.
     pub prev_hash: Option<u64>,
@@ -269,6 +284,10 @@ pub struct Observation {
     pub wait_progress: WaitProgress,
     /// Whether a process named the agent binary runs under the pane.
     pub descendancy: Descendancy,
+    /// This cycle's `.launch-attempt` stamp; the grace rule judges it.
+    pub launch_attempt: crate::tmux::Evidence,
+    /// The alert the log still shows this seat, if any.
+    pub outstanding_alert: Option<crate::attention::Reason>,
     /// Age of the newest event this agent is the ACTOR of.
     pub last_actor_event_age_secs: u64,
     /// Age of this seat's newest declaration: what a `waiting-agent` ceiling
@@ -1758,23 +1777,29 @@ fn book_sweep(
     Some(Verdict::Meta(booked.verdict))
 }
 
-/// The ONE end a death latch has: a POSITIVE process-tree reading shows the
-/// seat's harness back under the pane (the human's re-run in place). An
-/// UNKNOWN snapshot is not evidence of life, so a probe gap — and a reading
-/// that says the process is still gone — keeps the latch and returns `None`.
-/// On a clear it emits the one `dead-cleared` and hands back the episode the
-/// ordinary judgement must run on: identity kept, and every clock, hash and
-/// nudge field the death interrupted reset, because a pre-death hash or idle
-/// clock must not feed a stale verdict. No hysteresis and no second-alert
-/// suppression: the caller alerts again if the seat dies again, because that
-/// is a real event each time.
+/// The TWO ends a death latch has: a POSITIVE process-tree reading shows the
+/// seat's harness back under the pane (the human's re-run in place), or the
+/// seat's own later journal activity cleared the alert — a dead agent journals
+/// nothing, so its own record is proof of life the process name cannot give.
+/// An UNKNOWN snapshot is not evidence of life, so a probe gap — and a
+/// reading that says the process is still gone — keeps the latch and returns
+/// `None`. On a clear it emits the one `dead-cleared` and hands back the
+/// episode the ordinary judgement must run on: identity kept, and every clock,
+/// hash and nudge field the death interrupted reset, because a pre-death hash
+/// or idle clock must not feed a stale verdict. No hysteresis and no
+/// second-alert suppression: the caller alerts again if the seat dies again,
+/// because that is a real event each time.
 fn clear_death_latch(
     prior: &PaneState,
     next: &PaneState,
     seen: &Observation,
     effects: &mut Vec<Effect>,
 ) -> Option<PaneState> {
-    if !prior.dead_latched || !matches!(seen.descendancy, Descendancy::Present) {
+    if !prior.dead_latched {
+        return None;
+    }
+    let back = matches!(seen.descendancy, Descendancy::Present) || seen.outstanding_alert.is_none();
+    if !back {
         return None;
     }
     effects.push(Effect::Emit {
@@ -1834,8 +1859,10 @@ pub fn account(prior: &PaneState, seen: &Observation, knobs: &Knobs) -> Accounti
         None => {}
     }
 
-    // 2. The shell an auto reseat's respawn leaves is the move, not a death.
-    if seen.is_dead && !seen.auto_in_flight {
+    // 2. The shell an auto reseat's respawn leaves is the move, not a death;
+    //    and a shell read while the launch still settles is a seat starting.
+    let graced = launch_grace(seen.launch_attempt, seen.now_epoch, knobs.interval_secs);
+    if seen.is_dead && !seen.auto_in_flight && !graced {
         next.dead_latched = true;
         effects.push(Effect::Emit {
             action: "alert",
@@ -5204,6 +5231,8 @@ impl Cycle<'_> {
         let mut quota_refresh = false;
         // Every seat whose limit latch stands after its accounting.
         let mut auto_seats: Vec<AutoSeat> = Vec::new();
+        // ONE stamp read per cycle; every pane shares the session's grace.
+        let attempt = crate::store::open(self.meta_dir).launch_attempt();
 
         for pane in &observed {
             let Some(agent) = pane.agent.as_deref().filter(|name| !name.is_empty()) else {
@@ -5298,6 +5327,13 @@ impl Cycle<'_> {
                 done_progress,
                 wait_progress,
                 descendancy,
+                launch_attempt: attempt,
+                outstanding_alert: crate::session::alert_reason_in(
+                    &events,
+                    self.session,
+                    &slot,
+                    agent,
+                ),
                 last_actor_event_age_secs: last_actor_event_age(
                     &events,
                     self.session,
@@ -6812,14 +6848,14 @@ mod tests {
         age_secs, agents_fact, announced, ask_receipt, bar_glyph, continuation, deferred,
         delivered_receipts, done_challenge_text, entry_mut, fact_at, fleet_rows, held_seats,
         holds_seat, idle_nudge_seconds, idle_nudge_text, idle_nudge_text_waiting, is_meta_agent,
-        last_actor_event_age, last_done_event_at, last_working_declaration_at, launch_id_for,
-        live_model, motion_cadence, motion_failure, motion_observation_due, motion_publish_failure,
-        motion_ticker_enabled, nudge_text, observed_option, proven_ownership, quota_ask_candidates,
-        quota_delivery, quota_observation_due, quota_recipients, quota_seconds, read_events,
-        rebind, record_nudge, restore_idle, run, session_name, slot_latched, slot_mark,
-        stale_display, static_observe_cadence, sweep_effects, sweep_seconds,
-        system_time_from_epoch, throttle_quota_line, ticker_mode, wait_challenge_text,
-        window_agents_line,
+        last_actor_event_age, last_done_event_at, last_working_declaration_at, launch_grace,
+        launch_id_for, live_model, motion_cadence, motion_failure, motion_observation_due,
+        motion_publish_failure, motion_ticker_enabled, nudge_text, observed_option,
+        proven_ownership, quota_ask_candidates, quota_delivery, quota_observation_due,
+        quota_recipients, quota_seconds, read_events, rebind, record_nudge, restore_idle, run,
+        session_name, slot_latched, slot_mark, stale_display, static_observe_cadence,
+        sweep_effects, sweep_seconds, system_time_from_epoch, throttle_quota_line, ticker_mode,
+        wait_challenge_text, window_agents_line,
     };
     use super::{Look, Mark, PaneMark, session_mark};
     use crate::events::Event;
@@ -7152,6 +7188,8 @@ mod tests {
             done_progress: DoneProgress::None,
             wait_progress: WaitProgress::None,
             descendancy: Descendancy::Present,
+            launch_attempt: crate::tmux::Evidence::Silent,
+            outstanding_alert: Some(crate::attention::Reason::Dead),
             last_actor_event_age_secs: 0,
             declared_age_secs: 0,
             sweep: None,
@@ -12133,6 +12171,20 @@ mod tests {
         assert_eq!(second.verdict, Verdict::Dead);
         assert!(second.next.dead_latched);
         assert!(emitted(&second.effects).is_empty(), "alerted twice");
+    }
+
+    #[test]
+    fn launch_grace_covers_a_young_stamp_and_judges_everything_else() {
+        use crate::tmux::Evidence;
+        let now = 10_000;
+        assert!(launch_grace(Evidence::At(now), now, 60));
+        assert!(launch_grace(Evidence::At(now - 119), now, 60));
+        assert!(!launch_grace(Evidence::At(now - 120), now, 60));
+        assert!(!launch_grace(Evidence::At(now + 1), now, 60));
+        assert!(!launch_grace(Evidence::Silent, now, 60));
+        assert!(!launch_grace(Evidence::Unreadable, now, 60));
+        assert!(launch_grace(Evidence::At(now - 9), now, 5));
+        assert!(!launch_grace(Evidence::At(now - 10), now, 5));
     }
 
     #[test]

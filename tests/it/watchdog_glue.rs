@@ -1280,6 +1280,74 @@ fn a_pane_that_dropped_to_a_shell_is_alerted_once() {
     let _ = fs::remove_dir_all(&scratch);
 }
 
+/// A shell pane stamped as the main seat, with the daemon on its own thread.
+fn stamped_shell(
+    meta_dir: &Path,
+    socket: &Path,
+    scratch: &Path,
+    session: &str,
+    knobs: Knobs,
+) -> std::thread::JoinHandle<()> {
+    for words in [
+        vec!["new-session", "-d", "-s", session, "sh"],
+        vec!["set-option", "-p", "-t", session, "@ae_agent", "lead"],
+        vec!["set-option", "-p", "-t", session, "@ae_slot", "main"],
+    ] {
+        assert!(tmux(socket, scratch, &words).0, "{}", words.join(" "));
+    }
+    let dir = meta_dir.to_path_buf();
+    std::thread::spawn(move || {
+        let _ = run(&dir, knobs, &mut Vec::new(), &mut Vec::new());
+    })
+}
+
+fn journal_shows(meta_dir: &Path, needle: &str) {
+    let deadline = Instant::now() + BUDGET;
+    while Instant::now() < deadline && !events(meta_dir).contains(needle) {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[test]
+fn a_fresh_shell_is_silent_then_alerted_then_cleared_by_its_agent() {
+    let scratch = scratch("grace");
+    require_tmux(&scratch);
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup::new(&socket, &scratch);
+    let meta_dir = plant(&scratch.join("home"), "born", &socket, None);
+    // A launch began this second: the shell below is a seat still starting.
+    ae::store::open(&meta_dir)
+        .stamp_launch_attempt(ae::time::Timestamp::now().epoch())
+        .expect("the attempt stamp");
+    // Five-second cycles: the two-cycle grace outlasts any one cycle's cost.
+    let slow = Knobs {
+        interval_secs: 5,
+        ..quick()
+    };
+    let daemon = stamped_shell(&meta_dir, &socket, &scratch, "born", slow);
+    std::thread::sleep(Duration::from_secs(6));
+    let silent = !events(&meta_dir).contains("dropped to shell");
+    assert!(silent, "silent while young");
+    journal_shows(&meta_dir, "dropped to shell");
+    let alerted = events(&meta_dir).contains("dropped to shell");
+    assert!(alerted, "alerted once old");
+    // The agent's own declaration proves it alive; the daemon retracts.
+    let now = ae::time::Timestamp::now();
+    let line = ae::state::event_line(now, "lead", "state", "working", "alive");
+    ae::store::open(&meta_dir)
+        .append_event(&line)
+        .expect("the declaration");
+    journal_shows(&meta_dir, "dead-cleared");
+    let _ = tmux(&socket, &scratch, &["kill-session", "-t", "born"]);
+    let _ = daemon.join();
+    let log = events(&meta_dir);
+    assert!(log.contains("dead-cleared"), "the recovery");
+    let at = log.find("\"action\":\"state\"").expect("the declaration");
+    let alerts = log[..at].matches("dropped to shell").count();
+    assert_eq!(alerts, 1, "latched: {log}");
+    let _ = fs::remove_dir_all(&scratch);
+}
+
 #[test]
 fn the_branch_pair_is_published_on_the_session_the_daemon_watches() {
     // The pane's per-cycle git read.
