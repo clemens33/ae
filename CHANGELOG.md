@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.178] - 2026-09-25
+- Pin the usage-limit proof a reseat may stop a seat on
+- Pin the auto reseat leg, the changed-path list and the inherited declaration
+- Pin the auto reseat leg against a live seat on its limit
+- Pin that the leg acts only under an attempt the watchdog still holds open
+- Pin the leg's refusals by slot, its hold on a busy seat and the order of its silent arms
+- Move a seat off its usage limit through a watchdog leg that reuses the one reseat
+- Pin the changed-path list against a real work tree and the reason a refusal names for each skipped candidate
+- Decide a reseat stop from both frame readings in one pure verdict
+- Pin the line a reseat ending quotes when it printed no error line
+
 ## [v2026.9.177] - 2026-09-25
 - Pin the auto reseat decisions with failing unit tests
 - Pin the auto reseat edge cases and share the test specimens
