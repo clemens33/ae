@@ -222,6 +222,37 @@ fn rust_test_tmux_isolation_ok(justfile: &str) -> bool {
             .all(|(header, command)| recipe_text(justfile, header) == [*command])
 }
 
+/// Whether the `test` arm of `_tmux-isolated` forwards its extra arguments
+/// to nextest and, on a filtered run, skips the doctests with one stderr
+/// note — so a targeted receipt never needs a hand-replicated lane (#204).
+fn test_arm_forwards_filter_args(justfile: &str) -> bool {
+    let lines = recipe_text(justfile, "_tmux-isolated lane *args:");
+    let Some(open) = lines.iter().position(|line| line == "test)") else {
+        return false;
+    };
+    let Some(len) = lines[open..].iter().position(|line| line == ";;") else {
+        return false;
+    };
+    let arm = &lines[open..open + len];
+    let position = |needle: &str| arm.iter().position(|line| line.contains(needle));
+    let (Some(guard), Some(filtered), Some(note), Some(doctest)) = (
+        position("if (( $#"),
+        position("cargo nextest run --locked --all-features \"$@\""),
+        position("skipping doctests"),
+        position("cargo test --doc --locked --all-features"),
+    ) else {
+        return false;
+    };
+    let Some(bare) = arm
+        .iter()
+        .position(|line| line == "detached cargo nextest run --locked --all-features")
+    else {
+        return false;
+    };
+    let order = [guard, filtered, note, bare, doctest];
+    order.windows(2).all(|pair| pair[0] < pair[1]) && arm[note].contains(">&2")
+}
+
 #[test]
 fn the_lint_recipe_protects_shellchecks_stdin() {
     assert!(
@@ -297,6 +328,24 @@ fn the_rust_test_recipe_isolates_every_real_tmux_probe() {
     // directory leaves state behind and can contaminate a later run.
     assert!(!rust_test_tmux_isolation_ok(
         "rust-test:\n    test_tmux_tmp=\"$(mktemp -d \"${TMPDIR:-/tmp}/ae-rust-test.$$.XXXXXX\")\"\n    export TMUX_TMPDIR=\"$test_tmux_tmp\"\n    unset TMUX TMUX_PANE\n    tmux -L ae new-session -d -s foreign-review-sentry -e AE_SESSION=foreign-review-sentry\n    cargo nextest run --locked --all-features\n    cargo test --doc --locked --all-features\n"
+    ));
+}
+
+#[test]
+fn the_test_arm_forwards_filter_args_to_nextest_and_skips_the_doctests() {
+    assert!(
+        test_arm_forwards_filter_args(&read(&root().join("justfile"))),
+        "a filtered `just _tmux-isolated test` run must reach nextest, and skip the doctests"
+    );
+
+    // RED — today's arm takes no arguments: a worker needing a targeted
+    // receipt must hand-replicate the lane, which killed the fleet server.
+    assert!(!test_arm_forwards_filter_args(
+        "_tmux-isolated lane *args:\n    case \"$lane\" in\n        test)\n            detached cargo nextest run --locked --all-features\n            detached cargo test --doc --locked --all-features\n            ;;\n    esac\n"
+    ));
+    // RED — forwarded but never skipped: a filtered run pays for the doctests.
+    assert!(!test_arm_forwards_filter_args(
+        "_tmux-isolated lane *args:\n    case \"$lane\" in\n        test)\n            detached cargo nextest run --locked --all-features \"$@\"\n            detached cargo test --doc --locked --all-features\n            ;;\n    esac\n"
     ));
 }
 

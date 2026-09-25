@@ -1220,8 +1220,16 @@ _tmux-isolated lane *args:
     tmux -f /dev/null -L ae new-session -d -s foreign-review-sentry -e AE_SESSION=foreign-review-sentry
     case "$lane" in
         test)
-            detached cargo nextest run --locked --all-features
-            detached cargo test --doc --locked --all-features
+            # A filtered run is a receipt, not the gate: nextest only, no
+            # doctests. The bare run keeps the same two commands; no "$@"
+            # there (unbound under set -u on bash 3.2).
+            if (( $# )); then
+                detached cargo nextest run --locked --all-features "$@"
+                echo "note: filtered run, skipping doctests" >&2
+            else
+                detached cargo nextest run --locked --all-features
+                detached cargo test --doc --locked --all-features
+            fi
             ;;
         cov) detached cargo llvm-cov nextest --locked --all-features ;;
         mutants) detached cargo mutants --cargo-arg=--locked --jobs 1 "$@" ;;
