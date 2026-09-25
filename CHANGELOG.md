@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.183] - 2026-09-25
+- Document the landed auto reseat path
+- Re-ask a stop verify that lands mid-exit
+- Scrub git repository-local environment in run_git
+- Rewrite I5 to the caller-env-ignored contract
+
 ## [v2026.9.182] - 2026-09-25
 - Pin the quota-judged chooser, the move notices, the deadline line and the open-attempt list suffix
 - Pin the move notices end to end, a spent candidate account, and the said refusals and holds
