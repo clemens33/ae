@@ -396,6 +396,54 @@ fn a_stop_with_a_legacy_pane_it_could_not_kill_refuses() {
     assert!(panes.contains(&pane), "the legacy pane is alive: {panes}");
 }
 
+/// A start that found a legacy watchdog it could not take aborts before it
+/// spawns anything: exit 1, a `refused:` audit, and no `_watchdog` pane
+/// beside the live legacy one.
+#[test]
+fn a_start_with_a_legacy_pane_it_could_not_kill_aborts() {
+    let scratch = scratch("wdlegstart");
+    require_tmux(&scratch);
+    let socket = socket_of(&scratch);
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let root = scratch.join("home");
+    let meta_dir = plant_session(&root, "ours", &socket);
+    let run = |words: &[&str]| tmux(&socket, &scratch, words);
+    let pane = super::refusal_rig::linked(&run, "ours", "theirs", "ae-monitor", "_shepherd");
+
+    let (code, out, err) = watchdog(&root, &["start", "ours"]);
+
+    let stamps = tmux(
+        &socket,
+        &scratch,
+        &["list-panes", "-s", "-t", "ours", "-F", "#{@ae_agent}"],
+    )
+    .1;
+    let events = events_of(&meta_dir);
+    assert_eq!(
+        code, 1,
+        "a refused legacy reap aborts the start: {out} {err}"
+    );
+    assert!(
+        err.contains("a legacy watchdog of")
+            && err.contains(&pane)
+            && err.contains("it belongs to session"),
+        "err names the pane and its short reason: {err}"
+    );
+    assert!(
+        events.iter().any(|line| line.contains("watchdog-start")
+            && line.contains("refused:")
+            && line.contains(&pane)),
+        "one refused audit naming the legacy pane: {events:?}"
+    );
+    assert!(
+        !stamps.lines().any(|line| line == "_watchdog"),
+        "no watchdog pane spawned beside the live legacy: {stamps:?}"
+    );
+}
+
 /// I2: a refused legacy kill does not lock out the main stop. Each
 /// registration follows its own verdict (the main pane dies, its pidfile is
 /// cleared), while the session facts wait for zero refusals: exit 1, no

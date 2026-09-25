@@ -296,7 +296,6 @@ fn status(
     Ok(0)
 }
 
-/// `watchdog start` — reap, serialize, spawn the pane, wait for registration.
 /// Abort `start` with one `Error` line and one `refused:` audit. Both abort
 /// branches share it; only the composed lines differ.
 fn abort_start(
@@ -328,17 +327,19 @@ fn abort_on_live_legacy(
     // Unlike the cannot-rule-out arm in `start` (an unanswerable server exits
     // 0 because the daemon may not exist), this FOUND a live watchdog it
     // could not take: starting beside it would run two side by side.
+    let (err_line, audit) = legacy_abort_lines(session, &refused);
+    abort_start(meta_dir, caller, err, &err_line, &audit).map(Some)
+}
+
+/// The legacy-abort `Error` line plus its audit. Pure: pins without tmux.
+fn legacy_abort_lines(session: &str, refused: &[String]) -> (String, String) {
     let joined = refused.join("; ");
-    abort_start(
-        meta_dir,
-        caller,
-        err,
-        &format!(
+    (
+        format!(
             "Error: a legacy watchdog of '{session}' may still be running: {joined}. Start aborted; remove it by hand, then retry."
         ),
-        &format!("refused: {joined}"),
+        format!("refused: {joined}"),
     )
-    .map(Some)
 }
 
 /// Abort `start` when the fresh pane published nothing in bounds: tear the
@@ -353,8 +354,20 @@ fn abort_on_missing_registration(
     err: &mut impl Write,
 ) -> crate::Result<u8> {
     let kill = watchdog_glue::kill_owned_pane(server, pane, session, Some(AGENT_STAMP), err)?;
+    let (err_line, audit) = registration_abort_lines(session, pane, &kill);
+    abort_start(meta_dir, caller, err, &err_line, &audit)
+}
+
+/// The missing-registration abort `Error` line plus its audit: a refused
+/// teardown names the pane that may still run an unregistered watchdog.
+/// Pure: pins without tmux.
+fn registration_abort_lines(
+    session: &str,
+    pane: &str,
+    kill: &watchdog_glue::KillOutcome,
+) -> (String, String) {
     let base = "watchdog did not publish a pidfile within the start bound";
-    let (err_line, audit) = match watchdog_glue::refusal_short(&kill, session, Some(AGENT_STAMP)) {
+    match watchdog_glue::refusal_short(kill, session, Some(AGENT_STAMP)) {
         Some(short) => (
             format!(
                 "Error: {base}; its pane {pane} could not be removed ({short}) and may still run an unregistered watchdog. Start aborted."
@@ -365,10 +378,10 @@ fn abort_on_missing_registration(
             format!("Error: {base}; start aborted."),
             format!("refused: {base}"),
         ),
-    };
-    abort_start(meta_dir, caller, err, &err_line, &audit)
+    }
 }
 
+/// `watchdog start` — reap, serialize, spawn the pane, wait for registration.
 fn start(
     server: &ServerId,
     session: &str,
@@ -825,7 +838,8 @@ fn stamped_pane(server: &ServerId, session: &str, agent: &str) -> PaneLook {
 )]
 mod tests {
     use super::{
-        Action, Caller, Presence, START_ACTION, USAGE, actor_of, run_with_actor, spell_caller,
+        Action, Caller, PaneLook, Presence, START_ACTION, StopDecision, USAGE, actor_of,
+        legacy_abort_lines, registration_abort_lines, run_with_actor, spell_caller, stop_decision,
     };
 
     #[test]
@@ -911,5 +925,209 @@ mod tests {
         assert_eq!(body.lines().count(), 1, "still one line: {body:?}");
         assert!(body.contains("(pane %1)"), "{body}");
         crate::events::Event::parse_line(body.trim_end()).expect("the hostile line parses");
+    }
+
+    fn reap(
+        name: &'static str,
+        pane: &str,
+        outcome: crate::watchdog_glue::KillOutcome,
+    ) -> crate::watchdog_glue::LegacyReap {
+        crate::watchdog_glue::LegacyReap {
+            name,
+            pane: pane.to_owned(),
+            outcome,
+        }
+    }
+
+    fn decided(
+        main_gone: bool,
+        settle: bool,
+        exit: u8,
+        out: Option<&str>,
+        err: &[&str],
+        audit: &str,
+    ) -> StopDecision {
+        StopDecision {
+            main_gone,
+            settle,
+            exit,
+            out: out.map(str::to_owned),
+            err: err.iter().map(|line| (*line).to_owned()).collect(),
+            audit: audit.to_owned(),
+        }
+    }
+
+    struct StopRow {
+        label: &'static str,
+        legacy: Vec<crate::watchdog_glue::LegacyReap>,
+        running: bool,
+        second: Option<PaneLook>,
+        main: Option<crate::watchdog_glue::KillOutcome>,
+        want: StopDecision,
+    }
+
+    /// The refused `Error` line plus its audit for `frags`, byte for byte.
+    fn refused_lines(frags: &[&str], kept: bool) -> (Vec<String>, String) {
+        const HEAD: &str = "Error: the watchdog of 'ours' may still be running: ";
+        const TAIL: &str = "; retry 'ae watchdog stop ours'.";
+        let mut line = format!("{HEAD}{}", frags.join("; "));
+        if kept {
+            line.push_str(". The pidfile was kept");
+        }
+        line.push_str(TAIL);
+        (vec![line], format!("refused: {}", frags.join("; ")))
+    }
+
+    fn check_stop_rows(rows: Vec<StopRow>) {
+        for row in rows {
+            let got = stop_decision(
+                "ours",
+                &row.legacy,
+                row.running,
+                row.second.as_ref(),
+                row.main.as_ref(),
+            );
+            assert_eq!(got, row.want, "row {}", row.label);
+        }
+    }
+
+    #[test]
+    fn the_stop_fold_refuses_per_arm() {
+        use crate::watchdog_glue::KillOutcome::{WrongAgent, WrongSession};
+        const LEGACY: &str =
+            "pane %7 could not be killed (it belongs to session 'theirs', not 'ours')";
+        const MAIN: &str = "pane %5 could not be killed (it is stamped 'lead', not '_watchdog')";
+        const SILENT_ERR: &str = "its server stopped answering before the pane could be killed";
+        const SILENT_AUDIT: &str = "server stopped answering before the pane could be killed";
+        let (legacy_err, legacy_audit) = refused_lines(&[LEGACY], false);
+        let (main_err, main_audit) = refused_lines(&[MAIN], true);
+        let (silent_err, _) = refused_lines(&[SILENT_ERR], true);
+        check_stop_rows(vec![
+            StopRow {
+                label: "legacy-refused",
+                legacy: vec![reap("shepherd", "%7", WrongSession("theirs".to_owned()))],
+                running: false,
+                second: None,
+                main: None,
+                want: StopDecision {
+                    main_gone: false,
+                    settle: false,
+                    exit: 1,
+                    out: None,
+                    err: legacy_err,
+                    audit: legacy_audit,
+                },
+            },
+            StopRow {
+                label: "main-refused",
+                legacy: vec![],
+                running: true,
+                second: Some(PaneLook::Present("%5".to_owned())),
+                main: Some(WrongAgent("lead".to_owned())),
+                want: StopDecision {
+                    main_gone: false,
+                    settle: false,
+                    exit: 1,
+                    out: None,
+                    err: main_err,
+                    audit: main_audit,
+                },
+            },
+            StopRow {
+                label: "unanswered",
+                legacy: vec![],
+                running: true,
+                second: Some(PaneLook::Unanswered),
+                main: None,
+                want: StopDecision {
+                    main_gone: false,
+                    settle: false,
+                    exit: 1,
+                    out: None,
+                    err: silent_err,
+                    audit: format!("refused: {SILENT_AUDIT}"),
+                },
+            },
+        ]);
+    }
+
+    #[test]
+    fn the_stop_fold_settles_per_arm() {
+        use crate::watchdog_glue::KillOutcome::Killed;
+        const NOTE: &str =
+            "ae: the watchdog pane of 'ours' was already gone; stopping what remains.";
+        check_stop_rows(vec![
+            StopRow {
+                label: "main-killed",
+                legacy: vec![],
+                running: true,
+                second: Some(PaneLook::Present("%5".to_owned())),
+                main: Some(Killed),
+                want: decided(true, true, 0, Some("Watchdog stopped."), &[], "stopped"),
+            },
+            StopRow {
+                label: "absent",
+                legacy: vec![],
+                running: true,
+                second: Some(PaneLook::Absent),
+                main: None,
+                want: decided(true, true, 0, Some("Watchdog stopped."), &[NOTE], "stopped"),
+            },
+            StopRow {
+                label: "stopped-clean-legacy",
+                legacy: vec![reap("loop", "%8", Killed)],
+                running: false,
+                second: None,
+                main: None,
+                want: decided(false, true, 0, Some("Watchdog stopped."), &[], "stopped"),
+            },
+            StopRow {
+                label: "stopped-bare",
+                legacy: vec![],
+                running: false,
+                second: None,
+                main: None,
+                want: decided(
+                    false,
+                    true,
+                    0,
+                    Some("Watchdog is not running."),
+                    &[],
+                    "not running",
+                ),
+            },
+        ]);
+    }
+
+    #[test]
+    fn the_start_aborts_name_the_pane_they_could_not_take() {
+        let frag =
+            "pane %7 could not be killed (it belongs to session 'theirs', not 'ours')".to_owned();
+        let (err_line, audit) = legacy_abort_lines("ours", std::slice::from_ref(&frag));
+        assert_eq!(
+            err_line,
+            format!(
+                "Error: a legacy watchdog of 'ours' may still be running: {frag}. Start aborted; remove it by hand, then retry."
+            ),
+            "row legacy-abort"
+        );
+        assert_eq!(audit, format!("refused: {frag}"), "row legacy-abort");
+        let kill = crate::watchdog_glue::KillOutcome::WrongAgent("lead".to_owned());
+        let (err_line, audit) = registration_abort_lines("ours", "%5", &kill);
+        let short = "it is stamped 'lead', not '_watchdog'";
+        assert_eq!(
+            err_line,
+            format!(
+                "Error: watchdog did not publish a pidfile within the start bound; its pane %5 could not be removed ({short}) and may still run an unregistered watchdog. Start aborted."
+            ),
+            "row registration-refused"
+        );
+        assert_eq!(
+            audit,
+            format!(
+                "refused: watchdog did not publish a pidfile within the start bound; its pane %5 could not be removed ({short})"
+            ),
+            "row registration-refused"
+        );
     }
 }
