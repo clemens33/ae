@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.182] - 2026-09-25
+- Pin the quota-judged chooser, the move notices, the deadline line and the open-attempt list suffix
+- Pin the move notices end to end, a spent candidate account, and the said refusals and holds
+- Choose the auto reseat target by quota, tell every ending, forecast the move, and mark an open attempt in ae list
+- Pin the first-sight forecast, the lead-pair colead notice, the successor's own tool and the critical-target suffix
+
 ## [v2026.9.181] - 2026-09-25
 - Refuse short -L destructive tmux verbs in the justfile
 - Name the explicit-socket rule and remove the socket test node
