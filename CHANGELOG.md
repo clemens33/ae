@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.179] - 2026-09-25
+- Pin the reader toggle, wheel, dead-source and doctor arms with failing tests
+- Open a reader pane over a source and keep the keyboard in the source
+- Name the reader key and the no-select wheel map in the docs
+- Name the vi-mode Escape caveat beside the reader key
+- Expect the guarded resize hook in the launch policy pin
+- Use then_some for the exact mode-table command
+- Allow the one wheel-and-typing arm its length
+- Refuse a reader tail the verb does not own
+- Pin the reader self-close and the unstamped split refusal with failing tests
+- Close the reader from its own pane and undo an unstampable split
+- Pin the stale reader close from a third live pane
+- Say why an unstampable split is undone, in one sentence
+
 ## [v2026.9.178] - 2026-09-25
 - Pin the usage-limit proof a reseat may stop a seat on
 - Pin the auto reseat leg, the changed-path list and the inherited declaration
