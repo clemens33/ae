@@ -1628,7 +1628,10 @@ fn preflight(
                     "session '{old}' records its working copy at {recorded_work} but it is gone — restore it or end the session (ae end {old})"
                 ));
             }
-            if mode == WorkMode::Full && is_symlink(Path::new(&recorded_work)) {
+            // I4: every managed mode refuses a symlinked source before any
+            // write — the witness would be created through the link. Local
+            // moves nothing and writes nothing: its path stays its own business.
+            if mode != WorkMode::Local && is_symlink(Path::new(&recorded_work)) {
                 return Err(format!(
                     "session '{old}' records a working copy at {recorded_work} that is a symlink — refusing an unprovable copy"
                 ));
@@ -1713,6 +1716,140 @@ fn dir_id(path: &Path) -> (u64, u64) {
     )]
     let probe = std::fs::metadata(path);
     probe.map_or((0, 0), |meta| (meta.dev(), meta.ino()))
+}
+
+/// The identity witness file (#191): written into the managed work root on
+/// the fresh path, re-proved on every retry, removed after completion.
+const WITNESS_FILE_NAME: &str = ".ae-rename-witness";
+
+/// Self-describing witness bytes (N3): `ae rename witness <uuid>\n` — a human
+/// seeing the `git status` entry can tell what it is, and no user file
+/// collides with the stale gate by accident.
+const WITNESS_PREFIX: &str = "ae rename witness ";
+
+/// Canonical witness bytes for a nonce.
+fn witness_bytes(nonce: &str) -> String {
+    format!("{WITNESS_PREFIX}{nonce}\n")
+}
+
+/// Whether `path` holds our own witness bytes for `nonce`: a Regular file
+/// whose capped read compares exact. Links, special nodes, overlong or
+/// unreadable files are never ours — a link could reach the moved-aside
+/// original's witness, a FIFO would block the open. The ONE witness compare;
+/// both the verifier and the remover ask it.
+fn own_witness(path: &Path, nonce: &str) -> bool {
+    if !matches!(classify_node(path), NodeKind::Regular) {
+        return false;
+    }
+    let want = witness_bytes(nonce);
+    read_capped(path).is_some_and(|bytes| bytes == want.as_bytes())
+}
+
+/// Whether bytes are ae's own witness spelling (an exact-canonical UUID
+/// line): the stale gate replaces only these, never a foreign file.
+fn witness_bytes_valid(bytes: &[u8]) -> bool {
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return false;
+    };
+    text.strip_prefix(WITNESS_PREFIX)
+        .and_then(|line| line.strip_suffix('\n'))
+        .is_some_and(|inner| crate::archive::canonical_uuid(inner) == inner)
+}
+
+/// How much of a witness file is ever read: our own bytes are 54. Anything
+/// longer cannot be ours and is refused without being fully read.
+const WITNESS_READ_CAP: u64 = 2048;
+
+/// Capped bytes of the witness file: overlong or unreadable reads as `None`.
+/// Callers classify first — this never opens a link or special node.
+fn read_capped(path: &Path) -> Option<Vec<u8>> {
+    use std::io::Read as _;
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: the rename's capped witness-file read after an lstat classification — see clippy.toml"
+    )]
+    let file = std::fs::File::open(path).ok()?;
+    let mut bytes = Vec::new();
+    file.take(WITNESS_READ_CAP + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    u64::try_from(bytes.len())
+        .ok()
+        .filter(|len| *len <= WITNESS_READ_CAP)
+        .map(|_| bytes)
+}
+
+/// Write the fresh witness into the managed work root: lstat-gated, never
+/// through a link, stale-ours replaced, foreign files refused. First write of
+/// the transaction: every failure refuses before the intent publish.
+fn write_witness(work: &Path, nonce: &str) -> Result<(), String> {
+    let path = work.join(WITNESS_FILE_NAME);
+    match classify_node(&path) {
+        NodeKind::Absent => {}
+        NodeKind::Symlink => {
+            return Err(format!(
+                "'{}' is a symlink; refusing to write the rename witness through it",
+                path.display()
+            ));
+        }
+        NodeKind::Other(what) => {
+            return Err(format!(
+                "'{}' is {what}; refusing to write the rename witness over it",
+                path.display()
+            ));
+        }
+        NodeKind::Regular => {
+            // Stale-ours (our own canonical bytes from a crashed rename) is
+            // replaced; anything else is the user's file and stays untouched.
+            let stale = read_capped(&path).is_some_and(|bytes| witness_bytes_valid(&bytes));
+            if !stale {
+                return Err(format!(
+                    "'{}' is already a file ae did not write — move it aside and retry",
+                    path.display()
+                ));
+            }
+            if std::fs::remove_file(&path).is_err() {
+                return Err(format!(
+                    "could not replace the stale rename witness at '{}'",
+                    path.display()
+                ));
+            }
+        }
+    }
+    crate::init::create_exclusive(&path, witness_bytes(nonce).as_bytes(), 0o644).map_err(|why| {
+        format!(
+            "could not write the rename witness into '{}' ({why}) — make the directory writable and retry",
+            work.display()
+        )
+    })
+}
+
+/// Whether the witness at `work` re-proves `intent`: legacy intents (no
+/// nonce) hold the old rule; at phase complete absence reads as cleaned-up
+/// (removal runs after the durable publish) while a present mismatch still
+/// refuses.
+fn witness_holds(work: &Path, intent: &Intent) -> bool {
+    let Some(nonce) = intent.nonce.as_deref() else {
+        return true;
+    };
+    let path = work.join(WITNESS_FILE_NAME);
+    match classify_node(&path) {
+        NodeKind::Absent => intent.phase == PHASE_COMPLETE,
+        _ => own_witness(&path, nonce),
+    }
+}
+
+/// Remove the witness after the durable complete publish (and on the re-run
+/// of a completion): content-gated — only our own bytes go — and best-effort.
+/// A stale witness is harmless: the next fresh rename replaces it.
+fn remove_witness(work: &Path, intent: &Intent) {
+    let Some(nonce) = intent.nonce.as_deref() else {
+        return;
+    };
+    let path = work.join(WITNESS_FILE_NAME);
+    if own_witness(&path, nonce) {
+        let _ = std::fs::remove_file(&path);
+    }
 }
 
 /// The git administrative directory for a managed work path: origin's
@@ -1896,12 +2033,21 @@ fn work_moved(root: &Path, intent: &Intent) -> bool {
     {
         return false;
     }
+    // The nonce (#191): a recreated directory reuses `(device, inode)` on
+    // Linux but cannot repeat the minted bytes.
+    if !witness_holds(Path::new(&intent.new_work), intent) {
+        return false;
+    }
     if intent.mode != WorkMode::Git {
         return true;
     }
     // The administrative identity likewise: `git worktree move` preserves
     // the admin directory while repointing its `gitdir` file, so a recreated
-    // worktree at the same spelling fails here.
+    // worktree at the same spelling fails here. The admin needs no new
+    // witness of its own (N4): a git-shaped admin replacement always replaces
+    // the nonce-bearing work beside it, and the porcelain below proves one
+    // admin still points at the work. Manual admin surgery on an
+    // inode-reusing filesystem stays a named residual.
     if (intent.admin_dev, intent.admin_ino) == (0, 0)
         || dir_id(&admin_dir(&intent.origin, &intent.old_work))
             != (intent.admin_dev, intent.admin_ino)
@@ -1935,13 +2081,18 @@ fn do_work_move(root: &Path, intent: &Intent) -> Result<(), String> {
     // witness must describe the directory standing at the old address right
     // now — not a same-spelling replacement, and not a zero fingerprint no
     // publish step emits. A move first and a check afterward would strand
-    // real work on a forged or stale carrier.
-    if dir_id(Path::new(&intent.old_work)) != (intent.work_dev, intent.work_ino) {
+    // real work on a forged or stale carrier. The nonce rides the same
+    // verdict (#191): a recreated directory reuses the fingerprint.
+    if dir_id(Path::new(&intent.old_work)) != (intent.work_dev, intent.work_ino)
+        || !witness_holds(Path::new(&intent.old_work), intent)
+    {
         return Err(format!(
             "the working copy at '{}' does not match the recorded identity — refusing to move an unproved directory",
             intent.old_work
         ));
     }
+    // The admin re-proof stays `(device, inode)`-only (N4): the work nonce
+    // above already refuses every git-shaped replacement of the pair.
     if intent.mode == WorkMode::Git
         && dir_id(&admin_dir(&intent.origin, &intent.old_work))
             != (intent.admin_dev, intent.admin_ino)
@@ -2663,6 +2814,9 @@ fn converge_completed(
             )?;
             return Ok(EXIT_FAILED);
         }
+        // I2: a parked completing drive left the witness behind; the verified
+        // re-run takes it back (content-gated, best-effort).
+        remove_witness(Path::new(&intent.new_work), intent);
         // Retrying a completion is a success, never a cut: no attestation,
         // no park, no duplicate.
         print_stopped_success(intent, false, out, err)?;
@@ -2768,6 +2922,19 @@ fn stopped_fresh(
         )?;
         return Ok(EXIT_FAILED);
     }
+    // Fingerprint → write → publish: the fingerprint refusals above claim
+    // Nothing was renamed, so nothing may precede them; creating a child
+    // does not move the dir's (device, inode), so the mint lands after.
+    let nonce = match plan.mode {
+        WorkMode::Local => None,
+        _ => Some(crate::launch::generate_uuid()),
+    };
+    if let Some(ref nonce) = nonce
+        && let Err(why) = write_witness(Path::new(&plan.old_work), nonce)
+    {
+        writeln!(err, "Error: {why}. Nothing was renamed.")?;
+        return Ok(EXIT_FAILED);
+    }
     let mut intent = Intent {
         uuid: plan.uuid,
         old: old.to_owned(),
@@ -2783,11 +2950,12 @@ fn stopped_fresh(
         work_ino,
         admin_dev,
         admin_ino,
-        // Legacy shape until the witness write lands: the mint and the file
-        // publish together, never one without the other.
-        nonce: None,
+        nonce,
     };
     if let Err(why) = publish_intent(root, &intent) {
+        // N1: the witness this drive wrote has no carrier demanding it —
+        // take it back so `git status` stays clean.
+        remove_witness(Path::new(&intent.old_work), &intent);
         writeln!(err, "Error: {why}. Nothing was renamed.")?;
         return Ok(EXIT_FAILED);
     }
@@ -2933,6 +3101,9 @@ fn complete_transaction_until(
         {
             return Err(TxnError::Crash(code));
         }
+        // Completed and durable: the witness has no further verifier — take
+        // it back (best-effort; a stale witness is harmless).
+        remove_witness(Path::new(&intent.new_work), intent);
     }
     if intent.phase != PHASE_COMPLETE {
         return Err(TxnError::Fail(format!(
@@ -3656,6 +3827,7 @@ mod tests {
             v2.replace(&format!("work_nonce={NONCE_UUID}\n"), ""),
             v2.replace(NONCE_UUID, "not-a-uuid"),
             v2.replace(NONCE_UUID, ""),
+            v2.replace(NONCE_UUID, &NONCE_UUID.to_uppercase()),
             local.to_owned() + &format!("work_nonce={NONCE_UUID}\n"),
             local.replace("rename_intent=1\n", "rename_intent=2\n")
                 + &format!("work_nonce={NONCE_UUID}\n"),
@@ -3678,6 +3850,138 @@ mod tests {
         assert!(!text.contains("work_nonce"), "{text}");
         assert!(text.contains("phase=work-moved\n"), "{text}");
         assert_eq!(parse_intent(&back).expect("reparse"), intent);
+    }
+
+    /// A witness-test work dir: created, with optional witness bytes.
+    fn cell(root: &Path, name: &str, witness: Option<&[u8]>) -> PathBuf {
+        let dir = root.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        if let Some(bytes) = witness {
+            std::fs::write(dir.join(WITNESS_FILE_NAME), bytes).unwrap();
+        }
+        dir
+    }
+
+    /// Witness write matrix: absent writes canonical bytes; stale-ours
+    /// replaces; a link, a directory, a foreign file and an unwritable dir
+    /// refuse without touching anything.
+    #[test]
+    fn the_witness_write_gate_writes_only_where_it_may() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = scratch("witness-write");
+        let fresh = cell(&root, "fresh", None);
+        write_witness(&fresh, NONCE_UUID).expect("absent writes");
+        assert_eq!(
+            std::fs::read(fresh.join(WITNESS_FILE_NAME)).unwrap_or_default(),
+            witness_bytes(NONCE_UUID).as_bytes()
+        );
+        let stale = cell(
+            &root,
+            "stale",
+            Some(b"ae rename witness e795c9e9-1234-4890-abcd-ef0123456789\n"),
+        );
+        write_witness(&stale, NONCE_UUID).expect("stale replaces");
+        assert_eq!(
+            std::fs::read(stale.join(WITNESS_FILE_NAME)).unwrap_or_default(),
+            witness_bytes(NONCE_UUID).as_bytes()
+        );
+        let target = cell(&root, "target", None);
+        std::fs::write(target.join("marker"), "mine\n").unwrap();
+        let linked = cell(&root, "linked", None);
+        std::os::unix::fs::symlink(target.join("marker"), linked.join(WITNESS_FILE_NAME)).unwrap();
+        let err = write_witness(&linked, NONCE_UUID).expect_err("a link refuses");
+        assert!(err.contains("symlink"), "{err}");
+        assert!(
+            !target.join(WITNESS_FILE_NAME).exists(),
+            "nothing written through the link"
+        );
+        let dirnode = cell(&root, "dirnode", None);
+        std::fs::create_dir_all(dirnode.join(WITNESS_FILE_NAME)).unwrap();
+        assert!(write_witness(&dirnode, NONCE_UUID).is_err());
+        let foreign = cell(&root, "foreign", Some(b"mine\n"));
+        let err = write_witness(&foreign, NONCE_UUID).expect_err("foreign refuses");
+        assert!(err.contains("did not write"), "{err}");
+        assert_eq!(
+            std::fs::read(foreign.join(WITNESS_FILE_NAME)).unwrap_or_default(),
+            b"mine\n"
+        );
+        let locked = cell(&root, "locked", None);
+        let mut perms = std::fs::metadata(&locked).unwrap().permissions();
+        perms.set_mode(0o555);
+        std::fs::set_permissions(&locked, perms).unwrap();
+        let refused = write_witness(&locked, NONCE_UUID);
+        let mut perms = std::fs::metadata(&locked).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&locked, perms).unwrap();
+        let err = refused.expect_err("unwritable refuses");
+        assert!(err.contains("witness") && err.contains("writable"), "{err}");
+    }
+
+    /// Witness verify matrix (I3): a match holds; a mismatch, absence before
+    /// complete, a link to right bytes, a special node and an overlong file
+    /// refuse; absence at complete reads cleaned-up; legacy holds regardless.
+    #[test]
+    fn the_witness_verify_reads_only_what_it_classifies() {
+        let root = scratch("witness-verify");
+        let intent = parse_intent(valid_intent_doc_v2().as_bytes()).expect("v2");
+        let mut complete = intent.clone();
+        complete.phase = PHASE_COMPLETE.to_owned();
+        let legacy = parse_intent(valid_intent_doc().as_bytes()).expect("legacy");
+        let good = cell(&root, "good", Some(witness_bytes(NONCE_UUID).as_bytes()));
+        assert!(witness_holds(&good, &intent));
+        let bad = cell(
+            &root,
+            "bad",
+            Some(witness_bytes("aaaaaaaa-1234-4890-abcd-ef0123456789").as_bytes()),
+        );
+        assert!(!witness_holds(&bad, &intent));
+        let gone = cell(&root, "gone", None);
+        assert!(!witness_holds(&gone, &intent));
+        assert!(witness_holds(&gone, &complete));
+        // A link to right bytes refuses without opening (the order pin: a
+        // read-then-classify would match). A FIFO needs no separate pin: no
+        // libc/Command spell exists to create one here, and the order is what
+        // the link proves.
+        let linked = cell(&root, "linked", None);
+        std::os::unix::fs::symlink(good.join(WITNESS_FILE_NAME), linked.join(WITNESS_FILE_NAME))
+            .unwrap();
+        assert!(!witness_holds(&linked, &intent));
+        let sock = cell(&root, "sock", None);
+        std::os::unix::net::UnixListener::bind(sock.join(WITNESS_FILE_NAME)).unwrap();
+        assert!(!witness_holds(&sock, &intent));
+        let big = vec![b'x'; 4096];
+        let huge = cell(&root, "huge", Some(&big));
+        assert!(!witness_holds(&huge, &intent));
+        assert!(witness_holds(&root.join("no-such-dir"), &legacy));
+    }
+
+    /// Witness removal takes only its own bytes: a match goes; foreign
+    /// files, links and absence are left alone, silently.
+    #[test]
+    fn the_witness_removal_takes_only_its_own_bytes() {
+        let root = scratch("witness-remove");
+        let intent = parse_intent(valid_intent_doc_v2().as_bytes()).expect("v2");
+        let legacy = parse_intent(valid_intent_doc().as_bytes()).expect("legacy");
+        let ours = cell(&root, "ours", Some(witness_bytes(NONCE_UUID).as_bytes()));
+        remove_witness(&ours, &intent);
+        assert!(!ours.join(WITNESS_FILE_NAME).exists(), "ours goes");
+        let foreign = cell(&root, "foreign", Some(b"mine\n"));
+        remove_witness(&foreign, &intent);
+        assert_eq!(
+            std::fs::read(foreign.join(WITNESS_FILE_NAME)).unwrap_or_default(),
+            b"mine\n",
+            "foreign stays"
+        );
+        let linked = cell(&root, "linked", None);
+        std::os::unix::fs::symlink(ours.join("marker"), linked.join(WITNESS_FILE_NAME)).unwrap();
+        remove_witness(&linked, &intent);
+        assert!(
+            std::fs::read_link(linked.join(WITNESS_FILE_NAME)).is_ok(),
+            "a link stays a link"
+        );
+        let gone = cell(&root, "gone", None);
+        remove_witness(&gone, &intent);
+        remove_witness(&ours, &legacy);
     }
 
     #[test]

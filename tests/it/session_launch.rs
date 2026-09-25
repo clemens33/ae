@@ -3892,6 +3892,17 @@ fn a_stopped_git_rename_moves_the_managed_worktree() {
     );
     assert!(!old_work.exists(), "the old work path is gone");
     assert!(new_work.is_dir(), "the new work path holds the move");
+    // I6: the success path cleans the witness (a mutant deleting the cleanup
+    // leaves it behind).
+    assert!(
+        !new_work.join(WITNESS_NAME).exists(),
+        "the completed rename leaves no witness"
+    );
+    let status = git_in(&new_work, &["status", "--porcelain"]);
+    assert!(
+        !status.contains(WITNESS_NAME),
+        "git status stays clean of the witness: {status}"
+    );
 
     // The SAME files: device/inode and bytes for the work dir and markers.
     let after = capture_work_witness(&rig, new, &new_work, &rig.project, old);
@@ -4051,6 +4062,12 @@ fn a_stopped_full_rename_moves_the_managed_copy() {
         "{stdout}"
     );
     assert!(!old_work.exists(), "the old copy path is gone");
+    // I6: the success path cleans the witness (a mutant deleting the cleanup
+    // leaves it behind).
+    assert!(
+        !new_work.join(WITNESS_NAME).exists(),
+        "the completed rename leaves no witness"
+    );
     assert_eq!(
         id_of(&new_work),
         work_id_before,
@@ -5527,6 +5544,15 @@ fn a_phase_ahead_managed_carrier_still_moves_the_work() {
         "the work moved instead of being skipped"
     );
     assert!(!old_work.exists(), "the old path is gone");
+    // I8: the legacy carrier converges and rests in its own v1 shape (F8:
+    // advancing it never mints the row it never had).
+    let resting = std::fs::read(rig.home.join("sessions").join(".rename.pmold.pmnew.intent"))
+        .unwrap_or_default();
+    let resting = String::from_utf8_lossy(&resting);
+    assert!(
+        resting.contains("rename_intent=1\n") && !resting.contains("work_nonce"),
+        "the legacy carrier rests in its own v1 shape: {resting}"
+    );
 }
 
 /// BLOCKER (r2-2): replacing the moved work after the cut refuses the retry
@@ -5750,7 +5776,7 @@ fn a_missing_witness_refuses_the_retry() {
 
     kill_at_boundary(&rig, old, new, "after-work-move");
     assert!(std::fs::write(new_work.join("marker"), "mine\n").is_ok());
-    let _ = std::fs::remove_file(new_work.join(WITNESS_NAME));
+    std::fs::remove_file(new_work.join(WITNESS_NAME)).expect("the fresh path writes the witness");
 
     let (code, _, stderr) = public(&rig, &[ae::cli::RENAME, old, new]);
     assert_identity_refusal(code, &stderr);
@@ -5939,7 +5965,10 @@ fn a_read_only_managed_copy_refuses_the_rename() {
     perms.set_mode(0o755);
     std::fs::set_permissions(&old_work, perms).expect("the root back to 0755");
     assert_eq!(code, Some(1), "{stderr}");
-    assert!(stderr.contains("witness"), "{stderr}");
+    assert!(
+        stderr.contains("witness") && stderr.contains("make the directory writable and retry"),
+        "{stderr}"
+    );
     assert_no_carrier(&rig, old, new);
     assert!(
         !old_work.join(WITNESS_NAME).exists(),
