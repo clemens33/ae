@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.177] - 2026-09-25
+- Pin the auto reseat decisions with failing unit tests
+- Pin the auto reseat edge cases and share the test specimens
+- Pin the lift rule on unusable readings and the hold order by frame
+- Decide the auto reseat episode, its due time and the candidate to take
+- Pin the foreign-episode records, the same-second reading and the no-chain rest
+- Map the prompt verdict word to NeedsYou in the fleet picker
+- Pin the resume filter that drops an empty harness session row
+
 ## [v2026.9.176] - 2026-09-25
 - Pin that the by-name removal takes a moved successor
 - Remove the retire slot the proof named, refusing a moved name
