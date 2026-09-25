@@ -361,32 +361,57 @@ mod tests {
     const SESSION: &str = "aedev";
     const SLOT: &str = "spawned.3";
     const AGENT: &str = "builder";
+    /// The episode key every specimen below is timed against.
+    const KEY: &str = "2026-09-25T10:00:00Z";
+    /// Another episode's key.
+    const OTHER_KEY: &str = "2026-09-25T09:00:00Z";
 
-    fn event(line: &str) -> Event {
-        Event::parse_line(line).expect("the specimen is a well-formed event")
+    fn key_epoch() -> i64 {
+        Timestamp::parse(KEY).expect("the key parses").epoch()
+    }
+
+    fn after_key(since: i64) -> Timestamp {
+        Timestamp::from_epoch(key_epoch() + since)
+    }
+
+    /// A record `since` seconds after the key, through the typed reader the
+    /// daemon uses.
+    fn record(since: i64, actor: &str, action: &str, target: &str, rest: &str) -> Event {
+        let ts = after_key(since);
+        Event::parse_line(&format!(
+            r#"{{"ts":"{ts}","actor":"{actor}","action":"{action}","target":"{target}"{rest}}}"#
+        ))
+        .expect("the specimen is a well-formed event")
     }
 
     /// A watchdog record addressed to the seat by display name, as the daemon
     /// writes one.
-    fn watchdog(ts: &str, action: &str, reference: Option<&str>) -> Event {
-        let reference = reference.map(|value| format!(r#","ref":"{value}""#));
-        event(&format!(
-            r#"{{"ts":"{ts}","actor":"watchdog","action":"{action}","target":"{AGENT}"{}}}"#,
-            reference.unwrap_or_default()
-        ))
+    fn watchdog(since: i64, action: &str, reference: Option<&str>) -> Event {
+        let rest = reference.map(|value| format!(r#","ref":"{value}""#));
+        record(
+            since,
+            WATCHDOG_ACTOR,
+            action,
+            AGENT,
+            &rest.unwrap_or_default(),
+        )
     }
 
     /// The same, addressed by routing key, as the legs write one.
-    fn routed(ts: &str, action: &str, reference: &str) -> Event {
-        event(&format!(
-            r#"{{"ts":"{ts}","actor":"watchdog","action":"{action}","target":"{AGENT}","ref":"{reference}","target_slot":"{SLOT}","target_session":"{SESSION}"}}"#
-        ))
+    fn routed(since: i64, action: &str, reference: &str) -> Event {
+        let rest =
+            format!(r#","ref":"{reference}","target_slot":"{SLOT}","target_session":"{SESSION}""#);
+        record(since, WATCHDOG_ACTOR, action, AGENT, &rest)
     }
 
-    const KEY: &str = "2026-09-25T10:00:00Z";
+    /// The seat's `spawn`, written by its spawner.
+    fn spawned(since: i64) -> Event {
+        record(since, "lead", SPAWN_ACTION, AGENT, "")
+    }
 
-    fn key_epoch() -> i64 {
-        Timestamp::parse(KEY).expect("the key parses").epoch()
+    /// The `limit` that opens the episode keyed `KEY`.
+    fn limit() -> Event {
+        watchdog(0, LIMIT_ACTION, None)
     }
 
     fn entry(key: &str, value: Option<&str>, line: usize) -> SectionEntry {
@@ -403,7 +428,7 @@ mod tests {
         assert_eq!(parse_switch(Ok(Some("off".into()))), Ok(Switch::Off));
         assert_eq!(parse_switch(Ok(Some("on".into()))), Ok(Switch::On));
         assert_eq!(parse_switch(Ok(Some(" all ".into()))), Ok(Switch::All));
-        for bad in ["yes", "ON", "1", "\u{1b}[31m"] {
+        for bad in ["", "yes", "ON", "1", "\u{1b}[31m"] {
             let note = parse_switch(Ok(Some(bad.into()))).expect_err(bad);
             assert!(note.starts_with("auto reseat stays off: "), "{note}");
             assert!(
@@ -433,6 +458,7 @@ mod tests {
         assert_eq!(settled.switch, Switch::On);
         assert_eq!(settled.sessions, Some(vec!["aedev".to_owned()]));
         assert_eq!(settled.grace_secs, 900);
+        // A profile keyed twice keeps its LATER row, in that row's place.
         assert_eq!(
             settled.map,
             [
@@ -481,28 +507,45 @@ mod tests {
             "a list naming nobody acts nowhere"
         );
         assert_eq!(settled.grace_secs, DEFAULT_GRACE_SECS);
+        let settled = settle(Switch::On, Ok(None), Ok(Some("0".into())), map());
+        assert_eq!(
+            (settled.switch, settled.grace_secs),
+            (Switch::On, 0),
+            "no grace is a grace"
+        );
+    }
+
+    /// A config file removed with the test that wrote it, even on a failure.
+    struct Scratch(std::path::PathBuf);
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
     }
 
     #[test]
     fn the_global_file_is_read_live_and_nothing_past_an_off_switch_is_judged() {
-        let path = std::env::temp_dir().join(format!("ae-autoreseat-{}", std::process::id()));
+        let file =
+            Scratch(std::env::temp_dir().join(format!("ae-autoreseat-{}", std::process::id())));
+        let path = file.0.as_path();
         std::fs::write(
-            &path,
+            path,
             "[workspace]\nauto_reseat = on\nauto_reseat_grace_secs = 60\n[auto_reseat]\nsol6x = opus55x\n",
         )
         .expect("write config");
-        let on = settings(Some(&path));
+        let on = settings(Some(path));
         assert_eq!((on.switch, on.grace_secs), (Switch::On, 60));
         assert_eq!(on.candidates("sol6x"), Some(&["opus55x".to_owned()][..]));
         std::fs::write(
-            &path,
+            path,
             "[workspace]\nauto_reseat = off\nauto_reseat_grace_secs = ten\n[auto_reseat]\nbad key = x\n",
         )
         .expect("rewrite config");
-        assert_eq!(settings(Some(&path)), Settings::off(Vec::new()));
-        let _ = std::fs::remove_file(&path);
+        assert_eq!(settings(Some(path)), Settings::off(Vec::new()));
+        let _ = std::fs::remove_file(path);
         assert_eq!(
-            settings(Some(&path)),
+            settings(Some(path)),
             Settings::off(Vec::new()),
             "no file, no move"
         );
@@ -531,9 +574,16 @@ mod tests {
 
     #[test]
     fn on_moves_fixed_and_spawned_seats_and_only_all_moves_main() {
-        assert_eq!(SeatClass::of("main"), Some(SeatClass::Main));
-        assert_eq!(SeatClass::of("worker.0"), Some(SeatClass::Fixed));
-        assert_eq!(SeatClass::of("spawned.12"), Some(SeatClass::Spawned));
+        for (slot, class) in [
+            ("main", SeatClass::Main),
+            ("worker.0", SeatClass::Fixed),
+            ("worker.10", SeatClass::Fixed),
+            ("worker.01", SeatClass::Fixed),
+            ("spawned.0", SeatClass::Spawned),
+            ("spawned.12", SeatClass::Spawned),
+        ] {
+            assert_eq!(SeatClass::of(slot), Some(class), "{slot}");
+        }
         for odd in ["", "worker.", "spawned.x", "worker.0x", "Main"] {
             assert_eq!(SeatClass::of(odd), None, "{odd:?}");
         }
@@ -590,11 +640,11 @@ mod tests {
     fn the_first_limit_after_the_boundary_keys_the_episode_and_a_restart_keeps_it() {
         assert_eq!(fold(&[]), None);
         let events = [
-            watchdog("2026-09-25T09:00:00Z", LIMIT_ACTION, None),
-            watchdog("2026-09-25T09:30:00Z", CLEARED_ACTION, None),
-            watchdog(KEY, LIMIT_ACTION, None),
+            watchdog(-3600, LIMIT_ACTION, None),
+            watchdog(-1800, CLEARED_ACTION, None),
+            limit(),
             // A restarted daemon books the limit again: same episode.
-            watchdog("2026-09-25T10:05:00Z", LIMIT_ACTION, None),
+            watchdog(300, LIMIT_ACTION, None),
         ];
         let found = fold(&events).expect("an episode");
         assert_eq!(found.key.to_string(), KEY);
@@ -607,50 +657,37 @@ mod tests {
 
     #[test]
     fn alert_cleared_and_spawn_end_the_episode_and_reseat_does_not() {
-        let limit = watchdog(KEY, LIMIT_ACTION, None);
-        let cleared = watchdog("2026-09-25T10:01:00Z", CLEARED_ACTION, None);
-        assert_eq!(fold(&[limit.clone(), cleared]), None);
-        let spawn = event(&format!(
-            r#"{{"ts":"2026-09-25T10:01:00Z","actor":"lead","action":"spawn","target":"{AGENT}"}}"#
-        ));
-        assert_eq!(fold(&[limit.clone(), spawn]), None);
-        let reseat = routed("2026-09-25T10:11:00Z", "reseat", "anything");
-        assert!(fold(&[limit, reseat]).is_some());
+        assert_eq!(fold(&[limit(), watchdog(60, CLEARED_ACTION, None)]), None);
+        assert_eq!(fold(&[limit(), spawned(60)]), None);
+        assert!(fold(&[limit(), routed(660, "reseat", "anything")]).is_some());
     }
 
     #[test]
     fn attempts_and_outcomes_count_by_equal_ref_and_the_first_terminal_outcome_wins() {
-        let mut events = vec![
-            watchdog(KEY, LIMIT_ACTION, None),
-            routed("2026-09-25T10:10:00Z", ATTEMPT_ACTION, KEY),
-        ];
+        let mut events = vec![limit(), routed(600, ATTEMPT_ACTION, KEY)];
         let open = fold(&events).expect("an episode");
-        assert_eq!(open.attempts, 1);
-        assert_eq!(
-            open.open.map(|at| at.to_string()).as_deref(),
-            Some("2026-09-25T10:10:00Z")
-        );
-        events.push(routed("2026-09-25T10:13:00Z", FAILED_ACTION, KEY));
-        events.push(routed("2026-09-25T10:13:05Z", DONE_ACTION, "sol6x"));
-        events.push(routed("2026-09-25T10:14:00Z", REFUSED_ACTION, KEY));
+        assert_eq!((open.attempts, open.open), (1, Some(after_key(600))));
+        // The success path: the move's own outcome closes the attempt.
+        let mut moved = events.clone();
+        moved.push(routed(700, DONE_ACTION, "sol6x"));
+        let done = fold(&moved).expect("an episode");
+        assert_eq!((done.open, done.terminal), (None, Some(Outcome::Done)));
+        events.push(routed(780, FAILED_ACTION, KEY));
+        events.push(routed(785, DONE_ACTION, "sol6x"));
+        events.push(routed(840, REFUSED_ACTION, KEY));
         let closed = fold(&events).expect("an episode");
         assert_eq!(
             (closed.open, closed.terminal),
             (None, Some(Outcome::Failed))
         );
+        // A done with no attempt open still ends the path: the seat moved.
+        let stray = fold(&[limit(), routed(700, DONE_ACTION, "sol6x")]).expect("an episode");
+        assert_eq!((stray.attempts, stray.terminal), (0, Some(Outcome::Done)));
         // Another episode's ref counts for nothing here.
         let stale = [
-            watchdog(KEY, LIMIT_ACTION, None),
-            routed(
-                "2026-09-25T10:10:00Z",
-                ATTEMPT_ACTION,
-                "2026-09-25T09:00:00Z",
-            ),
-            routed(
-                "2026-09-25T10:10:01Z",
-                REFUSED_ACTION,
-                "2026-09-25T09:00:00Z",
-            ),
+            limit(),
+            routed(600, ATTEMPT_ACTION, OTHER_KEY),
+            routed(601, REFUSED_ACTION, OTHER_KEY),
         ];
         let found = fold(&stale).expect("an episode");
         assert_eq!((found.attempts, found.terminal), (0, None));
@@ -658,16 +695,12 @@ mod tests {
 
     #[test]
     fn a_hold_is_not_terminal_and_a_later_attempt_clears_it() {
-        let events = [
-            watchdog(KEY, LIMIT_ACTION, None),
-            watchdog("2026-09-25T10:10:00Z", HELD_ACTION, Some(KEY)),
-        ];
-        let held = fold(&events).expect("an episode");
+        let held = fold(&[limit(), watchdog(600, HELD_ACTION, Some(KEY))]).expect("an episode");
         assert!(held.held && held.terminal.is_none() && held.attempts == 0);
         let events = [
-            watchdog(KEY, LIMIT_ACTION, None),
-            routed("2026-09-25T10:11:00Z", ATTEMPT_ACTION, KEY),
-            routed("2026-09-25T10:11:30Z", HELD_ACTION, KEY),
+            limit(),
+            routed(660, ATTEMPT_ACTION, KEY),
+            routed(690, HELD_ACTION, KEY),
         ];
         let transient = fold(&events).expect("an episode");
         assert_eq!(
@@ -676,55 +709,37 @@ mod tests {
         );
         assert!(transient.held);
         let mut again = events.to_vec();
-        again.push(routed("2026-09-25T10:12:00Z", ATTEMPT_ACTION, KEY));
+        again.push(routed(720, ATTEMPT_ACTION, KEY));
         let second = fold(&again).expect("an episode");
         assert_eq!((second.attempts, second.held), (2, false));
     }
 
     #[test]
     fn only_the_watchdogs_records_for_this_seat_are_the_episode() {
-        let forged = event(&format!(
-            r#"{{"ts":"2026-09-25T10:10:00Z","actor":"{AGENT}","action":"auto-reseat-refused","target":"{AGENT}","ref":"{KEY}"}}"#
-        ));
-        let other = event(&format!(
-            r#"{{"ts":"2026-09-25T10:10:00Z","actor":"watchdog","action":"auto-reseat-refused","target":"other","ref":"{KEY}"}}"#
-        ));
-        let found = fold(&[watchdog(KEY, LIMIT_ACTION, None), forged, other]).expect("an episode");
+        let reference = format!(r#","ref":"{KEY}""#);
+        let forged = record(600, AGENT, REFUSED_ACTION, AGENT, &reference);
+        let other = record(600, WATCHDOG_ACTOR, REFUSED_ACTION, "other", &reference);
+        let found = fold(&[limit(), forged, other]).expect("an episode");
         assert_eq!(found.terminal, None);
         // A rename leaves the display-keyed limit under the old name: no
         // episode, so nothing fires.
-        assert_eq!(
-            episode(
-                &[watchdog(KEY, LIMIT_ACTION, None)],
-                SESSION,
-                SLOT,
-                "renamed"
-            ),
-            None
-        );
+        assert_eq!(episode(&[limit()], SESSION, SLOT, "renamed"), None);
     }
 
     #[test]
     fn left_profiles_names_each_profile_left_since_the_seats_spawn_newest_move_each() {
-        let spawn = event(&format!(
-            r#"{{"ts":"2026-09-25T08:00:00Z","actor":"lead","action":"spawn","target":"{AGENT}"}}"#
-        ));
         let events = [
-            routed("2026-09-25T07:00:00Z", DONE_ACTION, "fablex"),
-            spawn,
-            routed("2026-09-25T09:00:00Z", DONE_ACTION, "sol6x"),
-            routed("2026-09-25T09:30:00Z", DONE_ACTION, "opus55x"),
-            routed("2026-09-25T10:00:00Z", DONE_ACTION, "sol6x"),
+            routed(-10_800, DONE_ACTION, "fablex"),
+            spawned(-7200),
+            routed(-3600, DONE_ACTION, "sol6x"),
+            routed(-1800, DONE_ACTION, "opus55x"),
+            routed(0, DONE_ACTION, "sol6x"),
         ];
-        let left: Vec<(String, String)> = left_profiles(&events, SESSION, SLOT, AGENT)
-            .into_iter()
-            .map(|(profile, at)| (profile, at.to_string()))
-            .collect();
         assert_eq!(
-            left,
+            left_profiles(&events, SESSION, SLOT, AGENT),
             [
-                ("opus55x".to_owned(), "2026-09-25T09:30:00Z".to_owned()),
-                ("sol6x".to_owned(), "2026-09-25T10:00:00Z".to_owned()),
+                ("opus55x".to_owned(), after_key(-1800)),
+                ("sol6x".to_owned(), after_key(0)),
             ]
         );
     }
@@ -735,109 +750,120 @@ mod tests {
         client_input: None,
     };
 
+    /// A pane whose client input, when there is some, came `since` seconds
+    /// after the key.
+    fn pane(frame: Frame, human_prompt: bool, input_since: Option<i64>) -> Pane {
+        Pane {
+            frame,
+            human_prompt,
+            client_input: input_since.map(|since| key_epoch() + since),
+        }
+    }
+
     fn at(events: &[Event], pane: &Pane, since_key: i64) -> Decision {
         decide(fold(events).as_ref(), 600, pane, key_epoch() + since_key)
     }
 
     #[test]
     fn under_the_grace_it_waits_then_attempts() {
-        let limit = [watchdog(KEY, LIMIT_ACTION, None)];
-        assert_eq!(
-            at(&limit, &CLEAR, 599),
-            Decision::Wait {
-                due_at: key_epoch() + 600
-            }
-        );
+        let limit = [limit()];
+        let wait = Decision::Wait {
+            due_at: key_epoch() + 600,
+        };
+        assert_eq!(at(&limit, &CLEAR, 599), wait);
+        // Under the grace nothing is judged, not even a busy frame.
+        assert_eq!(at(&limit, &pane(Frame::Busy, false, None), 599), wait);
         assert_eq!(at(&limit, &CLEAR, 600), Decision::Attempt);
         assert_eq!(decide(None, 600, &CLEAR, key_epoch() + 900), Decision::Rest);
     }
 
     #[test]
     fn a_due_seat_holds_on_an_unread_busy_drafted_prompted_or_touched_pane() {
-        let limit = [watchdog(KEY, LIMIT_ACTION, None)];
+        let limit = [limit()];
         for (pane, reason) in [
+            (pane(Frame::Unread, false, None), HoldReason::Unread),
+            (pane(Frame::Busy, false, None), HoldReason::Busy),
+            (pane(Frame::Draft, false, None), HoldReason::Draft),
+            (pane(Frame::Clear, true, None), HoldReason::HumanPrompt),
             (
-                Pane {
-                    frame: Frame::Unread,
-                    ..CLEAR
-                },
-                HoldReason::Unread,
-            ),
-            (
-                Pane {
-                    frame: Frame::Busy,
-                    ..CLEAR
-                },
-                HoldReason::Busy,
-            ),
-            (
-                Pane {
-                    frame: Frame::Draft,
-                    ..CLEAR
-                },
-                HoldReason::Draft,
-            ),
-            (
-                Pane {
-                    human_prompt: true,
-                    ..CLEAR
-                },
-                HoldReason::HumanPrompt,
-            ),
-            (
-                Pane {
-                    client_input: Some(key_epoch() + 100),
-                    ..CLEAR
-                },
+                pane(Frame::Clear, false, Some(100)),
                 HoldReason::ClientInput,
             ),
+            // The frame outranks the prompt, and the prompt the input.
+            (pane(Frame::Busy, true, Some(100)), HoldReason::Busy),
+            (pane(Frame::Clear, true, Some(100)), HoldReason::HumanPrompt),
         ] {
             assert_eq!(at(&limit, &pane, 650), Decision::Hold(reason), "{pane:?}");
         }
-        // Input before the key is not a human reacting to this limit; input
-        // after it holds until the grace has passed since that input.
-        let early = Pane {
-            client_input: Some(key_epoch() - 5),
-            ..CLEAR
-        };
-        assert_eq!(at(&limit, &early, 650), Decision::Attempt);
-        let late = Pane {
-            client_input: Some(key_epoch() + 100),
-            ..CLEAR
-        };
-        assert_eq!(at(&limit, &late, 700), Decision::Attempt);
+        // Only input strictly after the key is a human reacting to this limit,
+        // and it holds until the grace has passed since that input.
+        for (input, now) in [(-5, 650), (0, 650), (100, 700)] {
+            let touched = pane(Frame::Clear, false, Some(input));
+            assert_eq!(
+                at(&limit, &touched, now),
+                Decision::Attempt,
+                "{input} {now}"
+            );
+        }
     }
 
     #[test]
     fn an_open_attempt_is_in_flight_until_its_bound_then_overdue() {
-        let events = [
-            watchdog(KEY, LIMIT_ACTION, None),
-            routed("2026-09-25T10:10:00Z", ATTEMPT_ACTION, KEY),
+        let busy = pane(Frame::Busy, false, None);
+        let first = [limit(), routed(600, ATTEMPT_ACTION, KEY)];
+        assert_eq!(at(&first, &busy, 600 + 179), Decision::InFlight);
+        assert_eq!(at(&first, &busy, 600 + IN_FLIGHT_SECS), Decision::Overdue);
+        // The second attempt keeps the same bound: its spent count never
+        // silences an attempt that is still open.
+        let second = [
+            limit(),
+            routed(600, ATTEMPT_ACTION, KEY),
+            routed(630, HELD_ACTION, KEY),
+            routed(700, ATTEMPT_ACTION, KEY),
         ];
-        let busy = Pane {
-            frame: Frame::Busy,
-            ..CLEAR
-        };
-        assert_eq!(at(&events, &busy, 600 + 179), Decision::InFlight);
-        assert_eq!(at(&events, &CLEAR, 600 + IN_FLIGHT_SECS), Decision::Overdue);
+        assert_eq!(at(&second, &CLEAR, 700 + 179), Decision::InFlight);
+        assert_eq!(at(&second, &CLEAR, 700 + IN_FLIGHT_SECS), Decision::Overdue);
     }
 
     #[test]
     fn a_terminal_outcome_or_spent_attempts_rest_and_a_transient_hold_earns_one_more() {
         let mut events = vec![
-            watchdog(KEY, LIMIT_ACTION, None),
-            routed("2026-09-25T10:10:00Z", ATTEMPT_ACTION, KEY),
-            routed("2026-09-25T10:10:30Z", HELD_ACTION, KEY),
+            limit(),
+            routed(600, ATTEMPT_ACTION, KEY),
+            routed(630, HELD_ACTION, KEY),
         ];
         assert_eq!(at(&events, &CLEAR, 700), Decision::Attempt);
-        events.push(routed("2026-09-25T10:12:00Z", ATTEMPT_ACTION, KEY));
-        events.push(routed("2026-09-25T10:12:30Z", HELD_ACTION, KEY));
+        events.push(routed(720, ATTEMPT_ACTION, KEY));
+        events.push(routed(750, HELD_ACTION, KEY));
         assert_eq!(at(&events, &CLEAR, 900), Decision::Rest);
-        let refused = [
-            watchdog(KEY, LIMIT_ACTION, None),
-            routed("2026-09-25T10:10:00Z", REFUSED_ACTION, KEY),
-        ];
+        let refused = [limit(), routed(600, REFUSED_ACTION, KEY)];
         assert_eq!(at(&refused, &CLEAR, 900), Decision::Rest);
+    }
+
+    #[test]
+    fn hostile_numbers_saturate_instead_of_wrapping_or_panicking() {
+        let mut events = vec![limit()];
+        events.extend((1..=300).map(|since| routed(since, ATTEMPT_ACTION, KEY)));
+        let crowded = fold(&events).expect("an episode");
+        assert_eq!(crowded.attempts, u8::MAX);
+        assert_eq!(
+            decide(Some(&crowded), 600, &CLEAR, i64::MAX),
+            Decision::Overdue
+        );
+        assert_eq!(
+            decide(Some(&crowded), 600, &CLEAR, i64::MIN),
+            Decision::InFlight
+        );
+        let quiet = fold(&[limit()]).expect("an episode");
+        assert_eq!(
+            decide(Some(&quiet), u64::MAX, &CLEAR, key_epoch()),
+            Decision::Wait { due_at: i64::MAX }
+        );
+        let touched = pane(Frame::Clear, false, Some(1));
+        assert_eq!(
+            decide(Some(&quiet), u64::MAX, &touched, i64::MAX),
+            Decision::Attempt
+        );
     }
 
     fn window(judged: f64, critical: bool, observed_at: i64, status: Status) -> Window {
@@ -860,9 +886,14 @@ mod tests {
         }
     }
 
+    const NOW: i64 = 10_000;
+
+    fn pick(candidates: &[Candidate]) -> Option<(String, Tier)> {
+        choose(candidates, NOW).pick
+    }
+
     #[test]
     fn exhausted_latched_and_unconfigured_candidates_are_passed_over_by_name() {
-        let now = 10_000;
         let choice = choose(
             &[
                 Candidate {
@@ -873,17 +904,17 @@ mod tests {
                     peer_latched: true,
                     ..candidate("shared", Vec::new())
                 },
-                candidate("full", vec![window(100.0, true, now - 60, Status::Fresh)]),
+                candidate("full", vec![window(100.0, true, NOW - 60, Status::Fresh)]),
                 candidate(
                     "stale-full",
-                    vec![window(100.0, true, now - 1800, Status::Stale)],
+                    vec![window(100.0, true, NOW - 1800, Status::Stale)],
                 ),
                 candidate(
                     "expired",
-                    vec![window(100.0, true, now - 90_000, Status::Unknown)],
+                    vec![window(100.0, true, NOW - 90_000, Status::Unknown)],
                 ),
             ],
-            now,
+            NOW,
         );
         assert_eq!(choice.pick, Some(("expired".to_owned(), Tier::Unknown)));
         assert_eq!(
@@ -895,84 +926,80 @@ mod tests {
                 ("stale-full".to_owned(), Skip::Exhausted),
             ]
         );
-        let none = choose(
-            &[candidate(
+        assert_eq!(
+            pick(&[candidate(
                 "full",
-                vec![window(100.0, true, now, Status::Fresh)],
-            )],
-            now,
+                vec![window(100.0, true, NOW, Status::Fresh)]
+            )]),
+            None
         );
-        assert_eq!(none.pick, None);
-        assert_eq!(choose(&[], now).pick, None);
+        assert_eq!(pick(&[]), None);
     }
 
     #[test]
     fn the_best_tier_wins_and_declared_order_decides_inside_it() {
-        let now = 10_000;
+        let hot = || candidate("hot", vec![window(96.0, true, NOW, Status::Fresh)]);
+        let dark = || candidate("dark", Vec::new());
         let choice = choose(
             &[
-                candidate("hot", vec![window(96.0, true, now, Status::Fresh)]),
-                candidate("dark", Vec::new()),
+                hot(),
+                dark(),
                 candidate(
                     "stale-cool",
-                    vec![window(10.0, false, now - 1800, Status::Stale)],
+                    vec![window(10.0, false, NOW - 1800, Status::Stale)],
                 ),
-                candidate("cool", vec![window(40.0, false, now, Status::Fresh)]),
-                candidate("cooler", vec![window(5.0, false, now, Status::Fresh)]),
+                candidate("cool", vec![window(40.0, false, NOW, Status::Fresh)]),
+                candidate("cooler", vec![window(5.0, false, NOW, Status::Fresh)]),
             ],
-            now,
+            NOW,
         );
         assert_eq!(choice.pick, Some(("cool".to_owned(), Tier::BelowCritical)));
         assert!(choice.skipped.is_empty());
-        let unknown = choose(
-            &[
-                candidate("hot", vec![window(96.0, true, now, Status::Fresh)]),
-                candidate("dark", Vec::new()),
-            ],
-            now,
+        assert_eq!(
+            pick(&[hot(), dark()]),
+            Some(("dark".to_owned(), Tier::Unknown))
         );
-        assert_eq!(unknown.pick, Some(("dark".to_owned(), Tier::Unknown)));
-        let critical = choose(
-            &[candidate(
-                "hot",
-                vec![window(96.0, true, now, Status::Fresh)],
-            )],
-            now,
+        assert_eq!(pick(&[hot()]), Some(("hot".to_owned(), Tier::Critical)));
+        // The classifier's flag decides the tier, not the number beside it.
+        let edge = candidate("edge", vec![window(99.0, false, NOW, Status::Fresh)]);
+        assert_eq!(
+            pick(&[edge]),
+            Some(("edge".to_owned(), Tier::BelowCritical))
         );
-        assert_eq!(critical.pick, Some(("hot".to_owned(), Tier::Critical)));
     }
 
     #[test]
-    fn a_profile_left_on_its_limit_waits_for_a_later_reading_with_headroom_or_a_reset() {
-        let now = 10_000;
+    fn a_profile_left_on_its_limit_waits_for_a_later_reading_below_critical_or_a_reset() {
         let left = |windows| Candidate {
             left_at: Some(5_000),
             ..candidate("sol6x", windows)
         };
         for windows in [
+            // Nothing read since the move, or only before it.
             Vec::new(),
             vec![window(20.0, false, 4_000, Status::Fresh)],
+            // Read since, but still critical or still at the limit.
+            vec![window(99.0, true, 6_000, Status::Fresh)],
             vec![
-                window(99.0, true, 6_000, Status::Fresh),
+                window(20.0, false, 6_000, Status::Fresh),
                 window(100.0, true, 6_000, Status::Stale),
             ],
         ] {
-            let choice = choose(&[left(windows)], now);
+            let choice = choose(&[left(windows)], NOW);
             assert_eq!(choice.skipped, [("sol6x".to_owned(), Skip::LeftOnLimit)]);
         }
-        let headroom = choose(
-            &[left(vec![window(20.0, false, 6_000, Status::Fresh)])],
-            now,
-        );
+        let headroom = left(vec![window(20.0, false, 6_000, Status::Fresh)]);
         assert_eq!(
-            headroom.pick,
+            pick(&[headroom]),
             Some(("sol6x".to_owned(), Tier::BelowCritical))
         );
         let reset = Window {
-            resets_at: Some(now - 1),
+            resets_at: Some(NOW - 1),
             ..window(100.0, true, 6_000, Status::Unknown)
         };
-        let after_reset = choose(&[left(vec![reset])], now);
-        assert_eq!(after_reset.pick, Some(("sol6x".to_owned(), Tier::Unknown)));
+        assert_eq!(
+            pick(&[left(vec![reset])]),
+            Some(("sol6x".to_owned(), Tier::Unknown))
+        );
     }
 }
