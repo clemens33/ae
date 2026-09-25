@@ -75,16 +75,17 @@ pub(crate) fn run(
         return Ok(crate::entry::EXIT_FAILED);
     };
     // The window's reader, whatever source it was opened for. The SAME source
-    // toggles it off; a different LIVE source retargets the one reader; a
-    // source that is gone (the reader outlived it) also closes — the calling
-    // pane is then the reader itself, and the toggle never guesses a new one.
+    // toggles it off, the CALLING pane being the reader itself toggles it off
+    // (the human clicked into it and pressed the key), a source that is gone
+    // also closes — the reader outlived it — and only a different LIVE source
+    // retargets the one reader.
     if let Some(existing) = panes
         .iter()
         .find(|pane| pane.window_id == window && pane.reader_src.is_some())
     {
         let stamp = existing.reader_src.clone().unwrap_or_default();
         let source_live = panes.iter().any(|pane| pane.pane_id == stamp);
-        if stamp == source || !source_live {
+        if existing.pane_id == source || stamp == source || !source_live {
             return Ok(if transport::kill_pane(&server, &existing.pane_id) {
                 0
             } else {
@@ -125,13 +126,19 @@ fn open(server: &ServerId, source: &str) -> Option<String> {
         },
     ));
     let reader = interpret_pane_id(succeeded, &stdout)?;
-    let _ = transport::publish_option(
+    // The stamp is what makes the pane findable. If it cannot land, the split
+    // is undone and the refusal reported: an unstamped pane would be one the
+    // toggle can never find.
+    if !transport::publish_option(
         server,
         OptionScope::Pane,
         &reader,
         READER_SOURCE_OPTION,
         source,
-    );
+    ) {
+        let _ = transport::kill_pane(server, &reader);
+        return None;
+    }
     let _ = transport::run_tmux_op(&argv(
         server,
         &Op::CopyModeFrom {
