@@ -450,4 +450,20 @@ mod tests {
             ]
         );
     }
+
+    /// With no `Error:` line the first line that says anything is quoted, and
+    /// with no output at all the record says so.
+    #[test]
+    fn an_ending_with_no_error_line_quotes_the_first_line_that_says_anything() {
+        for (err, summary) in [
+            ("\n  \ntmux said no\nmore\n", "tmux said no"),
+            ("", "the reseat printed no reason"),
+        ] {
+            assert_eq!(
+                outcome(Ended::Failed, KEY, "sol6x", "opus55x", err).2,
+                summary,
+                "{err:?}"
+            );
+        }
+    }
 }
