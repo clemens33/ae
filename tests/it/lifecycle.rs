@@ -984,6 +984,55 @@ fn stop_destroys_nothing() {
     assert!(err.contains("is not running"), "{err}");
 }
 
+/// A `tmux` that answers the FIRST verify-shaped `list-sessions` with tmux's
+/// own mid-exit diagnostic (measured on 3.4 and 3.7b), then proxies every
+/// later call to the real binary with its own directory stripped from PATH.
+const FAKE_TMUX_MID_EXIT: &str = "#!/bin/sh\n\
+    arm='__ARM__'\n\
+    list=0\n\
+    fmt=0\n\
+    for a in \"$@\"; do\n\
+      case \"$a\" in\n\
+        list-sessions) list=1;;\n\
+        '#{session_name}') fmt=1;;\n\
+      esac\n\
+    done\n\
+    if [ -f \"$arm\" ] && [ \"$list\" = 1 ] && [ \"$fmt\" = 1 ]; then\n\
+      rm -f \"$arm\"\n\
+      echo 'server exited unexpectedly' >&2\n\
+      exit 1\n\
+    fi\n\
+    d=$(dirname \"$0\")\n\
+    PATH=$(printf '%s' \"$PATH\" | tr ':' '\\n' | grep -v -x \"$d\" | paste -sd: -)\n\
+    export PATH\n\
+    exec tmux \"$@\"\n";
+
+/// A stop whose verify lands while its own kill's server is mid-exit re-asks
+/// once instead of failing: the first read is tmux's real mid-exit answer,
+/// the re-read crosses the same strict proof. Smallest defeating mutation:
+/// drop the re-read (the stop exits 1).
+#[test]
+fn stop_reasks_once_when_its_verify_lands_mid_exit() {
+    let rig = Rig::new("midexit");
+    let bin = rig.home.join("bin");
+    std::fs::create_dir_all(&bin).expect("a fixture bin");
+    let arm = bin.join("armed");
+    std::fs::write(&arm, "1").expect("the arm file");
+    write_exec(
+        &bin.join("tmux"),
+        &FAKE_TMUX_MID_EXIT.replace("__ARM__", &arm.display().to_string()),
+    );
+    let pathed = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let (code, out, err) = rig.run_with_env(&[("PATH", pathed.as_str())], &["_stop", &rig.name]);
+    assert_eq!(code, Some(0), "stdout: {out}\nstderr: {err}");
+    assert!(!exists(&arm), "the mid-exit answer fired exactly once");
+    assert!(!rig.session_is_live(), "the tmux session is gone");
+}
+
 /// Stopping the last RANKED session hands its viewer to a rankless live
 /// session on the same ae-owned server instead of detaching it. The survivor
 /// published no rank (a pre-watchdog leftover, or a crashed-watchdog corner);

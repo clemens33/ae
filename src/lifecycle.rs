@@ -102,6 +102,11 @@ pub(crate) fn live_id(server: &ServerId, name: &str) -> Option<String> {
     transport::observe_session_id(server, name)
 }
 
+/// How long a kill waits before re-asking a verify that landed mid-exit —
+/// one scheduling breath, long enough for an exiting server to settle into
+/// an answer the strict proof can read.
+const KILL_VERIFY_SETTLE: Duration = Duration::from_millis(100);
+
 /// Kill an exactly-identified session on its recorded server and VERIFY it
 /// died — the ONE answer to "is it gone" that `stop`, `end` and `compact`
 /// share so the three cannot drift into
@@ -114,7 +119,18 @@ pub(crate) fn kill_verified(
     err: &mut impl Write,
 ) -> io::Result<bool> {
     let _ = transport::kill_session(server, session_id);
-    match transport::verify_session_absent(server, name) {
+    let mut probe = transport::verify_session_absent(server, name);
+    if probe == StopProbe::Unknown {
+        // The kill may have removed the last session, so the server can be
+        // mid-exit while the verify asks — and a client that connected
+        // before the exit finished reads `server exited unexpectedly`,
+        // which proves nothing. Re-ask ONCE past a breath: the re-read
+        // crosses the same strict proof, so a still-unreachable server
+        // refuses exactly as before.
+        std::thread::sleep(KILL_VERIFY_SETTLE);
+        probe = transport::verify_session_absent(server, name);
+    }
+    match probe {
         StopProbe::Absent => Ok(true),
         StopProbe::Present => {
             writeln!(
