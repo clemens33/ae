@@ -7,7 +7,8 @@
 //!
 //! The refusal itself is unit-tested in `src/tmux_floor.rs`; what is asked here
 //! is WHERE it is spoken, asked of the tree so a new call site is a review
-//! rather than a diff.
+//! rather than a diff. Conditionals ae hands tmux stay binary for the same
+//! reason: 3.4 reads only the first two operands of one.
 
 #![allow(
     clippy::disallowed_methods,
@@ -117,6 +118,55 @@ fn the_recovery_commands_never_reach_the_gate() {
             "{module} decides the floor; ae list / version / upgrade must work below it"
         );
     }
+}
+
+/// Every tmux conjunction in src/ takes exactly two operands: tmux 3.4 reads
+/// only the first two and silently drops a third (#186). The opener names its
+/// unit — doubled `{{` counts braces at depth two, single `{` at depth one.
+#[test]
+fn every_tmux_conjunction_in_src_is_binary() {
+    let operands = |tail: &str, unit: u32| {
+        let (mut depth, mut count) = (unit, 1);
+        for byte in tail.bytes().skip(4) {
+            match byte {
+                b'{' => depth += 1,
+                b'}' if depth == 1 => break,
+                b'}' => depth -= 1,
+                b',' if depth == unit => count += 1,
+                _ => {}
+            }
+        }
+        count
+    };
+    for (tail, unit, expected) in [
+        ("{||:#{==:x,1},#{==:y,2},#{==:z,3}}", 1, 3),
+        ("{&&:##{==:##{w},2},##{==:##{z},0}}", 1, 2),
+        ("{&&:{x},#{{==:#{{{y}}},z}},w}}", 2, 3),
+        ("{&&:#{{==:#{{pid}},{x}}},#{{==:#{{{x}}},}}}}", 2, 2),
+        ("{&&:#{?a,b,c},d}", 1, 2),
+    ] {
+        assert_eq!(operands(tail, unit), expected);
+    }
+    let (mut hits, mut offenders) = (0, Vec::new());
+    for path in product_sources() {
+        let text =
+            fs::read_to_string(&path).unwrap_or_else(|err| panic!("{}: {err}", path.display()));
+        for (at, _) in text.match_indices("{&&:").chain(text.match_indices("{||:")) {
+            hits += 1;
+            let unit = 1 + u32::from(at > 0 && text.as_bytes()[at - 1] == b'{');
+            if operands(&text[at..], unit) != 2 {
+                let line = text[..at].matches('\n').count() + 1;
+                let name = path
+                    .strip_prefix(Path::new(env!("CARGO_MANIFEST_DIR")))
+                    .unwrap_or(&path)
+                    .display()
+                    .to_string();
+                offenders.push(format!("{name}:{line}"));
+            }
+        }
+    }
+    assert!(hits > 0, "the scan matched no conditional");
+    assert!(offenders.is_empty(), "non-binary: {offenders:?}");
 }
 
 /// The tmux this machine runs the suite against clears the floor.

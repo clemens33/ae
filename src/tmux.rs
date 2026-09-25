@@ -1087,7 +1087,8 @@ pub fn set_option_args(
 /// * `#{<name>}` — the option is still unset or empty.
 ///
 /// Every component is ae-validated (`$<n>`, decimal epochs, a canonical value),
-/// so the guard and the branch need no quoting.
+/// so the guard and the branch need no quoting. Conjunctions stay binary and
+/// nested: tmux 3.4 reads only the first two operands and drops a third.
 #[must_use]
 pub fn guarded_session_option_args(
     server: &ServerId,
@@ -1098,7 +1099,7 @@ pub fn guarded_session_option_args(
 ) -> Vec<String> {
     let target = format!("{}:", expected_session.id);
     let guard = format!(
-        "#{{&&:#{{&&:#{{==:#{{pid}},{pid}}},#{{==:#{{start_time}},{start}}}}},#{{&&:#{{==:#{{session_id}},{id}}},#{{==:#{{session_created}},{created}}}}},#{{==:#{{{name}}},}}}}",
+        "#{{&&:#{{&&:#{{==:#{{pid}},{pid}}},#{{==:#{{start_time}},{start}}}}},#{{&&:#{{&&:#{{==:#{{session_id}},{id}}},#{{==:#{{session_created}},{created}}}}},#{{==:#{{{name}}},}}}}}}",
         pid = expected_server.pid,
         start = expected_server.start,
         id = expected_session.id,
@@ -4342,15 +4343,13 @@ mod tests {
         );
         assert_eq!(&args[..4], ["if-shell", "-F", "-t", "$7"]);
         let guard = &args[4];
-        for needle in [
-            "#{==:#{pid},911}",
-            "#{==:#{start_time},1789109000}",
-            "#{==:#{session_id},$7}",
-            "#{==:#{session_created},1789109600}",
-            "#{==:#{@ae_session_uuid},}",
-        ] {
-            assert!(guard.contains(needle), "{needle} is missing: {guard}");
-        }
+        // The EXACT string, not needles: needles pass for a 3-operand shape
+        // too, and tmux 3.4 silently drops its third operand (#186).
+        assert_eq!(
+            guard,
+            "#{&&:#{&&:#{==:#{pid},911},#{==:#{start_time},1789109000}},#{&&:#{&&:#{==:#{session_id},$7},#{==:#{session_created},1789109600}},#{==:#{@ae_session_uuid},}}}",
+            "the guard nests binary conjunctions: {guard}"
+        );
         assert_eq!(
             args[5],
             "set-option -t $7: @ae_session_uuid 1b4e28ba-2fa1-11d2-883f-0016d3cc4321"
