@@ -634,4 +634,9 @@ mod tests {
             ["-C", "/wt/old", "rev-parse", "--absolute-git-dir"]
         );
     }
+
+    #[test]
+    fn absolute_git_dir_refuses_an_empty_work_dir() {
+        assert_eq!(super::absolute_git_dir(b""), None);
+    }
 }

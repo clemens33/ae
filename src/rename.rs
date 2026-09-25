@@ -1887,7 +1887,10 @@ fn parse_git_dir_answer(out: &str) -> Option<PathBuf> {
 /// (#196). `None` unless the answer parses AND canonicalizes to a direct
 /// child of `<origin>/.git/worktrees/` — a main-repo or walk-up answer, or an
 /// origin whose `.git` is a file (separate-git-dir, submodule), fails closed
-/// here and the caller refuses.
+/// here and the caller refuses. Residual: a hand-forged `<work>/.git` naming
+/// another live admin of the same origin is fingerprinted, then git's own move
+/// validation refuses and the carrier stays pending until the forgery is
+/// reverted.
 fn resolve_admin_dir(origin: &str, work: &str) -> Option<PathBuf> {
     let answer = parse_git_dir_answer(&crate::git::absolute_git_dir(work.as_bytes())?)?;
     let admins = canonical(&Path::new(origin).join(".git/worktrees"))?;
