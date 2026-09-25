@@ -904,6 +904,41 @@ pub fn prove_removable(dir: &Path, name: &str) -> Result<String, String> {
     removable_slot(&Meta::parse(&text), name)
 }
 
+/// Why a guarded removal refused: either the name moved onto another slot
+/// while the caller held a proof of the old one, or the ordinary refusal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RemovalRefusal {
+    /// The name now resolves to `now`, not the proven `proven` — a successor
+    /// holds the name, so nothing may be removed.
+    Moved {
+        /// The slot the name resolves to now.
+        now: String,
+        /// The slot the caller proved before the kill.
+        proven: String,
+    },
+    /// Every other refusal: an unknown name, a launch seat, a meta that could
+    /// not be read, locked or written.
+    Refused(String),
+}
+
+/// Drop every line `slot` owns, under a lock the caller holds.
+///
+/// # Errors
+///
+/// The refusal text: the meta could not be published.
+fn drop_slot(dir: &Path, text: &str, slot: &str) -> Result<(), String> {
+    let suffix = format!(".{slot}");
+    let mut next = String::new();
+    for row in records(text) {
+        if key_of(row).ends_with(suffix.as_str()) {
+            continue;
+        }
+        next.push_str(row);
+        next.push('\n');
+    }
+    publish(dir, &next)
+}
+
 /// Drop every line the seat named `name` owns and return its slot — the
 /// decision half of `remove-seat`, as a value.
 ///
@@ -913,18 +948,32 @@ pub fn prove_removable(dir: &Path, name: &str) -> Result<String, String> {
 pub fn remove_seat_slot(dir: &Path, name: &str) -> Result<String, String> {
     let _held = meta::lock(dir).map_err(|why| format!("cannot take the meta lock: {why}"))?;
     let text = text_of(dir)?;
-    let current = Meta::parse(&text);
-    let slot = removable_slot(&current, name)?;
-    let suffix = format!(".{slot}");
-    let mut next = String::new();
-    for row in records(&text) {
-        if key_of(row).ends_with(suffix.as_str()) {
-            continue;
-        }
-        next.push_str(row);
-        next.push('\n');
+    let slot = removable_slot(&Meta::parse(&text), name)?;
+    drop_slot(dir, &text, &slot)?;
+    Ok(slot)
+}
+
+/// Drop every line the slot the caller PROVED owns, refusing when the name now
+/// resolves elsewhere — the race-free half of a kill-first retire. The proof is
+/// taken before the kill; a retire plus re-spawn under the same name would
+/// otherwise let the removal follow the name onto the successor.
+///
+/// # Errors
+///
+/// [`RemovalRefusal::Moved`] when the name now resolves to a different slot;
+/// otherwise the refusals [`remove_seat_slot`] words.
+pub fn remove_proven_slot(dir: &Path, name: &str, proven: &str) -> Result<String, RemovalRefusal> {
+    let _held = meta::lock(dir)
+        .map_err(|why| RemovalRefusal::Refused(format!("cannot take the meta lock: {why}")))?;
+    let text = text_of(dir).map_err(RemovalRefusal::Refused)?;
+    let slot = removable_slot(&Meta::parse(&text), name).map_err(RemovalRefusal::Refused)?;
+    if slot != proven {
+        return Err(RemovalRefusal::Moved {
+            now: slot,
+            proven: proven.to_owned(),
+        });
     }
-    publish(dir, &next)?;
+    drop_slot(dir, &text, &slot).map_err(RemovalRefusal::Refused)?;
     Ok(slot)
 }
 
@@ -2244,14 +2293,25 @@ mod tests {
         let moved = scratch.meta().replace(&proven, "spawned.9");
         super::publish(scratch.dir(), &moved).expect("the moved meta");
 
-        let removal = super::remove_seat_slot(scratch.dir(), "scout");
-        assert!(
-            removal.is_err(),
-            "the removal followed the name onto the successor: {removal:?}"
+        let removal = super::remove_proven_slot(scratch.dir(), "scout", &proven);
+        assert_eq!(
+            removal,
+            Err(super::RemovalRefusal::Moved {
+                now: "spawned.9".to_owned(),
+                proven: proven.clone(),
+            }),
+            "the moved name is refused and names both slots"
         );
         let kept = scratch.meta();
         assert!(kept.contains("seat.spawned.9=scout"), "{kept}");
         assert!(kept.contains("work_dir.spawned.9="), "{kept}");
+
+        // Positive control: the slot the name really holds is removable.
+        assert_eq!(
+            super::remove_proven_slot(scratch.dir(), "scout", "spawned.9"),
+            Ok("spawned.9".to_owned())
+        );
+        assert!(!scratch.meta().contains("scout"), "{}", scratch.meta());
     }
 
     // B2-spawn U8: managed/legacy refuses atomically, record order kept.

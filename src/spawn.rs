@@ -1560,6 +1560,67 @@ fn retire_remove_failure(pane: &str, name: &str, why: &str) -> String {
     }
 }
 
+/// The line when the name moved onto another slot between the retire proof and
+/// the removal. The successor is untouched, so this carries NO `retire` advice
+/// — that would retire the successor. The pane-removed fact stays when the
+/// kill ran.
+fn retire_moved_failure(pane: &str, name: &str, proven: &str, now: &str) -> String {
+    let moved = format!(
+        "the seat '{name}' now resolves to slot '{now}', not the proven '{proven}' — a new seat \
+         holds the name and nothing more was removed"
+    );
+    if pane.is_empty() {
+        format!("Error: {moved}.")
+    } else {
+        format!("Error: pane {pane} was removed but {moved}.")
+    }
+}
+
+/// Prove the seat, take its pane, and drop the slot the PROOF named: the
+/// retire ladder between the target's resolution and the record. `Ok(None)`
+/// means a refusal was written and the caller exits 1. The event's identity
+/// comes from the proven slot, so a name that resolves elsewhere later cannot
+/// make the record describe the successor.
+fn retire_proven_seat(
+    dir: &Path,
+    facts: &Facts,
+    resolved: &str,
+    agent: &str,
+    err: &mut impl Write,
+) -> io::Result<Option<(String, Option<meta::RosterEntry>)>> {
+    let proven = match crate::identity::prove_removable(dir, agent) {
+        Ok(slot) => slot,
+        Err(why) => {
+            writeln!(err, "Error: {why}")?;
+            return Ok(None);
+        }
+    };
+    let retired_identity = crate::session::read_meta(dir).ok().and_then(|meta| {
+        meta.roster()
+            .iter()
+            .find(|entry| entry.slot == proven)
+            .cloned()
+    });
+    if !resolved.is_empty() && kill_retire_pane(facts, resolved, agent, err)? {
+        return Ok(None);
+    }
+    match crate::identity::remove_proven_slot(dir, agent, &proven) {
+        Ok(slot) => Ok(Some((slot, retired_identity))),
+        Err(crate::identity::RemovalRefusal::Moved { now, proven }) => {
+            writeln!(
+                err,
+                "{}",
+                retire_moved_failure(resolved, agent, &proven, &now)
+            )?;
+            Ok(None)
+        }
+        Err(crate::identity::RemovalRefusal::Refused(why)) => {
+            writeln!(err, "{}", retire_remove_failure(resolved, agent, &why))?;
+            Ok(None)
+        }
+    }
+}
+
 /// `_retire <meta-dir> <name|%pane>`.
 ///
 /// # Errors
@@ -1614,25 +1675,9 @@ pub fn run_retire(
         )?;
         return Ok(EXIT_FAILED);
     }
-    let retired_identity = crate::session::read_meta(dir).ok().and_then(|meta| {
-        meta.roster()
-            .iter()
-            .find(|entry| entry.name == agent)
-            .cloned()
-    });
-    if let Err(why) = crate::identity::prove_removable(dir, &agent) {
-        writeln!(err, "Error: {why}")?;
+    let Some((slot, retired_identity)) = retire_proven_seat(dir, &facts, &resolved, &agent, err)?
+    else {
         return Ok(EXIT_FAILED);
-    }
-    if !resolved.is_empty() && kill_retire_pane(&facts, &resolved, &agent, err)? {
-        return Ok(EXIT_FAILED);
-    }
-    let slot = match crate::identity::remove_seat_slot(dir, &agent) {
-        Ok(slot) => slot,
-        Err(why) => {
-            writeln!(err, "{}", retire_remove_failure(&resolved, &agent, &why))?;
-            return Ok(EXIT_FAILED);
-        }
     };
     drop_launch_artifacts(dir, &slot);
     // No layout rebalance: the worker lived in its own window, so killing the
@@ -1702,6 +1747,28 @@ mod tests {
         assert_eq!(
             super::retire_remove_failure("", "scout", "cannot take the meta lock: busy"),
             "Error: cannot take the meta lock: busy"
+        );
+    }
+
+    // #197.5: a name that moved onto a successor gets its OWN wording — both
+    // slots named and NO `retire <name>` advice, which would retire the
+    // successor — while the pane-removed fact survives.
+    #[test]
+    fn retire_moved_failure_names_both_slots_and_advises_no_retire() {
+        assert_eq!(
+            super::retire_moved_failure("%7", "scout", "spawned.0", "spawned.1"),
+            "Error: pane %7 was removed but the seat 'scout' now resolves to slot 'spawned.1', \
+             not the proven 'spawned.0' — a new seat holds the name and nothing more was removed."
+        );
+        assert_eq!(
+            super::retire_moved_failure("", "scout", "spawned.0", "spawned.1"),
+            "Error: the seat 'scout' now resolves to slot 'spawned.1', not the proven 'spawned.0' \
+             — a new seat holds the name and nothing more was removed."
+        );
+        let line = super::retire_moved_failure("%7", "scout", "spawned.0", "spawned.1");
+        assert!(
+            !line.contains("retire scout"),
+            "a moved name must not advise retiring it: {line}"
         );
     }
 
