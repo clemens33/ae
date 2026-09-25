@@ -262,12 +262,10 @@ fn a_seat_with_no_usable_candidate_is_refused_where_it_stands() {
     assert_eq!(code, Some(1), "out={out} err={err}");
     let refused = one_outcome(&rig, REFUSED_ACTION);
     assert_eq!(refused.reference.as_deref(), Some(KEY), "{refused:?}");
-    assert!(
-        refused
-            .summary
-            .as_deref()
-            .is_some_and(|summary| summary.contains("ghost")),
-        "the skip is named: {refused:?}"
+    assert_eq!(
+        refused.summary.as_deref(),
+        Some("refused: no usable candidate: ghost (not configured here)"),
+        "the skip is named with its reason: {refused:?}"
     );
     untouched(&rig, &pane);
 }

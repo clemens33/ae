@@ -664,6 +664,41 @@ fn a_seat_pack_carries_the_parking_note_whole_and_the_exact_reply_command() {
 }
 
 #[test]
+fn a_seat_pack_names_the_tracked_paths_a_real_work_tree_changed() {
+    let root = scratch("seatgit");
+    let work = root.join("work");
+    assert!(fs::create_dir_all(&work).is_ok(), "the work dir");
+    super::cli::git_in(&work, &["init", "-q"]);
+    plant(&root, "brf11", &work);
+    for name in ["kept.txt", "edited.txt"] {
+        assert!(fs::write(work.join(name), "one\n").is_ok(), "{name}");
+    }
+    super::cli::git_in(&work, &["add", "kept.txt", "edited.txt"]);
+    super::cli::git_in(&work, &["commit", "-q", "-m", "seed"]);
+    assert!(
+        fs::write(work.join("edited.txt"), "two\n").is_ok(),
+        "an edit"
+    );
+    assert!(
+        fs::write(work.join("new.txt"), "untracked\n").is_ok(),
+        "a new file"
+    );
+
+    let (code, stdout, stderr) = run(&root, &["brief", "brf11", "--seat", "lead"]);
+
+    assert_eq!(code, Some(0), "stderr: {stderr}");
+    // Only the TRACKED change is listed: the untracked file is not the
+    // successor's to commit, and the untouched one is not news.
+    assert!(
+        stdout.contains(
+            "dirty: yes\nlatest tag: none\nchanged, not committed:\n  - edited.txt\n\
+             recent commits:\n  - seed\n"
+        ),
+        "{stdout}"
+    );
+}
+
+#[test]
 fn a_seat_pack_refuses_the_flags_that_contradict_it_and_names_an_unknown_seat() {
     let root = scratch("seatrefuse");
     let work = root.join("work");
