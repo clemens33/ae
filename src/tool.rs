@@ -1353,10 +1353,9 @@ mod tests {
                         initial_turn: InitialTurn::None,
                     },
                     resume: ResumeSpec {
-                        form: ResumeForm::Flags {
-                            exact: "--resume",
-                            fallback: "--continue",
-                        },
+                        // #181: a gone conversation starts fresh, never
+                        // `--continue` into another seat's newest.
+                        form: ResumeForm::ExactOnly { exact: "--resume" },
                         probe: StoreProbe::ProjectTranscript,
                     },
                     carry: CarrySpec::ProjectTranscript,
@@ -1455,10 +1454,9 @@ mod tests {
                         initial_turn: InitialTurn::None,
                     },
                     resume: ResumeSpec {
-                        form: ResumeForm::Flags {
-                            exact: "--resume",
-                            fallback: "--resume latest",
-                        },
+                        // #181: a pending seat starts fresh, never
+                        // `--resume latest` into another seat's newest.
+                        form: ResumeForm::ExactOnly { exact: "--resume" },
                         probe: StoreProbe::RecordedId,
                     },
                     carry: CarrySpec::NotPortable,

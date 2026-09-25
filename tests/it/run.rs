@@ -824,19 +824,17 @@ fn a_nul_in_the_recorded_first_message_refuses_loud_before_any_marker() {
 #[test]
 fn a_recorded_id_is_the_resume_target_for_every_tool() {
     // The resume form each tool's capability row promises, and the fallback it
-    // offers when there is no id to resume BY. codex's and opencode's fallback
-    // is the plain command — there is no word to look for, so its absence is
-    // the assertion.
+    // offers when there is no id to resume BY. #181: every fallback is a
+    // FRESH start — claude and grok name the new conversation with a minted
+    // `--session-id`, the rest take the bare command. codex's, gemini's,
+    // agy's, muse's and opencode's fallback is the plain command — there is
+    // no word to look for, so its absence is the assertion.
     for (tool, exact, fallback) in [
-        ("claude", &["--resume", "u-9"][..], &["--continue"][..]),
+        ("claude", &["--resume", "u-9"][..], &["--session-id"][..]),
         ("codex", &["resume", "u-9"][..], &[][..]),
-        (
-            "gemini",
-            &["--resume", "u-9"][..],
-            &["--resume", "latest"][..],
-        ),
-        ("agy", &["--conversation", "u-9"][..], &["--continue"][..]),
-        ("grok", &["--resume", "u-9"][..], &["--continue"][..]),
+        ("gemini", &["--resume", "u-9"][..], &[][..]),
+        ("agy", &["--conversation", "u-9"][..], &[][..]),
+        ("grok", &["--resume", "u-9"][..], &["--session-id"][..]),
         ("muse", &["resume", "u-9"][..], &[][..]),
         ("opencode", &["--session", "u-9"][..], &[][..]),
     ] {
@@ -871,6 +869,17 @@ fn a_recorded_id_is_the_resume_target_for_every_tool() {
             !argv.iter().any(|word| word == "u-9" || word.is_empty()),
             "{tool} never names an id it does not have: {argv:?}"
         );
+        // #181: no fallback ever resumes another seat's conversation.
+        assert!(
+            !argv.iter().any(|word| word == "--continue"),
+            "{tool} never --continue: {argv:?}"
+        );
+        if tool == "gemini" {
+            assert!(
+                !carries(&argv, &["--resume", "latest"]),
+                "gemini never --resume latest: {argv:?}"
+            );
+        }
         if tool == "codex" {
             assert!(
                 !argv.iter().any(|word| word == "resume"),
@@ -905,6 +914,136 @@ fn a_pending_opencode_seat_resumes_fresh_never_continue() {
         "a pending opencode seat names no session: {argv:?}"
     );
     assert_eq!(argv[0], rig.tool("opencode"), "{argv:?}");
+}
+
+/// The `--session-id` value an argv carries, when it carries one.
+fn session_id_of(argv: &[String]) -> Option<&str> {
+    argv.iter()
+        .position(|word| word == "--session-id")
+        .and_then(|at| argv.get(at + 1).map(String::as_str))
+}
+
+/// #181: a claude seat whose recorded conversation is gone starts FRESH and
+/// names the new conversation with a minted id — `--continue` would join the
+/// newest conversation in the directory, which is not provably its own.
+#[test]
+fn a_gone_claude_conversation_mints_a_fresh_session_id() {
+    let rig = Rig::new("cl-fresh");
+    let gone = "0199c0de-1111-4890-abcd-ef0123456789";
+    rig.seat("claude", gone);
+    rig.started();
+    // No transcript for the id: claude's probe misses and the run falls back.
+    let (argv, _) = rig.exec();
+    assert!(
+        !argv.iter().any(|word| word == "--continue"),
+        "never --continue: {argv:?}"
+    );
+    assert!(
+        !carries(&argv, &["--resume", gone]),
+        "never the gone id: {argv:?}"
+    );
+    let minted = session_id_of(&argv).unwrap_or_else(|| panic!("a minted --session-id: {argv:?}"));
+    assert_ne!(minted, gone, "the mint is new: {argv:?}");
+    let settled = std::fs::read_to_string(rig.dir.join("meta")).expect("the meta");
+    assert!(
+        settled.contains(&format!("harness_session.main={minted}\n")),
+        "the argv id is the recorded id: {settled}"
+    );
+    assert!(
+        settled.contains(&format!("harness_session_prior.main={gone}\n")),
+        "the gone conversation is the predecessor: {settled}"
+    );
+}
+
+/// #181: a pending grok seat starts FRESH with a minted id — `--continue`
+/// would join the newest session for the directory.
+#[test]
+fn a_pending_grok_seat_mints_a_fresh_session_id() {
+    let rig = Rig::new("grok-fresh");
+    rig.seat("grok", "");
+    rig.started();
+    let (argv, _) = rig.exec();
+    assert!(
+        !argv.iter().any(|word| word == "--continue"),
+        "never --continue: {argv:?}"
+    );
+    let minted = session_id_of(&argv).unwrap_or_else(|| panic!("a minted --session-id: {argv:?}"));
+    assert_eq!(minted.len(), 36, "a uuid: {argv:?}");
+    let settled = std::fs::read_to_string(rig.dir.join("meta")).expect("the meta");
+    assert!(
+        settled.contains(&format!("harness_session.main={minted}\n")),
+        "the argv id is the recorded id: {settled}"
+    );
+}
+
+/// #181: an agy seat whose recorded conversation is gone starts FRESH on the
+/// bare command — `--continue` would join the newest conversation anywhere.
+#[test]
+fn a_gone_agy_conversation_starts_fresh_on_the_bare_command() {
+    let rig = Rig::new("agy-fresh");
+    let gone = "0199c0de-2222-4890-abcd-ef0123456789";
+    rig.seat("agy", gone);
+    rig.started();
+    // No <id>.db: agy's probe misses and the run falls back.
+    let (argv, _) = rig.exec();
+    for banned in ["--continue", "-c", "--conversation", "--resume"] {
+        assert!(
+            !argv.iter().any(|word| word == banned),
+            "never {banned}: {argv:?}"
+        );
+    }
+    assert!(
+        !argv.iter().any(|word| word == gone),
+        "never the gone id: {argv:?}"
+    );
+    let settled = std::fs::read_to_string(rig.dir.join("meta")).expect("the meta");
+    assert!(
+        settled.contains("harness_session.main=pending\n"),
+        "no id to record: {settled}"
+    );
+    assert!(
+        settled.contains(&format!("harness_session_prior.main={gone}\n")),
+        "the gone conversation is the predecessor: {settled}"
+    );
+}
+
+/// #181: a pending gemini seat starts FRESH on the bare command —
+/// `--resume latest` would join the newest session of the project.
+#[test]
+fn a_pending_gemini_seat_starts_fresh_on_the_bare_command() {
+    let rig = Rig::new("gem-fresh");
+    rig.seat("gemini", "");
+    rig.started();
+    let (argv, _) = rig.exec();
+    assert!(
+        !carries(&argv, &["--resume", "latest"]),
+        "never --resume latest: {argv:?}"
+    );
+    assert!(
+        !argv.iter().any(|word| word == "--continue"),
+        "never --continue: {argv:?}"
+    );
+    let settled = std::fs::read_to_string(rig.dir.join("meta")).expect("the meta");
+    assert!(
+        settled.contains("harness_session.main=pending\n"),
+        "no id to record: {settled}"
+    );
+}
+
+/// #181 N3: `--print` renders an illustrative mint it never writes — the meta
+/// is byte-identical and the real run mints its own.
+#[test]
+fn a_fallback_print_illustrates_a_mint_it_never_writes() {
+    let rig = Rig::new("print-mint");
+    rig.seat("claude", "");
+    rig.started();
+    let before = std::fs::read_to_string(rig.dir.join("meta")).expect("the meta");
+    let argv = rig.planned_argv();
+    let shown =
+        session_id_of(&argv).unwrap_or_else(|| panic!("an illustrative --session-id: {argv:?}"));
+    assert_eq!(shown.len(), 36, "a uuid: {argv:?}");
+    let after = std::fs::read_to_string(rig.dir.join("meta")).expect("the meta");
+    assert_eq!(after, before, "--print writes nothing");
 }
 
 /// #56 R5 (notice): the fresh resume names the unproven conversation on
@@ -1050,32 +1189,33 @@ fn a_subcommand_resume_carries_no_positional_context_turn() {
 #[test]
 fn a_probe_that_can_run_and_fails_still_falls_back() {
     // The other half of the rule: where a tool DOES leave evidence, a recorded
-    // id whose conversation is gone is not a resume target either.
-    for (tool, gone) in [
-        ("claude", "--continue"),
-        ("codex", "resume"),
-        ("agy", "--continue"),
-    ] {
+    // id whose conversation is gone is not a resume target either. #181: the
+    // fallback is a fresh start — never another seat's conversation.
+    for tool in ["claude", "codex", "agy"] {
         let rig = Rig::new(&format!("gone-{tool}"));
         rig.seat(tool, "u-9");
         rig.started();
         // No transcript planted: the id names a conversation that is not there.
         let argv = rig.planned_argv();
-        if tool == "codex" {
-            assert!(
-                !argv.iter().any(|word| word == gone),
-                "codex starts fresh rather than resuming a missing log: {argv:?}"
-            );
-        } else {
-            assert!(
-                argv.iter().any(|word| word == gone),
-                "{tool} takes its fallback rather than a missing conversation: {argv:?}"
-            );
-        }
+        assert!(
+            !argv.iter().any(|word| word == "--continue"),
+            "{tool} never --continue for a missing conversation: {argv:?}"
+        );
         assert!(
             !carries(&argv, &["--resume", "u-9"]) && !carries(&argv, &["--conversation", "u-9"]),
             "{tool} does not ask for what is not there: {argv:?}"
         );
+        if tool == "claude" {
+            assert!(
+                session_id_of(&argv).is_some(),
+                "claude names the fresh conversation: {argv:?}"
+            );
+        } else {
+            assert!(
+                session_id_of(&argv).is_none(),
+                "{tool} takes the bare command: {argv:?}"
+            );
+        }
     }
 }
 
@@ -1096,45 +1236,70 @@ fn a_resume_fallback_tags_the_abandoned_conversation_with_its_own_tool() {
     );
     rig.started();
     let (argv, _) = rig.exec();
-    assert!(carries(&argv, &["--continue"]), "{argv:?}");
+    let minted = session_id_of(&argv).unwrap_or_else(|| panic!("a minted --session-id: {argv:?}"));
     let settled = std::fs::read_to_string(&meta).expect("the meta");
     assert!(
         settled.contains(&format!("harness_session_prior.main=claude:{gone}\n")),
         "the abandoned conversation names the store it lives in: {settled}"
     );
+    assert!(
+        settled.contains(&format!("harness_session.main={minted}\n")),
+        "the mint names the fresh conversation: {settled}"
+    );
 }
 
 #[test]
-fn a_resume_fallback_records_the_abandoned_id_once_and_clears_the_current_one() {
+fn a_resume_fallback_records_the_abandoned_id_once_and_mints_the_current_one() {
     let rig = Rig::new("fallback");
     let gone = "0199c0de-1234-4890-abcd-ef0123456789";
     rig.seat("claude", gone);
     rig.started();
     // No transcript for the id: claude's probe misses and the run falls back.
     let (argv, _) = rig.exec();
-    assert!(carries(&argv, &["--continue"]), "{argv:?}");
+    let first = session_id_of(&argv).unwrap_or_else(|| panic!("a minted --session-id: {argv:?}"));
     let settled = std::fs::read_to_string(rig.dir.join("meta")).expect("the meta");
     assert!(
         settled.contains(&format!("harness_session_prior.main={gone}\n")),
         "the passed-over conversation is recorded: {settled}"
     );
     assert!(
-        settled.contains("harness_session.main=pending\n"),
-        "the dead id is cleared to the honest unknown: {settled}"
+        settled.contains(&format!("harness_session.main={first}\n")),
+        "the mint names the fresh conversation: {settled}"
     );
 
-    // Nothing new to abandon: the same fallback on an already-pending seat is
-    // a no-op, byte for byte, and the predecessor is recorded exactly once.
+    // #181 I4: the fake tool writes no transcript, so the minted conversation
+    // is UNBORN and the next re-run abandons it and mints again — one minted
+    // id per re-run into the prior list, `gone` recorded exactly once.
     let (argv, _) = rig.exec();
-    assert!(carries(&argv, &["--continue"]), "{argv:?}");
+    let second = session_id_of(&argv).unwrap_or_else(|| panic!("a minted --session-id: {argv:?}"));
+    assert_ne!(second, first, "each re-run mints again: {argv:?}");
     let again = std::fs::read_to_string(rig.dir.join("meta")).expect("the meta");
-    assert_eq!(again, settled, "a re-run with a pending id is a no-op");
+    assert!(
+        again.contains(&format!("harness_session_prior.main={gone},{first}\n")),
+        "the prior list gains the abandoned mint: {again}"
+    );
     assert_eq!(
-        again
-            .matches(&format!("harness_session_prior.main={gone}"))
-            .count(),
+        again.matches(gone).count(),
         1,
-        "once: {again}"
+        "gone recorded once: {again}"
+    );
+    assert!(
+        again.contains(&format!("harness_session.main={second}\n")),
+        "the newest mint is current: {again}"
+    );
+
+    // The churn is bounded: the prior list holds at most four, oldest first.
+    for _ in 0..5 {
+        rig.exec();
+    }
+    let churned = std::fs::read_to_string(rig.dir.join("meta")).expect("the meta");
+    let priors = churned
+        .lines()
+        .find_map(|line| line.strip_prefix("harness_session_prior.main="))
+        .expect("a prior row");
+    assert!(
+        priors.split(',').count() <= 4,
+        "at most four predecessors: {churned}"
     );
 }
 
@@ -1206,11 +1371,11 @@ fn a_resume_fallback_on_a_tool_that_needs_no_capture_writes_no_floor() {
     rig.started();
     // No transcript for the id: claude's probe misses and the run falls back.
     let (argv, _) = rig.exec();
-    assert!(carries(&argv, &["--continue"]), "{argv:?}");
+    let minted = session_id_of(&argv).unwrap_or_else(|| panic!("a minted --session-id: {argv:?}"));
     let settled = std::fs::read_to_string(&meta).expect("the meta");
     assert!(
-        settled.contains("harness_session.main=pending\n"),
-        "the dead id is cleared: {settled}"
+        settled.contains(&format!("harness_session.main={minted}\n")),
+        "the mint names the fresh conversation: {settled}"
     );
     assert!(
         !settled.contains("capture_floor"),
@@ -1251,18 +1416,23 @@ fn a_first_run_creates_a_second_resumes_and_the_marker_is_the_difference() {
         "the run marked the seat before becoming the tool"
     );
 
-    // SECOND RUN: the SAME line, and it resumes rather than creating a second
-    // conversation — which is the whole reason the marker exists.
+    // SECOND RUN: the SAME line. The fake tool wrote no transcript, so the
+    // recorded id is gone and the re-run falls back to a FRESH start — which
+    // is why the marker exists: no second conversation is created beside a
+    // live one, and the fresh one is named.
     let (argv, said) = rig.exec();
     assert!(said.contains(ae::run::RESUMING), "{said}");
-    // #56 B1: a non-ExactOnly fallback stays silent — the fresh-start notice
-    // fires on the ExactOnly form alone.
-    assert!(!said.contains("no proven"), "{said}");
-    assert!(
-        !argv.contains(&"--session-id".to_owned()),
-        "a re-run must not collide on a create-once id: {argv:?}"
+    // #181: claude is ExactOnly now — the fresh-start notice fires.
+    assert!(said.contains("no proven claude conversation"), "{said}");
+    let minted = session_id_of(&argv).unwrap_or_else(|| panic!("a minted --session-id: {argv:?}"));
+    assert_ne!(
+        minted, "u-3",
+        "the mint is not the create-once id: {argv:?}"
     );
-    assert!(argv.contains(&"--continue".to_owned()), "{argv:?}");
+    assert!(
+        !argv.iter().any(|word| word == "--continue"),
+        "never --continue: {argv:?}"
+    );
     assert!(rig.plan().contains(r#""mode":"resume""#));
 }
 

@@ -1529,13 +1529,31 @@ fn a_resume_reruns_with_the_resume_variant() {
     let plan = rig.plan("lnres", "main");
     assert!(plan.contains(r#""mode":"resume""#), "{plan}");
     assert!(
-        plan.contains(r#""--continue""#) && !plan.contains(&format!(r#""--resume","{sid}""#)),
-        "no transcript for this id, so the fallback: {plan}"
+        plan.contains(r#""--session-id""#)
+            && !plan.contains(r#""--continue""#)
+            && !plan.contains(&format!(r#""--resume","{sid}""#)),
+        "no transcript for this id, so the fresh-start fallback: {plan}"
+    );
+
+    // #181 I2: the resumed pane's `_run` minted the fresh conversation's id
+    // and recorded it BEFORE its exec — so once the second argv lands, the
+    // meta row equals the argv's `--session-id` and the passed-over id is the
+    // predecessor.
+    let minted = last_session_id(&rig);
+    let resumed_meta = rig.meta("lnres");
+    assert!(
+        resumed_meta.contains(&format!("harness_session.main={minted}\n")),
+        "the argv id is the recorded id: {resumed_meta}"
+    );
+    assert!(
+        resumed_meta.contains(&format!("harness_session_prior.main={sid}\n")),
+        "the passed-over id is the predecessor: {resumed_meta}"
     );
 
     // Plant the transcript claude would have written, and the same seat resumes
-    // the SAME conversation. The fallback above CLEARED the recorded id, so the
-    // fixture restores it: what is proven here is the transcript probe.
+    // the SAME conversation. The fallback above MINTED a new recorded id, so
+    // the fixture restores the old one: what is proven here is the transcript
+    // probe.
     ae::meta::rewrite(&rig.dir("lnres"), "harness_session.main", Some(&sid))
         .expect("the fixture restores the recorded id");
     let home = rig.scratch.display().to_string();
@@ -1585,10 +1603,12 @@ fn a_resume_reruns_with_the_resume_variant() {
 
 /// What a resume leaves on a flag tool's meta rows: the predecessor row it
 /// CARRIES through the rebuild (a row the rebuild does not enumerate is
-/// deleted), and `pending` rather than a freshly MINTED id for a seat whose
-/// recorded conversation is gone.
+/// deleted) — and #181: the resumed pane's `_run` then MINTS the fresh
+/// conversation's id and records it, so the meta row equals the argv's
+/// `--session-id`. (The REBUILD still never mints; that boundary is pinned at
+/// the id choice in src/session_launch.rs.)
 #[test]
-fn a_resume_carries_the_predecessor_row_and_never_mints_a_fresh_id() {
+fn a_resume_carries_the_predecessor_row_and_mints_the_fresh_one() {
     if skip() {
         return;
     }
@@ -1610,20 +1630,25 @@ fn a_resume_carries_the_predecessor_row_and_never_mints_a_fresh_id() {
 
     let (code, stdout, stderr) = rig.launch(&["--local", "lnrows"]);
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    // #181 I2: wait for the resumed pane's exec, then the meta is settled.
+    let minted = last_session_id(&rig);
     let resumed = rig.meta("lnrows");
     assert!(
         resumed.contains(&format!("harness_session_prior.main={prior}\n")),
         "the predecessor row survives the rebuilt meta: {resumed}"
     );
     assert!(
-        resumed.contains("harness_session.main=pending\n"),
-        "a resume must not mint for a flag tool: {resumed}"
+        resumed.contains(&format!("harness_session.main={minted}\n")),
+        "the argv id is the recorded id: {resumed}"
     );
-    // And the pane takes the tool's own fallback: there is no id to resume by.
+    // And the pane takes the fresh-start fallback: there is no id to resume
+    // by, and it names the new conversation rather than joining another's.
     let plan = rig.plan("lnrows", "main");
     assert!(
-        plan.contains(r#""--continue""#) && !plan.contains("--resume"),
-        "the fallback, with no minted id: {plan}"
+        plan.contains(r#""--session-id""#)
+            && !plan.contains("--resume")
+            && !plan.contains("--continue"),
+        "the fresh-start fallback: {plan}"
     );
 }
 
@@ -1810,6 +1835,30 @@ fn stop(rig: &Rig, session: &str) {
         rig.tmux(&["kill-session", "-t", &format!("={session}")]).0,
         "the session stops"
     );
+}
+
+/// #181 I2: the LAST `--session-id` value the fake agent was execed with.
+/// Each exec appends one `CLAUDE_CONFIG_DIR=` line (the argv blob itself may
+/// hold newlines from the context turn), so two execs are awaited by counting
+/// those markers — and `_run` records its mint BEFORE the exec, so once the
+/// argv lands the meta is settled.
+fn last_session_id(rig: &Rig) -> String {
+    for _ in 0..800 {
+        let seen = std::fs::read_to_string(&rig.launched).unwrap_or_default();
+        if seen.matches("CLAUDE_CONFIG_DIR=").count() >= 2 {
+            return seen
+                .rfind("--session-id ")
+                .and_then(|at| {
+                    seen[at + "--session-id ".len()..]
+                        .split_whitespace()
+                        .next()
+                        .map(str::to_owned)
+                })
+                .unwrap_or_else(|| panic!("a --session-id in the resumed argv: {seen}"));
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    panic!("the resumed pane never execed the agent")
 }
 
 /// A rig whose default and override clients run DIFFERENT binaries of one

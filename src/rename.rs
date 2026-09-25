@@ -4679,4 +4679,34 @@ mod tests {
             "~/p/ae → ~/…/worktrees/feat"
         );
     }
+
+    /// #181 N6: the explicit-home refusal names the fresh start the rename
+    /// would force — there is no `--continue` fallback left to force.
+    #[test]
+    fn the_explicit_home_refusal_names_the_fresh_start() {
+        let dir = scratch("fresh-word");
+        let home = dir.join("home");
+        let old = dir.join("old-work");
+        let new = dir.join("new-work");
+        let id = "0199c0de-3333-4890-abcd-ef0123456789";
+        let transcript = home.join("projects").join(crate::carry::project_key(&old));
+        std::fs::create_dir_all(&transcript).unwrap();
+        std::fs::write(transcript.join(format!("{id}.jsonl")), "{}\n").unwrap();
+        let meta = format!(
+            "schema=2\nseat.main=lead\nagent_bin.main=claude\nconfig_home.main={}\nharness_session.main={id}\n",
+            home.display()
+        );
+        let parsed = crate::meta::Meta::parse(&meta);
+        let err = explicit_home_check(
+            parsed.roster(),
+            &old.display().to_string(),
+            &new.display().to_string(),
+        )
+        .expect_err("a transcript the rename would strand refuses");
+        assert!(
+            err.contains("force a fresh start"),
+            "the refusal names the fresh start: {err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
