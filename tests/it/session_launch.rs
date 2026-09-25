@@ -6541,9 +6541,10 @@ fn rewrite_intent_row(intent: &str, key: &str, value: u64) -> String {
         + "\n"
 }
 
-/// #196 I5: a repo-selecting `GIT_DIR` in the environment cannot smuggle a
-/// foreign git dir past the containment — the plan-time fingerprint refuses
-/// before any write. Smallest defeating mutation: skip the containment.
+/// #196 I5: a repo-selecting `GIT_DIR` in the environment is ignored — the
+/// plan-time fingerprint reads the `-C` repository, the rename succeeds, and
+/// the foreign repo is untouched. Smallest defeating mutation: let the caller
+/// environment reach the query.
 #[test]
 fn a_git_dir_env_cannot_smuggle_a_foreign_git_dir_into_the_fingerprint() {
     if skip() {
@@ -6563,33 +6564,50 @@ fn a_git_dir_env_cannot_smuggle_a_foreign_git_dir_into_the_fingerprint() {
     let (code, stdout, stderr) = public(&rig, &["stop", "gdold"]);
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
 
+    // A truly foreign repo the smuggled `GIT_DIR` names.
+    let foreign = rig.scratch.join("foreign");
+    assert!(
+        std::fs::create_dir_all(&foreign).is_ok(),
+        "a foreign repo dir"
+    );
+    git_in(&foreign, &["init", "-q"]);
+    git_in(&foreign, &["config", "user.email", "t@t"]);
+    git_in(&foreign, &["config", "user.name", "t"]);
+    assert!(std::fs::write(foreign.join("f"), "foreign\n").is_ok());
+    git_in(&foreign, &["add", "-A"]);
+    git_in(&foreign, &["commit", "-qm", "base"]);
+    let foreign_head = git_in(&foreign, &["rev-parse", "HEAD"]);
+    let foreign_list = git_in(&foreign, &["worktree", "list", "--porcelain"]);
+
     let out = ae()
         .env("HOME", &rig.scratch)
         .env("AE_HOME", &rig.home)
         .env("TMUX_TMPDIR", &rig.scratch)
-        .env("GIT_DIR", rig.project.join(".git"))
+        .env("GIT_DIR", foreign.join(".git"))
         .env_remove("TMUX")
         .env_remove("TMUX_PANE")
         .args([ae::cli::RENAME, "gdold", "gdnew"])
         .output()
         .unwrap_or_else(|why| panic!("the rename should run: {why}"));
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
-    assert_eq!(out.status.code(), Some(1), "{stderr}");
-    assert!(stderr.contains("cannot be fingerprinted"), "{stderr}");
-    assert!(
-        !rig.home
-            .join("sessions")
-            .join(".rename.gdold.gdnew.intent")
-            .exists(),
-        "no intent is published"
-    );
-    assert!(old_work.is_dir(), "the old path is intact");
-    assert!(!new_work.exists(), "no destination appears");
-    assert!(!rig.dir("gdnew").exists(), "no state move");
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+    assert!(!old_work.exists(), "the old work path is gone");
+    assert!(new_work.is_dir(), "the new work path holds the move");
+    assert!(rig.dir("gdnew").exists(), "the state moved");
     let porcelain = git_in(&rig.project, &["worktree", "list", "--porcelain"]);
     assert!(
-        porcelain_has(&porcelain, &old_work) && !porcelain_has(&porcelain, &new_work),
-        "old registered once, new absent: {porcelain}"
+        !porcelain_has(&porcelain, &old_work) && porcelain_has(&porcelain, &new_work),
+        "new registered, old gone: {porcelain}"
+    );
+    assert_eq!(
+        git_in(&foreign, &["rev-parse", "HEAD"]),
+        foreign_head,
+        "the foreign HEAD is untouched"
+    );
+    assert_eq!(
+        git_in(&foreign, &["worktree", "list", "--porcelain"]),
+        foreign_list,
+        "the foreign registration is untouched"
     );
 }
 
