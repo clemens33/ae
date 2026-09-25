@@ -1104,26 +1104,43 @@ fn assert_equal_widths(socket: &Path, scratch: &Path, target: &str) {
 }
 
 fn root_status_binding(socket: &Path, scratch: &Path, key: &str) -> String {
-    let (_, keys) = tmux(socket, scratch, &["list-keys", "-T", "root"]);
-    let prefix = format!("bind-key  -T root {key} ");
-    keys.lines()
-        .find(|line| line.starts_with(&prefix))
+    let (ok, keys) = tmux(socket, scratch, &["list-keys", "-T", "root"]);
+    // The product parser, not a spacing prefix: tmux 3.4 prints one space
+    // after `bind-key` where 3.7 prints two.
+    ae::tmux::interpret_list_keys(ok, &keys)
+        .unwrap_or_default()
+        .iter()
+        .find(|binding| binding.key == key)
         .unwrap_or_else(|| panic!("one {key} binding: {keys}"))
-        .to_owned()
+        .command
+        .clone()
 }
 
 fn assert_tmux_default_mouse_binding(socket: &Path, scratch: &Path) {
     let binding = root_status_binding(socket, scratch, "MouseDown1Status");
+    // Both measured stocks, no boundary pinned: 3.4 selects the window,
+    // 3.7b switches the client. Exact equality leaves no room for ae's
+    // conditional map or tmux's menus.
     assert!(
-        binding.contains("switch-client -t =") && !binding.contains("if-shell"),
-        "the pre-release server begins with tmux's default: {binding}"
+        binding == "switch-client -t =" || binding == "select-window -t =",
+        "the pre-release server begins with tmux's stock click binding: {binding}"
     );
 }
 
 fn assert_ae_status_bindings(socket: &Path, scratch: &Path) {
     let server = ae::inventory::ServerId::Selected(ae::meta::Selector::Socket(socket.to_owned()));
     let menu_mouse = ae::transport::observe_tmux_floor(&server).menu_mouse();
-    let (_, keys) = tmux(socket, scratch, &["list-keys", "-T", "root"]);
+    let (ok, keys) = tmux(socket, scratch, &["list-keys", "-T", "root"]);
+    let bindings = ae::tmux::interpret_list_keys(ok, &keys).unwrap_or_default();
+    let binding = |key: &str| {
+        bindings
+            .iter()
+            .find(|binding| binding.key == key)
+            .unwrap_or_else(|| panic!("one {key} binding: {keys}"))
+            .command
+            .clone()
+    };
+    let has = |key: &str| bindings.iter().any(|binding| binding.key == key);
     for key in [
         "MouseDown3Pane",
         "M-MouseDown3Pane",
@@ -1132,13 +1149,11 @@ fn assert_ae_status_bindings(socket: &Path, scratch: &Path) {
         "M-MouseDown3StatusLeft",
     ] {
         assert!(
-            !keys
-                .lines()
-                .any(|line| line.starts_with(&format!("bind-key  -T root {key} "))),
+            !has(key),
             "the upgraded ae-owned server removes tmux's stock right-click menu for {key}: {keys}"
         );
     }
-    let down = root_status_binding(socket, scratch, "MouseDown1Status");
+    let down = binding("MouseDown1Status");
     assert!(
         down.contains("#{||:#{==:#{mouse_status_range},ae}")
             && down.contains("#{==:#{mouse_status_range},ae-more}")
@@ -1150,10 +1165,8 @@ fn assert_ae_status_bindings(socket: &Path, scratch: &Path) {
         "the upgrade reasserts press navigation: {down}"
     );
     let up_picker = if menu_mouse {
-        let (_, keys) = tmux(socket, scratch, &["list-keys", "-T", "root"]);
         assert!(
-            !keys.contains("bind-key  -T root MouseUp1Status ")
-                && !keys.contains("bind-key  -T root MouseUp3Status "),
+            !has("MouseUp1Status") && !has("MouseUp3Status"),
             "mouse-aware upgrade clears stale Up bindings: {keys}"
         );
         None
@@ -1162,7 +1175,7 @@ fn assert_ae_status_bindings(socket: &Path, scratch: &Path) {
             !down.contains("orchestrator"),
             "tmux 3.4 must not open twice: {down}"
         );
-        Some(root_status_binding(socket, scratch, "MouseUp1Status"))
+        Some(binding("MouseUp1Status"))
     };
     let picker = up_picker.as_deref().unwrap_or(&down);
     for needle in [
@@ -1176,7 +1189,7 @@ fn assert_ae_status_bindings(socket: &Path, scratch: &Path) {
     ] {
         assert!(picker.contains(needle), "missing {needle:?}: {picker}");
     }
-    let down_menu = root_status_binding(socket, scratch, "MouseDown3Status");
+    let down_menu = binding("MouseDown3Status");
     let menu = if menu_mouse {
         down_menu
     } else {
@@ -1184,7 +1197,7 @@ fn assert_ae_status_bindings(socket: &Path, scratch: &Path) {
             !down_menu.contains("orchestrator") && !down_menu.contains("_session-menu"),
             "tmux 3.4 press context path must be a no-op: {down_menu}"
         );
-        root_status_binding(socket, scratch, "MouseUp3Status")
+        binding("MouseUp3Status")
     };
     for needle in [
         "#{||:#{==:#{mouse_status_range},ae}",

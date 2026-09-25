@@ -3000,7 +3000,12 @@ fn a_spawned_seat_launches_its_preflighted_command_after_a_config_swap() {
     reason = "one live assertion of the capability-canonical server binding set"
 )]
 fn assert_ae_status_bindings(rig: &Rig) {
-    let (_, keys) = rig.tmux(&["list-keys", "-T", "root"]);
+    let (ok, keys) = rig.tmux(&["list-keys", "-T", "root"]);
+    // The product parser, not a spacing prefix: tmux 3.4 prints one space
+    // after `bind-key` where 3.7 prints two. Negatives and positives read
+    // this one parse, so an empty read fails at the finds below.
+    let bindings = ae::tmux::interpret_list_keys(ok, &keys).unwrap_or_default();
+    let has = |key: &str| bindings.iter().any(|binding| binding.key == key);
     for key in [
         "MouseDown3Pane",
         "M-MouseDown3Pane",
@@ -3009,17 +3014,17 @@ fn assert_ae_status_bindings(rig: &Rig) {
         "M-MouseDown3StatusLeft",
     ] {
         assert!(
-            !keys
-                .lines()
-                .any(|line| line.starts_with(&format!("bind-key  -T root {key} "))),
+            !has(key),
             "the ae-owned server removes tmux's stock right-click menu for {key}: {keys}"
         );
     }
     let binding = |key: &str| {
-        let prefix = format!("bind-key  -T root {key} ");
-        keys.lines()
-            .find(|line| line.starts_with(&prefix))
+        bindings
+            .iter()
+            .find(|binding| binding.key == key)
             .unwrap_or_else(|| panic!("one {key} binding: {keys}"))
+            .command
+            .clone()
     };
     let server = ae::inventory::ServerId::Selected(ae::meta::Selector::Socket(rig.sock.clone()));
     let menu_mouse = ae::transport::observe_tmux_floor(&server).menu_mouse();
@@ -3037,8 +3042,7 @@ fn assert_ae_status_bindings(rig: &Rig) {
     );
     let picker_click = if menu_mouse {
         assert!(
-            !keys.contains("bind-key  -T root MouseUp1Status ")
-                && !keys.contains("bind-key  -T root MouseUp3Status "),
+            !has("MouseUp1Status") && !has("MouseUp3Status"),
             "mouse-aware servers clear stale Up bindings: {keys}"
         );
         down_click
@@ -3084,17 +3088,12 @@ fn assert_ae_status_bindings(rig: &Rig) {
         assert!(menu.contains(needle), "missing {needle:?}: {menu}");
     }
     assert_eq!(
-        keys.lines()
-            .filter(|line| {
-                [
-                    "MouseDown1Status",
-                    "MouseDown3Status",
-                    "MouseUp1Status",
-                    "MouseUp3Status",
-                ]
-                .iter()
-                .any(|key| line.starts_with(&format!("bind-key  -T root {key} ")))
-            })
+        bindings
+            .iter()
+            .filter(|binding| matches!(
+                binding.key.as_str(),
+                "MouseDown1Status" | "MouseDown3Status" | "MouseUp1Status" | "MouseUp3Status"
+            ))
             .count(),
         if menu_mouse { 2 } else { 4 },
         "one canonical binding set for the server capability: {keys}"
@@ -3301,7 +3300,8 @@ fn an_ambient_launch_does_not_replace_mouse_down_status() {
     );
     let (listed, stock_keys) = ambient(&["list-keys", "-T", "root"]);
     assert!(listed, "the user's untouched root table: {stock_keys}");
-    let assert_stock_menus = |keys: &str| {
+    let assert_stock_menus = |ok: bool, keys: &str| {
+        let bindings = ae::tmux::interpret_list_keys(ok, keys).unwrap_or_default();
         for key in [
             "MouseDown3Pane",
             "M-MouseDown3Pane",
@@ -3309,17 +3309,18 @@ fn an_ambient_launch_does_not_replace_mouse_down_status() {
             "M-MouseDown3Status",
             "M-MouseDown3StatusLeft",
         ] {
-            let stock = keys
-                .lines()
-                .find(|line| line.starts_with(&format!("bind-key  -T root {key} ")))
+            let stock = bindings
+                .iter()
+                .find(|binding| binding.key == *key)
                 .unwrap_or_else(|| panic!("tmux's stock right-click binding for {key}: {keys}"));
             assert!(
-                stock.contains("display-menu"),
-                "tmux's stock right-click binding still opens its menu: {stock}"
+                stock.command.contains("display-menu"),
+                "tmux's stock right-click binding still opens its menu: {}",
+                stock.command
             );
         }
     };
-    assert_stock_menus(&stock_keys);
+    assert_stock_menus(listed, &stock_keys);
     let (code, stdout, stderr) =
         rig.launch_with_server("", "", &["--local", "lnfocus-ambient-stock"]);
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
@@ -3328,7 +3329,7 @@ fn an_ambient_launch_does_not_replace_mouse_down_status() {
         listed,
         "the ambient root table after launch: {post_launch_stock_keys}"
     );
-    assert_stock_menus(&post_launch_stock_keys);
+    assert_stock_menus(listed, &post_launch_stock_keys);
     assert!(
         ambient(&[
             "bind-key",
@@ -3379,18 +3380,21 @@ fn an_ambient_launch_does_not_replace_mouse_down_status() {
 
     let (listed, keys) = ambient(&["list-keys", "-T", "root"]);
     assert!(listed, "the ambient server's root table: {keys}");
-    let click = keys
-        .lines()
-        .find(|line| line.starts_with("bind-key  -T root MouseDown1Status "))
-        .unwrap_or_else(|| panic!("tmux's MouseDown1Status binding remains: {keys}"));
+    let bindings = ae::tmux::interpret_list_keys(listed, &keys).unwrap_or_default();
+    let binding = |key: &str| {
+        bindings
+            .iter()
+            .find(|binding| binding.key == key)
+            .unwrap_or_else(|| panic!("ambient {key} remains: {keys}"))
+            .command
+            .clone()
+    };
+    let click = binding("MouseDown1Status");
     assert!(
         click.contains("display-message ambient-owned") && !click.contains("if-shell"),
         "an ambient launch leaves the server-global click binding alone: {click}"
     );
-    let menu = keys
-        .lines()
-        .find(|line| line.starts_with("bind-key  -T root MouseDown3Status "))
-        .unwrap_or_else(|| panic!("tmux's MouseDown3Status binding remains: {keys}"));
+    let menu = binding("MouseDown3Status");
     assert!(
         menu.contains("display-message ambient-menu") && !menu.contains("display-menu"),
         "an ambient launch leaves the server-global menu binding alone: {menu}"
@@ -3399,10 +3403,7 @@ fn an_ambient_launch_does_not_replace_mouse_down_status() {
         ("MouseUp1Status", "ambient-up-click"),
         ("MouseUp3Status", "ambient-up-menu"),
     ] {
-        let line = keys
-            .lines()
-            .find(|line| line.starts_with(&format!("bind-key  -T root {key} ")))
-            .unwrap_or_else(|| panic!("ambient {key} remains: {keys}"));
+        let line = binding(key);
         assert!(
             line.contains(&format!("display-message {message}")),
             "ambient {key} changed: {line}"
