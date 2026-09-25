@@ -584,6 +584,13 @@ fn stop_timeout_advice(probe: Option<&ObservedPaneProbe>) -> (String, &'static s
 ///
 /// A capture ae could not take is [`HarnessState::Unknown`], never idle: the
 /// absence of a reading is not evidence that a turn is not running.
+/// Whether one capture PROVES the seat sits on its vendor's usage limit over an
+/// empty input box.
+fn limit_proven(capture: &str, agent_bin: &str, tool: ToolKind) -> bool {
+    let _ = (capture, agent_bin, tool);
+    false
+}
+
 fn frame(target: &Target, tool: ToolKind) -> HarnessState {
     transport::capture_pane(&target.server, &target.pane).map_or(HarnessState::Unknown, |capture| {
         crate::harness_state::classify(&capture, tool)
@@ -1919,5 +1926,83 @@ mod tests {
             "Error: moved — a turn never landed: pane %7 waits on the prompt named above, \
              which only the human may answer.\n"
         );
+    }
+
+    /// The limit proof reads ONE capture two ways, and each half is pinned on
+    /// its own: the vendor's own limit row, and the tool's own grammar
+    /// recognising its input box — which it does only while the box is empty.
+    /// A busy frame still proves the limit; the stop refuses it before asking.
+    #[test]
+    fn the_limit_is_proven_only_by_the_vendors_row_over_an_empty_box() {
+        const LIMIT: &str = "❯ a synthetic prompt\n  ⎿  You've hit your session limit · resets 3pm\n     \
+             /upgrade to increase your usage limit.\n\n";
+        const RULE: &str = "────────────────────────────────────────────────────────────";
+        let chrome = |prompt: &str| {
+            format!(
+                "{RULE}\n{prompt}\n{RULE}\n  🧠 Opus 5.5 (xhigh)  📁 repo  🌿 main\n  \
+                 ⏵⏵ bypass permissions on (shift+tab to cycle)"
+            )
+        };
+        let codex = "■ You’ve hit your usage limit. Visit https://chatgpt.com/codex/settings/usage \
+             to purchase more\ncredits or try again at Sep 26th, 2026 10:11 AM.\n\n\n› Ask Codex to \
+             do anything\n\n  gpt-6-astra medium · ~/projects/ae · main · Context 51% used";
+        for (capture, bin, limit, frame, proven) in [
+            (
+                format!("{LIMIT}{}", chrome("❯")),
+                "claude",
+                true,
+                true,
+                true,
+            ),
+            (
+                format!("{LIMIT}{}", chrome("❯ half a sentence")),
+                "claude",
+                true,
+                false,
+                false,
+            ),
+            (
+                format!("⏺ ok\n\n{}", chrome("❯")),
+                "claude",
+                false,
+                true,
+                false,
+            ),
+            (
+                format!(
+                    "{LIMIT}✳ Thinking… (3s · esc to interrupt)\n{}",
+                    chrome("❯")
+                ),
+                "claude",
+                true,
+                true,
+                true,
+            ),
+            (codex.to_owned(), "codex", true, true, true),
+            (
+                format!("{LIMIT}{}", chrome("❯")),
+                "muse",
+                false,
+                true,
+                false,
+            ),
+        ] {
+            let tool = super::ToolKind::from_binary_name(bin);
+            assert_eq!(
+                crate::watchdog::limit_notice(&capture, bin).is_some(),
+                limit,
+                "{bin}: the limit row\n{capture}"
+            );
+            assert_eq!(
+                crate::harness_state::read_frame(&capture, tool).is_some(),
+                frame,
+                "{bin}: the box\n{capture}"
+            );
+            assert_eq!(
+                super::limit_proven(&capture, bin, tool),
+                proven,
+                "{bin}\n{capture}"
+            );
+        }
     }
 }

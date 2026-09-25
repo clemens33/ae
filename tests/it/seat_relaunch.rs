@@ -61,6 +61,9 @@ $| = 1;
 my $composed = __COMPOSED__;
 my $frame = __FRAME__;
 my $busyfile = "__BUSY__";
+my $limitfile = "__LIMIT__";
+my $draftfile = "__DRAFT__";
+my $hook = "\xe2\x8e\xbf";
 my $rail = "\xe2\x94\x83";
 my $corner = "\xe2\x95\xb9";
 my $block = "\xe2\x96\x80";
@@ -72,7 +75,9 @@ my $brain = "\xf0\x9f\xa7\xa0";
 my $chev = "\xe2\x8f\xb5";
 my $spin = "\xe2\x9c\xb3";
 my $done = "\xe2\x9c\xbb";
-sub busy_now { return (-e $busyfile) ? 1 : 0; }
+sub busy_now {
+    return ((-e $busyfile) ? 1 : 0) . ((-e $limitfile) ? 1 : 0) . ((-e $draftfile) ? 1 : 0);
+}
 # Names the frame this fake drew LAST, once its bytes are written, so a test
 # can wait for the frame rather than for the process.
 sub drawn {
@@ -83,22 +88,29 @@ sub drawn {
     rename("$drawn.tmp", $drawn) or die;
 }
 sub draw {
-    my $busy = shift;
+    my ($busy, $limit, $draft) = split(//, shift);
     print "\e[H\e[2J";
     if ($frame) {
         # The row directly above the box is what says whether a turn is
         # running: claude draws its spinner there while it works and a
         # `done` summary when it is finished, and the classifier reads the
-        # last such row in the pane's recent history.
-        print $busy
-            ? "$spin Thinking$ellipsis (3s $dot esc to interrupt)\r\n"
-            : "$done Fake $dot done (0s)\r\n";
+        # last such row in the pane's recent history. At its usage limit it
+        # draws its own limit row there instead of the summary.
+        print "  $hook  You've hit your session limit $dot resets 3pm\r\n" if $limit;
+        if ($busy) {
+            print "$spin Thinking$ellipsis (3s $dot esc to interrupt)\r\n";
+        } elsif (!$limit) {
+            print "$done Fake $dot done (0s)\r\n";
+        }
         print "$bar\r\n";
-        print "$caret \r\n";
+        print $draft ? "$caret half a sentence\r\n" : "$caret \r\n";
         print "$bar\r\n";
         print "$brain Opus 5 $dot fake\r\n";
         print "$chev$chev accept edits on\r\n";
-        drawn($busy ? "esc to interrupt" : "done (0s)");
+        drawn($busy ? "esc to interrupt"
+            : $draft ? "half a sentence"
+            : $limit ? "hit your session limit"
+            : "done (0s)");
     } elsif ($composed) {
         print "opencode\r\n";
         print "$rail\r\n";
@@ -119,7 +131,7 @@ while (1) {
     bye() if -e $exit;
     if ($frame) {
         my $now = busy_now();
-        if ($now != $shown) { draw($now); $shown = $now; }
+        if ($now ne $shown) { draw($now); $shown = $now; }
     }
     my $ready = '';
     vec($ready, fileno(STDIN), 1) = 1;
@@ -169,6 +181,14 @@ fn fakes(scratch: &Path, tools: &Path) -> String {
             .replace("__COMPOSED__", composed)
             .replace("__FRAME__", frame)
             .replace("__BUSY__", &scratch.join("__BUSY__").display().to_string())
+            .replace(
+                "__LIMIT__",
+                &scratch.join("__LIMIT__").display().to_string(),
+            )
+            .replace(
+                "__DRAFT__",
+                &scratch.join("__DRAFT__").display().to_string(),
+            )
             .replace("__DRAWN__", &scratch.join("drawn").display().to_string());
         assert!(std::fs::write(&script, body).is_ok(), "the fake body");
         let _ = writeln!(
@@ -429,15 +449,29 @@ impl Rig {
     /// pane actually shows it — the fake redraws on its own poll, so a test
     /// that ran straight on would race its own setup.
     pub fn mark_busy(&self, pane: &str) {
-        assert!(std::fs::write(self.scratch.join("__BUSY__"), "").is_ok());
+        self.mark(pane, "__BUSY__", "esc to interrupt");
+    }
+
+    /// The same, for claude's own usage-limit row drawn above its box.
+    pub fn mark_limited(&self, pane: &str) {
+        self.mark(pane, "__LIMIT__", "hit your session limit");
+    }
+
+    /// The same, for a human's half-typed draft in the box.
+    pub fn mark_draft(&self, pane: &str) {
+        self.mark(pane, "__DRAFT__", "half a sentence");
+    }
+
+    fn mark(&self, pane: &str, file: &str, want: &str) {
+        assert!(std::fs::write(self.scratch.join(file), "").is_ok());
         let pid = self.tool_pid(pane, "claude");
         let pid = pid.unwrap_or_else(|| panic!("the frame-drawing fake runs in {pane}"));
-        self.wait_drawn(pane, pid, Some("esc to interrupt"));
+        self.wait_drawn(pane, pid, Some(want));
     }
 
     /// Wait until the fake `pid` has DRAWN a frame — `want`'s, when named —
     /// and the pane shows it. The fake names its last frame only after writing
-    /// it and redraws only when `__BUSY__` changes, so what this sees stays.
+    /// it and redraws only when a marker file changes, so what this sees stays.
     fn wait_drawn(&self, pane: &str, pid: u32, want: Option<&str>) {
         let marker = self.scratch.join(format!("drawn.{pid}"));
         let deadline = std::time::Instant::now() + Duration::from_mins(1);

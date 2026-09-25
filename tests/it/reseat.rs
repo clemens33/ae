@@ -350,6 +350,66 @@ fn a_frame_ae_cannot_read_is_refused_until_the_flag_says_otherwise() {
 }
 
 #[test]
+fn a_seat_on_its_usage_limit_over_an_empty_box_is_stopped_without_the_flag() {
+    // Claude at its limit draws its own limit row where the `done` summary
+    // would sit, so its frame reads neither idle nor busy. The vendor's own
+    // row over an EMPTY box, read twice, is the proof the stop needs.
+    let rig = Rig::new("limitmove");
+    rig.seat_rows("spawned.0", "scout", "claude", "claude");
+    record_history(&rig, "spawned.0");
+    let pane = rig.new_pane("spawned.0", "scout");
+    rig.start(&pane, "spawned.0", "claude");
+    rig.mark_limited(&pane);
+
+    let (code, out, err) = rig.run_top(
+        &rig.main_pane.clone(),
+        &["reseat", &rig.session, "scout", "--using", "fake-opencode"],
+    );
+
+    assert_eq!(
+        code,
+        Some(0),
+        "out={out} err={err}\nframe was:\n{}",
+        rig.capture(&pane)
+    );
+    assert!(rig.tool_pid(&pane, "opencode").is_some(), "moved in place");
+    assert_eq!(rig.meta_row("profile.spawned.0"), "fake-opencode");
+    assert!(rig.events().contains("stopped claude in place"), "audited");
+}
+
+#[test]
+fn a_limit_row_over_a_draft_or_a_running_turn_proves_nothing() {
+    // The limit alone is never the proof: a human's draft in the box keeps
+    // the frame unreadable, and a running turn is BUSY with or without the
+    // flag. Neither stops the tool, writes a seed or records a stop.
+    let rig = Rig::new("limitheld");
+    rig.seat_rows("worker.1", "w1", "claude", "claude");
+    let pane = rig.new_pane("worker.1", "w1");
+    rig.start(&pane, "worker.1", "claude");
+    rig.mark_limited(&pane);
+    rig.mark_draft(&pane);
+    let refused = |tail: &[&str], words: &[&str]| {
+        let mut args = vec!["reseat", &rig.session, "w1", "--using", "fake-grok"];
+        args.extend(tail);
+        let (code, out, err) = rig.run_top(&rig.main_pane.clone(), &args);
+        assert_eq!(code, Some(1), "{tail:?} out={out} err={err}");
+        assert!(
+            words.iter().all(|word| err.contains(word)),
+            "{tail:?}: {err}"
+        );
+        assert!(rig.tool_pid(&pane, "claude").is_some(), "{tail:?}: running");
+        assert_eq!(rig.meta_row("profile.worker.1"), "fake-claude");
+        assert!(!rig.dir.join("seed.w1.md").exists(), "{tail:?}: no seed");
+        assert!(!rig.events().contains("stopped"), "{tail:?}: no stop");
+    };
+    refused(&[], &["cannot read", "--stop-unknown"]);
+    assert!(std::fs::remove_file(rig.scratch.join("__DRAFT__")).is_ok());
+    rig.mark_busy(&pane);
+    refused(&[], &["is BUSY"]);
+    refused(&["--stop-unknown"], &["is BUSY"]);
+}
+
+#[test]
 fn the_argv_and_the_roster_are_answered_before_any_pane_is_read() {
     // Each of these is a DURABLE fact, so each must refuse on its own terms.
     // The seat is deliberately LIVE: a ladder that read the pane first would
