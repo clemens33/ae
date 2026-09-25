@@ -887,7 +887,7 @@ fn init_owns_exclusive_publication_and_every_caller_of_it_is_named() {
     /// make. The mode is part of the spelling: it is the published file's, and
     /// a caller that changed it would be publishing into someone else's store
     /// at the wrong permissions.
-    const CALLERS: [(&str, &str, &str); 2] = [
+    const CALLERS: [(&str, &str, &str); 3] = [
         (
             "src/lib.rs",
             "crate::init::create_exclusive(path, contents.as_bytes(), 0o666)",
@@ -903,6 +903,16 @@ fn init_owns_exclusive_publication_and_every_caller_of_it_is_named() {
             "src/carry.rs",
             "crate::init::create_exclusive(path, bytes, 0o600)",
             "the carry's publication must be init's exclusive writer at the store's own mode",
+        ),
+        // THE THIRD LEGITIMATE CALLER: a stopped rename publishes its identity
+        // witness into the managed work root it is about to move — a store ae
+        // does not hold (the user's live checkout) — so it needs exactly this
+        // operation, and a duplicate would be a second no-clobber publication
+        // to get wrong. Its mode is the work root's, not the config's.
+        (
+            "src/rename.rs",
+            "crate::init::create_exclusive(&path, witness_bytes(nonce).as_bytes(), 0o644)",
+            "the witness publication must be init's exclusive writer at the work root's own mode",
         ),
     ];
 
