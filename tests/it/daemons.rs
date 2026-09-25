@@ -227,6 +227,71 @@ fn a_watchdog_starts_once_reports_its_pid_and_stops_with_its_pane() {
     assert_eq!((code, out.trim()), (0, "Watchdog is not running."));
 }
 
+/// A stop typed in a plain shell whose locale is not UTF-8 still kills the
+/// pane (#187). Outside tmux, with no UTF-8 locale, a tmux client is not UTF-8,
+/// and the server sanitizes what it prints to that client; the ownership probe
+/// used to come back unreadable and the kill was refused.
+#[test]
+fn a_stop_from_a_shell_without_a_utf8_locale_still_kills_the_watchdog_pane() {
+    let scratch = scratch("wdposix");
+    require_tmux(&scratch);
+    let socket = socket_of(&scratch);
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let root = scratch.join("home");
+    let meta_dir = plant_session(&root, "wdposix", &socket);
+    let (ok, _) = tmux(
+        &socket,
+        &scratch,
+        &["new-session", "-d", "-s", "wdposix", "sleep", "60"],
+    );
+    assert!(ok, "the session the watchdog watches");
+    let (code, _, err) = watchdog(&root, &["start", "wdposix"]);
+    assert_eq!(code, 0, "the start failed: {err}");
+
+    // The binary, not the in-process entry: the locale must reach tmux's own
+    // environment, and only a child process can carry one. `ae()` strips
+    // `$TMUX`, which would otherwise make the client UTF-8 by itself.
+    let mut stop = super::cli::ae();
+    stop.env("AE_HOME", &root)
+        .env("LC_ALL", "C")
+        .env_remove("LC_CTYPE")
+        .env_remove("LANG")
+        .args(["watchdog", "stop", "wdposix"]);
+    let out = super::cli::bounded(
+        stop.stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("the ae binary runs"),
+        std::time::Duration::from_secs(30),
+    )
+    .expect("the stop returned");
+    let (stdout, stderr) = (
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert_eq!(stdout.trim(), "Watchdog stopped.");
+    assert!(stderr.is_empty(), "the stop refused something: {stderr}");
+    assert_eq!(ae::watchdog_glue::read_pid(&meta_dir), None);
+    let (_, panes) = tmux(
+        &socket,
+        &scratch,
+        &["list-panes", "-s", "-t", "wdposix", "-F", "#{@ae_agent}"],
+    );
+    assert!(
+        !panes.lines().any(|line| line == "_watchdog"),
+        "the watchdog pane outlived the stop: {panes:?}"
+    );
+}
+
 /// The audit ledger's lines, oldest first.
 fn events_of(meta_dir: &Path) -> Vec<String> {
     match fs::read_to_string(meta_dir.join("events.jsonl")) {

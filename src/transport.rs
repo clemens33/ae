@@ -256,6 +256,13 @@ fn spawn<A: AsRef<std::ffi::OsStr>>(
     feed: Option<&[u8]>,
 ) -> Option<std::process::Output> {
     let mut command = std::process::Command::new(program);
+    if declares_utf8(program, streams) {
+        // tmux prints `_` for every non-ASCII character and control byte to a
+        // client it does not judge UTF-8, and it judges that from `$TMUX` or a
+        // UTF-8 locale alone. A plain shell may have neither, yet ae reads what
+        // the client prints as UTF-8 (#187).
+        command.arg("-u");
+    }
     command.args(args);
     command.envs(envs.iter().copied());
     // `AE_VERSION` is the TARGET PIN of `ae upgrade` and nothing else's input.
@@ -332,6 +339,12 @@ fn spawn<A: AsRef<std::ffi::OsStr>>(
         let _wrote = std::io::Write::write_all(&mut sink, bytes);
     }
     child.wait_with_output().ok()
+}
+
+/// Whether a leg starts `program` as a UTF-8 tmux client: every tmux leg ae
+/// reads, never `Terminal`, whose client draws on the human's own terminal.
+fn declares_utf8(program: &str, streams: Streams<'_>) -> bool {
+    program == PROGRAM && !matches!(streams, Streams::Terminal)
 }
 
 /// How the door wires a child's streams — and therefore what it can report.
@@ -1273,7 +1286,7 @@ pub(crate) fn spawn_detached(
 
 #[cfg(test)]
 mod tests {
-    use super::{CaptureScratch, Streams, Tmux, run, spawn};
+    use super::{CaptureScratch, PROGRAM, Streams, Tmux, declares_utf8, run, spawn};
     use crate::inventory::{Discovery, QueryFailed, ServerId};
     use crate::meta::Selector;
     use std::path::PathBuf;
@@ -1286,6 +1299,30 @@ mod tests {
             (true, "ok\n".to_owned()),
             "this suite needs /bin/echo to prove the exec can succeed at all"
         );
+    }
+
+    /// `-u` goes on every tmux leg ae reads (#187), and on nothing else: not
+    /// the human's own `Terminal` client, and no other program on any leg.
+    #[test]
+    fn only_a_tmux_leg_that_ae_reads_is_started_as_a_utf8_client() {
+        let scratch = CaptureScratch::new().expect("a scratch file");
+        let legs = [
+            Streams::Captured,
+            Streams::InheritStderr,
+            Streams::Detached,
+            Streams::CapturedToFile {
+                file: scratch.file(),
+                cap: 0,
+            },
+            Streams::Terminal,
+        ];
+        for leg in legs {
+            let read_by_ae = !matches!(leg, Streams::Terminal);
+            assert_eq!(declares_utf8(PROGRAM, leg), read_by_ae, "tmux on {leg:?}");
+            for other in ["git", "ps", "sysctl", "nohup", "opencode", "/s/demo/send"] {
+                assert!(!declares_utf8(other, leg), "{other} on {leg:?}");
+            }
+        }
     }
 
     #[test]
