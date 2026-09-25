@@ -169,6 +169,197 @@ fn every_tmux_conjunction_in_src_is_binary() {
     assert!(offenders.is_empty(), "non-binary: {offenders:?}");
 }
 
+/// One string literal: its source body, whether raw, and the line it opens on.
+struct Lit<'a>(&'a str, bool, usize);
+
+/// The content start and hash count of a raw string opening at `i`, if any:
+/// `r"…"` or `r#"…"#`; `b"…"` is not raw and its quote opens a literal.
+fn raw(b: &[u8], i: usize) -> Option<(usize, usize)> {
+    let r = match b[i] {
+        b'r' => i,
+        b'b' if b.get(i + 1) == Some(&b'r') => i + 1,
+        _ => return None,
+    };
+    if i > 0 && (b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_') {
+        return None;
+    }
+    let hashes = (r + 1..b.len())
+        .take_while(|&j| b.get(j) == Some(&b'#'))
+        .count();
+    (b.get(r + 1 + hashes) == Some(&b'"')).then_some((r + 2 + hashes, hashes))
+}
+
+/// Every string literal in `text`: comments and char literals are skipped, a
+/// raw body is consumed whole, and `\` escapes the byte after it, so a quote
+/// in prose, a `'"'` char or one inside `r#"…"#` opens or ends no literal.
+fn lits(text: &str) -> Vec<Lit<'_>> {
+    let b = text.as_bytes();
+    let line = |at: usize| text[..at].matches('\n').count() + 1;
+    let (mut out, mut i) = (Vec::new(), 0);
+    while i < b.len() {
+        if b[i..].starts_with(b"//") {
+            i += text[i..].find('\n').map_or(b.len() - i, |at| at + 1);
+        } else if b[i..].starts_with(b"/*") {
+            let mut depth = 1;
+            i += 2;
+            while depth > 0 && i < b.len() {
+                let (open, close) = (b[i..].starts_with(b"/*"), b[i..].starts_with(b"*/"));
+                depth += i32::from(open) - i32::from(close);
+                i += if open || close { 2 } else { 1 };
+            }
+        } else if b[i] == b'\'' {
+            i += 3;
+        } else if let Some((start, hashes)) = raw(b, i) {
+            let end = (start..b.len())
+                .find(|&j| b[j] == b'"' && (0..hashes).all(|h| b.get(j + 1 + h) == Some(&b'#')))
+                .unwrap_or(b.len());
+            out.push(Lit(&text[start..end], true, line(i)));
+            i = (end + 1 + hashes).min(b.len());
+        } else if b[i] == b'"' {
+            let mut j = i + 1;
+            while j < b.len() && b[j] != b'"' {
+                j += if b[j] == b'\\' { 2 } else { 1 };
+            }
+            out.push(Lit(&text[i + 1..j], false, line(i)));
+            i = j + 1;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Whether the literal would PRODUCE a control byte: a raw `0x00`-`0x1f` or
+/// `0x7f`, or a (non-raw) escape that decodes to one. `\`+newline is a
+/// continuation and produces nothing.
+fn control(body: &str, raw: bool) -> bool {
+    let bad = |v: u32| v < 0x20 || v == 0x7f;
+    let b = body.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] < 0x20 || b[i] == 0x7f {
+            return true;
+        }
+        if b[i] != b'\\' || raw {
+            i += 1;
+            continue;
+        }
+        i += match b.get(i + 1) {
+            Some(b't' | b'n' | b'r' | b'0') => return true,
+            Some(b'x') => {
+                let hex = body
+                    .get(i + 2..i + 4)
+                    .and_then(|s| u32::from_str_radix(s, 16).ok());
+                if hex.is_some_and(bad) {
+                    return true;
+                }
+                4
+            }
+            Some(b'u') if b.get(i + 2) == Some(&b'{') => {
+                let end = body[i + 3..].find('}').map(|off| i + 3 + off);
+                let hex = end.and_then(|e| u32::from_str_radix(&body[i + 3..e], 16).ok());
+                if hex.is_some_and(bad) {
+                    return true;
+                }
+                end.map_or(2, |e| e + 1 - i)
+            }
+            _ => 2,
+        };
+    }
+    false
+}
+
+/// The product prefix of a source text: what lies before its terminal unit-test
+/// module.
+///
+/// The cut is PROVEN, because product code after the module would otherwise
+/// leave the scan silently: the `mod tests {` line must sit under a
+/// `#[cfg(test)]` in the non-blank block above it, at most one may exist, and
+/// after it every column-0 line must be the single closing `}`. Literal bodies
+/// are blanked first, so a fixture string at column 0 — tmux OUTPUT being
+/// decoded — cannot read as code; anything else refuses with `file:line`.
+fn product_head<'a>(text: &'a str, name: &str) -> Result<&'a str, String> {
+    let Some(cut) = text.find("\nmod tests {") else {
+        return Ok(text);
+    };
+    let line = text[..cut].matches('\n').count() + 1;
+    let tail = &text[cut + 1..];
+    let mut blanked = tail.as_bytes().to_vec();
+    for lit in lits(tail) {
+        let at = lit.0.as_ptr() as usize - tail.as_ptr() as usize;
+        blanked[at..at + lit.0.len()].fill(b' ');
+    }
+    let blanked = String::from_utf8(blanked).unwrap_or_default();
+    let col0: Vec<&str> = blanked
+        .split('\n')
+        .filter(|l| !l.is_empty() && !matches!(l.as_bytes().first(), Some(b' ' | b'\t')))
+        .collect();
+    let cfg = text[..cut]
+        .lines()
+        .rev()
+        .take_while(|l| !l.trim().is_empty())
+        .any(|l| l.trim() == "#[cfg(test)]");
+    if col0 != ["mod tests {", "}"] || !cfg || tail.contains("\nmod tests {") {
+        return Err(format!(
+            "{name}:{line}: untrusted `mod tests` layout: {col0:?}"
+        ));
+    }
+    Ok(&text[..cut])
+}
+
+/// Every tmux format literal in product code carries printable bytes only
+/// (#195): a control byte reaches a tmux client as `_`, and the reading side
+/// cannot parse what it cannot see (#187). The unit pin in `tmux.rs` names
+/// that module's constants; this one reads every string literal in src/ that
+/// carries a format (`#{`), wherever it lives.
+///
+/// Named residuals: a test-only format inside `mod tests` is not scanned (the
+/// module is cut away, `product_head` proves the cut), and a format assembled
+/// from pieces, where the control byte sits in a piece without `#{`
+/// (`concat!`, `format!`), escapes the scan.
+#[test]
+fn no_tmux_format_literal_in_src_carries_a_control_character() {
+    let cases = [r##""#{a}\t#{b}""##, r##""#{a}\\t""##, "r\"#{a}\t#{b}\""];
+    let verdicts: Vec<bool> = cases
+        .iter()
+        .map(|s| lits(s).first().is_some_and(|l| control(l.0, l.1)))
+        .collect();
+    assert_eq!(verdicts, [true, false, true], "scanner self-check");
+    let module = "const A: u8 = 1;\n#[cfg(test)]\nmod tests {\n    fn t() {}\n}\n";
+    assert_eq!(
+        product_head(module, "self").ok(),
+        Some("const A: u8 = 1;\n#[cfg(test)]")
+    );
+    let after = "const A: u8 = 1;\n#[cfg(test)]\nmod tests {\n    fn t() {}\n}\nconst B: u8 = 2;\n";
+    assert!(
+        product_head(after, "self").is_err(),
+        "code after the module"
+    );
+
+    let (mut hits, mut offenders) = (0, Vec::new());
+    for path in product_sources() {
+        let text =
+            fs::read_to_string(&path).unwrap_or_else(|err| panic!("{}: {err}", path.display()));
+        let name = path
+            .strip_prefix(Path::new(env!("CARGO_MANIFEST_DIR")))
+            .unwrap_or(&path)
+            .display()
+            .to_string();
+        let product = product_head(&text, &name).unwrap_or_else(|why| panic!("{why}"));
+        for lit in lits(product).iter().filter(|l| l.0.contains("#{")) {
+            hits += 1;
+            if control(lit.0, lit.1) {
+                offenders.push(format!("{name}:{}", lit.2));
+            }
+        }
+    }
+    assert!(hits > 0, "the scan matched no format literal");
+    assert!(
+        offenders.is_empty(),
+        "a tmux format would carry a control byte: {offenders:?}"
+    );
+}
+
 /// The tmux this machine runs the suite against clears the floor.
 ///
 /// A PANIC with a stated reason, never a skip. Below the floor every launch in
