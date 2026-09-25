@@ -109,29 +109,26 @@ impl LaunchSpec {
 /// How exact and fallback resume commands are composed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ResumeForm {
-    /// Append an exact flag/id pair, or the fallback flags.
-    Flags {
-        exact: &'static str,
-        fallback: &'static str,
-    },
-    /// Strip the harness's session grammar, then append exact or fallback
-    /// flags.
-    StrippedFlags {
+    /// Strip the harness's session grammar, then append an exact flag/id
+    /// pair. The fallback is not a flag at all: every fallback is a fresh
+    /// start composed by `launch::inject_session_id`, so this form owns the
+    /// exact half alone.
+    StrippedExact {
         grammar: SessionFlags,
         exact: &'static str,
-        fallback: &'static str,
     },
     /// Strip common flags, append an exact subcommand/id pair, and use the
-    /// stripped command itself as fallback.
+    /// stripped fresh start as fallback.
     Subcommand {
         grammar: SessionFlags,
         command: &'static str,
     },
-    /// Append an exact flag/id pair, and use the bare command as fallback: an
-    /// unproven seat starts fresh rather than resuming a conversation ae
-    /// cannot prove is its own.
+    /// Append an exact flag/id pair. The fallback is a fresh start composed
+    /// by `launch::inject_session_id`: an unproven seat starts fresh rather
+    /// than resuming a conversation ae cannot prove is its own.
     ExactOnly { exact: &'static str },
-    /// Preserve the command for both forms.
+    /// Preserve the command for the exact form; the fallback is the stripped
+    /// fresh start, like every other tool's.
     None,
 }
 
@@ -593,10 +590,9 @@ const CLAUDE: ToolAdapter = ToolAdapter {
         initial_turn: InitialTurn::None,
     },
     resume: ResumeSpec {
-        form: ResumeForm::Flags {
-            exact: "--resume",
-            fallback: "--continue",
-        },
+        // A gone conversation starts fresh, never `--continue` into
+        // another seat's newest.
+        form: ResumeForm::ExactOnly { exact: "--resume" },
         probe: StoreProbe::ProjectTranscript,
     },
     carry: CarrySpec::ProjectTranscript,
@@ -704,10 +700,9 @@ const GEMINI: ToolAdapter = ToolAdapter {
         initial_turn: InitialTurn::None,
     },
     resume: ResumeSpec {
-        form: ResumeForm::Flags {
-            exact: "--resume",
-            fallback: "--resume latest",
-        },
+        // A pending seat starts fresh, never `--resume latest` into
+        // another seat's newest.
+        form: ResumeForm::ExactOnly { exact: "--resume" },
         probe: StoreProbe::RecordedId,
     },
     carry: CarrySpec::NotPortable,
@@ -753,10 +748,11 @@ const AGY: ToolAdapter = ToolAdapter {
         initial_turn: InitialTurn::None,
     },
     resume: ResumeSpec {
-        form: ResumeForm::StrippedFlags {
+        // A gone conversation starts fresh, never `--continue` into
+        // another seat's newest.
+        form: ResumeForm::StrippedExact {
             grammar: SessionFlags::Conversation,
             exact: "--conversation",
-            fallback: "--continue",
         },
         probe: StoreProbe::ConversationDatabase,
     },
@@ -831,10 +827,11 @@ const GROK: ToolAdapter = ToolAdapter {
         initial_turn: InitialTurn::None,
     },
     resume: ResumeSpec {
-        form: ResumeForm::StrippedFlags {
+        // A pending seat starts fresh, never `--continue` into
+        // another seat's newest.
+        form: ResumeForm::StrippedExact {
             grammar: SessionFlags::ShortAliases,
             exact: "--resume",
-            fallback: "--continue",
         },
         probe: StoreProbe::RecordedId,
     },
@@ -1353,7 +1350,7 @@ mod tests {
                         initial_turn: InitialTurn::None,
                     },
                     resume: ResumeSpec {
-                        // #181: a gone conversation starts fresh, never
+                        // A gone conversation starts fresh, never
                         // `--continue` into another seat's newest.
                         form: ResumeForm::ExactOnly { exact: "--resume" },
                         probe: StoreProbe::ProjectTranscript,
@@ -1454,7 +1451,7 @@ mod tests {
                         initial_turn: InitialTurn::None,
                     },
                     resume: ResumeSpec {
-                        // #181: a pending seat starts fresh, never
+                        // A pending seat starts fresh, never
                         // `--resume latest` into another seat's newest.
                         form: ResumeForm::ExactOnly { exact: "--resume" },
                         probe: StoreProbe::RecordedId,
@@ -1501,10 +1498,9 @@ mod tests {
                         initial_turn: InitialTurn::None,
                     },
                     resume: ResumeSpec {
-                        form: ResumeForm::StrippedFlags {
+                        form: ResumeForm::StrippedExact {
                             grammar: SessionFlags::Conversation,
                             exact: "--conversation",
-                            fallback: "--continue",
                         },
                         probe: StoreProbe::ConversationDatabase,
                     },
@@ -1563,10 +1559,9 @@ mod tests {
                         initial_turn: InitialTurn::None,
                     },
                     resume: ResumeSpec {
-                        form: ResumeForm::StrippedFlags {
+                        form: ResumeForm::StrippedExact {
                             grammar: SessionFlags::ShortAliases,
                             exact: "--resume",
-                            fallback: "--continue",
                         },
                         probe: StoreProbe::RecordedId,
                     },

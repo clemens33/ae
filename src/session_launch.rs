@@ -2877,6 +2877,23 @@ struct WatchdogFacts<'a> {
     quota: &'a str,
 }
 
+/// The conversation id a launch carries for a seat: the stored one, or the
+/// honest unknown.
+///
+/// A REBUILD never MINTS for a flag tool: a seat whose row is absent or
+/// `pending` has no conversation to name, and a minted UUID would name one
+/// that does not exist — the seat takes the fresh-start fallback instead, and
+/// `_run` mints the new conversation's id at its own pre-exec. A
+/// CREATE still mints: there the id IS the conversation about to open.
+fn launch_session_id(stored: Option<String>, resuming: bool, tool: ToolKind) -> String {
+    match stored {
+        Some(id) => id,
+        None if resuming => PENDING.to_owned(),
+        None if launch::takes_launch_session_id(tool) => launch::generate_uuid(),
+        None => PENDING.to_owned(),
+    }
+}
+
 #[allow(
     clippy::too_many_lines,
     clippy::too_many_arguments,
@@ -3125,16 +3142,7 @@ fn build(
             .then(|| meta_value(&dir, &format!("harness_session.{}", seat.slot)))
             .flatten()
             .filter(|id| !id.is_empty() && id != PENDING);
-        // A RESUME never MINTS for a flag tool: a seat whose row is absent or
-        // `pending` has no conversation to name, and a minted UUID would name
-        // one that does not exist — it takes the tool's own fallback instead.
-        // A CREATE still mints: there the id IS the conversation about to open.
-        let session_id = match stored {
-            Some(id) => id,
-            None if shape.resuming => PENDING.to_owned(),
-            None if launch::takes_launch_session_id(seat.tool) => launch::generate_uuid(),
-            None => PENDING.to_owned(),
-        };
+        let session_id = launch_session_id(stored, shape.resuming, seat.tool);
         let launch_id = launch_token(
             seat.tool,
             shape
@@ -5361,6 +5369,36 @@ mod tests {
             .iter()
             .map(|command| command.as_args().to_vec())
             .collect()
+    }
+
+    #[test]
+    fn a_rebuild_carries_or_clears_but_never_mints() {
+        // The rebuild's half of the boundary — `_run` mints at its
+        // own pre-exec, the rebuild only carries the stored id or clears to
+        // the honest unknown.
+        use crate::tool::ToolKind;
+        assert_eq!(
+            super::launch_session_id(Some("u-9".to_owned()), true, ToolKind::Claude),
+            "u-9",
+            "a stored id is carried"
+        );
+        for tool in [ToolKind::Claude, ToolKind::Grok, ToolKind::Agy] {
+            assert_eq!(
+                super::launch_session_id(None, true, tool),
+                crate::launch::PENDING,
+                "a resume without a stored id clears, never mints: {}",
+                tool.as_str()
+            );
+        }
+        for tool in [ToolKind::Claude, ToolKind::Grok] {
+            let minted = super::launch_session_id(None, false, tool);
+            assert_eq!(minted.len(), 36, "a create mints: {}", tool.as_str());
+        }
+        assert_eq!(
+            super::launch_session_id(None, false, ToolKind::Agy),
+            crate::launch::PENDING,
+            "a create without a launch id stays pending"
+        );
     }
 
     #[test]

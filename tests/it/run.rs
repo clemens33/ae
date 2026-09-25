@@ -824,7 +824,7 @@ fn a_nul_in_the_recorded_first_message_refuses_loud_before_any_marker() {
 #[test]
 fn a_recorded_id_is_the_resume_target_for_every_tool() {
     // The resume form each tool's capability row promises, and the fallback it
-    // offers when there is no id to resume BY. #181: every fallback is a
+    // offers when there is no id to resume BY. Every fallback is a
     // FRESH start — claude and grok name the new conversation with a minted
     // `--session-id`, the rest take the bare command. codex's, gemini's,
     // agy's, muse's and opencode's fallback is the plain command — there is
@@ -869,7 +869,7 @@ fn a_recorded_id_is_the_resume_target_for_every_tool() {
             !argv.iter().any(|word| word == "u-9" || word.is_empty()),
             "{tool} never names an id it does not have: {argv:?}"
         );
-        // #181: no fallback ever resumes another seat's conversation.
+        // No fallback ever resumes another seat's conversation.
         assert!(
             !argv.iter().any(|word| word == "--continue"),
             "{tool} never --continue: {argv:?}"
@@ -923,127 +923,213 @@ fn session_id_of(argv: &[String]) -> Option<&str> {
         .and_then(|at| argv.get(at + 1).map(String::as_str))
 }
 
-/// #181: a claude seat whose recorded conversation is gone starts FRESH and
-/// names the new conversation with a minted id — `--continue` would join the
-/// newest conversation in the directory, which is not provably its own.
-#[test]
-fn a_gone_claude_conversation_mints_a_fresh_session_id() {
-    let rig = Rig::new("cl-fresh");
-    let gone = "0199c0de-1111-4890-abcd-ef0123456789";
-    rig.seat("claude", gone);
+/// A fallback's fresh start renders exactly like a Create of the same seat:
+/// with no recorded prompt the two are byte-identical for the same id. Same
+/// rig (the context embeds its paths); `recorded` is the harness row the
+/// fixture holds — `None` for a pending seat — restored afterwards.
+fn assert_fresh_is_create(rig: &Rig, recorded: Option<&str>) {
+    let planned = rig.planned_argv();
+    let shown = session_id_of(&planned).map(str::to_owned);
+    if let Some(shown) = shown.as_deref() {
+        ae::meta::rewrite(&rig.dir, "harness_session.main", Some(shown))
+            .unwrap_or_else(|why| panic!("point the fixture at the shown id: {why:?}"));
+    }
+    std::fs::remove_file(rig.dir.join("launch.main.started"))
+        .unwrap_or_else(|why| panic!("a Create renders: {why}"));
+    let created = rig.planned_argv();
+    if shown.is_some() {
+        ae::meta::rewrite(&rig.dir, "harness_session.main", recorded)
+            .unwrap_or_else(|why| panic!("restore the row: {why:?}"));
+    }
     rig.started();
-    // No transcript for the id: claude's probe misses and the run falls back.
-    let (argv, _) = rig.exec();
-    assert!(
-        !argv.iter().any(|word| word == "--continue"),
-        "never --continue: {argv:?}"
-    );
-    assert!(
-        !carries(&argv, &["--resume", gone]),
-        "never the gone id: {argv:?}"
-    );
-    let minted = session_id_of(&argv).unwrap_or_else(|| panic!("a minted --session-id: {argv:?}"));
-    assert_ne!(minted, gone, "the mint is new: {argv:?}");
-    let settled = std::fs::read_to_string(rig.dir.join("meta")).expect("the meta");
-    assert!(
-        settled.contains(&format!("harness_session.main={minted}\n")),
-        "the argv id is the recorded id: {settled}"
-    );
-    assert!(
-        settled.contains(&format!("harness_session_prior.main={gone}\n")),
-        "the gone conversation is the predecessor: {settled}"
+    assert_eq!(
+        created, planned,
+        "a fresh start is a Create with no first message"
     );
 }
 
-/// #181: a pending grok seat starts FRESH with a minted id — `--continue`
-/// would join the newest session for the directory.
+/// A seat whose recorded conversation is gone or never proven starts FRESH —
+/// never another seat's newest — and names only its own new conversation.
+/// The profile pins each tool's session grammar; the fallback strips it.
 #[test]
-fn a_pending_grok_seat_mints_a_fresh_session_id() {
-    let rig = Rig::new("grok-fresh");
-    rig.seat("grok", "");
-    rig.started();
-    let (argv, _) = rig.exec();
-    assert!(
-        !argv.iter().any(|word| word == "--continue"),
-        "never --continue: {argv:?}"
-    );
-    let minted = session_id_of(&argv).unwrap_or_else(|| panic!("a minted --session-id: {argv:?}"));
-    assert_eq!(minted.len(), 36, "a uuid: {argv:?}");
-    let settled = std::fs::read_to_string(rig.dir.join("meta")).expect("the meta");
-    assert!(
-        settled.contains(&format!("harness_session.main={minted}\n")),
-        "the argv id is the recorded id: {settled}"
-    );
+fn a_fallback_starts_fresh_and_names_only_its_own_new_conversation() {
+    for (tag, tool, tail, recorded, banned, mints) in [
+        (
+            "cl-fresh",
+            "claude",
+            "--continue --resume OLD --flag",
+            Some("0199c0de-1111-4890-abcd-ef0123456789"),
+            &["--continue", "--resume", "OLD"][..],
+            true,
+        ),
+        (
+            "grok-fresh",
+            "grok",
+            "-s OLD --resume OTHER -c --flag",
+            None,
+            &["--continue", "-c", "--resume", "-r", "OLD", "OTHER"][..],
+            true,
+        ),
+        (
+            "agy-fresh",
+            "agy",
+            "--conversation OLD -c --flag",
+            Some("0199c0de-2222-4890-abcd-ef0123456789"),
+            &["--continue", "-c", "--conversation", "--resume", "OLD"][..],
+            false,
+        ),
+        (
+            "gem-fresh",
+            "gemini",
+            "--resume latest --continue --flag",
+            None,
+            &["--continue", "--resume", "latest"][..],
+            false,
+        ),
+    ] {
+        let rig = Rig::new(tag);
+        let cmd = format!("{} {tail}", rig.tool(tool));
+        rig.profile("custom", &cmd);
+        rig.seat("custom", recorded.unwrap_or(""));
+        rig.started();
+        assert_fresh_is_create(&rig, recorded);
+        assert_fresh_row(&rig, tool, banned, recorded, mints);
+    }
 }
 
-/// #181: an agy seat whose recorded conversation is gone starts FRESH on the
-/// bare command — `--continue` would join the newest conversation anywhere.
-#[test]
-fn a_gone_agy_conversation_starts_fresh_on_the_bare_command() {
-    let rig = Rig::new("agy-fresh");
-    let gone = "0199c0de-2222-4890-abcd-ef0123456789";
-    rig.seat("agy", gone);
-    rig.started();
-    // No <id>.db: agy's probe misses and the run falls back.
-    let (argv, _) = rig.exec();
-    for banned in ["--continue", "-c", "--conversation", "--resume"] {
+/// One fresh-start row, execed: the argv names nothing unproven, the notice
+/// names the fresh start, and the meta rows match the argv.
+fn assert_fresh_row(rig: &Rig, tool: &str, banned: &[&str], recorded: Option<&str>, mints: bool) {
+    let (argv, said) = rig.exec();
+    for word in banned {
         assert!(
-            !argv.iter().any(|word| word == banned),
-            "never {banned}: {argv:?}"
+            !argv.iter().any(|arg| arg == word),
+            "{tool} never {word}: {argv:?}"
         );
     }
-    assert!(
-        !argv.iter().any(|word| word == gone),
-        "never the gone id: {argv:?}"
-    );
-    let settled = std::fs::read_to_string(rig.dir.join("meta")).expect("the meta");
-    assert!(
-        settled.contains("harness_session.main=pending\n"),
-        "no id to record: {settled}"
-    );
-    assert!(
-        settled.contains(&format!("harness_session_prior.main={gone}\n")),
-        "the gone conversation is the predecessor: {settled}"
-    );
+    if let Some(gone) = recorded {
+        assert!(
+            !argv.iter().any(|arg| arg == gone),
+            "{tool} never the gone id: {argv:?}"
+        );
+    }
+    let settled = std::fs::read_to_string(rig.dir.join("meta"))
+        .unwrap_or_else(|why| panic!("the meta: {why}"));
+    if mints {
+        let minted =
+            session_id_of(&argv).unwrap_or_else(|| panic!("{tool} mints a --session-id: {argv:?}"));
+        assert_eq!(
+            argv.iter()
+                .filter(|arg| arg.as_str() == "--session-id")
+                .count(),
+            1,
+            "{tool}: the mint is the only session id: {argv:?}"
+        );
+        match recorded {
+            Some(gone) => assert_ne!(minted, gone, "{tool}: the mint is new: {argv:?}"),
+            None => assert_eq!(minted.len(), 36, "{tool}: a uuid: {argv:?}"),
+        }
+        assert!(
+            said.contains(&format!("no proven {tool} conversation"))
+                && said.contains("starting a fresh one")
+                && said.contains(minted)
+                && !said.contains("instead of"),
+            "{tool}: the notice names the fresh start and its id: {said}"
+        );
+        assert!(
+            settled.contains(&format!("harness_session.main={minted}\n")),
+            "{tool}: the argv id is the recorded id: {settled}"
+        );
+    } else {
+        assert!(
+            !argv.iter().any(|arg| arg == "--session-id"),
+            "{tool} names no session: {argv:?}"
+        );
+        assert!(
+            said.contains(&format!(
+                "no proven {tool} conversation — starting a fresh one"
+            )),
+            "{tool}: the fresh start is named: {said}"
+        );
+        assert!(
+            settled.contains("harness_session.main=pending\n"),
+            "{tool}: no id to record: {settled}"
+        );
+    }
+    match recorded {
+        Some(gone) => assert!(
+            settled.contains(&format!("harness_session_prior.main={gone}\n")),
+            "{tool}: the gone conversation is the predecessor: {settled}"
+        ),
+        None => assert!(
+            !settled.contains("harness_session_prior"),
+            "{tool}: nothing abandoned: {settled}"
+        ),
+    }
 }
 
-/// #181: a pending gemini seat starts FRESH on the bare command —
-/// `--resume latest` would join the newest session of the project.
-#[test]
-fn a_pending_gemini_seat_starts_fresh_on_the_bare_command() {
-    let rig = Rig::new("gem-fresh");
-    rig.seat("gemini", "");
-    rig.started();
-    let (argv, _) = rig.exec();
-    assert!(
-        !carries(&argv, &["--resume", "latest"]),
-        "never --resume latest: {argv:?}"
-    );
-    assert!(
-        !argv.iter().any(|word| word == "--continue"),
-        "never --continue: {argv:?}"
-    );
-    let settled = std::fs::read_to_string(rig.dir.join("meta")).expect("the meta");
-    assert!(
-        settled.contains("harness_session.main=pending\n"),
-        "no id to record: {settled}"
-    );
-}
-
-/// #181 N3: `--print` renders an illustrative mint it never writes — the meta
-/// is byte-identical and the real run mints its own.
+/// `--print` renders an illustrative mint it never writes — the meta
+/// is byte-identical, the real run mints its own, and the print says so.
 #[test]
 fn a_fallback_print_illustrates_a_mint_it_never_writes() {
     let rig = Rig::new("print-mint");
     rig.seat("claude", "");
     rig.started();
     let before = std::fs::read_to_string(rig.dir.join("meta")).expect("the meta");
+    let plan = rig.plan();
+    assert!(
+        plan.contains("illustrative"),
+        "the print says the mint is illustrative: {plan}"
+    );
     let argv = rig.planned_argv();
     let shown =
         session_id_of(&argv).unwrap_or_else(|| panic!("an illustrative --session-id: {argv:?}"));
     assert_eq!(shown.len(), 36, "a uuid: {argv:?}");
     let after = std::fs::read_to_string(rig.dir.join("meta")).expect("the meta");
     assert_eq!(after, before, "--print writes nothing");
+}
+
+/// A fallback whose record fails still launches: a seat that minted goes
+/// UNNAMED — never with an id no row records, and stderr names none — while
+/// a seat with nothing to name starts fresh anyway, and still says so.
+#[test]
+fn a_fallback_with_a_failed_record_launches_without_the_unrecorded_id() {
+    for (tag, tool, mints) in [
+        ("unrec-claude", "claude", true),
+        ("unrec-agy", "agy", false),
+    ] {
+        let rig = Rig::new(tag);
+        rig.seat(tool, "0199c0de-1234-4890-abcd-ef0123456789");
+        // A recorded but EMPTY home: the probe misses (no transcript), the
+        // resume publishes nothing before the fallback record, and the chmod
+        // breaks only that write.
+        let home = rig.dir.join("home");
+        std::fs::create_dir_all(&home).expect("a home dir");
+        rig.append_meta(&format!("config_home.main={}\n", home.display()));
+        rig.started();
+        rig.chmod(0o555);
+        let (argv, said) = rig.exec();
+        rig.chmod(0o755);
+        assert!(
+            !argv.iter().any(|word| word == "--session-id"),
+            "{tool} launches with no session id: {argv:?}"
+        );
+        assert!(
+            said.contains("could not record the fresh conversation"),
+            "{tool} reports the failed record: {said}"
+        );
+        if mints {
+            assert!(
+                said.contains("starting unnamed instead") && !said.contains("(--session-id"),
+                "no id is named: {said}"
+            );
+        } else {
+            assert!(
+                said.contains("starting fresh anyway") && said.contains("starting a fresh one"),
+                "still fresh, still said: {said}"
+            );
+        }
+    }
 }
 
 /// #56 R5 (notice): the fresh resume names the unproven conversation on
@@ -1189,34 +1275,18 @@ fn a_subcommand_resume_carries_no_positional_context_turn() {
 #[test]
 fn a_probe_that_can_run_and_fails_still_falls_back() {
     // The other half of the rule: where a tool DOES leave evidence, a recorded
-    // id whose conversation is gone is not a resume target either. #181: the
-    // fallback is a fresh start — never another seat's conversation.
-    for tool in ["claude", "codex", "agy"] {
-        let rig = Rig::new(&format!("gone-{tool}"));
-        rig.seat(tool, "u-9");
-        rig.started();
-        // No transcript planted: the id names a conversation that is not there.
-        let argv = rig.planned_argv();
-        assert!(
-            !argv.iter().any(|word| word == "--continue"),
-            "{tool} never --continue for a missing conversation: {argv:?}"
-        );
-        assert!(
-            !carries(&argv, &["--resume", "u-9"]) && !carries(&argv, &["--conversation", "u-9"]),
-            "{tool} does not ask for what is not there: {argv:?}"
-        );
-        if tool == "claude" {
-            assert!(
-                session_id_of(&argv).is_some(),
-                "claude names the fresh conversation: {argv:?}"
-            );
-        } else {
-            assert!(
-                session_id_of(&argv).is_none(),
-                "{tool} takes the bare command: {argv:?}"
-            );
-        }
-    }
+    // id whose conversation is gone is not a resume target either. (The
+    // claude and agy gone rows live in the fresh-start table above; codex is
+    // the remaining gone-probe pin.)
+    let rig = Rig::new("gone-codex");
+    rig.seat("codex", "u-9");
+    rig.started();
+    // No rollout planted: the id names a conversation that is not there.
+    let argv = rig.planned_argv();
+    assert!(
+        !argv.iter().any(|word| word == "resume"),
+        "codex starts fresh rather than resuming a missing log: {argv:?}"
+    );
 }
 
 #[test]
@@ -1267,7 +1337,7 @@ fn a_resume_fallback_records_the_abandoned_id_once_and_mints_the_current_one() {
         "the mint names the fresh conversation: {settled}"
     );
 
-    // #181 I4: the fake tool writes no transcript, so the minted conversation
+    // The fake tool writes no transcript, so the minted conversation
     // is UNBORN and the next re-run abandons it and mints again — one minted
     // id per re-run into the prior list, `gone` recorded exactly once.
     let (argv, _) = rig.exec();
@@ -1288,7 +1358,8 @@ fn a_resume_fallback_records_the_abandoned_id_once_and_mints_the_current_one() {
         "the newest mint is current: {again}"
     );
 
-    // The churn is bounded: the prior list holds at most four, oldest first.
+    // The churn is bounded: the prior list holds at most four, oldest first —
+    // and the named mint-churn residual is that the real predecessor is evicted.
     for _ in 0..5 {
         rig.exec();
     }
@@ -1300,6 +1371,10 @@ fn a_resume_fallback_records_the_abandoned_id_once_and_mints_the_current_one() {
     assert!(
         priors.split(',').count() <= 4,
         "at most four predecessors: {churned}"
+    );
+    assert!(
+        !priors.contains(gone),
+        "the real predecessor is evicted by the churn: {churned}"
     );
 }
 
@@ -1422,7 +1497,7 @@ fn a_first_run_creates_a_second_resumes_and_the_marker_is_the_difference() {
     // live one, and the fresh one is named.
     let (argv, said) = rig.exec();
     assert!(said.contains(ae::run::RESUMING), "{said}");
-    // #181: claude is ExactOnly now — the fresh-start notice fires.
+    // Claude takes the fresh-start fallback, so its notice fires.
     assert!(said.contains("no proven claude conversation"), "{said}");
     let minted = session_id_of(&argv).unwrap_or_else(|| panic!("a minted --session-id: {argv:?}"));
     assert_ne!(

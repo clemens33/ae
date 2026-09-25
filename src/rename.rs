@@ -1491,7 +1491,7 @@ fn explicit_home_check(
                 if crate::lifecycle::path_exists(&before) && !crate::lifecycle::path_exists(&after)
                 {
                     return Err(format!(
-                        "seat '{}' ({}) pins an explicit config home ('{}') whose conversation '{id}' ae resumes exactly at '{old_work}' but not at '{new_work}' — renaming would force ae's '--continue' fallback (move the transcript or use an implicit home first)",
+                        "seat '{}' ({}) pins an explicit config home ('{}') whose conversation '{id}' ae resumes exactly at '{old_work}' but not at '{new_work}' — renaming would force a fresh start and lose the transcript (move the transcript or use an implicit home first)",
                         seat.slot,
                         tool.as_str(),
                         home.display()
@@ -4680,7 +4680,7 @@ mod tests {
         );
     }
 
-    /// #181 N6: the explicit-home refusal names the fresh start the rename
+    /// The explicit-home refusal names the fresh start the rename
     /// would force — there is no `--continue` fallback left to force.
     #[test]
     fn the_explicit_home_refusal_names_the_fresh_start() {

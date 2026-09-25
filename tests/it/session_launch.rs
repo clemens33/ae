@@ -1535,7 +1535,7 @@ fn a_resume_reruns_with_the_resume_variant() {
         "no transcript for this id, so the fresh-start fallback: {plan}"
     );
 
-    // #181 I2: the resumed pane's `_run` minted the fresh conversation's id
+    // The resumed pane's `_run` minted the fresh conversation's id
     // and recorded it BEFORE its exec — so once the second argv lands, the
     // meta row equals the argv's `--session-id` and the passed-over id is the
     // predecessor.
@@ -1546,8 +1546,8 @@ fn a_resume_reruns_with_the_resume_variant() {
         "the argv id is the recorded id: {resumed_meta}"
     );
     assert!(
-        resumed_meta.contains(&format!("harness_session_prior.main={sid}\n")),
-        "the passed-over id is the predecessor: {resumed_meta}"
+        resumed_meta.contains(&format!("harness_session_prior.main=claude:{sid}\n")),
+        "the passed-over id is the tagged predecessor: {resumed_meta}"
     );
 
     // Plant the transcript claude would have written, and the same seat resumes
@@ -1603,10 +1603,10 @@ fn a_resume_reruns_with_the_resume_variant() {
 
 /// What a resume leaves on a flag tool's meta rows: the predecessor row it
 /// CARRIES through the rebuild (a row the rebuild does not enumerate is
-/// deleted) — and #181: the resumed pane's `_run` then MINTS the fresh
+/// deleted) — and the resumed pane's `_run` then MINTS the fresh
 /// conversation's id and records it, so the meta row equals the argv's
 /// `--session-id`. (The REBUILD still never mints; that boundary is pinned at
-/// the id choice in src/session_launch.rs.)
+/// the id choice in `src/session_launch.rs`.)
 #[test]
 fn a_resume_carries_the_predecessor_row_and_mints_the_fresh_one() {
     if skip() {
@@ -1630,7 +1630,7 @@ fn a_resume_carries_the_predecessor_row_and_mints_the_fresh_one() {
 
     let (code, stdout, stderr) = rig.launch(&["--local", "lnrows"]);
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
-    // #181 I2: wait for the resumed pane's exec, then the meta is settled.
+    // Wait for the resumed pane's exec, then the meta is settled.
     let minted = last_session_id(&rig);
     let resumed = rig.meta("lnrows");
     assert!(
@@ -1837,7 +1837,7 @@ fn stop(rig: &Rig, session: &str) {
     );
 }
 
-/// #181 I2: the LAST `--session-id` value the fake agent was execed with.
+/// The LAST `--session-id` value the fake agent was execed with.
 /// Each exec appends one `CLAUDE_CONFIG_DIR=` line (the argv blob itself may
 /// hold newlines from the context turn), so two execs are awaited by counting
 /// those markers — and `_run` records its mint BEFORE the exec, so once the

@@ -2308,60 +2308,115 @@ pub(crate) fn record_config_home(
     rewrite_rows(dir, &[(&home_key, Some(value)), (&base_key, base)])
 }
 
-/// Record the conversation a resume FALLBACK just abandoned: the predecessor
-/// list gains `abandoned` (when usable) and `harness_session.<slot>` becomes
-/// `pending`, in one locked replacement — no reader sees the cleared row
-/// without the predecessor that explains it. Cleared even when `abandoned` is
-/// unusable, and idempotent: a row already `pending` writes nothing.
+/// Record what a resume FALLBACK decided, as ONE atomic, guarded replacement:
+/// the predecessor list gains the passed-over conversation (when usable) and
+/// `harness_session.<slot>` becomes the fresh conversation's id — the `minted`
+/// id for a launch-id tool, `pending` otherwise. No reader sees the new row
+/// without the predecessor that explains it.
+///
+/// The compare-and-swap guard is the shape `capture::commit_inner` uses, plus
+/// the conversation itself: under the meta lock, the slot must still name
+/// `agent`, still hold `tool`, its `launch_id.<slot>` must still be
+/// `launch_id`, AND `harness_session.<slot>` must still be `read_id` — the
+/// row `_run` composed from. A guard miss means another writer moved the seat
+/// under the compose, so the mint names nothing and the caller launches
+/// unnamed instead.
 ///
 /// A capture tool's fallback also republishes `capture_floor.<slot>` with the
-/// fallback moment, in that SAME replacement: the fresh conversation is born
-/// after it, and the stale floor would still admit the abandoned one's
-/// neighbours. Transition-only — an already-`pending` row keeps its floor —
-/// and only where the slot's own recorded binary says a capture is needed, so
-/// a claude or grok fallback stays byte-identical.
-pub(crate) fn record_abandoned_session(
+/// fallback moment, in that SAME replacement. Transition-only — an
+/// already-`pending` row keeps its floor — and only where the slot's own
+/// recorded binary says a capture is needed.
+///
+/// # Errors
+///
+/// [`RewriteError::NotWritten`] when the mint is not well-formed, the guard
+/// does not hold, or the lock, read, write, sync or rename failed.
+pub(crate) fn record_fallback_fresh(
     dir: &Path,
     slot: &str,
-    abandoned: &str,
+    agent: &str,
+    tool: crate::tool::ToolKind,
+    launch_id: &str,
+    read_id: &str,
+    minted: Option<&str>,
 ) -> Result<(), RewriteError> {
-    rewrite_under_lock(dir, |current| {
-        let parsed = Meta::parse(current);
-        // A resume fallback never crosses tools, so the conversation it
-        // abandons belongs to the slot's own recorded binary.
-        let tool = parsed
-            .roster()
-            .iter()
-            .find(|entry| entry.slot == slot)
-            .and_then(|entry| entry.binary.as_deref())
-            .unwrap_or_default();
-        let prior = prior_with(&parsed.harness_session_prior(slot), abandoned, tool);
-        let mut next = current.to_owned();
-        if let Some(list) = prior {
-            next = rewritten(
-                &next,
-                &format!("{HARNESS_SESSION_PRIOR_PREFIX}{slot}"),
-                Some(&list),
-            );
-        }
-        let session_key = format!("{HARNESS_SESSION_PREFIX}{slot}");
-        let transitioned = first_value(current.as_bytes(), &session_key)
-            != Some(crate::launch::PENDING.as_bytes());
-        next = rewritten(&next, &session_key, Some(crate::launch::PENDING));
-        if transitioned
-            && crate::tool::ToolKind::from_binary_name(tool)
-                .adapter()
-                .capture
-                .is_needed()
-        {
-            next = rewritten(
-                &next,
-                &format!("capture_floor.{slot}"),
-                Some(&crate::time::Timestamp::now().epoch().to_string()),
-            );
-        }
-        (next != current).then_some(next)
-    })
+    let refused = |why: &str| {
+        RewriteError::NotWritten(io::Error::new(io::ErrorKind::InvalidInput, why.to_owned()))
+    };
+    if minted.is_some_and(|id| !crate::session_launch::capture::is_lowercase_uuid(id)) {
+        return Err(refused("the fresh conversation id is not well-formed"));
+    }
+    let path = crate::store::open(dir).meta_path();
+    let _held = crate::store::lock(
+        &crate::store::open(dir).meta_lock(),
+        crate::store::LOCK_WAIT,
+    )
+    .map_err(RewriteError::NotWritten)?;
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: the meta read, for its guarded rewrite — see clippy.toml"
+    )]
+    let current = fs::read_to_string(&path).map_err(RewriteError::NotWritten)?;
+    let parsed = Meta::parse(&current);
+    let Some(entry) = parsed.roster().iter().find(|entry| entry.slot == slot) else {
+        return Err(refused("the slot is no longer seated"));
+    };
+    if entry.name != agent
+        || crate::tool::ToolKind::from_binary_name(entry.binary.as_deref().unwrap_or_default())
+            != tool
+    {
+        return Err(refused("the slot moved to another seat"));
+    }
+    // The launch arm is commit_inner's rule, including absent == absent: a
+    // seat that predates launch ids still records its fallback.
+    let launch_key = format!("launch_id.{slot}");
+    let first_launch = first_value(current.as_bytes(), &launch_key);
+    let sole_launch = sole_value(current.as_bytes(), &launch_key);
+    if first_launch.is_some() && sole_launch.is_none() {
+        return Err(refused("the seat records two launch ids"));
+    }
+    let recorded_launch = sole_launch
+        .map(String::from_utf8_lossy)
+        .map(std::borrow::Cow::into_owned)
+        .unwrap_or_default();
+    if recorded_launch != launch_id {
+        return Err(refused("the seat was re-created after the compose"));
+    }
+    let session_key = format!("{HARNESS_SESSION_PREFIX}{slot}");
+    // An absent row reads as the empty string, exactly as `_run` read it.
+    if first_value(current.as_bytes(), &session_key).unwrap_or_default() != read_id.as_bytes() {
+        return Err(refused("the conversation moved under the compose"));
+    }
+    // A resume fallback never crosses tools, so the conversation it passes
+    // over belongs to the slot's own recorded binary.
+    let binary = entry.binary.as_deref().unwrap_or_default();
+    let mut next = current.clone();
+    if let Some(list) = prior_with(&parsed.harness_session_prior(slot), read_id, binary) {
+        next = rewritten(
+            &next,
+            &format!("{HARNESS_SESSION_PRIOR_PREFIX}{slot}"),
+            Some(&list),
+        );
+    }
+    let transitioned = read_id.as_bytes() != crate::launch::PENDING.as_bytes();
+    let current_id = minted.unwrap_or(crate::launch::PENDING);
+    next = rewritten(&next, &session_key, Some(current_id));
+    if transitioned
+        && crate::tool::ToolKind::from_binary_name(binary)
+            .adapter()
+            .capture
+            .is_needed()
+    {
+        next = rewritten(
+            &next,
+            &format!("capture_floor.{slot}"),
+            Some(&crate::time::Timestamp::now().epoch().to_string()),
+        );
+    }
+    if next == current {
+        return Ok(());
+    }
+    publish_bytes(dir, &path, next.as_bytes())
 }
 
 /// The ONE locked read-modify-write the row writers share: take `meta.lock`,
@@ -3147,22 +3202,42 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// One fallback meta: the seat, its binary, its launch id, the
+    /// conversation `_run` composed from, and `extra` rows.
+    fn fallback_meta(dir: &std::path::Path, binary: &str, launch: &str, read: &str, extra: &str) {
+        let bin = if binary.is_empty() {
+            String::new()
+        } else {
+            format!("agent_bin.main={binary}\n")
+        };
+        std::fs::write(
+            dir.join("meta"),
+            format!(
+                "schema=2\nseat.main=lead\nprofile.main=custom\n{bin}\
+                 launch_id.main={launch}\nharness_session.main={read}\n{extra}"
+            ),
+        )
+        .expect("meta");
+    }
+
     #[test]
     fn a_fallback_on_a_capture_tool_republishes_a_fresh_capture_floor() {
         let dir = std::env::temp_dir().join(format!("ae-meta-capfloor-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("scratch");
         let gone = "0199c0de-1234-4890-abcd-ef0123456789";
-        std::fs::write(
-            dir.join("meta"),
-            format!(
-                "schema=2\nseat.main=lead\nprofile.main=codex\nagent_bin.main=codex\n\
-                 harness_session.main={gone}\ncapture_floor.main=1700000000\n"
-            ),
-        )
-        .expect("meta");
+        fallback_meta(&dir, "codex", "L1", gone, "capture_floor.main=1700000000\n");
         let before = crate::time::Timestamp::now().epoch();
-        super::record_abandoned_session(&dir, "main", gone).expect("record");
+        super::record_fallback_fresh(
+            &dir,
+            "main",
+            "lead",
+            crate::tool::ToolKind::Codex,
+            "L1",
+            gone,
+            None,
+        )
+        .expect("record");
         let text = std::fs::read_to_string(dir.join("meta")).unwrap();
         assert!(
             text.contains(&format!("harness_session_prior.main=codex:{gone}\n")),
@@ -3185,31 +3260,41 @@ mod tests {
 
     #[test]
     fn a_fallback_on_a_tool_that_needs_no_capture_leaves_the_floor_alone() {
-        for (tag, binary, prior) in [
-            ("claude", "agent_bin.main=claude\n", "claude:"),
-            ("unknown", "", ""),
+        for (tag, binary, prior, tool, minted) in [
+            (
+                "claude",
+                "claude",
+                "claude:",
+                crate::tool::ToolKind::Claude,
+                None,
+            ),
+            (
+                "mint",
+                "claude",
+                "claude:",
+                crate::tool::ToolKind::Claude,
+                Some("0199c0de-aaaa-4890-abcd-ef0123456789"),
+            ),
+            ("unknown", "", "", crate::tool::ToolKind::Unknown, None),
         ] {
             let dir =
                 std::env::temp_dir().join(format!("ae-meta-capfloor-{tag}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).expect("scratch");
             let gone = "0199c0de-1234-4890-abcd-ef0123456789";
-            std::fs::write(
-                dir.join("meta"),
-                format!(
-                    "schema=2\nseat.main=lead\nprofile.main=custom\n{binary}\
-                     harness_session.main={gone}\ncapture_floor.main=1000\n"
-                ),
-            )
-            .expect("meta");
-            super::record_abandoned_session(&dir, "main", gone).expect("record");
+            fallback_meta(&dir, binary, "L1", gone, "capture_floor.main=1000\n");
+            super::record_fallback_fresh(&dir, "main", "lead", tool, "L1", gone, minted)
+                .expect("record");
             let text = std::fs::read_to_string(dir.join("meta")).unwrap();
             assert!(
                 text.contains(&format!("harness_session_prior.main={prior}{gone}\n")),
                 "{tag}: {text}"
             );
             assert!(
-                text.contains("harness_session.main=pending\n"),
+                text.contains(&format!(
+                    "harness_session.main={}\n",
+                    minted.unwrap_or("pending")
+                )),
                 "{tag}: {text}"
             );
             assert!(
@@ -3224,8 +3309,7 @@ mod tests {
     fn a_second_fallback_call_on_an_already_cleared_slot_writes_nothing() {
         // An unusable id records no predecessor, so both calls take the same
         // path and the second must be a byte-identical no-op — the floor
-        // included. (A usable id never reaches a second call: `_run` passes
-        // no abandoned id for a pending seat.)
+        // included.
         let dir =
             std::env::temp_dir().join(format!("ae-meta-capfloor-noop-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -3233,10 +3317,19 @@ mod tests {
         std::fs::write(
             dir.join("meta"),
             "schema=2\nseat.main=lead\nprofile.main=codex\nagent_bin.main=codex\n\
-             harness_session.main=u-9\ncapture_floor.main=1700000000\n",
+             launch_id.main=L1\nharness_session.main=u-9\ncapture_floor.main=1700000000\n",
         )
         .expect("meta");
-        super::record_abandoned_session(&dir, "main", "u-9").expect("record");
+        super::record_fallback_fresh(
+            &dir,
+            "main",
+            "lead",
+            crate::tool::ToolKind::Codex,
+            "L1",
+            "u-9",
+            None,
+        )
+        .expect("record");
         let settled = std::fs::read_to_string(dir.join("meta")).unwrap();
         assert!(
             settled.contains("harness_session.main=pending\n"),
@@ -3267,9 +3360,172 @@ mod tests {
             "{settled}"
         );
         std::fs::write(dir.join("meta"), &aged).expect("age the floor");
-        super::record_abandoned_session(&dir, "main", "u-9").expect("no-op");
+        super::record_fallback_fresh(
+            &dir,
+            "main",
+            "lead",
+            crate::tool::ToolKind::Codex,
+            "L1",
+            "pending",
+            None,
+        )
+        .expect("no-op");
         let again = std::fs::read_to_string(dir.join("meta")).unwrap();
         assert_eq!(again, aged, "the cleared slot writes nothing more");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_fallback_guard_miss_writes_nothing() {
+        // One pin per guard arm: another agent, another tool, a re-created
+        // seat, a replaced conversation, an unusable mint, a missing launch
+        // id — each refuses and leaves the meta byte-identical, so the caller
+        // launches unnamed instead.
+        let mint = Some("0199c0de-aaaa-4890-abcd-ef0123456789");
+        let gone = "0199c0de-1234-4890-abcd-ef0123456789";
+        for (tag, agent, tool, launch, read, minted) in [
+            (
+                "agent",
+                "hand",
+                crate::tool::ToolKind::Claude,
+                "L1",
+                gone,
+                mint,
+            ),
+            (
+                "tool",
+                "lead",
+                crate::tool::ToolKind::Codex,
+                "L1",
+                gone,
+                mint,
+            ),
+            (
+                "launch",
+                "lead",
+                crate::tool::ToolKind::Claude,
+                "L2",
+                gone,
+                mint,
+            ),
+            (
+                "read",
+                "lead",
+                crate::tool::ToolKind::Claude,
+                "L1",
+                "0199c0de-ffff-4890-abcd-ef0123456789",
+                mint,
+            ),
+            (
+                "mint-bad",
+                "lead",
+                crate::tool::ToolKind::Claude,
+                "L1",
+                gone,
+                Some("not-a-uuid"),
+            ),
+            (
+                "mint-pending",
+                "lead",
+                crate::tool::ToolKind::Claude,
+                "L1",
+                gone,
+                Some("pending"),
+            ),
+            (
+                "mint-empty",
+                "lead",
+                crate::tool::ToolKind::Claude,
+                "L1",
+                gone,
+                Some(""),
+            ),
+            (
+                "no-launch",
+                "lead",
+                crate::tool::ToolKind::Claude,
+                "",
+                gone,
+                mint,
+            ),
+        ] {
+            let dir =
+                std::env::temp_dir().join(format!("ae-meta-guard-{tag}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("scratch");
+            fallback_meta(&dir, "claude", "L1", gone, "");
+            let before = std::fs::read_to_string(dir.join("meta")).unwrap();
+            let refused =
+                super::record_fallback_fresh(&dir, "main", agent, tool, launch, read, minted);
+            assert!(refused.is_err(), "{tag} refuses");
+            let after = std::fs::read_to_string(dir.join("meta")).unwrap();
+            assert_eq!(after, before, "{tag} writes nothing");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn a_fallback_without_any_launch_id_records() {
+        // Absent == absent, commit_inner's rule: a seat that predates launch
+        // ids still records its fallback.
+        let dir = std::env::temp_dir().join(format!("ae-meta-nolaunch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch");
+        let gone = "0199c0de-1234-4890-abcd-ef0123456789";
+        let minted = "0199c0de-aaaa-4890-abcd-ef0123456789";
+        std::fs::write(
+            dir.join("meta"),
+            format!(
+                "schema=2\nseat.main=lead\nprofile.main=custom\nagent_bin.main=claude\n\
+                 harness_session.main={gone}\n"
+            ),
+        )
+        .expect("meta");
+        super::record_fallback_fresh(
+            &dir,
+            "main",
+            "lead",
+            crate::tool::ToolKind::Claude,
+            "",
+            gone,
+            Some(minted),
+        )
+        .expect("record");
+        let text = std::fs::read_to_string(dir.join("meta")).unwrap();
+        assert!(
+            text.contains(&format!("harness_session.main={minted}\n")),
+            "{text}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_fallback_into_an_unwritable_session_refuses() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = std::env::temp_dir().join(format!("ae-meta-ro-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch");
+        fallback_meta(
+            &dir,
+            "claude",
+            "L1",
+            "0199c0de-1234-4890-abcd-ef0123456789",
+            "",
+        );
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555))
+            .expect("a read-only fixture dir");
+        let refused = super::record_fallback_fresh(
+            &dir,
+            "main",
+            "lead",
+            crate::tool::ToolKind::Claude,
+            "L1",
+            "0199c0de-1234-4890-abcd-ef0123456789",
+            Some("0199c0de-aaaa-4890-abcd-ef0123456789"),
+        );
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755))
+            .expect("restored so the fixture can be removed");
+        assert!(refused.is_err(), "an unwritable session refuses");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

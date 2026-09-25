@@ -56,9 +56,27 @@ pub struct Plan {
     model_notice: Option<String>,
     /// What a fresh-start resume says about the conversation it refuses.
     resume_notice: Option<String>,
-    /// The conversation a resume FALLBACK abandoned; recorded before the exec,
-    /// never part of `render()`.
-    abandoned_session: Option<String>,
+    /// What a resume FALLBACK records before the exec — the guard the meta
+    /// must still satisfy, and the fresh id. Never part of `render()`, except
+    /// through [`Plan::render`]'s illustrative-mint note.
+    fresh: Option<FreshRecord>,
+}
+
+/// What a resume FALLBACK records: the `_run` compose's view of the seat,
+/// which the guarded replacement compares-and-swaps.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FreshRecord {
+    /// The agent the slot still must name.
+    agent: String,
+    /// The tool the slot still must hold.
+    tool: ToolKind,
+    /// The launch id the seat still must carry.
+    launch_id: String,
+    /// `harness_session.<slot>` as compose read it.
+    read_id: String,
+    /// The fresh conversation's id, for a launch-id tool; `None` records
+    /// `pending`.
+    minted: Option<String>,
 }
 
 impl Plan {
@@ -66,7 +84,7 @@ impl Plan {
     #[must_use]
     pub fn render(&self) -> String {
         use crate::json::Value;
-        Value::Obj(vec![
+        let mut members = vec![
             ("mode".to_owned(), Value::Str(self.mode.as_str().to_owned())),
             ("tool".to_owned(), Value::Str(self.tool.as_str().to_owned())),
             ("env_clear".to_owned(), Value::Bool(self.clear)),
@@ -87,8 +105,23 @@ impl Plan {
                 "argv".to_owned(),
                 Value::Arr(self.argv.iter().cloned().map(Value::Str).collect()),
             ),
-        ])
-        .render()
+        ];
+        // `--print` renders a mint the real run will not use — a
+        // separate process mints its own — so the print says so, and writes
+        // nothing.
+        if self
+            .fresh
+            .as_ref()
+            .is_some_and(|fresh| fresh.minted.is_some())
+        {
+            members.push((
+                "fresh_note".to_owned(),
+                Value::Str(
+                    "the --session-id above is illustrative; the real run mints its own".to_owned(),
+                ),
+            ));
+        }
+        Value::Obj(members).render()
     }
 }
 
@@ -292,7 +325,7 @@ pub fn run(
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> crate::Result<u8> {
-    let plan = match build_with_snapshot(dir, slot, command_snapshot) {
+    let mut plan = match build_with_snapshot(dir, slot, command_snapshot) {
         Ok(plan) => plan,
         Err(why) => {
             writeln!(err, "ae: {why}")?;
@@ -325,10 +358,6 @@ pub fn run(
         writeln!(err, "{notice}")?;
         err.flush()?;
     }
-    if let Some(notice) = &plan.resume_notice {
-        writeln!(err, "{notice}")?;
-        err.flush()?;
-    }
     // BEFORE the exec, because after it there is no "after" — and REFUSING when
     // it cannot be written.
     let marker = started_marker(dir, slot);
@@ -350,19 +379,43 @@ pub fn run(
         writeln!(err, "{RESUMING}")?;
         err.flush()?;
     }
-    // A resume FALLBACK has just passed on the recorded conversation: the id
-    // becomes a predecessor and the seat's current id is cleared to `pending`,
-    // in one replacement, before the tool opens a different conversation. A
-    // failed recording is REPORTED and the launch proceeds — the row is
-    // bookkeeping, the conversation the pane is about to become is not.
-    if let Some(abandoned) = plan.abandoned_session.as_deref()
-        && let Err(why) = crate::meta::record_abandoned_session(dir, slot, abandoned)
+    // A resume FALLBACK has just passed on the recorded conversation: ONE
+    // guarded replacement records the predecessor and the fresh id, before
+    // the tool opens a different conversation. A miss or a failed recording
+    // is REPORTED: a seat that minted launches UNNAMED — never with an id no
+    // row records — and the mint notice is replaced by that report, so stderr
+    // never names an id the pane is not opening. A seat with nothing to name
+    // still starts fresh, and still says so.
+    let mut unnamed = false;
+    if let Some(fresh) = plan.fresh.as_ref()
+        && let Err(why) = crate::meta::record_fallback_fresh(
+            dir,
+            slot,
+            &fresh.agent,
+            fresh.tool,
+            &fresh.launch_id,
+            &fresh.read_id,
+            fresh.minted.as_deref(),
+        )
     {
+        if fresh.minted.is_some() {
+            plan.argv = drop_recorded_mint(&plan.argv);
+            unnamed = true;
+        }
         writeln!(
             err,
-            "ae: could not record the abandoned conversation {abandoned} for seat {slot} ({})",
-            why.cause()
+            "ae: could not record the fresh conversation for seat {slot} ({}) — {}",
+            why.cause(),
+            if unnamed {
+                "starting unnamed instead"
+            } else {
+                "starting fresh anyway"
+            },
         )?;
+        err.flush()?;
+    }
+    if !unnamed && let Some(notice) = &plan.resume_notice {
+        writeln!(err, "{notice}")?;
         err.flush()?;
     }
     let why = exec(&plan);
@@ -500,7 +553,7 @@ fn build_with_snapshot(
         config_home_notice,
         model_notice,
         resume_notice: composed.notice,
-        abandoned_session: composed.abandoned,
+        fresh: composed.fresh,
     })
 }
 
@@ -814,12 +867,34 @@ fn prove_implicit_store(
     ))
 }
 
-/// What a compose decided: the command line, the conversation a resume
-/// FALLBACK starts away from, and what the operator is told about it.
+/// What a compose decided: the command line, what a resume FALLBACK records,
+/// and what the operator is told about it.
 struct Composed {
     cmd: String,
-    abandoned: Option<String>,
+    fresh: Option<FreshRecord>,
     notice: Option<String>,
+}
+
+/// Drop the `--session-id` pair a fallback composed, for a seat whose fresh
+/// id could not be recorded: it launches unnamed rather than with an id no
+/// row records. The pair is unique by construction — the composer strips the
+/// session grammar before appending it — and every match is dropped, so a
+/// second one could only ever make the launch more unnamed, never less.
+fn drop_recorded_mint(argv: &[String]) -> Vec<String> {
+    let mut dropped = Vec::with_capacity(argv.len());
+    let mut skip = 0;
+    for word in argv {
+        if skip > 0 {
+            skip -= 1;
+            continue;
+        }
+        if word == "--session-id" {
+            skip = 1;
+            continue;
+        }
+        dropped.push(word.clone());
+    }
+    dropped
 }
 
 /// The composed shell command line, in builder order — and the conversation a
@@ -833,26 +908,46 @@ fn compose(
     config_home: &crate::launch_cmd::Resolved,
 ) -> Result<Composed, String> {
     if mode == Mode::Resume {
-        let (resume_form, fallback_form) =
-            resume_forms(seat.command.as_str(), seat.tool, &seat.harness_session);
         // DECIDE, THEN INJECT.
-        let exact_only = matches!(
-            seat.tool.adapter().resume.form,
-            ResumeForm::ExactOnly { .. }
-        );
         let exact = resumable(seat.tool, &seat.harness_session, config_home);
+        // A fallback names the fresh conversation it is about to open
+        // when the tool takes a launch session id; the exec records the mint
+        // before it becomes the tool.
+        let minted = (!exact && launch::takes_launch_session_id(seat.tool))
+            .then(crate::launch::generate_uuid);
+        let fresh_arg = minted.as_deref().unwrap_or(crate::launch::PENDING);
+        let (resume_form, fallback_form) = resume_forms(
+            seat.command.as_str(),
+            seat.tool,
+            &seat.harness_session,
+            fresh_arg,
+        );
         let form = if exact { resume_form } else { fallback_form };
         let cmd = if resume_keeps_context(seat.tool, exact) {
             launch::inject_ae_context(&form, dir, slot, ctx, &seat.launch_id).cmd
         } else {
             form
         };
-        let abandoned = (!exact && launch::id_probeable(&seat.harness_session))
-            .then(|| seat.harness_session.clone());
-        let notice = (!exact && exact_only).then(|| {
+        // The guard compares the RECORDED binary's tool, not the profile's:
+        // a seat whose profile changed names a different tool than its rows,
+        // and that is the writer's business, not this compose's.
+        let fresh = (!exact).then(|| FreshRecord {
+            agent: seat.agent.clone(),
+            tool: seat.recorded_tool,
+            launch_id: seat.launch_id.clone(),
+            read_id: seat.harness_session.clone(),
+            minted: minted.clone(),
+        });
+        let fresh_start_form = matches!(
+            seat.tool.adapter().resume.form,
+            ResumeForm::ExactOnly { .. } | ResumeForm::StrippedExact { .. }
+        );
+        let notice = (!exact && fresh_start_form).then(|| {
+            let mint = minted
+                .as_deref()
+                .map_or_else(String::new, |id| format!(" (--session-id {id})"));
             format!(
-                "ae: seat {slot}: no proven {} conversation — fresh start instead of \
-                 --continue (an unproven resume could join another seat's conversation)",
+                "ae: seat {slot}: no proven {} conversation — starting a fresh one{mint}",
                 seat.tool.as_str()
             )
         });
@@ -860,7 +955,7 @@ fn compose(
         // its UI returns, and no other tool has one.
         return Ok(Composed {
             cmd: launch::build_launch_command(&cmd, ""),
-            abandoned,
+            fresh,
             notice,
         });
     }
@@ -905,7 +1000,7 @@ fn compose(
     };
     Ok(Composed {
         cmd: launch::build_launch_command(&injected.cmd, &prompt_text),
-        abandoned: None,
+        fresh: None,
         notice: None,
     })
 }
@@ -1089,32 +1184,24 @@ pub(crate) fn canonical_config_home(
     }
 }
 
-/// The resume form of a profile's command, and the form to use when the
-/// conversation cannot be found.
+/// The resume form of a profile's command, and the fresh start to use when
+/// the conversation cannot be found: every fallback is Create's own composer
+/// naming the fresh conversation (`fresh`: the mint, or `pending` for the
+/// stripped bare command), never another seat's newest.
 #[must_use]
-pub fn resume_forms(cmd: &str, tool: ToolKind, session_id: &str) -> (String, String) {
+pub fn resume_forms(cmd: &str, tool: ToolKind, session_id: &str, fresh: &str) -> (String, String) {
+    let fallback = launch::inject_session_id(cmd, fresh);
     match tool.adapter().resume.form {
-        ResumeForm::Flags { exact, fallback } => (
-            format!("{cmd} {exact} {session_id}"),
-            format!("{cmd} {fallback}"),
-        ),
-        ResumeForm::StrippedFlags {
-            grammar,
-            exact,
-            fallback,
-        } => {
+        ResumeForm::StrippedExact { grammar, exact } => {
             let clean = launch::strip_session_grammar(cmd, grammar);
-            (
-                format!("{clean} {exact} {session_id}"),
-                format!("{clean} {fallback}"),
-            )
+            (format!("{clean} {exact} {session_id}"), fallback)
         }
         ResumeForm::Subcommand { grammar, command } => {
             let clean = launch::strip_session_grammar(cmd, grammar);
-            (format!("{clean} {command} {session_id}"), clean)
+            (format!("{clean} {command} {session_id}"), fallback)
         }
-        ResumeForm::ExactOnly { exact } => (format!("{cmd} {exact} {session_id}"), cmd.to_owned()),
-        ResumeForm::None => (cmd.to_owned(), cmd.to_owned()),
+        ResumeForm::ExactOnly { exact } => (format!("{cmd} {exact} {session_id}"), fallback),
+        ResumeForm::None => (cmd.to_owned(), fallback),
     }
 }
 
@@ -2117,7 +2204,7 @@ mod tests {
             config_home_notice: None,
             model_notice: None,
             resume_notice: None,
-            abandoned_session: None,
+            fresh: None,
         };
         let line = plan.render();
         assert!(!line.contains('\n'), "{line}");
@@ -2265,7 +2352,7 @@ mod tests {
             config_home_notice: None,
             model_notice: None,
             resume_notice: None,
-            abandoned_session: None,
+            fresh: None,
         };
         assert!(
             plan.render().contains(r#""env_clear":true"#),
@@ -2323,23 +2410,64 @@ mod tests {
     }
 
     #[test]
-    fn agy_resumes_by_conversation_and_falls_back_to_continue() {
+    fn agy_resumes_by_conversation_and_falls_back_to_a_fresh_start() {
         // The pair, read directly rather than through a launch: agy has no
         // `--resume` at all, and its operator-facing session flags are stripped
         // off BOTH forms so nothing an operator pinned can stack with, or be
-        // read instead of, the id ae is putting on.
+        // read instead of, the id ae is putting on. The fallback names
+        // no conversation at all.
         let (exact, fallback) = resume_forms(
             "agy --conversation OLD -c --dangerously-skip-permissions",
             ToolKind::Agy,
             "u-9",
+            crate::launch::PENDING,
         );
         assert_eq!(
             exact,
             "agy --dangerously-skip-permissions --conversation u-9"
         );
-        assert_eq!(fallback, "agy --dangerously-skip-permissions --continue");
+        assert_eq!(fallback, "agy --dangerously-skip-permissions");
         assert!(!exact.contains("OLD") && !fallback.contains("OLD"));
         assert!(!exact.contains("--resume"), "agy has no --resume: {exact}");
+    }
+
+    #[test]
+    fn an_unknown_tool_falls_back_to_the_stripped_command() {
+        // The None form preserves the command for the exact half, but its
+        // fallback is the stripped fresh start like every other tool's —
+        // nothing an operator pinned is resumed from.
+        let (exact, fallback) = resume_forms(
+            "mystery --resume OLD --continue --flag",
+            ToolKind::Unknown,
+            "u-9",
+            crate::launch::PENDING,
+        );
+        assert_eq!(exact, "mystery --resume OLD --continue --flag");
+        assert_eq!(fallback, "mystery --flag");
+    }
+
+    #[test]
+    fn dropping_the_recorded_mint_leaves_an_unnamed_command() {
+        let words = |list: &[&str]| {
+            list.iter()
+                .map(|word| (*word).to_owned())
+                .collect::<Vec<_>>()
+        };
+        let argv = words(&[
+            "/bin/claude",
+            "--flag",
+            "--session-id",
+            "0199c0de-aaaa-4890-abcd-ef0123456789",
+            "--append-system-prompt",
+            "ctx",
+        ]);
+        assert_eq!(
+            drop_recorded_mint(&argv),
+            words(&["/bin/claude", "--flag", "--append-system-prompt", "ctx"]),
+            "the mint pair is gone, the rest untouched"
+        );
+        let bare = words(&["/bin/agy", "--flag"]);
+        assert_eq!(drop_recorded_mint(&bare), bare, "no mint, no change");
     }
 
     #[test]
