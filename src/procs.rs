@@ -293,11 +293,14 @@ pub(crate) fn harness_rows(procs: &[Proc], pane_pid: u32) -> Vec<(ToolKind, &Pro
 
 /// Basename compare tolerant of a trailing `.exe` on either operand — the ONE
 /// name equality, shared by the descendant walk and by every caller that
-/// compares a foreground command with a recorded binary.
+/// compares a foreground command with a recorded binary or its live family.
 #[must_use]
 pub(crate) fn name_matches(comm: &str, agent_bin: &str) -> bool {
     let base = comm.rsplit('/').next().unwrap_or(comm);
-    strip_exe(base) == strip_exe(agent_bin)
+    let (live, recorded) = (strip_exe(base), strip_exe(agent_bin));
+    live == recorded
+        || ToolKind::from_known_binary_name(recorded)
+            .is_some_and(|kind| kind.adapter().process_name_matches(live))
 }
 
 fn strip_exe(s: &str) -> &str {
@@ -334,6 +337,14 @@ pub fn own_tty() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{Descendancy, Proc, PsArgv, descendancy, has_descendant_named, parse_table};
+
+    fn trow(proc: u32, parent: u32, comm: &str) -> Proc {
+        Proc {
+            pid: proc,
+            ppid: parent,
+            comm: comm.to_owned(),
+        }
+    }
 
     #[test]
     fn any_descendant_answers_busy_and_a_pidless_pane_is_never_busy() {
@@ -665,6 +676,42 @@ mod tests {
         assert_eq!(
             observed_harness("sh", Some(10), Some(&unplaced)),
             Observed::Shell
+        );
+    }
+
+    #[test]
+    fn a_live_muse_binary_under_a_pane_recorded_muse_reads_present() {
+        use super::{Observed, observed_harness};
+        use crate::tool::ToolKind;
+        // MEASURED 2026-09-28 (#206): the seat records `muse` while the live
+        // process is the versioned `muse-bin-1.4.0-R4302.1`; `ps -o comm=`
+        // reads the full path on macOS.
+        let procs = vec![
+            trow(100, 1, "fish"),
+            trow(200, 100, "/Users/ckriech/.local/bin/muse-bin-1.4.0-R4302.1"),
+        ];
+        assert_eq!(descendancy(Some(&procs), 100, "muse"), Descendancy::Present);
+        assert_eq!(
+            observed_harness("fish", Some(100), Some(&procs)),
+            Observed::Harness(vec![ToolKind::Muse])
+        );
+    }
+
+    #[test]
+    fn muse_near_names_never_read_present() {
+        let procs = |comm: &str| vec![trow(100, 1, "fish"), trow(200, 100, comm)];
+        for near in ["musecode", "muse-binx", "muse-bin-", "muse-binary"] {
+            assert_eq!(
+                descendancy(Some(&procs(near)), 100, "muse"),
+                Descendancy::Absent,
+                "{near:?} is not the muse family"
+            );
+        }
+        // A Linux-truncated comm keeps the digit after the prefix, so it
+        // still matches.
+        assert_eq!(
+            descendancy(Some(&procs("muse-bin-1.4.0-")), 100, "muse"),
+            Descendancy::Present
         );
     }
 }

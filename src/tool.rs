@@ -514,6 +514,12 @@ pub(crate) struct ToolAdapter {
     pub(crate) kind: ToolKind,
     /// Binary classification, metadata, and live process-name spelling.
     pub(crate) name: &'static str,
+    /// Live process-name family beyond the exact binary: when `Some`, a live
+    /// basename of `prefix` plus a version starting with an ASCII digit also
+    /// belongs to this row. Only muse declares one (its launcher `muse`
+    /// execs a versioned `muse-bin-<version>`); every other row is `None`
+    /// and matches its exact binary only.
+    pub(crate) process_family_prefix: Option<&'static str>,
     /// Human-facing name, or the full profile command for an unknown tool.
     pub(crate) label: Option<&'static str>,
     /// The client token a roster row draws beside an observed model, at most
@@ -573,6 +579,7 @@ pub(crate) struct ToolAdapter {
 const CLAUDE: ToolAdapter = ToolAdapter {
     kind: ToolKind::Claude,
     name: "claude",
+    process_family_prefix: None,
     label: Some("claude code"),
     client: "cc",
     launch_marker: None,
@@ -637,6 +644,7 @@ const CLAUDE: ToolAdapter = ToolAdapter {
 const CODEX: ToolAdapter = ToolAdapter {
     kind: ToolKind::Codex,
     name: "codex",
+    process_family_prefix: None,
     label: Some("codex"),
     client: "cx",
     launch_marker: Some("CODEX"),
@@ -686,6 +694,7 @@ const CODEX: ToolAdapter = ToolAdapter {
 const GEMINI: ToolAdapter = ToolAdapter {
     kind: ToolKind::Gemini,
     name: "gemini",
+    process_family_prefix: None,
     label: Some("gemini cli"),
     client: "gem",
     launch_marker: Some("GEMINI"),
@@ -734,6 +743,7 @@ const GEMINI: ToolAdapter = ToolAdapter {
 const AGY: ToolAdapter = ToolAdapter {
     kind: ToolKind::Agy,
     name: "agy",
+    process_family_prefix: None,
     label: Some("antigravity cli"),
     client: "agy",
     launch_marker: Some("AGY"),
@@ -809,6 +819,7 @@ const AGY: ToolAdapter = ToolAdapter {
 const GROK: ToolAdapter = ToolAdapter {
     kind: ToolKind::Grok,
     name: "grok",
+    process_family_prefix: None,
     label: Some("grok build"),
     client: "grok",
     launch_marker: None,
@@ -882,6 +893,7 @@ const GROK: ToolAdapter = ToolAdapter {
 const MUSE: ToolAdapter = ToolAdapter {
     kind: ToolKind::Muse,
     name: "muse",
+    process_family_prefix: Some("muse-bin-"),
     label: Some("muse code"),
     client: "muse",
     launch_marker: Some("MUSE"),
@@ -939,6 +951,7 @@ const MUSE: ToolAdapter = ToolAdapter {
 const OPENCODE: ToolAdapter = ToolAdapter {
     kind: ToolKind::OpenCode,
     name: "opencode",
+    process_family_prefix: None,
     label: Some("opencode"),
     client: "oc",
     launch_marker: None,
@@ -1018,6 +1031,7 @@ const OPENCODE: ToolAdapter = ToolAdapter {
 const UNKNOWN: ToolAdapter = ToolAdapter {
     kind: ToolKind::Unknown,
     name: "unknown",
+    process_family_prefix: None,
     label: None,
     client: "-",
     launch_marker: None,
@@ -1083,13 +1097,32 @@ pub fn is_client_token(token: &str) -> bool {
     KNOWN.iter().any(|adapter| adapter.client == token) || token == UNKNOWN.client
 }
 
+impl ToolAdapter {
+    /// Whether a stripped live basename belongs to this row: its exact
+    /// binary, or its declared versioned family — the prefix plus a version
+    /// whose first byte is an ASCII digit, which is what excludes
+    /// `muse-binx` while surviving a truncated comm. THE ONE family rule,
+    /// read by [`ToolKind::from_known_binary_name`] and by
+    /// [`crate::procs::name_matches`]; a row declaring no prefix is
+    /// byte-identical to a bare `==`.
+    pub(crate) fn process_name_matches(&self, base: &str) -> bool {
+        if self.name == base {
+            return true;
+        }
+        self.process_family_prefix.is_some_and(|prefix| {
+            base.strip_prefix(prefix)
+                .is_some_and(|rest| rest.as_bytes().first().is_some_and(u8::is_ascii_digit))
+        })
+    }
+}
+
 impl ToolKind {
     /// Classify one known bare binary name, preserving absence as `None`.
     #[must_use]
     pub(crate) fn from_known_binary_name(name: &str) -> Option<Self> {
         KNOWN
             .iter()
-            .find(|adapter| adapter.name == name)
+            .find(|adapter| adapter.process_name_matches(name))
             .map(|adapter| adapter.kind)
     }
 
@@ -1292,6 +1325,34 @@ mod tests {
     }
 
     #[test]
+    fn only_muse_declares_a_versioned_live_process_family() {
+        // MEASURED 2026-09-28 (#206): the launcher `muse` execs
+        // `muse-bin-<version>`, so the versioned basename classifies muse.
+        assert_eq!(
+            ToolKind::from_known_binary_name("muse-bin-1.4.0-R4302.1"),
+            Some(ToolKind::Muse)
+        );
+        for near in ["musecode", "muse-binx", "muse-bin-", "muse-binary"] {
+            assert_eq!(ToolKind::from_known_binary_name(near), None, "{near:?}");
+        }
+        assert_eq!(
+            ToolKind::Muse.adapter().process_family_prefix,
+            Some("muse-bin-")
+        );
+        for tool in [
+            ToolKind::Claude,
+            ToolKind::Codex,
+            ToolKind::Gemini,
+            ToolKind::Agy,
+            ToolKind::Grok,
+            ToolKind::OpenCode,
+            ToolKind::Unknown,
+        ] {
+            assert_eq!(tool.adapter().process_family_prefix, None, "{tool:?}");
+        }
+    }
+
+    #[test]
     fn only_the_cwd_keyed_probe_can_break_on_a_directory_move() {
         // The rename's explicit-home preflight shares this owner: adding a
         // cwd-keyed probe to another tool must flip its row here.
@@ -1333,6 +1394,7 @@ mod tests {
                 ToolAdapter {
                     kind: ToolKind::Claude,
                     name: "claude",
+                    process_family_prefix: None,
                     label: Some("claude code"),
                     client: "cc",
                     launch_marker: None,
@@ -1389,6 +1451,7 @@ mod tests {
                 ToolAdapter {
                     kind: ToolKind::Codex,
                     name: "codex",
+                    process_family_prefix: None,
                     label: Some("codex"),
                     client: "cx",
                     launch_marker: Some("CODEX"),
@@ -1437,6 +1500,7 @@ mod tests {
                 ToolAdapter {
                     kind: ToolKind::Gemini,
                     name: "gemini",
+                    process_family_prefix: None,
                     label: Some("gemini cli"),
                     client: "gem",
                     launch_marker: Some("GEMINI"),
@@ -1484,6 +1548,7 @@ mod tests {
                 ToolAdapter {
                     kind: ToolKind::Agy,
                     name: "agy",
+                    process_family_prefix: None,
                     label: Some("antigravity cli"),
                     client: "agy",
                     launch_marker: Some("AGY"),
@@ -1542,6 +1607,7 @@ mod tests {
                 ToolAdapter {
                     kind: ToolKind::Grok,
                     name: "grok",
+                    process_family_prefix: None,
                     label: Some("grok build"),
                     client: "grok",
                     launch_marker: None,
@@ -1597,6 +1663,7 @@ mod tests {
                 ToolAdapter {
                     kind: ToolKind::Muse,
                     name: "muse",
+                    process_family_prefix: Some("muse-bin-"),
                     label: Some("muse code"),
                     client: "muse",
                     launch_marker: Some("MUSE"),
@@ -1645,6 +1712,7 @@ mod tests {
                 ToolAdapter {
                     kind: ToolKind::OpenCode,
                     name: "opencode",
+                    process_family_prefix: None,
                     label: Some("opencode"),
                     client: "oc",
                     launch_marker: None,
@@ -1706,6 +1774,7 @@ mod tests {
             &ToolAdapter {
                 kind: ToolKind::Unknown,
                 name: "unknown",
+                process_family_prefix: None,
                 label: None,
                 client: "-",
                 launch_marker: None,
