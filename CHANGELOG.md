@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.185] - 2026-09-28
+- Recognise the versioned muse live process as the recorded muse seat
+
 ## [v2026.9.184] - 2026-09-25
 - Grace fresh launches in the dead branch and clear the latch on own journal activity
 
