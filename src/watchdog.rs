@@ -79,6 +79,12 @@ const CODEX_LIMIT: &[&str] = &[
     "Usage limit reached. You've reached your usage limit",
     "Quota exceeded. Check your plan",
 ];
+/// Muse 1.2.1 draws its quota banner as `Usage limit reached · /upgrade`
+/// (U+00B7 past the phrase end) and every refused turn as
+/// `model failed: API error 429 [request_id=…]` with server text after the
+/// code; both ASCII, no U+2019. The `transport error` sibling is transient,
+/// not limit, and stays out.
+const MUSE_LIMIT: &[&str] = &["Usage limit reached", "model failed: API error 429"];
 
 /// How a tool draws one of its OWN rows — its usage-limit notice or its
 /// transient error — data only; the one reader is [`newest_row`]. The row
@@ -108,6 +114,14 @@ const CODEX_BANNER: Banner = Banner {
     markers: &["■"],
     window: 16,
     phrases: CODEX_LIMIT,
+};
+/// Muse 1.2.1 draws its quota banner and its per-turn 429 row with `◆` at
+/// column 0, measured 6 to 12 rows up from its status row; the rest is room
+/// for a wrapped cell and a draft.
+const MUSE_BANNER: Banner = Banner {
+    markers: &["◆"],
+    window: 16,
+    phrases: MUSE_LIMIT,
 };
 /// Claude 2.1.281 draws an API error as a message row whose glyph sits at
 /// column 0 — `⏺` on macOS, `●` elsewhere — with its wrap at column 2; the
@@ -263,6 +277,7 @@ fn banner_for(agent_bin: &str) -> Option<&'static Banner> {
     match agent_bin {
         "claude" => Some(&CLAUDE_BANNER),
         "codex" => Some(&CODEX_BANNER),
+        "muse" => Some(&MUSE_BANNER),
         _ => None,
     }
 }
@@ -1875,14 +1890,14 @@ mod tests {
     use super::WaitState::{Blocked, WaitingAgent};
     use super::{
         CLAUDE_LIMIT, CLAUDE_TRANSIENT, CODEX_LIMIT, CODEX_TRANSIENT, DEFAULT_IDLE_NUDGE_SECS,
-        DoneProgress, NUDGE_IDLE_PREFIX, NUDGE_SENTENCE, NUDGE_TAIL, NUDGE_WAITING_CLOSE,
-        NUDGE_WAITING_OPEN, OVERVIEW_HOLD_WHILE_WORKING_SECS, OWN_WORK_AGE_CAP, QuietKind,
-        SweepAlert, SweepEffect, SweepKnobs, SweepObservation, SweepState, SweepVerdict, Throttle,
-        WaitProgress, WaitState, WedgeDetail, classify_dead, command_is_shell, declaration_current,
-        declaration_key, done_progress, indented, is_echo, is_sweep_target, latest_relevant_event,
-        limit_notice, quiet_filter, quiet_hash, quiet_reason, raw_nudge, record_sweep,
-        shows_throttle, stale_composite, submit_hdr, sweep_step, throttle_class, wait_progress,
-        waiting_agent_cap_secs, waiting_agent_escalated,
+        DoneProgress, MUSE_LIMIT, NUDGE_IDLE_PREFIX, NUDGE_SENTENCE, NUDGE_TAIL,
+        NUDGE_WAITING_CLOSE, NUDGE_WAITING_OPEN, OVERVIEW_HOLD_WHILE_WORKING_SECS,
+        OWN_WORK_AGE_CAP, QuietKind, SweepAlert, SweepEffect, SweepKnobs, SweepObservation,
+        SweepState, SweepVerdict, Throttle, WaitProgress, WaitState, WedgeDetail, classify_dead,
+        command_is_shell, declaration_current, declaration_key, done_progress, indented, is_echo,
+        is_sweep_target, latest_relevant_event, limit_notice, quiet_filter, quiet_hash,
+        quiet_reason, raw_nudge, record_sweep, shows_throttle, stale_composite, submit_hdr,
+        sweep_step, throttle_class, wait_progress, waiting_agent_cap_secs, waiting_agent_escalated,
     };
     use crate::events::Event;
     use crate::procs::Descendancy;
@@ -2808,6 +2823,15 @@ mod tests {
             );
             assert_eq!(throttle_class(&row, "claude"), None, "{phrase}");
         }
+        for phrase in MUSE_LIMIT {
+            let row = format!("◆ {phrase} · rest");
+            assert_eq!(
+                throttle_class(&row, "muse"),
+                Some(Throttle::LimitReached),
+                "{phrase}"
+            );
+            assert_eq!(throttle_class(&row, "claude"), None, "{phrase}");
+        }
         // Every measured transient head books on its tool's OWN error row, and
         // misses the other tool.
         for head in CLAUDE_TRANSIENT {
@@ -2869,6 +2893,7 @@ mod tests {
         for (bin, row, window) in [
             ("codex", "■ You’ve hit your usage limit.", 16),
             ("claude", "  ⎿  You've hit your session limit", 20),
+            ("muse", "◆ Usage limit reached · /upgrade", 16),
         ] {
             assert!(
                 limit_notice(&under(row, window - 1), bin).is_some(),
@@ -2898,6 +2923,21 @@ mod tests {
             (
                 "■ stream error: You’ve hit your usage limit",
                 "codex",
+                false,
+            ),
+            ("◆ Usage limit reached · /upgrade", "muse", true),
+            (
+                "◆ model failed: API error 429 [request_id=6e434b52]: x",
+                "muse",
+                true,
+            ),
+            (" ◆ Usage limit reached · /upgrade", "muse", false),
+            ("  ◆ Usage limit reached · /upgrade", "muse", false),
+            ("❯ ◆ Usage limit reached · /upgrade", "muse", false),
+            ("◆ Working (12s · esc to interrupt)", "muse", false),
+            (
+                "◆ model failed: transport error [net-timeout]:",
+                "muse",
                 false,
             ),
         ] {
@@ -2934,6 +2974,25 @@ mod tests {
         let clipped = limit_notice(&long, "codex").unwrap_or_default();
         assert_eq!(clipped.chars().count(), 160);
         assert!(clipped.ends_with('…'));
+        // Muse joins the 46-column wrapped banner across its continuation
+        // rows; the newest row (the per-turn 429) wins over the older banner.
+        // The cutter projects `·` to `?`, as it does codex's U+2019.
+        let wrapped = "◆ Usage limit reached · /upgrade\n  (https://accountscenter.meta.com/muse_code/?\n  ep=xgrade) for increased limits, or wait for\n  usage to reset at 12:56 AM";
+        assert_eq!(
+            limit_notice(&format!("{wrapped}\n\n{MUSE_BOTTOM}"), "muse").as_deref(),
+            Some(
+                "Usage limit reached ? /upgrade (https://accountscenter.meta.com/muse_code/? \
+                 ep=xgrade) for increased limits, or wait for usage to reset at 12:56 AM"
+            )
+        );
+        let both = format!("{MUSE_BANNER}\n\n❯ a synthetic prompt\n\n{MUSE_429}\n\n{MUSE_BOTTOM}");
+        assert_eq!(
+            limit_notice(&both, "muse").as_deref(),
+            Some(
+                "model failed: API error 429 [request_id=6e434b52-aa01-4a0f-9107-e6e3b61cfaed]: \
+                 Subscription quota exhausted. Your usage window resets at 2026-09-14T22:56:52Z. …"
+            )
+        );
     }
 
     /// Claude Code 2.1.281's bottom chrome, measured on a live pane
@@ -2961,6 +3020,23 @@ credits or try again at Sep 26th, 2026 10:11 AM.";
 › Ask Codex to do anything
 
   gpt-6-astra medium · ~/projects/clemens33/ae · main · Context 51% used · weekly 0% left";
+
+    /// Muse 1.2.1's quota banner, verbatim from a live pane (2026-09-14,
+    /// 190 columns): `◆` (U+25C6) at column 0, `·` U+00B7, the reset time on
+    /// the same row at this width.
+    const MUSE_BANNER: &str = "◆ Usage limit reached · /upgrade (https://accountscenter.meta.com/muse_code/?ep=xgrade) for increased limits, or wait for usage to reset at Sep 15 at 12:56 AM";
+
+    /// Muse 1.2.1's per-turn 429 row, verbatim from the same pane: the
+    /// `[request_id]` and the server text after `429` vary per turn.
+    const MUSE_429: &str = "◆ model failed: API error 429 [request_id=6e434b52-aa01-4a0f-9107-e6e3b61cfaed]: Subscription quota exhausted. Your usage window resets at 2026-09-14T22:56:52Z. (rate_limit_error)";
+
+    /// What muse 1.2.1 draws below its last cell on that pane: the voice
+    /// rule, the empty composer, a rule, the status row. Rules trimmed to
+    /// the label; the status row's content is synthetic.
+    const MUSE_BOTTOM: &str = "── Voice input (⌥ + v to start) ──
+❯
+────────────────────────────────────────
+  muse-spark-1.3 · max · ~/projects/clemens33/ae · YOLO";
 
     /// #189's false positive: a claude seat whose TRANSCRIPT quotes a limit
     /// banner — its own prose, a tool result peeking another seat, a pasted
@@ -3035,6 +3111,39 @@ credits or try again at Sep 26th, 2026 10:11 AM.";
             throttle_class(&frame, "claude"),
             Some(Throttle::LimitReached)
         );
+    }
+
+    /// Muse's own quota banner books the limit, on both shapes it draws:
+    /// the banner and the per-turn 429 row (muse 1.2.1's own rendering).
+    #[test]
+    fn muse_s_own_limit_rows_book_the_limit() {
+        for row in [MUSE_BANNER, MUSE_429] {
+            let frame = format!("❯ a synthetic prompt\n\n{row}\n\n{MUSE_BOTTOM}");
+            assert_eq!(
+                throttle_class(&frame, "muse"),
+                Some(Throttle::LimitReached),
+                "{row}"
+            );
+        }
+    }
+
+    /// The same false positive for muse: a quote under the `❯` ornament, a
+    /// spinner row sharing the `◆` marker, and the transient `transport
+    /// error` sibling are not a seat at its limit.
+    #[test]
+    fn a_limit_quoted_in_a_muse_transcript_books_nothing() {
+        let frame = format!(
+            "\
+❯ ◆ Usage limit reached · /upgrade (a pasted log)
+  ◆ model failed: API error 429 [request_id=9e8f]: quoted
+❯ colead reads Usage limit reached and will not answer.
+◆ Working (12s · esc to interrupt)
+◆ model failed: transport error [net-timeout]:
+  timed out waiting for response data (meta stream)
+
+{MUSE_BOTTOM}"
+        );
+        assert_eq!(throttle_class(&frame, "muse"), None);
     }
 
     /// #193's false positive: a claude transcript quoting a transient head —
