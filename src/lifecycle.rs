@@ -936,7 +936,7 @@ impl CallerGap {
     fn cause(&self, pane: &str) -> String {
         match self {
             Self::NotInTmux => {
-                "this process is not inside tmux ($TMUX is unset or names no socket)".to_owned()
+                "no usable tmux socket marker ($TMUX is unset or names no socket)".to_owned()
             }
             Self::NoPane => "no usable pane id was given".to_owned(),
             Self::PaneUnreadable => format!("tmux did not report pane {pane:?}"),

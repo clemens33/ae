@@ -2188,11 +2188,17 @@ impl AmbientRig {
 
     /// One core subcommand, with this rig's home AND its ambient server.
     fn run(&self, args: &[&str]) -> (Option<i32>, String, String) {
+        self.run_env(&[], args)
+    }
+
+    /// [`Self::run`] with `TMUX` and `TMUX_PANE` dropped, then `env` applied.
+    fn run_env(&self, env: &[(&str, &str)], args: &[&str]) -> (Option<i32>, String, String) {
         let mut cmd = ae();
         cmd.env("AE_HOME", &self.home);
         cmd.env("TMUX_TMPDIR", &self.home);
         cmd.env_remove("TMUX");
         cmd.env_remove("TMUX_PANE");
+        cmd.envs(env.iter().copied());
         for arg in args {
             cmd.arg(arg);
         }
@@ -2309,16 +2315,24 @@ fn a_bare_stop_from_a_non_ae_tmux_pane_has_no_inferred_target() {
 }
 
 #[test]
-fn a_bare_stop_outside_tmux_names_that_before_the_usage() {
+fn a_bare_stop_without_a_usable_tmux_marker_does_not_claim_it_is_outside_tmux() {
     let rig = AmbientRig::new("stopnotmux");
+    assert!(rig.tmux(&["new-session", "-d", "-s", "foreign", "sh"]).0);
+    let (_, panes) = rig.tmux(&["list-panes", "-t", "=foreign", "-F", "#{pane_id}"]);
+    let pane = panes.lines().next().unwrap_or_default();
 
-    let (code, out, err) = rig.run(&["stop"]);
+    // The marker is absent, or names no socket, while a real pane is inherited.
+    for marker in [&[][..], &[("TMUX", "relative,1,0")][..]] {
+        let env = [marker, &[("TMUX_PANE", pane)]].concat();
+        let (code, out, err) = rig.run_env(&env, &["stop"]);
 
-    assert_eq!(code, Some(2), "stdout: {out}\nstderr: {err}");
-    assert_eq!(
-        err,
-        stop_gap("this process is not inside tmux ($TMUX is unset or names no socket)")
-    );
+        assert_eq!(code, Some(2), "stdout: {out}\nstderr: {err}");
+        assert_eq!(
+            err,
+            stop_gap("no usable tmux socket marker ($TMUX is unset or names no socket)")
+        );
+    }
+    assert_eq!(rig.sessions(), vec!["foreign"], "nothing was killed");
 }
 
 #[test]
