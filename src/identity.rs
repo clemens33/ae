@@ -668,6 +668,7 @@ pub(crate) fn add_seat_slot_core(
     profile: &str,
     binary: &str,
     sid: Option<&str>,
+    launch_id: Option<&str>,
     target: TargetSpec<'_>,
 ) -> Result<String, String> {
     let _held = meta::lock(dir).map_err(|why| format!("cannot take the meta lock: {why}"))?;
@@ -687,7 +688,7 @@ pub(crate) fn add_seat_slot_core(
             "'{name}' already holds a seat — under v2 the name IS the identity."
         ));
     }
-    for field in [profile, binary].into_iter().chain(sid) {
+    for field in [profile, binary].into_iter().chain(sid).chain(launch_id) {
         if !control_free(field) || field.contains('\n') {
             return Err(format!(
                 "the value {field:?} carries a control byte no meta line can round-trip."
@@ -737,6 +738,11 @@ pub(crate) fn add_seat_slot_core(
     }]);
     // `render` opens the block it builds with `schema=2`.
     next.push_str(block.strip_prefix("schema=2\n").unwrap_or(&block));
+    // BORN with the seat, in this one write: no seat is observable without
+    // the incarnation a removal proves.
+    if let Some(id) = launch_id {
+        next.push_str(&["launch_id.", &slot, "=", id, "\n"].concat());
+    }
     publish(dir, &next)?;
     Ok(slot)
 }
@@ -760,7 +766,7 @@ pub fn add_seat_slot(
         None => TargetSpec::None,
         Some(spelling) => TargetSpec::LegacySpelling(spelling),
     };
-    add_seat_slot_core(dir, name, profile, binary, sid, target)
+    add_seat_slot_core(dir, name, profile, binary, sid, None, target)
 }
 
 /// Read `add-seat`'s flags: `--using <profile>`, `--binary <bin>`,
@@ -899,9 +905,27 @@ pub fn removable_slot(current: &Meta, name: &str) -> Result<String, String> {
 /// # Errors
 ///
 /// The refusal: an unknown name, a launch seat, an unreadable meta.
-pub fn prove_removable(dir: &Path, name: &str) -> Result<String, String> {
+pub fn prove_removable(dir: &Path, name: &str) -> Result<ProvenSeat, String> {
     let text = text_of(dir)?;
-    removable_slot(&Meta::parse(&text), name)
+    let slot = removable_slot(&Meta::parse(&text), name)?;
+    let launch_id = launch_id_in(&text, &slot);
+    Ok(ProvenSeat { slot, launch_id })
+}
+
+/// The seat INCARNATION a removal may take: its slot, which a successor can
+/// reuse, and the launch id that incarnation was born with, which it cannot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProvenSeat {
+    /// The slot the name resolved to.
+    pub slot: String,
+    /// `launch_id.<slot>` as proven; `None` for a seat recorded without one.
+    pub launch_id: Option<String>,
+}
+
+/// `launch_id.<slot>` in `text`, when exactly one row spells it.
+fn launch_id_in(text: &str, slot: &str) -> Option<String> {
+    meta::sole_value(text.as_bytes(), &format!("launch_id.{slot}"))
+        .map(|id| String::from_utf8_lossy(id).into_owned())
 }
 
 /// Why a guarded removal refused: either the name moved onto another slot
@@ -915,6 +939,12 @@ pub enum RemovalRefusal {
         now: String,
         /// The slot the caller proved before the kill.
         proven: String,
+    },
+    /// The name still resolves to the proven slot, but a NEW seat holds it: a
+    /// retire plus a re-spawn reused the slot, and its launch id differs.
+    Replaced {
+        /// The slot the successor holds.
+        slot: String,
     },
     /// Every other refusal: an unknown name, a launch seat, a meta that could
     /// not be read, locked or written.
@@ -953,27 +983,70 @@ pub fn remove_seat_slot(dir: &Path, name: &str) -> Result<String, String> {
     Ok(slot)
 }
 
-/// Drop every line the slot the caller PROVED owns, refusing when the name now
-/// resolves elsewhere — the race-free half of a kill-first retire. The proof is
-/// taken before the kill; a retire plus re-spawn under the same name would
-/// otherwise let the removal follow the name onto the successor.
+/// Drop every line the seat the caller PROVED owns, refusing when the name now
+/// resolves elsewhere or to a new incarnation — the race-free half of a
+/// kill-first retire and of a spawn cleanup. The proof is taken before the
+/// kill; a retire plus re-spawn under the same name would otherwise let the
+/// removal follow the name onto the successor, on the same slot or another.
+/// `cleanup` (the slot's launch artifacts) runs in the SAME hold, once the rows
+/// are gone: a successor writes its artifacts only after its own seat write,
+/// which waits on this lock, so none can be taken — and a refused publish
+/// leaves the seat with its artifacts.
 ///
 /// # Errors
 ///
-/// [`RemovalRefusal::Moved`] when the name now resolves to a different slot;
-/// otherwise the refusals [`remove_seat_slot`] words.
-pub fn remove_proven_slot(dir: &Path, name: &str, proven: &str) -> Result<String, RemovalRefusal> {
+/// [`RemovalRefusal::Moved`] when the name now resolves to a different slot,
+/// [`RemovalRefusal::Replaced`] when its launch id changed; otherwise the
+/// refusals [`remove_seat_slot`] words. `cleanup` runs on none of them.
+pub fn remove_proven_slot(
+    dir: &Path,
+    name: &str,
+    proven: &ProvenSeat,
+    cleanup: impl FnOnce(),
+) -> Result<String, RemovalRefusal> {
+    fenced(dir, name, proven, true, cleanup)
+}
+
+/// [`remove_proven_slot`] that KEEPS the rows: only `cleanup` runs, fenced
+/// the same way — for a seat whose pane survived and stays for a retire.
+///
+/// # Errors
+///
+/// As [`remove_proven_slot`].
+pub fn clean_proven_slot(
+    dir: &Path,
+    name: &str,
+    proven: &ProvenSeat,
+    cleanup: impl FnOnce(),
+) -> Result<String, RemovalRefusal> {
+    fenced(dir, name, proven, false, cleanup)
+}
+
+/// The one fenced check both entries share.
+fn fenced(
+    dir: &Path,
+    name: &str,
+    proven: &ProvenSeat,
+    drop_rows: bool,
+    cleanup: impl FnOnce(),
+) -> Result<String, RemovalRefusal> {
     let _held = meta::lock(dir)
         .map_err(|why| RemovalRefusal::Refused(format!("cannot take the meta lock: {why}")))?;
     let text = text_of(dir).map_err(RemovalRefusal::Refused)?;
     let slot = removable_slot(&Meta::parse(&text), name).map_err(RemovalRefusal::Refused)?;
-    if slot != proven {
+    if slot != proven.slot {
         return Err(RemovalRefusal::Moved {
             now: slot,
-            proven: proven.to_owned(),
+            proven: proven.slot.clone(),
         });
     }
-    drop_slot(dir, &text, &slot).map_err(RemovalRefusal::Refused)?;
+    if launch_id_in(&text, &slot) != proven.launch_id {
+        return Err(RemovalRefusal::Replaced { slot });
+    }
+    if drop_rows {
+        drop_slot(dir, &text, &slot).map_err(RemovalRefusal::Refused)?;
+    }
+    cleanup();
     Ok(slot)
 }
 
@@ -2175,6 +2248,7 @@ mod tests {
             "fable5",
             "claude",
             None,
+            None,
             super::TargetSpec::Explicit {
                 target,
                 state_root: state,
@@ -2285,7 +2359,9 @@ mod tests {
         let proven =
             add_explicit(&scratch, "scout", &target, Some(state.as_path())).expect("a seat");
         assert_eq!(
-            super::prove_removable(scratch.dir(), "scout").expect("a proven seat"),
+            super::prove_removable(scratch.dir(), "scout")
+                .expect("a proven seat")
+                .slot,
             proven
         );
         // Retired and re-spawned under the same name: every row moved to a new
@@ -2293,7 +2369,12 @@ mod tests {
         let moved = scratch.meta().replace(&proven, "spawned.9");
         super::publish(scratch.dir(), &moved).expect("the moved meta");
 
-        let removal = super::remove_proven_slot(scratch.dir(), "scout", &proven);
+        let legacy = |slot: &str| super::ProvenSeat {
+            slot: slot.to_owned(),
+            launch_id: None,
+        };
+        let moved = || panic!("the cleanup ran for a moved name");
+        let removal = super::remove_proven_slot(scratch.dir(), "scout", &legacy(&proven), moved);
         assert_eq!(
             removal,
             Err(super::RemovalRefusal::Moved {
@@ -2308,10 +2389,88 @@ mod tests {
 
         // Positive control: the slot the name really holds is removable.
         assert_eq!(
-            super::remove_proven_slot(scratch.dir(), "scout", "spawned.9"),
+            super::remove_proven_slot(scratch.dir(), "scout", &legacy("spawned.9"), || {}),
             Ok("spawned.9".to_owned())
         );
         assert!(!scratch.meta().contains("scout"), "{}", scratch.meta());
+    }
+
+    // The launch id is BORN in the seat's own write, or the seat is not born.
+    #[test]
+    fn a_launch_id_is_born_in_the_seat_write_or_refused_before_it() {
+        let scratch = local_core_dirs("born");
+        let add = |id| {
+            let none = super::TargetSpec::None;
+            super::add_seat_slot_core(scratch.dir(), "scout", "fable5", "claude", None, id, none)
+        };
+        assert!(add(Some("bad\u{7}")).is_err());
+        assert!(!scratch.meta().contains("scout"), "{}", scratch.meta());
+        let slot = add(Some("born-1")).expect("a seat");
+        let proven = super::prove_removable(scratch.dir(), "scout").expect("a proven seat");
+        assert_eq!(
+            proven.launch_id.as_deref(),
+            Some("born-1"),
+            "{}",
+            scratch.meta()
+        );
+        assert_eq!(proven.slot, slot);
+    }
+
+    // A retire plus a re-spawn under the same name lands on the SAME slot
+    // (the lowest free one), so only the launch id tells the successor apart;
+    // a row the seat grows after its birth is not a new incarnation.
+    #[test]
+    fn a_removal_refuses_a_successor_born_on_the_proven_slot() {
+        let scratch = local_core_dirs("reborn");
+        let slot = super::add_seat_slot(scratch.dir(), "scout", "fable5", "claude", None, None)
+            .expect("a seat");
+        let bare = scratch.meta();
+        let born = |id: &str| format!("{bare}launch_id.{slot}={id}\n");
+        super::publish(scratch.dir(), &born("first")).expect("the first incarnation");
+        let proven = super::prove_removable(scratch.dir(), "scout").expect("a proven seat");
+        super::publish(scratch.dir(), &born("second")).expect("the successor");
+        let reborn = || panic!("the cleanup ran for a successor");
+        assert!(super::remove_proven_slot(scratch.dir(), "scout", &proven, reborn).is_err());
+        assert_eq!(scratch.meta(), born("second"), "the successor is untouched");
+        let grown = format!("{}observed_model.{slot}=opus\n", born("first"));
+        super::publish(scratch.dir(), &grown).expect("the same seat, grown");
+        let cleaned = std::cell::Cell::new(false);
+        assert_eq!(
+            super::remove_proven_slot(scratch.dir(), "scout", &proven, || cleaned.set(true))
+                .map_err(|_| ()),
+            Ok(slot)
+        );
+        assert!(cleaned.get(), "the proven seat's cleanup runs");
+    }
+
+    // The rows go first: a removal the meta refuses keeps the seat's artifacts
+    // with the seat, so a retry or a retire still finds both.
+    #[test]
+    fn a_removal_whose_publish_is_refused_runs_no_cleanup() {
+        use std::os::unix::fs::PermissionsExt;
+        let scratch = local_core_dirs("refused");
+        super::add_seat_slot(scratch.dir(), "scout", "fable5", "claude", None, None)
+            .expect("a seat");
+        let proven = super::prove_removable(scratch.dir(), "scout").expect("a proven seat");
+        let before = scratch.meta();
+        let mode = |bits| std::fs::set_permissions(scratch.dir(), PermissionsExt::from_mode(bits));
+        mode(0o555).expect("deny");
+        if std::fs::write(scratch.dir().join("probe"), "x").is_ok() {
+            mode(0o755).expect("restore");
+            eprintln!("SKIP: a read-only directory is writable on this host");
+            return;
+        }
+        let cleaned = std::cell::Cell::new(false);
+        let removed = super::remove_proven_slot(scratch.dir(), "scout", &proven, || {
+            cleaned.set(true);
+        });
+        mode(0o755).expect("restore");
+        assert!(
+            matches!(removed, Err(super::RemovalRefusal::Refused(_))),
+            "{removed:?}"
+        );
+        assert!(!cleaned.get(), "the cleanup ran for a seat the meta kept");
+        assert_eq!(scratch.meta(), before, "the seat is kept");
     }
 
     // B2-spawn U8: managed/legacy refuses atomically, record order kept.

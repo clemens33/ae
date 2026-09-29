@@ -269,6 +269,35 @@ pub fn kill_owned_pane(
     want_agent: Option<&str>,
     err: &mut impl Write,
 ) -> crate::Result<KillOutcome> {
+    kill_matching(server, pane, want_session, want_agent, false, err)
+}
+
+/// [`kill_owned_pane`] for the pane the caller just CREATED, whose `@ae_agent`
+/// stamp may have failed: an EMPTY stamp passes beside `want_agent`, and
+/// every other reading refuses exactly as there.
+///
+/// # Errors
+///
+/// Only writing the refusal diagnostic to `err`.
+pub fn kill_created_pane(
+    server: &ServerId,
+    pane: &str,
+    want_session: &str,
+    want_agent: &str,
+    err: &mut impl Write,
+) -> crate::Result<KillOutcome> {
+    kill_matching(server, pane, want_session, Some(want_agent), true, err)
+}
+
+/// The one ownership-checked kill both entries share.
+fn kill_matching(
+    server: &ServerId,
+    pane: &str,
+    want_session: &str,
+    want_agent: Option<&str>,
+    unstamped_ok: bool,
+    err: &mut impl Write,
+) -> crate::Result<KillOutcome> {
     if pane.is_empty() {
         return Ok(KillOutcome::Nothing);
     }
@@ -292,6 +321,7 @@ pub fn kill_owned_pane(
     }
     if let Some(want_agent) = want_agent.filter(|name| !name.is_empty())
         && have.agent != want_agent
+        && !(unstamped_ok && have.agent.is_empty())
     {
         let outcome = KillOutcome::WrongAgent(have.agent);
         if let Some(short) = refusal_short(&outcome, want_session, Some(want_agent)) {

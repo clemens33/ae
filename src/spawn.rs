@@ -25,6 +25,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::deliver::{self, Shape};
+use crate::identity::{ProvenSeat, RemovalRefusal};
 use crate::inventory::ServerId;
 use crate::launch;
 use crate::meta::{self, Meta, ServerSelector};
@@ -282,7 +283,7 @@ fn run_spawn_inner(
     state_root: Option<&Path>,
     invoker_cwd: &Path,
 ) -> io::Result<u8> {
-    let staged = match record_spawned_seat(dir, tail, now, target, state_root, invoker_cwd, err)? {
+    let staged = match record_spawned_seat(dir, tail, now, target, state_root, invoker_cwd) {
         Ok(staged) => staged,
         Err(why) => {
             writeln!(err, "{why}")?;
@@ -320,7 +321,19 @@ fn run_spawn_inner(
             dir.display()
         )
     };
-    stamp_pane(&facts.server, &pane, &parsed.name, slot, &parsed.profile);
+    // A pane no stamp names is one no retire can find: it is removed NOW, by
+    // the kill that accepts the pane this spawn created, stamped or not.
+    if let Err(refused) = stamp_pane(&facts.server, &pane, &parsed.name, slot, &parsed.profile) {
+        let seat = staged.proven();
+        let verdict = rollback(dir, facts, &seat, &pane, &parsed.name, false, err)?;
+        let tail = rollback_tail(&verdict, &pane, &parsed.name, &facts.session);
+        writeln!(
+            err,
+            "Error: '{}' pane {pane} could not be stamped ({refused}) {tail}",
+            parsed.name
+        )?;
+        return Ok(EXIT_FAILED);
+    }
     crate::session_launch::name_agent_window(&facts.server, &pane, &parsed.name);
     // A spawn makes a NEW window, and the pane border, menu and popup styles
     // live in the window table — so the window is stamped here rather than
@@ -337,7 +350,7 @@ fn run_spawn_inner(
     // session id, the create-vs-resume decision — is composed by `_run` IN the
     // pane, from this session's own state.
     if let Err(why) = crate::run::clear_slot(dir, slot) {
-        let verdict = rollback(dir, facts, slot, &pane, &parsed.name, err)?;
+        let verdict = rollback(dir, facts, &staged.proven(), &pane, &parsed.name, true, err)?;
         let tail = rollback_tail(&verdict, &pane, &parsed.name, &facts.session);
         writeln!(
             err,
@@ -374,7 +387,7 @@ fn run_spawn_inner(
         let stored = deliver::store_body(dir, &format!("spawn-{slot}"), SPAWN_ACTION, &initial)
             .and_then(|_| crate::run::publish_prompt(dir, slot, &initial));
         if let Err(why) = stored {
-            let verdict = rollback(dir, facts, slot, &pane, &parsed.name, err)?;
+            let verdict = rollback(dir, facts, &staged.proven(), &pane, &parsed.name, true, err)?;
             let tail = rollback_tail(&verdict, &pane, &parsed.name, &facts.session);
             writeln!(
                 err,
@@ -405,7 +418,7 @@ fn run_spawn_inner(
     };
     // RESOLVED, never raw.
     let Some(core) = crate::shape::resolved_exe() else {
-        let verdict = rollback(dir, facts, slot, &pane, &parsed.name, err)?;
+        let verdict = rollback(dir, facts, &staged.proven(), &pane, &parsed.name, true, err)?;
         let tail = rollback_tail(&verdict, &pane, &parsed.name, &facts.session);
         writeln!(err, "Error: the core could not name its own binary {tail}")?;
         return Ok(EXIT_FAILED);
@@ -507,11 +520,22 @@ struct StagedSeat {
     tool: ToolKind,
     command: crate::config::ResolvedCommand,
     explicit: bool,
+    /// The launch id this incarnation was born with, in the seat's own write.
+    launch_id: String,
+}
+
+impl StagedSeat {
+    /// What a cleanup may remove: this incarnation, never a successor.
+    fn proven(&self) -> ProvenSeat {
+        ProvenSeat {
+            slot: self.slot.clone(),
+            launch_id: Some(self.launch_id.clone()),
+        }
+    }
 }
 
 /// Step A: validate, record the seat and stamp the attempt — no pane yet.
-/// Refusals travel in `Ok(Err)` for the inner to print; the outer `Err`
-/// is an output failure partway (the launch-token warning), aborting first.
+/// A refusal is the `Err` for the inner to print.
 #[allow(
     clippy::too_many_lines,
     reason = "step A owns the frozen order through the stamp"
@@ -523,51 +547,42 @@ fn record_spawned_seat(
     target: Option<&Path>,
     state_root: Option<&Path>,
     invoker_cwd: &Path,
-    err: &mut impl Write,
-) -> io::Result<Result<StagedSeat, String>> {
-    let parsed = match parse(tail) {
-        Ok(parsed) => parsed,
-        Err(line) => return Ok(Err(line)),
-    };
+) -> Result<StagedSeat, String> {
+    let parsed = parse(tail)?;
     // THE PEER BOUNDARY.
     if !crate::config::is_agent_name(&parsed.name) {
-        return Ok(Err(format!(
+        return Err(format!(
             "Error: invalid agent name '{}'. Names must match {}.",
             parsed.name,
             crate::config::AGENT_NAME_GRAMMAR
-        )));
+        ));
     }
-    if let Err(why) = meta::plan_spawn_target(target, state_root) {
-        return Ok(Err(why));
-    }
+    meta::plan_spawn_target(target, state_root)?;
     let facts = match facts(dir) {
         Ok(facts) => facts,
-        Err(why) => return Ok(Err(format!("Error: {why}"))),
+        Err(why) => return Err(format!("Error: {why}")),
     };
     if !transport::session_exists(&facts.server, &facts.session) {
-        return Ok(Err(format!(
-            "Error: session '{}' not running",
-            facts.session
-        )));
+        return Err(format!("Error: session '{}' not running", facts.session));
     }
     let cfg = match facts.identity() {
         Ok(cfg) => cfg,
-        Err(why) => return Ok(Err(why.to_string())),
+        Err(why) => return Err(why.to_string()),
     };
     let home = crate::doors::home();
     let command = match cfg.command(&parsed.profile, home.as_deref()) {
         Ok(command) => command,
-        Err(why) => return Ok(Err(why.to_string())),
+        Err(why) => return Err(why.to_string()),
     };
     let Some(command) = command else {
-        return Ok(Err(format!(
+        return Err(format!(
             "Error: profile '{}' not defined in [profiles] of {}",
             parsed.profile,
             facts
                 .global
                 .as_ref()
                 .map_or_else(String::new, |path| path.display().to_string())
-        )));
+        ));
     };
 
     // THE SAME GRAMMAR AS A LAUNCH SEAT, before any effect. config.rs enforces the
@@ -578,10 +593,10 @@ fn record_spawned_seat(
     let lexed = match crate::launch_cmd::lex_simple_command(command.as_str()) {
         Ok(lexed) => lexed,
         Err(why) => {
-            return Ok(Err(format!(
+            return Err(format!(
                 "Error: profile '{}' refused — {why}. Nothing was spawned.",
                 parsed.profile
-            )));
+            ));
         }
     };
     let tool = lexed.tool();
@@ -605,34 +620,27 @@ fn record_spawned_seat(
         },
         None => crate::identity::TargetSpec::None,
     };
+    // The launch id guards observed-model writes for every seat. Capture tools
+    // also use it to distinguish their own stores, but marker injection stays
+    // gated by the adapter capability. It is BORN in the seat's own write, so
+    // no seat is ever observable without the incarnation a cleanup proves.
+    let launch_id = crate::session_launch::launch_token(tool, None);
     let slot = match crate::identity::add_seat_slot_core(
         dir,
         &parsed.name,
         &parsed.profile,
         &binary,
         sid,
+        Some(&launch_id),
         spec,
     ) {
         Ok(slot) => slot,
-        Err(why) => return Ok(Err(format!("Error: {why}"))),
+        Err(why) => return Err(format!("Error: {why}")),
     };
-    // The launch id guards observed-model writes for every seat. Capture tools
-    // also use it to distinguish their own stores, but marker injection stays
-    // gated by the adapter capability. Record it before the pane exists so
-    // `_run` can compose either use from the same durable identity.
-    if meta::rewrite(
-        dir,
-        &format!("launch_id.{slot}"),
-        Some(&crate::session_launch::launch_token(tool, None)),
-    )
-    .is_err()
-    {
-        writeln!(
-            err,
-            "ae: could not record the launch token of '{}'.",
-            parsed.name
-        )?;
-    }
+    let seat = ProvenSeat {
+        slot: slot.clone(),
+        launch_id: Some(launch_id.clone()),
+    };
     // The capture lower bound is a BIRTH fact: publish it before the pane can
     // exec the tool. `launch_time` remains the post-exec lifecycle stamp.
     if tool.adapter().capture.is_needed()
@@ -643,11 +651,11 @@ fn record_spawned_seat(
         )
         .is_err()
     {
-        let _ = crate::identity::remove_seat_slot(dir, &parsed.name);
-        return Ok(Err(format!(
+        let _ = crate::identity::remove_proven_slot(dir, &parsed.name, &seat, || {});
+        return Err(format!(
             "Error: '{}' capture floor could not be recorded — nothing was spawned.",
             parsed.name
-        )));
+        ));
     }
 
     // THE LAUNCH-ATTEMPT STAMP, before the window this spawn is about to
@@ -656,25 +664,40 @@ fn record_spawned_seat(
     // CHECKED: an unrecorded attempt would make a later reboot proof read this
     // session as untouched since the boot, so nothing is spawned instead.
     if let Err(why) = crate::store::open(dir).stamp_launch_attempt(now.epoch()) {
-        let _ = crate::identity::remove_seat_slot(dir, &parsed.name);
-        return Ok(Err(format!(
+        let _ = crate::identity::remove_proven_slot(dir, &parsed.name, &seat, || {});
+        return Err(format!(
             "Error: '{}' launch attempt could not be recorded ({why}) — nothing was spawned.",
             parsed.name
-        )));
+        ));
     }
-    Ok(Ok(StagedSeat {
+    Ok(StagedSeat {
         slot,
         session: facts,
         argv: parsed,
         tool,
         command,
         explicit: target.is_some(),
-    }))
+        launch_id,
+    })
 }
 
 /// The retained-seat tail of a JIT refusal that kept its rows for repair.
 fn retained_for_repair(name: &str) -> String {
     format!("seat '{name}' retained; repair the session meta first, then retire the seat.")
+}
+
+/// Release the seat step A staged — its incarnation, never a successor that a
+/// concurrent retire plus re-spawn landed under the name.
+fn release(dir: &Path, staged: &StagedSeat) -> Result<String, String> {
+    let name = &staged.argv.name;
+    crate::identity::remove_proven_slot(dir, name, &staged.proven(), || {}).map_err(|refusal| {
+        match refusal {
+            RemovalRefusal::Refused(why) => why,
+            RemovalRefusal::Moved { .. } | RemovalRefusal::Replaced { .. } => {
+                format!("a new seat holds '{name}' now and was left untouched")
+            }
+        }
+    })
 }
 
 fn cleanup_outcome(released: &str, cleanup: &Result<String, String>) -> String {
@@ -756,7 +779,8 @@ fn preserve_teardown(
     pane: &str,
     err: &mut impl Write,
 ) -> Option<watchdog_glue::KillOutcome> {
-    drop_launch_artifacts(dir, &staged.slot);
+    let drop = || drop_launch_artifacts(dir, &staged.slot);
+    let _ = crate::identity::clean_proven_slot(dir, &staged.argv.name, &staged.proven(), drop);
     let server = &staged.session.server;
     let session = &staged.session.session;
     watchdog_glue::kill_owned_pane(server, pane, session, Some(&staged.argv.name), err).ok()
@@ -857,9 +881,10 @@ fn store_brief_or_fallback(
             let verdict = rollback(
                 dir,
                 &staged.session,
-                &staged.slot,
+                &staged.proven(),
                 pane,
                 &staged.argv.name,
+                true,
                 err,
             )?;
             let tail = rollback_tail(&verdict, pane, &staged.argv.name, &staged.session.session);
@@ -911,7 +936,15 @@ fn spawn_launch_turn_branch(
         Ok(prep) => prep,
         Err(mut failure) => {
             if failure.mode == RollbackMode::Full {
-                let verdict = rollback(dir, &staged.session, &staged.slot, pane, name, err)?;
+                let verdict = rollback(
+                    dir,
+                    &staged.session,
+                    &staged.proven(),
+                    pane,
+                    name,
+                    true,
+                    err,
+                )?;
                 if verdict != RollbackVerdict::Done {
                     let tail = rollback_tail(&verdict, pane, name, &staged.session.session);
                     failure.message.push(' ');
@@ -946,7 +979,7 @@ fn prepare_spawn_target(
     let row_state =
         meta::raw_seat_work_dir(&bytes, &staged.slot).map_err(|why| format!("{why} — {kept}"))?;
     if row_state.is_some() {
-        let cleanup = crate::identity::remove_seat_slot(dir, name);
+        let cleanup = release(dir, staged);
         return Err(format!(
             "a work_dir.{} row appeared after staging; the staged inherited target no longer holds. {}",
             staged.slot,
@@ -959,7 +992,7 @@ fn prepare_spawn_target(
     let spelling = row(&bytes, "work_dir");
     let canonical = crate::doors::canonical_strict_dir(Path::new(&spelling)).map_err(|error| {
         let stem = meta::inherited_dir_cause(&spelling, &error);
-        let cleanup = crate::identity::remove_seat_slot(dir, name);
+        let cleanup = release(dir, staged);
         format!(
             "{stem}. {}",
             cleanup_outcome(
@@ -1012,7 +1045,7 @@ fn start_spawned_pane(
                 (start.clone(), start, held)
             }
             Err(jit) => {
-                let cleanup = crate::identity::remove_seat_slot(dir, &staged.argv.name);
+                let cleanup = release(dir, staged);
                 return Err(format!(
                     "{jit} {}",
                     cleanup_outcome(
@@ -1030,7 +1063,7 @@ fn start_spawned_pane(
     let Some(pane) =
         transport::new_window(&staged.session.server, &staged.session.session, &start_dir)
     else {
-        let cleanup = crate::identity::remove_seat_slot(dir, &staged.argv.name);
+        let cleanup = release(dir, staged);
         return Err(format!(
             "Error: could not create a pane for '{}'. {}",
             staged.argv.name,
@@ -1070,12 +1103,20 @@ fn actor_of(caller: &str) -> &str {
 }
 
 /// Label the pane. Its new window is named separately, so this function stays
-/// correct if pane stamping is ever reused for a split.
-fn stamp_pane(server: &ServerId, pane: &str, name: &str, slot: &str, profile: &str) {
+/// correct if pane stamping is ever reused for a split. `Err` names the
+/// IDENTITY stamps tmux refused: every lookup, kill and route matches on them,
+/// while the title, label and profile are display only.
+fn stamp_pane(
+    server: &ServerId,
+    pane: &str,
+    name: &str,
+    slot: &str,
+    profile: &str,
+) -> Result<(), String> {
     let _ = transport::set_pane_title(server, pane, &format!("ae:{name}"));
     // The IDENTITY, verbatim; the label beside it is the same name as DRAWN,
     // with everything a drawer would read as a style taken out.
-    let _ = transport::publish_option(
+    let agent = transport::publish_option(
         server,
         crate::tmux::OptionScope::Pane,
         pane,
@@ -1089,7 +1130,7 @@ fn stamp_pane(server: &ServerId, pane: &str, name: &str, slot: &str, profile: &s
         crate::theme::AGENT_LABEL_OPTION,
         &crate::theme::agent_label(name),
     );
-    let _ = transport::publish_option(
+    let routed = transport::publish_option(
         server,
         crate::tmux::OptionScope::Pane,
         pane,
@@ -1106,6 +1147,16 @@ fn stamp_pane(server: &ServerId, pane: &str, name: &str, slot: &str, profile: &s
         // profile carrying one would restyle the pane border it names.
         &crate::theme::bar_text(profile, crate::theme::PROFILE_WIDTH),
     );
+    let refused: Vec<&str> = [("@ae_agent", agent), ("@ae_slot", routed)]
+        .iter()
+        .filter(|(_, stamped)| !stamped)
+        .map(|(option, _)| *option)
+        .collect();
+    if refused.is_empty() {
+        Ok(())
+    } else {
+        Err(refused.join(", "))
+    }
 }
 
 /// Wait, briefly, for the tool's process to replace the pane's shell — the
@@ -1438,6 +1489,12 @@ enum RollbackVerdict {
     SeatKept(String),
     /// The pane kill was refused, so the seat is kept for a later retire.
     PaneKept(watchdog_glue::KillOutcome),
+    /// The kill of a pane that may carry no stamp was refused: the seat is
+    /// kept, and no retire can find that pane by name.
+    UnstampedKept(watchdog_glue::KillOutcome),
+    /// The pane is gone and a NEW seat holds the name: a retire plus a
+    /// re-spawn replaced this one, and the successor is left alone.
+    Superseded,
 }
 
 /// The rollback's tail line from its verdict: success reads exactly as it
@@ -1450,17 +1507,22 @@ fn rollback_tail(verdict: &RollbackVerdict, pane: &str, name: &str, session: &st
         RollbackVerdict::SeatKept(why) => format!(
             "— spawn failed and was NOT fully rolled back; the pane is gone but the seat of '{name}' is kept ({why}) — remove it with 'retire {name}'."
         ),
-        RollbackVerdict::PaneKept(outcome) => {
+        RollbackVerdict::Superseded => {
+            format!("— spawn rolled back; a new seat holds '{name}' now and was left untouched.")
+        }
+        RollbackVerdict::PaneKept(outcome) | RollbackVerdict::UnstampedKept(outcome) => {
             let short = watchdog_glue::refusal_short(outcome, session, Some(name))
                 .unwrap_or_else(|| "it could not be removed".to_owned());
             let head = format!(
                 "— spawn failed and was NOT fully rolled back; pane {pane} could not be removed ({short})."
             );
-            if matches!(
-                outcome,
-                watchdog_glue::KillOutcome::WrongAgent(_)
-                    | watchdog_glue::KillOutcome::WrongSession(_)
-            ) {
+            if matches!(verdict, RollbackVerdict::UnstampedKept(_))
+                || matches!(
+                    outcome,
+                    watchdog_glue::KillOutcome::WrongAgent(_)
+                        | watchdog_glue::KillOutcome::WrongSession(_)
+                )
+            {
                 format!("{head} The seat is kept; remove the pane by hand, then 'retire {name}'.")
             } else {
                 format!(
@@ -1471,26 +1533,42 @@ fn rollback_tail(verdict: &RollbackVerdict, pane: &str, name: &str, session: &st
     }
 }
 
-/// Undo a spawn whose agent never launched: kill first, always drop the
-/// launch artifacts, and remove the seat only when the pane is gone.
+/// Undo a spawn whose agent never launched: kill first, drop the launch
+/// artifacts unless a successor holds the slot, and remove the seat only when
+/// the pane is gone — the incarnation `seat` proves, never a successor.
+/// `stamped: false` is the pane this spawn created and may not have stamped.
 fn rollback(
     dir: &Path,
     facts: &Facts,
-    slot: &str,
+    seat: &ProvenSeat,
     pane: &str,
     name: &str,
+    stamped: bool,
     err: &mut impl Write,
 ) -> io::Result<RollbackVerdict> {
-    let outcome =
-        watchdog_glue::kill_owned_pane(&facts.server, pane, &facts.session, Some(name), err)
-            .map_err(|why| std::io::Error::other(why.to_string()))?;
-    drop_launch_artifacts(dir, slot);
-    let verdict = if watchdog_glue::refusal_short(&outcome, &facts.session, Some(name)).is_some() {
-        RollbackVerdict::PaneKept(outcome)
-    } else if let Err(why) = crate::identity::remove_seat_slot(dir, name) {
-        RollbackVerdict::SeatKept(why)
+    let (server, session) = (&facts.server, facts.session.as_str());
+    let outcome = if stamped {
+        watchdog_glue::kill_owned_pane(server, pane, session, Some(name), err)
     } else {
-        RollbackVerdict::Done
+        watchdog_glue::kill_created_pane(server, pane, session, name, err)
+    }
+    .map_err(|why| std::io::Error::other(why.to_string()))?;
+    // The artifacts go in the proof's own hold: a successor's are its own.
+    let drop = || drop_launch_artifacts(dir, &seat.slot);
+    let refused = watchdog_glue::refusal_short(&outcome, session, Some(name)).is_some();
+    let removal = if refused {
+        crate::identity::clean_proven_slot(dir, name, seat, drop)
+    } else {
+        crate::identity::remove_proven_slot(dir, name, seat, drop)
+    };
+    let verdict = match (refused, removal) {
+        (true, _) if stamped => RollbackVerdict::PaneKept(outcome),
+        (true, _) => RollbackVerdict::UnstampedKept(outcome),
+        (false, Ok(_)) => RollbackVerdict::Done,
+        (false, Err(RemovalRefusal::Refused(why))) => RollbackVerdict::SeatKept(why),
+        (false, Err(RemovalRefusal::Moved { .. } | RemovalRefusal::Replaced { .. })) => {
+            RollbackVerdict::Superseded
+        }
     };
     facts.regenerate_manifest(dir);
     Ok(verdict)
@@ -1576,6 +1654,20 @@ fn retire_moved_failure(pane: &str, name: &str, proven: &str, now: &str) -> Stri
     }
 }
 
+/// The line when the proven slot holds a NEW seat under the name: a retire
+/// plus a re-spawn reused it. Like a moved name, it carries no `retire` advice.
+fn retire_replaced_failure(pane: &str, name: &str, slot: &str) -> String {
+    let replaced = format!(
+        "slot '{slot}' now holds a new seat '{name}', not the one this retire proved — \
+         nothing more was removed"
+    );
+    if pane.is_empty() {
+        format!("Error: {replaced}.")
+    } else {
+        format!("Error: pane {pane} was removed but {replaced}.")
+    }
+}
+
 /// Prove the seat, take its pane, and drop the slot the PROOF named: the
 /// retire ladder between the target's resolution and the record. `Ok(None)`
 /// means a refusal was written and the caller exits 1. The event's identity
@@ -1589,7 +1681,7 @@ fn retire_proven_seat(
     err: &mut impl Write,
 ) -> io::Result<Option<(String, Option<meta::RosterEntry>)>> {
     let proven = match crate::identity::prove_removable(dir, agent) {
-        Ok(slot) => slot,
+        Ok(seat) => seat,
         Err(why) => {
             writeln!(err, "Error: {why}")?;
             return Ok(None);
@@ -1598,13 +1690,14 @@ fn retire_proven_seat(
     let retired_identity = crate::session::read_meta(dir).ok().and_then(|meta| {
         meta.roster()
             .iter()
-            .find(|entry| entry.slot == proven)
+            .find(|entry| entry.slot == proven.slot)
             .cloned()
     });
     if !resolved.is_empty() && kill_retire_pane(facts, resolved, agent, err)? {
         return Ok(None);
     }
-    match crate::identity::remove_proven_slot(dir, agent, &proven) {
+    let drop = || drop_launch_artifacts(dir, &proven.slot);
+    match crate::identity::remove_proven_slot(dir, agent, &proven, drop) {
         Ok(slot) => Ok(Some((slot, retired_identity))),
         Err(crate::identity::RemovalRefusal::Moved { now, proven }) => {
             writeln!(
@@ -1612,6 +1705,10 @@ fn retire_proven_seat(
                 "{}",
                 retire_moved_failure(resolved, agent, &proven, &now)
             )?;
+            Ok(None)
+        }
+        Err(crate::identity::RemovalRefusal::Replaced { slot }) => {
+            writeln!(err, "{}", retire_replaced_failure(resolved, agent, &slot))?;
             Ok(None)
         }
         Err(crate::identity::RemovalRefusal::Refused(why)) => {
@@ -1679,7 +1776,6 @@ pub fn run_retire(
     else {
         return Ok(EXIT_FAILED);
     };
-    drop_launch_artifacts(dir, &slot);
     // No layout rebalance: the worker lived in its own window, so killing the
     // pane closed that window and the main window's layout was never touched.
     facts.regenerate_manifest(dir);
@@ -1770,6 +1866,24 @@ mod tests {
             !line.contains("retire scout"),
             "a moved name must not advise retiring it: {line}"
         );
+        assert_eq!(
+            super::retire_replaced_failure("%7", "scout", "spawned.0"),
+            "Error: pane %7 was removed but slot 'spawned.0' now holds a new seat 'scout', not the \
+             one this retire proved — nothing more was removed."
+        );
+        assert_eq!(
+            super::retire_replaced_failure("", "scout", "spawned.0"),
+            "Error: slot 'spawned.0' now holds a new seat 'scout', not the one this retire proved \
+             — nothing more was removed."
+        );
+    }
+
+    /// Spawned seat `spawned.0` as a proof with `launch_id`.
+    fn proof(launch_id: Option<&str>) -> crate::identity::ProvenSeat {
+        crate::identity::ProvenSeat {
+            slot: "spawned.0".to_owned(),
+            launch_id: launch_id.map(ToOwned::to_owned),
+        }
     }
 
     // #194 T4: a rollback over a refused kill keeps the seat but still drops
@@ -1797,7 +1911,7 @@ mod tests {
             local: None,
         };
         let mut err = Vec::new();
-        let verdict = super::rollback(&dir, &facts, "spawned.0", "%99", "scout", &mut err)
+        let verdict = super::rollback(&dir, &facts, &proof(None), "%99", "scout", true, &mut err)
             .expect("a verdict");
         assert!(
             matches!(verdict, super::RollbackVerdict::PaneKept(_)),
@@ -1819,6 +1933,48 @@ mod tests {
             "{tail}"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // A rollback removes the seat THIS spawn created, never a successor that a
+    // concurrent retire plus re-spawn landed on the same slot under the name.
+    #[test]
+    fn rollback_leaves_a_successor_on_the_same_slot_alone() {
+        let dir = std::path::PathBuf::from(format!("/tmp/ae-rollbacksucc.{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch dir");
+        let successor = "seat.spawned.0=scout\nlaunch_id.spawned.0=second\n";
+        std::fs::write(dir.join("meta"), successor).expect("a meta");
+        let artifacts = [
+            crate::run::started_marker(&dir, "spawned.0"),
+            crate::run::prompt_file(&dir, "spawned.0"),
+            dir.join("brief-retry.spawned.0.rec"),
+        ];
+        for artifact in &artifacts {
+            std::fs::write(artifact, "the successor's").expect("an artifact");
+        }
+        let facts = super::Facts {
+            session: "ours".to_owned(),
+            work_dir: String::new(),
+            origin: String::new(),
+            mode: String::new(),
+            main_pane: String::new(),
+            server: crate::inventory::ServerId::Selected(crate::meta::Selector::Socket(
+                dir.join("no-such-socket"),
+            )),
+            global: None,
+            local: None,
+        };
+        let (mut err, seat) = (Vec::new(), proof(Some("first")));
+        let verdict = super::rollback(&dir, &facts, &seat, "", "scout", true, &mut err);
+        let meta = std::fs::read_to_string(dir.join("meta")).unwrap_or_default();
+        let kept = artifacts.iter().all(|artifact| artifact.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(meta, successor, "{verdict:?}");
+        assert!(kept, "the successor's artifacts are its own");
+        assert!(
+            matches!(verdict, Ok(super::RollbackVerdict::Superseded)),
+            "{verdict:?}"
+        );
     }
 
     // #194 I4 + N-2: the tail names what the rollback left behind — never
@@ -1865,6 +2021,18 @@ mod tests {
                 RollbackVerdict::PaneKept(KillOutcome::WrongAgent(String::new())),
                 vec!["<unstamped>", "by hand"],
                 vec!["retry the removal"],
+            ),
+            (
+                "unstamped",
+                RollbackVerdict::UnstampedKept(KillOutcome::Unreadable),
+                vec!["NOT fully rolled back", "%9", "by hand"],
+                vec!["retry the removal"],
+            ),
+            (
+                "superseded",
+                RollbackVerdict::Superseded,
+                vec!["rolled back", "new seat holds 'scout'", "untouched"],
+                vec!["NOT", "'retire scout'"],
             ),
         ] {
             let tail = tail(&verdict);
@@ -2180,9 +2348,7 @@ mod tests {
             Some(target.as_path()),
             Some(state.as_path()),
             &rig.scratch,
-            &mut err,
         )
-        .expect("staged io")
         .expect("staged");
         // Sandbox pin: even an unexpected step-B launch scans here, never $HOME.
         let cxhome = rig.scratch.join("cxhome");
@@ -2261,9 +2427,7 @@ mod tests {
             Some(target.as_path()),
             Some(state.as_path()),
             &rig.scratch,
-            &mut err,
         )
-        .expect("staged io")
         .expect("staged");
         let id = crate::transport::observe_session_id(&rig.server(), &rig.session).expect("id");
         let _ = crate::transport::kill_session(&rig.server(), &id);
@@ -2356,9 +2520,7 @@ mod tests {
             Some(target.as_path()),
             Some(state.as_path()),
             &rig.scratch,
-            &mut err,
         )
-        .expect("staged io")
         .expect("staged");
         let scratch = std::fs::canonicalize(&rig.scratch).unwrap();
         std::fs::create_dir(scratch.join("\u{fffd}")).unwrap();
@@ -2418,9 +2580,7 @@ mod tests {
             Some(target.as_path()),
             Some(state.as_path()),
             &rig.scratch,
-            &mut err,
         )
-        .expect("staged io")
         .expect("staged");
         let other = rig.scratch.join("other");
         std::fs::create_dir(&other).unwrap();
@@ -2460,17 +2620,9 @@ mod tests {
             .to_vec();
         let snap = |name: &str| std::fs::read(rig.dir.join(name)).ok();
         let mut err = Vec::new();
-        let staged = super::record_spawned_seat(
-            &rig.dir,
-            &tail,
-            Timestamp::now(),
-            None,
-            None,
-            &rig.scratch,
-            &mut err,
-        )
-        .expect("staged io")
-        .expect("staged");
+        let staged =
+            super::record_spawned_seat(&rig.dir, &tail, Timestamp::now(), None, None, &rig.scratch)
+                .expect("staged");
         std::fs::write(rig.dir.join("workspace.md"), b"e10t1-manifest\n").expect("manifest");
         std::fs::write(rig.dir.join("events.jsonl"), b"e10t1-events\n").expect("events");
         // A->B: hostile row + session dir repointed at nothing.
@@ -2543,17 +2695,9 @@ mod tests {
             .to_vec();
         let snap = |name: &str| std::fs::read(rig.dir.join(name)).ok();
         let mut err = Vec::new();
-        let staged = super::record_spawned_seat(
-            &rig.dir,
-            &tail,
-            Timestamp::now(),
-            None,
-            None,
-            &rig.scratch,
-            &mut err,
-        )
-        .expect("staged io")
-        .expect("staged");
+        let staged =
+            super::record_spawned_seat(&rig.dir, &tail, Timestamp::now(), None, None, &rig.scratch)
+                .expect("staged");
         std::fs::write(rig.dir.join("workspace.md"), b"e10t2-manifest\n").expect("manifest");
         std::fs::write(rig.dir.join("events.jsonl"), b"e10t2-events\n").expect("events");
         // A->B: a valid row appears under a staged-Inherited seat — even
@@ -2645,9 +2789,7 @@ mod tests {
             Some(target.as_path()),
             Some(state.as_path()),
             &rig.scratch,
-            &mut err,
         )
-        .expect("staged io")
         .expect("staged");
         std::fs::write(rig.dir.join("workspace.md"), b"e10t3-manifest\n").expect("manifest");
         std::fs::write(rig.dir.join("events.jsonl"), b"e10t3-events\n").expect("events");
@@ -2814,6 +2956,7 @@ mod tests {
             tool: crate::tool::ToolKind::Grok,
             command: crate::config::IdentityConfig::resolved_snapshot("grok"),
             explicit: false,
+            launch_id: String::new(),
         };
         let held = crate::meta::SeatTarget {
             canonical: std::fs::canonicalize(&dir).expect("canon"),
@@ -2850,9 +2993,7 @@ mod tests {
             target,
             Some(state),
             state,
-            &mut err,
         )
-        .expect("staged io")
         .expect("staged");
         let (pane, _spelling, held) =
             super::start_spawned_pane(&rig.dir, &staged, "", Timestamp::now(), &mut out, &mut err)
@@ -2865,7 +3006,8 @@ mod tests {
             "scout",
             &staged.slot,
             &staged.argv.profile,
-        );
+        )
+        .expect("stamped");
         (rig, staged, held, pane)
     }
 
@@ -3146,17 +3288,9 @@ mod tests {
         let stamp = rig.dir.join(crate::store::LAUNCH_ATTEMPT);
         let before = panes();
         // MISSING leg: A stages, spelling repointed at nothing, B refuses.
-        let staged = super::record_spawned_seat(
-            &rig.dir,
-            &tail,
-            Timestamp::now(),
-            None,
-            Some(&root),
-            &root,
-            &mut err,
-        )
-        .expect("staged io")
-        .expect("staged");
+        let staged =
+            super::record_spawned_seat(&rig.dir, &tail, Timestamp::now(), None, Some(&root), &root)
+                .expect("staged");
         let gone = root.join("gone");
         assert!(!gone.exists(), "missing premise");
         let meta = std::fs::read_to_string(rig.dir.join("meta")).expect("meta");
@@ -3189,17 +3323,9 @@ mod tests {
             1,
         );
         std::fs::write(rig.dir.join("meta"), &restored).expect("restored meta");
-        let staged = super::record_spawned_seat(
-            &rig.dir,
-            &tail,
-            Timestamp::now(),
-            None,
-            Some(&root),
-            &root,
-            &mut err,
-        )
-        .expect("staged io")
-        .expect("staged");
+        let staged =
+            super::record_spawned_seat(&rig.dir, &tail, Timestamp::now(), None, Some(&root), &root)
+                .expect("staged");
         assert!(file.is_file(), "file premise");
         let meta = std::fs::read_to_string(rig.dir.join("meta")).expect("meta");
         let repointed = meta.replacen(
@@ -3218,17 +3344,9 @@ mod tests {
         );
         assert_eq!(panes(), before, "no new window");
         // DENIED leg: unwritable session dir, cleanup fails, seat stays, line stays uncertain.
-        let staged = super::record_spawned_seat(
-            &rig.dir,
-            &tail,
-            Timestamp::now(),
-            None,
-            Some(&root),
-            &root,
-            &mut err,
-        )
-        .expect("staged io")
-        .expect("staged");
+        let staged =
+            super::record_spawned_seat(&rig.dir, &tail, Timestamp::now(), None, Some(&root), &root)
+                .expect("staged");
         let pre_bytes = std::fs::read(rig.dir.join("meta")).expect("pre bytes");
         let events_before = std::fs::read(rig.dir.join("events.jsonl")).ok();
         let dir_meta = std::fs::metadata(&rig.dir).expect("mode");
@@ -3313,17 +3431,9 @@ mod tests {
             .map(str::to_owned)
             .to_vec();
         let (mut out, mut err) = (Vec::new(), Vec::new());
-        let staged = super::record_spawned_seat(
-            &rig.dir,
-            &tail,
-            Timestamp::now(),
-            None,
-            Some(&root),
-            &root,
-            &mut err,
-        )
-        .expect("staged io")
-        .expect("staged");
+        let staged =
+            super::record_spawned_seat(&rig.dir, &tail, Timestamp::now(), None, Some(&root), &root)
+                .expect("staged");
         assert!(!rig.meta().contains("work_dir.spawned.0="), "no seat row");
         assert_eq!(staged.session.work_dir, link_spelling, "A keeps link");
         let before = crate::transport::observe_panes(&rig.server(), &rig.session).expect("panes");

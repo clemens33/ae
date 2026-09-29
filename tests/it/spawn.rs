@@ -1022,6 +1022,54 @@ fn a_spawn_that_cannot_store_its_task_rolls_the_whole_thing_back() {
     );
 }
 
+/// A pane tmux would not stamp is findable by no name, so no retire could
+/// take it: the spawn removes the pane it created and names the stamp. When
+/// that kill is refused too, the seat stays and the remedy is by hand. The
+/// refusals are tmux's own, set on this private server as command aliases.
+#[test]
+fn a_spawn_whose_identity_stamp_fails_removes_the_pane_it_created() {
+    if !tmux_present(&super::cli::OwnedScratch::root("sp", "probe-stamp")) {
+        return;
+    }
+    let rig = Rig::new("stamp");
+    let windows_before = rig.windows().len();
+    // `set`, not `set-option`: an alias keys on the word typed, so the short
+    // spelling still reaches the command once `set-option` is refused.
+    let refuse = |slot: &str, verb: &str| {
+        let alias = format!("command-alias[{slot}]");
+        assert!(
+            rig.tmux(&["set", "-s", &alias, &format!("{verb}=nosuchcommand")])
+                .0
+        );
+    };
+    refuse("100", "set-option");
+    let (code, _, stderr) = rig.run(ae::cli::SPAWN, &["bare", "--using", "fake"]);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(
+        stderr.contains("could not be stamped (@ae_agent"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("spawn rolled back"), "{stderr}");
+    assert!(!rig.meta().contains("bare"), "{}", rig.meta());
+    assert_eq!(rig.windows().len(), windows_before, "{:?}", rig.windows());
+
+    refuse("101", "kill-pane");
+    let (code, _, stderr) = rig.run(ae::cli::SPAWN, &["kept", "--using", "fake"]);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(
+        stderr.contains("kill-pane failed and the pane is still listed"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("remove the pane by hand"), "{stderr}");
+    assert!(rig.meta().contains("seat.spawned.0=kept"), "{}", rig.meta());
+    assert_eq!(
+        rig.windows().len(),
+        windows_before + 1,
+        "{:?}",
+        rig.windows()
+    );
+}
+
 /// The readiness proof is taken BEFORE the target lock, and the wait for that
 /// lock can be the whole timeout. A pane that leaves its composed box in that
 /// window must REFUSE the brief: an unmodelled paste has no submit proof, so
