@@ -1690,6 +1690,10 @@ the session is killed. `n` or Escape changes nothing. With no attached client, a
 with `nobody attached to confirm; pass -y`. Add `-y` only when the caller has already been
 authorized to skip human confirmation.
 
+When no session can be resolved from where you typed it, `ae stop` names the cause (not
+inside tmux, no pane id, a pane tmux cannot read, or a pane outside any recorded ae session)
+on one line before the usage; from a `run-shell` job, pass `--pane=#{pane_id}`.
+
 ### Stopping every session (`ae stop all`)
 
 `ae stop all` stops every session **ae's own metadata owns**, using each

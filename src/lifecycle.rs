@@ -285,7 +285,8 @@ pub(crate) fn run_stop(
         }
     }
     let caller_server = crate::doors::caller_server();
-    let caller_session = recorded_caller_session(root, caller_server.as_ref(), &pane);
+    let resolution = caller_resolution(root, caller_server.as_ref(), &pane);
+    let caller_session = resolution.as_ref().ok().cloned();
     if target.is_empty() {
         if let Some(own) = &caller_session {
             target.clone_from(own);
@@ -298,6 +299,13 @@ pub(crate) fn run_stop(
         }
     }
     if target.is_empty() {
+        if let Err(gap) = &resolution {
+            writeln!(
+                err,
+                "Error: with no session name, ae stop {NEEDS_PANE}; {}.",
+                gap.cause(&pane)
+            )?;
+        }
         writeln!(err, "{STOP_USAGE}")?;
         return Ok(EXIT_USAGE);
     }
@@ -901,19 +909,73 @@ pub(crate) fn recorded_caller_session(
     caller_server: Option<&ServerId>,
     pane: &str,
 ) -> Option<String> {
-    let caller_server = caller_server?;
+    caller_resolution(root, caller_server, pane).ok()
+}
+
+/// What a route with no session name needs, said once for every route.
+const NEEDS_PANE: &str = "needs a pane ae can resolve (--pane <id>)";
+/// How a pane that is not one of a recorded ae session's own reads.
+const NOT_AN_AGENT_PANE: &str = "not an ae agent pane";
+
+/// Why the caller's own session could not be recorded — the one place each
+/// reading of [`caller_resolution`] is worded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CallerGap {
+    /// `$TMUX` is unset or names no absolute socket.
+    NotInTmux,
+    /// No pane id: `$TMUX_PANE` is unset and no `--pane` was given.
+    NoPane,
+    /// tmux reported no owner for the pane.
+    PaneUnreadable,
+    /// The pane's session has an unusable name or no recorded tmux server.
+    NotAnAeSession(String),
+    /// The session's recorded tmux server is not the caller's.
+    OtherServer(String),
+}
+
+impl CallerGap {
+    fn cause(&self, pane: &str) -> String {
+        match self {
+            Self::NotInTmux => {
+                "this process is not inside tmux ($TMUX is unset or names no socket)".to_owned()
+            }
+            Self::NoPane => "this process has no pane id ($TMUX_PANE is unset)".to_owned(),
+            Self::PaneUnreadable => format!("tmux did not report pane {pane:?}"),
+            Self::NotAnAeSession(session) => format!(
+                "pane {pane:?} is {NOT_AN_AGENT_PANE} (session {session:?} has no ae record)"
+            ),
+            Self::OtherServer(session) => format!(
+                "pane {pane:?} is {NOT_AN_AGENT_PANE} (session {session:?} is on a different tmux server than the one ae recorded)"
+            ),
+        }
+    }
+}
+
+/// [`recorded_caller_session`], naming the reading that refused.
+fn caller_resolution(
+    root: &Path,
+    caller_server: Option<&ServerId>,
+    pane: &str,
+) -> Result<String, CallerGap> {
+    let caller_server = caller_server.ok_or(CallerGap::NotInTmux)?;
     if pane.is_empty() {
-        return None;
+        return Err(CallerGap::NoPane);
     }
-    let owner = transport::observe_pane_owner(caller_server, pane)?;
-    if !name_is_usable(root, &owner.session) {
-        return None;
-    }
-    let recorded = recorded_server(root, &owner.session)?;
+    let owner =
+        transport::observe_pane_owner(caller_server, pane).ok_or(CallerGap::PaneUnreadable)?;
+    let session = owner.session;
+    let recorded = name_is_usable(root, &session)
+        .then(|| recorded_server(root, &session))
+        .flatten();
+    let Some(recorded) = recorded else {
+        return Err(CallerGap::NotAnAeSession(session));
+    };
     let mut sockets = crate::SocketPaths::asking(transport::observe_socket_path);
-    sockets
-        .proven_same(caller_server, &recorded)
-        .then_some(owner.session)
+    if sockets.proven_same(caller_server, &recorded) {
+        Ok(session)
+    } else {
+        Err(CallerGap::OtherServer(session))
+    }
 }
 
 /// `nohup <this binary> _stop --supervise <name>` — the ONE shape this module
@@ -1105,7 +1167,7 @@ fn self_target(caller: Option<&str>, err: &mut impl Write) -> io::Result<Option<
     }
     writeln!(
         err,
-        "Error: --self with no session name needs a pane ae can resolve (--pane <id>); this one is not an ae agent pane."
+        "Error: --self with no session name {NEEDS_PANE}; this one is {NOT_AN_AGENT_PANE}."
     )?;
     Ok(None)
 }

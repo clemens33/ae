@@ -30,6 +30,15 @@ use super::phase2::run_tmux;
 
 const UUID: &str = "33333333-3333-3333-3333-333333333333";
 
+/// What a bare `stop` prints when no caller resolves: the cause ae found on one
+/// line, then the unchanged usage.
+fn stop_gap(cause: &str) -> String {
+    format!(
+        "Error: with no session name, ae stop needs a pane ae can resolve (--pane <id>); {cause}.\n\
+         Usage: _stop <session-name|all> [-y] [--self]\n"
+    )
+}
+
 /// One isolated `AE_HOME` with its own tmux server and one live local session.
 struct Rig {
     home: PathBuf,
@@ -1206,7 +1215,13 @@ fn a_bare_stop_from_a_foreign_namesake_never_targets_the_recorded_session() {
     let (code, out, err) = rig.run_from(&["stop", "-y"], Some((&foreign.socket, &foreign.pane)));
 
     assert_eq!(code, Some(2), "stdout: {out}\nstderr: {err}");
-    assert_eq!(err, "Usage: _stop <session-name|all> [-y] [--self]\n");
+    assert_eq!(
+        err,
+        stop_gap(&format!(
+            "pane {:?} is not an ae agent pane (session {:?} is on a different tmux server than the one ae recorded)",
+            foreign.pane, rig.name
+        ))
+    );
     assert!(rig.session_is_live(), "the recorded session stays live");
     assert!(exists(&rig.dir), "the recorded state stays intact");
 }
@@ -2284,8 +2299,52 @@ fn a_bare_stop_from_a_non_ae_tmux_pane_has_no_inferred_target() {
     let (code, out, err) = rig.run_inside(pane, &["stop"]);
 
     assert_eq!(code, Some(2), "stdout: {out}\nstderr: {err}");
-    assert_eq!(err, "Usage: _stop <session-name|all> [-y] [--self]\n");
+    assert_eq!(
+        err,
+        stop_gap(&format!(
+            "pane {pane:?} is not an ae agent pane (session \"foreign\" has no ae record)"
+        ))
+    );
     assert_eq!(rig.sessions(), vec!["foreign"], "nothing was killed");
+}
+
+#[test]
+fn a_bare_stop_outside_tmux_names_that_before_the_usage() {
+    let rig = AmbientRig::new("stopnotmux");
+
+    let (code, out, err) = rig.run(&["stop"]);
+
+    assert_eq!(code, Some(2), "stdout: {out}\nstderr: {err}");
+    assert_eq!(
+        err,
+        stop_gap("this process is not inside tmux ($TMUX is unset or names no socket)")
+    );
+}
+
+#[test]
+fn a_bare_stop_with_no_pane_id_names_that_before_the_usage() {
+    let rig = AmbientRig::new("stopnopane");
+    assert!(rig.tmux(&["new-session", "-d", "-s", "foreign", "sh"]).0);
+
+    let (code, out, err) = rig.run_inside("", &["stop"]);
+
+    assert_eq!(code, Some(2), "stdout: {out}\nstderr: {err}");
+    assert_eq!(
+        err,
+        stop_gap("this process has no pane id ($TMUX_PANE is unset)")
+    );
+    assert_eq!(rig.sessions(), vec!["foreign"], "nothing was killed");
+}
+
+#[test]
+fn a_bare_stop_from_a_pane_tmux_cannot_read_names_that_before_the_usage() {
+    let rig = Rig::new("stopunread");
+
+    let (code, out, err) = rig.run_from(&["stop"], Some((&rig.sock, "%9999")));
+
+    assert_eq!(code, Some(2), "stdout: {out}\nstderr: {err}");
+    assert_eq!(err, stop_gap("tmux did not report pane \"%9999\""));
+    assert!(rig.session_is_live(), "the recorded session stays live");
 }
 
 /// B2: an unresolvable server record must not be answered with the ambient one.
