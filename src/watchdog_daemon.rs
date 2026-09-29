@@ -13779,7 +13779,7 @@ mod tests {
         let meta = Path::new("/home/x/.ae/sessions/demo");
         assert_eq!(
             wait_challenge_text(None, meta, 300, 0, 2, WaitState::Blocked, false),
-            "Continue the assigned work now. Do not re-plan or ask unless blocked. Blocked was declared 5m ago; confirmation 1 of 2. Prove the wait still holds: name the external blocker, who owns the unblock, what you last checked and when. Blocker gone: declare working and finish assigned work NOW. Otherwise re-declare blocked with current reason and proof. Then declare state: /home/x/.ae/sessions/demo/state <waiting-user|waiting-agent|blocked|done> \"<reason>\""
+            "Continue working; do not re-plan or ask unless blocked. Blocked was declared 5m ago; confirmation 1 of 2. Prove the wait still holds: name the blocker, its owner, your last check and when. Blocker gone: declare working and finish assigned work NOW. Else re-declare blocked with current reason and proof. Declare state: /home/x/.ae/sessions/demo/state <waiting-user|waiting-agent|blocked|done> \"<reason>\""
         );
         assert_eq!(
             wait_challenge_text(
@@ -13791,7 +13791,7 @@ mod tests {
                 WaitState::WaitingAgent,
                 true
             ),
-            "Session goal: ship P4.1. Continue the assigned work now. Do not re-plan or ask unless blocked. Waiting-agent was declared 10m ago; confirmation 2 of 2. It now reads as blocked: past the waiting ceiling. Prove the wait still holds: name the agent, the result you need, when you last chased them. Unblocked: declare working and finish assigned work NOW. Otherwise re-declare waiting-agent with current reason and proof. Then declare state: /home/x/.ae/sessions/demo/state <waiting-user|waiting-agent|blocked|done> \"<reason>\""
+            "Session goal: ship P4.1. Continue working; do not re-plan or ask unless blocked. Waiting-agent was declared 10m ago; confirmation 2 of 2. Now reads blocked: past the waiting ceiling. Prove the wait still holds: name the agent, the result, your last chase. Unblocked: declare working and finish assigned work NOW. Else re-declare waiting-agent with current reason and proof. Declare state: /home/x/.ae/sessions/demo/state <waiting-user|waiting-agent|blocked|done> \"<reason>\""
         );
     }
 
@@ -13836,19 +13836,19 @@ mod tests {
         let meta = Path::new("/home/x/.ae/sessions/demo");
         assert_eq!(
             nudge_text(None, meta, None),
-            "Continue the assigned work now. Do not re-plan or ask unless blocked. Then declare state: /home/x/.ae/sessions/demo/state <waiting-user|waiting-agent|blocked|done> \"<reason>\""
+            "Continue working; do not re-plan or ask unless blocked. Declare state: /home/x/.ae/sessions/demo/state <waiting-user|waiting-agent|blocked|done> \"<reason>\""
         );
         assert_eq!(
             idle_nudge_text(Some("ship P4.1"), meta, None),
-            "Session goal: ship P4.1. You look idle. Continue the assigned work now. Do not re-plan or ask unless blocked. Then declare state: /home/x/.ae/sessions/demo/state <waiting-user|waiting-agent|blocked|done> \"<reason>\""
+            "Session goal: ship P4.1. You look idle. Continue working; do not re-plan or ask unless blocked. Declare state: /home/x/.ae/sessions/demo/state <waiting-user|waiting-agent|blocked|done> \"<reason>\""
         );
         assert_eq!(
             idle_nudge_text_waiting(None, meta, "waiting on 1 request", None),
-            "You look idle. Continue the assigned work now. Do not re-plan or ask unless blocked. Then declare state: /home/x/.ae/sessions/demo/state <waiting-user|waiting-agent|blocked|done> \"<reason>\" ae still shows you waiting on 1 request — chase them, or declare state."
+            "You look idle. Continue working; do not re-plan or ask unless blocked. Declare state: /home/x/.ae/sessions/demo/state <waiting-user|waiting-agent|blocked|done> \"<reason>\" ae still shows you waiting on 1 request — chase them, or declare state."
         );
         assert_eq!(
             done_challenge_text(Some("ship P4.1"), meta, 300, 0, 2),
-            "Session goal: ship P4.1. Continue the assigned work now. Do not re-plan or ask unless blocked. Done was declared 5m ago; confirmation 1 of 2. Re-read your brief and goal. State how each deliverable was verified. Anything unverified: declare working and finish assigned work NOW. Worker awaiting owner review: invent no scope; do not commit or edit solely for this challenge. Otherwise re-declare done with completed work and proof, including any held review. This is self-attestation, not owner approval. Then declare state: /home/x/.ae/sessions/demo/state <waiting-user|waiting-agent|blocked|done> \"<reason>\""
+            "Session goal: ship P4.1. Continue working; do not re-plan or ask unless blocked. Done was declared 5m ago; confirmation 1 of 2. State how each deliverable was verified. Anything unverified: declare working and finish assigned work NOW. Awaiting owner review: invent no scope; do not commit or edit solely for this challenge. Else re-declare done with work and proof, held review included. Self-attestation, not owner approval. Declare state: /home/x/.ae/sessions/demo/state <waiting-user|waiting-agent|blocked|done> \"<reason>\""
         );
         // The #172 note's insertion point, byte-exact: the invitation's own
         // leading space separates the sentence when no note rides, and the
@@ -13860,11 +13860,29 @@ mod tests {
         };
         assert_eq!(
             super::nudge_words(None, meta, None, "idle 449m", None, Some(ended)).0,
-            "Continue the assigned work now. Do not re-plan or ask unless blocked. Input in your pane ended your waiting-user 5m ago (a tmux client viewing it gave a keypress, click, scroll or switch — not proof of an answer). If you are still waiting, re-declare waiting-user with the current reason. Then declare state: /home/x/.ae/sessions/demo/state <waiting-user|waiting-agent|blocked|done> \"<reason>\""
+            "Continue working; do not re-plan or ask unless blocked. Client input in your pane ended your waiting-user 5m ago (keypress, click, scroll or switch — not proof of an answer). Still waiting: re-declare waiting-user with the current reason. Declare state: /home/x/.ae/sessions/demo/state <waiting-user|waiting-agent|blocked|done> \"<reason>\""
         );
         assert_eq!(
             super::nudge_words(None, meta, Some(300), "idle 5m", None, Some(ended)).0,
-            "You look idle. Continue the assigned work now. Do not re-plan or ask unless blocked. Input in your pane ended your waiting-user 5m ago (a tmux client viewing it gave a keypress, click, scroll or switch — not proof of an answer). If you are still waiting, re-declare waiting-user with the current reason. Then declare state: /home/x/.ae/sessions/demo/state <waiting-user|waiting-agent|blocked|done> \"<reason>\""
+            "You look idle. Continue working; do not re-plan or ask unless blocked. Client input in your pane ended your waiting-user 5m ago (keypress, click, scroll or switch — not proof of an answer). Still waiting: re-declare waiting-user with the current reason. Declare state: /home/x/.ae/sessions/demo/state <waiting-user|waiting-agent|blocked|done> \"<reason>\""
+        );
+    }
+
+    #[test]
+    fn a_long_goal_is_clipped_to_one_short_line() {
+        let meta = Path::new("/home/x/.ae/sessions/demo");
+        let goal = "g".repeat(300);
+        let text = super::nudge_text(Some(&goal), meta, None);
+        let clipped = format!("{}…", "g".repeat(79));
+        assert!(
+            text.starts_with(&format!("Session goal: {clipped} ")),
+            "the goal is clipped at 80 cells with no added period: {text}"
+        );
+        assert!(!text.contains(&goal), "the full goal is gone: {text}");
+        let short = super::nudge_text(Some("ship P4.1"), meta, None);
+        assert!(
+            short.starts_with("Session goal: ship P4.1. "),
+            "a short goal keeps its period form: {short}"
         );
     }
 
@@ -13917,19 +13935,18 @@ mod tests {
                     "{state}/{label}: the text names the next step: {text}"
                 );
                 assert!(
-                    text.contains(
-                        "a tmux client viewing it gave a keypress, click, scroll or switch"
-                    ),
-                    "{state}/{label}: the text names the input: {text}"
+                    text.contains("Client input in your pane")
+                        && text.contains("keypress, click, scroll or switch"),
+                    "{state}/{label}: the text names the client input: {text}"
                 );
                 assert!(
                     !text.contains("answered") && !text.contains("the human"),
                     "{state}/{label}: input is never called an answer: {text}"
                 );
                 let note_at = text
-                    .find("Input in your pane ended your")
+                    .find("Client input in your pane ended your")
                     .expect("the note");
-                let invite_at = text.find("Then declare state:").expect("the invitation");
+                let invite_at = text.find("Declare state:").expect("the invitation");
                 let sentence_at = text
                     .find("Do not re-plan or ask unless blocked.")
                     .expect("the nudge sentence");

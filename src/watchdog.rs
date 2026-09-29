@@ -4094,6 +4094,33 @@ tail line
         }
     }
 
+    /// W1: a pane may still show the pre-clip wording after the upgrade — the
+    /// old sentence and invitation stay footprints, goal or no goal.
+    #[test]
+    fn a_pre_w1_nudge_is_still_a_footprint() {
+        for text in [
+            "Session goal: ship P4.1. Continue the assigned work now. Do not re-plan or ask unless blocked. Then declare state: /m/state <waiting-user|waiting-agent|blocked|done> \"<reason>\"",
+            "Continue the assigned work now. Do not re-plan or ask unless blocked. Then declare state: /m/state <waiting-user|waiting-agent|blocked|done> \"<reason>\"",
+        ] {
+            assert!(raw_nudge(text), "the old spelling is a footprint: {text}");
+            assert_eq!(quiet_filter(text), "", "the old spelling is stripped");
+        }
+    }
+
+    /// W1: a clipped goal ends in `… ` with no period, so the matcher splits
+    /// there too — while a clipped lookalike with no sentence stays output.
+    #[test]
+    fn a_clipped_goal_nudge_is_a_footprint() {
+        use crate::watchdog_daemon::nudge_text;
+        let meta = std::path::Path::new("/m");
+        let text = nudge_text(Some(&"g".repeat(300)), meta, None);
+        assert!(text.contains('…'), "the goal is really clipped: {text}");
+        assert!(raw_nudge(&text), "the clipped nudge is a footprint: {text}");
+        assert_eq!(quiet_filter(&text), "", "the clipped nudge is stripped");
+        let lookalike = format!("Session goal: clipped… not a sentence /x{NUDGE_TAIL}");
+        assert!(!raw_nudge(&lookalike), "{lookalike:?} is not a raw nudge");
+    }
+
     /// #174: every nudge the watchdog delivers is a footprint in its raw
     /// one-line form — all five generators, goal and no goal, with and without
     /// the #172 note, and the outstanding-own-work clause with an arbitrary
