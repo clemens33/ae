@@ -2358,11 +2358,10 @@ fn workspace_manifest_lists_no_monitor_panes() {
     let (code, stdout, stderr) = rig.launch(&["--local", "lnmonitors"]);
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
     let live = rig.panes("lnmonitors");
-    let main_pane = live
-        .iter()
-        .find(|(_, slot, _)| slot == "main")
-        .map(|(pane, _, _)| pane.clone())
-        .unwrap_or_else(|| panic!("the lead pane: {live:?}"));
+    let main_pane = live.iter().find(|(_, slot, _)| slot == "main").map_or_else(
+        || panic!("the lead pane: {live:?}"),
+        |(pane, _, _)| pane.clone(),
+    );
     assert!(
         live.iter().any(|(_, _, agent)| agent == "_events"),
         "the launch created its events monitor pane: {live:?}"
