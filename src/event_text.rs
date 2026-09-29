@@ -328,7 +328,7 @@ pub(crate) fn sanitize_menu_text(text: &str) -> String {
     clean
 }
 
-/// The crate's one menu-text cutter: `clean` bounded to `max` cells. Both
+/// The crate's one menu-text cutter: `clean` bounded to `max` cells. All
 /// public projectors delegate here, and so does the dialogs' column aligner;
 /// a second cutter is a review, pinned beside the dialog tests.
 #[must_use]
@@ -386,6 +386,15 @@ pub fn display_column(text: &str, max: usize) -> String {
     clip_to_width(&sanitize_menu_text(text), max, Cut::TrailingEllipsis)
 }
 
+/// The head-keeping cut for prose whose own bytes must survive: an
+/// over-budget value keeps its head and ends in `…`, like [`display_column`]
+/// but without the menu alphabet — a session goal in a nudge body is pasted
+/// text, not a terminal cell.
+#[must_use]
+pub fn clip_head(text: &str, max: usize) -> String {
+    clip_to_width(text, max, Cut::TrailingEllipsis)
+}
+
 /// Skip one escape sequence after its `\u{1b}` was folded to a `?`: a CSI runs
 /// to its final byte, an OSC to BEL or ST, and anything else loses its single
 /// introducer.
@@ -415,8 +424,9 @@ fn consume_escape(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
 #[cfg(test)]
 mod tests {
     use super::{
-        Cut, char_count, char_prefix, char_slice, clip_to_width, display_cell, display_column,
-        event_line, extract, last_records, pad_left_aligned, read_lines, records, reversed,
+        Cut, char_count, char_prefix, char_slice, clip_head, clip_to_width, display_cell,
+        display_column, event_line, extract, last_records, pad_left_aligned, read_lines, records,
+        reversed,
     };
 
     fn padded(field: &[u8], width: usize) -> Vec<u8> {
@@ -603,6 +613,16 @@ mod tests {
         assert_eq!(display_column("abcdefghij", 0), "");
         assert_eq!(display_column("\u{1b}[31mab", 20), "?ab");
         assert_eq!(display_column("中", 20), "?");
+    }
+
+    /// The prose projector: same one cutter, head kept, `…` marks the cut —
+    /// but the caller's own bytes survive, so a goal reads back verbatim.
+    #[test]
+    fn clip_head_keeps_the_head_and_the_callers_bytes() {
+        assert_eq!(clip_head("abcdefghij", 10), "abcdefghij");
+        assert_eq!(clip_head("abcdefghij", 7), "abcdef…");
+        assert_eq!(clip_head("Grüße ◆ header", 20), "Grüße ◆ header");
+        assert_eq!(clip_head("Grüße ◆ header", 8), "Grüße ◆…");
     }
 
     /// The one cutter counts characters, so the dialog's own `—` joiner —

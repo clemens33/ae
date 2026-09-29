@@ -1395,11 +1395,7 @@ const GOAL_CLIP_WIDTH: usize = 80;
 /// [`GOAL_CLIP_WIDTH`] cells ending in the cutter's mark with no added period.
 fn goal_prefix(goal: Option<&str>) -> String {
     goal.map_or_else(String::new, |goal| {
-        let clipped = crate::event_text::clip_to_width(
-            goal,
-            GOAL_CLIP_WIDTH,
-            crate::event_text::Cut::TrailingEllipsis,
-        );
+        let clipped = crate::event_text::clip_head(goal, GOAL_CLIP_WIDTH);
         if clipped == goal {
             format!("{NUDGE_GOAL_PREFIX}{goal}. ")
         } else {
@@ -13903,6 +13899,22 @@ mod tests {
         assert!(
             short.starts_with("Session goal: ship P4.1. "),
             "a short goal keeps its period form: {short}"
+        );
+        // Umlaut + wide char: clipped at a char boundary, 79 cells plus the mark.
+        let wide = "Grüße ◆ ".repeat(40);
+        let wide_text = super::nudge_text(Some(&wide), meta, None);
+        let rest = wide_text
+            .strip_prefix("Session goal: ")
+            .expect("the goal prefix");
+        let (clipped, _) = rest.split_once('…').expect("the clip mark");
+        assert_eq!(
+            clipped.chars().count(),
+            79,
+            "79 cells of goal plus the mark: {wide_text}"
+        );
+        assert!(
+            rest.starts_with("Grüße ◆ Grüße"),
+            "the kept bytes read back verbatim: {wide_text}"
         );
     }
 
