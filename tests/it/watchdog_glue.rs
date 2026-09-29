@@ -173,6 +173,19 @@ fn watch_until(
     session: &str,
     done: impl Fn() -> bool,
 ) -> bool {
+    watch_until_budget(meta_dir, socket, scratch, session, BUDGET, done)
+}
+
+/// [`watch_until`] with a caller-chosen budget; only arms whose evidence needs
+/// more than [`BUDGET`] pass anything else.
+fn watch_until_budget(
+    meta_dir: &Path,
+    socket: &Path,
+    scratch: &Path,
+    session: &str,
+    budget: Duration,
+    done: impl Fn() -> bool,
+) -> bool {
     let meta_dir = meta_dir.to_path_buf();
     let daemon = std::thread::spawn(move || {
         let mut out = Vec::new();
@@ -180,7 +193,7 @@ fn watch_until(
         let code = run(&meta_dir, quick(), &mut out, &mut err);
         (code, String::from_utf8_lossy(&out).into_owned())
     });
-    let deadline = Instant::now() + BUDGET;
+    let deadline = Instant::now() + budget;
     let mut satisfied = false;
     while Instant::now() < deadline {
         if done() {
@@ -1017,6 +1030,11 @@ fn leaving_the_usage_limit_runs_exactly_one_quota_pass() {
     stop_watchdog(&mut child, &socket, &scratch, "limit");
 }
 
+/// How long the nudge arm waits for its evidence. Daemon startup plus the
+/// seed-then-nudge cycles can outlast the file-wide [`BUDGET`] when another
+/// test lane runs beside this one, so this arm alone waits twice as long.
+const NUDGE_BUDGET: Duration = Duration::from_secs(40);
+
 #[test]
 fn a_stale_pane_is_nudged_by_a_pane_running_only_the_core() {
     // THE CUT'S HEADLINE.
@@ -1057,7 +1075,7 @@ fn a_stale_pane_is_nudged_by_a_pane_running_only_the_core() {
     );
 
     let delivered = meta_dir.join("delivered");
-    let reached = watch_until(&meta_dir, &socket, &scratch, "nudged", || {
+    let reached = watch_until_budget(&meta_dir, &socket, &scratch, "nudged", NUDGE_BUDGET, || {
         fs::read_to_string(&delivered).is_ok_and(|text| text.contains("lead"))
     });
     let receipt = fs::read_to_string(&delivered).unwrap_or_default();
