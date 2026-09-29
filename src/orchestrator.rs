@@ -476,8 +476,8 @@ pub(crate) fn run_resume(
     // Success is DELIBERATELY silent. This continuation runs as a background
     // tmux `run-shell` job (the picker row's menu command), and tmux paints
     // such a job's output into VIEW MODE over the best session's active pane —
-    // after a resume, the resumed session itself, until any key dismisses it
-    // (#207). The launcher's success text is dropped for two reasons: the
+    // after a resume, the resumed session itself, until any key dismisses it.
+    // The launcher's success text is dropped for two reasons: the
     // `Resuming session …` narration is meant for a terminal the human is
     // watching, and the attach hint names a route this caller does not take,
     // because it hands the captured client to the resumed session itself. A
@@ -526,7 +526,7 @@ pub(crate) fn run_resume(
 
 /// Echo the launcher's whole captured report before a refusal is reported.
 ///
-/// Success never calls this: a picker resume is silent on success (#207), and
+/// Success never calls this: a picker resume is silent on success, and
 /// this is the one gate that keeps every failure path byte-identical to what
 /// the route reported before the silence.
 fn echo_launch(
@@ -1940,7 +1940,7 @@ mod tests {
 
     #[test]
     fn a_refusal_echoes_the_launchers_whole_captured_report() {
-        // Success never calls this (#207: a picker resume is silent), so this
+        // Success never calls this (a picker resume is silent), so this
         // helper is the one gate that keeps a failed launch's captured report
         // in front of the human. Swallowing either stream here would silently
         // drop the only text a refused row has.

@@ -1237,7 +1237,7 @@ fn a_stopped_row_resumes_its_session_for_the_clicking_client_and_leaves_no_view_
         "the other client must not move: {clients}"
     );
 
-    // #207: the continuation captures the launcher's stdout and stderr, and
+    // The continuation captures the launcher's stdout and stderr, and
     // tmux paints a background `run-shell` job's output into VIEW MODE over
     // the best session's active pane — after a resume that IS the resumed
     // session, so the human met `Resuming session …` and the attach hint,
