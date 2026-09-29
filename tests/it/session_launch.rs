@@ -2345,7 +2345,7 @@ fn workspace_manifest_names_the_effective_seat() {
     );
 }
 
-/// #73: the roster lists SEATS, never monitor panes. A pane enters the table
+/// The roster lists SEATS, never monitor panes. A pane enters the table
 /// only when its `@ae_agent` stamp is a valid agent name — the ONE grammar
 /// `config::is_agent_name`, which forbids the leading `_` the `_watchdog` and
 /// `_events` monitor panes carry — while every real seat row is untouched.
