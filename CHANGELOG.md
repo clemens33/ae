@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.187] - 2026-09-29
+- Hide Claude-wrapped ae turns in the board.
+- Remove only the proven seat incarnation and roll back a spawn whose identity stamp fails
+- Document the proven-incarnation removal in the kill invariant
+- Pin that a created-pane kill still refuses a foreign stamp and an owned kill an unstamped pane
+
 ## [v2026.9.186] - 2026-09-29
 - Silence the picker resume continuation on success
 - Pin the refusal echo a picker resume still makes
