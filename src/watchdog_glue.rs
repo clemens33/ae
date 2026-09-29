@@ -749,8 +749,6 @@ mod tests {
         }
     }
 
-    // An empty listing leaves no note; an unlisted one and every found pane,
-    // taken or refused, are named.
     // Only an unlisted scan with no legacy registration reads as nothing
     // found; a registration or a listing keeps the scan as it is.
     #[test]
@@ -772,6 +770,8 @@ mod tests {
         }
     }
 
+    // An empty listing leaves no note; an unlisted one and every found pane,
+    // taken or refused, are named.
     #[test]
     fn a_legacy_reap_note_names_what_the_reap_found_or_could_not_list() {
         use super::{LegacyReap, LegacyScan, legacy_reap_note};
