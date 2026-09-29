@@ -400,7 +400,7 @@ fn nudge_envelope() -> String {
 /// generators spell it through THIS constant, so the delivered bytes and the
 /// bytes the footprint filter strips can never drift apart.
 pub(crate) const NUDGE_SENTENCE: &str = "Continue working; do not re-plan or ask unless blocked.";
-/// The pre-W1 sentence. A pane can still carry the nudge the previous core
+/// The previous sentence. A pane can still carry the nudge the previous core
 /// delivered, so the footprint filter strips all three spellings.
 pub(crate) const NUDGE_SENTENCE_LEGACY_2: &str =
     "Continue the assigned work now. Do not re-plan or ask unless blocked.";
@@ -4112,10 +4112,10 @@ tail line
         }
     }
 
-    /// W1: a pane may still show the pre-clip wording after the upgrade — the
+    /// A pane may still show the previous wording after the upgrade — the
     /// old sentence and invitation stay footprints, goal or no goal.
     #[test]
-    fn a_pre_w1_nudge_is_still_a_footprint() {
+    fn a_previous_wording_nudge_is_still_a_footprint() {
         for text in [
             "Session goal: ship P4.1. Continue the assigned work now. Do not re-plan or ask unless blocked. Then declare state: /m/state <waiting-user|waiting-agent|blocked|done> \"<reason>\"",
             "Continue the assigned work now. Do not re-plan or ask unless blocked. Then declare state: /m/state <waiting-user|waiting-agent|blocked|done> \"<reason>\"",
@@ -4125,7 +4125,7 @@ tail line
         }
     }
 
-    /// W1: a clipped goal ends in `… ` with no period, so the matcher splits
+    /// A clipped goal ends in `… ` with no period, so the matcher splits
     /// there too — while a clipped lookalike with no sentence stays output.
     #[test]
     fn a_clipped_goal_nudge_is_a_footprint() {
