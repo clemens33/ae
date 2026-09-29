@@ -1700,6 +1700,54 @@ fn the_legacy_reap_keeps_the_artifacts_of_a_pane_it_could_not_kill() {
 }
 
 #[test]
+fn the_daemon_journals_what_its_legacy_reap_could_not_settle() {
+    // A launch or a resume starts the daemon with no caller to refuse to, so
+    // its journal records the reap: a listing that never answered, and a
+    // legacy pane it found but could not take.
+    let scratch = scratch("reapjournal");
+    require_tmux(&scratch);
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup::new(&socket, &scratch);
+    let meta_dir = plant(&scratch.join("home"), "ours", &socket, None);
+    let run_tmux = |words: &[&str]| tmux(&socket, &scratch, words);
+    let reaps = || -> Vec<String> {
+        events(&meta_dir)
+            .lines()
+            .filter(|line| line.contains("\"action\":\"legacy-reap\""))
+            .map(str::to_owned)
+            .collect()
+    };
+    // Phase 1: the server answers without `ours`, so the listing fails and
+    // the daemon, its session proven gone, returns on its own.
+    assert!(run_tmux(&["new-session", "-d", "-s", "keeper", "sleep", "60"]).0);
+    watch_until(&meta_dir, &socket, &scratch, "ours", || true);
+    let unlisted = reaps();
+    // Phase 2: a legacy pane the ownership probe reads as someone else's.
+    let pane = super::refusal_rig::linked(&run_tmux, "ours", "theirs", "ae-monitor", "_shepherd");
+    let journaled = watch_until(&meta_dir, &socket, &scratch, "ours", || reaps().len() > 1);
+    let found = reaps();
+
+    let words = "the panes could not be listed, so a legacy watchdog cannot be ruled out";
+    assert!(
+        unlisted.len() == 1 && unlisted[0].contains(words),
+        "one note names the unlisted reap: {unlisted:?}"
+    );
+    let refused = format!(
+        "legacy _shepherd pane {pane} could not be killed (it belongs to session 'theirs', not 'ours')"
+    );
+    assert!(
+        journaled && found.len() == 2 && found[1].contains(&refused),
+        "one more note names the refused pane: {found:?}"
+    );
+    assert!(
+        found
+            .iter()
+            .all(|line| line.contains("\"actor\":\"watchdog\"") && !line.contains("\"target\":")),
+        "each note is the watchdog's and names no seat: {found:?}"
+    );
+}
+
+#[test]
 fn the_legacy_reap_keeps_its_artifacts_when_the_panes_cannot_be_listed() {
     // #197.2: a listing that never answered is not "no legacy pane". The reap
     // keeps `<name>.pid`/`.status` (fail closed, as a refused kill keeps its

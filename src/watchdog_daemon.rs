@@ -3589,8 +3589,13 @@ pub fn run(
             None
         }
     };
-    // The pre-rename reap, which was `_watchdog_start`'s first act.
-    crate::watchdog_glue::reap_legacy(&server, &session, meta_dir, err)?;
+    // The pre-rename reap, which was `_watchdog_start`'s first act. A launch
+    // or a resume has no caller to refuse to, so the journal names what it
+    // found or could not list.
+    let scan = crate::watchdog_glue::reap_legacy(&server, &session, meta_dir, err)?;
+    if let Some(note) = crate::watchdog_glue::legacy_reap_note(&session, &scan) {
+        journal.record("legacy-reap", "", &note, err)?;
+    }
     announce_start(&server, &session, meta.work_dir());
     write!(
         out,
