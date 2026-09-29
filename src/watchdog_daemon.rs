@@ -1387,6 +1387,27 @@ fn note_slot(note: Option<&str>) -> String {
     note.map_or_else(String::new, |note| format!(" {note}"))
 }
 
+/// A goal clipped to one short line: the crate's one cutter, head-kept.
+const GOAL_CLIP_WIDTH: usize = 80;
+
+/// The nudge's goal prefix, shared by all five generators: a fitting goal
+/// keeps its `Session goal: …. ` form, a long one is clipped to
+/// [`GOAL_CLIP_WIDTH`] cells ending in the cutter's mark with no added period.
+fn goal_prefix(goal: Option<&str>) -> String {
+    goal.map_or_else(String::new, |goal| {
+        let clipped = crate::event_text::clip_to_width(
+            goal,
+            GOAL_CLIP_WIDTH,
+            crate::event_text::Cut::TrailingEllipsis,
+        );
+        if clipped == goal {
+            format!("{NUDGE_GOAL_PREFIX}{goal}. ")
+        } else {
+            format!("{NUDGE_GOAL_PREFIX}{clipped} ")
+        }
+    })
+}
+
 /// The nudge: the session goal when the meta carries one, then the status
 /// sentence, then the path to this session's own `state` helper.
 ///
@@ -1396,10 +1417,10 @@ fn note_slot(note: Option<&str>) -> String {
 /// nudge looks like.
 #[must_use]
 pub fn nudge_text(goal: Option<&str>, meta_dir: &Path, note: Option<&str>) -> String {
-    let prefix = goal.map_or_else(String::new, |goal| format!("{NUDGE_GOAL_PREFIX}{goal}. "));
+    let prefix = goal_prefix(goal);
     let note = note_slot(note);
     format!(
-        "{prefix}{NUDGE_SENTENCE}{note} Then declare state: {}{NUDGE_TAIL}",
+        "{prefix}{NUDGE_SENTENCE}{note} Declare state: {}{NUDGE_TAIL}",
         meta_dir.display()
     )
 }
@@ -1408,10 +1429,10 @@ pub fn nudge_text(goal: Option<&str>, meta_dir: &Path, note: Option<&str>) -> St
 /// observation that started its independent clock.
 #[must_use]
 pub fn idle_nudge_text(goal: Option<&str>, meta_dir: &Path, note: Option<&str>) -> String {
-    let prefix = goal.map_or_else(String::new, |goal| format!("{NUDGE_GOAL_PREFIX}{goal}. "));
+    let prefix = goal_prefix(goal);
     let note = note_slot(note);
     format!(
-        "{prefix}{NUDGE_IDLE_PREFIX}{NUDGE_SENTENCE}{note} Then declare state: {}{NUDGE_TAIL}",
+        "{prefix}{NUDGE_IDLE_PREFIX}{NUDGE_SENTENCE}{note} Declare state: {}{NUDGE_TAIL}",
         meta_dir.display()
     )
 }
@@ -1424,15 +1445,15 @@ pub fn done_challenge_text(
     confirmations: u8,
     required: u8,
 ) -> String {
-    let prefix = goal.map_or_else(String::new, |goal| format!("{NUDGE_GOAL_PREFIX}{goal}. "));
+    let prefix = goal_prefix(goal);
     let minutes = age / 60;
     format!(
         "{prefix}{NUDGE_SENTENCE} Done was \
-         declared {minutes}m ago; confirmation {} of {required}. Re-read your brief and goal. State how \
-         each deliverable was verified. Anything unverified: declare working and finish assigned \
-         work NOW. Worker awaiting owner review: invent no scope; do not commit or edit solely for \
-         this challenge. Otherwise re-declare done with completed work and proof, including any \
-         held review. This is self-attestation, not owner approval. Then declare state: {}{NUDGE_TAIL}",
+         declared {minutes}m ago; confirmation {} of {required}. State how each deliverable was \
+         verified. Anything unverified: declare working and finish assigned work NOW. Awaiting \
+         owner review: invent no scope; do not commit or edit solely for this challenge. Else \
+         re-declare done with work and proof, held review included. Self-attestation, not owner \
+         approval. Declare state: {}{NUDGE_TAIL}",
         confirmations.saturating_add(1),
         meta_dir.display()
     )
@@ -1451,30 +1472,30 @@ pub fn wait_challenge_text(
     state: WaitState,
     escalated: bool,
 ) -> String {
-    let prefix = goal.map_or_else(String::new, |goal| format!("{NUDGE_GOAL_PREFIX}{goal}. "));
+    let prefix = goal_prefix(goal);
     let minutes = age / 60;
     let (declared, proof, resolved) = match state {
         WaitState::WaitingAgent => (
             "Waiting-agent",
-            "name the agent, the result you need, when you last chased them",
+            "name the agent, the result, your last chase",
             "Unblocked",
         ),
         WaitState::Blocked => (
             "Blocked",
-            "name the external blocker, who owns the unblock, what you last checked and when",
+            "name the blocker, its owner, your last check and when",
             "Blocker gone",
         ),
     };
     let ceiling = if escalated {
-        " It now reads as blocked: past the waiting ceiling."
+        " Now reads blocked: past the waiting ceiling."
     } else {
         ""
     };
     format!(
         "{prefix}{NUDGE_SENTENCE} {declared} \
          was declared {minutes}m ago; confirmation {} of {required}.{ceiling} Prove the wait still \
-         holds: {proof}. {resolved}: declare working and finish assigned work NOW. Otherwise \
-         re-declare {} with current reason and proof. Then declare state: {}{NUDGE_TAIL}",
+         holds: {proof}. {resolved}: declare working and finish assigned work NOW. Else \
+         re-declare {} with current reason and proof. Declare state: {}{NUDGE_TAIL}",
         confirmations.saturating_add(1),
         state.as_str(),
         meta_dir.display()
@@ -1515,9 +1536,8 @@ fn wait_ended_clause(ended: WaitEnded) -> String {
 fn wait_ended_note(ended: WaitEnded) -> String {
     let state = ended.state_word();
     format!(
-        "Input in your pane ended your {state} {}m ago (a tmux client viewing it gave a keypress, \
-         click, scroll or switch — not proof of an answer). If you are still waiting, re-declare \
-         {state} with the current reason.",
+        "Client input in your pane ended your {state} {}m ago (keypress, click, scroll or switch \
+         — not proof of an answer). Still waiting: re-declare {state} with the current reason.",
         ended.input_age_secs / 60
     )
 }
@@ -13948,7 +13968,7 @@ mod tests {
                     .expect("the note");
                 let invite_at = text.find("Declare state:").expect("the invitation");
                 let sentence_at = text
-                    .find("Do not re-plan or ask unless blocked.")
+                    .find("re-plan or ask unless blocked.")
                     .expect("the nudge sentence");
                 assert!(
                     sentence_at < note_at && note_at < invite_at,

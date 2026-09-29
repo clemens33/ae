@@ -399,7 +399,10 @@ fn nudge_envelope() -> String {
 /// The nudge's own sentence, for the panes that render it unornamented. The
 /// generators spell it through THIS constant, so the delivered bytes and the
 /// bytes the footprint filter strips can never drift apart.
-pub(crate) const NUDGE_SENTENCE: &str =
+pub(crate) const NUDGE_SENTENCE: &str = "Continue working; do not re-plan or ask unless blocked.";
+/// The pre-W1 sentence. A pane can still carry the nudge the previous core
+/// delivered, so the footprint filter strips all three spellings.
+pub(crate) const NUDGE_SENTENCE_LEGACY_2: &str =
     "Continue the assigned work now. Do not re-plan or ask unless blocked.";
 pub(crate) const NUDGE_SENTENCE_LEGACY: &str = "Status check: if you have more work, continue. \
      Otherwise declare your state so I stop nudging: ";
@@ -413,6 +416,11 @@ const NUDGE_TAIL_LEGACY: &str = "/state <waiting-user|blocked|done> \"<reason>\"
 
 /// The optional prefix a nudge carries when the session has a goal.
 pub(crate) const NUDGE_GOAL_PREFIX: &str = "Session goal: ";
+
+/// The separator between a CLIPPED goal and the nudge sentence: the cutter's
+/// trailing mark plus the prefix builder's space, with no added period. The
+/// matcher splits on this as well as on `". "`.
+const NUDGE_GOAL_CLIPPED_SEP: &str = "… ";
 
 /// The idle reminder's own opening, before the sentence — the spelling
 /// `idle_nudge_text` delivers and the one branch the filter must accept.
@@ -492,15 +500,25 @@ fn raw_nudge_plain(body: &str) -> bool {
         return false;
     };
     goal.match_indices(". ")
-        .any(|(at, sep)| goal.get(at + sep.len()..).is_some_and(nudge_sentence))
+        .map(|(at, sep)| at + sep.len())
+        .chain(
+            goal.match_indices(NUDGE_GOAL_CLIPPED_SEP)
+                .map(|(at, sep)| at + sep.len()),
+        )
+        .any(|pos| goal.get(pos..).is_some_and(nudge_sentence))
 }
 
-/// The nudge sentence, directly or behind the idle reminder's opening.
+/// The nudge sentence, directly or behind the idle reminder's opening, in all
+/// three accepted spellings.
 fn nudge_sentence(rest: &str) -> bool {
     let rest = rest.strip_prefix(NUDGE_IDLE_PREFIX).unwrap_or(rest);
-    [NUDGE_SENTENCE, NUDGE_SENTENCE_LEGACY]
-        .iter()
-        .any(|sentence| rest.starts_with(sentence))
+    [
+        NUDGE_SENTENCE,
+        NUDGE_SENTENCE_LEGACY_2,
+        NUDGE_SENTENCE_LEGACY,
+    ]
+    .iter()
+    .any(|sentence| rest.starts_with(sentence))
 }
 
 /// The envelope ALONE on its line — an unmodeled pane's pair form, where the
