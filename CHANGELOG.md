@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.186] - 2026-09-29
+- Silence the picker resume continuation on success
+- Pin the refusal echo a picker resume still makes
+- Drop issue refs from the picker resume comments
+- Name the cause an implicit ae stop found before the usage block
+- Word implicit stop causes only as far as the code proved them
+- Say no usable tmux socket marker, not outside tmux, when TMUX is absent or malformed
+- Measure muse usage-limit notice rows for the watchdog
+- List only valid agent names in the workspace roster
+- Use map_or_else in the monitor-pane manifest pin
+- Drop the issue reference from the monitor-pane pin
+
 ## [v2026.9.185] - 2026-09-28
 - Recognise the versioned muse live process as the recorded muse seat
 
