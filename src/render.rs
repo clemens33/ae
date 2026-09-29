@@ -665,8 +665,11 @@ pub fn manifest_document(
     // with an empty
     // table, rather than failing the launch that asked for it.
     for pane in transport::observe_slots(&pane_server(&meta_bytes), session).unwrap_or_default() {
-        // An unstamped pane is not an agent.
-        if pane.agent.is_empty() {
+        // An unstamped pane is not an agent — and neither is a monitor pane.
+        // The stamp must be a valid agent name: `config::is_agent_name` is the
+        // ONE grammar, and it forbids the leading `_` of `_watchdog`/`_events`,
+        // so the roster lists only seats.
+        if !crate::config::is_agent_name(&pane.agent) {
             continue;
         }
         let mut role = "agent";

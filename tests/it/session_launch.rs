@@ -2345,6 +2345,77 @@ fn workspace_manifest_names_the_effective_seat() {
     );
 }
 
+/// #73: the roster lists SEATS, never monitor panes. A pane enters the table
+/// only when its `@ae_agent` stamp is a valid agent name — the ONE grammar
+/// `config::is_agent_name`, which forbids the leading `_` the `_watchdog` and
+/// `_events` monitor panes carry — while every real seat row is untouched.
+#[test]
+fn workspace_manifest_lists_no_monitor_panes() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("manifest-monitors");
+    let (code, stdout, stderr) = rig.launch(&["--local", "lnmonitors"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let live = rig.panes("lnmonitors");
+    let main_pane = live
+        .iter()
+        .find(|(_, slot, _)| slot == "main")
+        .map(|(pane, _, _)| pane.clone())
+        .unwrap_or_else(|| panic!("the lead pane: {live:?}"));
+    assert!(
+        live.iter().any(|(_, _, agent)| agent == "_events"),
+        "the launch created its events monitor pane: {live:?}"
+    );
+    // A `_watchdog`-stamped pane beside it: the second monitor shape the fleet
+    // carries, stamped exactly as the product stamps its own.
+    let (split, watchdog) = rig.tmux(&[
+        "split-window",
+        "-d",
+        "-t",
+        "lnmonitors",
+        "-P",
+        "-F",
+        "#{pane_id}",
+    ]);
+    assert!(split, "a pane to stamp: {watchdog}");
+    assert!(
+        rig.tmux(&[
+            "set-option",
+            "-p",
+            "-t",
+            watchdog.trim(),
+            "@ae_agent",
+            "_watchdog",
+        ])
+        .0,
+        "the watchdog stamp"
+    );
+    // Re-render from the live panes the way spawn and doctor do.
+    let dir = rig.dir("lnmonitors");
+    let dir_arg = dir.display().to_string();
+    let project_arg = rig.project.display().to_string();
+    let out = ae()
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
+        .arg(ae::cli::MANIFEST_RENDER)
+        .args([dir_arg.as_str(), "lnmonitors", project_arg.as_str()])
+        .args(["/nowhere", "local", main_pane.as_str(), "--out", "-"])
+        .output()
+        .unwrap_or_else(|why| panic!("the ae binary should run: {why}"));
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let doc = String::from_utf8_lossy(&out.stdout);
+    assert!(doc.contains("| lead |"), "the seat row stands: {doc}");
+    for shadow in ["_watchdog", "_events"] {
+        assert!(!doc.contains(shadow), "a monitor pane is no seat: {doc}");
+    }
+}
+
 /// F2: a recorded label naming ANOTHER harness refuses on the read path — the
 /// recorded label gets the same adapter gate as a spelled one. The fixture
 /// records an IMPLICIT override store EQUAL to the default's, so the store
