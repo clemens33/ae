@@ -914,8 +914,6 @@ pub(crate) fn recorded_caller_session(
 
 /// What a route with no session name needs, said once for every route.
 const NEEDS_PANE: &str = "needs a pane ae can resolve (--pane <id>)";
-/// How a pane that is not one of a recorded ae session's own reads.
-const NOT_AN_AGENT_PANE: &str = "not an ae agent pane";
 
 /// Why the caller's own session could not be recorded — the one place each
 /// reading of [`caller_resolution`] is worded.
@@ -923,14 +921,15 @@ const NOT_AN_AGENT_PANE: &str = "not an ae agent pane";
 enum CallerGap {
     /// `$TMUX` is unset or names no absolute socket.
     NotInTmux,
-    /// No pane id: `$TMUX_PANE` is unset and no `--pane` was given.
+    /// The pane id is empty: no `--pane` value and no `$TMUX_PANE` reached the core.
     NoPane,
     /// tmux reported no owner for the pane.
     PaneUnreadable,
     /// The pane's session has an unusable name or no recorded tmux server.
     NotAnAeSession(String),
-    /// The session's recorded tmux server is not the caller's.
-    OtherServer(String),
+    /// The recorded tmux server is not proved to be the caller's: another
+    /// socket, or a socket that did not answer.
+    ServerUnproved(String),
 }
 
 impl CallerGap {
@@ -939,13 +938,13 @@ impl CallerGap {
             Self::NotInTmux => {
                 "this process is not inside tmux ($TMUX is unset or names no socket)".to_owned()
             }
-            Self::NoPane => "this process has no pane id ($TMUX_PANE is unset)".to_owned(),
+            Self::NoPane => "no usable pane id was given".to_owned(),
             Self::PaneUnreadable => format!("tmux did not report pane {pane:?}"),
             Self::NotAnAeSession(session) => format!(
-                "pane {pane:?} is {NOT_AN_AGENT_PANE} (session {session:?} has no ae record)"
+                "pane {pane:?} is in session {session:?}, which has no usable recorded tmux server"
             ),
-            Self::OtherServer(session) => format!(
-                "pane {pane:?} is {NOT_AN_AGENT_PANE} (session {session:?} is on a different tmux server than the one ae recorded)"
+            Self::ServerUnproved(session) => format!(
+                "pane {pane:?} is in session {session:?}, whose recorded tmux server cannot be proved to be this one"
             ),
         }
     }
@@ -974,7 +973,7 @@ fn caller_resolution(
     if sockets.proven_same(caller_server, &recorded) {
         Ok(session)
     } else {
-        Err(CallerGap::OtherServer(session))
+        Err(CallerGap::ServerUnproved(session))
     }
 }
 
@@ -1167,7 +1166,7 @@ fn self_target(caller: Option<&str>, err: &mut impl Write) -> io::Result<Option<
     }
     writeln!(
         err,
-        "Error: --self with no session name {NEEDS_PANE}; this one is {NOT_AN_AGENT_PANE}."
+        "Error: --self with no session name {NEEDS_PANE}; this one is not an ae agent pane."
     )?;
     Ok(None)
 }

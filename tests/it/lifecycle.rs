@@ -1218,7 +1218,7 @@ fn a_bare_stop_from_a_foreign_namesake_never_targets_the_recorded_session() {
     assert_eq!(
         err,
         stop_gap(&format!(
-            "pane {:?} is not an ae agent pane (session {:?} is on a different tmux server than the one ae recorded)",
+            "pane {:?} is in session {:?}, whose recorded tmux server cannot be proved to be this one",
             foreign.pane, rig.name
         ))
     );
@@ -2302,7 +2302,7 @@ fn a_bare_stop_from_a_non_ae_tmux_pane_has_no_inferred_target() {
     assert_eq!(
         err,
         stop_gap(&format!(
-            "pane {pane:?} is not an ae agent pane (session \"foreign\" has no ae record)"
+            "pane {pane:?} is in session \"foreign\", which has no usable recorded tmux server"
         ))
     );
     assert_eq!(rig.sessions(), vec!["foreign"], "nothing was killed");
@@ -2329,11 +2329,65 @@ fn a_bare_stop_with_no_pane_id_names_that_before_the_usage() {
     let (code, out, err) = rig.run_inside("", &["stop"]);
 
     assert_eq!(code, Some(2), "stdout: {out}\nstderr: {err}");
+    assert_eq!(err, stop_gap("no usable pane id was given"));
+    assert_eq!(rig.sessions(), vec!["foreign"], "nothing was killed");
+}
+
+#[test]
+fn an_empty_pane_flag_is_not_blamed_on_the_environment() {
+    let rig = AmbientRig::new("stopemptyflag");
+    assert!(rig.tmux(&["new-session", "-d", "-s", "foreign", "sh"]).0);
+    let (_, panes) = rig.tmux(&["list-panes", "-t", "=foreign", "-F", "#{pane_id}"]);
+
+    let (code, out, err) = rig.run_inside(
+        panes.lines().next().unwrap_or_default(),
+        &["stop", "--pane="],
+    );
+
+    assert_eq!(code, Some(2), "stdout: {out}\nstderr: {err}");
+    assert_eq!(err, stop_gap("no usable pane id was given"));
+    assert_eq!(rig.sessions(), vec!["foreign"], "nothing was killed");
+}
+
+#[test]
+fn a_bare_stop_from_a_session_with_an_unusable_server_record_says_so() {
+    let rig = AmbientRig::new("stopbadrec");
+    rig.plant("ambold", "tmux_server_kind=ambiguous\ntmux_server=work\n");
+    let (_, panes) = rig.tmux(&["list-panes", "-t", "=ambold", "-F", "#{pane_id}"]);
+    let pane = panes.lines().next().unwrap_or_default();
+
+    let (code, out, err) = rig.run_inside(pane, &["stop"]);
+
+    assert_eq!(code, Some(2), "stdout: {out}\nstderr: {err}");
     assert_eq!(
         err,
-        stop_gap("this process has no pane id ($TMUX_PANE is unset)")
+        stop_gap(&format!(
+            "pane {pane:?} is in session \"ambold\", which has no usable recorded tmux server"
+        ))
     );
-    assert_eq!(rig.sessions(), vec!["foreign"], "nothing was killed");
+    assert_eq!(rig.sessions(), vec!["ambold"], "nothing was killed");
+}
+
+#[test]
+fn a_bare_stop_whose_recorded_server_does_not_answer_claims_no_mismatch() {
+    let rig = Rig::new("stopdeadrec");
+    let foreign = rig.foreign_namesake("dead");
+    assert!(
+        rig.tmux(&["kill-server"]).0,
+        "the recorded server goes away"
+    );
+
+    let (code, out, err) = rig.run_from(&["stop"], Some((&foreign.socket, &foreign.pane)));
+
+    assert_eq!(code, Some(2), "stdout: {out}\nstderr: {err}");
+    assert_eq!(
+        err,
+        stop_gap(&format!(
+            "pane {:?} is in session {:?}, whose recorded tmux server cannot be proved to be this one",
+            foreign.pane, rig.name
+        ))
+    );
+    assert!(exists(&rig.dir), "the recorded state stays intact");
 }
 
 #[test]
