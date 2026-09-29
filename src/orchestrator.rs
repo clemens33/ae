@@ -473,9 +473,18 @@ pub(crate) fn run_resume(
         &mut launch_out,
         &mut launch_err,
     )?;
-    out.write_all(&launch_out)?;
-    err.write_all(&launch_err)?;
+    // Success is DELIBERATELY silent. This continuation runs as a background
+    // tmux `run-shell` job (the picker row's menu command), and tmux paints
+    // such a job's output into VIEW MODE over the best session's active pane —
+    // after a resume, the resumed session itself, until any key dismisses it
+    // (#207). The launcher's success text is dropped for two reasons: the
+    // `Resuming session …` narration is meant for a terminal the human is
+    // watching, and the attach hint names a route this caller does not take,
+    // because it hands the captured client to the resumed session itself. A
+    // refusal below still reports through `echo_launch` plus `report_resume`,
+    // so a failure reaches the human exactly as it always did.
     if code != 0 {
+        echo_launch(out, err, &launch_out, &launch_err)?;
         let detail = String::from_utf8_lossy(&launch_err)
             .lines()
             .next()
@@ -485,6 +494,7 @@ pub(crate) fn run_resume(
         return Ok(code);
     }
     if let Err(why) = expectation.check_attachment() {
+        echo_launch(out, err, &launch_out, &launch_err)?;
         report_resume(
             Some(&server),
             Some(&expectation),
@@ -498,6 +508,7 @@ pub(crate) fn run_resume(
         return Ok(crate::entry::EXIT_FAILED);
     }
     if !crate::transport::switch_client(&server, &captured.client, &captured.name) {
+        echo_launch(out, err, &launch_out, &launch_err)?;
         report_resume(
             Some(&server),
             Some(&expectation),
@@ -511,6 +522,22 @@ pub(crate) fn run_resume(
         return Ok(crate::entry::EXIT_FAILED);
     }
     Ok(0)
+}
+
+/// Echo the launcher's whole captured report before a refusal is reported.
+///
+/// Success never calls this: a picker resume is silent on success (#207), and
+/// this is the one gate that keeps every failure path byte-identical to what
+/// the route reported before the silence.
+fn echo_launch(
+    out: &mut impl Write,
+    err: &mut impl Write,
+    launch_out: &[u8],
+    launch_err: &[u8],
+) -> crate::Result<()> {
+    out.write_all(launch_out)?;
+    err.write_all(launch_err)?;
+    Ok(())
 }
 
 /// Report a picker action to the still-proven clicker, then always to stderr.

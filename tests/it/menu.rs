@@ -1144,7 +1144,7 @@ fn stopped_rows_pin_their_columns_keys_and_resume_argv() {
     clippy::too_many_lines,
     reason = "one durable stopped row drawn, chosen and resumed against a real server"
 )]
-fn a_stopped_row_resumes_its_session_for_the_clicking_client() {
+fn a_stopped_row_resumes_its_session_for_the_clicking_client_and_leaves_no_view_mode() {
     let scratch = scratch("stopped-resume");
     if !tmux_present(&scratch) {
         let _ = fs::remove_dir_all(&scratch);
@@ -1235,6 +1235,43 @@ fn a_stopped_row_resumes_its_session_for_the_clicking_client() {
     assert!(
         clients.contains(&format!("{}|home", staged.other_client)),
         "the other client must not move: {clients}"
+    );
+
+    // #207: the continuation captures the launcher's stdout and stderr, and
+    // tmux paints a background `run-shell` job's output into VIEW MODE over
+    // the best session's active pane — after a resume that IS the resumed
+    // session, so the human met `Resuming session …` and the attach hint,
+    // neither of which describes a route that hands the captured client over
+    // itself. The route is SILENT on success: settle first, because the job's
+    // output is delivered asynchronously and a stray print must get every
+    // chance to appear, then read the mode of the pane the client now views.
+    let mut mode = String::new();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline {
+        mode = tmux(
+            &socket,
+            &main,
+            &[
+                "display-message",
+                "-p",
+                "-c",
+                &staged.client,
+                "#{pane_in_mode}",
+            ],
+        )
+        .1
+        .trim()
+        .to_owned();
+        if mode != "0" {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert_eq!(mode, "0", "a picker resume must leave no pane in view mode");
+    let seen = tmux(&socket, &watcher, &["capture-pane", "-p", "-t", "viewer"]).1;
+    assert!(
+        !seen.contains("Attach with:") && !seen.contains("Resuming session"),
+        "a picker resume must print neither launcher line into the client's view: {seen}"
     );
 }
 

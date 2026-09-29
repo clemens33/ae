@@ -696,7 +696,10 @@ rank, never expands a roster, and no agent row ever hangs under it. Choosing it
 starts the session — the row re-execs ae as `orchestrator --picker-resume` with
 the exact client that opened the menu, which re-proves that client and the
 server before resuming the session through the ordinary launch path — and then
-switches that client into the resumed session. The other client watching the
+switches that client into the resumed session. The continuation prints nothing
+on success, because tmux paints a background job's output over the pane it is
+handing over; a refusal reports on that client and on stderr as before. The
+other client watching the
 same pane is untouched, exactly like a running row's jump. A row clicked after
 its client detached or its server was replaced refuses without starting
 anything.
