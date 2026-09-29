@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.188] - 2026-09-29
+- Pin shorter watchdog nudge wording and clipped goal
+- Shorten watchdog nudge and challenge copy, clip goal
+- Route goal clip through clip_head projector, pin caller path
+- Reword watchdog nudge comments and footprint test name
+
 ## [v2026.9.187] - 2026-09-29
 - Hide Claude-wrapped ae turns in the board.
 - Remove only the proven seat incarnation and roll back a spawn whose identity stamp fails
