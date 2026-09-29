@@ -77,9 +77,11 @@ server a daemon is LEAVING after a rebind: neither is a session this state root
 still owns, and a rank left on a stranger would put it on every ae strip.
 
 Each registration follows its own verdict: a refused `_watchdog` kill keeps
-its pidfile and the bars, while a daemon that died is cleared and retracted
-(legacy artifacts are dropped regardless — nothing reads them anymore). But
-the session facts wait for zero refusals anywhere: with any refusal
+its pidfile and the bars, while a daemon that died is cleared and retracted.
+A legacy pidfile and status go only with a pane that was killed or was never
+there: they are what makes a stop whose reap could not list the panes refuse,
+and a start in that case spawns nothing, exiting 1 unless its own pidfile
+decides first. But the session facts wait for zero refusals anywhere: with any refusal
 outstanding the meta flag and the unwatched seed stay as they were, the audit
 reads `refused: …`, and the exit is 1.
 
