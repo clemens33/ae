@@ -457,8 +457,8 @@ fn start(
             caller.audit(meta_dir, outcome, err);
             return Ok(0);
         }
-        // A listing that failed proves no watchdog running, and a spawn could
-        // land beside a legacy one: refuse, naming the gap.
+        // No CURRENT daemon is proven here, and a failed listing cannot rule
+        // out a LEGACY one a spawn could land beside: refuse, naming the gap.
         Presence::Stopped if unlisted => {
             let gap = watchdog_glue::LEGACY_UNLISTED;
             let err_line = format!("Error: {gap}; start aborted.");

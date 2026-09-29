@@ -847,9 +847,9 @@ fn a_refused_start_and_stop_are_recorded_without_changing_the_outcome() {
 }
 
 /// On a server that answers nothing, a start with no pidfile refuses even
-/// where no legacy watchdog registered itself — a listing that failed proves
-/// no watchdog running and must never reach a spawn — while a stop refuses
-/// only where one did.
+/// where no legacy watchdog registered itself — no current daemon is proven,
+/// and a listing that failed cannot rule out a legacy one, so it must never
+/// reach a spawn — while a stop refuses only where one did.
 #[test]
 fn an_unlisted_reap_refuses_an_unproven_start_and_a_registered_stop() {
     let scratch = scratch("wdunl");
@@ -889,8 +889,8 @@ fn an_unlisted_reap_refuses_an_unproven_start_and_a_registered_stop() {
 }
 
 /// A live server that no longer holds the session cannot list its panes
-/// either: nothing proves a watchdog running, so the start refuses, naming
-/// the gap, and spawns nothing.
+/// either: no current daemon is proven, and a legacy one cannot be ruled
+/// out, so the start refuses, naming the gap, and spawns nothing.
 #[test]
 fn a_start_whose_session_left_a_live_server_refuses_and_spawns_nothing() {
     let scratch = scratch("wdgone");
