@@ -355,6 +355,49 @@ fn a_stop_over_a_refused_kill_keeps_its_pidfile_and_exits_1() {
     assert!(!shown, "no watchdog-off seed over a running daemon");
 }
 
+/// The same refusal when tmux itself fails the `kill-pane` of a pane that is
+/// ours: exit 1 naming the failure, the pidfile kept, nothing settled.
+#[test]
+fn a_stop_whose_kill_pane_fails_keeps_its_pidfile_and_exits_1() {
+    let scratch = scratch("wdkpfail");
+    require_tmux(&scratch);
+    let socket = socket_of(&scratch);
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let root = scratch.join("home");
+    let meta_dir = plant_session(&root, "ours", &socket);
+    let run = |words: &[&str]| tmux(&socket, &scratch, words);
+    assert!(run(&["new-session", "-d", "-s", "ours", "sleep", "60"]).0);
+    super::refusal_rig::own(&run, "ours", &root);
+    let (pane, pid) = super::refusal_rig::stamped(&run, "ours", "_watchdog");
+    assert!(
+        fs::write(meta_dir.join(".watchdog.pid"), format!("{pid}\n")).is_ok(),
+        "a live pidfile"
+    );
+    super::refusal_rig::refuse_kill_pane(&run);
+
+    let (code, out, err) = watchdog(&root, &["stop", "ours"]);
+
+    let panes = run(&["list-panes", "-a", "-F", "#{pane_id}"]).1;
+    let meta = fs::read_to_string(meta_dir.join("meta")).unwrap_or_default();
+    let status = ae::tmux::WATCHDOG_STATUS_OPTION;
+    let (seeded, _) = run(&["show-options", "-v", "-t", "ours", status]);
+    assert_eq!(code, 1, "a failed kill-pane exits 1: {out} {err}");
+    let named =
+        format!("pane {pane} could not be killed (kill-pane failed and the pane is still listed)");
+    assert!(err.contains(&named), "err names the failure: {err}");
+    assert!(panes.contains(&pane), "the pane is alive: {panes}");
+    assert_eq!(
+        fs::read_to_string(meta_dir.join(".watchdog.pid")).unwrap_or_default(),
+        format!("{pid}\n"),
+        "the pidfile still names the live daemon"
+    );
+    assert!(!meta.contains("watchdog=false"), "no settle: {meta}");
+    assert!(!seeded, "no watchdog-off seed");
+}
+
 /// A legacy watchdog the reap found but could not kill counts as refused,
 /// never as stopped (#194). The refused audit AND err name the pane id and
 /// its short reason.
@@ -518,6 +561,56 @@ fn a_start_whose_pane_never_publishes_refuses_after_the_bound() {
     assert!(
         !stamps.lines().any(|line| line == "_watchdog"),
         "the fresh pane is gone: {stamps:?}"
+    );
+}
+
+/// The same abort when tmux refuses the teardown: the fresh pane survives,
+/// and err and the audit name it as one that may still run a watchdog.
+#[test]
+fn a_start_that_cannot_remove_its_unpublished_pane_names_it() {
+    let scratch = scratch("wdnopubkept");
+    require_tmux(&scratch);
+    let socket = socket_of(&scratch);
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let root = scratch.join("home");
+    let meta_dir = plant_session(&root, "ours", &socket);
+    let _ = fs::remove_file(meta_dir.join("watchdog"));
+    plant_script(&meta_dir.join("watchdog"), "#!/bin/sh\nexec sleep 60\n");
+    let run = |words: &[&str]| tmux(&socket, &scratch, words);
+    assert!(run(&["new-session", "-d", "-s", "ours", "sleep", "60"]).0);
+    super::refusal_rig::refuse_kill_pane(&run);
+
+    let (code, out, err) = watchdog(&root, &["start", "ours"]);
+
+    let format = "#{pane_id} #{@ae_agent}";
+    let listed = run(&["list-panes", "-s", "-t", "ours", "-F", format]).1;
+    let pane = listed
+        .lines()
+        .find_map(|line| line.strip_suffix(" _watchdog"))
+        .unwrap_or_default()
+        .to_owned();
+    let base = "watchdog did not publish a pidfile within the start bound";
+    let named = format!(
+        "its pane {pane} could not be removed (kill-pane failed and the pane is still listed)"
+    );
+    let events = events_of(&meta_dir);
+    assert_eq!(code, 1, "the unregistered start exits 1: {out} {err}");
+    assert!(!pane.is_empty(), "the unremoved pane is alive: {listed:?}");
+    assert!(
+        err.contains(&format!(
+            "Error: {base}; {named} and may still run an unregistered watchdog. Start aborted."
+        )),
+        "err names the pane: {err}"
+    );
+    let audit = format!("refused: {base}; {named}");
+    assert!(
+        events
+            .iter()
+            .any(|line| line.contains("watchdog-start") && line.contains(&audit)),
+        "the refused audit names the pane: {events:?}"
     );
 }
 

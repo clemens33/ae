@@ -363,6 +363,16 @@ pub struct LegacyReap {
     pub outcome: KillOutcome,
 }
 
+/// What the legacy reap could see — an enumeration that never answered is
+/// NOT "no legacy pane", so it is its own answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LegacyScan {
+    /// The panes were listed; these are the legacy watchdogs found there.
+    Listed(Vec<LegacyReap>),
+    /// The panes could not be listed: a legacy watchdog cannot be ruled out.
+    Unlisted,
+}
+
 /// Reap any pre-rename watchdog still running under legacy artifacts.
 ///
 /// # Errors
@@ -373,18 +383,17 @@ pub fn reap_legacy(
     session: &str,
     meta_dir: &Path,
     err: &mut impl Write,
-) -> crate::Result<Vec<LegacyReap>> {
+) -> crate::Result<LegacyScan> {
     // ONE enumeration for both names: two `list-panes` runs could disagree.
-    // A FAILED enumeration is not evidence that anything is gone: it is not
-    // "no legacy pane", so the artifacts stay (fail closed, as a refused kill
-    // keeps its pidfile) and the gap is named.
+    // A FAILED enumeration is not evidence that anything is gone, so the
+    // artifacts stay and the gap is named — as they stay for a refused kill.
     let Some(observed) = transport::observe_agents(server, session) else {
         writeln!(
             err,
             "ae: could not list the panes of '{session}' — a legacy watchdog cannot be ruled \
              out; the legacy pidfile and status are kept."
         )?;
-        return Ok(Vec::new());
+        return Ok(LegacyScan::Unlisted);
     };
     let mut found = Vec::new();
     for name in LEGACY_WATCHDOG_NAMES {
@@ -393,22 +402,60 @@ pub fn reap_legacy(
             .iter()
             .find(|seen| seen.agent == stamp)
             .map(|seen| seen.pane.clone());
+        // Only a name whose watchdog is gone loses its artifacts: none was
+        // listed, or the kill took it.
+        let mut gone = true;
         if let Some(pane) = pane {
             // The recorded pid is deliberately NOT signalled here: the
             // pre-rename daemon IS the process in that pane, so the ownership-checked
             // `kill-pane` takes it with the pane, and a bare kill of a recorded
             // pid is the stranger-kill this module exists to refuse.
             let outcome = kill_owned_pane(server, &pane, session, Some(&stamp), err)?;
+            gone = matches!(outcome, KillOutcome::Killed | KillOutcome::Nothing);
             found.push(LegacyReap {
                 name,
                 pane,
                 outcome,
             });
         }
-        let _ = std::fs::remove_file(meta_dir.join(format!(".{name}.pid")));
-        let _ = std::fs::remove_file(meta_dir.join(format!(".{name}.status")));
+        if gone {
+            let _ = std::fs::remove_file(meta_dir.join(format!(".{name}.pid")));
+            let _ = std::fs::remove_file(meta_dir.join(format!(".{name}.status")));
+        }
     }
-    Ok(found)
+    Ok(LegacyScan::Listed(found))
+}
+
+/// Why an unlisted legacy reap settles nothing, in the words the stop's
+/// refusal and the daemon's journal share.
+pub const LEGACY_UNLISTED: &str =
+    "the panes could not be listed, so a legacy watchdog cannot be ruled out";
+
+/// The journal note a legacy reap leaves, when it has one: a listing that
+/// never answered, or every legacy pane it found, taken or not. A launch or a
+/// resume starts the daemon with no caller to refuse to, so this is where
+/// their reap is recorded.
+#[must_use]
+pub fn legacy_reap_note(session: &str, scan: &LegacyScan) -> Option<String> {
+    let found = match scan {
+        LegacyScan::Unlisted => return Some(LEGACY_UNLISTED.to_owned()),
+        LegacyScan::Listed(found) if found.is_empty() => return None,
+        LegacyScan::Listed(found) => found,
+    };
+    let panes: Vec<String> = found
+        .iter()
+        .map(|reap| {
+            let stamp = format!("_{}", reap.name);
+            match refusal_short(&reap.outcome, session, Some(&stamp)) {
+                Some(short) => format!(
+                    "legacy {stamp} pane {} could not be killed ({short})",
+                    reap.pane
+                ),
+                None => format!("legacy {stamp} pane {} reaped", reap.pane),
+            }
+        })
+        .collect();
+    Some(panes.join("; "))
 }
 
 /// The daemon's published pid, and the ownership rule for taking it back.
@@ -663,6 +710,39 @@ mod tests {
             session: session.to_owned(),
             agent: agent.to_owned(),
         }
+    }
+
+    // An empty listing leaves no note; an unlisted one and every found pane,
+    // taken or refused, are named.
+    #[test]
+    fn a_legacy_reap_note_names_what_the_reap_found_or_could_not_list() {
+        use super::{LegacyReap, LegacyScan, legacy_reap_note};
+        let reap = |name: &'static str, pane: &str, outcome| LegacyReap {
+            name,
+            pane: pane.to_owned(),
+            outcome,
+        };
+        let found = LegacyScan::Listed(vec![
+            reap(
+                "shepherd",
+                "%7",
+                KillOutcome::WrongSession("theirs".to_owned()),
+            ),
+            reap("loop", "%9", KillOutcome::Killed),
+        ]);
+        let notes = [
+            legacy_reap_note("ours", &LegacyScan::Listed(Vec::new())),
+            legacy_reap_note("ours", &LegacyScan::Unlisted),
+            legacy_reap_note("ours", &found),
+        ];
+        assert_eq!(
+            notes,
+            [
+                None,
+                Some("the panes could not be listed, so a legacy watchdog cannot be ruled out".to_owned()),
+                Some("legacy _shepherd pane %7 could not be killed (it belongs to session 'theirs', not 'ours'); legacy _loop pane %9 reaped".to_owned()),
+            ]
+        );
     }
 
     #[test]

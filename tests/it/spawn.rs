@@ -1928,3 +1928,38 @@ fn a_retire_over_a_refused_kill_or_a_silent_server_keeps_its_seat() {
     assert_eq!(rig.events(), events_before, "no retire event");
     assert!(prompt.is_file(), "the prompt file stays");
 }
+
+/// A retire whose `kill-pane` tmux itself fails exits 1 naming the failure,
+/// with the pane alive and the seat intact.
+#[test]
+fn a_retire_whose_kill_pane_fails_keeps_its_seat() {
+    let present = tmux_present(&super::cli::OwnedScratch::root("sp", "probe-kp"));
+    if !present {
+        return;
+    }
+    let rig = Rig::new("retirekp");
+    let (code, _, stderr) = rig.run(ae::cli::SPAWN, &["worker", "--using", "fake", "--", "hi"]);
+    assert_eq!(code, Some(0), "{stderr}");
+    let worker_pane = rig
+        .panes()
+        .into_iter()
+        .find(|(_, slot, _)| slot == "spawned.0")
+        .map(|row| row.0)
+        .unwrap_or_default();
+    assert!(!worker_pane.is_empty(), "the worker pane");
+    super::refusal_rig::refuse_kill_pane(&|tail: &[&str]| rig.tmux(tail));
+    let meta_before = rig.meta();
+    let events_before = rig.events();
+    let (code, stdout, stderr) = rig.run(ae::cli::RETIRE, &["worker"]);
+    assert_eq!(code, Some(1), "{stdout}\n{stderr}");
+    let named = format!(
+        "could not remove pane {worker_pane} (kill-pane failed and the pane is still listed) — the seat is kept"
+    );
+    assert!(stderr.contains(&named), "{stderr}");
+    assert!(
+        rig.panes().iter().any(|row| row.0 == worker_pane),
+        "the pane lives"
+    );
+    assert_eq!(rig.meta(), meta_before, "the seat rows stay");
+    assert_eq!(rig.events(), events_before, "no retire event");
+}

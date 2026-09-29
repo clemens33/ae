@@ -103,3 +103,10 @@ pub(crate) fn own(run: &dyn Fn(&[&str]) -> (bool, String), session: &str, root: 
         "the state root"
     );
 }
+
+/// Make every later `kill-pane` on this server fail with its pane alive: the
+/// verb is aliased to a command tmux does not know.
+pub(crate) fn refuse_kill_pane(run: &dyn Fn(&[&str]) -> (bool, String)) {
+    let alias = ["set", "-s", "command-alias[100]", "kill-pane=nosuchcommand"];
+    assert!(run(&alias).0, "kill-pane aliased away");
+}

@@ -311,7 +311,8 @@ fn abort_start(
 }
 
 /// Reap a pre-rename watchdog before the check-and-spawn, and abort when the
-/// reap found one it could not take. `Some` exits `start`; `None` proceeds.
+/// reap found one it could not take, or skip when it could not list the panes.
+/// `Some` exits `start`; `None` proceeds.
 fn abort_on_live_legacy(
     server: &ServerId,
     session: &str,
@@ -319,16 +320,54 @@ fn abort_on_live_legacy(
     caller: &Caller,
     err: &mut impl Write,
 ) -> crate::Result<Option<u8>> {
-    let legacy = watchdog_glue::reap_legacy(server, session, meta_dir, err)?;
-    let refused = legacy_refusals(session, &legacy);
-    if refused.is_empty() {
-        return Ok(None);
+    let scan = watchdog_glue::reap_legacy(server, session, meta_dir, err)?;
+    match legacy_start(session, &scan) {
+        LegacyStart::Proceed => Ok(None),
+        LegacyStart::Skip => skip_unanswered(meta_dir, caller, err).map(Some),
+        LegacyStart::Abort(refused) => {
+            let (err_line, audit) = legacy_abort_lines(session, &refused);
+            abort_start(meta_dir, caller, err, &err_line, &audit).map(Some)
+        }
     }
-    // Unlike the cannot-rule-out arm in `start` (an unanswerable server exits
-    // 0 because the daemon may not exist), this FOUND a live watchdog it
-    // could not take: starting beside it would run two side by side.
-    let (err_line, audit) = legacy_abort_lines(session, &refused);
-    abort_start(meta_dir, caller, err, &err_line, &audit).map(Some)
+}
+
+/// What `start` does after the legacy reap.
+#[derive(Debug, PartialEq, Eq)]
+enum LegacyStart {
+    Proceed,
+    /// A legacy watchdog nobody could rule out is one to not start beside:
+    /// skip exactly as an unanswering tmux does.
+    Skip,
+    /// Unlike that skip (an unanswerable server exits 0 because the daemon may
+    /// not exist), this FOUND a live watchdog it could not take: starting
+    /// beside it would run two side by side. Carries the refusal fragments.
+    Abort(Vec<String>),
+}
+
+/// The legacy reap's verdict for `start`. Pure: pins without tmux.
+fn legacy_start(session: &str, scan: &watchdog_glue::LegacyScan) -> LegacyStart {
+    match scan {
+        watchdog_glue::LegacyScan::Unlisted => LegacyStart::Skip,
+        watchdog_glue::LegacyScan::Listed(found) => {
+            let refused = legacy_refusals(session, found);
+            if refused.is_empty() {
+                LegacyStart::Proceed
+            } else {
+                LegacyStart::Abort(refused)
+            }
+        }
+    }
+}
+
+/// `start`'s skip when tmux did not answer, so a running watchdog — legacy or
+/// current — cannot be ruled out.
+fn skip_unanswered(meta_dir: &Path, caller: &Caller, err: &mut impl Write) -> crate::Result<u8> {
+    writeln!(
+        err,
+        "Watchdog start skipped — tmux did not answer, so a running watchdog cannot be ruled out."
+    )?;
+    caller.audit(meta_dir, "refused: tmux did not answer", err);
+    Ok(0)
 }
 
 /// The legacy-abort `Error` line plus its audit. Pure: pins without tmux.
@@ -418,15 +457,7 @@ fn start(
             let _ = meta::rewrite(meta_dir, "watchdog", Some("true"));
             return Ok(0);
         }
-        Presence::Unknown => {
-            writeln!(
-                err,
-                "Watchdog start skipped — tmux did not answer, so a running watchdog cannot be ruled out."
-            )?;
-            let outcome = "refused: tmux did not answer";
-            caller.audit(meta_dir, outcome, err);
-            return Ok(0);
-        }
+        Presence::Unknown => return skip_unanswered(meta_dir, caller, err),
         Presence::Stopped => {}
     }
     // The ae-monitor window with the `_events` pane must exist first: the
@@ -590,14 +621,21 @@ fn main_gone_decision(session: &str, err_frags: &[String], audit_frags: &[String
 /// main daemon runs, the second lookup and the main kill's outcome.
 fn stop_decision(
     session: &str,
-    legacy: &[watchdog_glue::LegacyReap],
+    scan: &watchdog_glue::LegacyScan,
     main_running: bool,
     second: Option<&PaneLook>,
     main: Option<&watchdog_glue::KillOutcome>,
 ) -> StopDecision {
+    let legacy = match scan {
+        watchdog_glue::LegacyScan::Listed(found) => found.as_slice(),
+        watchdog_glue::LegacyScan::Unlisted => &[],
+    };
     // Every refused pane, legacy first in reap order. The pane fragments read
     // the same on err and in the audit; the server-silence fragment does not.
-    let pane_frags = legacy_refusals(session, legacy);
+    let mut pane_frags = legacy_refusals(session, legacy);
+    if *scan == watchdog_glue::LegacyScan::Unlisted {
+        pane_frags.push(watchdog_glue::LEGACY_UNLISTED.to_owned());
+    }
     let mut err_frags = pane_frags.clone();
     let mut audit_frags = pane_frags;
     if !main_running {
@@ -838,8 +876,9 @@ fn stamped_pane(server: &ServerId, session: &str, agent: &str) -> PaneLook {
 )]
 mod tests {
     use super::{
-        Action, Caller, PaneLook, Presence, START_ACTION, StopDecision, USAGE, actor_of,
-        legacy_abort_lines, registration_abort_lines, run_with_actor, spell_caller, stop_decision,
+        Action, Caller, LegacyStart, PaneLook, Presence, START_ACTION, StopDecision, USAGE,
+        actor_of, legacy_abort_lines, legacy_start, registration_abort_lines, run_with_actor,
+        spell_caller, stop_decision,
     };
 
     #[test]
@@ -982,12 +1021,65 @@ mod tests {
         for row in rows {
             let got = stop_decision(
                 "ours",
-                &row.legacy,
+                &crate::watchdog_glue::LegacyScan::Listed(row.legacy),
                 row.running,
                 row.second.as_ref(),
                 row.main.as_ref(),
             );
             assert_eq!(got, row.want, "row {}", row.label);
+        }
+    }
+
+    // A reap whose listing never answered is a refusal, never "not running":
+    // the stop exits 1 and settles nothing, main daemon killed or not.
+    #[test]
+    fn an_unlisted_legacy_scan_refuses_the_stop_and_settles_nothing() {
+        use crate::watchdog_glue::{KillOutcome::Killed, LegacyScan::Unlisted};
+        let (err, audit) = refused_lines(
+            &["the panes could not be listed, so a legacy watchdog cannot be ruled out"],
+            false,
+        );
+        let refused = |main_gone| StopDecision {
+            main_gone,
+            settle: false,
+            exit: crate::state::EXIT_FAILED,
+            out: None,
+            err: err.clone(),
+            audit: audit.clone(),
+        };
+        assert_eq!(
+            stop_decision("ours", &Unlisted, false, None, None),
+            refused(false)
+        );
+        let present = PaneLook::Present("%5".to_owned());
+        let killed = stop_decision("ours", &Unlisted, true, Some(&present), Some(&Killed));
+        assert_eq!(killed, refused(true));
+    }
+
+    // An unlisted reap skips the start; a listing with nothing refused
+    // proceeds; a refused kill aborts, naming its pane.
+    #[test]
+    fn the_legacy_reap_decides_the_start() {
+        use crate::watchdog_glue::KillOutcome::{KillFailed, Killed};
+        use crate::watchdog_glue::LegacyScan::{Listed, Unlisted};
+        let failed = KillFailed("the pane is still listed".to_owned());
+        let rows = [
+            (Unlisted, LegacyStart::Skip),
+            (Listed(Vec::new()), LegacyStart::Proceed),
+            (
+                Listed(vec![reap("loop", "%3", Killed)]),
+                LegacyStart::Proceed,
+            ),
+            (
+                Listed(vec![reap("shepherd", "%7", failed)]),
+                LegacyStart::Abort(vec![
+                    "pane %7 could not be killed (kill-pane failed and the pane is still listed)"
+                        .to_owned(),
+                ]),
+            ),
+        ];
+        for (scan, want) in rows {
+            assert_eq!(legacy_start("ours", &scan), want, "{scan:?}");
         }
     }
 

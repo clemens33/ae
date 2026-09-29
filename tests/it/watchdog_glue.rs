@@ -32,7 +32,7 @@ use std::time::{Duration, Instant};
 use ae::inventory::ServerId;
 use ae::meta::Selector;
 use ae::watchdog_daemon::{Knobs, run};
-use ae::watchdog_glue::{self, KillOutcome, LegacyReap};
+use ae::watchdog_glue::{self, KillOutcome, LegacyReap, LegacyScan};
 
 use super::parity::Invocation;
 use super::parity::capture::ExitOutcome;
@@ -1565,7 +1565,7 @@ fn the_legacy_reap_refuses_a_pane_that_belongs_to_someone_else() {
     );
     assert_eq!(
         reaped.ok(),
-        Some(Vec::new()),
+        Some(LegacyScan::Listed(Vec::new())),
         "no legacy pane exists, so nothing is reported reaped"
     );
     assert!(
@@ -1614,11 +1614,11 @@ fn the_legacy_reap_takes_the_pane_it_does_own_and_its_artifacts_with_it() {
 
     assert_eq!(
         reaped.ok(),
-        Some(vec![LegacyReap {
+        Some(LegacyScan::Listed(vec![LegacyReap {
             name: "shepherd",
             pane: legacy.clone(),
             outcome: KillOutcome::Killed,
-        }]),
+        }])),
         "the reap reports which legacy watchdog it found, on which pane, and that the kill ran"
     );
     assert!(
@@ -1636,6 +1636,67 @@ fn the_legacy_reap_takes_the_pane_it_does_own_and_its_artifacts_with_it() {
         );
     }
     let _ = fs::remove_dir_all(&scratch);
+}
+
+#[test]
+fn the_legacy_reap_keeps_the_artifacts_of_a_pane_it_could_not_kill() {
+    // Fail closed per name: a refused kill keeps that watchdog's pidfile and
+    // status, while a name with no pane is still cleaned up. The server itself
+    // refuses `kill-pane` (a command alias), with the pane alive.
+    let scratch = scratch("reapkept");
+    require_tmux(&scratch);
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup::new(&socket, &scratch);
+    let server = server_of(&socket);
+    let meta_dir = plant(&scratch.join("home"), "ours", &socket, None);
+    assert!(tmux(&socket, &scratch, &["new-session", "-d", "-s", "ours"]).0);
+    let split = ["split-window", "-d", "-t", "ours", "-P", "-F", "#{pane_id}"];
+    let legacy = tmux(&socket, &scratch, &split).1.trim().to_owned();
+    let stamp = ["set-option", "-p", "-t", &legacy, "@ae_agent", "_shepherd"];
+    assert!(tmux(&socket, &scratch, &stamp).0);
+    super::refusal_rig::refuse_kill_pane(&|words: &[&str]| tmux(&socket, &scratch, words));
+    for artifact in [
+        ".shepherd.pid",
+        ".shepherd.status",
+        ".loop.pid",
+        ".loop.status",
+    ] {
+        assert!(fs::write(meta_dir.join(artifact), "4242\n").is_ok());
+    }
+
+    let reaped = watchdog_glue::reap_legacy(&server, "ours", &meta_dir, &mut Vec::new());
+    let panes = tmux(&socket, &scratch, &["list-panes", "-a", "-F", "#{pane_id}"]).1;
+    let kept = |artifact: &str| fs::read_to_string(meta_dir.join(artifact)).is_ok();
+    let artifacts = [
+        ".shepherd.pid",
+        ".shepherd.status",
+        ".loop.pid",
+        ".loop.status",
+    ]
+    .map(kept);
+    kill_server(&socket, &scratch);
+    let _ = fs::remove_dir_all(&scratch);
+
+    let failed = KillOutcome::KillFailed("the pane is still listed".to_owned());
+    let found = vec![LegacyReap {
+        name: "shepherd",
+        pane: legacy.clone(),
+        outcome: failed,
+    }];
+    assert_eq!(
+        reaped.ok(),
+        Some(LegacyScan::Listed(found)),
+        "the refused kill is reported, not reaped"
+    );
+    assert!(
+        panes.contains(&legacy),
+        "the refused pane is alive: {panes}"
+    );
+    assert_eq!(
+        artifacts,
+        [true, true, false, false],
+        "refused name kept, paneless name cleaned"
+    );
 }
 
 #[test]
@@ -1665,7 +1726,7 @@ fn the_legacy_reap_keeps_its_artifacts_when_the_panes_cannot_be_listed() {
 
     assert_eq!(
         reaped.ok(),
-        Some(Vec::new()),
+        Some(LegacyScan::Unlisted),
         "nothing may be reported reaped on a listing that never answered"
     );
     assert!(
