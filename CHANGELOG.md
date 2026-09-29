@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.189] - 2026-09-29
+- Tell an unlisted legacy reap from an empty one and keep a refused pane's artifacts
+- Journal what the daemon's legacy reap found or could not list
+- Document the legacy reap scan, its artifact keep and its journal record
+- Refuse a stop on an unlisted reap only where a legacy watchdog registered
+- Document the evidence gate on a stop over an unlisted legacy reap
+- Decide a legacy registration by metadata alone
+- Refuse a start no pidfile decides when its legacy reap could not list the panes
+- Document the unlisted start refusal and the kept legacy registration
+- Say what an unlisted start refusal can and cannot rule out
+- Put the legacy reap note comment above its test
+
 ## [v2026.9.188] - 2026-09-29
 - Pin shorter watchdog nudge wording and clipped goal
 - Shorten watchdog nudge and challenge copy, clip goal
