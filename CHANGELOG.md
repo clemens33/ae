@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.9.190] - 2026-09-29
+- Give the watchdog nudge arm its own 40 s budget
+
 ## [v2026.9.189] - 2026-09-29
 - Tell an unlisted legacy reap from an empty one and keep a refused pane's artifacts
 - Journal what the daemon's legacy reap found or could not list
