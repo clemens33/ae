@@ -24,6 +24,11 @@ fuzz_target!(|data: &[u8]| {
         "fuzz.jsonl",
         ae::tool::ToolKind::Claude,
     );
+    // #171: drive the wrapper recognizer over every produced row body, so the
+    // helper stays reachable although `hidden` owns its one production call.
+    for row in &rows {
+        let _ = std::hint::black_box(ae::board::claude::is_wrapped_ae_turn(&row.body));
+    }
     let _ = std::hint::black_box(ae::board::collect(rows));
     let _ = std::hint::black_box(coverage);
 });

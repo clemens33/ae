@@ -363,6 +363,56 @@ fn ae_injected_turns_are_hidden_and_counted_per_seat() {
 }
 
 #[test]
+fn a_harness_wrapped_ae_turn_is_hidden_and_counted() {
+    // #171 RED: the measured Claude 2.1.280 wrapped shape hides like a bare
+    // marker. Fixture = exact preserved message.content bytes (1044 B); the
+    // record is built with the JSON escaper, never user() (raw LF is invalid
+    // JSONL and would false-green into a no-row).
+    let content = include_str!("../fixtures/board/claude-wrapped-ae-turn.txt");
+    assert_eq!(
+        ae::install::sha256_hex(content.as_bytes()),
+        "fb661d1c1270f8ebb9835d79ccd0a4a292336a7b7edb734497a543b960308504"
+    );
+    let mut escaped = String::new();
+    ae::json::escape_into(content, &mut escaped);
+    let wrapped = format!(
+        r#"{{"type":"user","timestamp":"2026-09-16T09:01:00Z","message":{{"role":"user","content":"{escaped}"}}}}"#
+    );
+    let root = rig("wrapped-hidden");
+    let store = root.join("claude");
+    plant_transcript(
+        &store,
+        "work",
+        CLAUDE_ID,
+        &[
+            user("2026-09-16T09:00:00Z", "human one"),
+            wrapped,
+            user("2026-09-16T09:02:00Z", "human two"),
+            user("2026-09-16T09:03:00Z", &ae::provenance::peer("worker")),
+        ],
+    );
+    plant_session(
+        &root,
+        "one",
+        &claude_roster("main", "lead", CLAUDE_ID, &store),
+    );
+    let observation = observe(&root, &["one"], None);
+    let bodies: Vec<&str> = observation
+        .rows
+        .iter()
+        .map(|row| row.body.as_str())
+        .collect();
+    assert_eq!(bodies, ["human one", "human two"]);
+    assert_eq!(observation.coverage.len(), 0, "valid JSONL hides silently");
+    assert_eq!(
+        (observation.hidden.len(), observation.hidden[0].count),
+        (1, 1),
+        "the bare-marker control stays reader-silent, uncounted"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn the_codex_passive_launch_turn_is_hidden_not_rendered() {
     let root = rig("hidden-codex");
     let store = root.join("codex");

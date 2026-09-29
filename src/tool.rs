@@ -1198,6 +1198,14 @@ impl ToolKind {
     pub(crate) const fn needs_generated_context(self) -> bool {
         matches!(self.adapter().launch.context, ContextChannel::ConfigFile)
     }
+
+    /// Whether this harness persists multi-line ae turns inside a paste
+    /// wrapper: only Claude's store shape is measured (#171). Display-only —
+    /// the board's central filter consults it before its wrapper recognizer.
+    #[must_use]
+    pub(crate) const fn board_has_paste_wrapper(self) -> bool {
+        matches!(self, Self::Claude)
+    }
 }
 
 #[cfg(test)]

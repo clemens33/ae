@@ -96,6 +96,9 @@ pub fn collect(mut rows: Vec<Row>) -> Vec<Row> {
 /// HIDDEN when its body's FIRST line is one of the marker spellings
 /// [`crate::provenance`] owns — its predicate, never a respelling — or when the
 /// whole body IS this seat's Codex passive launch turn ([`passive_turn`]).
+/// A Claude row also hides when its whole body is a harness-wrapped ae turn
+/// ([`claude::is_wrapped_ae_turn`], #171): exact same-id tags, marker on the
+/// first inner line. A byte-faithful human copy collides and hides too.
 /// Assistant rows are never hidden: a model may legitimately quote a marker.
 #[must_use]
 fn hidden(row: &Row, passive: Option<&str>) -> bool {
@@ -103,7 +106,11 @@ fn hidden(row: &Row, passive: Option<&str>) -> bool {
         return false;
     }
     let first = row.body.lines().next().unwrap_or_default();
-    crate::provenance::is_ae_turn(first) || passive.is_some_and(|turn| row.body == turn)
+    crate::provenance::is_ae_turn(first)
+        || passive.is_some_and(|turn| row.body == turn)
+        // #171: a harness whose store wraps ae turns consults the wrapper
+        // recognizer; the capability owner names which (#171 measured Claude).
+        || (row.source.board_has_paste_wrapper() && claude::is_wrapped_ae_turn(&row.body))
 }
 
 /// The body of one seat's passive launch turn, where its tool has one: the text
@@ -1615,6 +1622,123 @@ mod tests {
                 "assistant rows are never hidden: {marker}"
             );
         }
+    }
+
+    /// Wrap `inner` as the measured Claude harness does: exact opener, the
+    /// marker on the first inner line, the exact matching closer last.
+    fn wrapped(id: &str, marker: &str, inner: &str) -> String {
+        format!("<pasted_content id=\"{id}\">\n{marker}\n{inner}\n</pasted_content id=\"{id}\">")
+    }
+
+    #[test]
+    fn a_harness_wrapped_ae_turn_hides_like_a_bare_marker() {
+        // #171: Claude 2.1.280 stores a multi-line ae turn wrapped, so the
+        // marker leaves line 1 and the bare check misses it. Every verb hides.
+        for marker in [
+            crate::provenance::peer("lead"),
+            crate::provenance::ctx(),
+            crate::provenance::brief("lead"),
+            crate::provenance::interrupt("lead"),
+        ] {
+            let body = wrapped("cbef", &marker, "synthetic turn body");
+            assert!(super::hidden(&row(1, "a", 0, &body), None), "{marker}");
+            let minimal =
+                format!("<pasted_content id=\"cbef\">\n{marker}\n</pasted_content id=\"cbef\">");
+            assert!(
+                super::hidden(&row(1, "a", 0, &minimal), None),
+                "3-line {marker}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_wrapper_that_breaks_the_exact_grammar_stays_a_human_row() {
+        let marker = crate::provenance::peer("lead");
+        let whole = wrapped("cbef", &marker, "synthetic turn body");
+        let open = "<pasted_content id=\"cbef\">";
+        let close = "</pasted_content id=\"cbef\">";
+        let cases: [(&str, String); 16] = [
+            ("prose before opener", format!("human words\n{whole}")),
+            (
+                "blank between opener and marker",
+                format!("{open}\n\n{marker}\nwords\n{close}"),
+            ),
+            (
+                "marker past the first inner line",
+                format!("{open}\nwords\n{marker}\nwords\n{close}"),
+            ),
+            ("missing closer", format!("{open}\n{marker}\nwords")),
+            (
+                "id mismatch",
+                format!("{open}\n{marker}\nwords\n</pasted_content id=\"dead\">"),
+            ),
+            ("empty id", wrapped("", &marker, "synthetic turn body")),
+            (
+                "missing id",
+                format!("<pasted_content>\n{marker}\nwords\n</pasted_content>"),
+            ),
+            (
+                "junk attribute on opener",
+                format!("<pasted_content id=\"cbef\" extra=\"1\">\n{marker}\nwords\n{close}"),
+            ),
+            (
+                "prefix before opener",
+                format!("x{open}\n{marker}\nwords\n{close}"),
+            ),
+            (
+                "embedded quote in id",
+                wrapped("cb\"ef", &marker, "synthetic turn body"),
+            ),
+            (
+                "premature same-id closer plus prose plus repeated closer",
+                format!("{open}\n{marker}\n{close}\nhuman prose\n{close}"),
+            ),
+            (
+                "trailing prose after closer",
+                format!("{whole}\nhuman prose"),
+            ),
+            (
+                "human wrapper prose on the first inner line",
+                format!("{open}\nhuman words\n{close}"),
+            ),
+            (
+                "marker nested below the first inner wrapper",
+                format!("{open}\nhuman words\n{whole}\n{close}"),
+            ),
+            ("bare opener alone", open.to_owned()),
+            ("bare closer alone", close.to_owned()),
+        ];
+        for (name, body) in &cases {
+            assert!(!super::hidden(&row(1, "a", 0, body), None), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_non_matching_closer_inside_the_wrapper_is_prose() {
+        // Only the SAME id closes: a foreign closer mid-body changes nothing.
+        let marker = crate::provenance::peer("lead");
+        let body = format!(
+            "<pasted_content id=\"cbef\">\n{marker}\n</pasted_content id=\"dead\">\nwords\n</pasted_content id=\"cbef\">"
+        );
+        assert!(super::hidden(&row(1, "a", 0, &body), None));
+    }
+
+    #[test]
+    fn wrapped_classification_needs_a_human_claude_row() {
+        let body = wrapped(
+            "cbef",
+            &crate::provenance::peer("lead"),
+            "synthetic turn body",
+        );
+        let mut assistant = row(1, "a", 0, &body);
+        assistant.role = Role::Assistant;
+        assert!(
+            !super::hidden(&assistant, None),
+            "assistant rows never hide"
+        );
+        let mut foreign = row(1, "a", 0, &body);
+        foreign.source = ToolKind::Codex;
+        assert!(!super::hidden(&foreign, None), "only Claude is measured");
     }
 
     #[test]

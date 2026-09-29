@@ -95,6 +95,46 @@ pub fn read_stream(
     (sink.rows, sink.coverage)
 }
 
+/// Whether a trimmed Claude human-turn body is a harness-wrapped ae turn:
+/// exact `<pasted_content id="X">` first, the marker on the first inner line,
+/// the exact same-id closer last, and no same-id closer before it. Closes
+/// #171 (Claude 2.1.280 stores multi-line ae turns wrapped). PURE: no I/O,
+/// the reader never calls it — `super::hidden` is the one caller, so a wrapped
+/// turn is hidden AND counted like every other central-filter drop. A literal
+/// human copy of a wrapped turn is byte-indistinguishable and hides too; the
+/// central count keeps that lossy collision visible.
+#[must_use]
+pub fn is_wrapped_ae_turn(body: &str) -> bool {
+    const OPEN_PREFIX: &str = "<pasted_content id=\"";
+    const CLOSE_PREFIX: &str = "</pasted_content id=\"";
+    const TAG_SUFFIX: &str = "\">";
+    /// The id a tag line carries, or None when the line is not exactly a
+    /// prefix+id+suffix tag with a nonempty quoteless id.
+    fn tag_id<'a>(line: &'a str, prefix: &str) -> Option<&'a str> {
+        line.strip_prefix(prefix)
+            .and_then(|rest| rest.strip_suffix(TAG_SUFFIX))
+            .filter(|id| !id.is_empty() && !id.contains('"'))
+    }
+    let lines: Vec<&str> = body.lines().collect();
+    if lines.len() < 3 {
+        return false;
+    }
+    let Some(id) = tag_id(lines[0], OPEN_PREFIX) else {
+        return false;
+    };
+    if !crate::provenance::is_ae_turn(lines[1]) {
+        return false;
+    }
+    if tag_id(lines[lines.len() - 1], CLOSE_PREFIX) != Some(id) {
+        return false;
+    }
+    // A same-id closer before the final line means human prose follows an
+    // already-closed block: the turn stays human (owner R2).
+    !lines[2..lines.len() - 1]
+        .iter()
+        .any(|line| tag_id(line, CLOSE_PREFIX) == Some(id))
+}
+
 /// One file's in-progress read: the caller's naming plus the rows, coverage
 /// and timestamp-miss count accumulated so far.
 struct Sink<'a> {
