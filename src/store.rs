@@ -211,6 +211,37 @@ pub fn read_source(path: &Path) -> SourceRead {
     }
 }
 
+/// Whether a node is at a path, from its own metadata alone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SourcePresence {
+    /// Positive `NotFound`: nothing is at this path.
+    Absent,
+    /// A regular file.
+    Regular,
+    /// A node OBSERVED non-regular, or one whose metadata could not be read:
+    /// something is there, or cannot be proven not to be.
+    Irregular(String),
+}
+
+/// Classify the node at `path` without following a link and without opening
+/// it, so a caller that only asks whether something is there reads no bytes.
+#[must_use]
+pub fn source_presence(path: &Path) -> SourcePresence {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: whether a session source is there, by its own metadata alone — never followed, never opened — see clippy.toml"
+    )]
+    let observed = std::fs::symlink_metadata(path);
+    match observed {
+        Ok(meta) => match nonregular_leg(meta.file_type()) {
+            None => SourcePresence::Regular,
+            Some(what) => SourcePresence::Irregular(what.to_owned()),
+        },
+        Err(why) if why.kind() == io::ErrorKind::NotFound => SourcePresence::Absent,
+        Err(why) => SourcePresence::Irregular(why.to_string()),
+    }
+}
+
 /// One session's files, addressed by its meta directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionStore {
@@ -829,6 +860,48 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    // Only a proven NotFound is absent: a directory, a link and a node whose
+    // metadata cannot be read all answer that something may be there.
+    #[test]
+    fn a_presence_is_absent_only_on_a_proven_not_found() {
+        use super::{SourcePresence, source_presence};
+        let dir = scratch("presence");
+        std::fs::write(dir.join("file"), b"x").unwrap();
+        std::fs::create_dir(dir.join("dir")).unwrap();
+        std::os::unix::fs::symlink(dir.join("file"), dir.join("link")).unwrap();
+        let sealed = dir.join("sealed");
+        std::fs::create_dir(&sealed).unwrap();
+        std::fs::write(sealed.join("inside"), b"x").unwrap();
+        std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let hidden = source_presence(&sealed.join("inside"));
+        std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let answers =
+            ["absent", "file", "dir", "link"].map(|name| source_presence(&dir.join(name)));
+        let _ = std::fs::remove_dir_all(&dir);
+        let irregular = |what: &str| SourcePresence::Irregular(what.to_owned());
+        assert_eq!(
+            answers,
+            [
+                SourcePresence::Absent,
+                SourcePresence::Regular,
+                irregular("a directory"),
+                irregular("a symlink"),
+            ]
+        );
+        // A host that ignores the mode (root) reads through to the file; skip
+        // that arm. Never Absent: something IS there.
+        assert!(
+            matches!(
+                hidden,
+                SourcePresence::Irregular(_) | SourcePresence::Regular
+            ),
+            "{hidden:?}"
+        );
+        if hidden == SourcePresence::Regular {
+            eprintln!("SKIP: this host searched a 0000 directory");
+        }
     }
 
     #[test]

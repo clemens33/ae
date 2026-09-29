@@ -436,18 +436,16 @@ fn legacy_artifacts(meta_dir: &Path, name: &str) -> [PathBuf; 2] {
     ]
 }
 
-/// Whether a pre-rename watchdog left any registration in `meta_dir`. Only a
-/// node proven absent is none, so an unreadable one counts.
+/// Whether a pre-rename watchdog left any registration in `meta_dir`, by
+/// metadata alone. Only a node proven absent is none, so an invalid or
+/// unreadable one counts.
 #[must_use]
 pub fn legacy_registered(meta_dir: &Path) -> bool {
     LEGACY_WATCHDOG_NAMES
         .iter()
         .flat_map(|name| legacy_artifacts(meta_dir, name))
         .any(|artifact| {
-            !matches!(
-                crate::store::read_source(&artifact),
-                crate::store::SourceRead::Absent
-            )
+            crate::store::source_presence(&artifact) != crate::store::SourcePresence::Absent
         })
 }
 

@@ -860,6 +860,10 @@ fn an_unlisted_reap_skips_any_start_and_refuses_a_registered_stop() {
     let (code, out, err) = watchdog(&root, &["stop", "wdunl"]);
     let kept = fs::read_to_string(meta_dir.join(".loop.status")).is_ok();
     let events = events_of(&meta_dir);
+    // An invalid node counts too: only a proven absence is no registration.
+    let _ = fs::remove_file(meta_dir.join(".loop.status"));
+    assert!(fs::create_dir(meta_dir.join(".shepherd.pid")).is_ok());
+    let (invalid_code, _, _) = watchdog(&root, &["stop", "wdunl"]);
     let _ = fs::remove_dir_all(&scratch);
 
     assert_eq!(start_code, 0, "the start skips: {start_err}");
@@ -871,6 +875,10 @@ fn an_unlisted_reap_skips_any_start_and_refuses_a_registered_stop() {
         "{out} {err}"
     );
     assert!(kept, "the registration is kept");
+    assert_eq!(
+        invalid_code, 1,
+        "a directory registration refuses the stop too"
+    );
     assert!(
         events.iter().any(|line| line.contains("watchdog-stop")
             && line.contains("refused:")
