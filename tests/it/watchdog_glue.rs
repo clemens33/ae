@@ -1510,6 +1510,8 @@ fn the_legacy_reap_refuses_a_pane_that_belongs_to_someone_else() {
     .1
     .trim()
     .to_owned();
+    let unstamped =
+        watchdog_glue::kill_owned_pane(&server, &ours, "ours", Some("_shepherd"), &mut Vec::new());
     // Stamp OUR pane as a live agent — it is the pane a wrong reap would take.
     assert!(
         tmux(
@@ -1525,6 +1527,7 @@ fn the_legacy_reap_refuses_a_pane_that_belongs_to_someone_else() {
         watchdog_glue::kill_owned_pane(&server, &foreign, "ours", Some("_shepherd"), &mut err);
     let stamp_verdict =
         watchdog_glue::kill_owned_pane(&server, &ours, "ours", Some("_shepherd"), &mut err);
+    let created = watchdog_glue::kill_created_pane(&server, &ours, "ours", "_shepherd", &mut err);
     // The artifacts a reap cleans up regardless, and the pane it must NOT find.
     assert!(fs::write(meta_dir.join(".loop.pid"), "4242\n").is_ok());
     let mut reap_err = Vec::new();
@@ -1543,6 +1546,14 @@ fn the_legacy_reap_refuses_a_pane_that_belongs_to_someone_else() {
         stamp_verdict.ok(),
         Some(KillOutcome::WrongAgent("lead".to_owned())),
         "our own agent's pane is refused because its stamp disagrees"
+    );
+    assert_eq!(
+        (unstamped.ok(), created.ok()),
+        (
+            Some(KillOutcome::WrongAgent(String::new())),
+            Some(KillOutcome::WrongAgent("lead".to_owned()))
+        ),
+        "an owned kill refuses an unstamped pane; a created-pane kill refuses a foreign stamp"
     );
     assert!(
         both_alive.contains(&foreign) && both_alive.contains(&ours),
