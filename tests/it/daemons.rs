@@ -846,11 +846,12 @@ fn a_refused_start_and_stop_are_recorded_without_changing_the_outcome() {
     }
 }
 
-/// On a server that answers nothing, a start skips even where no legacy
-/// watchdog registered itself — a listing that failed must never reach a
-/// spawn — while a stop refuses only where one did.
+/// On a server that answers nothing, a start with no pidfile refuses even
+/// where no legacy watchdog registered itself — a listing that failed proves
+/// no watchdog running and must never reach a spawn — while a stop refuses
+/// only where one did.
 #[test]
-fn an_unlisted_reap_skips_any_start_and_refuses_a_registered_stop() {
+fn an_unlisted_reap_refuses_an_unproven_start_and_a_registered_stop() {
     let scratch = scratch("wdunl");
     let root = scratch.join("home");
     let meta_dir = plant_session(&root, "wdunl", &scratch.join("no-such-socket"));
@@ -866,9 +867,9 @@ fn an_unlisted_reap_skips_any_start_and_refuses_a_registered_stop() {
     let (invalid_code, _, _) = watchdog(&root, &["stop", "wdunl"]);
     let _ = fs::remove_dir_all(&scratch);
 
-    assert_eq!(start_code, 0, "the start skips: {start_err}");
-    assert!(start_err.contains("start skipped"), "{start_err}");
     let unlisted = "the panes could not be listed, so a legacy watchdog cannot be ruled out";
+    assert_eq!(start_code, 1, "the start refuses: {start_err}");
+    assert!(start_err.contains(unlisted), "{start_err}");
     assert_eq!(code, 1, "a registered legacy refuses the stop: {out} {err}");
     assert!(
         !out.contains("not running") && err.contains(unlisted),
@@ -884,6 +885,41 @@ fn an_unlisted_reap_skips_any_start_and_refuses_a_registered_stop() {
             && line.contains("refused:")
             && line.contains(unlisted)),
         "the refused stop is audited: {events:?}"
+    );
+}
+
+/// A live server that no longer holds the session cannot list its panes
+/// either: nothing proves a watchdog running, so the start refuses, naming
+/// the gap, and spawns nothing.
+#[test]
+fn a_start_whose_session_left_a_live_server_refuses_and_spawns_nothing() {
+    let scratch = scratch("wdgone");
+    require_tmux(&scratch);
+    let socket = socket_of(&scratch);
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let root = scratch.join("home");
+    let meta_dir = plant_session(&root, "ours", &socket);
+    let run = |words: &[&str]| tmux(&socket, &scratch, words);
+    assert!(run(&["new-session", "-d", "-s", "theirs", "sleep", "60"]).0);
+
+    let (code, out, err) = watchdog(&root, &["start", "ours"]);
+    let (_, sessions) = run(&["list-sessions", "-F", "#{session_name}"]);
+    let unlisted = "the panes could not be listed, so a legacy watchdog cannot be ruled out";
+    assert_eq!(code, 1, "no watchdog is proven: {out} {err}");
+    assert!(err.contains(unlisted), "the gap is named: {err}");
+    assert!(
+        fs::read(meta_dir.join(".watchdog.pid")).is_err(),
+        "no spawn"
+    );
+    assert_eq!(sessions.trim(), "theirs", "nothing was created");
+    assert!(
+        events_of(&meta_dir)
+            .iter()
+            .any(|line| line.contains("watchdog-start") && line.contains(unlisted)),
+        "the refused start is audited"
     );
 }
 
