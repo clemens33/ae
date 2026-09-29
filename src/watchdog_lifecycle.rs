@@ -714,7 +714,8 @@ fn stop(
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> crate::Result<u8> {
-    let legacy = watchdog_glue::reap_legacy(server, session, meta_dir, err)?;
+    let legacy = watchdog_glue::reap_legacy(server, session, meta_dir, err)?
+        .unless_unregistered(watchdog_glue::legacy_registered(meta_dir));
     let seen = presence(server, session, meta_dir);
     if seen == Presence::Unknown {
         writeln!(

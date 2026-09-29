@@ -846,6 +846,39 @@ fn a_refused_start_and_stop_are_recorded_without_changing_the_outcome() {
     }
 }
 
+/// On a server that answers nothing, a start skips even where no legacy
+/// watchdog registered itself — a listing that failed must never reach a
+/// spawn — while a stop refuses only where one did.
+#[test]
+fn an_unlisted_reap_skips_any_start_and_refuses_a_registered_stop() {
+    let scratch = scratch("wdunl");
+    let root = scratch.join("home");
+    let meta_dir = plant_session(&root, "wdunl", &scratch.join("no-such-socket"));
+
+    let (start_code, _, start_err) = watchdog(&root, &["start", "wdunl"]);
+    assert!(fs::write(meta_dir.join(".loop.status"), "stale\n").is_ok());
+    let (code, out, err) = watchdog(&root, &["stop", "wdunl"]);
+    let kept = fs::read_to_string(meta_dir.join(".loop.status")).is_ok();
+    let events = events_of(&meta_dir);
+    let _ = fs::remove_dir_all(&scratch);
+
+    assert_eq!(start_code, 0, "the start skips: {start_err}");
+    assert!(start_err.contains("start skipped"), "{start_err}");
+    let unlisted = "the panes could not be listed, so a legacy watchdog cannot be ruled out";
+    assert_eq!(code, 1, "a registered legacy refuses the stop: {out} {err}");
+    assert!(
+        !out.contains("not running") && err.contains(unlisted),
+        "{out} {err}"
+    );
+    assert!(kept, "the registration is kept");
+    assert!(
+        events.iter().any(|line| line.contains("watchdog-stop")
+            && line.contains("refused:")
+            && line.contains(unlisted)),
+        "the refused stop is audited: {events:?}"
+    );
+}
+
 /// The `wdseed` session as a LAUNCH and a live daemon would have left it.
 ///
 /// The ownership pair the seed is proven against, the look the seed is rendered

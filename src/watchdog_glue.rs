@@ -419,11 +419,50 @@ pub fn reap_legacy(
             });
         }
         if gone {
-            let _ = std::fs::remove_file(meta_dir.join(format!(".{name}.pid")));
-            let _ = std::fs::remove_file(meta_dir.join(format!(".{name}.status")));
+            for artifact in legacy_artifacts(meta_dir, name) {
+                let _ = std::fs::remove_file(artifact);
+            }
         }
     }
     Ok(LegacyScan::Listed(found))
+}
+
+/// The files a pre-rename watchdog registered itself by: its pidfile and its
+/// status. The ONE list: the reap removes them and the stop reads them.
+fn legacy_artifacts(meta_dir: &Path, name: &str) -> [PathBuf; 2] {
+    [
+        meta_dir.join(format!(".{name}.pid")),
+        meta_dir.join(format!(".{name}.status")),
+    ]
+}
+
+/// Whether a pre-rename watchdog left any registration in `meta_dir`. Only a
+/// node proven absent is none, so an unreadable one counts.
+#[must_use]
+pub fn legacy_registered(meta_dir: &Path) -> bool {
+    LEGACY_WATCHDOG_NAMES
+        .iter()
+        .flat_map(|name| legacy_artifacts(meta_dir, name))
+        .any(|artifact| {
+            !matches!(
+                crate::store::read_source(&artifact),
+                crate::store::SourceRead::Absent
+            )
+        })
+}
+
+impl LegacyScan {
+    /// The scan `stop` decides on: an unlisted scan where no legacy watchdog
+    /// is registered reads as nothing found, as the main daemon reads as not
+    /// running without its pidfile. `start` never asks: a listing that failed
+    /// must not reach a spawn. Pure.
+    #[must_use]
+    pub fn unless_unregistered(self, registered: bool) -> Self {
+        match self {
+            Self::Unlisted if !registered => Self::Listed(Vec::new()),
+            scan => scan,
+        }
+    }
 }
 
 /// Why an unlisted legacy reap settles nothing, in the words the stop's
@@ -714,6 +753,27 @@ mod tests {
 
     // An empty listing leaves no note; an unlisted one and every found pane,
     // taken or refused, are named.
+    // Only an unlisted scan with no legacy registration reads as nothing
+    // found; a registration or a listing keeps the scan as it is.
+    #[test]
+    fn an_unlisted_scan_counts_only_where_a_legacy_watchdog_registered() {
+        use super::{LegacyReap, LegacyScan};
+        let found = LegacyScan::Listed(vec![LegacyReap {
+            name: "loop",
+            pane: "%9".to_owned(),
+            outcome: KillOutcome::Killed,
+        }]);
+        let rows = [
+            (LegacyScan::Unlisted, false, LegacyScan::Listed(Vec::new())),
+            (LegacyScan::Unlisted, true, LegacyScan::Unlisted),
+            (found.clone(), false, found.clone()),
+            (found.clone(), true, found),
+        ];
+        for (scan, registered, want) in rows {
+            assert_eq!(scan.unless_unregistered(registered), want, "{registered}");
+        }
+    }
+
     #[test]
     fn a_legacy_reap_note_names_what_the_reap_found_or_could_not_list() {
         use super::{LegacyReap, LegacyScan, legacy_reap_note};
