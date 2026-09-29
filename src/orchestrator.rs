@@ -1675,8 +1675,9 @@ fn clean(text: &str) -> String {
 mod tests {
     use super::{
         AGENT_ROW_OVERHEAD, Args, Columns, FidelityRung, KEYS, MODEL_CELL_CAP, ROW_CAP, Usage,
-        block_cells, launch_tail_is_valid, menu, menu_for_client, menu_for_client_session,
-        model_block, model_parts, pad, parse, parse_launch_tail, terminal_cells,
+        block_cells, echo_launch, launch_tail_is_valid, menu, menu_for_client,
+        menu_for_client_session, model_block, model_parts, pad, parse, parse_launch_tail,
+        terminal_cells,
     };
     use crate::inventory::ServerId;
     use crate::theme::Palette;
@@ -1935,6 +1936,20 @@ mod tests {
             ]),
             Err(Usage::DuplicateClient)
         );
+    }
+
+    #[test]
+    fn a_refusal_echoes_the_launchers_whole_captured_report() {
+        // Success never calls this (#207: a picker resume is silent), so this
+        // helper is the one gate that keeps a failed launch's captured report
+        // in front of the human. Swallowing either stream here would silently
+        // drop the only text a refused row has.
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        echo_launch(&mut out, &mut err, b"Resuming ...\n", b"Error: gone\n")
+            .expect("a Vec never fails to write");
+        assert_eq!(out, b"Resuming ...\n");
+        assert_eq!(err, b"Error: gone\n");
     }
 
     #[test]
